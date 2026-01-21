@@ -3,8 +3,9 @@
 # - Streamlit Cloud: forces Upload CSVs (no local C:\ paths)
 # - Tight sign conventions for forecast using COA
 # - Annual aggregation table: Revenues → FAD (by year)
+# - COA join logic updated:
+#     coa.csv: vcode == forecast_feed.vAccount == accounting_feed.TypeID
 
-import io
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Dict, List, Tuple
@@ -120,7 +121,7 @@ def accrue_to(deal: DealState, new_date: date, pref_rates: Dict[str, float]):
         yf = (e - s).days / 365.0
 
         for p, ps in deal.partners.items():
-            r = pref_rates.get(p, 0)
+            r = pref_rates.get(p, 0.0)
             ps.pref_accrued += ps.base() * r * yf
 
         if is_year_end(e) and e != d1:
@@ -135,9 +136,11 @@ def map_bucket(flag):
 
 
 def apply_txn(ps: PartnerState, d: date, amt: float, bucket: str):
-    # NOTE: sign conventions for accounting feed will be finalized later.
+    # NOTE: accounting-feed sign conventions will be finalized later.
     ps.irr_cashflows.append((d, amt))
+
     if bucket == "capital":
+        # contributions are often negative in investor cashflow convention; this will be revisited
         ps.principal += -amt if amt < 0 else -min(amt, ps.principal)
     else:
         if amt > 0:
@@ -152,45 +155,29 @@ def apply_txn(ps: PartnerState, d: date, amt: float, bucket: str):
 # LOADERS + SIGN NORMALIZATION (FORECAST)
 # ============================================================
 def load_coa(df: pd.DataFrame) -> pd.DataFrame:
-    # Normalize column names (trim spaces)
-    df.columns = [c.strip() for c in df.columns]
+    """
+    coa.csv headers (per your feed):
+      vcode, vdescription, vtype, iNOI, vMisc, vAccountType
+    Joining rule:
+      coa.vcode == forecast_feed.vAccount == accounting_feed.TypeID
+    """
+    df = df.copy()
+    df.columns = [str(c).strip() for c in df.columns]
 
-    # Accept common account-code header variants
-    if "vAccount" not in df.columns:
-        if "vCode" in df.columns:
-            df = df.rename(columns={"vCode": "vAccount"})
-        elif "vAccountCode" in df.columns:
-            df = df.rename(columns={"vAccountCode": "vAccount"})
-        elif "Account" in df.columns:
-            df = df.rename(columns={"Account": "vAccount"})
-        elif "AccountNumber" in df.columns:
-            df = df.rename(columns={"AccountNumber": "vAccount"})
-        else:
-            raise ValueError(
-                "coa.csv must include an account code column. "
-                "Expected one of: vCode, vAccount, vAccountCode, Account, AccountNumber."
-            )
+    # vcode in COA is the account code
+    if "vcode" not in df.columns:
+        raise ValueError("coa.csv is missing required column: vcode")
+
+    df = df.rename(columns={"vcode": "vAccount"})
 
     df["vAccount"] = pd.to_numeric(df["vAccount"], errors="coerce").astype("Int64")
 
-    # NOI flag variants
     if "iNOI" not in df.columns:
-        if "NOI" in df.columns:
-            df = df.rename(columns={"NOI": "iNOI"})
-        elif "IsNOI" in df.columns:
-            df = df.rename(columns={"IsNOI": "iNOI"})
-        else:
-            df["iNOI"] = 0
-
+        df["iNOI"] = 0
     df["iNOI"] = pd.to_numeric(df["iNOI"], errors="coerce").fillna(0).astype(int)
 
-    # Account type variants
     if "vAccountType" not in df.columns:
-        if "AccountType" in df.columns:
-            df = df.rename(columns={"AccountType": "vAccountType"})
-        else:
-            df["vAccountType"] = ""
-
+        df["vAccountType"] = ""
     df["vAccountType"] = df["vAccountType"].fillna("").astype(str).str.strip()
 
     return df[["vAccount", "iNOI", "vAccountType"]]
@@ -220,15 +207,21 @@ def normalize_forecast_signs(fc: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_forecast(df: pd.DataFrame, coa: pd.DataFrame, pro_yr_base: int) -> pd.DataFrame:
-    # Forecast feed columns: Vcode, Date, vAccount, mAmount, vSource, Pro_Yr
+    # Forecast feed columns (per your feed):
+    # Vcode, dtEntry, vSource, vAccount, mAmount, Year, Qtr, Date, Pro_Yr
+    df = df.copy()
+    df.columns = [str(c).strip() for c in df.columns]
+
     df = df.rename(columns={"Vcode": "vcode", "Date": "event_date"})
     df["vcode"] = df["vcode"].astype(str)
+
     df["event_date"] = pd.to_datetime(df["event_date"]).dt.date
     df["vAccount"] = pd.to_numeric(df["vAccount"], errors="coerce").astype("Int64")
     df["mAmount"] = pd.to_numeric(df["mAmount"], errors="coerce").fillna(0.0)
 
-    df["Year"] = (pro_yr_base + pd.to_numeric(df["Pro_Yr"], errors="coerce")).astype("Int64")
+    df["Year"] = (int(pro_yr_base) + pd.to_numeric(df["Pro_Yr"], errors="coerce")).astype("Int64")
 
+    # Join to COA on account code
     df = df.merge(coa, on="vAccount", how="left")
     df["iNOI"] = df["iNOI"].fillna(0).astype(int)
     df["vAccountType"] = df["vAccountType"].fillna("").astype(str)
@@ -247,6 +240,8 @@ def annual_aggregation_table(fc_deal: pd.DataFrame, start_year: int, horizon_yea
     f["acct_type"] = f["vAccountType"].astype(str).str.strip().str.lower()
 
     def sum_where(mask: pd.Series) -> pd.Series:
+        if f.empty:
+            return pd.Series(dtype=float)
         return f.loc[mask].groupby("Year")["mAmount_norm"].sum()
 
     revenues = sum_where(f["acct_type"].eq("revenues"))
@@ -271,7 +266,7 @@ def annual_aggregation_table(fc_deal: pd.DataFrame, start_year: int, horizon_yea
     out["Excluded Accounts"] = excluded_other
     out["Capital Expenditures"] = capex
 
-    # Because Interest/Principal/Excluded/Capex are normalized to negative outflows:
+    # Because Interest/Principal/Excluded/Capex are normalized as negative outflows:
     out["Funds Available for Distribution"] = (
         out["NOI"].fillna(0.0)
         + out["Interest"].fillna(0.0)
@@ -324,18 +319,16 @@ with st.sidebar:
 # ============================================================
 # LOAD INPUTS
 # ============================================================
-
-if mode == "Local folder":
-    if not folder or not Path(folder).exists():
-        st.error("Please enter a valid data folder path that contains the required CSV files.")
-        st.stop()
-
 def load_inputs():
     if CLOUD and mode == "Local folder":
         st.error("Local folder mode is disabled on Streamlit Cloud.")
         st.stop()
 
     if mode == "Local folder":
+        if not folder:
+            st.error("Please enter a data folder path.")
+            st.stop()
+
         inv = pd.read_csv(f"{folder}/investment_map.csv")
         wf = pd.read_csv(f"{folder}/waterfalls.csv")
         coa = load_coa(pd.read_csv(f"{folder}/coa.csv"))
@@ -346,18 +339,28 @@ def load_inputs():
             if f is None:
                 st.warning(f"Please upload {k}.csv")
                 st.stop()
+
         inv = pd.read_csv(uploads["investment_map"])
         wf = pd.read_csv(uploads["waterfalls"])
         coa = load_coa(pd.read_csv(uploads["coa"]))
         acct = pd.read_csv(uploads["accounting_feed"])
         fc = load_forecast(pd.read_csv(uploads["forecast_feed"]), coa, int(pro_yr_base))
 
+    # Normalize key fields we’ll use later
+    inv["vcode"] = inv["vcode"].astype(str)
+
+    if "InvestmentID" in inv.columns:
+        inv["InvestmentID"] = inv["InvestmentID"].astype(str)
+
+    # accounting_feed.TypeID aligns to COA account code (coa.vcode)
+    if "TypeID" in acct.columns:
+        acct["TypeID"] = pd.to_numeric(acct["TypeID"], errors="coerce").astype("Int64")
+
     return inv, wf, coa, acct, fc
 
 
 inv, wf, coa, acct, fc = load_inputs()
 
-inv["vcode"] = inv["vcode"].astype(str)
 deal = st.selectbox("Select Deal", sorted(inv["vcode"].dropna().unique().tolist()))
 
 if not st.button("Run Report", type="primary"):
@@ -365,11 +368,14 @@ if not st.button("Run Report", type="primary"):
 
 
 # ============================================================
-# CONTROL POPULATION (INNER JOIN)
+# CONTROL POPULATION (INNER JOIN ON InvestmentID → vcode)
 # ============================================================
-if "InvestmentID" in acct.columns:
+if "InvestmentID" in acct.columns and "InvestmentID" in inv.columns:
+    acct["InvestmentID"] = acct["InvestmentID"].astype(str)
     acct = acct.merge(inv[["InvestmentID", "vcode"]], on="InvestmentID", how="inner")
     acct = acct[acct["vcode"] == deal].copy()
+else:
+    acct = pd.DataFrame()  # placeholder if not present yet
 
 if acct.empty:
     st.warning("No accounting data found for the selected deal (after InvestmentID→vcode control join).")
@@ -390,8 +396,8 @@ state = DealState(str(deal), start_date)
 for p in wf_d["PropCode"].astype(str).unique():
     state.partners[p] = PartnerState()
 
-# Pref rates from Pref steps (assumes nPercent is % like 9 => 0.09)
-pref_rates = {}
+# Pref rates from Pref steps (assumes nPercent is percent like 9 => 0.09)
+pref_rates: Dict[str, float] = {}
 if "vState" in wf_d.columns:
     pref_rows = wf_d[wf_d["vState"].astype(str).str.strip().str.lower().eq("pref")]
     for _, r in pref_rows.iterrows():
@@ -402,21 +408,21 @@ if "vState" in wf_d.columns:
 
 
 # ============================================================
-# APPLY HISTORICAL ACCOUNTING TO BUILD CURRENT STATE
+# APPLY HISTORICAL ACCOUNTING TO BUILD CURRENT STATE (placeholder)
 # ============================================================
-if not acct.empty and "EffectiveDate" in acct.columns:
+# NOTE: We'll finish accounting sign conventions & mapping later.
+if not acct.empty and "EffectiveDate" in acct.columns and "InvestorID" in acct.columns:
     acct["EffectiveDate"] = pd.to_datetime(acct["EffectiveDate"]).dt.date
-    # Ensure we have InvestorID/PropCode for state mapping
-    if "InvestorID" in acct.columns:
-        acct["InvestorID"] = acct["InvestorID"].astype(str)
+    acct["InvestorID"] = acct["InvestorID"].astype(str)
 
     for _, r in acct.sort_values("EffectiveDate").iterrows():
         d = r["EffectiveDate"]
         accrue_to(state, d, pref_rates)
 
-        if "InvestorID" in acct.columns and r["InvestorID"] in state.partners:
+        inv_id = r["InvestorID"]
+        if inv_id in state.partners:
             apply_txn(
-                state.partners[r["InvestorID"]],
+                state.partners[inv_id],
                 d,
                 float(r.get("Amt", 0.0)),
                 map_bucket(r.get("Capital", "Y")),
@@ -456,8 +462,9 @@ st.dataframe(
 )
 
 st.caption(
-    "Sign conventions: Revenues are normalized positive; Expenses/Interest/Principal/Capex/Excluded are normalized negative. "
+    "Sign conventions: Revenues normalized positive; Expenses/Interest/Principal/Capex/Excluded normalized negative. "
     "Funds Available for Distribution = NOI + Interest + Principal + Excluded + Capex."
 )
 
-st.success("Annual aggregation table generated successfully. Next step: apply the CF_WF to monthly Funds Available and show step-level allocations.")
+st.success("Annual aggregation table generated successfully.")
+
