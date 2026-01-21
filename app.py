@@ -1,7 +1,6 @@
 # app.py
-# Streamlit app for Deal-level waterfall + XIRR forecasting/reporting
-# Local dev supports Local Folder or Upload CSVs
-# Streamlit Cloud forces Upload CSVs (no local filesystem access)
+# Waterfall + XIRR Forecast
+# Tightened sign conventions + Streamlit Cloud protection
 
 import io
 from dataclasses import dataclass, field
@@ -13,19 +12,11 @@ import pandas as pd
 import streamlit as st
 from scipy.optimize import brentq
 
-from openpyxl import Workbook
-from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
-from openpyxl.utils.dataframe import dataframe_to_rows
-
 
 # ============================================================
 # ENV DETECTION
 # ============================================================
 def is_streamlit_cloud() -> bool:
-    """
-    Streamlit Community Cloud mounts repos under /mount/src.
-    This reliably distinguishes Cloud vs local dev.
-    """
     return Path("/mount/src").exists()
 
 
@@ -69,38 +60,6 @@ def year_ends_strictly_between(d0: date, d1: date) -> List[date]:
     return out
 
 
-def require_cols(df: pd.DataFrame, cols: List[str], name: str):
-    missing = [c for c in cols if c not in df.columns]
-    if missing:
-        raise ValueError(f"{name} missing required columns: {missing}")
-
-def normalize_forecast_signs(fc: pd.DataFrame) -> pd.DataFrame:
-    """
-    Enforce model standard:
-      Revenues: positive
-      Expenses: negative
-      Interest/Principal/Capex/Excluded accounts: negative
-    """
-    out = fc.copy()
-    out["vAccountType_norm"] = out["vAccountType"].astype(str).str.strip().str.lower()
-
-    # Start with raw
-    amt = pd.to_numeric(out["mAmount"], errors="coerce").fillna(0.0)
-
-    # Force revenues positive, expenses negative
-    is_rev = out["vAccountType_norm"].eq("revenues")
-    is_exp = out["vAccountType_norm"].eq("expenses")
-
-    amt = amt.where(~is_rev, amt.abs())
-    amt = amt.where(~is_exp, -amt.abs())
-
-    # For the specific cash-flow adjustment accounts: force outflows negative
-    is_outflow_account = out["vAccount"].isin(list(ALL_EXCLUDED))
-    amt = amt.where(~is_outflow_account, -amt.abs())
-
-    out["mAmount_norm"] = amt
-    return out
-
 # ============================================================
 # XIRR
 # ============================================================
@@ -113,8 +72,7 @@ def xnpv(rate: float, cfs: List[Tuple[date, float]]) -> float:
 
 
 def xirr(cfs: List[Tuple[date, float]]) -> float:
-    f = lambda r: xnpv(r, cfs)
-    return brentq(f, -0.9999, 10.0)
+    return brentq(lambda r: xnpv(r, cfs), -0.9999, 10.0)
 
 
 # ============================================================
@@ -168,7 +126,7 @@ def accrue_to(deal: DealState, new_date: date, pref_rates: Dict[str, float]):
 
 
 # ============================================================
-# ACCOUNTING INGESTION
+# ACCOUNTING INGESTION (HISTORICAL)
 # ============================================================
 def map_bucket(flag):
     return "capital" if str(flag).upper() == "Y" else "pref"
@@ -188,23 +146,41 @@ def apply_txn(ps: PartnerState, d: date, amt: float, bucket: str):
 
 
 # ============================================================
-# LOADERS
+# LOADERS + SIGN NORMALIZATION
 # ============================================================
 def load_coa(df):
     df = df.rename(columns={"vCode": "vAccount"})
     df["vAccount"] = pd.to_numeric(df["vAccount"], errors="coerce").astype("Int64")
 
-    # NOI flag
     if "iNOI" not in df.columns and "NOI" in df.columns:
         df = df.rename(columns={"NOI": "iNOI"})
-    df["iNOI"] = pd.to_numeric(df["iNOI"], errors="coerce").fillna(0).astype(int)
+    df["iNOI"] = pd.to_numeric(df.get("iNOI", 0), errors="coerce").fillna(0).astype(int)
 
-    # Account type
     if "vAccountType" not in df.columns:
         df["vAccountType"] = ""
 
     df["vAccountType"] = df["vAccountType"].astype(str).str.strip()
     return df[["vAccount", "iNOI", "vAccountType"]]
+
+
+def normalize_forecast_signs(fc: pd.DataFrame) -> pd.DataFrame:
+    out = fc.copy()
+    atype = out["vAccountType"].str.lower()
+
+    amt = pd.to_numeric(out["mAmount"], errors="coerce").fillna(0.0)
+
+    # Revenues positive
+    amt = amt.where(~atype.eq("revenues"), amt.abs())
+
+    # Expenses negative
+    amt = amt.where(~atype.eq("expenses"), -amt.abs())
+
+    # Debt / capex / excluded always negative
+    amt = amt.where(~out["vAccount"].isin(ALL_EXCLUDED), -amt.abs())
+
+    out["mAmount_norm"] = amt
+    return out
+
 
 def load_forecast(df, coa, pro_yr_base):
     df = df.rename(columns={"Vcode": "vcode", "Date": "event_date"})
@@ -213,6 +189,7 @@ def load_forecast(df, coa, pro_yr_base):
     df = df.merge(coa, on="vAccount", how="left")
     df = normalize_forecast_signs(df)
     return df
+
 
 # ============================================================
 # STREAMLIT UI
@@ -227,31 +204,23 @@ with st.sidebar:
 
     if CLOUD:
         mode = "Upload CSVs"
-        st.info("Running on Streamlit Cloud. Local folders are not accessible — please upload CSVs.")
+        st.info("Running on Streamlit Cloud — local folders are disabled.")
     else:
-        mode = st.radio("Load data from:", ["Local folder", "Upload CSVs"], index=0)
+        mode = st.radio("Load data from:", ["Local folder", "Upload CSVs"])
 
     folder = None
     uploads = {}
 
     if mode == "Local folder":
-        folder = st.text_input(
-            "Data folder path",
-            placeholder=r"C:\Path\To\Data"
-        )
-        st.caption(
-            "Required files: investment_map.csv, waterfalls.csv, coa.csv, "
-            "accounting_feed.csv, forecast_feed.csv"
-        )
+        folder = st.text_input("Data folder path", placeholder=r"C:\Path\To\Data")
     else:
-        uploads["investment_map"] = st.file_uploader("investment_map.csv", type="csv")
-        uploads["waterfalls"] = st.file_uploader("waterfalls.csv", type="csv")
-        uploads["coa"] = st.file_uploader("coa.csv", type="csv")
-        uploads["accounting_feed"] = st.file_uploader("accounting_feed.csv", type="csv")
-        uploads["forecast_feed"] = st.file_uploader("forecast_feed.csv", type="csv")
+        uploads["investment_map"] = st.file_uploader("investment_map.csv")
+        uploads["waterfalls"] = st.file_uploader("waterfalls.csv")
+        uploads["coa"] = st.file_uploader("coa.csv")
+        uploads["accounting_feed"] = st.file_uploader("accounting_feed.csv")
+        uploads["forecast_feed"] = st.file_uploader("forecast_feed.csv")
 
     st.divider()
-    st.header("Report Settings")
     start_year = st.number_input("Start year", value=DEFAULT_START_YEAR)
     horizon_years = st.number_input("Horizon (years)", value=DEFAULT_HORIZON_YEARS)
     pro_yr_base = st.number_input("Pro_Yr base year", value=PRO_YR_BASE_DEFAULT)
@@ -262,7 +231,7 @@ with st.sidebar:
 # ============================================================
 def load_inputs():
     if CLOUD and mode == "Local folder":
-        st.error("Local folder mode is disabled on Streamlit Cloud.")
+        st.error("Local folder mode disabled on Streamlit Cloud.")
         st.stop()
 
     if mode == "Local folder":
@@ -274,9 +243,8 @@ def load_inputs():
     else:
         for k, f in uploads.items():
             if f is None:
-                st.warning(f"Please upload {k}.csv")
+                st.warning(f"Upload {k}.csv")
                 st.stop()
-
         inv = pd.read_csv(uploads["investment_map"])
         wf = pd.read_csv(uploads["waterfalls"])
         coa = load_coa(pd.read_csv(uploads["coa"]))
@@ -294,6 +262,7 @@ deal = st.selectbox("Select Deal", sorted(inv["vcode"].unique()))
 if not st.button("Run Report"):
     st.stop()
 
+
 # ============================================================
 # CONTROL POPULATION (INNER JOIN)
 # ============================================================
@@ -303,6 +272,7 @@ acct = acct[acct["vcode"] == deal]
 if acct.empty:
     st.error("No accounting data for selected deal.")
     st.stop()
+
 
 # ============================================================
 # INITIALIZE DEAL
@@ -319,8 +289,9 @@ pref_rates = {
     for _, r in wf_d[wf_d["vState"] == "Pref"].iterrows()
 }
 
+
 # ============================================================
-# APPLY HISTORY
+# APPLY HISTORICAL ACCOUNTING
 # ============================================================
 acct["EffectiveDate"] = pd.to_datetime(acct["EffectiveDate"]).dt.date
 for _, r in acct.sort_values("EffectiveDate").iterrows():
@@ -333,4 +304,6 @@ for _, r in acct.sort_values("EffectiveDate").iterrows():
     )
     state.last_event_date = r["EffectiveDate"]
 
-st.success("Deal loaded successfully. Forecast + reporting logic continues from here.")
+
+st.success("Sign conventions normalized. Model state initialized successfully.")
+st.write("Next: annual forecast + waterfall execution.")
