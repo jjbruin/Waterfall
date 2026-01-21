@@ -311,28 +311,30 @@ def pivot_annual_table(df: pd.DataFrame) -> pd.DataFrame:
     remainder = [r for r in wide.index if r not in existing]
     return wide.loc[existing + remainder]
 
-
 def style_annual_table(df: pd.DataFrame) -> pd.io.formats.style.Styler:
-    # per-row formatting: money rows with commas; DSCR with 2 decimals
+    # Base formatter: dollars with commas
     def money_fmt(x):
         if pd.isna(x):
             return ""
         return f"{x:,.0f}"
 
+    # DSCR formatter
     def dscr_fmt(x):
         if pd.isna(x):
             return ""
         return f"{x:,.2f}"
 
-    fmt = {}
-    for idx in df.index:
-        fmt[idx] = dscr_fmt if idx == "Debt Service Coverage Ratio" else money_fmt
+    styler = df.style.format(money_fmt)
 
-    styler = df.style.format(fmt, axis=1)
+    # Override DSCR row formatting manually (row-wise)
+    if "Debt Service Coverage Ratio" in df.index:
+        dscr_row = df.loc["Debt Service Coverage Ratio"]
+        styler = styler.format(
+            {col: dscr_fmt for col in df.columns},
+            subset=pd.IndexSlice[["Debt Service Coverage Ratio"], :]
+        )
 
     # Equal column widths and alignment
-    # - Index column ("Line Item") is rendered as row header (th)
-    # - Data cells (td) are numeric and right-aligned
     styler = styler.set_table_styles(
         [
             {"selector": "th", "props": [("text-align", "left"), ("width", "220px")]},
@@ -341,7 +343,7 @@ def style_annual_table(df: pd.DataFrame) -> pd.io.formats.style.Styler:
         overwrite=False,
     )
 
-    # Underline Expenses row
+    # Underline Expenses
     if "Expenses" in df.index:
         styler = styler.set_properties(
             subset=pd.IndexSlice[["Expenses"], :],
@@ -352,10 +354,13 @@ def style_annual_table(df: pd.DataFrame) -> pd.io.formats.style.Styler:
     if "NOI" in df.index:
         styler = styler.set_properties(
             subset=pd.IndexSlice[["NOI"], :],
-            **{"border-bottom": "3px double black", "font-weight": "bold"}
+            **{
+                "border-bottom": "3px double black",
+                "font-weight": "bold",
+            }
         )
 
-    # Line under the last row BEFORE Funds Available
+    # Line under the row before Funds Available
     if "Funds Available for Distribution" in df.index:
         fad_idx = df.index.get_loc("Funds Available for Distribution")
         if fad_idx > 0:
@@ -372,7 +377,7 @@ def style_annual_table(df: pd.DataFrame) -> pd.io.formats.style.Styler:
             **{"font-weight": "bold"}
         )
 
-    # Add a subtle separator above DSCR row
+    # Separator above DSCR
     if "Debt Service Coverage Ratio" in df.index:
         styler = styler.set_properties(
             subset=pd.IndexSlice[["Debt Service Coverage Ratio"], :],
@@ -380,6 +385,8 @@ def style_annual_table(df: pd.DataFrame) -> pd.io.formats.style.Styler:
         )
 
     return styler
+
+
 
 
 # ============================================================
