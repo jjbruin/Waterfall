@@ -152,19 +152,46 @@ def apply_txn(ps: PartnerState, d: date, amt: float, bucket: str):
 # LOADERS + SIGN NORMALIZATION (FORECAST)
 # ============================================================
 def load_coa(df: pd.DataFrame) -> pd.DataFrame:
-    # Normalize account id
-    df = df.rename(columns={"vCode": "vAccount"})
+    # Normalize column names (trim spaces)
+    df.columns = [c.strip() for c in df.columns]
+
+    # Accept common account-code header variants
+    if "vAccount" not in df.columns:
+        if "vCode" in df.columns:
+            df = df.rename(columns={"vCode": "vAccount"})
+        elif "vAccountCode" in df.columns:
+            df = df.rename(columns={"vAccountCode": "vAccount"})
+        elif "Account" in df.columns:
+            df = df.rename(columns={"Account": "vAccount"})
+        elif "AccountNumber" in df.columns:
+            df = df.rename(columns={"AccountNumber": "vAccount"})
+        else:
+            raise ValueError(
+                "coa.csv must include an account code column. "
+                "Expected one of: vCode, vAccount, vAccountCode, Account, AccountNumber."
+            )
+
     df["vAccount"] = pd.to_numeric(df["vAccount"], errors="coerce").astype("Int64")
 
-    # NOI flag (expects -1 for NOI accounts)
-    if "iNOI" not in df.columns and "NOI" in df.columns:
-        df = df.rename(columns={"NOI": "iNOI"})
-    df["iNOI"] = pd.to_numeric(df.get("iNOI", 0), errors="coerce").fillna(0).astype(int)
+    # NOI flag variants
+    if "iNOI" not in df.columns:
+        if "NOI" in df.columns:
+            df = df.rename(columns={"NOI": "iNOI"})
+        elif "IsNOI" in df.columns:
+            df = df.rename(columns={"IsNOI": "iNOI"})
+        else:
+            df["iNOI"] = 0
 
-    # Account type (Revenues/Expenses/etc.)
+    df["iNOI"] = pd.to_numeric(df["iNOI"], errors="coerce").fillna(0).astype(int)
+
+    # Account type variants
     if "vAccountType" not in df.columns:
-        df["vAccountType"] = ""
-    df["vAccountType"] = df["vAccountType"].astype(str).str.strip()
+        if "AccountType" in df.columns:
+            df = df.rename(columns={"AccountType": "vAccountType"})
+        else:
+            df["vAccountType"] = ""
+
+    df["vAccountType"] = df["vAccountType"].fillna("").astype(str).str.strip()
 
     return df[["vAccount", "iNOI", "vAccountType"]]
 
