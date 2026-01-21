@@ -74,6 +74,32 @@ def require_cols(df: pd.DataFrame, cols: List[str], name: str):
     if missing:
         raise ValueError(f"{name} missing required columns: {missing}")
 
+def normalize_forecast_signs(fc: pd.DataFrame) -> pd.DataFrame:
+    """
+    Enforce model standard:
+      Revenues: positive
+      Expenses: negative
+      Interest/Principal/Capex/Excluded accounts: negative
+    """
+    out = fc.copy()
+    out["vAccountType_norm"] = out["vAccountType"].astype(str).str.strip().str.lower()
+
+    # Start with raw
+    amt = pd.to_numeric(out["mAmount"], errors="coerce").fillna(0.0)
+
+    # Force revenues positive, expenses negative
+    is_rev = out["vAccountType_norm"].eq("revenues")
+    is_exp = out["vAccountType_norm"].eq("expenses")
+
+    amt = amt.where(~is_rev, amt.abs())
+    amt = amt.where(~is_exp, -amt.abs())
+
+    # For the specific cash-flow adjustment accounts: force outflows negative
+    is_outflow_account = out["vAccount"].isin(list(ALL_EXCLUDED))
+    amt = amt.where(~is_outflow_account, -amt.abs())
+
+    out["mAmount_norm"] = amt
+    return out
 
 # ============================================================
 # XIRR
@@ -167,17 +193,26 @@ def apply_txn(ps: PartnerState, d: date, amt: float, bucket: str):
 def load_coa(df):
     df = df.rename(columns={"vCode": "vAccount"})
     df["vAccount"] = pd.to_numeric(df["vAccount"], errors="coerce").astype("Int64")
-    df["iNOI"] = df["iNOI"].fillna(0).astype(int)
-    return df[["vAccount", "iNOI", "vAccountType"]]
 
+    # NOI flag
+    if "iNOI" not in df.columns and "NOI" in df.columns:
+        df = df.rename(columns={"NOI": "iNOI"})
+    df["iNOI"] = pd.to_numeric(df["iNOI"], errors="coerce").fillna(0).astype(int)
+
+    # Account type
+    if "vAccountType" not in df.columns:
+        df["vAccountType"] = ""
+
+    df["vAccountType"] = df["vAccountType"].astype(str).str.strip()
+    return df[["vAccount", "iNOI", "vAccountType"]]
 
 def load_forecast(df, coa, pro_yr_base):
     df = df.rename(columns={"Vcode": "vcode", "Date": "event_date"})
     df["event_date"] = pd.to_datetime(df["event_date"]).dt.date
     df["Year"] = pro_yr_base + df["Pro_Yr"]
     df = df.merge(coa, on="vAccount", how="left")
+    df = normalize_forecast_signs(df)
     return df
-
 
 # ============================================================
 # STREAMLIT UI
