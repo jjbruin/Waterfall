@@ -1,0 +1,17 @@
+# Never commit financial data
+*.csv
+*.xlsx
+data/
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Streamlit
+.streamlit/
+
+# OS / editor
+.vscode/
