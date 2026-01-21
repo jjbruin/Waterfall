@@ -297,6 +297,12 @@ with st.sidebar:
 # ============================================================
 # LOAD INPUTS
 # ============================================================
+
+if mode == "Local folder":
+    if not folder or not Path(folder).exists():
+        st.error("Please enter a valid data folder path that contains the required CSV files.")
+        st.stop()
+
 def load_inputs():
     if CLOUD and mode == "Local folder":
         st.error("Local folder mode is disabled on Streamlit Cloud.")
