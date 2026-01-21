@@ -2,9 +2,10 @@
 # Waterfall + XIRR Forecast
 # - Streamlit Cloud: forces Upload CSVs (no local C:\ paths)
 # - Tight sign conventions for forecast using COA
-# - Annual aggregation table: Revenues → FAD (by year)
-# - COA join logic updated:
-#     coa.csv: vcode == forecast_feed.vAccount == accounting_feed.TypeID
+# - Annual aggregation table (Years across top; line items as rows)
+#   with formatting, double line under NOI, separator before FAD,
+#   Expenses underlined, right-justified numbers, equal column widths,
+#   and DSCR row below Funds Available.
 
 from dataclasses import dataclass, field
 from datetime import date
@@ -51,7 +52,7 @@ def is_year_end(d: date) -> bool:
 def year_ends_strictly_between(d0: date, d1: date) -> List[date]:
     if d1 <= d0:
         return []
-    out = []
+    out: List[date] = []
     y = d0.year
     while True:
         ye = date(y, 12, 31)
@@ -79,7 +80,7 @@ def xirr(cfs: List[Tuple[date, float]]) -> float:
 
 
 # ============================================================
-# STATE
+# STATE (scaffolding for later waterfall execution)
 # ============================================================
 @dataclass
 class PartnerState:
@@ -88,7 +89,7 @@ class PartnerState:
     pref_capitalized: float = 0.0
     irr_cashflows: List[Tuple[date, float]] = field(default_factory=list)
 
-    def base(self):
+    def base(self) -> float:
         return self.principal + self.pref_capitalized
 
 
@@ -100,7 +101,7 @@ class DealState:
 
 
 # ============================================================
-# ACCRUAL / COMPOUNDING
+# ACCRUAL / COMPOUNDING (scaffolding)
 # ============================================================
 def compound_year_end(deal: DealState):
     for ps in deal.partners.values():
@@ -129,7 +130,7 @@ def accrue_to(deal: DealState, new_date: date, pref_rates: Dict[str, float]):
 
 
 # ============================================================
-# ACCOUNTING INGESTION (HISTORICAL)
+# ACCOUNTING INGESTION (HISTORICAL scaffolding)
 # ============================================================
 def map_bucket(flag):
     return "capital" if str(flag).upper() == "Y" else "pref"
@@ -140,7 +141,6 @@ def apply_txn(ps: PartnerState, d: date, amt: float, bucket: str):
     ps.irr_cashflows.append((d, amt))
 
     if bucket == "capital":
-        # contributions are often negative in investor cashflow convention; this will be revisited
         ps.principal += -amt if amt < 0 else -min(amt, ps.principal)
     else:
         if amt > 0:
@@ -152,24 +152,24 @@ def apply_txn(ps: PartnerState, d: date, amt: float, bucket: str):
 
 
 # ============================================================
-# LOADERS + SIGN NORMALIZATION (FORECAST)
+# LOADERS + SIGN NORMALIZATION
 # ============================================================
 def load_coa(df: pd.DataFrame) -> pd.DataFrame:
     """
     coa.csv headers (per your feed):
       vcode, vdescription, vtype, iNOI, vMisc, vAccountType
-    Joining rule:
+
+    Join rule:
       coa.vcode == forecast_feed.vAccount == accounting_feed.TypeID
     """
     df = df.copy()
     df.columns = [str(c).strip() for c in df.columns]
 
-    # vcode in COA is the account code
     if "vcode" not in df.columns:
         raise ValueError("coa.csv is missing required column: vcode")
 
+    # vcode is the account code; normalize to vAccount for joins
     df = df.rename(columns={"vcode": "vAccount"})
-
     df["vAccount"] = pd.to_numeric(df["vAccount"], errors="coerce").astype("Int64")
 
     if "iNOI" not in df.columns:
@@ -207,8 +207,10 @@ def normalize_forecast_signs(fc: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_forecast(df: pd.DataFrame, coa: pd.DataFrame, pro_yr_base: int) -> pd.DataFrame:
-    # Forecast feed columns (per your feed):
-    # Vcode, dtEntry, vSource, vAccount, mAmount, Year, Qtr, Date, Pro_Yr
+    """
+    Forecast feed columns (per your feed):
+      Vcode, dtEntry, vSource, vAccount, mAmount, Year, Qtr, Date, Pro_Yr
+    """
     df = df.copy()
     df.columns = [str(c).strip() for c in df.columns]
 
@@ -275,8 +277,109 @@ def annual_aggregation_table(fc_deal: pd.DataFrame, start_year: int, horizon_yea
         + out["Capital Expenditures"].fillna(0.0)
     )
 
-    out = out.fillna(0.0).reset_index()
+    # DSCR = NOI / |Total Debt Service|
+    tds_abs = out["Total Debt Service"].abs().replace(0, pd.NA)
+    out["Debt Service Coverage Ratio"] = out["NOI"] / tds_abs
+
+    out = out.reset_index()
     return out
+
+
+def pivot_annual_table(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Convert:
+        Year | Revenues | Expenses | NOI | ...
+    into:
+        Line Item (rows) x Year (columns)
+    """
+    wide = df.set_index("Year").T
+    wide.index.name = "Line Item"
+
+    desired_order = [
+        "Revenues",
+        "Expenses",
+        "NOI",
+        "Interest",
+        "Principal",
+        "Total Debt Service",
+        "Excluded Accounts",
+        "Capital Expenditures",
+        "Funds Available for Distribution",
+        "Debt Service Coverage Ratio",
+    ]
+    existing = [r for r in desired_order if r in wide.index]
+    remainder = [r for r in wide.index if r not in existing]
+    return wide.loc[existing + remainder]
+
+
+def style_annual_table(df: pd.DataFrame) -> pd.io.formats.style.Styler:
+    # per-row formatting: money rows with commas; DSCR with 2 decimals
+    def money_fmt(x):
+        if pd.isna(x):
+            return ""
+        return f"{x:,.0f}"
+
+    def dscr_fmt(x):
+        if pd.isna(x):
+            return ""
+        return f"{x:,.2f}"
+
+    fmt = {}
+    for idx in df.index:
+        fmt[idx] = dscr_fmt if idx == "Debt Service Coverage Ratio" else money_fmt
+
+    styler = df.style.format(fmt, axis=1)
+
+    # Equal column widths and alignment
+    # - Index column ("Line Item") is rendered as row header (th)
+    # - Data cells (td) are numeric and right-aligned
+    styler = styler.set_table_styles(
+        [
+            {"selector": "th", "props": [("text-align", "left"), ("width", "220px")]},
+            {"selector": "td", "props": [("text-align", "right"), ("width", "140px")]},
+        ],
+        overwrite=False,
+    )
+
+    # Underline Expenses row
+    if "Expenses" in df.index:
+        styler = styler.set_properties(
+            subset=pd.IndexSlice[["Expenses"], :],
+            **{"text-decoration": "underline"}
+        )
+
+    # Double line under NOI
+    if "NOI" in df.index:
+        styler = styler.set_properties(
+            subset=pd.IndexSlice[["NOI"], :],
+            **{"border-bottom": "3px double black", "font-weight": "bold"}
+        )
+
+    # Line under the last row BEFORE Funds Available
+    if "Funds Available for Distribution" in df.index:
+        fad_idx = df.index.get_loc("Funds Available for Distribution")
+        if fad_idx > 0:
+            prev_row = df.index[fad_idx - 1]
+            styler = styler.set_properties(
+                subset=pd.IndexSlice[[prev_row], :],
+                **{"border-bottom": "2px solid black"}
+            )
+
+    # Bold Funds Available
+    if "Funds Available for Distribution" in df.index:
+        styler = styler.set_properties(
+            subset=pd.IndexSlice[["Funds Available for Distribution"], :],
+            **{"font-weight": "bold"}
+        )
+
+    # Add a subtle separator above DSCR row
+    if "Debt Service Coverage Ratio" in df.index:
+        styler = styler.set_properties(
+            subset=pd.IndexSlice[["Debt Service Coverage Ratio"], :],
+            **{"border-top": "1px solid #999"}
+        )
+
+    return styler
 
 
 # ============================================================
@@ -346,13 +449,12 @@ def load_inputs():
         acct = pd.read_csv(uploads["accounting_feed"])
         fc = load_forecast(pd.read_csv(uploads["forecast_feed"]), coa, int(pro_yr_base))
 
-    # Normalize key fields we’ll use later
+    # Normalize deal identifiers
     inv["vcode"] = inv["vcode"].astype(str)
-
     if "InvestmentID" in inv.columns:
         inv["InvestmentID"] = inv["InvestmentID"].astype(str)
 
-    # accounting_feed.TypeID aligns to COA account code (coa.vcode)
+    # Normalize accounting TypeID to COA account code (coa.vcode => vAccount)
     if "TypeID" in acct.columns:
         acct["TypeID"] = pd.to_numeric(acct["TypeID"], errors="coerce").astype("Int64")
 
@@ -382,7 +484,7 @@ if acct.empty:
 
 
 # ============================================================
-# INITIALIZE DEAL STATE FROM WATERFALL
+# INITIALIZE DEAL STATE FROM WATERFALL (scaffolding)
 # ============================================================
 wf_d = wf[wf["vcode"].astype(str) == str(deal)].copy()
 if wf_d.empty:
@@ -432,7 +534,7 @@ if not acct.empty and "EffectiveDate" in acct.columns and "InvestorID" in acct.c
 
 
 # ============================================================
-# ANNUAL AGGREGATION DISPLAY (Revenues → FAD)
+# ANNUAL AGGREGATION DISPLAY (Years across columns)
 # ============================================================
 st.subheader("Annual Operating Forecast (Revenues → Funds Available for Distribution)")
 
@@ -441,30 +543,16 @@ if fc_deal.empty:
     st.error(f"No forecast rows found for deal {deal}.")
     st.stop()
 
-annual_df = annual_aggregation_table(fc_deal, int(start_year), int(horizon_years))
+annual_df_raw = annual_aggregation_table(fc_deal, int(start_year), int(horizon_years))
+annual_df = pivot_annual_table(annual_df_raw)
+styled = style_annual_table(annual_df)
 
-st.dataframe(
-    annual_df,
-    use_container_width=True,
-    hide_index=True,
-    column_config={
-        "Year": st.column_config.NumberColumn(format="%d"),
-        "Revenues": st.column_config.NumberColumn(format="$%,.0f"),
-        "Expenses": st.column_config.NumberColumn(format="$%,.0f"),
-        "NOI": st.column_config.NumberColumn(format="$%,.0f"),
-        "Interest": st.column_config.NumberColumn(format="$%,.0f"),
-        "Principal": st.column_config.NumberColumn(format="$%,.0f"),
-        "Total Debt Service": st.column_config.NumberColumn(format="$%,.0f"),
-        "Excluded Accounts": st.column_config.NumberColumn(format="$%,.0f"),
-        "Capital Expenditures": st.column_config.NumberColumn(format="$%,.0f"),
-        "Funds Available for Distribution": st.column_config.NumberColumn(format="$%,.0f"),
-    },
-)
+st.dataframe(styled, use_container_width=True)
 
 st.caption(
     "Sign conventions: Revenues normalized positive; Expenses/Interest/Principal/Capex/Excluded normalized negative. "
-    "Funds Available for Distribution = NOI + Interest + Principal + Excluded + Capex."
+    "Funds Available for Distribution = NOI + Interest + Principal + Excluded + Capex. "
+    "DSCR = NOI / |Total Debt Service|."
 )
 
 st.success("Annual aggregation table generated successfully.")
-
