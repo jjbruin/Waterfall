@@ -1,6 +1,8 @@
 # app.py
 # Waterfall + XIRR Forecast
-# Tightened sign conventions + Streamlit Cloud protection
+# - Streamlit Cloud: forces Upload CSVs (no local C:\ paths)
+# - Tight sign conventions for forecast using COA
+# - Annual aggregation table: Revenues → FAD (by year)
 
 import io
 from dataclasses import dataclass, field
@@ -133,6 +135,7 @@ def map_bucket(flag):
 
 
 def apply_txn(ps: PartnerState, d: date, amt: float, bucket: str):
+    # NOTE: sign conventions for accounting feed will be finalized later.
     ps.irr_cashflows.append((d, amt))
     if bucket == "capital":
         ps.principal += -amt if amt < 0 else -min(amt, ps.principal)
@@ -146,49 +149,112 @@ def apply_txn(ps: PartnerState, d: date, amt: float, bucket: str):
 
 
 # ============================================================
-# LOADERS + SIGN NORMALIZATION
+# LOADERS + SIGN NORMALIZATION (FORECAST)
 # ============================================================
-def load_coa(df):
+def load_coa(df: pd.DataFrame) -> pd.DataFrame:
+    # Normalize account id
     df = df.rename(columns={"vCode": "vAccount"})
     df["vAccount"] = pd.to_numeric(df["vAccount"], errors="coerce").astype("Int64")
 
+    # NOI flag (expects -1 for NOI accounts)
     if "iNOI" not in df.columns and "NOI" in df.columns:
         df = df.rename(columns={"NOI": "iNOI"})
     df["iNOI"] = pd.to_numeric(df.get("iNOI", 0), errors="coerce").fillna(0).astype(int)
 
+    # Account type (Revenues/Expenses/etc.)
     if "vAccountType" not in df.columns:
         df["vAccountType"] = ""
-
     df["vAccountType"] = df["vAccountType"].astype(str).str.strip()
+
     return df[["vAccount", "iNOI", "vAccountType"]]
 
 
 def normalize_forecast_signs(fc: pd.DataFrame) -> pd.DataFrame:
+    """
+    Internal model standard:
+      - Revenues: positive
+      - Expenses: negative
+      - Interest/Principal/Capex/Other excluded accounts: negative
+    """
     out = fc.copy()
-    atype = out["vAccountType"].str.lower()
+    atype = out["vAccountType"].astype(str).str.strip().str.lower()
 
     amt = pd.to_numeric(out["mAmount"], errors="coerce").fillna(0.0)
 
-    # Revenues positive
+    # Revenues -> positive, Expenses -> negative
     amt = amt.where(~atype.eq("revenues"), amt.abs())
-
-    # Expenses negative
     amt = amt.where(~atype.eq("expenses"), -amt.abs())
 
-    # Debt / capex / excluded always negative
+    # Specific outflow accounts -> negative (even if feed presents as positive)
     amt = amt.where(~out["vAccount"].isin(ALL_EXCLUDED), -amt.abs())
 
     out["mAmount_norm"] = amt
     return out
 
 
-def load_forecast(df, coa, pro_yr_base):
+def load_forecast(df: pd.DataFrame, coa: pd.DataFrame, pro_yr_base: int) -> pd.DataFrame:
+    # Forecast feed columns: Vcode, Date, vAccount, mAmount, vSource, Pro_Yr
     df = df.rename(columns={"Vcode": "vcode", "Date": "event_date"})
+    df["vcode"] = df["vcode"].astype(str)
     df["event_date"] = pd.to_datetime(df["event_date"]).dt.date
-    df["Year"] = pro_yr_base + df["Pro_Yr"]
+    df["vAccount"] = pd.to_numeric(df["vAccount"], errors="coerce").astype("Int64")
+    df["mAmount"] = pd.to_numeric(df["mAmount"], errors="coerce").fillna(0.0)
+
+    df["Year"] = (pro_yr_base + pd.to_numeric(df["Pro_Yr"], errors="coerce")).astype("Int64")
+
     df = df.merge(coa, on="vAccount", how="left")
+    df["iNOI"] = df["iNOI"].fillna(0).astype(int)
+    df["vAccountType"] = df["vAccountType"].fillna("").astype(str)
+
     df = normalize_forecast_signs(df)
     return df
+
+
+# ============================================================
+# ANNUAL AGGREGATION (Revenues → FAD by year)
+# ============================================================
+def annual_aggregation_table(fc_deal: pd.DataFrame, start_year: int, horizon_years: int) -> pd.DataFrame:
+    years = list(range(int(start_year), int(start_year) + int(horizon_years)))
+    f = fc_deal[fc_deal["Year"].isin(years)].copy()
+
+    f["acct_type"] = f["vAccountType"].astype(str).str.strip().str.lower()
+
+    def sum_where(mask: pd.Series) -> pd.Series:
+        return f.loc[mask].groupby("Year")["mAmount_norm"].sum()
+
+    revenues = sum_where(f["acct_type"].eq("revenues"))
+    expenses = sum_where(f["acct_type"].eq("expenses"))
+    noi = sum_where(f["iNOI"].eq(-1))
+
+    interest = sum_where(f["vAccount"].isin(INTEREST_ACCTS))
+    principal = sum_where(f["vAccount"].isin(PRINCIPAL_ACCTS))
+    capex = sum_where(f["vAccount"].isin(CAPEX_ACCTS))
+    excluded_other = sum_where(f["vAccount"].isin(OTHER_EXCLUDED_ACCTS))
+
+    out = pd.DataFrame({"Year": years}).set_index("Year")
+
+    out["Revenues"] = revenues
+    out["Expenses"] = expenses
+    out["NOI"] = noi
+
+    out["Interest"] = interest
+    out["Principal"] = principal
+    out["Total Debt Service"] = out["Interest"].fillna(0.0) + out["Principal"].fillna(0.0)
+
+    out["Excluded Accounts"] = excluded_other
+    out["Capital Expenditures"] = capex
+
+    # Because Interest/Principal/Excluded/Capex are normalized to negative outflows:
+    out["Funds Available for Distribution"] = (
+        out["NOI"].fillna(0.0)
+        + out["Interest"].fillna(0.0)
+        + out["Principal"].fillna(0.0)
+        + out["Excluded Accounts"].fillna(0.0)
+        + out["Capital Expenditures"].fillna(0.0)
+    )
+
+    out = out.fillna(0.0).reset_index()
+    return out
 
 
 # ============================================================
@@ -204,26 +270,28 @@ with st.sidebar:
 
     if CLOUD:
         mode = "Upload CSVs"
-        st.info("Running on Streamlit Cloud — local folders are disabled.")
+        st.info("Running on Streamlit Cloud — local folders are disabled. Please upload CSVs.")
     else:
-        mode = st.radio("Load data from:", ["Local folder", "Upload CSVs"])
+        mode = st.radio("Load data from:", ["Local folder", "Upload CSVs"], index=0)
 
     folder = None
     uploads = {}
 
     if mode == "Local folder":
         folder = st.text_input("Data folder path", placeholder=r"C:\Path\To\Data")
+        st.caption("Required: investment_map.csv, waterfalls.csv, coa.csv, accounting_feed.csv, forecast_feed.csv")
     else:
-        uploads["investment_map"] = st.file_uploader("investment_map.csv")
-        uploads["waterfalls"] = st.file_uploader("waterfalls.csv")
-        uploads["coa"] = st.file_uploader("coa.csv")
-        uploads["accounting_feed"] = st.file_uploader("accounting_feed.csv")
-        uploads["forecast_feed"] = st.file_uploader("forecast_feed.csv")
+        uploads["investment_map"] = st.file_uploader("investment_map.csv", type="csv")
+        uploads["waterfalls"] = st.file_uploader("waterfalls.csv", type="csv")
+        uploads["coa"] = st.file_uploader("coa.csv", type="csv")
+        uploads["accounting_feed"] = st.file_uploader("accounting_feed.csv", type="csv")
+        uploads["forecast_feed"] = st.file_uploader("forecast_feed.csv", type="csv")
 
     st.divider()
-    start_year = st.number_input("Start year", value=DEFAULT_START_YEAR)
-    horizon_years = st.number_input("Horizon (years)", value=DEFAULT_HORIZON_YEARS)
-    pro_yr_base = st.number_input("Pro_Yr base year", value=PRO_YR_BASE_DEFAULT)
+    st.header("Report Settings")
+    start_year = st.number_input("Start year", min_value=2000, max_value=2100, value=DEFAULT_START_YEAR, step=1)
+    horizon_years = st.number_input("Horizon (years)", min_value=1, max_value=30, value=DEFAULT_HORIZON_YEARS, step=1)
+    pro_yr_base = st.number_input("Pro_Yr base year", min_value=1900, max_value=2100, value=PRO_YR_BASE_DEFAULT, step=1)
 
 
 # ============================================================
@@ -231,7 +299,7 @@ with st.sidebar:
 # ============================================================
 def load_inputs():
     if CLOUD and mode == "Local folder":
-        st.error("Local folder mode disabled on Streamlit Cloud.")
+        st.error("Local folder mode is disabled on Streamlit Cloud.")
         st.stop()
 
     if mode == "Local folder":
@@ -239,17 +307,17 @@ def load_inputs():
         wf = pd.read_csv(f"{folder}/waterfalls.csv")
         coa = load_coa(pd.read_csv(f"{folder}/coa.csv"))
         acct = pd.read_csv(f"{folder}/accounting_feed.csv")
-        fc = load_forecast(pd.read_csv(f"{folder}/forecast_feed.csv"), coa, pro_yr_base)
+        fc = load_forecast(pd.read_csv(f"{folder}/forecast_feed.csv"), coa, int(pro_yr_base))
     else:
         for k, f in uploads.items():
             if f is None:
-                st.warning(f"Upload {k}.csv")
+                st.warning(f"Please upload {k}.csv")
                 st.stop()
         inv = pd.read_csv(uploads["investment_map"])
         wf = pd.read_csv(uploads["waterfalls"])
         coa = load_coa(pd.read_csv(uploads["coa"]))
         acct = pd.read_csv(uploads["accounting_feed"])
-        fc = load_forecast(pd.read_csv(uploads["forecast_feed"]), coa, pro_yr_base)
+        fc = load_forecast(pd.read_csv(uploads["forecast_feed"]), coa, int(pro_yr_base))
 
     return inv, wf, coa, acct, fc
 
@@ -257,53 +325,106 @@ def load_inputs():
 inv, wf, coa, acct, fc = load_inputs()
 
 inv["vcode"] = inv["vcode"].astype(str)
-deal = st.selectbox("Select Deal", sorted(inv["vcode"].unique()))
+deal = st.selectbox("Select Deal", sorted(inv["vcode"].dropna().unique().tolist()))
 
-if not st.button("Run Report"):
+if not st.button("Run Report", type="primary"):
     st.stop()
 
 
 # ============================================================
 # CONTROL POPULATION (INNER JOIN)
 # ============================================================
-acct = acct.merge(inv[["InvestmentID", "vcode"]], on="InvestmentID", how="inner")
-acct = acct[acct["vcode"] == deal]
+if "InvestmentID" in acct.columns:
+    acct = acct.merge(inv[["InvestmentID", "vcode"]], on="InvestmentID", how="inner")
+    acct = acct[acct["vcode"] == deal].copy()
 
 if acct.empty:
-    st.error("No accounting data for selected deal.")
+    st.warning("No accounting data found for the selected deal (after InvestmentID→vcode control join).")
+
+
+# ============================================================
+# INITIALIZE DEAL STATE FROM WATERFALL
+# ============================================================
+wf_d = wf[wf["vcode"].astype(str) == str(deal)].copy()
+if wf_d.empty:
+    st.error(f"No waterfall steps found for deal {deal}.")
     st.stop()
 
+wf_d["dteffective"] = pd.to_datetime(wf_d["dteffective"]).dt.date
+start_date = wf_d["dteffective"].min()
 
-# ============================================================
-# INITIALIZE DEAL
-# ============================================================
-wf_d = wf[wf["vcode"] == deal]
-start_date = pd.to_datetime(wf_d["dteffective"].min()).date()
-
-state = DealState(deal, start_date)
+state = DealState(str(deal), start_date)
 for p in wf_d["PropCode"].astype(str).unique():
     state.partners[p] = PartnerState()
 
-pref_rates = {
-    r["PropCode"]: r["nPercent"] / 100
-    for _, r in wf_d[wf_d["vState"] == "Pref"].iterrows()
-}
+# Pref rates from Pref steps (assumes nPercent is % like 9 => 0.09)
+pref_rates = {}
+if "vState" in wf_d.columns:
+    pref_rows = wf_d[wf_d["vState"].astype(str).str.strip().str.lower().eq("pref")]
+    for _, r in pref_rows.iterrows():
+        rate = float(r.get("nPercent") or 0.0)
+        if rate > 1.0:
+            rate /= 100.0
+        pref_rates[str(r["PropCode"])] = rate
 
 
 # ============================================================
-# APPLY HISTORICAL ACCOUNTING
+# APPLY HISTORICAL ACCOUNTING TO BUILD CURRENT STATE
 # ============================================================
-acct["EffectiveDate"] = pd.to_datetime(acct["EffectiveDate"]).dt.date
-for _, r in acct.sort_values("EffectiveDate").iterrows():
-    accrue_to(state, r["EffectiveDate"], pref_rates)
-    apply_txn(
-        state.partners[r["InvestorID"]],
-        r["EffectiveDate"],
-        r["Amt"],
-        map_bucket(r["Capital"])
-    )
-    state.last_event_date = r["EffectiveDate"]
+if not acct.empty and "EffectiveDate" in acct.columns:
+    acct["EffectiveDate"] = pd.to_datetime(acct["EffectiveDate"]).dt.date
+    # Ensure we have InvestorID/PropCode for state mapping
+    if "InvestorID" in acct.columns:
+        acct["InvestorID"] = acct["InvestorID"].astype(str)
+
+    for _, r in acct.sort_values("EffectiveDate").iterrows():
+        d = r["EffectiveDate"]
+        accrue_to(state, d, pref_rates)
+
+        if "InvestorID" in acct.columns and r["InvestorID"] in state.partners:
+            apply_txn(
+                state.partners[r["InvestorID"]],
+                d,
+                float(r.get("Amt", 0.0)),
+                map_bucket(r.get("Capital", "Y")),
+            )
+
+        state.last_event_date = d
 
 
-st.success("Sign conventions normalized. Model state initialized successfully.")
-st.write("Next: annual forecast + waterfall execution.")
+# ============================================================
+# ANNUAL AGGREGATION DISPLAY (Revenues → FAD)
+# ============================================================
+st.subheader("Annual Operating Forecast (Revenues → Funds Available for Distribution)")
+
+fc_deal = fc[fc["vcode"].astype(str) == str(deal)].copy()
+if fc_deal.empty:
+    st.error(f"No forecast rows found for deal {deal}.")
+    st.stop()
+
+annual_df = annual_aggregation_table(fc_deal, int(start_year), int(horizon_years))
+
+st.dataframe(
+    annual_df,
+    use_container_width=True,
+    hide_index=True,
+    column_config={
+        "Year": st.column_config.NumberColumn(format="%d"),
+        "Revenues": st.column_config.NumberColumn(format="$%,.0f"),
+        "Expenses": st.column_config.NumberColumn(format="$%,.0f"),
+        "NOI": st.column_config.NumberColumn(format="$%,.0f"),
+        "Interest": st.column_config.NumberColumn(format="$%,.0f"),
+        "Principal": st.column_config.NumberColumn(format="$%,.0f"),
+        "Total Debt Service": st.column_config.NumberColumn(format="$%,.0f"),
+        "Excluded Accounts": st.column_config.NumberColumn(format="$%,.0f"),
+        "Capital Expenditures": st.column_config.NumberColumn(format="$%,.0f"),
+        "Funds Available for Distribution": st.column_config.NumberColumn(format="$%,.0f"),
+    },
+)
+
+st.caption(
+    "Sign conventions: Revenues are normalized positive; Expenses/Interest/Principal/Capex/Excluded are normalized negative. "
+    "Funds Available for Distribution = NOI + Interest + Principal + Excluded + Capex."
+)
+
+st.success("Annual aggregation table generated successfully. Next step: apply the CF_WF to monthly Funds Available and show step-level allocations.")
