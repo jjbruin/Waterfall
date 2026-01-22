@@ -35,6 +35,8 @@ REVENUE_ACCTS = {4010,4012,4020,4041,4045,4040,4043,4030,4042,4070,4091,4092,409
 
 EXPENSE_ACCTS = {5090,5110,5114,5018,5010,5016,5012,5014,5051,5053,5050,5052,5054,5055,5060,5067,5063,5069,5061,5064,5065,5068,5070,5066,5020,5022,5021,5023,5025,5026,5045,5080,5087,5085,5040,5096,5095,5091,5100}
 
+NO_REVERSE_ACCTS = {4040, 4043, 4030, 4042}
+
 INTEREST_ACCTS = {5190, 7030}
 PRINCIPAL_ACCTS = {7060}
 CAPEX_ACCTS = {7050}
@@ -189,18 +191,23 @@ def load_coa(df: pd.DataFrame) -> pd.DataFrame:
 def normalize_forecast_signs(fc: pd.DataFrame) -> pd.DataFrame:
     """
     Normalization strategy:
-      1) Flip the entire forecast feed sign (multiply by -1)
-      2) Enforce internal conventions using explicit account sets:
-         - Revenues: positive
-         - Expenses: negative
+      1) Reverse all forecast signs (multiply by -1)
+      2) EXCEPT accounts in NO_REVERSE_ACCTS (leave them as-is)
+      3) Enforce internal conventions using explicit account sets:
+         - Revenue accounts: positive
+         - Expense accounts: negative
          - Interest/Principal/Capex/Other excluded: negative
     """
     out = fc.copy()
 
-    # Step 1: reverse all signs
+    # Step 1: reverse everything
     amt = pd.to_numeric(out["mAmount"], errors="coerce").fillna(0.0) * -1.0
 
-    # Step 2: enforce conventions
+    # Step 2: undo the reversal for exempt accounts (net: unchanged vs original)
+    exempt = out["vAccount"].isin(NO_REVERSE_ACCTS)
+    amt = amt.where(~exempt, amt * -1.0)
+
+    # Step 3: enforce final conventions
     is_rev = out["vAccount"].isin(REVENUE_ACCTS)
     is_exp = out["vAccount"].isin(EXPENSE_ACCTS)
     is_outflow = out["vAccount"].isin(ALL_EXCLUDED)
