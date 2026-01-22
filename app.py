@@ -192,27 +192,28 @@ def normalize_forecast_signs(fc: pd.DataFrame) -> pd.DataFrame:
     """
     Normalization strategy:
       1) Reverse all forecast signs (multiply by -1)
-      2) EXCEPT accounts in NO_REVERSE_ACCTS (leave them exactly as provided)
+      2) EXCEPT accounts in NO_REVERSE_ACCTS (leave exactly as provided)
       3) Enforce internal conventions:
-         - Revenue accounts: positive
-         - Expense accounts: negative
-         - Interest/Principal/Capex/Other excluded: negative
+         - Revenue accounts → positive
+       - Expense accounts → negative
+       - Interest / Principal / Capex / Other excluded → negative
+       - NO_REVERSE_ACCTS are never forced
     """
     out = fc.copy()
 
     # Original feed amount
     base = pd.to_numeric(out["mAmount"], errors="coerce").fillna(0.0)
 
-    # Flip everything by default
+    # Step 1: reverse everything
     amt = -base
 
-    # Exempt accounts: keep original sign exactly (NOT flipped)
+    # Step 2: undo reversal for exempt accounts
     exempt = out["vAccount"].isin(NO_REVERSE_ACCTS)
     amt = amt.where(~exempt, base)
 
-    # Enforce final conventions
-    is_rev = out["vAccount"].isin(REVENUE_ACCTS)
-    is_exp = out["vAccount"].isin(EXPENSE_ACCTS)
+    # Step 3: enforce final conventions (excluding exempt accounts)
+    is_rev = out["vAccount"].isin(REVENUE_ACCTS - NO_REVERSE_ACCTS)
+    is_exp = out["vAccount"].isin(EXPENSE_ACCTS - NO_REVERSE_ACCTS)
     is_outflow = out["vAccount"].isin(ALL_EXCLUDED)
 
     amt = amt.where(~is_rev, amt.abs())
