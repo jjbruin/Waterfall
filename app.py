@@ -182,25 +182,28 @@ def load_coa(df: pd.DataFrame) -> pd.DataFrame:
 
     return df[["vAccount", "iNOI", "vAccountType"]]
 
-
 def normalize_forecast_signs(fc: pd.DataFrame) -> pd.DataFrame:
     """
-    Internal model standard:
-      - Revenues: positive
-      - Expenses: negative
-      - Interest/Principal/Capex/Other excluded accounts: negative
+    Normalization strategy:
+      1) Flip the entire forecast feed sign (multiply by -1)
+      2) Enforce internal conventions using explicit account sets:
+         - Revenues: positive
+         - Expenses: negative
+         - Interest/Principal/Capex/Other excluded: negative
     """
     out = fc.copy()
-    atype = out["vAccountType"].astype(str).str.strip().str.lower()
 
-    amt = pd.to_numeric(out["mAmount"], errors="coerce").fillna(0.0)
+    # Step 1: reverse all signs
+    amt = pd.to_numeric(out["mAmount"], errors="coerce").fillna(0.0) * -1.0
 
-    # Revenues -> positive, Expenses -> negative
-    amt = amt.where(~atype.eq("revenues"), amt.abs())
-    amt = amt.where(~atype.eq("expenses"), -amt.abs())
+    # Step 2: enforce conventions
+    is_rev = out["vAccount"].isin(REVENUE_ACCTS)
+    is_exp = out["vAccount"].isin(EXPENSE_ACCTS)
+    is_outflow = out["vAccount"].isin(ALL_EXCLUDED)
 
-    # Specific outflow accounts -> negative (even if feed presents as positive)
-    amt = amt.where(~out["vAccount"].isin(ALL_EXCLUDED), -amt.abs())
+    amt = amt.where(~is_rev, amt.abs())
+    amt = amt.where(~is_exp, -amt.abs())
+    amt = amt.where(~is_outflow, -amt.abs())
 
     out["mAmount_norm"] = amt
     return out
