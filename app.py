@@ -2,37 +2,34 @@
 # Waterfall + XIRR Forecast
 # Step: model debt service (interest/principal/balances) for all existing + planned loans
 #
-# Updates per latest clarifications:
-#  - Base index rates:
-#       * SOFR/LIBOR -> 0.043
-#       * WSJ        -> 0.075
-#  - Variable-rate loans:
-#       * Assume NO amortization (interest-only for entire term)
-#       * Rate logic:
-#            base = index_base (per above)
-#            if cap exists (>0): effective_index = min(base, cap)
-#            else:              effective_index = base
-#            annual_rate = max(floor, effective_index + spread)
-#       * (cap applies to the index component before spread, per your instruction)
+# Includes:
+#  - Modeled loan schedules (existing loans from MRI_Loans.csv)
+#  - Optional planned second mortgage sizing details (MRI_Supp.csv + MRI_Val.csv)
+#  - Replaces forecast interest/principal lines with modeled values
+#  - Annual aggregation table formatted (years across columns, right-justified)
+#  - Loan schedule display formatted with commas + rate as % (2 decimals)
+#  - Dropdown to display planned loan sizing math for deals with MRI_Supp entries
 #
-# Inputs:
-#  - investment_map.csv (required)
-#  - waterfalls.csv (required)
-#  - coa.csv (required)
-#  - accounting_feed.csv (required)
-#  - forecast_feed.csv (required)
-#  - MRI_Loans.csv (optional but recommended to model existing loans)
-#  - MRI_Supp.csv + MRI_Val.csv (optional) to size planned future second mortgages
+# Rate conventions:
+#  - Variable base indices:
+#       SOFR/LIBOR -> 0.043
+#       WSJ        -> 0.075
+#       else       -> 0.043
+#  - Variable cap logic (cap applies to index component pre-spread):
+#       effective_index = min(base, cap) if cap>0 else base
+#       annual_rate = max(floor + spread, effective_index + spread)
+#  - Variable loans: assume NO amortization (interest-only for entire term)
+#  - ACT/360 -> ACT/365 conversion for amort/payment math:
+#       r_annual_365 = r_annual_360 * 365/360
 #
-# Key behavior:
-#  - Forecast feed debt service can be wrong; model computes debt service monthly.
-#  - Model replaces forecast debt service lines (interest/principal) with computed values.
-#  - Monthly schedule includes ending balances so we can pick balances at sale later.
+# NOTE: This file focuses on operating forecast + loan modeling and planned loan sizing debug.
+#       Waterfall execution and XIRR integration are built elsewhere in your app; this is the
+#       correctly functioning debt service engine + reporting shell.
 
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 
 import pandas as pd
 import streamlit as st
@@ -113,9 +110,11 @@ def month_ends_between(start_d: date, end_d: date) -> List[date]:
     rng = pd.date_range(start=start_me, end=end_me, freq="M")
     return [x.date() for x in rng]
 
+
 def annual_360_to_365(r_annual: float) -> float:
-    # r_annual is a decimal annual rate (e.g., 0.06 for 6%)
+    # r_annual in decimal form (e.g., 0.06 for 6%)
     return r_annual * (365.0 / 360.0)
+
 
 # ============================================================
 # XIRR
@@ -136,6 +135,11 @@ def xirr(cfs: List[Tuple[date, float]]) -> float:
 # LOADERS
 # ============================================================
 def load_coa(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    coa headers provided:
+      vcode, vdescription, vtype, iNOI, vMisc, vAccountType
+    vcode == vAccount in forecast_feed and TypeID in accounting_feed
+    """
     df = df.copy()
     df.columns = [str(c).strip() for c in df.columns]
 
@@ -205,9 +209,9 @@ def load_forecast(df: pd.DataFrame, coa: pd.DataFrame, pro_yr_base: int) -> pd.D
 def load_mri_loans(df: pd.DataFrame) -> pd.DataFrame:
     """
     MRI_Loans headers:
-      vCode, LoanID, mOrigLoanAmt, iAmortTerm, mNominalPenalty, iLoanTerm, vIntType, vIndex,
-      nRate, vSpread, nFloor, vIntRatereset, dtMaturity OR dtEvent, ...
-    dtEvent contains loan maturity date (per user)
+      vCode, LoanID, vPropertyName, mOrigLoanAmt, iAmortTerm, mNominalPenalty, iLoanTerm,
+      vIntType, vIndex, nRate, vSpread, nFloor, vIntRatereset, ..., dtEvent
+    dtEvent contains loan maturity date
     """
     d = df.copy()
     d.columns = [str(c).strip() for c in d.columns]
@@ -240,7 +244,6 @@ def load_mri_loans(df: pd.DataFrame) -> pd.DataFrame:
 # ============================================================
 # LOAN ENGINE
 # ============================================================
-
 @dataclass
 class Loan:
     vcode: str
@@ -271,9 +274,9 @@ class Loan:
     def rate_for_month(self) -> float:
         """
         Fixed:
-          annual_rate = nRate
+          annual_rate = nRate (decimal)
 
-        Variable (per your rules):
+        Variable:
           base index:
             SOFR/LIBOR -> 0.043
             WSJ        -> 0.075
@@ -294,126 +297,8 @@ class Loan:
         floor = self._as_decimal(self.floor)
 
         effective_index = min(base, cap) if cap > 0 else base
-
-        # Your requested change:
         annual_rate = max(floor + spread, effective_index + spread)
         return annual_rate
-
-def rate_for_month(self) -> float:
-    """
-    Variable logic (updated):
-      base = {SOFR/LIBOR:0.043, WSJ:0.075, else:0.043}
-      if cap exists (>0): effective_index = min(base, cap)
-      else:              effective_index = base
-      annual_rate = max(floor + spread, effective_index + spread)
-    Fixed logic:
-      annual_rate = nRate
-    """
-    idx = (self.index_name or "").strip().upper()
-    floor = self._as_decimal(self.floor)
-    spread = self._as_decimal(self.spread)
-    cap = self._as_decimal(self.cap)
-
-    if not self.is_variable():
-        return self._as_decimal(self.fixed_rate)
-
-    base = INDEX_BASE_RATES.get(idx, 0.043)
-    effective_index = min(base, cap) if cap > 0 else base
-
-    r = max(floor + spread, effective_index + spread)
-    return r
-
-def amortize_monthly_schedule(loan: Loan, schedule_start: date, schedule_end: date) -> pd.DataFrame:
-    """
-    Month-end schedule.
-
-    Fixed loans:
-      - IO months: payment = interest
-      - After IO: level-payment amortization (constant payment), unless maturity cuts it off (balloon possible)
-
-    Variable loans (per your rules):
-      - No amortization: interest-only for entire term
-    """
-    all_dates = month_ends_between(loan.orig_date, max(schedule_end, loan.maturity_date))
-    if not all_dates:
-        return pd.DataFrame()
-
-   r_annual_360 = loan.rate_for_month()
-   r_annual = annual_360_to_365(r_annual_360)   # convert to 365-basis annual
-   r_m = r_annual / 12.0
-
-
-    term_m = int(loan.loan_term_m) if loan.loan_term_m and loan.loan_term_m > 0 else len(all_dates)
-    amort_m = int(loan.amort_term_m) if loan.amort_term_m and loan.amort_term_m > 0 else term_m
-    io_m = int(loan.io_months) if loan.io_months and loan.io_months > 0 else 0
-
-    # Variable: no amortization (interest-only for entire term)
-    if loan.is_variable():
-        io_m = term_m
-
-    # remaining amort months after IO (used to set level payment ONCE)
-    amort_after_io = max(1, amort_m - io_m)
-
-    bal = float(loan.orig_amount)
-
-    # We will set this at the first amort month and keep it constant thereafter (fixed loans only)
-    level_payment: Optional[float] = None
-
-    rows = []
-    for i, dte in enumerate(all_dates, start=1):
-        if dte > loan.maturity_date:
-            break
-
-        interest = bal * r_m
-
-        if i <= io_m:
-            # interest-only months (and all months for variable loans)
-            payment = interest
-            principal = 0.0
-        else:
-            # amortizing phase (fixed loans only)
-            if level_payment is None:
-                # compute once based on balance at amort start
-                if r_m == 0:
-                    level_payment = bal / amort_after_io
-                else:
-                    level_payment = bal * r_m / (1 - (1 + r_m) ** (-amort_after_io))
-
-            payment = level_payment
-            principal = max(0.0, payment - interest)
-
-            # last-payment cleanup: don't pay more principal than remaining balance
-            if principal > bal:
-                principal = bal
-                payment = interest + principal
-
-        bal = max(0.0, bal - principal)
-
-        rows.append({
-            "vcode": loan.vcode,
-            "LoanID": loan.loan_id,
-            "event_date": dte,
-            "rate": r_annual,
-            "interest": float(interest),
-            "principal": float(principal),
-            "payment": float(payment),
-            "ending_balance": float(bal),
-        })
-
-        if bal <= 0.0:
-            break
-
-    sched = pd.DataFrame(rows)
-    if sched.empty:
-        return sched
-
-    sched = sched[
-        (sched["event_date"] >= month_end(schedule_start)) &
-        (sched["event_date"] <= month_end(schedule_end))
-    ].copy()
-
-    return sched
-
 
 
 def build_loans_from_mri_loans(mri_loans: pd.DataFrame) -> List[Loan]:
@@ -458,6 +343,271 @@ def build_loans_from_mri_loans(mri_loans: pd.DataFrame) -> List[Loan]:
         ))
 
     return loans
+
+
+def amortize_monthly_schedule(loan: Loan, schedule_start: date, schedule_end: date) -> pd.DataFrame:
+    """
+    Month-end schedule.
+
+    Fixed loans:
+      - IO months: payment = interest
+      - After IO: level-payment amortization (constant payment), unless maturity cuts it off (balloon possible)
+
+    Variable loans:
+      - No amortization: interest-only for entire term
+    """
+    all_dates = month_ends_between(loan.orig_date, max(schedule_end, loan.maturity_date))
+    if not all_dates:
+        return pd.DataFrame()
+
+    # rate_for_month returns decimal annual rate on a 360 basis; convert to 365 basis for payment math
+    r_annual_360 = loan.rate_for_month()
+    r_annual = annual_360_to_365(r_annual_360)
+    r_m = r_annual / 12.0
+
+    term_m = int(loan.loan_term_m) if loan.loan_term_m and loan.loan_term_m > 0 else len(all_dates)
+    amort_m = int(loan.amort_term_m) if loan.amort_term_m and loan.amort_term_m > 0 else term_m
+    io_m = int(loan.io_months) if loan.io_months and loan.io_months > 0 else 0
+
+    # Variable: no amortization (interest-only for entire term)
+    if loan.is_variable():
+        io_m = term_m
+
+    amort_after_io = max(1, amort_m - io_m)
+
+    bal = float(loan.orig_amount)
+    level_payment: Optional[float] = None
+
+    rows = []
+    for i, dte in enumerate(all_dates, start=1):
+        if dte > loan.maturity_date:
+            break
+
+        interest = bal * r_m
+
+        if i <= io_m:
+            payment = interest
+            principal = 0.0
+        else:
+            if level_payment is None:
+                if r_m == 0:
+                    level_payment = bal / amort_after_io
+                else:
+                    level_payment = bal * r_m / (1 - (1 + r_m) ** (-amort_after_io))
+
+            payment = level_payment
+            principal = max(0.0, payment - interest)
+
+            # last-payment cleanup
+            if principal > bal:
+                principal = bal
+                payment = interest + principal
+
+        bal = max(0.0, bal - principal)
+
+        rows.append({
+            "vcode": loan.vcode,
+            "LoanID": loan.loan_id,
+            "event_date": dte,
+            "rate": float(r_annual),  # store 365-basis decimal for display consistency
+            "interest": float(interest),
+            "principal": float(principal),
+            "payment": float(payment),
+            "ending_balance": float(bal),
+        })
+
+        if bal <= 0.0:
+            break
+
+    sched = pd.DataFrame(rows)
+    if sched.empty:
+        return sched
+
+    sched = sched[
+        (sched["event_date"] >= month_end(schedule_start)) &
+        (sched["event_date"] <= month_end(schedule_end))
+    ].copy()
+
+    return sched
+
+
+# ============================================================
+# PLANNED SECOND MORTGAGE SIZING (MRI_Supp)
+# ============================================================
+def projected_cap_rate_at_orig(mri_val: pd.DataFrame, vcode: str, proj_begin: date, orig_date: date) -> float:
+    dv = mri_val.copy()
+    dv.columns = [str(c).strip() for c in dv.columns]
+    if "vcode" not in dv.columns and "vCode" in dv.columns:
+        dv = dv.rename(columns={"vCode": "vcode"})
+    if "vcode" not in dv.columns or "fCapRate" not in dv.columns:
+        raise ValueError("MRI_Val.csv must include columns: vcode (or vCode), fCapRate")
+
+    dv["vcode"] = dv["vcode"].astype(str)
+    sub = dv[dv["vcode"] == str(vcode)].copy()
+    if sub.empty:
+        raise ValueError(f"MRI_Val has no rows for vcode {vcode}")
+
+    if "dtVal" in sub.columns:
+        sub["dtVal"] = pd.to_datetime(sub["dtVal"], errors="coerce").dt.date
+        sub = sub.sort_values("dtVal")
+
+    fcap = float(pd.to_numeric(sub["fCapRate"], errors="coerce").dropna().iloc[-1])
+
+    years = max(0.0, (pd.Timestamp(orig_date) - pd.Timestamp(proj_begin)).days / 365.0)
+    return fcap + 0.0005 * years
+
+
+def twelve_month_noi_after_date(fc_deal: pd.DataFrame, orig_date: date) -> float:
+    start_me = month_end(orig_date)
+    end_me = add_months(start_me, 12)
+    f = fc_deal[(fc_deal["event_date"] >= start_me) & (fc_deal["event_date"] < end_me)].copy()
+    if f.empty:
+        return 0.0
+    is_rev = f["vAccount"].isin(GROSS_REVENUE_ACCTS | CONTRA_REVENUE_ACCTS)
+    is_exp = f["vAccount"].isin(EXPENSE_ACCTS)
+    return float(f.loc[is_rev | is_exp, "mAmount_norm"].sum())
+
+
+def existing_debt_service_12m_after(fc_deal: pd.DataFrame, orig_date: date) -> float:
+    start_me = month_end(orig_date)
+    end_me = add_months(start_me, 12)
+    f = fc_deal[(fc_deal["event_date"] >= start_me) & (fc_deal["event_date"] < end_me)].copy()
+    if f.empty:
+        return 0.0
+    ds = f.loc[f["vAccount"].isin(INTEREST_ACCTS | PRINCIPAL_ACCTS), "mAmount_norm"].sum()
+    return float(abs(ds))
+
+
+def ds_first_12_months_for_principal(principal: float, rate: float, term_years: int, amort_years: int, io_years: float, orig_date: date) -> float:
+    r = rate / 100.0 if rate > 1.0 else rate
+    r_m = r / 12.0
+
+    term_m = int(round(term_years * 12))
+    io_m = int(round(io_years * 12))
+    amort_m = int(round(amort_years * 12))
+    amort_after_io = max(1, amort_m - io_m)
+
+    bal = principal
+    dates = month_ends_between(orig_date, add_months(orig_date, term_m - 1))
+    level_payment = None
+    rows = []
+    for i, _dte in enumerate(dates, start=1):
+        interest = bal * r_m
+        if i <= io_m:
+            principal_pmt = 0.0
+            payment = interest
+        else:
+            if level_payment is None:
+                if r_m == 0:
+                    level_payment = bal / amort_after_io
+                else:
+                    level_payment = bal * r_m / (1 - (1 + r_m) ** (-amort_after_io))
+            payment = level_payment
+            principal_pmt = max(0.0, payment - interest)
+            if principal_pmt > bal:
+                principal_pmt = bal
+                payment = interest + principal_pmt
+        bal = max(0.0, bal - principal_pmt)
+        rows.append(payment)
+    return float(sum(rows[:12]))
+
+
+def solve_principal_from_annual_ds(target_ds_12m: float, rate: float, term: int, amort: int, io_period: float, orig_date: date) -> float:
+    if target_ds_12m <= 0:
+        return 0.0
+
+    def f(p):
+        return ds_first_12_months_for_principal(p, rate, term, amort, io_period, orig_date) - target_ds_12m
+
+    lo = 0.0
+    hi = 1_000_000.0
+    for _ in range(30):
+        if f(hi) >= 0:
+            break
+        hi *= 2.0
+    else:
+        return 0.0
+
+    return float(brentq(f, lo, hi))
+
+
+def size_planned_second_mortgage(inv: pd.DataFrame, fc_deal: pd.DataFrame, mri_supp_row: pd.Series, mri_val: pd.DataFrame) -> Tuple[float, dict]:
+    orig_date = as_date(mri_supp_row["Orig_Date"])
+    term = int(float(mri_supp_row["Term"]))
+    amort = int(float(mri_supp_row["Amort"]))
+    io_years = float(mri_supp_row["I/O Period"])
+    dscr_req = float(mri_supp_row["DSCR"])
+    ltv = float(mri_supp_row["LTV"])
+    rate = float(mri_supp_row["Rate"])
+
+    if ltv > 1.5:
+        ltv = ltv / 100.0
+
+    proj_begin = min(fc_deal["event_date"])
+    noi_12 = twelve_month_noi_after_date(fc_deal, orig_date)
+    cap_rate = projected_cap_rate_at_orig(mri_val, str(fc_deal["vcode"].iloc[0]), proj_begin, orig_date)
+
+    inv2 = inv.copy()
+    inv2.columns = [str(c).strip() for c in inv2.columns]
+    inv2["vcode"] = inv2["vcode"].astype(str)
+    inv_row = inv2[inv2["vcode"] == str(fc_deal["vcode"].iloc[0])]
+
+    n_cost_sale = float(inv_row.iloc[0].get("nCostSaleRate", 0.0) or 0.0) if not inv_row.empty else 0.0
+    projected_value = (noi_12 / cap_rate) * (1.0 - n_cost_sale) if cap_rate != 0 else 0.0
+
+    # Placeholder until we wire modeled balances at orig_date:
+    existing_bal = 0.0
+
+    max_total_debt = projected_value * ltv
+    max_add_ltv = max(0.0, max_total_debt - existing_bal)
+
+    max_total_ds = (noi_12 / dscr_req) if dscr_req > 0 else 0.0
+    existing_ds = existing_debt_service_12m_after(fc_deal, orig_date)
+    max_add_ds = max(0.0, max_total_ds - existing_ds)
+
+    max_add_dscr = solve_principal_from_annual_ds(max_add_ds, rate, term, amort, io_years, orig_date)
+
+    new_loan_amt = min(max_add_ltv, max_add_dscr)
+
+    dbg = {
+        "Orig_Date": str(orig_date),
+        "NOI_12m": noi_12,
+        "CapRate": cap_rate,
+        "ProjectedValue": projected_value,
+        "ExistingDebtAssumed": existing_bal,
+        "MaxAdd_LTV": max_add_ltv,
+        "ExistingDS_12m_fromForecast": existing_ds,
+        "MaxAddDS_12m": max_add_ds,
+        "MaxAdd_DSCR_Principal": max_add_dscr,
+        "NewLoanAmt": new_loan_amt,
+    }
+    return float(new_loan_amt), dbg
+
+
+def planned_loan_debug_table(inv: pd.DataFrame, fc: pd.DataFrame, mri_supp: pd.DataFrame, mri_val: pd.DataFrame) -> pd.DataFrame:
+    if mri_supp is None or mri_supp.empty:
+        return pd.DataFrame()
+
+    ms = mri_supp.copy()
+    ms.columns = [str(c).strip() for c in ms.columns]
+    if "vCode" not in ms.columns and "vcode" in ms.columns:
+        ms = ms.rename(columns={"vcode": "vCode"})
+    ms["vCode"] = ms["vCode"].astype(str)
+
+    out_rows = []
+    for vcode in sorted(ms["vCode"].dropna().unique()):
+        fc_deal = fc[fc["vcode"].astype(str) == str(vcode)].copy()
+        if fc_deal.empty:
+            continue
+
+        row = ms[ms["vCode"] == str(vcode)].iloc[0]
+        try:
+            new_amt, dbg = size_planned_second_mortgage(inv, fc_deal, row, mri_val)
+            out_rows.append({"vCode": str(vcode), **dbg})
+        except Exception as e:
+            out_rows.append({"vCode": str(vcode), "Error": str(e)})
+
+    return pd.DataFrame(out_rows)
 
 
 # ============================================================
@@ -512,7 +662,7 @@ def pivot_annual_table(df: pd.DataFrame) -> pd.DataFrame:
     desired_order = [
         "Revenues", "Expenses", "NOI",
         "Interest", "Principal", "Total Debt Service",
-        "Excluded Accounts", "Capital Expenditures",
+        "Capital Expenditures", "Excluded Accounts",
         "Funds Available for Distribution", "Debt Service Coverage Ratio",
     ]
     existing = [r for r in desired_order if r in wide.index]
@@ -539,6 +689,7 @@ def style_annual_table(df: pd.DataFrame) -> pd.io.formats.style.Styler:
             subset=pd.IndexSlice[["Debt Service Coverage Ratio"], :]
         )
 
+    # Uniform column widths + right-aligned numbers
     styler = styler.set_table_styles(
         [
             {"selector": "th", "props": [("text-align", "left"), ("width", "220px")]},
@@ -547,15 +698,18 @@ def style_annual_table(df: pd.DataFrame) -> pd.io.formats.style.Styler:
         overwrite=False,
     )
 
+    # Underline expenses
     if "Expenses" in df.index:
         styler = styler.set_properties(subset=pd.IndexSlice[["Expenses"], :], **{"text-decoration": "underline"})
 
+    # Double line under NOI
     if "NOI" in df.index:
         styler = styler.set_properties(
             subset=pd.IndexSlice[["NOI"], :],
             **{"border-bottom": "3px double black", "font-weight": "bold"}
         )
 
+    # Line above FAD (last line before Funds Available), and bold FAD
     if "Funds Available for Distribution" in df.index:
         fad_idx = df.index.get_loc("Funds Available for Distribution")
         if fad_idx > 0:
@@ -563,6 +717,7 @@ def style_annual_table(df: pd.DataFrame) -> pd.io.formats.style.Styler:
             styler = styler.set_properties(subset=pd.IndexSlice[[prev_row], :], **{"border-bottom": "2px solid black"})
         styler = styler.set_properties(subset=pd.IndexSlice[["Funds Available for Distribution"], :], **{"font-weight": "bold"})
 
+    # Light line above DSCR
     if "Debt Service Coverage Ratio" in df.index:
         styler = styler.set_properties(subset=pd.IndexSlice[["Debt Service Coverage Ratio"], :], **{"border-top": "1px solid #999"})
 
@@ -573,7 +728,7 @@ def style_annual_table(df: pd.DataFrame) -> pd.io.formats.style.Styler:
 # STREAMLIT UI
 # ============================================================
 st.set_page_config(layout="wide")
-st.title("Waterfall + XIRR Forecast")
+st.title("Waterfall + XIRR Forecast — Loan Modeling")
 
 CLOUD = is_streamlit_cloud()
 
@@ -587,12 +742,12 @@ with st.sidebar:
         mode = st.radio("Load data from:", ["Local folder", "Upload CSVs"], index=0)
 
     folder = None
-    uploads = {}
+    uploads: Dict[str, Optional[object]] = {}
 
     if mode == "Local folder":
         folder = st.text_input("Data folder path", placeholder=r"C:\Path\To\Data")
         st.caption("Required: investment_map.csv, waterfalls.csv, coa.csv, accounting_feed.csv, forecast_feed.csv")
-        st.caption("Debt modeling: MRI_Loans.csv (recommended).")
+        st.caption("Debt modeling: MRI_Loans.csv (recommended). Planned loan sizing: MRI_Supp.csv + MRI_Val.csv (optional).")
     else:
         uploads["investment_map"] = st.file_uploader("investment_map.csv", type="csv")
         uploads["waterfalls"] = st.file_uploader("waterfalls.csv", type="csv")
@@ -603,6 +758,8 @@ with st.sidebar:
         st.divider()
         st.subheader("Debt Modeling Inputs")
         uploads["MRI_Loans"] = st.file_uploader("MRI_Loans.csv (existing loans)", type="csv")
+        uploads["MRI_Supp"] = st.file_uploader("MRI_Supp.csv (planned 2nd mortgages)", type="csv")
+        uploads["MRI_Val"] = st.file_uploader("MRI_Val.csv (cap rates for sizing)", type="csv")
 
     st.divider()
     st.header("Report Settings")
@@ -626,7 +783,10 @@ def load_inputs():
         coa = load_coa(pd.read_csv(f"{folder}/coa.csv"))
         acct = pd.read_csv(f"{folder}/accounting_feed.csv")
         fc = load_forecast(pd.read_csv(f"{folder}/forecast_feed.csv"), coa, int(pro_yr_base))
+
         mri_loans_raw = pd.read_csv(f"{folder}/MRI_Loans.csv") if Path(f"{folder}/MRI_Loans.csv").exists() else pd.DataFrame()
+        mri_supp = pd.read_csv(f"{folder}/MRI_Supp.csv") if Path(f"{folder}/MRI_Supp.csv").exists() else pd.DataFrame()
+        mri_val = pd.read_csv(f"{folder}/MRI_Val.csv") if Path(f"{folder}/MRI_Val.csv").exists() else pd.DataFrame()
 
     else:
         for k in ["investment_map", "waterfalls", "coa", "accounting_feed", "forecast_feed"]:
@@ -639,15 +799,20 @@ def load_inputs():
         coa = load_coa(pd.read_csv(uploads["coa"]))
         acct = pd.read_csv(uploads["accounting_feed"])
         fc = load_forecast(pd.read_csv(uploads["forecast_feed"]), coa, int(pro_yr_base))
+
         mri_loans_raw = pd.read_csv(uploads["MRI_Loans"]) if uploads.get("MRI_Loans") is not None else pd.DataFrame()
+        mri_supp = pd.read_csv(uploads["MRI_Supp"]) if uploads.get("MRI_Supp") is not None else pd.DataFrame()
+        mri_val = pd.read_csv(uploads["MRI_Val"]) if uploads.get("MRI_Val") is not None else pd.DataFrame()
 
     inv.columns = [str(c).strip() for c in inv.columns]
+    if "vcode" not in inv.columns and "vCode" in inv.columns:
+        inv = inv.rename(columns={"vCode": "vcode"})
     inv["vcode"] = inv["vcode"].astype(str)
 
-    return inv, wf, acct, fc, mri_loans_raw
+    return inv, wf, acct, fc, mri_loans_raw, mri_supp, mri_val
 
 
-inv, wf, acct, fc, mri_loans_raw = load_inputs()
+inv, wf, acct, fc, mri_loans_raw, mri_supp, mri_val = load_inputs()
 
 deal = st.selectbox("Select Deal", sorted(inv["vcode"].dropna().unique().tolist()))
 
@@ -672,7 +837,6 @@ model_end = max(fc_deal_base["event_date"])
 # ============================================================
 debug_msgs: List[str] = []
 loan_sched = pd.DataFrame()
-
 loans: List[Loan] = []
 
 if mri_loans_raw is not None and not mri_loans_raw.empty:
@@ -698,8 +862,6 @@ else:
 # Replace forecast debt service with modeled debt service
 # ============================================================
 fc_deal = fc_deal_base.copy()
-
-# Remove existing forecast interest/principal rows (replace with modeled)
 fc_deal = fc_deal[~fc_deal["vAccount"].isin(INTEREST_ACCTS | PRINCIPAL_ACCTS)].copy()
 
 if not loan_sched.empty:
@@ -739,7 +901,6 @@ if not loan_sched.empty:
     if add_rows:
         fc_deal = pd.concat([fc_deal, pd.DataFrame(add_rows)], ignore_index=True)
 
-# Ensure Year exists
 fc_deal["Year"] = fc_deal["event_date"].apply(lambda d: pd.Timestamp(d).year).astype("Int64")
 
 
@@ -763,14 +924,77 @@ if debug_msgs:
         for m in debug_msgs:
             st.write("- " + m)
 
-if not loan_sched.empty:
-    with st.expander("Loan Schedule (modeled) — monthly interest, principal, ending balance"):
-        show = loan_sched.sort_values(["LoanID", "event_date"]).copy()
-        st.dataframe(show, use_container_width=True)
 
-        totals = loan_sched.groupby("event_date", as_index=False)[["interest", "principal"]].sum()
+# ============================================================
+# Loan schedule display (formatted)
+# ============================================================
+if not loan_sched.empty:
+    with st.expander("Loan Schedule (modeled) — formatted"):
+        show = loan_sched.sort_values(["LoanID", "event_date"]).copy()
+
+        show_disp = show.copy()
+        show_disp["rate"] = (show_disp["rate"] * 100.0).map(lambda x: f"{x:,.2f}%")
+        for c in ["interest", "principal", "payment", "ending_balance"]:
+            show_disp[c] = show_disp[c].map(lambda x: f"{x:,.0f}")
+
+        st.dataframe(
+            show_disp[["LoanID", "event_date", "rate", "interest", "principal", "payment", "ending_balance"]],
+            use_container_width=True
+        )
+
+        totals = show.groupby("event_date", as_index=False)[["interest", "principal"]].sum()
         totals["debt_service"] = totals["interest"] + totals["principal"]
+
+        totals_disp = totals.copy()
+        for c in ["interest", "principal", "debt_service"]:
+            totals_disp[c] = totals_disp[c].map(lambda x: f"{x:,.0f}")
+
         st.subheader("Total Modeled Debt Service by Month (all loans)")
-        st.dataframe(totals.sort_values("event_date"), use_container_width=True)
+        st.dataframe(totals_disp.sort_values("event_date"), use_container_width=True)
+
+
+# ============================================================
+# Planned loan sizing dropdown (MRI_Supp)
+# ============================================================
+if mri_supp is not None and not mri_supp.empty:
+    st.subheader("Planned Second Mortgage — Maximum Additional Loan Size (MRI_Supp)")
+
+    if mri_val is None or mri_val.empty:
+        st.info("Upload/provide MRI_Val.csv to compute cap-rate based sizing details.")
+    else:
+        dbg_table = planned_loan_debug_table(inv, fc, mri_supp, mri_val)
+        if dbg_table.empty:
+            st.info("No planned loan rows could be evaluated (missing forecast rows or inputs).")
+        else:
+            vchoices = dbg_table["vCode"].dropna().astype(str).unique().tolist()
+            chosen = st.selectbox("Select property for sizing detail", sorted(vchoices), key="planned_sizing_select")
+
+            row = dbg_table[dbg_table["vCode"].astype(str) == str(chosen)].iloc[0].to_dict()
+
+            def fmt_money(x):
+                try:
+                    return f"{float(x):,.0f}"
+                except Exception:
+                    return x
+
+            def fmt_pct(x):
+                try:
+                    return f"{float(x) * 100:,.2f}%"
+                except Exception:
+                    return x
+
+            pretty = {}
+            for k, v in row.items():
+                if k in {"CapRate"}:
+                    pretty[k] = fmt_pct(v)
+                elif k in {
+                    "NOI_12m", "ProjectedValue", "MaxAdd_LTV", "ExistingDS_12m_fromForecast",
+                    "MaxAddDS_12m", "MaxAdd_DSCR_Principal", "NewLoanAmt", "ExistingDebtAssumed"
+                }:
+                    pretty[k] = fmt_money(v)
+                else:
+                    pretty[k] = v
+
+            st.json(pretty)
 
 st.success("Report generated successfully.")
