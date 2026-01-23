@@ -954,47 +954,56 @@ if not loan_sched.empty:
 
 
 # ============================================================
-# Planned loan sizing dropdown (MRI_Supp)
+# Planned loan sizing detail (ONLY when selected deal has MRI_Supp)
 # ============================================================
 if mri_supp is not None and not mri_supp.empty:
-    st.subheader("Planned Second Mortgage — Maximum Additional Loan Size (MRI_Supp)")
+    ms = mri_supp.copy()
+    ms.columns = [str(c).strip() for c in ms.columns]
+    if "vCode" not in ms.columns and "vcode" in ms.columns:
+        ms = ms.rename(columns={"vcode": "vCode"})
+    ms["vCode"] = ms["vCode"].astype(str)
 
-    if mri_val is None or mri_val.empty:
-        st.info("Upload/provide MRI_Val.csv to compute cap-rate based sizing details.")
-    else:
-        dbg_table = planned_loan_debug_table(inv, fc, mri_supp, mri_val)
-        if dbg_table.empty:
-            st.info("No planned loan rows could be evaluated (missing forecast rows or inputs).")
+    has_planned = (ms["vCode"] == str(deal)).any()
+
+    if has_planned:
+        st.subheader("Planned Second Mortgage — Sizing Detail (Selected Deal)")
+
+        if mri_val is None or mri_val.empty:
+            st.info("Upload/provide MRI_Val.csv to compute cap-rate based sizing details.")
         else:
-            vchoices = dbg_table["vCode"].dropna().astype(str).unique().tolist()
-            chosen = st.selectbox("Select property for sizing detail", sorted(vchoices), key="planned_sizing_select")
+            fc_sel = fc[fc["vcode"].astype(str) == str(deal)].copy()
+            supp_row = ms[ms["vCode"] == str(deal)].iloc[0]
 
-            row = dbg_table[dbg_table["vCode"].astype(str) == str(chosen)].iloc[0].to_dict()
+            try:
+                new_amt, dbg = size_planned_second_mortgage(inv, fc_sel, supp_row, mri_val)
 
-            def fmt_money(x):
-                try:
-                    return f"{float(x):,.0f}"
-                except Exception:
-                    return x
+                def fmt_money(x):
+                    try:
+                        return f"{float(x):,.0f}"
+                    except Exception:
+                        return x
 
-            def fmt_pct(x):
-                try:
-                    return f"{float(x) * 100:,.2f}%"
-                except Exception:
-                    return x
+                def fmt_pct(x):
+                    try:
+                        return f"{float(x) * 100:,.2f}%"
+                    except Exception:
+                        return x
 
-            pretty = {}
-            for k, v in row.items():
-                if k in {"CapRate"}:
-                    pretty[k] = fmt_pct(v)
-                elif k in {
-                    "NOI_12m", "ProjectedValue", "MaxAdd_LTV", "ExistingDS_12m_fromForecast",
-                    "MaxAddDS_12m", "MaxAdd_DSCR_Principal", "NewLoanAmt", "ExistingDebtAssumed"
-                }:
-                    pretty[k] = fmt_money(v)
-                else:
-                    pretty[k] = v
+                pretty = {}
+                for k, v in dbg.items():
+                    if k in {"CapRate"}:
+                        pretty[k] = fmt_pct(v)
+                    elif k in {
+                        "NOI_12m", "ProjectedValue", "MaxAdd_LTV", "ExistingDS_12m_fromForecast",
+                        "MaxAddDS_12m", "MaxAdd_DSCR_Principal", "NewLoanAmt", "ExistingDebtAssumed"
+                    }:
+                        pretty[k] = fmt_money(v)
+                    else:
+                        pretty[k] = v
 
-            st.json(pretty)
+                st.json(pretty)
+
+            except Exception as e:
+                st.error(f"Could not compute planned loan sizing for {deal}: {e}")
 
 st.success("Report generated successfully.")
