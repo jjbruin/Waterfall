@@ -1,57 +1,88 @@
-@dataclass
-class Loan:
-    vcode: str
-    loan_id: str
-    orig_date: date
-    maturity_date: date
-    orig_amount: float
-    loan_term_m: int
-    amort_term_m: int
-    io_months: int
-    int_type: str  # Fixed / Variable
-    index_name: str
-    fixed_rate: float  # nRate for fixed loans
-    spread: float       # vSpread for variable loans
-    floor: float        # nFloor for variable loans
-    cap: float          # vIntRatereset used as cap on INDEX (pre-spread) if > 0
+def amortize_monthly_schedule(loan: Loan, schedule_start: date, schedule_end: date) -> pd.DataFrame:
+    """
+    Month-end schedule.
 
-    @staticmethod
-    def _as_decimal(x) -> float:
-        if x is None or (isinstance(x, float) and pd.isna(x)) or pd.isna(x):
-            return 0.0
-        x = float(x)
-        return x / 100.0 if x > 1.0 else x
+    Fixed loans:
+      - IO months: payment = interest
+      - After IO: level-payment amortization (constant payment), unless maturity cuts it off (balloon possible)
 
-    def is_variable(self) -> bool:
-        return (self.int_type or "").strip().lower().startswith("var")
+    Variable loans (per your rules):
+      - No amortization: interest-only for entire term
+    """
+    all_dates = month_ends_between(loan.orig_date, max(schedule_end, loan.maturity_date))
+    if not all_dates:
+        return pd.DataFrame()
 
-    def rate_for_month(self) -> float:
-        """
-        Fixed:
-          annual_rate = nRate
+    r_annual = loan.rate_for_month()
+    r_m = r_annual / 12.0
 
-        Variable (per your rules):
-          base index:
-            SOFR/LIBOR -> 0.043
-            WSJ        -> 0.075
-            else       -> 0.043
-          if cap exists (>0): effective_index = min(base, cap)
-          else:              effective_index = base
-          annual_rate = max(floor + spread, effective_index + spread)
-        """
-        idx = (self.index_name or "").strip().upper()
+    term_m = int(loan.loan_term_m) if loan.loan_term_m and loan.loan_term_m > 0 else len(all_dates)
+    amort_m = int(loan.amort_term_m) if loan.amort_term_m and loan.amort_term_m > 0 else term_m
+    io_m = int(loan.io_months) if loan.io_months and loan.io_months > 0 else 0
 
-        if not self.is_variable():
-            return self._as_decimal(self.fixed_rate)
+    # Variable: no amortization (interest-only for entire term)
+    if loan.is_variable():
+        io_m = term_m
 
-        base = INDEX_BASE_RATES.get(idx, 0.043)
+    # remaining amort months after IO (used to set level payment ONCE)
+    amort_after_io = max(1, amort_m - io_m)
 
-        cap = self._as_decimal(self.cap)
-        spread = self._as_decimal(self.spread)
-        floor = self._as_decimal(self.floor)
+    bal = float(loan.orig_amount)
 
-        effective_index = min(base, cap) if cap > 0 else base
+    # We will set this at the first amort month and keep it constant thereafter (fixed loans only)
+    level_payment: Optional[float] = None
 
-        # Your requested change:
-        annual_rate = max(floor + spread, effective_index + spread)
-        return annual_rate
+    rows = []
+    for i, dte in enumerate(all_dates, start=1):
+        if dte > loan.maturity_date:
+            break
+
+        interest = bal * r_m
+
+        if i <= io_m:
+            # interest-only months (and all months for variable loans)
+            payment = interest
+            principal = 0.0
+        else:
+            # amortizing phase (fixed loans only)
+            if level_payment is None:
+                # compute once based on balance at amort start
+                if r_m == 0:
+                    level_payment = bal / amort_after_io
+                else:
+                    level_payment = bal * r_m / (1 - (1 + r_m) ** (-amort_after_io))
+
+            payment = level_payment
+            principal = max(0.0, payment - interest)
+
+            # last-payment cleanup: don't pay more principal than remaining balance
+            if principal > bal:
+                principal = bal
+                payment = interest + principal
+
+        bal = max(0.0, bal - principal)
+
+        rows.append({
+            "vcode": loan.vcode,
+            "LoanID": loan.loan_id,
+            "event_date": dte,
+            "rate": r_annual,
+            "interest": float(interest),
+            "principal": float(principal),
+            "payment": float(payment),
+            "ending_balance": float(bal),
+        })
+
+        if bal <= 0.0:
+            break
+
+    sched = pd.DataFrame(rows)
+    if sched.empty:
+        return sched
+
+    sched = sched[
+        (sched["event_date"] >= month_end(schedule_start)) &
+        (sched["event_date"] <= month_end(schedule_end))
+    ].copy()
+
+    return sched
