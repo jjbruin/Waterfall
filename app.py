@@ -35,6 +35,8 @@ from typing import List, Tuple, Optional, Dict
 
 import pandas as pd
 import streamlit as st
+import numpy as np
+
 from scipy.optimize import brentq
 
 
@@ -624,6 +626,621 @@ def planned_loan_as_loan_object(vcode: str, mri_supp_row: pd.Series, new_loan_am
         cap=0.0,
     )
 
+# ============================================================
+# WATERFALL ENGINE
+# ============================================================
+
+WF_REQUIRED_COLS = {"vcode", "vmisc", "iOrder", "PropCode", "dteffective", "mAmount", "nPercent", "FXRate", "vState"}
+
+def load_waterfalls(df: pd.DataFrame) -> pd.DataFrame:
+    w = df.copy()
+    w.columns = [str(c).strip() for c in w.columns]
+    # Normalize column names
+    ren = {}
+    if "vCode" in w.columns and "vcode" not in w.columns:
+        ren["vCode"] = "vcode"
+    w = w.rename(columns=ren)
+    if "vcode" not in w.columns:
+        raise ValueError("waterfalls.csv must include vcode (or vCode)")
+    w["vcode"] = w["vcode"].astype(str)
+
+    # Ensure required columns exist (allow some optional ones)
+    missing = [c for c in WF_REQUIRED_COLS if c not in w.columns]
+    if missing:
+        raise ValueError(f"waterfalls.csv missing columns: {missing}")
+
+    w["vmisc"] = w["vmisc"].astype(str).str.strip()
+    w["PropCode"] = w["PropCode"].astype(str).str.strip()
+    w["vState"] = w["vState"].astype(str).str.strip()
+
+    w["iOrder"] = pd.to_numeric(w["iOrder"], errors="coerce").fillna(9999).astype(int)
+    w["FXRate"] = pd.to_numeric(w["FXRate"], errors="coerce").fillna(0.0).astype(float)
+
+    # nPercent stored as decimal or percent; normalize to decimal
+    p = pd.to_numeric(w["nPercent"], errors="coerce").fillna(0.0).astype(float)
+    w["nPercent_dec"] = np.where(p > 1.0, p / 100.0, p)
+
+    # mAmount numeric, blank allowed
+    w["mAmount"] = pd.to_numeric(w["mAmount"], errors="coerce").fillna(0.0).astype(float)
+
+    # dates
+    w["dteffective"] = pd.to_datetime(w["dteffective"], errors="coerce").dt.date
+
+    # sort
+    w = w.sort_values(["vcode", "vmisc", "iOrder"]).reset_index(drop=True)
+    return w
+
+
+def cashflows_monthly_fad(fc_deal_modeled_full: pd.DataFrame) -> pd.DataFrame:
+    """
+    Monthly Funds Available for Distribution from modeled forecast.
+    Uses your same operating definitions:
+      FAD = NOI + Interest + Principal + Excluded + Capex  (all from mAmount_norm signs)
+    """
+    f = fc_deal_modeled_full.copy()
+    f["event_date"] = pd.to_datetime(f["event_date"]).dt.date
+    f["me"] = f["event_date"].apply(month_end)
+
+    is_rev = f["vAccount"].isin(GROSS_REVENUE_ACCTS | CONTRA_REVENUE_ACCTS)
+    is_exp = f["vAccount"].isin(EXPENSE_ACCTS)
+    is_int = f["vAccount"].isin(INTEREST_ACCTS)
+    is_prin = f["vAccount"].isin(PRINCIPAL_ACCTS)
+    is_capex = f["vAccount"].isin(CAPEX_ACCTS)
+    is_excl = f["vAccount"].isin(OTHER_EXCLUDED_ACCTS)
+
+    f["rev"] = np.where(is_rev, f["mAmount_norm"], 0.0)
+    f["exp"] = np.where(is_exp, f["mAmount_norm"], 0.0)
+    f["noi"] = f["rev"] + f["exp"]
+    f["int"] = np.where(is_int, f["mAmount_norm"], 0.0)
+    f["prin"] = np.where(is_prin, f["mAmount_norm"], 0.0)
+    f["capex"] = np.where(is_capex, f["mAmount_norm"], 0.0)
+    f["excl"] = np.where(is_excl, f["mAmount_norm"], 0.0)
+
+    g = f.groupby("me", as_index=False)[["noi", "int", "prin", "capex", "excl"]].sum()
+    g["fad"] = g["noi"] + g["int"] + g["prin"] + g["capex"] + g["excl"]
+    return g.rename(columns={"me": "event_date"})
+
+
+def xirr_safe(cfs: List[Tuple[date, float]]) -> Optional[float]:
+    # Need at least one negative and one positive
+    if not cfs:
+        return None
+    vals = [a for _, a in cfs]
+    if not (min(vals) < 0 and max(vals) > 0):
+        return None
+    try:
+        return float(xirr(cfs))
+    except Exception:
+        return None
+
+
+@dataclass
+class InvestorState:
+    propcode: str
+    capital_outstanding: float = 0.0  # positive = capital owed back to investor
+    pref_unpaid_compounded: float = 0.0  # unpaid pref carried into next year base
+    pref_accrued_current_year: float = 0.0  # accrues during the year
+    last_accrual_date: Optional[date] = None
+    cashflows: List[Tuple[date, float]] = None  # investor perspective: contributions negative, dists positive
+
+    def __post_init__(self):
+        if self.cashflows is None:
+            self.cashflows = []
+
+
+def accrue_pref_to_date(
+    ist: InvestorState,
+    asof: date,
+    annual_rate: float,
+):
+    """
+    Act/365
+    Compounds annually on 12/31:
+      - within year: accrue on (capital_outstanding + pref_unpaid_compounded)
+      - on 12/31: move current_year accrual into pref_unpaid_compounded
+    Also: "pay first then compound remaining" is handled by paying pref buckets before compounding.
+    """
+    if ist.last_accrual_date is None:
+        ist.last_accrual_date = asof
+        return
+
+    if asof <= ist.last_accrual_date:
+        return
+
+    # Step through year boundaries
+    cur = ist.last_accrual_date
+    while cur < asof:
+        year_end = date(cur.year, 12, 31)
+        next_stop = min(asof, year_end)
+        days = (next_stop - cur).days
+        if days > 0 and annual_rate > 0:
+            base = max(0.0, ist.capital_outstanding + ist.pref_unpaid_compounded)
+            ist.pref_accrued_current_year += base * annual_rate * (days / 365.0)
+
+        # If we hit year-end exactly, compound (roll) the remaining current-year accrual
+        if next_stop == year_end and asof > year_end:
+            # At year end we will compound AFTER any payments on that date. Payments happen in waterfall.
+            # So compounding should occur AFTER allocations for that period.
+            pass
+
+        cur = next_stop
+        if cur == year_end and cur < asof:
+            # advance one day to start next year's accrual window
+            cur = cur  # keep at 12/31; the loop step will continue
+
+            # We'll compound in a separate hook after distributions at 12/31 month-end.
+            # (Handled in run_waterfall_period)
+            break
+
+    ist.last_accrual_date = asof
+
+
+def compound_if_year_end(istates: Dict[str, InvestorState], period_date: date):
+    """After paying pref on period_date, if period_date is 12/31, roll current-year accrual into compounded."""
+    if period_date.month == 12 and period_date.day == 31:
+        for s in istates.values():
+            if s.pref_accrued_current_year > 0:
+                s.pref_unpaid_compounded += s.pref_accrued_current_year
+                s.pref_accrued_current_year = 0.0
+
+
+def apply_distribution(ist: InvestorState, d: date, amt: float):
+    """Record a distribution (positive cashflow from investor perspective)."""
+    if amt == 0:
+        return
+    ist.cashflows.append((d, float(amt)))
+
+
+def apply_contribution(ist: InvestorState, d: date, amt: float):
+    """Record a contribution (negative cashflow from investor perspective)."""
+    if amt == 0:
+        return
+    ist.cashflows.append((d, -abs(float(amt))))
+    ist.capital_outstanding += abs(float(amt))
+
+
+def pay_pref(ist: InvestorState, d: date, available: float) -> float:
+    """Pay pref: first compounded unpaid, then current-year accrued."""
+    pay = 0.0
+    if available <= 0:
+        return 0.0
+
+    # Pay compounded unpaid first
+    if ist.pref_unpaid_compounded > 0:
+        x = min(available, ist.pref_unpaid_compounded)
+        ist.pref_unpaid_compounded -= x
+        available -= x
+        pay += x
+
+    if available <= 0:
+        if pay:
+            apply_distribution(ist, d, pay)
+        return pay
+
+    # Pay current-year accrued next
+    if ist.pref_accrued_current_year > 0:
+        x = min(available, ist.pref_accrued_current_year)
+        ist.pref_accrued_current_year -= x
+        available -= x
+        pay += x
+
+    if pay:
+        apply_distribution(ist, d, pay)
+    return pay
+
+
+def pay_initial_capital(ist: InvestorState, d: date, available: float) -> float:
+    """Return capital until outstanding capital is 0."""
+    if available <= 0 or ist.capital_outstanding <= 0:
+        return 0.0
+    x = min(available, ist.capital_outstanding)
+    ist.capital_outstanding -= x
+    apply_distribution(ist, d, x)
+    return x
+
+
+def irr_needed_distribution(ist: InvestorState, d: date, target_irr: float, max_cash: float) -> float:
+    """
+    IRR lookback: find distribution amount (<= max_cash) to make IRR ~= target_irr.
+    Uses brentq on IRR difference if possible.
+    """
+    if max_cash <= 0:
+        return 0.0
+    # Must have at least one negative already
+    if not ist.cashflows or min(a for _, a in ist.cashflows) >= 0:
+        return 0.0
+
+    def irr_of(x):
+        cfs = ist.cashflows + [(d, float(x))]
+        r = xirr_safe(cfs)
+        return r if r is not None else None
+
+    r0 = irr_of(0.0)
+    if r0 is None:
+        return 0.0
+    if r0 >= target_irr:
+        return 0.0
+
+    r1 = irr_of(max_cash)
+    if r1 is None:
+        return 0.0
+    if r1 < target_irr:
+        # Even all cash doesn't reach target; take all
+        return max_cash
+
+    # Root find x such that irr(x) - target = 0
+    def f(x):
+        rr = irr_of(x)
+        if rr is None:
+            return -1e9
+        return rr - target_irr
+
+    try:
+        x = float(brentq(f, 0.0, max_cash))
+        return max(0.0, min(max_cash, x))
+    except Exception:
+        return 0.0
+
+
+def run_waterfall_period(
+    steps: pd.DataFrame,
+    istates: Dict[str, InvestorState],
+    period_date: date,
+    cash_available: float,
+    pref_rates: Dict[str, float],
+) -> Tuple[float, List[dict]]:
+    """
+    Returns (remaining_cash, allocations_rows)
+    allocations_rows: list of dict with step details + allocated amount
+    """
+    alloc_rows = []
+
+    # Accrue pref to this date for all investors in this waterfall using their per-investor pref rate
+    for pc, stt in istates.items():
+        rate = float(pref_rates.get(pc, 0.0))
+        accrue_pref_to_date(stt, period_date, rate)
+
+    remaining = float(cash_available)
+
+    for _, step in steps.iterrows():
+        pc = str(step["PropCode"])
+        state = str(step["vState"]).strip()
+        fx = float(step["FXRate"])
+        rate = float(step["nPercent_dec"])
+
+        if pc not in istates:
+            istates[pc] = InvestorState(propcode=pc)
+
+        stt = istates[pc]
+
+        allocated = 0.0
+
+        # NOTE: FXRate applies to this step’s share of *available in this step*
+        step_cash = remaining
+
+        if state == "Pref":
+            # Use nPercent as the pref rate for this PropCode (stored)
+            pref_rates[pc] = rate
+            # Pay pref due to this investor, but do not exceed step_cash * fx (if fx < 1)
+            cap = step_cash * fx if fx > 0 else 0.0
+            allocated = pay_pref(stt, period_date, cap)
+            remaining -= allocated
+
+        elif state == "Initial":
+            cap = step_cash * fx if fx > 0 else 0.0
+            allocated = pay_initial_capital(stt, period_date, cap)
+            remaining -= allocated
+
+        elif state == "Share":
+            cap = step_cash * fx if fx > 0 else 0.0
+            allocated = cap
+            if allocated > 0:
+                apply_distribution(stt, period_date, allocated)
+                remaining -= allocated
+
+        elif state == "Tag":
+            # Treat Tag as an explicit share using FXRate (lets your CSV control allocation precisely)
+            cap = step_cash * fx if fx > 0 else 0.0
+            allocated = cap
+            if allocated > 0:
+                apply_distribution(stt, period_date, allocated)
+                remaining -= allocated
+
+        elif state == "IRR":
+            # Allocate enough to hit target IRR = nPercent (decimal)
+            target = rate
+            cap = step_cash * fx if fx > 0 else 0.0
+            needed = irr_needed_distribution(stt, period_date, target, cap)
+            allocated = needed
+            if allocated > 0:
+                apply_distribution(stt, period_date, allocated)
+                remaining -= allocated
+
+        elif state in {"Def_Int", "Default"}:
+            # Placeholder: define precisely how these should compute (default interest/capital mechanics)
+            allocated = 0.0
+
+        else:
+            allocated = 0.0
+
+        alloc_rows.append({
+            "event_date": period_date,
+            "iOrder": int(step["iOrder"]),
+            "PropCode": pc,
+            "vState": state,
+            "FXRate": fx,
+            "nPercent": rate,
+            "Allocated": float(allocated),
+            "RemainingAfter": float(remaining),
+        })
+
+        if remaining <= 1e-9:
+            remaining = 0.0
+            break
+
+    # After allocations on this period, if 12/31 compound remaining current-year accruals
+    compound_if_year_end(istates, period_date)
+
+    return remaining, alloc_rows
+
+
+def run_waterfall(
+    wf_steps: pd.DataFrame,
+    vcode: str,
+    wf_name: str,
+    period_cash: pd.DataFrame,
+    initial_states: Optional[Dict[str, InvestorState]] = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    wf_name in {"CF_WF", "Cap_WF"}; matches vmisc
+    period_cash columns: event_date, cash_available
+    Returns:
+      allocations_df (step-by-step)
+      investor_summary_df
+    """
+    steps = wf_steps[(wf_steps["vcode"] == str(vcode)) & (wf_steps["vmisc"] == wf_name)].copy()
+    steps = steps.sort_values("iOrder")
+
+    if steps.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    istates = initial_states if initial_states is not None else {}
+    pref_rates = {}  # per investor pref rate for accrual
+
+    all_rows = []
+    for _, r in period_cash.sort_values("event_date").iterrows():
+        d = r["event_date"]
+        cash = float(r["cash_available"])
+        _rem, rows = run_waterfall_period(steps, istates, d, cash, pref_rates)
+        all_rows.extend(rows)
+
+    alloc_df = pd.DataFrame(all_rows)
+
+    # investor summary
+    inv_rows = []
+    for pc, stt in istates.items():
+        irr = xirr_safe(sorted(stt.cashflows, key=lambda t: t[0]))
+        inv_rows.append({
+            "PropCode": pc,
+            "EndingCapitalOutstanding": stt.capital_outstanding,
+            "UnpaidPrefCompounded": stt.pref_unpaid_compounded,
+            "AccruedPrefCurrentYear": stt.pref_accrued_current_year,
+            "XIRR": irr,
+            "TotalDistributions": sum(a for _, a in stt.cashflows if a > 0),
+            "TotalContributions": -sum(a for _, a in stt.cashflows if a < 0),
+        })
+
+    inv_sum = pd.DataFrame(inv_rows)
+    if not inv_sum.empty:
+        inv_sum = inv_sum.sort_values("PropCode")
+
+    return alloc_df, inv_sum
+
+# ============================================================
+# ACCOUNTING FEED -> SEED INVESTOR STATES
+# ============================================================
+
+def normalize_accounting_feed(acct: pd.DataFrame) -> pd.DataFrame:
+    """
+    Expected headers:
+      InvestmentID, InvestorID, EffectiveDate, TypeID, Amt, SubtypeUID,
+      MajorType, Typename, Partner, Capital, ROE_Income, YEAR, Qtr
+
+    Rules:
+      - Ignore rows where MajorType is missing (quarter-end system rows)
+      - Contribution has negative Amt
+      - Capital = 'Y' => capital contribution/distribution (Cap_WF history)
+        else => CF_WF history
+    """
+    a = acct.copy()
+    a.columns = [str(c).strip() for c in a.columns]
+
+    required = {"InvestmentID", "InvestorID", "EffectiveDate", "MajorType", "Amt", "Capital"}
+    missing = [c for c in required if c not in a.columns]
+    if missing:
+        raise ValueError(f"accounting_feed.csv missing columns: {missing}")
+
+    a["InvestmentID"] = a["InvestmentID"].astype(str).str.strip()
+    a["InvestorID"] = a["InvestorID"].astype(str).str.strip()
+    a["EffectiveDate"] = pd.to_datetime(a["EffectiveDate"], errors="coerce").dt.date
+
+    a["MajorType"] = a["MajorType"].fillna("").astype(str).str.strip()
+    a = a[a["MajorType"] != ""].copy()  # ignore system quarter-end rows
+
+    a["Amt"] = pd.to_numeric(a["Amt"], errors="coerce").fillna(0.0).astype(float)
+
+    a["Capital"] = a["Capital"].fillna("").astype(str).str.strip().str.upper()
+    a["is_capital"] = a["Capital"].eq("Y")
+
+    a["MajorTypeNorm"] = a["MajorType"].str.lower()
+    a["is_contribution"] = a["MajorTypeNorm"].str.contains("contrib")
+    a["is_distribution"] = a["MajorTypeNorm"].str.contains("distri")
+
+    # keep only rows that are explicitly contrib or distr
+    a = a[a["is_contribution"] | a["is_distribution"]].copy()
+
+    return a
+
+
+def build_investmentid_to_vcode(inv_map: pd.DataFrame) -> dict:
+    inv = inv_map.copy()
+    inv.columns = [str(c).strip() for c in inv.columns]
+    if "InvestmentID" not in inv.columns:
+        raise ValueError("investment_map.csv must include InvestmentID")
+    if "vcode" not in inv.columns and "vCode" in inv.columns:
+        inv = inv.rename(columns={"vCode": "vcode"})
+    if "vcode" not in inv.columns:
+        raise ValueError("investment_map.csv must include vcode (or vCode)")
+
+    inv["InvestmentID"] = inv["InvestmentID"].astype(str).str.strip()
+    inv["vcode"] = inv["vcode"].astype(str).str.strip()
+
+    # If duplicates exist, last wins (you can make this stricter later)
+    return dict(zip(inv["InvestmentID"], inv["vcode"]))
+
+
+def pref_rates_from_waterfall_steps(wf_steps: pd.DataFrame, vcode: str) -> dict:
+    """
+    Pull pref rate per PropCode from any 'Pref' step (CF_WF or Cap_WF).
+    If multiple Pref steps exist, we take the first by iOrder per vmisc.
+    """
+    s = wf_steps[wf_steps["vcode"].astype(str) == str(vcode)].copy()
+    if s.empty:
+        return {}
+    pref = s[s["vState"].astype(str).str.strip() == "Pref"].copy()
+    if pref.empty:
+        return {}
+    pref = pref.sort_values(["vmisc", "iOrder"])
+    # nPercent_dec already normalized in load_waterfalls()
+    out = {}
+    for pc, grp in pref.groupby("PropCode"):
+        out[str(pc)] = float(grp["nPercent_dec"].iloc[0])
+    return out
+
+
+def apply_accounting_event(
+    ist: InvestorState,
+    d: date,
+    amt: float,
+    is_capital: bool,
+    is_contribution: bool,
+    is_distribution: bool,
+):
+    """
+    Accounting feed already reflects historical CF_WF/Cap_WF results.
+    We replay it to establish:
+      - capital outstanding (from capital events)
+      - unpaid/compounded pref (by treating CF distributions as paying pref first)
+      - investor cashflows (for XIRR)
+
+    Sign conventions:
+      - Contribution has negative Amt (from user); distribution could be positive.
+    """
+    amt = float(amt)
+
+    # Normalize contribution / distribution amounts:
+    # Contribution should be negative cashflow for investor
+    if is_contribution:
+        cf = amt  # should already be negative
+        if cf > 0:
+            cf = -abs(cf)
+
+        ist.cashflows.append((d, cf))
+
+        if is_capital:
+            ist.capital_outstanding += abs(cf)  # increase capital outstanding
+        # if non-capital contribution exists, we do NOT change capital_outstanding (rare)
+
+        return
+
+    if is_distribution:
+        cf = amt
+        if cf < 0:
+            cf = abs(cf)  # ensure positive distribution
+
+        if is_capital:
+            # Capital distribution: return capital first, excess is just profit distribution
+            cap_return = min(cf, max(0.0, ist.capital_outstanding))
+            ist.capital_outstanding -= cap_return
+            ist.cashflows.append((d, cf))
+            return
+        else:
+            # CF distribution: pay pref first per your rule, remainder is residual distribution
+            remaining = cf
+
+            # Pay pref buckets FIRST but record as cashflow regardless
+            # pay_pref() already appends distribution cashflow for the pref component
+            paid_pref = pay_pref(ist, d, remaining)
+            remaining -= paid_pref
+
+            if remaining > 0:
+                apply_distribution(ist, d, remaining)
+
+            return
+
+
+def seed_states_from_accounting(
+    acct_raw: pd.DataFrame,
+    inv_map: pd.DataFrame,
+    wf_steps: pd.DataFrame,
+    target_vcode: str,
+) -> Dict[str, InvestorState]:
+    """
+    Build InvestorState per PropCode by replaying accounting events for the selected deal.
+
+    Mapping:
+      - InvestmentID (acct) -> InvestmentID (investment_map) -> vcode
+      - InvestorID (acct) -> PropCode (waterfalls)
+
+    Output:
+      states dict keyed by PropCode
+    """
+    acct = normalize_accounting_feed(acct_raw)
+
+    inv_to_vcode = build_investmentid_to_vcode(inv_map)
+
+    # Restrict to selected deal via InvestmentID->vcode
+    acct["vcode"] = acct["InvestmentID"].map(inv_to_vcode)
+    acct = acct[acct["vcode"].astype(str) == str(target_vcode)].copy()
+
+    # Pref rates per PropCode for accrual
+    pref_rates = pref_rates_from_waterfall_steps(wf_steps, target_vcode)
+
+    # Build states
+    states: Dict[str, InvestorState] = {}
+    acct = acct.sort_values(["EffectiveDate", "InvestorID"]).copy()
+
+    for _, r in acct.iterrows():
+        pc = str(r["InvestorID"])  # InvestorID == PropCode
+        d = r["EffectiveDate"]
+        if pd.isna(d):
+            continue
+
+        if pc not in states:
+            states[pc] = InvestorState(propcode=pc)
+            # start accrual clock at first event date
+            states[pc].last_accrual_date = d
+
+        stt = states[pc]
+
+        # Accrue pref up to this EffectiveDate before applying the cash event
+        rate = float(pref_rates.get(pc, 0.0))
+        accrue_pref_to_date(stt, d, rate)
+
+        apply_accounting_event(
+            ist=stt,
+            d=d,
+            amt=r["Amt"],
+            is_capital=bool(r["is_capital"]),
+            is_contribution=bool(r["is_contribution"]),
+            is_distribution=bool(r["is_distribution"]),
+        )
+
+        # If the event date is 12/31, compound AFTER payments that day
+        compound_if_year_end(states, d)
+
+    return states
+
 
 # ============================================================
 # ANNUAL AGGREGATION
@@ -1153,6 +1770,29 @@ cap_events_df = pd.DataFrame(capital_events)
 if not cap_events_df.empty:
     cap_events_df["Year"] = cap_events_df["event_date"].apply(lambda d: pd.Timestamp(d).year).astype("Int64")
 
+# ============================================================
+# Build period cash for CF and Capital waterfalls
+# ============================================================
+
+# Load waterfalls
+wf_steps = load_waterfalls(wf)
+
+# Monthly CF cash = monthly FAD from DISPLAY version (already zeroed post-sale for reporting)
+fad_monthly = cashflows_monthly_fad(fc_deal_display)
+cf_period_cash = fad_monthly.rename(columns={"fad": "cash_available"}).copy()
+
+# Monthly capital cash = capital events by month-end
+cap_period_cash = pd.DataFrame(columns=["event_date", "cash_available"])
+if cap_events_df is not None and not cap_events_df.empty:
+    ce = cap_events_df.copy()
+    ce["event_date"] = pd.to_datetime(ce["event_date"]).dt.date
+    ce["event_date"] = ce["event_date"].apply(month_end)
+    cap_period_cash = ce.groupby("event_date", as_index=False)["amount"].sum().rename(columns={"amount": "cash_available"})
+
+# Ensure we only run through sale month for distributions display (your rule)
+cf_period_cash = cf_period_cash[cf_period_cash["event_date"] <= sale_me].copy()
+cap_period_cash = cap_period_cash[cap_period_cash["event_date"] <= sale_me].copy()
+
 
 # ============================================================
 # DISPLAY ZEROES AFTER SALE DATE (operating + debt service lines)
@@ -1194,6 +1834,79 @@ if debug_msgs:
     with st.expander("Diagnostics"):
         for m in debug_msgs:
             st.write("- " + m)
+st.divider()
+st.header("Waterfalls & Investor Returns")
+
+# Seed from accounting history for this deal (InvestmentID -> vcode, InvestorID -> PropCode)
+seed_states = seed_states_from_accounting(
+    acct_raw=acct,      # accounting_feed df
+    inv_map=inv,        # investment_map df
+    wf_steps=wf_steps,  # loaded waterfalls df (after load_waterfalls)
+    target_vcode=deal_vcode
+)
+
+# --- CF Waterfall ---
+st.subheader("Cash Flow Waterfall (CF_WF)")
+cf_alloc, cf_investors = run_waterfall(
+    wf_steps=wf_steps,
+    vcode=deal_vcode,
+    wf_name="CF_WF",
+    period_cash=cf_period_cash,
+    initial_states=seed_states,
+)
+
+
+if cf_alloc.empty:
+    st.info("No CF_WF steps found for this deal in waterfalls.csv.")
+else:
+    with st.expander("CF_WF Step-by-Step Allocations"):
+        df = cf_alloc.copy()
+        df["Allocated"] = df["Allocated"].map(lambda x: f"{x:,.0f}")
+        df["RemainingAfter"] = df["RemainingAfter"].map(lambda x: f"{x:,.0f}")
+        st.dataframe(df, use_container_width=True)
+
+    st.markdown("**CF_WF Investor Summary**")
+    if not cf_investors.empty:
+        out = cf_investors.copy()
+        out["EndingCapitalOutstanding"] = out["EndingCapitalOutstanding"].map(lambda x: f"{x:,.0f}")
+        out["UnpaidPrefCompounded"] = out["UnpaidPrefCompounded"].map(lambda x: f"{x:,.0f}")
+        out["AccruedPrefCurrentYear"] = out["AccruedPrefCurrentYear"].map(lambda x: f"{x:,.0f}")
+        out["TotalDistributions"] = out["TotalDistributions"].map(lambda x: f"{x:,.0f}")
+        out["TotalContributions"] = out["TotalContributions"].map(lambda x: f"{x:,.0f}")
+        out["XIRR"] = out["XIRR"].map(lambda r: "" if r is None else f"{r*100:,.2f}%")
+        st.dataframe(out, use_container_width=True)
+
+
+# --- Capital Waterfall ---
+st.subheader("Capital Waterfall (Cap_WF)")
+cap_alloc, cap_investors = run_waterfall(
+    wf_steps=wf_steps,
+    vcode=deal_vcode,
+    wf_name="Cap_WF",
+    period_cash=cap_period_cash,
+    initial_states=seed_states,  # same dict continues forward
+)
+
+
+if cap_alloc.empty:
+    st.info("No Cap_WF steps found for this deal in waterfalls.csv.")
+else:
+    with st.expander("Cap_WF Step-by-Step Allocations"):
+        df = cap_alloc.copy()
+        df["Allocated"] = df["Allocated"].map(lambda x: f"{x:,.0f}")
+        df["RemainingAfter"] = df["RemainingAfter"].map(lambda x: f"{x:,.0f}")
+        st.dataframe(df, use_container_width=True)
+
+    st.markdown("**Cap_WF Investor Summary**")
+    if not cap_investors.empty:
+        out = cap_investors.copy()
+        out["EndingCapitalOutstanding"] = out["EndingCapitalOutstanding"].map(lambda x: f"{x:,.0f}")
+        out["UnpaidPrefCompounded"] = out["UnpaidPrefCompounded"].map(lambda x: f"{x:,.0f}")
+        out["AccruedPrefCurrentYear"] = out["AccruedPrefCurrentYear"].map(lambda x: f"{x:,.0f}")
+        out["TotalDistributions"] = out["TotalDistributions"].map(lambda x: f"{x:,.0f}")
+        out["TotalContributions"] = out["TotalContributions"].map(lambda x: f"{x:,.0f}")
+        out["XIRR"] = out["XIRR"].map(lambda r: "" if r is None else f"{r*100:,.2f}%")
+        st.dataframe(out, use_container_width=True)
 
 
 # ============================================================
@@ -1302,3 +2015,4 @@ with st.expander("Capital Events (Proceeds available to Capital Waterfall)"):
         st.json(sale_pretty)
 
 st.success("Report generated successfully.")
+
