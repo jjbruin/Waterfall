@@ -1,14 +1,14 @@
 # app.py
-# Waterfall + XIRR Forecast
-# Step: model debt service (interest/principal/balances) for all existing + planned loans
+# Waterfall + XIRR Forecast — Loan Modeling + Deal Header
 #
-# Includes:
-#  - Modeled loan schedules (existing loans from MRI_Loans.csv)
-#  - Optional planned second mortgage sizing details (MRI_Supp.csv + MRI_Val.csv)
-#  - Replaces forecast interest/principal lines with modeled values
-#  - Annual aggregation table formatted (years across columns, right-justified)
-#  - Loan schedule display formatted with commas + rate as % (2 decimals)
-#  - Dropdown to display planned loan sizing math for deals with MRI_Supp entries
+# Updates in this version:
+#  1) "Select Deal" dropdown now drives from Investment_Name (investment_map.csv),
+#     while internally we use vcode (deal_vcode).
+#  2) Displays an organized, visually appealing deal header above the forecast:
+#       vcode, InvestmentID, Operating_Partner, Asset_Type, Total_Units, Size_Sqf,
+#       Acquisition_Date, Lifecycle
+#  3) Planned second mortgage sizing detail appears ONLY when the selected deal has MRI_Supp.
+#  4) Loan schedule display formatted: commas + rate as % with 2 decimals.
 #
 # Rate conventions:
 #  - Variable base indices:
@@ -21,10 +21,6 @@
 #  - Variable loans: assume NO amortization (interest-only for entire term)
 #  - ACT/360 -> ACT/365 conversion for amort/payment math:
 #       r_annual_365 = r_annual_360 * 365/360
-#
-# NOTE: This file focuses on operating forecast + loan modeling and planned loan sizing debug.
-#       Waterfall execution and XIRR integration are built elsewhere in your app; this is the
-#       correctly functioning debt service engine + reporting shell.
 
 from dataclasses import dataclass
 from datetime import date
@@ -100,9 +96,6 @@ def add_months(d: date, months: int) -> date:
 
 
 def month_ends_between(start_d: date, end_d: date) -> List[date]:
-    """
-    Return month-ends from month_end(start_d) through month_end(end_d), inclusive.
-    """
     start_me = month_end(start_d)
     end_me = month_end(end_d)
     if end_me < start_me:
@@ -112,7 +105,6 @@ def month_ends_between(start_d: date, end_d: date) -> List[date]:
 
 
 def annual_360_to_365(r_annual: float) -> float:
-    # r_annual in decimal form (e.g., 0.06 for 6%)
     return r_annual * (365.0 / 360.0)
 
 
@@ -136,7 +128,7 @@ def xirr(cfs: List[Tuple[date, float]]) -> float:
 # ============================================================
 def load_coa(df: pd.DataFrame) -> pd.DataFrame:
     """
-    coa headers provided:
+    coa headers:
       vcode, vdescription, vtype, iNOI, vMisc, vAccountType
     vcode == vAccount in forecast_feed and TypeID in accounting_feed
     """
@@ -208,10 +200,10 @@ def load_forecast(df: pd.DataFrame, coa: pd.DataFrame, pro_yr_base: int) -> pd.D
 
 def load_mri_loans(df: pd.DataFrame) -> pd.DataFrame:
     """
-    MRI_Loans headers:
-      vCode, LoanID, vPropertyName, mOrigLoanAmt, iAmortTerm, mNominalPenalty, iLoanTerm,
-      vIntType, vIndex, nRate, vSpread, nFloor, vIntRatereset, ..., dtEvent
-    dtEvent contains loan maturity date
+    MRI_Loans headers include:
+      vCode, LoanID, mOrigLoanAmt, iAmortTerm, mNominalPenalty, iLoanTerm,
+      vIntType, vIndex, nRate, vSpread, nFloor, vIntRatereset, dtEvent
+    dtEvent contains loan maturity date.
     """
     d = df.copy()
     d.columns = [str(c).strip() for c in d.columns]
@@ -237,7 +229,6 @@ def load_mri_loans(df: pd.DataFrame) -> pd.DataFrame:
 
     d["vIntType"] = d.get("vIntType", "").fillna("").astype(str).str.strip()
     d["vIndex"] = d.get("vIndex", "").fillna("").astype(str).str.strip().str.upper()
-
     return d
 
 
@@ -398,7 +389,6 @@ def amortize_monthly_schedule(loan: Loan, schedule_start: date, schedule_end: da
             payment = level_payment
             principal = max(0.0, payment - interest)
 
-            # last-payment cleanup
             if principal > bal:
                 principal = bal
                 payment = interest + principal
@@ -409,7 +399,7 @@ def amortize_monthly_schedule(loan: Loan, schedule_start: date, schedule_end: da
             "vcode": loan.vcode,
             "LoanID": loan.loan_id,
             "event_date": dte,
-            "rate": float(r_annual),  # store 365-basis decimal for display consistency
+            "rate": float(r_annual),  # store 365-basis decimal for display
             "interest": float(interest),
             "principal": float(principal),
             "payment": float(payment),
@@ -478,7 +468,9 @@ def existing_debt_service_12m_after(fc_deal: pd.DataFrame, orig_date: date) -> f
     return float(abs(ds))
 
 
-def ds_first_12_months_for_principal(principal: float, rate: float, term_years: int, amort_years: int, io_years: float, orig_date: date) -> float:
+def ds_first_12_months_for_principal(
+    principal: float, rate: float, term_years: int, amort_years: int, io_years: float, orig_date: date
+) -> float:
     r = rate / 100.0 if rate > 1.0 else rate
     r_m = r / 12.0
 
@@ -584,32 +576,6 @@ def size_planned_second_mortgage(inv: pd.DataFrame, fc_deal: pd.DataFrame, mri_s
     return float(new_loan_amt), dbg
 
 
-def planned_loan_debug_table(inv: pd.DataFrame, fc: pd.DataFrame, mri_supp: pd.DataFrame, mri_val: pd.DataFrame) -> pd.DataFrame:
-    if mri_supp is None or mri_supp.empty:
-        return pd.DataFrame()
-
-    ms = mri_supp.copy()
-    ms.columns = [str(c).strip() for c in ms.columns]
-    if "vCode" not in ms.columns and "vcode" in ms.columns:
-        ms = ms.rename(columns={"vcode": "vCode"})
-    ms["vCode"] = ms["vCode"].astype(str)
-
-    out_rows = []
-    for vcode in sorted(ms["vCode"].dropna().unique()):
-        fc_deal = fc[fc["vcode"].astype(str) == str(vcode)].copy()
-        if fc_deal.empty:
-            continue
-
-        row = ms[ms["vCode"] == str(vcode)].iloc[0]
-        try:
-            new_amt, dbg = size_planned_second_mortgage(inv, fc_deal, row, mri_val)
-            out_rows.append({"vCode": str(vcode), **dbg})
-        except Exception as e:
-            out_rows.append({"vCode": str(vcode), "Error": str(e)})
-
-    return pd.DataFrame(out_rows)
-
-
 # ============================================================
 # ANNUAL AGGREGATION
 # ============================================================
@@ -689,7 +655,6 @@ def style_annual_table(df: pd.DataFrame) -> pd.io.formats.style.Styler:
             subset=pd.IndexSlice[["Debt Service Coverage Ratio"], :]
         )
 
-    # Uniform column widths + right-aligned numbers
     styler = styler.set_table_styles(
         [
             {"selector": "th", "props": [("text-align", "left"), ("width", "220px")]},
@@ -698,18 +663,15 @@ def style_annual_table(df: pd.DataFrame) -> pd.io.formats.style.Styler:
         overwrite=False,
     )
 
-    # Underline expenses
     if "Expenses" in df.index:
         styler = styler.set_properties(subset=pd.IndexSlice[["Expenses"], :], **{"text-decoration": "underline"})
 
-    # Double line under NOI
     if "NOI" in df.index:
         styler = styler.set_properties(
             subset=pd.IndexSlice[["NOI"], :],
             **{"border-bottom": "3px double black", "font-weight": "bold"}
         )
 
-    # Line above FAD (last line before Funds Available), and bold FAD
     if "Funds Available for Distribution" in df.index:
         fad_idx = df.index.get_loc("Funds Available for Distribution")
         if fad_idx > 0:
@@ -717,7 +679,6 @@ def style_annual_table(df: pd.DataFrame) -> pd.io.formats.style.Styler:
             styler = styler.set_properties(subset=pd.IndexSlice[[prev_row], :], **{"border-bottom": "2px solid black"})
         styler = styler.set_properties(subset=pd.IndexSlice[["Funds Available for Distribution"], :], **{"font-weight": "bold"})
 
-    # Light line above DSCR
     if "Debt Service Coverage Ratio" in df.index:
         styler = styler.set_properties(subset=pd.IndexSlice[["Debt Service Coverage Ratio"], :], **{"border-top": "1px solid #999"})
 
@@ -747,7 +708,7 @@ with st.sidebar:
     if mode == "Local folder":
         folder = st.text_input("Data folder path", placeholder=r"C:\Path\To\Data")
         st.caption("Required: investment_map.csv, waterfalls.csv, coa.csv, accounting_feed.csv, forecast_feed.csv")
-        st.caption("Debt modeling: MRI_Loans.csv (recommended). Planned loan sizing: MRI_Supp.csv + MRI_Val.csv (optional).")
+        st.caption("Optional: MRI_Loans.csv, MRI_Supp.csv, MRI_Val.csv")
     else:
         uploads["investment_map"] = st.file_uploader("investment_map.csv", type="csv")
         uploads["waterfalls"] = st.file_uploader("waterfalls.csv", type="csv")
@@ -756,10 +717,10 @@ with st.sidebar:
         uploads["forecast_feed"] = st.file_uploader("forecast_feed.csv", type="csv")
 
         st.divider()
-        st.subheader("Debt Modeling Inputs")
+        st.subheader("Optional Inputs")
         uploads["MRI_Loans"] = st.file_uploader("MRI_Loans.csv (existing loans)", type="csv")
         uploads["MRI_Supp"] = st.file_uploader("MRI_Supp.csv (planned 2nd mortgages)", type="csv")
-        uploads["MRI_Val"] = st.file_uploader("MRI_Val.csv (cap rates for sizing)", type="csv")
+        uploads["MRI_Val"] = st.file_uploader("MRI_Val.csv (cap rates)", type="csv")
 
     st.divider()
     st.header("Report Settings")
@@ -814,18 +775,87 @@ def load_inputs():
 
 inv, wf, acct, fc, mri_loans_raw, mri_supp, mri_val = load_inputs()
 
-deal = st.selectbox("Select Deal", sorted(inv["vcode"].dropna().unique().tolist()))
+# --- Select by Investment_Name (drives vcode internally) ---
+inv_disp = inv.copy()
+if "Investment_Name" not in inv_disp.columns:
+    st.error("investment_map.csv must include column: Investment_Name")
+    st.stop()
+
+inv_disp["Investment_Name"] = inv_disp["Investment_Name"].fillna("").astype(str)
+inv_disp["vcode"] = inv_disp["vcode"].astype(str)
+
+name_counts = inv_disp["Investment_Name"].value_counts()
+inv_disp["DealLabel"] = inv_disp.apply(
+    lambda r: f"{r['Investment_Name']} ({r['vcode']})" if name_counts.get(r["Investment_Name"], 0) > 1 else r["Investment_Name"],
+    axis=1
+)
+
+labels_sorted = sorted(inv_disp["DealLabel"].dropna().unique().tolist(), key=lambda x: x.lower())
+selected_label = st.selectbox("Select Deal", labels_sorted)
+
+selected_row = inv_disp[inv_disp["DealLabel"] == selected_label].iloc[0]
+deal_vcode = str(selected_row["vcode"])
 
 if not st.button("Run Report", type="primary"):
     st.stop()
 
 
+# --- Deal Header ---
+def fmt_date(x):
+    try:
+        return pd.to_datetime(x).date().isoformat()
+    except Exception:
+        return "—"
+
+
+def fmt_int(x):
+    try:
+        return f"{int(float(x)):,}"
+    except Exception:
+        return "—"
+
+
+def fmt_num(x):
+    try:
+        return f"{float(x):,.0f}"
+    except Exception:
+        return "—"
+
+
+st.markdown("### Deal Summary")
+st.markdown(
+    f"""
+    <div style="padding:14px 16px;border:1px solid #e6e6e6;border-radius:12px;background:#fafafa;">
+      <div style="font-size:20px;font-weight:700;line-height:1.2;">{selected_row.get('Investment_Name','')}</div>
+      <div style="margin-top:6px;color:#555;">
+        <span style="margin-right:14px;"><b>vCode:</b> {deal_vcode}</span>
+        <span style="margin-right:14px;"><b>InvestmentID:</b> {selected_row.get('InvestmentID','')}</span>
+        <span style="margin-right:14px;"><b>Operating Partner:</b> {selected_row.get('Operating_Partner','')}</span>
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Asset Type", selected_row.get("Asset_Type", "—") or "—")
+c2.metric("Total Units", fmt_int(selected_row.get("Total_Units", "")))
+c3.metric("Size (Sqf)", fmt_num(selected_row.get("Size_Sqf", "")))
+c4.metric("Lifecycle", selected_row.get("Lifecycle", "—") or "—")
+
+c5, c6, c7, c8 = st.columns(4)
+c5.metric("Acquisition Date", fmt_date(selected_row.get("Acquisition_Date", "")))
+c6.metric("", "")
+c7.metric("", "")
+c8.metric("", "")
+
+
 # ============================================================
 # Model window from forecast
 # ============================================================
-fc_deal_base = fc[fc["vcode"].astype(str) == str(deal)].copy()
+fc_deal_base = fc[fc["vcode"].astype(str) == str(deal_vcode)].copy()
 if fc_deal_base.empty:
-    st.error(f"No forecast rows found for deal {deal}.")
+    st.error(f"No forecast rows found for selected deal vCode {deal_vcode}.")
     st.stop()
 
 model_start = min(fc_deal_base["event_date"])
@@ -841,7 +871,7 @@ loans: List[Loan] = []
 
 if mri_loans_raw is not None and not mri_loans_raw.empty:
     mri_loans = load_mri_loans(mri_loans_raw)
-    mri_loans = mri_loans[mri_loans["vCode"].astype(str) == str(deal)].copy()
+    mri_loans = mri_loans[mri_loans["vCode"].astype(str) == str(deal_vcode)].copy()
     loans.extend(build_loans_from_mri_loans(mri_loans))
 else:
     debug_msgs.append("MRI_Loans.csv not provided; existing loans will NOT be modeled.")
@@ -875,7 +905,7 @@ if not loan_sched.empty:
 
         if intr != 0:
             add_rows.append({
-                "vcode": str(deal),
+                "vcode": str(deal_vcode),
                 "event_date": dte,
                 "vAccount": pd.Series([7030]).astype("Int64").iloc[0],
                 "mAmount": intr,
@@ -887,7 +917,7 @@ if not loan_sched.empty:
             })
         if prin != 0:
             add_rows.append({
-                "vcode": str(deal),
+                "vcode": str(deal_vcode),
                 "event_date": dte,
                 "vAccount": pd.Series([7060]).astype("Int64").iloc[0],
                 "mAmount": prin,
@@ -954,7 +984,7 @@ if not loan_sched.empty:
 
 
 # ============================================================
-# Planned loan sizing detail (ONLY when selected deal has MRI_Supp)
+# Planned second mortgage sizing detail (ONLY when selected deal has MRI_Supp)
 # ============================================================
 if mri_supp is not None and not mri_supp.empty:
     ms = mri_supp.copy()
@@ -963,7 +993,7 @@ if mri_supp is not None and not mri_supp.empty:
         ms = ms.rename(columns={"vcode": "vCode"})
     ms["vCode"] = ms["vCode"].astype(str)
 
-    has_planned = (ms["vCode"] == str(deal)).any()
+    has_planned = (ms["vCode"] == str(deal_vcode)).any()
 
     if has_planned:
         st.subheader("Planned Second Mortgage — Sizing Detail (Selected Deal)")
@@ -971,11 +1001,11 @@ if mri_supp is not None and not mri_supp.empty:
         if mri_val is None or mri_val.empty:
             st.info("Upload/provide MRI_Val.csv to compute cap-rate based sizing details.")
         else:
-            fc_sel = fc[fc["vcode"].astype(str) == str(deal)].copy()
-            supp_row = ms[ms["vCode"] == str(deal)].iloc[0]
+            fc_sel = fc[fc["vcode"].astype(str) == str(deal_vcode)].copy()
+            supp_row = ms[ms["vCode"] == str(deal_vcode)].iloc[0]
 
             try:
-                new_amt, dbg = size_planned_second_mortgage(inv, fc_sel, supp_row, mri_val)
+                _new_amt, dbg = size_planned_second_mortgage(inv, fc_sel, supp_row, mri_val)
 
                 def fmt_money(x):
                     try:
@@ -1004,6 +1034,6 @@ if mri_supp is not None and not mri_supp.empty:
                 st.json(pretty)
 
             except Exception as e:
-                st.error(f"Could not compute planned loan sizing for {deal}: {e}")
+                st.error(f"Could not compute planned loan sizing for vCode {deal_vcode}: {e}")
 
 st.success("Report generated successfully.")
