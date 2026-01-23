@@ -113,6 +113,9 @@ def month_ends_between(start_d: date, end_d: date) -> List[date]:
     rng = pd.date_range(start=start_me, end=end_me, freq="M")
     return [x.date() for x in rng]
 
+def annual_360_to_365(r_annual: float) -> float:
+    # r_annual is a decimal annual rate (e.g., 0.06 for 6%)
+    return r_annual * (365.0 / 360.0)
 
 # ============================================================
 # XIRR
@@ -335,8 +338,10 @@ def amortize_monthly_schedule(loan: Loan, schedule_start: date, schedule_end: da
     if not all_dates:
         return pd.DataFrame()
 
-    r_annual = loan.rate_for_month()
-    r_m = r_annual * (30.0 / 360.0)
+   r_annual_360 = loan.rate_for_month()
+   r_annual = annual_360_to_365(r_annual_360)   # convert to 365-basis annual
+   r_m = r_annual / 12.0
+
 
     term_m = int(loan.loan_term_m) if loan.loan_term_m and loan.loan_term_m > 0 else len(all_dates)
     amort_m = int(loan.amort_term_m) if loan.amort_term_m and loan.amort_term_m > 0 else term_m
