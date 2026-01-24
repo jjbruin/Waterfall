@@ -1777,6 +1777,20 @@ if not cap_events_df.empty:
 # Load waterfalls
 wf_steps = load_waterfalls(wf)
 
+
+# ============================================================
+# DISPLAY ZEROES AFTER SALE DATE (operating + debt service lines)
+# But keep full modeled data for NOI-forward already computed above.
+# ============================================================
+fc_deal_display = fc_deal_modeled.copy()
+after_sale_mask = fc_deal_display["event_date"] > sale_me
+
+# Zero mAmount_norm after sale for operating and debt-related accounts.
+# (We keep the rows but set to 0 so the annual table shows zeros post-sale.)
+fc_deal_display.loc[after_sale_mask, "mAmount_norm"] = 0.0
+
+
+
 # Monthly CF cash = monthly FAD from DISPLAY version (already zeroed post-sale for reporting)
 fad_monthly = cashflows_monthly_fad(fc_deal_display)
 cf_period_cash = fad_monthly.rename(columns={"fad": "cash_available"}).copy()
@@ -1792,18 +1806,6 @@ if cap_events_df is not None and not cap_events_df.empty:
 # Ensure we only run through sale month for distributions display (your rule)
 cf_period_cash = cf_period_cash[cf_period_cash["event_date"] <= sale_me].copy()
 cap_period_cash = cap_period_cash[cap_period_cash["event_date"] <= sale_me].copy()
-
-
-# ============================================================
-# DISPLAY ZEROES AFTER SALE DATE (operating + debt service lines)
-# But keep full modeled data for NOI-forward already computed above.
-# ============================================================
-fc_deal_display = fc_deal_modeled.copy()
-after_sale_mask = fc_deal_display["event_date"] > sale_me
-
-# Zero mAmount_norm after sale for operating and debt-related accounts.
-# (We keep the rows but set to 0 so the annual table shows zeros post-sale.)
-fc_deal_display.loc[after_sale_mask, "mAmount_norm"] = 0.0
 
 
 # ============================================================
