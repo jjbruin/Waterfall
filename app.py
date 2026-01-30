@@ -655,6 +655,8 @@ remaining_cash_at_sale, _ = get_sale_period_total_cash(cash_schedule, sale_me)
 
 # Add remaining cash to the CF waterfall at sale date
 if remaining_cash_at_sale > 0:
+    # Ensure date comparison works correctly
+    cf_period_cash['event_date'] = pd.to_datetime(cf_period_cash['event_date']).dt.date
     sale_mask = cf_period_cash['event_date'] == sale_me
     if sale_mask.any():
         cf_period_cash.loc[sale_mask, 'cash_available'] += remaining_cash_at_sale

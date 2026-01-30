@@ -364,7 +364,12 @@ def get_sale_period_total_cash(
     sale_date
 ) -> Tuple[float, float]:
     """
-    Get total cash available at sale (sale proceeds + remaining cash)
+    Get total cash available at sale (ending cash reserves to distribute)
+    
+    At sale, all accumulated cash reserves should be distributed along with
+    the final period's FAD. This returns the ending_cash which represents
+    the cash reserves that have accumulated (beginning cash + capital calls
+    - deficits covered).
     
     Args:
         cash_schedule: Cash flow schedule
@@ -376,17 +381,25 @@ def get_sale_period_total_cash(
     if cash_schedule.empty:
         return 0.0, 0.0
     
-    # Find the sale period
-    sale_periods = cash_schedule[cash_schedule['event_date'] == sale_date]
+    # Convert sale_date to match schedule date type
+    schedule = cash_schedule.copy()
+    schedule['event_date'] = pd.to_datetime(schedule['event_date']).dt.date
     
-    if sale_periods.empty:
-        # Use last period
-        last_idx = cash_schedule.index[-1]
-        ending_cash = cash_schedule.loc[last_idx, 'ending_cash']
-    else:
-        ending_cash = sale_periods['ending_cash'].iloc[-1]
+    if hasattr(sale_date, 'date'):
+        sale_date = sale_date.date()
     
-    remaining_cash = max(0, ending_cash)  # Only positive cash adds to distribution
+    # Find the sale period or last period before/at sale
+    schedule_up_to_sale = schedule[schedule['event_date'] <= sale_date]
+    
+    if schedule_up_to_sale.empty:
+        return 0.0, 0.0
+    
+    # Get ending cash from the last period up to (and including) sale date
+    # This represents accumulated reserves to be distributed at sale
+    last_idx = schedule_up_to_sale.index[-1]
+    ending_cash = float(schedule_up_to_sale.loc[last_idx, 'ending_cash'])
+    
+    remaining_cash = max(0.0, ending_cash)  # Only positive cash adds to distribution
     
     return remaining_cash, remaining_cash
 
