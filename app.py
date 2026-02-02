@@ -2747,6 +2747,316 @@ if tenants_raw is not None and not tenants_raw.empty:
             # Legend
             st.caption("⚠️ Yellow highlight indicates lease expiring within 2 years of current date")
 
+            # ============================================================
+            # LEASE ROLLOVER REPORT (inside Tenant Roster expander context)
+            # ============================================================
+            st.markdown("---")
+            st.subheader("Lease Rollover Report")
+
+            from datetime import datetime
+            current_date = datetime.now()
+            two_years_out = pd.Timestamp(current_date) + pd.DateOffset(years=2)
+
+            # Get property info from investment_map
+            prop_info = inv[inv['vcode'] == str(deal_vcode)].iloc[0] if not inv[inv['vcode'] == str(deal_vcode)].empty else {}
+            prop_name = prop_info.get('Investment_Name', 'Unknown')
+            partner = prop_info.get('Operating_Partner', 'N/A')
+            location = f"{prop_info.get('City', '')}, {prop_info.get('State', '')}".strip(', ') or 'N/A'
+            asset_type = prop_info.get('Asset_Type', 'N/A')
+            strategy = prop_info.get('Lifecycle', 'N/A')
+            acq_date = prop_info.get('Acquisition_Date', 'N/A')
+            property_gla = clean_number(prop_info.get('Size_Sqf', 0)) or total_rentable_sf
+
+            # Calculate metrics
+            total_occupied_sf_rpt = occupied['SF_Leased'].sum()
+            total_annual_rent_rpt = occupied['Annual_Rent'].sum()
+            current_occupancy = total_occupied_sf_rpt / property_gla if property_gla > 0 else 0
+            property_avg_rpsf = total_annual_rent_rpt / total_occupied_sf_rpt if total_occupied_sf_rpt > 0 else 0
+
+            # 2-Year Lease Maturity Exposure (non-vacant, expiring within 2 years)
+            expiring_2yr = deal_tenants[
+                (deal_tenants['Expiring_Soon']) &
+                (~deal_tenants['Is_Vacant'])
+            ]
+            exposure_gla = expiring_2yr['SF_Leased'].sum()
+            exposure_abr = expiring_2yr['Annual_Rent'].sum()
+            exposure_gla_pct = exposure_gla / property_gla if property_gla > 0 else 0
+            exposure_abr_pct = exposure_abr / total_annual_rent_rpt if total_annual_rent_rpt > 0 else 0
+            exposure_rpsf = exposure_abr / exposure_gla if exposure_gla > 0 else 0
+
+            # Vacancy calculations
+            vacant_tenants = deal_tenants[deal_tenants['Is_Vacant']]
+            total_vacant_gla = vacant_tenants['SF_Leased'].sum()
+            vacancy_loss = total_vacant_gla * property_avg_rpsf
+
+            # Calculate remaining years for each tenant
+            deal_tenants['Remain_Years'] = deal_tenants['Lease_End'].apply(
+                lambda x: max(0, (x - pd.Timestamp(current_date)).days / 365) if pd.notna(x) else 0
+            )
+
+            # Group by lease end year for maturity profile
+            deal_tenants['End_Year'] = deal_tenants.apply(
+                lambda r: 'Vacant' if r['Is_Vacant'] else (str(r['Lease_End'].year) if pd.notna(r['Lease_End']) else 'Unknown'),
+                axis=1
+            )
+
+            maturity_by_year = deal_tenants.groupby('End_Year').agg({
+                'SF_Leased': 'sum',
+                'Annual_Rent': 'sum'
+            }).reset_index()
+            maturity_by_year['Avg_RPSF'] = maturity_by_year.apply(
+                lambda r: r['Annual_Rent'] / r['SF_Leased'] if r['SF_Leased'] > 0 else 0, axis=1
+            )
+            maturity_by_year['Pct_Revenue'] = maturity_by_year['Annual_Rent'] / total_annual_rent_rpt if total_annual_rent_rpt > 0 else 0
+
+            # Top 10 tenants by revenue (non-vacant)
+            top_10 = occupied.nlargest(10, 'Annual_Rent').copy()
+            top_10['GLA_Pct'] = top_10['SF_Leased'] / property_gla if property_gla > 0 else 0
+            top_10['Rent_Pct'] = top_10['Annual_Rent'] / total_annual_rent_rpt if total_annual_rent_rpt > 0 else 0
+            top_10['Remain_Years'] = top_10['Lease_End'].apply(
+                lambda x: max(0, (x - pd.Timestamp(current_date)).days / 365) if pd.notna(x) else 0
+            )
+
+            # Near term maturities (within 2 years, non-vacant, sorted by end date)
+            near_term = expiring_2yr.sort_values('Lease_End').head(10).copy()
+            near_term['Remain_Years'] = near_term['Lease_End'].apply(
+                lambda x: max(0, (x - pd.Timestamp(current_date)).days / 365) if pd.notna(x) else 0
+            )
+
+            # Vacancies by size
+            vacancies_by_size = vacant_tenants.nlargest(10, 'SF_Leased')[['Tenant Name', 'SF_Leased']].copy()
+
+            # --- Display Header Section ---
+            col_left, col_right = st.columns(2)
+            with col_left:
+                st.markdown(f"""
+                **Partner:** {partner}
+                **Location:** {location}
+                **Asset Type:** {asset_type}
+                **Strategy:** {strategy}
+                **Acquisition Date:** {acq_date}
+                **GLA:** {property_gla:,.0f} sf
+                """)
+            with col_right:
+                st.markdown(f"**Current Occupancy:** {current_occupancy:.1%}")
+                st.markdown("**2 Year Lease Maturity Exposure:**")
+                st.markdown(f"- GLA: {exposure_gla:,.0f} ({exposure_gla_pct:.1%})")
+                st.markdown(f"- ABR: ${exposure_abr:,.0f} ({exposure_abr_pct:.1%})")
+                st.markdown(f"- ABR/SF: ${exposure_rpsf:.2f}")
+                st.markdown(f"**Property Avg ABR/SF:** ${property_avg_rpsf:.2f}")
+
+            # --- Lease Maturity Profile Chart ---
+            st.markdown("#### Lease Maturity Profile")
+
+            # Prepare chart data - include all years in 10-year forecast
+            chart_data = maturity_by_year.copy()
+            chart_data = chart_data[chart_data['End_Year'] != 'Vacant']  # Exclude vacant for chart
+
+            # Create full 10-year range from current year
+            current_year = current_date.year
+            all_years = [str(y) for y in range(current_year, current_year + 11)]
+
+            # Build complete chart dataframe with all years
+            chart_rows = []
+            for year in all_years:
+                year_data = chart_data[chart_data['End_Year'] == year]
+                if not year_data.empty:
+                    chart_rows.append({
+                        'Year': year,
+                        'Annual Rent': year_data['Annual_Rent'].iloc[0],
+                        'Avg RPSF': year_data['Avg_RPSF'].iloc[0],
+                        '% of Rent': year_data['Pct_Revenue'].iloc[0] * 100
+                    })
+                else:
+                    chart_rows.append({
+                        'Year': year,
+                        'Annual Rent': 0,
+                        'Avg RPSF': 0,
+                        '% of Rent': 0
+                    })
+
+            chart_df = pd.DataFrame(chart_rows)
+
+            import altair as alt
+
+            # Create layered chart
+            base = alt.Chart(chart_df).encode(
+                x=alt.X('Year:N', title='Lease End Year', sort=all_years)
+            )
+
+            bars = base.mark_bar(color='#4472C4').encode(
+                y=alt.Y('Annual Rent:Q', title='Annual Rent ($)')
+            )
+
+            max_rpsf = chart_df['Avg RPSF'].max()
+            line = base.mark_line(color='#ED7D31', strokeWidth=2, point=True).encode(
+                y=alt.Y('Avg RPSF:Q', title='Avg RPSF ($)', scale=alt.Scale(domain=[0, max(max_rpsf * 1.2, 1)]))
+            )
+
+            chart = alt.layer(bars, line).resolve_scale(y='independent').properties(height=250)
+            st.altair_chart(chart, use_container_width=True)
+
+            # --- Lease Maturity Table ---
+            st.markdown("#### Lease Maturity by Year")
+            maturity_display = maturity_by_year.copy()
+            maturity_display.columns = ['Year', 'GLA', 'Gross Rent', 'Avg RPSF', '% of Rev']
+            maturity_display['GLA'] = maturity_display['GLA'].apply(lambda x: f"{x:,.0f}")
+            maturity_display['Gross Rent'] = maturity_display['Gross Rent'].apply(lambda x: f"${x:,.0f}")
+            maturity_display['Avg RPSF'] = maturity_display['Avg RPSF'].apply(lambda x: f"${x:.2f}")
+            maturity_display['% of Rev'] = maturity_display['% of Rev'].apply(lambda x: f"{x:.1%}")
+            st.dataframe(maturity_display, use_container_width=True, hide_index=True)
+
+            # --- Top 10 Tenants by Revenue ---
+            st.markdown("#### Top 10 Tenants by Revenue")
+            if not top_10.empty:
+                top_10_display = pd.DataFrame({
+                    'Tenant Name': top_10['Tenant Name'],
+                    'GLA': top_10['SF_Leased'].apply(lambda x: f"{x:,.0f}"),
+                    '% GLA': top_10['GLA_Pct'].apply(lambda x: f"{x:.0%}"),
+                    'Annual Rent': top_10['Annual_Rent'].apply(lambda x: f"${x:,.0f}"),
+                    '% Rent': top_10['Rent_Pct'].apply(lambda x: f"{x:.0%}"),
+                    'RPSF': top_10['RPSF'].apply(lambda x: f"${x:.2f}"),
+                    'Start': top_10['Lease_Start'].apply(lambda x: x.strftime('%m/%d/%Y') if pd.notna(x) else ''),
+                    'End': top_10['Lease_End'].apply(lambda x: x.strftime('%m/%d/%Y') if pd.notna(x) else ''),
+                    'Remain': top_10['Remain_Years'].apply(lambda x: f"{x:.1f}")
+                })
+                st.dataframe(top_10_display, use_container_width=True, hide_index=True)
+
+            # --- Comments Section ---
+            st.markdown("#### Comments")
+            rollover_comment_key = f"rollover_comment_{deal_vcode}"
+            rollover_comment = st.text_area(
+                "Add comments about lease rollover",
+                value=st.session_state.get(rollover_comment_key, ""),
+                key=rollover_comment_key,
+                height=100
+            )
+
+            # --- Print Report Button ---
+            st.markdown("---")
+            if st.button("📄 Print Lease Rollover Report", key="print_rollover"):
+                # Generate print-friendly HTML
+                print_html = f"""
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>{prop_name} - Lease Rollover Report</title>
+                    <style>
+                        @page {{ size: letter landscape; margin: 0.5in; }}
+                        @media print {{
+                            body {{ -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }}
+                        }}
+                        body {{ font-family: Arial, sans-serif; font-size: 9pt; margin: 0; padding: 10px; }}
+                        .header {{ display: flex; justify-content: space-between; border-bottom: 2px solid #000; padding-bottom: 5px; margin-bottom: 10px; }}
+                        .header h1 {{ margin: 0; font-size: 18pt; }}
+                        .header .date {{ font-size: 10pt; }}
+                        .info-section {{ display: flex; justify-content: space-between; margin-bottom: 10px; }}
+                        .info-left, .info-right {{ width: 48%; }}
+                        .info-row {{ margin: 2px 0; }}
+                        .info-label {{ font-weight: bold; }}
+                        table {{ width: 100%; border-collapse: collapse; margin: 5px 0; font-size: 8pt; }}
+                        th, td {{ border: 1px solid #ccc; padding: 3px 5px; text-align: left; }}
+                        th {{ background-color: #f0f0f0; font-weight: bold; }}
+                        .section-title {{ font-weight: bold; font-size: 10pt; margin: 10px 0 5px 0; border-bottom: 1px solid #000; }}
+                        .highlight {{ background-color: #fff3cd !important; }}
+                        .two-col {{ display: flex; justify-content: space-between; }}
+                        .two-col > div {{ width: 48%; }}
+                        .vacancy-item {{ margin: 2px 0; }}
+                        .totals {{ margin-top: 10px; font-weight: bold; }}
+                        .comments {{ margin-top: 10px; border: 1px solid #ccc; padding: 5px; min-height: 50px; }}
+                        .right-align {{ text-align: right; }}
+                    </style>
+                </head>
+                <body>
+                    <div class="header">
+                        <h1>{prop_name}</h1>
+                        <div class="date">As of: {current_date.strftime('%m/%d/%y')}</div>
+                    </div>
+
+                    <div class="info-section">
+                        <div class="info-left">
+                            <div class="info-row"><span class="info-label">Partner:</span> {partner}</div>
+                            <div class="info-row"><span class="info-label">Location:</span> {location}</div>
+                            <div class="info-row"><span class="info-label">Asset Type:</span> {asset_type}</div>
+                            <div class="info-row"><span class="info-label">Strategy:</span> {strategy}</div>
+                            <div class="info-row"><span class="info-label">Acquisition Date:</span> {acq_date}</div>
+                            <div class="info-row"><span class="info-label">GLA:</span> {property_gla:,.0f} sf</div>
+                        </div>
+                        <div class="info-right">
+                            <div class="info-row"><span class="info-label">Current Occupancy:</span> {current_occupancy:.1%}</div>
+                            <div class="info-row"><span class="info-label">2 Year Lease Maturity Exposure:</span></div>
+                            <div class="info-row">&nbsp;&nbsp;&nbsp;&nbsp;GLA: {exposure_gla:,.0f} ({exposure_gla_pct:.1%})</div>
+                            <div class="info-row">&nbsp;&nbsp;&nbsp;&nbsp;ABR: ${exposure_abr:,.0f} ({exposure_abr_pct:.1%})</div>
+                            <div class="info-row">&nbsp;&nbsp;&nbsp;&nbsp;ABR/SF: ${exposure_rpsf:.2f}</div>
+                            <div class="info-row"><span class="info-label">Property Avg ABR/SF:</span> ${property_avg_rpsf:.2f}</div>
+                        </div>
+                    </div>
+
+                    <div class="section-title">Lease Maturity by Year</div>
+                    <table>
+                        <tr><th>Year</th><th class="right-align">GLA</th><th class="right-align">Gross Rent</th><th class="right-align">Avg RPSF</th><th class="right-align">% of Rev</th></tr>
+                """
+
+                for _, row in maturity_by_year.iterrows():
+                    print_html += f"""
+                        <tr>
+                            <td>{row['End_Year']}</td>
+                            <td class="right-align">{row['SF_Leased']:,.0f}</td>
+                            <td class="right-align">${row['Annual_Rent']:,.0f}</td>
+                            <td class="right-align">${row['Avg_RPSF']:.2f}</td>
+                            <td class="right-align">{row['Pct_Revenue']:.1%}</td>
+                        </tr>
+                    """
+
+                print_html += """
+                    </table>
+
+                    <div class="section-title">Top 10 Tenants by Revenue</div>
+                    <table>
+                        <tr><th>Tenant Name</th><th class="right-align">GLA</th><th class="right-align">%</th><th class="right-align">Annual Rent</th><th class="right-align">%</th><th class="right-align">RPSF</th><th>Start</th><th>End</th><th class="right-align">Remain</th></tr>
+                """
+
+                for i, (_, row) in enumerate(top_10.iterrows(), 1):
+                    start_str = row['Lease_Start'].strftime('%m/%d/%Y') if pd.notna(row['Lease_Start']) else ''
+                    end_str = row['Lease_End'].strftime('%m/%d/%Y') if pd.notna(row['Lease_End']) else ''
+                    gla_pct = row['SF_Leased'] / property_gla if property_gla > 0 else 0
+                    rent_pct = row['Annual_Rent'] / total_annual_rent_rpt if total_annual_rent_rpt > 0 else 0
+                    remain = max(0, (row['Lease_End'] - pd.Timestamp(current_date)).days / 365) if pd.notna(row['Lease_End']) else 0
+                    print_html += f"""
+                        <tr>
+                            <td>{i}) {row['Tenant Name']}</td>
+                            <td class="right-align">{row['SF_Leased']:,.0f}</td>
+                            <td class="right-align">{gla_pct:.0%}</td>
+                            <td class="right-align">${row['Annual_Rent']:,.0f}</td>
+                            <td class="right-align">{rent_pct:.0%}</td>
+                            <td class="right-align">${row['RPSF']:.2f}</td>
+                            <td>{start_str}</td>
+                            <td>{end_str}</td>
+                            <td class="right-align">{remain:.1f}</td>
+                        </tr>
+                    """
+
+                print_html += f"""
+                    </table>
+
+                    <div class="section-title">Comments</div>
+                    <div class="comments">{rollover_comment or '&nbsp;'}</div>
+                </body>
+                </html>
+                """
+
+                # Display in new window via components
+                import streamlit.components.v1 as components
+                components.html(f"""
+                    <script>
+                        var printWindow = window.open('', '_blank');
+                        printWindow.document.write(`{print_html.replace('`', '\\`')}`);
+                        printWindow.document.close();
+                        printWindow.focus();
+                        printWindow.print();
+                    </script>
+                """, height=0)
+
 # ============================================================
 # ONE PAGER INVESTOR REPORT
 # ============================================================
