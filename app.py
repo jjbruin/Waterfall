@@ -558,56 +558,56 @@ st.markdown(
     </div>
     <table class="deal-table">
         <tr>
-            <td class="label">vCode</td>
-            <td class="value">{deal_vcode}</td>
+            <td class="label"></td>
+            <td class="value"></td>
             <td class="spacer"></td>
             <td class="cap-header" colspan="2">Capitalization {f'(as of {as_of_str})' if as_of_str else ''}</td>
         </tr>
         <tr>
-            <td class="label">Investment ID</td>
-            <td class="value">{selected_row.get('InvestmentID','')}</td>
+            <td class="label">vCode</td>
+            <td class="value">{deal_vcode}</td>
             <td class="spacer"></td>
             <td class="cap-label">Debt</td>
             <td class="cap-value">${cap_data['debt']:,.0f}</td>
         </tr>
         <tr>
-            <td class="label">OP</td>
-            <td class="value">{selected_row.get('Operating_Partner','')}</td>
+            <td class="label">Investment ID</td>
+            <td class="value">{selected_row.get('InvestmentID','')}</td>
             <td class="spacer"></td>
             <td class="cap-label">Pref Equity</td>
             <td class="cap-value">${cap_data['pref_equity']:,.0f}</td>
         </tr>
         <tr>
-            <td class="label">Units</td>
-            <td class="value">{fmt_int(selected_row.get('Total_Units', ''))}</td>
+            <td class="label">OP</td>
+            <td class="value">{selected_row.get('Operating_Partner','')}</td>
             <td class="spacer"></td>
             <td class="cap-label">Ptr Equity</td>
             <td class="cap-value">${cap_data['partner_equity']:,.0f}</td>
         </tr>
         <tr>
-            <td class="label">Sqf</td>
-            <td class="value">{fmt_num(selected_row.get('Size_Sqf', ''))}</td>
+            <td class="label">Units</td>
+            <td class="value">{fmt_int(selected_row.get('Total_Units', ''))}</td>
             <td class="spacer"></td>
             <td class="cap-label" style="border-top: 1px solid #ccc;">Total Cap</td>
             <td class="cap-value" style="border-top: 1px solid #ccc; font-weight: 600;">${cap_data['total_cap']:,.0f}</td>
         </tr>
         <tr>
-            <td class="label">Lifecycle</td>
-            <td class="value">{selected_row.get('Lifecycle', '—') or '—'}</td>
+            <td class="label">Sqf</td>
+            <td class="value">{fmt_num(selected_row.get('Size_Sqf', ''))}</td>
             <td class="spacer"></td>
             <td class="cap-label">Valuation</td>
             <td class="cap-value">${cap_data['current_valuation']:,.0f}</td>
         </tr>
         <tr>
-            <td class="label">Acq Date</td>
-            <td class="value">{fmt_date(selected_row.get('Acquisition_Date', ''))}</td>
+            <td class="label">Lifecycle</td>
+            <td class="value">{selected_row.get('Lifecycle', '—') or '—'}</td>
             <td class="spacer"></td>
             <td class="cap-label">Cap Rate</td>
             <td class="cap-value">{cap_data['cap_rate']:.2%}</td>
         </tr>
         <tr>
-            <td class="label"></td>
-            <td class="value"></td>
+            <td class="label">Acq Date</td>
+            <td class="value">{fmt_date(selected_row.get('Acquisition_Date', ''))}</td>
             <td class="spacer"></td>
             <td class="cap-label">PE Exp (Cap)</td>
             <td class="cap-value">{cap_data['pe_exposure_cap']:.1%}</td>
