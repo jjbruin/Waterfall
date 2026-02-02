@@ -100,6 +100,21 @@ TABLE_DEFINITIONS = {
         'csv': 'investor_accounting.csv',
         'description': 'LP/GP historical transactions',
         'key_columns': ['FundID', 'InvestorID', 'EffectiveDate']
+    },
+    'occupancy': {
+        'csv': 'MRI_Occupancy_Download.csv',
+        'description': 'Quarterly occupancy data by property',
+        'key_columns': ['vCode', 'Qtr']
+    },
+    'isbs': {
+        'csv': 'ISBS_Download.csv',
+        'description': 'Income statement and balance sheet data',
+        'key_columns': ['vcode', 'dtEntry', 'vSource', 'vAccount']
+    },
+    'one_pager_comments': {
+        'csv': 'OnePager_Comments.csv',
+        'description': 'One Pager report comments by deal and period',
+        'key_columns': ['vcode', 'reporting_period']
     }
 }
 
@@ -179,7 +194,21 @@ def create_additional_tables(conn: sqlite3.Connection):
             UNIQUE(vcode, calculation_type, input_hash)
         )
     """)
-    
+
+    # One Pager comments table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS one_pager_comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            vcode TEXT NOT NULL,
+            reporting_period TEXT NOT NULL,
+            econ_comments TEXT,
+            business_plan_comments TEXT,
+            accrued_pref_comment TEXT,
+            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(vcode, reporting_period)
+        )
+    """)
+
     conn.commit()
 
 
@@ -278,6 +307,19 @@ def create_indexes(conn: sqlite3.Connection):
         # Capital calls
         "CREATE INDEX IF NOT EXISTS idx_capital_calls_vcode ON capital_calls(vcode)",
         "CREATE INDEX IF NOT EXISTS idx_capital_calls_date ON capital_calls(CallDate)",
+
+        # ISBS (income statement / balance sheet)
+        "CREATE INDEX IF NOT EXISTS idx_isbs_vcode ON isbs(vcode)",
+        "CREATE INDEX IF NOT EXISTS idx_isbs_source ON isbs(vSource)",
+        "CREATE INDEX IF NOT EXISTS idx_isbs_date ON isbs(dtEntry)",
+
+        # Occupancy
+        "CREATE INDEX IF NOT EXISTS idx_occupancy_vcode ON occupancy(vCode)",
+        "CREATE INDEX IF NOT EXISTS idx_occupancy_qtr ON occupancy(Qtr)",
+
+        # One Pager comments
+        "CREATE INDEX IF NOT EXISTS idx_one_pager_vcode ON one_pager_comments(vcode)",
+        "CREATE INDEX IF NOT EXISTS idx_one_pager_period ON one_pager_comments(reporting_period)",
     ]
     
     for idx_sql in indexes:

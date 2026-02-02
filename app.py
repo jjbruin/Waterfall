@@ -166,6 +166,18 @@ def load_inputs():
         except:
             isbs_raw = None
 
+        # Occupancy data for One Pager
+        try:
+            occupancy_raw = pd.read_sql('SELECT * FROM occupancy', conn)
+        except:
+            occupancy_raw = None
+
+        # Commitments for One Pager PE performance
+        try:
+            commitments_raw = pd.read_sql('SELECT * FROM commitments', conn)
+        except:
+            commitments_raw = None
+
         # Not typically in DB
         mri_supp = pd.DataFrame()
         fund_deals_raw = pd.DataFrame()
@@ -256,14 +268,42 @@ def load_inputs():
         if uploads.get("relationships"):
             relationships_raw = pd.read_csv(uploads["relationships"])
 
+    # Occupancy file (for One Pager - only for Local folder and Upload modes)
+    if mode == "Local folder":
+        occupancy_raw = None
+        occ_path = Path(f"{folder}/MRI_Occupancy_Download.csv")
+        if occ_path.exists():
+            try:
+                occupancy_raw = pd.read_csv(occ_path)
+            except Exception as e:
+                print(f"Warning: Could not load Occupancy file: {e}")
+                occupancy_raw = None
+    elif mode == "Upload CSVs":
+        occupancy_raw = None
+        # Could add upload support here if needed
+
+    # Commitments file (for One Pager - only for Local folder and Upload modes)
+    if mode == "Local folder":
+        commitments_raw = None
+        comm_path = Path(f"{folder}/MRI_Commitments.csv")
+        if comm_path.exists():
+            try:
+                commitments_raw = pd.read_csv(comm_path)
+            except Exception as e:
+                print(f"Warning: Could not load Commitments file: {e}")
+                commitments_raw = None
+    elif mode == "Upload CSVs":
+        commitments_raw = None
+        # Could add upload support here if needed
+
     # Normalize investment map
     inv.columns = [str(c).strip() for c in inv.columns]
     if "vcode" not in inv.columns and "vCode" in inv.columns:
         inv = inv.rename(columns={"vCode": "vcode"})
     inv["vcode"] = inv["vcode"].astype(str)
-    
+
     # Prepare return data
-    result = (inv, wf, acct, fc, coa, mri_loans_raw, mri_supp, mri_val, fund_deals_raw, inv_wf_raw, inv_acct_raw, relationships_raw, capital_calls_raw, isbs_raw)
+    result = (inv, wf, acct, fc, coa, mri_loans_raw, mri_supp, mri_val, fund_deals_raw, inv_wf_raw, inv_acct_raw, relationships_raw, capital_calls_raw, isbs_raw, occupancy_raw, commitments_raw)
 
     # Cache in session state
     st.session_state.cached_data = result
@@ -274,7 +314,7 @@ def load_inputs():
 
 # Load data with progress indicator
 with st.spinner("Loading data..."):
-    inv, wf, acct, fc, coa, mri_loans_raw, mri_supp, mri_val, fund_deals_raw, inv_wf_raw, inv_acct_raw, relationships_raw, capital_calls_raw, isbs_raw = load_inputs()
+    inv, wf, acct, fc, coa, mri_loans_raw, mri_supp, mri_val, fund_deals_raw, inv_wf_raw, inv_acct_raw, relationships_raw, capital_calls_raw, isbs_raw, occupancy_raw, commitments_raw = load_inputs()
 
 
 # ============================================================
@@ -2582,5 +2622,23 @@ if not cap_events_df.empty:
         disp2 = disp.copy()
         disp2["amount"] = disp2["amount"].map(lambda x: f"{x:,.0f}")
         st.dataframe(disp2[["event_date", "event_type", "amount"]], use_container_width=True)
+
+# ============================================================
+# ONE PAGER INVESTOR REPORT
+# ============================================================
+if isbs_raw is not None and not isbs_raw.empty:
+    with st.expander("One Pager Investor Report"):
+        from one_pager_ui import render_one_pager_section
+        render_one_pager_section(
+            vcode=deal_vcode,
+            inv_map=inv,
+            isbs_df=isbs_raw,
+            mri_loans=mri_loans_raw,
+            mri_val=mri_val,
+            waterfalls=wf,
+            commitments=commitments_raw,
+            acct=acct,
+            occupancy_df=occupancy_raw,
+        )
 
 st.success("✅ Report generated successfully!")
