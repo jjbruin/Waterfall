@@ -422,7 +422,7 @@ def render_one_pager_section(
         if st.button("Print Report", key=f"print_{vcode}_{selected_quarter}"):
             _generate_print_html(
                 vcode, selected_quarter, general_info, cap_stack,
-                prop_perf, pe_perf, comments
+                prop_perf, pe_perf, comments, chart_data
             )
 
 
@@ -478,72 +478,120 @@ def _generate_print_html(
     cap_stack: Dict,
     prop_perf: Dict,
     pe_perf: Dict,
-    comments: Dict
+    comments: Dict,
+    chart_data: pd.DataFrame = None
 ):
-    """Generate printable HTML report"""
+    """Generate printable HTML report - fits on one page"""
+    investment_name = general_info.get('investment_name', vcode)
+
+    # Pre-compute DSCR values for template
+    dscr_actual = f"{prop_perf['dscr']['ytd_actual']:.2f}x" if prop_perf['dscr']['ytd_actual'] else "-"
+    dscr_budget = f"{prop_perf['dscr']['ytd_budget']:.2f}x" if prop_perf['dscr']['ytd_budget'] else "-"
+
+    # Pre-compute date values
+    date_closed = general_info['date_closed'].strftime('%m/%d/%Y') if general_info.get('date_closed') else 'N/A'
+    anticipated_exit = general_info['anticipated_exit'].strftime('%m/%d/%Y') if general_info.get('anticipated_exit') else 'N/A'
+
+    # Build chart HTML if data available
+    chart_html = ""
+    if chart_data is not None and not chart_data.empty:
+        chart_rows = ""
+        for _, row in chart_data.iterrows():
+            noi_val = f"${row['NOI_Actual']:,.0f}" if pd.notna(row.get('NOI_Actual')) else "-"
+            occ_val = f"{row['Occupancy']:.0f}%" if pd.notna(row.get('Occupancy')) else "-"
+            chart_rows += f"<tr><td>{row['Quarter']}</td><td>{occ_val}</td><td>{noi_val}</td></tr>"
+        chart_html = f"""
+        <div class="section">
+            <div class="section-title">6. TRAILING QUARTERS</div>
+            <table class="small-table">
+                <tr><th>Quarter</th><th>Occupancy</th><th>NOI</th></tr>
+                {chart_rows}
+            </table>
+        </div>
+        """
+
     html = f"""
     <html>
     <head>
-        <title>One Pager - {vcode} - {quarter}</title>
+        <title>{investment_name} - {quarter}</title>
         <style>
+            @page {{ size: letter portrait; margin: 0.3in; }}
             @media print {{
-                body {{ margin: 0.5in; font-family: Arial, sans-serif; font-size: 10pt; }}
-                .section {{ margin-bottom: 15px; }}
-                .section-title {{ font-size: 12pt; font-weight: bold; border-bottom: 2px solid #333; margin-bottom: 8px; }}
-                table {{ width: 100%; border-collapse: collapse; font-size: 9pt; }}
-                th, td {{ border: 1px solid #ddd; padding: 4px 8px; text-align: left; }}
-                th {{ background: #f0f0f0; }}
-                .metric-row {{ display: flex; justify-content: space-between; margin: 3px 0; }}
-                .comments {{ background: #f9f9f9; padding: 8px; border: 1px solid #ddd; min-height: 50px; }}
+                body {{ margin: 0; padding: 0.2in; font-family: Arial, sans-serif; font-size: 8pt; }}
+                .header {{ text-align: center; margin-bottom: 8px; border-bottom: 2px solid #1e3a5f; padding-bottom: 5px; }}
+                .header h1 {{ margin: 0; font-size: 14pt; color: #1e3a5f; }}
+                .header h2 {{ margin: 2px 0 0 0; font-size: 10pt; color: #666; font-weight: normal; }}
+                .content {{ display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }}
+                .section {{ margin-bottom: 6px; break-inside: avoid; }}
+                .section-title {{ font-size: 9pt; font-weight: bold; border-bottom: 1px solid #333; margin-bottom: 4px; padding-bottom: 2px; }}
+                table {{ width: 100%; border-collapse: collapse; font-size: 7pt; }}
+                .small-table {{ font-size: 6pt; }}
+                th, td {{ border: 1px solid #ccc; padding: 2px 4px; text-align: left; }}
+                th {{ background: #f0f0f0; font-weight: bold; }}
+                .metric-row {{ display: flex; justify-content: space-between; margin: 1px 0; font-size: 7pt; }}
+                .comments {{ background: #f9f9f9; padding: 4px; border: 1px solid #ddd; font-size: 7pt; min-height: 20px; max-height: 40px; overflow: hidden; }}
+                .full-width {{ grid-column: 1 / -1; }}
             }}
         </style>
     </head>
     <body>
-        <h1 style="text-align: center; margin-bottom: 5px;">One Pager Investor Report</h1>
-        <h2 style="text-align: center; color: #666; margin-top: 0;">{vcode} - Q{quarter}</h2>
-
-        <div class="section">
-            <div class="section-title">1. GENERAL INFORMATION</div>
-            <div class="metric-row"><span>Partner:</span><span>{general_info['partner']}</span></div>
-            <div class="metric-row"><span>Asset Type:</span><span>{general_info['asset_type']}</span></div>
-            <div class="metric-row"><span>Location:</span><span>{general_info['location']}</span></div>
-            <div class="metric-row"><span>Units | SF:</span><span>{general_info['units']:,} | {general_info['sqft']:,}</span></div>
+        <div class="header">
+            <h1>{investment_name}</h1>
+            <h2>{quarter} Quarterly Report</h2>
         </div>
 
-        <div class="section">
-            <div class="section-title">2. CAPITALIZATION</div>
-            <table>
-                <tr><th>Layer</th><th>Amount</th><th>% of Cap</th></tr>
-                <tr><td>Senior Debt</td><td>${cap_stack['debt']:,.0f}</td><td>{cap_stack['debt_pct']:.1%}</td></tr>
-                <tr><td>Preferred Equity</td><td>${cap_stack['pref_equity']:,.0f}</td><td>{cap_stack['pref_equity_pct']:.1%}</td></tr>
-                <tr><td>Partner Equity</td><td>${cap_stack['partner_equity']:,.0f}</td><td>{cap_stack['partner_equity_pct']:.1%}</td></tr>
-                <tr style="font-weight: bold;"><td>Total</td><td>${cap_stack['total_cap']:,.0f}</td><td>100%</td></tr>
-            </table>
-        </div>
+        <div class="content">
+            <div class="section">
+                <div class="section-title">GENERAL INFORMATION</div>
+                <div class="metric-row"><span>Partner:</span><span>{general_info['partner']}</span></div>
+                <div class="metric-row"><span>Asset Type:</span><span>{general_info['asset_type']}</span></div>
+                <div class="metric-row"><span>Location:</span><span>{general_info['location']}</span></div>
+                <div class="metric-row"><span>Units | SF:</span><span>{general_info['units']:,} | {general_info['sqft']:,}</span></div>
+                <div class="metric-row"><span>Date Closed:</span><span>{date_closed}</span></div>
+                <div class="metric-row"><span>Anticipated Exit:</span><span>{anticipated_exit}</span></div>
+            </div>
 
-        <div class="section">
-            <div class="section-title">3. PROPERTY PERFORMANCE</div>
-            <table>
-                <tr><th>Metric</th><th>YTD Actual</th><th>YTD Budget</th><th>Variance</th></tr>
-                <tr><td>Revenue</td><td>${prop_perf['revenue']['ytd_actual']:,.0f}</td><td>${prop_perf['revenue']['ytd_budget']:,.0f}</td><td>${prop_perf['revenue']['variance']:,.0f}</td></tr>
-                <tr><td>Expenses</td><td>${prop_perf['expenses']['ytd_actual']:,.0f}</td><td>${prop_perf['expenses']['ytd_budget']:,.0f}</td><td>${prop_perf['expenses']['variance']:,.0f}</td></tr>
-                <tr style="font-weight: bold;"><td>NOI</td><td>${prop_perf['noi']['ytd_actual']:,.0f}</td><td>${prop_perf['noi']['ytd_budget']:,.0f}</td><td>${prop_perf['noi']['variance']:,.0f}</td></tr>
-            </table>
-            <p><strong>Comments:</strong></p>
-            <div class="comments">{comments.get('econ_comments', '')}</div>
-        </div>
+            <div class="section">
+                <div class="section-title">CAPITALIZATION</div>
+                <table>
+                    <tr><th>Layer</th><th>Amount</th><th>%</th></tr>
+                    <tr><td>Senior Debt</td><td>${cap_stack['debt']:,.0f}</td><td>{cap_stack['debt_pct']:.1%}</td></tr>
+                    <tr><td>Pref Equity</td><td>${cap_stack['pref_equity']:,.0f}</td><td>{cap_stack['pref_equity_pct']:.1%}</td></tr>
+                    <tr><td>Partner Equity</td><td>${cap_stack['partner_equity']:,.0f}</td><td>{cap_stack['partner_equity_pct']:.1%}</td></tr>
+                    <tr style="font-weight: bold;"><td>Total</td><td>${cap_stack['total_cap']:,.0f}</td><td>100%</td></tr>
+                </table>
+                <div class="metric-row" style="margin-top: 4px;"><span>Valuation:</span><span>${cap_stack['current_valuation']:,.0f}</span></div>
+                <div class="metric-row"><span>PE Coupon:</span><span>{cap_stack['pe_coupon']:.1%}</span></div>
+            </div>
 
-        <div class="section">
-            <div class="section-title">4. PREFERRED EQUITY PERFORMANCE</div>
-            <div class="metric-row"><span>Committed P.E.:</span><span>${pe_perf['committed_pe']:,.0f}</span></div>
-            <div class="metric-row"><span>Funded to Date:</span><span>${pe_perf['funded_to_date']:,.0f}</span></div>
-            <div class="metric-row"><span>Return of Capital:</span><span>${pe_perf['return_of_capital']:,.0f}</span></div>
-            <div class="metric-row"><span>Current P.E. Balance:</span><span>${pe_perf['current_pe_balance']:,.0f}</span></div>
-        </div>
+            <div class="section">
+                <div class="section-title">PROPERTY PERFORMANCE</div>
+                <table>
+                    <tr><th>Metric</th><th>YTD Actual</th><th>Budget</th><th>Var</th></tr>
+                    <tr><td>Revenue</td><td>${prop_perf['revenue']['ytd_actual']:,.0f}</td><td>${prop_perf['revenue']['ytd_budget']:,.0f}</td><td>${prop_perf['revenue']['variance']:,.0f}</td></tr>
+                    <tr><td>Expenses</td><td>${prop_perf['expenses']['ytd_actual']:,.0f}</td><td>${prop_perf['expenses']['ytd_budget']:,.0f}</td><td>${prop_perf['expenses']['variance']:,.0f}</td></tr>
+                    <tr style="font-weight: bold;"><td>NOI</td><td>${prop_perf['noi']['ytd_actual']:,.0f}</td><td>${prop_perf['noi']['ytd_budget']:,.0f}</td><td>${prop_perf['noi']['variance']:,.0f}</td></tr>
+                    <tr><td>DSCR</td><td>{dscr_actual}</td><td>{dscr_budget}</td><td>-</td></tr>
+                </table>
+                <div class="comments" style="margin-top: 4px;">{comments.get('econ_comments', '')}</div>
+            </div>
 
-        <div class="section">
-            <div class="section-title">5. BUSINESS PLAN & UPDATES</div>
-            <div class="comments">{comments.get('business_plan_comments', '')}</div>
+            <div class="section">
+                <div class="section-title">PREFERRED EQUITY</div>
+                <div class="metric-row"><span>Committed:</span><span>${pe_perf['committed_pe']:,.0f}</span></div>
+                <div class="metric-row"><span>Funded:</span><span>${pe_perf['funded_to_date']:,.0f}</span></div>
+                <div class="metric-row"><span>ROC:</span><span>${pe_perf['return_of_capital']:,.0f}</span></div>
+                <div class="metric-row"><span>Current Balance:</span><span>${pe_perf['current_pe_balance']:,.0f}</span></div>
+                <div class="metric-row"><span>Coupon:</span><span>{pe_perf['coupon']:.1%}</span></div>
+                <div class="metric-row"><span>Participation:</span><span>{pe_perf['participation']:.1%}</span></div>
+            </div>
+
+            <div class="section full-width">
+                <div class="section-title">BUSINESS PLAN & UPDATES</div>
+                <div class="comments">{comments.get('business_plan_comments', '')}</div>
+            </div>
+
+            {chart_html}
         </div>
 
         <script>window.print();</script>

@@ -34,8 +34,8 @@ from consolidation import build_consolidated_forecast, get_sub_portfolio_summary
 # ============================================================
 # STREAMLIT CONFIG
 # ============================================================
-st.set_page_config(layout="wide", page_title="Waterfall Model")
-st.title("Multi-Layer Waterfall Model")
+st.set_page_config(layout="wide", page_title="PSC Asset Management")
+st.title("Peaceable Street Capital - Asset Management System")
 
 
 # ============================================================
@@ -2485,123 +2485,6 @@ else:
         st.dataframe(out, use_container_width=True)
 
 # ============================================================
-# OWNERSHIP TREE ANALYSIS
-# ============================================================
-st.divider()
-st.header("Ownership Relationships & Waterfall Requirements")
-
-if relationships_raw is not None:
-    # Load and process relationships
-    relationships = load_relationships(relationships_raw)
-    
-    st.success(f"✅ Loaded {len(relationships)} ownership relationships")
-    
-    # Build ownership tree
-    with st.spinner("Building ownership tree..."):
-        nodes = build_ownership_tree(relationships)
-    
-    st.info(f"📊 Identified {len(nodes)} unique entities in ownership structure")
-    
-    # Identify entities that are deals (have vcode mappings)
-    deal_entities = set(inv["vcode"].unique())
-    
-    # Identify waterfall requirements
-    waterfall_reqs = identify_waterfall_requirements(nodes, deal_entities)
-    
-    st.subheader(f"Waterfall Requirements: {len(waterfall_reqs)} entities need waterfalls")
-    
-    # Create summary table
-    if waterfall_reqs:
-        summary_df = create_waterfall_summary_df(waterfall_reqs)
-        
-        st.dataframe(
-            summary_df,
-            use_container_width=True,
-            column_config={
-                "EntityID": st.column_config.TextColumn("Entity ID", width="medium"),
-                "EntityName": st.column_config.TextColumn("Entity Name", width="large"),
-                "NumInvestors": st.column_config.NumberColumn("# Investors", width="small"),
-                "IsDeal": st.column_config.TextColumn("Is Deal?", width="small"),
-                "DirectInvestors": st.column_config.TextColumn("Direct Investors", width="large"),
-                "UltimateInvestors": st.column_config.TextColumn("Ultimate Investors", width="large"),
-            }
-        )
-        
-        csv = summary_df.to_csv(index=False)
-        st.download_button(
-            label="📥 Download Waterfall Requirements CSV",
-            data=csv,
-            file_name="waterfall_requirements.csv",
-            mime="text/csv"
-        )
-    
-    # Entity selector
-    st.subheader("Detailed Entity Analysis")
-    
-    entity_options = sorted(nodes.keys())
-    selected_entity = st.selectbox(
-        "Select entity to analyze:",
-        entity_options,
-        format_func=lambda x: f"{x} - {nodes[x].name}" if nodes[x].name else x
-    )
-    
-    if selected_entity:
-        node = nodes[selected_entity]
-        
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Entity ID", node.entity_id)
-        col2.metric("# Direct Investors", len(node.investors))
-        col3.metric("# Investments", len(node.investments))
-        col4.metric("Status", 
-                   "🔄 Passthrough" if node.is_passthrough 
-                   else "💧 Needs Waterfall" if node.needs_waterfall 
-                   else "👤 Investor")
-        
-        if node.investors:
-            st.markdown("**Direct Investors:**")
-            inv_data = []
-            for inv_id, pct in node.investors:
-                inv_name = nodes[inv_id].name if inv_id in nodes else ""
-                inv_data.append({
-                    "Investor ID": inv_id,
-                    "Name": inv_name,
-                    "Ownership %": f"{pct*100:.4f}%"
-                })
-            st.dataframe(pd.DataFrame(inv_data), use_container_width=True, hide_index=True)
-        
-        ultimate = get_ultimate_investors(selected_entity, nodes, normalize=True)
-        ultimate = consolidate_ultimate_investors(ultimate)
-        ultimate = sorted(ultimate, key=lambda x: x[1], reverse=True)
-
-        if ultimate:
-            with st.expander("Ultimate Beneficial Owners"):
-                ult_data = []
-                total_pct = 0.0
-                for inv_id, eff_pct in ultimate:
-                    inv_name = nodes[inv_id].name if inv_id in nodes else ""
-                    total_pct += eff_pct
-                    ult_data.append({
-                        "Investor ID": inv_id,
-                        "Name": inv_name,
-                        "Effective Ownership %": f"{eff_pct*100:.4f}%"
-                    })
-                # Add total row
-                ult_data.append({
-                    "Investor ID": "",
-                    "Name": "**TOTAL**",
-                    "Effective Ownership %": f"{total_pct*100:.4f}%"
-                })
-                st.dataframe(pd.DataFrame(ult_data), use_container_width=True, hide_index=True)
-        
-        with st.expander("📊 View Ownership Tree"):
-            tree_viz = visualize_ownership_tree(selected_entity, nodes)
-            st.code(tree_viz, language=None)
-
-else:
-    st.info("Upload MRI_IA_Relationship.csv to analyze multi-tiered ownership structures")
-
-
-# ============================================================
 # OPTIONAL DISPLAYS
 # ============================================================
 if loan_sched is not None and not loan_sched.empty:
@@ -2641,4 +2524,94 @@ if isbs_raw is not None and not isbs_raw.empty:
             occupancy_df=occupancy_raw,
         )
 
-st.success("✅ Report generated successfully!")
+# ============================================================
+# OWNERSHIP TREE ANALYSIS
+# ============================================================
+st.divider()
+st.header("Ownership Relationships & Waterfall Requirements")
+
+if relationships_raw is not None:
+    # Load and process relationships
+    relationships = load_relationships(relationships_raw)
+
+    st.success(f"Loaded {len(relationships)} ownership relationships")
+
+    # Build ownership tree
+    with st.spinner("Building ownership tree..."):
+        nodes = build_ownership_tree(relationships)
+
+    st.info(f"Identified {len(nodes)} unique entities in ownership structure")
+
+    # Identify entities that are deals (have vcode mappings)
+    deal_entities = set(inv["vcode"].unique())
+
+    # Identify waterfall requirements
+    waterfall_reqs = identify_waterfall_requirements(nodes, deal_entities)
+
+    st.subheader(f"Waterfall Requirements: {len(waterfall_reqs)} entities need waterfalls")
+
+    # Create summary table
+    if waterfall_reqs:
+        summary_df = create_waterfall_summary_df(waterfall_reqs)
+
+        st.dataframe(
+            summary_df,
+            use_container_width=True,
+            column_config={
+                "EntityID": st.column_config.TextColumn("Entity ID", width="medium"),
+                "EntityName": st.column_config.TextColumn("Entity Name", width="large"),
+                "NumInvestors": st.column_config.NumberColumn("# Investors", width="small"),
+                "IsDeal": st.column_config.TextColumn("Is Deal?", width="small"),
+                "DirectInvestors": st.column_config.TextColumn("Direct Investors", width="large"),
+                "UltimateInvestors": st.column_config.TextColumn("Ultimate Investors", width="large"),
+            }
+        )
+
+        csv = summary_df.to_csv(index=False)
+        st.download_button(
+            label="Download Waterfall Requirements CSV",
+            data=csv,
+            file_name="waterfall_requirements.csv",
+            mime="text/csv"
+        )
+
+    # Use the selected deal for ownership analysis
+    selected_entity = deal_vcode
+
+    if selected_entity in nodes:
+        node = nodes[selected_entity]
+
+        ultimate = get_ultimate_investors(selected_entity, nodes, normalize=True)
+        ultimate = consolidate_ultimate_investors(ultimate)
+        ultimate = sorted(ultimate, key=lambda x: x[1], reverse=True)
+
+        if ultimate:
+            with st.expander("Ultimate Beneficial Owners"):
+                ult_data = []
+                total_pct = 0.0
+                for inv_id, eff_pct in ultimate:
+                    inv_name = nodes[inv_id].name if inv_id in nodes else ""
+                    total_pct += eff_pct
+                    ult_data.append({
+                        "Investor ID": inv_id,
+                        "Name": inv_name,
+                        "Effective Ownership %": f"{eff_pct*100:.4f}%"
+                    })
+                # Add total row
+                ult_data.append({
+                    "Investor ID": "",
+                    "Name": "**TOTAL**",
+                    "Effective Ownership %": f"{total_pct*100:.4f}%"
+                })
+                st.dataframe(pd.DataFrame(ult_data), use_container_width=True, hide_index=True)
+
+        with st.expander("View Ownership Tree"):
+            tree_viz = visualize_ownership_tree(selected_entity, nodes)
+            st.code(tree_viz, language=None)
+    else:
+        st.info(f"No ownership relationships found for {deal_vcode}")
+
+else:
+    st.info("Upload MRI_IA_Relationship.csv to analyze multi-tiered ownership structures")
+
+st.success("Report generated successfully!")
