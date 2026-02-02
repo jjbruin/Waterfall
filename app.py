@@ -843,13 +843,8 @@ if mri_val is not None and not mri_val.empty:
             "Less_Loan_Balances": loan_bal_sale,
             "Net_Sale_Proceeds": sale_proceeds,
         }
-        
-        capital_events.append({
-            "vcode": str(deal_vcode),
-            "event_date": sale_me,
-            "event_type": "Proceeds from Sale",
-            "amount": float(sale_proceeds),
-        })
+        # Note: Sale proceeds are not added here as separate events because they flow
+        # through the capital waterfall and will be captured as "Capital Distribution"
     except Exception as e:
         debug_msgs.append(f"Sale proceeds estimation failed: {e}")
 else:
@@ -940,6 +935,22 @@ if not cf_period_cash.empty:
     cf_period_cash = cf_period_cash[cf_period_cash["event_date"] <= sale_me].copy()
 cap_period_cash = cap_period_cash[cap_period_cash["event_date"] <= sale_me].copy()
 
+# Add sale proceeds to cap_period_cash for capital waterfall distribution
+# (not added to capital_events to avoid double-counting with distribution results)
+if sale_dbg is not None and sale_dbg.get("Net_Sale_Proceeds", 0) > 0:
+    sale_cash_entry = pd.DataFrame([{
+        "event_date": sale_me,
+        "cash_available": sale_dbg["Net_Sale_Proceeds"]
+    }])
+    if cap_period_cash.empty:
+        cap_period_cash = sale_cash_entry
+    else:
+        # Check if sale_me already exists in cap_period_cash
+        if sale_me in cap_period_cash["event_date"].values:
+            cap_period_cash.loc[cap_period_cash["event_date"] == sale_me, "cash_available"] += sale_dbg["Net_Sale_Proceeds"]
+        else:
+            cap_period_cash = pd.concat([cap_period_cash, sale_cash_entry], ignore_index=True).sort_values("event_date")
+
 # Load waterfalls and run
 wf_steps = load_waterfalls(wf)
 seed_states = seed_states_from_accounting(acct, inv, wf_steps, deal_vcode)
@@ -952,6 +963,49 @@ if capital_calls:
 
 cf_alloc, cf_investors = run_waterfall(wf_steps, deal_vcode, "CF_WF", cf_period_cash, seed_states)
 cap_alloc, cap_investors = run_waterfall(wf_steps, deal_vcode, "Cap_WF", cap_period_cash, seed_states)
+
+# ============================================================
+# ENHANCE CAPITAL EVENTS WITH CALLS AND DISTRIBUTIONS
+# ============================================================
+# Add future capital calls to capital events
+if capital_calls:
+    for call in capital_calls:
+        call_date = call.get('call_date')
+        if call_date is not None:
+            if hasattr(call_date, 'date'):
+                call_date = call_date.date()
+            elif isinstance(call_date, str):
+                call_date = pd.to_datetime(call_date).date()
+            capital_events.append({
+                "vcode": str(deal_vcode),
+                "event_date": call_date,
+                "event_type": "Capital Call",
+                "amount": float(call.get('amount', 0)),
+            })
+
+# Add Capital waterfall distributions to capital events (refi/sale proceeds only)
+# Note: We do NOT include CF waterfall distributions here per user requirement
+if cap_alloc is not None and not cap_alloc.empty:
+    # Group by date and sum allocations
+    cap_by_date = cap_alloc.groupby('event_date')['Allocated'].sum().reset_index()
+    for _, row in cap_by_date.iterrows():
+        if row['Allocated'] > 0:
+            evt_date = row['event_date']
+            if hasattr(evt_date, 'date'):
+                evt_date = evt_date.date()
+            capital_events.append({
+                "vcode": str(deal_vcode),
+                "event_date": evt_date,
+                "event_type": "Capital Distribution",
+                "amount": float(row['Allocated']),
+            })
+
+# Rebuild cap_events_df with all events
+cap_events_df = pd.DataFrame(capital_events)
+if not cap_events_df.empty:
+    cap_events_df["Year"] = cap_events_df["event_date"].apply(lambda d: pd.Timestamp(d).year).astype("Int64")
+    # Sort by date
+    cap_events_df = cap_events_df.sort_values("event_date").reset_index(drop=True)
 
 # ============================================================
 # 📊 ANNUAL OPERATING FORECAST & WATERFALL SUMMARY
@@ -2499,12 +2553,63 @@ if loan_sched is not None and not loan_sched.empty:
             use_container_width=True
         )
 
-if not cap_events_df.empty:
-    with st.expander("Capital Events"):
-        disp = cap_events_df.sort_values("event_date").copy()
-        disp2 = disp.copy()
-        disp2["amount"] = disp2["amount"].map(lambda x: f"{x:,.0f}")
-        st.dataframe(disp2[["event_date", "event_type", "amount"]], use_container_width=True)
+# ============================================================
+# XIRR CASH FLOWS TABLE
+# ============================================================
+# Build a table showing all cash flows used for XIRR calculation
+# Columns: Date, Description, Pref Equity, Ptr Equity, Deal
+xirr_cf_rows = []
+
+# Collect cashflows from all partners
+for partner in sorted(all_partners):
+    state = cf_investors.get(partner) or cap_investors.get(partner)
+    if state and state.cashflows:
+        # Determine if this is Pref Equity (PPI) or Partner Equity (OP)
+        is_pref_equity = not partner.upper().startswith("OP")
+
+        for cf_date, cf_amount in state.cashflows:
+            # Determine description based on sign
+            if cf_amount < 0:
+                description = "Contribution"
+            else:
+                description = "Distribution"
+
+            xirr_cf_rows.append({
+                "Date": cf_date,
+                "Description": description,
+                "Partner": partner,
+                "is_pref": is_pref_equity,
+                "Amount": cf_amount
+            })
+
+if xirr_cf_rows:
+    xirr_cf_df = pd.DataFrame(xirr_cf_rows)
+
+    # Pivot to get Pref Equity vs Ptr Equity columns
+    # Group by Date and Description, sum amounts by equity type
+    grouped = xirr_cf_df.groupby(["Date", "Description", "is_pref"])["Amount"].sum().reset_index()
+
+    # Pivot to separate Pref and Ptr columns
+    pref_df = grouped[grouped["is_pref"] == True][["Date", "Description", "Amount"]].rename(columns={"Amount": "Pref Equity"})
+    ptr_df = grouped[grouped["is_pref"] == False][["Date", "Description", "Amount"]].rename(columns={"Amount": "Ptr Equity"})
+
+    # Merge on Date and Description
+    final_df = pd.merge(pref_df, ptr_df, on=["Date", "Description"], how="outer").fillna(0)
+
+    # Calculate Deal total
+    final_df["Deal"] = final_df["Pref Equity"] + final_df["Ptr Equity"]
+
+    # Sort by date ascending
+    final_df = final_df.sort_values("Date").reset_index(drop=True)
+
+    # Format for display
+    display_df = final_df.copy()
+    display_df["Pref Equity"] = display_df["Pref Equity"].map(lambda x: f"({abs(x):,.0f})" if x < 0 else f"{x:,.0f}" if x != 0 else "")
+    display_df["Ptr Equity"] = display_df["Ptr Equity"].map(lambda x: f"({abs(x):,.0f})" if x < 0 else f"{x:,.0f}" if x != 0 else "")
+    display_df["Deal"] = display_df["Deal"].map(lambda x: f"({abs(x):,.0f})" if x < 0 else f"{x:,.0f}" if x != 0 else "")
+
+    with st.expander("XIRR Cash Flows"):
+        st.dataframe(display_df[["Date", "Description", "Pref Equity", "Ptr Equity", "Deal"]], use_container_width=True)
 
 # ============================================================
 # ONE PAGER INVESTOR REPORT

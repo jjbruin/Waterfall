@@ -32,7 +32,7 @@ def xnpv(rate: float, cfs: List[Tuple[date, float]]) -> float:
 
     npv = 0.0
     for d, amount in cfs:
-        years = (d - t0).days / 365.25
+        years = (d - t0).days / 365.0  # Use 365 to match Excel XIRR convention
         npv += amount / ((1 + rate) ** years)
 
     return npv
