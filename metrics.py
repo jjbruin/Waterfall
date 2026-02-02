@@ -71,23 +71,42 @@ def xirr(cfs: List[Tuple[date, float]]) -> Optional[float]:
 
 def calculate_roe(
     capital_events: List[Tuple[date, float]],
-    distributions: List[Tuple[date, float]],
+    cf_distributions: List[Tuple[date, float]],
     start_date: date,
     end_date: date
 ) -> float:
     """
-    Return on Equity: Cash distributions / Weighted Average Capital Outstanding
+    Annualized Return on Equity: (CF Distributions / Weighted Average Capital) annualized
+
+    ROE measures operating cash return on invested capital:
+    - Numerator: Only CF waterfall distributions (operating income)
+    - Excludes return of capital (Cap_WF) and balance sheet cash at sale
+    - Denominator: Time-weighted average capital outstanding
+    - Capital balance is reduced by capital returns (Cap_WF), not CF distributions
+    - Days with zero capital balance contribute zero to weighted average
 
     Args:
-        capital_events: [(date, amount)] where amount < 0 is contribution, > 0 is return
-        distributions: [(date, amount)] where amount > 0 is income distribution
-        start_date: Period start
-        end_date: Period end
+        capital_events: [(date, amount)] where amount < 0 is contribution, > 0 is capital return
+                        Used for weighted average capital calculation
+        cf_distributions: [(date, amount)] CF waterfall distributions only (amount > 0)
+                          Operating income for ROE numerator
+        start_date: Period start (typically first funding date)
+        end_date: Period end (typically sale date)
 
     Returns:
-        ROE as decimal (e.g., 0.12 for 12%)
+        Annualized ROE as decimal (e.g., 0.12 for 12% per year)
     """
-    # Build capital balance timeline
+    # Calculate total contributions (invested capital)
+    total_contributions = sum(
+        -amt for d, amt in capital_events
+        if amt < 0 and start_date <= d <= end_date
+    )
+
+    if total_contributions <= 0:
+        return 0.0
+
+    # Build capital balance timeline from capital events
+    # (contributions and capital returns, NOT CF distributions)
     events = []
 
     for d, amt in capital_events:
@@ -112,11 +131,12 @@ def calculate_roe(
         days = (evt_date - prev_date).days
         total_weighted_capital += current_balance * days
 
-        # Update balance
-        current_balance += change
+        # Update balance (floor at 0 - can't have negative capital outstanding)
+        current_balance = max(0, current_balance + change)
         prev_date = evt_date
 
-    # Add weighted capital for final period
+    # Add weighted capital for final period (to end_date/sale date)
+    # If capital is fully returned, this contributes 0 (balance is 0)
     days = (end_date - prev_date).days
     total_weighted_capital += current_balance * days
 
@@ -130,14 +150,21 @@ def calculate_roe(
     if weighted_avg_capital <= 0:
         return 0.0
 
-    # Total distributions in period
-    total_distributions = sum(
-        amt for d, amt in distributions
-        if start_date <= d <= end_date
+    # Calculate years for annualization
+    years = total_days / 365.0
+
+    if years <= 0:
+        return 0.0
+
+    # Sum CF waterfall distributions (operating income only)
+    total_cf_distributions = sum(
+        amt for d, amt in cf_distributions
+        if amt > 0 and start_date <= d <= end_date
     )
 
-    # ROE = distributions / weighted avg capital
-    return total_distributions / weighted_avg_capital
+    # Annualized ROE = (CF distributions / weighted avg capital) / years
+    # Note: Only CF waterfall distributions count, not return of capital or gain on sale
+    return (total_cf_distributions / weighted_avg_capital) / years
 
 
 def calculate_moic(
@@ -178,7 +205,7 @@ def investor_metrics(
     Calculate all three metrics: IRR, ROE, MOIC
 
     Args:
-        ist: InvestorState with cashflows populated
+        ist: InvestorState with cashflows and cf_distributions populated
         as_of_date: Calculation date
         inception_date: Start date for ROE calc (defaults to first contribution)
         unrealized_nav: Current value of unrealized investment
@@ -193,14 +220,18 @@ def investor_metrics(
             'MOIC': 0.0,
             'TotalContributions': 0.0,
             'TotalDistributions': 0.0,
+            'CFDistributions': 0.0,
             'CapitalOutstanding': ist.capital_outstanding
         }
 
-    # Separate contributions and distributions
+    # Separate contributions and all distributions
     contributions = [(d, a) for d, a in ist.cashflows if a < 0]
     distributions = [(d, a) for d, a in ist.cashflows if a > 0]
 
-    # Capital events (all cashflows)
+    # CF waterfall distributions only (for ROE)
+    cf_distributions = ist.cf_distributions if hasattr(ist, 'cf_distributions') else []
+
+    # Capital events (all cashflows - used for weighted average capital)
     capital_events = ist.cashflows.copy()
 
     # For unrealized IRR, add terminal value
@@ -211,17 +242,19 @@ def investor_metrics(
     # Calculate IRR
     irr = xirr(cfs_with_terminal)
 
-    # Calculate ROE
+    # Calculate ROE using CF distributions only (not capital returns)
     if inception_date is None and contributions:
         inception_date = min(d for d, _ in contributions)
 
     if inception_date is None:
         roe = 0.0
     else:
-        roe = calculate_roe(capital_events, distributions, inception_date, as_of_date)
+        roe = calculate_roe(capital_events, cf_distributions, inception_date, as_of_date)
 
-    # Calculate MOIC
+    # Calculate MOIC (uses all distributions including capital returns)
     moic = calculate_moic(contributions, distributions, unrealized_nav)
+
+    total_cf_dist = sum(a for _, a in cf_distributions) if cf_distributions else 0.0
 
     return {
         'IRR': irr,
@@ -229,6 +262,7 @@ def investor_metrics(
         'MOIC': moic,
         'TotalContributions': abs(sum(a for _, a in contributions)),
         'TotalDistributions': sum(a for _, a in distributions),
+        'CFDistributions': total_cf_dist,
         'CapitalOutstanding': ist.capital_outstanding,
         'UnrealizedNAV': unrealized_nav
     }

@@ -11,6 +11,7 @@ Multi-layer architecture:
 
 import streamlit as st
 import pandas as pd
+import sqlite3
 from pathlib import Path
 from datetime import date
 
@@ -28,6 +29,7 @@ from reporting import *
 from ownership_tree import *
 from capital_calls import *
 from cash_management import *
+from consolidation import build_consolidated_forecast, get_sub_portfolio_summary
 
 # ============================================================
 # STREAMLIT CONFIG
@@ -41,22 +43,32 @@ st.title("Multi-Layer Waterfall Model")
 # ============================================================
 with st.sidebar:
     st.header("Data Source")
-    
+
     CLOUD = is_streamlit_cloud()
-    
+
     if CLOUD:
         mode = "Upload CSVs"
         st.info("Running on Streamlit Cloud – local folders disabled. Upload CSVs.")
     else:
-        mode = st.radio("Load data from:", ["Local folder", "Upload CSVs"], index=0)
+        mode = st.radio("Load data from:", ["SQLite Database", "Local folder", "Upload CSVs"], index=0)
     
     folder = None
     uploads = {}
-    
-    if mode == "Local folder":
+    db_path = None
+
+    if mode == "SQLite Database":
+        db_path = st.text_input("Database path", value="waterfall.db", placeholder="waterfall.db")
+        st.caption("Loads all data from SQLite database including relationships for sub-portfolio consolidation.")
+        if st.button("🔄 Reload Data"):
+            if 'cached_data' in st.session_state:
+                del st.session_state.cached_data
+            if 'data_cache_key' in st.session_state:
+                del st.session_state.data_cache_key
+            st.rerun()
+    elif mode == "Local folder":
         folder = st.text_input("Data folder path", placeholder=r"C:\Path\To\Data")
         st.caption("**Required:** investment_map.csv, waterfalls.csv, coa.csv, accounting_feed.csv, forecast_feed.csv")
-        st.caption("**Optional:** MRI_Loans.csv, MRI_Supp.csv, MRI_Val.csv")
+        st.caption("**Optional:** MRI_Loans.csv, MRI_Supp.csv, MRI_Val.csv, MRI_IA_Relationship.csv")
         st.caption("**Portfolio:** fund_deals.csv, investor_waterfalls.csv, investor_accounting.csv")
     else:
         st.subheader("Required Files")
@@ -90,24 +102,79 @@ with st.sidebar:
 # DATA LOADING
 # ============================================================
 def load_inputs():
-    """Load all CSV files"""
+    """Load data from SQLite, CSV folder, or uploaded files"""
     if CLOUD and mode == "Local folder":
         st.error("Local folder mode disabled on Streamlit Cloud.")
         st.stop()
-    
+
     # Create a cache key based on mode and folder/uploads
-    if mode == "Local folder":
+    if mode == "SQLite Database":
+        cache_key = f"db_{db_path}"
+    elif mode == "Local folder":
         cache_key = f"local_{folder}"
     else:
         # For uploads, create key from uploaded file names
         cache_key = f"upload_{len([k for k, v in uploads.items() if v is not None])}"
-    
+
     # Check if data is already loaded in session state
     if 'data_cache_key' in st.session_state and st.session_state.data_cache_key == cache_key:
         if 'cached_data' in st.session_state:
             return st.session_state.cached_data
-    
-    if mode == "Local folder":
+
+    if mode == "SQLite Database":
+        if not db_path or not Path(db_path).exists():
+            st.error(f"Database not found: {db_path}")
+            st.stop()
+
+        conn = sqlite3.connect(db_path)
+
+        # Load required tables
+        inv = pd.read_sql('SELECT * FROM deals', conn)
+        wf = pd.read_sql('SELECT * FROM waterfalls', conn)
+        coa_raw = pd.read_sql('SELECT * FROM coa', conn)
+        coa = load_coa(coa_raw)
+        acct = pd.read_sql('SELECT * FROM accounting', conn)
+        fc_raw = pd.read_sql('SELECT * FROM forecasts', conn)
+        fc = load_forecast(fc_raw, coa, int(pro_yr_base))
+
+        # Optional tables
+        try:
+            mri_loans_raw = pd.read_sql('SELECT * FROM loans', conn)
+        except:
+            mri_loans_raw = pd.DataFrame()
+
+        try:
+            mri_val = pd.read_sql('SELECT * FROM valuations', conn)
+        except:
+            mri_val = pd.DataFrame()
+
+        # Relationships table (key for sub-portfolio consolidation)
+        try:
+            relationships_raw = pd.read_sql('SELECT * FROM relationships', conn)
+        except:
+            relationships_raw = None
+
+        # Capital calls
+        try:
+            capital_calls_raw = pd.read_sql('SELECT * FROM capital_calls', conn)
+        except:
+            capital_calls_raw = None
+
+        # ISBS (balance sheet for cash balances)
+        try:
+            isbs_raw = pd.read_sql('SELECT * FROM isbs', conn)
+        except:
+            isbs_raw = None
+
+        # Not typically in DB
+        mri_supp = pd.DataFrame()
+        fund_deals_raw = pd.DataFrame()
+        inv_wf_raw = pd.DataFrame()
+        inv_acct_raw = pd.DataFrame()
+
+        conn.close()
+
+    elif mode == "Local folder":
         if not folder:
             st.error("Enter data folder path.")
             st.stop()
@@ -148,41 +215,46 @@ def load_inputs():
         inv_wf_raw = pd.read_csv(uploads["investor_waterfalls"]) if uploads.get("investor_waterfalls") else pd.DataFrame()
         inv_acct_raw = pd.read_csv(uploads["investor_accounting"]) if uploads.get("investor_accounting") else pd.DataFrame()
     
-    # Capital calls file
-    capital_calls_raw = None
+    # Capital calls file (only for Local folder and Upload modes - SQLite loads it above)
     if mode == "Local folder":
+        capital_calls_raw = None
         cc_path = Path(f"{folder}/MRI_Capital_Calls.csv")
         if cc_path.exists():
             capital_calls_raw = pd.read_csv(cc_path)
-    elif uploads.get("capital_calls"):
-        capital_calls_raw = pd.read_csv(uploads["capital_calls"])
-    
-    # ISBS (balance sheet) file for cash balances
-    isbs_raw = None
+    elif mode == "Upload CSVs":
+        capital_calls_raw = None
+        if uploads.get("capital_calls"):
+            capital_calls_raw = pd.read_csv(uploads["capital_calls"])
+
+    # ISBS (balance sheet) file for cash balances (only for Local folder and Upload modes)
     if mode == "Local folder":
+        isbs_raw = None
         isbs_path = Path(f"{folder}/ISBS_Download.csv")
         if isbs_path.exists():
             try:
-                # Standard CSV file
                 isbs_raw = pd.read_csv(isbs_path, encoding='utf-8')
             except Exception as e:
                 print(f"Warning: Could not load ISBS file: {e}")
                 isbs_raw = None
-    elif uploads.get("isbs"):
-        try:
-            isbs_raw = pd.read_csv(uploads["isbs"], encoding='utf-8')
-        except Exception as e:
-            print(f"Warning: Could not load uploaded ISBS file: {e}")
-            isbs_raw = None
+    elif mode == "Upload CSVs":
+        isbs_raw = None
+        if uploads.get("isbs"):
+            try:
+                isbs_raw = pd.read_csv(uploads["isbs"], encoding='utf-8')
+            except Exception as e:
+                print(f"Warning: Could not load uploaded ISBS file: {e}")
+                isbs_raw = None
     
-    # Relationship file
-    relationships_raw = None
+    # Relationship file (only for Local folder and Upload modes - SQLite loads it above)
     if mode == "Local folder":
+        relationships_raw = None
         rel_path = Path(f"{folder}/MRI_IA_Relationship.csv")
         if rel_path.exists():
             relationships_raw = pd.read_csv(rel_path)
-    elif uploads.get("relationships"):
-        relationships_raw = pd.read_csv(uploads["relationships"])
+    elif mode == "Upload CSVs":
+        relationships_raw = None
+        if uploads.get("relationships"):
+            relationships_raw = pd.read_csv(uploads["relationships"])
 
     # Normalize investment map
     inv.columns = [str(c).strip() for c in inv.columns]
@@ -191,18 +263,18 @@ def load_inputs():
     inv["vcode"] = inv["vcode"].astype(str)
     
     # Prepare return data
-    result = (inv, wf, acct, fc, mri_loans_raw, mri_supp, mri_val, fund_deals_raw, inv_wf_raw, inv_acct_raw, relationships_raw, capital_calls_raw, isbs_raw)
-    
+    result = (inv, wf, acct, fc, coa, mri_loans_raw, mri_supp, mri_val, fund_deals_raw, inv_wf_raw, inv_acct_raw, relationships_raw, capital_calls_raw, isbs_raw)
+
     # Cache in session state
     st.session_state.cached_data = result
     st.session_state.data_cache_key = cache_key
-    
+
     return result
 
 
 # Load data with progress indicator
 with st.spinner("Loading data..."):
-    inv, wf, acct, fc, mri_loans_raw, mri_supp, mri_val, fund_deals_raw, inv_wf_raw, inv_acct_raw, relationships_raw, capital_calls_raw, isbs_raw = load_inputs()
+    inv, wf, acct, fc, coa, mri_loans_raw, mri_supp, mri_val, fund_deals_raw, inv_wf_raw, inv_acct_raw, relationships_raw, capital_calls_raw, isbs_raw = load_inputs()
 
 
 # ============================================================
@@ -237,34 +309,328 @@ with st.spinner(f"Generating report for {selected_label}..."):
 # DEAL HEADER
 # ============================================================
 st.markdown("### Deal Summary")
+# ============================================================
+# DEAL HEADER - Option B: Compact Header + Data Table
+# ============================================================
+
+# Get capitalization data
+def get_deal_capitalization(acct, inv, wf, mri_val, mri_loans, deal_vcode):
+    """Calculate deal capitalization from accounting_feed.
+    
+    Equity = Contributions + Return of Capital distributions.
+    InvestorID links to PropCode in waterfalls.
+    InvestmentID links to vcode via investment_map.
+    """
+    from loaders import build_investmentid_to_vcode
+    
+    cap_data = {
+        'as_of_date': None,
+        'debt': 0.0,
+        'pref_equity': 0.0,
+        'partner_equity': 0.0,
+        'total_cap': 0.0,
+        'current_valuation': 0.0,
+        'cap_rate': 0.0,
+        'pe_exposure_cap': 0.0,
+        'pe_exposure_value': 0.0,
+    }
+    
+    try:
+        inv_to_vcode = build_investmentid_to_vcode(inv)
+        deal_investment_ids = [iid for iid, vc in inv_to_vcode.items() if str(vc) == str(deal_vcode)]
+        acct_norm = acct.copy()
+        acct_norm.columns = [str(c).strip() for c in acct_norm.columns]
+        acct_norm["InvestmentID"] = acct_norm["InvestmentID"].astype(str).str.strip()
+        deal_acct = acct_norm[acct_norm["InvestmentID"].isin(deal_investment_ids)].copy()
+
+        if not deal_acct.empty:
+            if 'EffectiveDate' in deal_acct.columns:
+                deal_acct['EffectiveDate'] = pd.to_datetime(deal_acct['EffectiveDate'], errors='coerce')
+                cap_data['as_of_date'] = deal_acct['EffectiveDate'].max()
+            deal_acct["MajorType"] = deal_acct["MajorType"].fillna("").astype(str).str.strip()
+            deal_acct["Amt"] = pd.to_numeric(deal_acct["Amt"], errors="coerce").fillna(0.0)
+            if "TypeName" not in deal_acct.columns and "Typename" in deal_acct.columns:
+                deal_acct["TypeName"] = deal_acct["Typename"]
+            elif "TypeName" not in deal_acct.columns:
+                deal_acct["TypeName"] = ""
+            deal_acct["TypeName"] = deal_acct["TypeName"].fillna("").astype(str).str.strip()
+            deal_acct["InvestorID"] = deal_acct["InvestorID"].astype(str).str.strip()
+            # Calculate equity balances per investor
+            # InvestorID starting with "OP" = Partner Equity, otherwise = Preferred Equity
+            investor_balances = {}
+            for _, row in deal_acct.iterrows():
+                investor_id = row["InvestorID"]
+                major_type = row["MajorType"].lower()
+                type_name = row["TypeName"].lower()
+                amt = float(row["Amt"])
+                if investor_id not in investor_balances:
+                    investor_balances[investor_id] = 0.0
+                if "contrib" in major_type:
+                    investor_balances[investor_id] += abs(amt)
+                if "distri" in major_type and "return of capital" in type_name:
+                    investor_balances[investor_id] -= abs(amt)
+            for investor_id, balance in investor_balances.items():
+                # InvestorID starting with "OP" indicates Operating Partner (Partner Equity)
+                if investor_id.upper().startswith("OP"):
+                    cap_data['partner_equity'] += max(0, balance)
+                else:
+                    cap_data['pref_equity'] += max(0, balance)
+        # Get debt from MRI_Loans if available
+        if mri_loans is not None and not mri_loans.empty:
+            mri_loans_copy = mri_loans.copy()
+            mri_loans_copy.columns = [str(col).strip() for col in mri_loans_copy.columns]
+            if 'vCode' not in mri_loans_copy.columns and 'vcode' in mri_loans_copy.columns:
+                mri_loans_copy = mri_loans_copy.rename(columns={'vcode': 'vCode'})
+            if 'vCode' in mri_loans_copy.columns:
+                mri_loans_copy['vCode'] = mri_loans_copy['vCode'].astype(str)
+                deal_loans = mri_loans_copy[mri_loans_copy['vCode'] == str(deal_vcode)]
+                if not deal_loans.empty and 'mOrigLoanAmt' in deal_loans.columns:
+                    cap_data['debt'] = pd.to_numeric(deal_loans['mOrigLoanAmt'], errors='coerce').fillna(0).sum()
+        cap_data['total_cap'] = cap_data['debt'] + cap_data['pref_equity'] + cap_data['partner_equity']
+        if mri_val is not None and not mri_val.empty:
+            mri_val_copy = mri_val.copy()
+            mri_val_copy.columns = [str(c).strip() for c in mri_val_copy.columns]
+            if 'vcode' not in mri_val_copy.columns and 'vCode' in mri_val_copy.columns:
+                mri_val_copy = mri_val_copy.rename(columns={'vCode': 'vcode'})
+            if 'vcode' in mri_val_copy.columns:
+                mri_val_copy['vcode'] = mri_val_copy['vcode'].astype(str)
+                val_deal = mri_val_copy[mri_val_copy['vcode'] == str(deal_vcode)]
+                if not val_deal.empty:
+                    if 'mIncomeCapConcludedValue' in val_deal.columns:
+                        val = val_deal['mIncomeCapConcludedValue'].iloc[-1]
+                        cap_data['current_valuation'] = float(val) if pd.notna(val) else 0.0
+                    if 'fCapRate' in val_deal.columns:
+                        rate = val_deal['fCapRate'].iloc[-1]
+                        cap_data['cap_rate'] = float(rate) if pd.notna(rate) else 0.0
+        senior_exposure = cap_data['debt'] + cap_data['pref_equity']
+        if cap_data['total_cap'] > 0:
+            cap_data['pe_exposure_cap'] = senior_exposure / cap_data['total_cap']
+        if cap_data['current_valuation'] > 0:
+            cap_data['pe_exposure_value'] = senior_exposure / cap_data['current_valuation']
+    except Exception as e:
+        import traceback
+        print(f"Error in get_deal_capitalization: {e}")
+        print(traceback.format_exc())
+
+    return cap_data
+
+# Calculate capitalization (loan_sched will be defined after loan modeling, so we'll update this later)
+# For now, get what we can without loan data
+cap_data = get_deal_capitalization(acct, inv, wf, mri_val, mri_loans_raw, deal_vcode)
+
+# Format the as_of date
+as_of_str = ""
+if cap_data['as_of_date']:
+    as_of_str = pd.Timestamp(cap_data['as_of_date']).strftime('%m/%Y')
+
+# Build the Option B header with capitalization table
 st.markdown(
     f"""
-    <div style="padding:14px 16px;border:1px solid #e6e6e6;border-radius:12px;background:#fafafa;">
-      <div style="font-size:20px;font-weight:700;line-height:1.2;">{selected_row.get('Investment_Name','')}</div>
-      <div style="margin-top:6px;color:#555;">
-        <span style="margin-right:14px;"><b>vCode:</b> {deal_vcode}</span>
-        <span style="margin-right:14px;"><b>InvestmentID:</b> {selected_row.get('InvestmentID','')}</span>
-        <span style="margin-right:14px;"><b>Operating Partner:</b> {selected_row.get('Operating_Partner','')}</span>
-      </div>
+    <style>
+        .deal-header {{
+            background: linear-gradient(135deg, #1e3a5f 0%, #2c5282 100%);
+            color: white;
+            padding: 12px 16px;
+            border-radius: 8px 8px 0 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }}
+        .deal-title {{
+            font-size: 24px;
+            font-weight: 700;
+        }}
+        .asset-badge {{
+            background: rgba(255,255,255,0.2);
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-size: 15px;
+        }}
+        .deal-table {{
+            width: 100%;
+            border-collapse: collapse;
+            border: 1px solid #e0e0e0;
+            border-top: none;
+            border-radius: 0 0 8px 8px;
+            overflow: hidden;
+        }}
+        .deal-table td {{
+            padding: 4px 8px;
+            font-size: 14px;
+            border-bottom: 1px solid #f0f0f0;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            height: 28px;
+            vertical-align: middle;
+        }}
+        .deal-table tr:nth-child(even) {{
+            background: #f9f9f9;
+        }}
+        .deal-table tr:nth-child(odd) {{
+            background: #ffffff;
+        }}
+        .deal-table .label {{
+            font-weight: 600;
+            color: #444;
+            width: 18%;
+        }}
+        .deal-table .value {{
+            color: #222;
+            width: 22%;
+        }}
+        .deal-table .spacer {{
+            width: 2%;
+            border-right: 2px solid #e0e0e0;
+        }}
+        .deal-table .cap-label {{
+            font-weight: 600;
+            color: #444;
+            width: 28%;
+        }}
+        .deal-table .cap-value {{
+            color: #222;
+            text-align: right;
+            width: 30%;
+        }}
+        .cap-header {{
+            font-weight: 700;
+            color: #1e3a5f;
+            font-size: 15px;
+            border-bottom: 2px solid #1e3a5f !important;
+        }}
+
+        /* Smaller metrics for Deal-Level Summary and Cash Management */
+        [data-testid="stMetricValue"] {{
+            font-size: 1.1rem !important;
+        }}
+        [data-testid="stMetricLabel"] {{
+            font-size: 0.85rem !important;
+        }}
+        [data-testid="stMetricDelta"] {{
+            font-size: 0.75rem !important;
+        }}
+    </style>
+    
+    <div class="deal-header">
+        <span class="deal-title">{selected_row.get('Investment_Name','')}</span>
+        <span class="asset-badge">{selected_row.get('Asset_Type', '—') or '—'}</span>
     </div>
+    <table class="deal-table">
+        <tr>
+            <td class="label">vCode</td>
+            <td class="value">{deal_vcode}</td>
+            <td class="spacer"></td>
+            <td class="cap-header" colspan="2">Capitalization {f'(as of {as_of_str})' if as_of_str else ''}</td>
+        </tr>
+        <tr>
+            <td class="label">Investment ID</td>
+            <td class="value">{selected_row.get('InvestmentID','')}</td>
+            <td class="spacer"></td>
+            <td class="cap-label">Debt</td>
+            <td class="cap-value">${cap_data['debt']:,.0f}</td>
+        </tr>
+        <tr>
+            <td class="label">OP</td>
+            <td class="value">{selected_row.get('Operating_Partner','')}</td>
+            <td class="spacer"></td>
+            <td class="cap-label">Pref Equity</td>
+            <td class="cap-value">${cap_data['pref_equity']:,.0f}</td>
+        </tr>
+        <tr>
+            <td class="label">Units</td>
+            <td class="value">{fmt_int(selected_row.get('Total_Units', ''))}</td>
+            <td class="spacer"></td>
+            <td class="cap-label">Ptr Equity</td>
+            <td class="cap-value">${cap_data['partner_equity']:,.0f}</td>
+        </tr>
+        <tr>
+            <td class="label">Sqf</td>
+            <td class="value">{fmt_num(selected_row.get('Size_Sqf', ''))}</td>
+            <td class="spacer"></td>
+            <td class="cap-label" style="border-top: 1px solid #ccc;">Total Cap</td>
+            <td class="cap-value" style="border-top: 1px solid #ccc; font-weight: 600;">${cap_data['total_cap']:,.0f}</td>
+        </tr>
+        <tr>
+            <td class="label">Lifecycle</td>
+            <td class="value">{selected_row.get('Lifecycle', '—') or '—'}</td>
+            <td class="spacer"></td>
+            <td class="cap-label">Valuation</td>
+            <td class="cap-value">${cap_data['current_valuation']:,.0f}</td>
+        </tr>
+        <tr>
+            <td class="label">Acq Date</td>
+            <td class="value">{fmt_date(selected_row.get('Acquisition_Date', ''))}</td>
+            <td class="spacer"></td>
+            <td class="cap-label">Cap Rate</td>
+            <td class="cap-value">{cap_data['cap_rate']:.2%}</td>
+        </tr>
+        <tr>
+            <td class="label"></td>
+            <td class="value"></td>
+            <td class="spacer"></td>
+            <td class="cap-label">PE Exp (Cap)</td>
+            <td class="cap-value">{cap_data['pe_exposure_cap']:.1%}</td>
+        </tr>
+        <tr>
+            <td class="label"></td>
+            <td class="value"></td>
+            <td class="spacer"></td>
+            <td class="cap-label">PE Exp (Val)</td>
+            <td class="cap-value">{cap_data['pe_exposure_value']:.1%}</td>
+        </tr>
+    </table>
     """,
     unsafe_allow_html=True
 )
 
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Asset Type", selected_row.get("Asset_Type", "—") or "—")
-c2.metric("Total Units", fmt_int(selected_row.get("Total_Units", "")))
-c3.metric("Size (Sqf)", fmt_num(selected_row.get("Size_Sqf", "")))
-c4.metric("Lifecycle", selected_row.get("Lifecycle", "—") or "—")
-
-c5, c6, c7, c8 = st.columns(4)
-c5.metric("Acquisition Date", fmt_date(selected_row.get("Acquisition_Date", "")))
+st.write("")  # Add some spacing
 
 
 # ============================================================
-# FORECAST & LOAN MODELING
+# FORECAST & LOAN MODELING (with sub-portfolio consolidation)
 # ============================================================
-fc_deal_full = fc[fc["vcode"].astype(str) == str(deal_vcode)].copy()
+debug_msgs = []
+
+# Check for sub-portfolio consolidation
+deal_investment_id = str(selected_row.get('InvestmentID', ''))
+consolidation_info = None
+
+if relationships_raw is not None and not relationships_raw.empty:
+    # Try consolidation for sub-portfolio deals
+    consolidated_fc, consolidated_loans, consolidation_info = build_consolidated_forecast(
+        deal_investment_id=deal_investment_id,
+        deals=inv,
+        relationships=relationships_raw,
+        forecasts=fc,
+        loans=mri_loans_raw if mri_loans_raw is not None else pd.DataFrame(),
+        debug=True
+    )
+
+    if consolidation_info.get('is_sub_portfolio', False):
+        fc_raw = consolidated_fc.copy()
+        source = consolidation_info.get('forecast_source', 'unknown')
+
+        # Check if data is already processed (deal_level returns already-processed data)
+        if 'vAccountType' in fc_raw.columns and 'mAmount_norm' in fc_raw.columns:
+            # Already processed, just use it
+            fc_deal_full = fc_raw.copy()
+        else:
+            # Needs processing (properties_aggregated returns raw aggregated data)
+            if 'vcode' in fc_raw.columns and 'Vcode' not in fc_raw.columns:
+                fc_raw = fc_raw.rename(columns={'vcode': 'Vcode'})
+            fc_deal_full = load_forecast(fc_raw, coa, int(pro_yr_base))
+
+        prop_count = consolidation_info.get('property_count', 0)
+        debug_msgs.append(f"Sub-portfolio deal: {prop_count} properties consolidated ({source})")
+        st.info(f"📦 Sub-portfolio: {prop_count} properties consolidated from {source}")
+    else:
+        fc_deal_full = fc[fc["vcode"].astype(str) == str(deal_vcode)].copy()
+        debug_msgs.append(f"Not a sub-portfolio deal (InvestmentID: {deal_investment_id})")
+else:
+    fc_deal_full = fc[fc["vcode"].astype(str) == str(deal_vcode)].copy()
+    debug_msgs.append(f"No relationships data loaded - consolidation skipped")
+
 if fc_deal_full.empty:
     st.error(f"No forecast rows for vcode {deal_vcode}")
     st.stop()
@@ -290,11 +656,15 @@ if sale_date < month_end(model_start):
 sale_me = month_end(sale_date)
 
 # Build loan schedules
-debug_msgs = []
 loan_sched = pd.DataFrame()
 loans = []
 
-if mri_loans_raw is not None and not mri_loans_raw.empty:
+# Use consolidated loans for sub-portfolios, or filter by vcode for regular deals
+if consolidation_info and consolidation_info.get('is_sub_portfolio', False) and not consolidated_loans.empty:
+    mri_loans = load_mri_loans(consolidated_loans)
+    loans.extend(build_loans_from_mri_loans(mri_loans))
+    debug_msgs.append(f"Loans loaded: {len(loans)} from deal/property level")
+elif mri_loans_raw is not None and not mri_loans_raw.empty:
     mri_loans = load_mri_loans(mri_loans_raw)
     mri_loans = mri_loans[mri_loans["vCode"].astype(str) == str(deal_vcode)].copy()
     loans.extend(build_loans_from_mri_loans(mri_loans))
@@ -371,6 +741,45 @@ fc_deal_modeled["Year"] = fc_deal_modeled["event_date"].apply(lambda d: pd.Times
 capital_events = []
 sale_dbg = None
 
+# Add historical Contribution and Distribution: Return of Capital events
+if 'deal_acct' in dir() and deal_acct is not None and not deal_acct.empty:
+    for _, row in deal_acct.iterrows():
+        major_type = str(row.get("MajorType", "")).strip().lower()
+        type_name = str(row.get("TypeName", "")).strip()
+        type_name_lower = type_name.lower()
+        amt = float(row.get("Amt", 0))
+
+        # Get the date
+        eff_date = row.get("EffectiveDate", None)
+        if eff_date is None:
+            continue
+        if isinstance(eff_date, str):
+            try:
+                eff_date = pd.to_datetime(eff_date).date()
+            except:
+                continue
+        elif hasattr(eff_date, 'date'):
+            eff_date = eff_date.date()
+        elif not isinstance(eff_date, date):
+            continue
+
+        # Include Contributions (from MajorType)
+        if "contrib" in major_type and amt != 0:
+            capital_events.append({
+                "vcode": str(deal_vcode),
+                "event_date": eff_date,
+                "event_type": "Contribution",
+                "amount": float(abs(amt)),
+            })
+        # Include Distribution: Return of Capital (from TypeName)
+        elif "return of capital" in type_name_lower and amt != 0:
+            capital_events.append({
+                "vcode": str(deal_vcode),
+                "event_date": eff_date,
+                "event_type": type_name,  # Use actual TypeName
+                "amount": float(abs(amt)),
+            })
+
 if mri_val is not None and not mri_val.empty:
     try:
         noi_12_sale = twelve_month_noi_after_date(fc_deal_modeled, sale_me)
@@ -416,23 +825,115 @@ after_sale_mask = fc_deal_display["event_date"] > sale_me
 fc_deal_display.loc[after_sale_mask, "mAmount_norm"] = 0.0
 
 # ============================================================
-# ANNUAL OPERATING FORECAST (with integrated waterfalls)
+# CAPITAL CALLS, CASH MANAGEMENT & WATERFALLS (Computation)
+# ============================================================
+# Load and build capital calls schedule
+capital_calls = []
+if capital_calls_raw is not None and not capital_calls_raw.empty:
+    try:
+        cc_df = load_capital_calls(capital_calls_raw)
+        if cc_df is not None and not cc_df.empty:
+            capital_calls = build_capital_call_schedule(cc_df, deal_vcode)
+            if capital_calls:
+                fc_deal_modeled = integrate_capital_calls_with_forecast(
+                    fc_deal_modeled, capital_calls
+                )
+    except Exception as e:
+        debug_msgs.append(f"Could not process capital calls: {str(e)}")
+        capital_calls = []
+
+# Load beginning cash balance from ISBS
+beginning_cash = 0.0
+if isbs_raw is not None and not isbs_raw.empty:
+    try:
+        beginning_cash = load_beginning_cash_balance(isbs_raw, deal_vcode, model_start)
+    except Exception as e:
+        debug_msgs.append(f"Could not load cash balance: {str(e)}")
+
+# Build cash flow schedule
+cash_summary = {}
+try:
+    fad_monthly = cashflows_monthly_fad(fc_deal_modeled)
+    cash_schedule = build_cash_flow_schedule_from_fad(
+        fad_monthly=fad_monthly,
+        capital_calls=capital_calls,
+        beginning_cash=beginning_cash,
+        deal_vcode=deal_vcode
+    )
+    cash_summary = summarize_cash_usage(cash_schedule)
+except Exception as e:
+    debug_msgs.append(f"Error building cash flow schedule: {str(e)}")
+    try:
+        fad_monthly_fallback = cashflows_monthly_fad(fc_deal_modeled)
+        cash_schedule = fad_monthly_fallback.copy()
+        cash_schedule['distributable'] = cash_schedule['fad']
+        cash_schedule['beginning_cash'] = beginning_cash
+        cash_schedule['ending_cash'] = beginning_cash
+    except:
+        cash_schedule = pd.DataFrame()
+
+# Prepare waterfall inputs
+cf_period_cash = cash_schedule[['event_date', 'distributable']].copy() if not cash_schedule.empty else pd.DataFrame(columns=['event_date', 'cash_available'])
+if not cf_period_cash.empty:
+    cf_period_cash = cf_period_cash.rename(columns={'distributable': 'cash_available'})
+
+remaining_cash_at_sale, _ = get_sale_period_total_cash(cash_schedule, sale_me) if not cash_schedule.empty else (0, None)
+
+if remaining_cash_at_sale > 0 and not cf_period_cash.empty:
+    sale_mask = cf_period_cash['event_date'] == sale_me
+    if sale_mask.any():
+        cf_period_cash.loc[sale_mask, 'cash_available'] += remaining_cash_at_sale
+    else:
+        cf_period_cash = pd.concat([
+            cf_period_cash,
+            pd.DataFrame([{'event_date': sale_me, 'cash_available': remaining_cash_at_sale}])
+        ], ignore_index=True).sort_values('event_date')
+
+cap_period_cash = pd.DataFrame(columns=["event_date", "cash_available"])
+if cap_events_df is not None and not cap_events_df.empty:
+    ce = cap_events_df.copy()
+    ce["event_date"] = pd.to_datetime(ce["event_date"]).dt.date
+    ce["event_date"] = ce["event_date"].apply(month_end)
+    cap_period_cash = ce.groupby("event_date", as_index=False)["amount"].sum().rename(columns={"amount": "cash_available"})
+
+if not cf_period_cash.empty:
+    cf_period_cash = cf_period_cash[cf_period_cash["event_date"] <= sale_me].copy()
+cap_period_cash = cap_period_cash[cap_period_cash["event_date"] <= sale_me].copy()
+
+# Load waterfalls and run
+wf_steps = load_waterfalls(wf)
+seed_states = seed_states_from_accounting(acct, inv, wf_steps, deal_vcode)
+
+if capital_calls:
+    try:
+        seed_states = apply_capital_calls_to_states(capital_calls, seed_states)
+    except Exception as e:
+        debug_msgs.append(f"Could not apply capital calls to investor states: {str(e)}")
+
+cf_alloc, cf_investors = run_waterfall(wf_steps, deal_vcode, "CF_WF", cf_period_cash, seed_states)
+cap_alloc, cap_investors = run_waterfall(wf_steps, deal_vcode, "Cap_WF", cap_period_cash, seed_states)
+
+# ============================================================
+# 📊 ANNUAL OPERATING FORECAST & WATERFALL SUMMARY
 # ============================================================
 st.divider()
-st.subheader("Annual Operating Forecast")
+st.header("📊 Annual Operating Forecast & Waterfall Summary")
 
-# Note: cf_alloc and cap_alloc will be passed after waterfalls run
-# For now, create the table structure - we'll update it after waterfalls
 proceeds_by_year = None
 if not cap_events_df.empty:
     proceeds_by_year = cap_events_df.groupby("Year")["amount"].sum()
 
-# Annual table will be displayed after waterfalls run (see below)
-
-st.caption(
-    f"Sale Date: {sale_me.isoformat()} — Operating cash flows and debt service display as 0 after this date. "
-    f"Full forecast retained internally for NOI-forward valuation."
+annual_df_raw = annual_aggregation_table(
+    fc_deal_display,
+    int(start_year),
+    int(horizon_years),
+    proceeds_by_year=proceeds_by_year,
+    cf_alloc=cf_alloc,
+    cap_alloc=cap_alloc
 )
+annual_df = pivot_annual_table(annual_df_raw)
+styled = style_annual_table(annual_df)
+st.dataframe(styled, use_container_width=True)
 
 if debug_msgs:
     with st.expander("Diagnostics"):
@@ -537,61 +1038,22 @@ if 'sale_dbg' in locals() and sale_dbg:
             st.markdown(f"### **Net Sale Proceeds: ${sale_dbg['Net_Sale_Proceeds']:,.0f}**")
             st.caption("(Remaining cash reserves will be added to CF waterfall at sale)")
 
-# Load and build capital calls schedule (but don't apply yet)
-capital_calls = []
-if capital_calls_raw is not None and not capital_calls_raw.empty:
-    try:
-        cc_df = load_capital_calls(capital_calls_raw)
-        if cc_df is not None and not cc_df.empty:
-            capital_calls = build_capital_call_schedule(cc_df, deal_vcode)
-            
-            # Only integrate with forecast if we have capital calls for this deal
-            if capital_calls:
-                # Integrate with forecast to show as cash inflow
-                fc_deal_modeled = integrate_capital_calls_with_forecast(
-                    fc_deal_modeled, capital_calls
-                )
-    except Exception as e:
-        st.warning(f"Note: Could not process capital calls data. Continuing without capital calls. ({str(e)})")
-        capital_calls = []
-
-
 # ============================================================
-# CASH MANAGEMENT & RESERVES
+# CASH MANAGEMENT & RESERVES (Display)
 # ============================================================
 st.divider()
 st.header("Cash Management & Reserves")
 
-# Load beginning cash balance from ISBS
-beginning_cash = 0.0
-if isbs_raw is not None and not isbs_raw.empty:
-    try:
-        beginning_cash = load_beginning_cash_balance(isbs_raw, deal_vcode, model_start)
-        st.success(f"✅ Beginning cash balance loaded: ${beginning_cash:,.2f}")
-    except Exception as e:
-        st.warning(f"Could not load cash balance from ISBS file: {str(e)}")
+if beginning_cash > 0:
+    st.success(f"✅ Beginning cash balance: ${beginning_cash:,.2f}")
 else:
     st.info("ℹ️ No ISBS file provided - starting with $0 cash balance")
 
-# Build cash flow schedule
-cash_summary = {}  # Initialize outside try block
-try:
-    # Get FAD using existing function (already works in the app)
-    fad_monthly = cashflows_monthly_fad(fc_deal_modeled)
-    
-    # Build cash schedule with pre-calculated FAD
-    cash_schedule = build_cash_flow_schedule_from_fad(
-        fad_monthly=fad_monthly,
-        capital_calls=capital_calls,
-        beginning_cash=beginning_cash,
-        deal_vcode=deal_vcode
-    )
-    
-    # Show cash schedule summary
+if not cash_schedule.empty:
     with st.expander("📊 Cash Flow Schedule", expanded=False):
         st.dataframe(
             cash_schedule[[
-                'event_date', 'beginning_cash', 'capital_call', 'capex_paid', 
+                'event_date', 'beginning_cash', 'capital_call', 'capex_paid',
                 'operating_cf', 'deficit_covered', 'distributable', 'ending_cash'
             ]].style.format({
                 'beginning_cash': '${:,.0f}',
@@ -604,133 +1066,35 @@ try:
             }),
             use_container_width=True
         )
-    
-    # Show summary statistics
-    cash_summary = summarize_cash_usage(cash_schedule)
-    
+
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Beginning Cash", f"${cash_summary.get('beginning_cash', 0):,.0f}")
     col2.metric("Total CapEx Paid", f"${cash_summary.get('total_capex_paid', 0):,.0f}")
     col3.metric("Total Distributable", f"${cash_summary.get('total_distributable', 0):,.0f}")
     col4.metric("Ending Cash", f"${cash_summary.get('ending_cash', 0):,.0f}")
-    
-    # Flag if cash went negative
+
     if cash_summary.get('min_cash_balance', 0) < 0:
         st.warning(f"⚠️ Cash balance went negative (lowest: ${cash_summary.get('min_cash_balance', 0):,.0f}). Consider additional capital calls or reducing CapEx.")
-    
-except Exception as e:
-    st.error(f"Error building cash flow schedule: {str(e)}")
-    import traceback
-    st.code(traceback.format_exc())
-    # Create empty schedule as fallback using FAD
-    try:
-        fad_monthly_fallback = cashflows_monthly_fad(fc_deal_modeled)
-        cash_schedule = fad_monthly_fallback.copy()
-        cash_schedule['distributable'] = cash_schedule['fad']
-        cash_schedule['beginning_cash'] = beginning_cash
-        cash_schedule['ending_cash'] = beginning_cash
-        cash_summary = {}
-    except:
-        # Ultimate fallback - empty dataframe
-        cash_schedule = pd.DataFrame()
-        cash_summary = {}
-
-
-
-
 
 # ============================================================
-# WATERFALLS
+# CAPITAL CALLS SCHEDULE (Display)
 # ============================================================
-st.divider()
-st.header("Waterfalls & Investor Returns")
-
-# Use distributable cash from cash schedule (not raw FAD)
-# This already accounts for CapEx, deficits, and cash reserves
-cf_period_cash = cash_schedule[['event_date', 'distributable']].copy()
-cf_period_cash = cf_period_cash.rename(columns={'distributable': 'cash_available'})
-
-# Get remaining cash at sale date (not last period which might be different)
-remaining_cash_at_sale, _ = get_sale_period_total_cash(cash_schedule, sale_me)
-
-# Add remaining cash to the CF waterfall at sale date
-if remaining_cash_at_sale > 0:
-    # Ensure date comparison works correctly
-    cf_period_cash['event_date'] = pd.to_datetime(cf_period_cash['event_date']).dt.date
-    sale_mask = cf_period_cash['event_date'] == sale_me
-    if sale_mask.any():
-        cf_period_cash.loc[sale_mask, 'cash_available'] += remaining_cash_at_sale
-    else:
-        # Add sale date row if it doesn't exist
-        cf_period_cash = pd.concat([
-            cf_period_cash,
-            pd.DataFrame([{'event_date': sale_me, 'cash_available': remaining_cash_at_sale}])
-        ], ignore_index=True).sort_values('event_date')
-
-# Capital events cash (from sales, refinances, etc.)
-cap_period_cash = pd.DataFrame(columns=["event_date", "cash_available"])
-if cap_events_df is not None and not cap_events_df.empty:
-    ce = cap_events_df.copy()
-    ce["event_date"] = pd.to_datetime(ce["event_date"]).dt.date
-    ce["event_date"] = ce["event_date"].apply(month_end)
-    cap_period_cash = ce.groupby("event_date", as_index=False)["amount"].sum().rename(columns={"amount": "cash_available"})
-
-cf_period_cash = cf_period_cash[cf_period_cash["event_date"] <= sale_me].copy()
-cap_period_cash = cap_period_cash[cap_period_cash["event_date"] <= sale_me].copy()
-
 if capital_calls:
+    st.divider()
     st.subheader("Capital Calls Schedule")
-    
+
     summary = capital_calls_summary_table(capital_calls)
     st.dataframe(
         summary,
         use_container_width=True
     )
-    
+
     by_investor = capital_calls_by_investor(capital_calls)
     st.markdown("**By Investor:**")
     st.dataframe(
         by_investor,
         use_container_width=True
-       )
-
-
-# Load waterfalls
-wf_steps = load_waterfalls(wf)
-
-# Seed from accounting
-seed_states = seed_states_from_accounting(acct, inv, wf_steps, deal_vcode)
-
-# Apply capital calls to investor states if we have any
-if capital_calls:
-    try:
-        seed_states = apply_capital_calls_to_states(capital_calls, seed_states)
-    except Exception as e:
-        st.warning(f"Note: Could not apply capital calls to investor states. ({str(e)})")
-
-# Run Waterfalls
-cf_alloc, cf_investors = run_waterfall(wf_steps, deal_vcode, "CF_WF", cf_period_cash, seed_states)
-cap_alloc, cap_investors = run_waterfall(wf_steps, deal_vcode, "Cap_WF", cap_period_cash, seed_states)
-
-
-# ============================================================
-# ANNUAL OPERATING FORECAST WITH INTEGRATED WATERFALLS
-# ============================================================
-st.divider()
-st.header("📊 Annual Operating Forecast & Waterfall Summary")
-
-# Build the integrated annual table with waterfall details
-annual_df_raw = annual_aggregation_table(
-    fc_deal_display,
-    int(start_year),
-    int(horizon_years),
-    proceeds_by_year=proceeds_by_year,
-    cf_alloc=cf_alloc,
-    cap_alloc=cap_alloc
-)
-annual_df = pivot_annual_table(annual_df_raw)
-styled = style_annual_table(annual_df)
-st.dataframe(styled, use_container_width=True)
+    )
 
 
 # ============================================================
@@ -764,7 +1128,7 @@ for partner in sorted(all_partners):
         cap_dist = cap_alloc[cap_alloc['PropCode'] == partner]['Allocated'].sum()
     
     # Get investor state
-    state = seed_states.get(partner)
+    state = cf_investors.get(partner) or cap_investors.get(partner)
     
     if state:
         # Calculate metrics
@@ -812,17 +1176,474 @@ if partner_totals:
     
     # Summary metrics
     st.markdown("### Deal-Level Summary")
-    col1, col2, col3, col4 = st.columns(4)
-    
+
     total_cf_dist = totals_df['Cash Flow Distributions'].sum()
     total_cap_dist = totals_df['Capital Distributions'].sum()
     total_dist = totals_df['Total Distributions'].sum()
     total_contrib = totals_df['Total Contributions'].sum()
-    
+    deal_moic = total_dist / total_contrib if total_contrib > 0 else 0
+
+    # Calculate deal-level XIRR by combining all investor cashflows
+    from metrics import xirr
+    all_cashflows = []
+    for partner in all_partners:
+        state = cf_investors.get(partner) or cap_investors.get(partner)
+        if state and state.cashflows:
+            all_cashflows.extend(state.cashflows)
+
+    deal_xirr = xirr(all_cashflows) if all_cashflows else None
+
+    # Calculate deal-level ROE using proper formula:
+    # ROE = (Total CF Distributions / Weighted Average Capital) / Years
+    from metrics import calculate_roe
+
+    # Collect all CF distributions and capital events from all investors
+    all_cf_distributions = []
+    all_capital_events = []
+    for partner in all_partners:
+        state = cf_investors.get(partner) or cap_investors.get(partner)
+        if state:
+            if hasattr(state, 'cf_distributions') and state.cf_distributions:
+                all_cf_distributions.extend(state.cf_distributions)
+            if state.cashflows:
+                all_capital_events.extend(state.cashflows)
+
+    # Find inception date (first contribution)
+    contributions = [(d, a) for d, a in all_capital_events if a < 0]
+    inception_date = min(d for d, _ in contributions) if contributions else None
+
+    if inception_date and all_capital_events:
+        deal_roe = calculate_roe(all_capital_events, all_cf_distributions, inception_date, sale_me)
+    else:
+        deal_roe = 0.0
+
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
     col1.metric("Total CF Distributions", f"${total_cf_dist:,.0f}")
     col2.metric("Total Capital Distributions", f"${total_cap_dist:,.0f}")
     col3.metric("Total All Distributions", f"${total_dist:,.0f}")
-    col4.metric("Deal MOIC", f"{(total_dist / total_contrib if total_contrib > 0 else 0):.2f}x")
+    col4.metric("Deal MOIC", f"{deal_moic:.2f}x")
+    col5.metric("Deal XIRR", f"{deal_xirr:.2%}" if deal_xirr is not None else "N/A")
+    col6.metric("Deal ROE", f"{deal_roe:.2%}")
+
+    # ============================================================
+    # PARTNER PREFERRED RETURN SCHEDULES
+    # ============================================================
+    st.markdown("### Partner Preferred Return Schedules")
+
+    from waterfall import pref_rates_from_waterfall_steps
+    from datetime import timedelta
+    from calendar import monthrange
+
+    def get_month_end(d):
+        """Get last day of month for a given date"""
+        _, last_day = monthrange(d.year, d.month)
+        return date(d.year, d.month, last_day)
+
+    def build_pref_schedule(partner, pref_rate, cf_alloc_df, cap_alloc_df, acct_df, inv_map_df, target_vcode, state, start_date, end_date):
+        """
+        Build detailed preferred return accrual schedule for a partner.
+
+        Includes:
+        - Historical distributions from accounting feed (reduces pref accrual)
+        - Projected CF waterfall distributions (reduces pref accrual)
+        - Capital events (Pref paid first, then capital returned)
+
+        Distribution logic:
+        - Cash distributions first reduce compounded pref, then current year accrual
+        - Excess distributions beyond pref due are profit (don't reduce equity)
+        - Capital returns (Initial) reduce equity balance
+        - Accruals never go negative
+
+        Columns:
+        - Date, Typename, Amt, Equity Balance, Compounded Pref, Total Inv+Comp,
+        - Days, Current Due, Prior Accrual, Total Due, Amount Paid, Remaining Accrual
+        """
+        rows = []
+
+        # Collect all events: (date, iOrder, typename, amount, event_type)
+        # event_type: 'contribution', 'cash_distribution', 'capital_return', 'profit_share'
+        events = []
+
+        # Get cashflows from investor state (contributions)
+        if state and state.cashflows:
+            for d, amt in state.cashflows:
+                if amt < 0:
+                    # Contributions have order 0 (first)
+                    events.append((d, 0, "Contribution", abs(amt), 'contribution'))
+
+        # Get historical distributions from accounting feed
+        if acct_df is not None and not acct_df.empty and inv_map_df is not None:
+            from loaders import build_investmentid_to_vcode
+            inv_to_vcode = build_investmentid_to_vcode(inv_map_df)
+
+            # Filter accounting to this deal and partner
+            acct_filtered = acct_df.copy()
+            acct_filtered["vcode"] = acct_filtered["InvestmentID"].map(inv_to_vcode)
+            acct_filtered = acct_filtered[acct_filtered["vcode"].astype(str) == str(target_vcode)]
+            acct_filtered = acct_filtered[acct_filtered["InvestorID"].astype(str) == str(partner)]
+
+            for _, row in acct_filtered.iterrows():
+                d = row["EffectiveDate"]
+                if pd.isna(d):
+                    continue
+                # Ensure date is a proper date object
+                if isinstance(d, str):
+                    d = pd.to_datetime(d).date()
+                elif hasattr(d, 'date'):
+                    d = d.date()
+                elif not isinstance(d, date):
+                    continue
+
+                amt = float(row["Amt"])
+                major_type = str(row.get("MajorType", "")).strip()
+                typename = str(row.get("Typename", "")).strip()
+
+                # Skip contributions (already handled above)
+                if "contrib" in major_type.lower():
+                    continue
+
+                # Handle distributions based on Typename text
+                if "distri" in major_type.lower() and amt > 0:
+                    typename_lower = typename.lower()
+
+                    if "return of capital" in typename_lower:
+                        # Distribution: Return of Capital -> directly reduces investment balance
+                        events.append((d, 100, typename, amt, 'capital_return'))
+                    elif "preferred return" in typename_lower or "excess cash" in typename_lower or "income" in typename_lower:
+                        # Distribution: Preferred Return, Excess Cash Flow, Income
+                        # -> follows payment priority (Current Due, Remaining Accrual, Compounded Pref)
+                        events.append((d, 50, typename, amt, 'cash_distribution'))
+                    else:
+                        # Other distributions - treat as cash distribution
+                        events.append((d, 50, typename, amt, 'cash_distribution'))
+
+        # Helper to ensure date is a date object
+        def ensure_date(d):
+            if isinstance(d, str):
+                return pd.to_datetime(d).date()
+            elif hasattr(d, 'date'):
+                return d.date()
+            return d
+
+        # Get projected CF waterfall distributions (forecast period)
+        if not cf_alloc_df.empty:
+            partner_cf = cf_alloc_df[cf_alloc_df['PropCode'] == partner].copy()
+            for _, row in partner_cf.iterrows():
+                d = ensure_date(row['event_date'])
+                amt = row['Allocated']
+                vstate = str(row.get('vState', '')).strip()
+                iorder = int(row.get('iOrder', 999))
+                if amt > 0:
+                    if vstate == 'Pref':
+                        # Pref distributions reduce pref accrual
+                        events.append((d, iorder, f"CF_WF {vstate}", amt, 'cash_distribution'))
+                    elif vstate == 'Initial':
+                        events.append((d, iorder, f"CF_WF {vstate}", amt, 'capital_return'))
+                    elif vstate == 'Share':
+                        # Share distributions also reduce pref first, then are profit
+                        events.append((d, iorder, f"CF_WF {vstate}", amt, 'cash_distribution'))
+                    else:
+                        events.append((d, iorder, f"CF_WF {vstate}", amt, 'cash_distribution'))
+
+        # Get Cap waterfall distributions
+        if not cap_alloc_df.empty:
+            partner_cap = cap_alloc_df[cap_alloc_df['PropCode'] == partner].copy()
+            for _, row in partner_cap.iterrows():
+                d = ensure_date(row['event_date'])
+                amt = row['Allocated']
+                vstate = str(row.get('vState', '')).strip()
+                iorder = int(row.get('iOrder', 999))
+                if amt > 0:
+                    if vstate == 'Pref':
+                        events.append((d, iorder, f"Cap_WF {vstate}", amt, 'cash_distribution'))
+                    elif vstate == 'Initial':
+                        events.append((d, iorder, f"Cap_WF {vstate}", amt, 'capital_return'))
+                    else:
+                        events.append((d, iorder, f"Cap_WF {vstate}", amt, 'profit_share'))
+
+        # Sort events by date, then by iOrder (to ensure Pref before Initial)
+        events = sorted(events, key=lambda x: (x[0], x[1]))
+
+        if not events:
+            return pd.DataFrame()
+
+        # Generate month-end dates from start to end
+        month_ends = []
+        current = get_month_end(start_date)
+        while current <= end_date:
+            month_ends.append(current)
+            if current.month == 12:
+                next_month = date(current.year + 1, 1, 1)
+            else:
+                next_month = date(current.year, current.month + 1, 1)
+            current = get_month_end(next_month)
+
+        # Combine events with month ends for accrual checkpoints
+        all_dates = sorted(set([e[0] for e in events] + month_ends))
+
+        # Build event lookup by date, preserving order
+        event_lookup = {}
+        for d, iorder, typename, amt, etype in events:
+            if d not in event_lookup:
+                event_lookup[d] = []
+            event_lookup[d].append((iorder, typename, amt, etype))
+
+        # Sort events within each day by iOrder
+        for d in event_lookup:
+            event_lookup[d] = sorted(event_lookup[d], key=lambda x: x[0])
+
+        # Initialize tracking variables (matching Excel logic)
+        investment_balance = 0.0  # Cumulative: contributions - return of capital
+        compounded_pref = 0.0     # Pref compounded from prior years (on 12/31)
+        remaining_accrual = 0.0   # Carries forward between periods
+        last_date = None
+
+        # Helper to check for leap year
+        def days_in_year(d):
+            year = d.year
+            if (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0):
+                return 366.0
+            return 365.0
+
+        for d in all_dates:
+            # Calculate current due (accrual for this period)
+            if last_date is not None and pref_rate > 0 and investment_balance > 0:
+                days = (d - last_date).days
+                base = max(0.0, investment_balance + compounded_pref)
+                current_due = base * pref_rate * (days / days_in_year(d))
+            else:
+                days = (d - last_date).days if last_date else 0
+                current_due = 0.0
+
+            # Total Due = Current Due + Remaining Accrual from prior period
+            total_due = current_due + remaining_accrual
+
+            # Process events on this date
+            day_events = event_lookup.get(d, [])
+
+            if day_events:
+                for iorder, typename, amt, etype in day_events:
+                    pref_paid = 0.0
+
+                    if etype == 'contribution':
+                        # Contribution increases investment balance
+                        investment_balance += amt
+                        rows.append({
+                            'Date': d,
+                            'Type': typename,
+                            'Amt': -amt,  # Show as negative (outflow from investor)
+                            'Equity Balance': investment_balance,
+                            'Compounded Pref': compounded_pref,
+                            'Total Inv+Comp': investment_balance + compounded_pref,
+                            'Days': days,
+                            'Current Due': current_due,
+                            'Prior Accrual': remaining_accrual - current_due if remaining_accrual > current_due else 0,
+                            'Total Due': total_due,
+                            'Amount Paid': 0.0,
+                            'Remaining Accrual': remaining_accrual,
+                        })
+
+                    elif etype == 'cash_distribution':
+                        # Cash distribution payment application order:
+                        # 1. Current Due (this period's accrual)
+                        # 2. Remaining Accrual (prior period's unpaid pref)
+                        # 3. Compounded Pref (prior years' compounded)
+                        # Excess beyond all pref is just profit (no equity reduction)
+
+                        pref_paid = amt
+                        payment_remaining = amt
+
+                        # 1. Apply to current due
+                        current_due_paid = min(payment_remaining, current_due)
+                        payment_remaining -= current_due_paid
+                        new_current_due = current_due - current_due_paid
+
+                        # 2. Apply to remaining accrual (prior period)
+                        prior_accrual_paid = min(payment_remaining, remaining_accrual)
+                        payment_remaining -= prior_accrual_paid
+                        new_remaining = remaining_accrual - prior_accrual_paid
+
+                        # 3. Apply to compounded pref
+                        compounded_paid = min(payment_remaining, compounded_pref)
+                        payment_remaining -= compounded_paid
+                        compounded_pref -= compounded_paid
+
+                        # Update remaining accrual (current due not yet paid becomes remaining)
+                        new_remaining = max(0.0, new_remaining + new_current_due)
+
+                        rows.append({
+                            'Date': d,
+                            'Type': typename,
+                            'Amt': amt,
+                            'Equity Balance': investment_balance,
+                            'Compounded Pref': compounded_pref,
+                            'Total Inv+Comp': investment_balance + compounded_pref,
+                            'Days': days,
+                            'Current Due': current_due,
+                            'Prior Accrual': remaining_accrual,
+                            'Total Due': total_due,
+                            'Amount Paid': pref_paid,
+                            'Remaining Accrual': new_remaining,
+                        })
+                        remaining_accrual = new_remaining
+
+                    elif etype == 'capital_return':
+                        # Distribution: Return of Capital
+                        # Directly reduces investment balance (does NOT pay pref first)
+                        # Cannot return more capital than was invested
+
+                        capital_returned = min(amt, investment_balance)
+                        investment_balance = max(0.0, investment_balance - capital_returned)
+
+                        # Remaining accrual carries forward (add current due)
+                        new_remaining = remaining_accrual + current_due
+
+                        rows.append({
+                            'Date': d,
+                            'Type': typename,
+                            'Amt': amt,
+                            'Equity Balance': investment_balance,
+                            'Compounded Pref': compounded_pref,
+                            'Total Inv+Comp': investment_balance + compounded_pref,
+                            'Days': days,
+                            'Current Due': current_due,
+                            'Prior Accrual': remaining_accrual,
+                            'Total Due': total_due,
+                            'Amount Paid': 0.0,  # Capital return doesn't pay pref
+                            'Remaining Accrual': new_remaining,
+                        })
+                        remaining_accrual = new_remaining
+
+                    elif etype == 'profit_share':
+                        # Profit share after pref is cleared - no pref reduction, no equity change
+                        rows.append({
+                            'Date': d,
+                            'Type': typename,
+                            'Amt': amt,
+                            'Equity Balance': investment_balance,
+                            'Compounded Pref': compounded_pref,
+                            'Total Inv+Comp': investment_balance + compounded_pref,
+                            'Days': days,
+                            'Current Due': current_due,
+                            'Prior Accrual': remaining_accrual,
+                            'Total Due': total_due,
+                            'Amount Paid': 0.0,
+                            'Remaining Accrual': remaining_accrual,
+                        })
+
+                    # Reset for subsequent events on same day
+                    days = 0
+                    current_due = 0.0
+                    total_due = remaining_accrual  # Next event's total due is just remaining
+
+            else:
+                # Month-end accrual checkpoint (no event)
+                # Update remaining accrual with current due
+                remaining_accrual = total_due
+
+                rows.append({
+                    'Date': d,
+                    'Type': 'Accrual',
+                    'Amt': 0.0,
+                    'Equity Balance': investment_balance,
+                    'Compounded Pref': compounded_pref,
+                    'Total Inv+Comp': investment_balance + compounded_pref,
+                    'Days': days,
+                    'Current Due': current_due,
+                    'Prior Accrual': remaining_accrual - current_due,
+                    'Total Due': total_due,
+                    'Amount Paid': 0.0,
+                    'Remaining Accrual': remaining_accrual,
+                })
+
+            # Year-end compounding (12/31): Compounded Pref = Current Due + Remaining Accrual
+            if d.month == 12 and d.day == 31 and remaining_accrual > 0:
+                compounded_pref += remaining_accrual
+                rows.append({
+                    'Date': d,
+                    'Type': 'Year-End Compound',
+                    'Amt': remaining_accrual,
+                    'Equity Balance': investment_balance,
+                    'Compounded Pref': compounded_pref,
+                    'Total Inv+Comp': investment_balance + compounded_pref,
+                    'Days': 0,
+                    'Current Due': 0.0,
+                    'Prior Accrual': remaining_accrual,
+                    'Total Due': remaining_accrual,
+                    'Amount Paid': 0.0,
+                    'Remaining Accrual': 0.0,
+                })
+                remaining_accrual = 0.0
+
+            last_date = d
+
+        return pd.DataFrame(rows)
+
+    # Get pref rates from waterfall steps
+    pref_rates = pref_rates_from_waterfall_steps(wf_steps, deal_vcode)
+
+    # Find inception date (first contribution)
+    first_contrib_date = None
+    for partner in sorted(all_partners):
+        state = cf_investors.get(partner) or cap_investors.get(partner)
+        if state and state.cashflows:
+            contribs = [d for d, a in state.cashflows if a < 0]
+            if contribs:
+                d = min(contribs)
+                if first_contrib_date is None or d < first_contrib_date:
+                    first_contrib_date = d
+
+    if first_contrib_date is None:
+        first_contrib_date = date(start_year, 1, 1)
+
+    # Create expander for each partner
+    for partner in sorted(all_partners):
+        state = cf_investors.get(partner) or cap_investors.get(partner)
+        pref_rate = pref_rates.get(partner, 0.0)
+
+        with st.expander(f"📊 {partner} Preferred Return Schedule (Rate: {pref_rate:.2%})"):
+            if pref_rate == 0:
+                st.warning(f"No pref rate found for {partner}")
+            else:
+                schedule_df = build_pref_schedule(
+                    partner, pref_rate, cf_alloc, cap_alloc,
+                    acct, inv, deal_vcode,
+                    state, first_contrib_date, sale_me
+                )
+
+                if schedule_df.empty:
+                    st.info("No events found for this partner")
+                else:
+                    # Format the dataframe
+                    st.dataframe(
+                        schedule_df.style.format({
+                            'Amt': '${:,.0f}',
+                            'Equity Balance': '${:,.0f}',
+                            'Compounded Pref': '${:,.0f}',
+                            'Total Inv+Comp': '${:,.0f}',
+                            'Days': '{:.0f}',
+                            'Current Due': '${:,.2f}',
+                            'Prior Accrual': '${:,.2f}',
+                            'Total Due': '${:,.2f}',
+                            'Amount Paid': '${:,.2f}',
+                            'Remaining Accrual': '${:,.2f}',
+                        }),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+
+                    # Summary
+                    total_accrued = schedule_df['Current Due'].sum()
+                    total_paid = schedule_df['Amount Paid'].sum()
+                    final_remaining = schedule_df['Remaining Accrual'].iloc[-1] if len(schedule_df) > 0 else 0
+                    final_compounded = schedule_df['Compounded Pref'].iloc[-1] if len(schedule_df) > 0 else 0
+
+                    col1, col2, col3, col4 = st.columns(4)
+                    col1.metric("Total Pref Accrued", f"${total_accrued:,.0f}")
+                    col2.metric("Total Pref Paid", f"${total_paid:,.0f}")
+                    col3.metric("Final Compounded Pref", f"${final_compounded:,.0f}")
+                    col4.metric("Final Remaining Accrual", f"${final_remaining:,.0f}")
+
 else:
     st.info("No partner data available")
 
@@ -830,12 +1651,25 @@ else:
 if cap_alloc.empty:
     st.info("No Cap_WF steps found for this deal.")
 else:
-    with st.expander("Cap_WF (by year)"):
-        show_waterfall_matrix("Cap_WF Allocations by Year", cap_alloc)
-    
-    st.markdown("**Cap_WF Investor Summary**")
-    if not cap_investors.empty:
-        out = cap_investors.copy()
+    st.markdown("**Investor Summary**")
+    if cap_investors:
+        # Convert investor states dict to DataFrame for display
+        inv_rows = []
+        for pc, stt in cap_investors.items():
+            unrealized = stt.capital_outstanding + stt.pref_unpaid_compounded + stt.pref_accrued_current_year
+            metrics = investor_metrics(stt, sale_me, unrealized_nav=unrealized)
+            inv_rows.append({
+                "PropCode": pc,
+                "CapitalOutstanding": stt.capital_outstanding,
+                "UnpaidPrefCompounded": stt.pref_unpaid_compounded,
+                "AccruedPrefCurrentYear": stt.pref_accrued_current_year,
+                "TotalDistributions": metrics.get('TotalDistributions', 0),
+                "TotalContributions": metrics.get('TotalContributions', 0),
+                "IRR": metrics.get('IRR'),
+                "ROE": metrics.get('ROE', 0),
+                "MOIC": metrics.get('MOIC', 0),
+            })
+        out = pd.DataFrame(inv_rows)
         for c in ["CapitalOutstanding", "UnpaidPrefCompounded", "AccruedPrefCurrentYear",
                   "TotalDistributions", "TotalContributions"]:
             if c in out.columns:
@@ -933,24 +1767,32 @@ if relationships_raw is not None:
                 })
             st.dataframe(pd.DataFrame(inv_data), use_container_width=True, hide_index=True)
         
-        ultimate = get_ultimate_investors(selected_entity, nodes)
+        ultimate = get_ultimate_investors(selected_entity, nodes, normalize=True)
         ultimate = consolidate_ultimate_investors(ultimate)
         ultimate = sorted(ultimate, key=lambda x: x[1], reverse=True)
-        
+
         if ultimate:
-            st.markdown("**Ultimate Beneficial Owners:**")
-            ult_data = []
-            for inv_id, eff_pct in ultimate:
-                inv_name = nodes[inv_id].name if inv_id in nodes else ""
+            with st.expander("Ultimate Beneficial Owners"):
+                ult_data = []
+                total_pct = 0.0
+                for inv_id, eff_pct in ultimate:
+                    inv_name = nodes[inv_id].name if inv_id in nodes else ""
+                    total_pct += eff_pct
+                    ult_data.append({
+                        "Investor ID": inv_id,
+                        "Name": inv_name,
+                        "Effective Ownership %": f"{eff_pct*100:.4f}%"
+                    })
+                # Add total row
                 ult_data.append({
-                    "Investor ID": inv_id,
-                    "Name": inv_name,
-                    "Effective Ownership %": f"{eff_pct*100:.4f}%"
+                    "Investor ID": "",
+                    "Name": "**TOTAL**",
+                    "Effective Ownership %": f"{total_pct*100:.4f}%"
                 })
-            st.dataframe(pd.DataFrame(ult_data), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(ult_data), use_container_width=True, hide_index=True)
         
         with st.expander("📊 View Ownership Tree"):
-            tree_viz = visualize_ownership_tree(selected_entity, nodes, max_depth=5)
+            tree_viz = visualize_ownership_tree(selected_entity, nodes)
             st.code(tree_viz, language=None)
 
 else:

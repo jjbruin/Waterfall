@@ -16,15 +16,18 @@ from database import execute_query
 
 def load_coa(df: pd.DataFrame = None) -> pd.DataFrame:
     """
-    Load chart of accounts from database
-    
+    Load and normalize chart of accounts
+
     Args:
-        df: Ignored (kept for backward compatibility)
-    
+        df: Optional DataFrame with COA data. If None, loads from database.
+
     Returns:
         DataFrame with vAccount and vAccountType
     """
-    coa = execute_query("SELECT * FROM coa")
+    if df is not None and not df.empty:
+        coa = df.copy()
+    else:
+        coa = execute_query("SELECT * FROM coa")
     
     coa.columns = [str(c).strip() for c in coa.columns]
     
@@ -62,19 +65,21 @@ def normalize_forecast_signs(fc: pd.DataFrame) -> pd.DataFrame:
 
 def load_forecast(df: pd.DataFrame = None, coa: pd.DataFrame = None, pro_yr_base: int = None) -> pd.DataFrame:
     """
-    Load forecast feed from database
-    
+    Load and normalize forecast data
+
     Args:
-        df: Ignored (kept for backward compatibility)
+        df: Optional DataFrame with forecast data. If None, loads from database.
         coa: Chart of accounts (if None, loads from database)
         pro_yr_base: Base year for Pro_Yr calculations
-    
+
     Returns:
         Normalized forecast DataFrame
     """
-    # Load from database
-    fc = execute_query("SELECT * FROM forecasts")
-    
+    if df is not None and not df.empty:
+        fc = df.copy()
+    else:
+        fc = execute_query("SELECT * FROM forecasts")
+
     fc.columns = [str(c).strip() for c in fc.columns]
     fc = fc.rename(columns={"Vcode": "vcode", "Date": "event_date"})
     
@@ -84,7 +89,7 @@ def load_forecast(df: pd.DataFrame = None, coa: pd.DataFrame = None, pro_yr_base
         raise ValueError(f"forecasts table missing columns: {missing}")
 
     fc["vcode"] = fc["vcode"].astype(str)
-    fc["event_date"] = pd.to_datetime(fc["event_date"]).dt.date
+    fc["event_date"] = pd.to_datetime(fc["event_date"], format='mixed').dt.date
     fc["vAccount"] = pd.to_numeric(fc["vAccount"], errors="coerce").astype("Int64")
     fc["mAmount"] = pd.to_numeric(fc["mAmount"], errors="coerce").fillna(0.0)
 
@@ -104,17 +109,18 @@ def load_forecast(df: pd.DataFrame = None, coa: pd.DataFrame = None, pro_yr_base
 
 def load_mri_loans(df: pd.DataFrame = None) -> pd.DataFrame:
     """
-    Load existing loans from database
-    
+    Load and normalize loans data
+
     Args:
-        df: Ignored (kept for backward compatibility)
-    
+        df: Optional DataFrame with loan data. If None, loads from database.
+
     Returns:
-        Loans DataFrame
+        Normalized loans DataFrame
     """
-    loans = execute_query("SELECT * FROM loans")
-    
-    d = loans.copy()
+    if df is not None and not df.empty:
+        d = df.copy()
+    else:
+        d = execute_query("SELECT * FROM loans").copy()
     d.columns = [str(c).strip() for c in d.columns]
     
     if "vCode" not in d.columns:
@@ -138,8 +144,8 @@ def load_mri_loans(df: pd.DataFrame = None) -> pd.DataFrame:
         else:
             d[c] = pd.NA
 
-    d["vIntType"] = d["vIntType"].fillna("").astype(str).str.strip() if "vIntType" in d.columns else ""
-    d["vIndex"] = d["vIndex"].fillna("").astype(str).str.strip().str.upper() if "vIndex" in d.columns else ""
+    d["vIntType"] = d.get("vIntType", "").fillna("").astype(str).str.strip()
+    d["vIndex"] = d.get("vIndex", "").fillna("").astype(str).str.strip().str.upper()
     return d
 
 
@@ -230,6 +236,12 @@ def normalize_accounting_feed(acct: pd.DataFrame = None) -> pd.DataFrame:
     a["MajorTypeNorm"] = a["MajorType"].str.lower()
     a["is_contribution"] = a["MajorTypeNorm"].str.contains("contrib")
     a["is_distribution"] = a["MajorTypeNorm"].str.contains("distri")
+
+    # Include Partner column if available (for equity classification)
+    if "Partner" in a.columns:
+        a["Partner"] = a["Partner"].fillna("").astype(str).str.strip()
+    else:
+        a["Partner"] = ""
 
     # Keep only contrib/distr rows
     a = a[a["is_contribution"] | a["is_distribution"]].copy()

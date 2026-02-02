@@ -16,11 +16,12 @@ from config import INDEX_BASE_RATES
 class InvestorState:
     """
     State tracking for a single investor/partner
-    
+
     Tracks:
     - Capital account balance
     - Preferred return accruals (compounded and current year)
     - Cashflow history for XIRR calculation
+    - CF waterfall distributions (for ROE calculation)
     """
     propcode: str
     capital_outstanding: float = 0.0  # positive = capital owed back to investor
@@ -29,6 +30,8 @@ class InvestorState:
     last_accrual_date: Optional[date] = None
     cashflows: List[Tuple[date, float]] = field(default_factory=list)
     # Cashflows: negative = contribution, positive = distribution
+    cf_distributions: List[Tuple[date, float]] = field(default_factory=list)
+    # CF waterfall distributions only (operating income for ROE calculation)
 
 
 @dataclass

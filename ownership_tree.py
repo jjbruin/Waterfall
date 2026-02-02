@@ -122,44 +122,55 @@ def get_ultimate_investors(
     entity_id: str,
     nodes: Dict[str, OwnershipNode],
     visited: Optional[Set[str]] = None,
-    current_ownership: float = 1.0
+    current_ownership: float = 1.0,
+    normalize: bool = True
 ) -> List[Tuple[str, float]]:
     """
     Recursively find ultimate investors and their effective ownership percentages
-    
+
     Args:
         entity_id: Starting entity
         nodes: Complete ownership tree
         visited: Entities already processed (prevent circular references)
         current_ownership: Cumulative ownership percentage
-    
+        normalize: If True, normalize ownership percentages at each level to sum to 100%
+
     Returns:
         List of (ultimate_investor_id, effective_ownership_pct)
     """
     if visited is None:
         visited = set()
-    
+
     if entity_id in visited:
         return []  # Circular reference
-    
+
     visited.add(entity_id)
-    
+
     node = nodes.get(entity_id)
     if not node:
         return [(entity_id, current_ownership)]  # Leaf node (ultimate investor)
-    
+
     if not node.investors:
         return [(entity_id, current_ownership)]  # No investors = ultimate investor
-    
+
     ultimate = []
-    
+
+    # Calculate sum of ownership percentages at this level
+    total_ownership = sum(pct for _, pct in node.investors)
+
     for investor_id, ownership_pct in node.investors:
-        effective_pct = current_ownership * ownership_pct
-        
+        # Normalize ownership if percentages don't sum to 100%
+        if normalize and total_ownership > 0 and abs(total_ownership - 1.0) > 0.0001:
+            normalized_pct = ownership_pct / total_ownership
+        else:
+            normalized_pct = ownership_pct
+
+        effective_pct = current_ownership * normalized_pct
+
         # Recurse up the chain
-        upstream = get_ultimate_investors(investor_id, nodes, visited.copy(), effective_pct)
+        upstream = get_ultimate_investors(investor_id, nodes, visited.copy(), effective_pct, normalize)
         ultimate.extend(upstream)
-    
+
     return ultimate
 
 
@@ -339,37 +350,53 @@ def create_waterfall_summary_df(requirements: List[WaterfallRequirement]) -> pd.
 def visualize_ownership_tree(
     entity_id: str,
     nodes: Dict[str, OwnershipNode],
-    max_depth: int = 5,
-    indent: int = 0
+    max_depth: int = 20,
+    current_depth: int = 0,
+    visited: Optional[Set[str]] = None
 ) -> str:
     """
-    Create text visualization of ownership tree
-    
+    Create text visualization of ownership tree showing all branches
+
     Args:
         entity_id: Root entity
         nodes: Complete ownership tree
-        max_depth: Maximum depth to traverse
-        indent: Current indentation level
-    
+        max_depth: Maximum depth to traverse (default 20 to show all levels)
+        current_depth: Current depth in tree
+        visited: Set of visited entity IDs to prevent circular references
+
     Returns:
         Multi-line string representation
     """
-    if indent > max_depth:
-        return ""
-    
+    if visited is None:
+        visited = set()
+
+    if current_depth > max_depth:
+        return "  " * current_depth + "└─ ... (max depth reached)\n"
+
+    if entity_id in visited:
+        return "  " * current_depth + f"└─ {entity_id} (circular reference)\n"
+
+    visited.add(entity_id)
+
     node = nodes.get(entity_id)
     if not node:
-        return f"{'  ' * indent}└─ {entity_id} (NOT FOUND)\n"
-    
-    prefix = "  " * indent + ("└─ " if indent > 0 else "")
-    
+        return "  " * current_depth + f"└─ {entity_id}: [ULTIMATE OWNER]\n"
+
+    prefix = "  " * current_depth + ("└─ " if current_depth > 0 else "")
+
     passthrough = " [PASSTHROUGH]" if node.is_passthrough else ""
     waterfall = " [NEEDS WATERFALL]" if node.needs_waterfall else ""
-    
-    result = f"{prefix}{entity_id}: {node.name}{passthrough}{waterfall}\n"
-    
-    for investor_id, ownership_pct in node.investors:
-        result += f"{'  ' * (indent + 1)}├─ {ownership_pct*100:.2f}% owned by:\n"
-        result += visualize_ownership_tree(investor_id, nodes, max_depth, indent + 2)
-    
+    ultimate = " [ULTIMATE OWNER]" if not node.investors else ""
+
+    result = f"{prefix}{entity_id}: {node.name}{passthrough}{waterfall}{ultimate}\n"
+
+    # Sort investors by ownership percentage (highest first)
+    sorted_investors = sorted(node.investors, key=lambda x: x[1], reverse=True)
+
+    for i, (investor_id, ownership_pct) in enumerate(sorted_investors):
+        is_last = (i == len(sorted_investors) - 1)
+        branch_char = "└─" if is_last else "├─"
+        result += "  " * (current_depth + 1) + f"{branch_char} {ownership_pct*100:.2f}% owned by:\n"
+        result += visualize_ownership_tree(investor_id, nodes, max_depth, current_depth + 2, visited.copy())
+
     return result

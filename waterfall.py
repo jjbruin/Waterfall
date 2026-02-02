@@ -84,11 +84,20 @@ def compound_if_year_end(istates: Dict[str, InvestorState], period_date: date):
 # CASHFLOW RECORDING
 # ============================================================
 
-def apply_distribution(ist: InvestorState, d: date, amt: float):
-    """Record a distribution (positive cashflow from investor perspective)"""
+def apply_distribution(ist: InvestorState, d: date, amt: float, is_cf_waterfall: bool = False):
+    """Record a distribution (positive cashflow from investor perspective)
+
+    Args:
+        ist: Investor state to update
+        d: Distribution date
+        amt: Distribution amount
+        is_cf_waterfall: If True, also record in cf_distributions for ROE calculation
+    """
     if amt == 0:
         return
     ist.cashflows.append((d, float(amt)))
+    if is_cf_waterfall:
+        ist.cf_distributions.append((d, float(amt)))
 
 
 def apply_contribution(ist: InvestorState, d: date, amt: float):
@@ -103,10 +112,13 @@ def apply_contribution(ist: InvestorState, d: date, amt: float):
 # WATERFALL PAYMENT STEPS
 # ============================================================
 
-def pay_pref(ist: InvestorState, d: date, available: float) -> float:
+def pay_pref(ist: InvestorState, d: date, available: float, is_cf_waterfall: bool = False) -> float:
     """
     Pay preferred return: compounded unpaid first, then current-year accrued
-    
+
+    Args:
+        is_cf_waterfall: If True, track in cf_distributions for ROE calculation
+
     Returns amount paid
     """
     pay = 0.0
@@ -122,7 +134,7 @@ def pay_pref(ist: InvestorState, d: date, available: float) -> float:
 
     if available <= 0:
         if pay:
-            apply_distribution(ist, d, pay)
+            apply_distribution(ist, d, pay, is_cf_waterfall)
         return pay
 
     # Pay current-year accrued next
@@ -133,17 +145,21 @@ def pay_pref(ist: InvestorState, d: date, available: float) -> float:
         pay += x
 
     if pay:
-        apply_distribution(ist, d, pay)
+        apply_distribution(ist, d, pay, is_cf_waterfall)
     return pay
 
 
-def pay_initial_capital(ist: InvestorState, d: date, available: float) -> float:
-    """Return initial capital until outstanding capital is 0"""
+def pay_initial_capital(ist: InvestorState, d: date, available: float, is_cf_waterfall: bool = False) -> float:
+    """Return initial capital until outstanding capital is 0
+
+    Note: Capital returns are NOT CF distributions (excluded from ROE numerator)
+    """
     if available <= 0 or ist.capital_outstanding <= 0:
         return 0.0
     x = min(available, ist.capital_outstanding)
     ist.capital_outstanding -= x
-    apply_distribution(ist, d, x)
+    # Capital return is never a CF distribution - it's return of principal
+    apply_distribution(ist, d, x, is_cf_waterfall=False)
     return x
 
 
@@ -186,54 +202,59 @@ def irr_needed_distribution(ist: InvestorState, d: date, target_irr: float, max_
         return 0.0
 
 
-def pay_default_interest(ist: InvestorState, d: date, available: float, 
-                         default_balance: float, default_rate: float) -> float:
+def pay_default_interest(ist: InvestorState, d: date, available: float,
+                         default_balance: float, default_rate: float,
+                         is_cf_waterfall: bool = False) -> float:
     """
     Pay interest accrued on default contributions
-    
+
     Args:
         ist: InvestorState
         d: Distribution date
         available: Cash available for this step
         default_balance: Outstanding default balance (from mAmount)
         default_rate: Interest rate on defaults (from nPercent_dec)
-    
+        is_cf_waterfall: If True, track in cf_distributions for ROE calculation
+
     Returns:
         Amount paid
     """
     if available <= 0 or default_balance <= 0:
         return 0.0
-    
+
     # Calculate interest owed (simplified - could be enhanced with actual accrual tracking)
     # For now, assume interest = balance * rate (annual)
     interest_owed = default_balance * default_rate
-    
+
     x = min(available, interest_owed)
     if x > 0:
-        apply_distribution(ist, d, x)
+        # Interest is income, track as CF distribution
+        apply_distribution(ist, d, x, is_cf_waterfall)
     return x
 
 
-def pay_default_principal(ist: InvestorState, d: date, available: float, 
-                          default_balance: float) -> float:
+def pay_default_principal(ist: InvestorState, d: date, available: float,
+                          default_balance: float, is_cf_waterfall: bool = False) -> float:
     """
     Pay principal on default contributions
-    
+
     Args:
         ist: InvestorState
         d: Distribution date
         available: Cash available for this step
         default_balance: Outstanding default balance (from mAmount)
-    
+        is_cf_waterfall: Ignored - principal is never a CF distribution
+
     Returns:
         Amount paid
     """
     if available <= 0 or default_balance <= 0:
         return 0.0
-    
+
     x = min(available, default_balance)
     if x > 0:
-        apply_distribution(ist, d, x)
+        # Principal return is never a CF distribution
+        apply_distribution(ist, d, x, is_cf_waterfall=False)
     return x
 
 
@@ -340,51 +361,55 @@ def run_waterfall_period(
             # Maximum this step can take (FXRate share of remaining)
             step_max = remaining * lead_fx if lead_fx > 0 else remaining
             
+            # CF waterfall distributions should be tracked for ROE calculation
+            is_cf_wf = not is_capital_waterfall
+
             # Process based on vState
             if lead_state == "Pref":
                 pref_rates[lead_pc] = lead_rate
-                allocated = pay_pref(lead_stt, period_date, step_max)
-            
+                allocated = pay_pref(lead_stt, period_date, step_max, is_cf_wf)
+
             elif lead_state == "Initial":
                 if is_capital_waterfall:
-                    allocated = pay_initial_capital(lead_stt, period_date, step_max)
-            
+                    # Capital return - never a CF distribution
+                    allocated = pay_initial_capital(lead_stt, period_date, step_max, is_cf_wf)
+
             elif lead_state == "Share":
                 allocated = step_max
                 if allocated > 0:
-                    apply_distribution(lead_stt, period_date, allocated)
-            
+                    apply_distribution(lead_stt, period_date, allocated, is_cf_wf)
+
             elif lead_state == "IRR":
                 target_irr = lead_rate
                 allocated = irr_needed_distribution(lead_stt, period_date, target_irr, step_max)
                 if allocated > 0:
-                    apply_distribution(lead_stt, period_date, allocated)
-            
+                    apply_distribution(lead_stt, period_date, allocated, is_cf_wf)
+
             elif lead_state in ("Def&Int", "DefInt"):
                 # Combined default interest and principal
                 # Interest first, then principal
-                int_paid = pay_default_interest(lead_stt, period_date, step_max, lead_m_amount, lead_rate)
+                int_paid = pay_default_interest(lead_stt, period_date, step_max, lead_m_amount, lead_rate, is_cf_wf)
                 prin_avail = step_max - int_paid
-                prin_paid = pay_default_principal(lead_stt, period_date, prin_avail, lead_m_amount - int_paid)
+                prin_paid = pay_default_principal(lead_stt, period_date, prin_avail, lead_m_amount - int_paid, is_cf_wf)
                 allocated = int_paid + prin_paid
-            
+
             elif lead_state == "Def_Int":
                 # Default interest only
-                allocated = pay_default_interest(lead_stt, period_date, step_max, lead_m_amount, lead_rate)
-            
+                allocated = pay_default_interest(lead_stt, period_date, step_max, lead_m_amount, lead_rate, is_cf_wf)
+
             elif lead_state == "Default":
                 # Default principal only
-                allocated = pay_default_principal(lead_stt, period_date, step_max, lead_m_amount)
-            
+                allocated = pay_default_principal(lead_stt, period_date, step_max, lead_m_amount, is_cf_wf)
+
             elif lead_state == "Add":
                 # Additional capital pref
-                allocated = pay_pref(lead_stt, period_date, step_max)
-            
+                allocated = pay_pref(lead_stt, period_date, step_max, is_cf_wf)
+
             elif lead_state == "Amt":
                 # Fixed amount
                 allocated = min(step_max, abs(lead_m_amount)) if lead_m_amount != 0 else 0.0
                 if allocated > 0:
-                    apply_distribution(lead_stt, period_date, allocated)
+                    apply_distribution(lead_stt, period_date, allocated, is_cf_wf)
             
             else:
                 # Unknown state - no allocation
@@ -444,8 +469,9 @@ def run_waterfall_period(
                     break  # Use first lead partner's distribution as reference
             
             if allocated > 0:
-                apply_distribution(tag_stt, period_date, allocated)
-            
+                # Tag distributions follow same CF/Cap classification as lead
+                apply_distribution(tag_stt, period_date, allocated, not is_capital_waterfall)
+
             # Record allocation
             alloc_rows.append({
                 "event_date": period_date,
@@ -460,10 +486,10 @@ def run_waterfall_period(
                 "Allocated": float(allocated),
                 "RemainingAfter": float(remaining - allocated),
             })
-            
+
             remaining -= allocated
             processed_orders.add(tag_order)
-            
+
             if remaining <= 1e-9:
                 remaining = 0.0
                 break
@@ -493,10 +519,10 @@ def run_waterfall(
     period_cash: pd.DataFrame,
     initial_states: Optional[Dict[str, InvestorState]] = None,
     show_structure_when_no_cash: bool = True,
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
+) -> Tuple[pd.DataFrame, Dict[str, InvestorState]]:
     """
     Run complete waterfall for all periods
-    
+
     Args:
         wf_steps: All waterfall step definitions
         vcode: Deal code
@@ -504,9 +530,9 @@ def run_waterfall(
         period_cash: DataFrame with columns [event_date, cash_available]
         initial_states: Optional pre-seeded investor states
         show_structure_when_no_cash: If True, create zero-allocation rows even when no cash
-    
+
     Returns:
-        (allocations_df, investor_summary_df)
+        (allocations_df, investor_states_dict)
     """
     # Filter steps to this deal and waterfall type
     steps = wf_steps[
@@ -570,11 +596,8 @@ def run_waterfall(
             "TotalDistributions": metrics['TotalDistributions'],
         })
     
-    inv_sum = pd.DataFrame(inv_rows)
-    if not inv_sum.empty:
-        inv_sum = inv_sum.sort_values("PropCode")
-    
-    return alloc_df, inv_sum
+    # Return allocations DataFrame and the investor states dict
+    return alloc_df, istates
 
 
 # ============================================================
