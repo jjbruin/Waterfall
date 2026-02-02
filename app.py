@@ -1341,6 +1341,504 @@ if isbs_raw is not None and not isbs_raw.empty:
             st.info("No balance sheet data available for this deal.")
 
 # ============================================================
+# INCOME STATEMENT COMPARISON
+# ============================================================
+if isbs_raw is not None and not isbs_raw.empty:
+    with st.expander("📊 Income Statement Comparison"):
+        # Define income statement account classifications
+        IS_ACCOUNTS = {
+            'REVENUES': {
+                'Rental Income': ['4010', '4012'],
+                'Commercial': ['4020', '4041'],
+                'Abated Apartments': ['4045'],
+                'Vacancy': ['4040', '4043', '4030', '4042'],
+                'RUBS': ['4070'],
+                'RET': ['4091'],
+                'INS': ['4092'],
+                'CAM': ['4090', '4097', '4093', '4094', '4096', '4095'],
+                'Other Income': ['4063', '4060', '4061', '4062', '4080', '4065'],
+            },
+            'EXPENSES': {
+                'Real Estate Taxes': ['5090'],
+                'Property & Liability Insurance': ['5110', '5114'],
+                'Salary & Benefits': ['5018', '5010', '5016', '5012', '5014'],
+                'Utilities': ['5051', '5053', '5050', '5052', '5054', '5055'],
+                'Repairs & Maintenance': ['5060', '5067', '5063', '5069', '5061', '5064', '5065', '5068', '5070', '5066'],
+                'Administrative': ['5020', '5022', '5021', '5023', '5025', '5026', '5080'],
+                'Marketing & Advertising': ['5045'],
+                'Legal & Professional': ['5087', '5085'],
+                'Management Fee': ['5040'],
+                'Other Expenses': ['5096', '5095', '5091', '5100'],
+            },
+            'DEBT_SERVICE': {
+                'Interest': ['5190'],
+                'Principal': ['2145', '2150', '2152', '2154', '2156'],
+            },
+            'OTHER_BTL': {
+                'Interest Income': ['4050'],
+                'Other (Income) Expenses': ['5220', '5210', '5195', '7065'],
+                'Capital Expenditures': ['7050'],
+                'Partnership Expenses': ['5120', '5130'],
+                'Extraordinary Expenses': ['5400'],
+            },
+        }
+
+        # Prepare ISBS data for the deal
+        isbs_is = isbs_raw.copy()
+        isbs_is.columns = [str(c).strip() for c in isbs_is.columns]
+
+        # Filter for deal
+        if 'vcode' in isbs_is.columns:
+            isbs_is['vcode'] = isbs_is['vcode'].astype(str).str.strip().str.lower()
+            isbs_is = isbs_is[isbs_is['vcode'] == str(deal_vcode).strip().lower()]
+
+        # Parse dates
+        if not isbs_is.empty and 'dtEntry' in isbs_is.columns:
+            try:
+                isbs_is['dtEntry_parsed'] = pd.to_datetime(isbs_is['dtEntry'], unit='D', origin='1899-12-30', errors='coerce')
+            except:
+                isbs_is['dtEntry_parsed'] = pd.to_datetime(isbs_is['dtEntry'], errors='coerce')
+            null_dates = isbs_is['dtEntry_parsed'].isna()
+            if null_dates.any():
+                isbs_is.loc[null_dates, 'dtEntry_parsed'] = pd.to_datetime(isbs_is.loc[null_dates, 'dtEntry'], errors='coerce')
+
+            # Normalize vSource
+            if 'vSource' in isbs_is.columns:
+                isbs_is['vSource'] = isbs_is['vSource'].astype(str).str.strip()
+
+            # Normalize vAccount and mAmount
+            if 'vAccount' in isbs_is.columns:
+                isbs_is['vAccount'] = isbs_is['vAccount'].astype(str).str.strip()
+            if 'mAmount' in isbs_is.columns:
+                isbs_is['mAmount'] = pd.to_numeric(isbs_is['mAmount'], errors='coerce').fillna(0)
+
+            # Get available actual periods (Interim IS only)
+            actual_data = isbs_is[isbs_is['vSource'] == 'Interim IS']
+            actual_periods = sorted(actual_data['dtEntry_parsed'].dropna().unique()) if not actual_data.empty else []
+
+            # Get budget data
+            budget_data = isbs_is[isbs_is['vSource'] == 'Budget IS']
+
+            # Get underwriting data
+            uw_data = isbs_is[isbs_is['vSource'] == 'Projected IS']
+
+            if len(actual_periods) >= 1:
+                # Determine most recent actual period
+                most_recent_actual = pd.Timestamp(actual_periods[-1])
+                current_year = most_recent_actual.year
+                current_month = most_recent_actual.month
+
+                # Period type options
+                period_types = [
+                    "TTM (Trailing Twelve Months)",
+                    "YTD (Year to Date)",
+                    "Current Year Estimate",
+                    "Full Year",
+                    "Custom Month",
+                ]
+
+                # Source options
+                source_options = ["Actual", "Budget", "Underwriting", "Valuation"]
+
+                # Helper function to get cumulative balances for a specific date
+                def get_cumulative_balances(data_df, as_of_date, accounts_dict):
+                    """Get cumulative account balances as of a specific date from Actuals"""
+                    period_data = data_df[data_df['dtEntry_parsed'] == as_of_date].copy()
+                    if period_data.empty:
+                        return {}
+                    balances = {}
+                    for section, categories in accounts_dict.items():
+                        balances[section] = {}
+                        for category, acct_list in categories.items():
+                            total = period_data[period_data['vAccount'].isin(acct_list)]['mAmount'].sum()
+                            balances[section][category] = total
+                    return balances
+
+                # Helper function to sum budget amounts over a date range
+                def get_budget_sum(data_df, start_date, end_date, accounts_dict):
+                    """Sum budget amounts between start_date (exclusive) and end_date (inclusive)"""
+                    period_data = data_df[
+                        (data_df['dtEntry_parsed'] > start_date) &
+                        (data_df['dtEntry_parsed'] <= end_date)
+                    ].copy()
+                    if period_data.empty:
+                        return {}
+                    balances = {}
+                    for section, categories in accounts_dict.items():
+                        balances[section] = {}
+                        for category, acct_list in categories.items():
+                            total = period_data[period_data['vAccount'].isin(acct_list)]['mAmount'].sum()
+                            balances[section][category] = total
+                    return balances
+
+                # Helper to subtract two balance dicts
+                def subtract_balances(bal1, bal2, accounts_dict):
+                    """bal1 - bal2"""
+                    result = {}
+                    for section, categories in accounts_dict.items():
+                        result[section] = {}
+                        for category in categories.keys():
+                            v1 = bal1.get(section, {}).get(category, 0)
+                            v2 = bal2.get(section, {}).get(category, 0)
+                            result[section][category] = v1 - v2
+                    return result
+
+                # Helper to add two balance dicts
+                def add_balances(bal1, bal2, accounts_dict):
+                    """bal1 + bal2"""
+                    result = {}
+                    for section, categories in accounts_dict.items():
+                        result[section] = {}
+                        for category in categories.keys():
+                            v1 = bal1.get(section, {}).get(category, 0)
+                            v2 = bal2.get(section, {}).get(category, 0)
+                            result[section][category] = v1 + v2
+                    return result
+
+                # Helper to get valuation data for a period
+                def get_valuation_sum(fc_df, start_date, end_date, accounts_dict):
+                    """Get valuation amounts from forecast_feed"""
+                    if fc_df is None or fc_df.empty:
+                        return {}
+                    period_data = fc_df[
+                        (fc_df['event_date'] > start_date) &
+                        (fc_df['event_date'] <= end_date)
+                    ].copy()
+                    if period_data.empty:
+                        return {}
+                    balances = {}
+                    for section, categories in accounts_dict.items():
+                        balances[section] = {}
+                        for category, acct_list in categories.items():
+                            total = period_data[period_data['vAccount'].isin(acct_list)]['mAmount_norm'].sum()
+                            balances[section][category] = total
+                    return balances
+
+                # Function to calculate IS amounts based on period type and source
+                def calculate_is_amounts(period_type, source, ref_date, year, accounts_dict):
+                    """Calculate income statement amounts based on period type and source"""
+                    ref_date = pd.Timestamp(ref_date)
+
+                    if source == "Actual":
+                        if period_type == "TTM (Trailing Twelve Months)":
+                            # TTM = current month + prior Dec - same month last year
+                            current_bal = get_cumulative_balances(actual_data, ref_date, accounts_dict)
+                            # Find December of prior year
+                            dec_prior = None
+                            for p in actual_periods:
+                                p_ts = pd.Timestamp(p)
+                                if p_ts.year == ref_date.year - 1 and p_ts.month == 12:
+                                    dec_prior = p_ts
+                                    break
+                            # Find same month last year
+                            same_month_ly = None
+                            for p in actual_periods:
+                                p_ts = pd.Timestamp(p)
+                                if p_ts.year == ref_date.year - 1 and p_ts.month == ref_date.month:
+                                    same_month_ly = p_ts
+                                    break
+
+                            if dec_prior and same_month_ly:
+                                dec_bal = get_cumulative_balances(actual_data, dec_prior, accounts_dict)
+                                ly_bal = get_cumulative_balances(actual_data, same_month_ly, accounts_dict)
+                                # TTM = current + dec_prior - same_month_ly
+                                temp = add_balances(current_bal, dec_bal, accounts_dict)
+                                return subtract_balances(temp, ly_bal, accounts_dict)
+                            elif dec_prior:
+                                dec_bal = get_cumulative_balances(actual_data, dec_prior, accounts_dict)
+                                return add_balances(current_bal, dec_bal, accounts_dict)
+                            else:
+                                return current_bal
+
+                        elif period_type == "YTD (Year to Date)":
+                            # YTD = current month cumulative (since it resets each year)
+                            return get_cumulative_balances(actual_data, ref_date, accounts_dict)
+
+                        elif period_type == "Full Year":
+                            # Full Year = December of that year
+                            dec_date = None
+                            for p in actual_periods:
+                                p_ts = pd.Timestamp(p)
+                                if p_ts.year == year and p_ts.month == 12:
+                                    dec_date = p_ts
+                                    break
+                            if dec_date:
+                                return get_cumulative_balances(actual_data, dec_date, accounts_dict)
+                            return {}
+
+                        elif period_type == "Current Year Estimate":
+                            # YTD Actual + Budget for remainder
+                            ytd_bal = get_cumulative_balances(actual_data, ref_date, accounts_dict)
+                            # Budget from ref_date to Dec 31
+                            dec_end = pd.Timestamp(f"{ref_date.year}-12-31")
+                            budget_remainder = get_budget_sum(budget_data, ref_date, dec_end, accounts_dict)
+                            return add_balances(ytd_bal, budget_remainder, accounts_dict)
+
+                        else:  # Custom Month
+                            return get_cumulative_balances(actual_data, ref_date, accounts_dict)
+
+                    elif source == "Budget":
+                        if period_type == "TTM (Trailing Twelve Months)":
+                            # Sum 12 months of budget ending at ref_date
+                            start = ref_date - pd.DateOffset(months=12)
+                            return get_budget_sum(budget_data, start, ref_date, accounts_dict)
+
+                        elif period_type == "YTD (Year to Date)":
+                            # Sum budget from Jan 1 to ref_date
+                            jan1 = pd.Timestamp(f"{ref_date.year}-01-01") - pd.DateOffset(days=1)
+                            return get_budget_sum(budget_data, jan1, ref_date, accounts_dict)
+
+                        elif period_type == "Full Year":
+                            # Sum budget for full year
+                            jan1 = pd.Timestamp(f"{year}-01-01") - pd.DateOffset(days=1)
+                            dec31 = pd.Timestamp(f"{year}-12-31")
+                            return get_budget_sum(budget_data, jan1, dec31, accounts_dict)
+
+                        elif period_type == "Current Year Estimate":
+                            # Full year budget
+                            jan1 = pd.Timestamp(f"{ref_date.year}-01-01") - pd.DateOffset(days=1)
+                            dec31 = pd.Timestamp(f"{ref_date.year}-12-31")
+                            return get_budget_sum(budget_data, jan1, dec31, accounts_dict)
+
+                        else:  # Custom Month
+                            # Single month budget
+                            prior_month = ref_date - pd.DateOffset(months=1)
+                            return get_budget_sum(budget_data, prior_month, ref_date, accounts_dict)
+
+                    elif source == "Underwriting":
+                        if period_type == "TTM (Trailing Twelve Months)":
+                            start = ref_date - pd.DateOffset(months=12)
+                            return get_budget_sum(uw_data, start, ref_date, accounts_dict)
+
+                        elif period_type == "YTD (Year to Date)":
+                            jan1 = pd.Timestamp(f"{ref_date.year}-01-01") - pd.DateOffset(days=1)
+                            return get_budget_sum(uw_data, jan1, ref_date, accounts_dict)
+
+                        elif period_type == "Full Year":
+                            jan1 = pd.Timestamp(f"{year}-01-01") - pd.DateOffset(days=1)
+                            dec31 = pd.Timestamp(f"{year}-12-31")
+                            return get_budget_sum(uw_data, jan1, dec31, accounts_dict)
+
+                        elif period_type == "Current Year Estimate":
+                            jan1 = pd.Timestamp(f"{ref_date.year}-01-01") - pd.DateOffset(days=1)
+                            dec31 = pd.Timestamp(f"{ref_date.year}-12-31")
+                            return get_budget_sum(uw_data, jan1, dec31, accounts_dict)
+
+                        else:  # Custom Month
+                            prior_month = ref_date - pd.DateOffset(months=1)
+                            return get_budget_sum(uw_data, prior_month, ref_date, accounts_dict)
+
+                    elif source == "Valuation":
+                        if period_type == "TTM (Trailing Twelve Months)":
+                            start = ref_date - pd.DateOffset(months=12)
+                            return get_valuation_sum(fc_deal_modeled, start.date(), ref_date.date(), accounts_dict)
+
+                        elif period_type == "YTD (Year to Date)":
+                            jan1 = pd.Timestamp(f"{ref_date.year}-01-01") - pd.DateOffset(days=1)
+                            return get_valuation_sum(fc_deal_modeled, jan1.date(), ref_date.date(), accounts_dict)
+
+                        elif period_type == "Full Year":
+                            jan1 = pd.Timestamp(f"{year}-01-01") - pd.DateOffset(days=1)
+                            dec31 = pd.Timestamp(f"{year}-12-31")
+                            return get_valuation_sum(fc_deal_modeled, jan1.date(), dec31.date(), accounts_dict)
+
+                        elif period_type == "Current Year Estimate":
+                            jan1 = pd.Timestamp(f"{ref_date.year}-01-01") - pd.DateOffset(days=1)
+                            dec31 = pd.Timestamp(f"{ref_date.year}-12-31")
+                            return get_valuation_sum(fc_deal_modeled, jan1.date(), dec31.date(), accounts_dict)
+
+                        else:  # Custom Month
+                            prior_month = ref_date - pd.DateOffset(months=1)
+                            return get_valuation_sum(fc_deal_modeled, prior_month.date(), ref_date.date(), accounts_dict)
+
+                    return {}
+
+                # UI for period selection
+                st.markdown("**Configure Comparison:**")
+
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    st.markdown("*Column 1*")
+                    period_type1 = st.selectbox("Period Type", period_types, index=0, key="is_period_type1")
+                    source1 = st.selectbox("Source", source_options, index=0, key="is_source1")
+
+                    # Year/date selector based on period type
+                    available_years1 = sorted(set(pd.Timestamp(p).year for p in actual_periods), reverse=True)
+                    if period_type1 in ["TTM (Trailing Twelve Months)", "YTD (Year to Date)", "Custom Month", "Current Year Estimate"]:
+                        period_options1 = [pd.Timestamp(p).strftime('%Y-%m-%d') for p in actual_periods]
+                        ref_date1 = st.selectbox("As of Date", period_options1, index=len(period_options1)-1, key="is_ref_date1")
+                        year1 = pd.Timestamp(ref_date1).year
+                    else:  # Full Year
+                        year1 = st.selectbox("Year", available_years1, index=0, key="is_year1")
+                        # Find December of selected year or latest month
+                        ref_date1 = None
+                        for p in reversed(actual_periods):
+                            if pd.Timestamp(p).year == year1:
+                                ref_date1 = pd.Timestamp(p).strftime('%Y-%m-%d')
+                                break
+                        if not ref_date1:
+                            ref_date1 = pd.Timestamp(actual_periods[-1]).strftime('%Y-%m-%d')
+
+                with col2:
+                    st.markdown("*Column 2*")
+                    period_type2 = st.selectbox("Period Type", period_types, index=0, key="is_period_type2")
+                    source2 = st.selectbox("Source", source_options, index=0, key="is_source2")
+
+                    available_years2 = sorted(set(pd.Timestamp(p).year for p in actual_periods), reverse=True)
+                    if period_type2 in ["TTM (Trailing Twelve Months)", "YTD (Year to Date)", "Custom Month", "Current Year Estimate"]:
+                        period_options2 = [pd.Timestamp(p).strftime('%Y-%m-%d') for p in actual_periods]
+                        # Default to prior year same month if available
+                        default_idx2 = len(period_options2) - 1
+                        most_recent_ts = pd.Timestamp(actual_periods[-1])
+                        for i, p in enumerate(period_options2):
+                            p_ts = pd.Timestamp(p)
+                            if p_ts.year == most_recent_ts.year - 1 and p_ts.month == most_recent_ts.month:
+                                default_idx2 = i
+                                break
+                        ref_date2 = st.selectbox("As of Date", period_options2, index=default_idx2, key="is_ref_date2")
+                        year2 = pd.Timestamp(ref_date2).year
+                    else:  # Full Year
+                        year2 = st.selectbox("Year", available_years2, index=min(1, len(available_years2)-1), key="is_year2")
+                        ref_date2 = None
+                        for p in reversed(actual_periods):
+                            if pd.Timestamp(p).year == year2:
+                                ref_date2 = pd.Timestamp(p).strftime('%Y-%m-%d')
+                                break
+                        if not ref_date2:
+                            ref_date2 = pd.Timestamp(actual_periods[-1]).strftime('%Y-%m-%d')
+
+                # Calculate amounts for both columns
+                amounts1 = calculate_is_amounts(period_type1, source1, ref_date1, year1, IS_ACCOUNTS)
+                amounts2 = calculate_is_amounts(period_type2, source2, ref_date2, year2, IS_ACCOUNTS)
+
+                # Build display table
+                is_rows = []
+
+                def add_is_row(label, val1, val2, indent=0, is_header=False, is_total=False, is_calc=False):
+                    variance = val2 - val1 if val1 is not None and val2 is not None else None
+                    var_pct = (variance / abs(val1) * 100) if val1 and val1 != 0 and variance is not None else None
+
+                    prefix = "  " * indent
+                    if is_header or is_total or is_calc:
+                        label_display = f"**{prefix}{label}**"
+                    else:
+                        label_display = f"{prefix}{label}"
+
+                    col1_label = f"{source1} {period_type1.split(' ')[0]} {ref_date1[:7] if 'TTM' in period_type1 or 'YTD' in period_type1 else year1}"
+                    col2_label = f"{source2} {period_type2.split(' ')[0]} {ref_date2[:7] if 'TTM' in period_type2 or 'YTD' in period_type2 else year2}"
+
+                    is_rows.append({
+                        'Account': label_display,
+                        col1_label: f"${val1:,.0f}" if val1 is not None else "",
+                        col2_label: f"${val2:,.0f}" if val2 is not None else "",
+                        'Variance $': f"${variance:,.0f}" if variance is not None else "",
+                        'Variance %': f"{var_pct:.1f}%" if var_pct is not None else "",
+                    })
+
+                # Column labels for consistent naming
+                col1_label = f"{source1} {period_type1.split(' ')[0]} {ref_date1[:7] if 'TTM' in period_type1 or 'YTD' in period_type1 else year1}"
+                col2_label = f"{source2} {period_type2.split(' ')[0]} {ref_date2[:7] if 'TTM' in period_type2 or 'YTD' in period_type2 else year2}"
+
+                # REVENUES (flip signs - stored as credits/negative in accounting)
+                add_is_row("REVENUES", None, None, is_header=True)
+                total_rev_1 = 0
+                total_rev_2 = 0
+                for category in IS_ACCOUNTS['REVENUES'].keys():
+                    val1 = -amounts1.get('REVENUES', {}).get(category, 0)  # Flip sign
+                    val2 = -amounts2.get('REVENUES', {}).get(category, 0)  # Flip sign
+                    total_rev_1 += val1
+                    total_rev_2 += val2
+                    if val1 != 0 or val2 != 0:
+                        add_is_row(category, val1, val2, indent=1)
+                add_is_row("Total Revenues", total_rev_1, total_rev_2, is_total=True)
+
+                # Blank row
+                is_rows.append({'Account': '', col1_label: '', col2_label: '', 'Variance $': '', 'Variance %': ''})
+
+                # EXPENSES
+                add_is_row("EXPENSES", None, None, is_header=True)
+                total_exp_1 = 0
+                total_exp_2 = 0
+                for category in IS_ACCOUNTS['EXPENSES'].keys():
+                    val1 = amounts1.get('EXPENSES', {}).get(category, 0)
+                    val2 = amounts2.get('EXPENSES', {}).get(category, 0)
+                    total_exp_1 += val1
+                    total_exp_2 += val2
+                    if val1 != 0 or val2 != 0:
+                        add_is_row(category, val1, val2, indent=1)
+                add_is_row("Total Expenses", total_exp_1, total_exp_2, is_total=True)
+
+                # Blank row
+                is_rows.append({'Account': '', col1_label: '', col2_label: '', 'Variance $': '', 'Variance %': ''})
+
+                # NOI
+                noi_1 = total_rev_1 - total_exp_1
+                noi_2 = total_rev_2 - total_exp_2
+                add_is_row("NET OPERATING INCOME", noi_1, noi_2, is_calc=True)
+
+                # Blank row
+                is_rows.append({'Account': '', col1_label: '', col2_label: '', 'Variance $': '', 'Variance %': ''})
+
+                # DEBT SERVICE
+                add_is_row("DEBT SERVICE", None, None, is_header=True)
+                interest_1 = amounts1.get('DEBT_SERVICE', {}).get('Interest', 0)
+                interest_2 = amounts2.get('DEBT_SERVICE', {}).get('Interest', 0)
+                principal_1 = amounts1.get('DEBT_SERVICE', {}).get('Principal', 0)
+                principal_2 = amounts2.get('DEBT_SERVICE', {}).get('Principal', 0)
+
+                if interest_1 != 0 or interest_2 != 0:
+                    add_is_row("Interest", interest_1, interest_2, indent=1)
+                if principal_1 != 0 or principal_2 != 0:
+                    add_is_row("Principal", principal_1, principal_2, indent=1)
+
+                total_ds_1 = abs(interest_1) + abs(principal_1)
+                total_ds_2 = abs(interest_2) + abs(principal_2)
+                add_is_row("Total Debt Service", total_ds_1, total_ds_2, is_total=True)
+
+                # DSCR
+                dscr_1 = noi_1 / total_ds_1 if total_ds_1 != 0 else None
+                dscr_2 = noi_2 / total_ds_2 if total_ds_2 != 0 else None
+                dscr_var = dscr_2 - dscr_1 if dscr_1 is not None and dscr_2 is not None else None
+
+                is_rows.append({
+                    'Account': '**Debt Service Coverage Ratio**',
+                    col1_label: f"{dscr_1:.2f}x" if dscr_1 is not None else "",
+                    col2_label: f"{dscr_2:.2f}x" if dscr_2 is not None else "",
+                    'Variance $': f"{dscr_var:.2f}x" if dscr_var is not None else "",
+                    'Variance %': "",
+                })
+
+                # Blank row
+                is_rows.append({'Account': '', col1_label: '', col2_label: '', 'Variance $': '', 'Variance %': ''})
+
+                # OTHER BELOW THE LINE
+                add_is_row("OTHER BELOW THE LINE", None, None, is_header=True)
+                total_btl_1 = 0
+                total_btl_2 = 0
+                for category in IS_ACCOUNTS['OTHER_BTL'].keys():
+                    val1 = amounts1.get('OTHER_BTL', {}).get(category, 0)
+                    val2 = amounts2.get('OTHER_BTL', {}).get(category, 0)
+                    # Flip sign for Interest Income (stored as credit/negative)
+                    if category == 'Interest Income':
+                        val1 = -val1
+                        val2 = -val2
+                    total_btl_1 += val1
+                    total_btl_2 += val2
+                    if val1 != 0 or val2 != 0:
+                        add_is_row(category, val1, val2, indent=1)
+                add_is_row("Total Other Below the Line", total_btl_1, total_btl_2, is_total=True)
+
+                # Display the income statement
+                is_df = pd.DataFrame(is_rows)
+                st.dataframe(is_df, use_container_width=True, hide_index=True)
+
+            else:
+                st.info("No income statement periods available for this deal.")
+        else:
+            st.info("No income statement data available for this deal.")
+
+# ============================================================
 # CAPITAL CALLS SCHEDULE (Display)
 # ============================================================
 if capital_calls:
