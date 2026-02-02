@@ -1077,6 +1077,270 @@ if not cash_schedule.empty:
         st.warning(f"⚠️ Cash balance went negative (lowest: ${cash_summary.get('min_cash_balance', 0):,.0f}). Consider additional capital calls or reducing CapEx.")
 
 # ============================================================
+# BALANCE SHEET COMPARISON
+# ============================================================
+if isbs_raw is not None and not isbs_raw.empty:
+    with st.expander("📊 Balance Sheet Comparison"):
+        # Define account classifications
+        BS_ACCOUNTS = {
+            'ASSETS': {
+                'Current Assets': {
+                    'Cash': ['1010', '1012'],
+                    'Misc Current Assets': ['1040', '1070'],
+                },
+                'Noncurrent Assets': {
+                    'Accounts Receivable': ['1020', '1025', '1030'],
+                    'Lender Held Reserves & Escrows': ['1145', '1092', '1091'],
+                    'Other Reserves & Escrows': ['1014', '1080', '1090', '1100', '1120', '1130', '1140'],
+                    'Prepaid': ['1050', '1060', '1075', '1151'],
+                    'Fixed Assets': ['1240', '1250', '1260', '1270', '1280', '1282', '1275'],
+                    'Depreciation & Amortization': ['1230', '1290'],
+                    'Other Assets': ['1150', '1224', '1220'],
+                },
+            },
+            'LIABILITIES': {
+                'Current Liabilities': {
+                    'Accounts Payable': ['2010', '2012', '2015', '2020'],
+                    'Accrued Interest Payable': ['2060'],
+                    'Accrued Taxes Payable': ['2110'],
+                    'Security Deposits': ['2090'],
+                    'Prepaid Revenues': ['2080'],
+                    'Other Accrued Liabilities': ['2115', '2120', '2124', '2130'],
+                },
+                'Noncurrent Liabilities': {
+                    'Mortgages and Loans': ['2150', '2152', '2210'],
+                    'Misc Long Term Liabilities': ['2300', '2310'],
+                    'Deferred Developer/AM Fee': ['2230'],
+                    'Notes Payable to GP': ['2280'],
+                    'Notes Payable to LP': ['2290'],
+                },
+            },
+            'EQUITY': {
+                'Equity': {
+                    'Equity': ['2520', '2530', '2534', '2536', '2540'],
+                    'Partner Equity': ['2525'],
+                    'PSC Pref Equity': ['2526'],
+                    'Distributions-2527': ['2527'],
+                    'Distributions-2528': ['2528'],
+                    'Net Income': ['2550'],
+                },
+            },
+        }
+
+        # Prepare ISBS data for the deal
+        isbs_bs = isbs_raw.copy()
+        isbs_bs.columns = [str(c).strip() for c in isbs_bs.columns]
+
+        # Filter for deal
+        if 'vcode' in isbs_bs.columns:
+            isbs_bs['vcode'] = isbs_bs['vcode'].astype(str).str.strip().str.lower()
+            isbs_bs = isbs_bs[isbs_bs['vcode'] == str(deal_vcode).strip().lower()]
+
+        # Filter for actual reported balance sheets only (vSource = "Interim BS")
+        if 'vSource' in isbs_bs.columns:
+            isbs_bs['vSource'] = isbs_bs['vSource'].astype(str).str.strip()
+            isbs_bs = isbs_bs[isbs_bs['vSource'] == 'Interim BS']
+
+        if not isbs_bs.empty and 'dtEntry' in isbs_bs.columns:
+            # Parse dates
+            try:
+                isbs_bs['dtEntry_parsed'] = pd.to_datetime(isbs_bs['dtEntry'], unit='D', origin='1899-12-30', errors='coerce')
+            except:
+                isbs_bs['dtEntry_parsed'] = pd.to_datetime(isbs_bs['dtEntry'], errors='coerce')
+            null_dates = isbs_bs['dtEntry_parsed'].isna()
+            if null_dates.any():
+                isbs_bs.loc[null_dates, 'dtEntry_parsed'] = pd.to_datetime(isbs_bs.loc[null_dates, 'dtEntry'], errors='coerce')
+
+            # Get available periods (only from actual reported balance sheets)
+            available_periods = sorted(isbs_bs['dtEntry_parsed'].dropna().unique())
+
+            if len(available_periods) >= 1:
+                # Convert to date strings for display
+                period_options = [pd.Timestamp(p).strftime('%Y-%m-%d') for p in available_periods]
+
+                # Default selections: most recent and prior year end
+                most_recent_idx = len(period_options) - 1
+                most_recent = period_options[most_recent_idx]
+
+                # Find prior year end (December of previous year)
+                most_recent_date = pd.Timestamp(available_periods[most_recent_idx])
+                prior_year = most_recent_date.year - 1
+                prior_year_end = None
+                for i, p in enumerate(available_periods):
+                    p_date = pd.Timestamp(p)
+                    if p_date.year == prior_year and p_date.month == 12:
+                        prior_year_end = period_options[i]
+                        break
+                if prior_year_end is None and len(period_options) > 1:
+                    prior_year_end = period_options[0]  # Fallback to earliest
+                elif prior_year_end is None:
+                    prior_year_end = most_recent
+
+                # Period selectors
+                col_left, col_right = st.columns(2)
+                with col_left:
+                    period1 = st.selectbox("Prior Period", period_options, index=period_options.index(prior_year_end) if prior_year_end in period_options else 0, key="bs_period1")
+                with col_right:
+                    period2 = st.selectbox("Current Period", period_options, index=most_recent_idx, key="bs_period2")
+
+                # Get balances for each period
+                def get_period_balances(isbs_df, period_str, accounts_dict):
+                    """Get account balances for a specific period"""
+                    period_date = pd.to_datetime(period_str)
+                    period_data = isbs_df[isbs_df['dtEntry_parsed'] == period_date].copy()
+
+                    if period_data.empty:
+                        return {}
+
+                    # Normalize account column
+                    if 'vAccount' in period_data.columns:
+                        period_data['vAccount'] = period_data['vAccount'].astype(str).str.strip()
+                    if 'mAmount' in period_data.columns:
+                        period_data['mAmount'] = pd.to_numeric(period_data['mAmount'], errors='coerce').fillna(0)
+
+                    balances = {}
+                    for section, subsections in accounts_dict.items():
+                        balances[section] = {}
+                        for subsection, categories in subsections.items():
+                            balances[section][subsection] = {}
+                            for category, acct_list in categories.items():
+                                total = period_data[period_data['vAccount'].isin(acct_list)]['mAmount'].sum()
+                                balances[section][subsection][category] = total
+                    return balances
+
+                balances1 = get_period_balances(isbs_bs, period1, BS_ACCOUNTS)
+                balances2 = get_period_balances(isbs_bs, period2, BS_ACCOUNTS)
+
+                # Build display table
+                rows = []
+
+                def add_row(label, val1, val2, indent=0, is_header=False, is_total=False):
+                    variance = val2 - val1 if val1 is not None and val2 is not None else None
+                    var_pct = (variance / abs(val1) * 100) if val1 and val1 != 0 and variance is not None else None
+
+                    prefix = "  " * indent
+                    if is_header:
+                        label_display = f"**{prefix}{label}**"
+                    elif is_total:
+                        label_display = f"**{prefix}{label}**"
+                    else:
+                        label_display = f"{prefix}{label}"
+
+                    rows.append({
+                        'Account': label_display,
+                        period1: f"${val1:,.0f}" if val1 is not None else "",
+                        period2: f"${val2:,.0f}" if val2 is not None else "",
+                        'Variance $': f"${variance:,.0f}" if variance is not None else "",
+                        'Variance %': f"{var_pct:.1f}%" if var_pct is not None else "",
+                    })
+
+                # ASSETS
+                add_row("ASSETS", None, None, is_header=True)
+                total_current_assets_1 = 0
+                total_current_assets_2 = 0
+
+                # Current Assets
+                add_row("Current Assets", None, None, indent=1, is_header=True)
+                for category in BS_ACCOUNTS['ASSETS']['Current Assets'].keys():
+                    val1 = balances1.get('ASSETS', {}).get('Current Assets', {}).get(category, 0)
+                    val2 = balances2.get('ASSETS', {}).get('Current Assets', {}).get(category, 0)
+                    total_current_assets_1 += val1
+                    total_current_assets_2 += val2
+                    if val1 != 0 or val2 != 0:
+                        add_row(category, val1, val2, indent=2)
+                add_row("Total Current Assets", total_current_assets_1, total_current_assets_2, indent=1, is_total=True)
+
+                # Noncurrent Assets
+                total_noncurrent_assets_1 = 0
+                total_noncurrent_assets_2 = 0
+                add_row("Noncurrent Assets", None, None, indent=1, is_header=True)
+                for category in BS_ACCOUNTS['ASSETS']['Noncurrent Assets'].keys():
+                    val1 = balances1.get('ASSETS', {}).get('Noncurrent Assets', {}).get(category, 0)
+                    val2 = balances2.get('ASSETS', {}).get('Noncurrent Assets', {}).get(category, 0)
+                    total_noncurrent_assets_1 += val1
+                    total_noncurrent_assets_2 += val2
+                    if val1 != 0 or val2 != 0:
+                        add_row(category, val1, val2, indent=2)
+                add_row("Total Noncurrent Assets", total_noncurrent_assets_1, total_noncurrent_assets_2, indent=1, is_total=True)
+
+                total_assets_1 = total_current_assets_1 + total_noncurrent_assets_1
+                total_assets_2 = total_current_assets_2 + total_noncurrent_assets_2
+                add_row("TOTAL ASSETS", total_assets_1, total_assets_2, is_total=True)
+
+                # Blank row
+                rows.append({'Account': '', period1: '', period2: '', 'Variance $': '', 'Variance %': ''})
+
+                # LIABILITIES
+                add_row("LIABILITIES", None, None, is_header=True)
+                total_current_liab_1 = 0
+                total_current_liab_2 = 0
+
+                # Current Liabilities
+                add_row("Current Liabilities", None, None, indent=1, is_header=True)
+                for category in BS_ACCOUNTS['LIABILITIES']['Current Liabilities'].keys():
+                    val1 = balances1.get('LIABILITIES', {}).get('Current Liabilities', {}).get(category, 0)
+                    val2 = balances2.get('LIABILITIES', {}).get('Current Liabilities', {}).get(category, 0)
+                    total_current_liab_1 += val1
+                    total_current_liab_2 += val2
+                    if val1 != 0 or val2 != 0:
+                        add_row(category, val1, val2, indent=2)
+                add_row("Total Current Liabilities", total_current_liab_1, total_current_liab_2, indent=1, is_total=True)
+
+                # Noncurrent Liabilities
+                total_noncurrent_liab_1 = 0
+                total_noncurrent_liab_2 = 0
+                add_row("Noncurrent Liabilities", None, None, indent=1, is_header=True)
+                for category in BS_ACCOUNTS['LIABILITIES']['Noncurrent Liabilities'].keys():
+                    val1 = balances1.get('LIABILITIES', {}).get('Noncurrent Liabilities', {}).get(category, 0)
+                    val2 = balances2.get('LIABILITIES', {}).get('Noncurrent Liabilities', {}).get(category, 0)
+                    total_noncurrent_liab_1 += val1
+                    total_noncurrent_liab_2 += val2
+                    if val1 != 0 or val2 != 0:
+                        add_row(category, val1, val2, indent=2)
+                add_row("Total Noncurrent Liabilities", total_noncurrent_liab_1, total_noncurrent_liab_2, indent=1, is_total=True)
+
+                total_liab_1 = total_current_liab_1 + total_noncurrent_liab_1
+                total_liab_2 = total_current_liab_2 + total_noncurrent_liab_2
+                add_row("TOTAL LIABILITIES", total_liab_1, total_liab_2, is_total=True)
+
+                # Blank row
+                rows.append({'Account': '', period1: '', period2: '', 'Variance $': '', 'Variance %': ''})
+
+                # EQUITY
+                add_row("EQUITY", None, None, is_header=True)
+                total_equity_1 = 0
+                total_equity_2 = 0
+                for category in BS_ACCOUNTS['EQUITY']['Equity'].keys():
+                    val1 = balances1.get('EQUITY', {}).get('Equity', {}).get(category, 0)
+                    val2 = balances2.get('EQUITY', {}).get('Equity', {}).get(category, 0)
+                    total_equity_1 += val1
+                    total_equity_2 += val2
+                    if val1 != 0 or val2 != 0:
+                        add_row(category, val1, val2, indent=1)
+                add_row("TOTAL EQUITY", total_equity_1, total_equity_2, is_total=True)
+
+                # Blank row
+                rows.append({'Account': '', period1: '', period2: '', 'Variance $': '', 'Variance %': ''})
+
+                # TOTAL LIABILITIES + EQUITY
+                total_liab_equity_1 = total_liab_1 + total_equity_1
+                total_liab_equity_2 = total_liab_2 + total_equity_2
+                add_row("TOTAL LIABILITIES + EQUITY", total_liab_equity_1, total_liab_equity_2, is_total=True)
+
+                # Display the balance sheet
+                bs_df = pd.DataFrame(rows)
+                st.dataframe(bs_df, use_container_width=True, hide_index=True)
+
+                # Balance check (Assets + Liabilities + Equity = 0 when balanced, since L&E are credit/negative)
+                balance_check = total_assets_2 + total_liab_equity_2
+                if abs(balance_check) > 1:
+                    st.warning(f"⚠️ Balance sheet does not balance. Assets + Liabilities + Equity = ${balance_check:,.0f}")
+            else:
+                st.info("No balance sheet periods available for this deal.")
+        else:
+            st.info("No balance sheet data available for this deal.")
+
+# ============================================================
 # CAPITAL CALLS SCHEDULE (Display)
 # ============================================================
 if capital_calls:
