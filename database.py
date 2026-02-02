@@ -115,6 +115,11 @@ TABLE_DEFINITIONS = {
         'csv': 'OnePager_Comments.csv',
         'description': 'One Pager report comments by deal and period',
         'key_columns': ['vcode', 'reporting_period']
+    },
+    'tenants': {
+        'csv': 'Tenant_Report.csv',
+        'description': 'Commercial tenant roster by property',
+        'key_columns': ['Code', 'Tenant Code']
     }
 }
 

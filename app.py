@@ -178,6 +178,12 @@ def load_inputs():
         except:
             commitments_raw = None
 
+        # Tenant roster for commercial properties
+        try:
+            tenants_raw = pd.read_sql('SELECT * FROM tenants', conn)
+        except:
+            tenants_raw = None
+
         # Not typically in DB
         mri_supp = pd.DataFrame()
         fund_deals_raw = pd.DataFrame()
@@ -296,6 +302,20 @@ def load_inputs():
         commitments_raw = None
         # Could add upload support here if needed
 
+    # Tenant roster file (for commercial properties - only for Local folder and Upload modes)
+    if mode == "Local folder":
+        tenants_raw = None
+        tenant_path = Path(f"{folder}/Tenant_Report.csv")
+        if tenant_path.exists():
+            try:
+                tenants_raw = pd.read_csv(tenant_path)
+            except Exception as e:
+                print(f"Warning: Could not load Tenant Report file: {e}")
+                tenants_raw = None
+    elif mode == "Upload CSVs":
+        tenants_raw = None
+        # Could add upload support here if needed
+
     # Normalize investment map
     inv.columns = [str(c).strip() for c in inv.columns]
     if "vcode" not in inv.columns and "vCode" in inv.columns:
@@ -303,7 +323,7 @@ def load_inputs():
     inv["vcode"] = inv["vcode"].astype(str)
 
     # Prepare return data
-    result = (inv, wf, acct, fc, coa, mri_loans_raw, mri_supp, mri_val, fund_deals_raw, inv_wf_raw, inv_acct_raw, relationships_raw, capital_calls_raw, isbs_raw, occupancy_raw, commitments_raw)
+    result = (inv, wf, acct, fc, coa, mri_loans_raw, mri_supp, mri_val, fund_deals_raw, inv_wf_raw, inv_acct_raw, relationships_raw, capital_calls_raw, isbs_raw, occupancy_raw, commitments_raw, tenants_raw)
 
     # Cache in session state
     st.session_state.cached_data = result
@@ -314,7 +334,7 @@ def load_inputs():
 
 # Load data with progress indicator
 with st.spinner("Loading data..."):
-    inv, wf, acct, fc, coa, mri_loans_raw, mri_supp, mri_val, fund_deals_raw, inv_wf_raw, inv_acct_raw, relationships_raw, capital_calls_raw, isbs_raw, occupancy_raw, commitments_raw = load_inputs()
+    inv, wf, acct, fc, coa, mri_loans_raw, mri_supp, mri_val, fund_deals_raw, inv_wf_raw, inv_acct_raw, relationships_raw, capital_calls_raw, isbs_raw, occupancy_raw, commitments_raw, tenants_raw = load_inputs()
 
 
 # ============================================================
@@ -2610,6 +2630,122 @@ if xirr_cf_rows:
 
     with st.expander("XIRR Cash Flows"):
         st.dataframe(display_df[["Date", "Description", "Pref Equity", "Ptr Equity", "Deal"]], use_container_width=True)
+
+# ============================================================
+# TENANT ROSTER (Commercial Properties Only)
+# ============================================================
+if tenants_raw is not None and not tenants_raw.empty:
+    # Filter tenants for current deal (Code column = vcode)
+    tenants_raw['Code'] = tenants_raw['Code'].astype(str).str.strip()
+    deal_tenants = tenants_raw[tenants_raw['Code'] == str(deal_vcode)].copy()
+
+    if not deal_tenants.empty:
+        with st.expander("Tenant Roster"):
+            # Clean and prepare data
+            def clean_currency(val):
+                """Convert currency string to float"""
+                if pd.isna(val) or val == '':
+                    return 0.0
+                if isinstance(val, (int, float)):
+                    return float(val)
+                return float(str(val).replace('$', '').replace(',', '').strip())
+
+            def clean_number(val):
+                """Convert number string to float"""
+                if pd.isna(val) or val == '':
+                    return 0.0
+                if isinstance(val, (int, float)):
+                    return float(val)
+                return float(str(val).replace(',', '').strip())
+
+            # Parse numeric columns
+            deal_tenants['SF_Leased'] = deal_tenants['SF Leased'].apply(clean_number)
+            deal_tenants['Monthly_Rent'] = deal_tenants['Rent'].apply(clean_currency)
+            deal_tenants['Annual_Rent'] = deal_tenants['Monthly_Rent'] * 12
+            deal_tenants['Rentable_SF'] = deal_tenants['Rentable SF'].apply(clean_number)
+
+            # Calculate RPSF (Annual Rent / SF Leased)
+            deal_tenants['RPSF'] = deal_tenants.apply(
+                lambda r: r['Annual_Rent'] / r['SF_Leased'] if r['SF_Leased'] > 0 else 0, axis=1
+            )
+
+            # Calculate % of GLA (SF Leased / Rentable SF)
+            total_rentable_sf = deal_tenants['Rentable_SF'].iloc[0] if len(deal_tenants) > 0 else 0
+            deal_tenants['Pct_GLA'] = deal_tenants['SF_Leased'] / total_rentable_sf if total_rentable_sf > 0 else 0
+
+            # Calculate % of ABR (Annual Rent / Sum of all Annual Rent)
+            total_annual_rent = deal_tenants['Annual_Rent'].sum()
+            deal_tenants['Pct_ABR'] = deal_tenants['Annual_Rent'] / total_annual_rent if total_annual_rent > 0 else 0
+
+            # Parse dates
+            deal_tenants['Lease_Start'] = pd.to_datetime(deal_tenants['Lease Start'], errors='coerce')
+            deal_tenants['Lease_End'] = pd.to_datetime(deal_tenants['Lease End'], errors='coerce')
+
+            # Determine if lease expires within 2 years of current date
+            from datetime import datetime
+            two_years_from_now = pd.Timestamp(datetime.now()) + pd.DateOffset(years=2)
+            deal_tenants['Expiring_Soon'] = (deal_tenants['Lease_End'] <= two_years_from_now) & (deal_tenants['Lease_End'] >= pd.Timestamp(datetime.now()))
+
+            # Sort by SF Leased descending
+            deal_tenants = deal_tenants.sort_values('SF_Leased', ascending=False).reset_index(drop=True)
+
+            # Identify vacant vs occupied
+            deal_tenants['Is_Vacant'] = deal_tenants['Tenant Name'].str.strip().str.lower() == 'vacant'
+
+            # Calculate totals for non-vacant tenants
+            occupied = deal_tenants[~deal_tenants['Is_Vacant']]
+            total_occupied_sf = occupied['SF_Leased'].sum()
+            total_sf_leased = deal_tenants['SF_Leased'].sum()
+            occupancy_pct = total_occupied_sf / total_sf_leased if total_sf_leased > 0 else 0
+
+            # Weighted average RPSF for leased (non-vacant) spaces
+            weighted_rpsf = (occupied['Annual_Rent'].sum() / total_occupied_sf) if total_occupied_sf > 0 else 0
+
+            # Build display dataframe with formatting
+            display_rows = []
+            for _, row in deal_tenants.iterrows():
+                display_rows.append({
+                    'Tenant Name': row['Tenant Name'],
+                    'SF Leased': f"{row['SF_Leased']:,.0f}",
+                    'Lease Start': row['Lease_Start'].strftime('%m/%d/%Y') if pd.notna(row['Lease_Start']) else '',
+                    'Lease End': row['Lease_End'].strftime('%m/%d/%Y') if pd.notna(row['Lease_End']) else '',
+                    'Annual Rent': f"${row['Annual_Rent']:,.0f}",
+                    'RPSF': f"${row['RPSF']:,.2f}",
+                    '% of GLA': f"{row['Pct_GLA']:.1%}",
+                    '% of ABR': f"{row['Pct_ABR']:.1%}",
+                    '_expiring': row['Expiring_Soon'] and not row['Is_Vacant']
+                })
+
+            format_df = pd.DataFrame(display_rows)
+
+            # Style function to highlight expiring leases
+            def highlight_expiring(row):
+                if row['_expiring']:
+                    return ['background-color: #fff3cd'] * len(row)
+                return [''] * len(row)
+
+            # Apply styling and display (hide the _expiring helper column)
+            display_cols = ['Tenant Name', 'SF Leased', 'Lease Start', 'Lease End', 'Annual Rent', 'RPSF', '% of GLA', '% of ABR']
+            styled_df = format_df.style.apply(highlight_expiring, axis=1)
+
+            st.dataframe(
+                styled_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    '_expiring': None  # Hide the helper column
+                }
+            )
+
+            # Display totals
+            st.markdown("---")
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Occupied SF", f"{total_occupied_sf:,.0f}")
+            col2.metric("Occupancy %", f"{occupancy_pct:.1%}")
+            col3.metric("Wtd Avg RPSF", f"${weighted_rpsf:,.2f}")
+
+            # Legend
+            st.caption("⚠️ Yellow highlight indicates lease expiring within 2 years of current date")
 
 # ============================================================
 # ONE PAGER INVESTOR REPORT
