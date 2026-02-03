@@ -972,7 +972,7 @@ with tab_deal:
     # Capital calls are passed into run_waterfall so they increase
     # capital_outstanding (and the pref accrual base) at the correct date
     cf_alloc, cf_investors = run_waterfall(wf_steps, deal_vcode, "CF_WF", cf_period_cash, seed_states, capital_calls=capital_calls)
-    cap_alloc, cap_investors = run_waterfall(wf_steps, deal_vcode, "Cap_WF", cap_period_cash, seed_states, capital_calls=capital_calls)
+    cap_alloc, cap_investors = run_waterfall(wf_steps, deal_vcode, "Cap_WF", cap_period_cash, seed_states)
 
     # ============================================================
     # ENHANCE CAPITAL EVENTS WITH CALLS AND DISTRIBUTIONS
@@ -2260,6 +2260,8 @@ with tab_deal:
             investment_balance = 0.0  # Cumulative: contributions - return of capital
             compounded_pref = 0.0     # Pref compounded from prior years (on 12/31)
             remaining_accrual = 0.0   # Carries forward between periods
+            deferred_ye_accrual = 0.0 # 12/31 remaining accrual awaiting Q4 payment
+            deferred_ye_year = 0      # Year of the deferred snapshot
             last_date = None
 
             # Act/365 Fixed day count convention — denominator is always 365
@@ -2276,8 +2278,8 @@ with tab_deal:
                     days = (d - last_date).days if last_date else 0
                     current_due = 0.0
 
-                # Total Due = Current Due + Remaining Accrual from prior period
-                total_due = current_due + remaining_accrual
+                # Total Due = Current Due + Remaining Accrual + Deferred 12/31 balance
+                total_due = current_due + remaining_accrual + deferred_ye_accrual
 
                 # Process events on this date
                 day_events = event_lookup.get(d, [])
@@ -2288,6 +2290,8 @@ with tab_deal:
 
                         if etype == 'contribution':
                             # Contribution increases investment balance
+                            # Accumulate this period's accrual into remaining
+                            remaining_accrual += current_due
                             investment_balance += amt
                             rows.append({
                                 'Date': d,
@@ -2298,36 +2302,45 @@ with tab_deal:
                                 'Total Inv+Comp': investment_balance + compounded_pref,
                                 'Days': days,
                                 'Current Due': current_due,
-                                'Prior Accrual': remaining_accrual - current_due if remaining_accrual > current_due else 0,
+                                'Prior Accrual': remaining_accrual + deferred_ye_accrual - current_due,
                                 'Total Due': total_due,
                                 'Amount Paid': 0.0,
-                                'Remaining Accrual': remaining_accrual,
+                                'Remaining Accrual': remaining_accrual + deferred_ye_accrual,
                             })
 
                         elif etype == 'cash_distribution':
                             # Cash distribution payment application order:
-                            # 1. Current Due (this period's accrual)
-                            # 2. Remaining Accrual (prior period's unpaid pref)
-                            # 3. Compounded Pref (prior years' compounded)
+                            # 1. Deferred year-end balance (12/31 balance — Q4 payment covers this first)
+                            # 2. Compounded Pref (prior years' compounded)
+                            # 3. Current Due (this period's accrual)
+                            # 4. Remaining Accrual (prior period's unpaid pref, same year)
                             # Excess beyond all pref is just profit (no equity reduction)
 
                             pref_paid = amt
                             payment_remaining = amt
+                            pre_deferred = deferred_ye_accrual
 
-                            # 1. Apply to current due
+                            # 1. Apply to deferred year-end balance first
+                            deferred_paid = 0.0
+                            if deferred_ye_accrual > 0:
+                                deferred_paid = min(payment_remaining, deferred_ye_accrual)
+                                payment_remaining -= deferred_paid
+                                deferred_ye_accrual -= deferred_paid
+
+                            # 2. Apply to compounded pref
+                            compounded_paid = min(payment_remaining, compounded_pref)
+                            payment_remaining -= compounded_paid
+                            compounded_pref -= compounded_paid
+
+                            # 3. Apply to current due
                             current_due_paid = min(payment_remaining, current_due)
                             payment_remaining -= current_due_paid
                             new_current_due = current_due - current_due_paid
 
-                            # 2. Apply to remaining accrual (prior period)
+                            # 4. Apply to remaining accrual (prior period, same year)
                             prior_accrual_paid = min(payment_remaining, remaining_accrual)
                             payment_remaining -= prior_accrual_paid
                             new_remaining = remaining_accrual - prior_accrual_paid
-
-                            # 3. Apply to compounded pref
-                            compounded_paid = min(payment_remaining, compounded_pref)
-                            payment_remaining -= compounded_paid
-                            compounded_pref -= compounded_paid
 
                             # Update remaining accrual (current due not yet paid becomes remaining)
                             new_remaining = max(0.0, new_remaining + new_current_due)
@@ -2341,10 +2354,10 @@ with tab_deal:
                                 'Total Inv+Comp': investment_balance + compounded_pref,
                                 'Days': days,
                                 'Current Due': current_due,
-                                'Prior Accrual': remaining_accrual,
+                                'Prior Accrual': remaining_accrual + pre_deferred,
                                 'Total Due': total_due,
                                 'Amount Paid': pref_paid,
-                                'Remaining Accrual': new_remaining,
+                                'Remaining Accrual': new_remaining + deferred_ye_accrual,
                             })
                             remaining_accrual = new_remaining
 
@@ -2368,15 +2381,17 @@ with tab_deal:
                                 'Total Inv+Comp': investment_balance + compounded_pref,
                                 'Days': days,
                                 'Current Due': current_due,
-                                'Prior Accrual': remaining_accrual,
+                                'Prior Accrual': remaining_accrual + deferred_ye_accrual,
                                 'Total Due': total_due,
                                 'Amount Paid': 0.0,  # Capital return doesn't pay pref
-                                'Remaining Accrual': new_remaining,
+                                'Remaining Accrual': new_remaining + deferred_ye_accrual,
                             })
                             remaining_accrual = new_remaining
 
                         elif etype == 'profit_share':
                             # Profit share after pref is cleared - no pref reduction, no equity change
+                            # Accumulate this period's accrual into remaining
+                            remaining_accrual += current_due
                             rows.append({
                                 'Date': d,
                                 'Type': typename,
@@ -2386,21 +2401,22 @@ with tab_deal:
                                 'Total Inv+Comp': investment_balance + compounded_pref,
                                 'Days': days,
                                 'Current Due': current_due,
-                                'Prior Accrual': remaining_accrual,
+                                'Prior Accrual': remaining_accrual + deferred_ye_accrual - current_due,
                                 'Total Due': total_due,
                                 'Amount Paid': 0.0,
-                                'Remaining Accrual': remaining_accrual,
+                                'Remaining Accrual': remaining_accrual + deferred_ye_accrual,
                             })
 
                         # Reset for subsequent events on same day
                         days = 0
                         current_due = 0.0
-                        total_due = remaining_accrual  # Next event's total due is just remaining
+                        total_due = remaining_accrual + deferred_ye_accrual
 
                 else:
                     # Month-end accrual checkpoint (no event)
                     # Update remaining accrual with current due
-                    remaining_accrual = total_due
+                    # (deferred_ye_accrual is tracked separately)
+                    remaining_accrual = current_due + remaining_accrual
 
                     rows.append({
                         'Date': d,
@@ -2411,30 +2427,46 @@ with tab_deal:
                         'Total Inv+Comp': investment_balance + compounded_pref,
                         'Days': days,
                         'Current Due': current_due,
-                        'Prior Accrual': remaining_accrual - current_due,
+                        'Prior Accrual': remaining_accrual - current_due + deferred_ye_accrual,
                         'Total Due': total_due,
                         'Amount Paid': 0.0,
-                        'Remaining Accrual': remaining_accrual,
+                        'Remaining Accrual': remaining_accrual + deferred_ye_accrual,
                     })
 
-                # Year-end compounding (12/31): Compounded Pref = Current Due + Remaining Accrual
-                if d.month == 12 and d.day == 31 and remaining_accrual > 0:
-                    compounded_pref += remaining_accrual
-                    rows.append({
-                        'Date': d,
-                        'Type': 'Year-End Compound',
-                        'Amt': remaining_accrual,
-                        'Equity Balance': investment_balance,
-                        'Compounded Pref': compounded_pref,
-                        'Total Inv+Comp': investment_balance + compounded_pref,
-                        'Days': 0,
-                        'Current Due': 0.0,
-                        'Prior Accrual': remaining_accrual,
-                        'Total Due': remaining_accrual,
-                        'Amount Paid': 0.0,
-                        'Remaining Accrual': 0.0,
-                    })
+                # Deferred year-end compounding:
+                # At 12/31, snapshot remaining accrual as deferred.  The next
+                # distribution (within 45 days) gets a chance to pay it down.
+                # Only the unpaid shortfall compounds as of 1/1.
+                if d.month == 12 and d.day == 31:
+                    deferred_ye_accrual += remaining_accrual
                     remaining_accrual = 0.0
+                    deferred_ye_year = d.year
+
+                elif deferred_ye_accrual > 0 and d.year > deferred_ye_year:
+                    # In the new year with a pending deferred balance.
+                    # Compound after the first distribution event, or by 2/15.
+                    had_dist = bool(day_events) and any(
+                        e[3] == 'cash_distribution' for e in day_events
+                    )
+                    if had_dist or d >= date(deferred_ye_year + 1, 2, 15):
+                        shortfall = deferred_ye_accrual
+                        if shortfall > 0:
+                            compounded_pref += shortfall
+                            rows.append({
+                                'Date': date(deferred_ye_year + 1, 1, 1),
+                                'Type': 'Deferred Compound',
+                                'Amt': shortfall,
+                                'Equity Balance': investment_balance,
+                                'Compounded Pref': compounded_pref,
+                                'Total Inv+Comp': investment_balance + compounded_pref,
+                                'Days': 0,
+                                'Current Due': 0.0,
+                                'Prior Accrual': shortfall,
+                                'Total Due': shortfall,
+                                'Amount Paid': 0.0,
+                                'Remaining Accrual': remaining_accrual,
+                            })
+                        deferred_ye_accrual = 0.0
 
                 last_date = d
 

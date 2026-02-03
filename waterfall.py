@@ -611,9 +611,12 @@ def run_waterfall_period(
             remaining = 0.0
             break
     
-    # After all allocations, if 12/31 compound remaining pref
-    compound_if_year_end(istates, period_date)
-    
+    # NOTE: year-end compounding is handled by accrue_pref_to_date which
+    # compounds at year boundaries when accruing across years.  For the
+    # 12/31 period itself (no boundary crossing), pref_accrued_current_year
+    # carries forward and is compounded when the next period accrues past
+    # 12/31, effectively deferring the compound until the next distribution.
+
     return remaining, alloc_rows
 
 
