@@ -84,41 +84,37 @@ def build_capital_call_schedule(cc_df: pd.DataFrame, deal_vcode: str = None) -> 
 
 def apply_capital_calls_to_states(capital_calls: List[Dict], investor_states: Dict) -> Dict:
     """
-    Apply capital calls to investor states by updating their initial capital
-    
+    Apply capital calls to investor states by updating capital_outstanding
+    and recording contribution cashflows.
+
+    Works with InvestorState dataclass objects.
+
     Args:
-        capital_calls: List of capital call dicts
-        investor_states: Dict of investor states
-    
+        capital_calls: List of capital call dicts (investor_id, call_date, amount)
+        investor_states: Dict of PropCode -> InvestorState
+
     Returns:
         Updated investor_states dict
     """
     if not capital_calls:
         return investor_states
-    
-    # Group calls by investor
-    calls_by_investor = {}
+
     for call in capital_calls:
-        inv_id = call['investor_id']
-        if inv_id not in calls_by_investor:
-            calls_by_investor[inv_id] = []
-        calls_by_investor[inv_id].append(call)
-    
-    # Apply to each investor's state
-    for inv_id, calls in calls_by_investor.items():
+        inv_id = call.get('investor_id')
+        amount = call.get('amount', 0)
+        call_date = call.get('call_date')
+
+        if not inv_id or not amount:
+            continue
+
         if inv_id in investor_states:
-            # Sum up all capital calls for this investor
-            total_calls = sum(call['amount'] for call in calls)
-            
-            # Update their capital contribution
-            if 'capital' in investor_states[inv_id]:
-                investor_states[inv_id]['capital'] += total_calls
-            else:
-                investor_states[inv_id]['capital'] = total_calls
-            
-            # Store the calls in their state for reference
-            investor_states[inv_id]['capital_calls'] = calls
-    
+            stt = investor_states[inv_id]
+            stt.capital_outstanding += abs(amount)
+            # Record as contribution cashflow (negative) for XIRR
+            if call_date is not None:
+                d = call_date.date() if hasattr(call_date, 'date') else call_date
+                stt.cashflows.append((d, -abs(amount)))
+
     return investor_states
 
 

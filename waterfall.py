@@ -628,6 +628,7 @@ def run_waterfall(
     period_cash: pd.DataFrame,
     initial_states: Optional[Dict[str, InvestorState]] = None,
     show_structure_when_no_cash: bool = True,
+    capital_calls: Optional[List[dict]] = None,
 ) -> Tuple[pd.DataFrame, Dict[str, InvestorState]]:
     """
     Run complete waterfall for all periods
@@ -639,20 +640,21 @@ def run_waterfall(
         period_cash: DataFrame with columns [event_date, cash_available]
         initial_states: Optional pre-seeded investor states
         show_structure_when_no_cash: If True, create zero-allocation rows even when no cash
+        capital_calls: Optional list of capital call dicts to apply at correct dates
 
     Returns:
         (allocations_df, investor_states_dict)
     """
     # Filter steps to this deal and waterfall type
     steps = wf_steps[
-        (wf_steps["vcode"].astype(str) == str(vcode)) & 
+        (wf_steps["vcode"].astype(str) == str(vcode)) &
         (wf_steps["vmisc"] == wf_name)
     ].copy()
     steps = steps.sort_values("iOrder")
-    
+
     if steps.empty:
         return pd.DataFrame(), pd.DataFrame()
-    
+
     # If no cash periods, but we want to show structure, create a single zero-cash period
     if period_cash.empty or period_cash["cash_available"].sum() == 0:
         if show_structure_when_no_cash:
@@ -662,12 +664,21 @@ def run_waterfall(
             }])
         else:
             return pd.DataFrame(), pd.DataFrame()
-    
+
     istates = initial_states if initial_states is not None else {}
     # Pre-initialize pref rates from waterfall steps so the first period
     # accrues on the correct base (including compounded prior-year pref)
     pref_rates = pref_rates_from_waterfall_steps(wf_steps, vcode)
     add_pref_rates = add_pref_rates_from_waterfall_steps(wf_steps, vcode)
+
+    # Build set of pending capital calls (apply when period_date >= call_date)
+    pending_calls = []
+    if capital_calls:
+        for call in capital_calls:
+            cd = call.get('call_date')
+            if cd is not None:
+                cd_date = cd.date() if hasattr(cd, 'date') else cd
+                pending_calls.append({**call, '_date': cd_date, '_applied': False})
 
     # Determine if this is capital waterfall
     is_cap_wf = (wf_name == "Cap_WF")
@@ -676,6 +687,17 @@ def run_waterfall(
     for _, r in period_cash.sort_values("event_date").iterrows():
         d = r["event_date"]
         cash = float(r["cash_available"])
+
+        # Apply any capital calls whose date falls within or before this period
+        for pc in pending_calls:
+            if not pc['_applied'] and pc['_date'] <= d:
+                inv_id = pc.get('investor_id')
+                amount = abs(pc.get('amount', 0))
+                if inv_id and amount and inv_id in istates:
+                    stt = istates[inv_id]
+                    stt.capital_outstanding += amount
+                    stt.cashflows.append((pc['_date'], -amount))
+                pc['_applied'] = True
 
         _rem, rows = run_waterfall_period(
             steps, istates, d, cash, pref_rates,

@@ -969,14 +969,10 @@ with tab_deal:
     wf_steps = load_waterfalls(wf)
     seed_states = seed_states_from_accounting(acct, inv, wf_steps, deal_vcode)
 
-    if capital_calls:
-        try:
-            seed_states = apply_capital_calls_to_states(capital_calls, seed_states)
-        except Exception as e:
-            debug_msgs.append(f"Could not apply capital calls to investor states: {str(e)}")
-
-    cf_alloc, cf_investors = run_waterfall(wf_steps, deal_vcode, "CF_WF", cf_period_cash, seed_states)
-    cap_alloc, cap_investors = run_waterfall(wf_steps, deal_vcode, "Cap_WF", cap_period_cash, seed_states)
+    # Capital calls are passed into run_waterfall so they increase
+    # capital_outstanding (and the pref accrual base) at the correct date
+    cf_alloc, cf_investors = run_waterfall(wf_steps, deal_vcode, "CF_WF", cf_period_cash, seed_states, capital_calls=capital_calls)
+    cap_alloc, cap_investors = run_waterfall(wf_steps, deal_vcode, "Cap_WF", cap_period_cash, seed_states, capital_calls=capital_calls)
 
     # ============================================================
     # ENHANCE CAPITAL EVENTS WITH CALLS AND DISTRIBUTIONS
