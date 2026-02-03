@@ -419,9 +419,12 @@ def run_waterfall_period(
         
         stt = istates[pc]
         
-        # Find paired steps (same vAmtType)
+        # Find paired steps (same vAmtType AND same iOrder)
         if amt_type:
-            paired_steps = steps[steps["vAmtType"].astype(str).str.strip() == amt_type].copy()
+            paired_steps = steps[
+                (steps["vAmtType"].astype(str).str.strip() == amt_type) &
+                (steps["iOrder"] == order)
+            ].copy()
         else:
             paired_steps = steps[steps["iOrder"] == order].copy()
         

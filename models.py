@@ -27,6 +27,9 @@ class InvestorState:
     capital_outstanding: float = 0.0  # positive = capital owed back to investor
     pref_unpaid_compounded: float = 0.0  # unpaid pref from prior years
     pref_accrued_current_year: float = 0.0  # pref accrued this year
+    add_capital_outstanding: float = 0.0  # Additional/special capital owed back
+    add_pref_unpaid_compounded: float = 0.0  # Unpaid add-pref from prior years
+    add_pref_accrued_current_year: float = 0.0  # Add-pref accrued this year
     last_accrual_date: Optional[date] = None
     cashflows: List[Tuple[date, float]] = field(default_factory=list)
     # Cashflows: negative = contribution, positive = distribution

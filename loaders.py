@@ -237,6 +237,12 @@ def normalize_accounting_feed(acct: pd.DataFrame = None) -> pd.DataFrame:
     a["is_contribution"] = a["MajorTypeNorm"].str.contains("contrib")
     a["is_distribution"] = a["MajorTypeNorm"].str.contains("distri")
 
+    # Preserve Typename column for add-capital routing
+    if "Typename" in a.columns:
+        a["Typename"] = a["Typename"].fillna("").astype(str).str.strip()
+    else:
+        a["Typename"] = ""
+
     # Include Partner column if available (for equity classification)
     if "Partner" in a.columns:
         a["Partner"] = a["Partner"].fillna("").astype(str).str.strip()
