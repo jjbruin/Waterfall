@@ -2262,11 +2262,8 @@ with tab_deal:
             remaining_accrual = 0.0   # Carries forward between periods
             last_date = None
 
-            # Helper to check for leap year
+            # Act/365 Fixed day count convention — denominator is always 365
             def days_in_year(d):
-                year = d.year
-                if (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0):
-                    return 366.0
                 return 365.0
 
             for d in all_dates:
