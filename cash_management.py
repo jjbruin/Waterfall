@@ -126,72 +126,105 @@ def build_cash_flow_schedule_from_fad(
     if 'event_date' not in schedule.columns or 'fad' not in schedule.columns:
         raise ValueError(f"fad_monthly must have 'event_date' and 'fad' columns. Got: {schedule.columns.tolist()}")
     
+    # Extract CapEx from fad_monthly (capex is negative in the data).
+    # Compute FAD-before-CapEx so CapEx can be funded from cash reserves.
+    has_capex_col = 'capex' in schedule.columns
+    if has_capex_col:
+        schedule['capex_need'] = schedule['capex'].fillna(0).abs()
+        schedule['fad_before_capex'] = schedule['fad'].fillna(0) - schedule['capex'].fillna(0)
+    else:
+        schedule['capex_need'] = 0.0
+        schedule['fad_before_capex'] = schedule['fad'].fillna(0)
+
     # Initialize tracking columns
     schedule['beginning_cash'] = 0.0
     schedule['capital_call'] = 0.0
     schedule['capex_paid'] = 0.0
-    schedule['operating_cf'] = schedule['fad'].fillna(0)  # FAD is our operating cash flow
+    schedule['capex_unpaid'] = 0.0
+    schedule['operating_cf'] = schedule['fad_before_capex']
     schedule['deficit_covered'] = 0.0
+    schedule['unpaid_shortfall'] = 0.0
     schedule['distributable'] = 0.0
     schedule['distributed'] = 0.0  # Will be filled after waterfall
     schedule['ending_cash'] = 0.0
-    
+
     # Sort by date
     schedule = schedule.sort_values('event_date').reset_index(drop=True)
-    
+
     # Add capital calls to schedule
     if capital_calls:
+        # Normalize event_date to comparable type
+        sched_dates = pd.to_datetime(schedule['event_date'])
         for call in capital_calls:
             call_date = call.get('call_date')
             amount = call.get('amount', 0)
-            
+
             if call_date and amount:
+                call_ts = pd.Timestamp(call_date)
                 # Find matching period or closest future period
-                mask = schedule['event_date'] >= call_date
+                mask = sched_dates >= call_ts
                 if mask.any():
-                    idx = schedule[mask].index[0]
+                    idx = schedule[mask.values].index[0]
                     schedule.loc[idx, 'capital_call'] += amount
-    
+
     # Process each period
     cash_balance = beginning_cash
-    
+    carried_shortfall = 0.0  # Unpaid shortfall carried from prior periods
+
     for idx in schedule.index:
         # Start of period
         schedule.loc[idx, 'beginning_cash'] = cash_balance
-        
+
         # Add capital calls
         capital_call = schedule.loc[idx, 'capital_call']
         cash_balance += capital_call
-        
-        # For now, assume no CapEx since we don't have it in FAD
-        # FAD already accounts for CapEx if it's in your calculation
-        schedule.loc[idx, 'capex_paid'] = 0
-        
-        # Handle operating cash flow (FAD)
+
+        # --- Step 1: Fund CapEx from cash balance ---
+        capex_need = schedule.loc[idx, 'capex_need']
+        capex_paid = min(capex_need, max(0, cash_balance))
+        schedule.loc[idx, 'capex_paid'] = capex_paid
+        cash_balance -= capex_paid
+        capex_unpaid = capex_need - capex_paid
+        schedule.loc[idx, 'capex_unpaid'] = capex_unpaid
+        # Any unpaid CapEx adds to the carried shortfall
+        carried_shortfall += capex_unpaid
+
+        # --- Step 2: Handle operating cash flow (FAD before CapEx) ---
         operating_cf = schedule.loc[idx, 'operating_cf']
-        
-        if operating_cf < 0:
-            # Negative FAD - cover from cash if available
+
+        if operating_cf <= 0:
+            # Negative or zero FAD — cover deficit from cash balance if possible
             deficit = abs(operating_cf)
             deficit_covered = min(deficit, max(0, cash_balance))
             schedule.loc[idx, 'deficit_covered'] = deficit_covered
             cash_balance -= deficit_covered
+            unfunded_deficit = deficit - deficit_covered
+            carried_shortfall += unfunded_deficit
             schedule.loc[idx, 'distributable'] = 0.0
-            
         else:
-            # Positive FAD
-            if cash_balance < 0:
-                # Use FAD to cover cash deficit first
-                refill_amount = min(operating_cf, abs(cash_balance))
-                cash_balance += refill_amount
-                schedule.loc[idx, 'distributable'] = max(0, operating_cf - refill_amount)
+            # Positive FAD — first repay any carried shortfall
+            if carried_shortfall > 0:
+                repay = min(operating_cf, carried_shortfall)
+                carried_shortfall -= repay
+                operating_cf -= repay
+
+            # If still a carried shortfall, also tap cash balance
+            if carried_shortfall > 0:
+                cash_repay = min(carried_shortfall, max(0, cash_balance))
+                carried_shortfall -= cash_repay
+                cash_balance -= cash_repay
+
+            # Only distribute if no remaining shortfall
+            if carried_shortfall > 0:
+                schedule.loc[idx, 'distributable'] = 0.0
             else:
-                # All FAD is distributable
-                schedule.loc[idx, 'distributable'] = operating_cf
-        
+                schedule.loc[idx, 'distributable'] = max(0, operating_cf)
+
+        schedule.loc[idx, 'unpaid_shortfall'] = carried_shortfall
+
         # End of period (before distributions)
         schedule.loc[idx, 'ending_cash'] = cash_balance
-    
+
     return schedule
 
 
@@ -418,14 +451,17 @@ def summarize_cash_usage(cash_schedule: pd.DataFrame) -> Dict:
         'beginning_cash': cash_schedule['beginning_cash'].iloc[0],
         'total_capital_calls': cash_schedule['capital_call'].sum(),
         'total_capex_paid': cash_schedule['capex_paid'].sum(),
+        'total_capex_unpaid': cash_schedule['capex_unpaid'].sum() if 'capex_unpaid' in cash_schedule.columns else 0,
         'total_deficits_covered': cash_schedule['deficit_covered'].sum(),
         'total_distributable': cash_schedule['distributable'].sum(),
         'total_distributed': cash_schedule['distributed'].sum(),
         'ending_cash': cash_schedule['ending_cash'].iloc[-1],
+        'ending_shortfall': cash_schedule['unpaid_shortfall'].iloc[-1] if 'unpaid_shortfall' in cash_schedule.columns else 0,
         'min_cash_balance': cash_schedule['ending_cash'].min(),
         'max_cash_balance': cash_schedule['ending_cash'].max(),
         'periods_with_deficit': (cash_schedule['operating_cf'] < 0).sum(),
-        'periods_with_distributions': (cash_schedule['distributable'] > 0).sum()
+        'periods_with_distributions': (cash_schedule['distributable'] > 0).sum(),
+        'periods_with_shortfall': int((cash_schedule['unpaid_shortfall'] > 0).sum()) if 'unpaid_shortfall' in cash_schedule.columns else 0
     }
     
     return summary

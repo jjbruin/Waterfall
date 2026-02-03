@@ -28,10 +28,14 @@ def load_capital_calls(df: pd.DataFrame) -> pd.DataFrame:
     # Handle different column name variations
     if 'investor' in cc.columns and 'investor_id' not in cc.columns:
         cc = cc.rename(columns={'investor': 'investor_id'})
-    
+    if 'propcode' in cc.columns and 'investor_id' not in cc.columns:
+        cc = cc.rename(columns={'propcode': 'investor_id'})
+
+    if 'calldate' in cc.columns and 'call_date' not in cc.columns:
+        cc = cc.rename(columns={'calldate': 'call_date'})
     if 'date' in cc.columns and 'call_date' not in cc.columns:
         cc = cc.rename(columns={'date': 'call_date'})
-    
+
     if 'vcode' in cc.columns and 'deal_name' not in cc.columns:
         cc = cc.rename(columns={'vcode': 'deal_name'})
     
