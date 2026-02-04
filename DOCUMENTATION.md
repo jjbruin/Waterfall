@@ -135,7 +135,11 @@ P0000061   Whitney Manor      OREI Portfolio
 P0000062   Westchase Apts     OREI Portfolio
 ```
 
-Loans aggregate UP from properties to the parent deal level.
+**Consolidation Rules for Sub-Portfolios:**
+- **Forecasts**: ONLY property-level forecasts are used (summed across all properties). Parent-level forecasts are **ignored** even if they exist.
+- **Loans**: Aggregate from both parent AND property levels
+- **Debt Service**: Sum of amortization schedules for all loans (parent + properties)
+- **Loan Payoff**: Sum of outstanding balances at sale date for all loans
 
 ---
 

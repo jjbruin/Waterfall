@@ -4,8 +4,9 @@ Property to Deal consolidation logic for sub-portfolio deals
 
 Handles cases where:
 - Multiple properties roll up to a single deal
-- Debt exists at deal level
-- Forecasts may exist at property and/or deal level
+- Loans aggregate from both deal and property levels
+- Forecasts: For sub-portfolios, ONLY property-level forecasts are used
+  (summed across properties). Parent-level forecasts are ignored.
 """
 
 import pandas as pd
@@ -125,17 +126,23 @@ def get_property_vcodes_for_deal(deal_vcode: str, deals: pd.DataFrame) -> List[s
 def consolidate_property_forecasts(
     deal_vcode: str,
     property_vcodes: List[str],
-    forecasts: pd.DataFrame,
-    use_properties_if_available: bool = True
+    forecasts: pd.DataFrame
 ) -> pd.DataFrame:
     """
     Consolidate property-level forecasts to deal level.
+
+    For sub-portfolio deals (property_vcodes not empty):
+    - ONLY use property-level forecasts (summed across properties)
+    - Parent-level forecasts are IGNORED even if they exist
+    - Returns empty if no property forecasts exist
+
+    For standalone deals (property_vcodes empty):
+    - Use deal-level forecasts
 
     Args:
         deal_vcode: The deal's vcode
         property_vcodes: List of property vcodes that belong to this deal
         forecasts: Full forecasts DataFrame
-        use_properties_if_available: If True, prefer property forecasts when available
 
     Returns:
         Consolidated forecast DataFrame with deal_vcode as the vcode
@@ -147,17 +154,15 @@ def consolidate_property_forecasts(
         fc = fc.rename(columns={'Vcode': 'vcode'})
     fc['vcode'] = fc['vcode'].astype(str)
 
-    # Check what data exists
-    deal_fc = fc[fc['vcode'] == deal_vcode]
-    property_fc = fc[fc['vcode'].isin(property_vcodes)]
+    # Sub-portfolio: ONLY use property forecasts, never parent level
+    if property_vcodes:
+        property_fc = fc[fc['vcode'].isin(property_vcodes)]
 
-    deal_has_forecasts = len(deal_fc) > 0
-    properties_have_forecasts = len(property_fc) > 0
+        if property_fc.empty:
+            # No property forecasts - return empty (don't fall back to parent)
+            return pd.DataFrame()
 
-    # Decision logic
-    if properties_have_forecasts and use_properties_if_available:
-        # Aggregate property forecasts
-        # Group by date and account, sum amounts
+        # Aggregate property forecasts by date and account
         date_col = 'Date' if 'Date' in fc.columns else 'event_date'
 
         agg_fc = property_fc.groupby([date_col, 'vAccount'], as_index=False).agg({
@@ -171,13 +176,13 @@ def consolidate_property_forecasts(
 
         return agg_fc
 
-    elif deal_has_forecasts:
-        # Use deal-level forecasts as-is
+    # Standalone deal: use deal-level forecasts
+    deal_fc = fc[fc['vcode'] == deal_vcode]
+    if not deal_fc.empty:
         return deal_fc.copy()
 
-    else:
-        # No forecasts available
-        return pd.DataFrame()
+    # No forecasts available
+    return pd.DataFrame()
 
 
 def get_deal_loans(
@@ -277,27 +282,21 @@ def build_consolidated_forecast(
         debug_info['property_count'] = len(property_vcodes)
 
     # Consolidate forecasts
+    # For sub-portfolios: ONLY use property forecasts (summed), ignore parent level
+    # For standalone deals: use deal-level forecasts
     consolidated_fc = consolidate_property_forecasts(
         deal_vcode=deal_vcode,
         property_vcodes=property_vcodes,
-        forecasts=forecasts,
-        use_properties_if_available=True
+        forecasts=forecasts
     )
 
-    if property_vcodes and len(consolidated_fc) > 0:
-        # Check if we used properties or deal
-        fc = forecasts.copy()
-        if 'Vcode' in fc.columns:
-            fc = fc.rename(columns={'Vcode': 'vcode'})
-        fc['vcode'] = fc['vcode'].astype(str)
-
-        prop_fc_count = len(fc[fc['vcode'].isin(property_vcodes)])
-        if prop_fc_count > 0:
-            debug_info['forecast_source'] = 'properties_aggregated'
-        else:
-            debug_info['forecast_source'] = 'deal_level'
+    # Set forecast source for debug info
+    if property_vcodes:
+        # Sub-portfolio: always properties_aggregated (or none if empty)
+        debug_info['forecast_source'] = 'properties_aggregated' if len(consolidated_fc) > 0 else 'none'
     else:
-        debug_info['forecast_source'] = 'deal_level'
+        # Standalone deal
+        debug_info['forecast_source'] = 'deal_level' if len(consolidated_fc) > 0 else 'none'
 
     # Get loans
     deal_loans = get_deal_loans(deal_vcode, property_vcodes, loans)
