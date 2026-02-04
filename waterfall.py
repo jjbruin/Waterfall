@@ -16,107 +16,55 @@ from typing import Dict, List, Tuple, Optional
 import pandas as pd
 from scipy.optimize import brentq
 
-from models import InvestorState
+from models import InvestorState, CapitalPool, PrefTier
 from metrics import xirr, investor_metrics
 from loaders import build_investmentid_to_vcode, normalize_accounting_feed
+from config import typename_to_pool, resolve_pool_and_action
 
 
 # ============================================================
 # PREF ACCRUAL LOGIC
 # ============================================================
 
-def accrue_pref_to_date(ist: InvestorState, asof: date, annual_rate: float):
-    """
-    Accrue preferred return to a specific date
-    
-    Logic:
-    - Daily accrual on base = capital_outstanding + pref_unpaid_compounded
-    - On 12/31: compound current_year accrual into pref_unpaid_compounded
-    - Act/365 day count
-    
-    Args:
-        ist: InvestorState to update
-        asof: Date to accrue through
-        annual_rate: Pref rate as decimal (e.g., 0.08 for 8%)
-    """
-    if ist.last_accrual_date is None:
-        ist.last_accrual_date = asof
-        return
-
-    if asof <= ist.last_accrual_date:
-        return
-
-    # Step through year boundaries, compounding at each 12/31
-    cur = ist.last_accrual_date
-    while cur < asof:
-        year_end = date(cur.year, 12, 31)
-        next_stop = min(asof, year_end)
-        days = (next_stop - cur).days
-
-        if days > 0 and annual_rate > 0:
-            base = max(0.0, ist.capital_outstanding + ist.pref_unpaid_compounded)
-            ist.pref_accrued_current_year += base * annual_rate * (days / 365.0)
-
-        # At year end, compound current-year accrual into unpaid balance
-        # so the next year's accrual base includes prior unpaid pref
-        if next_stop == year_end and next_stop < asof:
-            if ist.pref_accrued_current_year > 0:
-                ist.pref_unpaid_compounded += ist.pref_accrued_current_year
-                ist.pref_accrued_current_year = 0.0
-            cur = date(cur.year + 1, 1, 1)
-        else:
-            cur = next_stop
-            break
-
-    ist.last_accrual_date = asof
-
-
-def accrue_add_pref_to_date(ist: InvestorState, asof: date, annual_rate: float):
-    """
-    Accrue preferred return on additional/special capital to a specific date.
-
-    Mirrors accrue_pref_to_date but accrues on add_capital_outstanding +
-    add_pref_unpaid_compounded.  Does NOT update last_accrual_date (the main
-    accrual function handles that).
-    """
-    if ist.last_accrual_date is None or asof <= ist.last_accrual_date:
-        return
-
-    cur = ist.last_accrual_date
-    while cur < asof:
-        year_end = date(cur.year, 12, 31)
-        next_stop = min(asof, year_end)
-        days = (next_stop - cur).days
-
-        if days > 0 and annual_rate > 0:
-            base = max(0.0, ist.add_capital_outstanding + ist.add_pref_unpaid_compounded)
-            ist.add_pref_accrued_current_year += base * annual_rate * (days / 365.0)
-
-        # Compound at year-end so next year accrues on the correct base
-        if next_stop == year_end and next_stop < asof:
-            if ist.add_pref_accrued_current_year > 0:
-                ist.add_pref_unpaid_compounded += ist.add_pref_accrued_current_year
-                ist.add_pref_accrued_current_year = 0.0
-            cur = date(cur.year + 1, 1, 1)
-        else:
-            cur = next_stop
-            break
 
 
 def compound_if_year_end(istates: Dict[str, InvestorState], period_date: date):
     """
-    On 12/31, compound current-year accrued pref into unpaid compounded balance
-    
-    This happens AFTER distributions are processed for that period
+    Deferred year-end compounding with 45-day grace period.
+
+    Distributions are typically made within 45 days after period end.
+    So for 12/31 accrued pref, we look at distributions through ~Feb 14.
+
+    This function is called AFTER distributions for each period. The logic:
+    - During Jan 1 - Feb 14: pref_accrued_prior_year holds the year-end balance
+    - Distributions during this time reduce pref_accrued_prior_year
+    - After Feb 14 (45 days): remaining pref_accrued_prior_year compounds
+
+    This defers compounding until after the grace period, allowing Q4
+    distributions (made in Jan/early Feb) to reduce the year-end balance
+    before it compounds.
     """
-    if period_date.month == 12 and period_date.day == 31:
-        for s in istates.values():
-            if s.pref_accrued_current_year > 0:
-                s.pref_unpaid_compounded += s.pref_accrued_current_year
-                s.pref_accrued_current_year = 0.0
-            if s.add_pref_accrued_current_year > 0:
-                s.add_pref_unpaid_compounded += s.add_pref_accrued_current_year
-                s.add_pref_accrued_current_year = 0.0
+    grace_period_days = 45
+
+    for s in istates.values():
+        for pool in s.pools.values():
+            for tier in pool.pref_tiers:
+                # Initialize tracking attributes if needed
+                if not hasattr(tier, 'pref_accrued_prior_year'):
+                    tier.pref_accrued_prior_year = 0.0
+                if not hasattr(tier, 'prior_year_for_accrued'):
+                    tier.prior_year_for_accrued = 0
+
+                # Check if there's prior year accrued pref that needs compounding
+                if tier.pref_accrued_prior_year > 0 and tier.prior_year_for_accrued > 0:
+                    prior_year_end = date(tier.prior_year_for_accrued, 12, 31)
+                    days_since_year_end = (period_date - prior_year_end).days
+
+                    # Compound once we're past the grace period
+                    if days_since_year_end >= grace_period_days:
+                        tier.pref_unpaid_compounded += tier.pref_accrued_prior_year
+                        tier.pref_accrued_prior_year = 0.0
+                        tier.prior_year_for_accrued = 0
 
 
 # ============================================================
@@ -150,106 +98,6 @@ def apply_contribution(ist: InvestorState, d: date, amt: float):
 # ============================================================
 # WATERFALL PAYMENT STEPS
 # ============================================================
-
-def pay_pref(ist: InvestorState, d: date, available: float, is_cf_waterfall: bool = False) -> float:
-    """
-    Pay preferred return: compounded unpaid first, then current-year accrued
-
-    Args:
-        is_cf_waterfall: If True, track in cf_distributions for ROE calculation
-
-    Returns amount paid
-    """
-    pay = 0.0
-    if available <= 0:
-        return 0.0
-
-    # Pay compounded unpaid first
-    if ist.pref_unpaid_compounded > 0:
-        x = min(available, ist.pref_unpaid_compounded)
-        ist.pref_unpaid_compounded -= x
-        available -= x
-        pay += x
-
-    if available <= 0:
-        if pay:
-            apply_distribution(ist, d, pay, is_cf_waterfall)
-        return pay
-
-    # Pay current-year accrued next
-    if ist.pref_accrued_current_year > 0:
-        x = min(available, ist.pref_accrued_current_year)
-        ist.pref_accrued_current_year -= x
-        available -= x
-        pay += x
-
-    if pay:
-        apply_distribution(ist, d, pay, is_cf_waterfall)
-    return pay
-
-
-def pay_initial_capital(ist: InvestorState, d: date, available: float, is_cf_waterfall: bool = False) -> float:
-    """Return initial capital until outstanding capital is 0
-
-    Note: Capital returns are NOT CF distributions (excluded from ROE numerator)
-    """
-    if available <= 0 or ist.capital_outstanding <= 0:
-        return 0.0
-    x = min(available, ist.capital_outstanding)
-    ist.capital_outstanding -= x
-    # Capital return is never a CF distribution - it's return of principal
-    apply_distribution(ist, d, x, is_cf_waterfall=False)
-    return x
-
-
-def pay_add_pref(ist: InvestorState, d: date, available: float, is_cf_waterfall: bool = False) -> float:
-    """
-    Pay preferred return on additional/special capital.
-
-    Mirrors pay_pref but draws from add_pref_unpaid_compounded then
-    add_pref_accrued_current_year.
-
-    Returns amount paid.
-    """
-    pay = 0.0
-    if available <= 0:
-        return 0.0
-
-    if ist.add_pref_unpaid_compounded > 0:
-        x = min(available, ist.add_pref_unpaid_compounded)
-        ist.add_pref_unpaid_compounded -= x
-        available -= x
-        pay += x
-
-    if available <= 0:
-        if pay:
-            apply_distribution(ist, d, pay, is_cf_waterfall)
-        return pay
-
-    if ist.add_pref_accrued_current_year > 0:
-        x = min(available, ist.add_pref_accrued_current_year)
-        ist.add_pref_accrued_current_year -= x
-        available -= x
-        pay += x
-
-    if pay:
-        apply_distribution(ist, d, pay, is_cf_waterfall)
-    return pay
-
-
-def pay_add_capital(ist: InvestorState, d: date, available: float, is_cf_waterfall: bool = False) -> float:
-    """
-    Return additional/special capital until add_capital_outstanding is 0.
-
-    Mirrors pay_initial_capital but reduces add_capital_outstanding.
-    Capital returns are NOT CF distributions.
-    """
-    if available <= 0 or ist.add_capital_outstanding <= 0:
-        return 0.0
-    x = min(available, ist.add_capital_outstanding)
-    ist.add_capital_outstanding -= x
-    apply_distribution(ist, d, x, is_cf_waterfall=False)
-    return x
 
 
 def irr_needed_distribution(ist: InvestorState, d: date, target_irr: float, max_cash: float) -> float:
@@ -348,6 +196,219 @@ def pay_default_principal(ist: InvestorState, d: date, available: float,
 
 
 # ============================================================
+# POOL-BASED PREF ACCRUAL & PAYMENT (GENERAL PURPOSE)
+# ============================================================
+
+def accrue_pool_pref(pool: CapitalPool, asof: date):
+    """
+    Accrue preferred return on a single pool to a specific date.
+
+    Iterates all PrefTiers on the pool.  Each tier accrues on:
+        base = pool.capital_outstanding + tier.pref_unpaid_compounded
+    Act/365 day count.
+
+    DEFERRED COMPOUNDING: Year-end compounding is handled by compound_if_year_end()
+    with a 45-day grace period. This function accrues but does NOT compound at
+    year-end. Instead, it tracks pref_accrued_prior_year for amounts that crossed
+    a year boundary but haven't been compounded yet.
+    """
+    if pool.last_accrual_date is None:
+        pool.last_accrual_date = asof
+        return
+
+    if asof <= pool.last_accrual_date:
+        return
+
+    grace_period_days = 45
+
+    for tier in pool.pref_tiers:
+        if tier.pref_rate <= 0:
+            continue
+
+        # Initialize tracking attributes if needed
+        if not hasattr(tier, 'pref_accrued_prior_year'):
+            tier.pref_accrued_prior_year = 0.0
+        if not hasattr(tier, 'prior_year_for_accrued'):
+            tier.prior_year_for_accrued = 0
+
+        cur = pool.last_accrual_date
+        while cur < asof:
+            year_end = date(cur.year, 12, 31)
+            next_stop = min(asof, year_end)
+            days = (next_stop - cur).days
+            if days > 0:
+                base = max(0.0, pool.capital_outstanding + tier.pref_unpaid_compounded)
+                tier.pref_accrued_current_year += base * tier.pref_rate * (days / 365.0)
+
+            # At year-end boundary, move current year accrued to prior year bucket
+            # but DON'T compound yet - wait for grace period
+            if next_stop == year_end and next_stop < asof:
+                # Check if we're past the grace period for this year-end
+                days_past_year_end = (asof - year_end).days
+                if days_past_year_end >= grace_period_days:
+                    # Past grace period - compound now
+                    if tier.pref_accrued_current_year > 0:
+                        tier.pref_unpaid_compounded += tier.pref_accrued_current_year
+                        tier.pref_accrued_current_year = 0.0
+                else:
+                    # Within grace period - move to prior year bucket, don't compound
+                    if tier.pref_accrued_current_year > 0:
+                        tier.pref_accrued_prior_year += tier.pref_accrued_current_year
+                        tier.prior_year_for_accrued = cur.year
+                        tier.pref_accrued_current_year = 0.0
+                cur = date(cur.year + 1, 1, 1)
+            else:
+                cur = next_stop
+                break
+
+    pool.last_accrual_date = asof
+
+
+def accrue_all_pools(ist: InvestorState, asof: date):
+    """Accrue pref on every pool for an investor."""
+    for pool in ist.pools.values():
+        accrue_pool_pref(pool, asof)
+
+
+def _ensure_pool_tiers(ist: InvestorState, pref_rates, add_pref_rates):
+    """
+    Ensure every pool has its PrefTier(s) initialised from waterfall rates.
+
+    Called once per period before accrual so that newly-created pools get
+    their tier set up.  Handles multi-tier (Cocoplum) when pref_rates
+    contains a list of rates for a PropCode.
+    """
+    pc = ist.propcode
+    rate_val = pref_rates.get(pc, 0.0)
+    pool = ist.get_pool("initial")
+    if not pool.pref_tiers:
+        if isinstance(rate_val, list):
+            for r in rate_val:
+                pool.pref_tiers.append(PrefTier(tier_name=f"pref_{r}", pref_rate=float(r)))
+        else:
+            pool.pref_tiers.append(PrefTier(tier_name="pref", pref_rate=float(rate_val)))
+
+    # Additional pool pref tiers
+    add_rate = float(add_pref_rates.get(pc, 0.0)) if add_pref_rates else 0.0
+    if add_rate > 0:
+        for pname in ("additional", "special", "cost_overrun"):
+            if pname in ist.pools and not ist.pools[pname].pref_tiers:
+                ist.pools[pname].pref_tiers.append(
+                    PrefTier(tier_name="pref", pref_rate=add_rate)
+                )
+
+
+def pay_pool_pref(ist: InvestorState, pool_name: str, d: date,
+                  available: float, is_cf_waterfall: bool = False,
+                  tier_index: int = 0,
+                  cocoplum_cross_reduce: bool = False) -> float:
+    """
+    Pay preferred return from a specific pool's tier.
+
+    Payment priority:
+    1. Compounded pref (from prior years)
+    2. Prior year accrued (within grace period, not yet compounded)
+    3. Current year accrued
+
+    For Cocoplum dual-tier: if cocoplum_cross_reduce=True, paying
+    tier 0 (5%) also reduces tier 1 (8.5%) balances dollar-for-dollar.
+
+    Returns amount paid.
+    """
+    pool = ist.get_pool(pool_name)
+    if not pool.pref_tiers or tier_index >= len(pool.pref_tiers):
+        return 0.0
+
+    tier = pool.pref_tiers[tier_index]
+    pay = 0.0
+    if available <= 0:
+        return 0.0
+
+    # Initialize tracking attribute if needed
+    if not hasattr(tier, 'pref_accrued_prior_year'):
+        tier.pref_accrued_prior_year = 0.0
+
+    # 1. Pay compounded first (oldest pref)
+    if tier.pref_unpaid_compounded > 0:
+        x = min(available, tier.pref_unpaid_compounded)
+        tier.pref_unpaid_compounded -= x
+        available -= x
+        pay += x
+
+    # 2. Pay prior year accrued (within grace period)
+    if available > 0 and tier.pref_accrued_prior_year > 0:
+        x = min(available, tier.pref_accrued_prior_year)
+        tier.pref_accrued_prior_year -= x
+        available -= x
+        pay += x
+
+    # 3. Pay current year accrued
+    if available > 0 and tier.pref_accrued_current_year > 0:
+        x = min(available, tier.pref_accrued_current_year)
+        tier.pref_accrued_current_year -= x
+        available -= x
+        pay += x
+
+    if pay > 0:
+        apply_distribution(ist, d, pay, is_cf_waterfall)
+        if cocoplum_cross_reduce and len(pool.pref_tiers) > 1:
+            _cross_reduce_tiers(pool, tier_index, pay)
+    return pay
+
+
+def _cross_reduce_tiers(pool: CapitalPool, paid_tier_index: int, amount: float):
+    """Cocoplum rule: paying one tier reduces other tiers dollar-for-dollar."""
+    remaining = amount
+    for i, tier in enumerate(pool.pref_tiers):
+        if i == paid_tier_index or remaining <= 0:
+            continue
+        # Initialize if needed
+        if not hasattr(tier, 'pref_accrued_prior_year'):
+            tier.pref_accrued_prior_year = 0.0
+        # Reduce in priority order: compounded, prior year, current year
+        if tier.pref_unpaid_compounded > 0:
+            x = min(remaining, tier.pref_unpaid_compounded)
+            tier.pref_unpaid_compounded -= x
+            remaining -= x
+        if remaining > 0 and tier.pref_accrued_prior_year > 0:
+            x = min(remaining, tier.pref_accrued_prior_year)
+            tier.pref_accrued_prior_year -= x
+            remaining -= x
+        if remaining > 0 and tier.pref_accrued_current_year > 0:
+            x = min(remaining, tier.pref_accrued_current_year)
+            tier.pref_accrued_current_year -= x
+            remaining -= x
+
+
+def pay_pool_capital(ist: InvestorState, pool_name: str, d: date,
+                     available: float, is_cf_waterfall: bool = False) -> float:
+    """
+    Return capital from a specific pool.
+
+    Handles cumulative cap for operating capital.
+    Capital returns are never CF distributions.
+    """
+    pool = ist.get_pool(pool_name)
+    if available <= 0 or pool.capital_outstanding <= 0:
+        return 0.0
+
+    payable = available
+
+    # Enforce cumulative cap for operating capital
+    if pool.cumulative_cap is not None:
+        max_remaining = max(0.0, pool.cumulative_cap - pool.cumulative_returned)
+        payable = min(payable, max_remaining)
+
+    x = min(payable, pool.capital_outstanding)
+    if x <= 0:
+        return 0.0
+    pool.capital_outstanding -= x
+    pool.cumulative_returned += x
+    apply_distribution(ist, d, x, is_cf_waterfall=False)
+    return x
+
+
+# ============================================================
 # WATERFALL PERIOD PROCESSING (WITH PAIRED STEP LOGIC)
 # ============================================================
 
@@ -383,30 +444,29 @@ def run_waterfall_period(
         add_pref_rates = {}
     alloc_rows = []
 
-    # Accrue pref to this date for all investors
+    # Ensure pref tiers are initialised and accrue all pools
     for pc, stt in istates.items():
-        rate = float(pref_rates.get(pc, 0.0))
-        accrue_pref_to_date(stt, period_date, rate)
-        add_rate = float(add_pref_rates.get(pc, 0.0))
-        if add_rate > 0:
-            accrue_add_pref_to_date(stt, period_date, add_rate)
+        _ensure_pool_tiers(stt, pref_rates, add_pref_rates)
+        accrue_all_pools(stt, period_date)
     
     remaining = float(cash_available)
     
     # Group steps by vAmtType to identify paired steps
     steps = steps.sort_values("iOrder")
     
-    # Track which steps we've processed
-    processed_orders = set()
-    
+    # Track which (iOrder, vAmtType) groups we've processed.
+    # Both keys are needed because a single iOrder can contain
+    # multiple vAmtType groups (e.g. P0000033 iOrder 2 has "Pref"
+    # for PPI28 and "OP" for OPOREI — both need processing).
+    processed_groups = set()
+
     for _, step in steps.iterrows():
         order = int(step["iOrder"])
-        
-        # Skip if already processed (as part of a pair)
-        if order in processed_orders:
-            continue
-        
         amt_type = str(step.get("vAmtType", "")).strip()
+
+        # Skip if already processed (as part of a pair)
+        if (order, amt_type) in processed_groups:
+            continue
         pc = str(step["PropCode"])
         state = str(step["vState"]).strip()
         fx = float(step["FXRate"])
@@ -442,9 +502,7 @@ def run_waterfall_period(
         # Process lead steps first (non-Tag)
         for _, lead in lead_steps.iterrows():
             lead_order = int(lead["iOrder"])
-            if lead_order in processed_orders:
-                continue
-                
+
             lead_pc = str(lead["PropCode"])
             lead_state = str(lead["vState"]).strip()
             lead_fx = float(lead["FXRate"])
@@ -458,7 +516,7 @@ def run_waterfall_period(
             allocated = 0.0
             
             # Maximum this step can take (FXRate share of remaining)
-            step_max = remaining * lead_fx if lead_fx > 0 else remaining
+            step_max = min(level_available * lead_fx, remaining) if lead_fx > 0 else remaining
             
             # CF waterfall distributions should be tracked for ROE calculation
             is_cf_wf = not is_capital_waterfall
@@ -466,12 +524,24 @@ def run_waterfall_period(
             # Process based on vState
             if lead_state == "Pref":
                 pref_rates[lead_pc] = lead_rate
-                allocated = pay_pref(lead_stt, period_date, step_max, is_cf_wf)
+                # Find which tier this step targets (match by rate)
+                init_pool = lead_stt.get_pool("initial")
+                tier_idx = 0
+                multi_tier = len(init_pool.pref_tiers) > 1
+                if multi_tier:
+                    for ti, t in enumerate(init_pool.pref_tiers):
+                        if abs(t.pref_rate - lead_rate) < 1e-6:
+                            tier_idx = ti
+                            break
+                allocated = pay_pool_pref(
+                    lead_stt, "initial", period_date, step_max, is_cf_wf,
+                    tier_index=tier_idx,
+                    cocoplum_cross_reduce=multi_tier,
+                )
 
             elif lead_state == "Initial":
                 if is_capital_waterfall:
-                    # Capital return - never a CF distribution
-                    allocated = pay_initial_capital(lead_stt, period_date, step_max, is_cf_wf)
+                    allocated = pay_pool_capital(lead_stt, "initial", period_date, step_max, is_cf_wf)
 
             elif lead_state == "Share":
                 allocated = step_max
@@ -501,23 +571,26 @@ def run_waterfall_period(
                 allocated = pay_default_principal(lead_stt, period_date, step_max, lead_m_amount, is_cf_wf)
 
             elif lead_state == "Add":
-                # Additional/special capital steps — route by vtranstype
+                # Route via resolve_pool_and_action
                 lead_vtranstype = str(lead.get("vtranstype", "")).strip()
-                if "pref" in lead_vtranstype.lower():
-                    # Pref-type: pay from add-pref pool, record rate
+                pool_name, action = resolve_pool_and_action(
+                    lead_state, lead_vtranstype, is_capital_waterfall
+                )
+                if action == "pay_pref":
                     add_pref_rates[lead_pc] = lead_rate
-                    allocated = pay_add_pref(lead_stt, period_date, step_max, is_cf_wf)
-                elif lead_vtranstype == "Operating Capital" and lead_m_amount > 0:
-                    # Operating Capital with capped balance
-                    cap = lead_m_amount
-                    payable = min(step_max, max(0.0, cap))
-                    allocated = pay_add_capital(lead_stt, period_date, payable, is_cf_wf)
+                    # Ensure pref tier exists on the target pool
+                    tgt_pool = lead_stt.get_pool(pool_name)
+                    if not tgt_pool.pref_tiers:
+                        tgt_pool.pref_tiers.append(
+                            PrefTier(tier_name="pref", pref_rate=lead_rate)
+                        )
+                    allocated = pay_pool_pref(lead_stt, pool_name, period_date, step_max, is_cf_wf)
+                elif action == "pay_capital":
+                    allocated = pay_pool_capital(lead_stt, pool_name, period_date, step_max, is_cf_wf)
+                elif action == "pay_capital_capped":
+                    allocated = pay_pool_capital(lead_stt, pool_name, period_date, step_max, is_cf_wf)
                 else:
-                    # Capital return (Additional Capital, Prorata Special Capital, etc.)
-                    if is_capital_waterfall:
-                        allocated = pay_add_capital(lead_stt, period_date, step_max, is_cf_wf)
-                    else:
-                        allocated = 0.0  # CF_WF does not return capital
+                    allocated = 0.0  # "skip" or unknown
 
             elif lead_state == "Amt":
                 # Fixed amount
@@ -548,7 +621,6 @@ def run_waterfall_period(
             })
             
             remaining -= allocated
-            processed_orders.add(lead_order)
             
             if remaining <= 1e-9:
                 remaining = 0.0
@@ -600,21 +672,19 @@ def run_waterfall_period(
             })
 
             remaining -= allocated
-            processed_orders.add(tag_order)
 
             if remaining <= 1e-9:
                 remaining = 0.0
                 break
         
-        # Mark all steps in this pair as processed
-        for _, s in paired_steps.iterrows():
-            processed_orders.add(int(s["iOrder"]))
+        # Mark this (iOrder, vAmtType) group as processed
+        processed_groups.add((order, amt_type))
         
         if remaining <= 1e-9:
             remaining = 0.0
             break
     
-    # NOTE: year-end compounding is handled by accrue_pref_to_date which
+    # NOTE: year-end compounding is handled by accrue_pool_pref which
     # compounds at year boundaries when accruing across years.  For the
     # 12/31 period itself (no boundary crossing), pref_accrued_current_year
     # carries forward and is compounded when the next period accrues past
@@ -701,7 +771,14 @@ def run_waterfall(
                 amount = abs(pc.get('amount', 0))
                 if inv_id and amount and inv_id in istates:
                     stt = istates[inv_id]
-                    stt.capital_outstanding += amount
+                    # Route to correct pool via typename
+                    pool_name = typename_to_pool(pc.get('typename', ''))
+                    pool = stt.get_pool(pool_name)
+                    pool.capital_outstanding += amount
+                    if pool_name == "operating":
+                        if pool.cumulative_cap is None:
+                            pool.cumulative_cap = 0.0
+                        pool.cumulative_cap += amount
                     stt.cashflows.append((pc['_date'], -amount))
                 pc['_applied'] = True
 
@@ -717,9 +794,8 @@ def run_waterfall(
     # Investor summary with metrics
     inv_rows = []
     for pc, stt in istates.items():
-        # Calculate unrealized NAV (initial + additional capital pools)
-        unrealized = (stt.capital_outstanding + stt.pref_unpaid_compounded + stt.pref_accrued_current_year
-                      + stt.add_capital_outstanding + stt.add_pref_unpaid_compounded + stt.add_pref_accrued_current_year)
+        # Calculate unrealized NAV across all pools and tiers
+        unrealized = stt.total_capital_outstanding + stt.total_pref_balance
         
         # Get metrics
         as_of = period_cash['event_date'].max()
@@ -747,7 +823,11 @@ def run_waterfall(
 # ============================================================
 
 def pref_rates_from_waterfall_steps(wf_steps: pd.DataFrame, vcode: str) -> dict:
-    """Extract pref rates from waterfall Pref steps"""
+    """Extract pref rates from waterfall Pref steps.
+
+    Returns dict of PropCode -> rate (float) for single-rate deals,
+    or PropCode -> [rate1, rate2, ...] for multi-tier deals (e.g. Cocoplum).
+    """
     s = wf_steps[wf_steps["vcode"].astype(str) == str(vcode)].copy()
     if s.empty:
         return {}
@@ -757,7 +837,16 @@ def pref_rates_from_waterfall_steps(wf_steps: pd.DataFrame, vcode: str) -> dict:
     pref = pref.sort_values(["vmisc", "iOrder"])
     out = {}
     for pc, grp in pref.groupby("PropCode"):
-        out[str(pc)] = float(grp["nPercent_dec"].iloc[0])
+        # Filter out 0.0 / NaN rates (data quality: some Cap_WF steps have NaN nPercent)
+        rates = sorted(r for r in grp["nPercent_dec"].unique().tolist() if r and r > 0)
+        if not rates:
+            # All rates were zero/NaN — fall back to 0.0 so pool gets a tier
+            out[str(pc)] = 0.0
+        elif len(rates) == 1:
+            out[str(pc)] = float(rates[0])
+        else:
+            # Multi-tier (e.g. Cocoplum 5% + 8.5%)
+            out[str(pc)] = [float(r) for r in rates]
     return out
 
 
@@ -779,10 +868,6 @@ def add_pref_rates_from_waterfall_steps(wf_steps: pd.DataFrame, vcode: str) -> d
     return out
 
 
-# Keywords in Typename that indicate additional/special capital contributions
-_ADD_CAPITAL_TYPENAMES = {"operating capital", "additional capital", "special capital"}
-
-
 def seed_states_from_accounting(
     acct_raw: pd.DataFrame,
     inv_map: pd.DataFrame,
@@ -791,77 +876,248 @@ def seed_states_from_accounting(
 ) -> Dict[str, InvestorState]:
     """
     Build InvestorState per PropCode from historical accounting
-    
+
     KEY PRINCIPLE: Accounting shows RESULTS of past waterfalls, not mechanics
     We use it to:
     1. Seed cashflow history for XIRR
-    2. Track capital balances
+    2. Track capital balances per named pool
     3. DO NOT modify pref balances (forward model handles that)
-    
+
+    Contributions are routed to the correct CapitalPool via
+    typename_to_pool() (config.py).  Operating capital contributions
+    also set the pool's cumulative_cap.
+
     Args:
         acct_raw: accounting_feed.csv DataFrame
         inv_map: investment_map.csv DataFrame
         wf_steps: Waterfall definitions
         target_vcode: Deal to process
-    
+
     Returns:
         Dict of InvestorState by PropCode
     """
     acct = normalize_accounting_feed(acct_raw)
     inv_to_vcode = build_investmentid_to_vcode(inv_map)
-    
+
     # Filter to target deal
     acct["vcode"] = acct["InvestmentID"].map(inv_to_vcode)
     acct = acct[acct["vcode"].astype(str) == str(target_vcode)].copy()
-    
+
     # Build states
     states: Dict[str, InvestorState] = {}
     acct = acct.sort_values(["EffectiveDate", "InvestorID"]).copy()
-    
+
     for _, r in acct.iterrows():
         pc = str(r["InvestorID"])  # InvestorID == PropCode
         d = r["EffectiveDate"]
         if pd.isna(d):
             continue
-        
+
         if pc not in states:
             states[pc] = InvestorState(propcode=pc)
             if r["is_contribution"]:
                 states[pc].last_accrual_date = d
-        
+
         stt = states[pc]
         amt = float(r["Amt"])
         is_capital = bool(r["is_capital"])
         is_contribution = bool(r["is_contribution"])
-        
-        # CONTRIBUTIONS: Increase capital and record cashflow
+
+        # CONTRIBUTIONS: Route to correct pool and record cashflow
         if is_contribution:
             cf = amt if amt < 0 else -abs(amt)  # Ensure negative
             stt.cashflows.append((d, cf))
 
-            # Route to add-capital pool if Typename indicates additional/special capital
-            typename = str(r.get("Typename", "")).strip().lower()
-            is_add_capital = any(kw in typename for kw in _ADD_CAPITAL_TYPENAMES)
-            if is_add_capital:
-                stt.add_capital_outstanding += abs(cf)
-            else:
-                stt.capital_outstanding += abs(cf)
+            # Route to named pool via Typename
+            pool_name = typename_to_pool(str(r.get("Typename", "")))
+            pool = stt.get_pool(pool_name)
+            pool.capital_outstanding += abs(cf)
+
+            # Operating capital: track cumulative cap from actual contributions
+            if pool_name == "operating":
+                if pool.cumulative_cap is None:
+                    pool.cumulative_cap = 0.0
+                pool.cumulative_cap += abs(cf)
 
             if stt.last_accrual_date is None:
                 stt.last_accrual_date = d
-        
+
         # DISTRIBUTIONS: Record cashflow, reduce capital if capital event
         elif r["is_distribution"]:
             cf = amt if amt > 0 else abs(amt)  # Ensure positive
             stt.cashflows.append((d, cf))
-            
+
             # ONLY capital distributions reduce capital_outstanding
             if is_capital:
                 capital_return = min(cf, max(0.0, stt.capital_outstanding))
                 stt.capital_outstanding -= capital_return
-            
+
             # CF distributions (is_capital=N) do NOT touch capital_outstanding
-    
+
+    # CRITICAL FIX: Set last_accrual_date to the LATEST historical date
+    # This prevents the forward model from re-accruing pref that was already
+    # paid historically. The forward model will only accrue from this point.
+    # Also seed unpaid pref balance by calculating (expected accrual - actual paid).
+    if not acct.empty:
+        latest_date = acct["EffectiveDate"].max()
+
+        # Calculate unpaid pref for each investor
+        for pc, stt in states.items():
+            if stt.last_accrual_date is None:
+                continue
+
+            # Get pref rate from waterfall steps
+            pref_rate = 0.0
+            pref_steps = wf_steps[
+                (wf_steps["vcode"].astype(str) == str(target_vcode)) &
+                (wf_steps["PropCode"].astype(str) == pc) &
+                (wf_steps["vState"].astype(str).str.strip() == "Pref")
+            ]
+            if not pref_steps.empty:
+                rate_col = "nPercent_dec" if "nPercent_dec" in pref_steps.columns else "nPercent"
+                if rate_col in pref_steps.columns:
+                    pref_rate = float(pref_steps[rate_col].iloc[0])
+
+            # Get this investor's transactions
+            inv_acct = acct[acct["InvestorID"] == pc].copy()
+            inv_acct = inv_acct.sort_values("EffectiveDate")
+
+            if not inv_acct.empty and pref_rate > 0:
+                # Calculate expected pref accrual from capital history
+                # with year-end compounding (pref accrues on capital + unpaid compounded pref)
+                current_capital = 0.0
+                pref_accrued_current_year = 0.0
+                pref_unpaid_compounded = 0.0
+                prev_date = None
+
+                # Get pref distributions for reducing accrued amounts
+                pref_dists = inv_acct[inv_acct["TypeID"] == 1019.0][["EffectiveDate", "Amt"]].copy()
+                pref_dists["Amt"] = pref_dists["Amt"].abs()
+
+                def accrue_to_date(from_date, to_date, capital, compounded, accrued_prior_year=0.0):
+                    """
+                    Accrue pref with deferred year-end compounding (45-day grace period).
+
+                    Returns (accrued_cy, compounded, accrued_prior_year)
+
+                    At year-end boundary:
+                    - If > 45 days past year-end: compound immediately
+                    - If <= 45 days past: move to prior_year bucket (compound later)
+                    """
+                    grace_period_days = 45
+
+                    if from_date is None or to_date <= from_date or capital <= 0:
+                        return 0.0, compounded, accrued_prior_year
+
+                    accrued_cy = 0.0
+                    cur = from_date
+                    while cur < to_date:
+                        year_end = date(cur.year, 12, 31)
+                        next_stop = min(to_date, year_end)
+                        days = (next_stop - cur).days
+                        if days > 0:
+                            base = max(0.0, capital + compounded)
+                            accrued_cy += base * pref_rate * (days / 365.0)
+
+                        # At year-end boundary
+                        if next_stop == year_end and next_stop < to_date:
+                            days_past_year_end = (to_date - year_end).days
+                            if days_past_year_end >= grace_period_days:
+                                # Past grace period - compound now
+                                compounded += accrued_cy + accrued_prior_year
+                                accrued_cy = 0.0
+                                accrued_prior_year = 0.0
+                            else:
+                                # Within grace period - move to prior year bucket
+                                accrued_prior_year += accrued_cy
+                                accrued_cy = 0.0
+                            cur = date(cur.year + 1, 1, 1)
+                        else:
+                            cur = next_stop
+                            break
+                    return accrued_cy, compounded, accrued_prior_year
+
+                def apply_pref_payment(amount, accrued_cy, compounded, accrued_prior_year=0.0):
+                    """Apply pref payment - reduces compounded first, then prior year, then current year"""
+                    remaining = amount
+                    if compounded > 0 and remaining > 0:
+                        pay = min(remaining, compounded)
+                        compounded -= pay
+                        remaining -= pay
+                    if accrued_prior_year > 0 and remaining > 0:
+                        pay = min(remaining, accrued_prior_year)
+                        accrued_prior_year -= pay
+                        remaining -= pay
+                    if accrued_cy > 0 and remaining > 0:
+                        pay = min(remaining, accrued_cy)
+                        accrued_cy -= pay
+                        remaining -= pay
+                    return accrued_cy, compounded, accrued_prior_year
+
+                pref_accrued_prior_year = 0.0
+
+                for _, tr in inv_acct.iterrows():
+                    tr_date = tr["EffectiveDate"]
+                    tr_amt = float(tr["Amt"])
+
+                    # Accrue pref from previous date to this transaction date
+                    if prev_date is not None:
+                        accrued, pref_unpaid_compounded, pref_accrued_prior_year = accrue_to_date(
+                            prev_date, tr_date, current_capital, pref_unpaid_compounded, pref_accrued_prior_year
+                        )
+                        pref_accrued_current_year += accrued
+
+                    # Handle pref distribution (reduces accrued pref)
+                    if tr["TypeID"] == 1019.0:
+                        pref_accrued_current_year, pref_unpaid_compounded, pref_accrued_prior_year = apply_pref_payment(
+                            abs(tr_amt), pref_accrued_current_year, pref_unpaid_compounded, pref_accrued_prior_year
+                        )
+
+                    # Update capital balance
+                    if tr["is_contribution"]:
+                        current_capital += abs(tr_amt)
+                    elif tr["is_capital"] and tr["is_distribution"]:
+                        current_capital = max(0.0, current_capital - abs(tr_amt))
+
+                    prev_date = tr_date
+
+                # Accrue from last transaction to latest_date
+                if prev_date is not None:
+                    final_accrued, final_compounded, final_prior_year = accrue_to_date(
+                        prev_date, latest_date, current_capital, pref_unpaid_compounded, pref_accrued_prior_year
+                    )
+                    pref_accrued_current_year = final_accrued
+                    pref_unpaid_compounded = final_compounded
+                    pref_accrued_prior_year = final_prior_year
+
+                # Total unpaid pref
+                unpaid_pref = pref_accrued_current_year + pref_unpaid_compounded + pref_accrued_prior_year
+
+                # Seed unpaid pref into the initial pool's tier
+                pool = stt.get_pool("initial")
+                if not pool.pref_tiers:
+                    # Create the pref tier if it doesn't exist
+                    pool.pref_tiers.append(PrefTier(tier_name="pref", pref_rate=pref_rate))
+
+                tier = pool.pref_tiers[0]
+                # Set the three buckets based on calculated values
+                tier.pref_unpaid_compounded = pref_unpaid_compounded
+                tier.pref_accrued_prior_year = pref_accrued_prior_year
+                tier.pref_accrued_current_year = pref_accrued_current_year
+
+                # Track which year the prior_year accrued is for
+                if pref_accrued_prior_year > 0 and latest_date:
+                    # If we're in the grace period (Jan-Feb), prior year is last year
+                    if latest_date.month <= 2:
+                        tier.prior_year_for_accrued = latest_date.year - 1
+                    else:
+                        tier.prior_year_for_accrued = 0
+
+            # Update last_accrual_date for all pools
+            for pool in stt.pools.values():
+                pool.last_accrual_date = latest_date
+            stt.last_accrual_date = latest_date
+
     return states
 
 
@@ -1019,22 +1275,27 @@ def run_upstream_waterfall_period(
                         if allocated > 0:
                             apply_distribution(stt, period_date, allocated, is_cf_wf)
                     elif state == "Pref":
-                        allocated = pay_pref(stt, period_date, step_max, is_cf_wf)
+                        # Ensure initial pool has a pref tier for upstream entities
+                        pool = stt.get_pool("initial")
+                        if not pool.pref_tiers:
+                            pool.pref_tiers.append(PrefTier(tier_name="pref", pref_rate=rate))
+                        allocated = pay_pool_pref(stt, "initial", period_date, step_max, is_cf_wf)
                     elif state in ("Def_Int", "Def&Int"):
                         # Default preferred return / combined default interest+principal
-                        # Uses same logic as Pref but at the default rate
-                        # Balance comes from InvestorState (populated from accounting feed)
-                        allocated = pay_pref(stt, period_date, step_max, is_cf_wf)
+                        pool = stt.get_pool("initial")
+                        if not pool.pref_tiers:
+                            pool.pref_tiers.append(PrefTier(tier_name="pref", pref_rate=rate))
+                        allocated = pay_pool_pref(stt, "initial", period_date, step_max, is_cf_wf)
                     elif state == "Default":
                         # Return of defaulted capital contributions
                         if effective_wf_type == "Cap_WF":
-                            allocated = pay_initial_capital(stt, period_date, step_max, False)
+                            allocated = pay_pool_capital(stt, "initial", period_date, step_max, False)
                         else:
                             # In CF waterfall, default capital can still be returned per some LLCs
-                            allocated = pay_initial_capital(stt, period_date, step_max, False)
+                            allocated = pay_pool_capital(stt, "initial", period_date, step_max, False)
                     elif state == "Initial":
                         if effective_wf_type == "Cap_WF":
-                            allocated = pay_initial_capital(stt, period_date, step_max, False)
+                            allocated = pay_pool_capital(stt, "initial", period_date, step_max, False)
                     elif state == "Share":
                         allocated = step_max
                         if allocated > 0:

@@ -217,6 +217,28 @@ def create_additional_tables(conn: sqlite3.Connection):
     conn.commit()
 
 
+def run_migrations(conn: sqlite3.Connection):
+    """Run any pending schema migrations."""
+    _migrate_capital_calls_typename(conn)
+
+
+def _migrate_capital_calls_typename(conn: sqlite3.Connection):
+    """Add Typename column to capital_calls table if it does not exist."""
+    try:
+        conn.execute("SELECT Typename FROM capital_calls LIMIT 1")
+    except Exception:
+        try:
+            conn.execute(
+                "ALTER TABLE capital_calls ADD COLUMN Typename TEXT "
+                "DEFAULT 'Contribution: Investments'"
+            )
+            conn.commit()
+            logger.info("Migration: added Typename column to capital_calls")
+        except Exception as e:
+            # Table may not exist yet — that's fine, column will come from CSV
+            logger.debug(f"Migration skip (capital_calls Typename): {e}")
+
+
 def init_database(data_folder: Optional[str] = None) -> Dict[str, Any]:
     """
     Initialize database from CSV files
@@ -270,11 +292,16 @@ def init_database(data_folder: Optional[str] = None) -> Dict[str, Any]:
     create_additional_tables(conn)
     logger.info("✅ Created additional tables")
     
+    # Run schema migrations
+    logger.info("\nRunning migrations...")
+    run_migrations(conn)
+    logger.info("✅ Migrations complete")
+
     # Create indexes for performance
     logger.info("\nCreating indexes...")
     create_indexes(conn)
     logger.info("✅ Created indexes")
-    
+
     conn.close()
     
     logger.info("=" * 80)

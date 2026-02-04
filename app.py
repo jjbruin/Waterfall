@@ -29,7 +29,7 @@ from reporting import *
 from ownership_tree import *
 from capital_calls import *
 from cash_management import *
-from consolidation import build_consolidated_forecast, get_sub_portfolio_summary
+from consolidation import build_consolidated_forecast, get_sub_portfolio_summary, get_property_vcodes_for_deal
 
 # ============================================================
 # STREAMLIT CONFIG
@@ -368,12 +368,15 @@ with tab_deal:
     # ============================================================
 
     # Get capitalization data
-    def get_deal_capitalization(acct, inv, wf, mri_val, mri_loans, deal_vcode):
+    def get_deal_capitalization(acct, inv, wf, mri_val, mri_loans, deal_vcode, property_vcodes=None):
         """Calculate deal capitalization from accounting_feed.
-    
+
         Equity = Contributions + Return of Capital distributions.
         InvestorID links to PropCode in waterfalls.
         InvestmentID links to vcode via investment_map.
+
+        For portfolio deals, property_vcodes should include all sub-property vcodes
+        so that debt from those properties is aggregated.
         """
         from loaders import build_investmentid_to_vcode
     
@@ -437,7 +440,11 @@ with tab_deal:
                     mri_loans_copy = mri_loans_copy.rename(columns={'vcode': 'vCode'})
                 if 'vCode' in mri_loans_copy.columns:
                     mri_loans_copy['vCode'] = mri_loans_copy['vCode'].astype(str)
-                    deal_loans = mri_loans_copy[mri_loans_copy['vCode'] == str(deal_vcode)]
+                    # Aggregate debt from deal + all property vcodes
+                    all_vcodes = [str(deal_vcode)]
+                    if property_vcodes:
+                        all_vcodes.extend([str(v) for v in property_vcodes])
+                    deal_loans = mri_loans_copy[mri_loans_copy['vCode'].isin(all_vcodes)]
                     if not deal_loans.empty and 'mOrigLoanAmt' in deal_loans.columns:
                         cap_data['debt'] = pd.to_numeric(deal_loans['mOrigLoanAmt'], errors='coerce').fillna(0).sum()
             cap_data['total_cap'] = cap_data['debt'] + cap_data['pref_equity'] + cap_data['partner_equity']
@@ -470,7 +477,9 @@ with tab_deal:
 
     # Calculate capitalization (loan_sched will be defined after loan modeling, so we'll update this later)
     # For now, get what we can without loan data
-    cap_data = get_deal_capitalization(acct, inv, wf, mri_val, mri_loans_raw, deal_vcode)
+    # Get property vcodes for portfolio deals to aggregate debt correctly
+    prop_vcodes_for_cap = get_property_vcodes_for_deal(deal_vcode, inv)
+    cap_data = get_deal_capitalization(acct, inv, wf, mri_val, mri_loans_raw, deal_vcode, prop_vcodes_for_cap)
 
     # Format the as_of date
     as_of_str = ""
@@ -646,44 +655,39 @@ with tab_deal:
     # ============================================================
     debug_msgs = []
 
-    # Check for sub-portfolio consolidation
+    # Check for sub-portfolio consolidation (uses Portfolio_Name in deals table)
     deal_investment_id = str(selected_row.get('InvestmentID', ''))
-    consolidation_info = None
+    rels_for_consol = relationships_raw if relationships_raw is not None else pd.DataFrame()
 
-    if relationships_raw is not None and not relationships_raw.empty:
-        # Try consolidation for sub-portfolio deals
-        consolidated_fc, consolidated_loans, consolidation_info = build_consolidated_forecast(
-            deal_investment_id=deal_investment_id,
-            deals=inv,
-            relationships=relationships_raw,
-            forecasts=fc,
-            loans=mri_loans_raw if mri_loans_raw is not None else pd.DataFrame(),
-            debug=True
-        )
+    consolidated_fc, consolidated_loans, consolidation_info = build_consolidated_forecast(
+        deal_investment_id=deal_investment_id,
+        deals=inv,
+        relationships=rels_for_consol,
+        forecasts=fc,
+        loans=mri_loans_raw if mri_loans_raw is not None else pd.DataFrame(),
+        debug=True
+    )
 
-        if consolidation_info.get('is_sub_portfolio', False):
-            fc_raw = consolidated_fc.copy()
-            source = consolidation_info.get('forecast_source', 'unknown')
+    if consolidation_info.get('is_sub_portfolio', False):
+        fc_raw = consolidated_fc.copy()
+        source = consolidation_info.get('forecast_source', 'unknown')
 
-            # Check if data is already processed (deal_level returns already-processed data)
-            if 'vAccountType' in fc_raw.columns and 'mAmount_norm' in fc_raw.columns:
-                # Already processed, just use it
-                fc_deal_full = fc_raw.copy()
-            else:
-                # Needs processing (properties_aggregated returns raw aggregated data)
-                if 'vcode' in fc_raw.columns and 'Vcode' not in fc_raw.columns:
-                    fc_raw = fc_raw.rename(columns={'vcode': 'Vcode'})
-                fc_deal_full = load_forecast(fc_raw, coa, int(pro_yr_base))
-
-            prop_count = consolidation_info.get('property_count', 0)
-            debug_msgs.append(f"Sub-portfolio deal: {prop_count} properties consolidated ({source})")
-            st.info(f"📦 Sub-portfolio: {prop_count} properties consolidated from {source}")
+        # Check if data is already processed (deal_level returns already-processed data)
+        if 'vAccountType' in fc_raw.columns and 'mAmount_norm' in fc_raw.columns:
+            # Already processed, just use it
+            fc_deal_full = fc_raw.copy()
         else:
-            fc_deal_full = fc[fc["vcode"].astype(str) == str(deal_vcode)].copy()
-            debug_msgs.append(f"Not a sub-portfolio deal (InvestmentID: {deal_investment_id})")
+            # Needs processing (properties_aggregated returns raw aggregated data)
+            if 'vcode' in fc_raw.columns and 'Vcode' not in fc_raw.columns:
+                fc_raw = fc_raw.rename(columns={'vcode': 'Vcode'})
+            fc_deal_full = load_forecast(fc_raw, coa, int(pro_yr_base))
+
+        prop_count = consolidation_info.get('property_count', 0)
+        debug_msgs.append(f"Sub-portfolio deal: {prop_count} properties consolidated ({source})")
+        st.info(f"📦 Sub-portfolio: {prop_count} properties consolidated from {source}")
     else:
         fc_deal_full = fc[fc["vcode"].astype(str) == str(deal_vcode)].copy()
-        debug_msgs.append(f"No relationships data loaded - consolidation skipped")
+        debug_msgs.append(f"Not a sub-portfolio deal (InvestmentID: {deal_investment_id})")
 
     if fc_deal_full.empty:
         st.error(f"No forecast rows for vcode {deal_vcode}")
@@ -736,20 +740,31 @@ with tab_deal:
         if "vCode" not in ms.columns and "vcode" in ms.columns:
             ms = ms.rename(columns={"vcode": "vCode"})
         ms["vCode"] = ms["vCode"].astype(str)
-    
-        if (ms["vCode"] == str(deal_vcode)).any():
+
+        # For sub-portfolio deals, check planned loans for deal + all property vcodes
+        supp_vcodes = [str(deal_vcode)]
+        if consolidation_info and consolidation_info.get('is_sub_portfolio', False):
+            supp_vcodes.extend(consolidation_info.get('property_vcodes', []))
+
+        matching_supp = ms[ms["vCode"].isin(supp_vcodes)]
+        if not matching_supp.empty:
             if mri_val is None or mri_val.empty:
                 debug_msgs.append("MRI_Supp present, but MRI_Val missing – cannot size planned loan.")
             else:
-                supp_row = ms[ms["vCode"] == str(deal_vcode)].iloc[0]
-                try:
-                    planned_new_loan_amt, planned_dbg = size_planned_second_mortgage(inv, fc_deal_full, supp_row, mri_val)
-                    planned_orig_date = month_end(as_date(supp_row["Orig_Date"]))
-                
-                    if planned_new_loan_amt > 0:
-                        loans.append(planned_loan_as_loan_object(deal_vcode, supp_row, planned_new_loan_amt))
-                except Exception as e:
-                    debug_msgs.append(f"Planned loan sizing failed: {e}")
+                for _, supp_row in matching_supp.iterrows():
+                    try:
+                        row_amt, row_dbg = size_planned_second_mortgage(inv, fc_deal_full, supp_row, mri_val)
+                        row_orig_date = month_end(as_date(supp_row["Orig_Date"]))
+
+                        if row_amt > 0:
+                            loans.append(planned_loan_as_loan_object(str(supp_row["vCode"]), supp_row, row_amt))
+                            # Keep first planned loan debug info
+                            if planned_dbg is None:
+                                planned_dbg = row_dbg
+                                planned_new_loan_amt = row_amt
+                                planned_orig_date = row_orig_date
+                    except Exception as e:
+                        debug_msgs.append(f"Planned loan sizing failed for {supp_row['vCode']}: {e}")
 
     # Generate loan schedules
     if loans:
@@ -1053,12 +1068,14 @@ with tab_deal:
         # Summary of all loans
         loan_summary = []
         for ln in loans:
+            orig_str = ln.orig_date.strftime('%Y-%m-%d') if pd.notna(ln.orig_date) else 'N/A'
+            mat_str = ln.maturity_date.strftime('%Y-%m-%d') if pd.notna(ln.maturity_date) else 'N/A'
             loan_summary.append({
                 'Loan ID': ln.loan_id,
                 'Type': 'Existing' if ln.loan_id != 'PLANNED_2ND' else 'Planned 2nd Mortgage',
                 'Original Amount': f"${ln.orig_amount:,.0f}",
-                'Origination': ln.orig_date.strftime('%Y-%m-%d'),
-                'Maturity': ln.maturity_date.strftime('%Y-%m-%d'),
+                'Origination': orig_str,
+                'Maturity': mat_str,
                 'Rate Type': ln.int_type,
                 'Rate': f"{ln.rate_for_month():.2%}",
                 'Term (months)': ln.loan_term_m,
@@ -1079,9 +1096,9 @@ with tab_deal:
                     ln_sched = loan_sched[loan_sched['LoanID'] == ln.loan_id].copy()
                 
                     if not ln_sched.empty:
-                        # Add beginning balance column
+                        # Add beginning balance column (ending_balance + principal = beginning_balance)
                         ln_sched = ln_sched.sort_values('event_date')
-                        ln_sched['beginning_balance'] = ln_sched['ending_balance'].shift(1).fillna(ln.orig_amount)
+                        ln_sched['beginning_balance'] = ln_sched['ending_balance'] + ln_sched['principal']
                     
                         display_cols = ['event_date', 'rate', 'beginning_balance', 'interest', 'principal', 'payment', 'ending_balance']
                     
@@ -1994,22 +2011,20 @@ with tab_deal:
     
         if state:
             # Calculate metrics
-            unrealized = (state.capital_outstanding + state.pref_unpaid_compounded + state.pref_accrued_current_year
-                          + state.add_capital_outstanding + state.add_pref_unpaid_compounded + state.add_pref_accrued_current_year)
-        
+            unrealized = state.total_capital_outstanding + state.total_pref_balance
+
             from metrics import investor_metrics
             metrics = investor_metrics(state, sale_me, unrealized_nav=unrealized)
-        
+
             partner_totals.append({
                 'Partner': partner,
                 'Cash Flow Distributions': cf_dist,
                 'Capital Distributions': cap_dist,
                 'Total Distributions': cf_dist + cap_dist,
-                'Capital Outstanding': state.capital_outstanding,
-                'Unpaid Pref (Compounded)': state.pref_unpaid_compounded,
-                'Accrued Pref (Current Yr)': state.pref_accrued_current_year,
-                'Total Capital + Pref': (state.capital_outstanding + state.pref_unpaid_compounded + state.pref_accrued_current_year
-                                        + state.add_capital_outstanding + state.add_pref_unpaid_compounded + state.add_pref_accrued_current_year),
+                'Capital Outstanding': state.total_capital_outstanding,
+                'Unpaid Pref (Compounded)': state.pref_unpaid_compounded + state.add_pref_unpaid_compounded,
+                'Accrued Pref (Current Yr)': state.pref_accrued_current_year + state.add_pref_accrued_current_year,
+                'Total Capital + Pref': unrealized,
                 'Total Contributions': metrics.get('TotalContributions', 0),
                 'IRR': metrics.get('IRR'),
                 'ROE': metrics.get('ROE', 0),
@@ -2037,7 +2052,97 @@ with tab_deal:
             use_container_width=True,
             hide_index=True
         )
-    
+
+        # --- Total Accrued Pref Owed ---
+        total_pref_owed = 0.0
+        for partner in all_partners:
+            state = cf_investors.get(partner) or cap_investors.get(partner)
+            if state:
+                total_pref_owed += state.total_pref_balance
+        if total_pref_owed > 0:
+            st.metric("Total Accrued Pref Owed (All Partners)", f"${total_pref_owed:,.2f}")
+
+        # --- Capital Pool Breakdown ---
+        with st.expander("Capital Pool Breakdown"):
+            pool_rows = []
+            for partner in sorted(all_partners):
+                state = cf_investors.get(partner) or cap_investors.get(partner)
+                if not state:
+                    continue
+                for pname, pool in state.pools.items():
+                    if pool.capital_outstanding == 0 and not pool.pref_tiers:
+                        continue
+                    for tier in pool.pref_tiers:
+                        pool_rows.append({
+                            "Partner": partner,
+                            "Pool": pname,
+                            "Capital Outstanding": pool.capital_outstanding,
+                            "Pref Tier": tier.tier_name,
+                            "Pref Rate": tier.pref_rate,
+                            "Compounded Pref": tier.pref_unpaid_compounded,
+                            "Current Year Pref": tier.pref_accrued_current_year,
+                            "Total Pref": tier.pref_unpaid_compounded + tier.pref_accrued_current_year,
+                            "Cumulative Cap": pool.cumulative_cap if pool.cumulative_cap is not None else "",
+                            "Cumulative Returned": pool.cumulative_returned if pool.cumulative_returned > 0 else "",
+                        })
+                    if not pool.pref_tiers and pool.capital_outstanding > 0:
+                        pool_rows.append({
+                            "Partner": partner,
+                            "Pool": pname,
+                            "Capital Outstanding": pool.capital_outstanding,
+                            "Pref Tier": "(none)",
+                            "Pref Rate": 0.0,
+                            "Compounded Pref": 0.0,
+                            "Current Year Pref": 0.0,
+                            "Total Pref": 0.0,
+                            "Cumulative Cap": pool.cumulative_cap if pool.cumulative_cap is not None else "",
+                            "Cumulative Returned": pool.cumulative_returned if pool.cumulative_returned > 0 else "",
+                        })
+            if pool_rows:
+                pool_df = pd.DataFrame(pool_rows)
+                st.dataframe(
+                    pool_df.style.format({
+                        'Capital Outstanding': '${:,.0f}',
+                        'Pref Rate': '{:.2%}',
+                        'Compounded Pref': '${:,.2f}',
+                        'Current Year Pref': '${:,.2f}',
+                        'Total Pref': '${:,.2f}',
+                    }),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                st.info("No capital pool data available")
+
+        # --- Pool Validation: Waterfall Step -> Pool Routing ---
+        with st.expander("Waterfall Step \u2192 Pool Routing"):
+            from config import resolve_pool_and_action as _resolve_rpa
+            routing_rows = []
+            for wf_type_label in ["CF_WF", "Cap_WF"]:
+                _is_cap = (wf_type_label == "Cap_WF")
+                _steps = wf_steps[
+                    (wf_steps["vcode"].astype(str) == str(deal_vcode)) &
+                    (wf_steps["vmisc"] == wf_type_label)
+                ].sort_values("iOrder")
+                for _, _step in _steps.iterrows():
+                    _vs = str(_step["vState"]).strip()
+                    _vt = str(_step.get("vtranstype", "")).strip()
+                    _pn, _act = _resolve_rpa(_vs, _vt, _is_cap)
+                    routing_rows.append({
+                        "Waterfall": wf_type_label,
+                        "iOrder": int(_step["iOrder"]),
+                        "vAmtType": _step.get("vAmtType", ""),
+                        "PropCode": str(_step["PropCode"]),
+                        "vState": _vs,
+                        "vtranstype": _vt,
+                        "Pool": _pn if _pn else f"({_vs})",
+                        "Action": _act if _act else _vs,
+                    })
+            if routing_rows:
+                st.dataframe(pd.DataFrame(routing_rows), use_container_width=True, hide_index=True)
+            else:
+                st.info("No waterfall steps found")
+
         # Summary metrics
         st.markdown("### Deal-Level Summary")
 
@@ -2492,50 +2597,62 @@ with tab_deal:
         # Create expander for each partner
         for partner in sorted(all_partners):
             state = cf_investors.get(partner) or cap_investors.get(partner)
-            pref_rate = pref_rates.get(partner, 0.0)
+            pref_rate_val = pref_rates.get(partner, 0.0)
 
-            with st.expander(f"📊 {partner} Preferred Return Schedule (Rate: {pref_rate:.2%})"):
-                if pref_rate == 0:
+            # Multi-tier: pref_rate_val may be a list of rates
+            if isinstance(pref_rate_val, list):
+                rate_list = pref_rate_val
+                rate_label = " / ".join(f"{r:.2%}" for r in rate_list)
+            else:
+                rate_list = [pref_rate_val] if pref_rate_val else []
+                rate_label = f"{pref_rate_val:.2%}" if pref_rate_val else "0.00%"
+
+            with st.expander(f"📊 {partner} Preferred Return Schedule (Rate: {rate_label})"):
+                if not rate_list or all(r == 0 for r in rate_list):
                     st.warning(f"No pref rate found for {partner}")
                 else:
-                    schedule_df = build_pref_schedule(
-                        partner, pref_rate, cf_alloc, cap_alloc,
-                        acct, inv, deal_vcode,
-                        state, first_contrib_date, sale_me
-                    )
+                    for tier_idx, pref_rate in enumerate(rate_list):
+                        if len(rate_list) > 1:
+                            st.markdown(f"**Tier {tier_idx + 1}: {pref_rate:.2%}** (initial pool)")
 
-                    if schedule_df.empty:
-                        st.info("No events found for this partner")
-                    else:
-                        # Format the dataframe
-                        st.dataframe(
-                            schedule_df.style.format({
-                                'Amt': '${:,.0f}',
-                                'Equity Balance': '${:,.0f}',
-                                'Compounded Pref': '${:,.0f}',
-                                'Total Inv+Comp': '${:,.0f}',
-                                'Days': '{:.0f}',
-                                'Current Due': '${:,.2f}',
-                                'Prior Accrual': '${:,.2f}',
-                                'Total Due': '${:,.2f}',
-                                'Amount Paid': '${:,.2f}',
-                                'Remaining Accrual': '${:,.2f}',
-                            }),
-                            use_container_width=True,
-                            hide_index=True
+                        schedule_df = build_pref_schedule(
+                            partner, pref_rate, cf_alloc, cap_alloc,
+                            acct, inv, deal_vcode,
+                            state, first_contrib_date, sale_me
                         )
 
-                        # Summary
-                        total_accrued = schedule_df['Current Due'].sum()
-                        total_paid = schedule_df['Amount Paid'].sum()
-                        final_remaining = schedule_df['Remaining Accrual'].iloc[-1] if len(schedule_df) > 0 else 0
-                        final_compounded = schedule_df['Compounded Pref'].iloc[-1] if len(schedule_df) > 0 else 0
+                        if schedule_df.empty:
+                            st.info("No events found for this partner")
+                        else:
+                            # Format the dataframe
+                            st.dataframe(
+                                schedule_df.style.format({
+                                    'Amt': '${:,.0f}',
+                                    'Equity Balance': '${:,.0f}',
+                                    'Compounded Pref': '${:,.0f}',
+                                    'Total Inv+Comp': '${:,.0f}',
+                                    'Days': '{:.0f}',
+                                    'Current Due': '${:,.2f}',
+                                    'Prior Accrual': '${:,.2f}',
+                                    'Total Due': '${:,.2f}',
+                                    'Amount Paid': '${:,.2f}',
+                                    'Remaining Accrual': '${:,.2f}',
+                                }),
+                                use_container_width=True,
+                                hide_index=True
+                            )
 
-                        col1, col2, col3, col4 = st.columns(4)
-                        col1.metric("Total Pref Accrued", f"${total_accrued:,.0f}")
-                        col2.metric("Total Pref Paid", f"${total_paid:,.0f}")
-                        col3.metric("Final Compounded Pref", f"${final_compounded:,.0f}")
-                        col4.metric("Final Remaining Accrual", f"${final_remaining:,.0f}")
+                            # Summary
+                            total_accrued = schedule_df['Current Due'].sum()
+                            total_paid = schedule_df['Amount Paid'].sum()
+                            final_remaining = schedule_df['Remaining Accrual'].iloc[-1] if len(schedule_df) > 0 else 0
+                            final_compounded = schedule_df['Compounded Pref'].iloc[-1] if len(schedule_df) > 0 else 0
+
+                            col1, col2, col3, col4 = st.columns(4)
+                            col1.metric("Total Pref Accrued", f"${total_accrued:,.0f}")
+                            col2.metric("Total Pref Paid", f"${total_paid:,.0f}")
+                            col3.metric("Final Compounded Pref", f"${final_compounded:,.0f}")
+                            col4.metric("Final Remaining Accrual", f"${final_remaining:,.0f}")
 
     else:
         st.info("No partner data available")
@@ -2549,8 +2666,7 @@ with tab_deal:
             # Convert investor states dict to DataFrame for display
             inv_rows = []
             for pc, stt in cap_investors.items():
-                unrealized = (stt.capital_outstanding + stt.pref_unpaid_compounded + stt.pref_accrued_current_year
-                              + stt.add_capital_outstanding + stt.add_pref_unpaid_compounded + stt.add_pref_accrued_current_year)
+                unrealized = stt.total_capital_outstanding + stt.total_pref_balance
                 metrics = investor_metrics(stt, sale_me, unrealized_nav=unrealized)
                 inv_rows.append({
                     "PropCode": pc,

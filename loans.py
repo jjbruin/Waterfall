@@ -28,10 +28,25 @@ def build_loans_from_mri_loans(mri_loans: pd.DataFrame) -> List[Loan]:
     for _, r in mri_loans.iterrows():
         vcode = str(r["vCode"])
         loan_id = str(r["LoanID"])
-        maturity = r["dtEvent"]
+
+        # Parse maturity date - handle string, datetime, or date
+        maturity_raw = r["dtEvent"]
+        if pd.isna(maturity_raw):
+            maturity = None
+        elif isinstance(maturity_raw, str):
+            try:
+                maturity = pd.to_datetime(maturity_raw).date()
+            except Exception:
+                maturity = None
+        elif hasattr(maturity_raw, 'date'):
+            maturity = maturity_raw.date()
+        elif isinstance(maturity_raw, date):
+            maturity = maturity_raw
+        else:
+            maturity = None
 
         loan_term_m = int(r["iLoanTerm"]) if pd.notna(r["iLoanTerm"]) and r["iLoanTerm"] > 0 else 0
-        orig_date = add_months(maturity, -loan_term_m) if loan_term_m > 0 else add_months(maturity, -120)
+        orig_date = add_months(maturity, -loan_term_m) if maturity and loan_term_m > 0 else (add_months(maturity, -120) if maturity else None)
 
         orig_amt = float(r["mOrigLoanAmt"]) if pd.notna(r["mOrigLoanAmt"]) else 0.0
         amort_m = int(r["iAmortTerm"]) if pd.notna(r["iAmortTerm"]) and r["iAmortTerm"] > 0 else loan_term_m
@@ -67,21 +82,32 @@ def build_loans_from_mri_loans(mri_loans: pd.DataFrame) -> List[Loan]:
 def amortize_monthly_schedule(loan: Loan, schedule_start: date, schedule_end: date) -> pd.DataFrame:
     """
     Generate month-end amortization schedule for a loan
-    
+
     Logic:
     - Fixed loans: IO period, then level-payment amortization
     - Variable loans: Interest-only for entire term (no amortization)
-    
+
     Args:
         loan: Loan object
         schedule_start: Start date for schedule
         schedule_end: End date for schedule
-    
+
     Returns:
         DataFrame with columns: vcode, LoanID, event_date, rate, interest,
                                principal, payment, ending_balance
     """
-    all_dates = month_ends_between(loan.orig_date, max(schedule_end, loan.maturity_date))
+    # Handle missing dates - skip loans with invalid date data
+    orig = loan.orig_date if pd.notna(loan.orig_date) else None
+    maturity = loan.maturity_date if pd.notna(loan.maturity_date) else None
+
+    if orig is None:
+        # Cannot generate schedule without origination date
+        return pd.DataFrame()
+
+    if maturity is None:
+        maturity = schedule_end
+
+    all_dates = month_ends_between(orig, max(schedule_end, maturity))
     if not all_dates:
         return pd.DataFrame()
 
@@ -105,7 +131,7 @@ def amortize_monthly_schedule(loan: Loan, schedule_start: date, schedule_end: da
 
     rows = []
     for i, dte in enumerate(all_dates, start=1):
-        if dte > loan.maturity_date:
+        if dte > maturity:
             break
 
         interest = bal * r_m

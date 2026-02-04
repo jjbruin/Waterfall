@@ -8,6 +8,8 @@ import numpy as np
 from datetime import datetime
 from typing import List, Dict
 
+from config import typename_to_pool
+
 
 def load_capital_calls(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -38,7 +40,11 @@ def load_capital_calls(df: pd.DataFrame) -> pd.DataFrame:
 
     if 'vcode' in cc.columns and 'deal_name' not in cc.columns:
         cc = cc.rename(columns={'vcode': 'deal_name'})
-    
+
+    # Normalize typename column (for pool routing)
+    if 'typename' not in cc.columns:
+        cc['typename'] = 'Contribution: Investments'
+
     # Convert date to datetime
     if 'call_date' in cc.columns:
         cc['call_date'] = pd.to_datetime(cc['call_date'])
@@ -75,22 +81,26 @@ def build_capital_call_schedule(cc_df: pd.DataFrame, deal_vcode: str = None) -> 
             'investor_id': row.get('investor_id', 'Unknown'),
             'call_date': row.get('call_date'),
             'amount': row.get('amount', 0),
-            'deal_name': row.get('deal_name', deal_vcode)
+            'deal_name': row.get('deal_name', deal_vcode),
+            'typename': row.get('typename', 'Contribution: Investments'),
         }
         schedule.append(call)
-    
+
     return schedule
 
 
 def apply_capital_calls_to_states(capital_calls: List[Dict], investor_states: Dict) -> Dict:
     """
-    Apply capital calls to investor states by updating capital_outstanding
-    and recording contribution cashflows.
+    Apply capital calls to investor states by routing to the correct
+    capital pool and recording contribution cashflows.
 
-    Works with InvestorState dataclass objects.
+    Pool routing uses the 'typename' field in each call dict via
+    typename_to_pool().  Falls back to 'initial' when typename is
+    absent or unrecognised.
 
     Args:
-        capital_calls: List of capital call dicts (investor_id, call_date, amount)
+        capital_calls: List of capital call dicts
+            (investor_id, call_date, amount, typename)
         investor_states: Dict of PropCode -> InvestorState
 
     Returns:
@@ -109,7 +119,17 @@ def apply_capital_calls_to_states(capital_calls: List[Dict], investor_states: Di
 
         if inv_id in investor_states:
             stt = investor_states[inv_id]
-            stt.capital_outstanding += abs(amount)
+            # Route to correct pool
+            pool_name = typename_to_pool(call.get('typename', ''))
+            pool = stt.get_pool(pool_name)
+            pool.capital_outstanding += abs(amount)
+
+            # Operating capital: update cumulative cap
+            if pool_name == "operating":
+                if pool.cumulative_cap is None:
+                    pool.cumulative_cap = 0.0
+                pool.cumulative_cap += abs(amount)
+
             # Record as contribution cashflow (negative) for XIRR
             if call_date is not None:
                 d = call_date.date() if hasattr(call_date, 'date') else call_date

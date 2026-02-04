@@ -5,11 +5,42 @@ Data structures for waterfall model
 
 from dataclasses import dataclass, field
 from datetime import date
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 import pandas as pd
 import numpy as np
 
 from config import INDEX_BASE_RATES
+
+
+# ============================================================
+# CAPITAL POOL DATA STRUCTURES
+# ============================================================
+
+@dataclass
+class PrefTier:
+    """One tier of preferred return on a capital pool.
+
+    A pool can have multiple tiers (e.g. Cocoplum has 5% and 8.5%
+    tiers on the same initial capital). Each tier accrues independently.
+    """
+    tier_name: str             # "pref", "pref_5pct", "pref_8.5pct"
+    pref_rate: float = 0.0     # 0.0 = no pref (e.g. operating capital)
+    pref_unpaid_compounded: float = 0.0
+    pref_accrued_current_year: float = 0.0
+
+
+@dataclass
+class CapitalPool:
+    """A single capital class for one investor.
+
+    Pool names: "initial", "additional", "special", "operating", "cost_overrun"
+    """
+    pool_name: str
+    capital_outstanding: float = 0.0
+    last_accrual_date: Optional[date] = None
+    pref_tiers: List[PrefTier] = field(default_factory=list)
+    cumulative_cap: Optional[float] = None   # for operating capital max return
+    cumulative_returned: float = 0.0         # for operating capital cumulative tracking
 
 
 @dataclass
@@ -18,30 +49,166 @@ class InvestorState:
     State tracking for a single investor/partner
 
     Tracks:
-    - Capital account balance
-    - Preferred return accruals (compounded and current year)
+    - Capital account balances across named pools
+    - Preferred return accruals (compounded and current year) per tier
     - Cashflow history for XIRR calculation
     - CF waterfall distributions (for ROE calculation)
+
+    Backward-compatible: code that reads/writes capital_outstanding,
+    pref_unpaid_compounded, etc. still works via properties that
+    delegate to the "initial" or "additional" pool.
     """
     propcode: str
-    capital_outstanding: float = 0.0  # positive = capital owed back to investor
-    pref_unpaid_compounded: float = 0.0  # unpaid pref from prior years
-    pref_accrued_current_year: float = 0.0  # pref accrued this year
-    add_capital_outstanding: float = 0.0  # Additional/special capital owed back
-    add_pref_unpaid_compounded: float = 0.0  # Unpaid add-pref from prior years
-    add_pref_accrued_current_year: float = 0.0  # Add-pref accrued this year
-    last_accrual_date: Optional[date] = None
+    pools: Dict[str, CapitalPool] = field(default_factory=dict)
     cashflows: List[Tuple[date, float]] = field(default_factory=list)
     # Cashflows: negative = contribution, positive = distribution
     cf_distributions: List[Tuple[date, float]] = field(default_factory=list)
     # CF waterfall distributions only (operating income for ROE calculation)
+
+    # ------------------------------------------------------------------
+    # Pool helpers
+    # ------------------------------------------------------------------
+
+    def get_pool(self, name: str) -> CapitalPool:
+        """Get or create a capital pool by name."""
+        if name not in self.pools:
+            self.pools[name] = CapitalPool(pool_name=name)
+        return self.pools[name]
+
+    # ------------------------------------------------------------------
+    # Backward-compat properties — initial pool
+    # ------------------------------------------------------------------
+
+    @property
+    def capital_outstanding(self) -> float:
+        """Capital outstanding in the initial pool."""
+        if "initial" not in self.pools:
+            return 0.0
+        return self.pools["initial"].capital_outstanding
+
+    @capital_outstanding.setter
+    def capital_outstanding(self, value: float):
+        self.get_pool("initial").capital_outstanding = value
+
+    @property
+    def pref_unpaid_compounded(self) -> float:
+        """Unpaid compounded pref in the initial pool (all tiers)."""
+        if "initial" not in self.pools:
+            return 0.0
+        return sum(t.pref_unpaid_compounded for t in self.pools["initial"].pref_tiers)
+
+    @pref_unpaid_compounded.setter
+    def pref_unpaid_compounded(self, value: float):
+        pool = self.get_pool("initial")
+        if pool.pref_tiers:
+            pool.pref_tiers[0].pref_unpaid_compounded = value
+        else:
+            pool.pref_tiers.append(PrefTier(tier_name="pref", pref_unpaid_compounded=value))
+
+    @property
+    def pref_accrued_current_year(self) -> float:
+        """Current-year accrued pref in the initial pool (all tiers)."""
+        if "initial" not in self.pools:
+            return 0.0
+        return sum(t.pref_accrued_current_year for t in self.pools["initial"].pref_tiers)
+
+    @pref_accrued_current_year.setter
+    def pref_accrued_current_year(self, value: float):
+        pool = self.get_pool("initial")
+        if pool.pref_tiers:
+            pool.pref_tiers[0].pref_accrued_current_year = value
+        else:
+            pool.pref_tiers.append(PrefTier(tier_name="pref", pref_accrued_current_year=value))
+
+    # ------------------------------------------------------------------
+    # Backward-compat properties — additional / non-initial pools
+    # ------------------------------------------------------------------
+
+    @property
+    def add_capital_outstanding(self) -> float:
+        """Capital outstanding across all non-initial pools."""
+        return sum(p.capital_outstanding for n, p in self.pools.items() if n != "initial")
+
+    @add_capital_outstanding.setter
+    def add_capital_outstanding(self, value: float):
+        self.get_pool("additional").capital_outstanding = value
+
+    @property
+    def add_pref_unpaid_compounded(self) -> float:
+        """Unpaid compounded pref across all non-initial pools."""
+        return sum(
+            t.pref_unpaid_compounded
+            for n, p in self.pools.items() if n != "initial"
+            for t in p.pref_tiers
+        )
+
+    @add_pref_unpaid_compounded.setter
+    def add_pref_unpaid_compounded(self, value: float):
+        pool = self.get_pool("additional")
+        if pool.pref_tiers:
+            pool.pref_tiers[0].pref_unpaid_compounded = value
+        else:
+            pool.pref_tiers.append(PrefTier(tier_name="pref", pref_unpaid_compounded=value))
+
+    @property
+    def add_pref_accrued_current_year(self) -> float:
+        """Current-year accrued pref across all non-initial pools."""
+        return sum(
+            t.pref_accrued_current_year
+            for n, p in self.pools.items() if n != "initial"
+            for t in p.pref_tiers
+        )
+
+    @add_pref_accrued_current_year.setter
+    def add_pref_accrued_current_year(self, value: float):
+        pool = self.get_pool("additional")
+        if pool.pref_tiers:
+            pool.pref_tiers[0].pref_accrued_current_year = value
+        else:
+            pool.pref_tiers.append(PrefTier(tier_name="pref", pref_accrued_current_year=value))
+
+    # ------------------------------------------------------------------
+    # Backward-compat property — last_accrual_date (shared across pools)
+    # ------------------------------------------------------------------
+
+    @property
+    def last_accrual_date(self) -> Optional[date]:
+        """Last accrual date (from initial pool; shared in legacy code)."""
+        if "initial" not in self.pools:
+            return None
+        return self.pools["initial"].last_accrual_date
+
+    @last_accrual_date.setter
+    def last_accrual_date(self, value: Optional[date]):
+        # Propagate to all existing pools (mirrors old shared-field behavior)
+        self.get_pool("initial").last_accrual_date = value
+        for p in self.pools.values():
+            p.last_accrual_date = value
+
+    # ------------------------------------------------------------------
+    # Aggregate properties (new)
+    # ------------------------------------------------------------------
+
+    @property
+    def total_capital_outstanding(self) -> float:
+        """Total capital across ALL pools."""
+        return sum(p.capital_outstanding for p in self.pools.values())
+
+    @property
+    def total_pref_balance(self) -> float:
+        """Total pref owed across all pools and all tiers."""
+        return sum(
+            t.pref_unpaid_compounded + t.pref_accrued_current_year
+            for p in self.pools.values()
+            for t in p.pref_tiers
+        )
 
 
 @dataclass
 class Loan:
     """
     Loan structure for debt service modeling
-    
+
     Supports:
     - Fixed and variable rate loans
     - Interest-only and amortizing structures
@@ -77,7 +244,7 @@ class Loan:
     def rate_for_month(self) -> float:
         """
         Calculate effective annual rate for this loan
-        
+
         Fixed:
           annual_rate = nRate (decimal)
 

@@ -51,3 +51,92 @@ INDEX_BASE_RATES = {
     "LIBOR": 0.043,
     "WSJ": 0.075,
 }
+
+# ============================================================
+# CAPITAL POOL ROUTING
+# ============================================================
+
+# Map accounting Typename keywords to capital pool names.
+# Checked in order; first match wins.  Default is "initial".
+TYPENAME_TO_POOL = {
+    "operating capital": "operating",
+    "cost overrun": "cost_overrun",
+    "special capital": "special",
+    "additional capital": "additional",
+}
+
+
+def typename_to_pool(typename: str) -> str:
+    """Map an accounting Typename string to a capital pool name.
+
+    Scans TYPENAME_TO_POOL for keyword matches (case-insensitive).
+    Returns "initial" if no keyword matches.
+    """
+    t = (typename or "").strip().lower()
+    for keyword, pool in TYPENAME_TO_POOL.items():
+        if keyword in t:
+            return pool
+    return "initial"
+
+
+def resolve_pool_and_action(vstate: str, vtranstype: str, is_capital_waterfall: bool) -> tuple:
+    """Route a waterfall step to (pool_name, action).
+
+    Used by the waterfall engine to decide which CapitalPool a step
+    targets and what operation to perform.
+
+    Actions returned:
+        "pay_pref"          – pay preferred return from the pool
+        "pay_capital"       – return capital from the pool
+        "pay_capital_capped"– return capital with cumulative cap (operating)
+        "skip"              – no action (e.g. capital return in CF waterfall)
+        (None, None)        – step is not pool-routed (handled elsewhere)
+
+    Args:
+        vstate: Waterfall step vState (e.g. "Pref", "Initial", "Add")
+        vtranstype: Waterfall step vtranstype text
+        is_capital_waterfall: True for Cap_WF, False for CF_WF
+
+    Returns:
+        (pool_name, action) tuple
+    """
+    vt = (vtranstype or "").strip().lower()
+
+    if vstate == "Pref":
+        return ("initial", "pay_pref")
+
+    if vstate == "Initial":
+        if is_capital_waterfall:
+            return ("initial", "pay_capital")
+        return ("initial", "skip")
+
+    if vstate == "Add":
+        # Operating Capital — always capped return (CF or Cap)
+        if "operating capital" in vt:
+            return ("operating", "pay_capital_capped")
+
+        # Cost Overrun
+        if "cost overrun" in vt:
+            if "pref" in vt:
+                return ("cost_overrun", "pay_pref")
+            if is_capital_waterfall:
+                return ("cost_overrun", "pay_capital")
+            return ("cost_overrun", "skip")
+
+        # Special Capital
+        if "special capital" in vt:
+            if "pref" in vt:
+                return ("special", "pay_pref")
+            if is_capital_waterfall:
+                return ("special", "pay_capital")
+            return ("special", "skip")
+
+        # Additional Capital (default Add bucket)
+        if "pref" in vt:
+            return ("additional", "pay_pref")
+        if is_capital_waterfall:
+            return ("additional", "pay_capital")
+        return ("additional", "skip")
+
+    # All other vStates (Share, IRR, Tag, Def&Int, etc.) — not pool-routed
+    return (None, None)
