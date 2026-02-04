@@ -1,0 +1,111 @@
+Typename Rules for Capital Pool Routing
+========================================
+
+This document describes how the "Typename" field in accounting and capital
+call records is used by the waterfall engine to route contributions and
+distributions to the correct capital pool.
+
+The Typename value is matched case-insensitively.  The FIRST keyword match
+wins.  If no keyword matches, the contribution is routed to the "initial"
+(primary investment) pool.
+
+
+CONTRIBUTION TYPENAMES
+----------------------
+
+  Typename Value                          Pool            Notes
+  ---------------------------------------- --------------- ---------------------------
+  Contribution: Investments               initial         Default / primary capital
+  Contribution: Additional Capital        additional      Developer / OP capital
+  Contribution: Special Capital           special         PPI / investor special capital
+  Contribution: Operating Capital         operating       Capped return pool (0% pref)
+  Contribution: Cost Overrun              cost_overrun    Cost overrun capital
+
+  Any other Typename containing:
+    "operating capital"                   operating
+    "cost overrun"                        cost_overrun
+    "special capital"                     special
+    "additional capital"                  additional
+
+  Anything else (including blank)         initial
+
+
+DISTRIBUTION TYPENAMES
+----------------------
+
+Distribution Typename values are informational only — they do not affect
+pool routing.  The waterfall engine determines which pool to pay from
+based on the waterfall step's vState and vtranstype fields.
+
+Common distribution Typenames for reference:
+
+  Typename Value                          Description
+  ---------------------------------------- ---------------------------
+  Distribution: Operations               CF waterfall distribution
+  Distribution: Capital                   Capital event distribution
+  Distribution: Preferred Return          Pref payment
+  Distribution: Return of Capital         Capital return
+
+
+POOL DEFINITIONS
+----------------
+
+  Pool Name       Description                     Pref Accrual?
+  --------------- ------------------------------- -------------------------
+  initial         Primary investment capital       Yes (deal-specific rate)
+  additional      Additional capital (OP/dev)      Yes (deal-specific rate)
+  special         Special capital (PPI/investor)   Yes (deal-specific rate)
+  operating       Operating capital contributions  Typically 0% (capped)
+  cost_overrun    Cost overrun capital             Yes (deal-specific rate)
+
+
+OPERATING CAPITAL CAPS
+----------------------
+
+Operating capital pools have a cumulative return cap equal to the total
+actual contributions.  For example, if an investor contributed $2,605,000
+in Operating Capital, the waterfall will return at most $2,605,000 total
+across all periods.
+
+The cap is set automatically from accounting contributions — it is NOT
+sourced from the waterfall step's mAmount field.
+
+
+MULTI-TIER PREFERRED RETURN (COCOPLUM)
+--------------------------------------
+
+Some deals (e.g., P0000084 Cocoplum) have two independent pref rates
+on the same initial capital.  The engine detects this when the waterfall
+table has multiple Pref steps at different nPercent values for the same
+PropCode.  Each tier accrues independently.
+
+Per the LLC agreement, payments on the lower-rate tier (e.g., 5%) reduce
+BOTH tiers' balances dollar-for-dollar.
+
+
+FORMATTING REQUIREMENTS
+-----------------------
+
+1. Typename must be a text string
+2. Leading/trailing whitespace is stripped automatically
+3. Matching is case-insensitive ("operating capital" = "Operating Capital")
+4. The keyword can appear anywhere in the string
+   (e.g., "Contribution: Operating Capital" matches "operating capital")
+5. If a Typename column is missing from a CSV, it defaults to
+   "Contribution: Investments" (initial pool)
+
+
+EXAMPLES
+--------
+
+  Typename                              -> Pool
+  -------------------------------------- ----------
+  "Contribution: Investments"            -> initial
+  "Contribution: Additional Capital"     -> additional
+  "Contribution: Operating Capital"      -> operating
+  "Contribution: Special Capital"        -> special
+  "Contribution: Cost Overrun"           -> cost_overrun
+  ""                                     -> initial
+  (missing column)                       -> initial
+  "Capital Call: Operating Capital"      -> operating
+  "ADDITIONAL CAPITAL CONTRIBUTION"      -> additional

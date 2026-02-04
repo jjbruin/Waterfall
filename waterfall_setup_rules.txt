@@ -1,0 +1,286 @@
+WATERFALL SETUP RULES
+=====================
+Guide for the deal modeling team on structuring waterfall steps in MRI/database.
+
+Last updated: 2026-02-04
+
+
+1. vState VOCABULARY
+--------------------
+Each waterfall step has a vState that controls how the engine processes it.
+
+  Pref       Pay accrued preferred return from the initial capital pool.
+             nPercent sets the annual pref rate (e.g. 0.08 = 8%).
+             Accrues daily on Act/365 Fixed. Compounds annually on 12/31.
+
+  Initial    Return initial capital. In Cap_WF reduces capital_outstanding.
+             In CF_WF this step is skipped (CF distributions never reduce
+             capital outstanding).
+
+  Add        Route to a specific capital pool based on vtranstype.
+             Pool and action are determined by the vtranstype text.
+             See Section 3 for the full routing table.
+
+  Tag        Proportional follower step. Receives a pro-rata share of what
+             the lead step at the same iOrder distributed. Does NOT route
+             to any capital pool. See Section 2.
+
+  Share      Residual distribution. FXRate = sharing percentage.
+             Does not interact with any capital pool.
+
+  IRR        IRR-targeted distribution (hurdle gate).
+             nPercent = target IRR threshold.
+
+  Amt        Fixed-amount distribution. mAmount = dollar amount per period.
+
+  Def&Int    Default interest + principal combined.
+             In CF_WF pays interest only; in Cap_WF also pays principal.
+
+  Def_Int    Default interest only. Does not reduce capital.
+
+  Default    Default principal return. Reduces capital_outstanding.
+
+
+2. ADD vs TAG — WHEN TO USE EACH
+---------------------------------
+This is the most critical modeling decision in the waterfall setup.
+
+ADD:
+  - Creates an independent waterfall step with its own pool routing.
+  - Each Add step independently enforces its pool's cumulative cap.
+  - Each Add step independently tracks capital_outstanding and pref accrual.
+  - Use Add when the investor has their OWN capital pool that must be
+    tracked and capped separately.
+
+TAG:
+  - A dependent step that mirrors a lead step at the same iOrder.
+  - Receives: (lead_distributed / lead_FX) * tag_FX.
+  - Does NOT route to any pool. No capital tracking, no cap enforcement.
+  - The distribution is recorded as a generic cashflow.
+  - Use Tag ONLY when the partner's distribution should be a fixed
+    proportion of the lead's distribution with no independent cap.
+
+RULE: If an investor has contributed capital to a pool that needs to be
+tracked and returned, that investor MUST have an Add step, NEVER a Tag.
+
+
+3. POOL ROUTING TABLE (for Add steps)
+--------------------------------------
+The vtranstype text determines which pool an Add step targets:
+
+  vtranstype contains          Pool           Action (CF_WF)        Action (Cap_WF)
+  --------------------------   -----------    ------------------    ------------------
+  "Operating Capital"          operating      pay_capital_capped    pay_capital_capped
+  "Cost Overrun" + "Pref"      cost_overrun   pay_pref              pay_pref
+  "Cost Overrun"               cost_overrun   skip                  pay_capital
+  "Special Capital" + "Pref"   special        pay_pref              pay_pref
+  "Special Capital"            special        skip                  pay_capital
+  "Pref" (other)               additional     pay_pref              pay_pref
+  (default / Additional)       additional     skip                  pay_capital
+
+Notes:
+  - "Operating Capital" is the only pool that uses pay_capital_capped in
+    BOTH CF_WF and Cap_WF. This means operating capital distributions
+    reduce capital_outstanding in both waterfall types and are subject
+    to a cumulative cap.
+  - All other capital pools (additional, special, cost_overrun) only
+    reduce capital in Cap_WF; in CF_WF they are skipped.
+
+
+4. OPERATING CAPITAL — ALWAYS USE ADD
+---------------------------------------
+Operating capital steps MUST always use vState=Add, never Tag.
+
+Why:
+  - Operating capital has a cumulative cap (mAmount) that limits total
+    distributions to the amount contributed.
+  - The engine tracks cumulative_returned vs cumulative_cap per investor
+    per pool.
+  - Tag steps bypass pool routing entirely — the engine never sees the
+    operating pool, so capital_outstanding is never reduced and the
+    cumulative cap is never enforced.
+
+Correct setup for two investors sharing operating capital:
+
+  iOrder  PropCode  vState  FXRate  mAmount      vtranstype
+  2       PPI28     Add     0.6969  2,605,000    Operating Capital
+  2       OPOREI    Add     0.3031  1,133,000    Operating Capital
+
+Each investor has their own Add step with:
+  - FXRate = their share of available cash at this level
+  - mAmount = their cumulative cap (total operating capital contributed)
+  - vtranstype = "Operating Capital" (routes to operating pool)
+
+WRONG setup (was the old configuration for P0000033/P0000061/P0000062):
+
+  iOrder  PropCode  vState  FXRate  mAmount      vtranstype
+  2       PPI28     Add     0.6969  2,605,000    Operating Capital
+  2       OPOREI    Tag     0.3031  1,133,000    Operating Capital
+
+This is wrong because OPOREI's Tag step:
+  - Never routes to the operating pool
+  - Never reduces OPOREI's capital_outstanding
+  - Never enforces OPOREI's cumulative cap of $1,133,000
+  - When PPI28's cap is hit ($2,605,000 fully returned), the lead
+    distributes $0, and OPOREI's Tag share of $0 is also $0 — even
+    if OPOREI hasn't been fully returned yet.
+
+
+5. FXRate USAGE
+----------------
+FXRate controls how available cash is allocated across steps at the same
+iOrder level.
+
+For lead (non-Tag) steps:
+  step_max = level_available * FXRate
+
+  Where level_available is the cash remaining at entry to this iOrder
+  (before any steps at this level consume cash).
+
+For Tag steps:
+  tag_share = (lead_distributed / lead_FXRate) * tag_FXRate
+
+FXRate values:
+  1.0     = step gets 100% of available cash (solo step at this level)
+  0.5     = step gets 50% of available cash (two equal partners)
+  0.6969  = step gets 69.69% (proportional to capital contribution)
+
+When two Add steps share the same iOrder:
+  - Their FXRates typically sum to 1.0 (but this is not required).
+  - Each gets its share of level_available independently.
+  - Each enforces its own pool caps independently.
+
+When a lead + Tag pair share the same iOrder:
+  - The lead's FXRate determines its allocation from level_available.
+  - The Tag's share is derived from the lead's actual distribution.
+  - Lead FXRate + Tag FXRate typically sum to 1.0.
+
+
+6. mAmount FIELD
+-----------------
+mAmount has different meanings depending on context:
+
+  vState=Add, vtranstype="Operating Capital":
+    mAmount = cumulative cap for this investor's operating pool.
+    Total distributions to this pool will never exceed mAmount.
+
+  vState=Amt:
+    mAmount = fixed dollar amount to distribute per period.
+
+  vState=Pref, Initial, Share, IRR:
+    mAmount is typically null/0 (not used).
+
+
+7. COMMON DEAL PATTERNS
+-------------------------
+
+Pattern A: Simple two-partner deal (e.g. P0000001)
+  CF_WF:
+    iOrder=1  PPI27    Def&Int  FX=0.5   Prorata Default Cap and Default Pref
+    iOrder=1  OPMCCORD Tag      FX=0.5   Prorata Default Cap and Default Pref
+    iOrder=3  PPI27    Pref     FX=1.0   Pref on Initial Capital
+    iOrder=4  OPMCCORD Pref     FX=1.0   Pref on Initial Capital
+    iOrder=5  PPI27    Share    FX=0.3   Residual Sharing Ratio
+    iOrder=5  OPMCCORD Tag      FX=0.7   Residual Sharing Ratio
+
+  Notes:
+    - Default and residual steps use Lead+Tag because both partners share
+      proportionally with no independent caps.
+    - Pref steps are separate iOrders because each investor has its own
+      pref rate and pool.
+    - Pref steps always use FX=1.0 (each gets 100% of remaining at their
+      priority level).
+
+Pattern B: Operating capital deal (e.g. P0000033)
+  CF_WF:
+    iOrder=1  PPI28    Default  FX=1.0   Pref Default Pref
+    iOrder=2  PPI28    Add      FX=0.6969  Operating Capital  mAmt=2,605,000
+    iOrder=2  OPOREI   Add      FX=0.3031  Operating Capital  mAmt=1,133,000
+    iOrder=4  PPI28    Share    FX=0.75  Residual Sharing Ratio
+    iOrder=4  OPOREI   Tag      FX=0.25  Residual Sharing Ratio
+
+  Notes:
+    - Both PPI28 and OPOREI are Add at iOrder=2 — each independently
+      tracks and caps operating capital returns.
+    - Residual sharing uses Lead+Tag because no independent cap is needed.
+    - FXRates at iOrder=2 (0.6969 + 0.3031 = 1.0) reflect capital
+      contribution proportions.
+
+Pattern C: Special capital + additional pref deal (e.g. P0000087)
+  CF_WF:
+    iOrder=1  PPISTD   Add      FX=0.5   Prorata Special Capital Pref
+    iOrder=1  OPBRC    Tag      FX=0.5   Prorata Special Capital Pref
+    iOrder=3  PPISTD   Add      FX=0.5   Prorata Special Capital
+    iOrder=3  OPBRC    Tag      FX=0.5   Prorata Special Capital
+    iOrder=5  PPISTD   Def_Int  FX=1.0   Default Pref
+    iOrder=7  PPISTD   Pref     FX=1.0   Pref on Initial Capital
+    iOrder=8  OPBRC    Pref     FX=1.0   Pref on Initial Capital
+    iOrder=9  OPBRC    Add      FX=1.0   Additional Capital Pref
+    iOrder=10 PPISTD   Share    FX=0.35  Residual Sharing Ratio
+    iOrder=10 OPBRC    Tag      FX=0.65  Residual Sharing Ratio
+
+  Notes:
+    - Special capital pref/return uses Lead+Tag (Add+Tag) because both
+      partners share proportionally from the special pool.
+    - If each partner had different special capital caps, they would
+      need separate Add steps (same pattern as operating capital).
+    - Additional capital pref is a solo Add step (only one partner has it).
+
+Pattern D: Multi-tier pref (Cocoplum pattern)
+  When a deal has multiple pref tiers at different rates:
+    iOrder=3  INVESTOR Pref  FX=1.0  nPercent=0.06  Pref on Initial Capital
+    iOrder=4  INVESTOR Pref  FX=1.0  nPercent=0.10  Pref on Initial Capital
+
+  The engine matches each Pref step to the correct tier by rate.
+  Higher-priority (lower iOrder) tiers are paid first.
+
+
+8. MODELING CHECKLIST
+----------------------
+
+When setting up a new deal:
+
+[ ] Identify all capital pools: initial, operating, additional, special,
+    cost overrun, default.
+
+[ ] For each pool with multiple investors:
+    - If each investor has an independent cap: use separate Add steps.
+    - If investors share proportionally with no cap: use Add + Tag.
+
+[ ] Operating capital MUST always use Add (never Tag) for each investor
+    who contributed to the operating pool.
+
+[ ] Set mAmount correctly for operating capital steps — this is the
+    cumulative cap.
+
+[ ] Verify FXRates at each iOrder sum to 1.0 (or the intended total).
+
+[ ] Pref steps get their own iOrder, one per investor, FX=1.0.
+
+[ ] Residual sharing steps: lead = Share, partner = Tag.
+
+[ ] Set up both CF_WF and Cap_WF with the same step structure.
+    Remember: CF_WF never reduces non-operating capital; Cap_WF does.
+
+[ ] Verify vtranstype text matches the routing rules (Section 3).
+    Incorrect vtranstype will route to the wrong pool.
+
+
+9. TROUBLESHOOTING
+-------------------
+
+Symptom: Investor's capital_outstanding never decreases.
+  Check: Is the step vState=Tag? Tags don't route to pools.
+  Fix: Change to vState=Add.
+
+Symptom: Investor gets $0 even though capital hasn't been fully returned.
+  Check: Is the investor a Tag on a lead that hit its cap?
+  Fix: Change to vState=Add with independent mAmount cap.
+
+Symptom: Operating capital exceeds contributed amount.
+  Check: Is mAmount set correctly? It should equal total contributions.
+  Fix: Update mAmount to match actual operating capital contributed.
+
+Symptom: Wrong pool receives distributions.
+  Check: Does vtranstype text match the routing table in Section 3?
+  Fix: Update vtranstype to match the correct pool keyword.

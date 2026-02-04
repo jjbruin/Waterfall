@@ -1,0 +1,366 @@
+# Waterfall Model - Complete Documentation
+
+**Last Updated:** February 2026
+
+---
+
+## Table of Contents
+
+1. [Project Overview](#project-overview)
+2. [Installation & Setup](#installation--setup)
+3. [Data Files](#data-files)
+4. [Database Management](#database-management)
+5. [Key Concepts](#key-concepts)
+6. [Capital Pools & Routing](#capital-pools--routing)
+7. [Ownership Relationships](#ownership-relationships)
+8. [Capital Calls & Commitments](#capital-calls--commitments)
+9. [Troubleshooting](#troubleshooting)
+
+---
+
+## Project Overview
+
+A Streamlit-based financial modeling application for calculating investment waterfalls, XIRR, and related performance metrics for real estate investments. Supports multi-layer distribution waterfalls with preferred returns, capital accounts, and investor-level tracking.
+
+### Tech Stack
+
+- **Python 3.x** with virtual environment (`.venv/`)
+- **Streamlit** - Web UI framework
+- **pandas/numpy** - Data manipulation
+- **scipy** - XIRR/NPV calculations (Brent's method)
+- **SQLite** - Local database (`waterfall.db`)
+
+### Project Structure
+
+```
+waterfall-xirr/
+├── app.py              # Main Streamlit entry point
+├── config.py           # Constants, account classifications, rates
+├── models.py           # Data classes (InvestorState, Loan)
+├── waterfall.py        # Waterfall calculation engine
+├── metrics.py          # XIRR, XNPV, ROE, MOIC calculations
+├── loaders.py          # Data loading from database/CSV
+├── database.py         # SQLite management, migrations
+├── loans.py            # Debt service modeling
+├── planned_loans.py    # Future loan projections
+├── capital_calls.py    # Capital call handling
+├── cash_management.py  # Cash flow management
+├── consolidation.py    # Sub-portfolio deal/property aggregation
+├── portfolio.py        # Fund/portfolio aggregation
+├── reporting.py        # Report generation
+├── ownership_tree.py   # Investor ownership structures
+├── utils.py            # Helper utilities
+└── waterfall.db        # SQLite database
+```
+
+### Module Reference
+
+| Module | Purpose |
+|--------|---------|
+| `waterfall.py` | Pref accrual, waterfall step processing, investor state management |
+| `loans.py` | Loan amortization schedules |
+| `consolidation.py` | Sub-portfolio aggregation (deals with properties) |
+| `ownership_tree.py` | Multi-tier ownership tracing |
+| `metrics.py` | XIRR, ROE, MOIC calculations |
+| `capital_calls.py` | Capital calls processing |
+| `cash_management.py` | Cash reserves and CapEx management |
+| `database.py` | Database operations |
+| `reporting.py` | Annual tables and formatting |
+
+---
+
+## Installation & Setup
+
+### Step 1: Install Dependencies
+
+```bash
+cd C:\Users\jbruin\Documents\GitHub\waterfall-xirr
+.venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### Step 2: Initialize Database
+
+```bash
+python migrate_to_database.py --folder "C:\Users\jbruin\OneDrive - peaceablestreet.com\Documents\WaterfallApp\data"
+```
+
+### Step 3: Run Application
+
+```bash
+streamlit run app.py
+```
+
+---
+
+## Data Files
+
+### Required Files
+
+Located in: `C:\Users\jbruin\OneDrive - peaceablestreet.com\Documents\WaterfallApp\data`
+
+| File | Description |
+|------|-------------|
+| `investment_map.csv` | Deal master data (vcode, Investment_Name, Portfolio_Name) |
+| `forecast_feed.csv` | Financial projections |
+| `waterfalls.csv` | Waterfall step definitions |
+| `accounting_feed.csv` | Historical accounting transactions |
+| `coa.csv` | Chart of accounts |
+
+### Optional Files
+
+| File | Description |
+|------|-------------|
+| `MRI_Loans.csv` | Loan details |
+| `MRI_Supp.csv` | Supplemental/planned loan data |
+| `MRI_Val.csv` | Valuation data |
+| `MRI_Capital_Calls.csv` | Capital call schedule |
+| `ISBS_Download.csv` | Balance sheet data (for cash balances) |
+| `MRI_IA_Relationship.csv` | Ownership relationships |
+| `MRI_Commitments.csv` | Investor commitments |
+| `MRI_Investor_ROE_Feed.csv` | Investor ROE data |
+
+### Sub-Portfolio Structure
+
+Deals can have child properties linked via the `Portfolio_Name` field:
+
+- **Parent Deal**: `Portfolio_Name` is NULL or self-referencing, `Investment_Name` is the portfolio identifier
+- **Child Property**: `Portfolio_Name` = parent deal's `Investment_Name`
+
+Example:
+```
+vcode      Investment_Name    Portfolio_Name
+P0000033   OREI Portfolio     (null)
+P0000061   Whitney Manor      OREI Portfolio
+P0000062   Westchase Apts     OREI Portfolio
+```
+
+Loans aggregate UP from properties to the parent deal level.
+
+---
+
+## Database Management
+
+### Refresh Workflow
+
+1. Update CSV files in the data folder
+2. Close Excel (releases file locks)
+3. Run migration:
+
+```bash
+cd C:\Users\jbruin\Documents\GitHub\waterfall-xirr
+python migrate_to_database.py --folder "C:\Users\jbruin\OneDrive - peaceablestreet.com\Documents\WaterfallApp\data"
+```
+
+4. Verify output shows green checkmarks for each file
+
+### Backup
+
+Before major changes:
+```bash
+copy waterfall.db waterfall_backup.db
+```
+
+### Restore
+
+If needed, delete `waterfall.db` and either:
+- Re-run migration from CSV files, or
+- Rename backup file back to `waterfall.db`
+
+---
+
+## Key Concepts
+
+### Waterfall Types
+
+| Type | Purpose | Capital Impact |
+|------|---------|----------------|
+| **CF_WF** | Operating cash distributions | Does NOT reduce capital outstanding |
+| **Cap_WF** | Refi/sale proceeds | DOES reduce capital outstanding |
+
+### Preferred Returns
+
+- **Accrual**: Daily using Act/365 Fixed day count
+- **Compounding**: Annually on 12/31 (with 45-day grace period)
+- **Grace Period**: Distributions within 45 days after year-end can reduce pref before compounding
+- **Tracking**: Three buckets per tier:
+  - `pref_unpaid_compounded` - Prior years' unpaid pref (already compounded)
+  - `pref_accrued_prior_year` - Last year's unpaid (compounds after Feb 14)
+  - `pref_accrued_current_year` - Current year accrual
+
+### Payment Priority
+
+When paying pref, the order is:
+1. Compounded unpaid pref (oldest)
+2. Prior year accrued (if past grace period)
+3. Current year accrued (newest)
+
+### Account Classifications
+
+- Revenue accounts: 4xxx series
+- Expense accounts: 5xxx series
+- Interest: 7030
+- Principal: 7060
+- CapEx tracked separately
+
+### Conventions
+
+- Cashflow signs: negative = contribution, positive = distribution
+- Rates as decimals (0.08 = 8%)
+- Use Python `date` objects for dates
+
+---
+
+## Capital Pools & Routing
+
+### Pool Types
+
+| Pool | Description | Pref Accrual |
+|------|-------------|--------------|
+| `initial` | Primary investment capital | Yes |
+| `additional` | Additional capital (OP/dev) | Yes |
+| `special` | Special capital (PPI/investor) | Yes |
+| `operating` | Operating capital contributions | Typically 0% (capped) |
+| `cost_overrun` | Cost overrun capital | Yes |
+
+### Typename Routing
+
+Contributions are routed to pools based on `Typename` field:
+
+| Typename contains | Routes to Pool |
+|-------------------|----------------|
+| "operating capital" | operating |
+| "cost overrun" | cost_overrun |
+| "special capital" | special |
+| "additional capital" | additional |
+| (anything else) | initial |
+
+### Operating Capital Caps
+
+Operating capital pools have a cumulative return cap equal to total contributions. The cap is enforced automatically.
+
+### vState Values
+
+| vState | Description |
+|--------|-------------|
+| `Pref` | Pay accrued preferred return |
+| `Initial` | Return initial capital (Cap_WF only) |
+| `Add` | Route to specific capital pool |
+| `Tag` | Proportional follower (no pool routing) |
+| `Share` | Residual distribution |
+| `IRR` | IRR hurdle gate |
+| `Amt` | Fixed-amount distribution |
+
+**Critical Rule**: Operating capital MUST use `Add`, never `Tag`. See `waterfall_setup_rules.txt` for details.
+
+---
+
+## Ownership Relationships
+
+### Multi-Tier Structure
+
+The system traces ownership through multiple layers:
+
+1. **Deal Level**: Property-owning entity (e.g., PPIBEL)
+2. **Fund Level**: Investor funds (e.g., TGA24, I1BA)
+3. **Ultimate Investors**: End beneficial owners
+
+### Passthrough Entities
+
+Entities 100% owned by a single parent are marked as passthroughs. Distributions flow through automatically.
+
+### Waterfall Requirements
+
+Entities with multiple investors need their own waterfall definitions. The system identifies these automatically from `MRI_IA_Relationship.csv`.
+
+---
+
+## Capital Calls & Commitments
+
+### Data Sources
+
+| File | Purpose |
+|------|---------|
+| `MRI_Commitments.csv` | Who committed what to whom |
+| `MRI_Investor_ROE_Feed.csv` | All investor financial activity |
+| `MRI_Capital_Calls.csv` | Planned future calls |
+
+### Key Calculations
+
+**Unfunded Commitment**:
+```
+Unfunded = Committed Amount - Funded to Date
+```
+
+**Outstanding Equity**:
+```
+Outstanding = Contributions - Return of Capital
+```
+
+**Pro-Rata Calls**:
+```
+Investor's Share = Total Call Amount × Investor's CapitalPercent
+```
+(Capped at unfunded balance)
+
+### Cash Flow Integration
+
+```
+Beginning Cash
++ Capital Calls (if any)
+- CapEx (paid from cash first)
++ Operating CF (if positive)
+- Operating Deficits (covered from cash if available)
+= Distributable Amount → Goes to Waterfall
+= Ending Cash (carries forward)
+
+At Sale:
+Sale Proceeds + Remaining Cash Reserves → Capital Waterfall
+```
+
+---
+
+## Troubleshooting
+
+### Common Issues
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| NaT comparison error | Null dates in loan data | Fixed in loans.py; re-load MRI_Loans.csv if needed |
+| Investor capital never decreases | Step uses Tag instead of Add | Change vState to Add |
+| Operating capital exceeds cap | mAmount set incorrectly | Update mAmount to match contributions |
+| Wrong pool receives distributions | Incorrect vtranstype | Update vtranstype text |
+| Properties not aggregating to parent | Portfolio_Name mismatch | Ensure property's Portfolio_Name = parent's Investment_Name |
+| Excessive pref accrual | Wrong last_accrual_date seed | Check accounting data has correct historical dates |
+
+### Validation Checks
+
+1. **Commitment percentages sum to 100%** for each entity
+2. **Funded <= Committed** for each investor
+3. **Capital calls <= Unfunded balance**
+4. **Outstanding equity >= 0**
+5. **FXRates at each iOrder sum to 1.0** (typically)
+
+### Database Issues
+
+- **"File not found"**: Check CSV path and filename spelling
+- **"Database is locked"**: Close Streamlit app and Excel
+- **"Invalid CSV format"**: Check for blank rows, special characters, merged cells
+
+---
+
+## Additional Reference Documents
+
+- `waterfall_setup_rules.txt` - Detailed guide for deal modeling team on waterfall step configuration
+- `typename_rules.txt` - Complete Typename routing rules for capital pool assignment
+- `CLAUDE.md` - Project instructions for Claude Code assistant
+
+---
+
+## Version History
+
+| Version | Date | Changes |
+|---------|------|---------|
+| 2.1 | Feb 2026 | Loan aggregation for sub-portfolios, 45-day grace period compounding, NaT handling |
+| 2.0 | Jan 2026 | Capital calls, cash management, database migration |
+| 1.0 | Initial | Core waterfall engine, ownership tree, metrics |
