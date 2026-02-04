@@ -29,7 +29,7 @@ from reporting import *
 from ownership_tree import *
 from capital_calls import *
 from cash_management import *
-from consolidation import build_consolidated_forecast, get_sub_portfolio_summary, get_property_vcodes_for_deal
+from consolidation import build_consolidated_forecast, get_sub_portfolio_summary, get_property_vcodes_for_deal, get_parent_deal_for_property
 
 # ============================================================
 # STREAMLIT CONFIG
@@ -1981,6 +1981,14 @@ with tab_deal:
     # ============================================================
     st.divider()
     st.header("🎯 Partner Returns")
+
+    # Check if this is a child property - returns are calculated at parent level
+    parent_deal_info = get_parent_deal_for_property(deal_vcode, inv)
+    if parent_deal_info:
+        parent_name = parent_deal_info.get('Investment_Name', parent_deal_info.get('vcode', 'parent'))
+        st.info(f"📊 Partner Returns are calculated at the **{parent_name}** level. "
+                f"Select **{parent_name}** from the deal dropdown above to view returns.")
+        st.stop()
 
     # ============================================================
     # PARTNER TOTALS & RETURNS

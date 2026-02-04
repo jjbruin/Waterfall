@@ -123,6 +123,51 @@ def get_property_vcodes_for_deal(deal_vcode: str, deals: pd.DataFrame) -> List[s
     return properties['vcode'].astype(str).tolist()
 
 
+def get_parent_deal_for_property(property_vcode: str, deals: pd.DataFrame) -> Optional[dict]:
+    """
+    Check if a deal is a child property and return parent deal info.
+
+    Args:
+        property_vcode: The vcode to check (e.g., 'P0000061')
+        deals: investment_map DataFrame
+
+    Returns:
+        Dict with parent info if this is a child property:
+        {'vcode': 'P0000033', 'Investment_Name': 'OREI Portfolio', 'InvestmentID': 'OREIMF'}
+        Returns None if this is not a child property (standalone or parent deal)
+    """
+    deals_df = deals.copy()
+    deals_df.columns = [str(c).strip() for c in deals_df.columns]
+    deals_df['vcode'] = deals_df['vcode'].astype(str).str.strip()
+    deals_df['Portfolio_Name'] = deals_df['Portfolio_Name'].fillna('').astype(str).str.strip()
+    deals_df['Investment_Name'] = deals_df['Investment_Name'].fillna('').astype(str).str.strip()
+
+    # Find the property's row
+    prop_row = deals_df[deals_df['vcode'] == str(property_vcode)]
+    if prop_row.empty:
+        return None
+
+    portfolio_name = prop_row.iloc[0]['Portfolio_Name']
+    if not portfolio_name:
+        return None  # No Portfolio_Name, so not a child property
+
+    # Find parent deal where Investment_Name = this property's Portfolio_Name
+    parent = deals_df[
+        (deals_df['Investment_Name'] == portfolio_name) &
+        (deals_df['vcode'] != str(property_vcode))  # exclude self
+    ]
+
+    if parent.empty:
+        return None  # No parent found
+
+    parent_row = parent.iloc[0]
+    return {
+        'vcode': str(parent_row['vcode']),
+        'Investment_Name': str(parent_row['Investment_Name']),
+        'InvestmentID': str(parent_row.get('InvestmentID', ''))
+    }
+
+
 def consolidate_property_forecasts(
     deal_vcode: str,
     property_vcodes: List[str],
