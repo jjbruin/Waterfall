@@ -1404,7 +1404,6 @@ def _render_one_pager(deal_vcode, isbs_raw, inv, mri_loans_raw, mri_val,
     if isbs_raw is None or isbs_raw.empty:
         return
 
-    st.subheader("One Pager Investor Report")
     render_one_pager_section(
         vcode=deal_vcode,
         inv_map=inv,
