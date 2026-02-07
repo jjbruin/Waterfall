@@ -1196,14 +1196,6 @@ def _render_tenant_roster(deal_vcode, tenants_raw, inv):
     )
     maturity_by_year['Pct_Revenue'] = maturity_by_year['Annual_Rent'] / total_annual_rent_rpt if total_annual_rent_rpt > 0 else 0
 
-    # Top 10 tenants by revenue (non-vacant)
-    top_10 = occupied.nlargest(10, 'Annual_Rent').copy()
-    top_10['GLA_Pct'] = top_10['SF_Leased'] / property_gla if property_gla > 0 else 0
-    top_10['Rent_Pct'] = top_10['Annual_Rent'] / total_annual_rent_rpt if total_annual_rent_rpt > 0 else 0
-    top_10['Remain_Years'] = top_10['Lease_End'].apply(
-        lambda x: max(0, (x - pd.Timestamp(current_date)).days / 365) if pd.notna(x) else 0
-    )
-
     # Near term maturities (within 2 years, non-vacant, sorted by end date)
     near_term = expiring_2yr.sort_values('Lease_End').head(10).copy()
     near_term['Remain_Years'] = near_term['Lease_End'].apply(
@@ -1293,22 +1285,6 @@ def _render_tenant_roster(deal_vcode, tenants_raw, inv):
     maturity_display['% of Rev'] = maturity_display['% of Rev'].apply(lambda x: f"{x:.1%}")
     st.dataframe(maturity_display, use_container_width=True, hide_index=True)
 
-    # --- Top 10 Tenants by Revenue ---
-    st.markdown("#### Top 10 Tenants by Revenue")
-    if not top_10.empty:
-        top_10_display = pd.DataFrame({
-            'Tenant Name': top_10['Tenant Name'],
-            'GLA': top_10['SF_Leased'].apply(lambda x: f"{x:,.0f}"),
-            '% GLA': top_10['GLA_Pct'].apply(lambda x: f"{x:.0%}"),
-            'Annual Rent': top_10['Annual_Rent'].apply(lambda x: f"${x:,.0f}"),
-            '% Rent': top_10['Rent_Pct'].apply(lambda x: f"{x:.0%}"),
-            'RPSF': top_10['RPSF'].apply(lambda x: f"${x:.2f}"),
-            'Start': top_10['Lease_Start'].apply(lambda x: x.strftime('%m/%d/%Y') if pd.notna(x) else ''),
-            'End': top_10['Lease_End'].apply(lambda x: x.strftime('%m/%d/%Y') if pd.notna(x) else ''),
-            'Remain': top_10['Remain_Years'].apply(lambda x: f"{x:.1f}")
-        })
-        st.dataframe(top_10_display, use_container_width=True, hide_index=True)
-
     # --- Comments Section ---
     st.markdown("#### Comments")
     rollover_comment_key = f"rollover_comment_{deal_vcode}"
@@ -1397,35 +1373,9 @@ def _render_tenant_roster(deal_vcode, tenants_raw, inv):
 
         print_html += """
             </table>
-
-            <div class="section-title">Top 10 Tenants by Revenue</div>
-            <table>
-                <tr><th>Tenant Name</th><th class="right-align">GLA</th><th class="right-align">%</th><th class="right-align">Annual Rent</th><th class="right-align">%</th><th class="right-align">RPSF</th><th>Start</th><th>End</th><th class="right-align">Remain</th></tr>
         """
 
-        for i, (_, row) in enumerate(top_10.iterrows(), 1):
-            start_str = row['Lease_Start'].strftime('%m/%d/%Y') if pd.notna(row['Lease_Start']) else ''
-            end_str = row['Lease_End'].strftime('%m/%d/%Y') if pd.notna(row['Lease_End']) else ''
-            gla_pct = row['SF_Leased'] / property_gla if property_gla > 0 else 0
-            rent_pct = row['Annual_Rent'] / total_annual_rent_rpt if total_annual_rent_rpt > 0 else 0
-            remain = max(0, (row['Lease_End'] - pd.Timestamp(current_date)).days / 365) if pd.notna(row['Lease_End']) else 0
-            print_html += f"""
-                <tr>
-                    <td>{i}) {row['Tenant Name']}</td>
-                    <td class="right-align">{row['SF_Leased']:,.0f}</td>
-                    <td class="right-align">{gla_pct:.0%}</td>
-                    <td class="right-align">${row['Annual_Rent']:,.0f}</td>
-                    <td class="right-align">{rent_pct:.0%}</td>
-                    <td class="right-align">${row['RPSF']:.2f}</td>
-                    <td>{start_str}</td>
-                    <td>{end_str}</td>
-                    <td class="right-align">{remain:.1f}</td>
-                </tr>
-            """
-
         print_html += f"""
-            </table>
-
             <div class="section-title">Comments</div>
             <div class="comments">{rollover_comment or '&nbsp;'}</div>
         </body>
