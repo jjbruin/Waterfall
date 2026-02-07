@@ -17,13 +17,15 @@ import numpy as np
 from datetime import date
 from typing import Dict, Any, Optional
 
+import altair as alt
+
+from config import IS_ACCOUNTS
 from one_pager import (
     get_available_quarters,
     get_general_information,
     get_capitalization_stack,
     get_property_performance,
     get_pe_performance,
-    get_noi_chart_data,
     get_one_pager_comments,
     save_one_pager_comments,
     quarter_to_date_range,
@@ -324,77 +326,12 @@ def render_one_pager_section(
             st.error("Failed to save comments. Please ensure the database table exists.")
 
     # ============================================================
-    # SECTION 6: OCCUPANCY vs NOI CHART
+    # SECTION 6: OCCUPANCY vs NOI CHART (Trailing 12 Quarters)
     # ============================================================
     st.markdown("---")
-    st.markdown("#### 6. OCCUPANCY vs NOI (Trailing 10 Quarters)")
+    st.markdown("#### 6. OCCUPANCY vs NOI (Trailing 12 Quarters)")
 
-    chart_data = get_noi_chart_data(vcode, selected_quarter, isbs_df, occupancy_df)
-
-    if not chart_data.empty and chart_data['NOI_Actual'].notna().any():
-        try:
-            import altair as alt
-
-            # Prepare data for dual-axis chart
-            chart_df = chart_data.copy()
-
-            # Create base chart
-            base = alt.Chart(chart_df).encode(
-                x=alt.X('Quarter:N', title='Quarter', sort=None)
-            )
-
-            # Occupancy bars
-            bars = base.mark_bar(color='#4A90A4', opacity=0.7).encode(
-                y=alt.Y('Occupancy:Q', title='Occupancy %', scale=alt.Scale(domain=[0, 100])),
-                tooltip=['Quarter', alt.Tooltip('Occupancy:Q', format='.1f')]
-            )
-
-            # NOI lines
-            noi_actual_line = base.mark_line(color='#2E7D32', strokeWidth=2).encode(
-                y=alt.Y('NOI_Actual:Q', title='NOI ($)', axis=alt.Axis(format='$,.0f')),
-                tooltip=['Quarter', alt.Tooltip('NOI_Actual:Q', format='$,.0f', title='NOI Actual')]
-            )
-
-            noi_uw_line = base.mark_line(color='#FF8F00', strokeWidth=2, strokeDash=[5, 5]).encode(
-                y=alt.Y('NOI_UW:Q'),
-                tooltip=['Quarter', alt.Tooltip('NOI_UW:Q', format='$,.0f', title='NOI U/W')]
-            )
-
-            # Combine with dual axis
-            chart = alt.layer(
-                bars,
-                noi_actual_line,
-                noi_uw_line
-            ).resolve_scale(
-                y='independent'
-            ).properties(
-                width='container',
-                height=300
-            )
-
-            st.altair_chart(chart, use_container_width=True)
-
-            # Legend
-            st.markdown("""
-            <div style="display: flex; gap: 20px; font-size: 12px; color: #666;">
-                <span><span style="background: #4A90A4; padding: 2px 10px; margin-right: 5px;"></span> Occupancy %</span>
-                <span><span style="background: #2E7D32; padding: 2px 10px; margin-right: 5px;"></span> NOI Actual</span>
-                <span><span style="border-top: 2px dashed #FF8F00; padding: 2px 10px; margin-right: 5px;"></span> NOI U/W</span>
-            </div>
-            """, unsafe_allow_html=True)
-
-        except ImportError:
-            # Fallback to simple Streamlit charts if altair not available
-            st.warning("Install altair for dual-axis charts. Using simplified view.")
-
-            # Show data as table instead
-            display_df = chart_data.copy()
-            display_df['NOI_Actual'] = display_df['NOI_Actual'].apply(lambda x: f"${x:,.0f}" if pd.notna(x) else "-")
-            display_df['NOI_UW'] = display_df['NOI_UW'].apply(lambda x: f"${x:,.0f}" if pd.notna(x) else "-")
-            display_df['Occupancy'] = display_df['Occupancy'].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "-")
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
-    else:
-        st.info("Insufficient data available for chart. Requires trailing quarter NOI data.")
+    chart_data = _build_quarterly_noi_chart(vcode, isbs_df, occupancy_df, num_quarters=12)
 
     # ============================================================
     # EXPORT BUTTONS
@@ -424,6 +361,224 @@ def render_one_pager_section(
                 vcode, selected_quarter, general_info, cap_stack,
                 prop_perf, pe_perf, comments, chart_data
             )
+
+
+def _build_quarterly_noi_chart(deal_vcode, isbs_raw, occupancy_raw, num_quarters=12):
+    """Build and render a quarterly NOI + Occupancy chart (same style as performance chart).
+
+    Returns a DataFrame with columns Quarter, Occupancy, NOI_Actual, NOI_UW
+    for use by the print-report function.
+    """
+    empty_df = pd.DataFrame(columns=['Quarter', 'Occupancy', 'NOI_Actual', 'NOI_UW'])
+
+    if isbs_raw is None or isbs_raw.empty:
+        st.info("Insufficient data available for chart.")
+        return empty_df
+
+    # --- Prepare IS data ---
+    isbs = isbs_raw.copy()
+    isbs.columns = [str(c).strip() for c in isbs.columns]
+
+    if 'vcode' in isbs.columns:
+        isbs['vcode'] = isbs['vcode'].astype(str).str.strip().str.lower()
+        isbs = isbs[isbs['vcode'] == str(deal_vcode).strip().lower()]
+
+    if isbs.empty or 'dtEntry' not in isbs.columns:
+        st.info("Insufficient data available for chart.")
+        return empty_df
+
+    try:
+        isbs['dtEntry_parsed'] = pd.to_datetime(isbs['dtEntry'], unit='D', origin='1899-12-30', errors='coerce')
+    except Exception:
+        isbs['dtEntry_parsed'] = pd.to_datetime(isbs['dtEntry'], errors='coerce')
+    null_dates = isbs['dtEntry_parsed'].isna()
+    if null_dates.any():
+        isbs.loc[null_dates, 'dtEntry_parsed'] = pd.to_datetime(isbs.loc[null_dates, 'dtEntry'], errors='coerce')
+
+    if 'vSource' in isbs.columns:
+        isbs['vSource'] = isbs['vSource'].astype(str).str.strip()
+    if 'vAccount' in isbs.columns:
+        isbs['vAccount'] = isbs['vAccount'].astype(str).str.strip()
+    if 'mAmount' in isbs.columns:
+        isbs['mAmount'] = pd.to_numeric(isbs['mAmount'], errors='coerce').fillna(0)
+
+    actual_data = isbs[isbs['vSource'] == 'Interim IS']
+    uw_data = isbs[isbs['vSource'] == 'Projected IS']
+
+    if actual_data.empty and uw_data.empty:
+        st.info("Insufficient data available for chart.")
+        return empty_df
+
+    # Flatten revenue & expense account codes
+    rev_accounts = [a for accts in IS_ACCOUNTS['REVENUES'].values() for a in accts]
+    exp_accounts = [a for accts in IS_ACCOUNTS['EXPENSES'].values() for a in accts]
+
+    def _compute_cumulative_noi(data, dates):
+        noi_by_date = {}
+        for dt in dates:
+            period = data[data['dtEntry_parsed'] == dt]
+            rev = period[period['vAccount'].isin(rev_accounts)]['mAmount'].sum()
+            exp = period[period['vAccount'].isin(exp_accounts)]['mAmount'].sum()
+            noi_by_date[dt] = (-rev) - exp
+        return noi_by_date
+
+    actual_dates = sorted(actual_data['dtEntry_parsed'].dropna().unique())
+    uw_dates = sorted(uw_data['dtEntry_parsed'].dropna().unique())
+
+    actual_cum = _compute_cumulative_noi(actual_data, actual_dates)
+    uw_cum = _compute_cumulative_noi(uw_data, uw_dates)
+
+    def _cumulative_to_periodic(cum_dict, sorted_dates):
+        periodic = {}
+        for i, dt in enumerate(sorted_dates):
+            dt_ts = pd.Timestamp(dt)
+            if dt_ts.month == 1:
+                periodic[dt_ts] = cum_dict[dt]
+            else:
+                prior = None
+                for j in range(i - 1, -1, -1):
+                    p = pd.Timestamp(sorted_dates[j])
+                    if p.year == dt_ts.year:
+                        prior = sorted_dates[j]
+                        break
+                periodic[dt_ts] = cum_dict[dt] - cum_dict[prior] if prior is not None else cum_dict[dt]
+        return periodic
+
+    actual_periodic = _cumulative_to_periodic(actual_cum, actual_dates)
+    uw_periodic = _cumulative_to_periodic(uw_cum, uw_dates)
+
+    # Aggregate to quarterly (sum 3 months per quarter, only complete quarters)
+    def _to_quarterly(periodic_dict):
+        quarterly = {}
+        month_counts = {}
+        for dt, val in sorted(periodic_dict.items()):
+            dt_ts = pd.Timestamp(dt)
+            q_month = ((dt_ts.month - 1) // 3 + 1) * 3
+            q_end = pd.Timestamp(year=dt_ts.year, month=q_month, day=1) + pd.offsets.MonthEnd(0)
+            quarterly[q_end] = quarterly.get(q_end, 0) + val
+            month_counts[q_end] = month_counts.get(q_end, 0) + 1
+        return {k: v for k, v in quarterly.items() if month_counts.get(k, 0) == 3}
+
+    actual_q = _to_quarterly(actual_periodic)
+    uw_q = _to_quarterly(uw_periodic)
+
+    all_q_ends = sorted(set(actual_q.keys()) | set(uw_q.keys()))
+    if not all_q_ends:
+        st.info("Not enough quarterly data for chart.")
+        return empty_df
+
+    # Take trailing N quarters
+    display_dates = all_q_ends[-num_quarters:]
+
+    # --- Occupancy data ---
+    has_occupancy = False
+    occ_by_date = {}
+    if occupancy_raw is not None and not occupancy_raw.empty:
+        occ = occupancy_raw.copy()
+        occ.columns = [str(c).strip() for c in occ.columns]
+        if 'vCode' in occ.columns:
+            occ['vCode'] = occ['vCode'].astype(str).str.strip().str.lower()
+            occ = occ[occ['vCode'] == str(deal_vcode).strip().lower()]
+
+        occ_col = 'Occ%' if 'Occ%' in occ.columns else (
+            'OccupancyPercent' if 'OccupancyPercent' in occ.columns else None)
+
+        if not occ.empty and occ_col and 'dtReported' in occ.columns:
+            occ['occ_val'] = pd.to_numeric(occ[occ_col], errors='coerce')
+            try:
+                occ['date_parsed'] = pd.to_datetime(
+                    occ['dtReported'], unit='D', origin='1899-12-30', errors='coerce')
+            except Exception:
+                occ['date_parsed'] = pd.to_datetime(occ['dtReported'], errors='coerce')
+            occ = occ.dropna(subset=['date_parsed', 'occ_val'])
+
+            if not occ.empty:
+                monthly_occ = {}
+                for _, row in occ.iterrows():
+                    me = pd.Timestamp(row['date_parsed']) + pd.offsets.MonthEnd(0)
+                    monthly_occ[me] = row['occ_val']
+
+                for dt in display_dates:
+                    dt_ts = pd.Timestamp(dt)
+                    q_start_month = ((dt_ts.month - 1) // 3) * 3 + 1
+                    vals = []
+                    for m in range(q_start_month, q_start_month + 3):
+                        me = pd.Timestamp(year=dt_ts.year, month=m, day=1) + pd.offsets.MonthEnd(0)
+                        if me in monthly_occ:
+                            vals.append(monthly_occ[me])
+                    if vals:
+                        occ_by_date[dt_ts] = sum(vals) / len(vals)
+                if occ_by_date:
+                    has_occupancy = True
+
+    # --- Build chart dataframe ---
+    chart_rows = []
+    for dt in display_dates:
+        dt_ts = pd.Timestamp(dt)
+        label = f"Q{(dt_ts.month - 1) // 3 + 1} {dt_ts.year}"
+        chart_rows.append({
+            'Quarter': label,
+            'Actual NOI': actual_q.get(dt_ts, None),
+            'Underwritten NOI': uw_q.get(dt_ts, None),
+            'Occupancy': occ_by_date.get(dt_ts, None),
+        })
+
+    chart_df = pd.DataFrame(chart_rows)
+    period_order = chart_df['Quarter'].tolist()
+
+    # --- Altair chart ---
+    noi_df = chart_df.melt(id_vars=['Quarter'], value_vars=['Actual NOI', 'Underwritten NOI'],
+                           var_name='Series', value_name='NOI')
+    noi_df = noi_df.dropna(subset=['NOI'])
+
+    if noi_df.empty:
+        st.info("Insufficient data available for chart.")
+        # Still return the df for print compatibility
+        return _to_print_df(chart_df)
+
+    color_scale = alt.Scale(
+        domain=['Actual NOI', 'Underwritten NOI'],
+        range=['#1F4E79', '#ED7D31']
+    )
+    dash_scale = alt.Scale(
+        domain=['Actual NOI', 'Underwritten NOI'],
+        range=[[0], [5, 5]]
+    )
+
+    if has_occupancy:
+        occ_df = chart_df[['Quarter', 'Occupancy']].dropna(subset=['Occupancy'])
+        bars = alt.Chart(occ_df).mark_bar(color='#B4D4F0', opacity=0.6).encode(
+            x=alt.X('Quarter:N', sort=period_order, title='Quarter'),
+            y=alt.Y('Occupancy:Q', title='Occupancy %', scale=alt.Scale(domain=[0, 100])),
+        )
+        lines = alt.Chart(noi_df).mark_line(point=True).encode(
+            x=alt.X('Quarter:N', sort=period_order),
+            y=alt.Y('NOI:Q', title='NOI ($)'),
+            color=alt.Color('Series:N', scale=color_scale, legend=alt.Legend(title=None)),
+            strokeDash=alt.StrokeDash('Series:N', scale=dash_scale, legend=alt.Legend(title=None)),
+        )
+        chart = alt.layer(bars, lines).resolve_scale(y='independent').properties(height=300)
+    else:
+        chart = alt.Chart(noi_df).mark_line(point=True).encode(
+            x=alt.X('Quarter:N', sort=period_order, title='Quarter'),
+            y=alt.Y('NOI:Q', title='NOI ($)'),
+            color=alt.Color('Series:N', scale=color_scale, legend=alt.Legend(title=None)),
+            strokeDash=alt.StrokeDash('Series:N', scale=dash_scale, legend=alt.Legend(title=None)),
+        ).properties(height=300)
+
+    st.altair_chart(chart, use_container_width=True)
+
+    return _to_print_df(chart_df)
+
+
+def _to_print_df(chart_df):
+    """Convert internal chart df to the format expected by _generate_print_html."""
+    return pd.DataFrame({
+        'Quarter': chart_df['Quarter'],
+        'Occupancy': chart_df['Occupancy'],
+        'NOI_Actual': chart_df['Actual NOI'],
+        'NOI_UW': chart_df['Underwritten NOI'],
+    })
 
 
 def _build_export_data(
