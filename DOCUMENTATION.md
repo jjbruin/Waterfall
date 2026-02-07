@@ -39,6 +39,7 @@ waterfall-xirr/
 ├── config.py                 # Constants, account classifications, rates
 ├── compute.py                # Deal computation logic (extracted from app.py)
 ├── property_financials_ui.py # Property Financials tab UI (Performance Chart, IS, BS, Tenants, One Pager)
+├── reports_ui.py             # Reports tab UI (Projected Returns Summary, Excel export)
 ├── one_pager_ui.py           # One Pager Investor Report UI (Streamlit components)
 ├── one_pager.py              # One Pager data logic (performance calcs, cap stack, PE metrics)
 ├── models.py                 # Data classes (InvestorState, Loan)
@@ -65,6 +66,7 @@ waterfall-xirr/
 | `app.py` | Streamlit entry point, sidebar controls, data loading, tab routing |
 | `compute.py` | Deal computation orchestration (extracted from app.py for caching) |
 | `property_financials_ui.py` | Property Financials tab: Performance Chart, IS, BS, Tenants, One Pager |
+| `reports_ui.py` | Reports tab: Projected Returns Summary, population selectors, Excel export |
 | `one_pager_ui.py` | One Pager UI: quarter selector, section renderers, NOI/Occupancy chart, print/export |
 | `one_pager.py` | One Pager data: property performance, cap stack, PE metrics, comments CRUD |
 | `waterfall.py` | Pref accrual, waterfall step processing, investor state management |
@@ -376,6 +378,47 @@ The Property Financials tab is rendered by `property_financials_ui.py` and displ
 
 ---
 
+## Reports Tab
+
+The Reports tab is rendered by `reports_ui.py` and provides exportable cross-deal reports.
+
+### Projected Returns Summary
+
+Columns: Deal Name, Partner, Contributions, CF Distributions, Capital Distributions, IRR, ROE, MOIC.
+
+Each deal's partner rows are followed by a **Deal Total** row (bold, solid top border) showing deal-level aggregated metrics:
+- **IRR**: Combined XIRR across all partner cashflows
+- **ROE**: Weighted-average-capital method using CF distributions only
+- **MOIC**: Total distributions / total contributions
+
+### Population Selectors
+
+| Option | Description |
+|--------|-------------|
+| **Current Deal** | Uses the deal selected in the Deal Analysis tab (instant — reads cached result) |
+| **Select Deals** | Multi-select from eligible deals |
+| **By Partner** | Select a partner (PropCode from waterfalls); resolves to all deals where that partner appears |
+| **By Upstream Investor** | Select an investor from the ownership tree; resolves to all deals where that investor has exposure (direct or through intermediate entities) |
+| **All Deals** | All deals that have waterfall definitions (child properties excluded) |
+
+### Excel Export
+
+- Generated via `openpyxl` with formatting:
+  - Currency columns (`$#,##0`): Contributions, CF Distributions, Capital Distributions
+  - Percentage columns (`0.00%`): IRR, ROE
+  - Multiple column (`0.00"x"`): MOIC
+  - Deal-total rows: bold font + medium top border
+  - Auto-column-width based on content
+- Download button appears below the preview table
+
+### Performance Notes
+
+- Child properties are filtered out using a vectorized `Portfolio_Name` check (no per-row function calls)
+- The "Current Deal" option reuses the `_deal_cache` from session_state — no recomputation
+- Multi-deal reports show a progress bar during computation
+
+---
+
 ## Troubleshooting
 
 ### Common Issues
@@ -417,6 +460,7 @@ The Property Financials tab is rendered by `property_financials_ui.py` and displ
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 2.4 | Feb 7 2026 | Reports tab with Projected Returns Summary, Excel export, population selectors (Current Deal, Select Deals, By Partner, By Upstream Investor, All Deals), deal-level total rows |
 | 2.3 | Feb 7 2026 | Performance chart (NOI + occupancy), occupancy table, One Pager chart upgrade, section reorder (IS before BS) |
 | 2.2 | Feb 2026 | Property Financials tab extraction (IS, BS, Tenants, One Pager into property_financials_ui.py), compute.py extraction |
 | 2.1 | Feb 2026 | Loan aggregation for sub-portfolios, 45-day grace period compounding, NaT handling |

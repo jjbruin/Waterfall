@@ -21,6 +21,7 @@ waterfall-xirr/
 ├── config.py                 # Constants, account classifications, rates
 ├── compute.py                # Deal computation logic (extracted from app.py)
 ├── property_financials_ui.py # Property Financials tab UI (Performance Chart, IS, BS, Tenants, One Pager)
+├── reports_ui.py             # Reports tab UI (Projected Returns Summary, Excel export)
 ├── one_pager_ui.py           # One Pager Investor Report UI (Streamlit components)
 ├── one_pager.py              # One Pager data logic (performance calcs, cap stack, PE metrics)
 ├── models.py                 # Data classes (InvestorState, Loan)
@@ -88,6 +89,13 @@ Rendered by `property_financials_ui.py`. Sections in order:
 ### 3. Ownership & Partnerships
 Ownership tree visualization and relationship data.
 
+### 4. Reports
+Rendered by `reports_ui.py`. Projected Returns Summary with Excel export.
+- **Report Type**: Extensible selector (currently: Projected Returns Summary)
+- **Population Selectors**: Current Deal, Select Deals, By Partner, By Upstream Investor, All Deals
+- **Output**: Partner-level rows (Contributions, CF Distributions, Capital Distributions, IRR, ROE, MOIC) plus bold deal-level total row with solid top border
+- **Excel Export**: Formatted workbook via openpyxl (currency/pct/multiple formats, auto-width, deal-total rows bold with top border)
+
 ## Key Functions
 
 - `xirr(cfs)` - Calculate IRR with irregular dates (metrics.py)
@@ -97,6 +105,9 @@ Ownership tree visualization and relationship data.
 - `get_property_vcodes_for_deal()` - Get child properties for aggregation (consolidation.py)
 - `_render_performance_chart()` - NOI + occupancy chart (property_financials_ui.py)
 - `_build_quarterly_noi_chart()` - One Pager chart, trailing 12 quarters (one_pager_ui.py)
+- `render_reports()` - Reports tab entry point (reports_ui.py)
+- `_build_partner_returns()` - Partner + deal-level metrics from compute result (reports_ui.py)
+- `_generate_excel()` - Formatted Excel workbook via openpyxl (reports_ui.py)
 
 ## Account Classifications
 
