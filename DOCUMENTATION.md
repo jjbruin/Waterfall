@@ -28,35 +28,45 @@ A Streamlit-based financial modeling application for calculating investment wate
 - **Streamlit** - Web UI framework
 - **pandas/numpy** - Data manipulation
 - **scipy** - XIRR/NPV calculations (Brent's method)
+- **altair** - Interactive charts (performance chart, lease maturity)
 - **SQLite** - Local database (`waterfall.db`)
 
 ### Project Structure
 
 ```
 waterfall-xirr/
-├── app.py              # Main Streamlit entry point
-├── config.py           # Constants, account classifications, rates
-├── models.py           # Data classes (InvestorState, Loan)
-├── waterfall.py        # Waterfall calculation engine
-├── metrics.py          # XIRR, XNPV, ROE, MOIC calculations
-├── loaders.py          # Data loading from database/CSV
-├── database.py         # SQLite management, migrations
-├── loans.py            # Debt service modeling
-├── planned_loans.py    # Future loan projections
-├── capital_calls.py    # Capital call handling
-├── cash_management.py  # Cash flow management
-├── consolidation.py    # Sub-portfolio deal/property aggregation
-├── portfolio.py        # Fund/portfolio aggregation
-├── reporting.py        # Report generation
-├── ownership_tree.py   # Investor ownership structures
-├── utils.py            # Helper utilities
-└── waterfall.db        # SQLite database
+├── app.py                    # Main Streamlit entry point & sidebar
+├── config.py                 # Constants, account classifications, rates
+├── compute.py                # Deal computation logic (extracted from app.py)
+├── property_financials_ui.py # Property Financials tab UI (Performance Chart, IS, BS, Tenants, One Pager)
+├── one_pager_ui.py           # One Pager Investor Report UI (Streamlit components)
+├── one_pager.py              # One Pager data logic (performance calcs, cap stack, PE metrics)
+├── models.py                 # Data classes (InvestorState, Loan)
+├── waterfall.py              # Waterfall calculation engine
+├── metrics.py                # XIRR, XNPV, ROE, MOIC calculations
+├── loaders.py                # Data loading from database/CSV
+├── database.py               # SQLite management, migrations, table definitions
+├── loans.py                  # Debt service modeling
+├── planned_loans.py          # Future loan projections
+├── capital_calls.py          # Capital call handling
+├── cash_management.py        # Cash flow management
+├── consolidation.py          # Sub-portfolio deal/property aggregation
+├── portfolio.py              # Fund/portfolio aggregation
+├── reporting.py              # Report generation
+├── ownership_tree.py         # Investor ownership structures
+├── utils.py                  # Helper utilities
+└── waterfall.db              # SQLite database (not in git, >100MB)
 ```
 
 ### Module Reference
 
 | Module | Purpose |
 |--------|---------|
+| `app.py` | Streamlit entry point, sidebar controls, data loading, tab routing |
+| `compute.py` | Deal computation orchestration (extracted from app.py for caching) |
+| `property_financials_ui.py` | Property Financials tab: Performance Chart, IS, BS, Tenants, One Pager |
+| `one_pager_ui.py` | One Pager UI: quarter selector, section renderers, NOI/Occupancy chart, print/export |
+| `one_pager.py` | One Pager data: property performance, cap stack, PE metrics, comments CRUD |
 | `waterfall.py` | Pref accrual, waterfall step processing, investor state management |
 | `loans.py` | Loan amortization schedules |
 | `consolidation.py` | Sub-portfolio aggregation (deals with properties) |
@@ -64,8 +74,9 @@ waterfall-xirr/
 | `metrics.py` | XIRR, ROE, MOIC calculations |
 | `capital_calls.py` | Capital calls processing |
 | `cash_management.py` | Cash reserves and CapEx management |
-| `database.py` | Database operations |
+| `database.py` | Database operations, table definitions, migrations, indexes |
 | `reporting.py` | Annual tables and formatting |
+| `config.py` | BS_ACCOUNTS, IS_ACCOUNTS, capital pool routing, default settings |
 
 ---
 
@@ -115,10 +126,12 @@ Located in: `C:\Users\jbruin\OneDrive - peaceablestreet.com\Documents\WaterfallA
 | `MRI_Supp.csv` | Supplemental/planned loan data |
 | `MRI_Val.csv` | Valuation data |
 | `MRI_Capital_Calls.csv` | Capital call schedule |
-| `ISBS_Download.csv` | Balance sheet data (for cash balances) |
+| `ISBS_Download.csv` | Income statement and balance sheet data (Interim IS, Budget IS, Projected IS, Interim BS) |
 | `MRI_IA_Relationship.csv` | Ownership relationships |
 | `MRI_Commitments.csv` | Investor commitments |
 | `MRI_Investor_ROE_Feed.csv` | Investor ROE data |
+| `MRI_Occupancy_Download.csv` | Monthly occupancy data by property (dtReported, Qtr, Occ%) |
+| `Tenant_Report.csv` | Commercial tenant roster by property (leases, SF, rent) |
 
 ### Sub-Portfolio Structure
 
@@ -324,6 +337,45 @@ Sale Proceeds + Remaining Cash Reserves → Capital Waterfall
 
 ---
 
+## Property Financials Tab
+
+The Property Financials tab is rendered by `property_financials_ui.py` and displays financial data for the selected property. Sections appear in this order:
+
+### 1. Performance Chart
+- **Altair dual-axis chart**: Occupancy bars (left axis, 0-100%) + Actual NOI and Underwritten NOI lines (right axis, dollar scale)
+- **Controls**: Frequency (Monthly / Quarterly / Annually), Period End selector
+- **Data pipeline**: Cumulative YTD balances from ISBS → periodic monthly NOI → aggregated to selected frequency
+- **NOI calculation**: Revenue (credit accounts, negated) minus Expenses (debit accounts), using `IS_ACCOUNTS` from `config.py`
+- **Occupancy source**: `occupancy` table (`Occ%` column preferred over `OccupancyPercent` which has nulls). `dtReported` parsed as Excel serial date. Quarterly values averaged from monthly data.
+- Shows trailing 12 periods by default
+
+### 2. Income Statement Comparison
+- Two-column comparison with configurable period type (TTM, YTD, Full Year, Current Year Estimate, Custom Month)
+- Four source options: Actual, Budget, Underwriting, Valuation
+- Displays Revenue, Expenses, NOI, Debt Service, DSCR, Other Below the Line
+- Wrapped in `st.form()` with "Apply Settings" button
+
+### 3. Balance Sheet Comparison
+- Two-period comparison (Prior Period vs Current Period)
+- Assets, Liabilities, Equity with variance columns
+- Balance check validation (Assets + L&E = 0)
+
+### 4. Tenant Roster & Lease Rollover
+- Commercial properties only (skipped if no tenant data)
+- Sortable tenant table with SF, rent, RPSF, % GLA, % ABR
+- Expiring leases highlighted (within 2 years)
+- Lease Maturity Profile chart (Altair) with 10-year forecast
+- Lease Maturity by Year table
+- Printable HTML report
+
+### 5. One Pager Investor Report
+- Rendered by `one_pager_ui.py` calling `one_pager.py` for data
+- Quarter selector, then sections: General Info, Cap Stack, Property Performance, PE Performance, Comments, NOI/Occupancy Chart
+- Chart uses same data pipeline as Performance Chart but fixed to quarterly, trailing 12 quarters
+- Print report generates single-page HTML; CSV export available
+
+---
+
 ## Troubleshooting
 
 ### Common Issues
@@ -365,6 +417,8 @@ Sale Proceeds + Remaining Cash Reserves → Capital Waterfall
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 2.3 | Feb 7 2026 | Performance chart (NOI + occupancy), occupancy table, One Pager chart upgrade, section reorder (IS before BS) |
+| 2.2 | Feb 2026 | Property Financials tab extraction (IS, BS, Tenants, One Pager into property_financials_ui.py), compute.py extraction |
 | 2.1 | Feb 2026 | Loan aggregation for sub-portfolios, 45-day grace period compounding, NaT handling |
 | 2.0 | Jan 2026 | Capital calls, cash management, database migration |
 | 1.0 | Initial | Core waterfall engine, ownership tree, metrics |
