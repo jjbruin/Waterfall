@@ -140,3 +140,90 @@ def resolve_pool_and_action(vstate: str, vtranstype: str, is_capital_waterfall: 
 
     # All other vStates (Share, IRR, Tag, Def&Int, etc.) — not pool-routed
     return (None, None)
+
+
+# ============================================================
+# FINANCIAL STATEMENT ACCOUNT CLASSIFICATIONS
+# ============================================================
+
+BS_ACCOUNTS = {
+    'ASSETS': {
+        'Current Assets': {
+            'Cash': ['1010', '1012'],
+            'Misc Current Assets': ['1040', '1070'],
+        },
+        'Noncurrent Assets': {
+            'Accounts Receivable': ['1020', '1025', '1030'],
+            'Lender Held Reserves & Escrows': ['1145', '1092', '1091'],
+            'Other Reserves & Escrows': ['1014', '1080', '1090', '1100', '1120', '1130', '1140'],
+            'Prepaid': ['1050', '1060', '1075', '1151'],
+            'Fixed Assets': ['1240', '1250', '1260', '1270', '1280', '1282', '1275'],
+            'Depreciation & Amortization': ['1230', '1290'],
+            'Other Assets': ['1150', '1224', '1220'],
+        },
+    },
+    'LIABILITIES': {
+        'Current Liabilities': {
+            'Accounts Payable': ['2010', '2012', '2015', '2020'],
+            'Accrued Interest Payable': ['2060'],
+            'Accrued Taxes Payable': ['2110'],
+            'Security Deposits': ['2090'],
+            'Prepaid Revenues': ['2080'],
+            'Other Accrued Liabilities': ['2115', '2120', '2124', '2130'],
+        },
+        'Noncurrent Liabilities': {
+            'Mortgages and Loans': ['2150', '2152', '2210'],
+            'Misc Long Term Liabilities': ['2300', '2310'],
+            'Deferred Developer/AM Fee': ['2230'],
+            'Notes Payable to GP': ['2280'],
+            'Notes Payable to LP': ['2290'],
+        },
+    },
+    'EQUITY': {
+        'Equity': {
+            'Equity': ['2520', '2530', '2534', '2536', '2540'],
+            'Partner Equity': ['2525'],
+            'PSC Pref Equity': ['2526'],
+            'Distributions-2527': ['2527'],
+            'Distributions-2528': ['2528'],
+            'Net Income': ['2550'],
+        },
+    },
+}
+
+IS_ACCOUNTS = {
+    'REVENUES': {
+        'Rental Income': ['4010', '4012'],
+        'Commercial': ['4020', '4041'],
+        'Abated Apartments': ['4045'],
+        'Vacancy': ['4040', '4043', '4030', '4042'],
+        'RUBS': ['4070'],
+        'RET': ['4091'],
+        'INS': ['4092'],
+        'CAM': ['4090', '4097', '4093', '4094', '4096', '4095'],
+        'Other Income': ['4063', '4060', '4061', '4062', '4080', '4065'],
+    },
+    'EXPENSES': {
+        'Real Estate Taxes': ['5090'],
+        'Property & Liability Insurance': ['5110', '5114'],
+        'Salary & Benefits': ['5018', '5010', '5016', '5012', '5014'],
+        'Utilities': ['5051', '5053', '5050', '5052', '5054', '5055'],
+        'Repairs & Maintenance': ['5060', '5067', '5063', '5069', '5061', '5064', '5065', '5068', '5070', '5066'],
+        'Administrative': ['5020', '5022', '5021', '5023', '5025', '5026', '5080'],
+        'Marketing & Advertising': ['5045'],
+        'Legal & Professional': ['5087', '5085'],
+        'Management Fee': ['5040'],
+        'Other Expenses': ['5096', '5095', '5091', '5100'],
+    },
+    'DEBT_SERVICE': {
+        'Interest': ['5190'],
+        'Principal': ['2145', '2150', '2152', '2154', '2156'],
+    },
+    'OTHER_BTL': {
+        'Interest Income': ['4050'],
+        'Other (Income) Expenses': ['5220', '5210', '5195', '7065'],
+        'Capital Expenditures': ['7050'],
+        'Partnership Expenses': ['5120', '5130'],
+        'Extraordinary Expenses': ['5400'],
+    },
+}
