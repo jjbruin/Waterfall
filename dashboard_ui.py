@@ -389,8 +389,21 @@ def _render_portfolio_noi_chart(isbs_raw, inv_disp, occupancy_raw):
     # We already have the chart — extract available period labels
     period_end_labels_display = chart_df_pre['Period'].tolist()
 
-    with ctrl_cols[1]:
+    # Default to most recently ended quarter (relative to today)
+    today = pd.Timestamp.today()
+    current_q_month = ((today.month - 1) // 3) * 3  # last month of prior quarter
+    if current_q_month == 0:
+        last_q_end = pd.Timestamp(year=today.year - 1, month=12, day=31)
+    else:
+        last_q_end = pd.Timestamp(year=today.year, month=current_q_month, day=1) + pd.offsets.MonthEnd(0)
+    last_q_label = f"Q{(last_q_end.month - 1) // 3 + 1} {last_q_end.year}"
+
+    if last_q_label in period_end_labels_display:
+        default_pe_idx = period_end_labels_display.index(last_q_label)
+    else:
         default_pe_idx = len(period_end_labels_display) - 1
+
+    with ctrl_cols[1]:
         period_end_sel = st.selectbox("Period End", period_end_labels_display,
                                       index=default_pe_idx, key="dash_noi_pe")
 
