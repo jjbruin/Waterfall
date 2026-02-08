@@ -38,6 +38,7 @@ waterfall-xirr/
 ├── app.py                    # Main Streamlit entry point & sidebar
 ├── config.py                 # Constants, account classifications, rates
 ├── compute.py                # Deal computation logic (extracted from app.py)
+├── dashboard_ui.py           # Dashboard tab UI (KPI cards, portfolio charts, computed returns)
 ├── property_financials_ui.py # Property Financials tab UI (Performance Chart, IS, BS, Tenants, One Pager)
 ├── reports_ui.py             # Reports tab UI (Projected Returns Summary, Excel export)
 ├── one_pager_ui.py           # One Pager Investor Report UI (Streamlit components)
@@ -65,6 +66,7 @@ waterfall-xirr/
 |--------|---------|
 | `app.py` | Streamlit entry point, sidebar controls, data loading, tab routing |
 | `compute.py` | Deal computation orchestration (extracted from app.py for caching) |
+| `dashboard_ui.py` | Dashboard tab: KPI cards, portfolio NOI trend, capital structure, occupancy, asset allocation, loan maturities, computed returns |
 | `property_financials_ui.py` | Property Financials tab: Performance Chart, IS, BS, Tenants, One Pager |
 | `reports_ui.py` | Reports tab: Projected Returns Summary, population selectors, Excel export |
 | `one_pager_ui.py` | One Pager UI: quarter selector, section renderers, NOI/Occupancy chart, print/export |
