@@ -79,11 +79,11 @@ streamlit run app.py
 ### 1. Dashboard
 Rendered by `dashboard_ui.py`. Executive portfolio-level view with instant-load KPIs and charts.
 - **KPI Cards** (6): Portfolio Value, Debt Outstanding, Wtd Avg Cap Rate, Portfolio Occupancy, Deal Count, Total Equity
-- **Portfolio NOI Trend** — Dual-axis Altair chart (occupancy bars + Actual/U/W NOI lines) aggregated across all deals. Frequency and period-end selectors, trailing 12 periods.
-- **Capital Structure by Deal** — Horizontal stacked bar (Debt / Pref Equity / Partner Equity per deal)
-- **Occupancy by Deal** — Horizontal bars colored above/below portfolio average with dashed reference line
-- **Asset Allocation** — Donut chart by Asset_Type with value legend table
-- **Loan Maturities** — Bar chart by maturity year with dollar labels
+- **Portfolio NOI Trend** — Dual-axis Altair chart (occupancy bars + Actual/U/W NOI lines) aggregated across all deals. Values in $ million. Frequency and period-end selectors (defaults to most recently ended quarter), trailing 12 periods. Capped at last closed quarter.
+- **Portfolio Capital Structure** — Consolidated vertical stacked bar (Debt blue / Pref Equity green / OP Equity grey) with Avg LTV and Pref Exposure annotations at dividing lines. Values in $ million.
+- **Occupancy by Type** — Horizontal bars showing weighted-average occupancy per Asset_Type, colored above/below portfolio average with dashed reference line.
+- **Asset Allocation** — Donut chart by Asset_Type sized by preferred equity, with % of total in legend table and hover tooltips.
+- **Loan Maturities** — Stacked bar chart by maturity year (Fixed blue / Floating orange) with weighted avg rate labels on fixed sections, total dollar labels, and "Show Data" expander with loan-level detail table (includes child property loans).
 - **Computed Returns** (button-gated) — Progress bar → IRR by Deal bar chart + formatted summary table (Contributions, Distributions, IRR, ROE, MOIC)
 
 ### 2. Deal Analysis
