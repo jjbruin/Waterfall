@@ -33,6 +33,7 @@ from consolidation import build_consolidated_forecast, get_sub_portfolio_summary
 from compute import compute_deal_analysis, get_deal_capitalization
 from property_financials_ui import render_property_financials
 from reports_ui import render_reports
+from dashboard_ui import render_dashboard
 
 # ============================================================
 # STREAMLIT CONFIG
@@ -293,7 +294,19 @@ inv, wf, acct, fc, coa, mri_loans_raw, mri_supp, mri_val, fund_deals_raw, inv_wf
 
 
 # Create tabs for different sections - tabs at top level
-tab_deal, tab_financials, tab_ownership, tab_reports = st.tabs(["Deal Analysis", "Property Financials", "Ownership & Partnerships", "Reports"])
+tab_dashboard, tab_deal, tab_financials, tab_ownership, tab_reports = st.tabs(["Dashboard", "Deal Analysis", "Property Financials", "Ownership & Partnerships", "Reports"])
+
+with tab_dashboard:
+    render_dashboard(
+        inv=inv, wf=wf, acct=acct, isbs_raw=isbs_raw,
+        mri_loans_raw=mri_loans_raw, mri_val=mri_val,
+        occupancy_raw=occupancy_raw, fc=fc, coa=coa,
+        mri_supp=mri_supp, relationships_raw=relationships_raw,
+        capital_calls_raw=capital_calls_raw,
+        start_year=int(start_year),
+        horizon_years=int(horizon_years),
+        pro_yr_base=int(pro_yr_base),
+    )
 
 with tab_deal:
     # ============================================================
