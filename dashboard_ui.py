@@ -234,6 +234,17 @@ def _compute_portfolio_noi(isbs_raw, inv_disp, frequency, period_end_label,
     if not all_period_ends:
         return None, None
 
+    # Cap at most recently ended quarter so future/projected periods are excluded
+    today = pd.Timestamp.today()
+    current_q_month = ((today.month - 1) // 3) * 3  # last month of prior quarter
+    if current_q_month == 0:
+        last_q_end = pd.Timestamp(year=today.year - 1, month=12, day=31)
+    else:
+        last_q_end = pd.Timestamp(year=today.year, month=current_q_month, day=1) + pd.offsets.MonthEnd(0)
+    all_period_ends = [d for d in all_period_ends if pd.Timestamp(d) <= last_q_end]
+    if not all_period_ends:
+        return None, None
+
     period_end_labels = [pd.Timestamp(d).strftime('%Y-%m-%d') for d in all_period_ends]
 
     # Determine display window (trailing 12 from selected period_end)
@@ -435,8 +446,8 @@ def _render_portfolio_noi_chart(isbs_raw, inv_disp, occupancy_raw):
         lines = alt.Chart(noi_df).mark_line(point=True).encode(
             x=alt.X('Period:N', sort=period_order),
             y=alt.Y('NOI:Q', title='NOI ($)'),
-            color=alt.Color('Series:N', scale=color_scale, legend=alt.Legend(title=None)),
-            strokeDash=alt.StrokeDash('Series:N', scale=dash_scale, legend=alt.Legend(title=None)),
+            color=alt.Color('Series:N', scale=color_scale, legend=alt.Legend(title=None, orient='bottom', direction='horizontal')),
+            strokeDash=alt.StrokeDash('Series:N', scale=dash_scale, legend=None),
         )
 
         chart = alt.layer(bars, lines).resolve_scale(y='independent').properties(height=350)
@@ -455,89 +466,141 @@ def _render_portfolio_noi_chart(isbs_raw, inv_disp, occupancy_raw):
         chart = alt.Chart(noi_df).mark_line(point=True).encode(
             x=alt.X('Period:N', sort=period_order, title='Period'),
             y=alt.Y('NOI:Q', title='NOI ($)'),
-            color=alt.Color('Series:N', scale=color_scale, legend=alt.Legend(title=None)),
-            strokeDash=alt.StrokeDash('Series:N', scale=dash_scale, legend=alt.Legend(title=None)),
+            color=alt.Color('Series:N', scale=color_scale, legend=alt.Legend(title=None, orient='bottom', direction='horizontal')),
+            strokeDash=alt.StrokeDash('Series:N', scale=dash_scale, legend=None),
         ).properties(height=350)
 
     st.altair_chart(chart, use_container_width=True)
 
 
 # ============================================================
-# RENDER — CAPITAL STRUCTURE BY DEAL
+# RENDER — PORTFOLIO CAPITAL STRUCTURE  (consolidated vertical bar)
 # ============================================================
 def _render_capital_stack_chart(caps):
-    """Horizontal stacked bar chart: Debt / Pref Equity / Partner Equity per deal."""
-    st.subheader("Capital Structure by Deal")
+    """Single vertical stacked bar: Debt (blue) / Pref Equity (green) / OP Equity (grey).
 
-    rows = []
-    for c in caps:
-        name = c.get('name', c.get('vcode', ''))
-        for cat, key in [('Debt', 'debt'), ('Pref Equity', 'pref_equity'),
-                         ('Partner Equity', 'partner_equity')]:
-            rows.append({'Deal': name, 'Category': cat, 'Value': c.get(key, 0)})
+    Annotates Avg LTV and Pref Exposure with indicators at the dividing lines.
+    """
+    st.subheader("Portfolio Capital Structure")
 
-    if not rows:
+    total_debt = sum(c.get('debt', 0) for c in caps)
+    total_pref = sum(c.get('pref_equity', 0) for c in caps)
+    total_partner = sum(c.get('partner_equity', 0) for c in caps)
+    total_cap = total_debt + total_pref + total_partner
+
+    if total_cap == 0:
         st.info("No capitalisation data available.")
         return
 
-    df = pd.DataFrame(rows)
-    # Sort deals by total cap descending
-    deal_totals = df.groupby('Deal')['Value'].sum().sort_values(ascending=True)
-    deal_order = deal_totals.index.tolist()
+    avg_ltv = total_debt / total_cap
+    pref_exposure = (total_debt + total_pref) / total_cap
+
+    # Stack order: Debt at base, Pref in middle, Partner on top
+    bar_data = pd.DataFrame([
+        {'Category': 'Debt', 'Value': total_debt, 'order': 1},
+        {'Category': 'Pref Equity', 'Value': total_pref, 'order': 2},
+        {'Category': 'OP Equity', 'Value': total_partner, 'order': 3},
+    ])
 
     color_scale = alt.Scale(
-        domain=['Debt', 'Pref Equity', 'Partner Equity'],
-        range=[CLR_DARK, CLR_ACCENT, CLR_LIGHT],
+        domain=['Debt', 'Pref Equity', 'OP Equity'],
+        range=[CLR_DARK, '#548235', '#A6A6A6'],
     )
 
-    chart = alt.Chart(df).mark_bar().encode(
-        y=alt.Y('Deal:N', sort=deal_order, title=None),
-        x=alt.X('Value:Q', title='Amount ($)', stack='zero'),
-        color=alt.Color('Category:N', scale=color_scale, legend=alt.Legend(title=None)),
-        tooltip=['Deal', 'Category', alt.Tooltip('Value:Q', format='$,.0f')],
-    ).properties(height=max(250, len(caps) * 28))
+    bar = alt.Chart(bar_data).mark_bar(size=100).encode(
+        x=alt.X('Label:N', title=None, axis=None),
+        y=alt.Y('Value:Q', title='Amount ($)', stack='zero',
+                 sort=alt.EncodingSortField(field='order', order='ascending')),
+        color=alt.Color('Category:N', scale=color_scale,
+                        sort=['Debt', 'Pref Equity', 'OP Equity'],
+                        legend=alt.Legend(title=None, orient='bottom', direction='horizontal')),
+        order=alt.Order('order:Q'),
+        tooltip=['Category', alt.Tooltip('Value:Q', format='$,.0f')],
+    ).transform_calculate(Label='"Portfolio"')
+
+    # --- Annotation: Avg LTV line at top of Debt ---
+    ltv_y = total_debt
+    ltv_line_df = pd.DataFrame([{'y': ltv_y}])
+    ltv_rule = alt.Chart(ltv_line_df).mark_rule(
+        color=CLR_DARK, strokeWidth=2, strokeDash=[4, 4]
+    ).encode(y='y:Q')
+    ltv_label = alt.Chart(ltv_line_df).mark_text(
+        align='left', dx=65, dy=-8, fontSize=13, fontWeight='bold', color=CLR_DARK
+    ).encode(
+        y='y:Q',
+        text=alt.value(f'← Avg LTV: {avg_ltv:.1%}'),
+    )
+
+    # --- Annotation: Pref Exposure line at top of Pref Equity ---
+    pref_y = total_debt + total_pref
+    pref_line_df = pd.DataFrame([{'y': pref_y}])
+    pref_rule = alt.Chart(pref_line_df).mark_rule(
+        color='#548235', strokeWidth=2, strokeDash=[4, 4]
+    ).encode(y='y:Q')
+    pref_label = alt.Chart(pref_line_df).mark_text(
+        align='left', dx=65, dy=-8, fontSize=13, fontWeight='bold', color='#548235'
+    ).encode(
+        y='y:Q',
+        text=alt.value(f'← Pref Exp: {pref_exposure:.1%}'),
+    )
+
+    chart = alt.layer(bar, ltv_rule, ltv_label, pref_rule, pref_label).properties(
+        height=350, width=250,
+    )
 
     st.altair_chart(chart, use_container_width=True)
 
 
 # ============================================================
-# RENDER — OCCUPANCY BY DEAL
+# RENDER — OCCUPANCY BY TYPE
 # ============================================================
-def _render_occupancy_by_deal(occ_map, inv_disp):
-    """Horizontal bar chart: occupancy per deal, coloured vs portfolio avg."""
-    st.subheader("Occupancy by Deal")
+def _render_occupancy_by_type(occ_map, caps):
+    """Horizontal bar chart: weighted-average occupancy per asset type."""
+    st.subheader("Occupancy by Type")
 
     if not occ_map:
         st.info("No occupancy data available.")
         return
 
+    # Build per-deal rows with asset type and units for weighting
     rows = []
-    for _, row in inv_disp.iterrows():
-        vc = str(row['vcode'])
+    for c in caps:
+        vc = c.get('vcode', '')
         occ = occ_map.get(vc)
         if occ is not None:
-            rows.append({
-                'Deal': row.get('DealLabel', row.get('Investment_Name', vc)),
-                'Occupancy': occ,
-            })
+            at = (c.get('asset_type', '') or '').strip() or 'Unknown'
+            units = c.get('total_units', 0) or 1  # fallback to 1 for equal weight
+            rows.append({'Asset_Type': at, 'Occupancy': occ, 'Units': units})
 
     if not rows:
-        st.info("No occupancy data for displayed deals.")
+        st.info("No occupancy data available.")
         return
 
-    df = pd.DataFrame(rows).sort_values('Occupancy', ascending=True)
+    df = pd.DataFrame(rows)
 
-    # Portfolio weighted average (simple mean here since we don't have units in df)
-    avg_occ = df['Occupancy'].mean()
+    # Weighted average occupancy per asset type
+    df['Weighted_Occ'] = df['Occupancy'] * df['Units']
+    type_agg = df.groupby('Asset_Type').agg(
+        Total_Weighted_Occ=('Weighted_Occ', 'sum'),
+        Total_Units=('Units', 'sum'),
+    ).reset_index()
+    type_agg['Occupancy'] = type_agg['Total_Weighted_Occ'] / type_agg['Total_Units']
+    type_agg = type_agg.sort_values('Occupancy', ascending=True)
 
-    df['Color'] = df['Occupancy'].apply(lambda v: CLR_DARK if v >= avg_occ else CLR_ACCENT)
+    # Portfolio weighted average
+    avg_occ = type_agg['Total_Weighted_Occ'].sum() / type_agg['Total_Units'].sum()
 
-    bars = alt.Chart(df).mark_bar().encode(
-        y=alt.Y('Deal:N', sort=alt.EncodingSortField(field='Occupancy', order='ascending'), title=None),
+    type_agg['Color'] = type_agg['Occupancy'].apply(
+        lambda v: CLR_DARK if v >= avg_occ else CLR_ACCENT)
+
+    bars = alt.Chart(type_agg).mark_bar().encode(
+        y=alt.Y('Asset_Type:N',
+                sort=alt.EncodingSortField(field='Occupancy', order='ascending'),
+                title=None),
         x=alt.X('Occupancy:Q', title='Occupancy %', scale=alt.Scale(domain=[0, 100])),
         color=alt.Color('Color:N', scale=None),
-        tooltip=['Deal', alt.Tooltip('Occupancy:Q', format='.1f')],
-    ).properties(height=max(250, len(df) * 28))
+        tooltip=['Asset_Type', alt.Tooltip('Occupancy:Q', format='.1f')],
+    ).properties(height=max(200, len(type_agg) * 35))
 
     rule = alt.Chart(pd.DataFrame({'avg': [avg_occ]})).mark_rule(
         strokeDash=[5, 5], color='#333', strokeWidth=1.5
@@ -598,7 +661,7 @@ def _render_asset_allocation(caps, inv_disp):
 # RENDER — LOAN MATURITY SCHEDULE
 # ============================================================
 def _render_loan_maturity(mri_loans_raw, inv_disp):
-    """Bar chart: loan maturities by year."""
+    """Stacked bar chart: loan maturities by year, fixed vs floating."""
     st.subheader("Loan Maturities")
 
     if mri_loans_raw is None or mri_loans_raw.empty:
@@ -636,27 +699,48 @@ def _render_loan_maturity(mri_loans_raw, inv_disp):
         return
 
     loans['mOrigLoanAmt'] = pd.to_numeric(loans['mOrigLoanAmt'], errors='coerce').fillna(0)
-    loans['Year'] = loans['maturity'].dt.year
+    loans['Year'] = loans['maturity'].dt.year.astype(str)
 
-    yearly = loans.groupby('Year')['mOrigLoanAmt'].sum().reset_index()
-    yearly.columns = ['Year', 'Amount']
-    yearly['Year'] = yearly['Year'].astype(str)
+    # Classify fixed vs floating from vIntType
+    if 'vIntType' in loans.columns:
+        loans['vIntType'] = loans['vIntType'].fillna('').astype(str).str.strip().str.lower()
+        loans['Rate Type'] = loans['vIntType'].apply(
+            lambda v: 'Floating' if v in ('variable', 'floating') else 'Fixed')
+    else:
+        loans['Rate Type'] = 'Fixed'
+
+    yearly = loans.groupby(['Year', 'Rate Type'])['mOrigLoanAmt'].sum().reset_index()
+    yearly.columns = ['Year', 'Rate Type', 'Amount']
 
     if yearly.empty:
         st.info("No loan maturity data to display.")
         return
 
-    chart = alt.Chart(yearly).mark_bar(color=CLR_DARK).encode(
+    color_scale = alt.Scale(
+        domain=['Fixed', 'Floating'],
+        range=[CLR_DARK, CLR_ACCENT],
+    )
+
+    bars = alt.Chart(yearly).mark_bar().encode(
         x=alt.X('Year:N', title='Maturity Year'),
-        y=alt.Y('Amount:Q', title='Loan Amount ($)'),
-        tooltip=['Year', alt.Tooltip('Amount:Q', format='$,.0f')],
+        y=alt.Y('Amount:Q', title='Loan Amount ($)', stack='zero'),
+        color=alt.Color('Rate Type:N', scale=color_scale,
+                        legend=alt.Legend(title=None, orient='bottom', direction='horizontal')),
+        order=alt.Order('order:Q'),
+        tooltip=['Year', 'Rate Type', alt.Tooltip('Amount:Q', format='$,.0f')],
+    ).transform_calculate(
+        order="datum['Rate Type'] === 'Fixed' ? 1 : 2"
     ).properties(height=250)
 
-    text = chart.mark_text(dy=-10, color=CLR_DARK, fontSize=11).encode(
+    # Total labels on top of each bar
+    totals = yearly.groupby('Year')['Amount'].sum().reset_index()
+    text = alt.Chart(totals).mark_text(dy=-10, color=CLR_DARK, fontSize=11).encode(
+        x=alt.X('Year:N'),
+        y=alt.Y('Amount:Q'),
         text=alt.Text('Amount:Q', format='$,.0f'),
     )
 
-    st.altair_chart(chart + text, use_container_width=True)
+    st.altair_chart(bars + text, use_container_width=True)
 
 
 # ============================================================
@@ -821,14 +905,17 @@ def render_dashboard(inv, wf, acct, isbs_raw, mri_loans_raw, mri_val,
 
     st.markdown("---")
 
-    # --- Row 2: Occupancy | Asset Allocation | Loan Maturities ---
-    col_occ, col_asset, col_loan = st.columns(3)
+    # --- Row 2: Occupancy by Type | Asset Allocation ---
+    col_occ, col_asset = st.columns(2)
     with col_occ:
-        _render_occupancy_by_deal(occ_map, inv_disp)
+        _render_occupancy_by_type(occ_map, caps)
     with col_asset:
         _render_asset_allocation(caps, inv_disp)
-    with col_loan:
-        _render_loan_maturity(mri_loans_raw, inv_disp)
+
+    st.markdown("---")
+
+    # --- Row 3: Loan Maturities (full width) ---
+    _render_loan_maturity(mri_loans_raw, inv_disp)
 
     st.divider()
 
