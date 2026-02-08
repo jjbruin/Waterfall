@@ -109,6 +109,7 @@ Rendered by `reports_ui.py`. Projected Returns Summary with Excel export.
 
 ## Key Functions
 
+- `build_partner_results()` - Single source of truth for all partner & deal metrics (compute.py)
 - `xirr(cfs)` - Calculate IRR with irregular dates (metrics.py)
 - `accrue_pref_to_date()` - Daily pref accrual (waterfall.py)
 - `InvestorState` - Tracks capital, pref, cashflows per investor (models.py)
