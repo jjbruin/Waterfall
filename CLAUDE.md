@@ -21,6 +21,7 @@ waterfall-xirr/
 ├── config.py                 # Constants, account classifications, rates
 ├── compute.py                # Deal computation logic (extracted from app.py)
 ├── dashboard_ui.py           # Dashboard tab UI (KPI cards, portfolio charts, computed returns)
+├── debt_service_ui.py        # Debt Service display (Loan Summary, Amortization Schedules, Sale Proceeds)
 ├── property_financials_ui.py # Property Financials tab UI (Performance Chart, IS, BS, Tenants, One Pager)
 ├── reports_ui.py             # Reports tab UI (Projected Returns Summary, Excel export)
 ├── one_pager_ui.py           # One Pager Investor Report UI (Streamlit components)
@@ -87,7 +88,7 @@ Rendered by `dashboard_ui.py`. Executive portfolio-level view with instant-load 
 - **Computed Returns** (button-gated) — Progress bar → IRR by Deal bar chart + formatted summary table (Contributions, Distributions, IRR, ROE, MOIC)
 
 ### 2. Deal Analysis
-Main waterfall computation, partner returns, capital accounts, XIRR/MOIC metrics.
+Main waterfall computation, partner returns, capital accounts, XIRR/MOIC metrics. Debt service display rendered by `debt_service_ui.py` (Loan Summary, Detailed Amortization Schedules, Sale Proceeds Calculation).
 
 ### 3. Property Financials
 Rendered by `property_financials_ui.py`. Sections in order:
@@ -117,6 +118,7 @@ Rendered by `reports_ui.py`. Projected Returns Summary with Excel export.
 - `get_property_vcodes_for_deal()` - Get child properties for aggregation (consolidation.py)
 - `_render_performance_chart()` - NOI + occupancy chart (property_financials_ui.py)
 - `_build_quarterly_noi_chart()` - One Pager chart, trailing 12 quarters (one_pager_ui.py)
+- `render_debt_service()` - Debt service display: loan summary, amortization, sale proceeds (debt_service_ui.py)
 - `render_dashboard()` - Dashboard tab entry point (dashboard_ui.py)
 - `_get_portfolio_caps()` - Lightweight cap data per deal, cached in session_state (dashboard_ui.py)
 - `_render_computed_returns()` - Button-gated IRR/MOIC computation (dashboard_ui.py)

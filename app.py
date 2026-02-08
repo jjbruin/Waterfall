@@ -34,6 +34,7 @@ from compute import compute_deal_analysis, get_deal_capitalization
 from property_financials_ui import render_property_financials
 from reports_ui import render_reports
 from dashboard_ui import render_dashboard
+from debt_service_ui import render_debt_service
 
 # ============================================================
 # STREAMLIT CONFIG
@@ -594,104 +595,9 @@ with tab_deal:
                 st.write("- " + m)
 
     # ============================================================
-    # DEBT AMORTIZATION SCHEDULES DISPLAY
+    # DEBT AMORTIZATION & SALE PROCEEDS
     # ============================================================
-    if loans:
-        st.divider()
-    
-        # Summary of all loans
-        loan_summary = []
-        for ln in loans:
-            orig_str = ln.orig_date.strftime('%Y-%m-%d') if pd.notna(ln.orig_date) else 'N/A'
-            mat_str = ln.maturity_date.strftime('%Y-%m-%d') if pd.notna(ln.maturity_date) else 'N/A'
-            loan_summary.append({
-                'Loan ID': ln.loan_id,
-                'Type': 'Existing' if ln.loan_id != 'PLANNED_2ND' else 'Planned 2nd Mortgage',
-                'Original Amount': f"${ln.orig_amount:,.0f}",
-                'Origination': orig_str,
-                'Maturity': mat_str,
-                'Rate Type': ln.int_type,
-                'Rate': f"{ln.rate_for_month():.2%}",
-                'Term (months)': ln.loan_term_m,
-                'Amort (months)': ln.amort_term_m,
-                'IO Period (months)': ln.io_months
-            })
-    
-        st.markdown("### Loan Summary")
-        st.dataframe(pd.DataFrame(loan_summary), use_container_width=True, hide_index=True)
-    
-        # Detailed amortization schedules
-        with st.expander("📋 Detailed Amortization Schedules", expanded=False):
-            for ln in loans:
-                st.markdown(f"#### {ln.loan_id}")
-            
-                # Get this loan's schedule
-                if not loan_sched.empty:
-                    ln_sched = loan_sched[loan_sched['LoanID'] == ln.loan_id].copy()
-                
-                    if not ln_sched.empty:
-                        # Add beginning balance column (ending_balance + principal = beginning_balance)
-                        ln_sched = ln_sched.sort_values('event_date')
-                        ln_sched['beginning_balance'] = ln_sched['ending_balance'] + ln_sched['principal']
-                    
-                        display_cols = ['event_date', 'rate', 'beginning_balance', 'interest', 'principal', 'payment', 'ending_balance']
-                    
-                        st.dataframe(
-                            ln_sched[display_cols].style.format({
-                                'rate': '{:.2%}',
-                                'beginning_balance': '${:,.0f}',
-                                'interest': '${:,.0f}',
-                                'principal': '${:,.0f}',
-                                'payment': '${:,.0f}',
-                                'ending_balance': '${:,.0f}'
-                            }),
-                            use_container_width=True,
-                            hide_index=True
-                        )
-                    
-                        # Summary stats
-                        col1, col2, col3 = st.columns(3)
-                        col1.metric("Total Interest", f"${ln_sched['interest'].sum():,.0f}")
-                        col2.metric("Total Principal", f"${ln_sched['principal'].sum():,.0f}")
-                        col3.metric("Final Balance", f"${ln_sched['ending_balance'].iloc[-1]:,.0f}")
-                    else:
-                        st.info(f"No schedule generated for {ln.loan_id}")
-            
-                st.divider()
-
-    # ============================================================
-    # SALE PROCEEDS CALCULATION
-    # ============================================================
-    if 'sale_dbg' in locals() and sale_dbg:
-        with st.expander("💰 Sale Proceeds Calculation", expanded=False):
-            st.markdown("### Exit Valuation & Net Proceeds")
-        
-            col1, col2 = st.columns(2)
-        
-            with col1:
-                st.markdown("**Valuation Inputs:**")
-                st.write(f"Sale Date: {sale_dbg['Sale_Date']}")
-                st.write(f"NOI (12 months after sale): ${sale_dbg['NOI_12m_After_Sale']:,.0f}")
-                st.write(f"Exit Cap Rate: {sale_dbg['CapRate_Sale']:.2%}")
-        
-            with col2:
-                st.markdown("**Calculation:**")
-                st.write(f"Implied Value (NOI ÷ Cap Rate): ${sale_dbg['Implied_Value']:,.0f}")
-                st.write(f"Less: Selling Costs (2%): (${sale_dbg['Less_Selling_Cost_2pct']:,.0f})")
-                st.write(f"**Value Net of Costs:** ${sale_dbg['Value_Net_Selling_Cost']:,.0f}")
-        
-            st.divider()
-        
-            st.markdown("### Net Proceeds to Equity")
-            col1, col2 = st.columns(2)
-        
-            with col1:
-                st.write(f"Value Net of Costs: ${sale_dbg['Value_Net_Selling_Cost']:,.0f}")
-                st.write(f"Less: Loan Payoff: (${sale_dbg['Less_Loan_Balances']:,.0f})")
-        
-            with col2:
-                st.markdown(f"### **Net Sale Proceeds: ${sale_dbg['Net_Sale_Proceeds']:,.0f}**")
-                st.caption("(Remaining cash reserves will be added to CF waterfall at sale)")
+    render_debt_service(loans, loan_sched, sale_dbg)
 
     # ============================================================
     # CASH MANAGEMENT & RESERVES (Display)
@@ -1416,21 +1322,6 @@ with tab_deal:
               if "MOIC" in out.columns:
                   out["MOIC"] = out["MOIC"].map(lambda r: f"{r:,.2f}x")
               st.dataframe(out, use_container_width=True)
-
-      # ============================================================
-      # OPTIONAL DISPLAYS
-      # ============================================================
-      if loan_sched is not None and not loan_sched.empty:
-          with st.expander("Loan Schedule (modeled)"):
-              show = loan_sched.sort_values(["LoanID", "event_date"]).copy()
-              show_disp = show.copy()
-              show_disp["rate"] = (show_disp["rate"] * 100.0).map(lambda x: f"{x:,.2f}%")
-              for c in ["interest", "principal", "payment", "ending_balance"]:
-                  show_disp[c] = show_disp[c].map(lambda x: f"{x:,.0f}")
-              st.dataframe(
-                  show_disp[["LoanID", "event_date", "rate", "interest", "principal", "payment", "ending_balance"]],
-                  use_container_width=True
-              )
 
       # ============================================================
       # XIRR CASH FLOWS TABLE
