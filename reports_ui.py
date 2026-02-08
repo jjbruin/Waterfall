@@ -8,105 +8,48 @@ Initial report: Projected Returns Summary (Contributions, CF Distributions, Capi
 import streamlit as st
 import pandas as pd
 from io import BytesIO
-from datetime import date
 
-from metrics import investor_metrics, xirr, calculate_roe
 from compute import compute_deal_analysis
 
 
 def _build_partner_returns(deal_result: dict, deal_name: str) -> list[dict]:
     """Extract partner-level and deal-level return metrics from a computed deal result.
 
+    Thin wrapper around pre-computed partner_results / deal_summary produced by
+    build_partner_results() in compute.py.  Maps to the report row format.
+
     Returns a list of dicts — partner rows followed by a deal-level total row.
     The deal-level row has Partner='Deal Total' and _is_deal_total=True (internal flag).
     """
-    cf_alloc = deal_result.get('cf_alloc')
-    cap_alloc = deal_result.get('cap_alloc')
-    cf_investors = deal_result.get('cf_investors', {})
-    cap_investors = deal_result.get('cap_investors', {})
-    sale_me = deal_result.get('sale_me')
+    partner_results = deal_result.get('partner_results', [])
+    deal_summary = deal_result.get('deal_summary', {})
 
-    if cf_alloc is None and cap_alloc is None:
+    if not partner_results:
         return []
-
-    all_partners = set()
-    if cf_alloc is not None and not cf_alloc.empty:
-        all_partners.update(cf_alloc['PropCode'].unique())
-    if cap_alloc is not None and not cap_alloc.empty:
-        all_partners.update(cap_alloc['PropCode'].unique())
 
     rows = []
-    total_contrib = 0.0
-    total_cf_dist = 0.0
-    total_cap_dist = 0.0
-
-    # Collect deal-level cashflows / cf_distributions for IRR & ROE
-    all_cashflows = []
-    all_cf_distributions = []
-
-    for partner in sorted(all_partners):
-        cf_dist = 0.0
-        if cf_alloc is not None and not cf_alloc.empty:
-            cf_dist = cf_alloc[cf_alloc['PropCode'] == partner]['Allocated'].sum()
-
-        cap_dist = 0.0
-        if cap_alloc is not None and not cap_alloc.empty:
-            cap_dist = cap_alloc[cap_alloc['PropCode'] == partner]['Allocated'].sum()
-
-        state = cf_investors.get(partner) or cap_investors.get(partner)
-        if state:
-            unrealized = state.total_capital_outstanding + state.total_pref_balance
-            metrics = investor_metrics(state, sale_me, unrealized_nav=unrealized)
-
-            contrib = metrics.get('TotalContributions', 0.0)
-            rows.append({
-                'Deal Name': deal_name,
-                'Partner': partner,
-                'Contributions': contrib,
-                'CF Distributions': cf_dist,
-                'Capital Distributions': cap_dist,
-                'IRR': metrics.get('IRR'),
-                'ROE': metrics.get('ROE', 0.0),
-                'MOIC': metrics.get('MOIC', 0.0),
-                '_is_deal_total': False,
-            })
-
-            total_contrib += contrib
-            total_cf_dist += cf_dist
-            total_cap_dist += cap_dist
-
-            if state.cashflows:
-                all_cashflows.extend(state.cashflows)
-            if hasattr(state, 'cf_distributions') and state.cf_distributions:
-                all_cf_distributions.extend(state.cf_distributions)
-
-    if not rows:
-        return []
-
-    # Deal-level IRR
-    deal_irr = xirr(all_cashflows) if all_cashflows else None
-
-    # Deal-level ROE
-    contributions_list = [(d, a) for d, a in all_cashflows if a < 0]
-    inception_date = min(d for d, _ in contributions_list) if contributions_list else None
-    if inception_date and all_cashflows and sale_me:
-        deal_roe = calculate_roe(all_cashflows, all_cf_distributions, inception_date, sale_me)
-    else:
-        deal_roe = 0.0
-
-    # Deal-level MOIC
-    total_dist = total_cf_dist + total_cap_dist
-    deal_moic = total_dist / total_contrib if total_contrib > 0 else 0.0
+    for pr in partner_results:
+        rows.append({
+            'Deal Name': deal_name,
+            'Partner': pr['partner'],
+            'Contributions': pr['contributions'],
+            'CF Distributions': pr['cf_distributions'],
+            'Capital Distributions': pr['cap_distributions'],
+            'IRR': pr['irr'],
+            'ROE': pr['roe'],
+            'MOIC': pr['moic'],
+            '_is_deal_total': False,
+        })
 
     rows.append({
         'Deal Name': deal_name,
         'Partner': 'Deal Total',
-        'Contributions': total_contrib,
-        'CF Distributions': total_cf_dist,
-        'Capital Distributions': total_cap_dist,
-        'IRR': deal_irr,
-        'ROE': deal_roe,
-        'MOIC': deal_moic,
+        'Contributions': deal_summary.get('total_contributions', 0.0),
+        'CF Distributions': deal_summary.get('total_cf_distributions', 0.0),
+        'Capital Distributions': deal_summary.get('total_cap_distributions', 0.0),
+        'IRR': deal_summary.get('deal_irr'),
+        'ROE': deal_summary.get('deal_roe', 0.0),
+        'MOIC': deal_summary.get('deal_moic', 0.0),
         '_is_deal_total': True,
     })
 

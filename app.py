@@ -563,6 +563,8 @@ with tab_deal:
     model_start = _dc['model_start']
     model_end_full = _dc['model_end_full']
     beginning_cash = _dc['beginning_cash']
+    partner_results = _dc.get('partner_results', [])
+    deal_summary = _dc.get('deal_summary', {})
 
     # ============================================================
     # 📊 ANNUAL OPERATING FORECAST & WATERFALL SUMMARY
@@ -765,50 +767,27 @@ with tab_deal:
     # ============================================================
     if not _is_child_property:
 
-      # Combine CF and Cap allocations by partner
+      # Build partner summary table from pre-computed partner_results
       partner_totals = []
-
       all_partners = set()
-      if not cf_alloc.empty:
-          all_partners.update(cf_alloc['PropCode'].unique())
-      if not cap_alloc.empty:
-          all_partners.update(cap_alloc['PropCode'].unique())
 
-      for partner in sorted(all_partners):
-          # Cash flow distributions
-          cf_dist = 0
-          if not cf_alloc.empty:
-              cf_dist = cf_alloc[cf_alloc['PropCode'] == partner]['Allocated'].sum()
-    
-          # Capital distributions
-          cap_dist = 0
-          if not cap_alloc.empty:
-              cap_dist = cap_alloc[cap_alloc['PropCode'] == partner]['Allocated'].sum()
-    
-          # Get investor state
-          state = cf_investors.get(partner) or cap_investors.get(partner)
-    
-          if state:
-              # Calculate metrics
-              unrealized = state.total_capital_outstanding + state.total_pref_balance
-
-              from metrics import investor_metrics
-              metrics = investor_metrics(state, sale_me, unrealized_nav=unrealized)
-
-              partner_totals.append({
-                  'Partner': partner,
-                  'Cash Flow Distributions': cf_dist,
-                  'Capital Distributions': cap_dist,
-                  'Total Distributions': cf_dist + cap_dist,
-                  'Capital Outstanding': state.total_capital_outstanding,
-                  'Unpaid Pref (Compounded)': state.pref_unpaid_compounded + state.add_pref_unpaid_compounded,
-                  'Accrued Pref (Current Yr)': state.pref_accrued_current_year + state.add_pref_accrued_current_year,
-                  'Total Capital + Pref': unrealized,
-                  'Total Contributions': metrics.get('TotalContributions', 0),
-                  'IRR': metrics.get('IRR'),
-                  'ROE': metrics.get('ROE', 0),
-                  'MOIC': metrics.get('MOIC', 0)
-              })
+      for pr in partner_results:
+          partner = pr['partner']
+          all_partners.add(partner)
+          partner_totals.append({
+              'Partner': partner,
+              'Cash Flow Distributions': pr['cf_distributions'],
+              'Capital Distributions': pr['cap_distributions'],
+              'Total Distributions': pr['total_distributions'],
+              'Capital Outstanding': pr['capital_outstanding'],
+              'Unpaid Pref (Compounded)': pr['pref_unpaid_compounded'],
+              'Accrued Pref (Current Yr)': pr['pref_accrued_current_year'],
+              'Total Capital + Pref': pr['unrealized_nav'],
+              'Total Contributions': pr['contributions'],
+              'IRR': pr['irr'],
+              'ROE': pr['roe'],
+              'MOIC': pr['moic'],
+          })
 
       if partner_totals:
           totals_df = pd.DataFrame(partner_totals)
@@ -922,48 +901,15 @@ with tab_deal:
               else:
                   st.info("No waterfall steps found")
 
-          # Summary metrics
+          # Summary metrics from pre-computed deal_summary
           st.markdown("### Deal-Level Summary")
 
-          total_cf_dist = totals_df['Cash Flow Distributions'].sum()
-          total_cap_dist = totals_df['Capital Distributions'].sum()
-          total_dist = totals_df['Total Distributions'].sum()
-          total_contrib = totals_df['Total Contributions'].sum()
-          deal_moic = total_dist / total_contrib if total_contrib > 0 else 0
-
-          # Calculate deal-level XIRR by combining all investor cashflows
-          from metrics import xirr
-          all_cashflows = []
-          for partner in all_partners:
-              state = cf_investors.get(partner) or cap_investors.get(partner)
-              if state and state.cashflows:
-                  all_cashflows.extend(state.cashflows)
-
-          deal_xirr = xirr(all_cashflows) if all_cashflows else None
-
-          # Calculate deal-level ROE using proper formula:
-          # ROE = (Total CF Distributions / Weighted Average Capital) / Years
-          from metrics import calculate_roe
-
-          # Collect all CF distributions and capital events from all investors
-          all_cf_distributions = []
-          all_capital_events = []
-          for partner in all_partners:
-              state = cf_investors.get(partner) or cap_investors.get(partner)
-              if state:
-                  if hasattr(state, 'cf_distributions') and state.cf_distributions:
-                      all_cf_distributions.extend(state.cf_distributions)
-                  if state.cashflows:
-                      all_capital_events.extend(state.cashflows)
-
-          # Find inception date (first contribution)
-          contributions = [(d, a) for d, a in all_capital_events if a < 0]
-          inception_date = min(d for d, _ in contributions) if contributions else None
-
-          if inception_date and all_capital_events:
-              deal_roe = calculate_roe(all_capital_events, all_cf_distributions, inception_date, sale_me)
-          else:
-              deal_roe = 0.0
+          total_cf_dist = deal_summary.get('total_cf_distributions', 0.0)
+          total_cap_dist = deal_summary.get('total_cap_distributions', 0.0)
+          total_dist = deal_summary.get('total_distributions', 0.0)
+          deal_moic = deal_summary.get('deal_moic', 0.0)
+          deal_xirr = deal_summary.get('deal_irr')
+          deal_roe = deal_summary.get('deal_roe', 0.0)
 
           col1, col2, col3, col4, col5, col6 = st.columns(6)
           col1.metric("Total CF Distributions", f"${total_cf_dist:,.0f}")
@@ -1489,53 +1435,24 @@ with tab_deal:
       # ============================================================
       # XIRR CASH FLOWS TABLE
       # ============================================================
-      # Build a table showing all cash flows used for XIRR calculation
-      # Columns: Date, Description, Pref Equity, Ptr Equity, Deal
+      # Read pre-computed cashflow details from partner_results
       xirr_cf_rows = []
-
-      # Collect cashflows from all partners
-      for partner in sorted(all_partners):
-          state = cf_investors.get(partner) or cap_investors.get(partner)
-          if state and state.cashflows:
-              # Determine if this is Pref Equity (PPI) or Partner Equity (OP)
-              is_pref_equity = not partner.upper().startswith("OP")
-
-              for cf_date, cf_amount in state.cashflows:
-                  # Determine description based on sign
-                  if cf_amount < 0:
-                      description = "Contribution"
-                  else:
-                      description = "Distribution"
-
-                  xirr_cf_rows.append({
-                      "Date": cf_date,
-                      "Description": description,
-                      "Partner": partner,
-                      "is_pref": is_pref_equity,
-                      "Amount": cf_amount
-                  })
+      for pr in partner_results:
+          xirr_cf_rows.extend(pr['cashflow_details'])
 
       if xirr_cf_rows:
           xirr_cf_df = pd.DataFrame(xirr_cf_rows)
 
           # Pivot to get Pref Equity vs Ptr Equity columns
-          # Group by Date and Description, sum amounts by equity type
           grouped = xirr_cf_df.groupby(["Date", "Description", "is_pref"])["Amount"].sum().reset_index()
 
-          # Pivot to separate Pref and Ptr columns
           pref_df = grouped[grouped["is_pref"] == True][["Date", "Description", "Amount"]].rename(columns={"Amount": "Pref Equity"})
           ptr_df = grouped[grouped["is_pref"] == False][["Date", "Description", "Amount"]].rename(columns={"Amount": "Ptr Equity"})
 
-          # Merge on Date and Description
           final_df = pd.merge(pref_df, ptr_df, on=["Date", "Description"], how="outer").fillna(0)
-
-          # Calculate Deal total
           final_df["Deal"] = final_df["Pref Equity"] + final_df["Ptr Equity"]
-
-          # Sort by date ascending
           final_df = final_df.sort_values("Date").reset_index(drop=True)
 
-          # Format for display
           display_df = final_df.copy()
           display_df["Pref Equity"] = display_df["Pref Equity"].map(lambda x: f"({abs(x):,.0f})" if x < 0 else f"{x:,.0f}" if x != 0 else "")
           display_df["Ptr Equity"] = display_df["Ptr Equity"].map(lambda x: f"({abs(x):,.0f})" if x < 0 else f"{x:,.0f}" if x != 0 else "")
@@ -1543,6 +1460,12 @@ with tab_deal:
 
           with st.expander("XIRR Cash Flows"):
               st.dataframe(display_df[["Date", "Description", "Pref Equity", "Ptr Equity", "Deal"]], use_container_width=True)
+
+              # Download raw data as CSV
+              raw_df = final_df.copy()
+              raw_df["Date"] = raw_df["Date"].astype(str)
+              csv_data = raw_df.to_csv(index=False).encode('utf-8')
+              st.download_button("Download XIRR Cash Flows (CSV)", csv_data, "xirr_cashflows.csv", "text/csv")
 
 with tab_financials:
     # Independent property selector (defaults to Deal Analysis selection)
