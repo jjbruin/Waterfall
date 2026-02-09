@@ -31,7 +31,7 @@ waterfall-xirr/
 ├── waterfall.py              # Waterfall calculation engine
 ├── metrics.py                # XIRR, XNPV, ROE, MOIC calculations
 ├── loaders.py                # Data loading from database/CSV
-├── database.py               # SQLite management, migrations, table definitions
+├── database.py               # SQLite management, migrations, table definitions, CSV import/export
 ├── loans.py                  # Debt service modeling
 ├── planned_loans.py          # Future loan projections
 ├── capital_calls.py          # Capital call handling
@@ -111,6 +111,11 @@ Rendered by `waterfall_setup_ui.py`. View, edit, and create waterfall structures
 - **Actions** — Save to Database (with audit trail), Reset to Saved, Copy CF_WF->Cap_WF, Export CSV, Preview Waterfall ($100k test).
 - **Guidance Panel** — Collapsible reference from `waterfall_setup_rules.txt`: vState reference, Add vs Tag rule, pool routing table, common patterns, modeling checklist.
 
+### Sidebar: Database Tools (SQLite mode)
+Expander in sidebar when using SQLite Database mode.
+- **Import CSVs** — Folder path input + "Import All CSVs" button. Refreshes all MRI-sourced tables from CSVs. Protected tables (`waterfalls`, `one_pager_comments`, `waterfall_audit`) are never overwritten. Shows summary (updated/protected/skipped/errors). Clears data and computation caches.
+- **Export Database** — "Prepare Export" button builds zip in session_state. "Download Database Export" button for `waterfall_db_export_{timestamp}.zip` containing `{table_name}_db_export.csv` for every table.
+
 ### 6. Reports
 Rendered by `reports_ui.py`. Projected Returns Summary with Excel export.
 - **Report Type**: Extensible selector (currently: Projected Returns Summary)
@@ -134,6 +139,8 @@ Rendered by `reports_ui.py`. Projected Returns Summary with Excel export.
 - `_render_computed_returns()` - Button-gated IRR/MOIC computation (dashboard_ui.py)
 - `render_waterfall_setup()` - Waterfall Setup tab entry point (waterfall_setup_ui.py)
 - `save_waterfall_steps()` - Replace all waterfall steps for a vcode with audit trail (database.py)
+- `import_csvs_to_database()` - Refresh tables from CSVs, protecting DB-managed tables (database.py)
+- `export_all_tables_to_zip()` - Export all tables as labeled CSVs in a zip archive (database.py)
 - `render_reports()` - Reports tab entry point (reports_ui.py)
 - `_build_partner_returns()` - Partner + deal-level metrics from compute result (reports_ui.py)
 - `_generate_excel()` - Formatted Excel workbook via openpyxl (reports_ui.py)
