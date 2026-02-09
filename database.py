@@ -16,6 +16,8 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 import logging
+import io
+import zipfile
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -742,3 +744,119 @@ def delete_waterfall_steps(vcode: str, wf_type: str = None):
         )
     finally:
         conn.close()
+
+
+# Tables managed exclusively via the app (never overwritten by CSV import)
+PROTECTED_TABLES = {'waterfalls', 'one_pager_comments', 'waterfall_audit'}
+
+
+def import_csvs_to_database(
+    data_folder: str,
+    db_path: str = DB_PATH,
+) -> Dict[str, Dict[str, Any]]:
+    """Import CSV files into the database, protecting DB-managed tables.
+
+    Iterates ``TABLE_DEFINITIONS``, reads each CSV from *data_folder*, and
+    replaces the corresponding table **except** for protected tables
+    (waterfalls, one_pager_comments, waterfall_audit) which are managed
+    exclusively via the application UI.
+
+    After loading, recreates indexes, runs migrations, and logs each
+    import to the ``import_log`` table.
+
+    Args:
+        data_folder: Path to folder containing MRI CSV source files.
+        db_path: Path to SQLite database file.
+
+    Returns:
+        Per-table results dict: ``{table_name: {status, rows, file?, error?}}``.
+        Status is one of ``'success'``, ``'protected'``, ``'skipped'``, ``'error'``.
+    """
+    results: Dict[str, Dict[str, Any]] = {}
+    data_path = Path(data_folder)
+
+    if not data_path.is_dir():
+        return {'_error': {'status': 'error', 'error': f'Folder not found: {data_folder}'}}
+
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+
+    for table_name, table_info in TABLE_DEFINITIONS.items():
+        # Skip protected tables
+        if table_name in PROTECTED_TABLES:
+            results[table_name] = {'rows': 0, 'status': 'protected'}
+            logger.info(f"🔒 Protected {table_name}: skipped (DB-managed)")
+            continue
+
+        csv_file = data_path / table_info['csv']
+
+        if not csv_file.exists():
+            results[table_name] = {'rows': 0, 'status': 'skipped', 'file': str(csv_file)}
+            logger.warning(f"⚠️  Skipped {table_name}: {csv_file} not found")
+            continue
+
+        try:
+            df = pd.read_csv(csv_file)
+            df.columns = [str(c).strip() for c in df.columns]
+            df.to_sql(table_name, conn, if_exists='replace', index=False)
+
+            # Log the import
+            try:
+                conn.execute(
+                    "INSERT INTO import_log (table_name, rows_imported, import_mode, imported_by, source_file) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (table_name, len(df), 'replace', 'csv_import', str(csv_file)),
+                )
+            except Exception:
+                pass  # import_log table may not exist yet on first run
+
+            logger.info(f"✅ Imported {table_name}: {len(df):,} rows from {csv_file.name}")
+            results[table_name] = {'rows': len(df), 'status': 'success', 'file': str(csv_file)}
+
+        except Exception as e:
+            logger.error(f"❌ Error importing {table_name}: {e}")
+            results[table_name] = {'rows': 0, 'status': 'error', 'error': str(e)}
+
+    # Ensure app-managed tables exist
+    create_additional_tables(conn)
+    run_migrations(conn)
+    create_indexes(conn)
+    conn.commit()
+    conn.close()
+
+    return results
+
+
+def export_all_tables_to_zip(db_path: str = DB_PATH) -> bytes:
+    """Export every database table as CSV files inside a zip archive.
+
+    Each table is written as ``{table_name}_db_export.csv`` to distinguish
+    exports from the original MRI source CSVs.
+
+    Args:
+        db_path: Path to SQLite database file.
+
+    Returns:
+        Zip archive as ``bytes``, suitable for ``st.download_button(data=...)``.
+    """
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+
+    tables = pd.read_sql(
+        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",
+        conn,
+    )
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for table_name in tables['name']:
+            try:
+                df = pd.read_sql(f"SELECT * FROM [{table_name}]", conn)
+                csv_bytes = df.to_csv(index=False).encode('utf-8')
+                zf.writestr(f"{table_name}_db_export.csv", csv_bytes)
+            except Exception as e:
+                logger.warning(f"Export skip {table_name}: {e}")
+
+    conn.close()
+    buf.seek(0)
+    return buf.read()

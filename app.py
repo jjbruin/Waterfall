@@ -13,7 +13,7 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 from pathlib import Path
-from datetime import date
+from datetime import date, datetime
 
 # Local imports
 from config import *
@@ -31,6 +31,7 @@ from capital_calls import *
 from cash_management import *
 from consolidation import build_consolidated_forecast, get_sub_portfolio_summary, get_property_vcodes_for_deal, get_parent_deal_for_property
 from compute import compute_deal_analysis, get_deal_capitalization
+from database import import_csvs_to_database, export_all_tables_to_zip
 from property_financials_ui import render_property_financials
 from reports_ui import render_reports
 from dashboard_ui import render_dashboard
@@ -153,6 +154,60 @@ with st.sidebar:
                 if k.startswith('_deal_'):
                     del st.session_state[k]
             st.rerun()
+
+        # --- Database Tools ---
+        with st.expander("Database Tools"):
+            # -- Import CSVs --
+            st.markdown("**Import CSVs**")
+            csv_folder = st.text_input(
+                "CSV folder path",
+                placeholder=r"C:\Path\To\MRI_Exports",
+                key="csv_import_folder",
+            )
+            st.caption("Waterfalls and comments are managed in the database and will not be overwritten.")
+            if st.button("Import All CSVs", key="btn_import_csvs"):
+                if csv_folder and csv_folder.strip():
+                    with st.spinner("Importing CSVs..."):
+                        import_results = import_csvs_to_database(csv_folder.strip(), db_path)
+                    if '_error' in import_results:
+                        st.error(import_results['_error']['error'])
+                    else:
+                        ok = sum(1 for v in import_results.values() if v['status'] == 'success')
+                        prot = sum(1 for v in import_results.values() if v['status'] == 'protected')
+                        skip = sum(1 for v in import_results.values() if v['status'] == 'skipped')
+                        err = sum(1 for v in import_results.values() if v['status'] == 'error')
+                        st.success(f"Import complete: {ok} updated, {prot} protected, {skip} skipped, {err} errors")
+                        if err:
+                            for tbl, res in import_results.items():
+                                if res['status'] == 'error':
+                                    st.error(f"  {tbl}: {res['error']}")
+                        # Clear caches so app picks up new data
+                        _load_sqlite_data.clear()
+                        for k in list(st.session_state.keys()):
+                            if k.startswith('_deal_') or k.startswith('_dashboard_'):
+                                del st.session_state[k]
+                else:
+                    st.warning("Enter a CSV folder path first.")
+
+            st.divider()
+
+            # -- Export Database --
+            st.markdown("**Export Database**")
+            if st.button("Prepare Export", key="btn_prepare_export"):
+                with st.spinner("Building zip..."):
+                    st.session_state['_db_export_zip'] = export_all_tables_to_zip(db_path)
+                st.success("Export ready for download.")
+
+            if '_db_export_zip' in st.session_state:
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                st.download_button(
+                    "Download Database Export",
+                    data=st.session_state['_db_export_zip'],
+                    file_name=f"waterfall_db_export_{ts}.zip",
+                    mime="application/zip",
+                    key="btn_download_export",
+                )
+
     elif mode == "Local folder":
         folder = st.text_input("Data folder path", placeholder=r"C:\Path\To\Data")
         st.caption("**Required:** investment_map.csv, waterfalls.csv, coa.csv, accounting_feed.csv, forecast_feed.csv")
