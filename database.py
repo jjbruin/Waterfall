@@ -647,3 +647,98 @@ def execute_query(query: str, params: tuple = None) -> pd.DataFrame:
     conn.close()
     
     return df
+
+
+def save_waterfall_steps(vcode: str, steps_df: pd.DataFrame):
+    """Replace all waterfall steps for a vcode with the provided DataFrame.
+
+    Backs up existing rows to waterfall_audit first, then DELETE + INSERT
+    within a transaction.
+    """
+    conn = get_db_connection()
+    try:
+        # Ensure audit table exists
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS waterfall_audit (
+                audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                audit_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                action TEXT,
+                vcode TEXT,
+                vmisc TEXT,
+                iOrder INTEGER,
+                vAmtType TEXT,
+                vNotes TEXT,
+                PropCode TEXT,
+                nmisc REAL,
+                dteffective TEXT,
+                vtranstype TEXT,
+                mAmount REAL,
+                nPercent REAL,
+                FXRate REAL,
+                vState TEXT
+            )
+        """)
+
+        # Backup existing rows
+        existing = pd.read_sql(
+            "SELECT * FROM waterfalls WHERE vcode = ?", conn, params=(vcode,)
+        )
+        if not existing.empty:
+            audit_cols = [
+                "vcode", "vmisc", "iOrder", "vAmtType", "vNotes", "PropCode",
+                "nmisc", "dteffective", "vtranstype", "mAmount", "nPercent",
+                "FXRate", "vState",
+            ]
+            for _, row in existing.iterrows():
+                vals = [row.get(c) for c in audit_cols]
+                conn.execute(
+                    "INSERT INTO waterfall_audit "
+                    "(action, vcode, vmisc, iOrder, vAmtType, vNotes, PropCode, "
+                    "nmisc, dteffective, vtranstype, mAmount, nPercent, FXRate, vState) "
+                    "VALUES ('backup', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    vals,
+                )
+
+        # Delete existing rows for this vcode
+        conn.execute("DELETE FROM waterfalls WHERE vcode = ?", (vcode,))
+
+        # Insert new rows
+        wf_cols = [
+            "vcode", "vmisc", "iOrder", "vAmtType", "vNotes", "PropCode",
+            "nmisc", "dteffective", "vtranstype", "mAmount", "nPercent",
+            "FXRate", "vState",
+        ]
+        for _, row in steps_df.iterrows():
+            vals = [row.get(c) for c in wf_cols]
+            conn.execute(
+                "INSERT INTO waterfalls "
+                "(vcode, vmisc, iOrder, vAmtType, vNotes, PropCode, nmisc, "
+                "dteffective, vtranstype, mAmount, nPercent, FXRate, vState) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                vals,
+            )
+
+        conn.commit()
+        logger.info(f"Saved {len(steps_df)} waterfall steps for {vcode}")
+    finally:
+        conn.close()
+
+
+def delete_waterfall_steps(vcode: str, wf_type: str = None):
+    """Delete waterfall steps for a vcode (optionally filtered by vmisc type)."""
+    conn = get_db_connection()
+    try:
+        if wf_type:
+            conn.execute(
+                "DELETE FROM waterfalls WHERE vcode = ? AND vmisc = ?",
+                (vcode, wf_type),
+            )
+        else:
+            conn.execute("DELETE FROM waterfalls WHERE vcode = ?", (vcode,))
+        conn.commit()
+        logger.info(
+            f"Deleted waterfall steps for {vcode}"
+            + (f" (type={wf_type})" if wf_type else "")
+        )
+    finally:
+        conn.close()

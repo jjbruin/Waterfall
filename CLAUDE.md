@@ -24,6 +24,7 @@ waterfall-xirr/
 ├── debt_service_ui.py        # Debt Service display (Loan Summary, Amortization Schedules, Sale Proceeds)
 ├── property_financials_ui.py # Property Financials tab UI (Performance Chart, IS, BS, Tenants, One Pager)
 ├── reports_ui.py             # Reports tab UI (Projected Returns Summary, Excel export)
+├── waterfall_setup_ui.py     # Waterfall Setup tab UI (view, edit, create waterfall structures)
 ├── one_pager_ui.py           # One Pager Investor Report UI (Streamlit components)
 ├── one_pager.py              # One Pager data logic (performance calcs, cap stack, PE metrics)
 ├── models.py                 # Data classes (InvestorState, Loan)
@@ -101,7 +102,16 @@ Rendered by `property_financials_ui.py`. Sections in order:
 ### 4. Ownership & Partnerships
 Ownership tree visualization and relationship data.
 
-### 5. Reports
+### 5. Waterfall Setup
+Rendered by `waterfall_setup_ui.py`. View, edit, and create waterfall structures for any entity.
+- **Entity Navigation** — Selectbox of all entities with waterfalls + entities from relationships. Mini ownership tree and investor list.
+- **Waterfall Editor** — `st.data_editor` with `num_rows="dynamic"` for CF_WF and Cap_WF steps. Columns: iOrder, PropCode, vState, FXRate, nPercent, mAmount, vtranstype, vAmtType, vNotes.
+- **Validation** — Inline warnings/errors: FXRate sums, Operating Capital Add vs Tag, Pref FX=1.0, lead/tag pairing.
+- **New Waterfall** — Pre-fills template from relationships/accounting: Pref steps per investor, Initial steps for Cap_WF, residual Share+Tag.
+- **Actions** — Save to Database (with audit trail), Reset to Saved, Copy CF_WF->Cap_WF, Export CSV, Preview Waterfall ($100k test).
+- **Guidance Panel** — Collapsible reference from `waterfall_setup_rules.txt`: vState reference, Add vs Tag rule, pool routing table, common patterns, modeling checklist.
+
+### 6. Reports
 Rendered by `reports_ui.py`. Projected Returns Summary with Excel export.
 - **Report Type**: Extensible selector (currently: Projected Returns Summary)
 - **Population Selectors**: Current Deal, Select Deals, By Partner, By Upstream Investor, All Deals
@@ -122,6 +132,8 @@ Rendered by `reports_ui.py`. Projected Returns Summary with Excel export.
 - `render_dashboard()` - Dashboard tab entry point (dashboard_ui.py)
 - `_get_portfolio_caps()` - Lightweight cap data per deal, cached in session_state (dashboard_ui.py)
 - `_render_computed_returns()` - Button-gated IRR/MOIC computation (dashboard_ui.py)
+- `render_waterfall_setup()` - Waterfall Setup tab entry point (waterfall_setup_ui.py)
+- `save_waterfall_steps()` - Replace all waterfall steps for a vcode with audit trail (database.py)
 - `render_reports()` - Reports tab entry point (reports_ui.py)
 - `_build_partner_returns()` - Partner + deal-level metrics from compute result (reports_ui.py)
 - `_generate_excel()` - Formatted Excel workbook via openpyxl (reports_ui.py)

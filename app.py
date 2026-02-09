@@ -35,6 +35,7 @@ from property_financials_ui import render_property_financials
 from reports_ui import render_reports
 from dashboard_ui import render_dashboard
 from debt_service_ui import render_debt_service
+from waterfall_setup_ui import render_waterfall_setup
 
 # ============================================================
 # STREAMLIT CONFIG
@@ -295,7 +296,7 @@ inv, wf, acct, fc, coa, mri_loans_raw, mri_supp, mri_val, fund_deals_raw, inv_wf
 
 
 # Create tabs for different sections - tabs at top level
-tab_dashboard, tab_deal, tab_financials, tab_ownership, tab_reports = st.tabs(["Dashboard", "Deal Analysis", "Property Financials", "Ownership & Partnerships", "Reports"])
+tab_dashboard, tab_deal, tab_financials, tab_ownership, tab_wf_setup, tab_reports = st.tabs(["Dashboard", "Deal Analysis", "Property Financials", "Ownership & Partnerships", "Waterfall Setup", "Reports"])
 
 with tab_dashboard:
     render_dashboard(
@@ -1686,6 +1687,11 @@ with tab_ownership:
 
     else:
         st.info("Upload MRI_IA_Relationship.csv to analyze multi-tiered ownership structures")
+
+with tab_wf_setup:
+    render_waterfall_setup(
+        wf=wf, inv=inv, relationships_raw=relationships_raw, acct=acct,
+    )
 
 with tab_reports:
     render_reports(
