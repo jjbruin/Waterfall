@@ -83,11 +83,6 @@ TABLE_DEFINITIONS = {
         'description': 'Investor commitments to entities',
         'key_columns': ['CommitmentUID', 'EntityID', 'InvestorID']
     },
-    'investor_roe_feed': {
-        'csv': 'MRI_Investor_ROE_Feed.csv',
-        'description': 'Investor-level financial activity for ROE calculations',
-        'key_columns': ['InvestmentID', 'InvestorID', 'EffectiveDate']
-    },
     'fund_deals': {
         'csv': 'fund_deals.csv',
         'description': 'Fund to deal mappings',
