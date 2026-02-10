@@ -89,7 +89,7 @@ Rendered by `dashboard_ui.py`. Executive portfolio-level view with instant-load 
 - **Computed Returns** (button-gated) — Progress bar → IRR by Deal bar chart + formatted summary table (Contributions, Distributions, IRR, ROE, MOIC)
 
 ### 2. Deal Analysis
-Main waterfall computation, partner returns, capital accounts, XIRR/MOIC metrics. Debt service display rendered by `debt_service_ui.py` (Loan Summary, Detailed Amortization Schedules, Sale Proceeds Calculation).
+Wrapped in `_deal_analysis_fragment()` (`@st.fragment`, defined at module level in `app.py`). Main waterfall computation, partner returns, capital accounts, XIRR/MOIC metrics. Debt service display rendered by `debt_service_ui.py` (Loan Summary, Detailed Amortization Schedules, Sale Proceeds Calculation). Deal switching only reruns this fragment — not all six tabs. Cross-tab state (`_current_deal_vcode`, `_current_fc_deal_modeled`) stored in session_state for Property Financials and Ownership tabs.
 
 ### 3. Property Financials
 Rendered by `property_financials_ui.py`. Sections in order:
@@ -125,6 +125,7 @@ Rendered by `reports_ui.py`. Projected Returns Summary with Excel export.
 
 ## Key Functions
 
+- `get_cached_deal_result()` - Shared multi-deal cache wrapper; all consumers call this instead of `compute_deal_analysis()` directly (compute.py)
 - `build_partner_results()` - Single source of truth for all partner & deal metrics (compute.py)
 - `xirr(cfs)` - Calculate IRR with irregular dates (metrics.py)
 - `accrue_pref_to_date()` - Daily pref accrual (waterfall.py)

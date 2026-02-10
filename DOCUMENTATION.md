@@ -14,7 +14,8 @@
 6. [Capital Pools & Routing](#capital-pools--routing)
 7. [Ownership Relationships](#ownership-relationships)
 8. [Capital Calls & Commitments](#capital-calls--commitments)
-9. [Troubleshooting](#troubleshooting)
+9. [Performance & Caching](#performance--caching)
+10. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -37,8 +38,10 @@ A Streamlit-based financial modeling application for calculating investment wate
 waterfall-xirr/
 ├── app.py                    # Main Streamlit entry point & sidebar
 ├── config.py                 # Constants, account classifications, rates
-├── compute.py                # Deal computation logic (extracted from app.py)
+├── compute.py                # Deal computation logic + shared multi-deal cache
 ├── dashboard_ui.py           # Dashboard tab UI (KPI cards, portfolio charts, computed returns)
+├── debt_service_ui.py        # Debt Service display (Loan Summary, Amortization, Sale Proceeds)
+├── waterfall_setup_ui.py     # Waterfall Setup tab UI (view, edit, create waterfalls)
 ├── property_financials_ui.py # Property Financials tab UI (Performance Chart, IS, BS, Tenants, One Pager)
 ├── reports_ui.py             # Reports tab UI (Projected Returns Summary, Excel export)
 ├── one_pager_ui.py           # One Pager Investor Report UI (Streamlit components)
@@ -47,7 +50,7 @@ waterfall-xirr/
 ├── waterfall.py              # Waterfall calculation engine
 ├── metrics.py                # XIRR, XNPV, ROE, MOIC calculations
 ├── loaders.py                # Data loading from database/CSV
-├── database.py               # SQLite management, migrations, table definitions
+├── database.py               # SQLite management, migrations, table definitions, CSV import/export
 ├── loans.py                  # Debt service modeling
 ├── planned_loans.py          # Future loan projections
 ├── capital_calls.py          # Capital call handling
@@ -65,7 +68,7 @@ waterfall-xirr/
 | Module | Purpose |
 |--------|---------|
 | `app.py` | Streamlit entry point, sidebar controls, data loading, tab routing |
-| `compute.py` | Deal computation orchestration (extracted from app.py for caching) |
+| `compute.py` | Deal computation orchestration + `get_cached_deal_result()` shared multi-deal cache |
 | `dashboard_ui.py` | Dashboard tab: KPI cards, portfolio NOI trend, capital structure, occupancy, asset allocation, loan maturities, computed returns |
 | `property_financials_ui.py` | Property Financials tab: Performance Chart, IS, BS, Tenants, One Pager |
 | `reports_ui.py` | Reports tab: Projected Returns Summary, population selectors, Excel export |
@@ -78,7 +81,9 @@ waterfall-xirr/
 | `metrics.py` | XIRR, ROE, MOIC calculations |
 | `capital_calls.py` | Capital calls processing |
 | `cash_management.py` | Cash reserves and CapEx management |
-| `database.py` | Database operations, table definitions, migrations, indexes |
+| `debt_service_ui.py` | Debt Service display: Loan Summary, Amortization Schedules, Sale Proceeds |
+| `waterfall_setup_ui.py` | Waterfall Setup tab: view, edit, create waterfall structures |
+| `database.py` | Database operations, table definitions, migrations, indexes, CSV import/export |
 | `reporting.py` | Annual tables and formatting |
 | `config.py` | BS_ACCOUNTS, IS_ACCOUNTS, capital pool routing, default settings |
 
@@ -418,6 +423,51 @@ Each deal's partner rows are followed by a **Deal Total** row (bold, solid top b
 - Child properties are filtered out using a vectorized `Portfolio_Name` check (no per-row function calls)
 - The "Current Deal" option reuses the `_deal_cache` from session_state — no recomputation
 - Multi-deal reports show a progress bar during computation
+
+---
+
+## Performance & Caching
+
+### Shared Multi-Deal Computation Cache
+
+All deal computations flow through `get_cached_deal_result()` in `compute.py`. This function wraps `compute_deal_analysis()` with a shared session_state cache (`st.session_state['_deal_results']`), keyed by `{vcode}|{start_year}|{horizon_years}|{pro_yr_base}`.
+
+Deals computed by any consumer accumulate in the shared cache and are reused everywhere:
+
+| Consumer | Location | Behavior |
+|----------|----------|----------|
+| Deal Analysis | `app.py` `_deal_analysis_fragment()` | Computes on first view, instant on return |
+| Dashboard Computed Returns | `dashboard_ui.py` `_render_computed_returns()` | Loops all eligible deals, cached for later |
+| Reports | `reports_ui.py` `render_reports()` | Loops selected deals, reuses any cached results |
+
+A toast notification ("Computing Pxxxxxxx...") appears only on cache misses. Cache invalidation happens automatically when "Reload Data" or "Import CSVs" clears all `_deal_*` session_state keys.
+
+### Fragment Isolation
+
+All six tabs use `@st.fragment` to isolate widget-triggered reruns:
+
+| Tab | Fragment | Location |
+|-----|----------|----------|
+| Dashboard | `_dashboard_fragment()` | `dashboard_ui.py` |
+| Deal Analysis | `_deal_analysis_fragment()` | `app.py` (module-level) |
+| Property Financials | `_property_financials_fragment()` | `property_financials_ui.py` |
+| Ownership (upstream) | `_render_upstream_analysis_fragment()` | `app.py` |
+| Waterfall Setup | `_waterfall_setup_fragment()` | `waterfall_setup_ui.py` |
+| Reports | `_reports_fragment()` | `reports_ui.py` |
+
+Switching deals in Deal Analysis only reruns the Deal Analysis fragment — not the other five tabs. Cross-tab state is shared via session_state:
+- `_current_deal_vcode` — selected deal vcode (used by Property Financials, Ownership)
+- `_current_fc_deal_modeled` — modeled forecast DataFrame (used by Property Financials)
+
+### Session State Cache Keys
+
+| Prefix | Contents | Cleared by |
+|--------|----------|------------|
+| `_deal_*` | Multi-deal computation cache, deal-related UI state | Reload Data, CSV Import |
+| `_current_*` | Cross-tab state (deal_vcode, fc_deal_modeled) | Reload Data, CSV Import |
+| `_dashboard_*` | Dashboard caps, returns, errors | Reload Data, CSV Import |
+| `_wf_*` | Waterfall Setup drafts and nav state | Reload Data, CSV Import |
+| `_ownership_*` | Ownership tree cache | Reload Data, CSV Import |
 
 ---
 
