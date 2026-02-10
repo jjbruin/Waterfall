@@ -20,8 +20,22 @@ from one_pager_ui import render_one_pager_section
 def render_property_financials(deal_vcode, isbs_raw, fc_deal_modeled,
                                tenants_raw, inv, mri_loans_raw, mri_val,
                                wf, commitments_raw, acct, occupancy_raw):
-    """Render the Property Financials tab contents."""
+    """Render the Property Financials tab contents.
 
+    Delegates to a @st.fragment so chart selectors, form submissions, and
+    buttons only rerun this fragment — not all six tabs.
+    """
+    _property_financials_fragment(
+        deal_vcode, isbs_raw, fc_deal_modeled, tenants_raw, inv,
+        mri_loans_raw, mri_val, wf, commitments_raw, acct, occupancy_raw,
+    )
+
+
+@st.fragment
+def _property_financials_fragment(deal_vcode, isbs_raw, fc_deal_modeled,
+                                  tenants_raw, inv, mri_loans_raw, mri_val,
+                                  wf, commitments_raw, acct, occupancy_raw):
+    """Fragment-isolated Property Financials body."""
     _render_performance_chart(deal_vcode, isbs_raw, occupancy_raw)
     _render_income_statement(deal_vcode, isbs_raw, fc_deal_modeled)
     _render_balance_sheet(deal_vcode, isbs_raw)
