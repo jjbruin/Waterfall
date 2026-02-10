@@ -30,7 +30,7 @@ from ownership_tree import *
 from capital_calls import *
 from cash_management import *
 from consolidation import build_consolidated_forecast, get_sub_portfolio_summary, get_property_vcodes_for_deal, get_parent_deal_for_property
-from compute import compute_deal_analysis, get_deal_capitalization
+from compute import compute_deal_analysis, get_deal_capitalization, get_cached_deal_result
 from database import import_csvs_to_database, export_all_tables_to_zip
 from property_financials_ui import render_property_financials
 from reports_ui import render_reports
@@ -149,9 +149,9 @@ with st.sidebar:
         st.caption("Loads all data from SQLite database including relationships for sub-portfolio consolidation.")
         if st.button("🔄 Reload Data"):
             _load_sqlite_data.clear()
-            # Clear deal computation cache too
+            # Clear deal computation + UI caches
             for k in list(st.session_state.keys()):
-                if k.startswith('_deal_'):
+                if k.startswith(('_deal_', '_wf_', '_ownership_', '_dashboard_')):
                     del st.session_state[k]
             st.rerun()
 
@@ -184,7 +184,7 @@ with st.sidebar:
                         # Clear caches so app picks up new data
                         _load_sqlite_data.clear()
                         for k in list(st.session_state.keys()):
-                            if k.startswith('_deal_') or k.startswith('_dashboard_'):
+                            if k.startswith(('_deal_', '_wf_', '_ownership_', '_dashboard_')):
                                 del st.session_state[k]
                 else:
                     st.warning("Enter a CSV folder path first.")
@@ -350,6 +350,198 @@ def load_inputs():
 inv, wf, acct, fc, coa, mri_loans_raw, mri_supp, mri_val, fund_deals_raw, inv_wf_raw, inv_acct_raw, relationships_raw, capital_calls_raw, isbs_raw, occupancy_raw, commitments_raw, tenants_raw = load_inputs()
 
 
+# ============================================================
+# FRAGMENT: Upstream Waterfall Analysis (Ownership tab)
+# ============================================================
+@st.fragment
+def _render_upstream_analysis_fragment(relationships, nodes, inv, fc, wf):
+    """Fragment-isolated upstream waterfall analysis.
+
+    Selectbox, number_input, and Run button only rerun this fragment.
+    """
+    st.markdown("---")
+    st.header("Upstream Waterfall Analysis")
+    st.markdown("Trace cash flows from deal level through funds, JVs, and partnerships to ultimate beneficiaries.")
+
+    # Get list of deals with forecasts for selection
+    deals_with_forecasts = []
+    if fc is not None and not fc.empty:
+        fc_vcodes = fc["vcode"].astype(str).unique()
+        for vc in fc_vcodes:
+            deal_info = inv[inv["vcode"].astype(str) == vc]
+            if not deal_info.empty:
+                deal_name = deal_info["Investment_Name"].iloc[0] if "Investment_Name" in deal_info.columns else vc
+                deals_with_forecasts.append((vc, f"{deal_name} ({vc})"))
+
+    if not deals_with_forecasts:
+        st.info("No deals with forecasts available for upstream analysis.")
+        return
+
+    # Deal selection for upstream analysis
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        upstream_deal_options = [label for _, label in deals_with_forecasts]
+        upstream_deal_label = st.selectbox(
+            "Select Deal for Upstream Analysis",
+            upstream_deal_options,
+            key="upstream_deal_selector"
+        )
+        upstream_vcode = None
+        for vc, label in deals_with_forecasts:
+            if label == upstream_deal_label:
+                upstream_vcode = vc
+                break
+
+    with col2:
+        analysis_amount = st.number_input(
+            "Distribution Amount ($)",
+            min_value=1000,
+            max_value=10000000,
+            value=100000,
+            step=10000,
+            key="upstream_analysis_amount"
+        )
+
+    if st.button("Run Upstream Waterfall Analysis", key="run_upstream_btn"):
+        if upstream_vcode:
+            with st.spinner("Processing upstream waterfalls..."):
+                try:
+                    from datetime import date as date_class
+                    analysis_cash = pd.DataFrame([{
+                        "event_date": date_class(2025, 12, 31),
+                        "cash_available": float(analysis_amount)
+                    }])
+
+                    deal_alloc, deal_states = run_waterfall(
+                        wf_steps=wf,
+                        vcode=upstream_vcode,
+                        wf_name="CF_WF",
+                        period_cash=analysis_cash,
+                        initial_states={},
+                    )
+
+                    if deal_alloc.empty:
+                        st.warning(f"No waterfall defined for {upstream_vcode}")
+                    else:
+                        deal_alloc["vcode"] = upstream_vcode
+                        upstream_alloc, entity_states, beneficiary_totals = run_recursive_upstream_waterfalls(
+                            deal_allocations=deal_alloc,
+                            wf_steps=wf,
+                            relationships=relationships,
+                            wf_type="CF_WF",
+                        )
+                        st.session_state.upstream_results = {
+                            "deal_alloc": deal_alloc,
+                            "upstream_alloc": upstream_alloc,
+                            "entity_states": entity_states,
+                            "beneficiary_totals": beneficiary_totals,
+                            "analysis_amount": analysis_amount,
+                            "vcode": upstream_vcode,
+                        }
+                        st.success("Upstream analysis complete!")
+
+                except Exception as e:
+                    st.error(f"Error running upstream analysis: {str(e)}")
+                    import traceback
+                    st.code(traceback.format_exc())
+
+    # Display results if available
+    if "upstream_results" in st.session_state and st.session_state.upstream_results:
+        results = st.session_state.upstream_results
+        upstream_alloc = results["upstream_alloc"]
+        beneficiary_totals = results["beneficiary_totals"]
+        analysis_amount = results["analysis_amount"]
+
+        if not upstream_alloc.empty:
+            st.subheader("Distribution Summary")
+            col1, col2, col3, col4 = st.columns(4)
+
+            with col1:
+                st.metric("Total Distributed", f"${analysis_amount:,.0f}")
+            with col2:
+                num_levels = upstream_alloc["Level"].max() + 1
+                st.metric("Ownership Levels", f"{num_levels}")
+            with col3:
+                num_beneficiaries = len(beneficiary_totals)
+                st.metric("Terminal Beneficiaries", f"{num_beneficiaries}")
+            with col4:
+                owpsc_flow = calculate_entity_through_flow(upstream_alloc, "OWPSC")
+                owpsc_total = owpsc_flow.get("total_received", 0)
+                owpsc_pct = (owpsc_total / analysis_amount * 100) if analysis_amount > 0 else 0
+                st.metric("OWPSC Share", f"${owpsc_total:,.0f} ({owpsc_pct:.1f}%)")
+
+            with st.expander("OWPSC Revenue Streams", expanded=True):
+                ubo_revenue = calculate_ubo_revenue_streams(upstream_alloc, "OWPSC", "PSC1")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("**Revenue Breakdown:**")
+                    rev_data = [
+                        {"Stream": "GP Promotes (via PSC1)", "Amount": f"${ubo_revenue.get('gp_promotes', 0):,.2f}"},
+                        {"Stream": "Fees", "Amount": f"${ubo_revenue.get('fees', 0):,.2f}"},
+                        {"Stream": "Capital Income", "Amount": f"${ubo_revenue.get('capital_income', 0):,.2f}"},
+                        {"Stream": "**Total Through-Flow**", "Amount": f"**${ubo_revenue.get('total_through_flow', 0):,.2f}**"},
+                    ]
+                    st.dataframe(pd.DataFrame(rev_data), hide_index=True, use_container_width=True)
+                with col2:
+                    st.markdown("**PSC1 Sources (flows to OWPSC):**")
+                    psc1_flow = calculate_entity_through_flow(upstream_alloc, "PSC1")
+                    if psc1_flow.get("by_source"):
+                        source_data = [
+                            {"Source": src, "Amount": f"${amt:,.2f}"}
+                            for src, amt in sorted(psc1_flow["by_source"].items(), key=lambda x: -x[1])
+                        ]
+                        st.dataframe(pd.DataFrame(source_data), hide_index=True, use_container_width=True)
+
+            with st.expander("Cash Flow by Level"):
+                for level in sorted(upstream_alloc["Level"].unique()):
+                    level_data = upstream_alloc[upstream_alloc["Level"] == level]
+                    level_total = level_data["Allocated"].sum()
+                    level_name = "Deal Level" if level == 0 else f"Level {level}"
+                    st.markdown(f"**{level_name}** (${level_total:,.0f} total)")
+                    level_summary = level_data.groupby(["Entity", "PropCode", "vState"]).agg({
+                        "Allocated": "sum"
+                    }).reset_index()
+                    level_summary = level_summary[level_summary["Allocated"] > 0.01]
+                    level_summary["Allocated"] = level_summary["Allocated"].apply(lambda x: f"${x:,.2f}")
+                    st.dataframe(
+                        level_summary.rename(columns={
+                            "Entity": "From", "PropCode": "To",
+                            "vState": "Type", "Allocated": "Amount"
+                        }),
+                        hide_index=True, use_container_width=True
+                    )
+
+            with st.expander("Terminal Beneficiaries"):
+                ben_data = [
+                    {
+                        "Entity": entity_id,
+                        "Cash Received": f"${total:,.2f}",
+                        "% of Total": f"{(total/analysis_amount*100):.2f}%"
+                    }
+                    for entity_id, total in sorted(beneficiary_totals.items(), key=lambda x: -x[1])
+                    if total > 0.01
+                ]
+                st.dataframe(pd.DataFrame(ben_data), hide_index=True, use_container_width=True)
+                ben_df = pd.DataFrame([
+                    {"EntityID": k, "CashReceived": v, "PctOfTotal": v/analysis_amount*100}
+                    for k, v in beneficiary_totals.items()
+                ])
+                csv = ben_df.to_csv(index=False)
+                st.download_button(
+                    label="Download Beneficiaries CSV",
+                    data=csv, file_name="terminal_beneficiaries.csv",
+                    mime="text/csv"
+                )
+
+            with st.expander("Full Allocation Detail"):
+                detail_cols = ["Level", "Entity", "Path", "PropCode", "vState", "Allocated", "vtranstype"]
+                available_cols = [c for c in detail_cols if c in upstream_alloc.columns]
+                detail_df = upstream_alloc[available_cols].copy()
+                detail_df = detail_df[detail_df["Allocated"] > 0.01]
+                detail_df["Allocated"] = detail_df["Allocated"].apply(lambda x: f"${x:,.2f}")
+                st.dataframe(detail_df, hide_index=True, use_container_width=True)
+
+
 # Create tabs for different sections - tabs at top level
 tab_dashboard, tab_deal, tab_financials, tab_ownership, tab_wf_setup, tab_reports = st.tabs(["Dashboard", "Deal Analysis", "Property Financials", "Ownership & Partnerships", "Waterfall Setup", "Reports"])
 
@@ -394,26 +586,21 @@ with tab_deal:
     deal_investment_id = str(selected_row.get('InvestmentID', ''))
     sale_date_raw = selected_row.get("Sale_Date", None)
 
-    _deal_key = f"{deal_vcode}|{start_year}|{horizon_years}|{pro_yr_base}"
-    if st.session_state.get('_deal_cache_key') != _deal_key:
-        st.session_state['_deal_cache'] = compute_deal_analysis(
-            deal_vcode=deal_vcode,
-            deal_investment_id=deal_investment_id,
-            sale_date_raw=sale_date_raw,
-            inv=inv, wf=wf, acct=acct, fc=fc, coa=coa,
-            mri_loans_raw=mri_loans_raw,
-            mri_supp=mri_supp,
-            mri_val=mri_val,
-            relationships_raw=relationships_raw,
-            capital_calls_raw=capital_calls_raw,
-            isbs_raw=isbs_raw,
-            start_year=int(start_year),
-            horizon_years=int(horizon_years),
-            pro_yr_base=int(pro_yr_base),
-        )
-        st.session_state['_deal_cache_key'] = _deal_key
-
-    _dc = st.session_state['_deal_cache']
+    _dc = get_cached_deal_result(
+        vcode=deal_vcode,
+        start_year=int(start_year),
+        horizon_years=int(horizon_years),
+        pro_yr_base=int(pro_yr_base),
+        deal_investment_id=deal_investment_id,
+        sale_date_raw=sale_date_raw,
+        inv=inv, wf=wf, acct=acct, fc=fc, coa=coa,
+        mri_loans_raw=mri_loans_raw,
+        mri_supp=mri_supp,
+        mri_val=mri_val,
+        relationships_raw=relationships_raw,
+        capital_calls_raw=capital_calls_raw,
+        isbs_raw=isbs_raw,
+    )
     cap_data = _dc['cap_data']
 
     # ============================================================
@@ -1446,15 +1633,23 @@ with tab_ownership:
     st.header("Ownership Relationships & Waterfall Requirements")
 
     if relationships_raw is not None:
-        # Load and process relationships
-        relationships = load_relationships(relationships_raw)
+        # Load and process relationships (cached in session_state)
+        _ot_cache = st.session_state.get('_ownership_tree_cache')
+        _ot_key = len(relationships_raw)
+        if _ot_cache and _ot_cache['key'] == _ot_key:
+            relationships = _ot_cache['relationships']
+            nodes = _ot_cache['nodes']
+        else:
+            relationships = load_relationships(relationships_raw)
+            with st.spinner("Building ownership tree..."):
+                nodes = build_ownership_tree(relationships)
+            st.session_state['_ownership_tree_cache'] = {
+                'key': _ot_key,
+                'relationships': relationships,
+                'nodes': nodes,
+            }
 
         st.success(f"Loaded {len(relationships)} ownership relationships")
-
-        # Build ownership tree
-        with st.spinner("Building ownership tree..."):
-            nodes = build_ownership_tree(relationships)
-
         st.info(f"Identified {len(nodes)} unique entities in ownership structure")
 
         # Identify entities that are deals (have vcode mappings)
@@ -1526,219 +1721,11 @@ with tab_ownership:
         else:
             st.info(f"No ownership relationships found for {deal_vcode}")
 
-        # ============================================================
-        # UPSTREAM WATERFALL ANALYSIS
-        # ============================================================
-        st.markdown("---")
-        st.header("Upstream Waterfall Analysis")
-        st.markdown("Trace cash flows from deal level through funds, JVs, and partnerships to ultimate beneficiaries.")
-
-        # Get list of deals with forecasts for selection
-        deals_with_forecasts = []
-        if fc is not None and not fc.empty:
-            fc_vcodes = fc["vcode"].astype(str).unique()
-            for vc in fc_vcodes:
-                deal_info = inv[inv["vcode"].astype(str) == vc]
-                if not deal_info.empty:
-                    deal_name = deal_info["Investment_Name"].iloc[0] if "Investment_Name" in deal_info.columns else vc
-                    deals_with_forecasts.append((vc, f"{deal_name} ({vc})"))
-
-        if deals_with_forecasts:
-            # Deal selection for upstream analysis
-            col1, col2 = st.columns([2, 1])
-            with col1:
-                upstream_deal_options = [label for _, label in deals_with_forecasts]
-                upstream_deal_label = st.selectbox(
-                    "Select Deal for Upstream Analysis",
-                    upstream_deal_options,
-                    key="upstream_deal_selector"
-                )
-                # Extract vcode from selection
-                upstream_vcode = None
-                for vc, label in deals_with_forecasts:
-                    if label == upstream_deal_label:
-                        upstream_vcode = vc
-                        break
-
-            with col2:
-                analysis_amount = st.number_input(
-                    "Distribution Amount ($)",
-                    min_value=1000,
-                    max_value=10000000,
-                    value=100000,
-                    step=10000,
-                    key="upstream_analysis_amount"
-                )
-
-            # Run analysis button
-            if st.button("Run Upstream Waterfall Analysis", key="run_upstream_btn"):
-                if upstream_vcode:
-                    with st.spinner("Processing upstream waterfalls..."):
-                        try:
-                            # Create test cash for analysis
-                            from datetime import date as date_class
-                            analysis_cash = pd.DataFrame([{
-                                "event_date": date_class(2025, 12, 31),
-                                "cash_available": float(analysis_amount)
-                            }])
-
-                            # Run deal-level waterfall
-                            deal_alloc, deal_states = run_waterfall(
-                                wf_steps=wf,
-                                vcode=upstream_vcode,
-                                wf_name="CF_WF",
-                                period_cash=analysis_cash,
-                                initial_states={},
-                            )
-
-                            if deal_alloc.empty:
-                                st.warning(f"No waterfall defined for {upstream_vcode}")
-                            else:
-                                # Add vcode to allocations for tracking
-                                deal_alloc["vcode"] = upstream_vcode
-
-                                # Run recursive upstream waterfalls
-                                upstream_alloc, entity_states, beneficiary_totals = run_recursive_upstream_waterfalls(
-                                    deal_allocations=deal_alloc,
-                                    wf_steps=wf,
-                                    relationships=relationships,
-                                    wf_type="CF_WF",
-                                )
-
-                                # Store results in session state
-                                st.session_state.upstream_results = {
-                                    "deal_alloc": deal_alloc,
-                                    "upstream_alloc": upstream_alloc,
-                                    "entity_states": entity_states,
-                                    "beneficiary_totals": beneficiary_totals,
-                                    "analysis_amount": analysis_amount,
-                                    "vcode": upstream_vcode,
-                                }
-                                st.success("Upstream analysis complete!")
-
-                        except Exception as e:
-                            st.error(f"Error running upstream analysis: {str(e)}")
-                            import traceback
-                            st.code(traceback.format_exc())
-
-            # Display results if available
-            if "upstream_results" in st.session_state and st.session_state.upstream_results:
-                results = st.session_state.upstream_results
-                upstream_alloc = results["upstream_alloc"]
-                beneficiary_totals = results["beneficiary_totals"]
-                analysis_amount = results["analysis_amount"]
-
-                if not upstream_alloc.empty:
-                    # Summary metrics
-                    st.subheader("Distribution Summary")
-                    col1, col2, col3, col4 = st.columns(4)
-
-                    with col1:
-                        st.metric("Total Distributed", f"${analysis_amount:,.0f}")
-                    with col2:
-                        num_levels = upstream_alloc["Level"].max() + 1
-                        st.metric("Ownership Levels", f"{num_levels}")
-                    with col3:
-                        num_beneficiaries = len(beneficiary_totals)
-                        st.metric("Terminal Beneficiaries", f"{num_beneficiaries}")
-                    with col4:
-                        # Calculate OWPSC's share
-                        owpsc_flow = calculate_entity_through_flow(upstream_alloc, "OWPSC")
-                        owpsc_total = owpsc_flow.get("total_received", 0)
-                        owpsc_pct = (owpsc_total / analysis_amount * 100) if analysis_amount > 0 else 0
-                        st.metric("OWPSC Share", f"${owpsc_total:,.0f} ({owpsc_pct:.1f}%)")
-
-                    # OWPSC Revenue Streams
-                    with st.expander("OWPSC Revenue Streams", expanded=True):
-                        ubo_revenue = calculate_ubo_revenue_streams(upstream_alloc, "OWPSC", "PSC1")
-
-                        col1, col2 = st.columns(2)
-
-                        with col1:
-                            st.markdown("**Revenue Breakdown:**")
-                            rev_data = [
-                                {"Stream": "GP Promotes (via PSC1)", "Amount": f"${ubo_revenue.get('gp_promotes', 0):,.2f}"},
-                                {"Stream": "Fees", "Amount": f"${ubo_revenue.get('fees', 0):,.2f}"},
-                                {"Stream": "Capital Income", "Amount": f"${ubo_revenue.get('capital_income', 0):,.2f}"},
-                                {"Stream": "**Total Through-Flow**", "Amount": f"**${ubo_revenue.get('total_through_flow', 0):,.2f}**"},
-                            ]
-                            st.dataframe(pd.DataFrame(rev_data), hide_index=True, use_container_width=True)
-
-                        with col2:
-                            st.markdown("**PSC1 Sources (flows to OWPSC):**")
-                            psc1_flow = calculate_entity_through_flow(upstream_alloc, "PSC1")
-                            if psc1_flow.get("by_source"):
-                                source_data = [
-                                    {"Source": src, "Amount": f"${amt:,.2f}"}
-                                    for src, amt in sorted(psc1_flow["by_source"].items(), key=lambda x: -x[1])
-                                ]
-                                st.dataframe(pd.DataFrame(source_data), hide_index=True, use_container_width=True)
-
-                    # Flow by Level
-                    with st.expander("Cash Flow by Level"):
-                        for level in sorted(upstream_alloc["Level"].unique()):
-                            level_data = upstream_alloc[upstream_alloc["Level"] == level]
-                            level_total = level_data["Allocated"].sum()
-
-                            level_name = "Deal Level" if level == 0 else f"Level {level}"
-                            st.markdown(f"**{level_name}** (${level_total:,.0f} total)")
-
-                            # Group by entity for cleaner display
-                            level_summary = level_data.groupby(["Entity", "PropCode", "vState"]).agg({
-                                "Allocated": "sum"
-                            }).reset_index()
-                            level_summary = level_summary[level_summary["Allocated"] > 0.01]
-                            level_summary["Allocated"] = level_summary["Allocated"].apply(lambda x: f"${x:,.2f}")
-
-                            st.dataframe(
-                                level_summary.rename(columns={
-                                    "Entity": "From",
-                                    "PropCode": "To",
-                                    "vState": "Type",
-                                    "Allocated": "Amount"
-                                }),
-                                hide_index=True,
-                                use_container_width=True
-                            )
-
-                    # Terminal Beneficiaries
-                    with st.expander("Terminal Beneficiaries"):
-                        ben_data = [
-                            {
-                                "Entity": entity_id,
-                                "Cash Received": f"${total:,.2f}",
-                                "% of Total": f"{(total/analysis_amount*100):.2f}%"
-                            }
-                            for entity_id, total in sorted(beneficiary_totals.items(), key=lambda x: -x[1])
-                            if total > 0.01
-                        ]
-                        st.dataframe(pd.DataFrame(ben_data), hide_index=True, use_container_width=True)
-
-                        # Download button
-                        ben_df = pd.DataFrame([
-                            {"EntityID": k, "CashReceived": v, "PctOfTotal": v/analysis_amount*100}
-                            for k, v in beneficiary_totals.items()
-                        ])
-                        csv = ben_df.to_csv(index=False)
-                        st.download_button(
-                            label="Download Beneficiaries CSV",
-                            data=csv,
-                            file_name="terminal_beneficiaries.csv",
-                            mime="text/csv"
-                        )
-
-                    # Full Allocation Detail
-                    with st.expander("Full Allocation Detail"):
-                        detail_cols = ["Level", "Entity", "Path", "PropCode", "vState", "Allocated", "vtranstype"]
-                        available_cols = [c for c in detail_cols if c in upstream_alloc.columns]
-                        detail_df = upstream_alloc[available_cols].copy()
-                        detail_df = detail_df[detail_df["Allocated"] > 0.01]
-                        detail_df["Allocated"] = detail_df["Allocated"].apply(lambda x: f"${x:,.2f}")
-
-                        st.dataframe(detail_df, hide_index=True, use_container_width=True)
-
-        else:
-            st.info("No deals with forecasts available for upstream analysis.")
+        # Upstream analysis is fragment-isolated — selectbox, number_input,
+        # and Run button only rerun this fragment, not the full app.
+        _render_upstream_analysis_fragment(
+            relationships, nodes, inv, fc, wf,
+        )
 
     else:
         st.info("Upload MRI_IA_Relationship.csv to analyze multi-tiered ownership structures")

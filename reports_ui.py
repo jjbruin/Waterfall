@@ -9,7 +9,7 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 
-from compute import compute_deal_analysis
+from compute import compute_deal_analysis, get_cached_deal_result
 
 
 def _build_partner_returns(deal_result: dict, deal_name: str) -> list[dict]:
@@ -138,7 +138,14 @@ def _build_deal_lookup(inv, wf):
     - eligible_deals: subset of inv_disp that have waterfall definitions
     - eligible_labels: sorted list of eligible deal labels
     - wf_norm: waterfalls DataFrame with normalised 'vcode' column
+
+    Cached in session_state to avoid rebuilding on every Streamlit rerun.
     """
+    cache_key = (id(inv), len(inv), id(wf), len(wf))
+    cached = st.session_state.get('_deal_lookup_cache')
+    if cached is not None and cached['key'] == cache_key:
+        return cached['data']
+
     inv_disp = inv.copy()
     inv_disp["Investment_Name"] = inv_disp["Investment_Name"].fillna("").astype(str)
     inv_disp["vcode"] = inv_disp["vcode"].astype(str)
@@ -180,7 +187,9 @@ def _build_deal_lookup(inv, wf):
         key=lambda x: x.lower(),
     )
 
-    return inv_disp, eligible_deals, eligible_labels, wf_norm
+    result = (inv_disp, eligible_deals, eligible_labels, wf_norm)
+    st.session_state['_deal_lookup_cache'] = {'key': cache_key, 'data': result}
+    return result
 
 
 def render_reports(
@@ -189,7 +198,27 @@ def render_reports(
     relationships_raw, capital_calls_raw, isbs_raw,
     start_year: int, horizon_years: int, pro_yr_base: int,
 ):
-    """Render the Reports tab contents."""
+    """Render the Reports tab contents.
+
+    Delegates to a @st.fragment so population selectors and the Generate
+    button only rerun this fragment — not all six tabs.
+    """
+    _reports_fragment(
+        inv, wf, acct, fc, coa,
+        mri_loans_raw, mri_supp, mri_val,
+        relationships_raw, capital_calls_raw, isbs_raw,
+        start_year, horizon_years, pro_yr_base,
+    )
+
+
+@st.fragment
+def _reports_fragment(
+    inv, wf, acct, fc, coa,
+    mri_loans_raw, mri_supp, mri_val,
+    relationships_raw, capital_calls_raw, isbs_raw,
+    start_year, horizon_years, pro_yr_base,
+):
+    """Fragment-isolated Reports body."""
 
     # --- Report type selector ---
     report_type = st.selectbox(
@@ -370,30 +399,25 @@ def render_reports(
             inv_id = str(row.get("InvestmentID", ""))
             sale_date_raw = row.get("Sale_Date", None)
 
-            # Use cached result when available
-            _deal_key = f"{vcode}|{start_year}|{horizon_years}|{pro_yr_base}"
-            if st.session_state.get('_deal_cache_key') == _deal_key:
-                result = st.session_state['_deal_cache']
-            else:
-                try:
-                    result = compute_deal_analysis(
-                        deal_vcode=vcode,
-                        deal_investment_id=inv_id,
-                        sale_date_raw=sale_date_raw,
-                        inv=inv, wf=wf, acct=acct, fc=fc, coa=coa,
-                        mri_loans_raw=mri_loans_raw,
-                        mri_supp=mri_supp,
-                        mri_val=mri_val,
-                        relationships_raw=relationships_raw,
-                        capital_calls_raw=capital_calls_raw,
-                        isbs_raw=isbs_raw,
-                        start_year=start_year,
-                        horizon_years=horizon_years,
-                        pro_yr_base=pro_yr_base,
-                    )
-                except Exception as e:
-                    errors.append(f"{label}: {e}")
-                    continue
+            try:
+                result = get_cached_deal_result(
+                    vcode=vcode,
+                    start_year=start_year,
+                    horizon_years=horizon_years,
+                    pro_yr_base=pro_yr_base,
+                    deal_investment_id=inv_id,
+                    sale_date_raw=sale_date_raw,
+                    inv=inv, wf=wf, acct=acct, fc=fc, coa=coa,
+                    mri_loans_raw=mri_loans_raw,
+                    mri_supp=mri_supp,
+                    mri_val=mri_val,
+                    relationships_raw=relationships_raw,
+                    capital_calls_raw=capital_calls_raw,
+                    isbs_raw=isbs_raw,
+                )
+            except Exception as e:
+                errors.append(f"{label}: {e}")
+                continue
 
             if 'error' in result:
                 errors.append(f"{label}: {result['error']}")
