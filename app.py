@@ -550,6 +550,10 @@ if "Investment_Name" not in inv_disp.columns:
     st.error("investment_map.csv must include Investment_Name column")
     st.stop()
 
+# Exclude sold deals (data kept for future Sold Portfolio tab)
+if "Sale_Status" in inv_disp.columns:
+    inv_disp = inv_disp[inv_disp["Sale_Status"].fillna("").str.upper() != "SOLD"].copy()
+
 inv_disp["Investment_Name"] = inv_disp["Investment_Name"].fillna("").astype(str)
 inv_disp["vcode"] = inv_disp["vcode"].astype(str)
 
