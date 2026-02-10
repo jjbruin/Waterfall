@@ -37,6 +37,7 @@ from reports_ui import render_reports
 from dashboard_ui import render_dashboard
 from debt_service_ui import render_debt_service
 from waterfall_setup_ui import render_waterfall_setup
+from sold_portfolio_ui import render_sold_portfolio
 
 # ============================================================
 # STREAMLIT CONFIG
@@ -1605,7 +1606,7 @@ def _deal_analysis_fragment():
 
 
 # Create tabs for different sections - tabs at top level
-tab_dashboard, tab_deal, tab_financials, tab_ownership, tab_wf_setup, tab_reports = st.tabs(["Dashboard", "Deal Analysis", "Property Financials", "Ownership & Partnerships", "Waterfall Setup", "Reports"])
+tab_dashboard, tab_deal, tab_financials, tab_ownership, tab_wf_setup, tab_reports, tab_sold = st.tabs(["Dashboard", "Deal Analysis", "Property Financials", "Ownership & Partnerships", "Waterfall Setup", "Reports", "Sold Portfolio"])
 
 with tab_dashboard:
     render_dashboard(
@@ -1771,3 +1772,6 @@ with tab_reports:
         horizon_years=int(horizon_years),
         pro_yr_base=int(pro_yr_base),
     )
+
+with tab_sold:
+    render_sold_portfolio(inv=inv, acct=acct)

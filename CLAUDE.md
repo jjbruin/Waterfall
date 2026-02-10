@@ -24,6 +24,7 @@ waterfall-xirr/
 ├── debt_service_ui.py        # Debt Service display (Loan Summary, Amortization Schedules, Sale Proceeds)
 ├── property_financials_ui.py # Property Financials tab UI (Performance Chart, IS, BS, Tenants, One Pager)
 ├── reports_ui.py             # Reports tab UI (Projected Returns Summary, Excel export)
+├── sold_portfolio_ui.py      # Sold Portfolio tab UI (historical returns from accounting)
 ├── waterfall_setup_ui.py     # Waterfall Setup tab UI (view, edit, create waterfall structures)
 ├── one_pager_ui.py           # One Pager Investor Report UI (Streamlit components)
 ├── one_pager.py              # One Pager data logic (performance calcs, cap stack, PE metrics)
@@ -123,6 +124,13 @@ Rendered by `reports_ui.py`. Projected Returns Summary with Excel export.
 - **Output**: Partner-level rows (Contributions, CF Distributions, Capital Distributions, IRR, ROE, MOIC) plus bold deal-level total row with solid top border
 - **Excel Export**: Formatted workbook via openpyxl (currency/pct/multiple formats, auto-width, deal-total rows bold with top border)
 
+### 7. Sold Portfolio
+Rendered by `sold_portfolio_ui.py`. Historical returns for sold deals computed from accounting_feed (no forecast waterfalls).
+- **Data Source**: Accounting history only — contributions (`is_contribution`), distributions (`is_distribution`), capital events (`is_capital`)
+- **Output**: Per-partner rows + bold deal-total rows. Columns: Investment Name, Partner, Total Contributions, Total Distributions, IRR, ROE, MOIC
+- **Metrics**: `xirr()` and `calculate_roe()` from `metrics.py`, MOIC = distributions / contributions (no unrealized NAV)
+- **Excel Export**: Formatted workbook matching Reports tab style (currency/pct/multiple formats, bold deal-total rows)
+
 ## Key Functions
 
 - `get_cached_deal_result()` - Shared multi-deal cache wrapper; all consumers call this instead of `compute_deal_analysis()` directly (compute.py)
@@ -145,6 +153,8 @@ Rendered by `reports_ui.py`. Projected Returns Summary with Excel export.
 - `render_reports()` - Reports tab entry point (reports_ui.py)
 - `_build_partner_returns()` - Partner + deal-level metrics from compute result (reports_ui.py)
 - `_generate_excel()` - Formatted Excel workbook via openpyxl (reports_ui.py)
+- `render_sold_portfolio()` - Sold Portfolio tab entry point (sold_portfolio_ui.py)
+- `_compute_all_sold_returns()` - Historical returns from accounting for sold deals (sold_portfolio_ui.py)
 
 ## Account Classifications
 
