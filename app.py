@@ -151,7 +151,7 @@ with st.sidebar:
             _load_sqlite_data.clear()
             # Clear deal computation + UI caches
             for k in list(st.session_state.keys()):
-                if k.startswith(('_deal_', '_wf_', '_ownership_', '_dashboard_')):
+                if k.startswith(('_deal_', '_current_', '_wf_', '_ownership_', '_dashboard_')):
                     del st.session_state[k]
             st.rerun()
 
@@ -184,7 +184,7 @@ with st.sidebar:
                         # Clear caches so app picks up new data
                         _load_sqlite_data.clear()
                         for k in list(st.session_state.keys()):
-                            if k.startswith(('_deal_', '_wf_', '_ownership_', '_dashboard_')):
+                            if k.startswith(('_deal_', '_current_', '_wf_', '_ownership_', '_dashboard_')):
                                 del st.session_state[k]
                 else:
                     st.warning("Enter a CSV folder path first.")
@@ -542,40 +542,33 @@ def _render_upstream_analysis_fragment(relationships, nodes, inv, fc, wf):
                 st.dataframe(detail_df, hide_index=True, use_container_width=True)
 
 
-# Create tabs for different sections - tabs at top level
-tab_dashboard, tab_deal, tab_financials, tab_ownership, tab_wf_setup, tab_reports = st.tabs(["Dashboard", "Deal Analysis", "Property Financials", "Ownership & Partnerships", "Waterfall Setup", "Reports"])
+# ============================================================
+# SHARED: Deal label lookup (used by Deal Analysis + Property Financials)
+# ============================================================
+inv_disp = inv.copy()
+if "Investment_Name" not in inv_disp.columns:
+    st.error("investment_map.csv must include Investment_Name column")
+    st.stop()
 
-with tab_dashboard:
-    render_dashboard(
-        inv=inv, wf=wf, acct=acct, isbs_raw=isbs_raw,
-        mri_loans_raw=mri_loans_raw, mri_val=mri_val,
-        occupancy_raw=occupancy_raw, fc=fc, coa=coa,
-        mri_supp=mri_supp, relationships_raw=relationships_raw,
-        capital_calls_raw=capital_calls_raw,
-        start_year=int(start_year),
-        horizon_years=int(horizon_years),
-        pro_yr_base=int(pro_yr_base),
-    )
+inv_disp["Investment_Name"] = inv_disp["Investment_Name"].fillna("").astype(str)
+inv_disp["vcode"] = inv_disp["vcode"].astype(str)
 
-with tab_deal:
-    # ============================================================
-    # DEAL SELECTION
-    # ============================================================
-    inv_disp = inv.copy()
-    if "Investment_Name" not in inv_disp.columns:
-        st.error("investment_map.csv must include Investment_Name column")
-        st.stop()
+name_counts = inv_disp["Investment_Name"].value_counts()
+inv_disp["DealLabel"] = inv_disp.apply(
+    lambda r: f"{r['Investment_Name']} ({r['vcode']})" if name_counts.get(r['Investment_Name'], 0) > 1 else r['Investment_Name'],
+    axis=1
+)
 
-    inv_disp["Investment_Name"] = inv_disp["Investment_Name"].fillna("").astype(str)
-    inv_disp["vcode"] = inv_disp["vcode"].astype(str)
+labels_sorted = sorted(inv_disp["DealLabel"].dropna().unique().tolist(), key=lambda x: x.lower())
 
-    name_counts = inv_disp["Investment_Name"].value_counts()
-    inv_disp["DealLabel"] = inv_disp.apply(
-        lambda r: f"{r['Investment_Name']} ({r['vcode']})" if name_counts.get(r['Investment_Name'], 0) > 1 else r['Investment_Name'],
-        axis=1
-    )
 
-    labels_sorted = sorted(inv_disp["DealLabel"].dropna().unique().tolist(), key=lambda x: x.lower())
+# ============================================================
+# FRAGMENT: Deal Analysis  (selectbox + all rendering)
+# Defined at module level so the body stays at 4-space indent.
+# Captures inv_disp, labels_sorted, inv, wf, acct, fc, etc. via closure.
+# ============================================================
+@st.fragment
+def _deal_analysis_fragment():
     selected_label = st.selectbox("Select Deal", labels_sorted, key="deal_selector")
 
     selected_row = inv_disp[inv_disp["DealLabel"] == selected_label].iloc[0]
@@ -601,6 +594,11 @@ with tab_deal:
         capital_calls_raw=capital_calls_raw,
         isbs_raw=isbs_raw,
     )
+
+    # Store cross-tab state for Property Financials
+    st.session_state['_current_deal_vcode'] = deal_vcode
+    st.session_state['_current_fc_deal_modeled'] = _dc.get('fc_deal_modeled')
+
     cap_data = _dc['cap_data']
 
     # ============================================================
@@ -1601,16 +1599,39 @@ with tab_deal:
               csv_data = raw_df.to_csv(index=False).encode('utf-8')
               st.download_button("Download XIRR Cash Flows (CSV)", csv_data, "xirr_cashflows.csv", "text/csv")
 
+
+# Create tabs for different sections - tabs at top level
+tab_dashboard, tab_deal, tab_financials, tab_ownership, tab_wf_setup, tab_reports = st.tabs(["Dashboard", "Deal Analysis", "Property Financials", "Ownership & Partnerships", "Waterfall Setup", "Reports"])
+
+with tab_dashboard:
+    render_dashboard(
+        inv=inv, wf=wf, acct=acct, isbs_raw=isbs_raw,
+        mri_loans_raw=mri_loans_raw, mri_val=mri_val,
+        occupancy_raw=occupancy_raw, fc=fc, coa=coa,
+        mri_supp=mri_supp, relationships_raw=relationships_raw,
+        capital_calls_raw=capital_calls_raw,
+        start_year=int(start_year),
+        horizon_years=int(horizon_years),
+        pro_yr_base=int(pro_yr_base),
+    )
+
+with tab_deal:
+    _deal_analysis_fragment()
+
 with tab_financials:
     # Independent property selector (defaults to Deal Analysis selection)
+    _da_label = st.session_state.get('deal_selector', labels_sorted[0] if labels_sorted else None)
+    _da_idx = labels_sorted.index(_da_label) if _da_label in labels_sorted else 0
     fin_label = st.selectbox("Select Property", labels_sorted,
-                             index=labels_sorted.index(selected_label),
+                             index=_da_idx,
                              key="fin_deal_selector")
     fin_row = inv_disp[inv_disp["DealLabel"] == fin_label].iloc[0]
     fin_vcode = str(fin_row["vcode"])
 
     # fc_deal_modeled is only valid for the Deal Analysis selection
-    fin_fc = fc_deal_modeled if fin_vcode == deal_vcode else None
+    _da_vcode = st.session_state.get('_current_deal_vcode', '')
+    _da_fc = st.session_state.get('_current_fc_deal_modeled')
+    fin_fc = _da_fc if fin_vcode == _da_vcode else None
 
     render_property_financials(
         deal_vcode=fin_vcode,
@@ -1686,7 +1707,7 @@ with tab_ownership:
             )
 
         # Use the selected deal for ownership analysis
-        selected_entity = deal_vcode
+        selected_entity = st.session_state.get('_current_deal_vcode', '')
 
         if selected_entity in nodes:
             node = nodes[selected_entity]
@@ -1719,7 +1740,7 @@ with tab_ownership:
                 tree_viz = visualize_ownership_tree(selected_entity, nodes)
                 st.code(tree_viz, language=None)
         else:
-            st.info(f"No ownership relationships found for {deal_vcode}")
+            st.info(f"No ownership relationships found for {selected_entity}")
 
         # Upstream analysis is fragment-isolated — selectbox, number_input,
         # and Run button only rerun this fragment, not the full app.

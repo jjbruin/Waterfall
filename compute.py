@@ -154,6 +154,7 @@ def get_cached_deal_result(vcode, start_year, horizon_years, pro_yr_base, **kwar
     cache = st.session_state.setdefault('_deal_results', {})
     key = f"{vcode}|{start_year}|{horizon_years}|{pro_yr_base}"
     if key not in cache:
+        st.toast(f"Computing {vcode}...")
         cache[key] = compute_deal_analysis(
             deal_vcode=vcode,
             start_year=start_year,
