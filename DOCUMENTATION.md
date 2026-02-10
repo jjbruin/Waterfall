@@ -138,7 +138,6 @@ Located in: `C:\Users\jbruin\OneDrive - peaceablestreet.com\Documents\WaterfallA
 | `ISBS_Download.csv` | Income statement and balance sheet data (Interim IS, Budget IS, Projected IS, Interim BS) |
 | `MRI_IA_Relationship.csv` | Ownership relationships |
 | `MRI_Commitments.csv` | Investor commitments |
-| `MRI_Investor_ROE_Feed.csv` | Investor ROE data |
 | `MRI_Occupancy_Download.csv` | Monthly occupancy data by property (dtReported, Qtr, Occ%) |
 | `Tenant_Report.csv` | Commercial tenant roster by property (leases, SF, rent) |
 
@@ -308,7 +307,6 @@ Entities with multiple investors need their own waterfall definitions. The syste
 | File | Purpose |
 |------|---------|
 | `MRI_Commitments.csv` | Who committed what to whom |
-| `MRI_Investor_ROE_Feed.csv` | All investor financial activity |
 | `MRI_Capital_Calls.csv` | Planned future calls |
 
 ### Key Calculations
