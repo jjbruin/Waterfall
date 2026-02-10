@@ -126,10 +126,11 @@ Rendered by `reports_ui.py`. Projected Returns Summary with Excel export.
 
 ### 7. Sold Portfolio
 Rendered by `sold_portfolio_ui.py`. Historical returns for sold deals computed from accounting_feed (no forecast waterfalls).
-- **Data Source**: Accounting history only — contributions (`is_contribution`), distributions (`is_distribution`), capital events (`is_capital`)
-- **Output**: Per-partner rows + bold deal-total rows. Columns: Investment Name, Partner, Total Contributions, Total Distributions, IRR, ROE, MOIC
-- **Metrics**: `xirr()` and `calculate_roe()` from `metrics.py`, MOIC = distributions / contributions (no unrealized NAV)
-- **Excel Export**: Formatted workbook matching Reports tab style (currency/pct/multiple formats, bold deal-total rows)
+- **Data Source**: Accounting history only — contributions (`is_contribution`), distributions (`is_distribution`), capital events (`is_capital`). Raw `acct` is normalised via `normalize_accounting_feed()` on first use.
+- **Pref Equity Only**: Filters out OP partners (`InvestorID` starting with "OP"). Case-insensitive InvestorID grouping handles mixed-case entity IDs.
+- **Summary Table**: One row per deal + bold Portfolio Total row. Columns: Investment Name, Acquisition Date, Sale Date, Total Contributions, Total Distributions, IRR, ROE, MOIC. Portfolio Total computes IRR/ROE/MOIC from the combined cashflow pool across all deals (not simple averages).
+- **Deal Detail Drill-Down**: Selectbox to pick a deal → expander with every pref equity accounting row sorted by date. Columns: Date, InvestorID, MajorType, Typename, Capital, Amount, Cashflow (XIRR), Capital Balance (running). IRR/ROE/MOIC metric cards below. Download Activity Detail exports the table + summary metrics to Excel for independent return verification.
+- **Excel Exports**: Summary workbook (`sold_portfolio_returns.xlsx`) and per-deal activity detail (`sold_activity_{name}.xlsx`) via openpyxl.
 
 ## Key Functions
 
@@ -154,7 +155,9 @@ Rendered by `sold_portfolio_ui.py`. Historical returns for sold deals computed f
 - `_build_partner_returns()` - Partner + deal-level metrics from compute result (reports_ui.py)
 - `_generate_excel()` - Formatted Excel workbook via openpyxl (reports_ui.py)
 - `render_sold_portfolio()` - Sold Portfolio tab entry point (sold_portfolio_ui.py)
-- `_compute_all_sold_returns()` - Historical returns from accounting for sold deals (sold_portfolio_ui.py)
+- `_compute_all_sold_returns()` - Pref-equity returns from accounting for sold deals, with portfolio total (sold_portfolio_ui.py)
+- `_build_deal_detail()` - Cashflow detail table for a single sold deal with running capital balance (sold_portfolio_ui.py)
+- `_generate_detail_excel()` - Activity detail Excel with summary metrics for return verification (sold_portfolio_ui.py)
 
 ## Account Classifications
 
