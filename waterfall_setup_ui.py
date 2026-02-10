@@ -5,7 +5,7 @@ Waterfall Setup tab — view, edit, and create waterfall structures.
 Provides:
 - Entity/ownership tree navigation
 - Editable CF_WF and Cap_WF waterfall step tables
-- Inline validation (FXRate sums, Add vs Tag, etc.)
+- On-demand validation (FXRate sums, Add vs Tag, etc.) via Save/Validate buttons
 - New-waterfall prefill from relationships/accounting
 - Session-draft workflow with explicit "Save to Database"
 - Guidance panel from waterfall_setup_rules.txt
@@ -52,12 +52,9 @@ DB_COLUMNS = [
 def render_waterfall_setup(wf, inv, relationships_raw, acct):
     """Render the Waterfall Setup tab.
 
-    Parameters
-    ----------
-    wf : pd.DataFrame   – full waterfalls table
-    inv : pd.DataFrame   – deals / investment map
-    relationships_raw : pd.DataFrame | None – MRI relationships
-    acct : pd.DataFrame  – accounting feed
+    Delegates to _waterfall_setup_fragment (decorated with @st.fragment)
+    so that widget interactions inside the tab (entity selectbox, data_editor
+    cell edits, buttons) only rerun this fragment — not the entire app.
     """
     st.header("Waterfall Setup")
 
@@ -65,6 +62,16 @@ def render_waterfall_setup(wf, inv, relationships_raw, acct):
         st.warning("No waterfall data loaded.")
         return
 
+    _waterfall_setup_fragment(wf, inv, relationships_raw, acct)
+
+
+@st.fragment
+def _waterfall_setup_fragment(wf, inv, relationships_raw, acct):
+    """Fragment-isolated body of the Waterfall Setup tab.
+
+    Widgets here (selectbox, data_editor, buttons) trigger only a fragment
+    rerun (~200 ms) instead of a full-app rerun (~20 s).
+    """
     # Normalise column types once
     wf = _normalise_wf(wf)
 
@@ -81,23 +88,28 @@ def render_waterfall_setup(wf, inv, relationships_raw, acct):
 
 # ── Entity navigation (left column) ─────────────────────────────────────
 
-def _render_entity_nav(wf, inv, relationships_raw):
-    """Build entity selector + mini tree view. Returns (entity_id, label)."""
+def _get_nav_data(wf, inv, relationships_raw):
+    """Build and cache entity options, labels, lookup dicts, and ownership tree.
 
-    st.subheader("Select Entity")
+    Results are cached in session_state keyed by DataFrame shapes so they
+    are only recomputed when the underlying data actually changes — not on
+    every cell-edit rerun.
+    """
+    cache_key = (
+        len(wf),
+        len(inv) if inv is not None else 0,
+        len(relationships_raw) if relationships_raw is not None else 0,
+    )
+    cached = st.session_state.get("_wf_nav_cache")
+    if cached and cached["key"] == cache_key:
+        return cached["data"]
 
-    # Build entity options grouped into categories
-    options: List[Tuple[str, str]] = []  # (entity_id, label)
-
-    # 1. Current deal from session (if set)
-    current_deal = st.session_state.get("deal_selector")
-
-    # 2. All entities with existing waterfalls
+    # ── Expensive work: only runs when data changes ──────────────────
     wf_vcodes = sorted(wf["vcode"].dropna().unique().tolist())
 
-    # Map vcode -> investment name and vcode -> InvestmentID for labelling/tree
     inv_names = {}
     vcode_to_inv_id = {}
+    inv_id_to_vcode = {}
     if inv is not None and not inv.empty:
         for _, r in inv.iterrows():
             vc = str(r.get("vcode", ""))
@@ -107,15 +119,25 @@ def _render_entity_nav(wf, inv, relationships_raw):
                 inv_names[vc] = nm
                 if iid:
                     vcode_to_inv_id[vc] = iid
+                    inv_id_to_vcode[iid] = vc
+                    # Also let InvestmentID resolve to the same name
+                    if iid not in inv_names:
+                        inv_names[iid] = nm
 
-    # 3. Entities from relationships that may need waterfalls
     rel_entities = set()
     if relationships_raw is not None and not relationships_raw.empty:
         rel_entities = set(relationships_raw["InvestmentID"].astype(str).str.strip().unique())
 
-    all_entity_ids = sorted(set(wf_vcodes) | rel_entities)
+    # Normalise relationship InvestmentIDs → vcodes where a mapping exists,
+    # so "P0000001" collapses to "30BEAR" and the dropdown is deduplicated.
+    rel_vcodes = set()
+    for eid in rel_entities:
+        rel_vcodes.add(inv_id_to_vcode.get(eid, eid))
 
-    labels = []
+    all_entity_ids = sorted(set(wf_vcodes) | rel_vcodes)
+
+    options: List[Tuple[str, str]] = []
+    labels: List[str] = []
     for eid in all_entity_ids:
         has_wf = eid in wf_vcodes
         name = inv_names.get(eid, "")
@@ -124,33 +146,58 @@ def _render_entity_nav(wf, inv, relationships_raw):
         labels.append(lbl)
         options.append((eid, lbl))
 
-    if not options:
-        st.info("No entities found.")
-        return None, None
-
-    # Default selection: try to match current deal
-    default_idx = 0
-    if current_deal:
-        for i, (eid, _) in enumerate(options):
-            # Match on vcode within the label
-            if eid == current_deal or f"({eid})" in (current_deal or ""):
-                default_idx = i
-                break
-        else:
-            # Try matching by label text
-            for i, (_, lbl) in enumerate(options):
-                if current_deal in lbl:
-                    default_idx = i
-                    break
-
-    # Build ownership tree once (used by both tree view and investor list)
     nodes = {}
     if relationships_raw is not None and not relationships_raw.empty:
         try:
             rels = load_relationships(relationships_raw)
             nodes = build_ownership_tree(rels)
-        except Exception as e:
-            st.warning(f"Could not build ownership tree: {e}")
+        except Exception:
+            pass  # tree display is best-effort
+
+    data = {
+        "options": options,
+        "labels": labels,
+        "vcode_to_inv_id": vcode_to_inv_id,
+        "nodes": nodes,
+    }
+    st.session_state["_wf_nav_cache"] = {"key": cache_key, "data": data}
+    return data
+
+
+def _render_entity_nav(wf, inv, relationships_raw):
+    """Build entity selector + mini tree view. Returns (entity_id, label)."""
+
+    st.subheader("Select Entity")
+
+    nav = _get_nav_data(wf, inv, relationships_raw)
+    options = nav["options"]
+    labels = nav["labels"]
+    vcode_to_inv_id = nav["vcode_to_inv_id"]
+    nodes = nav["nodes"]
+
+    if not options:
+        st.info("No entities found.")
+        return None, None
+
+    # Default selection: try to match current deal (vcode first, then label)
+    current_vcode = st.session_state.get("_current_deal_vcode", "")
+    current_deal = st.session_state.get("deal_selector", "")
+    default_idx = 0
+    if current_vcode:
+        for i, (eid, _) in enumerate(options):
+            if eid == current_vcode:
+                default_idx = i
+                break
+    if default_idx == 0 and current_deal:
+        for i, (eid, _) in enumerate(options):
+            if f"({eid})" in current_deal:
+                default_idx = i
+                break
+        else:
+            for i, (_, lbl) in enumerate(options):
+                if current_deal in lbl:
+                    default_idx = i
+                    break
 
     selected_label = st.selectbox(
         "Entity", labels, index=default_idx, key="_wf_entity_sel"
@@ -190,7 +237,7 @@ def _render_editor_panel(entity_id, entity_label, wf, inv, relationships_raw, ac
     st.subheader(f"Waterfall Steps — {entity_label}")
 
     # Filter waterfall rows for this entity
-    entity_wf = wf[wf["vcode"].astype(str) == str(entity_id)].copy()
+    entity_wf = wf[wf["vcode"].astype(str) == str(entity_id)]
     has_cf = not entity_wf[entity_wf["vmisc"] == "CF_WF"].empty
     has_cap = not entity_wf[entity_wf["vmisc"] == "Cap_WF"].empty
 
@@ -322,31 +369,41 @@ def _render_wf_type_editor(entity_id, wf_type, entity_wf, draft_key, full_wf, in
     st.session_state[draft_key] = edited
     current_df = edited
 
-    # ── Validation ────────────────────────────────────────────────────
-    _validate_steps(current_df, wf_type)
-
     # ── Action buttons ────────────────────────────────────────────────
-    btn_cols = st.columns(5)
+    btn_cols = st.columns(6)
 
     with btn_cols[0]:
         if st.button("Save to Database", key=f"_wf_save_{wf_type}_{entity_id}", type="primary"):
-            _save_draft(entity_id, wf_type, current_df, full_wf)
+            errs, warns = _validate_steps(current_df, wf_type)
+            if errs:
+                _show_validation(errs, warns)
+                st.error("Fix errors above before saving.")
+            else:
+                _show_validation(errs, warns)  # show warnings (non-blocking)
+                _save_draft(entity_id, wf_type, current_df, full_wf)
 
     with btn_cols[1]:
+        if st.button("Validate", key=f"_wf_validate_{wf_type}_{entity_id}"):
+            errs, warns = _validate_steps(current_df, wf_type)
+            _show_validation(errs, warns)
+            if not errs and not warns:
+                st.success("All checks passed.")
+
+    with btn_cols[2]:
         if st.button("Reset to Saved", key=f"_wf_reset_{wf_type}_{entity_id}"):
             if not db_rows.empty:
                 st.session_state[draft_key] = _db_to_editor_df(db_rows)
             else:
                 st.session_state.pop(draft_key, None)
 
-    with btn_cols[2]:
+    with btn_cols[3]:
         if wf_type == "CF_WF":
             if st.button("Copy CF_WF -> Cap_WF", key=f"_wf_copy_{entity_id}"):
                 cap_draft = current_df.copy()
                 st.session_state[f"_wf_draft|{entity_id}|Cap_WF"] = cap_draft
                 st.success("Copied CF_WF steps to Cap_WF draft.")
 
-    with btn_cols[3]:
+    with btn_cols[4]:
         csv_data = current_df.to_csv(index=False).encode("utf-8")
         st.download_button(
             "Export CSV",
@@ -356,7 +413,7 @@ def _render_wf_type_editor(entity_id, wf_type, entity_wf, draft_key, full_wf, in
             key=f"_wf_export_{wf_type}_{entity_id}",
         )
 
-    with btn_cols[4]:
+    with btn_cols[5]:
         if st.button("Preview Waterfall", key=f"_wf_preview_{wf_type}_{entity_id}"):
             _preview_waterfall(entity_id, wf_type, current_df)
 
@@ -364,9 +421,12 @@ def _render_wf_type_editor(entity_id, wf_type, entity_wf, draft_key, full_wf, in
 # ── Validation ───────────────────────────────────────────────────────────
 
 def _validate_steps(df, wf_type):
-    """Run validation rules on the editor DataFrame and show messages."""
+    """Run validation rules on the editor DataFrame.
+
+    Returns (errors: list[str], warnings: list[str]).
+    """
     if df.empty:
-        return
+        return [], []
 
     warnings = []
     errors = []
@@ -407,6 +467,11 @@ def _validate_steps(df, wf_type):
                 f"iOrder {int(order)}: has Tag step(s) but no lead step"
             )
 
+    return errors, warnings
+
+
+def _show_validation(errors, warnings):
+    """Display validation results in Streamlit."""
     for e in errors:
         st.error(e)
     for w in warnings:
@@ -658,13 +723,12 @@ def _get_investors_for_entity(entity_id, relationships_raw, acct, inv):
     investors = {}
 
     if relationships_raw is not None and not relationships_raw.empty:
-        rel = relationships_raw.copy()
-        rel["InvestmentID"] = rel["InvestmentID"].astype(str).str.strip()
-        rel["InvestorID"] = rel["InvestorID"].astype(str).str.strip()
-        match = rel[rel["InvestmentID"] == str(entity_id)]
-        for _, r in match.iterrows():
-            inv_id = r["InvestorID"]
-            pct = float(r.get("OwnershipPct", 0))
+        rel_inv_ids = relationships_raw["InvestmentID"].astype(str).str.strip()
+        rel_investor_ids = relationships_raw["InvestorID"].astype(str).str.strip()
+        mask = rel_inv_ids == str(entity_id)
+        for idx in mask[mask].index:
+            inv_id = rel_investor_ids[idx]
+            pct = float(relationships_raw.at[idx, "OwnershipPct"] if "OwnershipPct" in relationships_raw.columns else 0)
             if pct > 1:
                 pct = pct / 100.0
             investors[inv_id] = pct
@@ -672,16 +736,13 @@ def _get_investors_for_entity(entity_id, relationships_raw, acct, inv):
     # Also check accounting feed for additional investors
     if acct is not None and not acct.empty and inv is not None:
         # Map InvestmentID -> vcode
-        inv_copy = inv.copy()
-        inv_copy["vcode"] = inv_copy["vcode"].astype(str)
         inv_map = {}
-        if "InvestmentID" in inv_copy.columns:
-            for _, r in inv_copy.iterrows():
+        if "InvestmentID" in inv.columns:
+            for _, r in inv.iterrows():
                 inv_map[str(r["InvestmentID"])] = str(r["vcode"])
 
-        acct_copy = acct.copy()
-        acct_copy["_vc"] = acct_copy["InvestmentID"].astype(str).map(inv_map)
-        acct_match = acct_copy[acct_copy["_vc"] == str(entity_id)]
+        acct_vc = acct["InvestmentID"].astype(str).map(inv_map)
+        acct_match = acct[acct_vc == str(entity_id)]
         for inv_id in acct_match["InvestorID"].astype(str).unique():
             if inv_id not in investors:
                 investors[inv_id] = 0.0  # unknown pct
@@ -701,20 +762,32 @@ def _get_investors_for_entity(entity_id, relationships_raw, acct, inv):
 # ── DataFrame helpers ────────────────────────────────────────────────────
 
 def _normalise_wf(wf):
-    """Ensure consistent dtypes on waterfall DataFrame."""
-    wf = wf.copy()
-    wf["vcode"] = wf["vcode"].astype(str).str.strip()
-    wf["vmisc"] = wf["vmisc"].astype(str).str.strip()
+    """Ensure consistent dtypes on waterfall DataFrame.
+
+    Uses a lightweight session_state cache keyed by DataFrame identity (id + shape)
+    to avoid re-normalising on every Streamlit rerun.  Much faster than
+    @st.cache_data which must hash the entire DataFrame to check cache validity.
+    """
+    cache_key = (id(wf), len(wf))
+    cached = st.session_state.get("_wf_normalised_cache")
+    if cached is not None and cached["key"] == cache_key:
+        return cached["data"]
+
+    out = wf.copy()
+    out["vcode"] = out["vcode"].astype(str).str.strip()
+    out["vmisc"] = out["vmisc"].astype(str).str.strip()
     for col in ["iOrder"]:
-        if col in wf.columns:
-            wf[col] = pd.to_numeric(wf[col], errors="coerce").fillna(0).astype(int)
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0).astype(int)
     for col in ["FXRate", "nPercent", "mAmount", "nmisc"]:
-        if col in wf.columns:
-            wf[col] = pd.to_numeric(wf[col], errors="coerce").fillna(0.0)
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
     for col in ["vState", "PropCode", "vtranstype", "vAmtType", "vNotes"]:
-        if col in wf.columns:
-            wf[col] = wf[col].fillna("").astype(str).str.strip()
-    return wf
+        if col in out.columns:
+            out[col] = out[col].fillna("").astype(str).str.strip()
+
+    st.session_state["_wf_normalised_cache"] = {"key": cache_key, "data": out}
+    return out
 
 
 def _db_to_editor_df(rows):
