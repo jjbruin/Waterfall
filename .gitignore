@@ -15,3 +15,6 @@ venv/
 
 # OS / editor
 .vscode/
+
+# Local utilities
+migrate_to_database.py
