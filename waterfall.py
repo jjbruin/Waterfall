@@ -19,7 +19,7 @@ from scipy.optimize import brentq
 from models import InvestorState, CapitalPool, PrefTier
 from metrics import xirr, investor_metrics
 from loaders import build_investmentid_to_vcode, normalize_accounting_feed
-from config import typename_to_pool, resolve_pool_and_action
+from config import typename_to_pool, resolve_pool_and_action, resolve_upstream_typename_route
 
 
 # ============================================================
@@ -71,7 +71,8 @@ def compound_if_year_end(istates: Dict[str, InvestorState], period_date: date):
 # CASHFLOW RECORDING
 # ============================================================
 
-def apply_distribution(ist: InvestorState, d: date, amt: float, is_cf_waterfall: bool = False):
+def apply_distribution(ist: InvestorState, d: date, amt: float,
+                       is_cf_waterfall: bool = False, label: str = ""):
     """Record a distribution (positive cashflow from investor perspective)
 
     Args:
@@ -79,19 +80,22 @@ def apply_distribution(ist: InvestorState, d: date, amt: float, is_cf_waterfall:
         d: Distribution date
         amt: Distribution amount
         is_cf_waterfall: If True, also record in cf_distributions for ROE calculation
+        label: Description for XIRR Cash Flows table (vtranstype or typename)
     """
     if amt == 0:
         return
     ist.cashflows.append((d, float(amt)))
+    ist.cashflow_labels.append(label)
     if is_cf_waterfall:
         ist.cf_distributions.append((d, float(amt)))
 
 
-def apply_contribution(ist: InvestorState, d: date, amt: float):
+def apply_contribution(ist: InvestorState, d: date, amt: float, label: str = ""):
     """Record a contribution (negative cashflow from investor perspective)"""
     if amt == 0:
         return
     ist.cashflows.append((d, -abs(float(amt))))
+    ist.cashflow_labels.append(label)
     ist.capital_outstanding += abs(float(amt))
 
 
@@ -103,18 +107,29 @@ def apply_contribution(ist: InvestorState, d: date, amt: float):
 def irr_needed_distribution(ist: InvestorState, d: date, target_irr: float, max_cash: float) -> float:
     """
     Calculate distribution needed to achieve target IRR
-    
-    Uses binary search to find distribution amount that results in target IRR
+
+    Uses binary search to find distribution amount that results in target IRR.
+    Excludes Acquisition Fee distributions from the lookback cashflows —
+    fee income should not count toward clearing investment return hurdles.
     """
     if max_cash <= 0:
         return 0.0
-    
+
     # Must have at least one negative cashflow (investment)
     if not ist.cashflows or min(a for _, a in ist.cashflows) >= 0:
         return 0.0
 
+    # Exclude Acquisition Fee distributions from IRR lookback
+    labels = (ist.cashflow_labels
+              if len(ist.cashflow_labels) == len(ist.cashflows)
+              else [""] * len(ist.cashflows))
+    hurdle_cfs = [
+        cf for cf, lbl in zip(ist.cashflows, labels)
+        if "acquisition fee" not in lbl.lower()
+    ]
+
     def irr_of(x):
-        cfs = ist.cashflows + [(d, float(x))]
+        cfs = hurdle_cfs + [(d, float(x))]
         r = xirr(cfs)
         return r if r is not None else -999.0
 
@@ -141,7 +156,8 @@ def irr_needed_distribution(ist: InvestorState, d: date, target_irr: float, max_
 
 def pay_default_interest(ist: InvestorState, d: date, available: float,
                          default_balance: float, default_rate: float,
-                         is_cf_waterfall: bool = False) -> float:
+                         is_cf_waterfall: bool = False,
+                         label: str = "") -> float:
     """
     Pay interest accrued on default contributions
 
@@ -152,6 +168,7 @@ def pay_default_interest(ist: InvestorState, d: date, available: float,
         default_balance: Outstanding default balance (from mAmount)
         default_rate: Interest rate on defaults (from nPercent_dec)
         is_cf_waterfall: If True, track in cf_distributions for ROE calculation
+        label: Description for XIRR Cash Flows table
 
     Returns:
         Amount paid
@@ -166,12 +183,13 @@ def pay_default_interest(ist: InvestorState, d: date, available: float,
     x = min(available, interest_owed)
     if x > 0:
         # Interest is income, track as CF distribution
-        apply_distribution(ist, d, x, is_cf_waterfall)
+        apply_distribution(ist, d, x, is_cf_waterfall, label=label)
     return x
 
 
 def pay_default_principal(ist: InvestorState, d: date, available: float,
-                          default_balance: float, is_cf_waterfall: bool = False) -> float:
+                          default_balance: float, is_cf_waterfall: bool = False,
+                          label: str = "") -> float:
     """
     Pay principal on default contributions
 
@@ -181,6 +199,7 @@ def pay_default_principal(ist: InvestorState, d: date, available: float,
         available: Cash available for this step
         default_balance: Outstanding default balance (from mAmount)
         is_cf_waterfall: Ignored - principal is never a CF distribution
+        label: Description for XIRR Cash Flows table
 
     Returns:
         Amount paid
@@ -191,7 +210,7 @@ def pay_default_principal(ist: InvestorState, d: date, available: float,
     x = min(available, default_balance)
     if x > 0:
         # Principal return is never a CF distribution
-        apply_distribution(ist, d, x, is_cf_waterfall=False)
+        apply_distribution(ist, d, x, is_cf_waterfall=False, label=label)
     return x
 
 
@@ -301,7 +320,8 @@ def _ensure_pool_tiers(ist: InvestorState, pref_rates, add_pref_rates):
 def pay_pool_pref(ist: InvestorState, pool_name: str, d: date,
                   available: float, is_cf_waterfall: bool = False,
                   tier_index: int = 0,
-                  cocoplum_cross_reduce: bool = False) -> float:
+                  cocoplum_cross_reduce: bool = False,
+                  label: str = "") -> float:
     """
     Pay preferred return from a specific pool's tier.
 
@@ -350,7 +370,7 @@ def pay_pool_pref(ist: InvestorState, pool_name: str, d: date,
         pay += x
 
     if pay > 0:
-        apply_distribution(ist, d, pay, is_cf_waterfall)
+        apply_distribution(ist, d, pay, is_cf_waterfall, label=label)
         if cocoplum_cross_reduce and len(pool.pref_tiers) > 1:
             _cross_reduce_tiers(pool, tier_index, pay)
     return pay
@@ -381,7 +401,8 @@ def _cross_reduce_tiers(pool: CapitalPool, paid_tier_index: int, amount: float):
 
 
 def pay_pool_capital(ist: InvestorState, pool_name: str, d: date,
-                     available: float, is_cf_waterfall: bool = False) -> float:
+                     available: float, is_cf_waterfall: bool = False,
+                     label: str = "") -> float:
     """
     Return capital from a specific pool.
 
@@ -404,7 +425,7 @@ def pay_pool_capital(ist: InvestorState, pool_name: str, d: date,
         return 0.0
     pool.capital_outstanding -= x
     pool.cumulative_returned += x
-    apply_distribution(ist, d, x, is_cf_waterfall=False)
+    apply_distribution(ist, d, x, is_cf_waterfall=False, label=label)
     return x
 
 
@@ -508,16 +529,17 @@ def run_waterfall_period(
             lead_fx = float(lead["FXRate"])
             lead_rate = float(lead["nPercent_dec"])
             lead_m_amount = float(lead.get("mAmount", 0.0) or 0.0)
-            
+            lead_vtranstype = str(lead.get("vtranstype", "")).strip()
+
             if lead_pc not in istates:
                 istates[lead_pc] = InvestorState(propcode=lead_pc)
-            
+
             lead_stt = istates[lead_pc]
             allocated = 0.0
-            
+
             # Maximum this step can take (FXRate share of remaining)
             step_max = min(level_available * lead_fx, remaining) if lead_fx > 0 else remaining
-            
+
             # CF waterfall distributions should be tracked for ROE calculation
             is_cf_wf = not is_capital_waterfall
 
@@ -537,42 +559,42 @@ def run_waterfall_period(
                     lead_stt, "initial", period_date, step_max, is_cf_wf,
                     tier_index=tier_idx,
                     cocoplum_cross_reduce=multi_tier,
+                    label=lead_vtranstype,
                 )
 
             elif lead_state == "Initial":
                 if is_capital_waterfall:
-                    allocated = pay_pool_capital(lead_stt, "initial", period_date, step_max, is_cf_wf)
+                    allocated = pay_pool_capital(lead_stt, "initial", period_date, step_max, is_cf_wf, label=lead_vtranstype)
 
             elif lead_state == "Share":
                 allocated = step_max
                 if allocated > 0:
-                    apply_distribution(lead_stt, period_date, allocated, is_cf_wf)
+                    apply_distribution(lead_stt, period_date, allocated, is_cf_wf, label=lead_vtranstype)
 
             elif lead_state == "IRR":
                 target_irr = lead_rate
                 allocated = irr_needed_distribution(lead_stt, period_date, target_irr, step_max)
                 if allocated > 0:
-                    apply_distribution(lead_stt, period_date, allocated, is_cf_wf)
+                    apply_distribution(lead_stt, period_date, allocated, is_cf_wf, label=lead_vtranstype)
 
             elif lead_state in ("Def&Int", "DefInt"):
                 # Combined default interest and principal
                 # Interest first, then principal
-                int_paid = pay_default_interest(lead_stt, period_date, step_max, lead_m_amount, lead_rate, is_cf_wf)
+                int_paid = pay_default_interest(lead_stt, period_date, step_max, lead_m_amount, lead_rate, is_cf_wf, label=lead_vtranstype)
                 prin_avail = step_max - int_paid
-                prin_paid = pay_default_principal(lead_stt, period_date, prin_avail, lead_m_amount - int_paid, is_cf_wf)
+                prin_paid = pay_default_principal(lead_stt, period_date, prin_avail, lead_m_amount - int_paid, is_cf_wf, label=lead_vtranstype)
                 allocated = int_paid + prin_paid
 
             elif lead_state == "Def_Int":
                 # Default interest only
-                allocated = pay_default_interest(lead_stt, period_date, step_max, lead_m_amount, lead_rate, is_cf_wf)
+                allocated = pay_default_interest(lead_stt, period_date, step_max, lead_m_amount, lead_rate, is_cf_wf, label=lead_vtranstype)
 
             elif lead_state == "Default":
                 # Default principal only
-                allocated = pay_default_principal(lead_stt, period_date, step_max, lead_m_amount, is_cf_wf)
+                allocated = pay_default_principal(lead_stt, period_date, step_max, lead_m_amount, is_cf_wf, label=lead_vtranstype)
 
             elif lead_state == "Add":
                 # Route via resolve_pool_and_action
-                lead_vtranstype = str(lead.get("vtranstype", "")).strip()
                 pool_name, action = resolve_pool_and_action(
                     lead_state, lead_vtranstype, is_capital_waterfall
                 )
@@ -584,11 +606,11 @@ def run_waterfall_period(
                         tgt_pool.pref_tiers.append(
                             PrefTier(tier_name="pref", pref_rate=lead_rate)
                         )
-                    allocated = pay_pool_pref(lead_stt, pool_name, period_date, step_max, is_cf_wf)
+                    allocated = pay_pool_pref(lead_stt, pool_name, period_date, step_max, is_cf_wf, label=lead_vtranstype)
                 elif action == "pay_capital":
-                    allocated = pay_pool_capital(lead_stt, pool_name, period_date, step_max, is_cf_wf)
+                    allocated = pay_pool_capital(lead_stt, pool_name, period_date, step_max, is_cf_wf, label=lead_vtranstype)
                 elif action == "pay_capital_capped":
-                    allocated = pay_pool_capital(lead_stt, pool_name, period_date, step_max, is_cf_wf)
+                    allocated = pay_pool_capital(lead_stt, pool_name, period_date, step_max, is_cf_wf, label=lead_vtranstype)
                 else:
                     allocated = 0.0  # "skip" or unknown
 
@@ -596,7 +618,7 @@ def run_waterfall_period(
                 # Fixed amount
                 allocated = min(step_max, abs(lead_m_amount)) if lead_m_amount != 0 else 0.0
                 if allocated > 0:
-                    apply_distribution(lead_stt, period_date, allocated, is_cf_wf)
+                    apply_distribution(lead_stt, period_date, allocated, is_cf_wf, label=lead_vtranstype)
             
             else:
                 # Unknown state - no allocation
@@ -652,9 +674,11 @@ def run_waterfall_period(
                     allocated += tag_share
                     break  # Use first lead partner's distribution as reference
             
+            tag_vtranstype = str(tag.get("vtranstype", "")).strip()
+
             if allocated > 0:
                 # Tag distributions follow same CF/Cap classification as lead
-                apply_distribution(tag_stt, period_date, allocated, not is_capital_waterfall)
+                apply_distribution(tag_stt, period_date, allocated, not is_capital_waterfall, label=tag_vtranstype)
 
             # Record allocation
             alloc_rows.append({
@@ -663,7 +687,7 @@ def run_waterfall_period(
                 "iOrder": tag_order,
                 "vAmtType": amt_type,
                 "PropCode": tag_pc,
-                "vtranstype": tag.get("vtranstype", ""),
+                "vtranstype": tag_vtranstype,
                 "vState": "Tag",
                 "FXRate": tag_fx,
                 "nPercent": tag_rate,
@@ -780,6 +804,7 @@ def run_waterfall(
                             pool.cumulative_cap = 0.0
                         pool.cumulative_cap += amount
                     stt.cashflows.append((pc['_date'], -amount))
+                    stt.cashflow_labels.append(pc.get('typename', 'Capital Call'))
                 pc['_applied'] = True
 
         _rem, rows = run_waterfall_period(
@@ -927,6 +952,7 @@ def seed_states_from_accounting(
         if is_contribution:
             cf = amt if amt < 0 else -abs(amt)  # Ensure negative
             stt.cashflows.append((d, cf))
+            stt.cashflow_labels.append(str(r.get("Typename", "")))
 
             # Route to named pool via Typename
             pool_name = typename_to_pool(str(r.get("Typename", "")))
@@ -946,6 +972,7 @@ def seed_states_from_accounting(
         elif r["is_distribution"]:
             cf = amt if amt > 0 else abs(amt)  # Ensure positive
             stt.cashflows.append((d, cf))
+            stt.cashflow_labels.append(str(r.get("Typename", "")))
 
             # ONLY capital distributions reduce capital_outstanding
             if is_capital:
@@ -1165,6 +1192,8 @@ def run_upstream_waterfall_period(
     max_depth: int = 10,
     current_depth: int = 0,
     source_vtranstype: str = "",
+    source_typename: str = "",
+    typename_routed: bool = False,
 ) -> Dict[str, float]:
     """
     Process upstream waterfall for a single entity in a single period.
@@ -1175,6 +1204,11 @@ def run_upstream_waterfall_period(
     Uses source_vtranstype to select type-specific waterfalls when available.
     For example, if source_vtranstype contains "Promote" and the entity has a
     Promote_WF defined, that waterfall is used instead of the default wf_type.
+
+    Uses source_typename with UPSTREAM_TYPENAME_ROUTING (config.py) to bypass
+    intermediate waterfalls for specific fee types (e.g., Acquisition Fees route
+    directly to PSC1). Once a typename bypass fires, typename_routed=True prevents
+    re-triggering at downstream entities.
 
     Args:
         entity_id: Entity receiving cash (PropCode that received from deal waterfall)
@@ -1191,6 +1225,10 @@ def run_upstream_waterfall_period(
         current_depth: Current recursion depth
         source_vtranstype: vtranstype from the parent allocation, used to route
             to type-specific waterfalls (e.g., "GP Promote" -> Promote_WF)
+        source_typename: Original deal-level typename tag, carried unchanged through
+            all levels for routing and classification
+        typename_routed: True after a typename routing bypass has fired; suppresses
+            further routing checks at downstream entities
 
     Returns:
         Dict of terminal entity -> cash received
@@ -1209,6 +1247,46 @@ def run_upstream_waterfall_period(
 
     # Check if this entity has a waterfall definition
     if entity_id in upstream_entities:
+        # --- Typename routing bypass ---
+        # If source_typename matches a routing rule (e.g., "Acquisition Fee" -> PSC1)
+        # and we haven't already routed, skip this entity's waterfall entirely
+        # and send 100% to the target entity.
+        if not typename_routed:
+            route_target = resolve_upstream_typename_route(source_typename, entity_id)
+            if route_target is not None:
+                allocation_rows.append({
+                    "event_date": period_date,
+                    "Year": period_date.year,
+                    "Level": current_depth + 1,
+                    "Entity": entity_id,
+                    "Path": current_path,
+                    "iOrder": 0,
+                    "PropCode": route_target,
+                    "vState": "TypenameRoute",
+                    "FXRate": 1.0,
+                    "vtranstype": source_typename,
+                    "Allocated": float(cash_available),
+                    "WaterfallType": wf_type,
+                    "source_typename": source_typename,
+                })
+                return run_upstream_waterfall_period(
+                    entity_id=route_target,
+                    cash_available=cash_available,
+                    period_date=period_date,
+                    wf_steps=wf_steps,
+                    relationships=relationships,
+                    entity_states=entity_states,
+                    upstream_entities=upstream_entities,
+                    wf_type=wf_type,
+                    path=current_path,
+                    allocation_rows=allocation_rows,
+                    max_depth=max_depth,
+                    current_depth=current_depth + 1,
+                    source_vtranstype=source_vtranstype,
+                    source_typename=source_typename,
+                    typename_routed=True,
+                )
+
         # Determine which waterfall type to use based on source_vtranstype.
         # If the incoming cash is tagged as "GP Promote" (or similar), check
         # whether this entity has a Promote_WF. If so, use it instead of
@@ -1257,6 +1335,7 @@ def run_upstream_waterfall_period(
                     state = str(step["vState"]).strip()
                     fx = float(step["FXRate"])
                     rate = float(step.get("nPercent_dec", step.get("nPercent", 0)) or 0)
+                    step_vtlabel = str(step.get("vtranstype", "")).strip()
 
                     if pc not in entity_states:
                         entity_states[pc] = InvestorState(propcode=pc)
@@ -1273,44 +1352,44 @@ def run_upstream_waterfall_period(
                         else:
                             allocated = step_max
                         if allocated > 0:
-                            apply_distribution(stt, period_date, allocated, is_cf_wf)
+                            apply_distribution(stt, period_date, allocated, is_cf_wf, label=step_vtlabel)
                     elif state == "Pref":
                         # Ensure initial pool has a pref tier for upstream entities
                         pool = stt.get_pool("initial")
                         if not pool.pref_tiers:
                             pool.pref_tiers.append(PrefTier(tier_name="pref", pref_rate=rate))
-                        allocated = pay_pool_pref(stt, "initial", period_date, step_max, is_cf_wf)
+                        allocated = pay_pool_pref(stt, "initial", period_date, step_max, is_cf_wf, label=step_vtlabel)
                     elif state in ("Def_Int", "Def&Int"):
                         # Default preferred return / combined default interest+principal
                         pool = stt.get_pool("initial")
                         if not pool.pref_tiers:
                             pool.pref_tiers.append(PrefTier(tier_name="pref", pref_rate=rate))
-                        allocated = pay_pool_pref(stt, "initial", period_date, step_max, is_cf_wf)
+                        allocated = pay_pool_pref(stt, "initial", period_date, step_max, is_cf_wf, label=step_vtlabel)
                     elif state == "Default":
                         # Return of defaulted capital contributions
                         if effective_wf_type == "Cap_WF":
-                            allocated = pay_pool_capital(stt, "initial", period_date, step_max, False)
+                            allocated = pay_pool_capital(stt, "initial", period_date, step_max, False, label=step_vtlabel)
                         else:
                             # In CF waterfall, default capital can still be returned per some LLCs
-                            allocated = pay_pool_capital(stt, "initial", period_date, step_max, False)
+                            allocated = pay_pool_capital(stt, "initial", period_date, step_max, False, label=step_vtlabel)
                     elif state == "Initial":
                         if effective_wf_type == "Cap_WF":
-                            allocated = pay_pool_capital(stt, "initial", period_date, step_max, False)
+                            allocated = pay_pool_capital(stt, "initial", period_date, step_max, False, label=step_vtlabel)
                     elif state == "Share":
                         allocated = step_max
                         if allocated > 0:
-                            apply_distribution(stt, period_date, allocated, is_cf_wf)
+                            apply_distribution(stt, period_date, allocated, is_cf_wf, label=step_vtlabel)
                     elif state == "IRR":
                         target_irr = rate
                         allocated = irr_needed_distribution(stt, period_date, target_irr, step_max)
                         if allocated > 0:
-                            apply_distribution(stt, period_date, allocated, is_cf_wf)
+                            apply_distribution(stt, period_date, allocated, is_cf_wf, label=step_vtlabel)
                     elif state == "Catchup":
                         # Catchup: GP gets larger share until reaching target split
                         allocated = step_max * rate if rate > 0 else step_max
                         allocated = min(allocated, remaining)
                         if allocated > 0:
-                            apply_distribution(stt, period_date, allocated, is_cf_wf)
+                            apply_distribution(stt, period_date, allocated, is_cf_wf, label=step_vtlabel)
 
                     lead_distributions[pc] = (allocated, fx)
 
@@ -1328,6 +1407,7 @@ def run_upstream_waterfall_period(
                         "vtranstype": step.get("vtranstype", ""),
                         "Allocated": float(allocated),
                         "WaterfallType": effective_wf_type,
+                        "source_typename": source_typename,
                     })
 
                     remaining -= allocated
@@ -1349,6 +1429,7 @@ def run_upstream_waterfall_period(
                             max_depth=max_depth,
                             current_depth=current_depth + 1,
                             source_vtranstype=step_vtranstype,
+                            source_typename=source_typename,
                         )
                         for term_id, term_cash in sub_terminal.items():
                             terminal_cash[term_id] = terminal_cash.get(term_id, 0.0) + term_cash
@@ -1372,8 +1453,10 @@ def run_upstream_waterfall_period(
                             allocated = tag_share
                             break
 
+                    tag_vtlabel = str(tag.get("vtranstype", "")).strip()
+
                     if allocated > 0:
-                        apply_distribution(tag_stt, period_date, allocated, is_cf_wf)
+                        apply_distribution(tag_stt, period_date, allocated, is_cf_wf, label=tag_vtlabel)
 
                     allocation_rows.append({
                         "event_date": period_date,
@@ -1385,9 +1468,10 @@ def run_upstream_waterfall_period(
                         "PropCode": tag_pc,
                         "vState": "Tag",
                         "FXRate": tag_fx,
-                        "vtranstype": tag.get("vtranstype", ""),
+                        "vtranstype": tag_vtlabel,
                         "Allocated": float(allocated),
                         "WaterfallType": effective_wf_type,
+                        "source_typename": source_typename,
                     })
 
                     remaining -= allocated
@@ -1409,6 +1493,7 @@ def run_upstream_waterfall_period(
                             max_depth=max_depth,
                             current_depth=current_depth + 1,
                             source_vtranstype=tag_vtranstype,
+                            source_typename=source_typename,
                         )
                         for term_id, term_cash in sub_terminal.items():
                             terminal_cash[term_id] = terminal_cash.get(term_id, 0.0) + term_cash
@@ -1428,7 +1513,7 @@ def run_upstream_waterfall_period(
 
         stt = entity_states[entity_id]
         is_cf_wf = (wf_type == "CF_WF")
-        apply_distribution(stt, period_date, cash_available, is_cf_wf)
+        apply_distribution(stt, period_date, cash_available, is_cf_wf, label=source_typename or "Terminal Distribution")
 
         allocation_rows.append({
             "event_date": period_date,
@@ -1443,6 +1528,7 @@ def run_upstream_waterfall_period(
             "vtranstype": "Terminal Distribution",
             "Allocated": float(cash_available),
             "WaterfallType": wf_type,
+            "source_typename": source_typename,
         })
 
         return {entity_id: cash_available}
@@ -1472,10 +1558,11 @@ def run_upstream_waterfall_period(
                 "vtranstype": "Pari Passu",
                 "Allocated": float(investor_cash),
                 "WaterfallType": wf_type,
+                "source_typename": source_typename,
             })
 
             # Recursively process investor - preserve source_vtranstype
-            # so promote tagging survives through passthrough entities
+            # and source_typename so tagging survives through passthrough entities
             sub_terminal = run_upstream_waterfall_period(
                 entity_id=investor_id,
                 cash_available=investor_cash,
@@ -1490,6 +1577,7 @@ def run_upstream_waterfall_period(
                 max_depth=max_depth,
                 current_depth=current_depth + 1,
                 source_vtranstype=source_vtranstype,
+                source_typename=source_typename,
             )
             for term_id, term_cash in sub_terminal.items():
                 terminal_cash[term_id] = terminal_cash.get(term_id, 0.0) + term_cash
@@ -1541,6 +1629,12 @@ def run_recursive_upstream_waterfalls(
             if allocated <= 0.01:
                 continue
 
+            # Extract source_typename from deal allocation row.
+            # Use explicit source_typename column if present, otherwise
+            # fall back to vtranstype (the deal-level step label).
+            deal_vtranstype = str(row.get("vtranstype", ""))
+            deal_typename = str(row.get("source_typename", "") or deal_vtranstype)
+
             # Add Level 0 record (deal level)
             allocation_rows.append({
                 "event_date": period_date,
@@ -1552,13 +1646,13 @@ def run_recursive_upstream_waterfalls(
                 "PropCode": propcode,
                 "vState": str(row.get("vState", "")),
                 "FXRate": float(row.get("FXRate", 1.0)),
-                "vtranstype": str(row.get("vtranstype", "")),
+                "vtranstype": deal_vtranstype,
                 "Allocated": allocated,
                 "WaterfallType": wf_type,
+                "source_typename": deal_typename,
             })
 
-            # Process upstream - pass vtranstype for waterfall routing
-            deal_vtranstype = str(row.get("vtranstype", ""))
+            # Process upstream - pass vtranstype and typename for waterfall routing
             terminal = run_upstream_waterfall_period(
                 entity_id=propcode,
                 cash_available=allocated,
@@ -1573,6 +1667,7 @@ def run_recursive_upstream_waterfalls(
                 max_depth=10,
                 current_depth=0,
                 source_vtranstype=deal_vtranstype,
+                source_typename=deal_typename,
             )
 
             # Aggregate beneficiary totals
@@ -1652,14 +1747,15 @@ def calculate_entity_through_flow(
         - by_source: Breakdown by source entity
         - by_vtranstype: Breakdown by transaction type
     """
+    empty = {"total_received": 0, "by_source": {}, "by_vtranstype": {}, "by_typename": {}}
     if allocations.empty:
-        return {"total_received": 0, "by_source": {}, "by_vtranstype": {}}
+        return empty
 
     # Find all allocations TO this entity
     received = allocations[allocations["PropCode"].astype(str) == str(entity_id)].copy()
 
     if received.empty:
-        return {"total_received": 0, "by_source": {}, "by_vtranstype": {}}
+        return empty
 
     total = received["Allocated"].sum()
 
@@ -1672,10 +1768,16 @@ def calculate_entity_through_flow(
     # By path (for tracing)
     by_path = received.groupby("Path")["Allocated"].sum().to_dict()
 
+    # By typename (when source_typename column is present)
+    by_typename = {}
+    if "source_typename" in received.columns:
+        by_typename = received.groupby("source_typename")["Allocated"].sum().to_dict()
+
     return {
         "total_received": total,
         "by_source": by_source,
         "by_vtranstype": by_vtranstype,
+        "by_typename": by_typename,
         "by_path": by_path,
     }
 
@@ -1715,12 +1817,17 @@ def calculate_ubo_revenue_streams(
     promote_states = ["Tag", "Catchup", "Promote"]
     promotes = gp_allocations[gp_allocations["vState"].isin(promote_states)]["Allocated"].sum()
 
-    # Capital income = everything that isn't a fee or promote
-    fee_types = ["ACQ_FEE", "AM_FEE", "Acquisition Fee", "Asset Management Fee"]
-    fees = allocations[
-        (allocations["PropCode"].astype(str) == str(ubo_id)) &
-        (allocations["vtranstype"].isin(fee_types))
-    ]["Allocated"].sum()
+    # Fee detection: prefer source_typename (substring match) for accuracy,
+    # fall back to vtranstype exact match when column is missing
+    ubo_rows = allocations[allocations["PropCode"].astype(str) == str(ubo_id)]
+    fee_keywords = ["acquisition fee", "asset management fee", "am fee"]
+    if "source_typename" in allocations.columns:
+        tn_lower = ubo_rows["source_typename"].fillna("").astype(str).str.lower()
+        fee_mask = tn_lower.apply(lambda t: any(kw in t for kw in fee_keywords))
+        fees = ubo_rows.loc[fee_mask, "Allocated"].sum()
+    else:
+        fee_types = ["ACQ_FEE", "AM_FEE", "Acquisition Fee", "Asset Management Fee"]
+        fees = ubo_rows[ubo_rows["vtranstype"].isin(fee_types)]["Allocated"].sum()
 
     return {
         "ubo_id": ubo_id,
@@ -1729,6 +1836,7 @@ def calculate_ubo_revenue_streams(
         "fees": fees,
         "capital_income": ubo_flow["total_received"] - fees,
         "by_source": ubo_flow.get("by_source", {}),
+        "by_typename": ubo_flow.get("by_typename", {}),
         "by_path": ubo_flow.get("by_path", {}),
     }
 
