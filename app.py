@@ -568,6 +568,378 @@ labels_sorted = sorted(inv_disp["DealLabel"].dropna().unique().tolist(), key=lam
 
 
 # ============================================================
+# HELPERS: ROE & MOIC Audit (used by Deal Analysis fragment)
+# ============================================================
+def _build_roe_timeline(combined_cashflows, cf_only_distributions, end_date):
+    """Replay calculate_roe logic to produce an audit trail.
+
+    Returns (timeline_df, cf_dist_df, summary_dict).
+    """
+    from datetime import date as _date
+    events = []
+    for d, amt in combined_cashflows:
+        # Negative = contribution (increases balance), Positive = return (decreases)
+        events.append((d, -amt))
+    events = sorted(events, key=lambda x: x[0])
+
+    if not events:
+        return pd.DataFrame(), pd.DataFrame(), {}
+
+    inception = events[0][0]
+    # Build capital balance timeline
+    rows = []
+    current_balance = 0.0
+    prev_date = inception
+    total_weighted = 0.0
+
+    for evt_date, change in events:
+        days = (evt_date - prev_date).days
+        weighted = current_balance * days
+        if days > 0 and current_balance > 0:
+            rows.append({
+                'Date': prev_date, 'Event': '(holding period)',
+                'Amount': None, 'Capital Balance': current_balance,
+                'Days at Balance': days, 'Weighted Capital': weighted,
+            })
+        total_weighted += weighted
+        current_balance = max(0, current_balance + change)
+        orig_amt = -change  # Flip back to original sign
+        if orig_amt < 0:
+            event_label = 'Contribution'
+        elif orig_amt > 0:
+            event_label = 'Capital Return'
+        else:
+            event_label = 'Event'
+        rows.append({
+            'Date': evt_date, 'Event': event_label,
+            'Amount': orig_amt, 'Capital Balance': current_balance,
+            'Days at Balance': 0, 'Weighted Capital': 0.0,
+        })
+        prev_date = evt_date
+
+    # Final holding period to end_date
+    if end_date and prev_date < end_date:
+        days = (end_date - prev_date).days
+        weighted = current_balance * days
+        if days > 0:
+            rows.append({
+                'Date': prev_date, 'Event': '(holding period)',
+                'Amount': None, 'Capital Balance': current_balance,
+                'Days at Balance': days, 'Weighted Capital': weighted,
+            })
+            total_weighted += weighted
+
+    total_days = (end_date - inception).days if end_date else 0
+    wac = total_weighted / total_days if total_days > 0 else 0.0
+    years = total_days / 365.0 if total_days > 0 else 0.0
+
+    timeline_df = pd.DataFrame(rows)
+
+    # CF distributions
+    cf_rows = [{'Date': d, 'Amount': a} for d, a in cf_only_distributions if a > 0]
+    cf_dist_df = pd.DataFrame(cf_rows) if cf_rows else pd.DataFrame(columns=['Date', 'Amount'])
+    total_cf_dist = cf_dist_df['Amount'].sum() if not cf_dist_df.empty else 0.0
+
+    roe = (total_cf_dist / wac) / years if wac > 0 and years > 0 else 0.0
+
+    summary = {
+        'inception': inception, 'end': end_date,
+        'total_days': total_days, 'years': years,
+        'total_cf_dist': total_cf_dist, 'wac': wac, 'roe': roe,
+    }
+    return timeline_df, cf_dist_df, summary
+
+
+def _build_moic_breakdown(cashflow_details, pr_dict):
+    """Build MOIC audit breakdown from cashflow_details.
+
+    Returns (breakdown_df, summary_dict).
+    """
+    rows = []
+    for cf in cashflow_details:
+        amt = cf['Amount']
+        desc = cf.get('Description', '')
+        if amt < 0:
+            cf_type = 'Contribution'
+        elif 'Unrealized' in desc or 'NAV' in desc:
+            cf_type = 'Terminal Value'
+        elif 'Capital' in desc or 'Cap ' in desc or 'Refi' in desc or 'Sale' in desc:
+            cf_type = 'Cap Distribution'
+        else:
+            cf_type = 'CF Distribution'
+        rows.append({
+            'Date': cf['Date'], 'Description': desc,
+            'Type': cf_type, 'Amount': amt,
+        })
+    breakdown_df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=['Date', 'Description', 'Type', 'Amount'])
+
+    contributions = pr_dict.get('contributions', 0.0)
+    cf_dist = pr_dict.get('cf_distributions', 0.0)
+    cap_dist = pr_dict.get('cap_distributions', 0.0)
+    total_dist = pr_dict.get('total_distributions', 0.0)
+    unrealized = pr_dict.get('unrealized_nav', 0.0)
+    moic = pr_dict.get('moic', 0.0)
+
+    summary = {
+        'contributions': contributions, 'cf_dist': cf_dist,
+        'cap_dist': cap_dist, 'total_dist': total_dist,
+        'unrealized': unrealized, 'moic': moic,
+    }
+    return breakdown_df, summary
+
+
+def _generate_roe_audit_excel(partner_results, deal_summary, sale_me):
+    """Generate formatted Excel workbook for ROE audit."""
+    from io import BytesIO
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "ROE Audit"
+
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    bold_font = Font(bold=True)
+    top_border = Border(top=Side(style='medium'))
+    curr_fmt = '$#,##0'
+    pct_fmt = '0.00%'
+    date_fmt = 'MM/DD/YYYY'
+    num_fmt = '#,##0'
+
+    row = 1
+
+    def write_header(ws, r, cols):
+        for ci, name in enumerate(cols, 1):
+            c = ws.cell(row=r, column=ci, value=name)
+            c.font = header_font
+            c.fill = header_fill
+            c.alignment = Alignment(horizontal="center")
+        return r + 1
+
+    def write_summary_row(ws, r, labels_vals, bold=True):
+        for ci, (label, val, fmt) in enumerate(labels_vals, 1):
+            c = ws.cell(row=r, column=ci, value=val if val is not None else label)
+            if bold:
+                c.font = bold_font
+                c.border = top_border
+            if fmt:
+                c.number_format = fmt
+        return r + 1
+
+    # --- Per-partner sections ---
+    for pr in partner_results:
+        partner = pr['partner']
+        tl_df, cf_df, summary = _build_roe_timeline(
+            pr['combined_cashflows'], pr['cf_only_distributions'], sale_me)
+
+        # Section header
+        ws.cell(row=row, column=1, value=f"Partner: {partner}").font = Font(bold=True, size=12)
+        row += 1
+
+        # Table A: Capital Balance Timeline
+        ws.cell(row=row, column=1, value="Capital Balance Timeline").font = bold_font
+        row += 1
+        tl_cols = ['Date', 'Event', 'Amount', 'Capital Balance', 'Days at Balance', 'Weighted Capital']
+        row = write_header(ws, row, tl_cols)
+        for _, tr in tl_df.iterrows():
+            ws.cell(row=row, column=1, value=tr['Date']).number_format = date_fmt
+            ws.cell(row=row, column=2, value=tr['Event'])
+            if pd.notna(tr['Amount']):
+                ws.cell(row=row, column=3, value=tr['Amount']).number_format = curr_fmt
+            ws.cell(row=row, column=4, value=tr['Capital Balance']).number_format = curr_fmt
+            ws.cell(row=row, column=5, value=tr['Days at Balance']).number_format = num_fmt
+            ws.cell(row=row, column=6, value=tr['Weighted Capital']).number_format = curr_fmt
+            row += 1
+        # Timeline totals
+        ws.cell(row=row, column=1, value="Totals").font = bold_font
+        ws.cell(row=row, column=1).border = top_border
+        ws.cell(row=row, column=5, value=summary.get('total_days', 0)).font = bold_font
+        ws.cell(row=row, column=5).number_format = num_fmt
+        ws.cell(row=row, column=5).border = top_border
+        ws.cell(row=row, column=6, value=summary.get('wac', 0)).font = bold_font
+        ws.cell(row=row, column=6).number_format = curr_fmt
+        ws.cell(row=row, column=6).border = top_border
+        row += 2
+
+        # Table B: CF Distributions
+        ws.cell(row=row, column=1, value="CF Distributions").font = bold_font
+        row += 1
+        row = write_header(ws, row, ['Date', 'Amount'])
+        for _, cr in cf_df.iterrows():
+            ws.cell(row=row, column=1, value=cr['Date']).number_format = date_fmt
+            ws.cell(row=row, column=2, value=cr['Amount']).number_format = curr_fmt
+            row += 1
+        ws.cell(row=row, column=1, value="Total").font = bold_font
+        ws.cell(row=row, column=1).border = top_border
+        ws.cell(row=row, column=2, value=summary.get('total_cf_dist', 0)).font = bold_font
+        ws.cell(row=row, column=2).number_format = curr_fmt
+        ws.cell(row=row, column=2).border = top_border
+        row += 2
+
+        # Summary
+        ws.cell(row=row, column=1, value="ROE Summary").font = bold_font
+        row += 1
+        row = write_header(ws, row, ['Inception', 'End Date', 'Total Days', 'Years',
+                                       'CF Distributions', 'Wtd Avg Capital', 'ROE'])
+        ws.cell(row=row, column=1, value=summary.get('inception')).number_format = date_fmt
+        ws.cell(row=row, column=2, value=summary.get('end')).number_format = date_fmt
+        ws.cell(row=row, column=3, value=summary.get('total_days', 0)).number_format = num_fmt
+        ws.cell(row=row, column=4, value=round(summary.get('years', 0), 2))
+        ws.cell(row=row, column=5, value=summary.get('total_cf_dist', 0)).number_format = curr_fmt
+        ws.cell(row=row, column=6, value=summary.get('wac', 0)).number_format = curr_fmt
+        ws.cell(row=row, column=7, value=summary.get('roe', 0)).number_format = pct_fmt
+        row += 2
+
+    # --- Deal-level ROE ---
+    ws.cell(row=row, column=1, value="Deal-Level ROE").font = Font(bold=True, size=12)
+    row += 1
+    all_cfs = deal_summary.get('all_combined_cashflows', [])
+    all_cf_dist = []
+    for pr in partner_results:
+        all_cf_dist.extend(pr['cf_only_distributions'])
+    tl_df, cf_df, summary = _build_roe_timeline(all_cfs, all_cf_dist, sale_me)
+
+    ws.cell(row=row, column=1, value="Capital Balance Timeline").font = bold_font
+    row += 1
+    row = write_header(ws, row, ['Date', 'Event', 'Amount', 'Capital Balance', 'Days at Balance', 'Weighted Capital'])
+    for _, tr in tl_df.iterrows():
+        ws.cell(row=row, column=1, value=tr['Date']).number_format = date_fmt
+        ws.cell(row=row, column=2, value=tr['Event'])
+        if pd.notna(tr['Amount']):
+            ws.cell(row=row, column=3, value=tr['Amount']).number_format = curr_fmt
+        ws.cell(row=row, column=4, value=tr['Capital Balance']).number_format = curr_fmt
+        ws.cell(row=row, column=5, value=tr['Days at Balance']).number_format = num_fmt
+        ws.cell(row=row, column=6, value=tr['Weighted Capital']).number_format = curr_fmt
+        row += 1
+    ws.cell(row=row, column=1, value="Totals").font = bold_font
+    ws.cell(row=row, column=1).border = top_border
+    ws.cell(row=row, column=5, value=summary.get('total_days', 0)).font = bold_font
+    ws.cell(row=row, column=5).number_format = num_fmt
+    ws.cell(row=row, column=5).border = top_border
+    ws.cell(row=row, column=6, value=summary.get('wac', 0)).font = bold_font
+    ws.cell(row=row, column=6).number_format = curr_fmt
+    ws.cell(row=row, column=6).border = top_border
+    row += 2
+
+    row = write_header(ws, row, ['Inception', 'End Date', 'Total Days', 'Years',
+                                   'CF Distributions', 'Wtd Avg Capital', 'ROE'])
+    ws.cell(row=row, column=1, value=summary.get('inception')).number_format = date_fmt
+    ws.cell(row=row, column=2, value=summary.get('end')).number_format = date_fmt
+    ws.cell(row=row, column=3, value=summary.get('total_days', 0)).number_format = num_fmt
+    ws.cell(row=row, column=4, value=round(summary.get('years', 0), 2))
+    ws.cell(row=row, column=5, value=summary.get('total_cf_dist', 0)).number_format = curr_fmt
+    ws.cell(row=row, column=6, value=summary.get('wac', 0)).number_format = curr_fmt
+    ws.cell(row=row, column=7, value=summary.get('roe', 0)).number_format = pct_fmt
+
+    # Auto-width
+    for col in ws.columns:
+        max_len = 0
+        col_letter = col[0].column_letter
+        for cell in col:
+            if cell.value is not None:
+                max_len = max(max_len, len(str(cell.value)))
+        ws.column_dimensions[col_letter].width = min(max_len + 4, 30)
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _generate_moic_audit_excel(partner_results, deal_summary, sale_me):
+    """Generate formatted Excel workbook for MOIC audit."""
+    from io import BytesIO
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "MOIC Audit"
+
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    bold_font = Font(bold=True)
+    top_border = Border(top=Side(style='medium'))
+    curr_fmt = '$#,##0'
+    mult_fmt = '0.00"x"'
+    date_fmt = 'MM/DD/YYYY'
+
+    row = 1
+
+    def write_header(ws, r, cols):
+        for ci, name in enumerate(cols, 1):
+            c = ws.cell(row=r, column=ci, value=name)
+            c.font = header_font
+            c.fill = header_fill
+            c.alignment = Alignment(horizontal="center")
+        return r + 1
+
+    # --- Per-partner sections ---
+    for pr in partner_results:
+        partner = pr['partner']
+        breakdown_df, summary = _build_moic_breakdown(pr['cashflow_details'], pr)
+
+        ws.cell(row=row, column=1, value=f"Partner: {partner}").font = Font(bold=True, size=12)
+        row += 1
+
+        # Table A: Cashflow Breakdown
+        row = write_header(ws, row, ['Date', 'Description', 'Type', 'Amount'])
+        for _, br in breakdown_df.iterrows():
+            ws.cell(row=row, column=1, value=br['Date']).number_format = date_fmt
+            ws.cell(row=row, column=2, value=br['Description'])
+            ws.cell(row=row, column=3, value=br['Type'])
+            ws.cell(row=row, column=4, value=br['Amount']).number_format = curr_fmt
+            row += 1
+        row += 1
+
+        # Summary
+        ws.cell(row=row, column=1, value="MOIC Summary").font = bold_font
+        row += 1
+        row = write_header(ws, row, ['Contributions', 'CF Distributions', 'Cap Distributions',
+                                       'Total Distributions', 'Unrealized NAV', 'MOIC'])
+        ws.cell(row=row, column=1, value=summary['contributions']).number_format = curr_fmt
+        ws.cell(row=row, column=2, value=summary['cf_dist']).number_format = curr_fmt
+        ws.cell(row=row, column=3, value=summary['cap_dist']).number_format = curr_fmt
+        ws.cell(row=row, column=4, value=summary['total_dist']).number_format = curr_fmt
+        ws.cell(row=row, column=5, value=summary['unrealized']).number_format = curr_fmt
+        ws.cell(row=row, column=6, value=summary['moic']).number_format = mult_fmt
+        for ci in range(1, 7):
+            ws.cell(row=row, column=ci).font = bold_font
+        row += 2
+
+    # --- Deal-level MOIC ---
+    ws.cell(row=row, column=1, value="Deal-Level MOIC").font = Font(bold=True, size=12)
+    row += 1
+    ws.cell(row=row, column=1,
+            value="Note: Deal MOIC uses realized distributions only (no unrealized NAV)."
+            ).font = Font(italic=True)
+    row += 1
+    row = write_header(ws, row, ['Total Contributions', 'CF Distributions', 'Cap Distributions',
+                                   'Total Distributions', 'MOIC'])
+    ds = deal_summary
+    ws.cell(row=row, column=1, value=ds.get('total_contributions', 0)).number_format = curr_fmt
+    ws.cell(row=row, column=2, value=ds.get('total_cf_distributions', 0)).number_format = curr_fmt
+    ws.cell(row=row, column=3, value=ds.get('total_cap_distributions', 0)).number_format = curr_fmt
+    ws.cell(row=row, column=4, value=ds.get('total_distributions', 0)).number_format = curr_fmt
+    ws.cell(row=row, column=5, value=ds.get('deal_moic', 0)).number_format = mult_fmt
+    for ci in range(1, 6):
+        ws.cell(row=row, column=ci).font = bold_font
+
+    # Auto-width
+    for col in ws.columns:
+        max_len = 0
+        col_letter = col[0].column_letter
+        for cell in col:
+            if cell.value is not None:
+                max_len = max(max_len, len(str(cell.value)))
+        ws.column_dimensions[col_letter].width = min(max_len + 4, 30)
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+# ============================================================
 # FRAGMENT: Deal Analysis  (selectbox + all rendering)
 # Defined at module level so the body stays at 4-space indent.
 # Captures inv_disp, labels_sorted, inv, wf, acct, fc, etc. via closure.
@@ -1539,35 +1911,38 @@ def _deal_analysis_fragment():
           st.info("No Cap_WF steps found for this deal.")
       else:
           st.markdown("**Investor Summary**")
-          if cap_investors:
-              # Convert investor states dict to DataFrame for display
+          if partner_results:
+              # Build from pre-computed partner_results (same source as Partner Returns)
+              # with capital-balance columns from cap_investors
               inv_rows = []
-              for pc, stt in cap_investors.items():
-                  unrealized = stt.total_capital_outstanding + stt.total_pref_balance
-                  metrics = investor_metrics(stt, sale_me, unrealized_nav=unrealized)
+              for pr in partner_results:
+                  pc = pr['partner']
+                  cap_st = cap_investors.get(pc)
                   inv_rows.append({
                       "PropCode": pc,
-                      "CapitalOutstanding": stt.capital_outstanding,
-                      "UnpaidPrefCompounded": stt.pref_unpaid_compounded,
-                      "AccruedPrefCurrentYear": stt.pref_accrued_current_year,
-                      "TotalDistributions": metrics.get('TotalDistributions', 0),
-                      "TotalContributions": metrics.get('TotalContributions', 0),
-                      "IRR": metrics.get('IRR'),
-                      "ROE": metrics.get('ROE', 0),
-                      "MOIC": metrics.get('MOIC', 0),
+                      "CapitalOutstanding": pr['capital_outstanding'],
+                      "UnpaidPrefCompounded": pr['pref_unpaid_compounded'],
+                      "AccruedPrefCurrentYear": pr['pref_accrued_current_year'],
+                      "TotalDistributions": pr['total_distributions'],
+                      "TotalContributions": pr['contributions'],
+                      "IRR": pr['irr'],
+                      "ROE": pr['roe'],
+                      "MOIC": pr['moic'],
                   })
               out = pd.DataFrame(inv_rows)
-              for c in ["CapitalOutstanding", "UnpaidPrefCompounded", "AccruedPrefCurrentYear",
-                        "TotalDistributions", "TotalContributions"]:
-                  if c in out.columns:
-                      out[c] = out[c].map(lambda x: f"{x:,.0f}")
-              if "IRR" in out.columns:
-                  out["IRR"] = out["IRR"].map(lambda r: "" if r is None else f"{r*100:,.2f}%")
-              if "ROE" in out.columns:
-                  out["ROE"] = out["ROE"].map(lambda r: f"{r*100:,.2f}%")
-              if "MOIC" in out.columns:
-                  out["MOIC"] = out["MOIC"].map(lambda r: f"{r:,.2f}x")
-              st.dataframe(out, use_container_width=True)
+              st.dataframe(
+                  out.style.format({
+                      'CapitalOutstanding': '${:,.0f}',
+                      'UnpaidPrefCompounded': '${:,.0f}',
+                      'AccruedPrefCurrentYear': '${:,.0f}',
+                      'TotalDistributions': '${:,.0f}',
+                      'TotalContributions': '${:,.0f}',
+                      'IRR': lambda v: f'{v:.2%}' if pd.notna(v) else '',
+                      'ROE': '{:.2%}',
+                      'MOIC': '{:.2f}x',
+                  }),
+                  use_container_width=True, hide_index=True
+              )
 
       # ============================================================
       # XIRR CASH FLOWS TABLE
@@ -1581,12 +1956,17 @@ def _deal_analysis_fragment():
           xirr_cf_df = pd.DataFrame(xirr_cf_rows)
 
           # Pivot to get Pref Equity vs Ptr Equity columns
-          grouped = xirr_cf_df.groupby(["Date", "Description", "is_pref"])["Amount"].sum().reset_index()
+          # Group by Date (not Description) so pref/ptr with different Typenames merge on same row
+          pref_raw = xirr_cf_df[xirr_cf_df["is_pref"] == True]
+          ptr_raw = xirr_cf_df[xirr_cf_df["is_pref"] == False]
 
-          pref_df = grouped[grouped["is_pref"] == True][["Date", "Description", "Amount"]].rename(columns={"Amount": "Pref Equity"})
-          ptr_df = grouped[grouped["is_pref"] == False][["Date", "Description", "Amount"]].rename(columns={"Amount": "Ptr Equity"})
+          pref_df = pref_raw.groupby("Date").agg({"Amount": "sum", "Description": "first"}).reset_index().rename(columns={"Amount": "Pref Equity", "Description": "Pref_Desc"})
+          ptr_df = ptr_raw.groupby("Date").agg({"Amount": "sum", "Description": "first"}).reset_index().rename(columns={"Amount": "Ptr Equity", "Description": "Ptr_Desc"})
 
-          final_df = pd.merge(pref_df, ptr_df, on=["Date", "Description"], how="outer").fillna(0)
+          final_df = pd.merge(pref_df, ptr_df, on="Date", how="outer").fillna({"Pref Equity": 0, "Ptr Equity": 0, "Pref_Desc": "", "Ptr_Desc": ""})
+          # Prefer pref Typename; fall back to ptr Typename
+          final_df["Description"] = final_df["Pref_Desc"].where(final_df["Pref_Desc"] != "", final_df["Ptr_Desc"])
+          final_df = final_df.drop(columns=["Pref_Desc", "Ptr_Desc"])
           final_df["Deal"] = final_df["Pref Equity"] + final_df["Ptr Equity"]
           final_df = final_df.sort_values("Date").reset_index(drop=True)
 
@@ -1603,6 +1983,132 @@ def _deal_analysis_fragment():
               raw_df["Date"] = raw_df["Date"].astype(str)
               csv_data = raw_df.to_csv(index=False).encode('utf-8')
               st.download_button("Download XIRR Cash Flows (CSV)", csv_data, "xirr_cashflows.csv", "text/csv")
+
+    # ============================================================
+    # ROE AUDIT EXPANDER
+    # ============================================================
+    if partner_results and sale_me:
+        with st.expander("ROE Audit — Return on Equity Breakdown"):
+            st.caption("ROE = (Total CF Distributions ÷ Weighted Avg Capital) ÷ Years")
+
+            _fmt_curr = lambda x: f"(${abs(x):,.0f})" if x < 0 else f"${x:,.0f}" if x else ""
+
+            for pr in partner_results:
+                st.subheader(f"Partner: {pr['partner']}")
+
+                tl_df, cf_df, roe_sum = _build_roe_timeline(
+                    pr['combined_cashflows'], pr['cf_only_distributions'], sale_me)
+
+                # Table A: Capital Balance Timeline
+                if not tl_df.empty:
+                    st.markdown("**Capital Balance Timeline**")
+                    disp_tl = tl_df.copy()
+                    disp_tl['Date'] = disp_tl['Date'].apply(lambda d: d.strftime('%m/%d/%Y') if hasattr(d, 'strftime') else str(d))
+                    disp_tl['Amount'] = disp_tl['Amount'].apply(lambda x: _fmt_curr(x) if pd.notna(x) else '')
+                    disp_tl['Capital Balance'] = disp_tl['Capital Balance'].map(lambda x: f"${x:,.0f}")
+                    disp_tl['Days at Balance'] = disp_tl['Days at Balance'].map(lambda x: f"{x:,.0f}" if x else '')
+                    disp_tl['Weighted Capital'] = disp_tl['Weighted Capital'].map(lambda x: f"${x:,.0f}" if x else '')
+                    st.dataframe(disp_tl, use_container_width=True, hide_index=True)
+
+                # Table B: CF Distributions
+                if not cf_df.empty:
+                    st.markdown("**CF Distributions (ROE Numerator)**")
+                    disp_cf = cf_df.copy()
+                    disp_cf['Date'] = disp_cf['Date'].apply(lambda d: d.strftime('%m/%d/%Y') if hasattr(d, 'strftime') else str(d))
+                    disp_cf['Amount'] = disp_cf['Amount'].map(lambda x: f"${x:,.0f}")
+                    st.dataframe(disp_cf, use_container_width=True, hide_index=True)
+
+                # Summary cards
+                c1, c2, c3, c4, c5 = st.columns(5)
+                c1.metric("Inception → End",
+                          f"{roe_sum['inception'].strftime('%m/%d/%Y') if roe_sum.get('inception') else '—'} → {roe_sum['end'].strftime('%m/%d/%Y') if roe_sum.get('end') else '—'}")
+                c2.metric("Total Days / Years", f"{roe_sum.get('total_days', 0):,.0f} / {roe_sum.get('years', 0):.2f}")
+                c3.metric("CF Distributions", f"${roe_sum.get('total_cf_dist', 0):,.0f}")
+                c4.metric("Wtd Avg Capital", f"${roe_sum.get('wac', 0):,.0f}")
+                c5.metric("ROE", f"{roe_sum.get('roe', 0):.2%}")
+
+                st.divider()
+
+            # --- Deal-Level ROE ---
+            st.subheader("Deal-Level ROE")
+            all_combined = deal_summary.get('all_combined_cashflows', [])
+            all_cf_dist_deal = []
+            for pr in partner_results:
+                all_cf_dist_deal.extend(pr['cf_only_distributions'])
+            deal_tl, deal_cf, deal_roe_sum = _build_roe_timeline(all_combined, all_cf_dist_deal, sale_me)
+
+            if not deal_tl.empty:
+                disp_deal_tl = deal_tl.copy()
+                disp_deal_tl['Date'] = disp_deal_tl['Date'].apply(lambda d: d.strftime('%m/%d/%Y') if hasattr(d, 'strftime') else str(d))
+                disp_deal_tl['Amount'] = disp_deal_tl['Amount'].apply(lambda x: _fmt_curr(x) if pd.notna(x) else '')
+                disp_deal_tl['Capital Balance'] = disp_deal_tl['Capital Balance'].map(lambda x: f"${x:,.0f}")
+                disp_deal_tl['Days at Balance'] = disp_deal_tl['Days at Balance'].map(lambda x: f"{x:,.0f}" if x else '')
+                disp_deal_tl['Weighted Capital'] = disp_deal_tl['Weighted Capital'].map(lambda x: f"${x:,.0f}" if x else '')
+                st.dataframe(disp_deal_tl, use_container_width=True, hide_index=True)
+
+            dc1, dc2, dc3, dc4, dc5 = st.columns(5)
+            dc1.metric("Inception → End",
+                       f"{deal_roe_sum['inception'].strftime('%m/%d/%Y') if deal_roe_sum.get('inception') else '—'} → {deal_roe_sum['end'].strftime('%m/%d/%Y') if deal_roe_sum.get('end') else '—'}")
+            dc2.metric("Total Days / Years", f"{deal_roe_sum.get('total_days', 0):,.0f} / {deal_roe_sum.get('years', 0):.2f}")
+            dc3.metric("CF Distributions", f"${deal_roe_sum.get('total_cf_dist', 0):,.0f}")
+            dc4.metric("Wtd Avg Capital", f"${deal_roe_sum.get('wac', 0):,.0f}")
+            dc5.metric("ROE", f"{deal_roe_sum.get('roe', 0):.2%}")
+
+            # Excel download
+            roe_xlsx = _generate_roe_audit_excel(partner_results, deal_summary, sale_me)
+            st.download_button("Download ROE Audit (Excel)", roe_xlsx, "roe_audit.xlsx",
+                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    # ============================================================
+    # MOIC AUDIT EXPANDER
+    # ============================================================
+    if partner_results:
+        with st.expander("MOIC Audit — Multiple on Invested Capital"):
+            st.caption("MOIC = (Total Distributions + Unrealized NAV) ÷ Total Contributions")
+
+            _fmt_curr_moic = lambda x: f"(${abs(x):,.0f})" if x < 0 else f"${x:,.0f}" if x else ""
+
+            for pr in partner_results:
+                st.subheader(f"Partner: {pr['partner']}")
+
+                breakdown_df, moic_sum = _build_moic_breakdown(pr['cashflow_details'], pr)
+
+                # Table A: Cashflow Breakdown
+                if not breakdown_df.empty:
+                    st.markdown("**Cashflow Breakdown**")
+                    disp_bd = breakdown_df.copy()
+                    disp_bd['Date'] = disp_bd['Date'].apply(lambda d: d.strftime('%m/%d/%Y') if hasattr(d, 'strftime') else str(d))
+                    disp_bd['Amount'] = disp_bd['Amount'].map(lambda x: _fmt_curr_moic(x))
+                    st.dataframe(disp_bd, use_container_width=True, hide_index=True)
+
+                # Summary cards
+                m1, m2, m3, m4, m5, m6 = st.columns(6)
+                m1.metric("Contributions", f"${moic_sum.get('contributions', 0):,.0f}")
+                m2.metric("CF Distributions", f"${moic_sum.get('cf_dist', 0):,.0f}")
+                m3.metric("Cap Distributions", f"${moic_sum.get('cap_dist', 0):,.0f}")
+                m4.metric("Total Distributions", f"${moic_sum.get('total_dist', 0):,.0f}")
+                m5.metric("Unrealized NAV", f"${moic_sum.get('unrealized', 0):,.0f}")
+                m6.metric("MOIC", f"{moic_sum.get('moic', 0):.2f}x")
+
+                st.divider()
+
+            # --- Deal-Level MOIC ---
+            st.subheader("Deal-Level MOIC")
+            st.info("Deal MOIC uses **realized distributions only** (no unrealized NAV). "
+                    "Deal MOIC = Total Distributions ÷ Total Contributions.")
+
+            ds = deal_summary
+            dm1, dm2, dm3, dm4, dm5 = st.columns(5)
+            dm1.metric("Total Contributions", f"${ds.get('total_contributions', 0):,.0f}")
+            dm2.metric("CF Distributions", f"${ds.get('total_cf_distributions', 0):,.0f}")
+            dm3.metric("Cap Distributions", f"${ds.get('total_cap_distributions', 0):,.0f}")
+            dm4.metric("Total Distributions", f"${ds.get('total_distributions', 0):,.0f}")
+            dm5.metric("Deal MOIC", f"{ds.get('deal_moic', 0):.2f}x")
+
+            # Excel download
+            moic_xlsx = _generate_moic_audit_excel(partner_results, deal_summary, sale_me)
+            st.download_button("Download MOIC Audit (Excel)", moic_xlsx, "moic_audit.xlsx",
+                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 # Create tabs for different sections - tabs at top level
