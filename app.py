@@ -1954,6 +1954,8 @@ def _deal_analysis_fragment():
 
       if xirr_cf_rows:
           xirr_cf_df = pd.DataFrame(xirr_cf_rows)
+          # Ensure Amount is numeric (guards against stray non-float values)
+          xirr_cf_df["Amount"] = pd.to_numeric(xirr_cf_df["Amount"], errors="coerce").fillna(0.0)
 
           # Pivot to get Pref Equity vs Ptr Equity columns
           # Group by Date (not Description) so pref/ptr with different Typenames merge on same row
@@ -1963,7 +1965,7 @@ def _deal_analysis_fragment():
           pref_df = pref_raw.groupby("Date").agg({"Amount": "sum", "Description": "first"}).reset_index().rename(columns={"Amount": "Pref Equity", "Description": "Pref_Desc"})
           ptr_df = ptr_raw.groupby("Date").agg({"Amount": "sum", "Description": "first"}).reset_index().rename(columns={"Amount": "Ptr Equity", "Description": "Ptr_Desc"})
 
-          final_df = pd.merge(pref_df, ptr_df, on="Date", how="outer").fillna({"Pref Equity": 0, "Ptr Equity": 0, "Pref_Desc": "", "Ptr_Desc": ""})
+          final_df = pd.merge(pref_df, ptr_df, on="Date", how="outer").fillna({"Pref Equity": 0.0, "Ptr Equity": 0.0, "Pref_Desc": "", "Ptr_Desc": ""})
           # Prefer pref Typename; fall back to ptr Typename
           final_df["Description"] = final_df["Pref_Desc"].where(final_df["Pref_Desc"] != "", final_df["Ptr_Desc"])
           final_df = final_df.drop(columns=["Pref_Desc", "Ptr_Desc"])
@@ -1978,9 +1980,11 @@ def _deal_analysis_fragment():
           with st.expander("XIRR Cash Flows"):
               st.dataframe(display_df[["Date", "Description", "Pref Equity", "Ptr Equity", "Deal"]], use_container_width=True)
 
-              # Download raw data as CSV
-              raw_df = final_df.copy()
+              # Download raw data as CSV (ensure numeric columns are float)
+              raw_df = final_df[["Date", "Description", "Pref Equity", "Ptr Equity", "Deal"]].copy()
               raw_df["Date"] = raw_df["Date"].astype(str)
+              for _col in ["Pref Equity", "Ptr Equity", "Deal"]:
+                  raw_df[_col] = pd.to_numeric(raw_df[_col], errors="coerce").fillna(0.0)
               csv_data = raw_df.to_csv(index=False).encode('utf-8')
               st.download_button("Download XIRR Cash Flows (CSV)", csv_data, "xirr_cashflows.csv", "text/csv")
 
