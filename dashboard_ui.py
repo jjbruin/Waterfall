@@ -6,6 +6,8 @@ Provides a portfolio-level view of all investments at a glance.
 Lightweight sections load instantly; computed returns (IRR/MOIC) are button-gated.
 """
 
+from io import BytesIO
+
 import streamlit as st
 import pandas as pd
 import altair as alt
@@ -966,6 +968,73 @@ def _render_computed_returns(inv_disp, inv, wf, acct, fc, coa,
         })
 
         st.dataframe(styled, use_container_width=True, hide_index=True)
+
+        # Excel download with raw numeric values + Excel number formats
+        st.download_button(
+            "Download Returns (Excel)",
+            data=_generate_returns_excel(table_df),
+            file_name="portfolio_returns.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+
+def _generate_returns_excel(df: pd.DataFrame) -> bytes:
+    """Create a formatted Excel workbook from the computed returns DataFrame.
+
+    Writes raw numeric values with Excel number formats so columns are
+    usable in formulas (not stored as text).
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Portfolio Returns"
+
+    cols = list(df.columns)
+
+    # Header row
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    for ci, name in enumerate(cols, start=1):
+        cell = ws.cell(row=1, column=ci, value=name)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center")
+
+    currency_cols = {'Contributions', 'CF Distributions', 'Capital Distributions'}
+    pct_cols = {'IRR', 'ROE'}
+    moic_cols = {'MOIC'}
+
+    for ri, (_, row) in enumerate(df.iterrows(), start=2):
+        for ci, col in enumerate(cols, start=1):
+            val = row[col]
+            cell = ws.cell(row=ri, column=ci)
+
+            if col in currency_cols:
+                cell.value = float(val) if pd.notna(val) else 0.0
+                cell.number_format = '$#,##0'
+            elif col in pct_cols:
+                cell.value = float(val) if pd.notna(val) else None
+                cell.number_format = '0.00%'
+            elif col in moic_cols:
+                cell.value = float(val) if pd.notna(val) else 0.0
+                cell.number_format = '0.00"x"'
+            else:
+                cell.value = val
+
+    # Auto-width
+    for ci, col in enumerate(cols, start=1):
+        max_len = len(str(col))
+        for ri in range(2, len(df) + 2):
+            cv = ws.cell(row=ri, column=ci).value
+            if cv is not None:
+                max_len = max(max_len, len(str(cv)))
+        ws.column_dimensions[ws.cell(row=1, column=ci).column_letter].width = min(max_len + 4, 30)
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 
 # ============================================================
