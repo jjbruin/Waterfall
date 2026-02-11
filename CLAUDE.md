@@ -92,6 +92,10 @@ Rendered by `dashboard_ui.py`. Executive portfolio-level view with instant-load 
 ### 2. Deal Analysis
 Wrapped in `_deal_analysis_fragment()` (`@st.fragment`, defined at module level in `app.py`). Main waterfall computation, partner returns, capital accounts, XIRR/MOIC metrics. Debt service display rendered by `debt_service_ui.py` (Loan Summary, Detailed Amortization Schedules, Sale Proceeds Calculation). Deal switching only reruns this fragment — not all six tabs. Cross-tab state (`_current_deal_vcode`, `_current_fc_deal_modeled`) stored in session_state for Property Financials and Ownership tabs.
 
+**Audit Expanders** (after XIRR Cash Flows):
+- **ROE Audit — Return on Equity Breakdown**: Capital Balance Timeline table (each capital event with balance, days held, weighted capital), CF Distributions table (numerator detail), 5 metric cards per partner (Inception→End, Days/Years, CF Distributions, Wtd Avg Capital, ROE). Deal-level section with same breakdown. Excel download.
+- **MOIC Audit — Multiple on Invested Capital**: Cashflow Breakdown table (Date, Description, Type, Amount), 6 metric cards per partner (Contributions, CF/Cap/Total Distributions, Unrealized NAV, MOIC). Deal-level section with note that deal MOIC uses realized distributions only. Excel download.
+
 ### 3. Property Financials
 Rendered by `property_financials_ui.py`. Sections in order:
 - **Performance Chart** — Actual vs U/W NOI lines + occupancy bars (Altair). Supports Monthly/Quarterly/Annually with configurable period window.
@@ -154,6 +158,10 @@ Rendered by `sold_portfolio_ui.py`. Historical returns for sold deals computed f
 - `render_reports()` - Reports tab entry point (reports_ui.py)
 - `_build_partner_returns()` - Partner + deal-level metrics from compute result (reports_ui.py)
 - `_generate_excel()` - Formatted Excel workbook via openpyxl (reports_ui.py)
+- `_build_roe_timeline()` - Replay ROE calculation with audit trail: timeline df, cf distributions df, summary (app.py)
+- `_build_moic_breakdown()` - MOIC cashflow breakdown with Type classification (app.py)
+- `_generate_roe_audit_excel()` - Formatted ROE audit workbook with per-partner + deal-level sections (app.py)
+- `_generate_moic_audit_excel()` - Formatted MOIC audit workbook with per-partner + deal-level sections (app.py)
 - `render_sold_portfolio()` - Sold Portfolio tab entry point (sold_portfolio_ui.py)
 - `_compute_all_sold_returns()` - Pref-equity returns from accounting for sold deals, with portfolio total (sold_portfolio_ui.py)
 - `_build_deal_detail()` - Cashflow detail table for a single sold deal with running capital balance (sold_portfolio_ui.py)

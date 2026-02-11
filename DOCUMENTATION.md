@@ -344,6 +344,72 @@ Sale Proceeds + Remaining Cash Reserves → Capital Waterfall
 
 ---
 
+## Deal Analysis — Audit Expanders
+
+The Deal Analysis tab includes three collapsible audit sections below the waterfall results, providing full calculation transparency for every metric.
+
+### XIRR Cash Flows
+- Pivot table showing Date, Description, Pref Equity, Ptr Equity, and Deal columns
+- Download as CSV for independent verification
+
+### ROE Audit — Return on Equity Breakdown
+
+Formula: `ROE = (Total CF Distributions ÷ Weighted Avg Capital) ÷ Years`
+
+Per-partner sections, then deal-level total:
+
+**Capital Balance Timeline** — Step-by-step replay of the `calculate_roe()` logic showing:
+- Each capital event (contributions increase balance, capital returns decrease balance)
+- Holding periods between events with days held and weighted capital (Balance × Days)
+- Running capital balance after each event (floored at 0)
+- Totals row: sum of days and weighted average capital (WAC = total weighted ÷ total days)
+
+**CF Distributions** — Itemized list of CF waterfall distributions (ROE numerator). Only operating income distributions count — return of capital and gain on sale are excluded.
+
+**Summary Metric Cards**: Inception → End Date, Total Days / Years, CF Distributions, Weighted Avg Capital, ROE
+
+**Deal-Level ROE**: Same timeline using aggregated cashflows across all partners. CF distributions collected from all partners' `cf_only_distributions`.
+
+**Excel Download** (`roe_audit.xlsx`): Per-partner sections (timeline + CF distributions + summary), then deal-level section. Blue `#4472C4` headers, currency/percentage formats, bold summary rows with top border.
+
+### MOIC Audit — Multiple on Invested Capital
+
+Formula: `MOIC = (Total Distributions + Unrealized NAV) ÷ Total Contributions`
+
+Per-partner sections, then deal-level total:
+
+**Cashflow Breakdown** — Every cashflow classified by type:
+| Type | Criteria |
+|------|----------|
+| Contribution | Amount < 0 |
+| CF Distribution | Amount > 0, operating income |
+| Cap Distribution | Amount > 0, capital/refi/sale event |
+| Terminal Value | Unrealized NAV entry |
+
+**Summary Metric Cards**: Contributions, CF Distributions, Cap Distributions, Total Distributions, Unrealized NAV, MOIC
+
+**Deal-Level MOIC**: Uses **realized distributions only** (no unrealized NAV), per `compute.py`. Displayed with an info callout: `Deal MOIC = Total Distributions ÷ Total Contributions`.
+
+**Excel Download** (`moic_audit.xlsx`): Per-partner sections (breakdown + summary), then deal-level section. Same formatting conventions as ROE audit.
+
+### Data Sources
+
+All audit data comes from `partner_results` (computed by `build_partner_results()` in `compute.py`):
+- `combined_cashflows` — All capital events for ROE timeline
+- `cf_only_distributions` — CF waterfall distributions for ROE numerator
+- `cashflow_details` — Labeled cashflow rows for MOIC breakdown
+
+### Helper Functions (app.py, module-level)
+
+| Function | Returns |
+|----------|---------|
+| `_build_roe_timeline(combined_cashflows, cf_only_distributions, end_date)` | `(timeline_df, cf_dist_df, summary_dict)` |
+| `_build_moic_breakdown(cashflow_details, pr_dict)` | `(breakdown_df, summary_dict)` |
+| `_generate_roe_audit_excel(partner_results, deal_summary, sale_me)` | Excel bytes |
+| `_generate_moic_audit_excel(partner_results, deal_summary, sale_me)` | Excel bytes |
+
+---
+
 ## Property Financials Tab
 
 The Property Financials tab is rendered by `property_financials_ui.py` and displays financial data for the selected property. Sections appear in this order:
@@ -510,6 +576,7 @@ Switching deals in Deal Analysis only reruns the Deal Analysis fragment — not 
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 2.5 | Feb 11 2026 | ROE & MOIC audit expanders on Deal Analysis tab: full calculation breakdowns, capital balance timelines, metric summary cards, Excel downloads |
 | 2.4 | Feb 7 2026 | Reports tab with Projected Returns Summary, Excel export, population selectors (Current Deal, Select Deals, By Partner, By Upstream Investor, All Deals), deal-level total rows |
 | 2.3 | Feb 7 2026 | Performance chart (NOI + occupancy), occupancy table, One Pager chart upgrade, section reorder (IS before BS) |
 | 2.2 | Feb 2026 | Property Financials tab extraction (IS, BS, Tenants, One Pager into property_financials_ui.py), compute.py extraction |
