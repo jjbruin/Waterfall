@@ -79,6 +79,32 @@ def typename_to_pool(typename: str) -> str:
     return "initial"
 
 
+# ============================================================
+# UPSTREAM TYPENAME ROUTING
+# ============================================================
+# Maps typename keywords (case-insensitive substring) to target entity.
+# When cash flows upstream and a typename matches, the cash bypasses
+# intermediate waterfalls and routes directly to the target entity.
+UPSTREAM_TYPENAME_ROUTING = {
+    "acquisition fee": "PSC1",
+}
+
+
+def resolve_upstream_typename_route(typename: str, entity_id: str) -> str | None:
+    """If typename matches a routing rule AND entity is NOT the target, return target. Else None.
+
+    Case-insensitive substring matching (consistent with typename_to_pool).
+    Returns None when no routing applies — caller continues normal waterfall.
+    """
+    t = (typename or "").strip().lower()
+    if not t:
+        return None
+    for keyword, target in UPSTREAM_TYPENAME_ROUTING.items():
+        if keyword in t and entity_id != target:
+            return target
+    return None
+
+
 def resolve_pool_and_action(vstate: str, vtranstype: str, is_capital_waterfall: bool) -> tuple:
     """Route a waterfall step to (pool_name, action).
 
