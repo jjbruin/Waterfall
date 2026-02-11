@@ -535,19 +535,25 @@ def compute_deal_analysis(
         cf_alloc=cf_alloc,
         cap_alloc=cap_alloc,
         sale_me=sale_me,
+        sale_is_modeled=(sale_dbg is not None),
     )
     result['partner_results'] = partner_results
     result['deal_summary'] = deal_summary
     return result
 
 
-def build_partner_results(cf_investors, cap_investors, seed_states, cf_alloc, cap_alloc, sale_me):
+def build_partner_results(cf_investors, cap_investors, seed_states, cf_alloc, cap_alloc, sale_me, sale_is_modeled=False):
     """Build partner-level and deal-level metrics from waterfall results.
 
     This is the single source of truth for IRR, ROE, MOIC, cashflow details,
     and pref/capital balances.  Called once per deal by compute_deal_analysis();
     all UI screens read from the returned dicts instead of reimplementing the
     combine-CF-and-Cap logic.
+
+    Args:
+        sale_is_modeled: If True, sale proceeds have been estimated and
+            distributed through the capital waterfall.  Any remaining
+            capital/pref balances are realized losses, NOT unrealized NAV.
 
     Returns:
         (partner_results, deal_summary) where partner_results is a list of
@@ -558,6 +564,10 @@ def build_partner_results(cf_investors, cap_investors, seed_states, cf_alloc, ca
         all_partners.update(cf_alloc['PropCode'].unique())
     if cap_alloc is not None and not cap_alloc.empty:
         all_partners.update(cap_alloc['PropCode'].unique())
+    # Include partners with historical accounting entries (e.g., Acquisition Fee
+    # recipients) that may not have forward waterfall steps
+    if seed_states:
+        all_partners.update(seed_states.keys())
 
     if not all_partners:
         return [], {}
@@ -583,12 +593,12 @@ def build_partner_results(cf_investors, cap_investors, seed_states, cf_alloc, ca
 
         cf_state = cf_investors.get(partner)
         cap_state = cap_investors.get(partner)
-        state = cf_state or cap_state
+        seed_st = seed_states.get(partner)
+        state = cf_state or cap_state or seed_st
         if not state:
             continue
 
         # --- Combined cashflows (seed once + CF new + Cap new) ---
-        seed_st = seed_states.get(partner)
         seed_len = len(seed_st.cashflows) if seed_st else 0
 
         combined_cfs = []
@@ -600,11 +610,16 @@ def build_partner_results(cf_investors, cap_investors, seed_states, cf_alloc, ca
             combined_cfs.extend(cap_state.cashflows[seed_len:])
 
         # --- Unrealized NAV ---
+        # When a sale is modeled, the capital waterfall has already distributed
+        # sale proceeds.  Any remaining capital/pref is a realized LOSS — the
+        # waterfall determined who gets what.  Only treat remaining balances as
+        # unrealized value when no sale has been modeled.
         unrealized = 0.0
-        if cap_state:
-            unrealized = cap_state.total_capital_outstanding + cap_state.total_pref_balance
-        elif cf_state:
-            unrealized = cf_state.total_capital_outstanding + cf_state.total_pref_balance
+        if not sale_is_modeled:
+            if cap_state:
+                unrealized = cap_state.total_capital_outstanding + cap_state.total_pref_balance
+            elif cf_state:
+                unrealized = cf_state.total_capital_outstanding + cf_state.total_pref_balance
 
         # --- Investor metrics (IRR, ROE, MOIC) ---
         combined_state = InvestorState(propcode=partner)
@@ -620,24 +635,43 @@ def build_partner_results(cf_investors, cap_investors, seed_states, cf_alloc, ca
         # --- Cashflow detail rows (for XIRR Cash Flows table) ---
         cashflow_details = []
         if seed_st and seed_st.cashflows:
-            for cf_date, cf_amount in seed_st.cashflows:
-                desc = "Contribution" if cf_amount < 0 else "Historical Distribution"
+            labels = seed_st.cashflow_labels if hasattr(seed_st, 'cashflow_labels') else []
+            for i, (cf_date, cf_amount) in enumerate(seed_st.cashflows):
+                label = labels[i] if i < len(labels) and labels[i] else None
+                if label:
+                    desc = label
+                else:
+                    desc = "Contribution" if cf_amount < 0 else "Historical Distribution"
                 cashflow_details.append({
                     "Date": cf_date, "Description": desc,
                     "Partner": partner, "is_pref": is_pref_equity,
                     "Amount": cf_amount,
                 })
         if cf_state and len(cf_state.cashflows) > seed_len:
-            for cf_date, cf_amount in cf_state.cashflows[seed_len:]:
-                desc = "Capital Call" if cf_amount < 0 else "CF Distribution"
+            cf_labels = cf_state.cashflow_labels if hasattr(cf_state, 'cashflow_labels') else []
+            for i, (cf_date, cf_amount) in enumerate(cf_state.cashflows[seed_len:], start=seed_len):
+                lbl = cf_labels[i] if i < len(cf_labels) and cf_labels[i] else ""
+                if lbl:
+                    desc = lbl
+                elif cf_amount < 0:
+                    desc = "Capital Call"
+                else:
+                    desc = "CF Distribution"
                 cashflow_details.append({
                     "Date": cf_date, "Description": desc,
                     "Partner": partner, "is_pref": is_pref_equity,
                     "Amount": cf_amount,
                 })
         if cap_state and len(cap_state.cashflows) > seed_len:
-            for cf_date, cf_amount in cap_state.cashflows[seed_len:]:
-                desc = "Capital Distribution" if cf_amount > 0 else "Cap WF Adjustment"
+            cap_labels = cap_state.cashflow_labels if hasattr(cap_state, 'cashflow_labels') else []
+            for i, (cf_date, cf_amount) in enumerate(cap_state.cashflows[seed_len:], start=seed_len):
+                lbl = cap_labels[i] if i < len(cap_labels) and cap_labels[i] else ""
+                if lbl:
+                    desc = lbl
+                elif cf_amount > 0:
+                    desc = "Capital Distribution"
+                else:
+                    desc = "Cap WF Adjustment"
                 cashflow_details.append({
                     "Date": cf_date, "Description": desc,
                     "Partner": partner, "is_pref": is_pref_equity,
