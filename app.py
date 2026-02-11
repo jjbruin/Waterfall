@@ -1067,9 +1067,9 @@ def _deal_analysis_fragment():
           col1.metric("Total CF Distributions", f"${total_cf_dist:,.0f}")
           col2.metric("Total Capital Distributions", f"${total_cap_dist:,.0f}")
           col3.metric("Total All Distributions", f"${total_dist:,.0f}")
-          col4.metric("Deal MOIC", f"{deal_moic:.2f}x")
-          col5.metric("Deal XIRR", f"{deal_xirr:.2%}" if deal_xirr is not None else "N/A")
-          col6.metric("Deal ROE", f"{deal_roe:.2%}")
+          col4.metric("Deal XIRR", f"{deal_xirr:.2%}" if deal_xirr is not None else "N/A")
+          col5.metric("Deal ROE", f"{deal_roe:.2%}")
+          col6.metric("Deal MOIC", f"{deal_moic:.2f}x")
 
           # ============================================================
           # PARTNER PREFERRED RETURN SCHEDULES
