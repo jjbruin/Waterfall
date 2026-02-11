@@ -25,6 +25,7 @@ waterfall-xirr/
 ├── property_financials_ui.py # Property Financials tab UI (Performance Chart, IS, BS, Tenants, One Pager)
 ├── reports_ui.py             # Reports tab UI (Projected Returns Summary, Excel export)
 ├── sold_portfolio_ui.py      # Sold Portfolio tab UI (historical returns from accounting)
+├── psckoc_ui.py              # PSCKOC tab UI (upstream entity analysis, member returns)
 ├── waterfall_setup_ui.py     # Waterfall Setup tab UI (view, edit, create waterfall structures)
 ├── one_pager_ui.py           # One Pager Investor Report UI (Streamlit components)
 ├── one_pager.py              # One Pager data logic (performance calcs, cap stack, PE metrics)
@@ -136,6 +137,22 @@ Rendered by `sold_portfolio_ui.py`. Historical returns for sold deals computed f
 - **Deal Detail Drill-Down**: Selectbox to pick a deal → expander with every pref equity accounting row sorted by date. Columns: Date, InvestorID, MajorType, Typename, Capital, Amount, Cashflow (XIRR), Capital Balance (running). IRR/ROE/MOIC metric cards below. Download Activity Detail exports the table + summary metrics to Excel for independent return verification.
 - **Excel Exports**: Summary workbook (`sold_portfolio_returns.xlsx`) and per-deal activity detail (`sold_activity_{name}.xlsx`) via openpyxl.
 
+### 8. PSCKOC
+Rendered by `psckoc_ui.py`. Upstream waterfall analysis for the PSCKOC holding entity, showing how deal-level distributions flow through PPI entities to PSCKOC members.
+- **Members**: PSC1 (GP co-invest, Capital Units), KCREIT (LP, Capital Units), PCBLE (GP promote + AM fee recipient, Carry Units)
+- **Deal Discovery**: Traces chain: relationships (PSCKOC as investor) → PPI entities → deals referencing those PPIs in waterfalls. Currently discovers 8 underlying deals.
+- **Computation**: Button-gated. Runs `get_cached_deal_result()` per deal + `run_recursive_upstream_waterfalls()` for CF and Cap. Results cached in `st.session_state['_psckoc_results']`.
+- **Partner Returns**: KPI cards (IRR, ROE, MOIC) per member + styled summary table with deal-level totals.
+- **Income Schedule**: PSCKOC's projected income by period and source deal (CF vs Cap).
+- **Waterfall Allocations**: Allocation tables showing how income is distributed among PSC1/KCREIT/PCBLE.
+- **AM Fee Schedule**: Quarterly AM fee amounts (date, KCREIT balance, fee amount) per Section 6.02.
+- **XIRR Cash Flows**: Combined cashflow table per member (contributions + distributions).
+- **Excel Export**: 4-sheet workbook (Partner Returns, Income Schedule, AM Fee Schedule, XIRR Cash Flows).
+- **New Waterfall vStates** (in `waterfall.py`):
+  - `AMFee`: Post-distribution fee deducted from source investor (vNotes), paid to recipient (PropCode). Pool-neutral. `nPercent` = annual rate, `mAmount` = periods/yr.
+  - `Promote`: Cumulative catch-up. `FXRate` = carry share, `nPercent` = target carry %. `vNotes` = comma-separated capital investors. Math: `E >= target/(1-target) * P`.
+- **New InvestorState Fields** (`models.py`): `promote_base` (cumulative pref for catch-up denominator), `promote_carry` (cumulative carry from catch-up).
+
 ## Key Functions
 
 - `get_cached_deal_result()` - Shared multi-deal cache wrapper; all consumers call this instead of `compute_deal_analysis()` directly (compute.py)
@@ -166,6 +183,10 @@ Rendered by `sold_portfolio_ui.py`. Historical returns for sold deals computed f
 - `_compute_all_sold_returns()` - Pref-equity returns from accounting for sold deals, with portfolio total (sold_portfolio_ui.py)
 - `_build_deal_detail()` - Cashflow detail table for a single sold deal with running capital balance (sold_portfolio_ui.py)
 - `_generate_detail_excel()` - Activity detail Excel with summary metrics for return verification (sold_portfolio_ui.py)
+- `render_psckoc_tab()` - PSCKOC tab entry point (psckoc_ui.py)
+- `_find_psckoc_deals()` - Trace deal chain: relationships → PPI entities → underlying deals (psckoc_ui.py)
+- `_run_psckoc_computation()` - Run deal computations + upstream waterfalls for PSCKOC (psckoc_ui.py)
+- `_generate_psckoc_excel()` - 4-sheet PSCKOC workbook via openpyxl (psckoc_ui.py)
 
 ## Account Classifications
 

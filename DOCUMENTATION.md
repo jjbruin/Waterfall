@@ -44,6 +44,8 @@ waterfall-xirr/
 ├── waterfall_setup_ui.py     # Waterfall Setup tab UI (view, edit, create waterfalls)
 ├── property_financials_ui.py # Property Financials tab UI (Performance Chart, IS, BS, Tenants, One Pager)
 ├── reports_ui.py             # Reports tab UI (Projected Returns Summary, Excel export)
+├── sold_portfolio_ui.py      # Sold Portfolio tab UI (historical returns from accounting)
+├── psckoc_ui.py              # PSCKOC tab UI (upstream entity analysis, member returns)
 ├── one_pager_ui.py           # One Pager Investor Report UI (Streamlit components)
 ├── one_pager.py              # One Pager data logic (performance calcs, cap stack, PE metrics)
 ├── models.py                 # Data classes (InvestorState, Loan)
@@ -83,6 +85,8 @@ waterfall-xirr/
 | `cash_management.py` | Cash reserves and CapEx management |
 | `debt_service_ui.py` | Debt Service display: Loan Summary, Amortization Schedules, Sale Proceeds |
 | `waterfall_setup_ui.py` | Waterfall Setup tab: view, edit, create waterfall structures |
+| `sold_portfolio_ui.py` | Sold Portfolio tab: historical returns for sold deals from accounting |
+| `psckoc_ui.py` | PSCKOC tab: upstream entity analysis, member allocations, AM fee schedule |
 | `database.py` | Database operations, table definitions, migrations, indexes, CSV import/export |
 | `reporting.py` | Annual tables and formatting |
 | `config.py` | BS_ACCOUNTS, IS_ACCOUNTS, capital pool routing, default settings |
@@ -275,6 +279,8 @@ Operating capital pools have a cumulative return cap equal to total contribution
 | `Share` | Residual distribution |
 | `IRR` | IRR hurdle gate |
 | `Amt` | Fixed-amount distribution |
+| `AMFee` | Post-distribution fee (pool-neutral) — deducts from source investor (vNotes), pays to recipient (PropCode). `nPercent` = annual rate, `mAmount` = periods/yr |
+| `Promote` | Cumulative catch-up — `FXRate` = carry share, `nPercent` = target carry %. `vNotes` = comma-separated capital investors. Math: `E >= target/(1-target) * P` |
 
 **Critical Rule**: Operating capital MUST use `Add`, never `Tag`. See `waterfall_setup_rules.txt` for details.
 
@@ -490,6 +496,60 @@ Each deal's partner rows are followed by a **Deal Total** row (bold, solid top b
 
 ---
 
+## PSCKOC Entity Analysis Tab
+
+The PSCKOC tab is rendered by `psckoc_ui.py` and provides upstream waterfall analysis for the PSCKOC holding entity, showing how deal-level distributions flow through PPI entities to PSCKOC members.
+
+### Members
+
+| Member | Role | Unit Type |
+|--------|------|-----------|
+| PSC1 | GP co-invest (Peaceable) | Capital Units |
+| KCREIT | LP investor (KOC Member) | Capital Units |
+| PCBLE | GP promote + AM fee recipient (Peaceable) | Carry Units |
+
+### Waterfall Structure (Section 6.02)
+
+1. **Preferred Return** (8%) — PSC1 + KCREIT pro rata
+2. **GP Catch-up** — 80% PCBLE / 20% Capital until PCBLE has 20% of aggregate (Pref + Catch-up)
+3. **Residual Split** — 20% PCBLE / 80% Capital (pro rata PSC1 + KCREIT)
+4. **AM Fee** — 1.5% annual (quarterly) on KCREIT capital balance, deducted from KCREIT and paid to PCBLE
+
+### New Waterfall vStates
+
+| vState | Purpose | Key Fields |
+|--------|---------|------------|
+| `AMFee` | Post-distribution fee (pool-neutral) | `PropCode` = recipient, `nPercent` = annual rate, `mAmount` = periods/yr, `vNotes` = source investor |
+| `Promote` | Cumulative catch-up | `PropCode` = carry holder, `FXRate` = carry share, `nPercent` = target carry %, `vNotes` = capital investors (comma-separated) |
+
+**AMFee** is pool-neutral (`allocated = 0`) — it does NOT reduce the remaining cash pool. The waterfall loop has a special check to continue processing AMFee steps even when remaining cash is zero.
+
+**Promote** tracks cumulative catch-up across periods via `promote_base` (pref paid) and `promote_carry` (carry earned) on `InvestorState`. The catch-up formula: `carry_needed = (target_pct / (1 - target_pct)) * promote_base - promote_carry`.
+
+**promote_base tracking**: Pref steps with `vNotes` containing "promote_base" increment the investor's `promote_base` after paying pref.
+
+### Deal Discovery
+
+`_find_psckoc_deals()` traces the entity chain:
+1. Find entities where PSCKOC is an investor (via relationships table)
+2. Find deals whose waterfalls reference those entities as PropCode
+3. Returns deal vcodes with PPI entity and ownership percentage
+
+### Tab Sections
+
+1. **Deal Portfolio** — Table of underlying deals with asset type, PPI entity, ownership %
+2. **Compute Button** — Triggers `get_cached_deal_result()` per deal + `run_recursive_upstream_waterfalls()` for CF and Cap
+3. **Partner Returns** — KPI cards (IRR, ROE, MOIC) per member + styled summary table
+4. **Income Schedule** — PSCKOC's projected income by period and source deal
+5. **Waterfall Allocations** — CF_WF and Cap_WF allocation tables per member
+6. **AM Fee Schedule** — Quarterly AM fee amounts (date, KCREIT balance, fee)
+7. **XIRR Cash Flows** — Combined cashflow table per member
+8. **Excel Export** — 4-sheet workbook (Partner Returns, Income Schedule, AM Fee Schedule, XIRR Cash Flows)
+
+Results cached in `st.session_state['_psckoc_results']`.
+
+---
+
 ## Performance & Caching
 
 ### Shared Multi-Deal Computation Cache
@@ -503,12 +563,13 @@ Deals computed by any consumer accumulate in the shared cache and are reused eve
 | Deal Analysis | `app.py` `_deal_analysis_fragment()` | Computes on first view, instant on return |
 | Dashboard Computed Returns | `dashboard_ui.py` `_render_computed_returns()` | Loops all eligible deals, cached for later |
 | Reports | `reports_ui.py` `render_reports()` | Loops selected deals, reuses any cached results |
+| PSCKOC | `psckoc_ui.py` `_run_psckoc_computation()` | Computes underlying deals + upstream waterfalls |
 
 A toast notification ("Computing Pxxxxxxx...") appears only on cache misses. Cache invalidation happens automatically when "Reload Data" or "Import CSVs" clears all `_deal_*` session_state keys.
 
 ### Fragment Isolation
 
-All six tabs use `@st.fragment` to isolate widget-triggered reruns:
+All eight tabs use `@st.fragment` to isolate widget-triggered reruns:
 
 | Tab | Fragment | Location |
 |-----|----------|----------|
@@ -518,6 +579,8 @@ All six tabs use `@st.fragment` to isolate widget-triggered reruns:
 | Ownership (upstream) | `_render_upstream_analysis_fragment()` | `app.py` |
 | Waterfall Setup | `_waterfall_setup_fragment()` | `waterfall_setup_ui.py` |
 | Reports | `_reports_fragment()` | `reports_ui.py` |
+| Sold Portfolio | `_sold_portfolio_fragment()` | `sold_portfolio_ui.py` |
+| PSCKOC | `_psckoc_fragment()` | `psckoc_ui.py` |
 
 Switching deals in Deal Analysis only reruns the Deal Analysis fragment — not the other five tabs. Cross-tab state is shared via session_state:
 - `_current_deal_vcode` — selected deal vcode (used by Property Financials, Ownership)
@@ -532,6 +595,7 @@ Switching deals in Deal Analysis only reruns the Deal Analysis fragment — not 
 | `_dashboard_*` | Dashboard caps, returns, errors | Reload Data, CSV Import |
 | `_wf_*` | Waterfall Setup drafts and nav state | Reload Data, CSV Import |
 | `_ownership_*` | Ownership tree cache | Reload Data, CSV Import |
+| `_psckoc_*` | PSCKOC computation results | Reload Data, CSV Import |
 
 ---
 
@@ -576,6 +640,7 @@ Switching deals in Deal Analysis only reruns the Deal Analysis fragment — not 
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 2.6 | Feb 11 2026 | PSCKOC entity analysis tab: AMFee + Promote vStates in waterfall engine, promote_base/promote_carry tracking on InvestorState, upstream waterfall aggregation for PSCKOC members (PSC1/KCREIT/PCBLE), income schedule, AM fee schedule, partner returns, Excel export |
 | 2.5 | Feb 11 2026 | ROE & MOIC audit expanders on Deal Analysis tab: full calculation breakdowns, capital balance timelines, metric summary cards, Excel downloads |
 | 2.4 | Feb 7 2026 | Reports tab with Projected Returns Summary, Excel export, population selectors (Current Deal, Select Deals, By Partner, By Upstream Investor, All Deals), deal-level total rows |
 | 2.3 | Feb 7 2026 | Performance chart (NOI + occupancy), occupancy table, One Pager chart upgrade, section reorder (IS before BS) |
