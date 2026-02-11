@@ -38,6 +38,7 @@ from dashboard_ui import render_dashboard
 from debt_service_ui import render_debt_service
 from waterfall_setup_ui import render_waterfall_setup
 from sold_portfolio_ui import render_sold_portfolio
+from psckoc_ui import render_psckoc_tab
 
 # ============================================================
 # STREAMLIT CONFIG
@@ -152,7 +153,7 @@ with st.sidebar:
             _load_sqlite_data.clear()
             # Clear deal computation + UI caches
             for k in list(st.session_state.keys()):
-                if k.startswith(('_deal_', '_current_', '_wf_', '_ownership_', '_dashboard_')):
+                if k.startswith(('_deal_', '_current_', '_wf_', '_ownership_', '_dashboard_', '_psckoc_')):
                     del st.session_state[k]
             st.rerun()
 
@@ -185,7 +186,7 @@ with st.sidebar:
                         # Clear caches so app picks up new data
                         _load_sqlite_data.clear()
                         for k in list(st.session_state.keys()):
-                            if k.startswith(('_deal_', '_current_', '_wf_', '_ownership_', '_dashboard_')):
+                            if k.startswith(('_deal_', '_current_', '_wf_', '_ownership_', '_dashboard_', '_psckoc_')):
                                 del st.session_state[k]
                 else:
                     st.warning("Enter a CSV folder path first.")
@@ -2157,7 +2158,7 @@ def _deal_analysis_fragment():
 
 
 # Create tabs for different sections - tabs at top level
-tab_dashboard, tab_deal, tab_financials, tab_ownership, tab_wf_setup, tab_reports, tab_sold = st.tabs(["Dashboard", "Deal Analysis", "Property Financials", "Ownership & Partnerships", "Waterfall Setup", "Reports", "Sold Portfolio"])
+tab_dashboard, tab_deal, tab_financials, tab_ownership, tab_wf_setup, tab_reports, tab_sold, tab_psckoc = st.tabs(["Dashboard", "Deal Analysis", "Property Financials", "Ownership & Partnerships", "Waterfall Setup", "Reports", "Sold Portfolio", "PSCKOC"])
 
 with tab_dashboard:
     render_dashboard(
@@ -2326,3 +2327,14 @@ with tab_reports:
 
 with tab_sold:
     render_sold_portfolio(inv=inv, acct=acct)
+
+with tab_psckoc:
+    render_psckoc_tab(
+        inv=inv, wf=wf, acct=acct, fc=fc, coa=coa,
+        relationships_raw=relationships_raw,
+        mri_loans_raw=mri_loans_raw, mri_supp=mri_supp, mri_val=mri_val,
+        capital_calls_raw=capital_calls_raw, isbs_raw=isbs_raw,
+        start_year=int(start_year),
+        horizon_years=int(horizon_years),
+        pro_yr_base=int(pro_yr_base),
+    )

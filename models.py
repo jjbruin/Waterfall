@@ -62,8 +62,12 @@ class InvestorState:
     pools: Dict[str, CapitalPool] = field(default_factory=dict)
     cashflows: List[Tuple[date, float]] = field(default_factory=list)
     # Cashflows: negative = contribution, positive = distribution
+    cashflow_labels: List[str] = field(default_factory=list)
+    # Parallel to cashflows: cashflow_labels[i] is the Typename for cashflows[i]
     cf_distributions: List[Tuple[date, float]] = field(default_factory=list)
     # CF waterfall distributions only (operating income for ROE calculation)
+    promote_base: float = 0.0    # Cumulative pref distributions counting toward promote catch-up
+    promote_carry: float = 0.0   # Cumulative carry distributions from catch-up steps
 
     # ------------------------------------------------------------------
     # Pool helpers

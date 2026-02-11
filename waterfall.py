@@ -561,6 +561,10 @@ def run_waterfall_period(
                     cocoplum_cross_reduce=multi_tier,
                     label=lead_vtranstype,
                 )
+                # Track promote_base for cumulative catch-up calculation
+                lead_vnotes = str(lead.get("vNotes", "")).strip().lower()
+                if allocated > 0 and "promote_base" in lead_vnotes:
+                    lead_stt.promote_base += allocated
 
             elif lead_state == "Initial":
                 if is_capital_waterfall:
@@ -619,7 +623,52 @@ def run_waterfall_period(
                 allocated = min(step_max, abs(lead_m_amount)) if lead_m_amount != 0 else 0.0
                 if allocated > 0:
                     apply_distribution(lead_stt, period_date, allocated, is_cf_wf, label=lead_vtranstype)
-            
+
+            elif lead_state == "AMFee":
+                # Post-distribution AM fee: deduct from source investor, pay to recipient.
+                # Pool-neutral — does NOT reduce the remaining cash pool.
+                source_pc = str(lead.get("vNotes", "")).strip()
+                periods_per_year = max(1.0, lead_m_amount) if lead_m_amount > 0 else 4.0
+                source_ist = istates.get(source_pc)
+                if source_ist:
+                    fee = source_ist.total_capital_outstanding * lead_rate / periods_per_year
+                    if fee > 0:
+                        # Deduct from source's share (negative cashflow on source)
+                        source_ist.cashflows.append((period_date, -fee))
+                        source_ist.cashflow_labels.append(lead_vtranstype)
+                        # Pay to recipient (positive cashflow)
+                        apply_distribution(lead_stt, period_date, fee, is_cf_wf,
+                                           label=lead_vtranstype)
+                allocated = 0.0  # Pool-neutral: does NOT reduce remaining cash
+
+            elif lead_state == "Promote":
+                # Cumulative catch-up: lead (carry holder) gets FXRate share until
+                # carry_received >= target_pct / (1 - target_pct) * total_pref_base.
+                target_pct = lead_rate           # e.g. 0.20
+                notes = str(lead.get("vNotes", "")).strip()
+                cap_pcs = [s.strip() for s in notes.split(",") if s.strip()]
+
+                # Sum promote_base across capital investors
+                total_base = sum(
+                    istates[ci].promote_base for ci in cap_pcs if ci in istates
+                )
+
+                # Target carry and remaining catch-up
+                if target_pct < 1.0 and target_pct > 0:
+                    target_carry = (target_pct / (1.0 - target_pct)) * total_base
+                else:
+                    target_carry = total_base
+                carry_needed = max(0.0, target_carry - lead_stt.promote_carry)
+
+                if carry_needed <= 0:
+                    allocated = 0.0   # Catch-up complete, fall through to residual
+                else:
+                    allocated = min(step_max, carry_needed)
+                    if allocated > 0:
+                        apply_distribution(lead_stt, period_date, allocated, is_cf_wf,
+                                           label=lead_vtranstype)
+                        lead_stt.promote_carry += allocated
+
             else:
                 # Unknown state - no allocation
                 allocated = 0.0
@@ -703,11 +752,18 @@ def run_waterfall_period(
         
         # Mark this (iOrder, vAmtType) group as processed
         processed_groups.add((order, amt_type))
-        
+
         if remaining <= 1e-9:
             remaining = 0.0
-            break
-    
+            # Don't break if there are unprocessed AMFee steps (pool-neutral)
+            has_remaining_amfee = any(
+                str(s["vState"]).strip() == "AMFee"
+                for _, s in steps.iterrows()
+                if (int(s["iOrder"]), str(s.get("vAmtType", "")).strip()) not in processed_groups
+            )
+            if not has_remaining_amfee:
+                break
+
     # NOTE: year-end compounding is handled by accrue_pool_pref which
     # compounds at year boundaries when accruing across years.  For the
     # 12/31 period itself (no boundary crossing), pref_accrued_current_year
@@ -1359,6 +1415,10 @@ def run_upstream_waterfall_period(
                         if not pool.pref_tiers:
                             pool.pref_tiers.append(PrefTier(tier_name="pref", pref_rate=rate))
                         allocated = pay_pool_pref(stt, "initial", period_date, step_max, is_cf_wf, label=step_vtlabel)
+                        # Track promote_base for cumulative catch-up calculation
+                        step_vnotes = str(step.get("vNotes", "")).strip().lower()
+                        if allocated > 0 and "promote_base" in step_vnotes:
+                            stt.promote_base += allocated
                     elif state in ("Def_Int", "Def&Int"):
                         # Default preferred return / combined default interest+principal
                         pool = stt.get_pool("initial")
@@ -1390,6 +1450,45 @@ def run_upstream_waterfall_period(
                         allocated = min(allocated, remaining)
                         if allocated > 0:
                             apply_distribution(stt, period_date, allocated, is_cf_wf, label=step_vtlabel)
+
+                    elif state == "AMFee":
+                        # Post-distribution AM fee: deduct from source, pay to recipient.
+                        # Pool-neutral — does NOT reduce the remaining cash pool.
+                        source_pc = str(step.get("vNotes", "")).strip()
+                        m_amount = float(step.get("mAmount", 0) or 0)
+                        periods_per_year = max(1.0, m_amount) if m_amount > 0 else 4.0
+                        source_ist = entity_states.get(source_pc)
+                        if source_ist:
+                            fee = source_ist.total_capital_outstanding * rate / periods_per_year
+                            if fee > 0:
+                                source_ist.cashflows.append((period_date, -fee))
+                                source_ist.cashflow_labels.append(step_vtlabel)
+                                apply_distribution(stt, period_date, fee, is_cf_wf,
+                                                   label=step_vtlabel)
+                        allocated = 0.0  # Pool-neutral
+
+                    elif state == "Promote":
+                        # Cumulative catch-up: carry holder gets FXRate share until
+                        # carry_received >= target_pct/(1-target_pct) * total_pref_base.
+                        target_pct = rate
+                        notes = str(step.get("vNotes", "")).strip()
+                        cap_pcs = [s.strip() for s in notes.split(",") if s.strip()]
+                        total_base = sum(
+                            entity_states[ci].promote_base for ci in cap_pcs if ci in entity_states
+                        )
+                        if target_pct < 1.0 and target_pct > 0:
+                            target_carry = (target_pct / (1.0 - target_pct)) * total_base
+                        else:
+                            target_carry = total_base
+                        carry_needed = max(0.0, target_carry - stt.promote_carry)
+                        if carry_needed <= 0:
+                            allocated = 0.0
+                        else:
+                            allocated = min(step_max, carry_needed)
+                            if allocated > 0:
+                                apply_distribution(stt, period_date, allocated, is_cf_wf,
+                                                   label=step_vtlabel)
+                                stt.promote_carry += allocated
 
                     lead_distributions[pc] = (allocated, fx)
 
@@ -1499,7 +1598,14 @@ def run_upstream_waterfall_period(
                             terminal_cash[term_id] = terminal_cash.get(term_id, 0.0) + term_cash
 
                 if remaining <= 0.01:
-                    break
+                    # Don't break if there are unprocessed AMFee steps (pool-neutral)
+                    remaining_orders = [o for o in sorted(steps["iOrder"].unique()) if o > order]
+                    has_remaining_amfee = any(
+                        (steps[(steps["iOrder"] == o) & (steps["vState"].astype(str).str.strip() == "AMFee")].shape[0] > 0)
+                        for o in remaining_orders
+                    )
+                    if not has_remaining_amfee:
+                        break
 
             return terminal_cash
 

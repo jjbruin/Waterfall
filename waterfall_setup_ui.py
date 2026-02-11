@@ -29,10 +29,8 @@ from ownership_tree import (
 # ── Constants ────────────────────────────────────────────────────────────
 VSTATE_OPTIONS = [
     "Pref", "Initial", "Add", "Tag", "Share", "IRR",
-    "Amt", "Def&Int", "Def_Int", "Default",
+    "Amt", "Def&Int", "Def_Int", "Default", "AMFee", "Promote",
 ]
-
-VNOTES_OPTIONS = ["Pref", "OP", ""]
 
 WF_COLUMNS = [
     "iOrder", "vAmtType", "vNotes", "PropCode", "vState", "FXRate", "nPercent",
@@ -356,7 +354,7 @@ def _render_wf_type_editor(entity_id, wf_type, entity_wf, draft_key, full_wf, in
         "mAmount": st.column_config.NumberColumn("mAmount", min_value=0.0, format="%.0f"),
         "vtranstype": st.column_config.TextColumn("vtranstype"),
         "vAmtType": st.column_config.TextColumn("vAmtType"),
-        "vNotes": st.column_config.SelectboxColumn("vNotes", options=VNOTES_OPTIONS),
+        "vNotes": st.column_config.TextColumn("vNotes"),
     }
 
     edited = st.data_editor(
@@ -465,6 +463,26 @@ def _validate_steps(df, wf_type):
         if has_tag and not has_lead:
             errors.append(
                 f"iOrder {int(order)}: has Tag step(s) but no lead step"
+            )
+
+    # 5. AMFee steps require source PropCode in vNotes
+    amfee_rows = df[df["vState"] == "AMFee"]
+    for _, r in amfee_rows.iterrows():
+        vnotes = str(r.get("vNotes", "")).strip()
+        if not vnotes:
+            errors.append(
+                f"iOrder {int(r['iOrder'])} {r['PropCode']}: AMFee requires "
+                "source investor PropCode in vNotes"
+            )
+
+    # 6. Promote steps require capital investor PropCodes in vNotes
+    promote_rows = df[df["vState"] == "Promote"]
+    for _, r in promote_rows.iterrows():
+        vnotes = str(r.get("vNotes", "")).strip()
+        if not vnotes:
+            errors.append(
+                f"iOrder {int(r['iOrder'])} {r['PropCode']}: Promote requires "
+                "capital investor PropCodes in vNotes (comma-separated)"
             )
 
     return errors, warnings
@@ -873,6 +891,8 @@ def _render_guidance_panel():
 | **Def&Int** | Default interest + principal. CF_WF: interest only; Cap_WF: both. |
 | **Def_Int** | Default interest only. Does not reduce capital. |
 | **Default** | Default principal return. Reduces capital_outstanding. |
+| **AMFee** | Post-distribution AM fee. Deducts from source (vNotes) investor, pays to PropCode. Pool-neutral. `nPercent` = annual rate, `mAmount` = periods/yr. |
+| **Promote** | Cumulative catch-up. `FXRate` = carry share, `nPercent` = target carry %. `vNotes` = comma-separated capital investor PropCodes. Paired with Tags. |
 """)
 
         st.warning(
