@@ -8,11 +8,13 @@ in session_state and avoid recomputing on every Streamlit rerun.
 
 import pandas as pd
 import copy
+from collections import defaultdict
 from datetime import date
 from typing import Optional, Dict, List
 
 from config import (INTEREST_ACCTS, PRINCIPAL_ACCTS, SELLING_COST_RATE,
-                    GROSS_REVENUE_ACCTS, CONTRA_REVENUE_ACCTS, EXPENSE_ACCTS)
+                    GROSS_REVENUE_ACCTS, CONTRA_REVENUE_ACCTS, EXPENSE_ACCTS,
+                    typename_to_pool)
 from utils import month_end, as_date
 from metrics import investor_metrics, xirr, calculate_roe
 from models import InvestorState
@@ -20,7 +22,9 @@ from loaders import (load_coa, load_forecast, load_mri_loans,
                      build_investmentid_to_vcode, normalize_accounting_feed,
                      load_waterfalls)
 from loans import build_loans_from_mri_loans, amortize_monthly_schedule, total_loan_balance_at
-from waterfall import run_waterfall, seed_states_from_accounting
+from waterfall import (run_waterfall, seed_states_from_accounting,
+                       run_waterfall_period, pref_rates_from_waterfall_steps,
+                       add_pref_rates_from_waterfall_steps)
 from planned_loans import (size_planned_second_mortgage, planned_loan_as_loan_object,
                            twelve_month_noi_after_date, projected_cap_rate_at_date)
 from reporting import cashflows_monthly_fad
@@ -163,6 +167,171 @@ def get_cached_deal_result(vcode, start_year, horizon_years, pro_yr_base, **kwar
             **kwargs,
         )
     return cache[key]
+
+
+def run_interleaved_waterfalls(
+    wf_steps, deal_vcode, cf_period_cash, cap_period_cash,
+    seed_states, capital_calls=None,
+):
+    """Run CF and Cap waterfalls interleaved chronologically.
+
+    Instead of running all CF periods then all Cap periods sequentially,
+    this merges both timelines and processes each period in date order
+    using a single shared investor state.  Same-date periods: CF runs
+    before Cap (operating cash reduces pref before capital event).
+
+    Today cap_period_cash only contains the sale date, so this produces
+    identical metric results (IRR, ROE, MOIC) to the sequential approach.
+    It becomes meaningful when future features add mid-forecast refi events.
+
+    Returns:
+        (cf_alloc_df, cap_alloc_df, cf_investors, cap_investors)
+        compatible with build_partner_results().
+    """
+    # --- 1. Filter steps for each waterfall type ---
+    cf_steps = wf_steps[
+        (wf_steps["vcode"].astype(str) == str(deal_vcode)) &
+        (wf_steps["vmisc"] == "CF_WF")
+    ].copy().sort_values("iOrder")
+
+    cap_steps = wf_steps[
+        (wf_steps["vcode"].astype(str) == str(deal_vcode)) &
+        (wf_steps["vmisc"] == "Cap_WF")
+    ].copy().sort_values("iOrder")
+
+    # --- 2. Extract pref rates (cross-waterfall) ---
+    pref_rates = pref_rates_from_waterfall_steps(wf_steps, deal_vcode)
+    add_pref_rates = add_pref_rates_from_waterfall_steps(wf_steps, deal_vcode)
+
+    # --- 3. Build merged timeline with wf_type tag ---
+    cf_timeline = []
+    if not cf_steps.empty and not cf_period_cash.empty:
+        for _, r in cf_period_cash.sort_values("event_date").iterrows():
+            cf_timeline.append((r["event_date"], float(r["cash_available"]), "CF_WF"))
+
+    cap_timeline = []
+    if not cap_steps.empty and not cap_period_cash.empty:
+        for _, r in cap_period_cash.sort_values("event_date").iterrows():
+            cap_timeline.append((r["event_date"], float(r["cash_available"]), "Cap_WF"))
+
+    # Same-date: CF runs before Cap (sort key 0 < 1)
+    merged = sorted(
+        cf_timeline + cap_timeline,
+        key=lambda x: (x[0], 0 if x[2] == "CF_WF" else 1),
+    )
+
+    # --- 4. Initialize shared state ---
+    shared = copy.deepcopy(seed_states)
+
+    # --- 5. Build pending capital calls ---
+    pending_calls = []
+    if capital_calls:
+        for call in capital_calls:
+            cd = call.get('call_date')
+            if cd is not None:
+                cd_date = cd.date() if hasattr(cd, 'date') else cd
+                pending_calls.append({**call, '_date': cd_date, '_applied': False})
+
+    # --- 6. Per-partner, per-waterfall-type cashflow tracking ---
+    cf_new_cfs = defaultdict(list)
+    cf_new_labels = defaultdict(list)
+    cap_new_cfs = defaultdict(list)
+    cap_new_labels = defaultdict(list)
+
+    cf_alloc_rows = []
+    cap_alloc_rows = []
+
+    # --- 7. Main loop over merged timeline ---
+    for period_date, cash, wf_type in merged:
+        # a. Snapshot before capital calls
+        pre_call_lens = {pc: len(ist.cashflows) for pc, ist in shared.items()}
+
+        # b. Apply pending capital calls with date <= period_date
+        for pc_call in pending_calls:
+            if not pc_call['_applied'] and pc_call['_date'] <= period_date:
+                inv_id = pc_call.get('investor_id')
+                amount = abs(pc_call.get('amount', 0))
+                if inv_id and amount and inv_id in shared:
+                    stt = shared[inv_id]
+                    pool_name = typename_to_pool(pc_call.get('typename', ''))
+                    pool = stt.get_pool(pool_name)
+                    pool.capital_outstanding += amount
+                    if pool_name == "operating":
+                        if pool.cumulative_cap is None:
+                            pool.cumulative_cap = 0.0
+                        pool.cumulative_cap += amount
+                    stt.cashflows.append((pc_call['_date'], -amount))
+                    stt.cashflow_labels.append(pc_call.get('typename', 'Capital Call'))
+                pc_call['_applied'] = True
+
+        # c. Capital call cashflows always go to CF bucket
+        for pc, ist in shared.items():
+            pre = pre_call_lens.get(pc, 0)
+            if len(ist.cashflows) > pre:
+                cf_new_cfs[pc].extend(ist.cashflows[pre:])
+                cf_new_labels[pc].extend(ist.cashflow_labels[pre:])
+
+        # d. Snapshot before waterfall period
+        pre_wf_lens = {pc: len(ist.cashflows) for pc, ist in shared.items()}
+
+        # e. Run waterfall period with appropriate steps
+        steps = cf_steps if wf_type == "CF_WF" else cap_steps
+        is_cap = (wf_type == "Cap_WF")
+        _remaining, rows = run_waterfall_period(
+            steps, shared, period_date, cash, pref_rates,
+            is_capital_waterfall=is_cap, add_pref_rates=add_pref_rates,
+        )
+
+        # f. Collect allocation rows by waterfall type
+        if wf_type == "CF_WF":
+            cf_alloc_rows.extend(rows)
+        else:
+            cap_alloc_rows.extend(rows)
+
+        # g. Capture waterfall period cashflows by type
+        for pc, ist in shared.items():
+            pre = pre_wf_lens.get(pc, 0)
+            if len(ist.cashflows) > pre:
+                new_cfs = ist.cashflows[pre:]
+                new_lbls = ist.cashflow_labels[pre:]
+                if wf_type == "CF_WF":
+                    cf_new_cfs[pc].extend(new_cfs)
+                    cf_new_labels[pc].extend(new_lbls)
+                else:
+                    cap_new_cfs[pc].extend(new_cfs)
+                    cap_new_labels[pc].extend(new_lbls)
+
+    # --- 8. Construct synthetic cf_investors and cap_investors ---
+    # Both share identical final pref/capital balances from the unified state.
+    # The cashflows differ: cf has seed + CF-only new, cap has seed + Cap-only new.
+    cf_investors = {}
+    cap_investors = {}
+
+    for pc, ist in shared.items():
+        seed_st = seed_states.get(pc)
+        seed_cfs = list(seed_st.cashflows) if seed_st else []
+        seed_lbls = (
+            list(seed_st.cashflow_labels)
+            if seed_st and hasattr(seed_st, 'cashflow_labels') else []
+        )
+
+        # CF state: final balances + seed cashflows + CF-only new cashflows
+        cf_st = copy.deepcopy(ist)
+        cf_st.cashflows = seed_cfs + cf_new_cfs.get(pc, [])
+        cf_st.cashflow_labels = seed_lbls + cf_new_labels.get(pc, [])
+        cf_investors[pc] = cf_st
+
+        # Cap state: final balances + seed cashflows + Cap-only new cashflows
+        cap_st = copy.deepcopy(ist)
+        cap_st.cashflows = seed_cfs + cap_new_cfs.get(pc, [])
+        cap_st.cashflow_labels = seed_lbls + cap_new_labels.get(pc, [])
+        cap_st.cf_distributions = []  # Cap waterfall doesn't produce CF dists
+        cap_investors[pc] = cap_st
+
+    # --- 9. Return ---
+    cf_alloc_df = pd.DataFrame(cf_alloc_rows)
+    cap_alloc_df = pd.DataFrame(cap_alloc_rows)
+    return cf_alloc_df, cap_alloc_df, cf_investors, cap_investors
 
 
 def compute_deal_analysis(
@@ -461,8 +630,10 @@ def compute_deal_analysis(
     wf_steps = load_waterfalls(wf)
     seed_states = seed_states_from_accounting(acct, inv, wf_steps, deal_vcode)
 
-    cf_alloc, cf_investors = run_waterfall(wf_steps, deal_vcode, "CF_WF", cf_period_cash, copy.deepcopy(seed_states), capital_calls=capital_calls)
-    cap_alloc, cap_investors = run_waterfall(wf_steps, deal_vcode, "Cap_WF", cap_period_cash, copy.deepcopy(seed_states))
+    cf_alloc, cap_alloc, cf_investors, cap_investors = run_interleaved_waterfalls(
+        wf_steps, deal_vcode, cf_period_cash, cap_period_cash,
+        seed_states, capital_calls=capital_calls,
+    )
 
     # --- Enhance capital events with calls and distributions ---
     if capital_calls:

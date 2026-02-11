@@ -576,10 +576,31 @@ def _build_roe_timeline(combined_cashflows, cf_only_distributions, end_date):
     Returns (timeline_df, cf_dist_df, summary_dict).
     """
     from datetime import date as _date
+    # Aggregate CF distributions by date so we can exclude them from the
+    # capital balance timeline — CF distributions are operating income and
+    # must NOT reduce the capital balance.
+    cf_by_date = {}
+    for d, a in cf_only_distributions:
+        if a > 0:
+            cf_by_date[d] = cf_by_date.get(d, 0.0) + a
+
     events = []
     for d, amt in combined_cashflows:
-        # Negative = contribution (increases balance), Positive = return (decreases)
-        events.append((d, -amt))
+        if amt < 0:
+            # Contribution — always a capital event
+            events.append((d, -amt))
+        elif amt > 0:
+            # Positive: subtract CF distribution portion so only capital
+            # returns affect the balance.
+            cf_at_date = cf_by_date.get(d, 0.0)
+            if cf_at_date > 0:
+                consumed = min(cf_at_date, amt)
+                cf_by_date[d] -= consumed
+                cap_return = amt - consumed
+            else:
+                cap_return = amt
+            if cap_return > 0.005:
+                events.append((d, -cap_return))
     events = sorted(events, key=lambda x: x[0])
 
     if not events:
@@ -1962,8 +1983,13 @@ def _deal_analysis_fragment():
           pref_raw = xirr_cf_df[xirr_cf_df["is_pref"] == True]
           ptr_raw = xirr_cf_df[xirr_cf_df["is_pref"] == False]
 
-          pref_df = pref_raw.groupby("Date").agg({"Amount": "sum", "Description": "first"}).reset_index().rename(columns={"Amount": "Pref Equity", "Description": "Pref_Desc"})
-          ptr_df = ptr_raw.groupby("Date").agg({"Amount": "sum", "Description": "first"}).reset_index().rename(columns={"Amount": "Ptr Equity", "Description": "Ptr_Desc"})
+          def _join_descriptions(series):
+              """Join unique descriptions for same-date cashflows (e.g. Contribution + Acquisition Fee)."""
+              unique = series.unique()
+              return " / ".join(u for u in unique if u)
+
+          pref_df = pref_raw.groupby("Date").agg({"Amount": "sum", "Description": _join_descriptions}).reset_index().rename(columns={"Amount": "Pref Equity", "Description": "Pref_Desc"})
+          ptr_df = ptr_raw.groupby("Date").agg({"Amount": "sum", "Description": _join_descriptions}).reset_index().rename(columns={"Amount": "Ptr Equity", "Description": "Ptr_Desc"})
 
           final_df = pd.merge(pref_df, ptr_df, on="Date", how="outer").fillna({"Pref Equity": 0.0, "Ptr Equity": 0.0, "Pref_Desc": "", "Ptr_Desc": ""})
           # Prefer pref Typename; fall back to ptr Typename
@@ -1980,13 +2006,28 @@ def _deal_analysis_fragment():
           with st.expander("XIRR Cash Flows"):
               st.dataframe(display_df[["Date", "Description", "Pref Equity", "Ptr Equity", "Deal"]], use_container_width=True)
 
-              # Download raw data as CSV (ensure numeric columns are float)
-              raw_df = final_df[["Date", "Description", "Pref Equity", "Ptr Equity", "Deal"]].copy()
-              raw_df["Date"] = raw_df["Date"].astype(str)
-              for _col in ["Pref Equity", "Ptr Equity", "Deal"]:
-                  raw_df[_col] = pd.to_numeric(raw_df[_col], errors="coerce").fillna(0.0)
-              csv_data = raw_df.to_csv(index=False).encode('utf-8')
-              st.download_button("Download XIRR Cash Flows (CSV)", csv_data, "xirr_cashflows.csv", "text/csv")
+              # Download as Excel so it opens natively in spreadsheet apps
+              import io as _io
+              from openpyxl import Workbook as _Workbook
+              from openpyxl.styles import Font as _Font, numbers as _numbers
+              _wb = _Workbook()
+              _ws = _wb.active
+              _ws.title = "XIRR Cash Flows"
+              _headers = ["Date", "Description", "Pref Equity", "Ptr Equity", "Deal"]
+              for _ci, _h in enumerate(_headers, 1):
+                  _ws.cell(row=1, column=_ci, value=_h).font = _Font(bold=True)
+              for _ri, _row in enumerate(final_df[_headers].itertuples(index=False), 2):
+                  _ws.cell(row=_ri, column=1, value=str(_row[0]))
+                  _ws.cell(row=_ri, column=2, value=_row[1])
+                  for _ci in range(3, 6):
+                      _c = _ws.cell(row=_ri, column=_ci, value=float(_row[_ci - 1]))
+                      _c.number_format = '#,##0'
+              for _ci, _w in enumerate([12, 40, 16, 16, 16], 1):
+                  _ws.column_dimensions[_ws.cell(row=1, column=_ci).column_letter].width = _w
+              _buf = _io.BytesIO()
+              _wb.save(_buf)
+              st.download_button("Download XIRR Cash Flows", _buf.getvalue(), "xirr_cashflows.xlsx",
+                                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     # ============================================================
     # ROE AUDIT EXPANDER

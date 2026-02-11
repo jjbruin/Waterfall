@@ -107,14 +107,34 @@ def calculate_roe(
 
     # Build capital balance timeline from capital events
     # (contributions and capital returns, NOT CF distributions)
-    events = []
+    #
+    # capital_events contains ALL cashflows (contributions + CF dists + cap dists).
+    # CF distributions are operating income and must NOT reduce the capital
+    # balance.  Aggregate CF distributions by date so we can exclude them.
+    cf_by_date: dict = {}
+    for d, a in cf_distributions:
+        if a > 0 and start_date <= d <= end_date:
+            cf_by_date[d] = cf_by_date.get(d, 0.0) + a
 
+    events = []
     for d, amt in capital_events:
         if d < start_date or d > end_date:
             continue
-        # Negative = contribution (increases balance)
-        # Positive = return of capital (decreases balance)
-        events.append((d, -amt))  # Flip sign for balance tracking
+        if amt < 0:
+            # Contribution — always a capital event (increases balance)
+            events.append((d, -amt))
+        elif amt > 0:
+            # Positive cashflow — subtract CF distribution portion so only
+            # capital returns (Cap_WF) reduce the balance.
+            cf_at_date = cf_by_date.get(d, 0.0)
+            if cf_at_date > 0:
+                consumed = min(cf_at_date, amt)
+                cf_by_date[d] -= consumed
+                cap_return = amt - consumed
+            else:
+                cap_return = amt
+            if cap_return > 0.005:
+                events.append((d, -cap_return))
 
     if not events:
         return 0.0
