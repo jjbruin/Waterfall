@@ -110,11 +110,11 @@ Ownership tree visualization and relationship data.
 
 ### 5. Waterfall Setup
 Rendered by `waterfall_setup_ui.py`. View, edit, and create waterfall structures for any entity.
-- **Entity Navigation** — Selectbox of all entities with waterfalls + entities from relationships. Mini ownership tree and investor list.
-- **Waterfall Editor** — `st.data_editor` with `num_rows="dynamic"` for CF_WF and Cap_WF steps. Columns: iOrder, PropCode, vState, FXRate, nPercent, mAmount, vtranstype, vAmtType, vNotes.
-- **Validation** — Inline warnings/errors: FXRate sums, Operating Capital Add vs Tag, Pref FX=1.0, lead/tag pairing.
+- **Entity Navigation** — Selectbox of all entities with waterfalls + entities from relationships. Mini ownership tree and investor list. Default set once from Deal Analysis deal; user's explicit selection persists across reruns (not overridden by `_current_deal_vcode`).
+- **Waterfall Editor** — `st.data_editor` with `num_rows="dynamic"` for CF_WF and Cap_WF steps. Columns: iOrder, PropCode, vState, FXRate, nPercent, mAmount, vtranstype, vAmtType, vNotes. Draft (`_wf_draft|{entity_id}|{wf_type}`) is a stable base — only updated on Save/Reset/Copy, never on render (avoids editor reinitialization that discards edits).
+- **Validation** — Inline warnings/errors: FXRate sums, Operating Capital Add vs Tag, Pref FX=1.0, lead/tag pairing, AMFee/Promote vNotes requirements.
 - **New Waterfall** — Pre-fills template from relationships/accounting: Pref steps per investor, Initial steps for Cap_WF, residual Share+Tag.
-- **Actions** — Save to Database (with audit trail), Reset to Saved, Copy CF_WF->Cap_WF, Export CSV, Preview Waterfall ($100k test).
+- **Actions** — Save to Database (with audit trail, returns bool), Reset to Saved (clears editor widget state), Copy CF_WF->Cap_WF (clears Cap_WF editor state), Export CSV, Preview Waterfall ($100k test).
 - **Guidance Panel** — Collapsible reference from `waterfall_setup_rules.txt`: vState reference, Add vs Tag rule, pool routing table, common patterns, modeling checklist.
 
 ### Sidebar: Database Tools (SQLite mode)

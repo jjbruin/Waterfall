@@ -583,7 +583,7 @@ All eight tabs use `@st.fragment` to isolate widget-triggered reruns:
 | PSCKOC | `_psckoc_fragment()` | `psckoc_ui.py` |
 
 Switching deals in Deal Analysis only reruns the Deal Analysis fragment — not the other five tabs. Cross-tab state is shared via session_state:
-- `_current_deal_vcode` — selected deal vcode (used by Property Financials, Ownership)
+- `_current_deal_vcode` — selected deal vcode (used by Property Financials, Ownership; Waterfall Setup reads it once for initial default only)
 - `_current_fc_deal_modeled` — modeled forecast DataFrame (used by Property Financials)
 
 ### Session State Cache Keys
@@ -593,7 +593,7 @@ Switching deals in Deal Analysis only reruns the Deal Analysis fragment — not 
 | `_deal_*` | Multi-deal computation cache, deal-related UI state | Reload Data, CSV Import |
 | `_current_*` | Cross-tab state (deal_vcode, fc_deal_modeled) | Reload Data, CSV Import |
 | `_dashboard_*` | Dashboard caps, returns, errors | Reload Data, CSV Import |
-| `_wf_*` | Waterfall Setup drafts and nav state | Reload Data, CSV Import |
+| `_wf_*` | Waterfall Setup drafts (stable base), editor widget state, nav cache | Reload Data, CSV Import |
 | `_ownership_*` | Ownership tree cache | Reload Data, CSV Import |
 | `_psckoc_*` | PSCKOC computation results | Reload Data, CSV Import |
 
