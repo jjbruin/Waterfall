@@ -177,28 +177,34 @@ def _render_entity_nav(wf, inv, relationships_raw):
         st.info("No entities found.")
         return None, None
 
-    # Default selection: try to match current deal (vcode first, then label)
-    current_vcode = st.session_state.get("_current_deal_vcode", "")
-    current_deal = st.session_state.get("deal_selector", "")
-    default_idx = 0
-    if current_vcode:
-        for i, (eid, _) in enumerate(options):
-            if eid == current_vcode:
-                default_idx = i
-                break
-    if default_idx == 0 and current_deal:
-        for i, (eid, _) in enumerate(options):
-            if f"({eid})" in current_deal:
-                default_idx = i
-                break
-        else:
-            for i, (_, lbl) in enumerate(options):
-                if current_deal in lbl:
+    # Set initial default once — match Deal Analysis deal on first render.
+    # After that, the user's selection persists via session_state and is NOT
+    # overridden by changes to _current_deal_vcode (which would fight the
+    # user's explicit choice on every full rerun).
+    persisted = st.session_state.get("_wf_entity_sel")
+    if persisted is None or persisted not in labels:
+        current_vcode = st.session_state.get("_current_deal_vcode", "")
+        current_deal = st.session_state.get("deal_selector", "")
+        default_idx = 0
+        if current_vcode:
+            for i, (eid, _) in enumerate(options):
+                if eid == current_vcode:
                     default_idx = i
                     break
+        if default_idx == 0 and current_deal:
+            for i, (eid, _) in enumerate(options):
+                if f"({eid})" in current_deal:
+                    default_idx = i
+                    break
+            else:
+                for i, (_, lbl) in enumerate(options):
+                    if current_deal in lbl:
+                        default_idx = i
+                        break
+        st.session_state["_wf_entity_sel"] = labels[default_idx]
 
     selected_label = st.selectbox(
-        "Entity", labels, index=default_idx, key="_wf_entity_sel"
+        "Entity", labels, key="_wf_entity_sel"
     )
     selected_idx = labels.index(selected_label)
     entity_id = options[selected_idx][0]
@@ -357,14 +363,20 @@ def _render_wf_type_editor(entity_id, wf_type, entity_wf, draft_key, full_wf, in
         "vNotes": st.column_config.TextColumn("vNotes"),
     }
 
+    editor_widget_key = f"_wf_editor_{wf_type}_{entity_id}"
+
     edited = st.data_editor(
         editor_df,
         column_config=col_config,
         num_rows="dynamic",
         use_container_width=True,
-        key=f"_wf_editor_{wf_type}_{entity_id}",
+        key=editor_widget_key,
     )
-    st.session_state[draft_key] = edited
+    # NOTE: Do NOT write `st.session_state[draft_key] = edited` here.
+    # Doing so changes the base data on every rerun, which causes the
+    # data_editor to reinitialize and discard the edit that triggered the
+    # rerun — making recent entries disappear.  The draft is only updated
+    # on explicit Save / Reset / Copy so the base stays stable.
     current_df = edited
 
     # ── Action buttons ────────────────────────────────────────────────
@@ -378,7 +390,10 @@ def _render_wf_type_editor(entity_id, wf_type, entity_wf, draft_key, full_wf, in
                 st.error("Fix errors above before saving.")
             else:
                 _show_validation(errs, warns)  # show warnings (non-blocking)
-                _save_draft(entity_id, wf_type, current_df, full_wf)
+                if _save_draft(entity_id, wf_type, current_df, full_wf):
+                    # Promote current edits to the stable base so the editor
+                    # reinitializes cleanly and cross-type saves stay correct.
+                    st.session_state[draft_key] = current_df.copy()
 
     with btn_cols[1]:
         if st.button("Validate", key=f"_wf_validate_{wf_type}_{entity_id}"):
@@ -389,6 +404,8 @@ def _render_wf_type_editor(entity_id, wf_type, entity_wf, draft_key, full_wf, in
 
     with btn_cols[2]:
         if st.button("Reset to Saved", key=f"_wf_reset_{wf_type}_{entity_id}"):
+            # Clear editor widget state so it reinitializes from the base
+            st.session_state.pop(editor_widget_key, None)
             if not db_rows.empty:
                 st.session_state[draft_key] = _db_to_editor_df(db_rows)
             else:
@@ -399,6 +416,8 @@ def _render_wf_type_editor(entity_id, wf_type, entity_wf, draft_key, full_wf, in
             if st.button("Copy CF_WF -> Cap_WF", key=f"_wf_copy_{entity_id}"):
                 cap_draft = current_df.copy()
                 st.session_state[f"_wf_draft|{entity_id}|Cap_WF"] = cap_draft
+                # Clear Cap_WF editor so it picks up the copied data
+                st.session_state.pop(f"_wf_editor_Cap_WF_{entity_id}", None)
                 st.success("Copied CF_WF steps to Cap_WF draft.")
 
     with btn_cols[4]:
@@ -499,10 +518,10 @@ def _show_validation(errors, warnings):
 # ── Persistence helpers ──────────────────────────────────────────────────
 
 def _save_draft(entity_id, wf_type, editor_df, full_wf):
-    """Save the draft to the database."""
+    """Save the draft to the database.  Returns True on success."""
     if editor_df.empty:
         st.warning("Nothing to save — table is empty.")
-        return
+        return False
 
     # Build full rows for DB
     save_df = editor_df.copy()
@@ -544,8 +563,10 @@ def _save_draft(entity_id, wf_type, editor_df, full_wf):
         save_waterfall_steps(entity_id, combined)
         st.success(f"Saved {len(save_df)} {wf_type} steps for {entity_id}. "
                    "Use **Reload Data** in the sidebar to refresh other tabs.")
+        return True
     except Exception as e:
         st.error(f"Save failed: {e}")
+        return False
 
 
 def _preview_waterfall(entity_id, wf_type, editor_df):
