@@ -38,9 +38,53 @@ function toggle(section: string) {
 watch(() => deals.currentVcode, () => { expanded.value = {} })
 
 // ============================================================
+// Merged XIRR Cash Flows (side-by-side partners)
+// ============================================================
+
+const xirrMerged = computed(() => {
+  const xirr = deals.currentXirr
+  if (!xirr) return null
+
+  const partners = Object.keys(xirr)
+  if (partners.length === 0) return null
+
+  // Build a map keyed by "date|description" -> { date, description, partner1: amt, partner2: amt, deal: amt }
+  const rowMap = new Map<string, Record<string, any>>()
+
+  for (const partner of partners) {
+    for (const cf of xirr[partner]) {
+      const key = `${cf.date}|${cf.description}`
+      if (!rowMap.has(key)) {
+        rowMap.set(key, { date: cf.date, description: cf.description, _deal: 0 })
+      }
+      const row = rowMap.get(key)!
+      row[partner] = (row[partner] || 0) + cf.amount
+      row._deal += cf.amount
+    }
+  }
+
+  // Sort by date
+  const rows = [...rowMap.values()].sort((a, b) => a.date.localeCompare(b.date))
+
+  // Build columns
+  const columns = [
+    { key: 'date', label: 'Date' },
+    { key: 'description', label: 'Description' },
+    ...partners.map(p => ({ key: p, label: p, format: 'currency', align: 'right' })),
+    { key: '_deal', label: 'Deal', format: 'currency', align: 'right' },
+  ]
+
+  return { columns, rows }
+})
+
+// ============================================================
 // Formatters
 // ============================================================
 
+function fmtInt(v: any): string {
+  if (v == null || v !== v) return '—'
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(v)
+}
 function fmtCur(v: any): string {
   if (v == null || v !== v) return '—'
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 0 }).format(v)
@@ -174,8 +218,8 @@ function downloadExcel(url: string, filename: string) {
             <table class="info-table" v-if="deals.currentHeader.cap_data">
               <tr><td>Debt</td><td class="right">{{ fmtCur(deals.currentHeader.cap_data.debt) }}</td></tr>
               <tr><td>Pref Equity</td><td class="right">{{ fmtCur(deals.currentHeader.cap_data.pref_equity) }}</td></tr>
-              <tr><td>Ptr Equity</td><td class="right">{{ fmtCur(deals.currentHeader.cap_data.partner_equity) }}</td></tr>
-              <tr><td>Total Cap</td><td class="right bold">{{ fmtCur(deals.currentHeader.cap_data.total_cap) }}</td></tr>
+              <tr class="total-border"><td>Ptr Equity</td><td class="right">{{ fmtCur(deals.currentHeader.cap_data.partner_equity) }}</td></tr>
+              <tr><td class="bold">Total Cap</td><td class="right bold">{{ fmtCur(deals.currentHeader.cap_data.total_cap) }}</td></tr>
               <tr><td>Valuation</td><td class="right">{{ fmtCur(deals.currentHeader.cap_data.current_valuation) }}</td></tr>
               <tr><td>Cap Rate</td><td class="right">{{ fmtPct(deals.currentHeader.cap_data.cap_rate) }}</td></tr>
               <tr><td>PE Exp (Cap)</td><td class="right">{{ fmtPct(deals.currentHeader.cap_data.pe_exposure_cap) }}</td></tr>
@@ -183,6 +227,21 @@ function downloadExcel(url: string, filename: string) {
             </table>
           </div>
         </div>
+      </div>
+
+      <!-- Deal-Level Summary -->
+      <div class="section metrics-section">
+        <h3>Deal-Level Summary</h3>
+        <div class="metrics-row">
+          <KpiCard v-for="m in dealMetrics" :key="m.label" :label="m.label" :value="m.value" :format="m.format" />
+        </div>
+      </div>
+
+      <!-- Partner Returns -->
+      <div class="section">
+        <h3>Partner Returns</h3>
+        <DataTable :columns="partnerCols" :rows="deals.currentPartners"
+          :rowClass="(row: any) => !String(row.partner || '').startsWith('OP') ? 'row-highlight' : undefined" />
       </div>
 
       <!-- Annual Forecast -->
@@ -203,10 +262,10 @@ function downloadExcel(url: string, filename: string) {
               </thead>
               <tbody>
                 <tr v-for="(row, i) in deals.currentForecast.rows" :key="i"
-                    :class="{ 'section-header-row': row.label.endsWith(':'), 'blank-row': row.label === '' }">
+                    :class="{ 'section-header-row': row.label.endsWith(':'), 'blank-row': row.label.trim() === '' }">
                   <td class="label-col">{{ row.label }}</td>
                   <td v-for="y in deals.currentForecast.years" :key="y" class="year-col">
-                    {{ row.values[String(y)] != null ? fmtCur(row.values[String(y)]) : '' }}
+                    {{ (row.label.trim() === '' || row.label.endsWith(':')) ? '' : row.values[String(y)] != null ? (row.label === 'Debt Service Coverage Ratio' ? row.values[String(y)].toFixed(2) : fmtInt(row.values[String(y)])) : '' }}
                   </td>
                 </tr>
               </tbody>
@@ -347,20 +406,6 @@ function downloadExcel(url: string, filename: string) {
         </div>
       </div>
 
-      <!-- Partner Returns -->
-      <div class="section">
-        <h3>Partner Returns</h3>
-        <DataTable :columns="partnerCols" :rows="deals.currentPartners" />
-      </div>
-
-      <!-- Deal-Level Summary -->
-      <div class="section metrics-section">
-        <h3>Deal-Level Summary</h3>
-        <div class="metrics-row">
-          <KpiCard v-for="m in dealMetrics" :key="m.label" :label="m.label" :value="m.value" :format="m.format" />
-        </div>
-      </div>
-
       <!-- XIRR Cash Flows -->
       <div class="section expandable" :class="{ open: expanded.xirr }">
         <h3 @click="toggle('xirr')" class="section-header">
@@ -369,17 +414,8 @@ function downloadExcel(url: string, filename: string) {
         </h3>
         <div v-if="expanded.xirr" class="section-body">
           <p v-if="deals.loadingSection === 'xirr'" class="loading-msg">Loading XIRR data...</p>
-          <template v-else-if="deals.currentXirr">
-            <div v-for="(cfs, partner) in deals.currentXirr" :key="partner" class="xirr-partner">
-              <h4>{{ partner }}</h4>
-              <DataTable
-                :columns="[
-                  { key: 'date', label: 'Date' },
-                  { key: 'amount', label: 'Amount', format: 'currency', align: 'right' },
-                ]"
-                :rows="cfs"
-              />
-            </div>
+          <template v-else-if="xirrMerged">
+            <DataTable :columns="xirrMerged.columns" :rows="xirrMerged.rows" />
           </template>
         </div>
       </div>
@@ -603,7 +639,8 @@ function downloadExcel(url: string, filename: string) {
   color: var(--color-text-secondary);
 }
 .right { text-align: right; }
-.bold { font-weight: 700; }
+.bold { font-weight: 800 !important; }
+.total-border td { border-bottom: 2px solid #000; }
 .sub-msg {
   font-size: 12px;
   color: var(--color-text-secondary);

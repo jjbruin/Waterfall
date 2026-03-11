@@ -3,6 +3,7 @@ defineProps<{
   columns: Array<{ key: string; label: string; format?: string; align?: string }>
   rows: Array<Record<string, any>>
   highlightTotal?: boolean
+  rowClass?: (row: Record<string, any>) => string | Record<string, boolean> | undefined
 }>()
 
 function formatCell(value: any, format?: string): string {
@@ -40,7 +41,7 @@ function formatCell(value: any, format?: string): string {
         <tr
           v-for="(row, idx) in rows"
           :key="idx"
-          :class="{ 'total-row': highlightTotal && row._is_deal_total }"
+          :class="[{ 'total-row': highlightTotal && row._is_deal_total }, rowClass?.(row)]"
         >
           <td v-for="col in columns" :key="col.key" :style="{ textAlign: col.align || 'left' }">
             {{ formatCell(row[col.key], col.format) }}
@@ -85,5 +86,14 @@ function formatCell(value: any, format?: string): string {
 
 .total-row td {
   border-top: 2px solid var(--color-text);
+}
+
+.row-highlight {
+  font-weight: 700;
+  background: #edf2f7;
+}
+
+.row-highlight td {
+  background: #edf2f7;
 }
 </style>

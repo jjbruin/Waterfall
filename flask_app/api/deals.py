@@ -301,9 +301,15 @@ def xirr_cashflows(vcode):
 
     cashflows = {}
     for pr in result.get("partner_results", []):
+        details = pr.get("cashflow_details", [])
         cfs = []
-        for d, amt in pr.get("combined_cashflows", []):
-            cfs.append({"date": d.isoformat() if hasattr(d, 'isoformat') else str(d), "amount": amt})
+        for row in details:
+            d = row["Date"]
+            cfs.append({
+                "date": d.isoformat() if hasattr(d, 'isoformat') else str(d),
+                "description": row.get("Description", ""),
+                "amount": row["Amount"],
+            })
         cashflows[pr["partner"]] = cfs
 
     return jsonify(safe_json({"cashflows": cashflows}))
