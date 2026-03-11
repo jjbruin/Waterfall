@@ -128,6 +128,10 @@ Rendered by `dashboard_ui.py`. Executive portfolio-level view with instant-load 
 ### 2. Deal Analysis
 Wrapped in `_deal_analysis_fragment()` (`@st.fragment`, defined at module level in `app.py`). Main waterfall computation, partner returns, capital accounts, XIRR/MOIC metrics. Debt service display rendered by `debt_service_ui.py` (Loan Summary, Detailed Amortization Schedules, Sale Proceeds Calculation). Deal switching only reruns this fragment — not all six tabs. Cross-tab state (`_current_deal_vcode`, `_current_fc_deal_modeled`) stored in session_state for Property Financials and Ownership tabs.
 
+**Vue Layout** (DealAnalysisView.vue): Deal Information + Capitalization → Deal-Level Summary (KPI cards) → Partner Returns (non-OP partners highlighted bold with blue-grey background) → Annual Forecast (whole-dollar formatting, DSCR as 2-decimal, blank spacer/header cells) → expandable sections (Diagnostics, Debt Service, Cash Management, Capital Calls, XIRR Cash Flows, ROE Audit, MOIC Audit).
+
+**XIRR Cash Flows**: Merged side-by-side table with columns Date, Description (typename from `cashflow_details`), one amount column per partner, and Deal total column.
+
 **Audit Expanders** (after XIRR Cash Flows):
 - **ROE Audit — Return on Equity Breakdown**: Capital Balance Timeline table (each capital event with balance, days held, weighted capital), CF Distributions table (numerator detail), 5 metric cards per partner (Inception→End, Days/Years, CF Distributions, Wtd Avg Capital, ROE). Deal-level section with same breakdown. Excel download.
 - **MOIC Audit — Multiple on Invested Capital**: Cashflow Breakdown table (Date, Description, Type, Amount), 6 metric cards per partner (Contributions, CF/Cap/Total Distributions, Unrealized NAV, MOIC). Deal-level section with note that deal MOIC uses realized distributions only. Excel download.
