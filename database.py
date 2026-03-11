@@ -745,6 +745,70 @@ def delete_waterfall_steps(vcode: str, wf_type: str = None):
 PROTECTED_TABLES = {'waterfalls', 'one_pager_comments', 'waterfall_audit'}
 
 
+def import_single_csv(
+    data_folder: str,
+    table_name: str,
+    db_path: str = DB_PATH,
+) -> Dict[str, Dict[str, Any]]:
+    """Import a single CSV file into its database table.
+
+    Args:
+        data_folder: Path to folder containing the CSV file.
+        table_name: Key in TABLE_DEFINITIONS to import.
+        db_path: Path to SQLite database file.
+
+    Returns:
+        Per-table results dict (same format as import_csvs_to_database).
+    """
+    results: Dict[str, Dict[str, Any]] = {}
+
+    if table_name not in TABLE_DEFINITIONS:
+        return {table_name: {'rows': 0, 'status': 'error', 'error': f'Unknown table: {table_name}'}}
+
+    if table_name in PROTECTED_TABLES:
+        return {table_name: {'rows': 0, 'status': 'protected'}}
+
+    data_path = Path(data_folder)
+    if not data_path.is_dir():
+        return {'_error': {'status': 'error', 'error': f'Folder not found: {data_folder}'}}
+
+    table_info = TABLE_DEFINITIONS[table_name]
+    csv_file = data_path / table_info['csv']
+
+    if not csv_file.exists():
+        return {table_name: {'rows': 0, 'status': 'skipped', 'file': str(csv_file)}}
+
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+
+    try:
+        df = pd.read_csv(csv_file)
+        df.columns = [str(c).strip() for c in df.columns]
+        df.to_sql(table_name, conn, if_exists='replace', index=False)
+
+        try:
+            conn.execute(
+                "INSERT INTO import_log (table_name, rows_imported, import_mode, imported_by, source_file) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (table_name, len(df), 'replace', 'csv_import', str(csv_file)),
+            )
+        except Exception:
+            pass
+
+        logger.info(f"✅ Imported {table_name}: {len(df):,} rows from {csv_file.name}")
+        results[table_name] = {'rows': len(df), 'status': 'success', 'file': str(csv_file)}
+
+    except Exception as e:
+        logger.error(f"❌ Error importing {table_name}: {e}")
+        results[table_name] = {'rows': 0, 'status': 'error', 'error': str(e)}
+
+    create_indexes(conn)
+    conn.commit()
+    conn.close()
+    return results
+
+
 def import_csvs_to_database(
     data_folder: str,
     db_path: str = DB_PATH,

@@ -1,0 +1,52 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Node
+vue_app/node_modules/
+vue_app/dist/
+
+# Database (migrated separately via migrate_to_postgres.py)
+*.db
+*.sqlite
+*.sqlite3
+
+# Data files
+*.csv
+*.xlsx
+data/
+
+# Secrets
+.env
+.env.*
+!.env.example
+credentials.json
+*.pem
+*.key
+
+# Git / IDE / CI
+.git/
+.github/
+.gitignore
+.vscode/
+.idea/
+.claude/
+
+# Streamlit UI files (not needed — Flask has its own services)
+app.py
+dashboard_ui.py
+property_financials_ui.py
+waterfall_setup_ui.py
+reports_ui.py
+sold_portfolio_ui.py
+debt_service_ui.py
+one_pager_ui.py
+psckoc_ui.py
+.streamlit/
+
+# Docs / misc
+SESSION_HANDOFF.md
+DOCUMENTATION.md
+migrate_to_database.py

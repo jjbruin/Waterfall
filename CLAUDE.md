@@ -7,11 +7,14 @@ A Streamlit-based financial modeling application for calculating investment wate
 ## Tech Stack
 
 - **Python 3.x** with virtual environment (`.venv/`)
-- **Streamlit** - Web UI framework
+- **Streamlit** - Web UI framework (original)
+- **Flask** - REST API backend (`flask_app/`)
+- **Vue 3 + Vite** - Modern frontend (`vue_app/`)
 - **pandas/numpy** - Data manipulation
 - **scipy** - XIRR/NPV calculations (Brent's method)
-- **altair** - Interactive charts (performance chart, lease maturity)
+- **altair** - Interactive charts (Streamlit), **ECharts** - Charts (Vue)
 - **SQLite** - Local database (`waterfall.db`)
+- **JWT** - Authentication (Flask + Vue)
 
 ## Project Structure
 
@@ -43,7 +46,34 @@ waterfall-xirr/
 ├── reporting.py              # Report generation
 ├── ownership_tree.py         # Investor ownership structures
 ├── utils.py                  # Helper utilities
-└── waterfall.db              # SQLite database (not in git, >100MB)
+├── waterfall.db              # SQLite database (not in git, >100MB)
+│
+├── flask_app/                # Flask REST API backend
+│   ├── __init__.py           # App factory (create_app)
+│   ├── run.py                # Dev server entry point
+│   ├── config.py             # Flask configuration
+│   ├── extensions.py         # Flask extensions
+│   ├── serializers.py        # JSON serialization helpers (NumpyEncoder, safe_json)
+│   ├── auth/                 # JWT authentication (login, SSO config)
+│   ├── api/                  # API blueprints
+│   │   ├── dashboard.py      # Dashboard endpoints (KPIs, charts, SSE init-stream)
+│   │   ├── data.py           # Data endpoints (deals, import/export, config, list-csvs)
+│   │   ├── deal.py           # Deal analysis endpoints
+│   │   └── ...               # Additional route blueprints
+│   └── services/             # Business logic (reuses compute.py, database.py, etc.)
+│       ├── dashboard_service.py  # KPI calculations, NOI pipeline, chart data
+│       ├── data_service.py       # Data loading and caching
+│       ├── compute_service.py    # Deal computation cache (replaces st.session_state)
+│       └── ...
+│
+└── vue_app/                  # Vue 3 + Vite frontend
+    ├── src/
+    │   ├── api/client.ts     # Axios instance with JWT interceptors
+    │   ├── stores/           # Pinia stores (auth, data, dashboard)
+    │   ├── views/            # Page components (DashboardView, LoginView, etc.)
+    │   └── components/       # Shared components (KpiCard, DataTable, AppSidebar, etc.)
+    ├── vite.config.ts        # Vite config (proxies /api to Flask)
+    └── package.json
 ```
 
 ## Documentation
@@ -58,8 +88,13 @@ waterfall-xirr/
 # Activate virtual environment
 .venv\Scripts\activate
 
-# Run Streamlit app
+# Run Streamlit app (original UI)
 streamlit run app.py
+
+# Run Flask + Vue app (new UI)
+python -m flask_app.run          # API on http://localhost:5000
+cd vue_app && npm run dev        # Frontend on http://localhost:5173
+# Default login: admin / admin
 ```
 
 ## Key Concepts
@@ -82,7 +117,7 @@ streamlit run app.py
 
 ### 1. Dashboard
 Rendered by `dashboard_ui.py`. Executive portfolio-level view with instant-load KPIs and charts.
-- **KPI Cards** (6): Portfolio Value, Debt Outstanding, Wtd Avg Cap Rate, Portfolio Occupancy, Deal Count, Total Equity
+- **KPI Cards** (6): Portfolio Value, Debt Outstanding, Wtd Avg Cap Rate, Portfolio Occupancy, Deal Count, Total Preferred Equity
 - **Portfolio NOI Trend** — Dual-axis Altair chart (occupancy bars + Actual/U/W NOI lines) aggregated across all deals. Values in $ million. Frequency and period-end selectors (defaults to most recently ended quarter), trailing 12 periods. Capped at last closed quarter.
 - **Portfolio Capital Structure** — Consolidated vertical stacked bar (Debt blue / Pref Equity green / OP Equity grey) with Avg LTV and Pref Exposure annotations at dividing lines. Values in $ million.
 - **Occupancy by Type** — Horizontal bars showing weighted-average occupancy per Asset_Type, colored above/below portfolio average with dashed reference line.
@@ -119,7 +154,7 @@ Rendered by `waterfall_setup_ui.py`. View, edit, and create waterfall structures
 
 ### Sidebar: Database Tools (SQLite mode)
 Expander in sidebar when using SQLite Database mode.
-- **Import CSVs** — Folder path input + "Import All CSVs" button. Refreshes all MRI-sourced tables from CSVs. Protected tables (`waterfalls`, `one_pager_comments`, `waterfall_audit`) are never overwritten. Shows summary (updated/protected/skipped/errors). Clears data and computation caches.
+- **Import CSVs** — Folder path input with Scan button to discover available CSVs. Lists all TABLE_DEFINITIONS entries with checkboxes showing found/missing/protected status. Supports importing individual CSVs or all at once. Protected tables (`waterfalls`, `one_pager_comments`, `waterfall_audit`) are never overwritten. Shows summary (updated/protected/skipped/errors). Clears data and computation caches.
 - **Export Database** — "Prepare Export" button builds zip in session_state. "Download Database Export" button for `waterfall_db_export_{timestamp}.zip` containing `{table_name}_db_export.csv` for every table.
 
 ### 6. Reports
@@ -170,7 +205,8 @@ Rendered by `psckoc_ui.py`. Upstream waterfall analysis for the PSCKOC holding e
 - `_render_computed_returns()` - Button-gated IRR/MOIC computation (dashboard_ui.py)
 - `render_waterfall_setup()` - Waterfall Setup tab entry point (waterfall_setup_ui.py)
 - `save_waterfall_steps()` - Replace all waterfall steps for a vcode with audit trail (database.py)
-- `import_csvs_to_database()` - Refresh tables from CSVs, protecting DB-managed tables (database.py)
+- `import_csvs_to_database()` - Refresh all tables from CSVs, protecting DB-managed tables (database.py)
+- `import_single_csv()` - Import a single CSV into its database table (database.py)
 - `export_all_tables_to_zip()` - Export all tables as labeled CSVs in a zip archive (database.py)
 - `render_reports()` - Reports tab entry point (reports_ui.py)
 - `_build_partner_returns()` - Partner + deal-level metrics from compute result (reports_ui.py)

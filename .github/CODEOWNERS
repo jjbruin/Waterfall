@@ -1,0 +1,21 @@
+# Code ownership for PR review requirements
+# See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default: repo owner reviews all changes
+* @jjbruin
+
+# Core waterfall engine — requires careful review
+/waterfall.py @jjbruin
+/compute.py @jjbruin
+/models.py @jjbruin
+/metrics.py @jjbruin
+
+# Database schema and migrations
+/database.py @jjbruin
+
+# Authentication and access control
+/flask_app/auth/ @jjbruin
+
+# Flask API configuration
+/flask_app/config.py @jjbruin
+/flask_app/__init__.py @jjbruin
