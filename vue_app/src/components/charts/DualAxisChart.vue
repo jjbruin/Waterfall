@@ -19,20 +19,28 @@ const props = defineProps<{
 const option = computed(() => ({
   tooltip: { trigger: 'axis' },
   legend: { bottom: 0 },
-  grid: { left: 60, right: 60, top: 20, bottom: 40 },
+  grid: { left: 80, right: 80, top: 45, bottom: 50 },
   xAxis: { type: 'category', data: props.categories },
   yAxis: [
     {
       type: 'value',
       name: props.barAxisLabel || '',
+      nameLocation: 'middle',
+      nameGap: 45,
       position: 'left',
+      min: 0,
+      max: 100,
       axisLabel: { formatter: '{value}%' },
     },
     {
       type: 'value',
       name: props.lineAxisLabel || '',
+      nameLocation: 'middle',
+      nameGap: 55,
       position: 'right',
-      axisLabel: { formatter: '${value}' },
+      axisLabel: {
+        formatter: (v: number) => '$' + v.toLocaleString('en-US'),
+      },
     },
   ],
   series: [

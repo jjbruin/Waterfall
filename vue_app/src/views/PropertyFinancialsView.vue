@@ -53,6 +53,8 @@ watch(() => deals.currentVcode, () => {
   expanded.value = {}
   chartData.value = null
   isData.value = null
+  isLeftAsOfDate.value = ''
+  isRightAsOfDate.value = ''
   bsData.value = null
   tenantData.value = null
   onePagerData.value = null
@@ -94,19 +96,21 @@ async function refreshChart() {
 
 const chartBarData = computed(() => ({
   name: 'Occupancy',
-  data: (chartData.value?.occupancy || []).map(v => v != null ? +(v * 100).toFixed(1) : 0),
+  // Occ% is already 0–100; do NOT multiply by 100
+  data: (chartData.value?.occupancy || []).map(v => v != null ? +v.toFixed(1) : 0),
   color: '#93c5fd',
 }))
 
 const chartLineData = computed(() => [
   {
     name: 'Actual NOI',
-    data: (chartData.value?.actual_noi || []).map(v => v != null ? Math.round(v) : 0),
+    // Convert to thousands for cleaner axis labels
+    data: (chartData.value?.actual_noi || []).map(v => v != null ? +(v / 1000).toFixed(1) : 0),
     color: '#1F4E79',
   },
   {
     name: 'U/W NOI',
-    data: (chartData.value?.uw_noi || []).map(v => v != null ? Math.round(v) : 0),
+    data: (chartData.value?.uw_noi || []).map(v => v != null ? +(v / 1000).toFixed(1) : 0),
     color: '#ED7D31',
   },
 ])
@@ -127,7 +131,7 @@ interface ISRow {
 }
 interface ISResponse {
   rows: ISRow[]
-  available_dates: string[]
+  available_dates: Record<string, string[]>
   left_label: string
   right_label: string
 }
@@ -136,8 +140,26 @@ const isLeftSource = ref('Actual')
 const isLeftPeriod = ref('TTM')
 const isRightSource = ref('Budget')
 const isRightPeriod = ref('YTD')
-const isAsOfDate = ref('')
+const isLeftAsOfDate = ref('')
+const isRightAsOfDate = ref('')
 const isLoading = ref(false)
+
+/** All unique dates across every source, sorted ascending. */
+const isAllDates = computed(() => {
+  if (!isData.value?.available_dates) return []
+  const dateSet = new Set<string>()
+  for (const dates of Object.values(isData.value.available_dates)) {
+    for (const d of dates) dateSet.add(d)
+  }
+  return [...dateSet].sort()
+})
+
+function _pickDefaultDate(available: Record<string, string[]>): string {
+  const actuals = available?.Actual || []
+  if (actuals.length) return actuals[actuals.length - 1]
+  const all = [...new Set(Object.values(available || {}).flat() as string[])].sort()
+  return all.length ? all[all.length - 1] : ''
+}
 
 async function loadIS(vcode: string) {
   isLoading.value = true
@@ -148,11 +170,26 @@ async function loadIS(vcode: string) {
       right_source: isRightSource.value,
       right_period: isRightPeriod.value,
     }
-    if (isAsOfDate.value) params.as_of_date = isAsOfDate.value
+    if (isLeftAsOfDate.value) params.left_as_of_date = isLeftAsOfDate.value
+    if (isRightAsOfDate.value) params.right_as_of_date = isRightAsOfDate.value
     const res = await api.get(`/api/financials/${vcode}/income-statement`, { params })
     isData.value = res.data
-    if (!isAsOfDate.value && res.data.available_dates?.length) {
-      isAsOfDate.value = res.data.available_dates[res.data.available_dates.length - 1]
+    // Set defaults on first load
+    if (!isLeftAsOfDate.value) {
+      isLeftAsOfDate.value = _pickDefaultDate(res.data.available_dates)
+    }
+    if (!isRightAsOfDate.value) {
+      // Default right to prior-year same month when possible
+      const leftTs = isLeftAsOfDate.value
+      if (leftTs) {
+        const d = new Date(leftTs)
+        const priorYear = `${d.getFullYear() - 1}-${String(d.getMonth() + 1).padStart(2, '0')}`
+        const allDates = [...new Set(Object.values(res.data.available_dates || {}).flat() as string[])].sort()
+        const match = allDates.find(dt => dt.startsWith(priorYear))
+        isRightAsOfDate.value = match || _pickDefaultDate(res.data.available_dates)
+      } else {
+        isRightAsOfDate.value = _pickDefaultDate(res.data.available_dates)
+      }
     }
   } catch (e: any) {
     error.value = e.response?.data?.error || e.message
@@ -346,7 +383,7 @@ function fmtDate(val: string | null | undefined): string {
             :bar-data="chartBarData"
             :line-data="chartLineData"
             bar-axis-label="Occupancy %"
-            line-axis-label="NOI ($)"
+            line-axis-label="NOI ($000s)"
           />
         </template>
         <p v-else class="empty">No performance data available for this deal.</p>
@@ -366,16 +403,16 @@ function fmtDate(val: string | null | undefined): string {
               <label>Left Column:</label>
               <select v-model="isLeftSource"><option>Actual</option><option>Budget</option><option>Underwriting</option><option>Valuation</option></select>
               <select v-model="isLeftPeriod"><option>TTM</option><option>YTD</option><option>Full Year</option><option>Estimate</option><option>Custom</option></select>
+              <select v-model="isLeftAsOfDate">
+                <option v-for="d in isAllDates" :key="d" :value="d">{{ d }}</option>
+              </select>
             </div>
             <div class="col-control">
               <label>Right Column:</label>
               <select v-model="isRightSource"><option>Actual</option><option>Budget</option><option>Underwriting</option><option>Valuation</option></select>
               <select v-model="isRightPeriod"><option>TTM</option><option>YTD</option><option>Full Year</option><option>Estimate</option><option>Custom</option></select>
-            </div>
-            <div class="col-control">
-              <label>As of Date:</label>
-              <select v-model="isAsOfDate">
-                <option v-for="d in (isData?.available_dates || [])" :key="d" :value="d">{{ d }}</option>
+              <select v-model="isRightAsOfDate">
+                <option v-for="d in isAllDates" :key="d" :value="d">{{ d }}</option>
               </select>
             </div>
             <button class="btn btn-sm" @click="refreshIS">Apply</button>
@@ -398,12 +435,20 @@ function fmtDate(val: string | null | undefined): string {
                   <tr v-for="(row, idx) in isData.rows" :key="idx"
                     :class="{ 'header-row': row.is_header, 'total-row': row.is_total, 'calc-row': row.is_calc }">
                     <td :style="{ paddingLeft: (row.level * 20 + 8) + 'px' }">{{ row.account }}</td>
-                    <td class="right">{{ row.left != null ? fmtCurrency(row.left) : '' }}</td>
-                    <td class="right">{{ row.right != null ? fmtCurrency(row.right) : '' }}</td>
-                    <td class="right" :class="{ positive: row.var_usd && row.var_usd > 0, negative: row.var_usd && row.var_usd < 0 }">
-                      {{ row.var_usd != null ? fmtCurrency(row.var_usd) : '' }}
-                    </td>
-                    <td class="right">{{ row.var_pct != null ? fmtPct(row.var_pct) : '' }}</td>
+                    <template v-if="row.account === 'DSCR'">
+                      <td class="right">{{ row.left != null ? row.left.toFixed(2) + 'x' : '' }}</td>
+                      <td class="right">{{ row.right != null ? row.right.toFixed(2) + 'x' : '' }}</td>
+                      <td class="right"></td>
+                      <td class="right"></td>
+                    </template>
+                    <template v-else>
+                      <td class="right">{{ row.left != null ? fmtCurrency(row.left) : '' }}</td>
+                      <td class="right">{{ row.right != null ? fmtCurrency(row.right) : '' }}</td>
+                      <td class="right" :class="{ positive: row.var_usd && row.var_usd > 0, negative: row.var_usd && row.var_usd < 0 }">
+                        {{ row.var_usd != null ? fmtCurrency(row.var_usd) : '' }}
+                      </td>
+                      <td class="right">{{ row.var_pct != null ? fmtPct(row.var_pct) : '' }}</td>
+                    </template>
                   </tr>
                 </tbody>
               </table>

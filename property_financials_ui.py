@@ -200,7 +200,13 @@ def _render_performance_chart(deal_vcode, isbs_raw, occupancy_raw):
     period_end_labels = [pd.Timestamp(d).strftime('%Y-%m-%d') for d in all_period_ends]
 
     with ctrl_cols[1]:
-        default_pe_idx = len(period_end_labels) - 1
+        # Default to most recent period with actual NOI data
+        actual_end_set = set(actual_agg.keys())
+        default_pe_idx = len(period_end_labels) - 1  # fallback
+        for i in range(len(all_period_ends) - 1, -1, -1):
+            if all_period_ends[i] in actual_end_set:
+                default_pe_idx = i
+                break
         period_end_sel = st.selectbox("Period End", period_end_labels,
                                       index=default_pe_idx, key="perf_period_end")
 
@@ -581,59 +587,91 @@ def _get_period_balances(isbs_df, period_str, accounts_dict):
 # ============================================================
 
 def _render_income_statement(deal_vcode, isbs_raw, fc_deal_modeled):
-    if isbs_raw is None or isbs_raw.empty:
+    has_isbs = isbs_raw is not None and not isbs_raw.empty
+    has_fc = fc_deal_modeled is not None and not fc_deal_modeled.empty
+    if not has_isbs and not has_fc:
         return
 
     st.subheader("Income Statement Comparison")
 
     # Prepare ISBS data for the deal
-    isbs_is = isbs_raw.copy()
-    isbs_is.columns = [str(c).strip() for c in isbs_is.columns]
+    if has_isbs:
+        isbs_is = isbs_raw.copy()
+        isbs_is.columns = [str(c).strip() for c in isbs_is.columns]
 
-    # Filter for deal
-    if 'vcode' in isbs_is.columns:
-        isbs_is['vcode'] = isbs_is['vcode'].astype(str).str.strip().str.lower()
-        isbs_is = isbs_is[isbs_is['vcode'] == str(deal_vcode).strip().lower()]
+        # Filter for deal
+        if 'vcode' in isbs_is.columns:
+            isbs_is['vcode'] = isbs_is['vcode'].astype(str).str.strip().str.lower()
+            isbs_is = isbs_is[isbs_is['vcode'] == str(deal_vcode).strip().lower()]
 
-    if isbs_is.empty or 'dtEntry' not in isbs_is.columns:
+        if isbs_is.empty or 'dtEntry' not in isbs_is.columns:
+            isbs_is = pd.DataFrame()
+    else:
+        isbs_is = pd.DataFrame()
+
+    if isbs_is.empty and not has_fc:
         st.info("No income statement data available for this deal.")
         return
 
-    # Parse dates
-    try:
-        isbs_is['dtEntry_parsed'] = pd.to_datetime(isbs_is['dtEntry'], unit='D', origin='1899-12-30', errors='coerce')
-    except Exception:
-        isbs_is['dtEntry_parsed'] = pd.to_datetime(isbs_is['dtEntry'], errors='coerce')
-    null_dates = isbs_is['dtEntry_parsed'].isna()
-    if null_dates.any():
-        isbs_is.loc[null_dates, 'dtEntry_parsed'] = pd.to_datetime(isbs_is.loc[null_dates, 'dtEntry'], errors='coerce')
+    # Parse dates and normalize columns (only if ISBS data exists)
+    if not isbs_is.empty:
+        try:
+            isbs_is['dtEntry_parsed'] = pd.to_datetime(isbs_is['dtEntry'], unit='D', origin='1899-12-30', errors='coerce')
+        except Exception:
+            isbs_is['dtEntry_parsed'] = pd.to_datetime(isbs_is['dtEntry'], errors='coerce')
+        null_dates = isbs_is['dtEntry_parsed'].isna()
+        if null_dates.any():
+            isbs_is.loc[null_dates, 'dtEntry_parsed'] = pd.to_datetime(isbs_is.loc[null_dates, 'dtEntry'], errors='coerce')
 
-    # Normalize vSource
-    if 'vSource' in isbs_is.columns:
-        isbs_is['vSource'] = isbs_is['vSource'].astype(str).str.strip()
+        # Normalize vSource
+        if 'vSource' in isbs_is.columns:
+            isbs_is['vSource'] = isbs_is['vSource'].astype(str).str.strip()
 
-    # Normalize vAccount and mAmount
-    if 'vAccount' in isbs_is.columns:
-        isbs_is['vAccount'] = isbs_is['vAccount'].astype(str).str.strip()
-    if 'mAmount' in isbs_is.columns:
-        isbs_is['mAmount'] = pd.to_numeric(isbs_is['mAmount'], errors='coerce').fillna(0)
+        # Normalize vAccount and mAmount
+        if 'vAccount' in isbs_is.columns:
+            isbs_is['vAccount'] = isbs_is['vAccount'].astype(str).str.strip()
+        if 'mAmount' in isbs_is.columns:
+            isbs_is['mAmount'] = pd.to_numeric(isbs_is['mAmount'], errors='coerce').fillna(0)
 
-    # Get available actual periods (Interim IS only)
-    actual_data = isbs_is[isbs_is['vSource'] == 'Interim IS']
+    # Get available periods per source
+    if not isbs_is.empty and 'vSource' in isbs_is.columns:
+        actual_data = isbs_is[isbs_is['vSource'] == 'Interim IS']
+        budget_data = isbs_is[isbs_is['vSource'] == 'Budget IS']
+        uw_data = isbs_is[isbs_is['vSource'] == 'Projected IS']
+    else:
+        actual_data = pd.DataFrame()
+        budget_data = pd.DataFrame()
+        uw_data = pd.DataFrame()
+
     actual_periods = sorted(actual_data['dtEntry_parsed'].dropna().unique()) if not actual_data.empty else []
+    budget_periods = sorted(budget_data['dtEntry_parsed'].dropna().unique()) if not budget_data.empty else []
+    uw_periods = sorted(uw_data['dtEntry_parsed'].dropna().unique()) if not uw_data.empty else []
 
-    # Get budget data
-    budget_data = isbs_is[isbs_is['vSource'] == 'Budget IS']
+    # Get valuation (forecast) periods
+    val_periods = []
+    if fc_deal_modeled is not None and not fc_deal_modeled.empty:
+        raw_dates = fc_deal_modeled['event_date'].dropna().unique()
+        val_periods = sorted(set(pd.Timestamp(d) for d in raw_dates))
 
-    # Get underwriting data
-    uw_data = isbs_is[isbs_is['vSource'] == 'Projected IS']
+    # Collect all unique periods across all sources
+    all_period_set = set()
+    for p in actual_periods:
+        all_period_set.add(pd.Timestamp(p))
+    for p in budget_periods:
+        all_period_set.add(pd.Timestamp(p))
+    for p in uw_periods:
+        all_period_set.add(pd.Timestamp(p))
+    for p in val_periods:
+        all_period_set.add(pd.Timestamp(p))
 
-    if len(actual_periods) < 1:
+    if len(all_period_set) < 1:
         st.info("No income statement periods available for this deal.")
         return
 
-    # Determine most recent actual period
-    most_recent_actual = pd.Timestamp(actual_periods[-1])
+    all_periods_sorted = sorted(all_period_set)
+
+    # Determine most recent actual period (for defaults)
+    most_recent_actual = pd.Timestamp(actual_periods[-1]) if actual_periods else all_periods_sorted[-1]
 
     # Period type options
     period_types = [
@@ -647,11 +685,18 @@ def _render_income_statement(deal_vcode, isbs_raw, fc_deal_modeled):
     # Source options
     source_options = ["Actual", "Budget", "Underwriting", "Valuation"]
 
-    # As-of date options (used for all period types)
-    period_date_options = [pd.Timestamp(p).strftime('%Y-%m-%d') for p in actual_periods]
+    # As-of date options from all sources
+    period_date_options = [p.strftime('%Y-%m-%d') for p in all_periods_sorted]
+
+    # Default for column 1: most recent actual (or last overall)
+    most_recent_ts = most_recent_actual
+    default_idx1 = len(period_date_options) - 1
+    for i, p in enumerate(period_date_options):
+        if pd.Timestamp(p) == most_recent_ts:
+            default_idx1 = i
+            break
 
     # Default for column 2: prior year same month if available
-    most_recent_ts = pd.Timestamp(actual_periods[-1])
     default_idx2 = len(period_date_options) - 1
     for i, p in enumerate(period_date_options):
         p_ts = pd.Timestamp(p)
@@ -669,7 +714,7 @@ def _render_income_statement(deal_vcode, isbs_raw, fc_deal_modeled):
             period_type1 = st.selectbox("Period Type", period_types, index=0, key="is_period_type1")
             source1 = st.selectbox("Source", source_options, index=0, key="is_source1")
             ref_date1 = st.selectbox("As of Date", period_date_options,
-                                     index=len(period_date_options) - 1, key="is_ref_date1")
+                                     index=default_idx1, key="is_ref_date1")
             st.caption("For Full Year, the full year of the selected date is used.")
 
         with col2:
@@ -869,7 +914,13 @@ def _add_balances(bal1, bal2, accounts_dict):
 
 
 def _get_valuation_sum(fc_df, start_date, end_date, accounts_dict):
-    """Get valuation amounts from forecast_feed."""
+    """Get valuation amounts from forecast_feed.
+
+    mAmount_norm uses forecast convention (revenue positive, expenses negative).
+    Actuals use MRI accounting convention (revenue negative/credit, expenses
+    positive/debit).  Negate mAmount_norm so the returned balances match the
+    MRI sign convention expected by the display layer.
+    """
     if fc_df is None or fc_df.empty:
         return {}
     period_data = fc_df[
@@ -878,12 +929,15 @@ def _get_valuation_sum(fc_df, start_date, end_date, accounts_dict):
     ].copy()
     if period_data.empty:
         return {}
+    # Normalize vAccount to string for matching against IS_ACCOUNTS keys
+    period_data['vAccount'] = period_data['vAccount'].astype(str).str.strip()
     balances = {}
     for section, categories in accounts_dict.items():
         balances[section] = {}
         for category, acct_list in categories.items():
             total = period_data[period_data['vAccount'].isin(acct_list)]['mAmount_norm'].sum()
-            balances[section][category] = total
+            # Negate to convert forecast sign convention → MRI accounting convention
+            balances[section][category] = -total
     return balances
 
 

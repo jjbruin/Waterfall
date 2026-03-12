@@ -168,7 +168,7 @@ def get_performance_chart_data(
 
     available_labels = [pd.Timestamp(d).strftime('%Y-%m-%d') for d in all_period_ends]
 
-    # Determine display range
+    # Determine display range — default to last completed actual period
     if period_end:
         try:
             sel_ts = pd.Timestamp(period_end)
@@ -176,7 +176,13 @@ def get_performance_chart_data(
         except Exception:
             sel_idx = len(all_period_ends) - 1
     else:
-        sel_idx = len(all_period_ends) - 1
+        # Default: most recent period with actual NOI data
+        actual_end_set = set(actual_agg.keys())
+        sel_idx = len(all_period_ends) - 1  # fallback
+        for i in range(len(all_period_ends) - 1, -1, -1):
+            if all_period_ends[i] in actual_end_set:
+                sel_idx = i
+                break
 
     start_idx = max(0, sel_idx - periods + 1)
     display_dates = all_period_ends[start_idx:sel_idx + 1]
@@ -265,19 +271,29 @@ def _get_budget_sum(data_df, start_date, end_date, accounts_dict):
 
 
 def _get_valuation_sum(fc_df, start_date, end_date, accounts_dict):
+    """Get valuation amounts from forecast_feed.
+
+    mAmount_norm uses forecast convention (revenue positive, expenses negative).
+    Actuals use MRI accounting convention (revenue negative/credit, expenses
+    positive/debit).  Negate mAmount_norm so returned balances match the MRI
+    sign convention expected by the display layer.
+    """
     if fc_df is None or fc_df.empty:
         return {}
     period_data = fc_df[
         (fc_df['event_date'] > start_date) & (fc_df['event_date'] <= end_date)
-    ]
+    ].copy()
     if period_data.empty:
         return {}
+    # Normalize vAccount to string for matching against IS_ACCOUNTS keys
+    period_data['vAccount'] = period_data['vAccount'].astype(str).str.strip()
     balances = {}
     for section, categories in accounts_dict.items():
         balances[section] = {}
         for category, acct_list in categories.items():
             total = period_data[period_data['vAccount'].isin(acct_list)]['mAmount_norm'].sum()
-            balances[section][category] = float(total)
+            # Negate to convert forecast sign convention → MRI accounting convention
+            balances[section][category] = float(-total)
     return balances
 
 
@@ -410,37 +426,64 @@ def get_income_statement(
     left_source: str = "Actual",
     right_period: str = "YTD",
     right_source: str = "Budget",
-    as_of_date: Optional[str] = None,
-    year: Optional[int] = None,
+    left_as_of_date: Optional[str] = None,
+    right_as_of_date: Optional[str] = None,
     fc_deal_modeled: Optional[pd.DataFrame] = None,
 ) -> dict:
-    """Build income statement comparison data."""
+    """Build income statement comparison data.
+
+    Each column has its own as-of date so callers can compare different periods.
+    """
     isbs = _prepare_isbs(isbs_raw, vcode)
-    if isbs.empty:
-        return {"rows": [], "available_dates": [], "left_label": "", "right_label": ""}
+    if isbs.empty and (fc_deal_modeled is None or fc_deal_modeled.empty):
+        return {"rows": [], "available_dates": {}, "left_label": "", "right_label": ""}
 
-    actual_data = isbs[isbs['vSource'] == 'Interim IS']
-    budget_data = isbs[isbs['vSource'] == 'Budget IS']
-    uw_data = isbs[isbs['vSource'] == 'Projected IS']
-
-    actual_periods = sorted(actual_data['dtEntry_parsed'].dropna().unique())
-    available_dates = [pd.Timestamp(d).strftime('%Y-%m-%d') for d in actual_periods]
-
-    if as_of_date:
-        ref_date = pd.Timestamp(as_of_date)
-    elif actual_periods:
-        ref_date = pd.Timestamp(actual_periods[-1])
+    if not isbs.empty:
+        actual_data = isbs[isbs['vSource'] == 'Interim IS']
+        budget_data = isbs[isbs['vSource'] == 'Budget IS']
+        uw_data = isbs[isbs['vSource'] == 'Projected IS']
     else:
+        actual_data = pd.DataFrame()
+        budget_data = pd.DataFrame()
+        uw_data = pd.DataFrame()
+
+    # Collect available dates per source
+    actual_periods = sorted(actual_data['dtEntry_parsed'].dropna().unique()) if not actual_data.empty else []
+    budget_periods = sorted(budget_data['dtEntry_parsed'].dropna().unique()) if not budget_data.empty else []
+    uw_periods = sorted(uw_data['dtEntry_parsed'].dropna().unique()) if not uw_data.empty else []
+    val_periods = []
+    if fc_deal_modeled is not None and not fc_deal_modeled.empty:
+        raw_dates = fc_deal_modeled['event_date'].dropna().unique()
+        val_periods = sorted(set(pd.Timestamp(d) for d in raw_dates))
+
+    available_dates = {
+        "Actual": [pd.Timestamp(d).strftime('%Y-%m-%d') for d in actual_periods],
+        "Budget": [pd.Timestamp(d).strftime('%Y-%m-%d') for d in budget_periods],
+        "Underwriting": [pd.Timestamp(d).strftime('%Y-%m-%d') for d in uw_periods],
+        "Valuation": [pd.Timestamp(d).strftime('%Y-%m-%d') for d in val_periods],
+    }
+
+    # Resolve default ref dates per column
+    def _default_ref():
+        for periods in (actual_periods, budget_periods, uw_periods, val_periods):
+            if periods:
+                return pd.Timestamp(periods[-1])
+        return None
+
+    left_ref = pd.Timestamp(left_as_of_date) if left_as_of_date else _default_ref()
+    right_ref = pd.Timestamp(right_as_of_date) if right_as_of_date else _default_ref()
+
+    if left_ref is None or right_ref is None:
         return {"rows": [], "available_dates": available_dates, "left_label": "", "right_label": ""}
 
-    if year is None:
-        year = ref_date.year
+    left_year = left_ref.year
+    right_year = right_ref.year
 
     left_amounts = _calculate_is_amounts(
-        left_period, left_source, ref_date, year, IS_ACCOUNTS,
+        left_period, left_source, left_ref, left_year, IS_ACCOUNTS,
         actual_data, actual_periods, budget_data, uw_data, fc_deal_modeled)
     right_amounts = _calculate_is_amounts(
-        right_period, right_source, ref_date, year, IS_ACCOUNTS,
+        right_period, right_source, right_ref, right_year, IS_ACCOUNTS,
         actual_data, actual_periods, budget_data, uw_data, fc_deal_modeled)
 
     # Build rows
@@ -524,8 +567,12 @@ def get_income_statement(
                           "left": left_val, "right": right_val,
                           "var_usd": var_usd, "var_pct": (var_usd / abs(right_val)) if right_val != 0 else None})
 
-    left_label = f"{left_source} {left_period}"
-    right_label = f"{right_source} {right_period}"
+    def _period_label(source, period, ref):
+        date_part = ref.strftime('%Y-%m') if period in ('TTM', 'YTD', 'Custom') else str(ref.year)
+        return f"{source} {period} {date_part}"
+
+    left_label = _period_label(left_source, left_period, left_ref)
+    right_label = _period_label(right_source, right_period, right_ref)
 
     return {
         "rows": rows,

@@ -52,20 +52,19 @@ def income_statement(vcode):
     """Get income statement comparison."""
     data = _get_data()
 
-    # Optionally get fc_deal_modeled for Valuation source
+    # Get fc_deal_modeled for Valuation source and date discovery
     fc_deal_modeled = None
-    if request.args.get("left_source") == "Valuation" or request.args.get("right_source") == "Valuation":
-        from flask_app.services import compute_service
-        try:
-            start_year = request.args.get("start_year", current_app.config["DEFAULT_START_YEAR"], type=int)
-            horizon = request.args.get("horizon_years", current_app.config["DEFAULT_HORIZON_YEARS"], type=int)
-            pro_yr_base = request.args.get("pro_yr_base", current_app.config["PRO_YR_BASE_DEFAULT"], type=int)
-            result = compute_service.get_cached_deal_result(
-                vcode, start_year, horizon, pro_yr_base, data,
-            )
-            fc_deal_modeled = result.get("fc_deal_modeled")
-        except Exception:
-            pass
+    from flask_app.services import compute_service
+    try:
+        start_year = request.args.get("start_year", current_app.config["DEFAULT_START_YEAR"], type=int)
+        horizon = request.args.get("horizon_years", current_app.config["DEFAULT_HORIZON_YEARS"], type=int)
+        pro_yr_base = request.args.get("pro_yr_base", current_app.config["PRO_YR_BASE_DEFAULT"], type=int)
+        result = compute_service.get_cached_deal_result(
+            vcode, start_year, horizon, pro_yr_base, data,
+        )
+        fc_deal_modeled = result.get("fc_deal_modeled")
+    except Exception:
+        pass
 
     try:
         is_data = get_income_statement(
@@ -74,8 +73,8 @@ def income_statement(vcode):
             left_period=request.args.get("left_period", "TTM"),
             right_source=request.args.get("right_source", "Budget"),
             right_period=request.args.get("right_period", "YTD"),
-            as_of_date=request.args.get("as_of_date"),
-            year=request.args.get("year", type=int),
+            left_as_of_date=request.args.get("left_as_of_date"),
+            right_as_of_date=request.args.get("right_as_of_date"),
             fc_deal_modeled=fc_deal_modeled,
         )
     except Exception as e:
