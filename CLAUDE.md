@@ -59,19 +59,21 @@ waterfall-xirr/
 │   │   ├── dashboard.py      # Dashboard endpoints (KPIs, charts, SSE init-stream)
 │   │   ├── data.py           # Data endpoints (deals, import/export, config, list-csvs)
 │   │   ├── deal.py           # Deal analysis endpoints
+│   │   ├── reviews.py        # Review workflow endpoints (status, submit, approve, return, tracking, roles)
 │   │   └── ...               # Additional route blueprints
 │   └── services/             # Business logic (reuses compute.py, database.py, etc.)
 │       ├── dashboard_service.py  # KPI calculations, NOI pipeline, chart data
 │       ├── data_service.py       # Data loading and caching
 │       ├── compute_service.py    # Deal computation cache (replaces st.session_state)
+│       ├── review_service.py     # Review workflow business logic (approval pipeline)
 │       └── ...
 │
 └── vue_app/                  # Vue 3 + Vite frontend
     ├── src/
     │   ├── api/client.ts     # Axios instance with JWT interceptors
     │   ├── stores/           # Pinia stores (auth, data, dashboard)
-    │   ├── views/            # Page components (DashboardView, LoginView, etc.)
-    │   └── components/       # Shared components (KpiCard, DataTable, AppSidebar, etc.)
+    │   ├── views/            # Page components (DashboardView, ReviewTrackingView, etc.)
+    │   └── components/       # Shared components (KpiCard, DataTable, ReviewPanel, etc.)
     ├── vite.config.ts        # Vite config (proxies /api to Flask)
     └── package.json
 ```
@@ -152,9 +154,22 @@ Standalone tab (9th in Streamlit, separate route in Vue). Rendered by `one_pager
 - **Preferred Equity Performance** — Committed PE, Remaining to Fund, Funded to Date, Return of Capital, Current PE Balance, Accrued Balance, Coupon, Participation, ROE to Date, U/W ROE to Date. Editable accrued pref comment.
 - **Business Plan & Updates** — Editable free-text comments.
 - **Occupancy vs. NOI Chart** — ECharts dual-axis (Vue) / Altair (Streamlit). Occupancy bars + NOI U/W and NOI ACT lines. Trailing 10-12 quarters. Values in $ millions.
-- **Comments** — Three editable fields (performance, accrued pref, business plan) persisted to `one_pager_comments` table per vcode + quarter.
-- **Print** — Vue `@media print` CSS produces clean single-page output matching the PDF template. Textareas render as plain text in print.
-- **API Endpoints**: `GET /api/financials/<vcode>/one-pager` (all data), `GET /api/financials/<vcode>/one-pager/chart` (quarterly chart data), `PUT /api/financials/<vcode>/one-pager/comments` (save comments).
+- **Comments** — Three editable fields (performance, accrued pref, business plan) persisted to `one_pager_comments` table per vcode + quarter. Comments are locked (read-only) when the document is in review or approved.
+- **Review Workflow** — Sequential approval pipeline: Asset Manager → Head of AM → President → CCO → CEO → Approved. `ReviewPanel.vue` component shows status indicator, approve/return buttons (role-gated), and threaded review notes. Return sends document back to Draft with a required note. Comments locked when status is not draft/returned.
+- **Print** — Vue `@media print` CSS produces clean single-page output matching the PDF template. Textareas render as plain text in print. ReviewPanel hidden in print.
+- **API Endpoints**: `GET /api/financials/<vcode>/one-pager` (all data), `GET /api/financials/<vcode>/one-pager/chart` (quarterly chart data), `PUT /api/financials/<vcode>/one-pager/comments` (save comments, blocked when in review).
+- **Review API Endpoints** (`/api/reviews`): `GET /<vcode>/<quarter>` (status + notes + permissions), `POST /<vcode>/<quarter>/submit` (submit for review), `POST /<vcode>/<quarter>/approve` (advance step), `POST /<vcode>/<quarter>/return` (return to draft), `POST /<vcode>/<quarter>/note` (add discussion note), `GET /tracking` (production pipeline data), `GET /roles` (list assignments), `POST /roles` (assign role), `DELETE /roles/<id>` (remove role).
+- **Database Tables**: `review_roles` (user↔review_role, UNIQUE), `review_submissions` (vcode+quarter, status, current_step), `review_notes` (audit trail with action/note_text). All three in `PROTECTED_TABLES`.
+
+### 4a. Review Tracking
+Standalone view at `/review-tracking` (`ReviewTrackingView.vue`). Production pipeline dashboard for One Pager approval status across all active deals.
+- **Summary Cards**: Draft / In Review / Returned / Approved counts (clickable to filter).
+- **Filters**: Quarter (text input), Status (dropdown). Refresh button.
+- **Table**: Deal name, Quarter, Status badge, Step label, Updated date. Click row → navigates to `/one-pager?vcode=X&quarter=Y`.
+- **Data**: LEFT JOINs deals with `review_submissions` so unsubmitted deals show as "Draft". Excludes sold deals and child properties.
+
+### Review Role Management (Settings)
+Admin-only section in `SettingsView.vue`. Table of current review role assignments (username + role) with remove button. Add form: select user + select review role → "Assign Review Role". Available roles: `asset_manager`, `head_am`, `president`, `cco`, `ceo`. A user can hold multiple review roles.
 
 ### 5. Ownership & Partnerships
 Ownership tree visualization and relationship data.
@@ -170,7 +185,7 @@ Rendered by `waterfall_setup_ui.py`. View, edit, and create waterfall structures
 
 ### Sidebar: Database Tools (SQLite mode)
 Expander in sidebar when using SQLite Database mode.
-- **Import CSVs** — Folder path input with Scan button to discover available CSVs. Lists all TABLE_DEFINITIONS entries with checkboxes showing found/missing/protected status. Supports importing individual CSVs or all at once. Protected tables (`waterfalls`, `one_pager_comments`, `waterfall_audit`) are never overwritten. Shows summary (updated/protected/skipped/errors). Clears data and computation caches.
+- **Import CSVs** — Folder path input with Scan button to discover available CSVs. Lists all TABLE_DEFINITIONS entries with checkboxes showing found/missing/protected status. Supports importing individual CSVs or all at once. Protected tables (`waterfalls`, `one_pager_comments`, `waterfall_audit`, `review_roles`, `review_submissions`, `review_notes`) are never overwritten. Shows summary (updated/protected/skipped/errors). Clears data and computation caches.
 - **Export Database** — "Prepare Export" button builds zip in session_state. "Download Database Export" button for `waterfall_db_export_{timestamp}.zip` containing `{table_name}_db_export.csv` for every table.
 
 ### 7. Reports
@@ -247,6 +262,13 @@ Rendered by `psckoc_ui.py`. Upstream waterfall analysis for the PSCKOC holding e
 - `_find_psckoc_deals()` - Trace deal chain: relationships → PPI entities → underlying deals (psckoc_ui.py)
 - `_run_psckoc_computation()` - Run deal computations + upstream waterfalls for PSCKOC (psckoc_ui.py)
 - `_generate_psckoc_excel()` - 4-sheet PSCKOC workbook via openpyxl (psckoc_ui.py)
+- `prepare_cap_lookups()` - Pre-compute normalized DataFrames and lookup dicts for batch capitalization (compute.py)
+- `get_submission()` - Get or create review submission with notes and permissions (review_service.py)
+- `submit_for_review()` - Submit draft/returned document for review (review_service.py)
+- `approve()` - Approve at current step and advance to next (review_service.py)
+- `return_to_draft()` - Return document to draft with required note (review_service.py)
+- `is_editable()` - Check if comments can be edited based on review status (review_service.py)
+- `get_tracking_data()` - Production tracking data with filters, LEFT JOINs deals with submissions (review_service.py)
 
 ## Account Classifications
 
