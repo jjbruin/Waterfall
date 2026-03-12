@@ -25,13 +25,13 @@ waterfall-xirr/
 ├── compute.py                # Deal computation logic (extracted from app.py)
 ├── dashboard_ui.py           # Dashboard tab UI (KPI cards, portfolio charts, computed returns)
 ├── debt_service_ui.py        # Debt Service display (Loan Summary, Amortization Schedules, Sale Proceeds)
-├── property_financials_ui.py # Property Financials tab UI (Performance Chart, IS, BS, Tenants, One Pager)
+├── property_financials_ui.py # Property Financials tab UI (Performance Chart, IS, BS, Tenants)
 ├── reports_ui.py             # Reports tab UI (Projected Returns Summary, Excel export)
 ├── sold_portfolio_ui.py      # Sold Portfolio tab UI (historical returns from accounting)
 ├── psckoc_ui.py              # PSCKOC tab UI (upstream entity analysis, member returns)
 ├── waterfall_setup_ui.py     # Waterfall Setup tab UI (view, edit, create waterfall structures)
-├── one_pager_ui.py           # One Pager Investor Report UI (Streamlit components)
-├── one_pager.py              # One Pager data logic (performance calcs, cap stack, PE metrics)
+├── one_pager_ui.py           # One Pager tab UI (standalone tab, Streamlit components)
+├── one_pager.py              # One Pager data logic (general info, cap stack, property perf, PE metrics, comments)
 ├── models.py                 # Data classes (InvestorState, Loan)
 ├── waterfall.py              # Waterfall calculation engine
 ├── metrics.py                # XIRR, XNPV, ROE, MOIC calculations
@@ -126,7 +126,7 @@ Rendered by `dashboard_ui.py`. Executive portfolio-level view with instant-load 
 - **Computed Returns** (button-gated) — Progress bar → IRR by Deal bar chart + formatted summary table (Contributions, Distributions, IRR, ROE, MOIC)
 
 ### 2. Deal Analysis
-Wrapped in `_deal_analysis_fragment()` (`@st.fragment`, defined at module level in `app.py`). Main waterfall computation, partner returns, capital accounts, XIRR/MOIC metrics. Debt service display rendered by `debt_service_ui.py` (Loan Summary, Detailed Amortization Schedules, Sale Proceeds Calculation). Deal switching only reruns this fragment — not all six tabs. Cross-tab state (`_current_deal_vcode`, `_current_fc_deal_modeled`) stored in session_state for Property Financials and Ownership tabs.
+Wrapped in `_deal_analysis_fragment()` (`@st.fragment`, defined at module level in `app.py`). Main waterfall computation, partner returns, capital accounts, XIRR/MOIC metrics. Debt service display rendered by `debt_service_ui.py` (Loan Summary, Detailed Amortization Schedules, Sale Proceeds Calculation). Deal switching only reruns this fragment — not all nine tabs. Cross-tab state (`_current_deal_vcode`, `_current_fc_deal_modeled`) stored in session_state for Property Financials and Ownership tabs.
 
 **Vue Layout** (DealAnalysisView.vue): Deal Information + Capitalization → Deal-Level Summary (KPI cards) → Partner Returns (non-OP partners highlighted bold with blue-grey background) → Annual Forecast (whole-dollar formatting, DSCR as 2-decimal, blank spacer/header cells) → expandable sections (Diagnostics, Debt Service, Cash Management, Capital Calls, XIRR Cash Flows, ROE Audit, MOIC Audit).
 
@@ -138,16 +138,28 @@ Wrapped in `_deal_analysis_fragment()` (`@st.fragment`, defined at module level 
 
 ### 3. Property Financials
 Rendered by `property_financials_ui.py`. Sections in order:
-- **Performance Chart** — Actual vs U/W NOI lines + occupancy bars (Altair). Supports Monthly/Quarterly/Annually with configurable period window.
-- **Income Statement** — Two-column comparison (TTM, YTD, Full Year, Estimate, Custom). Sources: Actual, Budget, Underwriting, Valuation.
+- **Performance Chart** — Actual vs U/W NOI lines + occupancy bars (Altair/ECharts). Supports Monthly/Quarterly/Annually with configurable period window. Defaults to most recently completed actual period.
+- **Income Statement** — Two-column comparison (TTM, YTD, Full Year, Estimate, Custom). Sources: Actual, Budget, Underwriting, Valuation. Independent left/right "As of Date" selectors for cross-period comparison. Valuation source negates MRI sign convention (`-mAmount_norm`).
 - **Balance Sheet** — Two-period comparison with variance.
-- **Tenant Roster** — Commercial lease data with rollover report, maturity chart, and printable HTML.
-- **One Pager** — Investor report with cap stack, property performance, PE metrics, NOI/Occupancy chart (trailing 12 quarters), editable comments, print/export.
+- **Tenant Roster** — Commercial lease data with rollover report, maturity chart, and printable HTML. $/SF displayed as currency with 2 decimal places.
 
-### 4. Ownership & Partnerships
+### 4. One Pager
+Standalone tab (9th in Streamlit, separate route in Vue). Rendered by `one_pager_ui.py` (Streamlit) and `OnePagerView.vue` (Vue). Professional investor report matching printed PDF layout.
+- **Data Logic** (`one_pager.py`): `get_general_information()`, `get_capitalization_stack()`, `get_property_performance()`, `get_pe_performance()`, `get_one_pager_comments()`/`save_one_pager_comments()`.
+- **General Information** — Partner, Asset Type, Location, Investment Strategy, Units/SF, Date Closed, Year Built, Underwritten Exit.
+- **Capitalization / Exposure / Deal Terms** — Purchase Price (from deals `Acquisition_Price` or valuations), P.E. Coupon/Participation (from waterfall Pref/Share steps), Loan Terms string (maturity + rate + type), 2nd Loan Terms, Rate Cap, P.E. Yield on Exposure (NOI / (Debt + PE), computed in service layer). Capitalization table: Debt/Pref. Equity/Partner Equity/Total Cap with %. Valuation with year label. P.E. Exposure on Total Cap and on Value. Pref Equity capitalization (investor breakdown from accounting contributions).
+- **Property Performance** — Table with YTD (Actual), YTD (Budget), Variance (% of budget), At Close, Actual YE, U/W YE. Rows: Economic Occ., Revenue, Expenses, NOI, DSCR. Amounts in $M, DSCR as X.XXX. Editable performance comments.
+- **Preferred Equity Performance** — Committed PE, Remaining to Fund, Funded to Date, Return of Capital, Current PE Balance, Accrued Balance, Coupon, Participation, ROE to Date, U/W ROE to Date. Editable accrued pref comment.
+- **Business Plan & Updates** — Editable free-text comments.
+- **Occupancy vs. NOI Chart** — ECharts dual-axis (Vue) / Altair (Streamlit). Occupancy bars + NOI U/W and NOI ACT lines. Trailing 10-12 quarters. Values in $ millions.
+- **Comments** — Three editable fields (performance, accrued pref, business plan) persisted to `one_pager_comments` table per vcode + quarter.
+- **Print** — Vue `@media print` CSS produces clean single-page output matching the PDF template. Textareas render as plain text in print.
+- **API Endpoints**: `GET /api/financials/<vcode>/one-pager` (all data), `GET /api/financials/<vcode>/one-pager/chart` (quarterly chart data), `PUT /api/financials/<vcode>/one-pager/comments` (save comments).
+
+### 5. Ownership & Partnerships
 Ownership tree visualization and relationship data.
 
-### 5. Waterfall Setup
+### 6. Waterfall Setup
 Rendered by `waterfall_setup_ui.py`. View, edit, and create waterfall structures for any entity.
 - **Entity Navigation** — Selectbox of all entities with waterfalls + entities from relationships. Mini ownership tree and investor list. Default set once from Deal Analysis deal; user's explicit selection persists across reruns (not overridden by `_current_deal_vcode`).
 - **Waterfall Editor** — `st.data_editor` with `num_rows="dynamic"` for CF_WF and Cap_WF steps. Columns: iOrder, PropCode, vState, FXRate, nPercent, mAmount, vtranstype, vAmtType, vNotes. Draft (`_wf_draft|{entity_id}|{wf_type}`) is a stable base — only updated on Save/Reset/Copy, never on render (avoids editor reinitialization that discards edits).
@@ -161,14 +173,14 @@ Expander in sidebar when using SQLite Database mode.
 - **Import CSVs** — Folder path input with Scan button to discover available CSVs. Lists all TABLE_DEFINITIONS entries with checkboxes showing found/missing/protected status. Supports importing individual CSVs or all at once. Protected tables (`waterfalls`, `one_pager_comments`, `waterfall_audit`) are never overwritten. Shows summary (updated/protected/skipped/errors). Clears data and computation caches.
 - **Export Database** — "Prepare Export" button builds zip in session_state. "Download Database Export" button for `waterfall_db_export_{timestamp}.zip` containing `{table_name}_db_export.csv` for every table.
 
-### 6. Reports
+### 7. Reports
 Rendered by `reports_ui.py`. Projected Returns Summary with Excel export.
 - **Report Type**: Extensible selector (currently: Projected Returns Summary)
 - **Population Selectors**: Current Deal, Select Deals, By Partner, By Upstream Investor, All Deals
 - **Output**: Partner-level rows (Contributions, CF Distributions, Capital Distributions, IRR, ROE, MOIC) plus bold deal-level total row with solid top border
 - **Excel Export**: Formatted workbook via openpyxl (currency/pct/multiple formats, auto-width, deal-total rows bold with top border)
 
-### 7. Sold Portfolio
+### 8. Sold Portfolio
 Rendered by `sold_portfolio_ui.py`. Historical returns for sold deals computed from accounting_feed (no forecast waterfalls).
 - **Data Source**: Accounting history only — contributions (`is_contribution`), distributions (`is_distribution`), capital events (`is_capital`). Raw `acct` is normalised via `normalize_accounting_feed()` on first use.
 - **Pref Equity Only**: Filters out OP partners (`InvestorID` starting with "OP"). Case-insensitive InvestorID grouping handles mixed-case entity IDs.
@@ -176,7 +188,7 @@ Rendered by `sold_portfolio_ui.py`. Historical returns for sold deals computed f
 - **Deal Detail Drill-Down**: Selectbox to pick a deal → expander with every pref equity accounting row sorted by date. Columns: Date, InvestorID, MajorType, Typename, Capital, Amount, Cashflow (XIRR), Capital Balance (running). IRR/ROE/MOIC metric cards below. Download Activity Detail exports the table + summary metrics to Excel for independent return verification.
 - **Excel Exports**: Summary workbook (`sold_portfolio_returns.xlsx`) and per-deal activity detail (`sold_activity_{name}.xlsx`) via openpyxl.
 
-### 8. PSCKOC
+### 9. PSCKOC
 Rendered by `psckoc_ui.py`. Upstream waterfall analysis for the PSCKOC holding entity, showing how deal-level distributions flow through PPI entities to PSCKOC members.
 - **Members**: PSC1 (GP co-invest, Capital Units), KCREIT (LP, Capital Units), PCBLE (GP promote + AM fee recipient, Carry Units)
 - **Deal Discovery**: Traces chain: relationships (PSCKOC as investor) → PPI entities → deals referencing those PPIs in waterfalls. Currently discovers 8 underlying deals.
@@ -203,6 +215,14 @@ Rendered by `psckoc_ui.py`. Upstream waterfall analysis for the PSCKOC holding e
 - `get_property_vcodes_for_deal()` - Get child properties for aggregation (consolidation.py)
 - `_render_performance_chart()` - NOI + occupancy chart (property_financials_ui.py)
 - `_build_quarterly_noi_chart()` - One Pager chart, trailing 12 quarters (one_pager_ui.py)
+- `get_general_information()` - Deal general info from investment_map (one_pager.py)
+- `get_capitalization_stack()` - Cap stack, loan terms, PE exposure, investor breakdown (one_pager.py)
+- `get_property_performance()` - YTD/Budget/Variance/AtClose/YE metrics per quarter (one_pager.py)
+- `get_pe_performance()` - PE funding, ROE, balances from accounting (one_pager.py)
+- `get_one_pager_comments()` / `save_one_pager_comments()` - Comments CRUD per vcode+quarter (one_pager.py)
+- `get_one_pager_data()` - Aggregates all one-pager sections + computes pe_yield_on_exposure (financials_service.py)
+- `get_one_pager_chart()` - Quarterly NOI chart data for one-pager (financials_service.py)
+- `render_one_pager_tab()` - One Pager standalone tab entry point (property_financials_ui.py)
 - `render_debt_service()` - Debt service display: loan summary, amortization, sale proceeds (debt_service_ui.py)
 - `render_dashboard()` - Dashboard tab entry point (dashboard_ui.py)
 - `_get_portfolio_caps()` - Lightweight cap data per deal, cached in session_state (dashboard_ui.py)
