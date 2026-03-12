@@ -742,7 +742,7 @@ def delete_waterfall_steps(vcode: str, wf_type: str = None):
 
 
 # Tables managed exclusively via the app (never overwritten by CSV import)
-PROTECTED_TABLES = {'waterfalls', 'one_pager_comments', 'waterfall_audit'}
+PROTECTED_TABLES = {'waterfalls', 'one_pager_comments', 'waterfall_audit', 'review_roles', 'review_submissions', 'review_notes'}
 
 
 def import_single_csv(

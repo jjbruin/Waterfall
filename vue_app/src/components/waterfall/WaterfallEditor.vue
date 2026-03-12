@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, computed } from 'vue'
-import { AgGridVue } from 'ag-grid-vue3'
+import { ref, watch, computed, nextTick } from 'vue'
 import type { WaterfallStep } from '../../stores/waterfall'
 
 const props = defineProps<{
@@ -21,66 +20,52 @@ const emit = defineEmits<{
   (e: 'export-csv'): void
 }>()
 
-const gridApi = ref<any>(null)
-const rowData = ref<WaterfallStep[]>([...props.steps])
+const rows = ref<WaterfallStep[]>([])
+const selectedRows = ref<Set<number>>(new Set())
 
 watch(() => props.steps, (newSteps) => {
-  rowData.value = [...newSteps]
-}, { deep: true })
+  rows.value = newSteps.map((s) => ({ ...s }))
+  selectedRows.value = new Set()
+}, { deep: true, immediate: true })
 
-const rowCount = computed(() => rowData.value.length)
+const rowCount = computed(() => rows.value.length)
+const allSelected = computed(() => rows.value.length > 0 && selectedRows.value.size === rows.value.length)
 
-const columnDefs = computed(() => [
-  {
-    field: 'iOrder', headerName: 'Order', width: 80, editable: true,
-    valueParser: (params: any) => Number(params.newValue) || 0,
-  },
-  { field: 'PropCode', headerName: 'PropCode', width: 120, editable: true },
-  {
-    field: 'vState', headerName: 'vState', width: 120, editable: true,
-    cellEditor: 'agSelectCellEditor',
-    cellEditorParams: { values: props.vstateOptions },
-  },
-  {
-    field: 'FXRate', headerName: 'FXRate', width: 100, editable: true,
-    valueParser: (params: any) => parseFloat(params.newValue) || 0,
-    valueFormatter: (params: any) => params.value != null ? params.value.toFixed(4) : '',
-  },
-  {
-    field: 'nPercent', headerName: 'nPercent', width: 100, editable: true,
-    valueParser: (params: any) => parseFloat(params.newValue) || 0,
-    valueFormatter: (params: any) => params.value != null ? params.value.toFixed(4) : '',
-  },
-  {
-    field: 'mAmount', headerName: 'mAmount', width: 110, editable: true,
-    valueParser: (params: any) => parseFloat(params.newValue) || 0,
-    valueFormatter: (params: any) => {
-      if (params.value == null || params.value === 0) return ''
-      return new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(params.value)
-    },
-  },
-  { field: 'vtranstype', headerName: 'vtranstype', width: 180, editable: true },
-  { field: 'vAmtType', headerName: 'vAmtType', width: 100, editable: true },
-  { field: 'vNotes', headerName: 'vNotes', width: 160, editable: true },
-])
-
-const defaultColDef = {
-  sortable: false,
-  resizable: true,
-  suppressMovable: true,
+function emitUpdate() {
+  emit('update', rows.value.map((r) => ({ ...r })))
 }
 
-function onGridReady(params: any) {
-  gridApi.value = params.api
+function onCellChange(rowIdx: number, field: keyof WaterfallStep, value: any) {
+  const row = rows.value[rowIdx]
+  if (field === 'iOrder') {
+    ;(row as any)[field] = parseInt(value) || 0
+  } else if (field === 'FXRate' || field === 'nPercent' || field === 'mAmount') {
+    ;(row as any)[field] = parseFloat(value) || 0
+  } else {
+    ;(row as any)[field] = value
+  }
+  emitUpdate()
 }
 
-function onCellValueChanged() {
-  emit('update', [...rowData.value])
+function toggleRow(idx: number) {
+  if (selectedRows.value.has(idx)) {
+    selectedRows.value.delete(idx)
+  } else {
+    selectedRows.value.add(idx)
+  }
+}
+
+function toggleAll() {
+  if (allSelected.value) {
+    selectedRows.value = new Set()
+  } else {
+    selectedRows.value = new Set(rows.value.map((_, i) => i))
+  }
 }
 
 function addRow() {
-  const maxOrder = rowData.value.reduce((max, r) => Math.max(max, r.iOrder || 0), 0)
-  rowData.value = [...rowData.value, {
+  const maxOrder = rows.value.reduce((max, r) => Math.max(max, r.iOrder || 0), 0)
+  rows.value.push({
     iOrder: maxOrder + 1,
     PropCode: '',
     vState: '',
@@ -90,35 +75,38 @@ function addRow() {
     vtranstype: '',
     vAmtType: '',
     vNotes: '',
-  }]
-  emit('update', rowData.value)
+  })
+  emitUpdate()
 }
 
 function removeSelected() {
-  if (!gridApi.value) return
-  const selected = gridApi.value.getSelectedRows()
-  if (selected.length === 0) return
-  rowData.value = rowData.value.filter((r) => !selected.includes(r))
-  emit('update', rowData.value)
+  if (selectedRows.value.size === 0) return
+  rows.value = rows.value.filter((_, i) => !selectedRows.value.has(i))
+  selectedRows.value = new Set()
+  emitUpdate()
 }
 
 function moveRow(direction: 'up' | 'down') {
-  if (!gridApi.value) return
-  const selected = gridApi.value.getSelectedNodes()
-  if (selected.length !== 1) return
-  const idx = selected[0].rowIndex
+  if (selectedRows.value.size !== 1) return
+  const idx = [...selectedRows.value][0]
   const newIdx = direction === 'up' ? idx - 1 : idx + 1
-  if (newIdx < 0 || newIdx >= rowData.value.length) return
-  const rows = [...rowData.value]
-  const [moved] = rows.splice(idx, 1)
-  rows.splice(newIdx, 0, moved)
-  rowData.value = rows
-  emit('update', rowData.value)
+  if (newIdx < 0 || newIdx >= rows.value.length) return
+  const temp = rows.value[idx]
+  rows.value[idx] = rows.value[newIdx]
+  rows.value[newIdx] = temp
+  selectedRows.value = new Set([newIdx])
+  emitUpdate()
+}
+
+function fmtNum(v: number, decimals: number): string {
+  if (v == null) return ''
+  return v.toFixed(decimals)
 }
 </script>
 
 <template>
   <div class="waterfall-editor">
+    <!-- Header with label and action buttons -->
     <div class="editor-header">
       <div class="header-left">
         <span class="wf-type-label">{{ wfType }}</span>
@@ -127,9 +115,9 @@ function moveRow(direction: 'up' | 'down') {
       </div>
       <div class="header-actions">
         <button class="btn btn-sm" @click="addRow" title="Add row">+ Add Row</button>
-        <button class="btn btn-sm" @click="removeSelected" title="Remove selected rows">- Remove</button>
-        <button class="btn btn-sm" @click="moveRow('up')" title="Move selected row up">Up</button>
-        <button class="btn btn-sm" @click="moveRow('down')" title="Move selected row down">Down</button>
+        <button class="btn btn-sm" @click="removeSelected" :disabled="selectedRows.size === 0" title="Remove selected rows">- Remove</button>
+        <button class="btn btn-sm" @click="moveRow('up')" :disabled="selectedRows.size !== 1" title="Move selected row up">Up</button>
+        <button class="btn btn-sm" @click="moveRow('down')" :disabled="selectedRows.size !== 1" title="Move selected row down">Down</button>
         <span class="separator"></span>
         <button class="btn btn-sm" @click="emit('validate')">Validate</button>
         <button class="btn btn-sm" @click="emit('preview')">Preview</button>
@@ -143,18 +131,109 @@ function moveRow(direction: 'up' | 'down') {
         </button>
       </div>
     </div>
-    <ag-grid-vue
-      class="ag-theme-alpine"
-      style="height: 400px; width: 100%"
-      :rowData="rowData"
-      :columnDefs="columnDefs"
-      :defaultColDef="defaultColDef"
-      rowSelection="multiple"
-      :stopEditingWhenCellsLoseFocus="true"
-      :undoRedoCellEditing="true"
-      @gridReady="onGridReady"
-      @cellValueChanged="onCellValueChanged"
-    />
+
+    <!-- Editable table -->
+    <div class="table-wrapper">
+      <table class="wf-table">
+        <thead>
+          <tr>
+            <th class="col-sel"><input type="checkbox" :checked="allSelected" @change="toggleAll" /></th>
+            <th class="col-order">iOrder</th>
+            <th class="col-propcode">PropCode</th>
+            <th class="col-vstate">vState</th>
+            <th class="col-num">FXRate</th>
+            <th class="col-num">nPercent</th>
+            <th class="col-num">mAmount</th>
+            <th class="col-text">vtranstype</th>
+            <th class="col-amttype">vAmtType</th>
+            <th class="col-notes">vNotes</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-if="rows.length === 0">
+            <td colspan="10" class="empty-msg">No steps. Click "+ Add Row" to begin.</td>
+          </tr>
+          <tr
+            v-for="(row, idx) in rows"
+            :key="idx"
+            :class="{ selected: selectedRows.has(idx) }"
+          >
+            <td class="col-sel">
+              <input type="checkbox" :checked="selectedRows.has(idx)" @change="toggleRow(idx)" />
+            </td>
+            <td class="col-order">
+              <input
+                type="number"
+                :value="row.iOrder"
+                @change="onCellChange(idx, 'iOrder', ($event.target as HTMLInputElement).value)"
+                min="0" max="30" step="1"
+              />
+            </td>
+            <td class="col-propcode">
+              <input
+                type="text"
+                :value="row.PropCode"
+                @change="onCellChange(idx, 'PropCode', ($event.target as HTMLInputElement).value)"
+              />
+            </td>
+            <td class="col-vstate">
+              <select
+                :value="row.vState"
+                @change="onCellChange(idx, 'vState', ($event.target as HTMLSelectElement).value)"
+              >
+                <option value="">--</option>
+                <option v-for="opt in vstateOptions" :key="opt" :value="opt">{{ opt }}</option>
+              </select>
+            </td>
+            <td class="col-num">
+              <input
+                type="number"
+                :value="row.FXRate"
+                @change="onCellChange(idx, 'FXRate', ($event.target as HTMLInputElement).value)"
+                step="0.0001" min="0" max="1"
+              />
+            </td>
+            <td class="col-num">
+              <input
+                type="number"
+                :value="row.nPercent"
+                @change="onCellChange(idx, 'nPercent', ($event.target as HTMLInputElement).value)"
+                step="0.0001" min="0" max="1"
+              />
+            </td>
+            <td class="col-num">
+              <input
+                type="number"
+                :value="row.mAmount"
+                @change="onCellChange(idx, 'mAmount', ($event.target as HTMLInputElement).value)"
+                step="1" min="0"
+              />
+            </td>
+            <td class="col-text">
+              <input
+                type="text"
+                :value="row.vtranstype"
+                @change="onCellChange(idx, 'vtranstype', ($event.target as HTMLInputElement).value)"
+              />
+            </td>
+            <td class="col-amttype">
+              <input
+                type="text"
+                :value="row.vAmtType"
+                @change="onCellChange(idx, 'vAmtType', ($event.target as HTMLInputElement).value)"
+              />
+            </td>
+            <td class="col-notes">
+              <input
+                type="text"
+                :value="row.vNotes"
+                @change="onCellChange(idx, 'vNotes', ($event.target as HTMLInputElement).value)"
+              />
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 </template>
 
@@ -212,6 +291,109 @@ function moveRow(direction: 'up' | 'down') {
   margin: 0 4px;
 }
 
+/* Table */
+.table-wrapper {
+  overflow-x: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+}
+
+.wf-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  min-width: 900px;
+}
+
+.wf-table th {
+  background: #f5f5f5;
+  font-weight: 600;
+  text-align: left;
+  padding: 6px 4px;
+  border-bottom: 2px solid var(--color-border);
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.wf-table td {
+  padding: 2px 2px;
+  border-bottom: 1px solid #eee;
+  vertical-align: middle;
+}
+
+.wf-table tr.selected {
+  background: #e3f2fd;
+}
+
+.wf-table tr:hover:not(.selected) {
+  background: #fafafa;
+}
+
+.empty-msg {
+  text-align: center;
+  color: var(--color-text-secondary);
+  font-style: italic;
+  padding: 24px !important;
+}
+
+/* Column widths */
+.col-sel { width: 30px; text-align: center; }
+.col-order { width: 65px; }
+.col-propcode { width: 110px; }
+.col-vstate { width: 110px; }
+.col-num { width: 90px; }
+.col-text { width: 170px; }
+.col-amttype { width: 80px; }
+.col-notes { width: 140px; }
+
+/* Inputs inside cells */
+.wf-table input[type="text"],
+.wf-table input[type="number"],
+.wf-table select {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid transparent;
+  background: transparent;
+  padding: 4px 6px;
+  font-size: 13px;
+  font-family: inherit;
+  border-radius: 3px;
+}
+
+.wf-table input[type="text"]:focus,
+.wf-table input[type="number"]:focus,
+.wf-table select:focus {
+  border-color: var(--color-accent, #4a7cc9);
+  outline: none;
+  background: white;
+}
+
+.wf-table input[type="text"]:hover,
+.wf-table input[type="number"]:hover,
+.wf-table select:hover {
+  border-color: #ccc;
+}
+
+.wf-table input[type="number"] {
+  text-align: right;
+  -moz-appearance: textfield;
+}
+
+.wf-table input[type="number"]::-webkit-inner-spin-button,
+.wf-table input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.wf-table input[type="checkbox"] {
+  cursor: pointer;
+}
+
+.wf-table select {
+  cursor: pointer;
+}
+
+/* Buttons */
 .btn {
   padding: 4px 10px;
   border: 1px solid var(--color-border);
@@ -222,7 +404,7 @@ function moveRow(direction: 'up' | 'down') {
   white-space: nowrap;
 }
 
-.btn:hover {
+.btn:hover:not(:disabled) {
   background: #eee;
 }
 

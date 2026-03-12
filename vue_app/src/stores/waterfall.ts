@@ -26,6 +26,27 @@ interface Investor {
   ownership_pct: number
 }
 
+interface OwnershipInvestor {
+  investor_id: string
+  name: string
+  label: string
+  ownership_pct: number
+}
+
+interface TreeEntity {
+  id: string
+  name: string
+  pct?: number
+  tags?: string[]
+}
+
+export interface OwnershipTree {
+  owners: TreeEntity[]
+  selected: { id: string; name: string } | null
+  investments: TreeEntity[]
+  investors: OwnershipInvestor[]
+}
+
 interface ValidationResult {
   errors: string[]
   warnings: string[]
@@ -53,6 +74,9 @@ export const useWaterfallStore = defineStore('waterfall', () => {
     'Amt', 'Def&Int', 'Def_Int', 'Default', 'AMFee', 'Promote',
   ])
 
+  // Ownership tree
+  const ownershipTree = ref<OwnershipTree>({ owners: [], selected: null, investments: [], investors: [] })
+
   // Preview state
   const previewResult = ref<PreviewAllocation[] | null>(null)
   const previewTotal = ref(0)
@@ -69,24 +93,36 @@ export const useWaterfallStore = defineStore('waterfall', () => {
     entities.value = res.data.entities
   }
 
+  const loadError = ref('')
+
   async function loadSteps(vcode: string) {
     loading.value = true
+    loadError.value = ''
     try {
-      const [stepsRes, invRes] = await Promise.all([
+      const [stepsRes, invRes, treeRes] = await Promise.all([
         api.get(`/api/waterfall-setup/${vcode}/steps`),
-        api.get(`/api/waterfall-setup/${vcode}/investors`),
+        api.get(`/api/waterfall-setup/${vcode}/investors`).catch(() => ({ data: { investors: [] } })),
+        api.get(`/api/waterfall-setup/${vcode}/ownership-tree`).catch(() => ({ data: { owners: [], selected: null, investments: [], investors: [] } })),
       ])
-      cfSteps.value = stepsRes.data.cf_wf
-      capSteps.value = stepsRes.data.cap_wf
-      hasCf.value = stepsRes.data.has_cf
-      hasCap.value = stepsRes.data.has_cap
-      investors.value = invRes.data.investors
+      cfSteps.value = stepsRes.data.cf_wf || []
+      capSteps.value = stepsRes.data.cap_wf || []
+      hasCf.value = stepsRes.data.has_cf || false
+      hasCap.value = stepsRes.data.has_cap || false
+      investors.value = invRes.data.investors || []
+      ownershipTree.value = treeRes.data || { owners: [], selected: null, investments: [], investors: [] }
       currentEntity.value = vcode
       cfDirty.value = false
       capDirty.value = false
       validation.value = { errors: [], warnings: [] }
       previewResult.value = null
       previewError.value = ''
+    } catch (e: any) {
+      loadError.value = e.response?.data?.error || e.message || 'Failed to load waterfall steps'
+      cfSteps.value = []
+      capSteps.value = []
+      hasCf.value = false
+      hasCap.value = false
+      currentEntity.value = vcode
     } finally {
       loading.value = false
     }
@@ -103,8 +139,24 @@ export const useWaterfallStore = defineStore('waterfall', () => {
         other_steps: otherSteps.length > 0 ? otherSteps : undefined,
       })
       if (res.data.success) {
-        // Refresh steps from DB
-        await loadSteps(vcode)
+        // Use fresh steps from response instead of 3 extra API calls
+        if (res.data.cf_wf !== undefined) {
+          cfSteps.value = res.data.cf_wf
+          capSteps.value = res.data.cap_wf || []
+          hasCf.value = res.data.has_cf || false
+          hasCap.value = res.data.has_cap || false
+        }
+        cfDirty.value = false
+        capDirty.value = false
+        validation.value = { errors: [], warnings: [] }
+        previewResult.value = null
+        previewError.value = ''
+      } else if (res.data.errors) {
+        // Server-side validation failed
+        validation.value = {
+          errors: res.data.errors || [],
+          warnings: res.data.warnings || [],
+        }
       }
       return res.data
     } finally {
@@ -173,8 +225,8 @@ export const useWaterfallStore = defineStore('waterfall', () => {
   }
 
   return {
-    currentEntity, cfSteps, capSteps, entities, investors,
-    validation, loading, saving, hasCf, hasCap, vstateOptions,
+    currentEntity, cfSteps, capSteps, entities, investors, ownershipTree,
+    validation, loading, loadError, saving, hasCf, hasCap, vstateOptions,
     previewResult, previewTotal, previewError, previewing,
     cfDirty, capDirty, hasWaterfall,
     loadEntities, loadSteps, saveSteps, validateSteps,

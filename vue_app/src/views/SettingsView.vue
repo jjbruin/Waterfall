@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import { useDataStore } from '../stores/data'
 import DataTable from '../components/common/DataTable.vue'
+import api from '../api/client'
 
 const auth = useAuthStore()
 const dataStore = useDataStore()
@@ -20,6 +21,7 @@ const newUserRole = ref('viewer')
 onMounted(async () => {
   if (auth.isAdmin) {
     await auth.loadUsers()
+    await loadReviewRoles()
   }
 })
 
@@ -75,6 +77,66 @@ async function removeUser(userId: number, username: string) {
 }
 
 const roleOptions = ['viewer', 'analyst', 'admin']
+
+// ── Review Role Management ──────────────────────────────────
+interface ReviewRoleAssignment {
+  id: number
+  user_id: number
+  username: string
+  review_role: string
+}
+
+const reviewRoles = ref<ReviewRoleAssignment[]>([])
+const availableReviewRoles = ref<string[]>([])
+const reviewRolesLoading = ref(false)
+const newReviewUserId = ref<number | null>(null)
+const newReviewRole = ref('')
+
+async function loadReviewRoles() {
+  reviewRolesLoading.value = true
+  try {
+    const res = await api.get('/api/reviews/roles')
+    reviewRoles.value = res.data.assignments || []
+    availableReviewRoles.value = res.data.available_roles || []
+  } catch (e: any) {
+    dataStore.addToast(e.response?.data?.error || 'Failed to load review roles', 'error')
+  } finally {
+    reviewRolesLoading.value = false
+  }
+}
+
+async function addReviewRole() {
+  if (!newReviewUserId.value || !newReviewRole.value) {
+    dataStore.addToast('Select a user and role', 'error')
+    return
+  }
+  try {
+    await api.post('/api/reviews/roles', {
+      user_id: newReviewUserId.value,
+      review_role: newReviewRole.value,
+    })
+    dataStore.addToast('Review role assigned', 'success')
+    newReviewUserId.value = null
+    newReviewRole.value = ''
+    await loadReviewRoles()
+  } catch (e: any) {
+    dataStore.addToast(e.response?.data?.error || 'Failed to assign role', 'error')
+  }
+}
+
+async function removeReviewRole(id: number) {
+  try {
+    await api.delete(`/api/reviews/roles/${id}`)
+    dataStore.addToast('Review role removed', 'success')
+    await loadReviewRoles()
+  } catch (e: any) {
+    dataStore.addToast(e.response?.data?.error || 'Failed to remove role', 'error')
+  }
+}
+
+function formatReviewRole(role: string): string {
+  return role.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+}
 </script>
 
 <template>
@@ -203,6 +265,57 @@ const roleOptions = ['viewer', 'analyst', 'admin']
             <span class="role-badge admin">admin</span>
             <span>Full access: manage users, import data, delete waterfalls, configure system</span>
           </div>
+        </div>
+      </div>
+
+      <!-- Review Roles -->
+      <div class="section">
+        <h3>Review Roles (One Pager Approval)</h3>
+        <p class="section-desc">Assign review workflow roles to users for the One Pager approval pipeline.</p>
+
+        <!-- Current assignments -->
+        <div v-if="reviewRolesLoading" class="placeholder">Loading review roles...</div>
+        <table v-else-if="reviewRoles.length" class="users-table" style="margin-bottom: 16px;">
+          <thead>
+            <tr>
+              <th>Username</th>
+              <th>Review Role</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="rr in reviewRoles" :key="rr.id">
+              <td>{{ rr.username }}</td>
+              <td>
+                <span class="review-role-badge">{{ formatReviewRole(rr.review_role) }}</span>
+              </td>
+              <td>
+                <button class="btn-delete" @click="removeReviewRole(rr.id)">Remove</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-else class="placeholder">No review roles assigned yet.</p>
+
+        <!-- Add new assignment -->
+        <div class="form-grid">
+          <div class="form-row">
+            <label>User</label>
+            <select v-model="newReviewUserId" class="role-select">
+              <option :value="null">-- Select user --</option>
+              <option v-for="u in auth.users" :key="u.id" :value="u.id">{{ u.username }}</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>Review Role</label>
+            <select v-model="newReviewRole" class="role-select">
+              <option value="">-- Select role --</option>
+              <option v-for="r in availableReviewRoles" :key="r" :value="r">{{ formatReviewRole(r) }}</option>
+            </select>
+          </div>
+          <button class="btn-action" @click="addReviewRole" :disabled="!newReviewUserId || !newReviewRole">
+            Assign Review Role
+          </button>
         </div>
       </div>
     </template>
@@ -343,4 +456,20 @@ h3 { font-size: 15px; margin: 0 0 12px 0; }
 }
 
 .role-item .role-badge { min-width: 70px; text-align: center; }
+
+.section-desc {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  margin: -8px 0 12px 0;
+}
+
+.review-role-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  background: #e8eaf6;
+  color: #283593;
+}
 </style>

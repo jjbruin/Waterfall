@@ -13,6 +13,7 @@ const navItems = [
   { path: '/deal-analysis', label: 'Deal Analysis', icon: 'trending-up' },
   { path: '/property-financials', label: 'Property Financials', icon: 'building' },
   { path: '/one-pager', label: 'One Pager', icon: 'file' },
+  { path: '/review-tracking', label: 'Review Tracking', icon: 'check-square' },
   { path: '/ownership', label: 'Ownership', icon: 'git-branch' },
   { path: '/waterfall-setup', label: 'Waterfall Setup', icon: 'layers' },
   { path: '/reports', label: 'Reports', icon: 'file-text' },

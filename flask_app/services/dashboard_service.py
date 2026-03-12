@@ -20,6 +20,12 @@ def get_portfolio_caps(inv_disp, inv, wf, acct, mri_val, mri_loans_raw,
     Mirrors dashboard_ui.py::_get_portfolio_caps() without st.session_state caching.
     on_progress(current, total, deal_name) is called after each deal if provided.
     """
+    from compute import prepare_cap_lookups
+
+    # Pre-compute lookups once (avoids 84x redundant DataFrame copies/normalization)
+    lookups = prepare_cap_lookups(acct, inv, mri_val, mri_loans_raw)
+    prop_map = lookups["prop_map"]
+
     caps = []
     total = len(inv_disp)
     for i, (_, row) in enumerate(inv_disp.iterrows()):
@@ -28,11 +34,12 @@ def get_portfolio_caps(inv_disp, inv, wf, acct, mri_val, mri_loans_raw,
         if on_progress:
             on_progress(i, total, name)
         try:
-            prop_vcodes = get_property_vcodes_for_deal(vcode, inv)
+            prop_vcodes = prop_map.get(vcode, []) or None
             cap = get_deal_capitalization(
                 acct, inv, wf, mri_val, mri_loans_raw,
                 deal_vcode=vcode,
-                property_vcodes=prop_vcodes or None,
+                property_vcodes=prop_vcodes,
+                lookups=lookups,
             )
             cap["vcode"] = vcode
             cap["name"] = name

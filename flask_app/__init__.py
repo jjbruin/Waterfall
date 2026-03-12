@@ -98,6 +98,9 @@ def create_app(config_name: str = None) -> Flask:
     from flask_app.api.psckoc import psckoc_bp
     app.register_blueprint(psckoc_bp, url_prefix="/api/psckoc")
 
+    from flask_app.api.reviews import reviews_bp
+    app.register_blueprint(reviews_bp, url_prefix="/api/reviews")
+
     # Health check
     @app.route("/health")
     def health():

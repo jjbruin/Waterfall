@@ -69,9 +69,14 @@ def init_stream():
     def generate():
         total = len(inv_disp)
         caps = []
-        from compute import get_deal_capitalization
-        from consolidation import get_property_vcodes_for_deal
+        from compute import get_deal_capitalization, prepare_cap_lookups
         import pandas as pd
+
+        # Pre-compute all lookups once (avoids 84x redundant copies/normalization)
+        lookups = prepare_cap_lookups(
+            data["acct"], data["inv"], data["mri_val"], data["mri_loans_raw"],
+        )
+        prop_map = lookups["prop_map"]
 
         for i, (_, row) in enumerate(inv_disp.iterrows()):
             vcode = str(row["vcode"])
@@ -80,12 +85,13 @@ def init_stream():
             yield f"data: {msg}\n\n"
 
             try:
-                prop_vcodes = get_property_vcodes_for_deal(vcode, data["inv"])
+                prop_vcodes = prop_map.get(vcode, []) or None
                 cap = get_deal_capitalization(
                     data["acct"], data["inv"], data["wf"],
                     data["mri_val"], data["mri_loans_raw"],
                     deal_vcode=vcode,
-                    property_vcodes=prop_vcodes or None,
+                    property_vcodes=prop_vcodes,
+                    lookups=lookups,
                 )
                 cap["vcode"] = vcode
                 cap["name"] = name

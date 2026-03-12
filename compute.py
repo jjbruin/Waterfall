@@ -40,7 +40,92 @@ def _horizon_end_date(start_yr: int, horizon_yrs: int) -> date:
     return date(y, 12, 31)
 
 
-def get_deal_capitalization(acct, inv, wf, mri_val, mri_loans, deal_vcode, property_vcodes=None):
+def prepare_cap_lookups(acct, inv, mri_val, mri_loans):
+    """Pre-compute normalized DataFrames and lookup dicts for batch capitalization.
+
+    Call once before looping over deals, then pass the result to
+    get_deal_capitalization(..., lookups=...) to avoid redundant work.
+    """
+    lookups = {}
+
+    # 1. InvestmentID → vcode mapping + reverse (vcode → [InvestmentID, ...])
+    inv_to_vcode = build_investmentid_to_vcode(inv)
+    vcode_to_iids: dict[str, list[str]] = {}
+    for iid, vc in inv_to_vcode.items():
+        vcode_to_iids.setdefault(str(vc), []).append(iid)
+    lookups["vcode_to_iids"] = vcode_to_iids
+
+    # 2. Normalized accounting DataFrame (done once)
+    if acct is not None and not acct.empty:
+        acct_norm = acct.copy()
+        acct_norm.columns = [str(c).strip() for c in acct_norm.columns]
+        acct_norm["InvestmentID"] = acct_norm["InvestmentID"].astype(str).str.strip()
+        if 'EffectiveDate' in acct_norm.columns:
+            acct_norm['EffectiveDate'] = pd.to_datetime(acct_norm['EffectiveDate'], errors='coerce')
+        acct_norm["MajorType"] = acct_norm["MajorType"].fillna("").astype(str).str.strip()
+        acct_norm["Amt"] = pd.to_numeric(acct_norm["Amt"], errors="coerce").fillna(0.0)
+        if "TypeName" not in acct_norm.columns and "Typename" in acct_norm.columns:
+            acct_norm["TypeName"] = acct_norm["Typename"]
+        elif "TypeName" not in acct_norm.columns:
+            acct_norm["TypeName"] = ""
+        acct_norm["TypeName"] = acct_norm["TypeName"].fillna("").astype(str).str.strip()
+        acct_norm["InvestorID"] = acct_norm["InvestorID"].astype(str).str.strip()
+        lookups["acct_norm"] = acct_norm
+    else:
+        lookups["acct_norm"] = None
+
+    # 3. Normalized loans DataFrame (done once)
+    if mri_loans is not None and not mri_loans.empty:
+        loans_norm = mri_loans.copy()
+        loans_norm.columns = [str(col).strip() for col in loans_norm.columns]
+        if 'vCode' not in loans_norm.columns and 'vcode' in loans_norm.columns:
+            loans_norm = loans_norm.rename(columns={'vcode': 'vCode'})
+        if 'vCode' in loans_norm.columns:
+            loans_norm['vCode'] = loans_norm['vCode'].astype(str)
+        lookups["loans_norm"] = loans_norm
+    else:
+        lookups["loans_norm"] = None
+
+    # 4. Normalized valuations DataFrame (done once)
+    if mri_val is not None and not mri_val.empty:
+        val_norm = mri_val.copy()
+        val_norm.columns = [str(c).strip() for c in val_norm.columns]
+        if 'vcode' not in val_norm.columns and 'vCode' in val_norm.columns:
+            val_norm = val_norm.rename(columns={'vCode': 'vcode'})
+        if 'vcode' in val_norm.columns:
+            val_norm['vcode'] = val_norm['vcode'].astype(str)
+        lookups["val_norm"] = val_norm
+    else:
+        lookups["val_norm"] = None
+
+    # 5. Pre-compute property vcodes for all deals
+    inv_df = inv.copy()
+    inv_df.columns = [str(c).strip() for c in inv_df.columns]
+    inv_df['vcode'] = inv_df['vcode'].astype(str).str.strip()
+    inv_df['Portfolio_Name'] = inv_df['Portfolio_Name'].fillna('').astype(str).str.strip() if 'Portfolio_Name' in inv_df.columns else ''
+    # Build name→vcode and vcode→name
+    name_to_vcodes: dict[str, list[str]] = {}
+    vcode_to_name: dict[str, str] = {}
+    for _, r in inv_df.iterrows():
+        vc = str(r['vcode'])
+        nm = str(r.get('Investment_Name', '')).strip()
+        vcode_to_name[vc] = nm
+        pn = str(r.get('Portfolio_Name', '')).strip()
+        if pn:
+            name_to_vcodes.setdefault(pn, []).append(vc)
+    # Map deal vcode → child property vcodes
+    prop_map: dict[str, list[str]] = {}
+    for vc, nm in vcode_to_name.items():
+        children = [c for c in name_to_vcodes.get(nm, []) if c != vc]
+        if children:
+            prop_map[vc] = children
+    lookups["prop_map"] = prop_map
+
+    return lookups
+
+
+def get_deal_capitalization(acct, inv, wf, mri_val, mri_loans, deal_vcode,
+                            property_vcodes=None, lookups=None):
     """Calculate deal capitalization from accounting_feed.
 
     Equity = Contributions + Return of Capital distributions.
@@ -49,6 +134,9 @@ def get_deal_capitalization(acct, inv, wf, mri_val, mri_loans, deal_vcode, prope
 
     For portfolio deals, property_vcodes should include all sub-property vcodes
     so that debt from those properties is aggregated.
+
+    Pass lookups=prepare_cap_lookups(...) to avoid redundant normalization
+    when calling in a loop.
     """
     cap_data = {
         'as_of_date': None,
@@ -63,73 +151,87 @@ def get_deal_capitalization(acct, inv, wf, mri_val, mri_loans, deal_vcode, prope
     }
 
     try:
-        inv_to_vcode = build_investmentid_to_vcode(inv)
-        deal_investment_ids = [iid for iid, vc in inv_to_vcode.items() if str(vc) == str(deal_vcode)]
-        acct_norm = acct.copy()
-        acct_norm.columns = [str(c).strip() for c in acct_norm.columns]
-        acct_norm["InvestmentID"] = acct_norm["InvestmentID"].astype(str).str.strip()
-        deal_acct = acct_norm[acct_norm["InvestmentID"].isin(deal_investment_ids)].copy()
+        # Use pre-computed lookups if available, else compute per-call (backward compat)
+        if lookups:
+            vcode_to_iids = lookups["vcode_to_iids"]
+            acct_norm = lookups["acct_norm"]
+            loans_norm = lookups["loans_norm"]
+            val_norm = lookups["val_norm"]
+            deal_investment_ids = vcode_to_iids.get(str(deal_vcode), [])
+        else:
+            inv_to_vcode = build_investmentid_to_vcode(inv)
+            deal_investment_ids = [iid for iid, vc in inv_to_vcode.items() if str(vc) == str(deal_vcode)]
+            acct_norm = acct.copy() if acct is not None and not acct.empty else None
+            if acct_norm is not None:
+                acct_norm.columns = [str(c).strip() for c in acct_norm.columns]
+                acct_norm["InvestmentID"] = acct_norm["InvestmentID"].astype(str).str.strip()
+            loans_norm = None
+            val_norm = None
 
-        if not deal_acct.empty:
-            if 'EffectiveDate' in deal_acct.columns:
-                deal_acct['EffectiveDate'] = pd.to_datetime(deal_acct['EffectiveDate'], errors='coerce')
-                cap_data['as_of_date'] = deal_acct['EffectiveDate'].max()
-            deal_acct["MajorType"] = deal_acct["MajorType"].fillna("").astype(str).str.strip()
-            deal_acct["Amt"] = pd.to_numeric(deal_acct["Amt"], errors="coerce").fillna(0.0)
-            if "TypeName" not in deal_acct.columns and "Typename" in deal_acct.columns:
-                deal_acct["TypeName"] = deal_acct["Typename"]
-            elif "TypeName" not in deal_acct.columns:
-                deal_acct["TypeName"] = ""
-            deal_acct["TypeName"] = deal_acct["TypeName"].fillna("").astype(str).str.strip()
-            deal_acct["InvestorID"] = deal_acct["InvestorID"].astype(str).str.strip()
-            # Calculate equity balances per investor
-            investor_balances = {}
-            for _, row in deal_acct.iterrows():
-                investor_id = row["InvestorID"]
-                major_type = row["MajorType"].lower()
-                type_name = row["TypeName"].lower()
-                amt = float(row["Amt"])
-                if investor_id not in investor_balances:
-                    investor_balances[investor_id] = 0.0
-                if "contrib" in major_type:
-                    investor_balances[investor_id] += abs(amt)
-                if "distri" in major_type and "return of capital" in type_name:
-                    investor_balances[investor_id] -= abs(amt)
-            for investor_id, balance in investor_balances.items():
-                if investor_id.upper().startswith("OP"):
-                    cap_data['partner_equity'] += max(0, balance)
-                else:
-                    cap_data['pref_equity'] += max(0, balance)
-        # Get debt from MRI_Loans if available
-        if mri_loans is not None and not mri_loans.empty:
-            mri_loans_copy = mri_loans.copy()
-            mri_loans_copy.columns = [str(col).strip() for col in mri_loans_copy.columns]
-            if 'vCode' not in mri_loans_copy.columns and 'vcode' in mri_loans_copy.columns:
-                mri_loans_copy = mri_loans_copy.rename(columns={'vcode': 'vCode'})
-            if 'vCode' in mri_loans_copy.columns:
-                mri_loans_copy['vCode'] = mri_loans_copy['vCode'].astype(str)
-                all_vcodes = [str(deal_vcode)]
-                if property_vcodes:
-                    all_vcodes.extend([str(v) for v in property_vcodes])
-                deal_loans = mri_loans_copy[mri_loans_copy['vCode'].isin(all_vcodes)]
-                if not deal_loans.empty and 'mOrigLoanAmt' in deal_loans.columns:
-                    cap_data['debt'] = pd.to_numeric(deal_loans['mOrigLoanAmt'], errors='coerce').fillna(0).sum()
+        # Filter accounting to this deal
+        if acct_norm is not None and not acct_norm.empty:
+            deal_acct = acct_norm[acct_norm["InvestmentID"].isin(deal_investment_ids)]
+
+            if not deal_acct.empty:
+                if 'EffectiveDate' in deal_acct.columns:
+                    cap_data['as_of_date'] = deal_acct['EffectiveDate'].max()
+                # Calculate equity balances per investor
+                investor_balances: dict[str, float] = {}
+                for _, row in deal_acct.iterrows():
+                    investor_id = row["InvestorID"]
+                    major_type = row["MajorType"].lower()
+                    type_name = row["TypeName"].lower()
+                    amt = float(row["Amt"])
+                    if investor_id not in investor_balances:
+                        investor_balances[investor_id] = 0.0
+                    if "contrib" in major_type:
+                        investor_balances[investor_id] += abs(amt)
+                    if "distri" in major_type and "return of capital" in type_name:
+                        investor_balances[investor_id] -= abs(amt)
+                for investor_id, balance in investor_balances.items():
+                    if investor_id.upper().startswith("OP"):
+                        cap_data['partner_equity'] += max(0, balance)
+                    else:
+                        cap_data['pref_equity'] += max(0, balance)
+
+        # Get debt from MRI_Loans
+        ln = loans_norm if lookups else None
+        if ln is None and mri_loans is not None and not mri_loans.empty:
+            ln = mri_loans.copy()
+            ln.columns = [str(col).strip() for col in ln.columns]
+            if 'vCode' not in ln.columns and 'vcode' in ln.columns:
+                ln = ln.rename(columns={'vcode': 'vCode'})
+            if 'vCode' in ln.columns:
+                ln['vCode'] = ln['vCode'].astype(str)
+        if ln is not None and 'vCode' in ln.columns:
+            all_vcodes = [str(deal_vcode)]
+            if property_vcodes:
+                all_vcodes.extend([str(v) for v in property_vcodes])
+            deal_loans = ln[ln['vCode'].isin(all_vcodes)]
+            if not deal_loans.empty and 'mOrigLoanAmt' in deal_loans.columns:
+                cap_data['debt'] = pd.to_numeric(deal_loans['mOrigLoanAmt'], errors='coerce').fillna(0).sum()
+
         cap_data['total_cap'] = cap_data['debt'] + cap_data['pref_equity'] + cap_data['partner_equity']
-        if mri_val is not None and not mri_val.empty:
-            mri_val_copy = mri_val.copy()
-            mri_val_copy.columns = [str(c).strip() for c in mri_val_copy.columns]
-            if 'vcode' not in mri_val_copy.columns and 'vCode' in mri_val_copy.columns:
-                mri_val_copy = mri_val_copy.rename(columns={'vCode': 'vcode'})
-            if 'vcode' in mri_val_copy.columns:
-                mri_val_copy['vcode'] = mri_val_copy['vcode'].astype(str)
-                val_deal = mri_val_copy[mri_val_copy['vcode'] == str(deal_vcode)]
-                if not val_deal.empty:
-                    if 'mIncomeCapConcludedValue' in val_deal.columns:
-                        val = val_deal['mIncomeCapConcludedValue'].iloc[-1]
-                        cap_data['current_valuation'] = float(val) if pd.notna(val) else 0.0
-                    if 'fCapRate' in val_deal.columns:
-                        rate = val_deal['fCapRate'].iloc[-1]
-                        cap_data['cap_rate'] = float(rate) if pd.notna(rate) else 0.0
+
+        # Get valuation
+        vn = val_norm if lookups else None
+        if vn is None and mri_val is not None and not mri_val.empty:
+            vn = mri_val.copy()
+            vn.columns = [str(c).strip() for c in vn.columns]
+            if 'vcode' not in vn.columns and 'vCode' in vn.columns:
+                vn = vn.rename(columns={'vCode': 'vcode'})
+            if 'vcode' in vn.columns:
+                vn['vcode'] = vn['vcode'].astype(str)
+        if vn is not None and 'vcode' in vn.columns:
+            val_deal = vn[vn['vcode'] == str(deal_vcode)]
+            if not val_deal.empty:
+                if 'mIncomeCapConcludedValue' in val_deal.columns:
+                    val = val_deal['mIncomeCapConcludedValue'].iloc[-1]
+                    cap_data['current_valuation'] = float(val) if pd.notna(val) else 0.0
+                if 'fCapRate' in val_deal.columns:
+                    rate = val_deal['fCapRate'].iloc[-1]
+                    cap_data['cap_rate'] = float(rate) if pd.notna(rate) else 0.0
+
         senior_exposure = cap_data['debt'] + cap_data['pref_equity']
         if cap_data['total_cap'] > 0:
             cap_data['pe_exposure_cap'] = senior_exposure / cap_data['total_cap']

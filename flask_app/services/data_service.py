@@ -100,6 +100,41 @@ def reload(db_path: Optional[str] = None):
         _cache.clear()
 
 
+def refresh_table(table_name: str):
+    """Reload a single table in all cached data dicts.
+
+    Much faster than reload() which nukes the entire cache (100MB+ of data).
+    Only the changed table is re-read from the database.
+    """
+    # Map table adapter names to cache dict keys
+    table_to_key = {
+        "waterfalls": "wf",
+        "deals": "inv",
+        "accounting": "acct",
+        "relationships": "relationships_raw",
+    }
+    cache_key_name = table_to_key.get(table_name, table_name)
+
+    for cache_key, data in _cache.items():
+        db_path = cache_key.split("|")[0]
+        pro_yr_base = int(cache_key.split("|")[1]) if "|" in cache_key else 2025
+        config = {"db_path": db_path, "pro_yr_base": pro_yr_base}
+        try:
+            adapter = get_adapter(table_name)
+            fresh = adapter.load(config)
+            # Apply same normalization as load_all for deals
+            if table_name == "deals":
+                fresh.columns = [str(c).strip() for c in fresh.columns]
+                if "vcode" not in fresh.columns and "vCode" in fresh.columns:
+                    fresh = fresh.rename(columns={"vCode": "vcode"})
+                fresh["vcode"] = fresh["vcode"].astype(str)
+            data[cache_key_name] = fresh
+        except Exception:
+            # If single-table refresh fails, fall back to full reload
+            _cache.clear()
+            break
+
+
 def get_inv_display(inv: pd.DataFrame) -> pd.DataFrame:
     """Filter out sold deals — equivalent to inv_disp in app.py."""
     if inv is None or inv.empty:

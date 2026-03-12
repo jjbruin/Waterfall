@@ -33,6 +33,11 @@ const routes = [
     component: () => import('../views/OnePagerView.vue'),
   },
   {
+    path: '/review-tracking',
+    name: 'Review Tracking',
+    component: () => import('../views/ReviewTrackingView.vue'),
+  },
+  {
     path: '/ownership',
     name: 'Ownership & Partnerships',
     component: () => import('../views/OwnershipView.vue'),

@@ -39,7 +39,8 @@ _PARI_PASSU_DEFAULTS = {
 
 # ── Validation ───────────────────────────────────────────────────────────
 
-def validate_steps(df: pd.DataFrame, wf_type: str) -> tuple[list[str], list[str]]:
+def validate_steps(df: pd.DataFrame, wf_type: str,
+                   valid_entities: set = None) -> tuple[list[str], list[str]]:
     """Validate waterfall steps. Returns (errors, warnings).
 
     Extracted from waterfall_setup_ui.py::_validate_steps().
@@ -120,6 +121,16 @@ def validate_steps(df: pd.DataFrame, wf_type: str) -> tuple[list[str], list[str]
         if not str(row.get("PropCode", "")).strip():
             errors.append(f"Row {idx + 1}: PropCode is required")
 
+    # 8. PropCode must exist in relationships table (if valid_entities provided)
+    if valid_entities is not None and "PropCode" in df.columns:
+        for idx, row in df.iterrows():
+            pc = str(row.get("PropCode", "")).strip()
+            if pc and pc not in valid_entities:
+                errors.append(
+                    f"iOrder {int(row.get('iOrder', 0))} {pc}: PropCode does not "
+                    "exist in the relationships table"
+                )
+
     return errors, warnings
 
 
@@ -153,12 +164,21 @@ def delete_steps(vcode: str, wf_type: Optional[str] = None) -> dict:
         return {"success": False, "message": str(e)}
 
 
-def get_waterfall_steps(wf: pd.DataFrame, vcode: str) -> dict:
+def get_waterfall_steps(wf: pd.DataFrame, vcode: str,
+                        valid_entities: set = None) -> dict:
     """Get CF_WF and Cap_WF steps for an entity.
+
+    If valid_entities is provided, filters out rows whose PropCode
+    is not in the set (removes orphan entities not in relationships).
 
     Returns dict with cf_wf and cap_wf as lists of dicts.
     """
     entity_wf = wf[wf["vcode"] == vcode] if "vcode" in wf.columns else pd.DataFrame()
+
+    if valid_entities is not None and not entity_wf.empty:
+        entity_wf = entity_wf[
+            entity_wf["PropCode"].astype(str).str.strip().isin(valid_entities)
+        ]
 
     cf_wf = entity_wf[entity_wf["vmisc"] == "CF_WF"] if not entity_wf.empty else pd.DataFrame()
     cap_wf = entity_wf[entity_wf["vmisc"] == "Cap_WF"] if not entity_wf.empty else pd.DataFrame()
@@ -230,7 +250,9 @@ def get_entity_nav_data(wf: pd.DataFrame, inv: pd.DataFrame, relationships_raw: 
         for eid in relationships_raw["InvestmentID"].astype(str).str.strip().unique():
             rel_vcodes.add(inv_id_to_vcode.get(eid, eid))
 
-    all_ids = sorted(set(wf_vcodes) | rel_vcodes)
+    # Only include entities that exist in the relationships table.
+    # Waterfall-only entities with no relationships are excluded.
+    all_ids = sorted(rel_vcodes)
 
     entities = []
     for eid in all_ids:
@@ -425,7 +447,7 @@ def prefill_pari_passu_waterfall(entity_id: str, relationships_raw: pd.DataFrame
     """
     investors = _get_investors_for_entity(entity_id, relationships_raw, acct, inv)
     defaults = _PARI_PASSU_DEFAULTS
-    expense_propcode = f"{entity_id}_EXP"
+    expense_propcode = defaults["asset_mgmt_propcode"]
 
     shared_rows = []
 
@@ -513,6 +535,107 @@ def _get_investors_for_entity(entity_id, relationships_raw, acct, inv):
     elif total == 0 and result:
         equal = 1.0 / len(result)
         result = [(i, equal) for i, _ in result]
+
+    return result
+
+
+def get_ownership_tree_data(vcode: str, inv: pd.DataFrame,
+                            relationships_raw: pd.DataFrame) -> dict:
+    """Get structured ownership tree for an entity.
+
+    Returns dict with:
+      - owners: list of dicts (investors who own this entity)
+      - selected: dict (the entity itself)
+      - investments: list of dicts (entities this entity invests in)
+      - investors: list of dicts (detailed investor info with names)
+    """
+    result = {"owners": [], "selected": None, "investments": [], "investors": []}
+
+    # Build vcode -> InvestmentID mapping
+    vcode_to_inv_id = {}
+    inv_names = {}
+    if inv is not None and not inv.empty:
+        for _, r in inv.iterrows():
+            vc = str(r.get("vcode", ""))
+            nm = str(r.get("Investment_Name", ""))
+            iid = str(r.get("InvestmentID", "")).strip()
+            if vc:
+                inv_names[vc] = nm
+                if iid:
+                    vcode_to_inv_id[vc] = iid
+                    inv_names[iid] = nm
+
+    tree_id = vcode_to_inv_id.get(vcode, vcode)
+
+    if relationships_raw is None or relationships_raw.empty:
+        result["selected"] = {"id": vcode, "name": inv_names.get(vcode, vcode)}
+        return result
+
+    try:
+        from ownership_tree import build_ownership_tree, load_relationships
+        rels = load_relationships(relationships_raw)
+        nodes = build_ownership_tree(rels)
+
+        node = nodes.get(tree_id)
+
+        # Selected entity
+        entity_name = node.name if node else inv_names.get(vcode, vcode)
+        result["selected"] = {"id": tree_id, "name": entity_name}
+
+        if node:
+            # Owners: investors who own this entity (sorted by pct desc)
+            for inv_id, pct in sorted(node.investors, key=lambda x: x[1], reverse=True):
+                inv_node = nodes.get(inv_id)
+                inv_name = inv_node.name if inv_node else ""
+                tags = []
+                if inv_node and not inv_node.investors:
+                    tags.append("ULTIMATE OWNER")
+                if inv_node and inv_node.is_passthrough:
+                    tags.append("PASSTHROUGH")
+                result["owners"].append({
+                    "id": inv_id,
+                    "name": inv_name,
+                    "pct": pct,
+                    "tags": tags,
+                })
+
+            # Investments: entities this entity invests in
+            for child_id in sorted(node.investments):
+                child_node = nodes.get(child_id)
+                child_name = child_node.name if child_node else inv_names.get(child_id, "")
+                # Find this entity's ownership stake in the child
+                stake = 0.0
+                if child_node:
+                    for iid, p in child_node.investors:
+                        if iid == tree_id:
+                            stake = p
+                            break
+                tags = []
+                if child_node and child_node.is_passthrough:
+                    tags.append("PASSTHROUGH")
+                if child_node and child_node.needs_waterfall:
+                    tags.append("NEEDS WATERFALL")
+                result["investments"].append({
+                    "id": child_id,
+                    "name": child_name,
+                    "pct": stake,
+                    "tags": tags,
+                })
+
+            # Detailed investor list (for the collapsible panel)
+            for inv_id, pct in node.investors:
+                inv_name = nodes[inv_id].name if inv_id in nodes else ""
+                label = f"{inv_id} ({inv_name})" if inv_name else inv_id
+                result["investors"].append({
+                    "investor_id": inv_id,
+                    "name": inv_name,
+                    "label": label,
+                    "ownership_pct": pct,
+                })
+        else:
+            result["selected"] = {"id": vcode, "name": inv_names.get(vcode, vcode)}
+    except Exception:
+        result["selected"] = {"id": vcode, "name": inv_names.get(vcode, vcode)}
 
     return result
 

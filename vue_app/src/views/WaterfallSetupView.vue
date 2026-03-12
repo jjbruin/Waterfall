@@ -3,7 +3,6 @@ import { onMounted, ref, computed, watch } from 'vue'
 import { useWaterfallStore } from '../stores/waterfall'
 import type { WaterfallStep } from '../stores/waterfall'
 import WaterfallEditor from '../components/waterfall/WaterfallEditor.vue'
-import api from '../api/client'
 
 const wf = useWaterfallStore()
 
@@ -27,10 +26,25 @@ watch(() => [wf.cfSteps, wf.capSteps], () => {
   capDraft.value = wf.capSteps.map((s) => ({ ...s }))
 }, { deep: true })
 
-const currentDraft = computed(() => activeTab.value === 'CF_WF' ? cfDraft.value : capDraft.value)
 const hasAnySteps = computed(() => wf.hasWaterfall || cfDraft.value.length > 0 || capDraft.value.length > 0)
 
 const entitiesWithWf = computed(() => wf.entities.filter((e) => e.has_wf))
+
+const hasTreeData = computed(() => {
+  const t = wf.ownershipTree
+  return t.selected || t.owners.length > 0 || t.investments.length > 0 || t.investors.length > 0
+})
+
+// Prefer tree investors (have names), fall back to store investors
+const investorList = computed(() => {
+  if (wf.ownershipTree.investors.length > 0) return wf.ownershipTree.investors
+  return wf.investors.map((inv) => ({
+    investor_id: inv.investor_id,
+    name: '',
+    label: inv.investor_id,
+    ownership_pct: inv.ownership_pct,
+  }))
+})
 
 // ── Entity Selection ─────────────────────────────────────────────────────
 
@@ -63,16 +77,11 @@ async function handleSave(wfType: string) {
 
   const steps = wfType === 'CF_WF' ? cfDraft.value : capDraft.value
 
-  // Validate first
-  const val = await wf.validateSteps(steps, wfType)
-  if (val.errors.length > 0) {
-    setStatus('error', 'Fix validation errors before saving.')
-    return
-  }
-
   const result = await wf.saveSteps(selectedEntity.value, wfType, steps)
   if (result?.success) {
     setStatus('success', `Saved ${steps.length} ${wfType} steps for ${selectedEntity.value}.`)
+  } else if (result?.errors?.length > 0) {
+    setStatus('error', 'Fix validation errors before saving.')
   } else {
     setStatus('error', result?.message || 'Save failed.')
   }
@@ -180,22 +189,62 @@ function fmtPct(v: number): string {
         </select>
       </div>
 
-      <!-- Investor List -->
-      <div v-if="selectedEntity && wf.investors.length > 0" class="investor-list">
-        <details>
-          <summary>Investors ({{ wf.investors.length }})</summary>
-          <div class="investor-items">
-            <div v-for="inv in wf.investors" :key="inv.investor_id" class="investor-item">
-              <span class="inv-id">{{ inv.investor_id }}</span>
-              <span class="inv-pct">{{ fmtPct(inv.ownership_pct) }}</span>
+      <!-- Ownership Tree + Investor List (side by side) -->
+      <div v-if="selectedEntity && !wf.loading && hasTreeData" class="tree-investor-row">
+        <!-- Ownership Tree: owners → selected → investments -->
+        <div class="tree-col">
+          <details open>
+            <summary>Ownership Tree</summary>
+            <div class="tree-viz">
+              <!-- Owners (who owns this entity) -->
+              <div v-for="owner in wf.ownershipTree.owners" :key="'o-'+owner.id" class="tree-node owner-node">
+                <span class="tree-connector">├─</span>
+                <span class="tree-entity">{{ owner.id }}<template v-if="owner.name">: {{ owner.name }}</template></span>
+                <span class="tree-pct">({{ fmtPct(owner.pct || 0) }})</span>
+                <span v-for="tag in (owner.tags || [])" :key="tag" class="tree-tag">{{ tag }}</span>
+              </div>
+              <div v-if="wf.ownershipTree.owners.length" class="tree-arrow">▼ owns</div>
+              <!-- Selected entity (bold) -->
+              <div v-if="wf.ownershipTree.selected" class="tree-node selected-node">
+                <span class="tree-entity-selected">{{ wf.ownershipTree.selected.id }}<template v-if="wf.ownershipTree.selected.name">: {{ wf.ownershipTree.selected.name }}</template></span>
+              </div>
+              <div v-if="wf.ownershipTree.investments.length" class="tree-arrow">▼ invests in</div>
+              <!-- Investments (what this entity owns) -->
+              <div v-for="child in wf.ownershipTree.investments" :key="'i-'+child.id" class="tree-node investment-node">
+                <span class="tree-connector">├─</span>
+                <span class="tree-entity">{{ child.id }}<template v-if="child.name">: {{ child.name }}</template></span>
+                <span class="tree-pct">({{ fmtPct(child.pct || 0) }})</span>
+                <span v-for="tag in (child.tags || [])" :key="tag" class="tree-tag">{{ tag }}</span>
+              </div>
+              <!-- No relationships -->
+              <div v-if="!wf.ownershipTree.owners.length && !wf.ownershipTree.investments.length && wf.ownershipTree.selected" class="tree-empty">
+                No ownership relationships found.
+              </div>
             </div>
-          </div>
-        </details>
+          </details>
+        </div>
+        <!-- Investor list -->
+        <div v-if="investorList.length > 0" class="investor-col">
+          <details open>
+            <summary>Investors ({{ investorList.length }})</summary>
+            <div class="investor-items">
+              <div v-for="inv in investorList" :key="inv.investor_id" class="investor-item">
+                <span class="inv-label">{{ inv.label }}</span>
+                <span class="inv-pct">{{ fmtPct(inv.ownership_pct) }}</span>
+              </div>
+            </div>
+          </details>
+        </div>
       </div>
     </div>
 
     <!-- Loading -->
     <div v-if="wf.loading" class="loading">Loading waterfall steps...</div>
+
+    <!-- Load Error -->
+    <div v-if="wf.loadError && !wf.loading" class="validation-box errors">
+      <strong>Load Error:</strong> {{ wf.loadError }}
+    </div>
 
     <!-- Status Messages -->
     <div v-if="statusMessage" :class="['status-msg', statusMessage.type]">
@@ -212,18 +261,18 @@ function fmtPct(v: number): string {
       <p v-for="(warn, i) in wf.validation.warnings" :key="i">{{ warn }}</p>
     </div>
 
-    <!-- No Waterfall: Create Options -->
-    <template v-if="selectedEntity && !wf.loading && !hasAnySteps">
-      <div class="no-waterfall">
-        <p class="placeholder-text">No waterfall defined for this entity.</p>
+    <!-- Entity selected and done loading: always show editor tabs + create options if empty -->
+    <template v-if="selectedEntity && !wf.loading">
+      <!-- Create/Copy options when no steps exist -->
+      <div v-if="!hasAnySteps" class="no-waterfall">
+        <p class="no-wf-text">No waterfall steps defined for this entity. Use a template or copy from an existing deal, or add rows manually below.</p>
         <div class="create-actions">
           <button class="btn" @click="createNew('new')">Create New Waterfall</button>
           <button class="btn" @click="createNew('pari-passu')">Create Pari Passu</button>
-        </div>
-        <div class="copy-from-section">
-          <label>Copy from existing deal:</label>
-          <select v-model="copySourceVcode" class="copy-select">
-            <option value="">-- Select --</option>
+          <span class="separator-v"></span>
+          <label class="copy-label">Copy from:</label>
+          <select v-model="copySourceVcode" class="copy-select-inline">
+            <option value="">-- Select deal --</option>
             <option v-for="e in entitiesWithWf" :key="e.vcode" :value="e.vcode">
               {{ e.label }}
             </option>
@@ -231,10 +280,7 @@ function fmtPct(v: number): string {
           <button class="btn" @click="copyFromDeal" :disabled="!copySourceVcode">Copy</button>
         </div>
       </div>
-    </template>
 
-    <!-- Waterfall Editors -->
-    <template v-if="selectedEntity && !wf.loading && hasAnySteps">
       <!-- Tab Switcher -->
       <div class="tab-bar">
         <button
@@ -434,29 +480,120 @@ h2 {
   background: var(--color-surface);
 }
 
-.investor-list {
+.tree-investor-row {
+  display: flex;
+  gap: 20px;
   margin-top: 8px;
 }
 
-.investor-list details {
+.tree-col {
+  flex: 1;
+  min-width: 0;
+}
+
+.investor-col {
+  flex: 0 0 280px;
+  min-width: 0;
+}
+
+.tree-investor-row details {
   font-size: 13px;
 }
 
-.investor-list summary {
+.tree-investor-row summary {
   cursor: pointer;
   color: var(--color-text-secondary);
   font-weight: 500;
 }
 
+/* Ownership tree visualization */
+.tree-viz {
+  margin-top: 6px;
+  padding: 10px 14px;
+  background: #f8f9fa;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.tree-node {
+  padding: 1px 0;
+  white-space: nowrap;
+}
+
+.tree-connector {
+  color: #999;
+  margin-right: 4px;
+}
+
+.tree-entity {
+  color: var(--color-text);
+}
+
+.tree-entity-selected {
+  font-weight: 700;
+  color: var(--color-accent, #4a7cc9);
+  font-size: 13px;
+}
+
+.tree-pct {
+  color: var(--color-text-secondary);
+  margin-left: 6px;
+  font-size: 11px;
+}
+
+.tree-tag {
+  display: inline-block;
+  font-size: 10px;
+  padding: 0 4px;
+  margin-left: 4px;
+  border-radius: 3px;
+  background: #e0e0e0;
+  color: #555;
+  font-family: inherit;
+  vertical-align: middle;
+}
+
+.tree-arrow {
+  color: #999;
+  font-size: 11px;
+  padding: 2px 0 2px 8px;
+}
+
+.tree-empty {
+  color: var(--color-text-secondary);
+  font-style: italic;
+  font-family: inherit;
+}
+
+.owner-node {
+  padding-left: 16px;
+}
+
+.selected-node {
+  padding: 3px 0;
+  border-left: 3px solid var(--color-accent, #4a7cc9);
+  padding-left: 10px;
+  margin: 2px 0;
+}
+
+.investment-node {
+  padding-left: 16px;
+}
+
+/* Investor list */
 .investor-items {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  flex-direction: column;
+  gap: 4px;
   margin-top: 6px;
 }
 
 .investor-item {
   display: flex;
+  justify-content: space-between;
   gap: 6px;
   padding: 3px 8px;
   background: #f5f5f5;
@@ -465,7 +602,8 @@ h2 {
 }
 
 .inv-id { font-weight: 600; }
-.inv-pct { color: var(--color-text-secondary); }
+.inv-label { font-weight: 500; }
+.inv-pct { color: var(--color-text-secondary); white-space: nowrap; }
 
 /* Tabs */
 .tab-bar {
@@ -525,44 +663,45 @@ h2 {
 .validation-box.errors { background: #fee; border: 1px solid #fcc; color: #c00; }
 .validation-box.warnings { background: #fff8e1; border: 1px solid #ffe082; color: #856404; }
 
-/* No Waterfall */
+/* No Waterfall — inline banner with create + copy options */
 .no-waterfall {
-  padding: 24px;
-  text-align: center;
-  background: #fafafa;
+  padding: 12px 16px;
+  background: #f8f9fa;
   border: 1px dashed var(--color-border);
   border-radius: 8px;
   margin-bottom: 16px;
 }
 
+.no-wf-text {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  margin: 0 0 10px 0;
+}
+
 .create-actions {
   display: flex;
-  gap: 12px;
-  justify-content: center;
-  margin: 16px 0;
-}
-
-.copy-from-section {
-  display: flex;
   align-items: center;
-  gap: 8px;
-  justify-content: center;
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--color-border);
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
-.copy-from-section label {
+.separator-v {
+  width: 1px;
+  height: 24px;
+  background: var(--color-border);
+}
+
+.copy-label {
   font-size: 13px;
   color: var(--color-text-secondary);
 }
 
-.copy-select {
-  padding: 6px 10px;
+.copy-select-inline {
+  padding: 5px 8px;
   border: 1px solid var(--color-border);
   border-radius: 4px;
   font-size: 13px;
-  min-width: 300px;
+  min-width: 260px;
 }
 
 /* Preview */

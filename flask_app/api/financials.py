@@ -9,6 +9,9 @@ from flask_app.services.financials_service import (
     get_balance_sheet, get_tenant_roster,
     get_one_pager_data, get_one_pager_chart,
 )
+from flask_app.services.reports_service import (
+    build_deal_lookup, get_upstream_investor_deals,
+)
 from flask_app.serializers import safe_json
 
 financials_bp = Blueprint("financials", __name__)
@@ -160,6 +163,15 @@ def save_comments(vcode):
     quarter = body.get("quarter")
     if not quarter:
         return jsonify({"error": "quarter required"}), 400
+
+    # Block comment edits when document is in review/approved
+    try:
+        from flask_app.services.review_service import is_editable
+        if not is_editable(vcode, quarter):
+            return jsonify({"error": "Comments are locked while the document is in review"}), 403
+    except Exception:
+        pass  # If review tables don't exist yet, allow edits
+
     try:
         from one_pager import save_one_pager_comments
         save_one_pager_comments(
@@ -171,3 +183,66 @@ def save_comments(vcode):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     return jsonify({"ok": True})
+
+
+# ============================================================
+# Batch One Pager (by investor)
+# ============================================================
+
+@financials_bp.route("/one-pager/investors", methods=["GET"])
+@login_required
+def one_pager_investors():
+    """List upstream investors for the batch one-pager selector."""
+    data = _get_data()
+    lookup = build_deal_lookup(data["inv"], data["wf"])
+    investor_deals = get_upstream_investor_deals(
+        data.get("relationships_raw"), data["inv"], lookup["eligible_vcodes"]
+    )
+    result = []
+    for iid, info in investor_deals.items():
+        result.append({
+            "investor_id": iid,
+            "name": info["name"],
+            "display": info["display"],
+            "deal_count": len(info["vcodes"]),
+            "vcodes": info["vcodes"],
+        })
+    return jsonify({"investors": result})
+
+
+@financials_bp.route("/one-pager/batch", methods=["POST"])
+@login_required
+def one_pager_batch():
+    """Get one-pager data + chart for multiple deals at once.
+
+    Body: { vcodes: [...], quarter: "2025-Q4" (optional) }
+    Returns: { pages: [{vcode, data, chart, error?}, ...] }
+    """
+    body = request.get_json(silent=True) or {}
+    vcodes = body.get("vcodes", [])
+    quarter = body.get("quarter")
+
+    if not vcodes:
+        return jsonify({"error": "vcodes list required"}), 400
+
+    data = _get_data()
+    pages = []
+    for vcode in vcodes:
+        page: dict = {"vcode": vcode}
+        try:
+            page["data"] = get_one_pager_data(
+                vcode, quarter, data["inv"], data["isbs_raw"],
+                data["mri_loans_raw"], data["mri_val"],
+                data["wf"], data["commitments_raw"], data["acct"],
+                occupancy_raw=data["occupancy_raw"],
+            )
+        except Exception as e:
+            page["data"] = None
+            page["error"] = str(e)
+        try:
+            page["chart"] = get_one_pager_chart(vcode, data["isbs_raw"], data["occupancy_raw"])
+        except Exception:
+            page["chart"] = None
+        pages.append(page)
+
+    return jsonify(safe_json({"pages": pages}))

@@ -87,4 +87,20 @@ body {
     --sidebar-width: 200px;
   }
 }
+
+/* Print: hide app shell, let page content fill the page */
+@media print {
+  .sidebar {
+    display: none !important;
+  }
+  .app-header {
+    display: none !important;
+  }
+  .main-content {
+    margin-left: 0 !important;
+  }
+  .page-content {
+    padding: 0 !important;
+  }
+}
 </style>

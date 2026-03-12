@@ -25,6 +25,19 @@ def _get_data():
     return data_service.load_all(db_path, pro_yr_base)
 
 
+def _get_valid_entities(data) -> set:
+    """Build set of valid entity IDs from the relationships table."""
+    rel = data.get("relationships_raw")
+    if rel is None or rel.empty:
+        return None  # No relationships data — skip validation
+    ids = set()
+    if "InvestmentID" in rel.columns:
+        ids |= set(rel["InvestmentID"].dropna().astype(str).str.strip())
+    if "InvestorID" in rel.columns:
+        ids |= set(rel["InvestorID"].dropna().astype(str).str.strip())
+    return ids if ids else None
+
+
 # ── Entity Navigation ────────────────────────────────────────────────────
 
 @waterfall_setup_bp.route("/entities", methods=["GET"])
@@ -47,6 +60,18 @@ def investors(vcode):
     return jsonify({"investors": inv_list})
 
 
+@waterfall_setup_bp.route("/<vcode>/ownership-tree", methods=["GET"])
+@login_required
+def ownership_tree(vcode):
+    """Get ownership tree text and investor details for an entity."""
+    data = _get_data()
+    from flask_app.services.waterfall_service import get_ownership_tree_data
+    result = get_ownership_tree_data(
+        vcode, data["inv"], data.get("relationships_raw")
+    )
+    return jsonify(result)
+
+
 # ── Steps CRUD ────────────────────────────────────────────────────────────
 
 @waterfall_setup_bp.route("/<vcode>/steps", methods=["GET"])
@@ -54,7 +79,8 @@ def investors(vcode):
 def steps(vcode):
     """Get waterfall steps (CF_WF + Cap_WF) for an entity."""
     data = _get_data()
-    wf_data = get_waterfall_steps(data["wf"], vcode)
+    valid_entities = _get_valid_entities(data)
+    wf_data = get_waterfall_steps(data["wf"], vcode, valid_entities=valid_entities)
     return jsonify(wf_data)
 
 
@@ -77,6 +103,19 @@ def save(vcode):
         return jsonify({"error": "steps required"}), 400
 
     data = _get_data()
+    valid_entities = _get_valid_entities(data)
+
+    # Validate before saving (single round-trip instead of validate + save)
+    if wf_type:
+        val_df = pd.DataFrame(steps_list)
+        for col in ["FXRate", "nPercent", "mAmount"]:
+            if col in val_df.columns:
+                val_df[col] = pd.to_numeric(val_df[col], errors="coerce").fillna(0.0)
+        if "iOrder" in val_df.columns:
+            val_df["iOrder"] = pd.to_numeric(val_df["iOrder"], errors="coerce").fillna(0).astype(int)
+        errors, warnings = validate_steps(val_df, wf_type, valid_entities=valid_entities)
+        if errors:
+            return jsonify({"success": False, "errors": errors, "warnings": warnings})
 
     if wf_type:
         # Save one type, preserve the other
@@ -91,7 +130,19 @@ def save(vcode):
 
     result = save_steps(vcode, combined, data["wf"])
     if result["success"]:
-        data_service.reload()
+        # Surgically refresh only the waterfalls table in cache
+        # instead of nuking the entire 100MB+ data cache
+        data_service.refresh_table("waterfalls")
+
+        # Return the fresh steps so the frontend can update its store
+        # without making 3 more API calls (steps + investors + tree)
+        fresh_data = _get_data()
+        fresh_valid = _get_valid_entities(fresh_data)
+        wf_data = get_waterfall_steps(fresh_data["wf"], vcode, valid_entities=fresh_valid)
+        result["cf_wf"] = wf_data["cf_wf"]
+        result["cap_wf"] = wf_data["cap_wf"]
+        result["has_cf"] = wf_data["has_cf"]
+        result["has_cap"] = wf_data["has_cap"]
         return jsonify(result)
     else:
         return jsonify(result), 500
@@ -132,7 +183,9 @@ def validate():
     if "iOrder" in df.columns:
         df["iOrder"] = pd.to_numeric(df["iOrder"], errors="coerce").fillna(0).astype(int)
 
-    errors, warnings = validate_steps(df, wf_type)
+    data = _get_data()
+    valid_entities = _get_valid_entities(data)
+    errors, warnings = validate_steps(df, wf_type, valid_entities=valid_entities)
     return jsonify({"errors": errors, "warnings": warnings})
 
 
@@ -233,7 +286,8 @@ def config():
 def export_csv(vcode):
     """Export waterfall steps as CSV."""
     data = _get_data()
-    wf_data = get_waterfall_steps(data["wf"], vcode)
+    valid_entities = _get_valid_entities(data)
+    wf_data = get_waterfall_steps(data["wf"], vcode, valid_entities=valid_entities)
 
     rows = []
     for step in wf_data.get("cf_wf", []):
