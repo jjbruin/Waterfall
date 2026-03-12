@@ -294,6 +294,10 @@ function fmtPct(val: number | null | undefined): string {
   if (val == null || isNaN(val)) return '—'
   return (val * 100).toFixed(1) + '%'
 }
+function fmtCurrency2(val: number | null | undefined): string {
+  if (val == null || isNaN(val)) return '—'
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(val)
+}
 function fmtNumber(val: number | null | undefined, decimals = 0): string {
   if (val == null || isNaN(val)) return '—'
   return new Intl.NumberFormat('en-US', { maximumFractionDigits: decimals }).format(val)
@@ -525,7 +529,7 @@ function fmtDate(val: string | null | undefined): string {
                     <td>{{ fmtDate(t.lease_start) }}</td>
                     <td>{{ fmtDate(t.lease_end) }}</td>
                     <td class="right">{{ fmtCurrency(t.annual_rent) }}</td>
-                    <td class="right">{{ fmtNumber(t.rpsf, 2) }}</td>
+                    <td class="right">{{ fmtCurrency2(t.rpsf) }}</td>
                     <td class="right">{{ fmtPct(t.pct_gla) }}</td>
                     <td class="right">{{ fmtPct(t.pct_abr) }}</td>
                   </tr>
@@ -563,7 +567,7 @@ function fmtDate(val: string | null | undefined): string {
                       <td>{{ m.year }}</td>
                       <td class="right">{{ fmtNumber(m.sf) }}</td>
                       <td class="right">{{ fmtCurrency(m.annual_rent) }}</td>
-                      <td class="right">{{ fmtNumber(m.avg_rpsf, 2) }}</td>
+                      <td class="right">{{ fmtCurrency2(m.avg_rpsf) }}</td>
                       <td class="right">{{ fmtPct(m.pct_revenue) }}</td>
                     </tr>
                   </tbody>

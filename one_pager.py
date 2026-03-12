@@ -235,6 +235,11 @@ def get_capitalization_stack(
         'loan_maturity': None,
         'loan_rate': 0.0,
         'loan_type': '',  # Fixed/Variable
+        'loan_terms_str': 'N/A',
+        'second_loan_maturity': None,
+        'second_loan_rate': 0.0,
+        'second_loan_type': '',
+        'second_loan_terms_str': 'N/A',
         'rate_cap': None,
         'debt': 0.0,
         'debt_pct': 0.0,
@@ -244,9 +249,12 @@ def get_capitalization_stack(
         'partner_equity_pct': 0.0,
         'total_cap': 0.0,
         'current_valuation': 0.0,
+        'valuation_year': '',
         'pe_exposure_on_cap': 0.0,
         'pe_exposure_on_value': 0.0,
+        'pe_yield_on_exposure': 0.0,
         'committed_pe': 0.0,
+        'pref_equity_capitalization': '',
     }
 
     vcode_str = str(vcode).strip()
@@ -265,23 +273,54 @@ def get_capitalization_stack(
                 if 'mOrigLoanAmt' in deal_loans.columns:
                     cap['debt'] = pd.to_numeric(deal_loans['mOrigLoanAmt'], errors='coerce').fillna(0).sum()
 
-                # Get loan terms from most recent/primary loan
-                loan_row = deal_loans.iloc[0]
+                def _parse_loan(row):
+                    """Extract maturity, rate, type, rate_cap from a loan row."""
+                    maturity = None
+                    rate = 0.0
+                    ltype = ''
+                    for mat_col in ['dtMaturity', 'dtEvent']:
+                        if mat_col in row.index and pd.notna(row[mat_col]):
+                            try:
+                                maturity = pd.to_datetime(row[mat_col]).date()
+                                break
+                            except:
+                                pass
+                    if 'nRate' in row.index:
+                        r = pd.to_numeric(row['nRate'], errors='coerce')
+                        if pd.notna(r):
+                            rate = r if r < 1 else r / 100
+                    if 'vIntType' in row.index:
+                        ltype = str(row['vIntType']).strip()
+                    return maturity, rate, ltype
 
-                if 'dtEvent' in deal_loans.columns or 'dtMaturity' in deal_loans.columns:
-                    mat_col = 'dtMaturity' if 'dtMaturity' in deal_loans.columns else 'dtEvent'
-                    try:
-                        cap['loan_maturity'] = pd.to_datetime(loan_row[mat_col]).date()
-                    except:
-                        pass
+                def _format_loan_str(maturity, rate, ltype):
+                    parts = []
+                    if maturity:
+                        parts.append(f"{maturity.month}/{maturity.day}/{maturity.year} maturity")
+                    if rate > 0:
+                        parts.append(f"{rate:.1%} {ltype.lower()}" if ltype else f"{rate:.1%}")
+                    return ', '.join(parts) if parts else 'N/A'
 
-                if 'nRate' in deal_loans.columns:
-                    rate = pd.to_numeric(loan_row['nRate'], errors='coerce')
-                    if pd.notna(rate):
-                        cap['loan_rate'] = rate if rate < 1 else rate / 100
+                # Primary loan (largest by amount)
+                deal_loans_sorted = deal_loans.copy()
+                deal_loans_sorted['_amt'] = pd.to_numeric(deal_loans_sorted['mOrigLoanAmt'], errors='coerce').fillna(0)
+                deal_loans_sorted = deal_loans_sorted.sort_values('_amt', ascending=False)
 
-                if 'vIntType' in deal_loans.columns:
-                    cap['loan_type'] = str(loan_row['vIntType']).strip()
+                loan_row = deal_loans_sorted.iloc[0]
+                cap['loan_maturity'], cap['loan_rate'], cap['loan_type'] = _parse_loan(loan_row)
+                cap['loan_terms_str'] = _format_loan_str(cap['loan_maturity'], cap['loan_rate'], cap['loan_type'])
+
+                # Rate cap (for variable loans)
+                if 'nFloor' in loan_row.index:
+                    rc = pd.to_numeric(loan_row.get('nFloor'), errors='coerce')
+                    if pd.notna(rc) and rc > 0:
+                        cap['rate_cap'] = f"{rc:.2%}"
+
+                # Second loan
+                if len(deal_loans_sorted) > 1:
+                    loan2 = deal_loans_sorted.iloc[1]
+                    cap['second_loan_maturity'], cap['second_loan_rate'], cap['second_loan_type'] = _parse_loan(loan2)
+                    cap['second_loan_terms_str'] = _format_loan_str(cap['second_loan_maturity'], cap['second_loan_rate'], cap['second_loan_type'])
 
     # Get valuation from MRI_VAL
     if mri_val is not None and not mri_val.empty:
@@ -300,10 +339,42 @@ def get_capitalization_stack(
                     v = pd.to_numeric(val_row['mIncomeCapConcludedValue'], errors='coerce')
                     cap['current_valuation'] = float(v) if pd.notna(v) else 0.0
 
-                # Purchase price might be in a separate column or use initial valuation
-                if 'mPurchasePrice' in deal_val.columns:
-                    pp = pd.to_numeric(val_row['mPurchasePrice'], errors='coerce')
-                    cap['purchase_price'] = float(pp) if pd.notna(pp) else 0.0
+                # Valuation year from date column
+                for dt_col in ['dtValuation', 'dtVal', 'dtReported', 'dtEntry']:
+                    if dt_col in val_row.index and pd.notna(val_row[dt_col]):
+                        try:
+                            cap['valuation_year'] = str(pd.to_datetime(val_row[dt_col]).year)
+                        except:
+                            pass
+                        break
+
+                # Purchase price from valuations table
+                for pp_col in ['mPurchasePrice', 'Acquisition_Price']:
+                    if pp_col in deal_val.columns:
+                        pp = pd.to_numeric(val_row[pp_col], errors='coerce')
+                        if pd.notna(pp) and pp > 0:
+                            cap['purchase_price'] = float(pp)
+                            break
+
+    # Fallback: purchase price from investment map (deals table)
+    if cap['purchase_price'] == 0 and inv_map is not None and not inv_map.empty:
+        im = inv_map.copy()
+        im.columns = [str(c).strip() for c in im.columns]
+        if 'vcode' not in im.columns and 'vCode' in im.columns:
+            im = im.rename(columns={'vCode': 'vcode'})
+        if 'vcode' in im.columns:
+            im['vcode'] = im['vcode'].astype(str).str.strip()
+            deal_im = im[im['vcode'] == vcode_str]
+            if not deal_im.empty:
+                for pp_col in ['Acquisition_Price', 'Purchase_Price', 'mPurchasePrice']:
+                    if pp_col in deal_im.columns:
+                        raw = deal_im.iloc[0][pp_col]
+                        if pd.notna(raw):
+                            clean = str(raw).replace(',', '').replace('$', '').strip()
+                            pp = pd.to_numeric(clean, errors='coerce')
+                            if pd.notna(pp) and pp > 0:
+                                cap['purchase_price'] = float(pp)
+                                break
 
     # Get PE coupon and participation from waterfalls
     if waterfalls is not None and not waterfalls.empty:
@@ -380,11 +451,30 @@ def get_capitalization_stack(
                     if "distri" in major_type and "return of capital" in type_name:
                         investor_balances[investor_id] -= abs(amt)
 
+                pe_investor_contribs = {}
                 for investor_id, balance in investor_balances.items():
                     if investor_id.upper().startswith("OP"):
                         cap['partner_equity'] += max(0, balance)
                     else:
                         cap['pref_equity'] += max(0, balance)
+                        # Track PE investor contributions for capitalization breakdown
+                        contribs_only = sum(
+                            abs(float(r["Amt"]))
+                            for _, r in deal_acct[deal_acct["InvestorID"] == investor_id].iterrows()
+                            if "contrib" in r["MajorType"].lower()
+                        )
+                        if contribs_only > 0:
+                            pe_investor_contribs[investor_id] = contribs_only
+
+                # Build pref equity capitalization string (e.g. "TIAA 46%, PSC 46%, F&F 8%")
+                if pe_investor_contribs:
+                    total_pe_contribs = sum(pe_investor_contribs.values())
+                    if total_pe_contribs > 0:
+                        parts = []
+                        for inv_id, amt in sorted(pe_investor_contribs.items(), key=lambda x: -x[1]):
+                            pct = amt / total_pe_contribs * 100
+                            parts.append(f"{inv_id} {pct:.0f}%")
+                        cap['pref_equity_capitalization'] = ', '.join(parts)
         except Exception as e:
             pass
 

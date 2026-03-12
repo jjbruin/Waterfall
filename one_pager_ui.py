@@ -84,6 +84,13 @@ def render_one_pager_section(
     pe_perf = get_pe_performance(vcode, selected_quarter, acct, commitments, waterfalls, inv_map)
     comments = get_one_pager_comments(vcode, selected_quarter)
 
+    # Compute PE Yield on Exposure = NOI / (Debt + PE)
+    noi_ye = (prop_perf.get('noi', {}).get('actual_ye', 0) or
+              prop_perf.get('noi', {}).get('ytd_actual', 0) or 0)
+    senior_plus_pe = cap_stack.get('debt', 0) + cap_stack.get('pref_equity', 0)
+    if senior_plus_pe > 0 and noi_ye > 0:
+        cap_stack['pe_yield_on_exposure'] = noi_ye / senior_plus_pe
+
     # ============================================================
     # SECTION 1: GENERAL INFORMATION
     # ============================================================
@@ -119,40 +126,38 @@ def render_one_pager_section(
     st.markdown("---")
     st.markdown("#### 2. CAPITALIZATION / EXPOSURE / DEAL TERMS")
 
-    col1, col2, col3 = st.columns(3)
+    def _fmt_mil(val):
+        if val is None or val == 0:
+            return '—'
+        return f"${val / 1_000_000:,.1f}M"
+
+    col1, col2 = st.columns(2)
 
     with col1:
-        st.markdown("**Deal Terms**")
-        st.markdown(f"- Purchase Price: ${cap_stack['purchase_price']:,.0f}" if cap_stack['purchase_price'] > 0 else "- Purchase Price: N/A")
-        st.markdown(f"- P.E. Coupon: {cap_stack['pe_coupon']:.1%}" if cap_stack['pe_coupon'] > 0 else "- P.E. Coupon: N/A")
-        st.markdown(f"- P.E. Participation: {cap_stack['pe_participation']:.1%}" if cap_stack['pe_participation'] > 0 else "- P.E. Participation: N/A")
+        st.markdown(f"**Purchase Price:** {_fmt_mil(cap_stack['purchase_price'])}")
+        st.markdown(f"**P.E. Coupon:** {cap_stack['pe_coupon']:.1%}" if cap_stack['pe_coupon'] > 0 else "**P.E. Coupon:** N/A")
+        st.markdown(f"**P.E. Participation:** {cap_stack['pe_participation']:.1%}" if cap_stack['pe_participation'] > 0 else "**P.E. Participation:** N/A")
+        st.markdown(f"**Loan Terms:** {cap_stack.get('loan_terms_str', 'N/A')}")
+        st.markdown(f"**2nd Loan Terms:** {cap_stack.get('second_loan_terms_str', 'N/A')}")
+        st.markdown(f"**Rate Cap:** {cap_stack.get('rate_cap') or 'N/A'}")
+        st.markdown(f"**P.E. Yield on Exposure:** {cap_stack.get('pe_yield_on_exposure', 0):.1%}" if cap_stack.get('pe_yield_on_exposure', 0) > 0 else "**P.E. Yield on Exposure:** N/A")
+        st.markdown(f"**Pref Equity capitalization:** {cap_stack.get('pref_equity_capitalization', 'N/A')}")
 
     with col2:
-        st.markdown("**Loan Terms**")
-        maturity = cap_stack['loan_maturity'].strftime('%m/%d/%Y') if cap_stack['loan_maturity'] else 'N/A'
-        st.markdown(f"- Maturity: {maturity}")
-        st.markdown(f"- Rate: {cap_stack['loan_rate']:.2%}" if cap_stack['loan_rate'] > 0 else "- Rate: N/A")
-        st.markdown(f"- Type: {cap_stack['loan_type']}" if cap_stack['loan_type'] else "- Type: N/A")
+        st.markdown("**Capitalization**")
+        cap_rows = [
+            {'Layer': 'Debt', 'Amount': _fmt_mil(cap_stack['debt']), '%': f"{cap_stack['debt_pct']:.0%}"},
+            {'Layer': 'Pref. Equity', 'Amount': _fmt_mil(cap_stack['pref_equity']), '%': f"{cap_stack['pref_equity_pct']:.0%}"},
+            {'Layer': 'Partner Equity', 'Amount': _fmt_mil(cap_stack['partner_equity']), '%': f"{cap_stack['partner_equity_pct']:.0%}"},
+            {'Layer': 'Total Cap', 'Amount': _fmt_mil(cap_stack['total_cap']), '%': ''},
+        ]
+        cap_df = pd.DataFrame(cap_rows)
+        st.dataframe(cap_df, use_container_width=True, hide_index=True)
 
-    with col3:
-        st.markdown("**Current Values**")
-        st.markdown(f"- Valuation: ${cap_stack['current_valuation']:,.0f}" if cap_stack['current_valuation'] > 0 else "- Valuation: N/A")
-        st.markdown(f"- P.E. Exposure (Cap): {cap_stack['pe_exposure_on_cap']:.1%}" if cap_stack['pe_exposure_on_cap'] > 0 else "- P.E. Exposure (Cap): N/A")
-        st.markdown(f"- P.E. Exposure (Value): {cap_stack['pe_exposure_on_value']:.1%}" if cap_stack['pe_exposure_on_value'] > 0 else "- P.E. Exposure (Value): N/A")
-
-    # Capitalization Stack Table
-    st.markdown("**Capitalization Stack**")
-    cap_rows = [
-        {'Layer': 'Senior Debt', 'Amount': cap_stack['debt'], '% of Cap': cap_stack['debt_pct']},
-        {'Layer': 'Preferred Equity', 'Amount': cap_stack['pref_equity'], '% of Cap': cap_stack['pref_equity_pct']},
-        {'Layer': 'Partner Equity', 'Amount': cap_stack['partner_equity'], '% of Cap': cap_stack['partner_equity_pct']},
-        {'Layer': 'Total Capitalization', 'Amount': cap_stack['total_cap'], '% of Cap': 1.0},
-    ]
-    cap_df = pd.DataFrame(cap_rows)
-    cap_df['Amount'] = cap_df['Amount'].apply(lambda x: f"${x:,.0f}")
-    cap_df['% of Cap'] = cap_df['% of Cap'].apply(lambda x: f"{x:.1%}")
-
-    st.dataframe(cap_df, use_container_width=True, hide_index=True)
+        val_year = cap_stack.get('valuation_year', '')
+        st.markdown(f"**{val_year} Valuation:** {_fmt_mil(cap_stack['current_valuation'])}")
+        st.markdown(f"**P.E. Expos. on Total Cap:** {cap_stack['pe_exposure_on_cap']:.1%}" if cap_stack['pe_exposure_on_cap'] > 0 else "**P.E. Expos. on Total Cap:** N/A")
+        st.markdown(f"**P.E. Expos. on Value:** {cap_stack['pe_exposure_on_value']:.1%}" if cap_stack['pe_exposure_on_value'] > 0 else "**P.E. Expos. on Value:** N/A")
 
     # ============================================================
     # SECTION 3: PROPERTY PERFORMANCE

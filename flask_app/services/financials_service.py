@@ -803,6 +803,13 @@ def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
     pe_perf = get_pe_performance(vcode, quarter_str, acct, commitments, waterfalls, inv) if quarter_str else {}
     comments = get_one_pager_comments(vcode, quarter_str) if quarter_str else {}
 
+    # Compute PE Yield on Exposure = Actual YE NOI / (Debt + PE)
+    if prop_perf and cap_stack:
+        noi_ye = prop_perf.get('noi', {}).get('actual_ye', 0) or prop_perf.get('noi', {}).get('ytd_actual', 0) or 0
+        senior_plus_pe = cap_stack.get('debt', 0) + cap_stack.get('pref_equity', 0)
+        if senior_plus_pe > 0 and noi_ye > 0:
+            cap_stack['pe_yield_on_exposure'] = noi_ye / senior_plus_pe
+
     return {
         "available_quarters": available,
         "general": general,
