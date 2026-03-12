@@ -32,7 +32,7 @@ from cash_management import *
 from consolidation import build_consolidated_forecast, get_sub_portfolio_summary, get_property_vcodes_for_deal, get_parent_deal_for_property
 from compute import compute_deal_analysis, get_deal_capitalization, get_cached_deal_result
 from database import import_csvs_to_database, export_all_tables_to_zip
-from property_financials_ui import render_property_financials
+from property_financials_ui import render_property_financials, render_one_pager_tab
 from reports_ui import render_reports
 from dashboard_ui import render_dashboard
 from debt_service_ui import render_debt_service
@@ -2158,7 +2158,7 @@ def _deal_analysis_fragment():
 
 
 # Create tabs for different sections - tabs at top level
-tab_dashboard, tab_deal, tab_financials, tab_ownership, tab_wf_setup, tab_reports, tab_sold, tab_psckoc = st.tabs(["Dashboard", "Deal Analysis", "Property Financials", "Ownership & Partnerships", "Waterfall Setup", "Reports", "Sold Portfolio", "PSCKOC"])
+tab_dashboard, tab_deal, tab_financials, tab_onepager, tab_ownership, tab_wf_setup, tab_reports, tab_sold, tab_psckoc = st.tabs(["Dashboard", "Deal Analysis", "Property Financials", "One Pager", "Ownership & Partnerships", "Waterfall Setup", "Reports", "Sold Portfolio", "PSCKOC"])
 
 with tab_dashboard:
     render_dashboard(
@@ -2195,6 +2195,28 @@ with tab_financials:
         isbs_raw=isbs_raw,
         fc_deal_modeled=fin_fc,
         tenants_raw=tenants_raw,
+        inv=inv,
+        mri_loans_raw=mri_loans_raw,
+        mri_val=mri_val,
+        wf=wf,
+        commitments_raw=commitments_raw,
+        acct=acct,
+        occupancy_raw=occupancy_raw,
+    )
+
+with tab_onepager:
+    # Independent property selector (defaults to Deal Analysis selection)
+    _op_label = st.session_state.get('deal_selector', labels_sorted[0] if labels_sorted else None)
+    _op_idx = labels_sorted.index(_op_label) if _op_label in labels_sorted else 0
+    op_label = st.selectbox("Select Property", labels_sorted,
+                            index=_op_idx,
+                            key="op_deal_selector")
+    op_row = inv_disp[inv_disp["DealLabel"] == op_label].iloc[0]
+    op_vcode = str(op_row["vcode"])
+
+    render_one_pager_tab(
+        deal_vcode=op_vcode,
+        isbs_raw=isbs_raw,
         inv=inv,
         mri_loans_raw=mri_loans_raw,
         mri_val=mri_val,

@@ -28,7 +28,6 @@ async function onDealSelect(event: Event) {
   isData.value = null
   bsData.value = null
   tenantData.value = null
-  onePagerData.value = null
   expanded.value = {}
   // Auto-load performance chart
   await loadChart(vcode)
@@ -45,7 +44,6 @@ function toggle(section: string) {
     if (section === 'is' && !isData.value) loadIS(vc)
     if (section === 'bs' && !bsData.value) loadBS(vc)
     if (section === 'tenants' && !tenantData.value) loadTenants(vc)
-    if (section === 'onepager' && !onePagerData.value) loadOnePager(vc)
   }
 }
 
@@ -57,7 +55,6 @@ watch(() => deals.currentVcode, () => {
   isRightAsOfDate.value = ''
   bsData.value = null
   tenantData.value = null
-  onePagerData.value = null
 })
 
 // ============================================================
@@ -287,34 +284,6 @@ async function loadTenants(vcode: string) {
 }
 
 // ============================================================
-// One Pager
-// ============================================================
-const onePagerData = ref<Record<string, any> | null>(null)
-const onePagerQuarter = ref('')
-const onePagerLoading = ref(false)
-
-async function loadOnePager(vcode: string) {
-  onePagerLoading.value = true
-  try {
-    const params: any = {}
-    if (onePagerQuarter.value) params.quarter = onePagerQuarter.value
-    const res = await api.get(`/api/financials/${vcode}/one-pager`, { params })
-    onePagerData.value = res.data
-    if (!onePagerQuarter.value && res.data.available_quarters?.length) {
-      onePagerQuarter.value = res.data.available_quarters[res.data.available_quarters.length - 1]
-    }
-  } catch (e: any) {
-    error.value = e.response?.data?.error || e.message
-  } finally {
-    onePagerLoading.value = false
-  }
-}
-
-async function refreshOnePager() {
-  if (deals.currentVcode) await loadOnePager(deals.currentVcode)
-}
-
-// ============================================================
 // Formatting helpers
 // ============================================================
 function fmtCurrency(val: number | null | undefined): string {
@@ -530,7 +499,7 @@ function fmtDate(val: string | null | undefined): string {
             <div class="kpi-row" v-if="tenantData.summary">
               <KpiCard label="Occupied SF" :value="tenantData.summary.occupied_sf" format="integer" />
               <KpiCard label="Occupancy" :value="tenantData.summary.occupancy_pct" format="percent" />
-              <KpiCard label="Wtd Avg RPSF" :value="tenantData.summary.wtd_avg_rpsf" format="currency" />
+              <KpiCard label="Wtd Avg RPSF" :value="tenantData.summary.wtd_avg_rpsf" format="currency2" />
             </div>
 
             <!-- Tenant table -->
@@ -606,82 +575,6 @@ function fmtDate(val: string | null | undefined): string {
         </div>
       </div>
 
-      <!-- ======================================== -->
-      <!-- One Pager -->
-      <!-- ======================================== -->
-      <div class="section expandable" :class="{ open: expanded['onepager'] }">
-        <h3 class="section-header" @click="toggle('onepager')">
-          <span class="caret">{{ expanded['onepager'] ? '&#9660;' : '&#9654;' }}</span>
-          One Pager — Investor Report
-        </h3>
-        <div v-if="expanded['onepager']" class="section-body">
-          <div class="op-controls">
-            <div class="col-control">
-              <label>Quarter:</label>
-              <select v-model="onePagerQuarter" @change="refreshOnePager">
-                <option v-for="q in (onePagerData?.available_quarters || [])" :key="q" :value="q">{{ q }}</option>
-              </select>
-            </div>
-          </div>
-
-          <div v-if="onePagerLoading" class="loading">Loading one pager...</div>
-          <template v-else-if="onePagerData">
-            <!-- General Information -->
-            <div v-if="onePagerData.general" class="op-section">
-              <h4>General Information</h4>
-              <div class="detail-grid">
-                <template v-for="(val, key) in onePagerData.general" :key="key">
-                  <div class="detail-label">{{ key }}</div>
-                  <div class="detail-value">{{ val ?? '—' }}</div>
-                </template>
-              </div>
-            </div>
-
-            <!-- Capitalization Stack -->
-            <div v-if="onePagerData.cap_stack" class="op-section">
-              <h4>Capitalization Stack</h4>
-              <div class="detail-grid">
-                <template v-for="(val, key) in onePagerData.cap_stack" :key="key">
-                  <div class="detail-label">{{ key }}</div>
-                  <div class="detail-value">{{ typeof val === 'number' ? fmtCurrency(val) : (val ?? '—') }}</div>
-                </template>
-              </div>
-            </div>
-
-            <!-- Property Performance -->
-            <div v-if="onePagerData.property_performance" class="op-section">
-              <h4>Property Performance</h4>
-              <div class="detail-grid">
-                <template v-for="(val, key) in onePagerData.property_performance" :key="key">
-                  <div class="detail-label">{{ key }}</div>
-                  <div class="detail-value">{{ typeof val === 'number' ? fmtCurrency(val) : (val ?? '—') }}</div>
-                </template>
-              </div>
-            </div>
-
-            <!-- PE Performance -->
-            <div v-if="onePagerData.pe_performance" class="op-section">
-              <h4>PE Performance</h4>
-              <div class="detail-grid">
-                <template v-for="(val, key) in onePagerData.pe_performance" :key="key">
-                  <div class="detail-label">{{ key }}</div>
-                  <div class="detail-value">{{ typeof val === 'number' ? fmtCurrency(val) : (val ?? '—') }}</div>
-                </template>
-              </div>
-            </div>
-
-            <!-- Comments -->
-            <div v-if="onePagerData.comments" class="op-section">
-              <h4>Comments</h4>
-              <div v-for="(val, key) in onePagerData.comments" :key="key" class="comment-block">
-                <div class="comment-label">{{ key }}</div>
-                <div class="comment-text">{{ val || '(none)' }}</div>
-              </div>
-            </div>
-          </template>
-          <p v-else class="empty">No one pager data available.</p>
-        </div>
-      </div>
     </template>
 
     <p v-else class="empty">Select a deal to view property financials.</p>
@@ -745,17 +638,6 @@ function fmtDate(val: string | null | undefined): string {
 /* Rollover section */
 .rollover-section { margin-top: 20px; }
 .rollover-section h4 { font-size: 13px; font-weight: 600; margin-bottom: 12px; }
-
-/* One Pager sections */
-.op-section { margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid var(--color-border); }
-.op-section:last-child { border-bottom: none; }
-.op-section h4 { font-size: 13px; font-weight: 600; margin-bottom: 12px; }
-.detail-grid { display: grid; grid-template-columns: 200px 1fr; gap: 4px 16px; font-size: 13px; }
-.detail-label { color: var(--color-text-secondary); font-weight: 500; }
-.detail-value { color: var(--color-text); }
-.comment-block { margin-bottom: 12px; }
-.comment-label { font-size: 12px; color: var(--color-text-secondary); font-weight: 500; margin-bottom: 4px; }
-.comment-text { font-size: 13px; white-space: pre-wrap; }
 
 /* Loading / Empty */
 .loading { text-align: center; padding: 24px; color: var(--color-text-secondary); font-style: italic; }

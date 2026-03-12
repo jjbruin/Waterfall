@@ -12,6 +12,7 @@ const navItems = [
   { path: '/dashboard', label: 'Dashboard', icon: 'grid' },
   { path: '/deal-analysis', label: 'Deal Analysis', icon: 'trending-up' },
   { path: '/property-financials', label: 'Property Financials', icon: 'building' },
+  { path: '/one-pager', label: 'One Pager', icon: 'file' },
   { path: '/ownership', label: 'Ownership', icon: 'git-branch' },
   { path: '/waterfall-setup', label: 'Waterfall Setup', icon: 'layers' },
   { path: '/reports', label: 'Reports', icon: 'file-text' },

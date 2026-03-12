@@ -28,6 +28,11 @@ const routes = [
     component: () => import('../views/PropertyFinancialsView.vue'),
   },
   {
+    path: '/one-pager',
+    name: 'One Pager',
+    component: () => import('../views/OnePagerView.vue'),
+  },
+  {
     path: '/ownership',
     name: 'Ownership & Partnerships',
     component: () => import('../views/OwnershipView.vue'),

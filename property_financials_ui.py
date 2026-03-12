@@ -31,6 +31,21 @@ def render_property_financials(deal_vcode, isbs_raw, fc_deal_modeled,
     )
 
 
+def render_one_pager_tab(deal_vcode, isbs_raw, inv, mri_loans_raw, mri_val,
+                         wf, commitments_raw, acct, occupancy_raw):
+    """Render the One Pager tab contents (standalone tab)."""
+    _one_pager_fragment(deal_vcode, isbs_raw, inv, mri_loans_raw, mri_val,
+                        wf, commitments_raw, acct, occupancy_raw)
+
+
+@st.fragment
+def _one_pager_fragment(deal_vcode, isbs_raw, inv, mri_loans_raw, mri_val,
+                        wf, commitments_raw, acct, occupancy_raw):
+    """Fragment-isolated One Pager body."""
+    _render_one_pager(deal_vcode, isbs_raw, inv, mri_loans_raw, mri_val,
+                      wf, commitments_raw, acct, occupancy_raw)
+
+
 @st.fragment
 def _property_financials_fragment(deal_vcode, isbs_raw, fc_deal_modeled,
                                   tenants_raw, inv, mri_loans_raw, mri_val,
@@ -40,8 +55,6 @@ def _property_financials_fragment(deal_vcode, isbs_raw, fc_deal_modeled,
     _render_income_statement(deal_vcode, isbs_raw, fc_deal_modeled)
     _render_balance_sheet(deal_vcode, isbs_raw)
     _render_tenant_roster(deal_vcode, tenants_raw, inv)
-    _render_one_pager(deal_vcode, isbs_raw, inv, mri_loans_raw, mri_val,
-                      wf, commitments_raw, acct, occupancy_raw)
 
 
 # ============================================================
