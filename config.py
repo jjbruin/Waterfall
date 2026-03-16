@@ -3,12 +3,15 @@ config.py
 Configuration and constants for waterfall model
 """
 
+from datetime import date
+
 # ============================================================
 # DEFAULT SETTINGS
 # ============================================================
-DEFAULT_START_YEAR = 2026
+DEFAULT_START_YEAR = date.today().year
 DEFAULT_HORIZON_YEARS = 10
-PRO_YR_BASE_DEFAULT = 2025
+PRO_YR_BASE_DEFAULT = date.today().year - 1
+DEFAULT_ACTUALS_THROUGH = None  # None = full forecast; date = actuals cutoff
 
 # Capital event parameters
 SELLING_COST_RATE = 0.02  # 2% selling costs

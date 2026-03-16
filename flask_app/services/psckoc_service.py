@@ -117,6 +117,8 @@ def run_psckoc_computation(deal_vcodes: list[str], data: dict,
     deal_results = {}
     errors = []
 
+    actuals_through = data.get("actuals_through")
+
     for vcode in deal_vcodes:
         try:
             result = get_cached_deal_result(
@@ -125,6 +127,7 @@ def run_psckoc_computation(deal_vcodes: list[str], data: dict,
                 horizon_years=horizon_years,
                 pro_yr_base=pro_yr_base,
                 data=data,
+                actuals_through=actuals_through,
             )
         except Exception as e:
             errors.append(f"Deal {vcode}: {e}")

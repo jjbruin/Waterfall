@@ -242,6 +242,32 @@ with st.sidebar:
     horizon_years = st.number_input("Horizon (years)", min_value=1, max_value=30, value=DEFAULT_HORIZON_YEARS, step=1)
     pro_yr_base = st.number_input("Pro_Yr base year", min_value=1900, max_value=2100, value=PRO_YR_BASE_DEFAULT, step=1)
 
+    st.divider()
+    st.header("Actuals Cutoff")
+    use_actuals = st.checkbox("Include YTD actuals", value=False, key="use_actuals")
+    actuals_through = None
+    if use_actuals:
+        # Build month-end options for current year up to most recent completed month
+        _today = date.today()
+        _month_ends = []
+        for m in range(1, _today.month + 1):
+            import calendar
+            last_day = calendar.monthrange(_today.year, m)[1]
+            me = date(_today.year, m, last_day)
+            if me < _today:
+                _month_ends.append(me)
+        if _month_ends:
+            actuals_through = st.selectbox(
+                "Actuals through",
+                options=_month_ends,
+                index=len(_month_ends) - 1,
+                format_func=lambda d: d.strftime("%B %Y"),
+                key="actuals_through_selector",
+            )
+            st.caption(f"Waterfall runs only for periods after {actuals_through.strftime('%m/%d/%Y')}")
+        else:
+            st.caption("No completed months yet this year.")
+
 
 # ============================================================
 # DATA LOADING
@@ -983,6 +1009,7 @@ def _deal_analysis_fragment():
         start_year=int(start_year),
         horizon_years=int(horizon_years),
         pro_yr_base=int(pro_yr_base),
+        actuals_through=actuals_through,
         deal_investment_id=deal_investment_id,
         sale_date_raw=sale_date_raw,
         inv=inv, wf=wf, acct=acct, fc=fc, coa=coa,
@@ -2170,6 +2197,7 @@ with tab_dashboard:
         start_year=int(start_year),
         horizon_years=int(horizon_years),
         pro_yr_base=int(pro_yr_base),
+        actuals_through=actuals_through,
     )
 
 with tab_deal:
@@ -2345,6 +2373,7 @@ with tab_reports:
         start_year=int(start_year),
         horizon_years=int(horizon_years),
         pro_yr_base=int(pro_yr_base),
+        actuals_through=actuals_through,
     )
 
 with tab_sold:
@@ -2359,4 +2388,5 @@ with tab_psckoc:
         start_year=int(start_year),
         horizon_years=int(horizon_years),
         pro_yr_base=int(pro_yr_base),
+        actuals_through=actuals_through,
     )

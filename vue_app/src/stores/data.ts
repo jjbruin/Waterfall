@@ -14,6 +14,7 @@ interface AppConfig {
   start_year: number
   horizon_years: number
   pro_yr_base: number
+  actuals_through: string | null
   db_path: string
 }
 
@@ -95,6 +96,7 @@ export const useDataStore = defineStore('data', () => {
         start_year: res.data.start_year,
         horizon_years: res.data.horizon_years,
         pro_yr_base: res.data.pro_yr_base,
+        actuals_through: res.data.actuals_through || null,
         db_path: config.value?.db_path || '',
       }
       addToast('Configuration updated', 'success')

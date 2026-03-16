@@ -62,8 +62,10 @@ def income_statement(vcode):
         start_year = request.args.get("start_year", current_app.config["DEFAULT_START_YEAR"], type=int)
         horizon = request.args.get("horizon_years", current_app.config["DEFAULT_HORIZON_YEARS"], type=int)
         pro_yr_base = request.args.get("pro_yr_base", current_app.config["PRO_YR_BASE_DEFAULT"], type=int)
+        actuals_through = request.args.get("actuals_through", current_app.config.get("ACTUALS_THROUGH"))
         result = compute_service.get_cached_deal_result(
             vcode, start_year, horizon, pro_yr_base, data,
+            actuals_through=actuals_through,
         )
         fc_deal_modeled = result.get("fc_deal_modeled")
     except Exception:

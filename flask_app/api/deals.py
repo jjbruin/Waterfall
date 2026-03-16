@@ -22,15 +22,17 @@ def _params():
         request.args.get("start_year", current_app.config["DEFAULT_START_YEAR"], type=int),
         request.args.get("horizon_years", current_app.config["DEFAULT_HORIZON_YEARS"], type=int),
         request.args.get("pro_yr_base", current_app.config["PRO_YR_BASE_DEFAULT"], type=int),
+        request.args.get("actuals_through", current_app.config.get("ACTUALS_THROUGH"), type=str),
     )
 
 
 def _get_result(vcode, force=False):
     """Get or compute deal result with standard params."""
-    start_year, horizon, pro_yr_base = _params()
+    start_year, horizon, pro_yr_base, actuals_through = _params()
     data = _get_data()
     return compute_service.get_cached_deal_result(
         vcode, start_year, horizon, pro_yr_base, data, force=force,
+        actuals_through=actuals_through,
     )
 
 
@@ -50,12 +52,14 @@ def compute_deal():
     start_year = body.get("start_year", current_app.config["DEFAULT_START_YEAR"])
     horizon = body.get("horizon_years", current_app.config["DEFAULT_HORIZON_YEARS"])
     pro_yr_base = body.get("pro_yr_base", current_app.config["PRO_YR_BASE_DEFAULT"])
+    actuals_through = body.get("actuals_through", current_app.config.get("ACTUALS_THROUGH"))
     force = body.get("force", False)
 
     data = _get_data()
     try:
         result = compute_service.get_cached_deal_result(
             vcode, start_year, horizon, pro_yr_base, data, force=force,
+            actuals_through=actuals_through,
         )
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -156,7 +160,7 @@ def deal_forecast(vcode):
 @login_required
 def annual_forecast(vcode):
     """Get annual aggregation table (pivoted: rows=line items, cols=years)."""
-    start_year, horizon, _ = _params()
+    start_year, horizon, _, _ = _params()
     try:
         result = _get_result(vcode)
     except Exception as e:
@@ -408,6 +412,128 @@ def moic_audit_excel(vcode):
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         as_attachment=True,
         download_name=f"moic_audit_{vcode}.xlsx",
+    )
+
+
+# ============================================================
+# Cache info
+# ============================================================
+
+# ============================================================
+# Per-section Excel downloads
+# ============================================================
+
+@deals_bp.route("/<vcode>/excel/partner-returns", methods=["GET"])
+@login_required
+def partner_returns_excel(vcode):
+    """Download Partner Returns Excel."""
+    try:
+        result = _get_result(vcode)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    excel_bytes = compute_service.generate_partner_returns_excel(result)
+    return send_file(
+        io.BytesIO(excel_bytes),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True, download_name=f"partner_returns_{vcode}.xlsx",
+    )
+
+
+@deals_bp.route("/<vcode>/excel/forecast", methods=["GET"])
+@login_required
+def forecast_excel(vcode):
+    """Download Annual Forecast Excel."""
+    start_year, horizon, _, _ = _params()
+    try:
+        result = _get_result(vcode)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    excel_bytes = compute_service.generate_forecast_excel(result, start_year, horizon)
+    return send_file(
+        io.BytesIO(excel_bytes),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True, download_name=f"annual_forecast_{vcode}.xlsx",
+    )
+
+
+@deals_bp.route("/<vcode>/excel/debt-service", methods=["GET"])
+@login_required
+def debt_service_excel(vcode):
+    """Download Debt Service Excel."""
+    try:
+        result = _get_result(vcode)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    excel_bytes = compute_service.generate_debt_service_excel(result)
+    return send_file(
+        io.BytesIO(excel_bytes),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True, download_name=f"debt_service_{vcode}.xlsx",
+    )
+
+
+@deals_bp.route("/<vcode>/excel/cash-schedule", methods=["GET"])
+@login_required
+def cash_schedule_excel(vcode):
+    """Download Cash Schedule Excel."""
+    try:
+        result = _get_result(vcode)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    excel_bytes = compute_service.generate_cash_schedule_excel(result)
+    return send_file(
+        io.BytesIO(excel_bytes),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True, download_name=f"cash_schedule_{vcode}.xlsx",
+    )
+
+
+@deals_bp.route("/<vcode>/excel/capital-calls", methods=["GET"])
+@login_required
+def capital_calls_excel(vcode):
+    """Download Capital Calls Excel."""
+    try:
+        result = _get_result(vcode)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    excel_bytes = compute_service.generate_capital_calls_excel(result)
+    return send_file(
+        io.BytesIO(excel_bytes),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True, download_name=f"capital_calls_{vcode}.xlsx",
+    )
+
+
+@deals_bp.route("/<vcode>/excel/xirr-cashflows", methods=["GET"])
+@login_required
+def xirr_cashflows_excel(vcode):
+    """Download XIRR Cash Flows Excel."""
+    try:
+        result = _get_result(vcode)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    excel_bytes = compute_service.generate_xirr_cashflows_excel(result)
+    return send_file(
+        io.BytesIO(excel_bytes),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True, download_name=f"xirr_cashflows_{vcode}.xlsx",
+    )
+
+
+@deals_bp.route("/<vcode>/excel/full", methods=["GET"])
+@login_required
+def full_deal_excel(vcode):
+    """Download comprehensive Deal Analysis Excel workbook."""
+    start_year, horizon, _, _ = _params()
+    try:
+        result = _get_result(vcode)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    excel_bytes = compute_service.generate_full_deal_excel(result, start_year, horizon)
+    return send_file(
+        io.BytesIO(excel_bytes),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True, download_name=f"deal_analysis_{vcode}.xlsx",
     )
 
 

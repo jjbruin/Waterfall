@@ -202,6 +202,7 @@ def render_reports(
     mri_loans_raw, mri_supp, mri_val,
     relationships_raw, capital_calls_raw, isbs_raw,
     start_year: int, horizon_years: int, pro_yr_base: int,
+    actuals_through=None,
 ):
     """Render the Reports tab contents.
 
@@ -213,6 +214,7 @@ def render_reports(
         mri_loans_raw, mri_supp, mri_val,
         relationships_raw, capital_calls_raw, isbs_raw,
         start_year, horizon_years, pro_yr_base,
+        actuals_through,
     )
 
 
@@ -222,6 +224,7 @@ def _reports_fragment(
     mri_loans_raw, mri_supp, mri_val,
     relationships_raw, capital_calls_raw, isbs_raw,
     start_year, horizon_years, pro_yr_base,
+    actuals_through=None,
 ):
     """Fragment-isolated Reports body."""
 
@@ -410,6 +413,7 @@ def _reports_fragment(
                     start_year=start_year,
                     horizon_years=horizon_years,
                     pro_yr_base=pro_yr_base,
+                    actuals_through=actuals_through,
                     deal_investment_id=inv_id,
                     sale_date_raw=sale_date_raw,
                     inv=inv, wf=wf, acct=acct, fc=fc, coa=coa,

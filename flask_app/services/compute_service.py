@@ -25,6 +25,7 @@ def get_cached_deal_result(
     pro_yr_base: int,
     data: dict,
     force: bool = False,
+    actuals_through=None,
 ) -> dict:
     """Compute or retrieve cached deal result.
 
@@ -35,11 +36,13 @@ def get_cached_deal_result(
         pro_yr_base: Pro-forma base year.
         data: Dict from data_service.load_all().
         force: If True, bypass cache.
+        actuals_through: Date cutoff for actuals (None = full forecast).
 
     Returns:
         Full result dict from compute_deal_analysis().
     """
-    cache_key = f"{vcode}|{start_year}|{horizon_years}|{pro_yr_base}"
+    at_str = str(actuals_through) if actuals_through else "none"
+    cache_key = f"{vcode}|{start_year}|{horizon_years}|{pro_yr_base}|{at_str}"
     if not force and cache_key in _deal_cache:
         return _deal_cache[cache_key]
 
@@ -82,6 +85,7 @@ def get_cached_deal_result(
         start_year=start_year,
         horizon_years=horizon_years,
         pro_yr_base=pro_yr_base,
+        actuals_through=actuals_through,
     )
 
     _deal_cache[cache_key] = result
@@ -472,6 +476,496 @@ def generate_moic_audit_excel(partner_results, deal_summary, sale_me) -> bytes:
     for col in ws.columns:
         max_len = max((len(str(cell.value or "")) for cell in col), default=0)
         ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 30)
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+# ============================================================
+# Shared Excel helpers
+# ============================================================
+
+def _excel_styles():
+    """Return common openpyxl styles dict."""
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    return {
+        'header_font': Font(bold=True, color="FFFFFF"),
+        'header_fill': PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid"),
+        'bold': Font(bold=True),
+        'top_border': Border(top=Side(style='medium')),
+        'curr': '$#,##0',
+        'pct': '0.00%',
+        'mult': '0.00"x"',
+        'date': 'MM/DD/YYYY',
+        'num': '#,##0',
+        'dec2': '#,##0.00',
+    }
+
+
+def _write_header_row(ws, row, cols, styles):
+    """Write a styled header row and return next row number."""
+    from openpyxl.styles import Alignment
+    for ci, name in enumerate(cols, 1):
+        c = ws.cell(row=row, column=ci, value=name)
+        c.font = styles['header_font']
+        c.fill = styles['header_fill']
+        c.alignment = Alignment(horizontal="center")
+    return row + 1
+
+
+def _autosize_columns(ws):
+    """Auto-size all columns in worksheet."""
+    for col in ws.columns:
+        max_len = max((len(str(cell.value or "")) for cell in col), default=0)
+        ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 40)
+
+
+# ============================================================
+# Per-section Excel generators
+# ============================================================
+
+def generate_partner_returns_excel(result: dict) -> bytes:
+    """Excel for Partner Returns section."""
+    from openpyxl import Workbook
+    s = _excel_styles()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Partner Returns"
+
+    pr_list = result.get("partner_results", [])
+    ds = result.get("deal_summary", {})
+
+    cols = ['Partner', 'Contributions', 'CF Distributions', 'Cap Distributions',
+            'Total Distributions', 'IRR', 'ROE', 'MOIC']
+    row = _write_header_row(ws, 1, cols, s)
+
+    for pr in pr_list:
+        ws.cell(row=row, column=1, value=pr['partner'])
+        ws.cell(row=row, column=2, value=pr.get('contributions', 0)).number_format = s['curr']
+        ws.cell(row=row, column=3, value=pr.get('cf_distributions', 0)).number_format = s['curr']
+        ws.cell(row=row, column=4, value=pr.get('cap_distributions', 0)).number_format = s['curr']
+        ws.cell(row=row, column=5, value=pr.get('total_distributions', 0)).number_format = s['curr']
+        ws.cell(row=row, column=6, value=pr.get('irr', 0)).number_format = s['pct']
+        ws.cell(row=row, column=7, value=pr.get('roe', 0)).number_format = s['pct']
+        ws.cell(row=row, column=8, value=pr.get('moic', 0)).number_format = s['mult']
+        row += 1
+
+    for ci in range(1, 9):
+        ws.cell(row=row, column=ci).border = s['top_border']
+    ws.cell(row=row, column=1, value="Deal Total").font = s['bold']
+    ws.cell(row=row, column=2, value=ds.get('total_contributions', 0)).number_format = s['curr']
+    ws.cell(row=row, column=3, value=ds.get('total_cf_distributions', 0)).number_format = s['curr']
+    ws.cell(row=row, column=4, value=ds.get('total_cap_distributions', 0)).number_format = s['curr']
+    ws.cell(row=row, column=5, value=ds.get('total_distributions', 0)).number_format = s['curr']
+    ws.cell(row=row, column=6, value=ds.get('deal_irr', 0)).number_format = s['pct']
+    ws.cell(row=row, column=7, value=ds.get('deal_roe', 0)).number_format = s['pct']
+    ws.cell(row=row, column=8, value=ds.get('deal_moic', 0)).number_format = s['mult']
+    for ci in range(1, 9):
+        ws.cell(row=row, column=ci).font = s['bold']
+
+    _autosize_columns(ws)
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def generate_forecast_excel(result: dict, start_year: int, horizon_years: int) -> bytes:
+    """Excel for Annual Forecast section."""
+    from openpyxl import Workbook
+    from reporting import annual_aggregation_table
+    s = _excel_styles()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Annual Forecast"
+
+    fc_display = result.get("fc_deal_display")
+    if fc_display is None or fc_display.empty:
+        ws.cell(row=1, column=1, value="No forecast data available")
+        buf = BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
+
+    cap_events = result.get("cap_events_df")
+    proceeds_by_year = None
+    if cap_events is not None and not cap_events.empty and "Year" in cap_events.columns:
+        proceeds_by_year = cap_events.groupby("Year")["amount"].sum()
+
+    table = annual_aggregation_table(
+        fc_display, start_year, horizon_years,
+        proceeds_by_year=proceeds_by_year,
+        cf_alloc=result.get("cf_alloc"),
+        cap_alloc=result.get("cap_alloc"),
+    )
+
+    if "Year" not in table.columns:
+        ws.cell(row=1, column=1, value="No forecast data available")
+        buf = BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
+
+    wide = table.set_index("Year").T
+    years = [int(y) for y in wide.columns]
+
+    fcols = ['Line Item'] + [str(y) for y in years]
+    frow = _write_header_row(ws, 1, fcols, s)
+
+    for label, row_data in wide.iterrows():
+        label_str = str(label)
+        ws.cell(row=frow, column=1, value=label_str).font = s['bold'] if label_str.strip() in {
+            'Revenue', 'Expenses', 'NOI', 'Capital Expenditures', 'FAD',
+            'Total Distributions', 'DSCR'
+        } else None
+        for ci, y in enumerate(years, 2):
+            val = row_data.get(y)
+            if val is not None and not (isinstance(val, float) and val != val):
+                cell = ws.cell(row=frow, column=ci, value=float(val))
+                if 'DSCR' in label_str:
+                    cell.number_format = s['dec2']
+                else:
+                    cell.number_format = s['curr']
+        frow += 1
+
+    _autosize_columns(ws)
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def generate_debt_service_excel(result: dict) -> bytes:
+    """Excel for Debt Service section."""
+    from openpyxl import Workbook
+    s = _excel_styles()
+    wb = Workbook()
+
+    ws = wb.active
+    ws.title = "Loan Summary"
+    loans = result.get("loans", [])
+    cols = ['Loan ID', 'Original Amount', 'Origination Date', 'Maturity Date',
+            'Type', 'Rate', 'Loan Term (mo)', 'Amort Term (mo)', 'IO Months']
+    row = _write_header_row(ws, 1, cols, s)
+    for l in (loans or []):
+        ws.cell(row=row, column=1, value=l.loan_id)
+        ws.cell(row=row, column=2, value=l.orig_amount).number_format = s['curr']
+        ws.cell(row=row, column=3, value=l.orig_date.isoformat() if l.orig_date else "")
+        ws.cell(row=row, column=4, value=l.maturity_date.isoformat() if l.maturity_date else "")
+        ws.cell(row=row, column=5, value=l.int_type or "")
+        ws.cell(row=row, column=6, value=l.fixed_rate or 0).number_format = s['pct']
+        ws.cell(row=row, column=7, value=l.loan_term_m or 0)
+        ws.cell(row=row, column=8, value=l.amort_term_m or 0)
+        ws.cell(row=row, column=9, value=l.io_months or 0)
+        row += 1
+    _autosize_columns(ws)
+
+    loan_sched = result.get("loan_sched")
+    if loan_sched is not None and not loan_sched.empty:
+        ws2 = wb.create_sheet("Amortization Schedule")
+        sched_cols = list(loan_sched.columns)
+        row = _write_header_row(ws2, 1, sched_cols, s)
+        for _, r in loan_sched.iterrows():
+            for ci, col in enumerate(sched_cols, 1):
+                val = r[col]
+                cell = ws2.cell(row=row, column=ci, value=val)
+                if isinstance(val, (int, float)) and col != 'Year':
+                    cell.number_format = s['curr']
+            row += 1
+        _autosize_columns(ws2)
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def generate_cash_schedule_excel(result: dict) -> bytes:
+    """Excel for Cash Management section."""
+    from openpyxl import Workbook
+    s = _excel_styles()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Cash Schedule"
+
+    sched = result.get("cash_schedule")
+    if sched is None or (hasattr(sched, 'empty') and sched.empty):
+        ws.cell(row=1, column=1, value="No cash schedule data available")
+        buf = BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
+
+    if isinstance(sched, pd.DataFrame):
+        cols = list(sched.columns)
+        row = _write_header_row(ws, 1, cols, s)
+        for _, r in sched.iterrows():
+            for ci, col in enumerate(cols, 1):
+                val = r[col]
+                cell = ws.cell(row=row, column=ci, value=val)
+                if isinstance(val, (int, float)):
+                    cell.number_format = s['curr']
+            row += 1
+    _autosize_columns(ws)
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def generate_capital_calls_excel(result: dict) -> bytes:
+    """Excel for Capital Calls section."""
+    from openpyxl import Workbook
+    s = _excel_styles()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Capital Calls"
+
+    calls = result.get("capital_calls", [])
+    if not calls:
+        ws.cell(row=1, column=1, value="No capital call data available")
+        buf = BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
+
+    if isinstance(calls, list) and len(calls) > 0:
+        cols = list(calls[0].keys()) if isinstance(calls[0], dict) else ['Data']
+        row = _write_header_row(ws, 1, cols, s)
+        for item in calls:
+            if isinstance(item, dict):
+                for ci, col in enumerate(cols, 1):
+                    val = item.get(col)
+                    cell = ws.cell(row=row, column=ci, value=val)
+                    if isinstance(val, (int, float)):
+                        cell.number_format = s['curr']
+            row += 1
+    _autosize_columns(ws)
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def generate_xirr_cashflows_excel(result: dict) -> bytes:
+    """Excel for XIRR Cash Flows section."""
+    from openpyxl import Workbook
+    s = _excel_styles()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "XIRR Cash Flows"
+
+    pr_list = result.get("partner_results", [])
+    if not pr_list:
+        ws.cell(row=1, column=1, value="No cashflow data available")
+        buf = BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
+
+    partners = [pr['partner'] for pr in pr_list]
+    cols = ['Date', 'Description'] + partners + ['Deal Total']
+    row = _write_header_row(ws, 1, cols, s)
+
+    all_rows = []
+    for pr in pr_list:
+        for cf in pr.get('cashflow_details', []):
+            d = cf['Date']
+            date_str = d.isoformat() if hasattr(d, 'isoformat') else str(d)
+            desc = cf.get('Description', '')
+            key = (date_str, desc)
+            found = False
+            for ar in all_rows:
+                if ar['key'] == key:
+                    ar[pr['partner']] = cf['Amount']
+                    found = True
+                    break
+            if not found:
+                entry = {'key': key, 'date': date_str, 'desc': desc}
+                entry[pr['partner']] = cf['Amount']
+                all_rows.append(entry)
+
+    for ar in all_rows:
+        ws.cell(row=row, column=1, value=ar['date'])
+        ws.cell(row=row, column=2, value=ar['desc'])
+        total = 0.0
+        for ci, p in enumerate(partners, 3):
+            val = ar.get(p, 0.0)
+            ws.cell(row=row, column=ci, value=val).number_format = s['curr']
+            total += (val or 0.0)
+        ws.cell(row=row, column=len(partners) + 3, value=total).number_format = s['curr']
+        row += 1
+
+    _autosize_columns(ws)
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def generate_full_deal_excel(result: dict, start_year: int, horizon_years: int) -> bytes:
+    """Generate comprehensive multi-sheet Deal Analysis workbook."""
+    from openpyxl import Workbook
+    s = _excel_styles()
+    wb = Workbook()
+
+    pr_list = result.get("partner_results", [])
+    ds = result.get("deal_summary", {})
+    sale_me = result.get("sale_me")
+
+    # --- Sheet 1: Partner Returns ---
+    ws1 = wb.active
+    ws1.title = "Partner Returns"
+    cols = ['Partner', 'Contributions', 'CF Distributions', 'Cap Distributions',
+            'Total Distributions', 'IRR', 'ROE', 'MOIC']
+    row = _write_header_row(ws1, 1, cols, s)
+    for pr in pr_list:
+        ws1.cell(row=row, column=1, value=pr['partner'])
+        ws1.cell(row=row, column=2, value=pr.get('contributions', 0)).number_format = s['curr']
+        ws1.cell(row=row, column=3, value=pr.get('cf_distributions', 0)).number_format = s['curr']
+        ws1.cell(row=row, column=4, value=pr.get('cap_distributions', 0)).number_format = s['curr']
+        ws1.cell(row=row, column=5, value=pr.get('total_distributions', 0)).number_format = s['curr']
+        ws1.cell(row=row, column=6, value=pr.get('irr', 0)).number_format = s['pct']
+        ws1.cell(row=row, column=7, value=pr.get('roe', 0)).number_format = s['pct']
+        ws1.cell(row=row, column=8, value=pr.get('moic', 0)).number_format = s['mult']
+        row += 1
+    for ci in range(1, 9):
+        ws1.cell(row=row, column=ci).border = s['top_border']
+    ws1.cell(row=row, column=1, value="Deal Total").font = s['bold']
+    ws1.cell(row=row, column=2, value=ds.get('total_contributions', 0)).number_format = s['curr']
+    ws1.cell(row=row, column=3, value=ds.get('total_cf_distributions', 0)).number_format = s['curr']
+    ws1.cell(row=row, column=4, value=ds.get('total_cap_distributions', 0)).number_format = s['curr']
+    ws1.cell(row=row, column=5, value=ds.get('total_distributions', 0)).number_format = s['curr']
+    ws1.cell(row=row, column=6, value=ds.get('deal_irr', 0)).number_format = s['pct']
+    ws1.cell(row=row, column=7, value=ds.get('deal_roe', 0)).number_format = s['pct']
+    ws1.cell(row=row, column=8, value=ds.get('deal_moic', 0)).number_format = s['mult']
+    for ci in range(1, 9):
+        ws1.cell(row=row, column=ci).font = s['bold']
+    _autosize_columns(ws1)
+
+    # --- Sheet 2: Annual Forecast ---
+    ws2 = wb.create_sheet("Annual Forecast")
+    fc_display = result.get("fc_deal_display")
+    if fc_display is not None and not fc_display.empty:
+        from reporting import annual_aggregation_table
+        cap_events = result.get("cap_events_df")
+        proceeds_by_year = None
+        if cap_events is not None and not cap_events.empty and "Year" in cap_events.columns:
+            proceeds_by_year = cap_events.groupby("Year")["amount"].sum()
+        try:
+            table = annual_aggregation_table(
+                fc_display, start_year, horizon_years,
+                proceeds_by_year=proceeds_by_year,
+                cf_alloc=result.get("cf_alloc"),
+                cap_alloc=result.get("cap_alloc"),
+            )
+            if "Year" in table.columns:
+                wide = table.set_index("Year").T
+                years = [int(y) for y in wide.columns]
+                fcols = ['Line Item'] + [str(y) for y in years]
+                frow = _write_header_row(ws2, 1, fcols, s)
+                for label, row_data in wide.iterrows():
+                    ws2.cell(row=frow, column=1, value=str(label))
+                    for ci, y in enumerate(years, 2):
+                        val = row_data.get(y)
+                        if val is not None and not (isinstance(val, float) and val != val):
+                            cell = ws2.cell(row=frow, column=ci, value=float(val))
+                            cell.number_format = s['dec2'] if 'DSCR' in str(label) else s['curr']
+                    frow += 1
+                _autosize_columns(ws2)
+        except Exception:
+            ws2.cell(row=1, column=1, value="Error generating forecast")
+    else:
+        ws2.cell(row=1, column=1, value="No forecast data")
+
+    # --- Sheet 3: Debt Service ---
+    ws3 = wb.create_sheet("Debt Service")
+    loans = result.get("loans", [])
+    dcols = ['Loan ID', 'Original Amount', 'Origination', 'Maturity', 'Type', 'Rate']
+    drow = _write_header_row(ws3, 1, dcols, s)
+    for l in (loans or []):
+        ws3.cell(row=drow, column=1, value=l.loan_id)
+        ws3.cell(row=drow, column=2, value=l.orig_amount).number_format = s['curr']
+        ws3.cell(row=drow, column=3, value=l.orig_date.isoformat() if l.orig_date else "")
+        ws3.cell(row=drow, column=4, value=l.maturity_date.isoformat() if l.maturity_date else "")
+        ws3.cell(row=drow, column=5, value=l.int_type or "")
+        ws3.cell(row=drow, column=6, value=l.fixed_rate or 0).number_format = s['pct']
+        drow += 1
+    _autosize_columns(ws3)
+
+    # --- Sheet 4: Cash Schedule ---
+    ws4 = wb.create_sheet("Cash Schedule")
+    sched = result.get("cash_schedule")
+    if sched is not None and isinstance(sched, pd.DataFrame) and not sched.empty:
+        ccols = list(sched.columns)
+        crow = _write_header_row(ws4, 1, ccols, s)
+        for _, r in sched.iterrows():
+            for ci, col in enumerate(ccols, 1):
+                val = r[col]
+                cell = ws4.cell(row=crow, column=ci, value=val)
+                if isinstance(val, (int, float)):
+                    cell.number_format = s['curr']
+            crow += 1
+        _autosize_columns(ws4)
+    else:
+        ws4.cell(row=1, column=1, value="No cash schedule data")
+
+    # --- Sheet 5: XIRR Cash Flows ---
+    ws5 = wb.create_sheet("XIRR Cash Flows")
+    if pr_list:
+        partners = [pr['partner'] for pr in pr_list]
+        xcols = ['Date', 'Description'] + partners + ['Deal Total']
+        xrow = _write_header_row(ws5, 1, xcols, s)
+        all_rows = []
+        for pr in pr_list:
+            for cf in pr.get('cashflow_details', []):
+                d = cf['Date']
+                date_str = d.isoformat() if hasattr(d, 'isoformat') else str(d)
+                desc = cf.get('Description', '')
+                key = (date_str, desc)
+                found = False
+                for ar in all_rows:
+                    if ar['key'] == key:
+                        ar[pr['partner']] = cf['Amount']
+                        found = True
+                        break
+                if not found:
+                    entry = {'key': key, 'date': date_str, 'desc': desc}
+                    entry[pr['partner']] = cf['Amount']
+                    all_rows.append(entry)
+        for ar in all_rows:
+            ws5.cell(row=xrow, column=1, value=ar['date'])
+            ws5.cell(row=xrow, column=2, value=ar['desc'])
+            total = 0.0
+            for ci, p in enumerate(partners, 3):
+                val = ar.get(p, 0.0)
+                ws5.cell(row=xrow, column=ci, value=val).number_format = s['curr']
+                total += (val or 0.0)
+            ws5.cell(row=xrow, column=len(partners) + 3, value=total).number_format = s['curr']
+            xrow += 1
+        _autosize_columns(ws5)
+
+    # --- Sheet 6: ROE Audit ---
+    try:
+        roe_bytes = generate_roe_audit_excel(pr_list, ds, sale_me)
+        from openpyxl import load_workbook
+        roe_wb = load_workbook(BytesIO(roe_bytes))
+        roe_src = roe_wb.active
+        ws6 = wb.create_sheet("ROE Audit")
+        for r in roe_src.iter_rows():
+            for cell in r:
+                ws6.cell(row=cell.row, column=cell.column, value=cell.value).number_format = cell.number_format
+        _autosize_columns(ws6)
+    except Exception:
+        ws6 = wb.create_sheet("ROE Audit")
+        ws6.cell(row=1, column=1, value="Error generating ROE audit")
+
+    # --- Sheet 7: MOIC Audit ---
+    try:
+        moic_bytes = generate_moic_audit_excel(pr_list, ds, sale_me)
+        from openpyxl import load_workbook
+        moic_wb = load_workbook(BytesIO(moic_bytes))
+        moic_src = moic_wb.active
+        ws7 = wb.create_sheet("MOIC Audit")
+        for r in moic_src.iter_rows():
+            for cell in r:
+                ws7.cell(row=cell.row, column=cell.column, value=cell.value).number_format = cell.number_format
+        _autosize_columns(ws7)
+    except Exception:
+        ws7 = wb.create_sheet("MOIC Audit")
+        ws7.cell(row=1, column=1, value="Error generating MOIC audit")
 
     buf = BytesIO()
     wb.save(buf)

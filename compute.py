@@ -165,6 +165,14 @@ def get_deal_capitalization(acct, inv, wf, mri_val, mri_loans, deal_vcode,
             if acct_norm is not None:
                 acct_norm.columns = [str(c).strip() for c in acct_norm.columns]
                 acct_norm["InvestmentID"] = acct_norm["InvestmentID"].astype(str).str.strip()
+                acct_norm["MajorType"] = acct_norm["MajorType"].fillna("").astype(str).str.strip()
+                acct_norm["Amt"] = pd.to_numeric(acct_norm["Amt"], errors="coerce").fillna(0.0)
+                if "TypeName" not in acct_norm.columns and "Typename" in acct_norm.columns:
+                    acct_norm["TypeName"] = acct_norm["Typename"]
+                elif "TypeName" not in acct_norm.columns:
+                    acct_norm["TypeName"] = ""
+                acct_norm["TypeName"] = acct_norm["TypeName"].fillna("").astype(str).str.strip()
+                acct_norm["InvestorID"] = acct_norm["InvestorID"].astype(str).str.strip()
             loans_norm = None
             val_norm = None
 
@@ -245,7 +253,7 @@ def get_deal_capitalization(acct, inv, wf, mri_val, mri_loans, deal_vcode,
     return cap_data
 
 
-def get_cached_deal_result(vcode, start_year, horizon_years, pro_yr_base, **kwargs):
+def get_cached_deal_result(vcode, start_year, horizon_years, pro_yr_base, actuals_through=None, **kwargs):
     """Check shared multi-deal cache; compute and store on miss.
 
     All consumers (Deal Analysis, Dashboard, Reports) should call this
@@ -258,7 +266,8 @@ def get_cached_deal_result(vcode, start_year, horizon_years, pro_yr_base, **kwar
     """
     import streamlit as st
     cache = st.session_state.setdefault('_deal_results', {})
-    key = f"{vcode}|{start_year}|{horizon_years}|{pro_yr_base}"
+    at_str = str(actuals_through) if actuals_through else "none"
+    key = f"{vcode}|{start_year}|{horizon_years}|{pro_yr_base}|{at_str}"
     if key not in cache:
         st.toast(f"Computing {vcode}...")
         cache[key] = compute_deal_analysis(
@@ -266,6 +275,7 @@ def get_cached_deal_result(vcode, start_year, horizon_years, pro_yr_base, **kwar
             start_year=start_year,
             horizon_years=horizon_years,
             pro_yr_base=pro_yr_base,
+            actuals_through=actuals_through,
             **kwargs,
         )
     return cache[key]
@@ -442,6 +452,7 @@ def compute_deal_analysis(
     mri_loans_raw, mri_supp, mri_val,
     relationships_raw, capital_calls_raw, isbs_raw,
     start_year, horizon_years, pro_yr_base,
+    actuals_through=None,
 ):
     """
     Compute all deal-level analysis results.
@@ -492,6 +503,24 @@ def compute_deal_analysis(
             'cap_data': cap_data,
             'prop_vcodes_for_cap': prop_vcodes_for_cap,
         }
+
+    # --- Actuals through: trim forecast operating rows for months <= cutoff ---
+    # The accounting seed already captures actual partner cash flows for these
+    # months. The waterfall will only run on periods after the cutoff.
+    if actuals_through is not None:
+        from config import REVENUE_ACCTS, EXPENSE_ACCTS
+        cutoff = pd.Timestamp(actuals_through)
+        operating_accts = REVENUE_ACCTS | EXPENSE_ACCTS
+        mask = (
+            fc_deal_full["event_date"].apply(lambda d: pd.Timestamp(d)) <= cutoff
+        ) & (
+            fc_deal_full["vAccount"].isin(operating_accts)
+        )
+        trimmed_count = mask.sum()
+        fc_deal_full = fc_deal_full[~mask].copy()
+        debug_msgs.append(
+            f"Actuals through {actuals_through}: {trimmed_count} forecast operating rows trimmed"
+        )
 
     model_start = min(fc_deal_full["event_date"])
     model_end_full = max(fc_deal_full["event_date"])
@@ -714,6 +743,20 @@ def compute_deal_analysis(
         cf_period_cash = cf_period_cash[cf_period_cash["event_date"] <= sale_me].copy()
     cap_period_cash = cap_period_cash[cap_period_cash["event_date"] <= sale_me].copy()
 
+    # --- Actuals through: filter waterfall periods to post-cutoff only ---
+    # Historical distributions are already in seed_states from accounting.
+    if actuals_through is not None:
+        cutoff_date = pd.Timestamp(actuals_through).date()
+        if hasattr(cutoff_date, 'date'):
+            cutoff_date = cutoff_date.date()
+        if not cf_period_cash.empty:
+            cf_period_cash = cf_period_cash[cf_period_cash["event_date"] > cutoff_date].copy()
+        if not cap_period_cash.empty:
+            cap_period_cash = cap_period_cash[cap_period_cash["event_date"] > cutoff_date].copy()
+        debug_msgs.append(
+            f"Actuals through {actuals_through}: waterfall runs only for periods after {cutoff_date}"
+        )
+
     # Add sale proceeds to cap_period_cash
     if sale_dbg is not None and sale_dbg.get("Net_Sale_Proceeds", 0) > 0:
         sale_cash_entry = pd.DataFrame([{
@@ -798,6 +841,7 @@ def compute_deal_analysis(
         'model_start': model_start,
         'model_end_full': model_end_full,
         'beginning_cash': beginning_cash,
+        'actuals_through': actuals_through,
     }
 
     # --- Build partner results (single source of truth for all metrics) ---

@@ -29,9 +29,25 @@ const selectedCsvs = ref<Set<string>>(new Set())
 
 // Config
 const showConfig = ref(false)
-const localStartYear = ref(2026)
+const localStartYear = ref(new Date().getFullYear())
 const localHorizon = ref(10)
-const localProYrBase = ref(2025)
+const localProYrBase = ref(new Date().getFullYear() - 1)
+const localActualsThrough = ref<string | null>(null)
+const useActuals = ref(false)
+
+// Build month-end options for current year
+const monthEndOptions = (() => {
+  const today = new Date()
+  const year = today.getFullYear()
+  const options: { value: string; label: string }[] = []
+  for (let m = 0; m < today.getMonth(); m++) {
+    const lastDay = new Date(year, m + 1, 0)
+    const iso = lastDay.toISOString().split('T')[0]
+    const label = lastDay.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+    options.push({ value: iso, label })
+  }
+  return options
+})()
 
 onMounted(async () => {
   if (!auth.isAuthenticated) return
@@ -40,6 +56,8 @@ onMounted(async () => {
     localStartYear.value = data.config.start_year
     localHorizon.value = data.config.horizon_years
     localProYrBase.value = data.config.pro_yr_base
+    localActualsThrough.value = data.config.actuals_through
+    useActuals.value = !!data.config.actuals_through
   }
 })
 
@@ -100,6 +118,7 @@ async function handleConfigSave() {
     start_year: localStartYear.value,
     horizon_years: localHorizon.value,
     pro_yr_base: localProYrBase.value,
+    actuals_through: useActuals.value ? localActualsThrough.value : null,
   })
 }
 
@@ -151,6 +170,23 @@ const collapsed = ref(false)
           <div class="config-row">
             <label>Pro_Yr Base</label>
             <input type="number" v-model.number="localProYrBase" min="1900" max="2100" />
+          </div>
+          <div class="config-row">
+            <label>
+              <input type="checkbox" v-model="useActuals" style="margin-right: 4px;" />
+              YTD Actuals
+            </label>
+          </div>
+          <div v-if="useActuals && monthEndOptions.length" class="config-row">
+            <label>Through</label>
+            <select v-model="localActualsThrough" class="config-select">
+              <option v-for="opt in monthEndOptions" :key="opt.value" :value="opt.value">
+                {{ opt.label }}
+              </option>
+            </select>
+          </div>
+          <div v-if="useActuals && !monthEndOptions.length" class="config-caption">
+            No completed months yet this year.
           </div>
           <button class="btn btn-xs btn-full" @click="handleConfigSave">
             Apply Settings
@@ -380,7 +416,7 @@ const collapsed = ref(false)
   color: rgba(255, 255, 255, 0.7);
 }
 
-.config-row input {
+.config-row input[type="number"] {
   width: 70px;
   padding: 2px 6px;
   border: 1px solid rgba(255, 255, 255, 0.3);
@@ -389,6 +425,22 @@ const collapsed = ref(false)
   color: white;
   font-size: 12px;
   text-align: right;
+}
+
+.config-select {
+  width: 120px;
+  padding: 2px 4px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.1);
+  color: white;
+  font-size: 11px;
+}
+
+.config-caption {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.5);
+  margin: 2px 0;
 }
 
 /* Database tools */

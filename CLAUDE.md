@@ -115,6 +115,16 @@ cd vue_app && npm run dev        # Frontend on http://localhost:5173
 - Loans aggregate UP from properties to parent deal level
 - See `consolidation.py` for implementation
 
+### Actuals Through Cutoff
+- Global setting (`actuals_through`): date or None (default None = full forecast)
+- **Partner cash flows**: Actual distributions from `accounting_feed` through cutoff (via `seed_states_from_accounting`); waterfall-computed distributions only for periods AFTER cutoff
+- **Operating forecast**: Forecast Rev+Exp rows for months <= cutoff are removed from `fc_deal_full`
+- **Waterfall**: `cf_period_cash` and `cap_period_cash` filtered to post-cutoff periods only
+- **Cache key**: includes `actuals_through` so toggling triggers recomputation
+- **Dynamic defaults**: `DEFAULT_START_YEAR = date.today().year`, `PRO_YR_BASE_DEFAULT = date.today().year - 1`
+- **UI**: Streamlit sidebar checkbox + month-end selector; Vue sidebar in Report Settings
+- **Flask**: `ACTUALS_THROUGH` in config, passed via query params / request body, included in `/api/data/config`
+
 ## Application Tabs
 
 ### 1. Dashboard

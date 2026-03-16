@@ -133,6 +133,7 @@ def get_config():
         "start_year": current_app.config["DEFAULT_START_YEAR"],
         "horizon_years": current_app.config["DEFAULT_HORIZON_YEARS"],
         "pro_yr_base": current_app.config["PRO_YR_BASE_DEFAULT"],
+        "actuals_through": current_app.config.get("ACTUALS_THROUGH"),
         "db_path": current_app.config["DB_PATH"],
     })
 
@@ -155,11 +156,16 @@ def update_config():
         current_app.config["PRO_YR_BASE_DEFAULT"] = int(body["pro_yr_base"])
         # Pro_yr_base affects data loading — clear data cache
         data_service.reload()
+    if "actuals_through" in body:
+        current_app.config["ACTUALS_THROUGH"] = body["actuals_through"]  # ISO date string or None
+        # Actuals cutoff changes computation results — clear compute cache
+        compute_service.clear_cache()
 
     return jsonify({"message": "Config updated", **{
         "start_year": current_app.config["DEFAULT_START_YEAR"],
         "horizon_years": current_app.config["DEFAULT_HORIZON_YEARS"],
         "pro_yr_base": current_app.config["PRO_YR_BASE_DEFAULT"],
+        "actuals_through": current_app.config.get("ACTUALS_THROUGH"),
     }})
 
 

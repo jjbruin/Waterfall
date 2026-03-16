@@ -890,6 +890,7 @@ def _render_computed_returns(inv_disp, inv, wf, acct, fc, coa,
                     start_year=start_year,
                     horizon_years=horizon_years,
                     pro_yr_base=pro_yr_base,
+                    actuals_through=actuals_through,
                     deal_investment_id=inv_id,
                     sale_date_raw=sale_date_raw,
                     inv=inv, wf=wf, acct=acct, fc=fc, coa=coa,
@@ -1042,7 +1043,8 @@ def _generate_returns_excel(df: pd.DataFrame) -> bytes:
 # ============================================================
 def render_dashboard(inv, wf, acct, isbs_raw, mri_loans_raw, mri_val,
                      occupancy_raw, fc, coa, mri_supp, relationships_raw,
-                     capital_calls_raw, start_year, horizon_years, pro_yr_base):
+                     capital_calls_raw, start_year, horizon_years, pro_yr_base,
+                     actuals_through=None):
     """Render the Executive Portfolio Dashboard tab.
 
     Delegates to a @st.fragment so chart selectors and the Compute button
@@ -1053,13 +1055,15 @@ def render_dashboard(inv, wf, acct, isbs_raw, mri_loans_raw, mri_val,
         inv, wf, acct, isbs_raw, mri_loans_raw, mri_val,
         occupancy_raw, fc, coa, mri_supp, relationships_raw,
         capital_calls_raw, start_year, horizon_years, pro_yr_base,
+        actuals_through,
     )
 
 
 @st.fragment
 def _dashboard_fragment(inv, wf, acct, isbs_raw, mri_loans_raw, mri_val,
                         occupancy_raw, fc, coa, mri_supp, relationships_raw,
-                        capital_calls_raw, start_year, horizon_years, pro_yr_base):
+                        capital_calls_raw, start_year, horizon_years, pro_yr_base,
+                        actuals_through=None):
     """Fragment-isolated dashboard body."""
 
     # --- Build deal lookup (reuse from reports_ui) ---

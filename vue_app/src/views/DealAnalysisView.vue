@@ -163,12 +163,18 @@ const loanCols = [
 // Excel download helper
 // ============================================================
 
-function downloadExcel(url: string, filename: string) {
+async function downloadExcel(url: string, filename: string) {
   const token = localStorage.getItem('token')
+  const resp = await fetch(url, {
+    headers: { 'Authorization': `Bearer ${token}` },
+  })
+  if (!resp.ok) return
+  const blob = await resp.blob()
   const a = document.createElement('a')
-  a.href = `${url}?token=${encodeURIComponent(token || '')}`
+  a.href = URL.createObjectURL(blob)
   a.download = filename
   a.click()
+  URL.revokeObjectURL(a.href)
 }
 </script>
 
@@ -193,6 +199,13 @@ function downloadExcel(url: string, filename: string) {
     <!-- Results -->
     <!-- ============================================================ -->
     <template v-if="deals.hasResult">
+
+      <!-- Full Workbook Download -->
+      <div class="full-download">
+        <button class="btn-download" @click="downloadExcel(`/api/deals/${deals.currentVcode}/excel/full`, `deal_analysis_${deals.currentVcode}.xlsx`)">
+          Download Full Deal Analysis (Excel)
+        </button>
+      </div>
 
       <!-- Deal Header -->
       <div v-if="deals.currentHeader" class="section header-section">
@@ -239,17 +252,23 @@ function downloadExcel(url: string, filename: string) {
 
       <!-- Partner Returns -->
       <div class="section">
-        <h3>Partner Returns</h3>
+        <div class="section-title-row">
+          <h3>Partner Returns</h3>
+          <button class="btn-download-sm" @click="downloadExcel(`/api/deals/${deals.currentVcode}/excel/partner-returns`, `partner_returns_${deals.currentVcode}.xlsx`)">Excel</button>
+        </div>
         <DataTable :columns="partnerCols" :rows="deals.currentPartners"
           :rowClass="(row: any) => !String(row.partner || '').startsWith('OP') ? 'row-highlight' : undefined" />
       </div>
 
       <!-- Annual Forecast -->
       <div class="section expandable" :class="{ open: expanded.forecast }">
-        <h3 @click="toggle('forecast')" class="section-header">
-          <span class="chevron">{{ expanded.forecast ? '▾' : '▸' }}</span>
-          Annual Operating Forecast & Waterfall Summary
-        </h3>
+        <div class="section-title-row">
+          <h3 @click="toggle('forecast')" class="section-header">
+            <span class="chevron">{{ expanded.forecast ? '▾' : '▸' }}</span>
+            Annual Operating Forecast & Waterfall Summary
+          </h3>
+          <button v-if="expanded.forecast && deals.currentForecast" class="btn-download-sm" @click.stop="downloadExcel(`/api/deals/${deals.currentVcode}/excel/forecast`, `annual_forecast_${deals.currentVcode}.xlsx`)">Excel</button>
+        </div>
         <div v-if="expanded.forecast" class="section-body">
           <p v-if="deals.loadingSection === 'forecast'" class="loading-msg">Loading forecast...</p>
           <div v-else-if="deals.currentForecast" class="forecast-table-wrapper">
@@ -262,7 +281,7 @@ function downloadExcel(url: string, filename: string) {
               </thead>
               <tbody>
                 <tr v-for="(row, i) in deals.currentForecast.rows" :key="i"
-                    :class="{ 'section-header-row': row.label.endsWith(':'), 'blank-row': row.label.trim() === '' }">
+                    :class="{ 'section-header-row': row.label.endsWith(':'), 'blank-row': row.label.trim() === '', 'underline-row': ['Expenses', 'Capital Expenditures'].includes(row.label.trim()), 'topline-row': row.label.trim() === 'Total Distributions' }">
                   <td class="label-col">{{ row.label }}</td>
                   <td v-for="y in deals.currentForecast.years" :key="y" class="year-col">
                     {{ (row.label.trim() === '' || row.label.endsWith(':')) ? '' : row.values[String(y)] != null ? (row.label === 'Debt Service Coverage Ratio' ? row.values[String(y)].toFixed(2) : fmtInt(row.values[String(y)])) : '' }}
@@ -290,10 +309,13 @@ function downloadExcel(url: string, filename: string) {
 
       <!-- Debt Service -->
       <div class="section expandable" :class="{ open: expanded.debt }">
-        <h3 @click="toggle('debt')" class="section-header">
-          <span class="chevron">{{ expanded.debt ? '▾' : '▸' }}</span>
-          Debt Service
-        </h3>
+        <div class="section-title-row">
+          <h3 @click="toggle('debt')" class="section-header">
+            <span class="chevron">{{ expanded.debt ? '▾' : '▸' }}</span>
+            Debt Service
+          </h3>
+          <button v-if="expanded.debt && deals.currentDebt" class="btn-download-sm" @click.stop="downloadExcel(`/api/deals/${deals.currentVcode}/excel/debt-service`, `debt_service_${deals.currentVcode}.xlsx`)">Excel</button>
+        </div>
         <div v-if="expanded.debt" class="section-body">
           <p v-if="deals.loadingSection === 'debt'" class="loading-msg">Loading debt service...</p>
           <template v-else-if="deals.currentDebt">
@@ -352,10 +374,13 @@ function downloadExcel(url: string, filename: string) {
 
       <!-- Cash Management -->
       <div class="section expandable" :class="{ open: expanded.cash }">
-        <h3 @click="toggle('cash')" class="section-header">
-          <span class="chevron">{{ expanded.cash ? '▾' : '▸' }}</span>
-          Cash Management & Reserves
-        </h3>
+        <div class="section-title-row">
+          <h3 @click="toggle('cash')" class="section-header">
+            <span class="chevron">{{ expanded.cash ? '▾' : '▸' }}</span>
+            Cash Management & Reserves
+          </h3>
+          <button v-if="expanded.cash && deals.currentCash" class="btn-download-sm" @click.stop="downloadExcel(`/api/deals/${deals.currentVcode}/excel/cash-schedule`, `cash_schedule_${deals.currentVcode}.xlsx`)">Excel</button>
+        </div>
         <div v-if="expanded.cash" class="section-body">
           <p v-if="deals.loadingSection === 'cash'" class="loading-msg">Loading cash data...</p>
           <template v-else-if="deals.currentCash">
@@ -385,10 +410,13 @@ function downloadExcel(url: string, filename: string) {
 
       <!-- Capital Calls -->
       <div class="section expandable" :class="{ open: expanded.capcalls }">
-        <h3 @click="toggle('capcalls')" class="section-header">
-          <span class="chevron">{{ expanded.capcalls ? '▾' : '▸' }}</span>
-          Capital Calls Schedule
-        </h3>
+        <div class="section-title-row">
+          <h3 @click="toggle('capcalls')" class="section-header">
+            <span class="chevron">{{ expanded.capcalls ? '▾' : '▸' }}</span>
+            Capital Calls Schedule
+          </h3>
+          <button v-if="expanded.capcalls && deals.currentCapCalls" class="btn-download-sm" @click.stop="downloadExcel(`/api/deals/${deals.currentVcode}/excel/capital-calls`, `capital_calls_${deals.currentVcode}.xlsx`)">Excel</button>
+        </div>
         <div v-if="expanded.capcalls" class="section-body">
           <p v-if="deals.loadingSection === 'capcalls'" class="loading-msg">Loading capital calls...</p>
           <template v-else-if="deals.currentCapCalls">
@@ -408,10 +436,13 @@ function downloadExcel(url: string, filename: string) {
 
       <!-- XIRR Cash Flows -->
       <div class="section expandable" :class="{ open: expanded.xirr }">
-        <h3 @click="toggle('xirr')" class="section-header">
-          <span class="chevron">{{ expanded.xirr ? '▾' : '▸' }}</span>
-          XIRR Cash Flows
-        </h3>
+        <div class="section-title-row">
+          <h3 @click="toggle('xirr')" class="section-header">
+            <span class="chevron">{{ expanded.xirr ? '▾' : '▸' }}</span>
+            XIRR Cash Flows
+          </h3>
+          <button v-if="expanded.xirr && xirrMerged" class="btn-download-sm" @click.stop="downloadExcel(`/api/deals/${deals.currentVcode}/excel/xirr-cashflows`, `xirr_cashflows_${deals.currentVcode}.xlsx`)">Excel</button>
+        </div>
         <div v-if="expanded.xirr" class="section-body">
           <p v-if="deals.loadingSection === 'xirr'" class="loading-msg">Loading XIRR data...</p>
           <template v-else-if="xirrMerged">
@@ -699,6 +730,12 @@ function downloadExcel(url: string, filename: string) {
   height: 8px;
   border-bottom: none;
 }
+.underline-row td {
+  border-bottom: 2px solid #000;
+}
+.topline-row td {
+  border-top: 2px solid #000;
+}
 
 /* Sale grid */
 .sale-grid {
@@ -756,6 +793,36 @@ function downloadExcel(url: string, filename: string) {
 }
 .btn-download:hover {
   opacity: 0.9;
+}
+.btn-download-sm {
+  padding: 3px 10px;
+  background: var(--color-accent);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.btn-download-sm:hover {
+  opacity: 0.9;
+}
+
+/* Section title with download button */
+.section-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.section-title-row h3 {
+  flex: 1;
+}
+
+/* Full workbook download */
+.full-download {
+  margin-bottom: 12px;
+  text-align: right;
 }
 
 .loading-msg {

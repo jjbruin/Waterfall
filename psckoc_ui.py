@@ -37,19 +37,22 @@ PSCKOC_MEMBERS = ["PSC1", "KCREIT", "PCBLE"]
 def render_psckoc_tab(inv, wf, acct, fc, coa, relationships_raw,
                       mri_loans_raw, mri_supp, mri_val,
                       capital_calls_raw, isbs_raw,
-                      start_year, horizon_years, pro_yr_base):
+                      start_year, horizon_years, pro_yr_base,
+                      actuals_through=None):
     """Render the PSCKOC Entity Analysis tab."""
     _psckoc_fragment(inv, wf, acct, fc, coa, relationships_raw,
                      mri_loans_raw, mri_supp, mri_val,
                      capital_calls_raw, isbs_raw,
-                     start_year, horizon_years, pro_yr_base)
+                     start_year, horizon_years, pro_yr_base,
+                     actuals_through)
 
 
 @st.fragment
 def _psckoc_fragment(inv, wf, acct, fc, coa, relationships_raw,
                      mri_loans_raw, mri_supp, mri_val,
                      capital_calls_raw, isbs_raw,
-                     start_year, horizon_years, pro_yr_base):
+                     start_year, horizon_years, pro_yr_base,
+                     actuals_through=None):
     """Fragment-isolated PSCKOC analysis body."""
 
     st.subheader("PSCKOC Entity Analysis")
@@ -224,6 +227,7 @@ def _run_psckoc_computation(deal_vcodes, inv, wf, acct, fc, coa,
                 start_year=start_year,
                 horizon_years=horizon_years,
                 pro_yr_base=pro_yr_base,
+                actuals_through=actuals_through,
                 deal_investment_id=inv_id,
                 sale_date_raw=sale_date_raw,
                 inv=inv, wf=wf, acct=acct, fc=fc, coa=coa,

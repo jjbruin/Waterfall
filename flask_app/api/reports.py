@@ -88,6 +88,7 @@ def projected_returns():
     start_year = body.get("start_year", current_app.config["DEFAULT_START_YEAR"])
     horizon = body.get("horizon_years", current_app.config["DEFAULT_HORIZON_YEARS"])
     pro_yr_base = body.get("pro_yr_base", current_app.config["PRO_YR_BASE_DEFAULT"])
+    actuals_through = body.get("actuals_through", current_app.config.get("ACTUALS_THROUGH"))
 
     data = _get_data()
     inv = data["inv"]
@@ -99,7 +100,10 @@ def projected_returns():
         deal_name = deal_row.iloc[0].get("Investment_Name", vcode) if not deal_row.empty else vcode
 
         try:
-            result = compute_service.get_cached_deal_result(vcode, start_year, horizon, pro_yr_base, data)
+            result = compute_service.get_cached_deal_result(
+                vcode, start_year, horizon, pro_yr_base, data,
+                actuals_through=actuals_through,
+            )
             rows = build_partner_returns(result, deal_name)
             all_rows.extend(rows)
         except Exception as e:
@@ -120,6 +124,7 @@ def projected_returns_excel():
     start_year = body.get("start_year", current_app.config["DEFAULT_START_YEAR"])
     horizon = body.get("horizon_years", current_app.config["DEFAULT_HORIZON_YEARS"])
     pro_yr_base = body.get("pro_yr_base", current_app.config["PRO_YR_BASE_DEFAULT"])
+    actuals_through = body.get("actuals_through", current_app.config.get("ACTUALS_THROUGH"))
 
     data = _get_data()
     inv = data["inv"]
@@ -129,7 +134,10 @@ def projected_returns_excel():
         deal_row = inv[inv["vcode"] == vcode]
         deal_name = deal_row.iloc[0].get("Investment_Name", vcode) if not deal_row.empty else vcode
         try:
-            result = compute_service.get_cached_deal_result(vcode, start_year, horizon, pro_yr_base, data)
+            result = compute_service.get_cached_deal_result(
+                vcode, start_year, horizon, pro_yr_base, data,
+                actuals_through=actuals_through,
+            )
             rows = build_partner_returns(result, deal_name)
             all_rows.extend(rows)
         except Exception:
