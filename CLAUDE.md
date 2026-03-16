@@ -64,7 +64,7 @@ waterfall-xirr/
 │   └── services/             # Business logic (reuses compute.py, database.py, etc.)
 │       ├── dashboard_service.py  # KPI calculations, NOI pipeline, chart data
 │       ├── data_service.py       # Data loading and caching
-│       ├── compute_service.py    # Deal computation cache (replaces st.session_state)
+│       ├── compute_service.py    # Deal computation cache, ROE/MOIC audit builders, Excel generators
 │       ├── review_service.py     # Review workflow business logic (approval pipeline)
 │       └── ...
 │
@@ -143,6 +143,14 @@ Wrapped in `_deal_analysis_fragment()` (`@st.fragment`, defined at module level 
 **Vue Layout** (DealAnalysisView.vue): Deal Information + Capitalization → Deal-Level Summary (KPI cards) → Partner Returns (non-OP partners highlighted bold with blue-grey background) → Annual Forecast (whole-dollar formatting, DSCR as 2-decimal, blank spacer/header cells) → expandable sections (Diagnostics, Debt Service, Cash Management, Capital Calls, XIRR Cash Flows, ROE Audit, MOIC Audit).
 
 **XIRR Cash Flows**: Merged side-by-side table with columns Date, Description (typename from `cashflow_details`), one amount column per partner, and Deal total column.
+
+**Annual Forecast Formatting**: Black border lines under Expenses and Capital Expenditures rows (`underline-row` CSS class), black border above Total Distributions (`topline-row` CSS class).
+
+**Excel Downloads** (Vue): Per-section download buttons ("Excel") on each section header + "Download Full Deal Analysis (Excel)" button at top of results. Uses `fetch` + `Blob` with `Authorization: Bearer` header. Sections: Partner Returns, Annual Forecast, Debt Service, Cash Management, Capital Calls, XIRR Cash Flows, ROE Audit, MOIC Audit. Full workbook combines all 7 sheets.
+
+**Excel API Endpoints** (`/api/deals/<vcode>/excel/`): `partner-returns`, `forecast`, `debt-service`, `cash-schedule`, `capital-calls`, `xirr-cashflows`, `full` (7-sheet workbook). All GET, login_required.
+
+**Excel Generators** (`compute_service.py`): Shared helpers `_excel_styles()`, `_write_header_row()`, `_autosize_columns()`. Per-section: `generate_partner_returns_excel()`, `generate_forecast_excel()`, `generate_debt_service_excel()`, `generate_cash_schedule_excel()`, `generate_capital_calls_excel()`, `generate_xirr_cashflows_excel()`. Full: `generate_full_deal_excel()` — 7 sheets including ROE/MOIC audit via `load_workbook` copy.
 
 **Audit Expanders** (after XIRR Cash Flows):
 - **ROE Audit — Return on Equity Breakdown**: Capital Balance Timeline table (each capital event with balance, days held, weighted capital), CF Distributions table (numerator detail), 5 metric cards per partner (Inception→End, Days/Years, CF Distributions, Wtd Avg Capital, ROE). Deal-level section with same breakdown. Excel download.
@@ -279,6 +287,13 @@ Rendered by `psckoc_ui.py`. Upstream waterfall analysis for the PSCKOC holding e
 - `return_to_draft()` - Return document to draft with required note (review_service.py)
 - `is_editable()` - Check if comments can be edited based on review status (review_service.py)
 - `get_tracking_data()` - Production tracking data with filters, LEFT JOINs deals with submissions (review_service.py)
+- `generate_partner_returns_excel()` - Partner Returns Excel with deal total row (compute_service.py)
+- `generate_forecast_excel()` - Annual Forecast Excel pivoted by year (compute_service.py)
+- `generate_debt_service_excel()` - Loan Summary + Amortization Schedule (2-sheet) (compute_service.py)
+- `generate_cash_schedule_excel()` - Cash flow schedule Excel (compute_service.py)
+- `generate_capital_calls_excel()` - Capital calls Excel (compute_service.py)
+- `generate_xirr_cashflows_excel()` - Merged XIRR cashflows by partner (compute_service.py)
+- `generate_full_deal_excel()` - 7-sheet comprehensive Deal Analysis workbook (compute_service.py)
 
 ## Account Classifications
 

@@ -1,6 +1,6 @@
 # Waterfall Model - Complete Documentation
 
-**Last Updated:** February 2026
+**Last Updated:** March 2026
 
 ---
 
@@ -26,11 +26,14 @@ A Streamlit-based financial modeling application for calculating investment wate
 ### Tech Stack
 
 - **Python 3.x** with virtual environment (`.venv/`)
-- **Streamlit** - Web UI framework
+- **Streamlit** - Web UI framework (original)
+- **Flask** - REST API backend (`flask_app/`)
+- **Vue 3 + Vite** - Modern frontend (`vue_app/`)
 - **pandas/numpy** - Data manipulation
 - **scipy** - XIRR/NPV calculations (Brent's method)
-- **altair** - Interactive charts (performance chart, lease maturity)
+- **altair** - Interactive charts (Streamlit), **ECharts** - Charts (Vue)
 - **SQLite** - Local database (`waterfall.db`)
+- **JWT** - Authentication (Flask + Vue)
 
 ### Project Structure
 
@@ -62,7 +65,24 @@ waterfall-xirr/
 ├── reporting.py              # Report generation
 ├── ownership_tree.py         # Investor ownership structures
 ├── utils.py                  # Helper utilities
-└── waterfall.db              # SQLite database (not in git, >100MB)
+├── waterfall.db              # SQLite database (not in git, >100MB)
+│
+├── flask_app/                # Flask REST API backend
+│   ├── __init__.py           # App factory (create_app)
+│   ├── run.py                # Dev server entry point
+│   ├── config.py             # Flask configuration (dynamic defaults, ACTUALS_THROUGH)
+│   ├── auth/                 # JWT authentication
+│   ├── api/                  # API blueprints (dashboard, data, deals, reviews, financials, reports)
+│   └── services/             # Business logic (compute_service, data_service, review_service, etc.)
+│
+└── vue_app/                  # Vue 3 + Vite frontend
+    ├── src/
+    │   ├── api/client.ts     # Axios instance with JWT interceptors
+    │   ├── stores/           # Pinia stores (auth, data, dashboard, deals)
+    │   ├── views/            # Page components (DashboardView, DealAnalysisView, OnePagerView, etc.)
+    │   └── components/       # Shared components (KpiCard, DataTable, ReviewPanel, AppSidebar)
+    ├── vite.config.ts        # Vite config (proxies /api to Flask)
+    └── package.json
 ```
 
 ### Module Reference
@@ -112,7 +132,13 @@ python migrate_to_database.py --folder "C:\Users\jbruin\OneDrive - peaceablestre
 ### Step 3: Run Application
 
 ```bash
+# Streamlit (original UI)
 streamlit run app.py
+
+# Flask + Vue (new UI)
+python -m flask_app.run          # API on http://localhost:5000
+cd vue_app && npm run dev        # Frontend on http://localhost:5173
+# Default login: admin / admin
 ```
 
 ---
@@ -232,6 +258,28 @@ When paying pref, the order is:
 - Principal: 7060
 - CapEx tracked separately
 
+### Actuals Through Cutoff
+
+Global setting that allows mid-year model updates using actual results through a specified date.
+
+| Component | Behavior with `actuals_through` set |
+|-----------|-------------------------------------|
+| **Partner Cash Flows** | Actual distributions from `accounting_feed` through cutoff (via `seed_states_from_accounting`); waterfall-computed distributions only AFTER cutoff |
+| **Operating Forecast** | Forecast Revenue + Expense rows for months <= cutoff removed from `fc_deal_full` |
+| **Waterfall** | `cf_period_cash` and `cap_period_cash` filtered to `event_date > cutoff` only |
+| **Cache Key** | Includes `actuals_through` so toggling triggers full recomputation |
+| **Default** | `None` (full forecast, current behavior preserved) |
+
+**Dynamic Defaults** (as of March 2026):
+- `DEFAULT_START_YEAR = date.today().year` (was hardcoded 2026)
+- `PRO_YR_BASE_DEFAULT = date.today().year - 1` (was hardcoded 2025)
+
+**UI Controls**:
+- Streamlit: Sidebar checkbox "Include YTD actuals" + month-end date selector
+- Vue: Report Settings section in `AppSidebar.vue` with same controls
+
+**Flask**: `ACTUALS_THROUGH` in `flask_app/config.py`, passed via query params and request body, included in `GET /api/data/config` and `PUT /api/data/config`.
+
 ### Conventions
 
 - Cashflow signs: negative = contribution, positive = distribution
@@ -350,9 +398,35 @@ Sale Proceeds + Remaining Cash Reserves → Capital Waterfall
 
 ---
 
-## Deal Analysis — Audit Expanders
+## Deal Analysis — Excel Downloads & Audit Expanders
 
-The Deal Analysis tab includes three collapsible audit sections below the waterfall results, providing full calculation transparency for every metric.
+The Deal Analysis tab includes per-section Excel download buttons on every section header, plus a "Download Full Deal Analysis (Excel)" button at the top that produces a comprehensive 7-sheet workbook. Three collapsible audit sections below the waterfall results provide full calculation transparency for every metric.
+
+### Excel Downloads
+
+**Per-Section Downloads** (small "Excel" button on each section header):
+- Partner Returns — Partner metrics + deal total row
+- Annual Forecast — Pivoted line items × years
+- Debt Service — Loan Summary + Amortization Schedule (2 sheets)
+- Cash Management — Cash flow schedule
+- Capital Calls — Capital call data
+- XIRR Cash Flows — Merged side-by-side partner cashflows
+- ROE Audit / MOIC Audit — Individual audit workbooks
+
+**Full Workbook** — 7 sheets: Partner Returns, Annual Forecast, Debt Service, Cash Schedule, XIRR Cash Flows, ROE Audit, MOIC Audit. All formatted with blue `#4472C4` headers, currency/percentage/multiple number formats, bold total rows with top borders, auto-sized columns.
+
+**API Endpoints** (`GET /api/deals/<vcode>/excel/`):
+| Endpoint | Description |
+|----------|-------------|
+| `partner-returns` | Partner Returns sheet |
+| `forecast` | Annual Forecast sheet |
+| `debt-service` | Loan Summary + Amortization |
+| `cash-schedule` | Cash Schedule sheet |
+| `capital-calls` | Capital Calls sheet |
+| `xirr-cashflows` | XIRR Cash Flows sheet |
+| `full` | 7-sheet comprehensive workbook |
+
+**Generator Functions** (`flask_app/services/compute_service.py`): Shared helpers `_excel_styles()`, `_write_header_row()`, `_autosize_columns()`. Per-section generators and `generate_full_deal_excel()` for the comprehensive workbook. ROE/MOIC audit sheets are generated by existing `generate_roe_audit_excel()` / `generate_moic_audit_excel()` and copied via `load_workbook`.
 
 ### XIRR Cash Flows
 - Pivot table showing Date, Description, Pref Equity, Ptr Equity, and Deal columns
@@ -413,6 +487,10 @@ All audit data comes from `partner_results` (computed by `build_partner_results(
 | `_build_moic_breakdown(cashflow_details, pr_dict)` | `(breakdown_df, summary_dict)` |
 | `_generate_roe_audit_excel(partner_results, deal_summary, sale_me)` | Excel bytes |
 | `_generate_moic_audit_excel(partner_results, deal_summary, sale_me)` | Excel bytes |
+| `generate_partner_returns_excel(result)` | Partner Returns Excel bytes (compute_service.py) |
+| `generate_forecast_excel(result, start_year, horizon_years)` | Annual Forecast Excel bytes (compute_service.py) |
+| `generate_debt_service_excel(result)` | Debt Service Excel bytes (compute_service.py) |
+| `generate_full_deal_excel(result, start_year, horizon_years)` | 7-sheet workbook bytes (compute_service.py) |
 
 ---
 
@@ -554,7 +632,7 @@ Results cached in `st.session_state['_psckoc_results']`.
 
 ### Shared Multi-Deal Computation Cache
 
-All deal computations flow through `get_cached_deal_result()` in `compute.py`. This function wraps `compute_deal_analysis()` with a shared session_state cache (`st.session_state['_deal_results']`), keyed by `{vcode}|{start_year}|{horizon_years}|{pro_yr_base}`.
+All deal computations flow through `get_cached_deal_result()` in `compute.py`. This function wraps `compute_deal_analysis()` with a shared session_state cache (`st.session_state['_deal_results']`), keyed by `{vcode}|{start_year}|{horizon_years}|{pro_yr_base}|{actuals_through}`. The Flask backend uses an equivalent module-level `_deal_cache` dict in `compute_service.py`.
 
 Deals computed by any consumer accumulate in the shared cache and are reused everywhere:
 
@@ -640,6 +718,7 @@ Switching deals in Deal Analysis only reruns the Deal Analysis fragment — not 
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 3.0 | Mar 16 2026 | Global "Actuals Through" cutoff setting (sidebar control, forecast trimming, post-cutoff waterfall), dynamic year defaults, Deal Analysis per-section Excel downloads (7 section buttons + full 7-sheet workbook), capitalization table bug fix (TypeName normalization), annual forecast formatting (black border lines), Flask/Vue actuals_through threading |
 | 2.6 | Feb 11 2026 | PSCKOC entity analysis tab: AMFee + Promote vStates in waterfall engine, promote_base/promote_carry tracking on InvestorState, upstream waterfall aggregation for PSCKOC members (PSC1/KCREIT/PCBLE), income schedule, AM fee schedule, partner returns, Excel export |
 | 2.5 | Feb 11 2026 | ROE & MOIC audit expanders on Deal Analysis tab: full calculation breakdowns, capital balance timelines, metric summary cards, Excel downloads |
 | 2.4 | Feb 7 2026 | Reports tab with Projected Returns Summary, Excel export, population selectors (Current Deal, Select Deals, By Partner, By Upstream Investor, All Deals), deal-level total rows |
