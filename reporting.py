@@ -1,11 +1,9 @@
 """
 reporting.py
 Annual aggregation tables and formatting utilities
-With integrated waterfall displays
 """
 
 import pandas as pd
-import streamlit as st
 from typing import Optional
 
 from config import (GROSS_REVENUE_ACCTS, CONTRA_REVENUE_ACCTS, EXPENSE_ACCTS,
@@ -471,28 +469,3 @@ def pivot_waterfall_by_year(alloc_df: pd.DataFrame) -> pd.DataFrame:
     return pv
 
 
-def show_waterfall_matrix(title: str, alloc_df: pd.DataFrame):
-    """Display waterfall allocations in Streamlit"""
-    st.subheader(title)
-
-    pv = pivot_waterfall_by_year(alloc_df)
-    if pv.empty:
-        st.info("No allocations to display.")
-        return
-
-    year_cols = [c for c in pv.columns if isinstance(c, int)]
-
-    col_config = {}
-    for y in year_cols:
-        col_config[y] = st.column_config.NumberColumn(
-            label=f"{y:>6}",
-            format="%,.0f",
-            width="small",
-        )
-
-    st.dataframe(
-        pv,
-        use_container_width=True,
-        hide_index=True,
-        column_config=col_config,
-    )

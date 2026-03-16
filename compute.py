@@ -253,34 +253,6 @@ def get_deal_capitalization(acct, inv, wf, mri_val, mri_loans, deal_vcode,
     return cap_data
 
 
-def get_cached_deal_result(vcode, start_year, horizon_years, pro_yr_base, actuals_through=None, **kwargs):
-    """Check shared multi-deal cache; compute and store on miss.
-
-    All consumers (Deal Analysis, Dashboard, Reports) should call this
-    instead of compute_deal_analysis() directly so that results computed
-    anywhere are reused everywhere.
-
-    The full result dict is stored — including cf_alloc, cap_alloc, and
-    partner_results — so upstream waterfall analysis can pull actual
-    allocations without re-running waterfalls.
-    """
-    import streamlit as st
-    cache = st.session_state.setdefault('_deal_results', {})
-    at_str = str(actuals_through) if actuals_through else "none"
-    key = f"{vcode}|{start_year}|{horizon_years}|{pro_yr_base}|{at_str}"
-    if key not in cache:
-        st.toast(f"Computing {vcode}...")
-        cache[key] = compute_deal_analysis(
-            deal_vcode=vcode,
-            start_year=start_year,
-            horizon_years=horizon_years,
-            pro_yr_base=pro_yr_base,
-            actuals_through=actuals_through,
-            **kwargs,
-        )
-    return cache[key]
-
-
 def run_interleaved_waterfalls(
     wf_steps, deal_vcode, cf_period_cash, cap_period_cash,
     seed_states, capital_calls=None,
