@@ -21,35 +21,25 @@
 
 ## Project Overview
 
-A Streamlit-based financial modeling application for calculating investment waterfalls, XIRR, and related performance metrics for real estate investments. Supports multi-layer distribution waterfalls with preferred returns, capital accounts, and investor-level tracking.
+A Flask + Vue financial modeling application for calculating investment waterfalls, XIRR, and related performance metrics for real estate investments. Supports multi-layer distribution waterfalls with preferred returns, capital accounts, and investor-level tracking.
 
 ### Tech Stack
 
 - **Python 3.x** with virtual environment (`.venv/`)
-- **Streamlit** - Web UI framework (original)
 - **Flask** - REST API backend (`flask_app/`)
 - **Vue 3 + Vite** - Modern frontend (`vue_app/`)
 - **pandas/numpy** - Data manipulation
 - **scipy** - XIRR/NPV calculations (Brent's method)
-- **altair** - Interactive charts (Streamlit), **ECharts** - Charts (Vue)
-- **SQLite** - Local database (`waterfall.db`)
+- **ECharts** - Interactive charts (Vue)
+- **SQLite** - Local database (`waterfall.db`), PostgreSQL ready
 - **JWT** - Authentication (Flask + Vue)
 
 ### Project Structure
 
 ```
 waterfall-xirr/
-├── app.py                    # Main Streamlit entry point & sidebar
-├── config.py                 # Constants, account classifications, rates
-├── compute.py                # Deal computation logic + shared multi-deal cache
-├── dashboard_ui.py           # Dashboard tab UI (KPI cards, portfolio charts, computed returns)
-├── debt_service_ui.py        # Debt Service display (Loan Summary, Amortization, Sale Proceeds)
-├── waterfall_setup_ui.py     # Waterfall Setup tab UI (view, edit, create waterfalls)
-├── property_financials_ui.py # Property Financials tab UI (Performance Chart, IS, BS, Tenants, One Pager)
-├── reports_ui.py             # Reports tab UI (Projected Returns Summary, Excel export)
-├── sold_portfolio_ui.py      # Sold Portfolio tab UI (historical returns from accounting)
-├── psckoc_ui.py              # PSCKOC tab UI (upstream entity analysis, member returns)
-├── one_pager_ui.py           # One Pager Investor Report UI (Streamlit components)
+├── config.py                 # Constants, account classifications, dynamic defaults
+├── compute.py                # Deal computation engine (core logic)
 ├── one_pager.py              # One Pager data logic (performance calcs, cap stack, PE metrics)
 ├── models.py                 # Data classes (InvestorState, Loan)
 ├── waterfall.py              # Waterfall calculation engine
@@ -62,17 +52,18 @@ waterfall-xirr/
 ├── cash_management.py        # Cash flow management
 ├── consolidation.py          # Sub-portfolio deal/property aggregation
 ├── portfolio.py              # Fund/portfolio aggregation
-├── reporting.py              # Report generation
+├── reporting.py              # Annual aggregation tables, formatting utilities
 ├── ownership_tree.py         # Investor ownership structures
 ├── utils.py                  # Helper utilities
 ├── waterfall.db              # SQLite database (not in git, >100MB)
 │
-├── flask_app/                # Flask REST API backend
-│   ├── __init__.py           # App factory (create_app)
+├── flask_app/                # Flask REST API backend (105 routes)
+│   ├── __init__.py           # App factory, SPA serving
 │   ├── run.py                # Dev server entry point
 │   ├── config.py             # Flask configuration (dynamic defaults, ACTUALS_THROUGH)
-│   ├── auth/                 # JWT authentication
-│   ├── api/                  # API blueprints (dashboard, data, deals, reviews, financials, reports)
+│   ├── db.py                 # SQLAlchemy engine (SQLite or PostgreSQL)
+│   ├── auth/                 # JWT authentication, SSO (Azure AD + Okta)
+│   ├── api/                  # 10 API blueprints (dashboard, data, deals, reviews, financials, reports, etc.)
 │   └── services/             # Business logic (compute_service, data_service, review_service, etc.)
 │
 └── vue_app/                  # Vue 3 + Vite frontend
@@ -89,12 +80,7 @@ waterfall-xirr/
 
 | Module | Purpose |
 |--------|---------|
-| `app.py` | Streamlit entry point, sidebar controls, data loading, tab routing |
-| `compute.py` | Deal computation orchestration + `get_cached_deal_result()` shared multi-deal cache |
-| `dashboard_ui.py` | Dashboard tab: KPI cards, portfolio NOI trend, capital structure, occupancy, asset allocation, loan maturities, computed returns |
-| `property_financials_ui.py` | Property Financials tab: Performance Chart, IS, BS, Tenants, One Pager |
-| `reports_ui.py` | Reports tab: Projected Returns Summary, population selectors, Excel export |
-| `one_pager_ui.py` | One Pager UI: quarter selector, section renderers, NOI/Occupancy chart, print/export |
+| `compute.py` | Deal computation engine — `compute_deal_analysis()`, `build_partner_results()`, `run_interleaved_waterfalls()` |
 | `one_pager.py` | One Pager data: property performance, cap stack, PE metrics, comments CRUD |
 | `waterfall.py` | Pref accrual, waterfall step processing, investor state management |
 | `loans.py` | Loan amortization schedules |
@@ -103,13 +89,12 @@ waterfall-xirr/
 | `metrics.py` | XIRR, ROE, MOIC calculations |
 | `capital_calls.py` | Capital calls processing |
 | `cash_management.py` | Cash reserves and CapEx management |
-| `debt_service_ui.py` | Debt Service display: Loan Summary, Amortization Schedules, Sale Proceeds |
-| `waterfall_setup_ui.py` | Waterfall Setup tab: view, edit, create waterfall structures |
-| `sold_portfolio_ui.py` | Sold Portfolio tab: historical returns for sold deals from accounting |
-| `psckoc_ui.py` | PSCKOC tab: upstream entity analysis, member allocations, AM fee schedule |
 | `database.py` | Database operations, table definitions, migrations, indexes, CSV import/export |
-| `reporting.py` | Annual tables and formatting |
-| `config.py` | BS_ACCOUNTS, IS_ACCOUNTS, capital pool routing, default settings |
+| `reporting.py` | Annual aggregation tables and formatting utilities |
+| `config.py` | BS_ACCOUNTS, IS_ACCOUNTS, capital pool routing, dynamic default settings |
+| `flask_app/services/compute_service.py` | Deal cache, ROE/MOIC audit builders, 8 Excel generators |
+| `flask_app/services/financials_service.py` | Performance chart, IS, BS, tenants, one-pager data |
+| `flask_app/services/review_service.py` | Review workflow (approval pipeline, tracking, roles) |
 
 ---
 
@@ -132,11 +117,10 @@ python migrate_to_database.py --folder "C:\Users\jbruin\OneDrive - peaceablestre
 ### Step 3: Run Application
 
 ```bash
-# Streamlit (original UI)
-streamlit run app.py
-
-# Flask + Vue (new UI)
+# Flask API backend
 python -m flask_app.run          # API on http://localhost:5000
+
+# Vue frontend (separate terminal)
 cd vue_app && npm run dev        # Frontend on http://localhost:5173
 # Default login: admin / admin
 ```
@@ -275,8 +259,7 @@ Global setting that allows mid-year model updates using actual results through a
 - `PRO_YR_BASE_DEFAULT = date.today().year - 1` (was hardcoded 2025)
 
 **UI Controls**:
-- Streamlit: Sidebar checkbox "Include YTD actuals" + month-end date selector
-- Vue: Report Settings section in `AppSidebar.vue` with same controls
+- Vue: Report Settings section in `AppSidebar.vue` with checkbox + month-end date selector
 
 **Flask**: `ACTUALS_THROUGH` in `flask_app/config.py`, passed via query params and request body, included in `GET /api/data/config` and `PUT /api/data/config`.
 
@@ -510,7 +493,7 @@ The Property Financials tab is rendered by `property_financials_ui.py` and displ
 - Two-column comparison with configurable period type (TTM, YTD, Full Year, Current Year Estimate, Custom Month)
 - Four source options: Actual, Budget, Underwriting, Valuation
 - Displays Revenue, Expenses, NOI, Debt Service, DSCR, Other Below the Line
-- Wrapped in `st.form()` with "Apply Settings" button
+- Apply Settings button to refresh comparison
 
 ### 3. Balance Sheet Comparison
 - Two-period comparison (Prior Period vs Current Period)
@@ -624,7 +607,7 @@ The PSCKOC tab is rendered by `psckoc_ui.py` and provides upstream waterfall ana
 7. **XIRR Cash Flows** — Combined cashflow table per member
 8. **Excel Export** — 4-sheet workbook (Partner Returns, Income Schedule, AM Fee Schedule, XIRR Cash Flows)
 
-Results cached in `st.session_state['_psckoc_results']`.
+Results cached in module-level dict in `psckoc_service.py`.
 
 ---
 
@@ -632,48 +615,26 @@ Results cached in `st.session_state['_psckoc_results']`.
 
 ### Shared Multi-Deal Computation Cache
 
-All deal computations flow through `get_cached_deal_result()` in `compute.py`. This function wraps `compute_deal_analysis()` with a shared session_state cache (`st.session_state['_deal_results']`), keyed by `{vcode}|{start_year}|{horizon_years}|{pro_yr_base}|{actuals_through}`. The Flask backend uses an equivalent module-level `_deal_cache` dict in `compute_service.py`.
+All deal computations flow through `get_cached_deal_result()` in `flask_app/services/compute_service.py`. This function wraps `compute_deal_analysis()` with a module-level `_deal_cache` dict, keyed by `{vcode}|{start_year}|{horizon_years}|{pro_yr_base}|{actuals_through}`.
 
 Deals computed by any consumer accumulate in the shared cache and are reused everywhere:
 
 | Consumer | Location | Behavior |
 |----------|----------|----------|
-| Deal Analysis | `app.py` `_deal_analysis_fragment()` | Computes on first view, instant on return |
-| Dashboard Computed Returns | `dashboard_ui.py` `_render_computed_returns()` | Loops all eligible deals, cached for later |
-| Reports | `reports_ui.py` `render_reports()` | Loops selected deals, reuses any cached results |
-| PSCKOC | `psckoc_ui.py` `_run_psckoc_computation()` | Computes underlying deals + upstream waterfalls |
+| Deal Analysis | `deals.py` → `compute_service.py` | Computes on first request, instant on return |
+| Dashboard Computed Returns | `dashboard.py` → `compute_service.py` | Loops all eligible deals, cached for later |
+| Reports | `reports.py` → `compute_service.py` | Loops selected deals, reuses any cached results |
+| PSCKOC | `psckoc.py` → `psckoc_service.py` | Computes underlying deals + upstream waterfalls |
 
-A toast notification ("Computing Pxxxxxxx...") appears only on cache misses. Cache invalidation happens automatically when "Reload Data" or "Import CSVs" clears all `_deal_*` session_state keys.
+Cache invalidation happens via `compute_service.clear_cache()` when "Reload Data" or "Import CSVs" is triggered.
 
-### Fragment Isolation
+### Module-Level Caches
 
-All eight tabs use `@st.fragment` to isolate widget-triggered reruns:
-
-| Tab | Fragment | Location |
-|-----|----------|----------|
-| Dashboard | `_dashboard_fragment()` | `dashboard_ui.py` |
-| Deal Analysis | `_deal_analysis_fragment()` | `app.py` (module-level) |
-| Property Financials | `_property_financials_fragment()` | `property_financials_ui.py` |
-| Ownership (upstream) | `_render_upstream_analysis_fragment()` | `app.py` |
-| Waterfall Setup | `_waterfall_setup_fragment()` | `waterfall_setup_ui.py` |
-| Reports | `_reports_fragment()` | `reports_ui.py` |
-| Sold Portfolio | `_sold_portfolio_fragment()` | `sold_portfolio_ui.py` |
-| PSCKOC | `_psckoc_fragment()` | `psckoc_ui.py` |
-
-Switching deals in Deal Analysis only reruns the Deal Analysis fragment — not the other five tabs. Cross-tab state is shared via session_state:
-- `_current_deal_vcode` — selected deal vcode (used by Property Financials, Ownership; Waterfall Setup reads it once for initial default only)
-- `_current_fc_deal_modeled` — modeled forecast DataFrame (used by Property Financials)
-
-### Session State Cache Keys
-
-| Prefix | Contents | Cleared by |
-|--------|----------|------------|
-| `_deal_*` | Multi-deal computation cache, deal-related UI state | Reload Data, CSV Import |
-| `_current_*` | Cross-tab state (deal_vcode, fc_deal_modeled) | Reload Data, CSV Import |
-| `_dashboard_*` | Dashboard caps, returns, errors | Reload Data, CSV Import |
-| `_wf_*` | Waterfall Setup drafts (stable base), editor widget state, nav cache | Reload Data, CSV Import |
-| `_ownership_*` | Ownership tree cache | Reload Data, CSV Import |
-| `_psckoc_*` | PSCKOC computation results | Reload Data, CSV Import |
+| Service | Cache | Cleared by |
+|---------|-------|------------|
+| `compute_service.py` | `_deal_cache` — deal computation results | `clear_cache()` on reload/import |
+| `data_service.py` | `_data_cache` — loaded DataFrames | `reload()` on reload/import |
+| `dashboard_service.py` | Per-request computation | No persistent cache |
 
 ---
 
@@ -701,7 +662,7 @@ Switching deals in Deal Analysis only reruns the Deal Analysis fragment — not 
 ### Database Issues
 
 - **"File not found"**: Check CSV path and filename spelling
-- **"Database is locked"**: Close Streamlit app and Excel
+- **"Database is locked"**: Close Flask app and Excel
 - **"Invalid CSV format"**: Check for blank rows, special characters, merged cells
 
 ---
