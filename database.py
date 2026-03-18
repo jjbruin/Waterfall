@@ -211,6 +211,67 @@ def create_additional_tables(conn: sqlite3.Connection):
         )
     """)
 
+    # Capital calls (may also be populated from CSV import)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS capital_calls (
+            Vcode TEXT NOT NULL,
+            PropCode TEXT,
+            CallDate TEXT,
+            Amount REAL,
+            CallType TEXT,
+            FundingSource TEXT,
+            Notes TEXT,
+            Typename TEXT DEFAULT 'Contribution: Investments'
+        )
+    """)
+
+    # Prospective loans — refinance / new mortgage proposals
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS prospective_loans (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            vcode           TEXT NOT NULL,
+            loan_name       TEXT,
+            status          TEXT DEFAULT 'draft',
+            refi_date       TEXT NOT NULL,
+            existing_loan_id TEXT,
+            loan_amount     REAL,
+            lender_uw_noi   REAL,
+            max_ltv         REAL,
+            min_dscr        REAL,
+            min_debt_yield  REAL,
+            interest_rate   REAL,
+            rate_spread_bps INTEGER,
+            rate_index      TEXT,
+            term_years      INTEGER,
+            amort_years     INTEGER,
+            io_years        REAL,
+            int_type        TEXT DEFAULT 'Fixed',
+            closing_costs   REAL DEFAULT 0,
+            reserve_holdback REAL DEFAULT 0,
+            notes           TEXT,
+            created_by      TEXT,
+            created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_by      TEXT,
+            updated_at      TIMESTAMP
+        )
+    """)
+
+    # Prospective loans audit trail
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS prospective_loans_audit (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            loan_id     INTEGER NOT NULL,
+            action      TEXT NOT NULL,
+            vcode       TEXT,
+            loan_name   TEXT,
+            status      TEXT,
+            loan_amount REAL,
+            all_fields  TEXT,
+            changed_by  TEXT,
+            changed_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     conn.commit()
 
 
@@ -742,7 +803,7 @@ def delete_waterfall_steps(vcode: str, wf_type: str = None):
 
 
 # Tables managed exclusively via the app (never overwritten by CSV import)
-PROTECTED_TABLES = {'waterfalls', 'one_pager_comments', 'waterfall_audit', 'review_roles', 'review_submissions', 'review_notes'}
+PROTECTED_TABLES = {'waterfalls', 'one_pager_comments', 'waterfall_audit', 'review_roles', 'review_submissions', 'review_notes', 'prospective_loans', 'prospective_loans_audit', 'planned_loans'}
 
 
 def import_single_csv(
@@ -885,6 +946,164 @@ def import_csvs_to_database(
     conn.close()
 
     return results
+
+
+# ============================================================
+# Prospective Loans CRUD
+# ============================================================
+
+def get_prospective_loans_for_deal(vcode: str, db_path: str = DB_PATH) -> List[Dict[str, Any]]:
+    """Get all prospective loans for a deal, ordered by created_at desc."""
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM prospective_loans WHERE vcode = ? ORDER BY created_at DESC",
+            (vcode,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+
+def get_prospective_loan_by_id(loan_id: int, db_path: str = DB_PATH) -> Optional[Dict[str, Any]]:
+    """Get a single prospective loan by ID."""
+    conn = get_db_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM prospective_loans WHERE id = ?", (loan_id,)
+        ).fetchone()
+        return dict(row) if row else None
+    except Exception:
+        return None
+    finally:
+        conn.close()
+
+
+def save_prospective_loan(row_dict: Dict[str, Any], username: str = "system", db_path: str = DB_PATH) -> int:
+    """Insert or update a prospective loan. Returns the row ID."""
+    conn = get_db_connection()
+    try:
+        if "status" not in row_dict or not row_dict["status"]:
+            row_dict["status"] = "draft"
+        loan_id = row_dict.get("id")
+        cols = [
+            "vcode", "loan_name", "status", "refi_date", "existing_loan_id",
+            "loan_amount", "lender_uw_noi", "max_ltv", "min_dscr", "min_debt_yield",
+            "interest_rate", "rate_spread_bps", "rate_index",
+            "term_years", "amort_years", "io_years", "int_type",
+            "closing_costs", "reserve_holdback", "notes",
+        ]
+
+        if loan_id:
+            # Update
+            set_clause = ", ".join(f"{c} = ?" for c in cols)
+            vals = [row_dict.get(c) for c in cols]
+            vals += [username, loan_id]
+            conn.execute(
+                f"UPDATE prospective_loans SET {set_clause}, updated_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                vals,
+            )
+            conn.commit()
+            _audit_prospective_loan(conn, loan_id, "update", row_dict, username)
+        else:
+            # Insert
+            placeholders = ", ".join("?" for _ in cols)
+            col_names = ", ".join(cols)
+            vals = [row_dict.get(c) for c in cols]
+            vals += [username]
+            cur = conn.execute(
+                f"INSERT INTO prospective_loans ({col_names}, created_by) VALUES ({placeholders}, ?)",
+                vals,
+            )
+            loan_id = cur.lastrowid
+            conn.commit()
+            _audit_prospective_loan(conn, loan_id, "create", row_dict, username)
+
+        return loan_id
+    finally:
+        conn.close()
+
+
+def delete_prospective_loan(loan_id: int, username: str = "system", db_path: str = DB_PATH) -> bool:
+    """Delete a prospective loan by ID."""
+    conn = get_db_connection()
+    try:
+        row = conn.execute("SELECT * FROM prospective_loans WHERE id = ?", (loan_id,)).fetchone()
+        if not row:
+            return False
+        _audit_prospective_loan(conn, loan_id, "delete", dict(row), username)
+        conn.execute("DELETE FROM prospective_loans WHERE id = ?", (loan_id,))
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def accept_prospective_loan(loan_id: int, username: str = "system", db_path: str = DB_PATH) -> bool:
+    """Accept a prospective loan: sets status='accepted', rejects all others for the same vcode."""
+    conn = get_db_connection()
+    try:
+        row = conn.execute("SELECT * FROM prospective_loans WHERE id = ?", (loan_id,)).fetchone()
+        if not row:
+            return False
+        vcode = row["vcode"]
+
+        # Reject all other loans for this deal
+        conn.execute(
+            "UPDATE prospective_loans SET status = 'rejected', updated_by = ?, updated_at = CURRENT_TIMESTAMP "
+            "WHERE vcode = ? AND id != ? AND status != 'rejected'",
+            (username, vcode, loan_id),
+        )
+        # Accept this one
+        conn.execute(
+            "UPDATE prospective_loans SET status = 'accepted', updated_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (username, loan_id),
+        )
+        conn.commit()
+        _audit_prospective_loan(conn, loan_id, "accept", dict(row), username)
+        return True
+    finally:
+        conn.close()
+
+
+def revert_prospective_loan(loan_id: int, username: str = "system", db_path: str = DB_PATH) -> bool:
+    """Revert an accepted loan back to draft status."""
+    conn = get_db_connection()
+    try:
+        row = conn.execute("SELECT * FROM prospective_loans WHERE id = ?", (loan_id,)).fetchone()
+        if not row:
+            return False
+        conn.execute(
+            "UPDATE prospective_loans SET status = 'draft', updated_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (username, loan_id),
+        )
+        conn.commit()
+        _audit_prospective_loan(conn, loan_id, "revert", dict(row), username)
+        return True
+    finally:
+        conn.close()
+
+
+def _audit_prospective_loan(conn: sqlite3.Connection, loan_id: int, action: str, row_dict: dict, username: str):
+    """Write audit trail for prospective loan change."""
+    import json
+    try:
+        conn.execute(
+            "INSERT INTO prospective_loans_audit (loan_id, action, vcode, loan_name, status, loan_amount, all_fields, changed_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                loan_id, action,
+                row_dict.get("vcode"), row_dict.get("loan_name"),
+                row_dict.get("status"), row_dict.get("loan_amount"),
+                json.dumps({k: str(v) if v is not None else None for k, v in row_dict.items()}),
+                username,
+            ),
+        )
+        conn.commit()
+    except Exception as e:
+        logger.debug(f"Audit write failed for prospective_loan {loan_id}: {e}")
 
 
 def export_all_tables_to_zip(db_path: str = DB_PATH) -> bytes:

@@ -1,6 +1,7 @@
 """Property Financials API — performance chart, IS, BS, tenants, one pager."""
 
-from flask import Blueprint, request, jsonify, current_app
+from flask import Blueprint, request, jsonify, current_app, send_file
+import io
 
 from flask_app.auth.routes import login_required
 from flask_app.services import data_service
@@ -21,6 +22,15 @@ def _get_data():
     db_path = current_app.config["DB_PATH"]
     pro_yr_base = current_app.config["PRO_YR_BASE_DEFAULT"]
     return data_service.load_all(db_path, pro_yr_base)
+
+
+def _get_deal_name(inv, vcode):
+    """Get deal name for filename."""
+    row = inv[inv["vcode"] == str(vcode)]
+    if not row.empty:
+        name = row.iloc[0].get("Investment_Name", vcode)
+        return str(name).replace("/", "-").replace("\\", "-").strip() or vcode
+    return vcode
 
 
 # ============================================================
@@ -121,6 +131,165 @@ def tenants(vcode):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     return jsonify(safe_json(tenant_data))
+
+
+# ============================================================
+# Excel Downloads
+# ============================================================
+
+@financials_bp.route("/<vcode>/excel/performance-chart", methods=["GET"])
+@login_required
+def excel_performance_chart(vcode):
+    """Download performance chart data as Excel."""
+    data = _get_data()
+    freq = request.args.get("freq", "Quarterly")
+    periods = request.args.get("periods", 12, type=int)
+    period_end = request.args.get("period_end")
+    chart_data = get_performance_chart_data(
+        data["isbs_raw"], data["occupancy_raw"], vcode,
+        freq=freq, periods=periods, period_end=period_end,
+    )
+    deal_name = _get_deal_name(data["inv"], vcode)
+    from flask_app.services.financials_service import generate_performance_chart_excel
+    content = generate_performance_chart_excel(chart_data, deal_name)
+    return send_file(
+        io.BytesIO(content),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=f"{deal_name}_performance.xlsx",
+    )
+
+
+@financials_bp.route("/<vcode>/excel/income-statement", methods=["GET"])
+@login_required
+def excel_income_statement(vcode):
+    """Download income statement as Excel."""
+    data = _get_data()
+    fc_deal_modeled = None
+    from flask_app.services import compute_service
+    try:
+        start_year = request.args.get("start_year", current_app.config["DEFAULT_START_YEAR"], type=int)
+        horizon = request.args.get("horizon_years", current_app.config["DEFAULT_HORIZON_YEARS"], type=int)
+        pro_yr_base = request.args.get("pro_yr_base", current_app.config["PRO_YR_BASE_DEFAULT"], type=int)
+        actuals_through = request.args.get("actuals_through", current_app.config.get("ACTUALS_THROUGH"))
+        result = compute_service.get_cached_deal_result(
+            vcode, start_year, horizon, pro_yr_base, data,
+            actuals_through=actuals_through,
+        )
+        fc_deal_modeled = result.get("fc_deal_modeled")
+    except Exception:
+        pass
+    is_data = get_income_statement(
+        data["isbs_raw"], vcode,
+        left_source=request.args.get("left_source", "Actual"),
+        left_period=request.args.get("left_period", "TTM"),
+        right_source=request.args.get("right_source", "Budget"),
+        right_period=request.args.get("right_period", "YTD"),
+        left_as_of_date=request.args.get("left_as_of_date"),
+        right_as_of_date=request.args.get("right_as_of_date"),
+        fc_deal_modeled=fc_deal_modeled,
+    )
+    deal_name = _get_deal_name(data["inv"], vcode)
+    from flask_app.services.financials_service import generate_income_statement_excel
+    content = generate_income_statement_excel(is_data, deal_name)
+    return send_file(
+        io.BytesIO(content),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=f"{deal_name}_income_statement.xlsx",
+    )
+
+
+@financials_bp.route("/<vcode>/excel/balance-sheet", methods=["GET"])
+@login_required
+def excel_balance_sheet(vcode):
+    """Download balance sheet as Excel."""
+    data = _get_data()
+    bs_data = get_balance_sheet(
+        data["isbs_raw"], vcode,
+        period1=request.args.get("period1"),
+        period2=request.args.get("period2"),
+    )
+    deal_name = _get_deal_name(data["inv"], vcode)
+    from flask_app.services.financials_service import generate_balance_sheet_excel
+    content = generate_balance_sheet_excel(bs_data, deal_name)
+    return send_file(
+        io.BytesIO(content),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=f"{deal_name}_balance_sheet.xlsx",
+    )
+
+
+@financials_bp.route("/<vcode>/excel/tenants", methods=["GET"])
+@login_required
+def excel_tenants(vcode):
+    """Download tenant roster as Excel."""
+    data = _get_data()
+    tenant_data = get_tenant_roster(data["tenants_raw"], vcode, inv=data["inv"])
+    deal_name = _get_deal_name(data["inv"], vcode)
+    from flask_app.services.financials_service import generate_tenant_roster_excel
+    content = generate_tenant_roster_excel(tenant_data, deal_name)
+    return send_file(
+        io.BytesIO(content),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=f"{deal_name}_tenants.xlsx",
+    )
+
+
+@financials_bp.route("/<vcode>/excel/full", methods=["GET"])
+@login_required
+def excel_full_financials(vcode):
+    """Download full property financials workbook (all sections)."""
+    data = _get_data()
+    freq = request.args.get("freq", "Quarterly")
+    periods = request.args.get("periods", 12, type=int)
+    chart_data = get_performance_chart_data(
+        data["isbs_raw"], data["occupancy_raw"], vcode,
+        freq=freq, periods=periods,
+    )
+
+    fc_deal_modeled = None
+    from flask_app.services import compute_service
+    try:
+        start_year = request.args.get("start_year", current_app.config["DEFAULT_START_YEAR"], type=int)
+        horizon = request.args.get("horizon_years", current_app.config["DEFAULT_HORIZON_YEARS"], type=int)
+        pro_yr_base = request.args.get("pro_yr_base", current_app.config["PRO_YR_BASE_DEFAULT"], type=int)
+        actuals_through = request.args.get("actuals_through", current_app.config.get("ACTUALS_THROUGH"))
+        result = compute_service.get_cached_deal_result(
+            vcode, start_year, horizon, pro_yr_base, data,
+            actuals_through=actuals_through,
+        )
+        fc_deal_modeled = result.get("fc_deal_modeled")
+    except Exception:
+        pass
+    is_data = get_income_statement(
+        data["isbs_raw"], vcode,
+        left_source=request.args.get("left_source", "Actual"),
+        left_period=request.args.get("left_period", "TTM"),
+        right_source=request.args.get("right_source", "Budget"),
+        right_period=request.args.get("right_period", "YTD"),
+        left_as_of_date=request.args.get("left_as_of_date"),
+        right_as_of_date=request.args.get("right_as_of_date"),
+        fc_deal_modeled=fc_deal_modeled,
+    )
+    bs_data = get_balance_sheet(
+        data["isbs_raw"], vcode,
+        period1=request.args.get("period1"),
+        period2=request.args.get("period2"),
+    )
+    tenant_data = get_tenant_roster(data["tenants_raw"], vcode, inv=data["inv"])
+
+    deal_name = _get_deal_name(data["inv"], vcode)
+    from flask_app.services.financials_service import generate_full_financials_excel
+    content = generate_full_financials_excel(chart_data, is_data, bs_data, tenant_data, deal_name)
+    return send_file(
+        io.BytesIO(content),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=f"{deal_name}_property_financials.xlsx",
+    )
 
 
 # ============================================================

@@ -307,6 +307,66 @@ function fmtDate(val: string | null | undefined): string {
   const d = new Date(val)
   return isNaN(d.getTime()) ? val : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 }
+
+// ============================================================
+// Excel Downloads
+// ============================================================
+const downloading = ref<Record<string, boolean>>({})
+
+async function downloadExcel(section: string) {
+  const vc = deals.currentVcode
+  if (!vc) return
+  downloading.value[section] = true
+  try {
+    const token = localStorage.getItem('token')
+    let url = `/api/financials/${vc}/excel/${section}`
+    const params = new URLSearchParams()
+
+    if (section === 'performance-chart') {
+      params.set('freq', chartFreq.value)
+      params.set('periods', String(chartPeriods.value))
+    } else if (section === 'income-statement') {
+      params.set('left_source', isLeftSource.value)
+      params.set('left_period', isLeftPeriod.value)
+      params.set('right_source', isRightSource.value)
+      params.set('right_period', isRightPeriod.value)
+      if (isLeftAsOfDate.value) params.set('left_as_of_date', isLeftAsOfDate.value)
+      if (isRightAsOfDate.value) params.set('right_as_of_date', isRightAsOfDate.value)
+    } else if (section === 'balance-sheet') {
+      if (bsPeriod1.value) params.set('period1', bsPeriod1.value)
+      if (bsPeriod2.value) params.set('period2', bsPeriod2.value)
+    } else if (section === 'full') {
+      params.set('freq', chartFreq.value)
+      params.set('periods', String(chartPeriods.value))
+      params.set('left_source', isLeftSource.value)
+      params.set('left_period', isLeftPeriod.value)
+      params.set('right_source', isRightSource.value)
+      params.set('right_period', isRightPeriod.value)
+      if (isLeftAsOfDate.value) params.set('left_as_of_date', isLeftAsOfDate.value)
+      if (isRightAsOfDate.value) params.set('right_as_of_date', isRightAsOfDate.value)
+      if (bsPeriod1.value) params.set('period1', bsPeriod1.value)
+      if (bsPeriod2.value) params.set('period2', bsPeriod2.value)
+    }
+
+    const qs = params.toString()
+    if (qs) url += '?' + qs
+
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+    if (!res.ok) throw new Error(`Download failed: ${res.status}`)
+    const blob = await res.blob()
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    const disposition = res.headers.get('content-disposition') || ''
+    const match = disposition.match(/filename="?([^"]+)"?/)
+    a.download = match ? match[1] : `${section}.xlsx`
+    a.click()
+    URL.revokeObjectURL(a.href)
+  } catch (e: any) {
+    error.value = e.message || 'Download failed'
+  } finally {
+    downloading.value[section] = false
+  }
+}
 </script>
 
 <template>
@@ -329,11 +389,24 @@ function fmtDate(val: string | null | undefined): string {
     </div>
 
     <template v-if="deals.currentVcode">
+      <!-- Full workbook download -->
+      <div class="full-download">
+        <button class="btn btn-excel" @click="downloadExcel('full')" :disabled="downloading['full']">
+          {{ downloading['full'] ? 'Downloading...' : 'Download Full Property Financials (Excel)' }}
+        </button>
+      </div>
+
       <!-- ======================================== -->
       <!-- Performance Chart (always shown) -->
       <!-- ======================================== -->
       <div class="section">
-        <h3>Performance Chart</h3>
+        <div class="section-title-row">
+          <h3>Performance Chart</h3>
+          <button v-if="chartData && chartData.periods.length" class="btn btn-excel btn-sm"
+            @click="downloadExcel('performance-chart')" :disabled="downloading['performance-chart']">
+            {{ downloading['performance-chart'] ? '...' : 'Excel' }}
+          </button>
+        </div>
         <div class="chart-controls">
           <div class="control-group">
             <label>Frequency:</label>
@@ -366,10 +439,16 @@ function fmtDate(val: string | null | undefined): string {
       <!-- Income Statement -->
       <!-- ======================================== -->
       <div class="section expandable" :class="{ open: expanded['is'] }">
-        <h3 class="section-header" @click="toggle('is')">
-          <span class="caret">{{ expanded['is'] ? '&#9660;' : '&#9654;' }}</span>
-          Income Statement
-        </h3>
+        <div class="section-title-row">
+          <h3 class="section-header" @click="toggle('is')">
+            <span class="caret">{{ expanded['is'] ? '&#9660;' : '&#9654;' }}</span>
+            Income Statement
+          </h3>
+          <button v-if="isData && isData.rows.length" class="btn btn-excel btn-sm"
+            @click.stop="downloadExcel('income-statement')" :disabled="downloading['income-statement']">
+            {{ downloading['income-statement'] ? '...' : 'Excel' }}
+          </button>
+        </div>
         <div v-if="expanded['is']" class="section-body">
           <div class="is-controls">
             <div class="col-control">
@@ -435,10 +514,16 @@ function fmtDate(val: string | null | undefined): string {
       <!-- Balance Sheet -->
       <!-- ======================================== -->
       <div class="section expandable" :class="{ open: expanded['bs'] }">
-        <h3 class="section-header" @click="toggle('bs')">
-          <span class="caret">{{ expanded['bs'] ? '&#9660;' : '&#9654;' }}</span>
-          Balance Sheet
-        </h3>
+        <div class="section-title-row">
+          <h3 class="section-header" @click="toggle('bs')">
+            <span class="caret">{{ expanded['bs'] ? '&#9660;' : '&#9654;' }}</span>
+            Balance Sheet
+          </h3>
+          <button v-if="bsData && bsData.rows.length" class="btn btn-excel btn-sm"
+            @click.stop="downloadExcel('balance-sheet')" :disabled="downloading['balance-sheet']">
+            {{ downloading['balance-sheet'] ? '...' : 'Excel' }}
+          </button>
+        </div>
         <div v-if="expanded['bs']" class="section-body">
           <div class="bs-controls">
             <div class="col-control">
@@ -492,10 +577,16 @@ function fmtDate(val: string | null | undefined): string {
       <!-- Tenant Roster -->
       <!-- ======================================== -->
       <div class="section expandable" :class="{ open: expanded['tenants'] }">
-        <h3 class="section-header" @click="toggle('tenants')">
-          <span class="caret">{{ expanded['tenants'] ? '&#9660;' : '&#9654;' }}</span>
-          Tenant Roster
-        </h3>
+        <div class="section-title-row">
+          <h3 class="section-header" @click="toggle('tenants')">
+            <span class="caret">{{ expanded['tenants'] ? '&#9660;' : '&#9654;' }}</span>
+            Tenant Roster
+          </h3>
+          <button v-if="tenantData && tenantData.tenants.length" class="btn btn-excel btn-sm"
+            @click.stop="downloadExcel('tenants')" :disabled="downloading['tenants']">
+            {{ downloading['tenants'] ? '...' : 'Excel' }}
+          </button>
+        </div>
         <div v-if="expanded['tenants']" class="section-body">
           <div v-if="tenantLoading" class="loading">Loading tenant data...</div>
           <template v-else-if="tenantData">
@@ -642,6 +733,18 @@ function fmtDate(val: string | null | undefined): string {
 /* Rollover section */
 .rollover-section { margin-top: 20px; }
 .rollover-section h4 { font-size: 13px; font-weight: 600; margin-bottom: 12px; }
+
+/* Section title row (header + Excel button) */
+.section-title-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.section-title-row h3 { margin-bottom: 0; }
+.expandable .section-title-row { margin-bottom: 0; }
+.expandable.open .section-title-row { margin-bottom: 12px; }
+
+/* Excel download buttons */
+.btn-excel { background: #217346; }
+.btn-excel:hover { background: #1a5c38; }
+.btn-excel:disabled { opacity: 0.6; cursor: not-allowed; }
+.full-download { margin-bottom: 16px; }
 
 /* Loading / Empty */
 .loading { text-align: center; padding: 24px; color: var(--color-text-secondary); font-style: italic; }

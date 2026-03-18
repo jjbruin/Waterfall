@@ -53,6 +53,13 @@ def create_app(config_name: str = None) -> Flask:
     import database
     database.DB_PATH = app.config["DB_PATH"]
 
+    # Ensure app-managed tables exist (prospective_loans, etc.)
+    import sqlite3
+    _conn = sqlite3.connect(app.config["DB_PATH"], check_same_thread=False)
+    database.create_additional_tables(_conn)
+    database.run_migrations(_conn)
+    _conn.close()
+
     # Initialize SQLAlchemy engine management
     from flask_app.db import init_app as init_db
     init_db(app)

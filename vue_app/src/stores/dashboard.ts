@@ -94,29 +94,41 @@ export const useDashboardStore = defineStore('dashboard', () => {
       // Phase 2 — parallel data fetch (caps cached, all fast now)
       log('log', 'loadAll() phase 2 — 6 parallel requests')
       initProgress.value = null
-      const [kpiRes, capRes, noiRes, occRes, allocRes, loanRes] = await Promise.all([
-        api.get('/api/dashboard/kpis'),
-        api.get('/api/dashboard/capitalization'),
-        api.get('/api/dashboard/noi-trend', { params: { freq: noiFreq.value } }),
-        api.get('/api/dashboard/occupancy-by-type'),
-        api.get('/api/dashboard/asset-allocation'),
-        api.get('/api/dashboard/loan-maturities'),
-      ])
-      kpis.value = kpiRes.data
-      capStructure.value = capRes.data
-      noiData.value = noiRes.data
-      occByType.value = occRes.data
-      assetAlloc.value = allocRes.data.allocation
-      loanMaturities.value = loanRes.data
+      await fetchDashboardData()
       log('log', 'loadAll() complete')
     } catch (err: any) {
       const msg = err?.response?.data?.error || err?.message || 'Unknown error'
-      log('error', 'loadAll() failed:', msg, err)
-      loadError.value = `Dashboard load failed: ${msg}`
+      log('warn', 'loadAll() first attempt failed, retrying:', msg)
+      // Auto-retry once — the first attempt may have warmed the server cache
+      try {
+        await fetchDashboardData()
+        log('log', 'loadAll() retry succeeded')
+      } catch (retryErr: any) {
+        const retryMsg = retryErr?.response?.data?.error || retryErr?.message || 'Unknown error'
+        log('error', 'loadAll() retry also failed:', retryMsg, retryErr)
+        loadError.value = `Dashboard load failed: ${retryMsg}`
+      }
     } finally {
       loading.value = false
       initProgress.value = null
     }
+  }
+
+  async function fetchDashboardData() {
+    const [kpiRes, capRes, noiRes, occRes, allocRes, loanRes] = await Promise.all([
+      api.get('/api/dashboard/kpis'),
+      api.get('/api/dashboard/capitalization'),
+      api.get('/api/dashboard/noi-trend', { params: { freq: noiFreq.value } }),
+      api.get('/api/dashboard/occupancy-by-type'),
+      api.get('/api/dashboard/asset-allocation'),
+      api.get('/api/dashboard/loan-maturities'),
+    ])
+    kpis.value = kpiRes.data
+    capStructure.value = capRes.data
+    noiData.value = noiRes.data
+    occByType.value = occRes.data
+    assetAlloc.value = allocRes.data.allocation
+    loanMaturities.value = loanRes.data
   }
 
   /** Connect to SSE init-stream endpoint. Resolves when done. */

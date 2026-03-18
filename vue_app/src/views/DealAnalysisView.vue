@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, computed, ref, watch } from 'vue'
 import { useDataStore } from '../stores/data'
-import { useDealsStore } from '../stores/deals'
+import { useDealsStore, type ProspectiveLoan, type SizingResult } from '../stores/deals'
 import KpiCard from '../components/common/KpiCard.vue'
 import DataTable from '../components/common/DataTable.vue'
 import ProgressOverlay from '../components/common/ProgressOverlay.vue'
@@ -15,7 +15,10 @@ onMounted(async () => {
 
 async function onDealSelect(event: Event) {
   const vcode = (event.target as HTMLSelectElement).value
-  if (vcode) await deals.computeDeal(vcode)
+  if (vcode) {
+    await deals.computeDeal(vcode)
+    deals.loadProspectiveLoans(vcode)
+  }
 }
 
 // Lazy-load sections when they expand
@@ -27,15 +30,249 @@ function toggle(section: string) {
     if (section === 'forecast') deals.loadForecast(vc)
     if (section === 'debt') deals.loadDebtService(vc)
     if (section === 'cash') deals.loadCashSchedule(vc)
-    if (section === 'capcalls') deals.loadCapitalCalls(vc)
+    if (section === 'capcalls') {
+      deals.loadCapitalCalls(vc)
+      deals.loadRawCapitalCalls(vc)
+    }
     if (section === 'xirr') deals.loadXirrCashflows(vc)
     if (section === 'roe') deals.loadRoeAudit(vc)
     if (section === 'moic') deals.loadMoicAudit(vc)
+    if (section === 'refi') deals.loadProspectiveLoans(vc)
   }
 }
 
 // Reset expansions when deal changes
-watch(() => deals.currentVcode, () => { expanded.value = {} })
+watch(() => deals.currentVcode, (vc) => {
+  expanded.value = {}
+  if (vc) deals.loadProspectiveLoans(vc)
+})
+
+// ============================================================
+// Prospective Loan Form
+// ============================================================
+
+const showRefiForm = ref(false)
+const refiForm = ref<Record<string, any>>({})
+const refiSizing = ref<SizingResult | null>(null)
+const refiSaving = ref(false)
+const refiError = ref('')
+const editingLoanId = ref<number | null>(null)
+
+function resetRefiForm() {
+  refiForm.value = {
+    loan_name: '',
+    refi_date: '',
+    existing_loan_id: '',
+    loan_amount: '',
+    lender_uw_noi: '',
+    max_ltv: 70,
+    min_dscr: 1.25,
+    min_debt_yield: 8,
+    interest_rate: '',
+    rate_spread_bps: '',
+    rate_index: '',
+    term_years: 5,
+    amort_years: 0,
+    io_years: 5,
+    int_type: 'Fixed',
+    closing_costs: 0,
+    reserve_holdback: 0,
+    notes: '',
+  }
+  refiSizing.value = null
+  refiError.value = ''
+  editingLoanId.value = null
+}
+
+function openRefiForm(loan?: ProspectiveLoan) {
+  if (loan) {
+    editingLoanId.value = loan.id
+    refiForm.value = {
+      loan_name: loan.loan_name || '',
+      refi_date: loan.refi_date || '',
+      existing_loan_id: loan.existing_loan_id || '',
+      loan_amount: loan.loan_amount || '',
+      lender_uw_noi: loan.lender_uw_noi || '',
+      max_ltv: loan.max_ltv != null ? (loan.max_ltv <= 1 ? loan.max_ltv * 100 : loan.max_ltv) : 70,
+      min_dscr: loan.min_dscr || 1.25,
+      min_debt_yield: loan.min_debt_yield != null ? (loan.min_debt_yield <= 1 ? loan.min_debt_yield * 100 : loan.min_debt_yield) : 8,
+      interest_rate: loan.interest_rate || '',
+      rate_spread_bps: loan.rate_spread_bps || '',
+      rate_index: loan.rate_index || '',
+      term_years: loan.term_years || 5,
+      amort_years: loan.amort_years || 0,
+      io_years: loan.io_years || 5,
+      int_type: loan.int_type || 'Fixed',
+      closing_costs: loan.closing_costs || 0,
+      reserve_holdback: loan.reserve_holdback || 0,
+      notes: loan.notes || '',
+    }
+    refiSizing.value = deals.sizingResults[loan.id] || null
+  } else {
+    resetRefiForm()
+  }
+  refiError.value = ''
+  showRefiForm.value = true
+}
+
+async function saveRefiForm() {
+  const vc = deals.currentVcode
+  if (!vc) return
+  refiSaving.value = true
+  refiError.value = ''
+  try {
+    const payload = {
+      ...refiForm.value,
+      max_ltv: parseFloat(refiForm.value.max_ltv) / 100,
+      min_debt_yield: parseFloat(refiForm.value.min_debt_yield) / 100,
+      loan_amount: refiForm.value.loan_amount ? parseFloat(refiForm.value.loan_amount) : null,
+      lender_uw_noi: refiForm.value.lender_uw_noi ? parseFloat(refiForm.value.lender_uw_noi) : null,
+      interest_rate: refiForm.value.interest_rate ? parseFloat(refiForm.value.interest_rate) : null,
+      closing_costs: parseFloat(refiForm.value.closing_costs) || 0,
+      reserve_holdback: parseFloat(refiForm.value.reserve_holdback) || 0,
+    }
+    if (editingLoanId.value) {
+      await deals.updateProspectiveLoan(vc, editingLoanId.value, payload)
+    } else {
+      const result = await deals.createProspectiveLoan(vc, payload)
+      editingLoanId.value = result.id
+    }
+
+    // Auto-run sizing
+    if (editingLoanId.value) {
+      refiSizing.value = await deals.runSizingAnalysis(vc, editingLoanId.value)
+    }
+  } catch (e: any) {
+    refiError.value = e.response?.data?.error || e.message
+  } finally {
+    refiSaving.value = false
+  }
+}
+
+async function acceptLoan(loanId: number) {
+  const vc = deals.currentVcode
+  if (!vc) return
+  refiSaving.value = true
+  try {
+    await deals.acceptProspectiveLoan(vc, loanId)
+    showRefiForm.value = false
+  } catch (e: any) {
+    refiError.value = e.response?.data?.error || e.message
+  } finally {
+    refiSaving.value = false
+  }
+}
+
+async function revertLoan(loanId: number) {
+  const vc = deals.currentVcode
+  if (!vc) return
+  await deals.revertProspectiveLoan(vc, loanId)
+}
+
+async function deleteLoan(loanId: number) {
+  const vc = deals.currentVcode
+  if (!vc) return
+  await deals.deleteProspectiveLoan(vc, loanId)
+  if (editingLoanId.value === loanId) {
+    showRefiForm.value = false
+    resetRefiForm()
+  }
+}
+
+async function runSizing(loanId: number) {
+  const vc = deals.currentVcode
+  if (!vc) return
+  refiSizing.value = await deals.runSizingAnalysis(vc, loanId)
+}
+
+// ============================================================
+// Capital Call Management
+// ============================================================
+
+const showCapCallForm = ref(false)
+const capCallForm = ref<Record<string, any>>({})
+const capCallSaving = ref(false)
+const editingCapCallId = ref<number | null>(null)
+
+// Get investor keys from current partner results for PropCode dropdown
+const capitalCallInvestors = computed(() => {
+  const partners = deals.currentPartners
+  if (!partners || !partners.length) return []
+  return partners.map((p: any) => p.partner).filter((p: string) => p)
+})
+
+function resetCapCallForm() {
+  capCallForm.value = {
+    PropCode: '',
+    CallDate: '',
+    Amount: '',
+    CallType: '',
+    FundingSource: '',
+    Notes: '',
+    Typename: 'Contribution: Investments',
+  }
+  editingCapCallId.value = null
+}
+
+function openCapCallForm(prefill?: Record<string, any>) {
+  resetCapCallForm()
+  if (prefill) {
+    capCallForm.value = { ...capCallForm.value, ...prefill }
+  }
+  showCapCallForm.value = true
+}
+
+function editCapCall(call: any) {
+  editingCapCallId.value = call.id
+  capCallForm.value = {
+    PropCode: call.PropCode || '',
+    CallDate: call.CallDate || '',
+    Amount: call.Amount || '',
+    CallType: call.CallType || '',
+    FundingSource: call.FundingSource || '',
+    Notes: call.Notes || '',
+    Typename: call.Typename || 'Contribution: Investments',
+  }
+  showCapCallForm.value = true
+}
+
+async function saveCapCall() {
+  const vc = deals.currentVcode
+  if (!vc) return
+  capCallSaving.value = true
+  try {
+    if (editingCapCallId.value) {
+      await deals.updateRawCapitalCall(vc, editingCapCallId.value, capCallForm.value)
+    } else {
+      await deals.createRawCapitalCall(vc, capCallForm.value)
+    }
+    showCapCallForm.value = false
+    resetCapCallForm()
+    // Recompute to reflect new capital call in returns
+    await deals.computeDeal(vc, true)
+    // Refresh the capital calls section
+    deals.loadCapitalCalls(vc)
+    deals.loadRawCapitalCalls(vc)
+  } finally {
+    capCallSaving.value = false
+  }
+}
+
+async function deleteCapCall(callId: number) {
+  const vc = deals.currentVcode
+  if (!vc) return
+  await deals.deleteRawCapitalCall(vc, callId)
+  await deals.computeDeal(vc, true)
+  deals.loadCapitalCalls(vc)
+  deals.loadRawCapitalCalls(vc)
+}
+
+// Status badge class
+function statusClass(status: string) {
+  if (status === 'accepted') return 'badge-accepted'
+  if (status === 'rejected') return 'badge-rejected'
+  return 'badge-draft'
+}
 
 // ============================================================
 // Merged XIRR Cash Flows (side-by-side partners)
@@ -242,6 +479,280 @@ async function downloadExcel(url: string, filename: string) {
         </div>
       </div>
 
+      <!-- ============================================================ -->
+      <!-- Refinance / New Loan -->
+      <!-- ============================================================ -->
+      <div class="section expandable" :class="{ open: expanded.refi }">
+        <div class="section-title-row">
+          <h3 @click="toggle('refi')" class="section-header">
+            <span class="chevron">{{ expanded.refi ? '▾' : '▸' }}</span>
+            Refinance / New Loan
+          </h3>
+          <button v-if="expanded.refi" class="btn-action-sm" @click.stop="openRefiForm()">+ New Loan Proposal</button>
+        </div>
+        <div v-if="expanded.refi" class="section-body">
+
+          <!-- Refi capital call alert -->
+          <div v-if="deals.currentRefiCapCallRequired" class="alert alert-warning">
+            <strong>Capital Call Required:</strong> The accepted refinance results in a shortfall of {{ fmtCur(deals.currentRefiCapCallAmount) }}.
+            <button class="btn-action-sm" @click="openCapCallForm({
+              Amount: deals.currentRefiCapCallAmount,
+              CallDate: deals.currentRefiDbg?.refi_date || '',
+              Notes: 'Refinance shortfall funding',
+              Typename: 'Contribution: Investments',
+            })">
+              Create Capital Call
+            </button>
+          </div>
+
+          <!-- Existing Prospective Loans Table -->
+          <table v-if="deals.currentProspectiveLoans.length" class="info-table refi-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Status</th>
+                <th>Refi Date</th>
+                <th class="right">Loan Amount</th>
+                <th class="right">Rate</th>
+                <th>Term</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="loan in deals.currentProspectiveLoans" :key="loan.id">
+                <td>{{ loan.loan_name || '(unnamed)' }}</td>
+                <td><span :class="['badge', statusClass(loan.status)]">{{ loan.status }}</span></td>
+                <td>{{ fmtDate(loan.refi_date) }}</td>
+                <td class="right">{{ loan.loan_amount ? fmtCur(loan.loan_amount) : '—' }}</td>
+                <td class="right">{{ loan.interest_rate ? loan.interest_rate + '%' : '—' }}</td>
+                <td>{{ loan.term_years ? loan.term_years + 'yr' : '—' }}{{ loan.io_years ? ' IO' : '' }}</td>
+                <td class="actions-cell">
+                  <button class="btn-sm" @click="openRefiForm(loan)">Edit</button>
+                  <button v-if="loan.status === 'draft'" class="btn-sm btn-accept" @click="acceptLoan(loan.id)">Accept</button>
+                  <button v-if="loan.status === 'accepted'" class="btn-sm btn-revert" @click="revertLoan(loan.id)">Revert</button>
+                  <button class="btn-sm btn-danger" @click="deleteLoan(loan.id)">Delete</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <p v-else class="placeholder">No loan proposals. Click "+ New Loan Proposal" to begin.</p>
+
+          <!-- Accepted Loan Sizing Summary -->
+          <div v-if="deals.currentRefiDbg" class="refi-sizing-summary">
+            <h4>Accepted Loan Analysis</h4>
+            <div class="sizing-grid">
+              <div class="sizing-col">
+                <h5>NOI Comparison</h5>
+                <table class="info-table">
+                  <tr><td>System Projected (12mo)</td><td class="right">{{ fmtCur(deals.currentRefiDbg.system_noi_12m) }}</td></tr>
+                  <tr><td>Lender Underwritten</td><td class="right">{{ fmtCur(deals.currentRefiDbg.lender_uw_noi) }}</td></tr>
+                  <tr><td>Difference</td><td class="right" :class="{ 'text-danger': deals.currentRefiDbg.noi_difference < 0 }">
+                    {{ fmtCur(deals.currentRefiDbg.noi_difference) }} ({{ deals.currentRefiDbg.noi_diff_pct }}%)
+                  </td></tr>
+                </table>
+              </div>
+              <div class="sizing-col">
+                <h5>Proceeds Summary</h5>
+                <table class="info-table">
+                  <tr><td>Loan Amount</td><td class="right">{{ fmtCur(deals.currentRefiDbg.final_loan_amount || deals.currentRefiDbg.estimated_loan_amount) }}</td></tr>
+                  <tr><td>Less: Existing Loan Payoff</td><td class="right">{{ fmtCur(-deals.currentRefiDbg.existing_loan_balance) }}</td></tr>
+                  <tr><td>Less: Closing Costs</td><td class="right">{{ fmtCur(-deals.currentRefiDbg.closing_costs) }}</td></tr>
+                  <tr class="total-border"><td class="bold">Net Refi Proceeds</td><td class="right bold">{{ fmtCur(deals.currentRefiDbg.net_refi_proceeds) }}</td></tr>
+                  <tr><td>Less: Reserve Holdback</td><td class="right">{{ fmtCur(-deals.currentRefiDbg.reserve_holdback) }}</td></tr>
+                  <tr class="total-border"><td class="bold">Distributable (Sec 8.2)</td><td class="right bold" :class="{ 'text-danger': deals.currentRefiDbg.distributable_proceeds < 0 }">{{ fmtCur(deals.currentRefiDbg.distributable_proceeds) }}</td></tr>
+                </table>
+              </div>
+            </div>
+            <div v-if="deals.currentRefiDbg.constraints" class="constraint-table">
+              <h5>Constraint Analysis</h5>
+              <table class="info-table">
+                <thead>
+                  <tr><th>Metric</th><th class="right">Max Loan</th><th>Binding?</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(c, name) in deals.currentRefiDbg.constraints" :key="name">
+                    <td>{{ name === 'ltv' ? `LTV (${(c.max_ltv * 100).toFixed(0)}%)` : name === 'dscr' ? `DSCR (${c.min_dscr}x)` : name === 'debt_yield' ? `Debt Yield (${(c.min_debt_yield * 100).toFixed(1)}%)` : 'Quoted' }}</td>
+                    <td class="right">{{ fmtCur(c.max_loan) }}</td>
+                    <td><strong v-if="deals.currentRefiDbg.binding_constraint === name">Yes</strong></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Refi Form Modal -->
+      <div v-if="showRefiForm" class="modal-overlay" @click.self="showRefiForm = false">
+        <div class="modal refi-modal">
+          <h3>{{ editingLoanId ? 'Edit Loan Proposal' : 'New Loan Proposal' }}</h3>
+          <p v-if="refiError" class="error">{{ refiError }}</p>
+
+          <div class="form-grid">
+            <div class="form-group">
+              <label>Loan Name</label>
+              <input v-model="refiForm.loan_name" placeholder="e.g. BofA Refi 2026" />
+            </div>
+            <div class="form-group">
+              <label>Refi / Origination Date</label>
+              <input type="date" v-model="refiForm.refi_date" />
+            </div>
+            <div class="form-group">
+              <label>Existing Loan ID (being replaced)</label>
+              <input v-model="refiForm.existing_loan_id" placeholder="LoanID from debt service" />
+            </div>
+            <div class="form-group">
+              <label>Quoted Loan Amount ($)</label>
+              <input type="number" v-model="refiForm.loan_amount" placeholder="40000000" />
+            </div>
+            <div class="form-group">
+              <label>Interest Rate (%)</label>
+              <input type="number" step="0.01" v-model="refiForm.interest_rate" placeholder="5.50" />
+            </div>
+            <div class="form-group">
+              <label>Spread (bps)</label>
+              <input type="number" v-model="refiForm.rate_spread_bps" placeholder="287" />
+            </div>
+            <div class="form-group">
+              <label>Rate Index</label>
+              <input v-model="refiForm.rate_index" placeholder="5YR_TSY" />
+            </div>
+            <div class="form-group">
+              <label>Term (years)</label>
+              <input type="number" v-model="refiForm.term_years" />
+            </div>
+            <div class="form-group">
+              <label>Amort (years, 0=IO)</label>
+              <input type="number" v-model="refiForm.amort_years" />
+            </div>
+            <div class="form-group">
+              <label>IO Period (years)</label>
+              <input type="number" step="0.5" v-model="refiForm.io_years" />
+            </div>
+            <div class="form-group">
+              <label>Max LTV (%)</label>
+              <input type="number" step="1" v-model="refiForm.max_ltv" />
+            </div>
+            <div class="form-group">
+              <label>Min DSCR (x)</label>
+              <input type="number" step="0.01" v-model="refiForm.min_dscr" />
+            </div>
+            <div class="form-group">
+              <label>Min Debt Yield (%)</label>
+              <input type="number" step="0.1" v-model="refiForm.min_debt_yield" />
+            </div>
+            <div class="form-group">
+              <label>Lender Underwritten NOI ($)</label>
+              <input type="number" v-model="refiForm.lender_uw_noi" placeholder="From lender's UW" />
+            </div>
+            <div class="form-group">
+              <label>Closing Costs ($)</label>
+              <input type="number" v-model="refiForm.closing_costs" />
+            </div>
+            <div class="form-group">
+              <label>Reserve Holdback ($)</label>
+              <input type="number" v-model="refiForm.reserve_holdback" />
+            </div>
+            <div class="form-group full-width">
+              <label>Notes</label>
+              <textarea v-model="refiForm.notes" rows="2"></textarea>
+            </div>
+          </div>
+
+          <!-- Sizing Results (shown after save) -->
+          <div v-if="refiSizing" class="sizing-results">
+            <h4>Sizing Analysis</h4>
+            <div class="sizing-grid">
+              <div class="sizing-col">
+                <h5>NOI Comparison</h5>
+                <table class="info-table">
+                  <tr><td>System Projected NOI</td><td class="right">{{ fmtCur(refiSizing.system_noi_12m) }}</td></tr>
+                  <tr><td>Lender Underwritten</td><td class="right">{{ fmtCur(refiSizing.lender_uw_noi) }}</td></tr>
+                  <tr><td>Difference</td><td class="right" :class="{ 'text-danger': refiSizing.noi_difference < 0 }">
+                    {{ fmtCur(refiSizing.noi_difference) }} ({{ refiSizing.noi_diff_pct }}%)
+                  </td></tr>
+                </table>
+              </div>
+              <div class="sizing-col">
+                <h5>Constraints</h5>
+                <table class="info-table">
+                  <tr v-for="(c, name) in refiSizing.constraints" :key="name">
+                    <td>{{ String(name).toUpperCase() }}</td>
+                    <td class="right">{{ fmtCur(c.max_loan) }}</td>
+                    <td><strong v-if="refiSizing.binding_constraint === name">Binding</strong></td>
+                  </tr>
+                </table>
+              </div>
+            </div>
+            <div class="sizing-summary">
+              <table class="info-table">
+                <tr class="total-border"><td class="bold">Estimated Loan Amount</td><td class="right bold">{{ fmtCur(refiSizing.estimated_loan_amount) }}</td></tr>
+                <tr><td>Less: Existing Loan Payoff</td><td class="right">{{ fmtCur(-refiSizing.existing_loan_balance) }}</td></tr>
+                <tr><td>Less: Closing Costs</td><td class="right">{{ fmtCur(-refiSizing.closing_costs) }}</td></tr>
+                <tr class="total-border"><td class="bold">Net Refi Proceeds</td><td class="right bold">{{ fmtCur(refiSizing.net_refi_proceeds) }}</td></tr>
+                <tr><td>Less: Reserve Holdback</td><td class="right">{{ fmtCur(-refiSizing.reserve_holdback) }}</td></tr>
+                <tr class="total-border"><td class="bold">Distributable</td><td class="right bold" :class="{ 'text-danger': refiSizing.distributable_proceeds < 0 }">{{ fmtCur(refiSizing.distributable_proceeds) }}</td></tr>
+              </table>
+              <p v-if="refiSizing.capital_call_required" class="alert alert-warning" style="margin-top:8px">
+                Capital call of {{ fmtCur(refiSizing.capital_call_amount) }} will be required.
+              </p>
+              <p v-if="refiSizing.new_maturity_date" class="note">
+                Accepting will extend sale date to {{ refiSizing.new_maturity_date }}
+              </p>
+            </div>
+          </div>
+
+          <div class="modal-actions">
+            <button class="btn-primary" @click="saveRefiForm" :disabled="refiSaving">
+              {{ refiSaving ? 'Saving...' : (editingLoanId ? 'Save & Analyze' : 'Save Draft & Analyze') }}
+            </button>
+            <button v-if="editingLoanId && refiSizing" class="btn-accept" @click="acceptLoan(editingLoanId)" :disabled="refiSaving">
+              Accept Loan
+            </button>
+            <button class="btn-secondary" @click="showRefiForm = false">Close</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Capital Call Form Modal -->
+      <div v-if="showCapCallForm" class="modal-overlay" @click.self="showCapCallForm = false">
+        <div class="modal">
+          <h3>{{ editingCapCallId ? 'Edit Capital Call' : 'Add Capital Call' }}</h3>
+          <div class="form-grid">
+            <div class="form-group">
+              <label>Investor (PropCode)</label>
+              <select v-model="capCallForm.PropCode">
+                <option value="">-- Select --</option>
+                <option v-for="inv in capitalCallInvestors" :key="inv" :value="inv">{{ inv }}</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Call Date</label>
+              <input type="date" v-model="capCallForm.CallDate" />
+            </div>
+            <div class="form-group">
+              <label>Amount ($)</label>
+              <input type="number" v-model="capCallForm.Amount" />
+            </div>
+            <div class="form-group">
+              <label>Typename</label>
+              <input v-model="capCallForm.Typename" placeholder="Contribution: Investments" />
+            </div>
+            <div class="form-group full-width">
+              <label>Notes</label>
+              <textarea v-model="capCallForm.Notes" rows="2"></textarea>
+            </div>
+          </div>
+          <div class="modal-actions">
+            <button class="btn-primary" @click="saveCapCall" :disabled="capCallSaving">
+              {{ capCallSaving ? 'Saving...' : 'Save & Recompute' }}
+            </button>
+            <button class="btn-secondary" @click="showCapCallForm = false">Cancel</button>
+          </div>
+        </div>
+      </div>
+
       <!-- Deal-Level Summary -->
       <div class="section metrics-section">
         <h3>Deal-Level Summary</h3>
@@ -415,7 +926,10 @@ async function downloadExcel(url: string, filename: string) {
             <span class="chevron">{{ expanded.capcalls ? '▾' : '▸' }}</span>
             Capital Calls Schedule
           </h3>
-          <button v-if="expanded.capcalls && deals.currentCapCalls" class="btn-download-sm" @click.stop="downloadExcel(`/api/deals/${deals.currentVcode}/excel/capital-calls`, `capital_calls_${deals.currentVcode}.xlsx`)">Excel</button>
+          <div v-if="expanded.capcalls" style="display:flex;gap:8px">
+            <button class="btn-action-sm" @click.stop="openCapCallForm()">+ Add Capital Call</button>
+            <button v-if="deals.currentCapCalls" class="btn-download-sm" @click.stop="downloadExcel(`/api/deals/${deals.currentVcode}/excel/capital-calls`, `capital_calls_${deals.currentVcode}.xlsx`)">Excel</button>
+          </div>
         </div>
         <div v-if="expanded.capcalls" class="section-body">
           <p v-if="deals.loadingSection === 'capcalls'" class="loading-msg">Loading capital calls...</p>
@@ -429,8 +943,28 @@ async function downloadExcel(url: string, filename: string) {
               ]"
               :rows="deals.currentCapCalls"
             />
-            <p v-else class="placeholder">No capital calls</p>
+            <p v-else class="placeholder">No capital calls in computed results</p>
           </template>
+
+          <!-- Raw Capital Calls (editable) -->
+          <details v-if="deals.currentRawCapitalCalls.length" class="raw-calls-detail">
+            <summary>Manage Capital Calls ({{ deals.currentRawCapitalCalls.length }})</summary>
+            <table class="info-table">
+              <thead><tr><th>Investor</th><th>Date</th><th class="right">Amount</th><th>Type</th><th>Actions</th></tr></thead>
+              <tbody>
+                <tr v-for="call in deals.currentRawCapitalCalls" :key="call.id">
+                  <td>{{ call.PropCode }}</td>
+                  <td>{{ fmtDate(call.CallDate) }}</td>
+                  <td class="right">{{ fmtCur(call.Amount) }}</td>
+                  <td>{{ call.Typename }}</td>
+                  <td class="actions-cell">
+                    <button class="btn-sm" @click="editCapCall(call)">Edit</button>
+                    <button class="btn-sm btn-danger" @click="deleteCapCall(call.id)">Delete</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </details>
         </div>
       </div>
 
@@ -851,4 +1385,194 @@ async function downloadExcel(url: string, filename: string) {
 .diag-list li {
   margin-bottom: 4px;
 }
+
+/* Modal overlay */
+.modal-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.4);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.modal {
+  background: white;
+  border-radius: 8px;
+  padding: 24px;
+  max-width: 680px;
+  width: 90%;
+  max-height: 85vh;
+  overflow-y: auto;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+}
+.refi-modal {
+  max-width: 860px;
+}
+.modal h3 {
+  margin: 0 0 16px;
+  font-size: 16px;
+}
+.modal-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+  justify-content: flex-end;
+}
+
+/* Form grid */
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.form-group.full-width {
+  grid-column: 1 / -1;
+}
+.form-group label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+.form-group input,
+.form-group select,
+.form-group textarea {
+  padding: 6px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+/* Buttons */
+.btn-primary {
+  padding: 6px 14px;
+  background: var(--color-accent);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
+.btn-secondary {
+  padding: 6px 14px;
+  background: #e2e8f0;
+  color: #333;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.btn-action-sm {
+  padding: 3px 10px;
+  background: #38a169;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.btn-sm {
+  padding: 2px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 11px;
+  background: white;
+}
+.btn-accept { background: #38a169; color: white; border-color: #38a169; }
+.btn-revert { background: #dd6b20; color: white; border-color: #dd6b20; }
+.btn-danger { background: #e53e3e; color: white; border-color: #e53e3e; }
+.actions-cell { white-space: nowrap; display: flex; gap: 4px; }
+
+/* Badges */
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+.badge-draft { background: #e2e8f0; color: #4a5568; }
+.badge-accepted { background: #c6f6d5; color: #22543d; }
+.badge-rejected { background: #fed7d7; color: #822727; }
+
+/* Alert */
+.alert {
+  padding: 10px 14px;
+  border-radius: 6px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.alert-warning {
+  background: #fffbeb;
+  border: 1px solid #f6e05e;
+  color: #744210;
+}
+
+/* Sizing / Refi */
+.sizing-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin: 12px 0;
+}
+.sizing-col h5 {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  margin: 0 0 6px;
+}
+.sizing-results {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--color-border);
+}
+.sizing-summary {
+  margin-top: 12px;
+}
+.refi-sizing-summary {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border);
+}
+.constraint-table {
+  margin-top: 12px;
+}
+.constraint-table th {
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  padding: 4px 8px;
+  border-bottom: 2px solid var(--color-border);
+}
+.refi-table th {
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  padding: 4px 8px;
+  border-bottom: 2px solid var(--color-border);
+}
+
+.text-danger { color: #e53e3e; }
+
+.raw-calls-detail {
+  margin-top: 12px;
+}
+.raw-calls-detail summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--color-accent);
+}
 </style>
+

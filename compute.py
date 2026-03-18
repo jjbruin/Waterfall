@@ -26,7 +26,8 @@ from waterfall import (run_waterfall, seed_states_from_accounting,
                        run_waterfall_period, pref_rates_from_waterfall_steps,
                        add_pref_rates_from_waterfall_steps)
 from planned_loans import (size_planned_second_mortgage, planned_loan_as_loan_object,
-                           twelve_month_noi_after_date, projected_cap_rate_at_date)
+                           twelve_month_noi_after_date, projected_cap_rate_at_date,
+                           size_prospective_loan, prospective_loan_as_loan_object)
 from reporting import cashflows_monthly_fad
 from capital_calls import (load_capital_calls, build_capital_call_schedule,
                            integrate_capital_calls_with_forecast)
@@ -425,6 +426,7 @@ def compute_deal_analysis(
     relationships_raw, capital_calls_raw, isbs_raw,
     start_year, horizon_years, pro_yr_base,
     actuals_through=None,
+    prospective_loans_raw=None,
 ):
     """
     Compute all deal-level analysis results.
@@ -558,6 +560,67 @@ def compute_deal_analysis(
                     except Exception as e:
                         debug_msgs.append(f"Planned loan sizing failed for {supp_row['vCode']}: {e}")
 
+    # --- Prospective loans (refinance / new mortgage from app DB) ---
+    refi_dbg = None
+    refi_capital_call_required = False
+    refi_capital_call_amount = 0.0
+    refi_net_proceeds = 0.0
+    refi_reserve_holdback = 0.0
+
+    if prospective_loans_raw is not None and not prospective_loans_raw.empty:
+        accepted = prospective_loans_raw[
+            (prospective_loans_raw["vcode"].astype(str) == str(deal_vcode))
+            & (prospective_loans_raw["status"] == "accepted")
+        ]
+        if not accepted.empty:
+            prospect = accepted.iloc[0].to_dict()
+            try:
+                # Build original loan schedule BEFORE replacing for correct balance calc
+                original_loan_sched = pd.DataFrame()
+                if loans:
+                    orig_scheds = []
+                    for ln in loans:
+                        s = amortize_monthly_schedule(ln, model_start, model_end_full)
+                        if not s.empty:
+                            orig_scheds.append(s)
+                    if orig_scheds:
+                        original_loan_sched = pd.concat(orig_scheds, ignore_index=True)
+
+                est_amt, sizing = size_prospective_loan(
+                    fc_deal_full, mri_val, prospect, original_loan_sched, deal_vcode,
+                )
+
+                final_amount = float(prospect.get("loan_amount") or est_amt) if prospect.get("loan_amount") else est_amt
+                refi_dbg = sizing
+                refi_dbg["final_loan_amount"] = final_amount
+
+                # Remove replaced loan if specified
+                existing_loan_id = prospect.get("existing_loan_id")
+                if existing_loan_id:
+                    loans = [ln for ln in loans if ln.loan_id != existing_loan_id]
+                    debug_msgs.append(f"Replacing loan {existing_loan_id} with prospective loan")
+
+                # Add new loan
+                new_loan = prospective_loan_as_loan_object(deal_vcode, prospect, final_amount)
+                loans.append(new_loan)
+                debug_msgs.append(f"Prospective loan added: {new_loan.loan_id} = ${final_amount:,.0f}")
+
+                # Override sale date to new loan maturity
+                new_maturity = new_loan.maturity_date
+                if new_maturity and new_maturity > sale_me:
+                    old_sale = sale_me
+                    sale_me = month_end(new_maturity)
+                    debug_msgs.append(f"Sale date extended from {old_sale} to {sale_me} (new loan maturity)")
+
+                # Track refi proceeds for capital waterfall
+                refi_net_proceeds = sizing.get("net_refi_proceeds", 0)
+                refi_reserve_holdback = float(prospect.get("reserve_holdback") or 0)
+                refi_capital_call_required = sizing.get("capital_call_required", False)
+                refi_capital_call_amount = sizing.get("capital_call_amount", 0)
+
+            except Exception as e:
+                debug_msgs.append(f"Prospective loan processing failed: {e}")
+
     # Generate loan schedules
     if loans:
         schedules = []
@@ -570,29 +633,50 @@ def compute_deal_analysis(
     else:
         debug_msgs.append("No loans to model for this deal.")
 
+    # --- Identify balloon payments at maturity ---
+    # Balloon payments (large principal at maturity that zeros out the balance) are paid
+    # from sale proceeds, not operating cash.  Build a set of (LoanID, event_date) to
+    # exclude from forecast debt service, and track the total balloon for sale deduction.
+    balloon_keys = set()   # (LoanID, event_date) tuples for balloon rows
+    balloon_total = 0.0    # sum of balloon principal across all loans
+
+    if not loan_sched.empty:
+        for loan_id, grp in loan_sched.groupby("LoanID"):
+            grp_sorted = grp.sort_values("event_date")
+            last_row = grp_sorted.iloc[-1]
+            if (last_row["ending_balance"] < 1.0  # tolerance for float rounding
+                    and last_row["principal"] > 0
+                    and len(grp_sorted) > 1
+                    and grp_sorted.iloc[-2]["ending_balance"] > 0):
+                balloon_keys.add((loan_id, last_row["event_date"]))
+                balloon_total += last_row["principal"]
+
     # --- Replace forecast debt service with modeled ---
     fc_deal_modeled = fc_deal_full.copy()
     fc_deal_modeled = fc_deal_modeled[~fc_deal_modeled["vAccount"].isin(INTEREST_ACCTS | PRINCIPAL_ACCTS)].copy()
 
     if not loan_sched.empty:
-        monthly = loan_sched.groupby(["vcode", "event_date"], as_index=False)[["interest", "principal"]].sum()
-        monthly["vAccount_interest"] = list(INTEREST_ACCTS)[0]
-        monthly["vAccount_principal"] = list(PRINCIPAL_ACCTS)[0]
+        monthly = loan_sched.groupby(["vcode", "LoanID", "event_date"], as_index=False)[
+            ["interest", "principal"]
+        ].sum()
 
         add_rows = []
         for _, r in monthly.iterrows():
+            is_balloon = (r["LoanID"], r["event_date"]) in balloon_keys
             add_rows.append({
                 "vcode": r["vcode"],
                 "event_date": r["event_date"],
-                "vAccount": r["vAccount_interest"],
+                "vAccount": list(INTEREST_ACCTS)[0],
                 "mAmount_norm": -abs(r["interest"]),
             })
-            add_rows.append({
-                "vcode": r["vcode"],
-                "event_date": r["event_date"],
-                "vAccount": r["vAccount_principal"],
-                "mAmount_norm": -abs(r["principal"]),
-            })
+            # Exclude balloon principal — it is repaid from sale proceeds, not operating cash
+            if not is_balloon:
+                add_rows.append({
+                    "vcode": r["vcode"],
+                    "event_date": r["event_date"],
+                    "vAccount": list(PRINCIPAL_ACCTS)[0],
+                    "mAmount_norm": -abs(r["principal"]),
+                })
         if add_rows:
             fc_deal_modeled = pd.concat([fc_deal_modeled, pd.DataFrame(add_rows)], ignore_index=True)
 
@@ -614,7 +698,9 @@ def compute_deal_analysis(
             value_sale = (noi_12_sale / cap_rate_sale) if cap_rate_sale != 0 else 0.0
             value_net_selling_cost = value_sale * (1.0 - SELLING_COST_RATE)
 
-            loan_bal_sale = total_loan_balance_at(loan_sched, sale_me)
+            # Use ending_balance from schedule + balloon amounts that weren't
+            # included in operating debt service (they are repaid from sale proceeds).
+            loan_bal_sale = total_loan_balance_at(loan_sched, sale_me) + balloon_total
 
             sale_proceeds = max(0.0, value_net_selling_cost - loan_bal_sale)
 
@@ -656,6 +742,16 @@ def compute_deal_analysis(
         except Exception as e:
             debug_msgs.append(f"Could not process capital calls: {str(e)}")
             capital_calls = []
+
+    # Update refi shortfall flag: existing capital calls may cover the gap
+    if refi_capital_call_required and capital_calls:
+        total_cc = sum(abs(c.get('amount', 0)) for c in capital_calls)
+        remaining = refi_capital_call_amount - total_cc
+        if remaining <= 1.0:  # $1 tolerance for rounding
+            refi_capital_call_required = False
+            refi_capital_call_amount = 0.0
+        else:
+            refi_capital_call_amount = remaining
 
     # Load beginning cash balance from ISBS
     beginning_cash = 0.0
@@ -728,6 +824,32 @@ def compute_deal_analysis(
         debug_msgs.append(
             f"Actuals through {actuals_through}: waterfall runs only for periods after {cutoff_date}"
         )
+
+    # Add refi distributable proceeds to cap_period_cash (Section 8.2)
+    if refi_dbg is not None and refi_net_proceeds > 0:
+        distributable = refi_net_proceeds - refi_reserve_holdback
+        if distributable > 0:
+            refi_date = as_date(refi_dbg.get("refi_date", refi_dbg.get("new_maturity_date", sale_me)))
+            # Use the actual refi date from the prospect
+            if prospective_loans_raw is not None and not prospective_loans_raw.empty:
+                acc = prospective_loans_raw[
+                    (prospective_loans_raw["vcode"].astype(str) == str(deal_vcode))
+                    & (prospective_loans_raw["status"] == "accepted")
+                ]
+                if not acc.empty:
+                    refi_date = month_end(as_date(acc.iloc[0]["refi_date"]))
+            refi_cash_entry = pd.DataFrame([{
+                "event_date": refi_date,
+                "cash_available": distributable,
+            }])
+            if cap_period_cash.empty:
+                cap_period_cash = refi_cash_entry
+            else:
+                if refi_date in cap_period_cash["event_date"].values:
+                    cap_period_cash.loc[cap_period_cash["event_date"] == refi_date, "cash_available"] += distributable
+                else:
+                    cap_period_cash = pd.concat([cap_period_cash, refi_cash_entry], ignore_index=True).sort_values("event_date")
+            debug_msgs.append(f"Refi distributable proceeds ${distributable:,.0f} added to capital waterfall at {refi_date}")
 
     # Add sale proceeds to cap_period_cash
     if sale_dbg is not None and sale_dbg.get("Net_Sale_Proceeds", 0) > 0:
@@ -814,6 +936,9 @@ def compute_deal_analysis(
         'model_end_full': model_end_full,
         'beginning_cash': beginning_cash,
         'actuals_through': actuals_through,
+        'refi_dbg': refi_dbg,
+        'refi_capital_call_required': refi_capital_call_required,
+        'refi_capital_call_amount': refi_capital_call_amount,
     }
 
     # --- Build partner results (single source of truth for all metrics) ---

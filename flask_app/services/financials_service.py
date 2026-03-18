@@ -7,6 +7,7 @@ dicts suitable for JSON serialization.
 
 import pandas as pd
 import numpy as np
+from io import BytesIO
 from datetime import datetime, date
 from typing import Optional
 
@@ -823,3 +824,519 @@ def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
 def get_one_pager_chart(vcode, isbs_raw, occupancy_raw, num_quarters=12):
     """Build quarterly NOI chart data for One Pager (same pipeline as perf chart, fixed quarterly)."""
     return get_performance_chart_data(isbs_raw, occupancy_raw, vcode, freq="Quarterly", periods=num_quarters)
+
+
+# ============================================================
+# Excel Generators
+# ============================================================
+
+def _safe_autosize(ws):
+    """Auto-size columns, skipping merged cells."""
+    from openpyxl.cell.cell import MergedCell
+    for col in ws.columns:
+        max_len = 0
+        col_letter = None
+        for cell in col:
+            if isinstance(cell, MergedCell):
+                continue
+            if col_letter is None:
+                col_letter = cell.column_letter
+            max_len = max(max_len, len(str(cell.value or "")))
+        if col_letter:
+            ws.column_dimensions[col_letter].width = min(max_len + 4, 40)
+
+
+def generate_performance_chart_excel(chart_data: dict, deal_name: str = "") -> bytes:
+    """Create Excel workbook with performance chart data as a table."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment
+    from flask_app.services.compute_service import _excel_styles, _write_header_row
+
+    s = _excel_styles()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Performance Data"
+
+    # Title row
+    title = f"{deal_name} — Performance Data" if deal_name else "Performance Data"
+    ws.cell(row=1, column=1, value=title).font = Font(bold=True, size=13)
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=4)
+
+    # Header row 3
+    cols = ["Period", "Actual NOI ($)", "U/W NOI ($)", "Occupancy (%)"]
+    r = _write_header_row(ws, 3, cols, s)
+
+    # Data rows
+    periods = chart_data.get("periods", [])
+    actual_noi = chart_data.get("actual_noi", [])
+    uw_noi = chart_data.get("uw_noi", [])
+    occupancy = chart_data.get("occupancy", [])
+
+    for i, period in enumerate(periods):
+        ws.cell(row=r, column=1, value=period)
+        c_actual = ws.cell(row=r, column=2, value=actual_noi[i] if i < len(actual_noi) else None)
+        c_actual.number_format = '$#,##0'
+        c_uw = ws.cell(row=r, column=3, value=uw_noi[i] if i < len(uw_noi) else None)
+        c_uw.number_format = '$#,##0'
+        occ_val = occupancy[i] if i < len(occupancy) else None
+        c_occ = ws.cell(row=r, column=4, value=occ_val / 100.0 if occ_val is not None else None)
+        c_occ.number_format = '0.0%'
+        r += 1
+
+    _safe_autosize(ws)
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def generate_income_statement_excel(is_data: dict, deal_name: str = "") -> bytes:
+    """Create Excel workbook with income statement data."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from flask_app.services.compute_service import _excel_styles, _write_header_row
+
+    s = _excel_styles()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Income Statement"
+
+    # Title row
+    title = f"{deal_name} — Income Statement" if deal_name else "Income Statement"
+    ws.cell(row=1, column=1, value=title).font = Font(bold=True, size=13)
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=5)
+
+    # Header row 3
+    left_label = is_data.get("left_label", "Left")
+    right_label = is_data.get("right_label", "Right")
+    cols = ["Account", left_label, right_label, "Variance ($)", "Variance (%)"]
+    r = _write_header_row(ws, 3, cols, s)
+
+    calc_fill = PatternFill(start_color="EFF6FF", end_color="EFF6FF", fill_type="solid")
+    top_border = Border(top=Side(style='medium'))
+
+    rows = is_data.get("rows", [])
+    for row in rows:
+        account = row.get("account", "")
+        is_header = row.get("is_header", False)
+        is_total = row.get("is_total", False)
+        is_calc = row.get("is_calc", False)
+        level = row.get("level", 0)
+        is_dscr = account == "DSCR"
+
+        # Indent level 1 rows
+        if level == 1 and not is_header:
+            account = "  " + account
+
+        ws.cell(row=r, column=1, value=account)
+
+        if is_header:
+            ws.cell(row=r, column=1).font = Font(bold=True)
+        elif is_total:
+            for ci in range(1, 6):
+                ws.cell(row=r, column=ci).font = Font(bold=True)
+                ws.cell(row=r, column=ci).border = top_border
+        elif is_calc:
+            for ci in range(1, 6):
+                ws.cell(row=r, column=ci).font = Font(bold=True)
+                ws.cell(row=r, column=ci).fill = calc_fill
+
+        if not is_header:
+            left_val = row.get("left")
+            right_val = row.get("right")
+            var_usd = row.get("var_usd")
+            var_pct = row.get("var_pct")
+
+            if is_dscr:
+                fmt = '0.00"x"'
+                c_left = ws.cell(row=r, column=2, value=left_val)
+                c_left.number_format = fmt
+                c_right = ws.cell(row=r, column=3, value=right_val)
+                c_right.number_format = fmt
+            else:
+                c_left = ws.cell(row=r, column=2, value=left_val)
+                c_left.number_format = '$#,##0'
+                c_right = ws.cell(row=r, column=3, value=right_val)
+                c_right.number_format = '$#,##0'
+                c_var = ws.cell(row=r, column=4, value=var_usd)
+                c_var.number_format = '$#,##0'
+
+            c_vpct = ws.cell(row=r, column=5, value=var_pct)
+            c_vpct.number_format = '0.0%'
+
+        r += 1
+
+    _safe_autosize(ws)
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def generate_balance_sheet_excel(bs_data: dict, deal_name: str = "") -> bytes:
+    """Create Excel workbook with balance sheet data."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, Border, Side
+    from flask_app.services.compute_service import _excel_styles, _write_header_row
+
+    s = _excel_styles()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Balance Sheet"
+
+    # Title row
+    title = f"{deal_name} — Balance Sheet" if deal_name else "Balance Sheet"
+    ws.cell(row=1, column=1, value=title).font = Font(bold=True, size=13)
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=5)
+
+    # Header row 3
+    p1_label = bs_data.get("period1_label", "Period 1")
+    p2_label = bs_data.get("period2_label", "Period 2")
+    cols = ["Account", p1_label, p2_label, "Variance ($)", "Variance (%)"]
+    r = _write_header_row(ws, 3, cols, s)
+
+    top_border = Border(top=Side(style='medium'))
+
+    rows = bs_data.get("rows", [])
+    for row in rows:
+        account = row.get("account", "")
+        is_header = row.get("is_header", False)
+        is_total = row.get("is_total", False)
+        level = row.get("level", 0)
+
+        # Indent based on level
+        if level == 2 and not is_header:
+            account = "    " + account
+        elif level == 1 and not is_header:
+            account = "  " + account
+
+        ws.cell(row=r, column=1, value=account)
+
+        if is_header:
+            ws.cell(row=r, column=1).font = Font(bold=True)
+        elif is_total:
+            for ci in range(1, 6):
+                ws.cell(row=r, column=ci).font = Font(bold=True)
+                ws.cell(row=r, column=ci).border = top_border
+
+        if not is_header:
+            c_p1 = ws.cell(row=r, column=2, value=row.get("period1"))
+            c_p1.number_format = '$#,##0'
+            c_p2 = ws.cell(row=r, column=3, value=row.get("period2"))
+            c_p2.number_format = '$#,##0'
+            c_var = ws.cell(row=r, column=4, value=row.get("var_usd"))
+            c_var.number_format = '$#,##0'
+            c_vpct = ws.cell(row=r, column=5, value=row.get("var_pct"))
+            c_vpct.number_format = '0.0%'
+
+        r += 1
+
+    _safe_autosize(ws)
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def generate_tenant_roster_excel(tenant_data: dict, deal_name: str = "") -> bytes:
+    """Create multi-sheet Excel workbook with tenant roster and lease rollover."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from flask_app.services.compute_service import _excel_styles, _write_header_row
+
+    s = _excel_styles()
+    yellow_fill = PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid")
+    wb = Workbook()
+
+    # ---- Sheet 1: Tenant Roster ----
+    ws = wb.active
+    ws.title = "Tenant Roster"
+
+    # Title row 1
+    title = f"{deal_name} — Tenant Roster" if deal_name else "Tenant Roster"
+    ws.cell(row=1, column=1, value=title).font = Font(bold=True, size=13)
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=8)
+
+    # Summary row 2
+    summary = tenant_data.get("summary", {})
+    occ_sf = summary.get("occupied_sf", 0)
+    occ_pct = summary.get("occupancy_pct", 0)
+    wtd_rpsf = summary.get("wtd_avg_rpsf", 0)
+    summary_text = f"Occupied SF: {occ_sf:,.0f} | Occupancy: {occ_pct:.1%} | Wtd Avg RPSF: ${wtd_rpsf:,.2f}"
+    ws.cell(row=2, column=1, value=summary_text).font = Font(bold=True)
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=8)
+
+    # Header row 4
+    cols = ["Tenant", "SF Leased", "Lease Start", "Lease End", "Annual Rent", "$/SF", "% GLA", "% ABR"]
+    r = _write_header_row(ws, 4, cols, s)
+
+    tenants = tenant_data.get("tenants", [])
+    for t in tenants:
+        ws.cell(row=r, column=1, value=t.get("tenant_name", ""))
+        c_sf = ws.cell(row=r, column=2, value=t.get("sf_leased"))
+        c_sf.number_format = '#,##0'
+
+        # Lease dates
+        start_str = t.get("lease_start")
+        if start_str:
+            try:
+                ws.cell(row=r, column=3, value=pd.Timestamp(start_str).to_pydatetime()).number_format = 'MM/DD/YYYY'
+            except Exception:
+                ws.cell(row=r, column=3, value=start_str)
+        end_str = t.get("lease_end")
+        if end_str:
+            try:
+                ws.cell(row=r, column=4, value=pd.Timestamp(end_str).to_pydatetime()).number_format = 'MM/DD/YYYY'
+            except Exception:
+                ws.cell(row=r, column=4, value=end_str)
+
+        c_rent = ws.cell(row=r, column=5, value=t.get("annual_rent"))
+        c_rent.number_format = '$#,##0'
+        c_rpsf = ws.cell(row=r, column=6, value=t.get("rpsf"))
+        c_rpsf.number_format = '$#,##0.00'
+        c_gla = ws.cell(row=r, column=7, value=t.get("pct_gla"))
+        c_gla.number_format = '0.0%'
+        c_abr = ws.cell(row=r, column=8, value=t.get("pct_abr"))
+        c_abr.number_format = '0.0%'
+
+        # Vacant rows: italic
+        if t.get("is_vacant"):
+            for ci in range(1, 9):
+                ws.cell(row=r, column=ci).font = Font(italic=True)
+
+        # Expiring rows: yellow fill
+        if t.get("expiring_soon"):
+            for ci in range(1, 9):
+                ws.cell(row=r, column=ci).fill = yellow_fill
+
+        r += 1
+
+    _safe_autosize(ws)
+
+    # ---- Sheet 2: Lease Rollover ----
+    ws2 = wb.create_sheet("Lease Rollover")
+
+    ws2.cell(row=1, column=1, value="Lease Maturity Schedule").font = Font(bold=True, size=13)
+    ws2.merge_cells(start_row=1, start_column=1, end_row=1, end_column=5)
+
+    r2 = 3
+    rollover = tenant_data.get("rollover", {})
+    exposure = rollover.get("exposure_2yr")
+    if exposure:
+        exp_gla = exposure.get("gla", 0)
+        exp_gla_pct = exposure.get("gla_pct", 0)
+        exp_abr = exposure.get("abr", 0)
+        exp_abr_pct = exposure.get("abr_pct", 0)
+        kpi_text = (f"2-Year Exposure — Expiring GLA: {exp_gla:,.0f} ({exp_gla_pct:.1%}) "
+                    f"| Expiring ABR: ${exp_abr:,.0f} ({exp_abr_pct:.1%})")
+        ws2.cell(row=r2, column=1, value=kpi_text).font = Font(bold=True)
+        ws2.merge_cells(start_row=r2, start_column=1, end_row=r2, end_column=5)
+        r2 += 2
+
+    # Maturity table header
+    mat_cols = ["Year", "SF", "Annual Rent", "Avg $/SF", "% Revenue"]
+    r2 = _write_header_row(ws2, r2, mat_cols, s)
+
+    maturity = rollover.get("maturity_by_year", [])
+    for m in maturity:
+        ws2.cell(row=r2, column=1, value=m.get("year", ""))
+        c_sf = ws2.cell(row=r2, column=2, value=m.get("sf"))
+        c_sf.number_format = '#,##0'
+        c_rent = ws2.cell(row=r2, column=3, value=m.get("annual_rent"))
+        c_rent.number_format = '$#,##0'
+        c_rpsf = ws2.cell(row=r2, column=4, value=m.get("avg_rpsf"))
+        c_rpsf.number_format = '$#,##0.00'
+        c_pct = ws2.cell(row=r2, column=5, value=m.get("pct_revenue"))
+        c_pct.number_format = '0.0%'
+        r2 += 1
+
+    _safe_autosize(ws2)
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def generate_full_financials_excel(chart_data, is_data, bs_data, tenant_data, deal_name="") -> bytes:
+    """Combine all property financials sections into a single 5-sheet workbook."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from flask_app.services.compute_service import _excel_styles, _write_header_row
+
+    s = _excel_styles()
+    yellow_fill = PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid")
+    calc_fill = PatternFill(start_color="EFF6FF", end_color="EFF6FF", fill_type="solid")
+    top_border = Border(top=Side(style='medium'))
+    wb = Workbook()
+
+    # ---- Sheet 1: Performance Data ----
+    ws = wb.active
+    ws.title = "Performance Data"
+    title = f"{deal_name} — Performance Data" if deal_name else "Performance Data"
+    ws.cell(row=1, column=1, value=title).font = Font(bold=True, size=13)
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=4)
+    cols = ["Period", "Actual NOI ($)", "U/W NOI ($)", "Occupancy (%)"]
+    r = _write_header_row(ws, 3, cols, s)
+    periods = chart_data.get("periods", [])
+    actual_noi = chart_data.get("actual_noi", [])
+    uw_noi = chart_data.get("uw_noi", [])
+    occupancy = chart_data.get("occupancy", [])
+    for i, period in enumerate(periods):
+        ws.cell(row=r, column=1, value=period)
+        ws.cell(row=r, column=2, value=actual_noi[i] if i < len(actual_noi) else None).number_format = '$#,##0'
+        ws.cell(row=r, column=3, value=uw_noi[i] if i < len(uw_noi) else None).number_format = '$#,##0'
+        occ_val = occupancy[i] if i < len(occupancy) else None
+        ws.cell(row=r, column=4, value=occ_val / 100.0 if occ_val is not None else None).number_format = '0.0%'
+        r += 1
+    _safe_autosize(ws)
+
+    # ---- Sheet 2: Income Statement ----
+    ws2 = wb.create_sheet("Income Statement")
+    title = f"{deal_name} — Income Statement" if deal_name else "Income Statement"
+    ws2.cell(row=1, column=1, value=title).font = Font(bold=True, size=13)
+    ws2.merge_cells(start_row=1, start_column=1, end_row=1, end_column=5)
+    left_label = is_data.get("left_label", "Left")
+    right_label = is_data.get("right_label", "Right")
+    is_cols = ["Account", left_label, right_label, "Variance ($)", "Variance (%)"]
+    r = _write_header_row(ws2, 3, is_cols, s)
+    for row in is_data.get("rows", []):
+        account = row.get("account", "")
+        is_header = row.get("is_header", False)
+        is_total_row = row.get("is_total", False)
+        is_calc_row = row.get("is_calc", False)
+        level = row.get("level", 0)
+        is_dscr = account == "DSCR"
+        if level == 1 and not is_header:
+            account = "  " + account
+        ws2.cell(row=r, column=1, value=account)
+        if is_header:
+            ws2.cell(row=r, column=1).font = Font(bold=True)
+        elif is_total_row:
+            for ci in range(1, 6):
+                ws2.cell(row=r, column=ci).font = Font(bold=True)
+                ws2.cell(row=r, column=ci).border = top_border
+        elif is_calc_row:
+            for ci in range(1, 6):
+                ws2.cell(row=r, column=ci).font = Font(bold=True)
+                ws2.cell(row=r, column=ci).fill = calc_fill
+        if not is_header:
+            left_val = row.get("left")
+            right_val = row.get("right")
+            if is_dscr:
+                fmt = '0.00"x"'
+                ws2.cell(row=r, column=2, value=left_val).number_format = fmt
+                ws2.cell(row=r, column=3, value=right_val).number_format = fmt
+            else:
+                ws2.cell(row=r, column=2, value=left_val).number_format = '$#,##0'
+                ws2.cell(row=r, column=3, value=right_val).number_format = '$#,##0'
+                ws2.cell(row=r, column=4, value=row.get("var_usd")).number_format = '$#,##0'
+            ws2.cell(row=r, column=5, value=row.get("var_pct")).number_format = '0.0%'
+        r += 1
+    _safe_autosize(ws2)
+
+    # ---- Sheet 3: Balance Sheet ----
+    ws3 = wb.create_sheet("Balance Sheet")
+    title = f"{deal_name} — Balance Sheet" if deal_name else "Balance Sheet"
+    ws3.cell(row=1, column=1, value=title).font = Font(bold=True, size=13)
+    ws3.merge_cells(start_row=1, start_column=1, end_row=1, end_column=5)
+    p1_label = bs_data.get("period1_label", "Period 1")
+    p2_label = bs_data.get("period2_label", "Period 2")
+    bs_cols = ["Account", p1_label, p2_label, "Variance ($)", "Variance (%)"]
+    r = _write_header_row(ws3, 3, bs_cols, s)
+    for row in bs_data.get("rows", []):
+        account = row.get("account", "")
+        is_header = row.get("is_header", False)
+        is_total_row = row.get("is_total", False)
+        level = row.get("level", 0)
+        if level == 2 and not is_header:
+            account = "    " + account
+        elif level == 1 and not is_header:
+            account = "  " + account
+        ws3.cell(row=r, column=1, value=account)
+        if is_header:
+            ws3.cell(row=r, column=1).font = Font(bold=True)
+        elif is_total_row:
+            for ci in range(1, 6):
+                ws3.cell(row=r, column=ci).font = Font(bold=True)
+                ws3.cell(row=r, column=ci).border = top_border
+        if not is_header:
+            ws3.cell(row=r, column=2, value=row.get("period1")).number_format = '$#,##0'
+            ws3.cell(row=r, column=3, value=row.get("period2")).number_format = '$#,##0'
+            ws3.cell(row=r, column=4, value=row.get("var_usd")).number_format = '$#,##0'
+            ws3.cell(row=r, column=5, value=row.get("var_pct")).number_format = '0.0%'
+        r += 1
+    _safe_autosize(ws3)
+
+    # ---- Sheet 4: Tenant Roster ----
+    ws4 = wb.create_sheet("Tenant Roster")
+    title = f"{deal_name} — Tenant Roster" if deal_name else "Tenant Roster"
+    ws4.cell(row=1, column=1, value=title).font = Font(bold=True, size=13)
+    ws4.merge_cells(start_row=1, start_column=1, end_row=1, end_column=8)
+    summary = tenant_data.get("summary", {})
+    occ_sf = summary.get("occupied_sf", 0)
+    occ_pct = summary.get("occupancy_pct", 0)
+    wtd_rpsf = summary.get("wtd_avg_rpsf", 0)
+    summary_text = f"Occupied SF: {occ_sf:,.0f} | Occupancy: {occ_pct:.1%} | Wtd Avg RPSF: ${wtd_rpsf:,.2f}"
+    ws4.cell(row=2, column=1, value=summary_text).font = Font(bold=True)
+    ws4.merge_cells(start_row=2, start_column=1, end_row=2, end_column=8)
+    t_cols = ["Tenant", "SF Leased", "Lease Start", "Lease End", "Annual Rent", "$/SF", "% GLA", "% ABR"]
+    r = _write_header_row(ws4, 4, t_cols, s)
+    for t in tenant_data.get("tenants", []):
+        ws4.cell(row=r, column=1, value=t.get("tenant_name", ""))
+        ws4.cell(row=r, column=2, value=t.get("sf_leased")).number_format = '#,##0'
+        start_str = t.get("lease_start")
+        if start_str:
+            try:
+                ws4.cell(row=r, column=3, value=pd.Timestamp(start_str).to_pydatetime()).number_format = 'MM/DD/YYYY'
+            except Exception:
+                ws4.cell(row=r, column=3, value=start_str)
+        end_str = t.get("lease_end")
+        if end_str:
+            try:
+                ws4.cell(row=r, column=4, value=pd.Timestamp(end_str).to_pydatetime()).number_format = 'MM/DD/YYYY'
+            except Exception:
+                ws4.cell(row=r, column=4, value=end_str)
+        ws4.cell(row=r, column=5, value=t.get("annual_rent")).number_format = '$#,##0'
+        ws4.cell(row=r, column=6, value=t.get("rpsf")).number_format = '$#,##0.00'
+        ws4.cell(row=r, column=7, value=t.get("pct_gla")).number_format = '0.0%'
+        ws4.cell(row=r, column=8, value=t.get("pct_abr")).number_format = '0.0%'
+        if t.get("is_vacant"):
+            for ci in range(1, 9):
+                ws4.cell(row=r, column=ci).font = Font(italic=True)
+        if t.get("expiring_soon"):
+            for ci in range(1, 9):
+                ws4.cell(row=r, column=ci).fill = yellow_fill
+        r += 1
+    _safe_autosize(ws4)
+
+    # ---- Sheet 5: Lease Rollover ----
+    ws5 = wb.create_sheet("Lease Rollover")
+    ws5.cell(row=1, column=1, value="Lease Maturity Schedule").font = Font(bold=True, size=13)
+    ws5.merge_cells(start_row=1, start_column=1, end_row=1, end_column=5)
+    r5 = 3
+    rollover = tenant_data.get("rollover", {})
+    exposure = rollover.get("exposure_2yr")
+    if exposure:
+        exp_gla = exposure.get("gla", 0)
+        exp_gla_pct = exposure.get("gla_pct", 0)
+        exp_abr = exposure.get("abr", 0)
+        exp_abr_pct = exposure.get("abr_pct", 0)
+        kpi_text = (f"2-Year Exposure — Expiring GLA: {exp_gla:,.0f} ({exp_gla_pct:.1%}) "
+                    f"| Expiring ABR: ${exp_abr:,.0f} ({exp_abr_pct:.1%})")
+        ws5.cell(row=r5, column=1, value=kpi_text).font = Font(bold=True)
+        ws5.merge_cells(start_row=r5, start_column=1, end_row=r5, end_column=5)
+        r5 += 2
+    mat_cols = ["Year", "SF", "Annual Rent", "Avg $/SF", "% Revenue"]
+    r5 = _write_header_row(ws5, r5, mat_cols, s)
+    for m in rollover.get("maturity_by_year", []):
+        ws5.cell(row=r5, column=1, value=m.get("year", ""))
+        ws5.cell(row=r5, column=2, value=m.get("sf")).number_format = '#,##0'
+        ws5.cell(row=r5, column=3, value=m.get("annual_rent")).number_format = '$#,##0'
+        ws5.cell(row=r5, column=4, value=m.get("avg_rpsf")).number_format = '$#,##0.00'
+        ws5.cell(row=r5, column=5, value=m.get("pct_revenue")).number_format = '0.0%'
+        r5 += 1
+    _safe_autosize(ws5)
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()

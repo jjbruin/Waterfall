@@ -40,23 +40,31 @@ def load_capital_calls(df: pd.DataFrame) -> pd.DataFrame:
 
     if 'vcode' in cc.columns and 'deal_name' not in cc.columns:
         cc = cc.rename(columns={'vcode': 'deal_name'})
+    if 'entityid' in cc.columns and 'deal_name' not in cc.columns:
+        cc = cc.rename(columns={'entityid': 'deal_name'})
 
     # Normalize typename column (for pool routing)
     if 'typename' not in cc.columns:
         cc['typename'] = 'Contribution: Investments'
 
-    # Convert date to datetime
-    if 'call_date' in cc.columns:
-        cc['call_date'] = pd.to_datetime(cc['call_date'])
-    
-    # Convert amount to numeric
+    # Convert amount to numeric early so we can filter nulls
     if 'amount' in cc.columns:
         cc['amount'] = pd.to_numeric(cc['amount'], errors='coerce')
-    
+
+    # Drop rows missing essential fields (deal_name, call_date, or amount)
+    required = [c for c in ['deal_name', 'call_date', 'amount'] if c in cc.columns]
+    if required:
+        cc = cc.dropna(subset=required, how='any')
+
+    # Convert date to datetime — use mixed format to handle both
+    # US ("6/30/2026") and ISO ("2026-06-01") dates from CSV vs HTML inputs
+    if 'call_date' in cc.columns:
+        cc['call_date'] = pd.to_datetime(cc['call_date'], format='mixed', dayfirst=False)
+
     # Sort by date
     if 'call_date' in cc.columns:
         cc = cc.sort_values('call_date')
-    
+
     return cc
 
 

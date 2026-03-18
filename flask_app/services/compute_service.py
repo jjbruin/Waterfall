@@ -57,6 +57,7 @@ def get_cached_deal_result(
     relationships_raw = data["relationships_raw"]
     capital_calls_raw = data["capital_calls_raw"]
     isbs_raw = data["isbs_raw"]
+    prospective_loans_raw = data.get("prospective_loans_raw")
 
     # Resolve InvestmentID for this vcode
     deal_row = inv[inv["vcode"] == vcode]
@@ -86,6 +87,7 @@ def get_cached_deal_result(
         horizon_years=horizon_years,
         pro_yr_base=pro_yr_base,
         actuals_through=actuals_through,
+        prospective_loans_raw=prospective_loans_raw,
     )
 
     _deal_cache[cache_key] = result

@@ -102,6 +102,63 @@ export interface XirrCashflows {
   [partner: string]: Array<{ date: string; amount: number }>
 }
 
+export interface ProspectiveLoan {
+  id: number
+  vcode: string
+  loan_name: string | null
+  status: string
+  refi_date: string
+  existing_loan_id: string | null
+  loan_amount: number | null
+  lender_uw_noi: number | null
+  max_ltv: number | null
+  min_dscr: number | null
+  min_debt_yield: number | null
+  interest_rate: number | null
+  rate_spread_bps: number | null
+  rate_index: string | null
+  term_years: number | null
+  amort_years: number | null
+  io_years: number | null
+  int_type: string | null
+  closing_costs: number | null
+  reserve_holdback: number | null
+  notes: string | null
+  created_at: string | null
+  [key: string]: any
+}
+
+export interface SizingResult {
+  system_noi_12m: number
+  lender_uw_noi: number
+  noi_difference: number
+  noi_diff_pct: number
+  constraints: Record<string, any>
+  binding_constraint: string
+  estimated_loan_amount: number
+  existing_loan_balance: number
+  closing_costs: number
+  reserve_holdback: number
+  net_refi_proceeds: number
+  distributable_proceeds: number
+  capital_call_required: boolean
+  capital_call_amount: number
+  new_maturity_date: string | null
+  [key: string]: any
+}
+
+export interface RawCapitalCall {
+  id: number
+  Vcode: string
+  PropCode: string
+  CallDate: string
+  Amount: number
+  CallType: string
+  FundingSource: string
+  Notes: string
+  Typename: string
+}
+
 // ============================================================
 // Store
 // ============================================================
@@ -126,6 +183,18 @@ export const useDealsStore = defineStore('deals', () => {
   const roeAudits = ref<Record<string, RoeAudit>>({})
   const moicAudits = ref<Record<string, MoicAudit>>({})
 
+  // Prospective loans
+  const prospectiveLoans = ref<Record<string, ProspectiveLoan[]>>({})
+  const sizingResults = ref<Record<number, SizingResult>>({})
+
+  // Raw capital calls (for editing)
+  const rawCapitalCalls = ref<Record<string, RawCapitalCall[]>>({})
+
+  // Refi info from last compute
+  const refiDbg = ref<Record<string, any>>({})
+  const refiCapitalCallRequired = ref<Record<string, boolean>>({})
+  const refiCapitalCallAmount = ref<Record<string, number>>({})
+
   // Section loading states
   const loadingSection = ref<string | null>(null)
 
@@ -142,10 +211,26 @@ export const useDealsStore = defineStore('deals', () => {
   const currentMoic = computed(() => moicAudits.value[currentVcode.value] || null)
   const currentDebugMsgs = computed(() => debugMsgs.value[currentVcode.value] || [])
   const hasResult = computed(() => !!dealSummaries.value[currentVcode.value])
+  const currentProspectiveLoans = computed(() => prospectiveLoans.value[currentVcode.value] || [])
+  const currentRawCapitalCalls = computed(() => rawCapitalCalls.value[currentVcode.value] || [])
+  const currentRefiDbg = computed(() => refiDbg.value[currentVcode.value] || null)
+  const currentRefiCapCallRequired = computed(() => refiCapitalCallRequired.value[currentVcode.value] || false)
+  const currentRefiCapCallAmount = computed(() => refiCapitalCallAmount.value[currentVcode.value] || 0)
 
   // ============================================================
   // Actions
   // ============================================================
+
+  function _clearLazySections(vcode: string) {
+    // Clear lazy-loaded sections so they reload with fresh data
+    delete forecasts.value[vcode]
+    delete debtService.value[vcode]
+    delete cashData.value[vcode]
+    delete capitalCalls.value[vcode]
+    delete xirrCashflows.value[vcode]
+    delete roeAudits.value[vcode]
+    delete moicAudits.value[vcode]
+  }
 
   async function computeDeal(vcode: string, force = false) {
     computing.value = true
@@ -161,6 +246,14 @@ export const useDealsStore = defineStore('deals', () => {
       dealSummaries.value[vcode] = compRes.data.deal_summary
       debugMsgs.value[vcode] = compRes.data.debug_msgs || []
       headers.value[vcode] = headerRes.data
+
+      // Store refi info
+      refiDbg.value[vcode] = compRes.data.refi_dbg || null
+      refiCapitalCallRequired.value[vcode] = compRes.data.refi_capital_call_required || false
+      refiCapitalCallAmount.value[vcode] = compRes.data.refi_capital_call_amount || 0
+
+      // Clear lazy sections so they reload fresh
+      _clearLazySections(vcode)
     } catch (e: any) {
       error.value = e.response?.data?.error || e.message
     } finally {
@@ -231,6 +324,84 @@ export const useDealsStore = defineStore('deals', () => {
     } finally { loadingSection.value = null }
   }
 
+  // ============================================================
+  // Prospective Loans
+  // ============================================================
+
+  async function loadProspectiveLoans(vcode: string) {
+    try {
+      const res = await api.get(`/api/deals/${vcode}/prospective-loans`)
+      prospectiveLoans.value[vcode] = res.data.loans
+    } catch { /* ignore */ }
+  }
+
+  async function createProspectiveLoan(vcode: string, data: Record<string, any>) {
+    const res = await api.post(`/api/deals/${vcode}/prospective-loans`, data)
+    await loadProspectiveLoans(vcode)
+    return res.data
+  }
+
+  async function updateProspectiveLoan(vcode: string, loanId: number, data: Record<string, any>) {
+    await api.put(`/api/deals/${vcode}/prospective-loans/${loanId}`, data)
+    await loadProspectiveLoans(vcode)
+  }
+
+  async function deleteProspectiveLoan(vcode: string, loanId: number) {
+    const loan = (prospectiveLoans.value[vcode] || []).find(l => l.id === loanId)
+    await api.delete(`/api/deals/${vcode}/prospective-loans/${loanId}`)
+    await loadProspectiveLoans(vcode)
+    // Only recompute if we deleted an accepted loan
+    if (loan && loan.status === 'accepted') {
+      await computeDeal(vcode, true)
+    }
+  }
+
+  async function acceptProspectiveLoan(vcode: string, loanId: number) {
+    const res = await api.post(`/api/deals/${vcode}/prospective-loans/${loanId}/accept`)
+    await loadProspectiveLoans(vcode)
+    // Recompute to get fresh results with the new loan
+    await computeDeal(vcode, true)
+    return res.data
+  }
+
+  async function revertProspectiveLoan(vcode: string, loanId: number) {
+    await api.post(`/api/deals/${vcode}/prospective-loans/${loanId}/revert`)
+    await loadProspectiveLoans(vcode)
+    await computeDeal(vcode, true)
+  }
+
+  async function runSizingAnalysis(vcode: string, loanId: number) {
+    const res = await api.get(`/api/deals/${vcode}/prospective-loans/${loanId}/sizing`)
+    sizingResults.value[loanId] = res.data
+    return res.data
+  }
+
+  // ============================================================
+  // Raw Capital Calls CRUD
+  // ============================================================
+
+  async function loadRawCapitalCalls(vcode: string) {
+    try {
+      const res = await api.get(`/api/deals/${vcode}/raw-capital-calls`)
+      rawCapitalCalls.value[vcode] = res.data.capital_calls
+    } catch { /* ignore */ }
+  }
+
+  async function createRawCapitalCall(vcode: string, data: Record<string, any>) {
+    await api.post(`/api/deals/${vcode}/raw-capital-calls`, data)
+    await loadRawCapitalCalls(vcode)
+  }
+
+  async function updateRawCapitalCall(vcode: string, callId: number, data: Record<string, any>) {
+    await api.put(`/api/deals/${vcode}/raw-capital-calls/${callId}`, data)
+    await loadRawCapitalCalls(vcode)
+  }
+
+  async function deleteRawCapitalCall(vcode: string, callId: number) {
+    await api.delete(`/api/deals/${vcode}/raw-capital-calls/${callId}`)
+    await loadRawCapitalCalls(vcode)
+  }
+
   function selectDeal(vcode: string) {
     currentVcode.value = vcode
   }
@@ -247,6 +418,12 @@ export const useDealsStore = defineStore('deals', () => {
     xirrCashflows.value = {}
     roeAudits.value = {}
     moicAudits.value = {}
+    prospectiveLoans.value = {}
+    sizingResults.value = {}
+    rawCapitalCalls.value = {}
+    refiDbg.value = {}
+    refiCapitalCallRequired.value = {}
+    refiCapitalCallAmount.value = {}
     currentVcode.value = ''
   }
 
@@ -255,13 +432,24 @@ export const useDealsStore = defineStore('deals', () => {
     partnerResults, dealSummaries, debugMsgs,
     headers, forecasts, debtService, cashData, capitalCalls,
     xirrCashflows, roeAudits, moicAudits,
+    prospectiveLoans, sizingResults, rawCapitalCalls,
+    refiDbg, refiCapitalCallRequired, refiCapitalCallAmount,
     // Computed
     currentPartners, currentSummary, currentHeader, currentForecast,
     currentDebt, currentCash, currentCapCalls, currentXirr,
     currentRoe, currentMoic, currentDebugMsgs, hasResult,
+    currentProspectiveLoans, currentRawCapitalCalls,
+    currentRefiDbg, currentRefiCapCallRequired, currentRefiCapCallAmount,
     // Actions
     computeDeal, loadForecast, loadDebtService, loadCashSchedule,
     loadCapitalCalls, loadXirrCashflows, loadRoeAudit, loadMoicAudit,
     selectDeal, clearAll,
+    // Prospective loans
+    loadProspectiveLoans, createProspectiveLoan, updateProspectiveLoan,
+    deleteProspectiveLoan, acceptProspectiveLoan, revertProspectiveLoan,
+    runSizingAnalysis,
+    // Raw capital calls
+    loadRawCapitalCalls, createRawCapitalCall, updateRawCapitalCall,
+    deleteRawCapitalCall,
   }
 })
