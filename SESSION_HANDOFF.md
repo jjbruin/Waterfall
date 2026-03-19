@@ -1,6 +1,6 @@
 # Session Handoff: Flask API + Vue 3 SPA — Waterfall XIRR
 
-**Date**: 2026-03-16 (updated)
+**Date**: 2026-03-18 (updated)
 **Status**: Application fully operational on Flask + Vue. Streamlit removed. Azure deployment blocked on IT.
 
 ---
@@ -15,6 +15,9 @@
 | Core Engine | **CLEAN** | 14+ Python modules with no UI dependency (compute, waterfall, metrics, etc.) |
 | Actuals Through | **COMPLETE** | Global cutoff setting, dynamic year defaults, threaded through all layers |
 | Excel Downloads | **COMPLETE** | Per-section buttons + full 7-sheet Deal Analysis workbook |
+| Capital Calls | **COMPLETE** | CRUD endpoints, mixed date handling, refi shortfall auto-clear, table auto-creation |
+| Balloon Payoff | **COMPLETE** | Detection, forecast exclusion, pre-balloon balance deduction from sale proceeds |
+| Prospective Loans | **COMPLETE** | Refi sizing with refi_date, sale date extension, balloon-aware net proceeds |
 | Review Workflow | **COMPLETE** | Sequential approval pipeline (Draft → Head AM → President → CCO → CEO → Approved) |
 | Multi-User Auth | **COMPLETE** | Role-based (viewer/analyst/admin), user management, SSO ready |
 | PostgreSQL | **READY** | Migration script, SQLAlchemy abstraction, data adapters |
@@ -122,6 +125,27 @@ waterfall-xirr/
 ---
 
 ## Recent Changes (March 2026)
+
+### Capital Calls, Balloon Payoff & Prospective Loans (Mar 18)
+
+**Capital Call CRUD & Data Pipeline**:
+- `POST/PUT/DELETE /api/deals/<vcode>/capital-calls` endpoints with full cache invalidation (`data_service.reload()`)
+- `capital_calls` table auto-created via `CREATE TABLE IF NOT EXISTS` in `database.py`
+- `load_capital_calls()` uses `pd.to_datetime(format='mixed', dayfirst=False)` for mixed CSV/HTML date formats
+- Null row filtering (`dropna`) handles empty rows from CSV imports (5,130 → 3 rows)
+- Column mapping: `entityid` → `deal_name`, `propcode` → `investor_id`, `calldate` → `call_date`
+- Refi shortfall auto-clear: when capital calls cover the gap within $1 tolerance, warning flag is removed
+
+**Balloon Loan Payoff at Sale**:
+- Detection: loan schedule last row `ending_balance < $1` (float tolerance), `principal > 0`, prior row balance > 0
+- Balloon principal excluded from forecast debt service (not an operating expense)
+- Sale proceeds deduct pre-balloon loan balance: `total_loan_balance_at(sale_date) + balloon_total`
+- Loan schedule grouped by `["vcode", "LoanID", "event_date"]` to distinguish overlapping loans
+
+**Prospective Loan Refinancing**:
+- `size_prospective_loan()` returns `refi_date` in sizing dict for Vue form pre-fill
+- Sale date extends to new maturity when `Sale_ME < new_maturity`
+- Net sale proceeds: `sale_price - loan_balances - balloon_total + cash_reserves`
 
 ### Streamlit Removal (Mar 16)
 - Deleted 9 Streamlit UI files: `app.py`, `dashboard_ui.py`, `debt_service_ui.py`, `property_financials_ui.py`, `reports_ui.py`, `sold_portfolio_ui.py`, `psckoc_ui.py`, `waterfall_setup_ui.py`, `one_pager_ui.py`
@@ -249,6 +273,10 @@ npm run dev
 - **Excel downloads**: openpyxl bytes served via `send_file(BytesIO(bytes))`, fetch + Blob on client
 - **Actuals through**: Global cutoff threads through config → compute → cache key → API → Vue sidebar
 - **Review workflow**: Sequential approval with role-gated actions, comment lockout during review
+- **Capital call dates**: `format='mixed'` handles CSV US dates ("6/30/2026") and HTML ISO dates ("2026-06-01")
+- **Cache invalidation**: Capital call CRUD uses `data_service.reload()` (full clear), not `refresh_table()` (single table patch)
+- **Balloon detection**: Float tolerance (`< $1`) instead of exact zero comparison for loan ending balances
+- **Refi shortfall tolerance**: $1 threshold for floating point rounding in capital call coverage checks
 
 ---
 

@@ -346,6 +346,46 @@ Entities with multiple investors need their own waterfall definitions. The syste
 | `MRI_Commitments.csv` | Who committed what to whom |
 | `MRI_Capital_Calls.csv` | Planned future calls |
 
+### Capital Calls Data Pipeline
+
+1. **CSV Import**: `MRI_Capital_Calls.csv` imported to `capital_calls` SQLite table
+2. **Table Auto-Creation**: `database.py` → `create_additional_tables()` creates the table if it doesn't exist:
+   ```sql
+   CREATE TABLE IF NOT EXISTS capital_calls (
+       Vcode TEXT NOT NULL, PropCode TEXT, CallDate TEXT,
+       Amount REAL, CallType TEXT, FundingSource TEXT,
+       Notes TEXT, Typename TEXT DEFAULT 'Contribution: Investments'
+   )
+   ```
+3. **Loading**: `load_capital_calls()` normalizes column names (`entityid` → `deal_name`, `propcode` → `investor_id`, `calldate` → `call_date`), drops null rows, parses dates with `format='mixed'`
+4. **Schedule**: `build_capital_call_schedule()` filters by deal vcode and builds event list
+5. **Application**: `apply_capital_calls_to_states()` routes contributions to capital pools via `typename_to_pool()` and records XIRR cashflows
+
+### Capital Call CRUD (Deal Analysis)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/deals/<vcode>/capital-calls` | POST | Create new capital call |
+| `/api/deals/<vcode>/capital-calls` | PUT | Update existing capital call |
+| `/api/deals/<vcode>/capital-calls` | DELETE | Delete capital call |
+
+All CRUD operations call `data_service.reload()` for full cache invalidation (not `refresh_table()`) to ensure consistent recomputation.
+
+### Refi Shortfall Auto-Clear
+
+When a deal has a refinancing shortfall (`refi_capital_call_required = True`), capital calls are checked after processing. If total capital calls cover the shortfall within $1 tolerance, the warning flag is cleared:
+```python
+remaining = refi_capital_call_amount - total_cc
+if remaining <= 1.0:
+    refi_capital_call_required = False
+```
+
+### Date Handling
+
+Capital calls use `pd.to_datetime(format='mixed', dayfirst=False)` to handle both:
+- US dates from CSV import: `"6/30/2026"`
+- ISO dates from HTML form inputs: `"2026-06-01"`
+
 ### Key Calculations
 
 **Unfunded Commitment**:
@@ -378,6 +418,35 @@ Beginning Cash
 At Sale:
 Sale Proceeds + Remaining Cash Reserves → Capital Waterfall
 ```
+
+---
+
+## Balloon Loan Payoff & Prospective Loans
+
+### Balloon Detection
+
+When a loan's amortization schedule shows the balance being paid down to near-zero at maturity (a balloon payment), the system detects this automatically:
+
+| Check | Threshold |
+|-------|-----------|
+| `ending_balance` on final row | < $1.00 (float tolerance) |
+| `principal` on final row | > 0 |
+| `ending_balance` on prior row | > 0 |
+
+### Forecast vs Sale Treatment
+
+- **Forecast debt service**: Balloon principal is **excluded** — it is not an operating expense. Only interest is included for the balloon period.
+- **Sale proceeds**: Net sale deducts the **pre-balloon** loan balance. Formula: `total_loan_balance_at(sale_date) + balloon_total`
+- **Loan schedule groupby**: Uses `["vcode", "LoanID", "event_date"]` to correctly distinguish multiple loans with overlapping dates
+
+### Prospective Loan Refinancing
+
+`size_prospective_loan()` in `planned_loans.py` models future refinancing:
+
+- Returns a sizing dict including `refi_date` for Vue form pre-fill
+- When `Sale_ME` < new loan maturity, sale date is extended to the new maturity
+- Net sale proceeds: `sale_price - loan_balances - balloon_total + cash_reserves`
+- The refi shortfall amount triggers the "Capital Call Required" warning in Deal Analysis
 
 ---
 
@@ -650,6 +719,11 @@ Cache invalidation happens via `compute_service.clear_cache()` when "Reload Data
 | Wrong pool receives distributions | Incorrect vtranstype | Update vtranstype text |
 | Properties not aggregating to parent | Portfolio_Name mismatch | Ensure property's Portfolio_Name = parent's Investment_Name |
 | Excessive pref accrual | Wrong last_accrual_date seed | Check accounting data has correct historical dates |
+| Capital calls not computing | Mixed date formats crash `pd.to_datetime` silently | Ensure `format='mixed'` in `load_capital_calls()` |
+| Capital calls empty after save | `refresh_table()` insufficient for initial load | Use `data_service.reload()` for full cache clear |
+| Refi shortfall persists after capital calls | Floating point rounding ($0.39 remainder) | $1 tolerance applied: `remaining <= 1.0` |
+| Balloon payment double-counted | Balloon in forecast AND sale deduction | Balloon excluded from forecast, added to sale loan balance |
+| Loan ending_balance not exactly 0 | Float rounding (e.g., 8.2e-08) | Detection uses `< 1.0` threshold, not `== 0` |
 
 ### Validation Checks
 
@@ -679,6 +753,7 @@ Cache invalidation happens via `compute_service.clear_cache()` when "Reload Data
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 3.1 | Mar 18 2026 | Capital call CRUD with full cache invalidation, mixed date format handling (`format='mixed'`), null row filtering, `capital_calls` table auto-creation, refi shortfall auto-clear after capital calls cover gap. Balloon loan payoff: detection (ending_balance < $1), exclusion from forecast debt service, pre-balloon balance deduction from net sale proceeds. Prospective loan `refi_date` in sizing dict for Vue form pre-fill. |
 | 3.0 | Mar 16 2026 | Global "Actuals Through" cutoff setting (sidebar control, forecast trimming, post-cutoff waterfall), dynamic year defaults, Deal Analysis per-section Excel downloads (7 section buttons + full 7-sheet workbook), capitalization table bug fix (TypeName normalization), annual forecast formatting (black border lines), Flask/Vue actuals_through threading |
 | 2.6 | Feb 11 2026 | PSCKOC entity analysis tab: AMFee + Promote vStates in waterfall engine, promote_base/promote_carry tracking on InvestorState, upstream waterfall aggregation for PSCKOC members (PSC1/KCREIT/PCBLE), income schedule, AM fee schedule, partner returns, Excel export |
 | 2.5 | Feb 11 2026 | ROE & MOIC audit expanders on Deal Analysis tab: full calculation breakdowns, capital balance timelines, metric summary cards, Excel downloads |

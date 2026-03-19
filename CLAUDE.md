@@ -102,6 +102,26 @@ cd vue_app && npm run dev        # Frontend on http://localhost:5173
 - Compounds annually on 12/31 (with 45-day grace period)
 - Tracked per investor via `InvestorState`
 
+### Capital Calls
+- **Data pipeline**: `MRI_Capital_Calls.csv` → `capital_calls` SQLite table → `load_capital_calls()` → `build_capital_call_schedule()` → `apply_capital_calls_to_states()`
+- **Date handling**: Uses `pd.to_datetime(format='mixed', dayfirst=False)` to handle both CSV US dates ("6/30/2026") and HTML ISO dates ("2026-06-01")
+- **Null filtering**: `dropna(subset=['deal_name', 'call_date', 'amount'])` removes empty rows from CSV imports
+- **Column mapping**: Supports `entityid` → `deal_name`, `propcode` → `investor_id`, `calldate` → `call_date`
+- **Table auto-creation**: `database.py` creates `capital_calls` table via `CREATE TABLE IF NOT EXISTS` in `create_additional_tables()`
+- **CRUD endpoints**: `POST/PUT/DELETE /api/deals/<vcode>/capital-calls` in `deals.py`. All use `data_service.reload()` for full cache invalidation
+- **Refi shortfall auto-clear**: After capital calls are applied, if total capital calls cover the refi shortfall (within $1 tolerance), `refi_capital_call_required` is set to False
+
+### Balloon Loan Payoff at Sale
+- **Detection**: Loan schedule's last row has `ending_balance < 1.0` (float tolerance), `principal > 0`, and prior row's `ending_balance > 0`
+- **Forecast exclusion**: Balloon principal payments are excluded from forecast debt service rows (they are NOT operating expenses)
+- **Sale proceeds**: Net sale proceeds deduct `total_loan_balance_at(sale_date) + balloon_total` — uses pre-balloon balance since balloon is paid at sale
+- **Groupby**: Loan schedule grouped by `["vcode", "LoanID", "event_date"]` to distinguish loans with same dates
+
+### Prospective Loans (Refinancing)
+- `size_prospective_loan()` in `planned_loans.py` returns sizing dict including `refi_date` for Vue form pre-fill
+- Prospective loan extends sale date to new maturity when `Sale_ME` < new maturity
+- Net sale proceeds formula: `sale_price - loan_balances - balloon_total + cash_reserves`
+
 ### Sub-Portfolio Aggregation
 - Deals can have child properties linked via `Portfolio_Name`
 - Loans aggregate UP from properties to parent deal level
@@ -251,8 +271,14 @@ Upstream waterfall analysis for the PSCKOC holding entity, showing how deal-leve
 - `get_pe_performance()` - PE funding, ROE, balances from accounting (one_pager.py)
 - `get_one_pager_comments()` / `save_one_pager_comments()` - Comments CRUD per vcode+quarter (one_pager.py)
 
+### Capital Calls
+- `load_capital_calls()` - Load and normalize capital calls with mixed date format handling (capital_calls.py)
+- `build_capital_call_schedule()` - Build list of capital call events, optionally filtered by deal (capital_calls.py)
+- `apply_capital_calls_to_states()` - Apply capital calls to investor states with pool routing (capital_calls.py)
+
 ### Database
 - `save_waterfall_steps()` - Replace all waterfall steps for a vcode with audit trail (database.py)
+- `create_additional_tables()` - Creates capital_calls and other tables if they don't exist (database.py)
 - `import_csvs_to_database()` - Refresh all tables from CSVs, protecting DB-managed tables (database.py)
 - `import_single_csv()` - Import a single CSV into its database table (database.py)
 - `export_all_tables_to_zip()` - Export all tables as labeled CSVs in a zip archive (database.py)
