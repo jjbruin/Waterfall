@@ -1,6 +1,6 @@
 # Session Handoff: Flask API + Vue 3 SPA — Waterfall XIRR
 
-**Date**: 2026-03-18 (updated)
+**Date**: 2026-03-19 (updated)
 **Status**: Application fully operational on Flask + Vue. Streamlit removed. Azure deployment blocked on IT.
 
 ---
@@ -18,6 +18,8 @@
 | Capital Calls | **COMPLETE** | CRUD endpoints, mixed date handling, refi shortfall auto-clear, table auto-creation |
 | Balloon Payoff | **COMPLETE** | Detection, forecast exclusion, pre-balloon balance deduction from sale proceeds |
 | Prospective Loans | **COMPLETE** | Refi sizing with refi_date, sale date extension, balloon-aware net proceeds |
+| Desktop Launcher | **COMPLETE** | `launch_app.bat` + custom icon, starts both servers + opens browser |
+| Responsive Layout | **COMPLETE** | Sidebar collapse updates main content width, views fill available screen |
 | Review Workflow | **COMPLETE** | Sequential approval pipeline (Draft → Head AM → President → CCO → CEO → Approved) |
 | Multi-User Auth | **COMPLETE** | Role-based (viewer/analyst/admin), user management, SSO ready |
 | PostgreSQL | **READY** | Migration script, SQLAlchemy abstraction, data adapters |
@@ -46,6 +48,8 @@ waterfall-xirr/
 ├── reporting.py                 # Annual aggregation tables, formatting utilities
 ├── ownership_tree.py            # Investor ownership structures
 ├── utils.py                     # Helper utilities
+├── launch_app.bat               # Desktop launcher (starts Flask + Vue + opens browser)
+├── waterfall_xirr.ico           # Custom app icon for desktop shortcut
 ├── waterfall.db                 # SQLite database (not in git, >100MB)
 │
 ├── flask_app/                   # Flask REST API (105 routes across 10 blueprints)
@@ -125,6 +129,20 @@ waterfall-xirr/
 ---
 
 ## Recent Changes (March 2026)
+
+### Desktop Launcher & Responsive Layout (Mar 19)
+
+**Desktop Launcher**:
+- `launch_app.bat` starts Flask API + Vue dev server (minimized), then opens browser to `http://localhost:5173`
+- Custom `waterfall_xirr.ico` icon (waterfall bar chart design) for desktop shortcut
+- Desktop shortcut created at user's Desktop folder
+
+**Responsive Sidebar & Full-Width Views**:
+- Sidebar collapse/expand now updates the `--sidebar-width` CSS variable on the document root
+- `main-content` margin animates with the sidebar via `transition: margin-left 0.2s`
+- Removed `max-width` constraints from Property Financials (was 1200px), Review Tracking (was 900px), and Settings (was 700px)
+- One Pager retains 960px `max-width` for print/PDF layout
+- All views now fill available screen width regardless of sidebar state
 
 ### Capital Calls, Balloon Payoff & Prospective Loans (Mar 18)
 
@@ -245,6 +263,9 @@ Then every push to `main` auto-deploys.
 
 ## Running Locally (Development)
 
+**Desktop shortcut** (easiest): Double-click **"Waterfall XIRR"** on the desktop — starts both servers and opens browser.
+
+**Or manually**:
 ```bash
 # Flask API (from repo root)
 cd waterfall-xirr
@@ -277,6 +298,7 @@ npm run dev
 - **Cache invalidation**: Capital call CRUD uses `data_service.reload()` (full clear), not `refresh_table()` (single table patch)
 - **Balloon detection**: Float tolerance (`< $1`) instead of exact zero comparison for loan ending balances
 - **Refi shortfall tolerance**: $1 threshold for floating point rounding in capital call coverage checks
+- **Responsive sidebar**: Toggle updates `--sidebar-width` CSS variable on `:root`; `main-content` transitions smoothly
 
 ---
 

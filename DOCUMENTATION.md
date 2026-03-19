@@ -116,6 +116,10 @@ python migrate_to_database.py --folder "C:\Users\jbruin\OneDrive - peaceablestre
 
 ### Step 3: Run Application
 
+**Option A — Desktop Shortcut** (recommended):
+Double-click the **"Waterfall XIRR"** shortcut on the desktop. It starts both servers and opens the browser automatically.
+
+**Option B — Manual Start**:
 ```bash
 # Flask API backend
 python -m flask_app.run          # API on http://localhost:5000
@@ -123,6 +127,12 @@ python -m flask_app.run          # API on http://localhost:5000
 # Vue frontend (separate terminal)
 cd vue_app && npm run dev        # Frontend on http://localhost:5173
 # Default login: admin / admin
+```
+
+**Option C — Launch Script**:
+```bash
+# From repo root — starts both servers + opens browser
+launch_app.bat
 ```
 
 ---
@@ -753,6 +763,7 @@ Cache invalidation happens via `compute_service.clear_cache()` when "Reload Data
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 3.2 | Mar 19 2026 | Desktop launcher (`launch_app.bat`) with custom icon (`waterfall_xirr.ico`). Responsive sidebar: collapsing/expanding updates main content width dynamically via CSS variable. Removed `max-width` constraints from Property Financials, Review Tracking, and Settings views (One Pager retains 960px for print layout). |
 | 3.1 | Mar 18 2026 | Capital call CRUD with full cache invalidation, mixed date format handling (`format='mixed'`), null row filtering, `capital_calls` table auto-creation, refi shortfall auto-clear after capital calls cover gap. Balloon loan payoff: detection (ending_balance < $1), exclusion from forecast debt service, pre-balloon balance deduction from net sale proceeds. Prospective loan `refi_date` in sizing dict for Vue form pre-fill. |
 | 3.0 | Mar 16 2026 | Global "Actuals Through" cutoff setting (sidebar control, forecast trimming, post-cutoff waterfall), dynamic year defaults, Deal Analysis per-section Excel downloads (7 section buttons + full 7-sheet workbook), capitalization table bug fix (TypeName normalization), annual forecast formatting (black border lines), Flask/Vue actuals_through threading |
 | 2.6 | Feb 11 2026 | PSCKOC entity analysis tab: AMFee + Promote vStates in waterfall engine, promote_base/promote_carry tracking on InvestorState, upstream waterfall aggregation for PSCKOC members (PSC1/KCREIT/PCBLE), income schedule, AM fee schedule, partner returns, Excel export |

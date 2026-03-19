@@ -36,6 +36,8 @@ waterfall-xirr/
 ├── reporting.py              # Annual aggregation tables, formatting utilities
 ├── ownership_tree.py         # Investor ownership structures
 ├── utils.py                  # Helper utilities
+├── launch_app.bat            # Desktop launcher (starts Flask + Vue + opens browser)
+├── waterfall_xirr.ico        # Custom app icon for desktop shortcut
 ├── waterfall.db              # SQLite database (not in git, >100MB)
 │
 ├── flask_app/                # Flask REST API backend
@@ -79,6 +81,9 @@ waterfall-xirr/
 
 ## Running the Application
 
+**Desktop shortcut**: Double-click **"Waterfall XIRR"** on the desktop — starts both servers and opens browser.
+
+**Or manually**:
 ```bash
 # Activate virtual environment
 .venv\Scripts\activate
