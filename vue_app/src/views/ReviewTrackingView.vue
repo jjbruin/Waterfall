@@ -184,7 +184,6 @@ function filterByStatus(status: string) {
 
 <style scoped>
 .review-tracking {
-  max-width: 900px;
   padding: 0 0 40px 0;
 }
 

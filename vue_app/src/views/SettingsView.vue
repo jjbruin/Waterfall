@@ -323,7 +323,7 @@ function formatReviewRole(role: string): string {
 </template>
 
 <style scoped>
-.settings { padding: 0 0 40px 0; max-width: 700px; }
+.settings { padding: 0 0 40px 0; }
 h2 { font-size: 20px; margin-bottom: 16px; }
 h3 { font-size: 15px; margin: 0 0 12px 0; }
 

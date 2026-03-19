@@ -66,6 +66,7 @@ body {
   margin-left: var(--sidebar-width);
   display: flex;
   flex-direction: column;
+  transition: margin-left 0.2s;
 }
 
 .page-content {

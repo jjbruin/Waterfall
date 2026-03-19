@@ -677,7 +677,7 @@ async function downloadExcel(section: string) {
 </template>
 
 <style scoped>
-.property-financials { max-width: 1200px; }
+.property-financials { }
 
 /* Error banner */
 .error-banner { background: #fef2f2; border: 1px solid #fca5a5; color: #991b1b; padding: 10px 16px; border-radius: 8px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; }

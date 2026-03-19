@@ -122,15 +122,23 @@ async function handleConfigSave() {
   })
 }
 
-// Mobile sidebar toggle
+// Sidebar collapse toggle
 const collapsed = ref(false)
+
+function toggleCollapsed() {
+  collapsed.value = !collapsed.value
+  document.documentElement.style.setProperty(
+    '--sidebar-width',
+    collapsed.value ? '40px' : '240px'
+  )
+}
 </script>
 
 <template>
   <aside class="sidebar" :class="{ collapsed }">
     <div class="sidebar-header">
       <h2 v-if="!collapsed">Waterfall XIRR</h2>
-      <button class="toggle-btn" @click="collapsed = !collapsed">
+      <button class="toggle-btn" @click="toggleCollapsed()">
         {{ collapsed ? '>' : '<' }}
       </button>
     </div>
