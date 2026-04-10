@@ -12,8 +12,11 @@ A Flask + Vue financial modeling application for calculating investment waterfal
 - **pandas/numpy** - Data manipulation
 - **scipy** - XIRR/NPV calculations (Brent's method)
 - **ECharts** - Interactive charts (Vue)
-- **SQLite** - Local database (`waterfall.db`)
+- **PostgreSQL** - Azure-hosted database (local dev: SQLite via `waterfall.db`)
+- **SQLAlchemy** - Database abstraction (`flask_app/db.py`), switches via `DATABASE_URL` env var
 - **JWT** - Authentication (Flask + Vue)
+- **Docker** - Multi-stage build (Vue → Python 3.12-slim + Gunicorn)
+- **Azure Container Apps** - Production hosting
 
 ## Project Structure
 
@@ -26,7 +29,7 @@ waterfall-xirr/
 ├── waterfall.py              # Waterfall calculation engine
 ├── metrics.py                # XIRR, XNPV, ROE, MOIC calculations
 ├── loaders.py                # Data loading from database/CSV
-├── database.py               # SQLite management, migrations, table definitions, CSV import/export
+├── database.py               # Database management (SQLite + PostgreSQL), migrations, CSV import/export
 ├── loans.py                  # Debt service modeling
 ├── planned_loans.py          # Future loan projections
 ├── capital_calls.py          # Capital call handling
@@ -36,20 +39,22 @@ waterfall-xirr/
 ├── reporting.py              # Annual aggregation tables, formatting utilities
 ├── ownership_tree.py         # Investor ownership structures
 ├── utils.py                  # Helper utilities
-├── launch_app.bat            # Desktop launcher (starts Flask + Vue + opens browser)
+├── Dockerfile                # Multi-stage Docker build (Vue + Flask + Gunicorn)
+├── launch_app.bat            # Desktop launcher (opens Azure app in browser)
 ├── waterfall_xirr.ico        # Custom app icon for desktop shortcut
-├── waterfall.db              # SQLite database (not in git, >100MB)
+├── waterfall.db              # SQLite database for local dev (not in git, >100MB)
 │
 ├── flask_app/                # Flask REST API backend
-│   ├── __init__.py           # App factory (create_app)
+│   ├── __init__.py           # App factory (create_app), SPA serving with cache headers
 │   ├── run.py                # Dev server entry point
-│   ├── config.py             # Flask configuration (dynamic defaults, ACTUALS_THROUGH)
+│   ├── db.py                 # SQLAlchemy engine management (SQLite/PostgreSQL)
+│   ├── config.py             # Flask configuration (DATABASE_URL, dynamic defaults, ACTUALS_THROUGH)
 │   ├── extensions.py         # Flask extensions
 │   ├── serializers.py        # JSON serialization helpers (NumpyEncoder, safe_json)
 │   ├── auth/                 # JWT authentication (login, SSO config)
 │   ├── api/                  # API blueprints
 │   │   ├── dashboard.py      # Dashboard endpoints (KPIs, charts, SSE init-stream)
-│   │   ├── data.py           # Data endpoints (deals, import/export, config, list-csvs)
+│   │   ├── data.py           # Data endpoints (deals, upload-import, export, config)
 │   │   ├── deals.py          # Deal analysis endpoints + Excel downloads
 │   │   ├── financials.py     # Property Financials + One Pager endpoints
 │   │   ├── reports.py        # Report generation endpoints
@@ -58,10 +63,16 @@ waterfall-xirr/
 │   └── services/             # Business logic (reuses compute.py, database.py, etc.)
 │       ├── dashboard_service.py  # KPI calculations, NOI pipeline, chart data
 │       ├── data_service.py       # Data loading and caching
+│       ├── data_adapters.py      # Pluggable data source adapters (DB or MRI API)
 │       ├── compute_service.py    # Deal computation cache, ROE/MOIC audit builders, Excel generators
 │       ├── review_service.py     # Review workflow business logic (approval pipeline)
 │       ├── financials_service.py # Property Financials + One Pager data aggregation
 │       └── ...
+│
+├── scripts/                  # Azure migration and setup scripts
+│   ├── migrate_to_postgres.py    # Bulk SQLite → PostgreSQL migration
+│   ├── fix_tables.py             # Fix tables with type mismatches
+│   └── azure-complete-setup.sh   # Reference doc of provisioned infrastructure
 │
 └── vue_app/                  # Vue 3 + Vite frontend
     ├── src/
@@ -81,9 +92,22 @@ waterfall-xirr/
 
 ## Running the Application
 
-**Desktop shortcut**: Double-click **"Waterfall XIRR"** on the desktop — starts both servers and opens browser.
+### Production (Azure)
+**Desktop shortcut**: Double-click **"Waterfall XIRR"** on the desktop — opens the Azure app in the browser.
+- **URL**: https://app-waterfall-dev.victoriousforest-f83586cf.eastus.azurecontainerapps.io
+- Default login: admin / admin
 
-**Or manually**:
+### Deploying Changes
+All deploys use Azure CLI (GitHub Actions secrets are not configured):
+```bash
+# 1. Build image in Azure Container Registry
+az acr build --registry acrwaterfalldev -g rg-waterfall-dev --image waterfall-xirr:latest --no-logs .
+
+# 2. Deploy to Container Apps (use incrementing suffix to force new revision)
+az containerapp update -g rg-waterfall-dev -n app-waterfall-dev --image acrwaterfalldev.azurecr.io/waterfall-xirr:latest --revision-suffix v8
+```
+
+### Local Development
 ```bash
 # Activate virtual environment
 .venv\Scripts\activate
@@ -95,6 +119,17 @@ python -m flask_app.run          # API on http://localhost:5000
 cd vue_app && npm run dev        # Frontend on http://localhost:5173
 # Default login: admin / admin
 ```
+
+### Azure Infrastructure
+- **Container App**: app-waterfall-dev (1 CPU, 2GB RAM, 2 Gunicorn workers)
+- **PostgreSQL**: psql-waterfall-dev.postgres.database.azure.com (B1ms, v16)
+- **Container Registry**: acrwaterfalldev.azurecr.io
+- **Resource Group**: rg-waterfall-dev (eastus)
+- View logs: `az containerapp logs show -g rg-waterfall-dev -n app-waterfall-dev --type console --tail 50`
+
+### Caching
+- `index.html` served with `Cache-Control: no-cache` — browser always checks for new version on deploy
+- Hashed assets (`/assets/*`) cached for 1 year with `immutable` — Vite generates new hashes on each build
 
 ## Key Concepts
 
@@ -139,7 +174,7 @@ cd vue_app && npm run dev        # Frontend on http://localhost:5173
 - **Waterfall**: `cf_period_cash` and `cap_period_cash` filtered to post-cutoff periods only
 - **Cache key**: includes `actuals_through` so toggling triggers recomputation
 - **Dynamic defaults**: `DEFAULT_START_YEAR = date.today().year`, `PRO_YR_BASE_DEFAULT = date.today().year - 1`
-- **UI**: Streamlit sidebar checkbox + month-end selector; Vue sidebar in Report Settings
+- **UI**: Vue sidebar in Report Settings (checkbox + month-end selector)
 - **Flask**: `ACTUALS_THROUGH` in config, passed via query params / request body, included in `/api/data/config`
 
 ## Application Tabs
@@ -220,7 +255,7 @@ View, edit, and create waterfall structures for any entity. Vue: `WaterfallSetup
 
 ### Sidebar: Database Tools
 Vue: `AppSidebar.vue` database tools section. Flask: `data.py` API endpoints.
-- **Import CSVs** — Folder path input with Scan button to discover available CSVs. Supports importing individual CSVs or all at once. Protected tables (`waterfalls`, `one_pager_comments`, `waterfall_audit`, `review_roles`, `review_submissions`, `review_notes`) are never overwritten. Clears data and computation caches.
+- **Import CSVs** — Browser file upload (no server-side folder scan — incompatible with Azure). Select CSV files → auto-matches filenames to table definitions → shows importable/protected/unmatched status → uploads one file at a time (sequential to avoid OOM on 2GB container) with progress indicator. Protected tables (`waterfalls`, `one_pager_comments`, `waterfall_audit`, `review_roles`, `review_submissions`, `review_notes`) are never overwritten. Clears data and computation caches.
 - **Export Database** — Export all tables as `waterfall_db_export_{timestamp}.zip` containing `{table_name}_db_export.csv` for every table.
 
 ### 7. Reports
@@ -284,9 +319,10 @@ Upstream waterfall analysis for the PSCKOC holding entity, showing how deal-leve
 ### Database
 - `save_waterfall_steps()` - Replace all waterfall steps for a vcode with audit trail (database.py)
 - `create_additional_tables()` - Creates capital_calls and other tables if they don't exist (database.py)
+- `import_csv_dataframe()` - Import a DataFrame into a table, works with SQLite and PostgreSQL (database.py)
 - `import_csvs_to_database()` - Refresh all tables from CSVs, protecting DB-managed tables (database.py)
-- `import_single_csv()` - Import a single CSV into its database table (database.py)
 - `export_all_tables_to_zip()` - Export all tables as labeled CSVs in a zip archive (database.py)
+- `set_engine()` - Wire SQLAlchemy engine for PostgreSQL support (database.py)
 
 ### Flask Services
 - `get_cached_deal_result()` - Shared multi-deal cache wrapper (compute_service.py)
