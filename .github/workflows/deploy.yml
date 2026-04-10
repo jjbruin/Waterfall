@@ -1,12 +1,11 @@
-# Build and deploy to Azure App Service on push to main
+# Build and deploy to Azure Container Apps on push to main
 #
 # Required GitHub secrets:
-#   AZURE_CREDENTIALS    — Service principal JSON (az ad sp create-for-rbac --sdk-auth)
-#   ACR_LOGIN_SERVER     — e.g. waterfallxirracr.azurecr.io
-#   ACR_USERNAME         — Container registry username
-#   ACR_PASSWORD         — Container registry password
-#   AZURE_WEBAPP_NAME    — e.g. waterfall-xirr
-#   AZURE_RG             — e.g. waterfall-xirr-rg
+#   ACR_LOGIN_SERVER     — e.g. acrwaterfalldev.azurecr.io
+#   ACR_USERNAME         — Container registry admin username
+#   ACR_PASSWORD         — Container registry admin password
+#   AZURE_RG             — e.g. rg-waterfall-dev
+#   AZURE_CONTAINERAPP   — e.g. app-waterfall-dev
 
 name: Deploy to Azure
 
@@ -44,14 +43,15 @@ jobs:
           docker push ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
           docker push ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:latest
 
-      # Deploy to Azure App Service
+      # Deploy to Azure Container Apps
       - name: Login to Azure
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Deploy to App Service
-        uses: azure/webapps-deploy@v3
+      - name: Deploy to Container Apps
+        uses: azure/container-apps-deploy-action@v2
         with:
-          app-name: ${{ secrets.AZURE_WEBAPP_NAME }}
-          images: ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          resourceGroup: ${{ secrets.AZURE_RG }}
+          containerAppName: ${{ secrets.AZURE_CONTAINERAPP }}
+          imageToDeploy: ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}

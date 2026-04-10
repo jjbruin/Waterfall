@@ -24,8 +24,9 @@ const navItems = [
 
 // Database tools
 const showDbTools = ref(false)
-const csvFolder = ref('')
-const selectedCsvs = ref<Set<string>>(new Set())
+const uploadFiles = ref<File[]>([])
+const uploadMatches = ref<Array<{ file: File; table_name: string | null; csv_file: string; description: string; protected: boolean }>>([])
+const uploading = ref(false)
 
 // Config
 const showConfig = ref(false)
@@ -65,48 +66,72 @@ async function handleReload() {
   await data.reloadData()
 }
 
-async function handleScanFolder() {
-  if (!csvFolder.value.trim()) return
-  selectedCsvs.value = new Set()
-  await data.scanCsvs(csvFolder.value.trim())
-  // Auto-select all found, non-protected CSVs
-  for (const csv of data.availableCsvs) {
-    if (csv.found && !csv.protected) {
-      selectedCsvs.value.add(csv.table_name)
+async function handleFileSelect(event: Event) {
+  const input = event.target as HTMLInputElement
+  if (!input.files || input.files.length === 0) return
+  uploadFiles.value = Array.from(input.files)
+
+  // Load table defs if not yet loaded, then match files
+  await data.loadTableDefs()
+  const csvToTable: Record<string, { table_name: string; csv_file: string; description: string; protected: boolean }> = {}
+  for (const td of data.tableDefs) {
+    csvToTable[td.csv_file.toLowerCase()] = td
+  }
+
+  uploadMatches.value = uploadFiles.value.map(f => {
+    const match = csvToTable[f.name.toLowerCase()]
+    return {
+      file: f,
+      table_name: match?.table_name || null,
+      csv_file: match?.csv_file || f.name,
+      description: match?.description || '',
+      protected: match?.protected || false,
+    }
+  })
+}
+
+const uploadProgress = ref('')
+
+async function handleUploadImport() {
+  const importable = uploadMatches.value.filter(m => m.table_name && !m.protected)
+  if (importable.length === 0) return
+  uploading.value = true
+  data.importResult = null
+  const allResults: Record<string, any> = {}
+  const client = (await import('../../api/client')).default
+
+  // Upload one file at a time to avoid OOM on the server
+  for (let i = 0; i < importable.length; i++) {
+    const m = importable[i]
+    uploadProgress.value = `${i + 1}/${importable.length}: ${m.table_name}`
+    try {
+      const formData = new FormData()
+      formData.append('files', m.file, m.file.name)
+      const res = await client.post(
+        '/api/data/upload-import', formData,
+        { headers: { 'Content-Type': 'multipart/form-data' } }
+      )
+      Object.assign(allResults, res.data.results)
+    } catch (e: any) {
+      allResults[m.table_name || m.file.name] = {
+        status: 'error',
+        error: e.response?.data?.error || e.message,
+      }
     }
   }
-}
 
-function toggleCsv(tableName: string) {
-  if (selectedCsvs.value.has(tableName)) {
-    selectedCsvs.value.delete(tableName)
-  } else {
-    selectedCsvs.value.add(tableName)
-  }
-}
-
-function selectAllCsvs() {
-  for (const csv of data.availableCsvs) {
-    if (csv.found && !csv.protected) selectedCsvs.value.add(csv.table_name)
-  }
-}
-
-function selectNoneCsvs() {
-  selectedCsvs.value = new Set()
-}
-
-async function handleImportSelected() {
-  if (!csvFolder.value.trim() || selectedCsvs.value.size === 0) return
-  const selected = [...selectedCsvs.value]
-  if (selected.length === data.availableCsvs.filter(c => c.found && !c.protected).length) {
-    // All importable CSVs selected — use bulk import
-    await data.importCsvs(csvFolder.value.trim())
-  } else {
-    // Import one at a time
-    for (const tableName of selected) {
-      await data.importCsvs(csvFolder.value.trim(), tableName)
-    }
-  }
+  data.importResult = allResults
+  const ok = Object.values(allResults).filter((v: any) => v.status === 'success').length
+  const err = Object.values(allResults).filter((v: any) => v.status === 'error').length
+  data.addToast(
+    `Upload complete: ${ok} imported${err > 0 ? ', ' + err + ' errors' : ''}`,
+    err > 0 ? 'error' : 'success'
+  )
+  uploadFiles.value = []
+  uploadMatches.value = []
+  uploadProgress.value = ''
+  uploading.value = false
+  await data.loadDeals()
 }
 
 async function handleExport() {
@@ -211,60 +236,43 @@ function toggleCollapsed() {
           <!-- Import CSVs -->
           <div class="db-sub">
             <span class="db-label">Import CSVs</span>
-            <div class="folder-row">
-              <input
-                type="text"
-                v-model="csvFolder"
-                placeholder="C:\Path\To\MRI_Exports"
-                class="db-input"
-                @keyup.enter="handleScanFolder"
-              />
-              <button
-                class="btn btn-xs btn-scan"
-                @click="handleScanFolder"
-                :disabled="data.scanningCsvs || !csvFolder.trim()"
-                title="Scan folder for CSVs"
-              >
-                {{ data.scanningCsvs ? '...' : 'Scan' }}
-              </button>
-            </div>
+            <p class="db-caption">Select MRI CSV files to upload and import.</p>
+            <input
+              type="file"
+              multiple
+              accept=".csv"
+              class="db-file-input"
+              @change="handleFileSelect"
+            />
 
-            <!-- CSV file list -->
-            <div v-if="data.availableCsvs.length" class="csv-list">
+            <!-- Matched file list -->
+            <div v-if="uploadMatches.length" class="csv-list" style="margin-top: 4px">
               <div class="csv-list-header">
-                <span class="csv-count">{{ data.availableCsvs.filter(c => c.found).length }} found</span>
-                <span class="csv-actions">
-                  <button class="link-btn" @click="selectAllCsvs">All</button>
-                  <button class="link-btn" @click="selectNoneCsvs">None</button>
-                </span>
+                <span class="csv-count">{{ uploadMatches.filter(m => m.table_name && !m.protected).length }} importable</span>
               </div>
               <div
-                v-for="csv in data.availableCsvs"
-                :key="csv.table_name"
+                v-for="m in uploadMatches"
+                :key="m.file.name"
                 class="csv-row"
-                :class="{ 'csv-missing': !csv.found, 'csv-protected': csv.protected }"
+                :class="{ 'csv-missing': !m.table_name, 'csv-protected': m.protected }"
               >
-                <label class="csv-label" :title="csv.description + ' (' + csv.csv_file + ')'">
-                  <input
-                    type="checkbox"
-                    :checked="selectedCsvs.has(csv.table_name)"
-                    :disabled="!csv.found || csv.protected"
-                    @change="toggleCsv(csv.table_name)"
-                  />
-                  <span class="csv-name">{{ csv.table_name }}</span>
-                  <span v-if="csv.protected" class="csv-badge protected">locked</span>
-                  <span v-else-if="!csv.found" class="csv-badge missing">not found</span>
-                </label>
+                <span class="csv-label" :title="m.description || m.file.name">
+                  <span class="csv-name">{{ m.table_name || m.file.name }}</span>
+                  <span v-if="m.protected" class="csv-badge protected">locked</span>
+                  <span v-else-if="!m.table_name" class="csv-badge missing">no match</span>
+                  <span v-else class="csv-badge" style="color: #81c784">{{ (m.file.size / 1024).toFixed(0) }}KB</span>
+                </span>
               </div>
             </div>
 
             <p class="db-caption">Protected tables (waterfalls, comments) are never overwritten.</p>
             <button
               class="btn btn-xs btn-full"
-              @click="handleImportSelected"
-              :disabled="data.importing || selectedCsvs.size === 0"
+              style="margin-top: 4px"
+              @click="handleUploadImport"
+              :disabled="uploading || uploadMatches.filter(m => m.table_name && !m.protected).length === 0"
             >
-              {{ data.importing ? 'Importing...' : selectedCsvs.size === 0 ? 'Select CSVs to Import' : `Import ${selectedCsvs.size} CSV${selectedCsvs.size > 1 ? 's' : ''}` }}
+              {{ uploading ? `Importing ${uploadProgress}` : uploadMatches.filter(m => m.table_name && !m.protected).length === 0 ? 'Select CSV Files' : `Upload & Import ${uploadMatches.filter(m => m.table_name && !m.protected).length} CSV${uploadMatches.filter(m => m.table_name && !m.protected).length > 1 ? 's' : ''}` }}
             </button>
           </div>
 
@@ -462,45 +470,6 @@ function toggleCollapsed() {
   margin-bottom: 4px;
 }
 
-.db-input {
-  width: 100%;
-  padding: 4px 6px;
-  border: 1px solid rgba(255, 255, 255, 0.3);
-  border-radius: 3px;
-  background: rgba(255, 255, 255, 0.1);
-  color: white;
-  font-size: 11px;
-  margin-bottom: 4px;
-}
-
-.db-input::placeholder { color: rgba(255, 255, 255, 0.4); }
-
-.folder-row {
-  display: flex;
-  gap: 4px;
-  margin-bottom: 4px;
-}
-
-.folder-row .db-input {
-  flex: 1;
-  margin-bottom: 0;
-}
-
-.btn-scan {
-  flex-shrink: 0;
-  padding: 4px 8px;
-  font-size: 11px;
-  border: 1px solid rgba(255, 255, 255, 0.3);
-  background: rgba(255, 255, 255, 0.1);
-  color: white;
-  border-radius: 3px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.btn-scan:hover { background: rgba(255, 255, 255, 0.2); }
-.btn-scan:disabled { opacity: 0.5; cursor: not-allowed; }
-
 /* CSV file list */
 .csv-list {
   max-height: 200px;
@@ -588,6 +557,25 @@ function toggleCollapsed() {
   font-size: 10px;
   color: rgba(255, 255, 255, 0.5);
   margin-bottom: 4px;
+}
+
+.db-file-input {
+  width: 100%;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.8);
+  margin-bottom: 2px;
+}
+.db-file-input::file-selector-button {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.8);
+  border-radius: 3px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.db-file-input::file-selector-button:hover {
+  background: rgba(255, 255, 255, 0.2);
 }
 
 .db-divider {

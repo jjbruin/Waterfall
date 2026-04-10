@@ -2,7 +2,7 @@
 defineProps<{
   label: string
   value: string | number
-  format?: 'currency' | 'currency2' | 'percent' | 'number' | 'integer'
+  format?: 'currency' | 'currency2' | 'currency-millions' | 'percent' | 'number' | 'integer'
 }>()
 
 function formatValue(value: string | number, format?: string): string {
@@ -14,6 +14,10 @@ function formatValue(value: string | number, format?: string): string {
       return new Intl.NumberFormat('en-US', {
         style: 'currency', currency: 'USD', minimumFractionDigits: 0, maximumFractionDigits: 0,
       }).format(value)
+    case 'currency-millions':
+      return new Intl.NumberFormat('en-US', {
+        style: 'currency', currency: 'USD', minimumFractionDigits: 1, maximumFractionDigits: 1,
+      }).format(value / 1_000_000) + 'M'
     case 'currency2':
       return new Intl.NumberFormat('en-US', {
         style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2,

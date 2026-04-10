@@ -54,15 +54,22 @@ def create_app(config_name: str = None) -> Flask:
     database.DB_PATH = app.config["DB_PATH"]
 
     # Ensure app-managed tables exist (prospective_loans, etc.)
-    import sqlite3
-    _conn = sqlite3.connect(app.config["DB_PATH"], check_same_thread=False)
-    database.create_additional_tables(_conn)
-    database.run_migrations(_conn)
-    _conn.close()
+    # Only run for SQLite — PostgreSQL migrations handled separately
+    if not app.config.get("DATABASE_URL"):
+        import sqlite3
+        _conn = sqlite3.connect(app.config["DB_PATH"], check_same_thread=False)
+        database.create_additional_tables(_conn)
+        database.run_migrations(_conn)
+        _conn.close()
 
     # Initialize SQLAlchemy engine management
-    from flask_app.db import init_app as init_db
+    from flask_app.db import init_app as init_db, get_engine
     init_db(app)
+
+    # Wire SQLAlchemy engine into legacy database.py for PostgreSQL support
+    if app.config.get("DATABASE_URL"):
+        with app.app_context():
+            database.set_engine(get_engine())
 
     # Configure data adapters (MRI API if env vars set, else database)
     with app.app_context():

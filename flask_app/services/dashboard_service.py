@@ -13,9 +13,44 @@ from consolidation import get_property_vcodes_for_deal
 from config import IS_ACCOUNTS
 
 
+def get_child_vcodes(inv: pd.DataFrame) -> set:
+    """Return the set of vcodes that are child properties of a sub-portfolio.
+
+    A deal is a child if its Portfolio_Name matches another deal's Investment_Name
+    (and it is not that parent deal itself). These should be excluded from
+    portfolio-level aggregations because their data is already rolled up into
+    the parent deal's capitalization.
+    """
+    if inv is None or inv.empty:
+        return set()
+
+    df = inv.copy()
+    df.columns = [str(c).strip() for c in df.columns]
+    if "Portfolio_Name" not in df.columns or "Investment_Name" not in df.columns:
+        return set()
+
+    df["vcode"] = df["vcode"].astype(str).str.strip()
+    df["Investment_Name"] = df["Investment_Name"].fillna("").astype(str).str.strip()
+    df["Portfolio_Name"] = df["Portfolio_Name"].fillna("").astype(str).str.strip()
+
+    # Parent Investment_Names that have children referencing them
+    parent_names = set(df[df["Portfolio_Name"] != ""]["Portfolio_Name"].unique())
+    # Only keep names that actually match an existing deal's Investment_Name
+    parent_names &= set(df["Investment_Name"].unique())
+
+    # Children: Portfolio_Name matches a parent name AND Investment_Name != Portfolio_Name
+    child_mask = (
+        df["Portfolio_Name"].isin(parent_names)
+        & (df["Investment_Name"] != df["Portfolio_Name"])
+    )
+    return set(df.loc[child_mask, "vcode"])
+
+
 def get_portfolio_caps(inv_disp, inv, wf, acct, mri_val, mri_loans_raw,
                        on_progress=None) -> list[dict]:
     """Get capitalization data for all active deals.
+
+    Caller should pre-filter inv_disp to exclude child properties.
 
     Mirrors dashboard_ui.py::_get_portfolio_caps() without st.session_state caching.
     on_progress(current, total, deal_name) is called after each deal if provided.
@@ -45,6 +80,7 @@ def get_portfolio_caps(inv_disp, inv, wf, acct, mri_val, mri_loans_raw,
             cap["name"] = name
             cap["asset_type"] = str(row.get("Asset_Type", "") or "")
             cap["total_units"] = float(pd.to_numeric(row.get("Total_Units", 0), errors="coerce") or 0)
+            cap["property_count"] = int(pd.to_numeric(row.get("Property_Count", 0), errors="coerce") or 0)
             caps.append(cap)
         except Exception:
             continue
@@ -53,8 +89,11 @@ def get_portfolio_caps(inv_disp, inv, wf, acct, mri_val, mri_loans_raw,
     return caps
 
 
-def get_latest_occupancy(inv_disp, occupancy_raw) -> dict:
+def get_latest_occupancy(inv_disp, occupancy_raw, inv=None) -> dict:
     """Return dict {vcode: latest Occ%} for each deal.
+
+    For sub-portfolio parents with no direct occupancy data, computes a
+    weighted-average occupancy from child properties (weighted by Total_Units).
 
     Mirrors dashboard_ui.py::_get_latest_occupancy().
     """
@@ -82,13 +121,40 @@ def get_latest_occupancy(inv_disp, occupancy_raw) -> dict:
         occ["date_parsed"] = pd.to_datetime(occ["dtReported"], errors="coerce")
     occ = occ.dropna(subset=["date_parsed", "occ_val"])
 
+    # Build a map of latest occupancy per vcode (lowercase key)
+    _latest_occ = {}
+    for vc_lower, grp in occ.groupby("vCode"):
+        latest = grp.loc[grp["date_parsed"].idxmax()]
+        _latest_occ[vc_lower] = float(latest["occ_val"])
+
+    # Build units lookup from inv for weighted-average child rollup
+    units_map = {}
+    if inv is not None and not inv.empty:
+        for _, r in inv.iterrows():
+            vc = str(r.get("vcode", "")).strip().lower()
+            raw = pd.to_numeric(r.get("Total_Units", 0), errors="coerce")
+            units_map[vc] = float(raw) if pd.notna(raw) and raw > 0 else 1.0
+
     occ_map = {}
     for _, row in inv_disp.iterrows():
         vc = str(row["vcode"]).strip().lower()
-        deal_occ = occ[occ["vCode"] == vc]
-        if not deal_occ.empty:
-            latest = deal_occ.loc[deal_occ["date_parsed"].idxmax()]
-            occ_map[str(row["vcode"])] = float(latest["occ_val"])
+        if vc in _latest_occ:
+            occ_map[str(row["vcode"])] = _latest_occ[vc]
+        elif inv is not None:
+            # Sub-portfolio parent: roll up child property occupancy
+            children = get_property_vcodes_for_deal(str(row["vcode"]), inv)
+            if children:
+                weighted_sum = 0.0
+                total_units = 0.0
+                for child_vc in children:
+                    child_lower = str(child_vc).strip().lower()
+                    child_occ = _latest_occ.get(child_lower)
+                    if child_occ is not None:
+                        units = units_map.get(child_lower, 1)
+                        weighted_sum += child_occ * units
+                        total_units += units
+                if total_units > 0:
+                    occ_map[str(row["vcode"])] = weighted_sum / total_units
 
     return occ_map
 
@@ -101,7 +167,7 @@ def get_portfolio_kpis(caps: list[dict], occ_map: dict) -> dict:
     if not caps:
         return {
             "portfolio_value": 0, "debt_outstanding": 0, "wtd_avg_cap_rate": 0,
-            "portfolio_occupancy": 0, "deal_count": 0, "total_pref_equity": 0,
+            "portfolio_occupancy": 0, "property_count": 0, "total_pref_equity": 0,
         }
 
     total_value = sum(c.get("current_valuation", 0) or 0 for c in caps)
@@ -128,12 +194,14 @@ def get_portfolio_kpis(caps: list[dict], occ_map: dict) -> dict:
             occ_denom += units
     wtd_occ = occ_num / occ_denom if occ_denom > 0 else 0.0
 
+    total_properties = sum(c.get("property_count", 1) for c in caps)
+
     return {
         "portfolio_value": total_value,
         "debt_outstanding": total_debt,
         "wtd_avg_cap_rate": wtd_cap_rate,
         "portfolio_occupancy": wtd_occ,
-        "deal_count": len(caps),
+        "property_count": total_properties,
         "total_pref_equity": total_pref,
     }
 
@@ -170,7 +238,9 @@ def get_occupancy_by_type(caps: list[dict], occ_map: dict) -> list[dict]:
         if occ is not None:
             at = (c.get("asset_type", "") or "").strip() or "Unknown"
             units = c.get("total_units", 0) or 1
-            rows.append({"Asset_Type": at, "Occupancy": occ, "Units": units})
+            prop_count = c.get("property_count", 0) or 0
+            rows.append({"Asset_Type": at, "Occupancy": occ, "Units": units,
+                         "Property_Count": prop_count})
 
     if not rows:
         return []
@@ -180,6 +250,7 @@ def get_occupancy_by_type(caps: list[dict], occ_map: dict) -> list[dict]:
     type_agg = df.groupby("Asset_Type").agg(
         Total_Weighted_Occ=("Weighted_Occ", "sum"),
         Total_Units=("Units", "sum"),
+        Total_Properties=("Property_Count", "sum"),
     ).reset_index()
     type_agg["Occupancy"] = type_agg["Total_Weighted_Occ"] / type_agg["Total_Units"]
     type_agg = type_agg.sort_values("Occupancy", ascending=True)
@@ -192,6 +263,7 @@ def get_occupancy_by_type(caps: list[dict], occ_map: dict) -> list[dict]:
             "asset_type": r["Asset_Type"],
             "occupancy": float(r["Occupancy"]),
             "above_avg": bool(r["Occupancy"] >= avg_occ),
+            "property_count": int(r["Total_Properties"]),
         })
 
     return result
@@ -206,7 +278,9 @@ def get_asset_allocation(caps: list[dict]) -> list[dict]:
     rows = []
     for c in caps:
         at = (c.get("asset_type", "") or "").strip() or "Unknown"
-        rows.append({"Asset_Type": at, "Pref_Equity": c.get("pref_equity", 0) or 0})
+        prop_count = c.get("property_count", 0) or 0
+        rows.append({"Asset_Type": at, "Pref_Equity": c.get("pref_equity", 0) or 0,
+                      "Property_Count": prop_count})
 
     if not rows:
         return []
@@ -215,6 +289,7 @@ def get_asset_allocation(caps: list[dict]) -> list[dict]:
     agg = df.groupby("Asset_Type").agg(
         total_pref=("Pref_Equity", "sum"),
         count=("Pref_Equity", "size"),
+        total_properties=("Property_Count", "sum"),
     ).reset_index().sort_values("total_pref", ascending=False)
 
     grand_total = agg["total_pref"].sum()
@@ -228,6 +303,7 @@ def get_asset_allocation(caps: list[dict]) -> list[dict]:
             "pref_equity": float(r["total_pref"]),
             "pct": float(r["total_pref"] / grand_total),
             "count": int(r["count"]),
+            "property_count": int(r["total_properties"]),
         })
     return result
 
@@ -292,7 +368,7 @@ def get_loan_maturity_data(mri_loans_raw, inv_disp, inv) -> dict:
     yearly.columns = ["year", "rate_type", "amount"]
 
     # Weighted avg rate for fixed loans per year
-    fixed_loans = loans[(loans["Rate Type"] == "Fixed") & (loans["mOrigLoanAmt"] > 0)]
+    fixed_loans = loans[(loans["Rate Type"] == "Fixed") & (loans["mOrigLoanAmt"] > 0)].copy()
     fixed_rates = []
     if not fixed_loans.empty:
         fixed_loans["weighted_rate"] = fixed_loans["nRate"] * fixed_loans["mOrigLoanAmt"]
@@ -549,3 +625,417 @@ def compute_portfolio_noi(isbs_raw, inv_disp, frequency="Quarterly",
         "occupancy": occupancy,
         "frequency": frequency,
     }
+
+
+# ============================================================
+# Per-deal trailing NOI and occupancy helpers
+# ============================================================
+
+def _get_deal_trailing_noi(isbs_raw, inv_disp, num_quarters=4) -> dict:
+    """Compute trailing N-quarter NOI per deal vcode.
+
+    Returns dict {vcode: trailing_noi_total}.
+    """
+    if isbs_raw is None or isbs_raw.empty:
+        return {}
+
+    isbs = isbs_raw.copy()
+    isbs.columns = [str(c).strip() for c in isbs.columns]
+
+    parent_vcodes = set(inv_disp["vcode"].astype(str).str.strip().str.lower())
+    if "vcode" in isbs.columns:
+        isbs["vcode"] = isbs["vcode"].astype(str).str.strip().str.lower()
+        isbs = isbs[isbs["vcode"].isin(parent_vcodes)]
+
+    if isbs.empty or "dtEntry" not in isbs.columns:
+        return {}
+
+    try:
+        isbs["dtEntry_parsed"] = pd.to_datetime(
+            isbs["dtEntry"], unit="D", origin="1899-12-30", errors="coerce")
+    except Exception:
+        isbs["dtEntry_parsed"] = pd.to_datetime(isbs["dtEntry"], errors="coerce")
+    null_dates = isbs["dtEntry_parsed"].isna()
+    if null_dates.any():
+        isbs.loc[null_dates, "dtEntry_parsed"] = pd.to_datetime(
+            isbs.loc[null_dates, "dtEntry"], errors="coerce")
+
+    if "vSource" in isbs.columns:
+        isbs["vSource"] = isbs["vSource"].astype(str).str.strip()
+    if "vAccount" in isbs.columns:
+        isbs["vAccount"] = isbs["vAccount"].astype(str).str.strip()
+    if "mAmount" in isbs.columns:
+        isbs["mAmount"] = pd.to_numeric(isbs["mAmount"], errors="coerce").fillna(0)
+
+    actual_data = isbs[isbs["vSource"] == "Interim IS"]
+    if actual_data.empty:
+        return {}
+
+    rev_accounts = []
+    for acct_list in IS_ACCOUNTS["REVENUES"].values():
+        rev_accounts.extend(acct_list)
+    exp_accounts = []
+    for acct_list in IS_ACCOUNTS["EXPENSES"].values():
+        exp_accounts.extend(acct_list)
+
+    # Determine trailing quarter boundaries
+    today = pd.Timestamp.today()
+    current_q_month = ((today.month - 1) // 3) * 3
+    if current_q_month == 0:
+        last_q_end = pd.Timestamp(year=today.year - 1, month=12, day=31)
+    else:
+        last_q_end = pd.Timestamp(year=today.year, month=current_q_month, day=1) + pd.offsets.MonthEnd(0)
+
+    result = {}
+    for vc_lower in parent_vcodes:
+        deal_data = actual_data[actual_data["vcode"] == vc_lower]
+        if deal_data.empty:
+            continue
+
+        dates = sorted(deal_data["dtEntry_parsed"].dropna().unique())
+        if not dates:
+            continue
+
+        # Cumulative -> periodic monthly NOI
+        cum = {}
+        for dt in dates:
+            period = deal_data[deal_data["dtEntry_parsed"] == dt]
+            rev = period[period["vAccount"].isin(rev_accounts)]["mAmount"].sum()
+            exp = period[period["vAccount"].isin(exp_accounts)]["mAmount"].sum()
+            cum[dt] = (-rev) - exp
+
+        periodic = {}
+        for i, dt in enumerate(dates):
+            dt_ts = pd.Timestamp(dt)
+            if dt_ts.month == 1:
+                periodic[dt_ts] = cum[dt]
+            else:
+                prior = None
+                for j in range(i - 1, -1, -1):
+                    p = pd.Timestamp(dates[j])
+                    if p.year == dt_ts.year:
+                        prior = dates[j]
+                        break
+                if prior is not None:
+                    periodic[dt_ts] = cum[dt] - cum[prior]
+                else:
+                    periodic[dt_ts] = cum[dt]
+
+        # Aggregate to quarterly
+        quarterly = {}
+        month_counts = {}
+        for dt, val in sorted(periodic.items()):
+            dt_ts = pd.Timestamp(dt)
+            q_month = ((dt_ts.month - 1) // 3 + 1) * 3
+            q_end = pd.Timestamp(year=dt_ts.year, month=q_month, day=1) + pd.offsets.MonthEnd(0)
+            quarterly[q_end] = quarterly.get(q_end, 0) + val
+            month_counts[q_end] = month_counts.get(q_end, 0) + 1
+        complete_quarters = {k: v for k, v in quarterly.items()
+                            if month_counts.get(k, 0) == 3 and k <= last_q_end}
+
+        if complete_quarters:
+            trailing_keys = sorted(complete_quarters.keys())[-num_quarters:]
+            trailing_noi = sum(complete_quarters[k] for k in trailing_keys)
+            # Find original-case vcode
+            orig_vc = None
+            for _, row in inv_disp.iterrows():
+                if str(row["vcode"]).strip().lower() == vc_lower:
+                    orig_vc = str(row["vcode"])
+                    break
+            if orig_vc:
+                result[orig_vc] = trailing_noi
+
+    return result
+
+
+def _get_deal_trailing_occupancy(inv_disp, occupancy_raw, num_quarters=4) -> dict:
+    """Compute average occupancy over trailing N quarters per deal vcode.
+
+    Returns dict {vcode: avg_occupancy}.
+    """
+    if occupancy_raw is None or occupancy_raw.empty:
+        return {}
+
+    occ = occupancy_raw.copy()
+    occ.columns = [str(c).strip() for c in occ.columns]
+    if "vCode" not in occ.columns:
+        return {}
+
+    occ["vCode"] = occ["vCode"].astype(str).str.strip().str.lower()
+    occ_col = "Occ%" if "Occ%" in occ.columns else (
+        "OccupancyPercent" if "OccupancyPercent" in occ.columns else None)
+    if occ_col is None or "dtReported" not in occ.columns:
+        return {}
+
+    occ["occ_val"] = pd.to_numeric(occ[occ_col], errors="coerce")
+    try:
+        occ["date_parsed"] = pd.to_datetime(
+            occ["dtReported"], unit="D", origin="1899-12-30", errors="coerce")
+    except Exception:
+        occ["date_parsed"] = pd.to_datetime(occ["dtReported"], errors="coerce")
+    occ = occ.dropna(subset=["date_parsed", "occ_val"])
+
+    # Quarter boundaries
+    today = pd.Timestamp.today()
+    current_q_month = ((today.month - 1) // 3) * 3
+    if current_q_month == 0:
+        last_q_end = pd.Timestamp(year=today.year - 1, month=12, day=31)
+    else:
+        last_q_end = pd.Timestamp(year=today.year, month=current_q_month, day=1) + pd.offsets.MonthEnd(0)
+
+    parent_vcodes = set(inv_disp["vcode"].astype(str).str.strip().str.lower())
+    result = {}
+
+    for _, inv_row in inv_disp.iterrows():
+        vc = str(inv_row["vcode"]).strip()
+        vc_lower = vc.lower()
+        deal_occ = occ[occ["vCode"] == vc_lower].copy()
+        if deal_occ.empty:
+            continue
+
+        # Monthly -> quarterly average
+        deal_occ["month_end"] = deal_occ["date_parsed"].apply(
+            lambda d: pd.Timestamp(d) + pd.offsets.MonthEnd(0))
+        monthly_avg = deal_occ.groupby("month_end")["occ_val"].mean()
+
+        quarterly = {}
+        month_counts = {}
+        for me, val in monthly_avg.items():
+            me_ts = pd.Timestamp(me)
+            q_month = ((me_ts.month - 1) // 3 + 1) * 3
+            q_end = pd.Timestamp(year=me_ts.year, month=q_month, day=1) + pd.offsets.MonthEnd(0)
+            quarterly.setdefault(q_end, []).append(val)
+
+        complete_quarters = {k: sum(v) / len(v) for k, v in quarterly.items()
+                            if len(v) == 3 and k <= last_q_end}
+
+        if complete_quarters:
+            trailing_keys = sorted(complete_quarters.keys())[-num_quarters:]
+            avg_occ = sum(complete_quarters[k] for k in trailing_keys) / len(trailing_keys)
+            result[vc] = avg_occ
+
+    return result
+
+
+# ============================================================
+# Excel generators
+# ============================================================
+
+def _excel_styles():
+    """Common openpyxl styles for dashboard Excel exports."""
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    return {
+        'header_font': Font(bold=True, color="FFFFFF"),
+        'header_fill': PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid"),
+        'bold': Font(bold=True),
+        'top_border': Border(top=Side(style='medium')),
+        'curr': '$#,##0',
+        'pct': '0.00%',
+        'mult': '0.00"x"',
+        'date_fmt': 'MM/DD/YYYY',
+        'num': '#,##0',
+    }
+
+
+def _write_header_row(ws, row, cols, styles):
+    from openpyxl.styles import Alignment
+    for ci, name in enumerate(cols, 1):
+        c = ws.cell(row=row, column=ci, value=name)
+        c.font = styles['header_font']
+        c.fill = styles['header_fill']
+        c.alignment = Alignment(horizontal="center")
+    return row + 1
+
+
+def _autosize_columns(ws):
+    for col in ws.columns:
+        max_len = max((len(str(cell.value or "")) for cell in col), default=0)
+        ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 40)
+
+
+def generate_portfolio_schedule_excel(
+    caps, occ_map, loan_detail, trailing_noi_map, trailing_occ_map,
+    returns_list, inv_disp,
+) -> bytes:
+    """Generate Portfolio Schedule Excel with per-deal summary rows.
+
+    Columns: Investment Name, Asset Type, Current Valuation, Total Debt,
+    Earliest Maturity, Cap Rate, Trailing 4Q NOI, Avg Occupancy (4Q),
+    Pref Equity, IRR, ROE, MOIC.
+    """
+    from openpyxl import Workbook
+    import io
+
+    s = _excel_styles()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Portfolio Schedule"
+
+    columns = [
+        "Investment Name", "Asset Type", "Properties", "Current Valuation",
+        "Total Debt", "Earliest Maturity", "Cap Rate", "Trailing 4Q NOI",
+        "Avg Occupancy (4Q)", "Pref Equity", "IRR", "ROE", "MOIC",
+    ]
+    r = _write_header_row(ws, 1, columns, s)
+
+    # Build loan aggregation: per deal -> total debt, earliest maturity
+    # loan_detail has 'property' (name), we need to map back to vcode
+    inv_tmp = inv_disp.copy()
+    inv_tmp["vcode"] = inv_tmp["vcode"].astype(str).str.strip()
+    name_to_vcode = {}
+    for _, row in inv_tmp.iterrows():
+        name_to_vcode[row.get("Investment_Name", "")] = str(row["vcode"])
+
+    loan_agg = {}  # vcode -> {total_debt, earliest_maturity}
+    for loan in loan_detail:
+        prop_name = loan.get("property", "")
+        vc = name_to_vcode.get(prop_name)
+        if not vc:
+            # Try matching the property name in the vcode_to_name map reverse
+            continue
+        if vc not in loan_agg:
+            loan_agg[vc] = {"total_debt": 0, "earliest_maturity": None}
+        loan_agg[vc]["total_debt"] += loan.get("amount", 0)
+        mat = loan.get("maturity", "")
+        if mat:
+            try:
+                mat_date = pd.Timestamp(mat)
+                existing = loan_agg[vc]["earliest_maturity"]
+                if existing is None or mat_date < existing:
+                    loan_agg[vc]["earliest_maturity"] = mat_date
+            except Exception:
+                pass
+
+    # Build returns lookup: vcode -> {irr, roe, moic}
+    returns_map = {}
+    for ret in returns_list:
+        returns_map[ret["vcode"]] = ret
+
+    # Write rows sorted by name
+    sorted_caps = sorted(caps, key=lambda c: c.get("name", ""))
+    for cap in sorted_caps:
+        vc = cap.get("vcode", "")
+        name = cap.get("name", vc)
+        asset_type = cap.get("asset_type", "")
+        valuation = cap.get("current_valuation", 0) or 0
+        cap_rate = cap.get("cap_rate", 0) or 0
+        pref_eq = cap.get("pref_equity", 0) or 0
+
+        la = loan_agg.get(vc, {})
+        total_debt = la.get("total_debt", 0) or (cap.get("debt", 0) or 0)
+        earliest_mat = la.get("earliest_maturity")
+
+        trailing_noi = trailing_noi_map.get(vc)
+        trailing_occ = trailing_occ_map.get(vc)
+
+        ret = returns_map.get(vc, {})
+        irr = ret.get("irr")
+        roe = ret.get("roe")
+        moic = ret.get("moic")
+
+        prop_count = cap.get("property_count", 1)
+
+        row_data = [
+            name, asset_type, prop_count, valuation, total_debt,
+            earliest_mat.date() if earliest_mat else None,
+            cap_rate, trailing_noi, trailing_occ,
+            pref_eq, irr, roe, moic,
+        ]
+        for ci, val in enumerate(row_data, 1):
+            cell = ws.cell(row=r, column=ci, value=val)
+        # Apply formats  (col 3=Properties is integer, no format needed)
+        ws.cell(row=r, column=4).number_format = s['curr']
+        ws.cell(row=r, column=5).number_format = s['curr']
+        ws.cell(row=r, column=6).number_format = s['date_fmt']
+        ws.cell(row=r, column=7).number_format = s['pct']
+        ws.cell(row=r, column=8).number_format = s['curr']
+        if trailing_occ is not None:
+            ws.cell(row=r, column=9).number_format = '0.0"%"'
+        ws.cell(row=r, column=10).number_format = s['curr']
+        if irr is not None:
+            ws.cell(row=r, column=11).number_format = s['pct']
+        if roe is not None:
+            ws.cell(row=r, column=12).number_format = s['pct']
+        if moic is not None:
+            ws.cell(row=r, column=13).number_format = s['mult']
+        r += 1
+
+    # Totals row
+    from openpyxl.styles import Alignment
+    total_valuation = sum(c.get("current_valuation", 0) or 0 for c in caps)
+    total_debt_sum = sum(
+        (loan_agg.get(c.get("vcode", ""), {}).get("total_debt", 0)
+         or (c.get("debt", 0) or 0))
+        for c in caps
+    )
+    total_pref = sum(c.get("pref_equity", 0) or 0 for c in caps)
+    total_noi = sum(v for v in trailing_noi_map.values() if v is not None)
+
+    total_properties = sum(c.get("property_count", 1) for c in caps)
+
+    ws.cell(row=r, column=1, value="PORTFOLIO TOTAL").font = s['bold']
+    ws.cell(row=r, column=3, value=total_properties).font = s['bold']
+    ws.cell(row=r, column=4, value=total_valuation).number_format = s['curr']
+    ws.cell(row=r, column=4).font = s['bold']
+    ws.cell(row=r, column=5, value=total_debt_sum).number_format = s['curr']
+    ws.cell(row=r, column=5).font = s['bold']
+    ws.cell(row=r, column=8, value=total_noi).number_format = s['curr']
+    ws.cell(row=r, column=8).font = s['bold']
+    ws.cell(row=r, column=10, value=total_pref).number_format = s['curr']
+    ws.cell(row=r, column=10).font = s['bold']
+    for ci in range(1, len(columns) + 1):
+        ws.cell(row=r, column=ci).border = s['top_border']
+
+    _autosize_columns(ws)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def generate_loan_detail_excel(loan_detail: list[dict]) -> bytes:
+    """Generate Loan Detail Excel with individual mortgage rows."""
+    from openpyxl import Workbook
+    import io
+
+    s = _excel_styles()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Loan Detail"
+
+    columns = ["Property", "Loan ID", "Maturity Date", "Loan Amount",
+               "Rate Type", "Interest Rate"]
+    r = _write_header_row(ws, 1, columns, s)
+
+    sorted_detail = sorted(loan_detail, key=lambda d: (d.get("maturity", ""), d.get("property", "")))
+    for loan in sorted_detail:
+        mat = loan.get("maturity", "")
+        try:
+            mat_val = pd.Timestamp(mat).date() if mat else None
+        except Exception:
+            mat_val = mat
+
+        ws.cell(row=r, column=1, value=loan.get("property", ""))
+        ws.cell(row=r, column=2, value=loan.get("loan_id", ""))
+        ws.cell(row=r, column=3, value=mat_val)
+        ws.cell(row=r, column=3).number_format = s['date_fmt']
+        ws.cell(row=r, column=4, value=loan.get("amount", 0))
+        ws.cell(row=r, column=4).number_format = s['curr']
+        ws.cell(row=r, column=5, value=loan.get("rate_type", ""))
+        ws.cell(row=r, column=6, value=loan.get("rate", 0))
+        ws.cell(row=r, column=6).number_format = s['pct']
+        r += 1
+
+    # Total row
+    total_amount = sum(l.get("amount", 0) for l in loan_detail)
+    ws.cell(row=r, column=1, value="TOTAL").font = s['bold']
+    ws.cell(row=r, column=4, value=total_amount).number_format = s['curr']
+    ws.cell(row=r, column=4).font = s['bold']
+    for ci in range(1, len(columns) + 1):
+        ws.cell(row=r, column=ci).border = s['top_border']
+
+    _autosize_columns(ws)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()

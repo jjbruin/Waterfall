@@ -87,7 +87,7 @@ def prepare_cap_lookups(acct, inv, mri_val, mri_loans):
     else:
         lookups["loans_norm"] = None
 
-    # 4. Normalized valuations DataFrame (done once)
+    # 4. Normalized valuations DataFrame (done once, including date parsing)
     if mri_val is not None and not mri_val.empty:
         val_norm = mri_val.copy()
         val_norm.columns = [str(c).strip() for c in val_norm.columns]
@@ -95,6 +95,9 @@ def prepare_cap_lookups(acct, inv, mri_val, mri_loans):
             val_norm = val_norm.rename(columns={'vCode': 'vcode'})
         if 'vcode' in val_norm.columns:
             val_norm['vcode'] = val_norm['vcode'].astype(str)
+        if 'dtValuation' in val_norm.columns:
+            val_norm['_dt_parsed'] = pd.to_datetime(
+                val_norm['dtValuation'], format='mixed', dayfirst=False, errors='coerce')
         lookups["val_norm"] = val_norm
     else:
         lookups["val_norm"] = None
@@ -232,14 +235,37 @@ def get_deal_capitalization(acct, inv, wf, mri_val, mri_loans, deal_vcode,
             if 'vcode' in vn.columns:
                 vn['vcode'] = vn['vcode'].astype(str)
         if vn is not None and 'vcode' in vn.columns:
-            val_deal = vn[vn['vcode'] == str(deal_vcode)]
+            val_deal = vn[vn['vcode'] == str(deal_vcode)].copy()
             if not val_deal.empty:
-                if 'mIncomeCapConcludedValue' in val_deal.columns:
-                    val = val_deal['mIncomeCapConcludedValue'].iloc[-1]
-                    cap_data['current_valuation'] = float(val) if pd.notna(val) else 0.0
-                if 'fCapRate' in val_deal.columns:
-                    rate = val_deal['fCapRate'].iloc[-1]
-                    cap_data['cap_rate'] = float(rate) if pd.notna(rate) else 0.0
+                # Select most recent valuation row by dtValuation
+                if '_dt_parsed' in val_deal.columns:
+                    # Pre-parsed in prepare_cap_lookups()
+                    val_deal = val_deal.dropna(subset=['_dt_parsed'])
+                    if not val_deal.empty:
+                        val_deal = val_deal.sort_values('_dt_parsed', ascending=False)
+                elif 'dtValuation' in val_deal.columns:
+                    val_deal['_dt_parsed'] = pd.to_datetime(
+                        val_deal['dtValuation'], format='mixed', dayfirst=False, errors='coerce')
+                    val_deal = val_deal.dropna(subset=['_dt_parsed'])
+                    if not val_deal.empty:
+                        val_deal = val_deal.sort_values('_dt_parsed', ascending=False)
+                latest = val_deal.iloc[0] if not val_deal.empty else None
+                if latest is not None:
+                    if 'mIncomeCapConcludedValue' in val_deal.columns:
+                        val = pd.to_numeric(
+                            str(latest['mIncomeCapConcludedValue']).replace(',', '').strip(),
+                            errors='coerce')
+                        cap_data['current_valuation'] = float(val) if pd.notna(val) else 0.0
+                    if 'fCapRate' in val_deal.columns:
+                        rate = pd.to_numeric(
+                            str(latest['fCapRate']).replace(',', '').strip(),
+                            errors='coerce')
+                        cap_data['cap_rate'] = float(rate) if pd.notna(rate) else 0.0
+                    if 'nCostSaleRate' in val_deal.columns:
+                        cos = pd.to_numeric(
+                            str(latest['nCostSaleRate']).replace(',', '').strip(),
+                            errors='coerce')
+                        cap_data['cost_of_sale'] = float(cos) if pd.notna(cos) else 0.0
 
         senior_exposure = cap_data['debt'] + cap_data['pref_equity']
         if cap_data['total_cap'] > 0:

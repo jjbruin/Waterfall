@@ -329,7 +329,7 @@ def pivot_annual_table(df: pd.DataFrame) -> pd.DataFrame:
     return wide.loc[final_order]
 
 
-def style_annual_table(df: pd.DataFrame) -> pd.io.formats.style.Styler:
+def style_annual_table(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
     """Apply formatting to annual table with waterfall integration"""
     def money_fmt(x):
         if pd.isna(x) or x == "" or x is None:

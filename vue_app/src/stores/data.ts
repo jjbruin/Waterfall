@@ -30,6 +30,13 @@ interface CsvInfo {
   protected: boolean
 }
 
+interface TableDef {
+  table_name: string
+  csv_file: string
+  description: string
+  protected: boolean
+}
+
 export const useDataStore = defineStore('data', () => {
   const deals = ref<Deal[]>([])
   const allDeals = ref<Deal[]>([])
@@ -45,6 +52,8 @@ export const useDataStore = defineStore('data', () => {
   const exporting = ref(false)
   const availableCsvs = ref<CsvInfo[]>([])
   const scanningCsvs = ref(false)
+  const tableDefs = ref<TableDef[]>([])
+  const tableDefsLoaded = ref(false)
 
   // Toast notifications
   const toasts = ref<Array<{ id: number; message: string; type: 'success' | 'error' | 'info' }>>([])
@@ -112,6 +121,17 @@ export const useDataStore = defineStore('data', () => {
       addToast('All caches cleared and data reloaded', 'success')
     } catch (e: any) {
       addToast('Reload failed: ' + (e.response?.data?.error || e.message), 'error')
+    }
+  }
+
+  async function loadTableDefs() {
+    if (tableDefsLoaded.value) return
+    try {
+      const res = await api.get('/api/data/table-definitions')
+      tableDefs.value = res.data.tables
+      tableDefsLoaded.value = true
+    } catch {
+      // endpoint may not exist yet
     }
   }
 
@@ -187,9 +207,10 @@ export const useDataStore = defineStore('data', () => {
     deals, allDeals, loading, error, config,
     importing, importResult, exporting,
     availableCsvs, scanningCsvs,
+    tableDefs, tableDefsLoaded,
     toasts,
     loadDeals, loadConfig, updateConfig, reloadData,
-    scanCsvs, importCsvs, exportDatabase,
+    loadTableDefs, scanCsvs, importCsvs, exportDatabase,
     getDealName, addToast, dismissToast,
   }
 })

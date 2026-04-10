@@ -13,7 +13,9 @@ from flask_app.services import data_service, compute_service
 from flask_app.services.dashboard_service import (
     get_portfolio_kpis, get_portfolio_caps, get_latest_occupancy,
     get_capital_structure, get_occupancy_by_type, get_asset_allocation,
-    get_loan_maturity_data, compute_portfolio_noi,
+    get_loan_maturity_data, compute_portfolio_noi, get_child_vcodes,
+    _get_deal_trailing_noi, _get_deal_trailing_occupancy,
+    generate_portfolio_schedule_excel, generate_loan_detail_excel,
 )
 from flask_app.serializers import safe_json
 
@@ -44,6 +46,10 @@ def _get_caps_and_occ(on_progress=None):
     data = _get_data()
     inv_disp = data_service.get_inv_display(data["inv"])
 
+    # Exclude child properties — their data rolls up into parent deals
+    child_vcodes = get_child_vcodes(data["inv"])
+    inv_disp = inv_disp[~inv_disp["vcode"].astype(str).isin(child_vcodes)]
+
     cache_key = len(inv_disp)
     if cache_key in _caps_cache and cache_key in _occ_cache:
         return _caps_cache[cache_key], _occ_cache[cache_key], data, inv_disp
@@ -57,7 +63,7 @@ def _get_caps_and_occ(on_progress=None):
                 on_progress=on_progress,
             )
         if cache_key not in _occ_cache:
-            _occ_cache[cache_key] = get_latest_occupancy(inv_disp, data["occupancy_raw"])
+            _occ_cache[cache_key] = get_latest_occupancy(inv_disp, data["occupancy_raw"], inv=data["inv"])
 
     return _caps_cache[cache_key], _occ_cache[cache_key], data, inv_disp
 
@@ -72,6 +78,11 @@ def init_stream():
     """
     data = _get_data()
     inv_disp = data_service.get_inv_display(data["inv"])
+
+    # Exclude child properties — their data rolls up into parent deals
+    child_vcodes = get_child_vcodes(data["inv"])
+    inv_disp = inv_disp[~inv_disp["vcode"].astype(str).isin(child_vcodes)]
+
     cache_key = len(inv_disp)
 
     # If already cached, send done immediately
@@ -114,6 +125,9 @@ def init_stream():
                 cap["total_units"] = float(
                     pd.to_numeric(row.get("Total_Units", 0), errors="coerce") or 0
                 )
+                cap["property_count"] = int(
+                    pd.to_numeric(row.get("Property_Count", 0), errors="coerce") or 0
+                )
                 caps.append(cap)
             except Exception:
                 continue
@@ -121,7 +135,7 @@ def init_stream():
         # Cache results
         _caps_cache[cache_key] = caps
         if cache_key not in _occ_cache:
-            _occ_cache[cache_key] = get_latest_occupancy(inv_disp, data["occupancy_raw"])
+            _occ_cache[cache_key] = get_latest_occupancy(inv_disp, data["occupancy_raw"], inv=data["inv"])
 
         yield f"data: {json.dumps({'done': True, 'total': total})}\n\n"
 
@@ -159,6 +173,9 @@ def noi_trend():
     freq = request.args.get("freq", "Quarterly")
     data = _get_data()
     inv_disp = data_service.get_inv_display(data["inv"])
+    # Exclude child properties — NOI data rolls up via ISBS vcode matching
+    child_vcodes = get_child_vcodes(data["inv"])
+    inv_disp = inv_disp[~inv_disp["vcode"].astype(str).isin(child_vcodes)]
     noi_data = compute_portfolio_noi(
         data["isbs_raw"], inv_disp, frequency=freq,
         occupancy_raw=data["occupancy_raw"],
@@ -205,6 +222,9 @@ def computed_returns():
     """Compute returns for all active deals. Button-gated in UI."""
     data = _get_data()
     inv_disp = data_service.get_inv_display(data["inv"])
+    # Exclude child properties — returns are computed at parent level
+    child_vcodes = get_child_vcodes(data["inv"])
+    inv_disp = inv_disp[~inv_disp["vcode"].astype(str).isin(child_vcodes)]
 
     start_year = current_app.config["DEFAULT_START_YEAR"]
     horizon = current_app.config["DEFAULT_HORIZON_YEARS"]
@@ -244,3 +264,76 @@ def computed_returns():
             errors.append({"vcode": vcode, "name": name, "error": str(e)})
 
     return jsonify(safe_json({"returns": results, "errors": errors}))
+
+
+@dashboard_bp.route("/excel/portfolio-schedule", methods=["GET"])
+@login_required
+def portfolio_schedule_excel():
+    """Download Portfolio Schedule Excel with per-deal summary."""
+    caps, occ_map, data, inv_disp = _get_caps_and_occ()
+
+    # Trailing 4Q NOI and occupancy
+    trailing_noi = _get_deal_trailing_noi(data["isbs_raw"], inv_disp)
+    trailing_occ = _get_deal_trailing_occupancy(inv_disp, data["occupancy_raw"])
+
+    # Loan detail for earliest maturity aggregation
+    maturity_data = get_loan_maturity_data(data["mri_loans_raw"], inv_disp, data["inv"])
+    loan_detail = maturity_data.get("detail", [])
+
+    # Computed returns (use cache if available)
+    start_year = current_app.config["DEFAULT_START_YEAR"]
+    horizon = current_app.config["DEFAULT_HORIZON_YEARS"]
+    pro_yr_base = current_app.config["PRO_YR_BASE_DEFAULT"]
+    actuals_through = current_app.config.get("ACTUALS_THROUGH")
+
+    wf = data["wf"]
+    wf_vcodes = set(wf["vcode"].astype(str).unique()) if wf is not None and not wf.empty and "vcode" in wf.columns else set()
+    eligible = inv_disp[inv_disp["vcode"].astype(str).isin(wf_vcodes)]
+
+    returns_list = []
+    for _, row in eligible.iterrows():
+        vcode = str(row["vcode"])
+        name = row.get("Investment_Name", vcode)
+        try:
+            result = compute_service.get_cached_deal_result(
+                vcode, start_year, horizon, pro_yr_base, data,
+                actuals_through=actuals_through,
+            )
+            ds = result.get("deal_summary", {})
+            returns_list.append({
+                "vcode": vcode,
+                "name": name,
+                "irr": ds.get("deal_irr"),
+                "roe": ds.get("deal_roe"),
+                "moic": ds.get("deal_moic"),
+            })
+        except Exception:
+            returns_list.append({"vcode": vcode, "name": name, "irr": None, "roe": None, "moic": None})
+
+    excel_bytes = generate_portfolio_schedule_excel(
+        caps, occ_map, loan_detail, trailing_noi, trailing_occ,
+        returns_list, inv_disp,
+    )
+    return send_file(
+        io.BytesIO(excel_bytes),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name="portfolio_schedule.xlsx",
+    )
+
+
+@dashboard_bp.route("/excel/loan-detail", methods=["GET"])
+@login_required
+def loan_detail_excel():
+    """Download Loan Detail Excel with individual mortgage rows."""
+    _, _, data, inv_disp = _get_caps_and_occ()
+    maturity_data = get_loan_maturity_data(data["mri_loans_raw"], inv_disp, data["inv"])
+    loan_detail = maturity_data.get("detail", [])
+
+    excel_bytes = generate_loan_detail_excel(loan_detail)
+    return send_file(
+        io.BytesIO(excel_bytes),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name="loan_detail.xlsx",
+    )

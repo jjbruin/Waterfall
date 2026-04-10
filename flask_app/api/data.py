@@ -8,7 +8,11 @@ from flask_app.auth.routes import login_required, role_required
 from flask_app.services import data_service
 from flask_app.services import compute_service
 from flask_app.serializers import df_to_response, safe_json
-from database import import_csvs_to_database, import_single_csv, export_all_tables_to_zip, TABLE_DEFINITIONS, PROTECTED_TABLES
+from database import (
+    import_csvs_to_database, import_single_csv, import_csv_dataframe,
+    export_all_tables_to_zip, TABLE_DEFINITIONS, PROTECTED_TABLES,
+)
+import pandas as pd
 
 data_bp = Blueprint("data", __name__)
 
@@ -100,6 +104,70 @@ def list_csvs():
     # Sort: found first, then alphabetical
     csvs.sort(key=lambda c: (not c["found"], c["table_name"]))
     return jsonify({"csvs": csvs})
+
+
+@data_bp.route("/upload-import", methods=["POST"])
+@login_required
+@role_required("admin")
+def upload_import():
+    """Import CSV files uploaded directly (admin only).
+
+    Accepts multipart/form-data with one or more CSV files.
+    File names are matched to TABLE_DEFINITIONS by csv filename.
+    Returns: { results: { table_name: {status, rows, error?} } }
+    """
+    if not request.files:
+        return jsonify({"error": "No files uploaded"}), 400
+
+    # Build reverse lookup: csv filename → table name
+    csv_to_table = {}
+    for table_name, table_info in TABLE_DEFINITIONS.items():
+        csv_to_table[table_info["csv"].lower()] = table_name
+
+    results = {}
+    for key, file in request.files.items(multi=True):
+        filename = file.filename or key
+        # Match by exact CSV filename or by table name
+        table_name = csv_to_table.get(filename.lower())
+        if not table_name:
+            # Try matching by table name directly
+            bare = filename.rsplit(".", 1)[0].lower() if "." in filename else filename.lower()
+            if bare in TABLE_DEFINITIONS:
+                table_name = bare
+
+        if not table_name:
+            results[filename] = {'rows': 0, 'status': 'error',
+                                 'error': f'No matching table for "{filename}"'}
+            continue
+
+        try:
+            df = pd.read_csv(file.stream)
+            result = import_csv_dataframe(table_name, df, source=f"upload:{filename}")
+            results[table_name] = result
+        except Exception as e:
+            results[table_name or filename] = {'rows': 0, 'status': 'error', 'error': str(e)}
+
+    # Clear caches after import
+    data_service.reload()
+    compute_service.clear_cache()
+
+    return jsonify({"results": results})
+
+
+@data_bp.route("/table-definitions", methods=["GET"])
+@login_required
+def table_definitions():
+    """Return table definitions for the upload UI (filename mapping)."""
+    tables = []
+    for table_name, table_info in TABLE_DEFINITIONS.items():
+        tables.append({
+            "table_name": table_name,
+            "csv_file": table_info["csv"],
+            "description": table_info.get("description", ""),
+            "protected": table_name in PROTECTED_TABLES,
+        })
+    tables.sort(key=lambda t: t["table_name"])
+    return jsonify({"tables": tables})
 
 
 @data_bp.route("/export", methods=["GET"])

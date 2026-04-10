@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, computed, watch } from 'vue'
+import { onMounted, computed, watch, ref } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import KpiCard from '../components/common/KpiCard.vue'
 import DataTable from '../components/common/DataTable.vue'
@@ -120,7 +120,16 @@ const occOption = computed(() => {
   if (!d || !d.data.length) return null
   const sorted = [...d.data].sort((a, b) => a.occupancy - b.occupancy)
   return {
-    tooltip: { trigger: 'axis' },
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params: any) => {
+        const p = params[0]
+        const item = sorted[p.dataIndex]
+        return `<b>${item.asset_type}</b><br/>` +
+          `Occupancy: ${item.occupancy.toFixed(1)}%<br/>` +
+          `Properties: ${item.property_count ?? '—'}`
+      },
+    },
     grid: { left: 120, right: 60, top: 35, bottom: 35 },
     xAxis: { type: 'value', name: 'Occupancy %', nameLocation: 'center', nameGap: 20, min: 0, max: 100 },
     yAxis: { type: 'category', data: sorted.map(d => d.asset_type) },
@@ -145,8 +154,20 @@ const occOption = computed(() => {
 const allocOption = computed(() => {
   const d = dashboard.assetAlloc
   if (!d.length) return null
+  // Build a lookup by asset_type for the custom tooltip
+  const lookup = Object.fromEntries(d.map(item => [item.asset_type, item]))
   return {
-    tooltip: { trigger: 'item', formatter: '{b}: ${c} ({d}%)' },
+    tooltip: {
+      trigger: 'item',
+      formatter: (p: any) => {
+        const item = lookup[p.name]
+        const mVal = (p.value / 1_000_000).toFixed(1)
+        const props = item?.property_count ?? '—'
+        return `<b>${p.name}</b><br/>` +
+          `Pref Equity: $${mVal}M (${p.percent.toFixed(1)}%)<br/>` +
+          `Properties: ${props}`
+      },
+    },
     legend: { orient: 'vertical', right: 10, top: 'center' },
     series: [{
       type: 'pie',
@@ -235,6 +256,51 @@ const returnsColumns = [
 function onFreqChange(e: Event) {
   dashboard.loadNoi((e.target as HTMLSelectElement).value)
 }
+
+const downloadingSchedule = ref(false)
+const downloadingLoans = ref(false)
+
+async function downloadPortfolioSchedule() {
+  downloadingSchedule.value = true
+  try {
+    const token = localStorage.getItem('token')
+    const resp = await fetch('/api/dashboard/excel/portfolio-schedule', {
+      headers: { 'Authorization': `Bearer ${token}` },
+    })
+    if (!resp.ok) return
+    const blob = await resp.blob()
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = 'portfolio_schedule.xlsx'
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(a.href)
+  } finally {
+    downloadingSchedule.value = false
+  }
+}
+
+async function downloadLoanDetail() {
+  downloadingLoans.value = true
+  try {
+    const token = localStorage.getItem('token')
+    const resp = await fetch('/api/dashboard/excel/loan-detail', {
+      headers: { 'Authorization': `Bearer ${token}` },
+    })
+    if (!resp.ok) return
+    const blob = await resp.blob()
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = 'loan_detail.xlsx'
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(a.href)
+  } finally {
+    downloadingLoans.value = false
+  }
+}
 </script>
 
 <template>
@@ -248,13 +314,23 @@ function onFreqChange(e: Event) {
     </div>
 
     <!-- KPI Cards -->
+    <div class="kpi-header" v-if="dashboard.kpis">
+      <div></div>
+      <button
+        class="btn-excel"
+        @click="downloadPortfolioSchedule"
+        :disabled="downloadingSchedule"
+      >
+        {{ downloadingSchedule ? 'Generating...' : 'Download Portfolio Schedule (Excel)' }}
+      </button>
+    </div>
     <div class="kpi-grid" v-if="dashboard.kpis">
-      <KpiCard label="Portfolio Value" :value="dashboard.kpis.portfolio_value" format="currency" />
-      <KpiCard label="Debt Outstanding" :value="dashboard.kpis.debt_outstanding" format="currency" />
+      <KpiCard label="Portfolio Value" :value="dashboard.kpis.portfolio_value" format="currency-millions" />
+      <KpiCard label="Debt Outstanding" :value="dashboard.kpis.debt_outstanding" format="currency-millions" />
       <KpiCard label="Wtd Avg Cap Rate" :value="dashboard.kpis.wtd_avg_cap_rate" format="percent" />
       <KpiCard label="Portfolio Occupancy" :value="dashboard.kpis.portfolio_occupancy / 100" format="percent" />
-      <KpiCard label="Deal Count" :value="dashboard.kpis.deal_count" format="integer" />
-      <KpiCard label="Total Preferred Equity" :value="dashboard.kpis.total_pref_equity" format="currency" />
+      <KpiCard label="Property Count" :value="dashboard.kpis.property_count" format="integer" />
+      <KpiCard label="Total Preferred Equity" :value="dashboard.kpis.total_pref_equity" format="currency-millions" />
     </div>
 
     <!-- Charts Row 1: NOI Trend + Capital Structure -->
@@ -296,7 +372,16 @@ function onFreqChange(e: Event) {
 
     <!-- Loan Maturities -->
     <div class="chart-card">
-      <h3>Loan Maturities</h3>
+      <div class="chart-header">
+        <h3>Loan Maturities</h3>
+        <button
+          class="btn-excel-sm"
+          @click="downloadLoanDetail"
+          :disabled="downloadingLoans"
+        >
+          {{ downloadingLoans ? '...' : 'Excel' }}
+        </button>
+      </div>
       <v-chart v-if="loanOption" :option="loanOption" style="height: 300px" autoresize />
       <p v-else class="placeholder">No loan data</p>
     </div>
@@ -402,6 +487,39 @@ function onFreqChange(e: Event) {
   border-radius: 4px;
   cursor: pointer;
 }
+
+.kpi-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.btn-excel {
+  padding: 6px 16px;
+  background: var(--color-primary);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.btn-excel:hover { background: #163d5e; }
+.btn-excel:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.btn-excel-sm {
+  padding: 3px 10px;
+  background: transparent;
+  color: var(--color-primary);
+  border: 1px solid var(--color-primary);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.btn-excel-sm:hover { background: var(--color-primary); color: white; }
+.btn-excel-sm:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .btn-compute {
   padding: 6px 16px;

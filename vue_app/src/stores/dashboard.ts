@@ -12,7 +12,7 @@ interface KpiData {
   debt_outstanding: number
   wtd_avg_cap_rate: number
   portfolio_occupancy: number
-  deal_count: number
+  property_count: number
   total_pref_equity: number
 }
 

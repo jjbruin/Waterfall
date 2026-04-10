@@ -26,6 +26,15 @@ logger = logging.getLogger(__name__)
 # Database path
 DB_PATH = "waterfall.db"
 
+# SQLAlchemy engine — set by Flask app when DATABASE_URL is configured
+_sa_engine = None
+
+
+def set_engine(engine):
+    """Set the SQLAlchemy engine for PostgreSQL support."""
+    global _sa_engine
+    _sa_engine = engine
+
 # Table definitions with their CSV sources
 TABLE_DEFINITIONS = {
     'deals': {
@@ -121,22 +130,25 @@ TABLE_DEFINITIONS = {
 }
 
 
-def get_db_connection() -> sqlite3.Connection:
+def get_db_connection():
     """
-    Get database connection with optimizations
-    
-    Returns:
-        sqlite3.Connection with row_factory set to Row
+    Get database connection with optimizations.
+
+    Returns SQLAlchemy connection if engine is set (PostgreSQL),
+    otherwise falls back to sqlite3.
     """
+    if _sa_engine is not None:
+        return _sa_engine.connect()
+
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row  # Return rows as dictionaries
-    
+
     # Performance optimizations
     conn.execute("PRAGMA journal_mode=WAL")  # Write-Ahead Logging
     conn.execute("PRAGMA synchronous=NORMAL")  # Faster writes
     conn.execute("PRAGMA cache_size=10000")  # Larger cache
     conn.execute("PRAGMA temp_store=MEMORY")  # Temp tables in memory
-    
+
     return conn
 
 
@@ -686,24 +698,24 @@ def validate_database() -> Dict[str, Any]:
 
 def execute_query(query: str, params: tuple = None) -> pd.DataFrame:
     """
-    Execute a SQL query and return results as DataFrame
-    
-    Args:
-        query: SQL query string
-        params: Query parameters (optional)
-    
-    Returns:
-        DataFrame with query results
+    Execute a SQL query and return results as DataFrame.
+
+    Supports both SQLite (?) and PostgreSQL (%s) parameter styles.
     """
     conn = get_db_connection()
-    
-    if params:
-        df = pd.read_sql(query, conn, params=params)
-    else:
-        df = pd.read_sql(query, conn)
-    
-    conn.close()
-    
+
+    # Convert SQLite-style ? params to %s for PostgreSQL
+    if _sa_engine is not None and params and "?" in query:
+        query = query.replace("?", "%s")
+
+    try:
+        if params:
+            df = pd.read_sql(query, conn, params=params)
+        else:
+            df = pd.read_sql(query, conn)
+    finally:
+        conn.close()
+
     return df
 
 
@@ -806,6 +818,89 @@ def delete_waterfall_steps(vcode: str, wf_type: str = None):
 PROTECTED_TABLES = {'waterfalls', 'one_pager_comments', 'waterfall_audit', 'review_roles', 'review_submissions', 'review_notes', 'prospective_loans', 'prospective_loans_audit', 'planned_loans'}
 
 
+def _get_import_connection():
+    """Get a connection for import operations (PostgreSQL or SQLite)."""
+    if _sa_engine is not None:
+        return _sa_engine.connect(), True  # (conn, is_postgres)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    return conn, False
+
+
+def _log_import(conn, is_postgres, table_name, row_count, source):
+    """Log an import to import_log table."""
+    try:
+        if is_postgres:
+            from sqlalchemy import text
+            conn.execute(
+                text("INSERT INTO import_log (table_name, rows_imported, import_mode, imported_by, source_file) "
+                     "VALUES (:t, :r, :m, :u, :f)"),
+                {"t": table_name, "r": row_count, "m": "replace", "u": "csv_import", "f": source},
+            )
+        else:
+            conn.execute(
+                "INSERT INTO import_log (table_name, rows_imported, import_mode, imported_by, source_file) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (table_name, row_count, 'replace', 'csv_import', source),
+            )
+    except Exception:
+        pass
+
+
+def _import_dataframe(conn, is_postgres, table_name, df):
+    """Import a DataFrame into a table, replacing existing data."""
+    if is_postgres:
+        # pd.to_sql needs the engine, not a raw connection
+        df.to_sql(table_name, _sa_engine, if_exists='replace', index=False)
+    else:
+        df.to_sql(table_name, conn, if_exists='replace', index=False)
+
+
+def import_csv_dataframe(
+    table_name: str,
+    df: pd.DataFrame,
+    source: str = "upload",
+) -> Dict[str, Any]:
+    """Import a DataFrame into a database table (works with SQLite and PostgreSQL).
+
+    Args:
+        table_name: Key in TABLE_DEFINITIONS to import.
+        df: DataFrame with the CSV data.
+        source: Description of where the data came from.
+
+    Returns:
+        Result dict: {status, rows, error?}
+    """
+    if table_name not in TABLE_DEFINITIONS:
+        return {'rows': 0, 'status': 'error', 'error': f'Unknown table: {table_name}'}
+
+    if table_name in PROTECTED_TABLES:
+        return {'rows': 0, 'status': 'protected'}
+
+    conn, is_postgres = _get_import_connection()
+
+    try:
+        df.columns = [str(c).strip() for c in df.columns]
+        _import_dataframe(conn, is_postgres, table_name, df)
+        _log_import(conn, is_postgres, table_name, len(df), source)
+
+        if is_postgres:
+            conn.commit()
+        else:
+            create_indexes(conn)
+            conn.commit()
+
+        logger.info(f"Imported {table_name}: {len(df):,} rows from {source}")
+        return {'rows': len(df), 'status': 'success'}
+
+    except Exception as e:
+        logger.error(f"Error importing {table_name}: {e}")
+        return {'rows': 0, 'status': 'error', 'error': str(e)}
+    finally:
+        conn.close()
+
+
 def import_single_csv(
     data_folder: str,
     table_name: str,
@@ -821,8 +916,6 @@ def import_single_csv(
     Returns:
         Per-table results dict (same format as import_csvs_to_database).
     """
-    results: Dict[str, Dict[str, Any]] = {}
-
     if table_name not in TABLE_DEFINITIONS:
         return {table_name: {'rows': 0, 'status': 'error', 'error': f'Unknown table: {table_name}'}}
 
@@ -839,35 +932,13 @@ def import_single_csv(
     if not csv_file.exists():
         return {table_name: {'rows': 0, 'status': 'skipped', 'file': str(csv_file)}}
 
-    conn = sqlite3.connect(db_path, check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-
     try:
         df = pd.read_csv(csv_file)
-        df.columns = [str(c).strip() for c in df.columns]
-        df.to_sql(table_name, conn, if_exists='replace', index=False)
-
-        try:
-            conn.execute(
-                "INSERT INTO import_log (table_name, rows_imported, import_mode, imported_by, source_file) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (table_name, len(df), 'replace', 'csv_import', str(csv_file)),
-            )
-        except Exception:
-            pass
-
-        logger.info(f"✅ Imported {table_name}: {len(df):,} rows from {csv_file.name}")
-        results[table_name] = {'rows': len(df), 'status': 'success', 'file': str(csv_file)}
-
+        result = import_csv_dataframe(table_name, df, source=str(csv_file))
+        return {table_name: result}
     except Exception as e:
-        logger.error(f"❌ Error importing {table_name}: {e}")
-        results[table_name] = {'rows': 0, 'status': 'error', 'error': str(e)}
-
-    create_indexes(conn)
-    conn.commit()
-    conn.close()
-    return results
+        logger.error(f"Error importing {table_name}: {e}")
+        return {table_name: {'rows': 0, 'status': 'error', 'error': str(e)}}
 
 
 def import_csvs_to_database(
@@ -878,11 +949,7 @@ def import_csvs_to_database(
 
     Iterates ``TABLE_DEFINITIONS``, reads each CSV from *data_folder*, and
     replaces the corresponding table **except** for protected tables
-    (waterfalls, one_pager_comments, waterfall_audit) which are managed
-    exclusively via the application UI.
-
-    After loading, recreates indexes, runs migrations, and logs each
-    import to the ``import_log`` table.
+    which are managed exclusively via the application UI.
 
     Args:
         data_folder: Path to folder containing MRI CSV source files.
@@ -890,7 +957,6 @@ def import_csvs_to_database(
 
     Returns:
         Per-table results dict: ``{table_name: {status, rows, file?, error?}}``.
-        Status is one of ``'success'``, ``'protected'``, ``'skipped'``, ``'error'``.
     """
     results: Dict[str, Dict[str, Any]] = {}
     data_path = Path(data_folder)
@@ -898,52 +964,33 @@ def import_csvs_to_database(
     if not data_path.is_dir():
         return {'_error': {'status': 'error', 'error': f'Folder not found: {data_folder}'}}
 
-    conn = sqlite3.connect(db_path, check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-
     for table_name, table_info in TABLE_DEFINITIONS.items():
-        # Skip protected tables
         if table_name in PROTECTED_TABLES:
             results[table_name] = {'rows': 0, 'status': 'protected'}
-            logger.info(f"🔒 Protected {table_name}: skipped (DB-managed)")
             continue
 
         csv_file = data_path / table_info['csv']
 
         if not csv_file.exists():
             results[table_name] = {'rows': 0, 'status': 'skipped', 'file': str(csv_file)}
-            logger.warning(f"⚠️  Skipped {table_name}: {csv_file} not found")
             continue
 
         try:
             df = pd.read_csv(csv_file)
-            df.columns = [str(c).strip() for c in df.columns]
-            df.to_sql(table_name, conn, if_exists='replace', index=False)
-
-            # Log the import
-            try:
-                conn.execute(
-                    "INSERT INTO import_log (table_name, rows_imported, import_mode, imported_by, source_file) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (table_name, len(df), 'replace', 'csv_import', str(csv_file)),
-                )
-            except Exception:
-                pass  # import_log table may not exist yet on first run
-
-            logger.info(f"✅ Imported {table_name}: {len(df):,} rows from {csv_file.name}")
-            results[table_name] = {'rows': len(df), 'status': 'success', 'file': str(csv_file)}
-
+            result = import_csv_dataframe(table_name, df, source=str(csv_file))
+            results[table_name] = result
         except Exception as e:
-            logger.error(f"❌ Error importing {table_name}: {e}")
+            logger.error(f"Error importing {table_name}: {e}")
             results[table_name] = {'rows': 0, 'status': 'error', 'error': str(e)}
 
-    # Ensure app-managed tables exist
-    create_additional_tables(conn)
-    run_migrations(conn)
-    create_indexes(conn)
-    conn.commit()
-    conn.close()
+    # For SQLite, ensure app-managed tables and indexes exist
+    if _sa_engine is None:
+        conn = sqlite3.connect(db_path, check_same_thread=False)
+        create_additional_tables(conn)
+        run_migrations(conn)
+        create_indexes(conn)
+        conn.commit()
+        conn.close()
 
     return results
 
