@@ -663,16 +663,19 @@ def get_property_performance(
             perf['dscr']['ytd_budget'] = noi / ds
 
     # Get U/W YE (full year projected)
+    # Underwriting (Projected IS) is YTD cumulative — use December snapshot
     if not uw_data.empty:
         year = int(quarter_str.split('-')[0])
-        jan1 = pd.Timestamp(f"{year}-01-01") - pd.DateOffset(days=1)
-        dec31 = pd.Timestamp(f"{year}-12-31")
-        rev, exp, noi, ds = calc_amounts(uw_data, sum_range=(jan1, dec31))
-        perf['revenue']['uw_ye'] = rev
-        perf['expenses']['uw_ye'] = exp
-        perf['noi']['uw_ye'] = noi
-        if ds > 0:
-            perf['dscr']['uw_ye'] = noi / ds
+        uw_periods = sorted(uw_data['dtEntry_parsed'].dropna().unique())
+        dec_date = next((pd.Timestamp(p) for p in reversed(uw_periods)
+                         if pd.Timestamp(p).year == year and pd.Timestamp(p).month == 12), None)
+        if dec_date:
+            rev, exp, noi, ds = calc_amounts(uw_data, as_of_date=dec_date)
+            perf['revenue']['uw_ye'] = rev
+            perf['expenses']['uw_ye'] = exp
+            perf['noi']['uw_ye'] = noi
+            if ds > 0:
+                perf['dscr']['uw_ye'] = noi / ds
 
     # Calculate variances
     for metric in ['revenue', 'expenses', 'noi']:

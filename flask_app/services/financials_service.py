@@ -376,23 +376,47 @@ def _calculate_is_amounts(period_type, source, ref_date, year, accounts_dict,
             return _get_budget_sum(budget_data, prior, ref_date, accounts_dict)
 
     elif source == "Underwriting":
+        # Underwriting (Projected IS) is stored as YTD cumulative snapshots
+        # (trial balance), same as Actuals — NOT periodic like Budget.
+        uw_periods_list = sorted(uw_data['dtEntry_parsed'].dropna().unique()) if not uw_data.empty else []
+
         if period_type == "TTM":
-            start = ref_date - pd.DateOffset(months=12)
-            return _get_budget_sum(uw_data, start, ref_date, accounts_dict)
+            current_bal = _get_cumulative_balances(uw_data, ref_date, accounts_dict)
+            dec_prior = next((pd.Timestamp(p) for p in uw_periods_list
+                              if pd.Timestamp(p).year == ref_date.year - 1 and pd.Timestamp(p).month == 12), None)
+            same_month_ly = next((pd.Timestamp(p) for p in uw_periods_list
+                                  if pd.Timestamp(p).year == ref_date.year - 1 and pd.Timestamp(p).month == ref_date.month), None)
+            if dec_prior and same_month_ly:
+                dec_bal = _get_cumulative_balances(uw_data, dec_prior, accounts_dict)
+                ly_bal = _get_cumulative_balances(uw_data, same_month_ly, accounts_dict)
+                return _subtract_balances(_add_balances(current_bal, dec_bal, accounts_dict), ly_bal, accounts_dict)
+            elif dec_prior:
+                return _add_balances(current_bal, _get_cumulative_balances(uw_data, dec_prior, accounts_dict), accounts_dict)
+            return current_bal
+
         elif period_type == "YTD":
-            jan1 = pd.Timestamp(f"{ref_date.year}-01-01") - pd.DateOffset(days=1)
-            return _get_budget_sum(uw_data, jan1, ref_date, accounts_dict)
+            return _get_cumulative_balances(uw_data, ref_date, accounts_dict)
+
         elif period_type == "Full Year":
-            jan1 = pd.Timestamp(f"{year}-01-01") - pd.DateOffset(days=1)
-            dec31 = pd.Timestamp(f"{year}-12-31")
-            return _get_budget_sum(uw_data, jan1, dec31, accounts_dict)
+            dec_date = next((pd.Timestamp(p) for p in uw_periods_list
+                             if pd.Timestamp(p).year == year and pd.Timestamp(p).month == 12), None)
+            return _get_cumulative_balances(uw_data, dec_date, accounts_dict) if dec_date else {}
+
         elif period_type == "Estimate":
-            jan1 = pd.Timestamp(f"{ref_date.year}-01-01") - pd.DateOffset(days=1)
-            dec31 = pd.Timestamp(f"{ref_date.year}-12-31")
-            return _get_budget_sum(uw_data, jan1, dec31, accounts_dict)
-        else:
-            prior = ref_date - pd.DateOffset(months=1)
-            return _get_budget_sum(uw_data, prior, ref_date, accounts_dict)
+            # Full year from underwriting
+            dec_date = next((pd.Timestamp(p) for p in uw_periods_list
+                             if pd.Timestamp(p).year == ref_date.year and pd.Timestamp(p).month == 12), None)
+            return _get_cumulative_balances(uw_data, dec_date, accounts_dict) if dec_date else {}
+
+        else:  # Custom — single-month periodic: current YTD minus prior month YTD
+            current_bal = _get_cumulative_balances(uw_data, ref_date, accounts_dict)
+            prior_date = ref_date - pd.DateOffset(months=1)
+            closest_prior = next((pd.Timestamp(p) for p in reversed(uw_periods_list)
+                                  if pd.Timestamp(p) <= prior_date), None)
+            if closest_prior:
+                prior_bal = _get_cumulative_balances(uw_data, closest_prior, accounts_dict)
+                return _subtract_balances(current_bal, prior_bal, accounts_dict)
+            return current_bal
 
     elif source == "Valuation":
         if period_type == "TTM":
