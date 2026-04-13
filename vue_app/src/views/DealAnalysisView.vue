@@ -44,6 +44,7 @@ function toggle(section: string) {
 // Reset expansions when deal changes
 watch(() => deals.currentVcode, (vc) => {
   expanded.value = {}
+  selectedSizingLoanId.value = null
   if (vc) deals.loadProspectiveLoans(vc)
 })
 
@@ -141,6 +142,7 @@ async function saveRefiForm() {
     // Auto-run sizing
     if (editingLoanId.value) {
       refiSizing.value = await deals.runSizingAnalysis(vc, editingLoanId.value)
+      selectedSizingLoanId.value = editingLoanId.value
     }
   } catch (e: any) {
     refiError.value = e.response?.data?.error || e.message
@@ -184,6 +186,32 @@ async function runSizing(loanId: number) {
   if (!vc) return
   refiSizing.value = await deals.runSizingAnalysis(vc, loanId)
 }
+
+// Inline sizing detail panel (below proposals table)
+const selectedSizingLoanId = ref<number | null>(null)
+const sizingLoading = ref(false)
+
+async function viewSizing(loanId: number) {
+  const vc = deals.currentVcode
+  if (!vc) return
+  if (selectedSizingLoanId.value === loanId && deals.sizingResults[loanId]) {
+    selectedSizingLoanId.value = null  // toggle off
+    return
+  }
+  selectedSizingLoanId.value = loanId
+  if (!deals.sizingResults[loanId]) {
+    sizingLoading.value = true
+    try {
+      await deals.runSizingAnalysis(vc, loanId)
+    } catch { /* handled in store */ }
+    sizingLoading.value = false
+  }
+}
+
+const selectedSizing = computed<SizingResult | null>(() => {
+  if (!selectedSizingLoanId.value) return null
+  return deals.sizingResults[selectedSizingLoanId.value] || null
+})
 
 // ============================================================
 // Capital Call Management
@@ -512,21 +540,25 @@ async function downloadExcel(url: string, filename: string) {
                 <th>Name</th>
                 <th>Status</th>
                 <th>Refi Date</th>
-                <th class="right">Loan Amount</th>
+                <th class="right">Quoted Amount</th>
+                <th class="right">Est. Amount</th>
                 <th class="right">Rate</th>
                 <th>Term</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="loan in deals.currentProspectiveLoans" :key="loan.id">
+              <tr v-for="loan in deals.currentProspectiveLoans" :key="loan.id"
+                  :class="{ 'row-selected': selectedSizingLoanId === loan.id }">
                 <td>{{ loan.loan_name || '(unnamed)' }}</td>
                 <td><span :class="['badge', statusClass(loan.status)]">{{ loan.status }}</span></td>
                 <td>{{ fmtDate(loan.refi_date) }}</td>
                 <td class="right">{{ loan.loan_amount ? fmtCur(loan.loan_amount) : '—' }}</td>
+                <td class="right">{{ deals.sizingResults[loan.id] ? fmtCur(deals.sizingResults[loan.id].estimated_loan_amount) : '—' }}</td>
                 <td class="right">{{ loan.interest_rate ? loan.interest_rate + '%' : '—' }}</td>
                 <td>{{ loan.term_years ? loan.term_years + 'yr' : '—' }}{{ loan.io_years ? ' IO' : '' }}</td>
                 <td class="actions-cell">
+                  <button class="btn-sm" :class="{ 'btn-active': selectedSizingLoanId === loan.id }" @click="viewSizing(loan.id)">Sizing</button>
                   <button class="btn-sm" @click="openRefiForm(loan)">Edit</button>
                   <button v-if="loan.status === 'draft'" class="btn-sm btn-accept" @click="acceptLoan(loan.id)">Accept</button>
                   <button v-if="loan.status === 'accepted'" class="btn-sm btn-revert" @click="revertLoan(loan.id)">Revert</button>
@@ -536,6 +568,53 @@ async function downloadExcel(url: string, filename: string) {
             </tbody>
           </table>
           <p v-else class="placeholder">No loan proposals. Click "+ New Loan Proposal" to begin.</p>
+
+          <!-- Inline Sizing Detail Panel -->
+          <div v-if="sizingLoading" class="sizing-loading">Running sizing analysis...</div>
+          <div v-else-if="selectedSizing" class="refi-sizing-summary">
+            <h4>Sizing Analysis — {{ deals.currentProspectiveLoans.find(l => l.id === selectedSizingLoanId)?.loan_name || 'Loan' }}</h4>
+            <div class="sizing-grid">
+              <div class="sizing-col">
+                <h5>NOI Comparison</h5>
+                <table class="info-table">
+                  <tr><td>System Projected (12mo)</td><td class="right">{{ fmtCur(selectedSizing.system_noi_12m) }}</td></tr>
+                  <tr><td>Lender Underwritten</td><td class="right">{{ fmtCur(selectedSizing.lender_uw_noi) }}</td></tr>
+                  <tr><td>Difference</td><td class="right" :class="{ 'text-danger': selectedSizing.noi_difference < 0 }">
+                    {{ fmtCur(selectedSizing.noi_difference) }} ({{ selectedSizing.noi_diff_pct }}%)
+                  </td></tr>
+                </table>
+              </div>
+              <div class="sizing-col">
+                <h5>Proceeds Summary</h5>
+                <table class="info-table">
+                  <tr><td>Estimated Loan Amount</td><td class="right">{{ fmtCur(selectedSizing.estimated_loan_amount) }}</td></tr>
+                  <tr><td>Less: Existing Loan Payoff</td><td class="right">{{ fmtCur(-selectedSizing.existing_loan_balance) }}</td></tr>
+                  <tr><td>Less: Closing Costs</td><td class="right">{{ fmtCur(-selectedSizing.closing_costs) }}</td></tr>
+                  <tr class="total-border"><td class="bold">Net Refi Proceeds</td><td class="right bold">{{ fmtCur(selectedSizing.net_refi_proceeds) }}</td></tr>
+                  <tr><td>Less: Reserve Holdback</td><td class="right">{{ fmtCur(-selectedSizing.reserve_holdback) }}</td></tr>
+                  <tr class="total-border"><td class="bold">Distributable</td><td class="right bold" :class="{ 'text-danger': selectedSizing.distributable_proceeds < 0 }">{{ fmtCur(selectedSizing.distributable_proceeds) }}</td></tr>
+                </table>
+              </div>
+            </div>
+            <div v-if="selectedSizing.constraints" class="constraint-table">
+              <h5>Constraint Analysis</h5>
+              <table class="info-table">
+                <thead>
+                  <tr><th>Metric</th><th class="right">Max Loan</th><th>Binding?</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(c, name) in selectedSizing.constraints" :key="name">
+                    <td>{{ name === 'ltv' ? `LTV (${(c.max_ltv * 100).toFixed(0)}%)` : name === 'dscr' ? `DSCR (${c.min_dscr}x)` : name === 'debt_yield' ? `Debt Yield (${(c.min_debt_yield * 100).toFixed(1)}%)` : 'Quoted' }}</td>
+                    <td class="right">{{ fmtCur(c.max_loan) }}</td>
+                    <td><strong v-if="selectedSizing.binding_constraint === name">Binding</strong></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p v-if="selectedSizing.capital_call_required" class="alert alert-warning" style="margin-top:8px">
+              Capital call of {{ fmtCur(selectedSizing.capital_call_amount) }} will be required.
+            </p>
+          </div>
 
           <!-- Accepted Loan Sizing Summary -->
           <div v-if="deals.currentRefiDbg" class="refi-sizing-summary">
@@ -1564,6 +1643,10 @@ async function downloadExcel(url: string, filename: string) {
 }
 
 .text-danger { color: #e53e3e; }
+
+.row-selected { background: #ebf8ff; }
+.btn-active { background: var(--color-accent) !important; color: white !important; border-color: var(--color-accent) !important; }
+.sizing-loading { padding: 12px; color: var(--color-text-secondary); font-style: italic; font-size: 13px; }
 
 .raw-calls-detail {
   margin-top: 12px;
