@@ -181,6 +181,137 @@ def _exec(conn, sql, params=None):
         return conn.execute(sql)
 
 
+def _pg_fix_column_types(conn, text, table, col_types):
+    """ALTER columns to correct types if they are currently TEXT.
+
+    Safe to run repeatedly — only alters columns whose current type is 'text'.
+    Uses ALTER COLUMN ... TYPE ... USING to cast existing data.
+    """
+    for col, target_type in col_types.items():
+        try:
+            cur_type = conn.execute(text(
+                "SELECT data_type FROM information_schema.columns "
+                f"WHERE table_name = '{table}' AND column_name = '{col}'"
+            )).scalar()
+            if cur_type and cur_type.lower() == "text":
+                conn.execute(text(
+                    f'ALTER TABLE "{table}" ALTER COLUMN "{col}" '
+                    f"TYPE {target_type} USING NULLIF(\"{col}\", '')::{ target_type}"
+                ))
+                logger.info(f"Altered {table}.{col} from TEXT to {target_type}")
+        except Exception as e:
+            logger.warning(f"Could not alter {table}.{col}: {e}")
+
+
+def ensure_pg_tables(engine):
+    """Ensure app-managed tables exist on PostgreSQL with correct schema.
+
+    Called once at startup when DATABASE_URL is set.  Uses SERIAL for
+    auto-increment columns (SQLite AUTOINCREMENT is not valid on PG).
+    Also backfills any rows that have NULL id from prior inserts.
+    """
+    from sqlalchemy import text
+
+    ddl_statements = [
+        """
+        CREATE TABLE IF NOT EXISTS prospective_loans (
+            id              SERIAL PRIMARY KEY,
+            vcode           TEXT NOT NULL,
+            loan_name       TEXT,
+            status          TEXT DEFAULT 'draft',
+            refi_date       TEXT NOT NULL,
+            existing_loan_id TEXT,
+            loan_amount     DOUBLE PRECISION,
+            lender_uw_noi   DOUBLE PRECISION,
+            max_ltv         DOUBLE PRECISION,
+            min_dscr        DOUBLE PRECISION,
+            min_debt_yield  DOUBLE PRECISION,
+            interest_rate   DOUBLE PRECISION,
+            rate_spread_bps BIGINT,
+            rate_index      TEXT,
+            term_years      BIGINT,
+            amort_years     BIGINT,
+            io_years        DOUBLE PRECISION,
+            int_type        TEXT DEFAULT 'Fixed',
+            closing_costs   DOUBLE PRECISION DEFAULT 0,
+            reserve_holdback DOUBLE PRECISION DEFAULT 0,
+            notes           TEXT,
+            created_by      TEXT,
+            created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_by      TEXT,
+            updated_at      TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS prospective_loans_audit (
+            id          SERIAL PRIMARY KEY,
+            loan_id     BIGINT NOT NULL,
+            action      TEXT NOT NULL,
+            vcode       TEXT,
+            loan_name   TEXT,
+            status      TEXT,
+            loan_amount DOUBLE PRECISION,
+            all_fields  TEXT,
+            changed_by  TEXT,
+            changed_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+    ]
+
+    with engine.connect() as conn:
+        for ddl in ddl_statements:
+            conn.execute(text(ddl))
+
+        # Fix column types — the table may have been created with all-TEXT
+        # columns via pandas to_sql or SQLite DDL passed through.
+        # Migrate to proper types so PostgreSQL returns ints/floats.
+        _pg_fix_column_types(conn, text, "prospective_loans", {
+            "id": "INTEGER",
+            "loan_amount": "DOUBLE PRECISION",
+            "lender_uw_noi": "DOUBLE PRECISION",
+            "max_ltv": "DOUBLE PRECISION",
+            "min_dscr": "DOUBLE PRECISION",
+            "min_debt_yield": "DOUBLE PRECISION",
+            "interest_rate": "DOUBLE PRECISION",
+            "rate_spread_bps": "INTEGER",
+            "term_years": "INTEGER",
+            "amort_years": "INTEGER",
+            "io_years": "DOUBLE PRECISION",
+            "closing_costs": "DOUBLE PRECISION",
+            "reserve_holdback": "DOUBLE PRECISION",
+        })
+
+        # Ensure id has a SERIAL sequence
+        try:
+            has_seq = conn.execute(text(
+                "SELECT pg_get_serial_sequence('prospective_loans', 'id')"
+            )).scalar()
+            if not has_seq:
+                conn.execute(text(
+                    "CREATE SEQUENCE IF NOT EXISTS prospective_loans_id_seq"
+                ))
+                conn.execute(text(
+                    "SELECT setval('prospective_loans_id_seq', COALESCE((SELECT MAX(id) FROM prospective_loans), 0))"
+                ))
+                conn.execute(text(
+                    "UPDATE prospective_loans SET id = nextval('prospective_loans_id_seq') WHERE id IS NULL"
+                ))
+                conn.execute(text(
+                    "ALTER TABLE prospective_loans ALTER COLUMN id SET DEFAULT nextval('prospective_loans_id_seq')"
+                ))
+                conn.execute(text(
+                    "ALTER TABLE prospective_loans ALTER COLUMN id SET NOT NULL"
+                ))
+                conn.execute(text(
+                    "ALTER SEQUENCE prospective_loans_id_seq OWNED BY prospective_loans.id"
+                ))
+                logger.info("Fixed prospective_loans.id to use SERIAL sequence")
+        except Exception as e:
+            logger.warning(f"Could not fix prospective_loans id sequence: {e}")
+
+        conn.commit()
+
+
 def create_additional_tables(conn: sqlite3.Connection):
     """
     Create tables that don't come from CSVs

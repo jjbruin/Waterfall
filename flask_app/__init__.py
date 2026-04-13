@@ -69,7 +69,10 @@ def create_app(config_name: str = None) -> Flask:
     # Wire SQLAlchemy engine into legacy database.py for PostgreSQL support
     if app.config.get("DATABASE_URL"):
         with app.app_context():
-            database.set_engine(get_engine())
+            engine = get_engine()
+            database.set_engine(engine)
+            # Ensure app-managed tables exist on PostgreSQL
+            database.ensure_pg_tables(engine)
 
     # Configure data adapters (MRI API if env vars set, else database)
     with app.app_context():
