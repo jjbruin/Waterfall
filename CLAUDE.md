@@ -161,6 +161,21 @@ cd vue_app && npm run dev        # Frontend on http://localhost:5173
 - `size_prospective_loan()` in `planned_loans.py` returns sizing dict including `refi_date` for Vue form pre-fill
 - Prospective loan extends sale date to new maturity when `Sale_ME` < new maturity
 - Net sale proceeds formula: `sale_price - loan_balances - balloon_total + cash_reserves`
+- **Loan type**: Radio selector — Supplemental (keep all existing loans) or Refinance (replace selected loans via checkbox list)
+- **Multi-loan replacement**: `existing_loan_id` stores comma-separated LoanIDs; `compute.py` filters with `not in replacing_ids`; `planned_loans.py` uses `.isin(replacing_ids)` for balance lookup
+- **Sizing constraints**: LTV (value x max LTV), DSCR (NOI / min DSCR → solve principal), Debt Yield (NOI / min yield), Quoted amount — binding = minimum
+- **Workflow**: Draft → Save & Analyze (sizing only) → Accept (full waterfall recompute) → Revert. Editing an accepted loan auto-recomputes waterfall on save.
+- **CRUD endpoints**: `GET/POST/PUT/DELETE /api/deals/<vcode>/prospective-loans`, plus `/accept`, `/revert`, `/sizing` per loan
+- **PostgreSQL**: `ensure_pg_tables()` in `database.py` creates table with `SERIAL` id + proper column types at startup; `_pg_fix_column_types()` migrates TEXT→INTEGER/DOUBLE PRECISION
+
+### ISBS Data Formats
+- **Source column**: `vSource` in ISBS table (`ISBS_Download.csv`)
+- **Interim IS** (Actuals): YTD cumulative trial balance snapshots — use `_get_cumulative_balances()` at a single date
+- **Budget IS**: Periodic monthly amounts — use `_get_budget_sum()` over date range
+- **Projected IS** (Underwriting): YTD cumulative trial balance snapshots — use `_get_cumulative_balances()` (same as Actuals)
+- **Valuation**: Periodic monthly from `forecast_feed` — use `_get_valuation_sum()` with negated `mAmount_norm`
+- **TTM from cumulative**: Current YTD + prior year Dec YTD - prior year same-month YTD
+- **Performance chart / Dashboard**: Both correctly convert cumulative→periodic via `_cumulative_to_periodic()`
 
 ### Sub-Portfolio Aggregation
 - Deals can have child properties linked via `Portfolio_Name`
