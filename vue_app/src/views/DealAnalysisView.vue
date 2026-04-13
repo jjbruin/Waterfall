@@ -171,6 +171,12 @@ async function saveRefiForm() {
       refiSizing.value = await deals.runSizingAnalysis(vc, editingLoanId.value)
       selectedSizingLoanId.value = editingLoanId.value
     }
+
+    // If the loan is already accepted, recompute the waterfall with updated assumptions
+    const loan = deals.currentProspectiveLoans.find(l => l.id === editingLoanId.value)
+    if (loan && loan.status === 'accepted') {
+      await deals.computeDeal(vc, true)
+    }
   } catch (e: any) {
     refiError.value = e.response?.data?.error || e.message
   } finally {
