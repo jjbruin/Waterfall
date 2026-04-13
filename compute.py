@@ -620,11 +620,12 @@ def compute_deal_analysis(
                 refi_dbg = sizing
                 refi_dbg["final_loan_amount"] = final_amount
 
-                # Remove replaced loan if specified
-                existing_loan_id = prospect.get("existing_loan_id")
-                if existing_loan_id:
-                    loans = [ln for ln in loans if ln.loan_id != existing_loan_id]
-                    debug_msgs.append(f"Replacing loan {existing_loan_id} with prospective loan")
+                # Remove replaced loans if specified
+                existing_loan_id_raw = prospect.get("existing_loan_id") or ""
+                replacing_ids = [s.strip() for s in str(existing_loan_id_raw).split(",") if s.strip()]
+                if replacing_ids:
+                    loans = [ln for ln in loans if ln.loan_id not in replacing_ids]
+                    debug_msgs.append(f"Replacing loans {replacing_ids} with prospective loan")
 
                 # Add new loan
                 new_loan = prospective_loan_as_loan_object(deal_vcode, prospect, final_amount)

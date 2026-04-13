@@ -59,6 +59,9 @@ const refiSaving = ref(false)
 const refiError = ref('')
 const editingLoanId = ref<number | null>(null)
 
+const refiLoanType = ref<'supplemental' | 'refinance'>('supplemental')
+const replacingLoanIds = ref<string[]>([])
+
 function resetRefiForm() {
   refiForm.value = {
     loan_name: '',
@@ -80,12 +83,25 @@ function resetRefiForm() {
     reserve_holdback: 0,
     notes: '',
   }
+  refiLoanType.value = 'supplemental'
+  replacingLoanIds.value = []
   refiSizing.value = null
   refiError.value = ''
   editingLoanId.value = null
 }
 
+// Existing loans for the current deal (from debt service data)
+const existingLoans = computed(() => {
+  const debt = deals.currentDebt
+  if (!debt || !debt.loans) return []
+  return debt.loans
+})
+
 function openRefiForm(loan?: ProspectiveLoan) {
+  // Ensure debt service is loaded so we can show the loan list
+  const vc = deals.currentVcode
+  if (vc) deals.loadDebtService(vc)
+
   if (loan) {
     editingLoanId.value = loan.id
     refiForm.value = {
@@ -108,6 +124,14 @@ function openRefiForm(loan?: ProspectiveLoan) {
       reserve_holdback: loan.reserve_holdback || 0,
       notes: loan.notes || '',
     }
+    // Restore loan type and replacing IDs from saved existing_loan_id
+    if (loan.existing_loan_id) {
+      refiLoanType.value = 'refinance'
+      replacingLoanIds.value = loan.existing_loan_id.split(',').map(s => s.trim()).filter(Boolean)
+    } else {
+      refiLoanType.value = 'supplemental'
+      replacingLoanIds.value = []
+    }
     refiSizing.value = deals.sizingResults[loan.id] || null
   } else {
     resetRefiForm()
@@ -122,8 +146,11 @@ async function saveRefiForm() {
   refiSaving.value = true
   refiError.value = ''
   try {
+    // Serialize replacing loan IDs into existing_loan_id
+    const existingLoanIdStr = refiLoanType.value === 'refinance' ? replacingLoanIds.value.join(',') : ''
     const payload = {
       ...refiForm.value,
+      existing_loan_id: existingLoanIdStr,
       max_ltv: parseFloat(refiForm.value.max_ltv) / 100,
       min_debt_yield: parseFloat(refiForm.value.min_debt_yield) / 100,
       loan_amount: refiForm.value.loan_amount ? parseFloat(refiForm.value.loan_amount) : null,
@@ -677,9 +704,29 @@ async function downloadExcel(url: string, filename: string) {
               <label>Refi / Origination Date</label>
               <input type="date" v-model="refiForm.refi_date" />
             </div>
-            <div class="form-group">
-              <label>Existing Loan ID (being replaced)</label>
-              <input v-model="refiForm.existing_loan_id" placeholder="LoanID from debt service" />
+            <div class="form-group full-width loan-type-group">
+              <label>Loan Type</label>
+              <div class="radio-row">
+                <label class="radio-label">
+                  <input type="radio" value="supplemental" v-model="refiLoanType" />
+                  Supplemental (keep all existing loans)
+                </label>
+                <label class="radio-label">
+                  <input type="radio" value="refinance" v-model="refiLoanType" />
+                  Refinance (replace selected loans)
+                </label>
+              </div>
+              <div v-if="refiLoanType === 'refinance'" class="replacing-loans">
+                <label class="sub-label">Select loans to replace:</label>
+                <div v-if="existingLoans.length" class="loan-checkboxes">
+                  <label v-for="ln in existingLoans" :key="ln.loan_id" class="checkbox-label">
+                    <input type="checkbox" :value="ln.loan_id" v-model="replacingLoanIds" />
+                    {{ ln.loan_id }} — {{ fmtCur(ln.orig_amount) }} @ {{ (ln.fixed_rate * 100).toFixed(2) }}% {{ ln.int_type }}
+                    <span v-if="ln.maturity_date" class="loan-detail">mat. {{ fmtDate(ln.maturity_date) }}</span>
+                  </label>
+                </div>
+                <p v-else class="placeholder">No existing loans found. Expand "Debt Service" section first.</p>
+              </div>
             </div>
             <div class="form-group">
               <label>Quoted Loan Amount ($)</label>
@@ -1641,6 +1688,16 @@ async function downloadExcel(url: string, filename: string) {
   padding: 4px 8px;
   border-bottom: 2px solid var(--color-border);
 }
+
+/* Loan type selector */
+.loan-type-group { grid-column: 1 / -1; }
+.radio-row { display: flex; gap: 20px; margin: 4px 0; }
+.radio-label { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+.replacing-loans { margin-top: 8px; padding: 8px 12px; background: #f7fafc; border: 1px solid var(--color-border); border-radius: 4px; }
+.replacing-loans .sub-label { font-size: 12px; font-weight: 600; color: var(--color-text-secondary); margin-bottom: 4px; display: block; }
+.loan-checkboxes { display: flex; flex-direction: column; gap: 4px; }
+.checkbox-label { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+.checkbox-label .loan-detail { color: var(--color-text-secondary); font-size: 12px; }
 
 .text-danger { color: #e53e3e; }
 

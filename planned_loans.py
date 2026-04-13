@@ -295,7 +295,9 @@ def size_prospective_loan(
     io_years = float(prospect.get("io_years") or 0)
     closing_costs = float(prospect.get("closing_costs") or 0)
     reserve_holdback = float(prospect.get("reserve_holdback") or 0)
-    existing_loan_id = prospect.get("existing_loan_id")
+    existing_loan_id_raw = prospect.get("existing_loan_id") or ""
+    # Support comma-separated list of loan IDs being replaced
+    replacing_ids = [s.strip() for s in str(existing_loan_id_raw).split(",") if s.strip()]
 
     if max_ltv > 1.5:
         max_ltv = max_ltv / 100.0
@@ -319,9 +321,9 @@ def size_prospective_loan(
     # Existing loan balance at refi date (use ONLY original loans, not prospective)
     existing_bal = 0.0
     if loan_sched is not None and not loan_sched.empty:
-        # Filter to only the loan being replaced, or all loans if none specified
-        if existing_loan_id:
-            existing_sched = loan_sched[loan_sched["LoanID"] == existing_loan_id]
+        # Filter to only the loans being replaced, or all loans if none specified
+        if replacing_ids:
+            existing_sched = loan_sched[loan_sched["LoanID"].isin(replacing_ids)]
         else:
             existing_sched = loan_sched
         if not existing_sched.empty:
@@ -408,7 +410,7 @@ def size_prospective_loan(
         "binding_constraint": binding_name,
         "estimated_loan_amount": estimated_amount,
         "existing_loan_balance": existing_bal,
-        "existing_loan_id": existing_loan_id,
+        "replacing_loan_ids": replacing_ids,
         "closing_costs": closing_costs,
         "reserve_holdback": reserve_holdback,
         "net_refi_proceeds": net_proceeds,
