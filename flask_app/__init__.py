@@ -123,7 +123,7 @@ def create_app(config_name: str = None) -> Flask:
     # Serve Vue SPA in production (static/ directory from Docker build)
     static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
     if os.path.isdir(static_dir):
-        from flask import send_from_directory
+        from flask import send_from_directory, make_response
 
         @app.route("/", defaults={"path": ""})
         @app.route("/<path:path>")
@@ -131,9 +131,15 @@ def create_app(config_name: str = None) -> Flask:
             # Serve actual files (JS, CSS, images) if they exist
             file_path = os.path.join(static_dir, path)
             if path and os.path.isfile(file_path):
-                return send_from_directory(static_dir, path)
-            # Otherwise serve index.html (Vue Router handles client-side routes)
-            return send_from_directory(static_dir, "index.html")
+                resp = make_response(send_from_directory(static_dir, path))
+                # Hashed assets (Vite adds content hash) — cache aggressively
+                if path.startswith("assets/"):
+                    resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+                return resp
+            # index.html — always revalidate so deploys take effect immediately
+            resp = make_response(send_from_directory(static_dir, "index.html"))
+            resp.headers["Cache-Control"] = "no-cache"
+            return resp
     else:
         # Development mode — Vue dev server handles frontend
         @app.route("/")

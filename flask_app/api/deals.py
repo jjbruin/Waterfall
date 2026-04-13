@@ -303,7 +303,10 @@ def create_prospective_loan(vcode):
     if "status" not in body:
         body["status"] = "draft"
     username = request.headers.get("X-Username", "api")
-    loan_id = save_prospective_loan(body, username)
+    try:
+        loan_id = save_prospective_loan(body, username)
+    except Exception as e:
+        return jsonify({"error": f"Failed to save loan: {e}"}), 500
     data_service.refresh_table("prospective_loans")
     return jsonify({"id": loan_id, "status": "created"}), 201
 

@@ -152,6 +152,35 @@ def get_db_connection():
     return conn
 
 
+def _exec(conn, sql, params=None):
+    """Execute SQL on either sqlite3 or SQLAlchemy connection.
+
+    Converts ``?`` positional placeholders to ``:p0, :p1, …`` named params
+    when running against SQLAlchemy (PostgreSQL).  sqlite3 connections are
+    passed through unchanged.
+    """
+    if _sa_engine is not None:
+        from sqlalchemy import text
+        if params:
+            named_sql = []
+            param_dict = {}
+            idx = 0
+            for ch in sql:
+                if ch == '?':
+                    name = f"p{idx}"
+                    named_sql.append(f":{name}")
+                    param_dict[name] = params[idx] if isinstance(params, (list, tuple)) else params
+                    idx += 1
+                else:
+                    named_sql.append(ch)
+            return conn.execute(text("".join(named_sql)), param_dict)
+        return conn.execute(text(sql))
+    else:
+        if params:
+            return conn.execute(sql, params)
+        return conn.execute(sql)
+
+
 def create_additional_tables(conn: sqlite3.Connection):
     """
     Create tables that don't come from CSVs
@@ -727,27 +756,28 @@ def save_waterfall_steps(vcode: str, steps_df: pd.DataFrame):
     """
     conn = get_db_connection()
     try:
-        # Ensure audit table exists
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS waterfall_audit (
-                audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                audit_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                action TEXT,
-                vcode TEXT,
-                vmisc TEXT,
-                iOrder INTEGER,
-                vAmtType TEXT,
-                vNotes TEXT,
-                PropCode TEXT,
-                nmisc REAL,
-                dteffective TEXT,
-                vtranstype TEXT,
-                mAmount REAL,
-                nPercent REAL,
-                FXRate REAL,
-                vState TEXT
-            )
-        """)
+        # Ensure audit table exists (SQLite only; PostgreSQL handled by migration)
+        if _sa_engine is None:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS waterfall_audit (
+                    audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    audit_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    action TEXT,
+                    vcode TEXT,
+                    vmisc TEXT,
+                    iOrder INTEGER,
+                    vAmtType TEXT,
+                    vNotes TEXT,
+                    PropCode TEXT,
+                    nmisc REAL,
+                    dteffective TEXT,
+                    vtranstype TEXT,
+                    mAmount REAL,
+                    nPercent REAL,
+                    FXRate REAL,
+                    vState TEXT
+                )
+            """)
 
         # Backup existing rows
         existing = pd.read_sql(
@@ -761,7 +791,8 @@ def save_waterfall_steps(vcode: str, steps_df: pd.DataFrame):
             ]
             for _, row in existing.iterrows():
                 vals = [row.get(c) for c in audit_cols]
-                conn.execute(
+                _exec(
+                    conn,
                     "INSERT INTO waterfall_audit "
                     "(action, vcode, vmisc, iOrder, vAmtType, vNotes, PropCode, "
                     "nmisc, dteffective, vtranstype, mAmount, nPercent, FXRate, vState) "
@@ -770,7 +801,7 @@ def save_waterfall_steps(vcode: str, steps_df: pd.DataFrame):
                 )
 
         # Delete existing rows for this vcode
-        conn.execute("DELETE FROM waterfalls WHERE vcode = ?", (vcode,))
+        _exec(conn, "DELETE FROM waterfalls WHERE vcode = ?", (vcode,))
 
         # Insert new rows
         wf_cols = [
@@ -780,7 +811,8 @@ def save_waterfall_steps(vcode: str, steps_df: pd.DataFrame):
         ]
         for _, row in steps_df.iterrows():
             vals = [row.get(c) for c in wf_cols]
-            conn.execute(
+            _exec(
+                conn,
                 "INSERT INTO waterfalls "
                 "(vcode, vmisc, iOrder, vAmtType, vNotes, PropCode, nmisc, "
                 "dteffective, vtranstype, mAmount, nPercent, FXRate, vState) "
@@ -799,12 +831,13 @@ def delete_waterfall_steps(vcode: str, wf_type: str = None):
     conn = get_db_connection()
     try:
         if wf_type:
-            conn.execute(
+            _exec(
+                conn,
                 "DELETE FROM waterfalls WHERE vcode = ? AND vmisc = ?",
                 (vcode, wf_type),
             )
         else:
-            conn.execute("DELETE FROM waterfalls WHERE vcode = ?", (vcode,))
+            _exec(conn, "DELETE FROM waterfalls WHERE vcode = ?", (vcode,))
         conn.commit()
         logger.info(
             f"Deleted waterfall steps for {vcode}"
@@ -1003,11 +1036,12 @@ def get_prospective_loans_for_deal(vcode: str, db_path: str = DB_PATH) -> List[D
     """Get all prospective loans for a deal, ordered by created_at desc."""
     conn = get_db_connection()
     try:
-        rows = conn.execute(
+        rows = _exec(
+            conn,
             "SELECT * FROM prospective_loans WHERE vcode = ? ORDER BY created_at DESC",
             (vcode,),
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [dict(r._mapping) if hasattr(r, '_mapping') else dict(r) for r in rows]
     except Exception:
         return []
     finally:
@@ -1018,10 +1052,13 @@ def get_prospective_loan_by_id(loan_id: int, db_path: str = DB_PATH) -> Optional
     """Get a single prospective loan by ID."""
     conn = get_db_connection()
     try:
-        row = conn.execute(
+        row = _exec(
+            conn,
             "SELECT * FROM prospective_loans WHERE id = ?", (loan_id,)
         ).fetchone()
-        return dict(row) if row else None
+        if row is None:
+            return None
+        return dict(row._mapping) if hasattr(row, '_mapping') else dict(row)
     except Exception:
         return None
     finally:
@@ -1048,7 +1085,8 @@ def save_prospective_loan(row_dict: Dict[str, Any], username: str = "system", db
             set_clause = ", ".join(f"{c} = ?" for c in cols)
             vals = [row_dict.get(c) for c in cols]
             vals += [username, loan_id]
-            conn.execute(
+            _exec(
+                conn,
                 f"UPDATE prospective_loans SET {set_clause}, updated_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 vals,
             )
@@ -1060,11 +1098,20 @@ def save_prospective_loan(row_dict: Dict[str, Any], username: str = "system", db
             col_names = ", ".join(cols)
             vals = [row_dict.get(c) for c in cols]
             vals += [username]
-            cur = conn.execute(
-                f"INSERT INTO prospective_loans ({col_names}, created_by) VALUES ({placeholders}, ?)",
-                vals,
-            )
-            loan_id = cur.lastrowid
+            if _sa_engine is not None:
+                # PostgreSQL: use RETURNING id to get the new row ID
+                cur = _exec(
+                    conn,
+                    f"INSERT INTO prospective_loans ({col_names}, created_by) VALUES ({placeholders}, ?) RETURNING id",
+                    vals,
+                )
+                loan_id = cur.fetchone()[0]
+            else:
+                cur = conn.execute(
+                    f"INSERT INTO prospective_loans ({col_names}, created_by) VALUES ({placeholders}, ?)",
+                    vals,
+                )
+                loan_id = cur.lastrowid
             conn.commit()
             _audit_prospective_loan(conn, loan_id, "create", row_dict, username)
 
@@ -1077,11 +1124,12 @@ def delete_prospective_loan(loan_id: int, username: str = "system", db_path: str
     """Delete a prospective loan by ID."""
     conn = get_db_connection()
     try:
-        row = conn.execute("SELECT * FROM prospective_loans WHERE id = ?", (loan_id,)).fetchone()
+        row = _exec(conn, "SELECT * FROM prospective_loans WHERE id = ?", (loan_id,)).fetchone()
         if not row:
             return False
-        _audit_prospective_loan(conn, loan_id, "delete", dict(row), username)
-        conn.execute("DELETE FROM prospective_loans WHERE id = ?", (loan_id,))
+        row_dict = dict(row._mapping) if hasattr(row, '_mapping') else dict(row)
+        _audit_prospective_loan(conn, loan_id, "delete", row_dict, username)
+        _exec(conn, "DELETE FROM prospective_loans WHERE id = ?", (loan_id,))
         conn.commit()
         return True
     finally:
@@ -1092,24 +1140,27 @@ def accept_prospective_loan(loan_id: int, username: str = "system", db_path: str
     """Accept a prospective loan: sets status='accepted', rejects all others for the same vcode."""
     conn = get_db_connection()
     try:
-        row = conn.execute("SELECT * FROM prospective_loans WHERE id = ?", (loan_id,)).fetchone()
+        row = _exec(conn, "SELECT * FROM prospective_loans WHERE id = ?", (loan_id,)).fetchone()
         if not row:
             return False
-        vcode = row["vcode"]
+        row_dict = dict(row._mapping) if hasattr(row, '_mapping') else dict(row)
+        vcode = row_dict["vcode"]
 
         # Reject all other loans for this deal
-        conn.execute(
+        _exec(
+            conn,
             "UPDATE prospective_loans SET status = 'rejected', updated_by = ?, updated_at = CURRENT_TIMESTAMP "
             "WHERE vcode = ? AND id != ? AND status != 'rejected'",
             (username, vcode, loan_id),
         )
         # Accept this one
-        conn.execute(
+        _exec(
+            conn,
             "UPDATE prospective_loans SET status = 'accepted', updated_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (username, loan_id),
         )
         conn.commit()
-        _audit_prospective_loan(conn, loan_id, "accept", dict(row), username)
+        _audit_prospective_loan(conn, loan_id, "accept", row_dict, username)
         return True
     finally:
         conn.close()
@@ -1119,25 +1170,28 @@ def revert_prospective_loan(loan_id: int, username: str = "system", db_path: str
     """Revert an accepted loan back to draft status."""
     conn = get_db_connection()
     try:
-        row = conn.execute("SELECT * FROM prospective_loans WHERE id = ?", (loan_id,)).fetchone()
+        row = _exec(conn, "SELECT * FROM prospective_loans WHERE id = ?", (loan_id,)).fetchone()
         if not row:
             return False
-        conn.execute(
+        row_dict = dict(row._mapping) if hasattr(row, '_mapping') else dict(row)
+        _exec(
+            conn,
             "UPDATE prospective_loans SET status = 'draft', updated_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (username, loan_id),
         )
         conn.commit()
-        _audit_prospective_loan(conn, loan_id, "revert", dict(row), username)
+        _audit_prospective_loan(conn, loan_id, "revert", row_dict, username)
         return True
     finally:
         conn.close()
 
 
-def _audit_prospective_loan(conn: sqlite3.Connection, loan_id: int, action: str, row_dict: dict, username: str):
+def _audit_prospective_loan(conn, loan_id: int, action: str, row_dict: dict, username: str):
     """Write audit trail for prospective loan change."""
     import json
     try:
-        conn.execute(
+        _exec(
+            conn,
             "INSERT INTO prospective_loans_audit (loan_id, action, vcode, loan_name, status, loan_amount, all_fields, changed_by) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
