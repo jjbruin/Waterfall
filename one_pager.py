@@ -598,12 +598,16 @@ def get_property_performance(
     if isbs.empty:
         return perf
 
-    # Parse dates
+    # Parse dates — handle string dates, timestamps, and Excel serial numbers
     if 'dtEntry' in isbs.columns:
-        try:
-            isbs['dtEntry_parsed'] = pd.to_datetime(isbs['dtEntry'], unit='D', origin='1899-12-30', errors='coerce')
-        except:
-            isbs['dtEntry_parsed'] = pd.to_datetime(isbs['dtEntry'], errors='coerce')
+        isbs['dtEntry_parsed'] = pd.to_datetime(isbs['dtEntry'], format='mixed', dayfirst=False, errors='coerce')
+        if isbs['dtEntry_parsed'].isna().sum() > len(isbs) * 0.5:
+            try:
+                numeric_dates = pd.to_numeric(isbs['dtEntry'], errors='coerce')
+                serial_dates = pd.to_datetime(numeric_dates, unit='D', origin='1899-12-30', errors='coerce')
+                isbs.loc[isbs['dtEntry_parsed'].isna(), 'dtEntry_parsed'] = serial_dates[isbs['dtEntry_parsed'].isna()]
+            except Exception:
+                pass
 
     # Normalize columns
     if 'vSource' in isbs.columns:
@@ -699,6 +703,17 @@ def get_property_performance(
             perf['noi']['uw_ye'] = noi
             if ds > 0:
                 perf['dscr']['uw_ye'] = noi / ds
+
+        # At Close: earliest December 31 in Projected IS = due diligence audit
+        dec_dates = [pd.Timestamp(p) for p in uw_periods if pd.Timestamp(p).month == 12]
+        if dec_dates:
+            at_close_date = min(dec_dates)
+            rev, exp, noi, ds = calc_amounts(uw_data, as_of_date=at_close_date)
+            perf['revenue']['at_close'] = rev
+            perf['expenses']['at_close'] = exp
+            perf['noi']['at_close'] = noi
+            if ds > 0:
+                perf['dscr']['at_close'] = noi / ds
 
     # Calculate variances
     for metric in ['revenue', 'expenses', 'noi']:
