@@ -10,7 +10,8 @@ from flask_app.services import compute_service
 from flask_app.serializers import df_to_response, safe_json
 from database import (
     import_csvs_to_database, import_single_csv, import_csv_dataframe,
-    export_all_tables_to_zip, TABLE_DEFINITIONS, PROTECTED_TABLES,
+    import_csv_stream, export_all_tables_to_zip, TABLE_DEFINITIONS,
+    PROTECTED_TABLES,
 )
 import pandas as pd
 
@@ -141,8 +142,7 @@ def upload_import():
             continue
 
         try:
-            df = pd.read_csv(file.stream)
-            result = import_csv_dataframe(table_name, df, source=f"upload:{filename}")
+            result = import_csv_stream(table_name, file.stream, source=f"upload:{filename}")
             results[table_name] = result
         except Exception as e:
             results[table_name or filename] = {'rows': 0, 'status': 'error', 'error': str(e)}

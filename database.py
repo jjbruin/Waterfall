@@ -1065,6 +1065,65 @@ def import_csv_dataframe(
         conn.close()
 
 
+def import_csv_stream(
+    table_name: str,
+    file_stream,
+    source: str = "upload",
+    chunk_size: int = 50_000,
+) -> Dict[str, Any]:
+    """Import a CSV file stream in chunks to avoid OOM on large files.
+
+    Reads the CSV in chunks and writes each chunk to the database.
+    First chunk replaces the table; subsequent chunks append.
+
+    Args:
+        table_name: Key in TABLE_DEFINITIONS to import.
+        file_stream: File-like object (e.g., request file stream).
+        source: Description of where the data came from.
+        chunk_size: Number of rows per chunk.
+
+    Returns:
+        Result dict: {status, rows, error?}
+    """
+    if table_name not in TABLE_DEFINITIONS:
+        return {'rows': 0, 'status': 'error', 'error': f'Unknown table: {table_name}'}
+
+    if table_name in PROTECTED_TABLES:
+        return {'rows': 0, 'status': 'protected'}
+
+    conn, is_postgres = _get_import_connection()
+
+    try:
+        total_rows = 0
+        first_chunk = True
+        engine = _sa_engine if is_postgres else conn
+
+        for chunk in pd.read_csv(file_stream, chunksize=chunk_size, low_memory=False):
+            chunk.columns = [str(c).strip() for c in chunk.columns]
+            mode = 'replace' if first_chunk else 'append'
+            chunk.to_sql(table_name, engine, if_exists=mode, index=False)
+            total_rows += len(chunk)
+            first_chunk = False
+            logger.info(f"  {table_name}: imported {total_rows:,} rows so far...")
+
+        _log_import(conn, is_postgres, table_name, total_rows, source)
+
+        if is_postgres:
+            conn.commit()
+        else:
+            create_indexes(conn)
+            conn.commit()
+
+        logger.info(f"Imported {table_name}: {total_rows:,} rows from {source}")
+        return {'rows': total_rows, 'status': 'success'}
+
+    except Exception as e:
+        logger.error(f"Error importing {table_name}: {e}")
+        return {'rows': 0, 'status': 'error', 'error': str(e)}
+    finally:
+        conn.close()
+
+
 def import_single_csv(
     data_folder: str,
     table_name: str,
