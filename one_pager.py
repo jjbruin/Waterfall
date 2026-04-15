@@ -722,7 +722,7 @@ def get_property_performance(
     if perf['dscr']['ytd_actual'] is not None and perf['dscr']['ytd_budget'] is not None:
         perf['dscr']['variance'] = perf['dscr']['ytd_actual'] - perf['dscr']['ytd_budget']
 
-    # Get occupancy from occupancy_df if available
+    # Economic Occupancy = avg physical occ (YTD months) - bad debt/concessions %
     if occupancy_df is not None and not occupancy_df.empty:
         occ = occupancy_df.copy()
         occ.columns = [str(c).strip() for c in occ.columns]
@@ -731,11 +731,39 @@ def get_property_performance(
             occ[vcode_col] = occ[vcode_col].astype(str).str.strip().str.lower()
             occ = occ[occ[vcode_col] == vcode_str]
 
-            if not occ.empty and 'Qtr' in occ.columns:
-                occ['Qtr'] = occ['Qtr'].astype(str).str.strip()
-                qtr_occ = occ[occ['Qtr'] == quarter_str]
-                if not qtr_occ.empty and 'OccupancyPercent' in qtr_occ.columns:
-                    perf['economic_occ']['ytd_actual'] = pd.to_numeric(qtr_occ.iloc[0]['OccupancyPercent'], errors='coerce')
+            if not occ.empty:
+                # Parse dtReported to filter YTD months
+                occ_col = 'Occ%' if 'Occ%' in occ.columns else 'OccupancyPercent'
+                if occ_col in occ.columns and 'dtReported' in occ.columns:
+                    occ['_dt'] = pd.to_datetime(occ['dtReported'], format='mixed', dayfirst=False, errors='coerce')
+                    if occ['_dt'].isna().sum() > len(occ) * 0.5:
+                        try:
+                            num = pd.to_numeric(occ['dtReported'], errors='coerce')
+                            occ.loc[occ['_dt'].isna(), '_dt'] = pd.to_datetime(
+                                num[occ['_dt'].isna()], unit='D', origin='1899-12-30', errors='coerce')
+                        except Exception:
+                            pass
+
+                    year = int(quarter_str.split('-')[0])
+                    # YTD: Jan 1 through quarter end of selected year
+                    ytd_occ = occ[(occ['_dt'].dt.year == year) & (occ['_dt'] <= pd.Timestamp(quarter_end))]
+                    if not ytd_occ.empty:
+                        avg_physical_occ = pd.to_numeric(ytd_occ[occ_col], errors='coerce').mean()
+
+                        # Bad debt/concessions % from ISBS Interim IS YTD
+                        bad_debt_pct = 0.0
+                        if not actual_data.empty and ytd_date is not None:
+                            ytd_is = actual_data[actual_data['dtEntry_parsed'] == ytd_date]
+                            if not ytd_is.empty:
+                                # 4040 (concessions) + 4043 (bad debt) — positive (debit, contra-revenue)
+                                bd_amt = ytd_is[ytd_is['vAccount'].isin(['4040', '4043'])]['mAmount'].sum()
+                                # 4010 (rental income) — negative (credit)
+                                rental = ytd_is[ytd_is['vAccount'] == '4010']['mAmount'].sum()
+                                if rental != 0:
+                                    # bd_amt is positive, rental is negative → ratio is positive
+                                    bad_debt_pct = bd_amt / abs(rental) * 100  # as percentage points
+
+                        perf['economic_occ']['ytd_actual'] = avg_physical_occ - bad_debt_pct
 
     return perf
 
