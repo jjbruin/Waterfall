@@ -211,7 +211,9 @@ def get_capitalization_stack(
     waterfalls: pd.DataFrame,
     commitments: pd.DataFrame,
     acct: pd.DataFrame,
-    inv_map: pd.DataFrame
+    inv_map: pd.DataFrame,
+    isbs_raw: pd.DataFrame = None,
+    quarter_str: str = None,
 ) -> Dict[str, Any]:
     """
     Get capitalization stack and deal terms
@@ -259,8 +261,20 @@ def get_capitalization_stack(
 
     vcode_str = str(vcode).strip()
 
-    # Get debt from MRI_Loans
-    if mri_loans is not None and not mri_loans.empty:
+    # Get debt from ISBS balance sheet (current outstanding for selected quarter)
+    isbs_debt = None
+    if isbs_raw is not None and not isbs_raw.empty:
+        from compute import get_isbs_debt_balance
+        as_of = None
+        if quarter_str:
+            _, q_end = quarter_to_date_range(quarter_str)
+            as_of = q_end
+        isbs_debt = get_isbs_debt_balance(isbs_raw, vcode, as_of_date=as_of)
+
+    if isbs_debt is not None:
+        cap['debt'] = isbs_debt
+    elif mri_loans is not None and not mri_loans.empty:
+        # Fallback: origination amounts from MRI_Loans
         loans = mri_loans.copy()
         loans.columns = [str(c).strip() for c in loans.columns]
         if 'vCode' not in loans.columns and 'vcode' in loans.columns:

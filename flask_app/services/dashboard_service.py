@@ -47,7 +47,7 @@ def get_child_vcodes(inv: pd.DataFrame) -> set:
 
 
 def get_portfolio_caps(inv_disp, inv, wf, acct, mri_val, mri_loans_raw,
-                       on_progress=None) -> list[dict]:
+                       on_progress=None, isbs_raw=None) -> list[dict]:
     """Get capitalization data for all active deals.
 
     Caller should pre-filter inv_disp to exclude child properties.
@@ -75,6 +75,7 @@ def get_portfolio_caps(inv_disp, inv, wf, acct, mri_val, mri_loans_raw,
                 deal_vcode=vcode,
                 property_vcodes=prop_vcodes,
                 lookups=lookups,
+                isbs_raw=isbs_raw,
             )
             cap["vcode"] = vcode
             cap["name"] = name

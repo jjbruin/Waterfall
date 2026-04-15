@@ -21,6 +21,14 @@ class Config:
     # CORS
     CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "http://localhost:5173").split(",")
 
+    # Email / SMTP
+    SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.office365.com")
+    SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+    SMTP_USER = os.environ.get("SMTP_USER", "")
+    SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
+    SMTP_FROM = os.environ.get("SMTP_FROM", "")  # defaults to SMTP_USER if empty
+    APP_URL = os.environ.get("APP_URL", "https://app-waterfall-dev.victoriousforest-f83586cf.eastus.azurecontainerapps.io")
+
     # Cache
     CACHE_TYPE = "SimpleCache"
     CACHE_DEFAULT_TIMEOUT = 300

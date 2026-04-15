@@ -1,7 +1,7 @@
 """Review workflow service for One Pager approval pipeline."""
 
 from sqlalchemy import text
-from flask_app.db import get_engine
+from flask_app.db import get_engine, is_postgres
 
 
 # Sequential review steps
@@ -19,20 +19,21 @@ REVIEW_ROLE_NAMES = [s['role'] for s in REVIEW_STEPS if s['role']]
 
 def _ensure_tables():
     """Create review tables if they don't exist."""
+    pk = "SERIAL PRIMARY KEY" if is_postgres() else "INTEGER PRIMARY KEY AUTOINCREMENT"
     engine = get_engine()
     with engine.begin() as conn:
-        conn.execute(text("""
+        conn.execute(text(f"""
             CREATE TABLE IF NOT EXISTS review_roles (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {pk},
                 user_id INTEGER NOT NULL,
                 review_role TEXT NOT NULL,
                 UNIQUE(user_id, review_role),
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
         """))
-        conn.execute(text("""
+        conn.execute(text(f"""
             CREATE TABLE IF NOT EXISTS review_submissions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {pk},
                 vcode TEXT NOT NULL,
                 quarter TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'draft',
@@ -44,9 +45,9 @@ def _ensure_tables():
                 UNIQUE(vcode, quarter)
             )
         """))
-        conn.execute(text("""
+        conn.execute(text(f"""
             CREATE TABLE IF NOT EXISTS review_notes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {pk},
                 vcode TEXT NOT NULL,
                 quarter TEXT NOT NULL,
                 user_id INTEGER NOT NULL,

@@ -15,8 +15,11 @@ const confirmPw = ref('')
 
 // New user form
 const newUsername = ref('')
-const newUserPw = ref('')
-const newUserRole = ref('viewer')
+const newUserPw = ref('password')
+const newUserRole = ref('analyst')
+const newUserEmail = ref('')
+const newUserMustChange = ref(true)
+const newUserSendWelcome = ref(true)
 
 onMounted(async () => {
   if (auth.isAdmin) {
@@ -46,12 +49,26 @@ async function createUser() {
     dataStore.addToast('Username and password required', 'error')
     return
   }
+  if (newUserSendWelcome.value && !newUserEmail.value.trim()) {
+    dataStore.addToast('Email is required to send welcome email', 'error')
+    return
+  }
   try {
-    await auth.createUser(newUsername.value.trim(), newUserPw.value, newUserRole.value)
-    dataStore.addToast(`User '${newUsername.value}' created`, 'success')
+    const res = await auth.createUser(
+      newUsername.value.trim(),
+      newUserPw.value,
+      newUserRole.value,
+      newUserEmail.value.trim() || undefined,
+      newUserMustChange.value,
+      newUserSendWelcome.value,
+    )
+    dataStore.addToast(res.message || `User '${newUsername.value}' created`, 'success')
     newUsername.value = ''
-    newUserPw.value = ''
-    newUserRole.value = 'viewer'
+    newUserPw.value = 'password'
+    newUserRole.value = 'analyst'
+    newUserEmail.value = ''
+    newUserMustChange.value = true
+    newUserSendWelcome.value = true
   } catch (e: any) {
     dataStore.addToast(e.response?.data?.error || 'Failed to create user', 'error')
   }
@@ -73,6 +90,17 @@ async function removeUser(userId: number, username: string) {
     dataStore.addToast(`User '${username}' deleted`, 'success')
   } catch (e: any) {
     dataStore.addToast(e.response?.data?.error || 'Failed to delete user', 'error')
+  }
+}
+
+async function sendWelcome(userId: number, username: string) {
+  if (!confirm(`This will reset ${username}'s password to "password" and send a welcome email. Continue?`)) return
+  try {
+    const res = await api.post(`/auth/users/${userId}/send-welcome`)
+    dataStore.addToast(res.data.message, 'success')
+    await auth.loadUsers()
+  } catch (e: any) {
+    dataStore.addToast(e.response?.data?.error || 'Failed to send welcome email', 'error')
   }
 }
 
@@ -166,7 +194,7 @@ function formatReviewRole(role: string): string {
         </div>
         <div class="form-row">
           <label>New Password</label>
-          <input type="password" v-model="newPw" />
+          <input type="password" v-model="newPw" placeholder="At least 8 characters" />
         </div>
         <div class="form-row">
           <label>Confirm New Password</label>
@@ -190,7 +218,9 @@ function formatReviewRole(role: string): string {
             <tr>
               <th>ID</th>
               <th>Username</th>
+              <th>Email</th>
               <th>Role</th>
+              <th>Status</th>
               <th>Created</th>
               <th>Actions</th>
             </tr>
@@ -199,6 +229,7 @@ function formatReviewRole(role: string): string {
             <tr v-for="u in auth.users" :key="u.id">
               <td>{{ u.id }}</td>
               <td>{{ u.username }}</td>
+              <td class="email-cell">{{ u.email || '—' }}</td>
               <td>
                 <select
                   :value="u.role"
@@ -209,8 +240,20 @@ function formatReviewRole(role: string): string {
                   <option v-for="r in roleOptions" :key="r" :value="r">{{ r }}</option>
                 </select>
               </td>
-              <td>{{ u.created_at?.slice(0, 10) || '—' }}</td>
               <td>
+                <span v-if="u.must_change_password" class="status-badge pending">Pending</span>
+                <span v-else class="status-badge active">Active</span>
+              </td>
+              <td>{{ u.created_at?.slice(0, 10) || '—' }}</td>
+              <td class="actions-cell">
+                <button
+                  v-if="u.id !== auth.user?.id && u.email"
+                  class="btn-small btn-welcome"
+                  @click="sendWelcome(u.id, u.username)"
+                  title="Reset password and send welcome email"
+                >
+                  Send Welcome
+                </button>
                 <button
                   v-if="u.id !== auth.user?.id"
                   class="btn-delete"
@@ -218,7 +261,7 @@ function formatReviewRole(role: string): string {
                 >
                   Delete
                 </button>
-                <span v-else class="self-tag">you</span>
+                <span v-if="u.id === auth.user?.id" class="self-tag">you</span>
               </td>
             </tr>
           </tbody>
@@ -234,14 +277,32 @@ function formatReviewRole(role: string): string {
             <input type="text" v-model="newUsername" placeholder="username" />
           </div>
           <div class="form-row">
-            <label>Password</label>
-            <input type="password" v-model="newUserPw" placeholder="password" />
+            <label>Email</label>
+            <input type="email" v-model="newUserEmail" placeholder="user@peaceablestreet.com" />
+          </div>
+          <div class="form-row">
+            <label>Initial Password</label>
+            <input type="text" v-model="newUserPw" />
           </div>
           <div class="form-row">
             <label>Role</label>
             <select v-model="newUserRole" class="role-select">
               <option v-for="r in roleOptions" :key="r" :value="r">{{ r }}</option>
             </select>
+          </div>
+          <div class="form-row checkbox-row">
+            <label></label>
+            <label class="checkbox-label">
+              <input type="checkbox" v-model="newUserMustChange" />
+              Require password change on first login
+            </label>
+          </div>
+          <div class="form-row checkbox-row">
+            <label></label>
+            <label class="checkbox-label">
+              <input type="checkbox" v-model="newUserSendWelcome" :disabled="!newUserEmail.trim()" />
+              Send welcome email with credentials
+            </label>
           </div>
           <button class="btn-action" @click="createUser" :disabled="!newUsername.trim() || !newUserPw">
             Create User
@@ -359,12 +420,34 @@ h3 { font-size: 15px; margin: 0 0 12px 0; }
   color: var(--color-text-secondary);
 }
 
-.form-row input, .form-row select {
+.form-row input[type="text"],
+.form-row input[type="password"],
+.form-row input[type="email"],
+.form-row select {
   flex: 1;
   padding: 6px 10px;
   border: 1px solid var(--color-border);
   border-radius: 4px;
   font-size: 13px;
+}
+
+.checkbox-row {
+  margin-top: -2px;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--color-text);
+  cursor: pointer;
+  min-width: auto !important;
+}
+
+.checkbox-label input[type="checkbox"] {
+  flex: none;
+  width: auto;
 }
 
 .btn-action {
@@ -400,12 +483,50 @@ h3 { font-size: 15px; margin: 0 0 12px 0; }
   border-bottom: 1px solid var(--color-border);
 }
 
+.email-cell {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.actions-cell {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.status-badge.active { background: #e8f5e9; color: #2e7d32; }
+.status-badge.pending { background: #fff3e0; color: #e65100; }
+
 .role-select {
   padding: 4px 8px;
   border: 1px solid var(--color-border);
   border-radius: 4px;
   font-size: 12px;
 }
+
+.btn-small {
+  padding: 2px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.btn-welcome {
+  background: none;
+  color: #1565c0;
+  border: 1px solid #1565c0;
+}
+.btn-welcome:hover { background: #e3f2fd; }
 
 .btn-delete {
   padding: 2px 10px;

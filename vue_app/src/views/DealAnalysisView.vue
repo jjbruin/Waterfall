@@ -924,7 +924,7 @@ async function downloadExcel(url: string, filename: string) {
               </thead>
               <tbody>
                 <tr v-for="(row, i) in deals.currentForecast.rows" :key="i"
-                    :class="{ 'section-header-row': row.label.endsWith(':'), 'blank-row': row.label.trim() === '', 'underline-row': ['Expenses', 'Capital Expenditures'].includes(row.label.trim()), 'topline-row': row.label.trim() === 'Total Distributions' }">
+                    :class="{ 'section-header-row': row.label.endsWith(':'), 'blank-row': row.label.trim() === '', 'underline-row': ['Expenses', 'Capital Expenditures', 'Other Below-the-Line'].includes(row.label.trim()), 'topline-row': row.label.trim() === 'Total Distributions' }">
                   <td class="label-col">{{ row.label }}</td>
                   <td v-for="y in deals.currentForecast.years" :key="y" class="year-col">
                     {{ (row.label.trim() === '' || row.label.endsWith(':')) ? '' : row.values[String(y)] != null ? (row.label === 'Debt Service Coverage Ratio' ? row.values[String(y)].toFixed(2) : fmtInt(row.values[String(y)])) : '' }}
@@ -1005,6 +1005,7 @@ async function downloadExcel(url: string, filename: string) {
                     <tr><td>Implied Value</td><td class="right">{{ fmtCur(deals.currentDebt.sale_proceeds.Implied_Value) }}</td></tr>
                     <tr><td>Less Selling Costs (2%)</td><td class="right">{{ fmtCur(deals.currentDebt.sale_proceeds.Less_Selling_Cost_2pct) }}</td></tr>
                     <tr><td>Net of Costs</td><td class="right">{{ fmtCur(deals.currentDebt.sale_proceeds.Value_Net_Selling_Cost) }}</td></tr>
+                    <tr v-if="deals.currentDebt.sale_proceeds.Tax_Abatement_NPV"><td>NPV (@5%) Tax Abatements</td><td class="right">{{ fmtCur(deals.currentDebt.sale_proceeds.Tax_Abatement_NPV) }}</td></tr>
                     <tr><td>Less Loan Payoff</td><td class="right">{{ fmtCur(deals.currentDebt.sale_proceeds.Less_Loan_Balances) }}</td></tr>
                     <tr><td class="bold">Net Sale Proceeds</td><td class="right bold">{{ fmtCur(deals.currentDebt.sale_proceeds.Net_Sale_Proceeds) }}</td></tr>
                   </table>

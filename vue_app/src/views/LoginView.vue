@@ -15,6 +15,13 @@ const loading = ref(false)
 const ssoEnabled = ref(false)
 const ssoProvider = ref('')
 
+// Force change password state
+const newPassword = ref('')
+const confirmPassword = ref('')
+const changeLoading = ref(false)
+const changeError = ref('')
+const tempPassword = ref('')
+
 onMounted(async () => {
   // Check if SSO is configured
   try {
@@ -47,7 +54,13 @@ async function handleLogin() {
   error.value = ''
   loading.value = true
   try {
-    await auth.login(username.value, password.value)
+    const result = await auth.login(username.value, password.value)
+    if (result?.mustChangePassword) {
+      // Store the current password so user doesn't have to re-type it
+      tempPassword.value = password.value
+      password.value = ''
+      return
+    }
     const redirect = (route.query.redirect as string) || '/dashboard'
     router.push(redirect)
   } catch (e: any) {
@@ -55,6 +68,41 @@ async function handleLogin() {
   } finally {
     loading.value = false
   }
+}
+
+async function handleForceChange() {
+  changeError.value = ''
+  if (newPassword.value !== confirmPassword.value) {
+    changeError.value = 'Passwords do not match'
+    return
+  }
+  if (newPassword.value.length < 8) {
+    changeError.value = 'Password must be at least 8 characters'
+    return
+  }
+  if (newPassword.value === tempPassword.value) {
+    changeError.value = 'New password must be different from current password'
+    return
+  }
+  changeLoading.value = true
+  try {
+    await auth.forceChangePassword(tempPassword.value, newPassword.value)
+    const redirect = (route.query.redirect as string) || '/dashboard'
+    router.push(redirect)
+  } catch (e: any) {
+    changeError.value = e.response?.data?.error || 'Failed to change password'
+  } finally {
+    changeLoading.value = false
+  }
+}
+
+function cancelForceChange() {
+  auth.mustChangePassword = false
+  auth.pendingUsername = ''
+  tempPassword.value = ''
+  newPassword.value = ''
+  confirmPassword.value = ''
+  changeError.value = ''
 }
 
 function handleSsoLogin() {
@@ -70,28 +118,58 @@ const ssoLabel = {
 <template>
   <div class="login-card">
     <h2>Waterfall XIRR</h2>
-    <p class="subtitle">Sign in to continue</p>
 
-    <!-- SSO Button -->
-    <button v-if="ssoEnabled" class="btn-sso" @click="handleSsoLogin">
-      {{ ssoLabel[ssoProvider as keyof typeof ssoLabel] || 'Sign in with SSO' }}
-    </button>
-    <div v-if="ssoEnabled" class="divider"><span>or</span></div>
+    <!-- Force Change Password Form -->
+    <template v-if="auth.mustChangePassword">
+      <p class="subtitle">You must change your password before continuing</p>
+      <p class="info-text">Welcome, <strong>{{ auth.pendingUsername }}</strong>. Please set a new password.</p>
 
-    <form @submit.prevent="handleLogin">
-      <div class="field">
-        <label>Username</label>
-        <input v-model="username" type="text" autocomplete="username" required />
-      </div>
-      <div class="field">
-        <label>Password</label>
-        <input v-model="password" type="password" autocomplete="current-password" required />
-      </div>
-      <p v-if="error" class="error">{{ error }}</p>
-      <button type="submit" :disabled="loading" class="btn-login">
-        {{ loading ? 'Signing in...' : 'Sign In' }}
+      <form @submit.prevent="handleForceChange">
+        <div class="field">
+          <label>New Password</label>
+          <input v-model="newPassword" type="password" autocomplete="new-password"
+                 placeholder="At least 8 characters" required />
+        </div>
+        <div class="field">
+          <label>Confirm New Password</label>
+          <input v-model="confirmPassword" type="password" autocomplete="new-password" required />
+        </div>
+        <p v-if="changeError" class="error">{{ changeError }}</p>
+        <button type="submit" :disabled="changeLoading" class="btn-login">
+          {{ changeLoading ? 'Changing...' : 'Set New Password' }}
+        </button>
+        <button type="button" class="btn-back" @click="cancelForceChange">Back to Login</button>
+      </form>
+    </template>
+
+    <!-- Normal Login Form -->
+    <template v-else>
+      <p class="subtitle">Sign in to continue</p>
+
+      <!-- SSO Button -->
+      <button v-if="ssoEnabled" class="btn-sso" @click="handleSsoLogin">
+        {{ ssoLabel[ssoProvider as keyof typeof ssoLabel] || 'Sign in with SSO' }}
       </button>
-    </form>
+      <div v-if="ssoEnabled" class="divider"><span>or</span></div>
+
+      <form @submit.prevent="handleLogin">
+        <div class="field">
+          <label>Username</label>
+          <input v-model="username" type="text" autocomplete="username" required />
+        </div>
+        <div class="field">
+          <label>Password</label>
+          <input v-model="password" type="password" autocomplete="current-password" required />
+        </div>
+        <p v-if="error" class="error">{{ error }}</p>
+        <button type="submit" :disabled="loading" class="btn-login">
+          {{ loading ? 'Signing in...' : 'Sign In' }}
+        </button>
+      </form>
+      <div class="forgot-link">
+        <router-link to="/forgot-password">Forgot password?</router-link>
+      </div>
+    </template>
   </div>
 </template>
 
@@ -113,6 +191,15 @@ const ssoLabel = {
   color: var(--color-text-secondary);
   margin-bottom: 24px;
   font-size: 14px;
+}
+
+.info-text {
+  font-size: 13px;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  background: #f0f7ff;
+  border-radius: 6px;
+  border-left: 3px solid var(--color-primary);
 }
 
 .field {
@@ -154,6 +241,19 @@ const ssoLabel = {
 .btn-login:hover { background: #163d5f; }
 .btn-login:disabled { opacity: 0.6; cursor: not-allowed; }
 
+.btn-back {
+  width: 100%;
+  padding: 10px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  margin-top: 8px;
+}
+.btn-back:hover { background: #f5f5f5; }
+
 .btn-sso {
   width: 100%;
   padding: 10px;
@@ -186,5 +286,18 @@ const ssoLabel = {
   padding: 0 12px;
   font-size: 12px;
   color: var(--color-text-secondary);
+}
+
+.forgot-link {
+  text-align: center;
+  margin-top: 16px;
+  font-size: 13px;
+}
+.forgot-link a {
+  color: var(--color-primary);
+  text-decoration: none;
+}
+.forgot-link a:hover {
+  text-decoration: underline;
 }
 </style>

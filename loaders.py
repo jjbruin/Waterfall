@@ -9,7 +9,7 @@ import pandas as pd
 import numpy as np
 from typing import Dict
 
-from config import (GROSS_REVENUE_ACCTS, CONTRA_REVENUE_ACCTS, EXPENSE_ACCTS,
+from config import (GROSS_REVENUE_ACCTS, CONTRA_REVENUE_ACCTS, EXPENSE_ACCTS, TAX_ABATEMENT_ACCTS,
                     INTEREST_ACCTS, PRINCIPAL_ACCTS, CAPEX_ACCTS, ALL_EXCLUDED)
 from database import execute_query
 
@@ -58,6 +58,10 @@ def normalize_forecast_signs(fc: pd.DataFrame) -> pd.DataFrame:
     amt = amt.where(~is_contra_rev, -base.abs())
     amt = amt.where(~is_exp, -base.abs())
     amt = amt.where(~is_outflow, -base.abs())
+
+    # Tax abatements are credits that increase cash flow — force positive
+    is_abate = out["vAccount"].isin(TAX_ABATEMENT_ACCTS)
+    amt = amt.where(~is_abate, base.abs())
 
     out["mAmount_norm"] = amt
     return out

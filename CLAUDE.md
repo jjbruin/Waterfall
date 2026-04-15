@@ -104,7 +104,7 @@ All deploys use Azure CLI (GitHub Actions secrets are not configured):
 az acr build --registry acrwaterfalldev -g rg-waterfall-dev --image waterfall-xirr:latest --no-logs .
 
 # 2. Deploy to Container Apps (use incrementing suffix to force new revision)
-az containerapp update -g rg-waterfall-dev -n app-waterfall-dev --image acrwaterfalldev.azurecr.io/waterfall-xirr:latest --revision-suffix v8
+az containerapp update -g rg-waterfall-dev -n app-waterfall-dev --image acrwaterfalldev.azurecr.io/waterfall-xirr:latest --revision-suffix v19
 ```
 
 ### Local Development
@@ -151,10 +151,19 @@ cd vue_app && npm run dev        # Frontend on http://localhost:5173
 - **CRUD endpoints**: `POST/PUT/DELETE /api/deals/<vcode>/capital-calls` in `deals.py`. All use `data_service.reload()` for full cache invalidation
 - **Refi shortfall auto-clear**: After capital calls are applied, if total capital calls cover the refi shortfall (within $1 tolerance), `refi_capital_call_required` is set to False
 
+### Tax Abatements
+- **Account**: `TAX_ABATEMENT_ACCTS = {7070}` in `config.py` — stored in `forecast_feed` / `forecasts` table
+- **Sign convention**: MRI stores abatements as negative (credit); `normalize_forecast_signs()` in `loaders.py` forces `base.abs()` (positive) since abatements increase cash flow
+- **Annual Forecast**: Displayed as "Tax Abatement" row below NOI, included in FAD calculation (`reporting.py`)
+- **NPV at Sale**: Remaining abatement payments after sale date are discounted to PV at `TAX_ABATEMENT_DISCOUNT_RATE` (5%) and added to net sale proceeds (`compute.py`). Shown as "NPV (@5%) Tax Abatements" in Sale Proceeds Calculation (Debt Service section)
+- **Below-the-line items**: Former "Excluded Accounts" renamed to "Other Below-the-Line" (`OTHER_EXCLUDED_ACCTS`): Interest Income (4050), Other Income/Expenses (5220, 5210, 5195, 7065), Partnership Expenses (5120, 5130), Extraordinary Expenses (5400)
+- **Conditional display**: Tax Abatement NPV line only appears in Sale Proceeds Calculation when deal has 7070 data
+
 ### Balloon Loan Payoff at Sale
 - **Detection**: Loan schedule's last row has `ending_balance < 1.0` (float tolerance), `principal > 0`, and prior row's `ending_balance > 0`
 - **Forecast exclusion**: Balloon principal payments are excluded from forecast debt service rows (they are NOT operating expenses)
 - **Sale proceeds**: Net sale proceeds deduct `total_loan_balance_at(sale_date) + balloon_total` — uses pre-balloon balance since balloon is paid at sale
+- **Sale proceeds formula**: `max(0, value_net_selling_cost - loan_balances + tax_abatement_npv)`
 - **Groupby**: Loan schedule grouped by `["vcode", "LoanID", "event_date"]` to distinguish loans with same dates
 
 ### Prospective Loans (Refinancing)
@@ -211,7 +220,7 @@ Main waterfall computation, partner returns, capital accounts, XIRR/MOIC metrics
 
 **XIRR Cash Flows**: Merged side-by-side table with columns Date, Description (typename from `cashflow_details`), one amount column per partner, and Deal total column.
 
-**Annual Forecast Formatting**: Black border lines under Expenses and Capital Expenditures rows (`underline-row` CSS class), black border above Total Distributions (`topline-row` CSS class).
+**Annual Forecast Formatting**: Black border lines under Expenses, Capital Expenditures, and Other Below-the-Line rows (`underline-row` CSS class), black border above Total Distributions (`topline-row` CSS class). Row order: Revenues → Expenses → NOI → Tax Abatement → Interest → Principal → Total Debt Service → Capital Expenditures → Other Below-the-Line → FAD → DSCR → waterfall allocations.
 
 **Excel Downloads** (Vue): Per-section download buttons ("Excel") on each section header + "Download Full Deal Analysis (Excel)" button at top of results. Uses `fetch` + `Blob` with `Authorization: Bearer` header. Sections: Partner Returns, Annual Forecast, Debt Service, Cash Management, Capital Calls, XIRR Cash Flows, ROE Audit, MOIC Audit. Full workbook combines all 7 sheets.
 
@@ -361,9 +370,14 @@ Upstream waterfall analysis for the PSCKOC holding entity, showing how deal-leve
 
 ## Account Classifications
 
-- Revenue accounts: 4xxx series
-- Expense accounts: 5xxx series
-- Interest/Principal/CapEx tracked separately
+- Revenue accounts: 4xxx series (positive in `mAmount_norm`)
+- Expense accounts: 5xxx series (negative in `mAmount_norm`)
+- Interest: `INTEREST_ACCTS` {5190, 7030}
+- Principal: `PRINCIPAL_ACCTS` {7060}
+- CapEx: `CAPEX_ACCTS` {7050}
+- Tax Abatement: `TAX_ABATEMENT_ACCTS` {7070} — forced positive (income)
+- Other Below-the-Line: `OTHER_EXCLUDED_ACCTS` {4050, 5220, 5210, 5195, 7065, 5120, 5130, 5400}
+- `ALL_EXCLUDED` = Interest | Principal | CapEx | Other Below-the-Line (does NOT include Tax Abatement — separate sign handling)
 
 ## Conventions
 

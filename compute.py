@@ -14,7 +14,8 @@ from typing import Optional, Dict, List
 
 from config import (INTEREST_ACCTS, PRINCIPAL_ACCTS, SELLING_COST_RATE,
                     GROSS_REVENUE_ACCTS, CONTRA_REVENUE_ACCTS, EXPENSE_ACCTS,
-                    typename_to_pool)
+                    TAX_ABATEMENT_ACCTS, TAX_ABATEMENT_DISCOUNT_RATE,
+                    DEBT_BS_ACCTS, typename_to_pool)
 from utils import month_end, as_date
 from metrics import investor_metrics, xirr, calculate_roe
 from models import InvestorState
@@ -39,6 +40,78 @@ from consolidation import build_consolidated_forecast, get_property_vcodes_for_d
 def _horizon_end_date(start_yr: int, horizon_yrs: int) -> date:
     y = int(start_yr) + int(horizon_yrs) - 1
     return date(y, 12, 31)
+
+
+def get_isbs_debt_balance(isbs_raw, vcode, as_of_date=None):
+    """Get current debt outstanding from ISBS balance sheet.
+
+    Args:
+        isbs_raw: Raw ISBS DataFrame
+        vcode: Deal vcode
+        as_of_date: Optional date to get balance at. If None, uses most recent.
+
+    Returns:
+        Debt balance (float) or None if no ISBS data available.
+    """
+    if isbs_raw is None or isbs_raw.empty:
+        return None
+
+    df = isbs_raw.copy()
+    df.columns = [str(c).strip() for c in df.columns]
+
+    # Filter to deal
+    if 'vcode' in df.columns:
+        df['vcode'] = df['vcode'].astype(str).str.strip().str.lower()
+        df = df[df['vcode'] == str(vcode).strip().lower()]
+    if df.empty:
+        return None
+
+    # Filter to Interim BS
+    if 'vSource' in df.columns:
+        df['vSource'] = df['vSource'].astype(str).str.strip()
+        df = df[df['vSource'] == 'Interim BS']
+    if df.empty:
+        return None
+
+    # Parse dates
+    if 'dtEntry' in df.columns:
+        try:
+            df['_dt'] = pd.to_datetime(df['dtEntry'], unit='D', origin='1899-12-30', errors='coerce')
+        except Exception:
+            df['_dt'] = pd.to_datetime(df['dtEntry'], errors='coerce')
+        null_dates = df['_dt'].isna()
+        if null_dates.any():
+            df.loc[null_dates, '_dt'] = pd.to_datetime(df.loc[null_dates, 'dtEntry'], errors='coerce')
+    else:
+        return None
+
+    # Filter to debt accounts
+    if 'vAccount' in df.columns:
+        df['vAccount'] = df['vAccount'].astype(str).str.strip()
+        df = df[df['vAccount'].isin(DEBT_BS_ACCTS)]
+    if df.empty:
+        return None
+
+    # Select period
+    if as_of_date is not None:
+        target = pd.Timestamp(as_of_date)
+        # Find closest period on or before as_of_date
+        available = sorted(df['_dt'].dropna().unique())
+        candidates = [d for d in available if d <= target]
+        if not candidates:
+            return None
+        period = candidates[-1]
+    else:
+        period = df['_dt'].dropna().max()
+
+    period_data = df[df['_dt'] == period]
+    if period_data.empty:
+        return None
+
+    if 'mAmount' in period_data.columns:
+        total = pd.to_numeric(period_data['mAmount'], errors='coerce').fillna(0).sum()
+        return abs(float(total))  # BS liabilities may be negative; we want positive debt
+    return None
 
 
 def prepare_cap_lookups(acct, inv, mri_val, mri_loans):
@@ -129,7 +202,7 @@ def prepare_cap_lookups(acct, inv, mri_val, mri_loans):
 
 
 def get_deal_capitalization(acct, inv, wf, mri_val, mri_loans, deal_vcode,
-                            property_vcodes=None, lookups=None):
+                            property_vcodes=None, lookups=None, isbs_raw=None):
     """Calculate deal capitalization from accounting_feed.
 
     Equity = Contributions + Return of Capital distributions.
@@ -206,22 +279,33 @@ def get_deal_capitalization(acct, inv, wf, mri_val, mri_loans, deal_vcode,
                     else:
                         cap_data['pref_equity'] += max(0, balance)
 
-        # Get debt from MRI_Loans
-        ln = loans_norm if lookups else None
-        if ln is None and mri_loans is not None and not mri_loans.empty:
-            ln = mri_loans.copy()
-            ln.columns = [str(col).strip() for col in ln.columns]
-            if 'vCode' not in ln.columns and 'vcode' in ln.columns:
-                ln = ln.rename(columns={'vcode': 'vCode'})
-            if 'vCode' in ln.columns:
-                ln['vCode'] = ln['vCode'].astype(str)
-        if ln is not None and 'vCode' in ln.columns:
-            all_vcodes = [str(deal_vcode)]
+        # Get debt from ISBS balance sheet (current outstanding), fallback to MRI_Loans (origination)
+        isbs_debt = get_isbs_debt_balance(isbs_raw, deal_vcode)
+        if isbs_debt is not None:
+            cap_data['debt'] = isbs_debt
+            # For portfolio deals, also add child property debt from ISBS
             if property_vcodes:
-                all_vcodes.extend([str(v) for v in property_vcodes])
-            deal_loans = ln[ln['vCode'].isin(all_vcodes)]
-            if not deal_loans.empty and 'mOrigLoanAmt' in deal_loans.columns:
-                cap_data['debt'] = pd.to_numeric(deal_loans['mOrigLoanAmt'], errors='coerce').fillna(0).sum()
+                for pv in property_vcodes:
+                    child_debt = get_isbs_debt_balance(isbs_raw, pv)
+                    if child_debt:
+                        cap_data['debt'] += child_debt
+        else:
+            # Fallback: origination amounts from MRI_Loans
+            ln = loans_norm if lookups else None
+            if ln is None and mri_loans is not None and not mri_loans.empty:
+                ln = mri_loans.copy()
+                ln.columns = [str(col).strip() for col in ln.columns]
+                if 'vCode' not in ln.columns and 'vcode' in ln.columns:
+                    ln = ln.rename(columns={'vcode': 'vCode'})
+                if 'vCode' in ln.columns:
+                    ln['vCode'] = ln['vCode'].astype(str)
+            if ln is not None and 'vCode' in ln.columns:
+                all_vcodes = [str(deal_vcode)]
+                if property_vcodes:
+                    all_vcodes.extend([str(v) for v in property_vcodes])
+                deal_loans = ln[ln['vCode'].isin(all_vcodes)]
+                if not deal_loans.empty and 'mOrigLoanAmt' in deal_loans.columns:
+                    cap_data['debt'] = pd.to_numeric(deal_loans['mOrigLoanAmt'], errors='coerce').fillna(0).sum()
 
         cap_data['total_cap'] = cap_data['debt'] + cap_data['pref_equity'] + cap_data['partner_equity']
 
@@ -464,7 +548,8 @@ def compute_deal_analysis(
 
     # --- Capitalization ---
     prop_vcodes_for_cap = get_property_vcodes_for_deal(deal_vcode, inv)
-    cap_data = get_deal_capitalization(acct, inv, wf, mri_val, mri_loans_raw, deal_vcode, prop_vcodes_for_cap)
+    cap_data = get_deal_capitalization(acct, inv, wf, mri_val, mri_loans_raw, deal_vcode, prop_vcodes_for_cap,
+                                       isbs_raw=isbs_raw)
 
     # --- Forecast consolidation ---
     rels_for_consol = relationships_raw if relationships_raw is not None else pd.DataFrame()
@@ -731,6 +816,22 @@ def compute_deal_analysis(
 
             sale_proceeds = max(0.0, value_net_selling_cost - loan_bal_sale)
 
+            # NPV of remaining tax abatement payments beyond sale date
+            abatement_npv = 0.0
+            abatement_discount_rate = TAX_ABATEMENT_DISCOUNT_RATE
+            abate_rows = fc_deal_modeled[
+                (fc_deal_modeled["vAccount"].isin(TAX_ABATEMENT_ACCTS)) &
+                (fc_deal_modeled["event_date"] > sale_me)
+            ].copy()
+            if not abate_rows.empty:
+                sale_ts = pd.Timestamp(sale_me)
+                for _, ar in abate_rows.iterrows():
+                    cf_date = pd.Timestamp(ar["event_date"])
+                    years_fwd = (cf_date - sale_ts).days / 365.0
+                    abatement_npv += ar["mAmount_norm"] / ((1 + abatement_discount_rate) ** years_fwd)
+
+            sale_proceeds = max(0.0, value_net_selling_cost - loan_bal_sale + abatement_npv)
+
             sale_dbg = {
                 "Sale_Date": str(sale_me),
                 "NOI_12m_After_Sale": noi_12_sale,
@@ -739,6 +840,7 @@ def compute_deal_analysis(
                 "Less_Selling_Cost_2pct": value_sale * SELLING_COST_RATE,
                 "Value_Net_Selling_Cost": value_net_selling_cost,
                 "Less_Loan_Balances": loan_bal_sale,
+                "Tax_Abatement_NPV": abatement_npv,
                 "Net_Sale_Proceeds": sale_proceeds,
             }
         except Exception as e:

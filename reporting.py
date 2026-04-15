@@ -7,14 +7,15 @@ import pandas as pd
 from typing import Optional
 
 from config import (GROSS_REVENUE_ACCTS, CONTRA_REVENUE_ACCTS, EXPENSE_ACCTS,
-                    INTEREST_ACCTS, PRINCIPAL_ACCTS, CAPEX_ACCTS, OTHER_EXCLUDED_ACCTS)
+                    INTEREST_ACCTS, PRINCIPAL_ACCTS, CAPEX_ACCTS, OTHER_EXCLUDED_ACCTS,
+                    TAX_ABATEMENT_ACCTS)
 
 
 def cashflows_monthly_fad(fc_deal_modeled_full: pd.DataFrame) -> pd.DataFrame:
     """
     Calculate monthly Funds Available for Distribution
     
-    FAD = NOI + Interest + Principal + Excluded + Capex (all from mAmount_norm)
+    FAD = NOI + Tax Abatement + Interest + Principal + Other Below-the-Line + Capex (all from mAmount_norm)
     Note: Interest, Principal, Capex should be negative (outflows)
     """
     f = fc_deal_modeled_full.copy()
@@ -27,6 +28,7 @@ def cashflows_monthly_fad(fc_deal_modeled_full: pd.DataFrame) -> pd.DataFrame:
     is_prin = f["vAccount"].isin(PRINCIPAL_ACCTS)
     is_capex = f["vAccount"].isin(CAPEX_ACCTS)
     is_excl = f["vAccount"].isin(OTHER_EXCLUDED_ACCTS)
+    is_abate = f["vAccount"].isin(TAX_ABATEMENT_ACCTS)
 
     f["rev"] = f["mAmount_norm"].where(is_rev, 0.0)
     f["exp"] = f["mAmount_norm"].where(is_exp, 0.0)
@@ -35,9 +37,10 @@ def cashflows_monthly_fad(fc_deal_modeled_full: pd.DataFrame) -> pd.DataFrame:
     f["prin"] = f["mAmount_norm"].where(is_prin, 0.0)
     f["capex"] = f["mAmount_norm"].where(is_capex, 0.0)
     f["excl"] = f["mAmount_norm"].where(is_excl, 0.0)
+    f["abate"] = f["mAmount_norm"].where(is_abate, 0.0)
 
-    g = f.groupby("me", as_index=False)[["noi", "int", "prin", "capex", "excl"]].sum()
-    g["fad"] = g["noi"] + g["int"] + g["prin"] + g["capex"] + g["excl"]
+    g = f.groupby("me", as_index=False)[["noi", "int", "prin", "capex", "excl", "abate"]].sum()
+    g["fad"] = g["noi"] + g["int"] + g["prin"] + g["capex"] + g["excl"] + g["abate"]
     return g.rename(columns={"me": "event_date"})
 
 
@@ -76,21 +79,24 @@ def annual_aggregation_table(
     principal = sum_where(f["vAccount"].isin(PRINCIPAL_ACCTS))
     capex = sum_where(f["vAccount"].isin(CAPEX_ACCTS))
     excluded_other = sum_where(f["vAccount"].isin(OTHER_EXCLUDED_ACCTS))
+    tax_abatement = sum_where(f["vAccount"].isin(TAX_ABATEMENT_ACCTS))
 
     out = pd.DataFrame({"Year": years}).set_index("Year")
     out["Revenues"] = revenues
     out["Expenses"] = expenses
     out["NOI"] = out["Revenues"].fillna(0.0) + out["Expenses"].fillna(0.0)
+    out["Tax Abatement"] = tax_abatement
     out["Interest"] = interest
     out["Principal"] = principal
     out["Total Debt Service"] = out["Interest"].fillna(0.0) + out["Principal"].fillna(0.0)
-    out["Excluded Accounts"] = excluded_other
+    out["Other Below-the-Line"] = excluded_other
     out["Capital Expenditures"] = capex
     out["Funds Available for Distribution"] = (
         out["NOI"].fillna(0.0) +
+        out["Tax Abatement"].fillna(0.0) +
         out["Interest"].fillna(0.0) +
         out["Principal"].fillna(0.0) +
-        out["Excluded Accounts"].fillna(0.0) +
+        out["Other Below-the-Line"].fillna(0.0) +
         out["Capital Expenditures"].fillna(0.0)
     )
 
@@ -238,9 +244,9 @@ def pivot_annual_table(df: pd.DataFrame) -> pd.DataFrame:
     
     # Define the order - base items first, then waterfall items will follow naturally
     base_order = [
-        "Revenues", "Expenses", "NOI",
+        "Revenues", "Expenses", "NOI", "Tax Abatement",
         "Interest", "Principal", "Total Debt Service",
-        "Capital Expenditures", "Excluded Accounts",
+        "Capital Expenditures", "Other Below-the-Line",
         "Funds Available for Distribution", "Debt Service Coverage Ratio",
     ]
     

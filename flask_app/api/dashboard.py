@@ -61,6 +61,7 @@ def _get_caps_and_occ(on_progress=None):
                 inv_disp, data["inv"], data["wf"], data["acct"],
                 data["mri_val"], data["mri_loans_raw"],
                 on_progress=on_progress,
+                isbs_raw=data.get("isbs_raw"),
             )
         if cache_key not in _occ_cache:
             _occ_cache[cache_key] = get_latest_occupancy(inv_disp, data["occupancy_raw"], inv=data["inv"])

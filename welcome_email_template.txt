@@ -1,0 +1,73 @@
+Subject: Waterfall XIRR — Your Account Is Ready
+
+Hi {NAME},
+
+You now have access to Waterfall XIRR, our investment waterfall and returns platform.
+
+GETTING STARTED
+---------------
+1. Open the app: https://app-waterfall-dev.victoriousforest-f83586cf.eastus.azurecontainerapps.io
+2. Log in with:
+     Username: {USERNAME}
+     Password: password
+3. You'll be prompted to set a new password on your first login.
+
+DESKTOP SHORTCUT
+----------------
+I've attached a shortcut file (Waterfall XIRR.url). Save it to your desktop
+for quick access — just double-click to open the app in your browser.
+
+FORGOT YOUR PASSWORD?
+---------------------
+Click "Forgot password?" on the login page and enter your email ({EMAIL}).
+You'll receive a reset link.
+
+If you have any questions, let me know.
+
+Best,
+Jason
+
+
+====================================================================
+INDIVIDUAL DETAILS — copy/paste per person, then delete this section
+====================================================================
+
+To: jday@peaceablestreet.com
+    Name: JDay
+    Username: jday
+    Role: Asset Manager
+
+To: anaik@peaceablestreet.com
+    Name: ANaik
+    Username: anaik
+    Role: Asset Manager
+
+To: mrosenfeld@peaceablestreet.com
+    Name: MRosenfeld
+    Username: mrosenfeld
+    Role: Head of Asset Management
+
+To: bdonato@peaceablestreet.com
+    Name: BDonato
+    Username: bdonato
+    Role: CCO
+
+To: jstewart@peaceablestreet.com
+    Name: JStewart
+    Username: jstewart
+    Role: CFO
+
+To: ejohnson@peaceablestreet.com
+    Name: EJohnson
+    Username: ejohnson
+    Role: CEO
+
+To: dhenry@peaceablestreet.com
+    Name: DHenry
+    Username: dhenry
+    Role: Founder
+
+To: fkurz@peaceablestreet.com
+    Name: FKurz
+    Username: fkurz
+    Role: Founder

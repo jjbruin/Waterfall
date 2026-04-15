@@ -13,6 +13,9 @@ DEFAULT_HORIZON_YEARS = 10
 PRO_YR_BASE_DEFAULT = date.today().year - 1
 DEFAULT_ACTUALS_THROUGH = None  # None = full forecast; date = actuals cutoff
 
+# Balance sheet debt accounts (Mortgages and Loans from ISBS)
+DEBT_BS_ACCTS = {'2150', '2152', '2210'}
+
 # Capital event parameters
 SELLING_COST_RATE = 0.02  # 2% selling costs
 NEW_LOAN_NET_PROCEEDS = 0.98  # 98% net proceeds from new loans
@@ -43,8 +46,11 @@ INTEREST_ACCTS = {5190, 7030}
 PRINCIPAL_ACCTS = {7060}
 CAPEX_ACCTS = {7050}
 OTHER_EXCLUDED_ACCTS = {4050, 5220, 5210, 5195, 7065, 5120, 5130, 5400}
+TAX_ABATEMENT_ACCTS = {7070}
 
 ALL_EXCLUDED = INTEREST_ACCTS | PRINCIPAL_ACCTS | CAPEX_ACCTS | OTHER_EXCLUDED_ACCTS
+
+TAX_ABATEMENT_DISCOUNT_RATE = 0.05
 
 # ============================================================
 # DEBT INDEX BASE RATES
