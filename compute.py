@@ -53,7 +53,11 @@ def get_isbs_debt_balance(isbs_raw, vcode, as_of_date=None):
     Returns:
         Debt balance (float) or None if no ISBS data available.
     """
+    import logging
+    log = logging.getLogger(__name__)
+
     if isbs_raw is None or isbs_raw.empty:
+        log.info("get_isbs_debt_balance(%s): isbs_raw is None/empty", vcode)
         return None
 
     df = isbs_raw.copy()
@@ -64,6 +68,7 @@ def get_isbs_debt_balance(isbs_raw, vcode, as_of_date=None):
         df['vcode'] = df['vcode'].astype(str).str.strip().str.lower()
         df = df[df['vcode'] == str(vcode).strip().lower()]
     if df.empty:
+        log.info("get_isbs_debt_balance(%s): no rows after vcode filter", vcode)
         return None
 
     # Filter to Interim BS
@@ -71,18 +76,28 @@ def get_isbs_debt_balance(isbs_raw, vcode, as_of_date=None):
         df['vSource'] = df['vSource'].astype(str).str.strip()
         df = df[df['vSource'] == 'Interim BS']
     if df.empty:
+        log.info("get_isbs_debt_balance(%s): no Interim BS rows", vcode)
         return None
 
-    # Parse dates
+    # Parse dates — handle string dates, timestamps, and Excel serial numbers
     if 'dtEntry' in df.columns:
-        try:
-            df['_dt'] = pd.to_datetime(df['dtEntry'], unit='D', origin='1899-12-30', errors='coerce')
-        except Exception:
-            df['_dt'] = pd.to_datetime(df['dtEntry'], errors='coerce')
-        null_dates = df['_dt'].isna()
-        if null_dates.any():
-            df.loc[null_dates, '_dt'] = pd.to_datetime(df.loc[null_dates, 'dtEntry'], errors='coerce')
+        log.info("get_isbs_debt_balance(%s): dtEntry dtype=%s, sample=%s",
+                 vcode, df['dtEntry'].dtype, df['dtEntry'].iloc[0] if len(df) > 0 else 'N/A')
+        df['_dt'] = pd.to_datetime(df['dtEntry'], format='mixed', dayfirst=False, errors='coerce')
+        nat_count = df['_dt'].isna().sum()
+        log.info("get_isbs_debt_balance(%s): after parse, %d/%d NaT", vcode, nat_count, len(df))
+        # If most dates are NaT, try Excel serial number parsing
+        if nat_count > len(df) * 0.5:
+            try:
+                numeric_dates = pd.to_numeric(df['dtEntry'], errors='coerce')
+                serial_dates = pd.to_datetime(numeric_dates, unit='D', origin='1899-12-30', errors='coerce')
+                df.loc[df['_dt'].isna(), '_dt'] = serial_dates[df['_dt'].isna()]
+                log.info("get_isbs_debt_balance(%s): after serial parse, %d/%d NaT",
+                         vcode, df['_dt'].isna().sum(), len(df))
+            except Exception as e:
+                log.warning("get_isbs_debt_balance(%s): serial parse error: %s", vcode, e)
     else:
+        log.info("get_isbs_debt_balance(%s): no dtEntry column", vcode)
         return None
 
     # Filter to debt accounts
@@ -90,15 +105,16 @@ def get_isbs_debt_balance(isbs_raw, vcode, as_of_date=None):
         df['vAccount'] = df['vAccount'].astype(str).str.strip()
         df = df[df['vAccount'].isin(DEBT_BS_ACCTS)]
     if df.empty:
+        log.info("get_isbs_debt_balance(%s): no debt account rows", vcode)
         return None
 
     # Select period
     if as_of_date is not None:
         target = pd.Timestamp(as_of_date)
-        # Find closest period on or before as_of_date
         available = sorted(df['_dt'].dropna().unique())
         candidates = [d for d in available if d <= target]
         if not candidates:
+            log.info("get_isbs_debt_balance(%s): no periods on or before %s", vcode, as_of_date)
             return None
         period = candidates[-1]
     else:
@@ -110,7 +126,9 @@ def get_isbs_debt_balance(isbs_raw, vcode, as_of_date=None):
 
     if 'mAmount' in period_data.columns:
         total = pd.to_numeric(period_data['mAmount'], errors='coerce').fillna(0).sum()
-        return abs(float(total))  # BS liabilities may be negative; we want positive debt
+        result = abs(float(total))
+        log.info("get_isbs_debt_balance(%s): period=%s, debt=%.2f", vcode, period, result)
+        return result
     return None
 
 
