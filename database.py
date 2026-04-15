@@ -1098,7 +1098,8 @@ def import_csv_stream(
         first_chunk = True
         engine = _sa_engine if is_postgres else conn
 
-        for chunk in pd.read_csv(file_stream, chunksize=chunk_size, low_memory=False):
+        for chunk in pd.read_csv(file_stream, chunksize=chunk_size, low_memory=False,
+                                  dtype=str):
             chunk.columns = [str(c).strip() for c in chunk.columns]
             mode = 'replace' if first_chunk else 'append'
             chunk.to_sql(table_name, engine, if_exists=mode, index=False)
