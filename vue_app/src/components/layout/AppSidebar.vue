@@ -1,12 +1,18 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { useDataStore } from '../../stores/data'
 
 const route = useRoute()
+const router = useRouter()
 const auth = useAuthStore()
 const data = useDataStore()
+
+function handleLogout() {
+  auth.logout()
+  router.push('/login')
+}
 
 const navItems = [
   { path: '/dashboard', label: 'Dashboard', icon: 'grid' },
@@ -314,8 +320,11 @@ function toggleCollapsed() {
     <div class="sidebar-footer" v-show="!collapsed">
       <div class="user-info" v-if="auth.user">
         <span>{{ auth.user.username }}</span>
-        <button class="btn btn-sm btn-text" @click="auth.logout()">Logout</button>
+        <span class="user-role">{{ auth.user.role }}</span>
       </div>
+      <button class="btn btn-logout" @click="handleLogout">
+        Logout
+      </button>
     </div>
   </aside>
 </template>
@@ -635,7 +644,7 @@ function toggleCollapsed() {
 
 /* Footer */
 .sidebar-footer {
-  padding: 8px 16px;
+  padding: 10px 12px;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
   margin-top: auto;
 }
@@ -645,5 +654,30 @@ function toggleCollapsed() {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  margin-bottom: 8px;
+}
+
+.user-role {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.5);
+  text-transform: capitalize;
+}
+
+.btn-logout {
+  width: 100%;
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.85);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.15s;
+}
+
+.btn-logout:hover {
+  background: rgba(239, 83, 80, 0.25);
+  border-color: rgba(239, 83, 80, 0.5);
+  color: white;
 }
 </style>
