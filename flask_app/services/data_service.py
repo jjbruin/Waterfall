@@ -30,6 +30,21 @@ def load_all(db_path: str, pro_yr_base: int = 2025) -> dict:
     # Required tables
     inv = get_adapter("deals").load(config)
     wf = get_adapter("waterfalls").load(config)
+
+    # Normalize waterfall columns (raw table may have vCode, unstripped vmisc, etc.)
+    if not wf.empty:
+        wf.columns = [str(c).strip() for c in wf.columns]
+        if "vCode" in wf.columns and "vcode" not in wf.columns:
+            wf = wf.rename(columns={"vCode": "vcode"})
+        if "vcode" in wf.columns:
+            wf["vcode"] = wf["vcode"].astype(str).str.strip()
+        if "vmisc" in wf.columns:
+            wf["vmisc"] = wf["vmisc"].astype(str).str.strip()
+        if "PropCode" in wf.columns:
+            wf["PropCode"] = wf["PropCode"].astype(str).str.strip()
+        if "vState" in wf.columns:
+            wf["vState"] = wf["vState"].astype(str).str.strip()
+
     coa_raw = get_adapter("coa").load(config)
     coa = load_coa(coa_raw)
     acct = get_adapter("accounting").load(config)
@@ -128,12 +143,24 @@ def refresh_table(table_name: str):
         try:
             adapter = get_adapter(table_name)
             fresh = adapter.load(config)
-            # Apply same normalization as load_all for deals
+            # Apply same normalization as load_all
             if table_name == "deals":
                 fresh.columns = [str(c).strip() for c in fresh.columns]
                 if "vcode" not in fresh.columns and "vCode" in fresh.columns:
                     fresh = fresh.rename(columns={"vCode": "vcode"})
                 fresh["vcode"] = fresh["vcode"].astype(str)
+            elif table_name == "waterfalls" and not fresh.empty:
+                fresh.columns = [str(c).strip() for c in fresh.columns]
+                if "vCode" in fresh.columns and "vcode" not in fresh.columns:
+                    fresh = fresh.rename(columns={"vCode": "vcode"})
+                if "vcode" in fresh.columns:
+                    fresh["vcode"] = fresh["vcode"].astype(str).str.strip()
+                if "vmisc" in fresh.columns:
+                    fresh["vmisc"] = fresh["vmisc"].astype(str).str.strip()
+                if "PropCode" in fresh.columns:
+                    fresh["PropCode"] = fresh["PropCode"].astype(str).str.strip()
+                if "vState" in fresh.columns:
+                    fresh["vState"] = fresh["vState"].astype(str).str.strip()
             data[cache_key_name] = fresh
         except Exception:
             # If single-table refresh fails, fall back to full reload
