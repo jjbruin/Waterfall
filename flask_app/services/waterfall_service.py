@@ -168,17 +168,12 @@ def get_waterfall_steps(wf: pd.DataFrame, vcode: str,
                         valid_entities: set = None) -> dict:
     """Get CF_WF and Cap_WF steps for an entity.
 
-    If valid_entities is provided, filters out rows whose PropCode
-    is not in the set (removes orphan entities not in relationships).
-
     Returns dict with cf_wf and cap_wf as lists of dicts.
+    Note: valid_entities is accepted but no longer used for filtering —
+    waterfall steps are returned as-is (matching Deal Analysis behavior).
+    Validation of PropCodes against relationships is done at save time only.
     """
     entity_wf = wf[wf["vcode"] == vcode] if "vcode" in wf.columns else pd.DataFrame()
-
-    if valid_entities is not None and not entity_wf.empty:
-        entity_wf = entity_wf[
-            entity_wf["PropCode"].astype(str).str.strip().isin(valid_entities)
-        ]
 
     cf_wf = entity_wf[entity_wf["vmisc"] == "CF_WF"] if not entity_wf.empty else pd.DataFrame()
     cap_wf = entity_wf[entity_wf["vmisc"] == "Cap_WF"] if not entity_wf.empty else pd.DataFrame()
@@ -250,9 +245,8 @@ def get_entity_nav_data(wf: pd.DataFrame, inv: pd.DataFrame, relationships_raw: 
         for eid in relationships_raw["InvestmentID"].astype(str).str.strip().unique():
             rel_vcodes.add(inv_id_to_vcode.get(eid, eid))
 
-    # Only include entities that exist in the relationships table.
-    # Waterfall-only entities with no relationships are excluded.
-    all_ids = sorted(rel_vcodes)
+    # Include entities from relationships AND any with waterfalls
+    all_ids = sorted(rel_vcodes | wf_vcodes)
 
     entities = []
     for eid in all_ids:
