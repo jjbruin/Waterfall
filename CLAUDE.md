@@ -177,7 +177,7 @@ cd vue_app && npm run dev        # Frontend on http://localhost:5173
 - **Sizing constraints**: LTV (value x max LTV), DSCR (NOI / min DSCR → solve principal), Debt Yield (NOI / min yield), Quoted amount — binding = minimum
 - **Workflow**: Draft → Save & Analyze (sizing only) → Accept (full waterfall recompute) → Revert. Editing an accepted loan auto-recomputes waterfall on save.
 - **CRUD endpoints**: `GET/POST/PUT/DELETE /api/deals/<vcode>/prospective-loans`, plus `/accept`, `/revert`, `/sizing` per loan
-- **PostgreSQL**: `ensure_pg_tables()` in `database.py` creates table with `SERIAL` id + proper column types at startup; `_pg_fix_column_types()` migrates TEXT→INTEGER/DOUBLE PRECISION
+- **PostgreSQL**: `ensure_pg_tables()` in `database.py` creates tables (prospective_loans, prospective_loans_audit, waterfall_audit) with `SERIAL` id + proper column types at startup; `_pg_fix_column_types()` migrates TEXT→INTEGER/DOUBLE PRECISION. Column names with mixed case (iOrder, PropCode, FXRate) must be double-quoted in SQL statements.
 
 ### ISBS Data Formats
 - **Source column**: `vSource` in ISBS table (`ISBS_Download.csv`)
@@ -297,7 +297,7 @@ View, edit, and create waterfall structures for any entity. Vue: `WaterfallSetup
 - **Waterfall Editor** — Editable table for CF_WF and Cap_WF steps. Columns: iOrder, PropCode, vState, FXRate, nPercent, mAmount, vtranstype, vAmtType, vNotes.
 - **Validation** — Inline warnings/errors: FXRate sums, Operating Capital Add vs Tag, Pref FX=1.0, lead/tag pairing, AMFee/Promote vNotes requirements.
 - **New Waterfall** — Pre-fills template from relationships/accounting: Pref steps per investor, Initial steps for Cap_WF, residual Share+Tag.
-- **Actions** — Save to Database (with audit trail), Reset to Saved, Copy CF_WF->Cap_WF, Export CSV, Preview Waterfall ($100k test).
+- **Actions** — Save to Database (with audit trail + cache invalidation via `refresh_table` + `clear_cache`), Reset to Saved, Copy CF_WF->Cap_WF, Export CSV, Preview Waterfall ($100k test).
 - **Guidance Panel** — Collapsible reference from `waterfall_setup_rules.txt`.
 
 ### Sidebar: Database Tools & User
@@ -375,7 +375,7 @@ Upstream waterfall analysis for the PSCKOC holding entity, showing how deal-leve
 - `apply_capital_calls_to_states()` - Apply capital calls to investor states with pool routing (capital_calls.py)
 
 ### Database
-- `save_waterfall_steps()` - Replace all waterfall steps for a vcode with audit trail (database.py)
+- `save_waterfall_steps()` - Replace all waterfall steps for a vcode with audit trail; quotes column names for PostgreSQL (database.py)
 - `create_additional_tables()` - Creates capital_calls and other tables if they don't exist (database.py)
 - `import_csv_dataframe()` - Import a DataFrame into a table, works with SQLite and PostgreSQL (database.py)
 - `import_csvs_to_database()` - Refresh all tables from CSVs, protecting DB-managed tables (database.py)
