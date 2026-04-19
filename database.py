@@ -911,9 +911,15 @@ def save_waterfall_steps(vcode: str, steps_df: pd.DataFrame):
             """)
 
         # Backup existing rows
-        existing = pd.read_sql(
-            "SELECT * FROM waterfalls WHERE vcode = ?", conn, params=(vcode,)
-        )
+        if _sa_engine is not None:
+            from sqlalchemy import text
+            existing = pd.read_sql(
+                text("SELECT * FROM waterfalls WHERE vcode = :vc"), conn, params={"vc": vcode}
+            )
+        else:
+            existing = pd.read_sql(
+                "SELECT * FROM waterfalls WHERE vcode = ?", conn, params=(vcode,)
+            )
         if not existing.empty:
             audit_cols = [
                 "vcode", "vmisc", "iOrder", "vAmtType", "vNotes", "PropCode",
