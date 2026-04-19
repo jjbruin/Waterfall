@@ -51,7 +51,8 @@ waterfall-xirr/
 │   ├── config.py             # Flask configuration (DATABASE_URL, dynamic defaults, ACTUALS_THROUGH)
 │   ├── extensions.py         # Flask extensions
 │   ├── serializers.py        # JSON serialization helpers (NumpyEncoder, safe_json)
-│   ├── auth/                 # JWT authentication (login, SSO config)
+│   ├── auth/                 # JWT authentication (login, SSO config, password reset, welcome emails)
+│   │   └── email_utils.py    # SMTP email sending (welcome emails, password reset)
 │   ├── api/                  # API blueprints
 │   │   ├── dashboard.py      # Dashboard endpoints (KPIs, charts, SSE init-stream)
 │   │   ├── data.py           # Data endpoints (deals, upload-import, export, config)
@@ -78,7 +79,7 @@ waterfall-xirr/
     ├── src/
     │   ├── api/client.ts     # Axios instance with JWT interceptors
     │   ├── stores/           # Pinia stores (auth, data, dashboard, deals)
-    │   ├── views/            # Page components (DashboardView, DealAnalysisView, OnePagerView, etc.)
+    │   ├── views/            # Page components (DashboardView, DealAnalysisView, OnePagerView, ForgotPasswordView, ResetPasswordView, etc.)
     │   └── components/       # Shared components (KpiCard, DataTable, ReviewPanel, AppSidebar)
     ├── vite.config.ts        # Vite config (proxies /api to Flask)
     └── package.json
@@ -100,12 +101,13 @@ waterfall-xirr/
 ### Deploying Changes
 All deploys use Azure CLI (GitHub Actions secrets are not configured):
 ```bash
-# 1. Build image in Azure Container Registry
+# 1. Build image in Azure Container Registry (use --no-logs to avoid unicode crash)
 az acr build --registry acrwaterfalldev -g rg-waterfall-dev --image waterfall-xirr:latest --no-logs .
 
 # 2. Deploy to Container Apps (use incrementing suffix to force new revision)
-az containerapp update -g rg-waterfall-dev -n app-waterfall-dev --image acrwaterfalldev.azurecr.io/waterfall-xirr:latest --revision-suffix v19
+az containerapp update -g rg-waterfall-dev -n app-waterfall-dev --image acrwaterfalldev.azurecr.io/waterfall-xirr:latest --revision-suffix v30
 ```
+**Note**: ACR build agent has transient failures (5-second runs) — retry if it fails. Use `--no-logs` to avoid Azure CLI unicode crash (`✓` character).
 
 ### Local Development
 ```bash
@@ -180,11 +182,32 @@ cd vue_app && npm run dev        # Frontend on http://localhost:5173
 ### ISBS Data Formats
 - **Source column**: `vSource` in ISBS table (`ISBS_Download.csv`)
 - **Interim IS** (Actuals): YTD cumulative trial balance snapshots — use `_get_cumulative_balances()` at a single date
+- **Interim BS** (Balance Sheet): Current outstanding balances — used for debt via `get_isbs_debt_balance()`
 - **Budget IS**: Periodic monthly amounts — use `_get_budget_sum()` over date range
 - **Projected IS** (Underwriting): YTD cumulative trial balance snapshots — use `_get_cumulative_balances()` (same as Actuals)
 - **Valuation**: Periodic monthly from `forecast_feed` — use `_get_valuation_sum()` with negated `mAmount_norm`
 - **TTM from cumulative**: Current YTD + prior year Dec YTD - prior year same-month YTD
 - **Performance chart / Dashboard**: Both correctly convert cumulative→periodic via `_cumulative_to_periodic()`
+
+### ISBS Debt Balance
+- **Config**: `DEBT_BS_ACCTS = {'2150', '2152', '2210'}` in `config.py` — Balance Sheet debt accounts
+- **Function**: `get_isbs_debt_balance(isbs_raw, vcode, as_of_date=None)` in `compute.py`
+- **Logic**: Filters ISBS to `vSource='Interim BS'`, deal vcode (case-insensitive), debt accounts; picks most recent period (or specific `as_of_date`); returns `abs(sum(mAmount))`
+- **Hierarchy**: ISBS current outstanding preferred over MRI_Loans `mOrigLoanAmt` (static origination). Falls back to MRI_Loans if ISBS unavailable.
+- **Usage**: Dashboard (`get_portfolio_caps()`), Deal Analysis (`get_deal_capitalization()`), One Pager (`get_capitalization_stack()` with quarter-specific date)
+- **Date parsing**: Uses `pd.to_datetime(format='mixed')` first; Excel serial fallback only when >50% NaT
+
+### At Close Data (One Pager)
+- **Source**: ISBS `vSource='Projected IS'` at the earliest December 31 date per deal
+- **Meaning**: Due diligence audit performed at original closing — represents underwritten expectations
+- **Fields**: Revenue, Expenses, NOI, DSCR (debt service from Interest + Principal accounts)
+- **Implementation**: `get_property_performance()` in `one_pager.py` finds `min(dec_dates)` from Projected IS periods
+
+### Economic Occupancy (One Pager)
+- **Formula**: `avg(physical occupancy YTD months) - bad_debt_concessions_pct`
+- **Physical occupancy**: Average of `Occ%` from MRI_Occupancy_Download for YTD months of current year through quarter end
+- **Bad debt/concessions %**: `(sum of vAccounts 4040 + 4043) / abs(sum of vAccount 4010) × 100` from ISBS Interim IS YTD
+- **Accounts**: 4040 = Residential Concessions, 4043 = Bad Debt & Collection Loss, 4010 = Rental Income
 
 ### Sub-Portfolio Aggregation
 - Deals can have child properties linked via `Portfolio_Name`
@@ -243,8 +266,8 @@ Vue: `PropertyFinancialsView.vue`. Flask: `financials.py` + `financials_service.
 Standalone route at `/one-pager`. Vue: `OnePagerView.vue`. Flask: `financials.py` + `financials_service.py`. Professional investor report matching printed PDF layout.
 - **Data Logic** (`one_pager.py`): `get_general_information()`, `get_capitalization_stack()`, `get_property_performance()`, `get_pe_performance()`, `get_one_pager_comments()`/`save_one_pager_comments()`.
 - **General Information** — Partner, Asset Type, Location, Investment Strategy, Units/SF, Date Closed, Year Built, Underwritten Exit.
-- **Capitalization / Exposure / Deal Terms** — Purchase Price (from deals `Acquisition_Price` or valuations), P.E. Coupon/Participation (from waterfall Pref/Share steps), Loan Terms string (maturity + rate + type), 2nd Loan Terms, Rate Cap, P.E. Yield on Exposure (NOI / (Debt + PE), computed in service layer). Capitalization table: Debt/Pref. Equity/Partner Equity/Total Cap with %. Valuation with year label. P.E. Exposure on Total Cap and on Value. Pref Equity capitalization (investor breakdown from accounting contributions).
-- **Property Performance** — Table with YTD (Actual), YTD (Budget), Variance (% of budget), At Close, Actual YE, U/W YE. Rows: Economic Occ., Revenue, Expenses, NOI, DSCR. Amounts in $M, DSCR as X.XXX. Editable performance comments.
+- **Capitalization / Exposure / Deal Terms** — Purchase Price (from deals `Acquisition_Price` or valuations), P.E. Coupon/Participation (from waterfall Pref/Share steps), Loan Terms string (maturity + rate + type), 2nd Loan Terms, Rate Cap, P.E. Yield on Exposure (NOI / (Debt + PE), computed in service layer). Capitalization table: Debt (from ISBS balance sheet)/Pref. Equity/Partner Equity/Total Cap with %. Valuation sorted by date descending (most recent used). P.E. Exposure on Total Cap and on Value. Pref Equity capitalization (investor breakdown from accounting contributions).
+- **Property Performance** — Table with YTD (Actual), YTD (Budget), Variance (% of budget), At Close (from Projected IS earliest Dec 31), Actual YE, U/W YE. Rows: Economic Occ. (avg physical occ - bad debt %), Revenue, Expenses, NOI, DSCR. Amounts in $M, DSCR as X.XXX. Editable performance comments.
 - **Preferred Equity Performance** — Committed PE, Remaining to Fund, Funded to Date, Return of Capital, Current PE Balance, Accrued Balance, Coupon, Participation, ROE to Date, U/W ROE to Date. Editable accrued pref comment.
 - **Business Plan & Updates** — Editable free-text comments.
 - **Occupancy vs. NOI Chart** — ECharts dual-axis. Occupancy bars + NOI U/W and NOI ACT lines. Trailing 10-12 quarters. Values in $ millions.
@@ -277,10 +300,19 @@ View, edit, and create waterfall structures for any entity. Vue: `WaterfallSetup
 - **Actions** — Save to Database (with audit trail), Reset to Saved, Copy CF_WF->Cap_WF, Export CSV, Preview Waterfall ($100k test).
 - **Guidance Panel** — Collapsible reference from `waterfall_setup_rules.txt`.
 
-### Sidebar: Database Tools
+### Sidebar: Database Tools & User
 Vue: `AppSidebar.vue` database tools section. Flask: `data.py` API endpoints.
-- **Import CSVs** — Browser file upload (no server-side folder scan — incompatible with Azure). Select CSV files → auto-matches filenames to table definitions → shows importable/protected/unmatched status → uploads one file at a time (sequential to avoid OOM on 2GB container) with progress indicator. Protected tables (`waterfalls`, `one_pager_comments`, `waterfall_audit`, `review_roles`, `review_submissions`, `review_notes`) are never overwritten. Clears data and computation caches.
+- **Import CSVs** — Browser file upload (no server-side folder scan — incompatible with Azure). Select CSV files → auto-matches filenames to table definitions → shows importable/protected/unmatched status → uploads one file at a time (sequential to avoid OOM on 2GB container) with progress indicator. Protected tables (`waterfalls`, `one_pager_comments`, `waterfall_audit`, `review_roles`, `review_submissions`, `review_notes`) are never overwritten. Uses chunked import (`import_csv_stream()`, 50K rows/chunk, `dtype=str`) for large files like ISBS (800K+ rows). Clears data and computation caches.
 - **Export Database** — Export all tables as `waterfall_db_export_{timestamp}.zip` containing `{table_name}_db_export.csv` for every table.
+- **Logout Button** — Full-width button at bottom of sidebar showing username + role. Clears auth store and redirects to login page.
+
+### User Authentication
+- **JWT-based**: Login returns access token, stored in Pinia auth store, sent via Axios interceptor
+- **Roles**: `admin`, `analyst`, `viewer` — role-gated endpoints via `@role_required()` decorator
+- **Password Reset**: `ForgotPasswordView.vue` → email with reset token → `ResetPasswordView.vue`. Uses `flask_app/auth/email_utils.py` for SMTP
+- **Welcome Emails**: Admin creates user → sends welcome email with temporary password and login link
+- **Forced Password Change**: Users with `must_change_password` flag are redirected to change password on login
+- **SMTP**: Configured via `SMTP_SERVER`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD` env vars (pending Office 365 setup)
 
 ### 7. Reports
 Projected Returns Summary with Excel export. Vue: `ReportsView.vue`. Flask: `reports.py` + `reports_service.py`.
@@ -327,6 +359,8 @@ Upstream waterfall analysis for the PSCKOC holding entity, showing how deal-leve
 - `get_property_vcodes_for_deal()` - Get child properties for aggregation (consolidation.py)
 - `cashflows_monthly_fad()` - Monthly FAD from modeled forecast (reporting.py)
 - `annual_aggregation_table()` - Annual pivot table for forecast display (reporting.py)
+- `get_isbs_debt_balance()` - Current debt from ISBS balance sheet, fallback to MRI_Loans (compute.py)
+- `get_deal_capitalization()` - Deal cap stack with ISBS debt support (compute.py)
 
 ### One Pager Data
 - `get_general_information()` - Deal general info from investment_map (one_pager.py)
@@ -347,6 +381,7 @@ Upstream waterfall analysis for the PSCKOC holding entity, showing how deal-leve
 - `import_csvs_to_database()` - Refresh all tables from CSVs, protecting DB-managed tables (database.py)
 - `export_all_tables_to_zip()` - Export all tables as labeled CSVs in a zip archive (database.py)
 - `set_engine()` - Wire SQLAlchemy engine for PostgreSQL support (database.py)
+- `import_csv_stream()` - Chunked CSV import (50K rows, dtype=str) for large files (database.py)
 
 ### Flask Services
 - `get_cached_deal_result()` - Shared multi-deal cache wrapper (compute_service.py)
@@ -378,6 +413,8 @@ Upstream waterfall analysis for the PSCKOC holding entity, showing how deal-leve
 - Tax Abatement: `TAX_ABATEMENT_ACCTS` {7070} — forced positive (income)
 - Other Below-the-Line: `OTHER_EXCLUDED_ACCTS` {4050, 5220, 5210, 5195, 7065, 5120, 5130, 5400}
 - `ALL_EXCLUDED` = Interest | Principal | CapEx | Other Below-the-Line (does NOT include Tax Abatement — separate sign handling)
+- Debt (Balance Sheet): `DEBT_BS_ACCTS` {2150, 2152, 2210} — ISBS Interim BS accounts for current debt outstanding
+- Bad Debt/Concessions: 4040 (Residential Concessions), 4043 (Bad Debt & Collection Loss), 4010 (Rental Income) — used in Economic Occupancy calculation
 
 ## Conventions
 

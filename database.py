@@ -256,6 +256,26 @@ def ensure_pg_tables(engine):
             changed_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS waterfall_audit (
+            audit_id        SERIAL PRIMARY KEY,
+            audit_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            action          TEXT,
+            vcode           TEXT,
+            vmisc           TEXT,
+            "iOrder"        INTEGER,
+            "vAmtType"      TEXT,
+            "vNotes"        TEXT,
+            "PropCode"      TEXT,
+            nmisc           DOUBLE PRECISION,
+            dteffective     TEXT,
+            vtranstype      TEXT,
+            "mAmount"       DOUBLE PRECISION,
+            "nPercent"      DOUBLE PRECISION,
+            "FXRate"        DOUBLE PRECISION,
+            "vState"        TEXT
+        )
+        """,
     ]
 
     with engine.connect() as conn:
@@ -926,14 +946,18 @@ def save_waterfall_steps(vcode: str, steps_df: pd.DataFrame):
                 "nmisc", "dteffective", "vtranstype", "mAmount", "nPercent",
                 "FXRate", "vState",
             ]
+            # Quote column names for PostgreSQL (lowercases unquoted identifiers)
+            if _sa_engine is not None:
+                audit_col_sql = ', '.join(f'"{c}"' for c in ["action"] + audit_cols)
+            else:
+                audit_col_sql = "action, " + ", ".join(audit_cols)
+            placeholders = ", ".join(["?"] * (1 + len(audit_cols)))
             for _, row in existing.iterrows():
-                vals = [row.get(c) for c in audit_cols]
+                vals = ["backup"] + [row.get(c) for c in audit_cols]
                 _exec(
                     conn,
-                    "INSERT INTO waterfall_audit "
-                    "(action, vcode, vmisc, iOrder, vAmtType, vNotes, PropCode, "
-                    "nmisc, dteffective, vtranstype, mAmount, nPercent, FXRate, vState) "
-                    "VALUES ('backup', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    f"INSERT INTO waterfall_audit ({audit_col_sql}) "
+                    f"VALUES ({placeholders})",
                     vals,
                 )
 
@@ -946,14 +970,18 @@ def save_waterfall_steps(vcode: str, steps_df: pd.DataFrame):
             "nmisc", "dteffective", "vtranstype", "mAmount", "nPercent",
             "FXRate", "vState",
         ]
+        # Quote column names for PostgreSQL
+        if _sa_engine is not None:
+            wf_col_sql = ', '.join(f'"{c}"' for c in wf_cols)
+        else:
+            wf_col_sql = ", ".join(wf_cols)
+        placeholders = ", ".join(["?"] * len(wf_cols))
         for _, row in steps_df.iterrows():
             vals = [row.get(c) for c in wf_cols]
             _exec(
                 conn,
-                "INSERT INTO waterfalls "
-                "(vcode, vmisc, iOrder, vAmtType, vNotes, PropCode, nmisc, "
-                "dteffective, vtranstype, mAmount, nPercent, FXRate, vState) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                f"INSERT INTO waterfalls ({wf_col_sql}) "
+                f"VALUES ({placeholders})",
                 vals,
             )
 
