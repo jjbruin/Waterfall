@@ -6,7 +6,7 @@ import io
 
 from flask_app.auth.routes import login_required, role_required
 from flask_app.services import data_service
-from flask_app.services.compute_service import clear_deal_cache
+from flask_app.services.compute_service import clear_cache
 from flask_app.services.waterfall_service import (
     validate_steps, save_steps, delete_steps,
     get_waterfall_steps, get_entities_with_waterfalls,
@@ -133,7 +133,7 @@ def save(vcode):
     if result["success"]:
         # Refresh waterfalls data and clear deal computation cache
         data_service.refresh_table("waterfalls")
-        clear_deal_cache(vcode)
+        clear_cache(vcode)
 
         # Return the fresh steps so the frontend can update its store
         # without making 3 more API calls (steps + investors + tree)
