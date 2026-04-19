@@ -182,7 +182,16 @@ def get_waterfall_steps(wf: pd.DataFrame, vcode: str,
         if df.empty:
             return []
         cols = [c for c in WF_COLUMNS if c in df.columns]
-        return df[cols].sort_values("iOrder").to_dict(orient="records")
+        out = df[cols].sort_values("iOrder")
+        # Replace NaN with 0.0 for numeric fields, "" for strings
+        # (NaN is not valid JSON and breaks frontend parsing)
+        for col in ["FXRate", "nPercent", "mAmount"]:
+            if col in out.columns:
+                out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
+        for col in ["PropCode", "vState", "vtranstype", "vAmtType", "vNotes"]:
+            if col in out.columns:
+                out[col] = out[col].fillna("").astype(str)
+        return out.to_dict(orient="records")
 
     return {
         "cf_wf": to_records(cf_wf),
