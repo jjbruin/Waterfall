@@ -101,8 +101,9 @@ def get_isbs_debt_balance(isbs_raw, vcode, as_of_date=None):
         return None
 
     # Filter to debt accounts
+    # Strip trailing '.0' — PostgreSQL BIGINT nullable columns read as float64
     if 'vAccount' in df.columns:
-        df['vAccount'] = df['vAccount'].astype(str).str.strip()
+        df['vAccount'] = df['vAccount'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
         df = df[df['vAccount'].isin(DEBT_BS_ACCTS)]
     if df.empty:
         log.info("get_isbs_debt_balance(%s): no debt account rows", vcode)

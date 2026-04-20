@@ -40,7 +40,7 @@ def _prepare_isbs(isbs_raw, vcode):
     if 'vSource' in isbs.columns:
         isbs['vSource'] = isbs['vSource'].astype(str).str.strip()
     if 'vAccount' in isbs.columns:
-        isbs['vAccount'] = isbs['vAccount'].astype(str).str.strip()
+        isbs['vAccount'] = isbs['vAccount'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
     if 'mAmount' in isbs.columns:
         isbs['mAmount'] = pd.to_numeric(isbs['mAmount'], errors='coerce').fillna(0)
     return isbs
@@ -287,7 +287,7 @@ def _get_valuation_sum(fc_df, start_date, end_date, accounts_dict):
     if period_data.empty:
         return {}
     # Normalize vAccount to string for matching against IS_ACCOUNTS keys
-    period_data['vAccount'] = period_data['vAccount'].astype(str).str.strip()
+    period_data['vAccount'] = period_data['vAccount'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
     balances = {}
     for section, categories in accounts_dict.items():
         balances[section] = {}

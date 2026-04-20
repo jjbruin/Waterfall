@@ -84,7 +84,10 @@ def load_beginning_cash_balance(isbs_df: pd.DataFrame, deal_vcode: str, forecast
         print(f"Using ISBS data from: {most_recent_date.strftime('%Y-%m-%d')}")
     
     # Filter for cash accounts
-    isbs['vAccount'] = isbs['vAccount'].astype(str).str.strip()
+    # PostgreSQL BIGINT columns come back as float64 when nullable,
+    # so astype(str) can produce '1014.0' instead of '1014'.  Strip the
+    # trailing '.0' to normalise to plain integer strings.
+    isbs['vAccount'] = isbs['vAccount'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
     isbs = isbs[isbs['vAccount'].isin(CASH_BALANCE_ACCTS)]
     
     if isbs.empty:

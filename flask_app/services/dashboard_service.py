@@ -443,7 +443,7 @@ def compute_portfolio_noi(isbs_raw, inv_disp, frequency="Quarterly",
     if "vSource" in isbs.columns:
         isbs["vSource"] = isbs["vSource"].astype(str).str.strip()
     if "vAccount" in isbs.columns:
-        isbs["vAccount"] = isbs["vAccount"].astype(str).str.strip()
+        isbs["vAccount"] = isbs["vAccount"].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
     if "mAmount" in isbs.columns:
         isbs["mAmount"] = pd.to_numeric(isbs["mAmount"], errors="coerce").fillna(0)
 
@@ -664,7 +664,7 @@ def _get_deal_trailing_noi(isbs_raw, inv_disp, num_quarters=4) -> dict:
     if "vSource" in isbs.columns:
         isbs["vSource"] = isbs["vSource"].astype(str).str.strip()
     if "vAccount" in isbs.columns:
-        isbs["vAccount"] = isbs["vAccount"].astype(str).str.strip()
+        isbs["vAccount"] = isbs["vAccount"].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
     if "mAmount" in isbs.columns:
         isbs["mAmount"] = pd.to_numeric(isbs["mAmount"], errors="coerce").fillna(0)
 
