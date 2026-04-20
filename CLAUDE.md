@@ -241,7 +241,7 @@ Main waterfall computation, partner returns, capital accounts, XIRR/MOIC metrics
 
 **Layout**: Deal Information + Capitalization → Deal-Level Summary (KPI cards) → Partner Returns (non-OP partners highlighted bold with blue-grey background) → Annual Forecast (whole-dollar formatting, DSCR as 2-decimal, blank spacer/header cells) → expandable sections (Diagnostics, Debt Service, Cash Management, Capital Calls, XIRR Cash Flows, ROE Audit, MOIC Audit).
 
-**XIRR Cash Flows**: Merged side-by-side table with columns Date, Description (typename from `cashflow_details`), one amount column per partner, and Deal total column.
+**XIRR Cash Flows**: Merged side-by-side table with columns Date, Description (typename from `cashflow_details`), one amount column per partner, and Deal total column. Rows are keyed by (date, description); same-date/same-description cashflows for one partner are summed. Partner Returns IRR is computed from `combined_cfs` (the authoritative cashflow list); the XIRR Cash Flows table/Excel is a display-friendly pivot of the same data via `cashflow_details`.
 
 **Annual Forecast Formatting**: Black border lines under Expenses, Capital Expenditures, and Other Below-the-Line rows (`underline-row` CSS class), black border above Total Distributions (`topline-row` CSS class). Row order: Revenues → Expenses → NOI → Tax Abatement → Interest → Principal → Total Debt Service → Capital Expenditures → Other Below-the-Line → FAD → DSCR → waterfall allocations.
 
@@ -393,7 +393,7 @@ Upstream waterfall analysis for the PSCKOC holding entity, showing how deal-leve
 - `generate_debt_service_excel()` - Loan Summary + Amortization Schedule (2-sheet) (compute_service.py)
 - `generate_cash_schedule_excel()` - Cash flow schedule Excel (compute_service.py)
 - `generate_capital_calls_excel()` - Capital calls Excel (compute_service.py)
-- `generate_xirr_cashflows_excel()` - Merged XIRR cashflows by partner (compute_service.py)
+- `generate_xirr_cashflows_excel()` - Merged XIRR cashflows by partner; sums same-date/same-description entries (compute_service.py)
 - `generate_full_deal_excel()` - 7-sheet comprehensive Deal Analysis workbook (compute_service.py)
 - `get_one_pager_data()` - Aggregates all one-pager sections + computes pe_yield_on_exposure (financials_service.py)
 - `get_one_pager_chart()` - Quarterly NOI chart data for one-pager (financials_service.py)
