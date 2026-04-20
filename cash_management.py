@@ -8,6 +8,8 @@ import numpy as np
 from typing import Dict, List, Tuple
 from datetime import datetime
 
+from config import CASH_BALANCE_ACCTS
+
 
 def load_beginning_cash_balance(isbs_df: pd.DataFrame, deal_vcode: str, forecast_start_date) -> float:
     """
@@ -82,9 +84,8 @@ def load_beginning_cash_balance(isbs_df: pd.DataFrame, deal_vcode: str, forecast
         print(f"Using ISBS data from: {most_recent_date.strftime('%Y-%m-%d')}")
     
     # Filter for cash accounts
-    cash_accounts = ['1012', '1010', '1100', '1120', '1130', '1140', '1145']
     isbs['vAccount'] = isbs['vAccount'].astype(str).str.strip()
-    isbs = isbs[isbs['vAccount'].isin(cash_accounts)]
+    isbs = isbs[isbs['vAccount'].isin(CASH_BALANCE_ACCTS)]
     
     if isbs.empty:
         print(f"Warning: No cash accounts found in ISBS data for deal {deal_vcode}")

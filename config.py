@@ -16,6 +16,13 @@ DEFAULT_ACTUALS_THROUGH = None  # None = full forecast; date = actuals cutoff
 # Balance sheet debt accounts (Mortgages and Loans from ISBS)
 DEBT_BS_ACCTS = {'2150', '2152', '2210'}
 
+# Cash & reserve accounts for beginning cash balance (from ISBS Interim BS)
+CASH_BALANCE_ACCTS = {
+    '1010', '1012', '1014', '1070',
+    '1090', '1091', '1092',
+    '1100', '1120', '1130', '1140', '1141', '1142', '1143', '1144', '1145',
+}
+
 # Capital event parameters
 SELLING_COST_RATE = 0.02  # 2% selling costs
 NEW_LOAN_NET_PROCEEDS = 0.98  # 98% net proceeds from new loans
