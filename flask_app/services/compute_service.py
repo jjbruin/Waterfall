@@ -772,7 +772,7 @@ def generate_xirr_cashflows_excel(result: dict) -> bytes:
             found = False
             for ar in all_rows:
                 if ar['key'] == key:
-                    ar[pr['partner']] = cf['Amount']
+                    ar[pr['partner']] = ar.get(pr['partner'], 0) + cf['Amount']
                     found = True
                     break
             if not found:
