@@ -360,6 +360,7 @@ Upstream waterfall analysis for the PSCKOC holding entity, showing how deal-leve
 - `cashflows_monthly_fad()` - Monthly FAD from modeled forecast (reporting.py)
 - `annual_aggregation_table()` - Annual pivot table for forecast display (reporting.py)
 - `get_isbs_debt_balance()` - Current debt from ISBS balance sheet, fallback to MRI_Loans (compute.py)
+- `load_beginning_cash_balance()` - Beginning cash balance from ISBS Interim BS using CASH_BALANCE_ACCTS (cash_management.py)
 - `get_deal_capitalization()` - Deal cap stack with ISBS debt support (compute.py)
 
 ### One Pager Data
@@ -414,6 +415,7 @@ Upstream waterfall analysis for the PSCKOC holding entity, showing how deal-leve
 - Other Below-the-Line: `OTHER_EXCLUDED_ACCTS` {4050, 5220, 5210, 5195, 7065, 5120, 5130, 5400}
 - `ALL_EXCLUDED` = Interest | Principal | CapEx | Other Below-the-Line (does NOT include Tax Abatement — separate sign handling)
 - Debt (Balance Sheet): `DEBT_BS_ACCTS` {2150, 2152, 2210} — ISBS Interim BS accounts for current debt outstanding
+- Cash & Reserves (Balance Sheet): `CASH_BALANCE_ACCTS` {1010, 1012, 1014, 1070, 1090, 1091, 1092, 1100, 1120, 1130, 1140, 1141, 1142, 1144, 1145} — ISBS Interim BS accounts for beginning cash balance in Cash Management section
 - Bad Debt/Concessions: 4040 (Residential Concessions), 4043 (Bad Debt & Collection Loss), 4010 (Rental Income) — used in Economic Occupancy calculation
 
 ## Conventions

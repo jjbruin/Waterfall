@@ -3,6 +3,7 @@ cash_management.py
 Manages cash reserves, capital expenditures, capital calls, and distribution logic
 """
 
+import logging
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Tuple
@@ -10,99 +11,105 @@ from datetime import datetime
 
 from config import CASH_BALANCE_ACCTS
 
+log = logging.getLogger(__name__)
+
 
 def load_beginning_cash_balance(isbs_df: pd.DataFrame, deal_vcode: str, forecast_start_date) -> float:
     """
     Extract beginning cash balance from ISBS_Download.csv
-    
+
     Args:
         isbs_df: ISBS_Download dataframe
         deal_vcode: Deal identifier
         forecast_start_date: Start date of forecast (to find most recent prior balance)
-    
+
     Returns:
         Beginning cash balance (sum of all cash accounts)
     """
     if isbs_df is None or isbs_df.empty:
         return 0.0
-    
+
     # Normalize column names
     isbs = isbs_df.copy()
     isbs.columns = [str(c).strip() for c in isbs.columns]
-    
+
     # Check if required columns exist
     required_cols = ['vcode', 'dtEntry', 'vSource', 'vAccount', 'mAmount']
     missing = [col for col in required_cols if col not in isbs.columns]
     if missing:
-        print(f"Warning: Missing columns in ISBS data: {missing}")
+        log.warning("load_beginning_cash(%s): missing columns %s", deal_vcode, missing)
         return 0.0
-    
+
     # Filter for the deal (case-insensitive)
     isbs['vcode'] = isbs['vcode'].astype(str).str.strip().str.lower()
     deal_vcode_lower = str(deal_vcode).strip().lower()
     isbs = isbs[isbs['vcode'] == deal_vcode_lower]
-    
+
     if isbs.empty:
-        print(f"Warning: No ISBS data found for deal {deal_vcode}")
+        log.warning("load_beginning_cash(%s): no ISBS rows for deal", deal_vcode)
         return 0.0
-    
+
     # Filter for Interim BS (balance sheet) - exact match with stripped whitespace
     isbs['vSource'] = isbs['vSource'].astype(str).str.strip()
     isbs = isbs[isbs['vSource'] == 'Interim BS']
-    
+
     if isbs.empty:
-        print(f"Warning: No 'Interim BS' records found for deal {deal_vcode}")
+        log.warning("load_beginning_cash(%s): no Interim BS rows", deal_vcode)
         return 0.0
-    
-    # Convert date column (handle Excel serial dates)
-    if 'dtEntry' in isbs.columns:
-        # Try to parse as Excel serial date first
+
+    # Parse dates — try standard first, fall back to Excel serial numbers
+    isbs['dtEntry_parsed'] = pd.to_datetime(isbs['dtEntry'], format='mixed',
+                                            dayfirst=False, errors='coerce')
+    nat_count = int(isbs['dtEntry_parsed'].isna().sum())
+    # If most dates are NaT, try Excel serial number fallback
+    if nat_count > len(isbs) * 0.5:
         try:
-            isbs['dtEntry_parsed'] = pd.to_datetime(isbs['dtEntry'], unit='D', origin='1899-12-30', errors='coerce')
-        except:
-            isbs['dtEntry_parsed'] = pd.to_datetime(isbs['dtEntry'], errors='coerce')
-        
-        # If that didn't work, try standard datetime parsing
-        null_dates = isbs['dtEntry_parsed'].isna()
-        if null_dates.any():
-            isbs.loc[null_dates, 'dtEntry_parsed'] = pd.to_datetime(isbs.loc[null_dates, 'dtEntry'], errors='coerce')
-        
-        # Convert forecast_start_date to datetime
-        if not isinstance(forecast_start_date, pd.Timestamp):
-            forecast_start_date = pd.to_datetime(forecast_start_date)
-        
-        # Find most recent entry before forecast start
-        isbs = isbs[isbs['dtEntry_parsed'] < forecast_start_date]
-        
-        if isbs.empty:
-            print(f"Warning: No ISBS records before forecast start date {forecast_start_date}")
-            return 0.0
-        
-        # Get the most recent date
-        most_recent_date = isbs['dtEntry_parsed'].max()
-        isbs = isbs[isbs['dtEntry_parsed'] == most_recent_date]
-        print(f"Using ISBS data from: {most_recent_date.strftime('%Y-%m-%d')}")
-    
-    # Filter for cash accounts
-    # PostgreSQL BIGINT columns come back as float64 when nullable,
-    # so astype(str) can produce '1014.0' instead of '1014'.  Strip the
-    # trailing '.0' to normalise to plain integer strings.
-    isbs['vAccount'] = isbs['vAccount'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
-    isbs = isbs[isbs['vAccount'].isin(CASH_BALANCE_ACCTS)]
-    
+            numeric = pd.to_numeric(isbs['dtEntry'], errors='coerce')
+            serial = pd.to_datetime(numeric, unit='D', origin='1899-12-30', errors='coerce')
+            isbs.loc[isbs['dtEntry_parsed'].isna(), 'dtEntry_parsed'] = serial[isbs['dtEntry_parsed'].isna()]
+        except Exception:
+            pass
+
+    # Convert forecast_start_date to datetime
+    if not isinstance(forecast_start_date, pd.Timestamp):
+        forecast_start_date = pd.to_datetime(forecast_start_date)
+
+    # Find most recent entry before forecast start
+    isbs = isbs[isbs['dtEntry_parsed'] < forecast_start_date]
+
     if isbs.empty:
-        print(f"Warning: No cash accounts found in ISBS data for deal {deal_vcode}")
+        log.warning("load_beginning_cash(%s): no rows before %s", deal_vcode, forecast_start_date)
         return 0.0
-    
-    # Sum the amounts
-    if 'mAmount' in isbs.columns:
-        total_cash = pd.to_numeric(isbs['mAmount'], errors='coerce').sum()
-        cash_balance = float(total_cash) if not pd.isna(total_cash) else 0.0
-        print(f"Beginning cash balance for {deal_vcode}: ${cash_balance:,.2f}")
-        print(f"  From {len(isbs)} cash account records")
-        return cash_balance
-    
-    return 0.0
+
+    # Get the most recent date
+    most_recent_date = isbs['dtEntry_parsed'].max()
+    isbs = isbs[isbs['dtEntry_parsed'] == most_recent_date]
+
+    # Normalize vAccount — strip trailing '.0' from float-typed columns
+    isbs['vAccount'] = isbs['vAccount'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+
+    # Log all 1xxx accounts at this date for diagnostics
+    all_1xxx = sorted(isbs.loc[isbs['vAccount'].str.match(r'^1\d{3}$', na=False), 'vAccount'].unique())
+    log.info("load_beginning_cash(%s): date=%s, 1xxx accounts=%s, CASH_BALANCE_ACCTS=%s",
+             deal_vcode, most_recent_date.strftime('%Y-%m-%d'), all_1xxx, sorted(CASH_BALANCE_ACCTS))
+
+    isbs = isbs[isbs['vAccount'].isin(CASH_BALANCE_ACCTS)]
+
+    if isbs.empty:
+        log.warning("load_beginning_cash(%s): no cash accounts after filter", deal_vcode)
+        return 0.0
+
+    # Sum the amounts — log per-account breakdown for diagnostics
+    isbs['_amt'] = pd.to_numeric(isbs['mAmount'], errors='coerce')
+    acct_totals = isbs.groupby('vAccount')['_amt'].sum().sort_index()
+    for acct, amt in acct_totals.items():
+        log.info("load_beginning_cash(%s):   acct=%s  amount=%s", deal_vcode, acct, f"{amt:,.2f}")
+
+    total_cash = acct_totals.sum()
+    cash_balance = float(total_cash) if not pd.isna(total_cash) else 0.0
+    log.info("load_beginning_cash(%s): TOTAL=$%s from %d records",
+             deal_vcode, f"{cash_balance:,.2f}", len(isbs))
+    return cash_balance
 
 
 def build_cash_flow_schedule_from_fad(
