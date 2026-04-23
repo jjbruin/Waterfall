@@ -598,6 +598,7 @@ def generate_forecast_excel(result: dict, start_year: int, horizon_years: int) -
         proceeds_by_year=proceeds_by_year,
         cf_alloc=result.get("cf_alloc"),
         cap_alloc=result.get("cap_alloc"),
+        cash_schedule=result.get("cash_schedule"),
     )
 
     if "Year" not in table.columns:
@@ -852,6 +853,7 @@ def generate_full_deal_excel(result: dict, start_year: int, horizon_years: int) 
                 proceeds_by_year=proceeds_by_year,
                 cf_alloc=result.get("cf_alloc"),
                 cap_alloc=result.get("cap_alloc"),
+                cash_schedule=result.get("cash_schedule"),
             )
             if "Year" in table.columns:
                 wide = table.set_index("Year").T

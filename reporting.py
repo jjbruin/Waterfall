@@ -17,6 +17,11 @@ def cashflows_monthly_fad(fc_deal_modeled_full: pd.DataFrame) -> pd.DataFrame:
     
     FAD = NOI + Tax Abatement + Interest + Principal + Other Below-the-Line + Capex (all from mAmount_norm)
     Note: Interest, Principal, Capex should be negative (outflows)
+
+    The 'fad' column includes CapEx. The cash management layer removes CapEx
+    (fad_before_capex = fad - capex) because CapEx is funded from cash reserves.
+    The annual forecast FAD row adds back CapEx paid from reserves so only
+    unfunded CapEx reduces FAD.
     """
     f = fc_deal_modeled_full.copy()
     f["event_date"] = pd.to_datetime(f["event_date"]).dt.date
@@ -51,10 +56,11 @@ def annual_aggregation_table(
     proceeds_by_year: Optional[pd.Series] = None,
     cf_alloc: Optional[pd.DataFrame] = None,
     cap_alloc: Optional[pd.DataFrame] = None,
+    cash_schedule: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """
     Create annual aggregation table with integrated waterfall details
-    
+
     Args:
         fc_deal_display: Forecast data
         start_year: First year
@@ -62,7 +68,8 @@ def annual_aggregation_table(
         proceeds_by_year: Capital event proceeds by year
         cf_alloc: Cash flow waterfall allocations
         cap_alloc: Capital waterfall allocations
-    
+        cash_schedule: Cash flow schedule with capex_paid column (from reserves)
+
     Returns DataFrame with columns for each year
     """
     years = list(range(int(start_year), int(start_year) + int(horizon_years)))
@@ -91,7 +98,9 @@ def annual_aggregation_table(
     out["Total Debt Service"] = out["Interest"].fillna(0.0) + out["Principal"].fillna(0.0)
     out["Other Below-the-Line"] = excluded_other
     out["Capital Expenditures"] = capex
-    out["Funds Available for Distribution"] = (
+    # FAD = operating cash after debt service and CapEx, but CapEx paid from
+    # cash reserves is added back (only unfunded CapEx reduces FAD).
+    base_fad = (
         out["NOI"].fillna(0.0) +
         out["Tax Abatement"].fillna(0.0) +
         out["Interest"].fillna(0.0) +
@@ -99,6 +108,13 @@ def annual_aggregation_table(
         out["Other Below-the-Line"].fillna(0.0) +
         out["Capital Expenditures"].fillna(0.0)
     )
+    # Add back CapEx funded from cash reserves
+    capex_from_reserves = pd.Series(0.0, index=out.index)
+    if cash_schedule is not None and not cash_schedule.empty and 'capex_paid' in cash_schedule.columns:
+        cs = cash_schedule.copy()
+        cs['Year'] = pd.to_datetime(cs['event_date']).dt.year
+        capex_from_reserves = cs.groupby('Year')['capex_paid'].sum().reindex(out.index, fill_value=0.0)
+    out["Funds Available for Distribution"] = base_fad + capex_from_reserves
 
     tds_abs = out["Total Debt Service"].abs().replace(0, pd.NA)
     out["Debt Service Coverage Ratio"] = out["NOI"] / tds_abs

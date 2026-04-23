@@ -7,11 +7,59 @@ No Streamlit dependency.
 import pandas as pd
 from typing import Optional
 
+import logging
 from loaders import load_coa, load_forecast
 from flask_app.services.data_adapters import get_adapter
 
+logger = logging.getLogger(__name__)
+
 # Module-level cache — cleared by reload()
 _cache: dict = {}
+
+
+# ISBS split table names and their vSource values
+# Both isbs_interim_is and isbs_interim_is_historical map to 'Interim IS'
+_ISBS_SPLIT = {
+    'isbs_interim_is': 'Interim IS',
+    'isbs_interim_is_historical': 'Interim IS',
+    'isbs_interim_bs': 'Interim BS',
+    'isbs_budget_is': 'Budget IS',
+    'isbs_projected_is': 'Projected IS',
+    'isbs_valuation_is': 'Valuation IS',
+}
+
+
+def _assemble_isbs(config: dict) -> tuple:
+    """Load split ISBS tables and assemble into a single DataFrame.
+
+    Returns (assembled_df, split_dict) where split_dict maps table names
+    to their individual DataFrames.
+    Falls back to legacy monolithic isbs table if split tables are all empty.
+    """
+    parts = []
+    split_dict = {}
+
+    for table_name, vsource in _ISBS_SPLIT.items():
+        df = get_adapter(table_name).load(config)
+        split_dict[table_name] = df
+        if not df.empty:
+            df = df.copy()
+            if 'vSource' not in df.columns:
+                df['vSource'] = vsource
+            parts.append(df)
+
+    if parts:
+        assembled = pd.concat(parts, ignore_index=True)
+        logger.info(f"ISBS assembled from split tables: {len(assembled):,} rows")
+        return assembled, split_dict
+
+    # Fallback: try legacy monolithic table
+    legacy = get_adapter("isbs").load(config)
+    if not legacy.empty:
+        logger.info(f"ISBS fallback to legacy table: {len(legacy):,} rows")
+        return legacy, split_dict
+
+    return pd.DataFrame(), split_dict
 
 
 def load_all(db_path: str, pro_yr_base: int = 2025) -> dict:
@@ -56,7 +104,7 @@ def load_all(db_path: str, pro_yr_base: int = 2025) -> dict:
     mri_val = get_adapter("valuations").load(config)
     relationships_raw = get_adapter("relationships").load(config)
     capital_calls_raw = get_adapter("capital_calls").load(config)
-    isbs_raw = get_adapter("isbs").load(config)
+    isbs_raw, isbs_split = _assemble_isbs(config)
     occupancy_raw = get_adapter("occupancy").load(config)
     commitments_raw = get_adapter("commitments").load(config)
     tenants_raw = get_adapter("tenants").load(config)
@@ -99,6 +147,12 @@ def load_all(db_path: str, pro_yr_base: int = 2025) -> dict:
         "relationships_raw": relationships_raw,
         "capital_calls_raw": capital_calls_raw,
         "isbs_raw": isbs_raw,
+        "isbs_interim_is": isbs_split.get("isbs_interim_is", pd.DataFrame()),
+        "isbs_interim_is_historical": isbs_split.get("isbs_interim_is_historical", pd.DataFrame()),
+        "isbs_interim_bs": isbs_split.get("isbs_interim_bs", pd.DataFrame()),
+        "isbs_budget_is": isbs_split.get("isbs_budget_is", pd.DataFrame()),
+        "isbs_projected_is": isbs_split.get("isbs_projected_is", pd.DataFrame()),
+        "isbs_valuation_is": isbs_split.get("isbs_valuation_is", pd.DataFrame()),
         "occupancy_raw": occupancy_raw,
         "commitments_raw": commitments_raw,
         "tenants_raw": tenants_raw,
@@ -136,6 +190,9 @@ def refresh_table(table_name: str):
     }
     cache_key_name = table_to_key.get(table_name, table_name)
 
+    # If an ISBS split table is refreshed, also reassemble isbs_raw
+    is_isbs_split = table_name in _ISBS_SPLIT
+
     for cache_key, data in _cache.items():
         db_path = cache_key.split("|")[0]
         pro_yr_base = int(cache_key.split("|")[1]) if "|" in cache_key else 2025
@@ -162,6 +219,11 @@ def refresh_table(table_name: str):
                 if "vState" in fresh.columns:
                     fresh["vState"] = fresh["vState"].astype(str).str.strip()
             data[cache_key_name] = fresh
+
+            # Reassemble isbs_raw from split tables when a split table changes
+            if is_isbs_split:
+                assembled, _ = _assemble_isbs(config)
+                data["isbs_raw"] = assembled if not assembled.empty else None
         except Exception:
             # If single-table refresh fails, fall back to full reload
             _cache.clear()

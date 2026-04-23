@@ -114,8 +114,38 @@ TABLE_DEFINITIONS = {
     },
     'isbs': {
         'csv': 'ISBS_Download.csv',
-        'description': 'Income statement and balance sheet data',
+        'description': 'Income statement and balance sheet data (legacy monolithic)',
         'key_columns': ['vcode', 'dtEntry', 'vSource', 'vAccount']
+    },
+    'isbs_interim_is': {
+        'csv': 'ISBS_Interim_IS.csv',
+        'description': 'ISBS Actuals — YTD cumulative trial balance (2025+)',
+        'key_columns': ['vcode', 'dtEntry', 'vAccount']
+    },
+    'isbs_interim_is_historical': {
+        'csv': 'ISBS_Interim_IS_Historical.csv',
+        'description': 'ISBS Actuals — YTD cumulative trial balance (pre-2025)',
+        'key_columns': ['vcode', 'dtEntry', 'vAccount']
+    },
+    'isbs_interim_bs': {
+        'csv': 'ISBS_Interim_BS.csv',
+        'description': 'ISBS Balance Sheet — current outstanding balances',
+        'key_columns': ['vcode', 'dtEntry', 'vAccount']
+    },
+    'isbs_budget_is': {
+        'csv': 'ISBS_Budget_IS.csv',
+        'description': 'ISBS Budget — periodic monthly amounts',
+        'key_columns': ['vcode', 'dtEntry', 'vAccount']
+    },
+    'isbs_projected_is': {
+        'csv': 'ISBS_Projected_IS.csv',
+        'description': 'ISBS Underwriting — YTD cumulative trial balance',
+        'key_columns': ['vcode', 'dtEntry', 'vAccount']
+    },
+    'isbs_valuation_is': {
+        'csv': 'ISBS_Valuation_IS.csv',
+        'description': 'ISBS Valuation — periodic monthly from forecast_feed',
+        'key_columns': ['vcode', 'dtEntry', 'vAccount']
     },
     'one_pager_comments': {
         'csv': 'OnePager_Comments.csv',
@@ -590,10 +620,24 @@ def create_indexes(conn: sqlite3.Connection):
         "CREATE INDEX IF NOT EXISTS idx_capital_calls_vcode ON capital_calls(vcode)",
         "CREATE INDEX IF NOT EXISTS idx_capital_calls_date ON capital_calls(CallDate)",
 
-        # ISBS (income statement / balance sheet)
+        # ISBS (income statement / balance sheet) — legacy monolithic table
         "CREATE INDEX IF NOT EXISTS idx_isbs_vcode ON isbs(vcode)",
         "CREATE INDEX IF NOT EXISTS idx_isbs_source ON isbs(vSource)",
         "CREATE INDEX IF NOT EXISTS idx_isbs_date ON isbs(dtEntry)",
+
+        # ISBS split tables
+        "CREATE INDEX IF NOT EXISTS idx_isbs_interim_is_vcode ON isbs_interim_is(vcode)",
+        "CREATE INDEX IF NOT EXISTS idx_isbs_interim_is_date ON isbs_interim_is(dtEntry)",
+        "CREATE INDEX IF NOT EXISTS idx_isbs_interim_is_hist_vcode ON isbs_interim_is_historical(vcode)",
+        "CREATE INDEX IF NOT EXISTS idx_isbs_interim_is_hist_date ON isbs_interim_is_historical(dtEntry)",
+        "CREATE INDEX IF NOT EXISTS idx_isbs_interim_bs_vcode ON isbs_interim_bs(vcode)",
+        "CREATE INDEX IF NOT EXISTS idx_isbs_interim_bs_date ON isbs_interim_bs(dtEntry)",
+        "CREATE INDEX IF NOT EXISTS idx_isbs_budget_is_vcode ON isbs_budget_is(vcode)",
+        "CREATE INDEX IF NOT EXISTS idx_isbs_budget_is_date ON isbs_budget_is(dtEntry)",
+        "CREATE INDEX IF NOT EXISTS idx_isbs_projected_is_vcode ON isbs_projected_is(vcode)",
+        "CREATE INDEX IF NOT EXISTS idx_isbs_projected_is_date ON isbs_projected_is(dtEntry)",
+        "CREATE INDEX IF NOT EXISTS idx_isbs_valuation_is_vcode ON isbs_valuation_is(vcode)",
+        "CREATE INDEX IF NOT EXISTS idx_isbs_valuation_is_date ON isbs_valuation_is(dtEntry)",
 
         # Occupancy
         "CREATE INDEX IF NOT EXISTS idx_occupancy_vcode ON occupancy(vCode)",
@@ -1464,3 +1508,91 @@ def export_all_tables_to_zip(db_path: str = DB_PATH) -> bytes:
     conn.close()
     buf.seek(0)
     return buf.read()
+
+
+# ============================================================
+# ISBS Split Migration
+# ============================================================
+
+# Mapping from new table name to the vSource value it holds
+# isbs_interim_is and isbs_interim_is_historical both map to 'Interim IS'
+# but are split by date (pre-2025 vs 2025+)
+ISBS_SPLIT_TABLES = {
+    'isbs_interim_is': 'Interim IS',
+    'isbs_interim_is_historical': 'Interim IS',
+    'isbs_interim_bs': 'Interim BS',
+    'isbs_budget_is': 'Budget IS',
+    'isbs_projected_is': 'Projected IS',
+    'isbs_valuation_is': 'Valuation IS',
+}
+
+# Date cutoff for Interim IS historical split
+_INTERIM_IS_CUTOFF = '2025-01-01'
+
+
+def split_isbs_table(db_path: str = DB_PATH):
+    """Migrate monolithic isbs table into 6 split tables by vSource.
+
+    Interim IS is further split into historical (pre-2025) and current (2025+).
+    Idempotent — skips tables that already have data.
+    Works with both SQLite and PostgreSQL (via _sa_engine).
+    """
+    from flask_app.db import get_engine
+
+    engine = get_engine()
+    try:
+        isbs = pd.read_sql("SELECT * FROM isbs", engine)
+    except Exception as e:
+        logger.warning(f"split_isbs_table: cannot read isbs table: {e}")
+        return
+
+    if isbs.empty:
+        logger.info("split_isbs_table: isbs table is empty, nothing to split")
+        return
+
+    # Parse dates for the Interim IS historical/current split
+    isbs['_dtEntry_parsed'] = pd.to_datetime(isbs['dtEntry'], format='mixed', dayfirst=False, errors='coerce')
+
+    # Define splits: (table_name, filter_function)
+    splits = {
+        'isbs_interim_is': lambda df: df[
+            (df['vSource'] == 'Interim IS') &
+            (df['_dtEntry_parsed'] >= _INTERIM_IS_CUTOFF)
+        ],
+        'isbs_interim_is_historical': lambda df: df[
+            (df['vSource'] == 'Interim IS') &
+            (df['_dtEntry_parsed'] < _INTERIM_IS_CUTOFF)
+        ],
+        'isbs_interim_bs': lambda df: df[df['vSource'] == 'Interim BS'],
+        'isbs_budget_is': lambda df: df[df['vSource'] == 'Budget IS'],
+        'isbs_projected_is': lambda df: df[df['vSource'] == 'Projected IS'],
+        'isbs_valuation_is': lambda df: df[df['vSource'] == 'Valuation IS'],
+    }
+
+    for table_name, filter_fn in splits.items():
+        # Check if target table already has data
+        try:
+            existing = pd.read_sql(f"SELECT 1 FROM {table_name} LIMIT 1", engine)
+            if not existing.empty:
+                logger.info(f"split_isbs_table: {table_name} already populated, skipping")
+                continue
+        except Exception:
+            pass  # Table doesn't exist yet — will be created by to_sql
+
+        subset = filter_fn(isbs).copy()
+        # Drop helper column
+        subset = subset.drop(columns=['_dtEntry_parsed'], errors='ignore')
+
+        if subset.empty:
+            logger.info(f"split_isbs_table: no rows for {table_name}, skipping")
+            continue
+
+        # Drop vSource column — it's implicit in the table name
+        if 'vSource' in subset.columns:
+            subset = subset.drop(columns=['vSource'])
+
+        row_count = len(subset)
+        logger.info(f"split_isbs_table: writing {row_count:,} rows to {table_name}")
+        subset.to_sql(table_name, engine, if_exists='replace', index=False)
+
+    logger.info("split_isbs_table: migration complete")

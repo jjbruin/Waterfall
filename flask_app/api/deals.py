@@ -196,6 +196,7 @@ def annual_forecast(vcode):
             proceeds_by_year=proceeds_by_year,
             cf_alloc=cf_alloc,
             cap_alloc=cap_alloc,
+            cash_schedule=result.get("cash_schedule"),
         )
     except Exception as e:
         return jsonify({"error": str(e)}), 500
