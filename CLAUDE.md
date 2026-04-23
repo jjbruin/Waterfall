@@ -156,7 +156,7 @@ cd vue_app && npm run dev        # Frontend on http://localhost:5173
 ### Tax Abatements
 - **Account**: `TAX_ABATEMENT_ACCTS = {7070}` in `config.py` — stored in `forecast_feed` / `forecasts` table
 - **Sign convention**: MRI stores abatements as negative (credit); `normalize_forecast_signs()` in `loaders.py` forces `base.abs()` (positive) since abatements increase cash flow
-- **Annual Forecast**: Displayed as "Tax Abatement" row below NOI, included in FAD calculation (`reporting.py`)
+- **Annual Forecast**: Displayed as "Tax Abatement" row below NOI, included in FAD calculation. FAD adds back CapEx funded from cash reserves (`reporting.py`)
 - **NPV at Sale**: Remaining abatement payments after sale date are discounted to PV at `TAX_ABATEMENT_DISCOUNT_RATE` (5%) and added to net sale proceeds (`compute.py`). Shown as "NPV (@5%) Tax Abatements" in Sale Proceeds Calculation (Debt Service section)
 - **Below-the-line items**: Former "Excluded Accounts" renamed to "Other Below-the-Line" (`OTHER_EXCLUDED_ACCTS`): Interest Income (4050), Other Income/Expenses (5220, 5210, 5195, 7065), Partnership Expenses (5120, 5130), Extraordinary Expenses (5400)
 - **Conditional display**: Tax Abatement NPV line only appears in Sale Proceeds Calculation when deal has 7070 data
@@ -188,6 +188,25 @@ cd vue_app && npm run dev        # Frontend on http://localhost:5173
 - **Valuation**: Periodic monthly from `forecast_feed` — use `_get_valuation_sum()` with negated `mAmount_norm`
 - **TTM from cumulative**: Current YTD + prior year Dec YTD - prior year same-month YTD
 - **Performance chart / Dashboard**: Both correctly convert cumulative→periodic via `_cumulative_to_periodic()`
+
+### ISBS Split Tables
+MRI's query record limits make exporting the monolithic `ISBS_Download.csv` (800K+ rows) impractical. The ISBS data is split into 6 tables by `vSource`:
+
+| Table | CSV Filename | vSource | Description |
+|-------|-------------|---------|-------------|
+| `isbs_interim_is` | `ISBS_Interim_IS.csv` | Interim IS | Actuals — YTD cumulative (2025+) |
+| `isbs_interim_is_historical` | `ISBS_Interim_IS_Historical.csv` | Interim IS | Actuals — YTD cumulative (pre-2025) |
+| `isbs_interim_bs` | `ISBS_Interim_BS.csv` | Interim BS | Balance Sheet |
+| `isbs_budget_is` | `ISBS_Budget_IS.csv` | Budget IS | Budget — periodic monthly |
+| `isbs_projected_is` | `ISBS_Projected_IS.csv` | Projected IS | Underwriting — YTD cumulative |
+| `isbs_valuation_is` | `ISBS_Valuation_IS.csv` | Valuation IS | Valuation — periodic monthly |
+
+- **Assembly**: `_assemble_isbs()` in `data_service.py` loads split tables, restores `vSource` column, concatenates into `isbs_raw`. Falls back to legacy monolithic `isbs` table if no split tables exist.
+- **CSV upload**: Auto-detects split table filenames via `TABLE_DEFINITIONS` in `database.py`
+- **Cache**: `refresh_table()` reassembles `isbs_raw` when any split table is updated
+- **Migration**: `split_isbs_table()` in `database.py` can migrate legacy monolithic table into splits (idempotent)
+- **Consumers unchanged**: All code continues to use `isbs_raw` with `vSource` filtering
+- **Pending**: Direct MRI database access via VPN (requested Apr 2026) to bypass record limits entirely
 
 ### ISBS Debt Balance
 - **Config**: `DEBT_BS_ACCTS = {'2150', '2152', '2210'}` in `config.py` — Balance Sheet debt accounts
@@ -244,6 +263,8 @@ Main waterfall computation, partner returns, capital accounts, XIRR/MOIC metrics
 **XIRR Cash Flows**: Merged side-by-side table with columns Date, Description (typename from `cashflow_details`), one amount column per partner, and Deal total column. Rows are keyed by (date, description); same-date/same-description cashflows for one partner are summed. Partner Returns IRR is computed from `combined_cfs` (the authoritative cashflow list); the XIRR Cash Flows table/Excel is a display-friendly pivot of the same data via `cashflow_details`.
 
 **Annual Forecast Formatting**: Black border lines under Expenses, Capital Expenditures, and Other Below-the-Line rows (`underline-row` CSS class), black border above Total Distributions (`topline-row` CSS class). Row order: Revenues → Expenses → NOI → Tax Abatement → Interest → Principal → Total Debt Service → Capital Expenditures → Other Below-the-Line → FAD → DSCR → waterfall allocations.
+
+**FAD and CapEx**: FAD = NOI + Tax Abatement + Interest + Principal + Other BTL + CapEx + CapEx paid from reserves. CapEx is initially fully deducted (negative), then the portion funded from cash reserves (`capex_paid` in cash schedule) is added back. Only unfunded CapEx reduces FAD. The cash schedule (`build_cash_flow_schedule_from_fad()` in `cash_management.py`) tracks `capex_paid` vs `capex_unpaid` per period; `annual_aggregation_table()` aggregates `capex_paid` by year from the cash schedule.
 
 **Excel Downloads** (Vue): Per-section download buttons ("Excel") on each section header + "Download Full Deal Analysis (Excel)" button at top of results. Uses `fetch` + `Blob` with `Authorization: Bearer` header. Sections: Partner Returns, Annual Forecast, Debt Service, Cash Management, Capital Calls, XIRR Cash Flows, ROE Audit, MOIC Audit. Full workbook combines all 7 sheets.
 
@@ -357,8 +378,9 @@ Upstream waterfall analysis for the PSCKOC holding entity, showing how deal-leve
 - `InvestorState` - Tracks capital, pref, cashflows per investor (models.py)
 - `Loan` - Debt structure with fixed/variable rates (models.py)
 - `get_property_vcodes_for_deal()` - Get child properties for aggregation (consolidation.py)
-- `cashflows_monthly_fad()` - Monthly FAD from modeled forecast (reporting.py)
-- `annual_aggregation_table()` - Annual pivot table for forecast display (reporting.py)
+- `cashflows_monthly_fad()` - Monthly FAD from modeled forecast; includes CapEx (reporting.py)
+- `annual_aggregation_table()` - Annual pivot table for forecast display; accepts cash_schedule for reserve-adjusted FAD (reporting.py)
+- `build_cash_flow_schedule_from_fad()` - Transforms FAD into distributable; funds CapEx from reserves, tracks shortfalls (cash_management.py)
 - `get_isbs_debt_balance()` - Current debt from ISBS balance sheet, fallback to MRI_Loans (compute.py)
 - `load_beginning_cash_balance()` - Beginning cash balance from ISBS Interim BS using CASH_BALANCE_ACCTS (cash_management.py)
 - `get_deal_capitalization()` - Deal cap stack with ISBS debt support (compute.py)
@@ -383,6 +405,8 @@ Upstream waterfall analysis for the PSCKOC holding entity, showing how deal-leve
 - `export_all_tables_to_zip()` - Export all tables as labeled CSVs in a zip archive (database.py)
 - `set_engine()` - Wire SQLAlchemy engine for PostgreSQL support (database.py)
 - `import_csv_stream()` - Chunked CSV import (50K rows, dtype=str) for large files (database.py)
+- `split_isbs_table()` - Migrate monolithic isbs table into 6 split tables by vSource; idempotent (database.py)
+- `_assemble_isbs()` - Load split ISBS tables, restore vSource column, concatenate; fallback to legacy (data_service.py)
 
 ### Flask Services
 - `get_cached_deal_result()` - Shared multi-deal cache wrapper (compute_service.py)
