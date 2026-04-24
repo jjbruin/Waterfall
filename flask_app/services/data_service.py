@@ -50,6 +50,20 @@ def _assemble_isbs(config: dict) -> tuple:
 
     if parts:
         assembled = pd.concat(parts, ignore_index=True)
+        # Check for vSource categories present in split tables
+        split_vsources = set(assembled['vSource'].unique()) if 'vSource' in assembled.columns else set()
+        all_vsources = set(_ISBS_SPLIT.values())
+        missing_vsources = all_vsources - split_vsources
+
+        # Supplement from legacy monolithic table for any missing vSource categories
+        if missing_vsources:
+            legacy = get_adapter("isbs").load(config)
+            if not legacy.empty and 'vSource' in legacy.columns:
+                legacy_supplement = legacy[legacy['vSource'].isin(missing_vsources)]
+                if not legacy_supplement.empty:
+                    logger.info(f"ISBS supplementing from legacy for missing vSources: {missing_vsources} ({len(legacy_supplement):,} rows)")
+                    assembled = pd.concat([assembled, legacy_supplement], ignore_index=True)
+
         logger.info(f"ISBS assembled from split tables: {len(assembled):,} rows")
         return assembled, split_dict
 
