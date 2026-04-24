@@ -628,6 +628,10 @@ def compute_deal_analysis(
 
     model_start = min(fc_deal_full["event_date"])
     model_end_full = max(fc_deal_full["event_date"])
+    log.info("compute(%s): model_start=%s, model_end=%s, event_date dtype=%s, sample=%s",
+             deal_vcode, model_start, model_end_full,
+             fc_deal_full["event_date"].dtype,
+             fc_deal_full["event_date"].head(3).tolist())
 
     # --- Sale date ---
     if sale_date_raw is None or (isinstance(sale_date_raw, float) and pd.isna(sale_date_raw)) or str(sale_date_raw).strip() == "":
