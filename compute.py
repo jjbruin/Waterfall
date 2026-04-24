@@ -600,6 +600,11 @@ def compute_deal_analysis(
     else:
         fc_deal_full = fc[fc["vcode"].astype(str) == str(deal_vcode)].copy()
         debug_msgs.append(f"Not a sub-portfolio deal (InvestmentID: {deal_investment_id})")
+        sorted_dates = sorted(set(str(d) for d in fc_deal_full["event_date"]))
+        debug_msgs.append(
+            f"DIAG: fc rows={len(fc_deal_full)}, event_date dtype={fc_deal_full['event_date'].dtype}, "
+            f"first5={sorted_dates[:5]}, last5={sorted_dates[-5:]}"
+        )
 
     if fc_deal_full.empty:
         return {
