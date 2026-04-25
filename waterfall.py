@@ -993,7 +993,7 @@ def seed_states_from_accounting(
     # Filter to cutoff date (only include actuals through this date)
     if cutoff_date is not None:
         cutoff_ts = pd.Timestamp(cutoff_date)
-        acct = acct[acct["EffectiveDate"] <= cutoff_ts].copy()
+        acct = acct[pd.to_datetime(acct["EffectiveDate"]) <= cutoff_ts].copy()
 
     # Build states
     states: Dict[str, InvestorState] = {}
