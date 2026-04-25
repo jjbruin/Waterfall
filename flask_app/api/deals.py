@@ -43,34 +43,6 @@ def _get_result(vcode, force=False):
 
 
 # ============================================================
-# Diagnostics
-# ============================================================
-
-@deals_bp.route("/<vcode>/diag/forecast-dates", methods=["GET"])
-@login_required
-def diag_forecast_dates(vcode):
-    """Diagnostic: show forecast event_date range and samples for a deal."""
-    import pandas as pd
-    data = _get_data()
-    fc = data["fc"]
-    fc_deal = fc[fc["vcode"].astype(str) == str(vcode)].copy()
-    if fc_deal.empty:
-        return jsonify({"error": f"No forecast rows for {vcode}"})
-    dates = fc_deal["event_date"]
-    date_strs = dates.astype(str).tolist()
-    return jsonify({
-        "vcode": vcode,
-        "row_count": len(fc_deal),
-        "event_date_dtype": str(dates.dtype),
-        "min_date": str(min(dates)),
-        "max_date": str(max(dates)),
-        "first_5": date_strs[:5],
-        "last_5": date_strs[-5:],
-        "sorted_unique_first_10": sorted(set(date_strs))[:10],
-    })
-
-
-# ============================================================
 # Core compute
 # ============================================================
 

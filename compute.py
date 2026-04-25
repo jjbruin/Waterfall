@@ -600,11 +600,6 @@ def compute_deal_analysis(
     else:
         fc_deal_full = fc[fc["vcode"].astype(str) == str(deal_vcode)].copy()
         debug_msgs.append(f"Not a sub-portfolio deal (InvestmentID: {deal_investment_id})")
-        sorted_dates = sorted(set(str(d) for d in fc_deal_full["event_date"]))
-        debug_msgs.append(
-            f"DIAG: fc rows={len(fc_deal_full)}, event_date dtype={fc_deal_full['event_date'].dtype}, "
-            f"first5={sorted_dates[:5]}, last5={sorted_dates[-5:]}"
-        )
 
     if fc_deal_full.empty:
         return {
@@ -631,13 +626,19 @@ def compute_deal_analysis(
             f"Actuals through {actuals_through}: {trimmed_count} forecast operating rows trimmed"
         )
 
+    # Filter out anomalous forecast dates (e.g. MRI "Year 0" base entries)
+    # that predate the reasonable model window
+    from datetime import date as _date
+    _cutoff = _date(int(start_year) - 2, 1, 1)
+    _pre = len(fc_deal_full)
+    fc_deal_full = fc_deal_full[fc_deal_full["event_date"] >= _cutoff].copy()
+    if len(fc_deal_full) < _pre:
+        debug_msgs.append(
+            f"Filtered {_pre - len(fc_deal_full)} forecast rows before {_cutoff}"
+        )
+
     model_start = min(fc_deal_full["event_date"])
     model_end_full = max(fc_deal_full["event_date"])
-    sorted_dates = sorted(set(str(d) for d in fc_deal_full["event_date"]))
-    debug_msgs.append(
-        f"model_start={model_start}, dtype={fc_deal_full['event_date'].dtype}, "
-        f"first_5_sorted={sorted_dates[:5]}, n_rows={len(fc_deal_full)}"
-    )
 
     # --- Sale date ---
     if sale_date_raw is None or (isinstance(sale_date_raw, float) and pd.isna(sale_date_raw)) or str(sale_date_raw).strip() == "":
