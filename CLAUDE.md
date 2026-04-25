@@ -239,9 +239,11 @@ MRI's query record limits make exporting the monolithic `ISBS_Download.csv` (800
 
 ### Actuals Through Cutoff
 - Global setting (`actuals_through`): date or None (default None = full forecast)
-- **Partner cash flows**: Actual distributions from `accounting_feed` through cutoff (via `seed_states_from_accounting`); waterfall-computed distributions only for periods AFTER cutoff
+- **Actuals/Forecast boundary**: Always enforced. If `actuals_through` is set, that date is the cutoff. Otherwise, defaults to Dec 31 of `start_year - 1`. XIRR cash flows come from `accounting_feed` only before the boundary, and from `forecast_feed` (waterfall) only after.
+- **Partner cash flows**: `seed_states_from_accounting()` accepts `cutoff_date` parameter — only accounting entries on or before cutoff are used to seed InvestorState. Waterfall-computed distributions cover periods AFTER cutoff only.
 - **Operating forecast**: Forecast Rev+Exp rows for months <= cutoff are removed from `fc_deal_full`
-- **Waterfall**: `cf_period_cash` and `cap_period_cash` filtered to post-cutoff periods only
+- **Waterfall**: `cf_period_cash` and `cap_period_cash` filtered to post-cutoff periods only (always, not just when `actuals_through` is set)
+- **Date comparison safety**: Period filtering uses `pd.to_datetime()` on `event_date`/`EffectiveDate` columns before comparing with `pd.Timestamp` cutoff to avoid `Timestamp vs datetime.date` errors
 - **Cache key**: includes `actuals_through` so toggling triggers recomputation
 - **Dynamic defaults**: `DEFAULT_START_YEAR = date.today().year`, `PRO_YR_BASE_DEFAULT = date.today().year - 1`
 - **UI**: Vue sidebar in Report Settings (checkbox + month-end selector)
@@ -379,6 +381,7 @@ Upstream waterfall analysis for the PSCKOC holding entity, showing how deal-leve
 - `prepare_cap_lookups()` - Pre-compute normalized DataFrames and lookup dicts for batch capitalization (compute.py)
 - `xirr(cfs)` - Calculate IRR with irregular dates (metrics.py)
 - `accrue_pref_to_date()` - Daily pref accrual (waterfall.py)
+- `seed_states_from_accounting()` - Build InvestorState from historical accounting; accepts `cutoff_date` to limit to actuals boundary (waterfall.py)
 - `InvestorState` - Tracks capital, pref, cashflows per investor (models.py)
 - `Loan` - Debt structure with fixed/variable rates (models.py)
 - `get_property_vcodes_for_deal()` - Get child properties for aggregation (consolidation.py)
