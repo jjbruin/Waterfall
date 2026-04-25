@@ -977,13 +977,13 @@ def compute_deal_analysis(
         acct_cutoff = pd.Timestamp(actuals_through)
     else:
         acct_cutoff = pd.Timestamp(_dt(int(start_year) - 1, 12, 31))
-    wf_cutoff = acct_cutoff.date() if hasattr(acct_cutoff, 'date') else acct_cutoff
+    # Convert event_date to Timestamp for safe comparison (avoids Timestamp vs date error)
     if not cf_period_cash.empty:
-        cf_period_cash = cf_period_cash[cf_period_cash["event_date"] > wf_cutoff].copy()
+        cf_period_cash = cf_period_cash[pd.to_datetime(cf_period_cash["event_date"]) > acct_cutoff].copy()
     if not cap_period_cash.empty:
-        cap_period_cash = cap_period_cash[cap_period_cash["event_date"] > wf_cutoff].copy()
+        cap_period_cash = cap_period_cash[pd.to_datetime(cap_period_cash["event_date"]) > acct_cutoff].copy()
     debug_msgs.append(
-        f"Actuals/forecast boundary: accounting through {wf_cutoff}, waterfall after"
+        f"Actuals/forecast boundary: accounting through {acct_cutoff.date()}, waterfall after"
     )
 
     # Add refi distributable proceeds to cap_period_cash (Section 8.2)
