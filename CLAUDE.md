@@ -201,7 +201,7 @@ MRI's query record limits make exporting the monolithic `ISBS_Download.csv` (800
 | `isbs_projected_is` | `ISBS_Projected_IS.csv` | Projected IS | Underwriting — YTD cumulative |
 | `isbs_valuation_is` | `ISBS_Valuation_IS.csv` | Valuation IS | Valuation — periodic monthly |
 
-- **Assembly**: `_assemble_isbs()` in `data_service.py` loads split tables, restores `vSource` column, concatenates into `isbs_raw`. Falls back to legacy monolithic `isbs` table if no split tables exist.
+- **Assembly**: `_assemble_isbs()` in `data_service.py` loads split tables, restores `vSource` column, concatenates into `isbs_raw`. Supplements from legacy monolithic `isbs` table for any missing vSource categories. Falls back entirely to legacy table if no split tables exist.
 - **CSV upload**: Auto-detects split table filenames via `TABLE_DEFINITIONS` in `database.py`
 - **Cache**: `refresh_table()` reassembles `isbs_raw` when any split table is updated
 - **Migration**: `split_isbs_table()` in `database.py` can migrate legacy monolithic table into splits (idempotent)
@@ -232,6 +232,10 @@ MRI's query record limits make exporting the monolithic `ISBS_Download.csv` (800
 - Deals can have child properties linked via `Portfolio_Name`
 - Loans aggregate UP from properties to parent deal level
 - See `consolidation.py` for implementation
+
+### Forecast Date Filtering
+- **Anomalous dates**: MRI valuation exports can include "Year 0" base entries with dates far in the past (e.g. 2015-12-31 for a 2025 deal). `compute_deal_analysis()` filters out forecast rows with `event_date` before `start_year - 2` to prevent `model_start` from being set to an unreasonable date.
+- **Beginning cash fallback**: If no ISBS Interim BS data exists before `model_start` (e.g. new acquisition where forecast starts before balance sheet history), `load_beginning_cash_balance()` falls back to the earliest available ISBS date instead of returning $0.
 
 ### Actuals Through Cutoff
 - Global setting (`actuals_through`): date or None (default None = full forecast)
@@ -382,7 +386,7 @@ Upstream waterfall analysis for the PSCKOC holding entity, showing how deal-leve
 - `annual_aggregation_table()` - Annual pivot table for forecast display; accepts cash_schedule for reserve-adjusted FAD (reporting.py)
 - `build_cash_flow_schedule_from_fad()` - Transforms FAD into distributable; funds CapEx from reserves, tracks shortfalls (cash_management.py)
 - `get_isbs_debt_balance()` - Current debt from ISBS balance sheet, fallback to MRI_Loans (compute.py)
-- `load_beginning_cash_balance()` - Beginning cash balance from ISBS Interim BS using CASH_BALANCE_ACCTS (cash_management.py)
+- `load_beginning_cash_balance()` - Beginning cash balance from ISBS Interim BS using CASH_BALANCE_ACCTS; falls back to earliest available ISBS date if none before forecast start (cash_management.py)
 - `get_deal_capitalization()` - Deal cap stack with ISBS debt support (compute.py)
 
 ### One Pager Data
