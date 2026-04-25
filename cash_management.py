@@ -75,15 +75,22 @@ def load_beginning_cash_balance(isbs_df: pd.DataFrame, deal_vcode: str, forecast
         forecast_start_date = pd.to_datetime(forecast_start_date)
 
     # Find most recent entry before forecast start
-    isbs = isbs[isbs['dtEntry_parsed'] < forecast_start_date]
+    before = isbs[isbs['dtEntry_parsed'] < forecast_start_date]
+
+    if before.empty:
+        # Fallback: use earliest available balance sheet date (deal may have
+        # started after forecast model start, e.g. new acquisition)
+        log.info("load_beginning_cash(%s): no rows before %s, using earliest available",
+                 deal_vcode, forecast_start_date)
+        most_recent_date = isbs['dtEntry_parsed'].min()
+    else:
+        most_recent_date = before['dtEntry_parsed'].max()
+
+    isbs = isbs[isbs['dtEntry_parsed'] == most_recent_date]
 
     if isbs.empty:
-        log.warning("load_beginning_cash(%s): no rows before %s", deal_vcode, forecast_start_date)
+        log.warning("load_beginning_cash(%s): no rows at %s", deal_vcode, most_recent_date)
         return 0.0
-
-    # Get the most recent date
-    most_recent_date = isbs['dtEntry_parsed'].max()
-    isbs = isbs[isbs['dtEntry_parsed'] == most_recent_date]
 
     # Normalize vAccount — strip trailing '.0' from float-typed columns
     isbs['vAccount'] = isbs['vAccount'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
