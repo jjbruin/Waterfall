@@ -970,19 +970,21 @@ def compute_deal_analysis(
         cf_period_cash = cf_period_cash[cf_period_cash["event_date"] <= sale_me].copy()
     cap_period_cash = cap_period_cash[cap_period_cash["event_date"] <= sale_me].copy()
 
-    # --- Actuals through: filter waterfall periods to post-cutoff only ---
-    # Historical distributions are already in seed_states from accounting.
+    # --- Actuals/Forecast boundary ---
+    # Accounting cashflows are used through the cutoff; waterfall runs after.
+    from datetime import date as _dt
     if actuals_through is not None:
-        cutoff_date = pd.Timestamp(actuals_through).date()
-        if hasattr(cutoff_date, 'date'):
-            cutoff_date = cutoff_date.date()
-        if not cf_period_cash.empty:
-            cf_period_cash = cf_period_cash[cf_period_cash["event_date"] > cutoff_date].copy()
-        if not cap_period_cash.empty:
-            cap_period_cash = cap_period_cash[cap_period_cash["event_date"] > cutoff_date].copy()
-        debug_msgs.append(
-            f"Actuals through {actuals_through}: waterfall runs only for periods after {cutoff_date}"
-        )
+        acct_cutoff = pd.Timestamp(actuals_through)
+    else:
+        acct_cutoff = pd.Timestamp(_dt(int(start_year) - 1, 12, 31))
+    wf_cutoff = acct_cutoff.date() if hasattr(acct_cutoff, 'date') else acct_cutoff
+    if not cf_period_cash.empty:
+        cf_period_cash = cf_period_cash[cf_period_cash["event_date"] > wf_cutoff].copy()
+    if not cap_period_cash.empty:
+        cap_period_cash = cap_period_cash[cap_period_cash["event_date"] > wf_cutoff].copy()
+    debug_msgs.append(
+        f"Actuals/forecast boundary: accounting through {wf_cutoff}, waterfall after"
+    )
 
     # Add refi distributable proceeds to cap_period_cash (Section 8.2)
     if refi_dbg is not None and refi_net_proceeds > 0:
@@ -1026,7 +1028,8 @@ def compute_deal_analysis(
 
     # --- Run waterfalls ---
     wf_steps = load_waterfalls(wf)
-    seed_states = seed_states_from_accounting(acct, inv, wf_steps, deal_vcode)
+    seed_states = seed_states_from_accounting(acct, inv, wf_steps, deal_vcode,
+                                              cutoff_date=acct_cutoff)
 
     cf_alloc, cap_alloc, cf_investors, cap_investors = run_interleaved_waterfalls(
         wf_steps, deal_vcode, cf_period_cash, cap_period_cash,

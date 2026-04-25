@@ -954,9 +954,15 @@ def seed_states_from_accounting(
     inv_map: pd.DataFrame,
     wf_steps: pd.DataFrame,
     target_vcode: str,
+    cutoff_date=None,
 ) -> Dict[str, InvestorState]:
     """
     Build InvestorState per PropCode from historical accounting
+
+    Args:
+        cutoff_date: If provided, only include accounting entries on or before
+            this date. Entries after cutoff are excluded — the forward model
+            (waterfall) handles those periods.
 
     KEY PRINCIPLE: Accounting shows RESULTS of past waterfalls, not mechanics
     We use it to:
@@ -983,6 +989,11 @@ def seed_states_from_accounting(
     # Filter to target deal
     acct["vcode"] = acct["InvestmentID"].map(inv_to_vcode)
     acct = acct[acct["vcode"].astype(str) == str(target_vcode)].copy()
+
+    # Filter to cutoff date (only include actuals through this date)
+    if cutoff_date is not None:
+        cutoff_ts = pd.Timestamp(cutoff_date)
+        acct = acct[acct["EffectiveDate"] <= cutoff_ts].copy()
 
     # Build states
     states: Dict[str, InvestorState] = {}
