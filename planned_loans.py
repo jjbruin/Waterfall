@@ -24,8 +24,8 @@ def projected_cap_rate_at_date(mri_val: pd.DataFrame, vcode: str, asof_date: dat
     Get projected cap rate at a specific date
 
     Uses base cap rate from MRI_Val (fCapRate) + 0.05% increase per year.
-    Escalation starts from the valuation date (dtVal) of the selected fCapRate row.
-    Falls back to proj_begin if dtVal is not available.
+    Escalation starts from the valuation date (dtVal or dtValuation) of the selected fCapRate row.
+    Falls back to proj_begin if no date column is available.
     """
     dv = mri_val.copy()
     dv.columns = [str(c).strip() for c in dv.columns]
@@ -39,18 +39,24 @@ def projected_cap_rate_at_date(mri_val: pd.DataFrame, vcode: str, asof_date: dat
     if sub.empty:
         raise ValueError(f"MRI_Val has no rows for vcode {vcode}")
 
-    has_dtval = "dtVal" in sub.columns
-    if has_dtval:
-        sub["dtVal"] = pd.to_datetime(sub["dtVal"], errors="coerce").dt.date
-        sub = sub.sort_values("dtVal")
+    # Resolve date column: dtVal or dtValuation
+    dt_col = None
+    for candidate in ("dtVal", "dtValuation"):
+        if candidate in sub.columns:
+            dt_col = candidate
+            break
+
+    if dt_col:
+        sub[dt_col] = pd.to_datetime(sub[dt_col], errors="coerce").dt.date
+        sub = sub.sort_values(dt_col)
 
     cap_series = pd.to_numeric(sub["fCapRate"], errors="coerce").dropna()
     fcap = float(cap_series.iloc[-1])
 
-    # Determine escalation anchor: dtVal of the row that provided fCapRate
+    # Determine escalation anchor: valuation date of the row that provided fCapRate
     anchor = None
-    if has_dtval:
-        anchor_val = sub.loc[cap_series.index[-1], "dtVal"]
+    if dt_col:
+        anchor_val = sub.loc[cap_series.index[-1], dt_col]
         if pd.notna(anchor_val):
             anchor = anchor_val
     if anchor is None:
