@@ -360,12 +360,22 @@ Projected Returns Summary with Excel export. Vue: `ReportsView.vue`. Flask: `rep
 - **Excel Export**: Formatted workbook via openpyxl (currency/pct/multiple formats, auto-width, deal-total rows bold with top border)
 
 ### 8. Sold Portfolio
-Historical returns for sold deals computed from accounting_feed (no forecast waterfalls). Vue: `SoldPortfolioView.vue`. Flask: `sold_service.py`.
+Historical returns for sold deals computed from accounting_feed (no forecast waterfalls). Vue: `SoldPortfolioView.vue`. Flask: `sold_portfolio.py` + `sold_service.py`.
 - **Data Source**: Accounting history only — contributions (`is_contribution`), distributions (`is_distribution`), capital events (`is_capital`). Raw `acct` is normalised via `normalize_accounting_feed()` on first use.
 - **Pref Equity Only**: Filters out OP partners (`InvestorID` starting with "OP"). Case-insensitive InvestorID grouping handles mixed-case entity IDs.
-- **Summary Table**: One row per deal + bold Portfolio Total row. Columns: Investment Name, Acquisition Date, Sale Date, Total Contributions, Total Distributions, IRR, ROE, MOIC. Portfolio Total computes IRR/ROE/MOIC from the combined cashflow pool across all deals (not simple averages).
+- **Summary Table**: Inline `<table>` (not DataTable) with column group headers. One row per deal + bold Portfolio Total row. Gross columns: Investment Name, Acquisition Date, Sale Date, Total Contributions, Total Distributions, IRR, ROE, MOIC. Net columns (visible after computation): Net IRR, Net ROE, Net MOIC. Visual divider (4px border column) separates Gross and Net sections.
 - **Deal Detail Drill-Down**: Selectbox to pick a deal → expander with every pref equity accounting row sorted by date. Columns: Date, InvestorID, MajorType, Typename, Capital, Amount, Cashflow (XIRR), Capital Balance (running). IRR/ROE/MOIC metric cards below. Download Activity Detail exports the table + summary metrics to Excel for independent return verification.
-- **Excel Exports**: Summary workbook (`sold_portfolio_returns.xlsx`) and per-deal activity detail (`sold_activity_{name}.xlsx`) via openpyxl.
+- **Net Returns**: Theoretical investor net-of-fees returns computed via simplified waterfall. User inputs assumptions (Ownership %, AM Fee %, Hurdle Rate %, Promote %, Annual Expenses) in a horizontal panel, clicks "Compute Net Returns". Results merged into summary table alongside gross columns.
+  - **Per-deal waterfall** (`compute_net_waterfall_for_deal()`): Walks accounting events chronologically. Contributions scaled by ownership %. Distributions: deduct AM fee (on capital balance) and expenses, accrue pref at hurdle rate (Act/365 simple), pay accrued pref first, return capital (capital events only), split excess by promote %. Fees capped at distribution amount (prorated if AM Fee + Expenses > Scaled Distribution).
+  - **Portfolio total**: All net cashflows pooled across deals; IRR/ROE/MOIC computed once from the combined pool (not averaged).
+  - **Assumptions footnote**: Displayed below summary table when net returns are shown.
+- **Excel Exports**:
+  - Summary workbook (`sold_portfolio_returns.xlsx`) — gross returns only
+  - Per-deal activity detail (`sold_activity_{name}.xlsx`) — accounting rows + metrics
+  - **Net Returns workbook** (`sold_portfolio_net_returns.xlsx`) — multi-sheet:
+    - Sheet 1 "Summary": Gross + Net side by side with assumptions footnote
+    - Per-deal sheets: Full waterfall detail with **Excel formulas** (not static values). Editable assumptions block in row 2 (B2=Ownership%, D2=AM Fee%, F2=Hurdle%, H2=Promote%, J2=Annual Expenses) — changing any assumption recalculates the entire sheet. Formula columns: Scaled Amount, AM Fee (with capping), Expenses (with capping), Available, Pref Accrued, Pref Paid (`=MIN`), Capital Returned (`=IF` for capital events), Excess, Promote, Net to Investor, Capital Balance, Pref Balance. Summary section: XIRR formula, MOIC formula, SUMPRODUCT for contributions/distributions. Column headers have comments explaining each formula.
+- **API Endpoints** (`/api/sold-portfolio`): `GET /summary`, `GET /summary/excel`, `GET /detail/<vcode>`, `GET /detail/<vcode>/excel`, `POST /net-returns` (JSON), `POST /net-returns/excel` (multi-sheet workbook). Net endpoints accept `{ownership_pct, am_fee_pct, hurdle_rate, promote_pct, annual_expenses}` as decimals.
 - **Acquisition Fees included**: Unlike the Deal Analysis waterfall path, Sold Portfolio includes all accounting entries (including Acquisition Fees) in its return calculations.
 
 ### 9. PSCKOC
@@ -448,6 +458,9 @@ Upstream waterfall analysis for the PSCKOC holding entity, showing how deal-leve
 - `return_to_draft()` - Return document to draft with required note (review_service.py)
 - `is_editable()` - Check if comments can be edited based on review status (review_service.py)
 - `get_tracking_data()` - Production tracking data with filters, LEFT JOINs deals with submissions (review_service.py)
+- `compute_net_waterfall_for_deal()` - Per-deal net returns waterfall with fees/promote (sold_service.py)
+- `compute_all_net_returns()` - Orchestrator: loops sold deals, pools net cashflows for portfolio metrics (sold_service.py)
+- `generate_net_returns_excel()` - Multi-sheet workbook with formula-driven waterfall detail (sold_service.py)
 
 ## Account Classifications
 
