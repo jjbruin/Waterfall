@@ -1177,12 +1177,30 @@ def build_partner_results(cf_investors, cap_investors, seed_states, cf_alloc, ca
         seed_len = len(seed_st.cashflows) if seed_st else 0
 
         combined_cfs = []
+        combined_labels = []
         if seed_st and seed_st.cashflows:
             combined_cfs.extend(seed_st.cashflows)
+            seed_lbls = seed_st.cashflow_labels if hasattr(seed_st, 'cashflow_labels') else []
+            combined_labels.extend(seed_lbls[:len(seed_st.cashflows)])
+            combined_labels.extend([""] * (len(seed_st.cashflows) - len(combined_labels)))
         if cf_state and len(cf_state.cashflows) > seed_len:
-            combined_cfs.extend(cf_state.cashflows[seed_len:])
+            new_cfs = cf_state.cashflows[seed_len:]
+            combined_cfs.extend(new_cfs)
+            cf_lbls = cf_state.cashflow_labels if hasattr(cf_state, 'cashflow_labels') else []
+            combined_labels.extend(cf_lbls[seed_len:seed_len + len(new_cfs)])
+            combined_labels.extend([""] * (len(combined_cfs) - len(combined_labels)))
         if cap_state and len(cap_state.cashflows) > seed_len:
-            combined_cfs.extend(cap_state.cashflows[seed_len:])
+            new_cfs = cap_state.cashflows[seed_len:]
+            combined_cfs.extend(new_cfs)
+            cap_lbls = cap_state.cashflow_labels if hasattr(cap_state, 'cashflow_labels') else []
+            combined_labels.extend(cap_lbls[seed_len:seed_len + len(new_cfs)])
+            combined_labels.extend([""] * (len(combined_cfs) - len(combined_labels)))
+
+        # Exclude Acquisition Fee entries from XIRR/ROE/MOIC calculations
+        metrics_cfs = [
+            cf for cf, lbl in zip(combined_cfs, combined_labels)
+            if "acquisition fee" not in (lbl or "").lower()
+        ]
 
         # --- Unrealized NAV ---
         # When a sale is modeled, the capital waterfall has already distributed
@@ -1198,7 +1216,7 @@ def build_partner_results(cf_investors, cap_investors, seed_states, cf_alloc, ca
 
         # --- Investor metrics (IRR, ROE, MOIC) ---
         combined_state = InvestorState(propcode=partner)
-        combined_state.cashflows = combined_cfs
+        combined_state.cashflows = metrics_cfs
         combined_state.cf_distributions = (
             cf_state.cf_distributions if cf_state and hasattr(cf_state, 'cf_distributions') else []
         )
@@ -1277,27 +1295,45 @@ def build_partner_results(cf_investors, cap_investors, seed_states, cf_alloc, ca
             'capital_outstanding': cap_state.total_capital_outstanding if cap_state else state.total_capital_outstanding,
             'pref_unpaid_compounded': pref_unpaid_compounded,
             'pref_accrued_current_year': pref_accrued_current_year,
-            'combined_cashflows': combined_cfs,
+            'combined_cashflows': metrics_cfs,
             'cf_only_distributions': combined_state.cf_distributions,
-            'cashflow_details': cashflow_details,
+            'cashflow_details': [
+                d for d in cashflow_details
+                if "acquisition fee" not in (d.get("Description", "") or "").lower()
+            ],
         })
 
         total_contrib += contrib
         total_cf_dist += cf_dist
         total_cap_dist += cap_dist
 
-        # --- Accumulate deal-level cashflow streams ---
+        # --- Accumulate deal-level cashflow streams (excluding Acquisition Fees) ---
+        def _exclude_acq_fee(cfs, lbls):
+            return [cf for cf, lbl in zip(cfs, lbls)
+                    if "acquisition fee" not in (lbl or "").lower()]
+
         # Seed (once)
         if seed_st and seed_st.cashflows:
-            all_irr_cashflows.extend(seed_st.cashflows)
-            all_cashflows.extend(seed_st.cashflows)
+            s_lbls = seed_st.cashflow_labels if hasattr(seed_st, 'cashflow_labels') else [""] * len(seed_st.cashflows)
+            filtered_seed = _exclude_acq_fee(seed_st.cashflows, s_lbls)
+            all_irr_cashflows.extend(filtered_seed)
+            all_cashflows.extend(filtered_seed)
         # CF waterfall new
         if cf_state and len(cf_state.cashflows) > seed_len:
-            all_irr_cashflows.extend(cf_state.cashflows[seed_len:])
-            all_cashflows.extend(cf_state.cashflows[seed_len:])
+            new_cfs = cf_state.cashflows[seed_len:]
+            cf_lbls = cf_state.cashflow_labels if hasattr(cf_state, 'cashflow_labels') else [""] * len(cf_state.cashflows)
+            new_lbls = cf_lbls[seed_len:seed_len + len(new_cfs)]
+            new_lbls.extend([""] * (len(new_cfs) - len(new_lbls)))
+            filtered_cf = _exclude_acq_fee(new_cfs, new_lbls)
+            all_irr_cashflows.extend(filtered_cf)
+            all_cashflows.extend(filtered_cf)
         # Cap waterfall new
         if cap_state and len(cap_state.cashflows) > seed_len:
-            all_irr_cashflows.extend(cap_state.cashflows[seed_len:])
+            new_cfs = cap_state.cashflows[seed_len:]
+            cap_lbls = cap_state.cashflow_labels if hasattr(cap_state, 'cashflow_labels') else [""] * len(cap_state.cashflows)
+            new_lbls = cap_lbls[seed_len:seed_len + len(new_cfs)]
+            new_lbls.extend([""] * (len(new_cfs) - len(new_lbls)))
+            all_irr_cashflows.extend(_exclude_acq_fee(new_cfs, new_lbls))
         # Terminal unrealized
         if unrealized > 0 and sale_me:
             all_irr_cashflows.append((sale_me, unrealized))
