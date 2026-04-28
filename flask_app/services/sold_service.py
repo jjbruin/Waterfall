@@ -531,21 +531,16 @@ def compute_net_waterfall_for_deal(deal_acct: pd.DataFrame, inv: pd.DataFrame,
                 if days > 0:
                     pref_accrued += capital_balance * hurdle_rate * days / 365.0
 
-            # Compute fees for this period
+            # Compute fees for this period (independent, then cap sequentially)
             if last_date is not None:
                 days_period = max((d - last_date).days, 0)
             else:
                 days_period = 0
             am_fee = capital_balance * am_fee_pct * days_period / 365.0 if capital_balance > 0 else 0.0
+            am_fee = min(am_fee, scaled_dist)  # cap at distribution
             expenses = annual_expenses * days_period / 365.0
-
-            # Available after fees (floor at 0)
-            total_fees = am_fee + expenses
-            if total_fees > scaled_dist:
-                am_fee = scaled_dist * (am_fee / total_fees) if total_fees > 0 else 0.0
-                expenses = scaled_dist - am_fee
-                total_fees = scaled_dist
-            available = scaled_dist - total_fees
+            expenses = min(expenses, max(0.0, scaled_dist - am_fee))  # cap at remainder
+            available = scaled_dist - am_fee - expenses
 
             # Pay accrued pref
             pref_paid = min(pref_accrued, available)
@@ -920,10 +915,10 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
         dws.cell(row=HDR, column=5).comment = Comment("= Gross Amount × Ownership %", "Formula")
         dws.cell(row=HDR, column=6).comment = Comment(
             "= prior Capital Balance × AM Fee % × Days / 365\n"
-            "Capped: if AM Fee + Expenses > Scaled Amount, fees are prorated.", "Formula")
+            "Capped at Scaled Amount (fees cannot exceed the distribution).", "Formula")
         dws.cell(row=HDR, column=7).comment = Comment(
             "= Annual Expenses × Days / 365\n"
-            "Capped: if AM Fee + Expenses > Scaled Amount, fees are prorated.", "Formula")
+            "Capped at Scaled Amount − AM Fee (remaining after AM Fee).", "Formula")
         dws.cell(row=HDR, column=8).comment = Comment("= Scaled Amount − AM Fee − Expenses", "Formula")
         dws.cell(row=HDR, column=9).comment = Comment(
             "= prior Pref Balance + prior Capital Balance × Hurdle Rate % × Days / 365", "Formula")
@@ -993,33 +988,26 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
             else:
                 # ── Distribution row: full waterfall formulas ──
 
-                # F: AM Fee (with capping logic)
-                # am_uncapped = prior_cap_bal × am_fee% × days/365
-                # If am_uncapped + exp_uncapped > scaled, prorate
+                # F: AM Fee = prior Capital Balance × AM Fee % × Days / 365
+                # Capped at scaled distribution (cannot exceed what's available)
                 c = dws.cell(row=r, column=6)
                 if is_first:
                     c.value = 0.0
                 else:
                     days = f"(A{r}-A{p})/365"
-                    am_unc = f"O{p}*{AMF}*{days}"
-                    exp_unc = f"{EXP}*{days}"
-                    c.value = (
-                        f"=IF(O{p}<=0,0,"
-                        f"IF({am_unc}+{exp_unc}>E{r},"
-                        f"IF({am_unc}+{exp_unc}>0,E{r}*{am_unc}/({am_unc}+{exp_unc}),0),"
-                        f"{am_unc}))"
-                    )
+                    am_raw = f"O{p}*{AMF}*{days}"
+                    c.value = f"=IF(O{p}<=0,0,MIN({am_raw},E{r}))"
                 c.number_format = CUR
 
-                # G: Expenses (with capping logic)
+                # G: Expenses = Annual Expenses × Days / 365
+                # Capped at remaining after AM Fee (cannot exceed distribution - AM Fee)
                 c = dws.cell(row=r, column=7)
                 if is_first:
                     c.value = 0.0
                 else:
                     days = f"(A{r}-A{p})/365"
-                    am_unc = f"IF(O{p}>0,O{p}*{AMF}*{days},0)"
-                    exp_unc = f"{EXP}*{days}"
-                    c.value = f"=IF({am_unc}+{exp_unc}>E{r},E{r}-F{r},{exp_unc})"
+                    exp_raw = f"{EXP}*{days}"
+                    c.value = f"=MIN({exp_raw},MAX(0,E{r}-F{r}))"
                 c.number_format = CUR
 
                 # H: Available = Scaled - AM Fee - Expenses
