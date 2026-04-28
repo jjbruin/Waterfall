@@ -483,6 +483,7 @@ def compute_net_waterfall_for_deal(deal_acct: pd.DataFrame, inv: pd.DataFrame,
             "is_distribution": bool(r["is_distribution"]),
             "is_capital": bool(r["is_capital"]),
             "gross_amount": amt,
+            "typename": str(r.get("Typename", "")),
         })
     events.sort(key=lambda e: e["date"])
 
@@ -524,18 +525,45 @@ def compute_net_waterfall_for_deal(deal_acct: pd.DataFrame, inv: pd.DataFrame,
 
         if ev["is_distribution"]:
             scaled_dist = abs(scaled)
+            is_acq_fee = "acquisition fee" in ev["typename"].lower()
 
-            # Accrue pref since last event
-            if last_date is not None and capital_balance > 0:
-                days = (d - last_date).days
-                if days > 0:
-                    pref_accrued += capital_balance * hurdle_rate * days / 365.0
-
-            # Compute fees for this period (independent, then cap sequentially)
+            # Days since last event
             if last_date is not None:
                 days_period = max((d - last_date).days, 0)
             else:
                 days_period = 0
+
+            # Acquisition Fee: pass through to investor without fees or promote.
+            # These are GP fees, not distributable profit.
+            if is_acq_fee:
+                net_to_investor = scaled_dist
+                net_cashflows.append((d, net_to_investor))
+                waterfall_detail.append({
+                    "Date": str(d),
+                    "Event": "Acquisition Fee",
+                    "Gross Amount": abs(gross),
+                    "Ownership %": ownership_pct,
+                    "Scaled Amount": scaled_dist,
+                    "AM Fee": 0.0,
+                    "Expenses": 0.0,
+                    "Available": scaled_dist,
+                    "Pref Accrued": pref_accrued,
+                    "Pref Paid": 0.0,
+                    "Capital Returned": 0.0,
+                    "Excess": 0.0,
+                    "Promote (GP)": 0.0,
+                    "Net to Investor": net_to_investor,
+                    "Capital Balance": capital_balance,
+                    "Pref Balance": pref_accrued,
+                })
+                last_date = d
+                continue
+
+            # Accrue pref since last event
+            if capital_balance > 0 and days_period > 0:
+                pref_accrued += capital_balance * hurdle_rate * days_period / 365.0
+
+            # Compute fees (independent, then cap sequentially)
             am_fee = capital_balance * am_fee_pct * days_period / 365.0 if capital_balance > 0 else 0.0
             am_fee = min(am_fee, scaled_dist)  # cap at distribution
             expenses = annual_expenses * days_period / 365.0
@@ -927,7 +955,9 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
             "= MIN(prior Capital Balance, Available − Pref Paid)\n"
             "Only on Capital Distribution events; 0 for CF Distributions.", "Formula")
         dws.cell(row=HDR, column=12).comment = Comment("= Available − Pref Paid − Capital Returned", "Formula")
-        dws.cell(row=HDR, column=13).comment = Comment("= Excess × Promote %", "Formula")
+        dws.cell(row=HDR, column=13).comment = Comment(
+            "= Excess × Promote %\n"
+            "0 for Acquisition Fee rows (fees pass through without promote).", "Formula")
         dws.cell(row=HDR, column=14).comment = Comment(
             "= Pref Paid + Capital Returned + Excess − Promote (GP)", "Formula")
         dws.cell(row=HDR, column=15).comment = Comment(
@@ -1041,9 +1071,9 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
                 c.value = f"=H{r}-J{r}-K{r}"
                 c.number_format = CUR
 
-                # M: Promote = Excess × Promote%
+                # M: Promote = Excess × Promote% (0 for Acquisition Fee rows)
                 c = dws.cell(row=r, column=13)
-                c.value = f"=L{r}*{PRO}"
+                c.value = f'=IF(B{r}="Acquisition Fee",0,L{r}*{PRO})'
                 c.number_format = CUR
 
                 # N: Net to Investor = Pref + Capital + Excess - Promote
