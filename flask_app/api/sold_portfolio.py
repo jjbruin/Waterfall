@@ -8,7 +8,7 @@ from flask_app.services import data_service
 from flask_app.services.sold_service import (
     compute_all_sold_returns, build_deal_detail,
     generate_sold_excel, generate_detail_excel,
-    get_sold_deals,
+    get_sold_deals, compute_all_net_returns, generate_net_returns_excel,
 )
 from flask_app.serializers import df_to_records, safe_json
 
@@ -108,4 +108,85 @@ def deal_detail_excel(vcode):
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         as_attachment=True,
         download_name=f"sold_activity_{safe_name}.xlsx",
+    )
+
+
+def _parse_assumptions(body):
+    """Parse and validate net returns assumptions from request body."""
+    required = ["ownership_pct", "am_fee_pct", "hurdle_rate", "promote_pct", "annual_expenses"]
+    missing = [k for k in required if k not in body]
+    if missing:
+        return None, f"Missing required fields: {', '.join(missing)}"
+
+    try:
+        assumptions = {
+            "ownership_pct": float(body["ownership_pct"]),
+            "am_fee_pct": float(body["am_fee_pct"]),
+            "hurdle_rate": float(body["hurdle_rate"]),
+            "promote_pct": float(body["promote_pct"]),
+            "annual_expenses": float(body["annual_expenses"]),
+        }
+    except (ValueError, TypeError):
+        return None, "All assumption values must be numeric"
+
+    for pct_field in ["ownership_pct", "am_fee_pct", "hurdle_rate", "promote_pct"]:
+        if not 0 <= assumptions[pct_field] <= 1:
+            return None, f"{pct_field} must be between 0 and 1"
+    if assumptions["annual_expenses"] < 0:
+        return None, "annual_expenses must be >= 0"
+
+    return assumptions, None
+
+
+@sold_portfolio_bp.route("/net-returns", methods=["POST"])
+@login_required
+def net_returns():
+    """Compute net returns with fee/promote waterfall assumptions."""
+    body = request.get_json(force=True)
+    assumptions, err = _parse_assumptions(body)
+    if err:
+        return jsonify({"error": err}), 400
+
+    data = _get_data()
+    inv_sold = get_sold_deals(data["inv"])
+    if inv_sold.empty:
+        return jsonify({"error": "No sold deals found"}), 404
+
+    result = compute_all_net_returns(inv_sold, data["acct"], data["inv"], assumptions)
+
+    # Strip waterfall_detail from JSON response (too large)
+    deal_results = []
+    for dr in result["deal_results"]:
+        deal_results.append({k: v for k, v in dr.items() if k != "waterfall_detail"})
+
+    return jsonify(safe_json({
+        "deal_results": deal_results,
+        "portfolio": result["portfolio"],
+        "assumptions": result["assumptions"],
+    }))
+
+
+@sold_portfolio_bp.route("/net-returns/excel", methods=["POST"])
+@login_required
+def net_returns_excel():
+    """Download net returns Excel with per-deal waterfall detail."""
+    body = request.get_json(force=True)
+    assumptions, err = _parse_assumptions(body)
+    if err:
+        return jsonify({"error": err}), 400
+
+    data = _get_data()
+    inv_sold = get_sold_deals(data["inv"])
+    if inv_sold.empty:
+        return jsonify({"error": "No sold deals found"}), 404
+
+    gross_df = compute_all_sold_returns(inv_sold, data["acct"], data["inv"])
+    net_result = compute_all_net_returns(inv_sold, data["acct"], data["inv"], assumptions)
+    excel_bytes = generate_net_returns_excel(gross_df, net_result)
+
+    return send_file(
+        io.BytesIO(excel_bytes),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name="sold_portfolio_net_returns.xlsx",
     )
