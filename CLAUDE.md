@@ -277,6 +277,8 @@ Main waterfall computation, partner returns, capital accounts, XIRR/MOIC metrics
 
 **XIRR Cash Flows**: Merged side-by-side table with columns Date, Description (typename from `cashflow_details`), one amount column per partner, and Deal total column. Rows are keyed by (date, description); same-date/same-description cashflows for one partner are summed. Partner Returns IRR is computed from `combined_cfs` (the authoritative cashflow list); the XIRR Cash Flows table/Excel is a display-friendly pivot of the same data via `cashflow_details`.
 
+**Acquisition Fee Exclusion**: "Distribution:Acquisition Fee" entries from accounting are excluded from all waterfall-based XIRR/ROE/MOIC calculations and the XIRR Cash Flows display table (`build_partner_results()` in `compute.py`). Also excluded from IRR hurdle lookback (`irr_needed_distribution()` in `waterfall.py`). The Sold Portfolio tab is **not** affected — it computes returns directly from raw accounting data via `sold_service.py`.
+
 **Annual Forecast Formatting**: Black border lines under Expenses, Capital Expenditures, and Other Below-the-Line rows (`underline-row` CSS class), black border above Total Distributions (`topline-row` CSS class). Row order: Revenues → Expenses → NOI → Tax Abatement → Interest → Principal → Total Debt Service → Capital Expenditures → Other Below-the-Line → FAD → DSCR → waterfall allocations.
 
 **FAD and CapEx**: FAD = NOI + Tax Abatement + Interest + Principal + Other BTL + CapEx + CapEx paid from reserves. CapEx is initially fully deducted (negative), then the portion funded from cash reserves (`capex_paid` in cash schedule) is added back. Only unfunded CapEx reduces FAD. The cash schedule (`build_cash_flow_schedule_from_fad()` in `cash_management.py`) tracks `capex_paid` vs `capex_unpaid` per period; `annual_aggregation_table()` aggregates `capex_paid` by year from the cash schedule.
@@ -364,6 +366,7 @@ Historical returns for sold deals computed from accounting_feed (no forecast wat
 - **Summary Table**: One row per deal + bold Portfolio Total row. Columns: Investment Name, Acquisition Date, Sale Date, Total Contributions, Total Distributions, IRR, ROE, MOIC. Portfolio Total computes IRR/ROE/MOIC from the combined cashflow pool across all deals (not simple averages).
 - **Deal Detail Drill-Down**: Selectbox to pick a deal → expander with every pref equity accounting row sorted by date. Columns: Date, InvestorID, MajorType, Typename, Capital, Amount, Cashflow (XIRR), Capital Balance (running). IRR/ROE/MOIC metric cards below. Download Activity Detail exports the table + summary metrics to Excel for independent return verification.
 - **Excel Exports**: Summary workbook (`sold_portfolio_returns.xlsx`) and per-deal activity detail (`sold_activity_{name}.xlsx`) via openpyxl.
+- **Acquisition Fees included**: Unlike the Deal Analysis waterfall path, Sold Portfolio includes all accounting entries (including Acquisition Fees) in its return calculations.
 
 ### 9. PSCKOC
 Upstream waterfall analysis for the PSCKOC holding entity, showing how deal-level distributions flow through PPI entities to PSCKOC members. Vue: `PsckocView.vue`. Flask: `psckoc_service.py`.
