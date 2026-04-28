@@ -168,6 +168,15 @@ cd vue_app && npm run dev        # Frontend on http://localhost:5173
 - **Sale proceeds formula**: `max(0, value_net_selling_cost - loan_balances + tax_abatement_npv)`
 - **Groupby**: Loan schedule grouped by `["vcode", "LoanID", "event_date"]` to distinguish loans with same dates
 
+### Cap Rate at Sale / Refinance
+- **Source column**: `fCapRate` from `valuations` table (MRI_Val)
+- **Date column**: `dtValuation` — the date each cap rate was assessed
+- **Function**: `projected_cap_rate_at_date()` in `planned_loans.py` — sorts by `dtValuation`, takes the most recent `fCapRate` as the base rate
+- **Escalation**: +0.05% (0.0005) per year from the `dtValuation` of the selected row to the target date (sale or refi)
+- **Example**: fCapRate=0.0575 at 12/31/2025, sale at 12/31/2030 → 0.0575 + 5×0.0005 = 0.06 (6.00%)
+- **Sale value**: `NOI_12_months / cap_rate` — uses `twelve_month_noi_after_date()` for forward 12-month NOI from forecast
+- **Callers**: `compute_deal_analysis()` for sale proceeds, `size_planned_second_mortgage()` and `size_prospective_loan()` for loan sizing
+
 ### Prospective Loans (Refinancing)
 - `size_prospective_loan()` in `planned_loans.py` returns sizing dict including `refi_date` for Vue form pre-fill
 - Prospective loan extends sale date to new maturity when `Sale_ME` < new maturity
@@ -391,6 +400,8 @@ Upstream waterfall analysis for the PSCKOC holding entity, showing how deal-leve
 - `get_isbs_debt_balance()` - Current debt from ISBS balance sheet, fallback to MRI_Loans (compute.py)
 - `load_beginning_cash_balance()` - Beginning cash balance from ISBS Interim BS using CASH_BALANCE_ACCTS; falls back to earliest available ISBS date if none before forecast start (cash_management.py)
 - `get_deal_capitalization()` - Deal cap stack with ISBS debt support (compute.py)
+- `projected_cap_rate_at_date()` - Cap rate with annual escalation from valuation date (planned_loans.py)
+- `twelve_month_noi_after_date()` - Forward 12-month NOI from forecast for sale/refi valuation (planned_loans.py)
 
 ### One Pager Data
 - `get_general_information()` - Deal general info from investment_map (one_pager.py)
