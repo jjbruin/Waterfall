@@ -848,7 +848,22 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
                 max_len = max(max_len, len(str(cv)))
         ws.column_dimensions[ws.cell(row=1, column=ci).column_letter].width = min(max_len + 4, 30)
 
-    # Per-deal waterfall sheets
+    # Per-deal waterfall sheets — formula-driven for auditability
+    # Users can change assumptions in B2/D2/F2/H2/J2 and the entire sheet recalculates.
+    #
+    # Column map (row 4 header, data from row 5):
+    #   A=Date  B=Event  C=Gross  D=Own%  E=Scaled  F=AMFee  G=Expenses
+    #   H=Available  I=PrefAccrued  J=PrefPaid  K=CapReturned  L=Excess
+    #   M=Promote  N=NetToInvestor  O=CapBalance  P=PrefBalance
+    #
+    # Assumption cells: B2=Ownership%, D2=AM Fee%, F2=Hurdle%, H2=Promote%, J2=AnnualExp
+
+    from openpyxl.comments import Comment
+    from openpyxl.utils import get_column_letter
+
+    note_font = Font(italic=True, color="808080")
+    assumptions = net_result.get("assumptions", {})
+
     used_names = set()
     for dr in net_result["deal_results"]:
         detail = dr.get("waterfall_detail", [])
@@ -856,7 +871,6 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
             continue
 
         sheet_name = dr["Investment Name"][:31]
-        # Ensure uniqueness
         base = sheet_name
         counter = 2
         while sheet_name in used_names:
@@ -865,60 +879,232 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
         used_names.add(sheet_name)
 
         dws = wb.create_sheet(title=sheet_name)
+
+        # ── Assumptions block (rows 1-2) ──
+        dws.cell(row=1, column=1, value="Assumptions (editable — formulas update automatically)").font = bold_font
+        assumption_defs = [
+            # (col, label, value, format)
+            (1, "Ownership %", assumptions.get("ownership_pct", 0), "0.00%"),
+            (3, "AM Fee %", assumptions.get("am_fee_pct", 0), "0.00%"),
+            (5, "Hurdle Rate %", assumptions.get("hurdle_rate", 0), "0.00%"),
+            (7, "Promote %", assumptions.get("promote_pct", 0), "0.00%"),
+            (9, "Annual Expenses", assumptions.get("annual_expenses", 0), "$#,##0"),
+        ]
+        for col, label, val, fmt in assumption_defs:
+            dws.cell(row=2, column=col, value=label).font = bold_font
+            c = dws.cell(row=2, column=col + 1, value=val)
+            c.number_format = fmt
+
+        # Absolute references to assumption cells
+        OWN = "$B$2"   # Ownership %
+        AMF = "$D$2"   # AM Fee %
+        HUR = "$F$2"   # Hurdle Rate %
+        PRO = "$H$2"   # Promote %
+        EXP = "$J$2"   # Annual Expenses
+
+        # ── Column headers (row 4) ──
+        HDR = 4
         detail_cols = [
             "Date", "Event", "Gross Amount", "Ownership %", "Scaled Amount",
             "AM Fee", "Expenses", "Available", "Pref Accrued", "Pref Paid",
             "Capital Returned", "Excess", "Promote (GP)", "Net to Investor",
             "Capital Balance", "Pref Balance",
         ]
-
         for ci, col in enumerate(detail_cols, 1):
-            cell = dws.cell(row=1, column=ci, value=col)
+            cell = dws.cell(row=HDR, column=ci, value=col)
             cell.font = header_font
             cell.fill = header_fill
             cell.alignment = Alignment(horizontal="center")
 
-        currency_detail = {3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
-        pct_detail = {4}
+        # Add formula-explanation comments on headers
+        dws.cell(row=HDR, column=5).comment = Comment("= Gross Amount × Ownership %", "Formula")
+        dws.cell(row=HDR, column=6).comment = Comment(
+            "= prior Capital Balance × AM Fee % × Days / 365\n"
+            "Capped: if AM Fee + Expenses > Scaled Amount, fees are prorated.", "Formula")
+        dws.cell(row=HDR, column=7).comment = Comment(
+            "= Annual Expenses × Days / 365\n"
+            "Capped: if AM Fee + Expenses > Scaled Amount, fees are prorated.", "Formula")
+        dws.cell(row=HDR, column=8).comment = Comment("= Scaled Amount − AM Fee − Expenses", "Formula")
+        dws.cell(row=HDR, column=9).comment = Comment(
+            "= prior Pref Balance + prior Capital Balance × Hurdle Rate % × Days / 365", "Formula")
+        dws.cell(row=HDR, column=10).comment = Comment("= MIN(Pref Accrued, Available)", "Formula")
+        dws.cell(row=HDR, column=11).comment = Comment(
+            "= MIN(prior Capital Balance, Available − Pref Paid)\n"
+            "Only on Capital Distribution events; 0 for CF Distributions.", "Formula")
+        dws.cell(row=HDR, column=12).comment = Comment("= Available − Pref Paid − Capital Returned", "Formula")
+        dws.cell(row=HDR, column=13).comment = Comment("= Excess × Promote %", "Formula")
+        dws.cell(row=HDR, column=14).comment = Comment(
+            "= Pref Paid + Capital Returned + Excess − Promote (GP)", "Formula")
+        dws.cell(row=HDR, column=15).comment = Comment(
+            "Contributions: prior + |Scaled Amount|\n"
+            "Distributions: prior − Capital Returned", "Formula")
+        dws.cell(row=HDR, column=16).comment = Comment("= Pref Accrued − Pref Paid", "Formula")
 
-        for ri, row in enumerate(detail, 2):
-            for ci, col in enumerate(detail_cols, 1):
-                val = row.get(col, "")
-                cell = dws.cell(row=ri, column=ci)
-                if ci in pct_detail:
-                    cell.value = float(val) if val else 0.0
-                    cell.number_format = "0.00%"
-                elif ci in currency_detail:
-                    cell.value = float(val) if val is not None else 0.0
-                    cell.number_format = "$#,##0"
+        # ── Data rows with formulas (row 5+) ──
+        FDR = HDR + 1  # first data row
+        CUR = "$#,##0"
+
+        for idx, row_data in enumerate(detail):
+            r = FDR + idx
+            p = r - 1  # previous row
+            is_first = (idx == 0)
+            is_contrib = (row_data["Event"] == "Contribution")
+
+            # A: Date (actual Excel date for date arithmetic)
+            dt_val = pd.to_datetime(row_data["Date"])
+            dws.cell(row=r, column=1, value=dt_val).number_format = "MM/DD/YYYY"
+
+            # B: Event (text value)
+            dws.cell(row=r, column=2, value=row_data["Event"])
+
+            # C: Gross Amount (input value)
+            dws.cell(row=r, column=3, value=float(row_data["Gross Amount"])).number_format = CUR
+
+            # D: Ownership % → assumption cell
+            c = dws.cell(row=r, column=4)
+            c.value = f"={OWN}"
+            c.number_format = "0.00%"
+
+            # E: Scaled Amount = Gross × Ownership%
+            c = dws.cell(row=r, column=5)
+            c.value = f"=C{r}*{OWN}"
+            c.number_format = CUR
+
+            if is_contrib:
+                # F-M: zeros for contributions (no fees, no waterfall)
+                for ci in range(6, 14):
+                    dws.cell(row=r, column=ci, value=0).number_format = CUR
+
+                # N: Net to Investor = Scaled (negative contribution)
+                c = dws.cell(row=r, column=14)
+                c.value = f"=E{r}"
+                c.number_format = CUR
+
+                # O: Capital Balance = prior + |contribution|
+                c = dws.cell(row=r, column=15)
+                c.value = f"=ABS(E{r})" if is_first else f"=O{p}+ABS(E{r})"
+                c.number_format = CUR
+
+                # P: Pref Balance (unchanged through contributions)
+                c = dws.cell(row=r, column=16)
+                c.value = 0.0 if is_first else f"=P{p}"
+                c.number_format = CUR
+
+            else:
+                # ── Distribution row: full waterfall formulas ──
+
+                # F: AM Fee (with capping logic)
+                # am_uncapped = prior_cap_bal × am_fee% × days/365
+                # If am_uncapped + exp_uncapped > scaled, prorate
+                c = dws.cell(row=r, column=6)
+                if is_first:
+                    c.value = 0.0
                 else:
-                    cell.value = val
+                    days = f"(A{r}-A{p})/365"
+                    am_unc = f"O{p}*{AMF}*{days}"
+                    exp_unc = f"{EXP}*{days}"
+                    c.value = (
+                        f"=IF(O{p}<=0,0,"
+                        f"IF({am_unc}+{exp_unc}>E{r},"
+                        f"IF({am_unc}+{exp_unc}>0,E{r}*{am_unc}/({am_unc}+{exp_unc}),0),"
+                        f"{am_unc}))"
+                    )
+                c.number_format = CUR
 
-        # Summary below detail
-        sr = len(detail) + 3
-        dws.cell(row=sr, column=1, value="Net Metrics").font = bold_font
-        metrics = [
-            ("Net IRR", dr.get("Net IRR"), "0.00%"),
-            ("Net ROE", dr.get("Net ROE", 0), "0.00%"),
-            ("Net MOIC", dr.get("Net MOIC", 0), '0.00"x"'),
-            ("Net Contributions", dr.get("Net Contributions", 0), "$#,##0"),
-            ("Net Distributions", dr.get("Net Distributions", 0), "$#,##0"),
-        ]
-        for i, (label, val, fmt) in enumerate(metrics):
-            r = sr + 1 + i
-            dws.cell(row=r, column=1, value=label).font = bold_font
-            cell = dws.cell(row=r, column=2)
-            cell.value = float(val) if val is not None and not (isinstance(val, float) and np.isnan(val)) else None
-            cell.number_format = fmt
+                # G: Expenses (with capping logic)
+                c = dws.cell(row=r, column=7)
+                if is_first:
+                    c.value = 0.0
+                else:
+                    days = f"(A{r}-A{p})/365"
+                    am_unc = f"IF(O{p}>0,O{p}*{AMF}*{days},0)"
+                    exp_unc = f"{EXP}*{days}"
+                    c.value = f"=IF({am_unc}+{exp_unc}>E{r},E{r}-F{r},{exp_unc})"
+                c.number_format = CUR
 
-        # Auto-size detail columns
-        for ci, col in enumerate(detail_cols, 1):
-            max_len = len(col)
-            for ri in range(2, len(detail) + 2):
-                cv = dws.cell(row=ri, column=ci).value
-                if cv is not None:
-                    max_len = max(max_len, len(str(cv)))
-            dws.column_dimensions[dws.cell(row=1, column=ci).column_letter].width = min(max_len + 4, 22)
+                # H: Available = Scaled - AM Fee - Expenses
+                c = dws.cell(row=r, column=8)
+                c.value = f"=E{r}-F{r}-G{r}"
+                c.number_format = CUR
+
+                # I: Pref Accrued = prior Pref Balance + accrual
+                c = dws.cell(row=r, column=9)
+                if is_first:
+                    c.value = 0.0
+                else:
+                    c.value = f"=P{p}+O{p}*{HUR}*(A{r}-A{p})/365"
+                c.number_format = CUR
+
+                # J: Pref Paid = MIN(Accrued, Available)
+                c = dws.cell(row=r, column=10)
+                c.value = f"=MIN(I{r},H{r})"
+                c.number_format = CUR
+
+                # K: Capital Returned (capital events only)
+                c = dws.cell(row=r, column=11)
+                if is_first:
+                    c.value = 0.0
+                else:
+                    c.value = f'=IF(B{r}="Capital Distribution",MIN(O{p},H{r}-J{r}),0)'
+                c.number_format = CUR
+
+                # L: Excess = Available - Pref Paid - Capital Returned
+                c = dws.cell(row=r, column=12)
+                c.value = f"=H{r}-J{r}-K{r}"
+                c.number_format = CUR
+
+                # M: Promote = Excess × Promote%
+                c = dws.cell(row=r, column=13)
+                c.value = f"=L{r}*{PRO}"
+                c.number_format = CUR
+
+                # N: Net to Investor = Pref + Capital + Excess - Promote
+                c = dws.cell(row=r, column=14)
+                c.value = f"=J{r}+K{r}+L{r}-M{r}"
+                c.number_format = CUR
+
+                # O: Capital Balance = prior - Capital Returned
+                c = dws.cell(row=r, column=15)
+                if is_first:
+                    c.value = 0.0
+                else:
+                    c.value = f"=O{p}-K{r}"
+                c.number_format = CUR
+
+                # P: Pref Balance = Accrued - Paid
+                c = dws.cell(row=r, column=16)
+                c.value = f"=I{r}-J{r}"
+                c.number_format = CUR
+
+        # ── Summary metrics as formulas ──
+        last_r = FDR + len(detail) - 1
+        sr = last_r + 2
+        dws.cell(row=sr, column=1, value="Net Metrics (formulas)").font = bold_font
+
+        dws.cell(row=sr + 1, column=1, value="Net Contributions").font = bold_font
+        c = dws.cell(row=sr + 1, column=2)
+        c.value = f'=SUMPRODUCT((B{FDR}:B{last_r}="Contribution")*N{FDR}:N{last_r})'
+        c.number_format = CUR
+
+        dws.cell(row=sr + 2, column=1, value="Net Distributions").font = bold_font
+        c = dws.cell(row=sr + 2, column=2)
+        c.value = f'=SUMPRODUCT((B{FDR}:B{last_r}<>"Contribution")*N{FDR}:N{last_r})'
+        c.number_format = CUR
+
+        dws.cell(row=sr + 3, column=1, value="Net MOIC").font = bold_font
+        c = dws.cell(row=sr + 3, column=2)
+        c.value = f'=IF(ABS(B{sr+1})>0,B{sr+2}/ABS(B{sr+1}),0)'
+        c.number_format = '0.00"x"'
+
+        dws.cell(row=sr + 4, column=1, value="Net IRR").font = bold_font
+        c = dws.cell(row=sr + 4, column=2)
+        c.value = f'=IFERROR(XIRR(N{FDR}:N{last_r},A{FDR}:A{last_r}),"N/A")'
+        c.number_format = "0.00%"
+
+        # ── Auto-size columns ──
+        col_widths = [12, 20, 16, 12, 16, 14, 14, 14, 14, 14, 16, 14, 14, 16, 16, 14]
+        for ci, w in enumerate(col_widths, 1):
+            dws.column_dimensions[get_column_letter(ci)].width = w
 
     buf = io.BytesIO()
     wb.save(buf)
