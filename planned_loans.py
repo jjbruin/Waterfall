@@ -19,11 +19,13 @@ from config import GROSS_REVENUE_ACCTS, CONTRA_REVENUE_ACCTS, EXPENSE_ACCTS, INT
 from utils import as_date, month_end, add_months, month_ends_between
 
 
-def projected_cap_rate_at_date(mri_val: pd.DataFrame, vcode: str, proj_begin: date, asof_date: date) -> float:
+def projected_cap_rate_at_date(mri_val: pd.DataFrame, vcode: str, asof_date: date, proj_begin: date = None) -> float:
     """
     Get projected cap rate at a specific date
-    
-    Uses base cap rate from MRI_Val + 0.05% increase per year
+
+    Uses base cap rate from MRI_Val (fCapRate) + 0.05% increase per year.
+    Escalation starts from the valuation date (dtVal) of the selected fCapRate row.
+    Falls back to proj_begin if dtVal is not available.
     """
     dv = mri_val.copy()
     dv.columns = [str(c).strip() for c in dv.columns]
@@ -37,13 +39,27 @@ def projected_cap_rate_at_date(mri_val: pd.DataFrame, vcode: str, proj_begin: da
     if sub.empty:
         raise ValueError(f"MRI_Val has no rows for vcode {vcode}")
 
-    if "dtVal" in sub.columns:
+    has_dtval = "dtVal" in sub.columns
+    if has_dtval:
         sub["dtVal"] = pd.to_datetime(sub["dtVal"], errors="coerce").dt.date
         sub = sub.sort_values("dtVal")
 
-    fcap = float(pd.to_numeric(sub["fCapRate"], errors="coerce").dropna().iloc[-1])
+    cap_series = pd.to_numeric(sub["fCapRate"], errors="coerce").dropna()
+    fcap = float(cap_series.iloc[-1])
 
-    years = max(0.0, (pd.Timestamp(asof_date) - pd.Timestamp(proj_begin)).days / 365.0)
+    # Determine escalation anchor: dtVal of the row that provided fCapRate
+    anchor = None
+    if has_dtval:
+        anchor_val = sub.loc[cap_series.index[-1], "dtVal"]
+        if pd.notna(anchor_val):
+            anchor = anchor_val
+    if anchor is None:
+        anchor = proj_begin
+
+    if anchor is None:
+        return fcap
+
+    years = max(0.0, (pd.Timestamp(asof_date) - pd.Timestamp(anchor)).days / 365.0)
     return fcap + 0.0005 * years
 
 
@@ -184,9 +200,8 @@ def size_planned_second_mortgage(
     if ltv > 1.5:
         ltv = ltv / 100.0
 
-    proj_begin = min(fc_deal_full["event_date"])
     noi_12 = twelve_month_noi_after_date(fc_deal_full, orig_date)
-    cap_rate = projected_cap_rate_at_date(mri_val, str(fc_deal_full["vcode"].iloc[0]), proj_begin, orig_date)
+    cap_rate = projected_cap_rate_at_date(mri_val, str(fc_deal_full["vcode"].iloc[0]), orig_date)
 
     projected_value = (noi_12 / cap_rate) if cap_rate != 0 else 0.0
 
@@ -305,14 +320,13 @@ def size_prospective_loan(
         min_debt_yield = min_debt_yield / 100.0
 
     # System projected NOI for 12 months from refi date
-    proj_begin = min(fc_deal_full["event_date"])
     system_noi = twelve_month_noi_after_date(fc_deal_full, refi_date)
 
     # Cap rate for projected value
     cap_rate = 0.0
     projected_value = 0.0
     try:
-        cap_rate = projected_cap_rate_at_date(mri_val, str(vcode), proj_begin, refi_date)
+        cap_rate = projected_cap_rate_at_date(mri_val, str(vcode), refi_date)
         if cap_rate > 0:
             projected_value = system_noi / cap_rate
     except Exception:

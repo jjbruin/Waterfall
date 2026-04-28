@@ -834,8 +834,7 @@ def compute_deal_analysis(
     if mri_val is not None and not mri_val.empty:
         try:
             noi_12_sale = twelve_month_noi_after_date(fc_deal_modeled, sale_me)
-            proj_begin = min(fc_deal_modeled["event_date"])
-            cap_rate_sale = projected_cap_rate_at_date(mri_val, str(deal_vcode), proj_begin, sale_me)
+            cap_rate_sale = projected_cap_rate_at_date(mri_val, str(deal_vcode), sale_me)
 
             value_sale = (noi_12_sale / cap_rate_sale) if cap_rate_sale != 0 else 0.0
             value_net_selling_cost = value_sale * (1.0 - SELLING_COST_RATE)
