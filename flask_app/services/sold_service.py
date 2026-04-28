@@ -600,15 +600,12 @@ def compute_net_waterfall_for_deal(deal_acct: pd.DataFrame, inv: pd.DataFrame,
     net_capital_events = []
     net_cf_dists = []
     for row in waterfall_detail:
-        d = pd.to_datetime(row["Date"])
+        d = pd.to_datetime(row["Date"]).date()
         if row["Event"] == "Contribution":
             net_capital_events.append((d, -abs(row["Scaled Amount"])))
         else:
             if row["Capital Returned"] > 0:
                 net_capital_events.append((d, row["Capital Returned"]))
-            cf_portion = row["Pref Paid"] + row["Net to Investor"] - row["Capital Returned"] - row["Pref Paid"]
-            # Actually: net_to_investor = pref_paid + capital_returned + investor_share
-            # cf_dist = pref_paid + investor_share = net_to_investor - capital_returned
             cf_dist = row["Net to Investor"] - row["Capital Returned"]
             if cf_dist > 0:
                 net_cf_dists.append((d, cf_dist))
@@ -693,7 +690,7 @@ def compute_all_net_returns(inv_sold: pd.DataFrame, acct: pd.DataFrame,
         port_net_cf = []
         for dr in deal_results:
             for row in dr["waterfall_detail"]:
-                d = pd.to_datetime(row["Date"])
+                d = pd.to_datetime(row["Date"]).date()
                 if row["Event"] == "Contribution":
                     port_net_capital.append((d, -abs(row["Scaled Amount"])))
                 else:
