@@ -489,8 +489,6 @@ def compute_net_waterfall_for_deal(deal_acct: pd.DataFrame, inv: pd.DataFrame,
 
     capital_balance = 0.0
     pref_accrued = 0.0
-    unpaid_am_fee = 0.0
-    unpaid_expenses = 0.0
     last_date = None
     net_cashflows = []
     waterfall_detail = []
@@ -537,19 +535,15 @@ def compute_net_waterfall_for_deal(deal_acct: pd.DataFrame, inv: pd.DataFrame,
                 days_period = 0
 
             # Acquisition Fee: entire distribution consumed by the fee.
-            # Investor gets $0. Period AM fees and expenses accrue unpaid.
+            # Investor gets $0. Pref still accrues. AM fees and expenses
+            # for this period are foregone (matching Excel formula behavior).
             if is_acq_fee:
                 # Accrue pref for elapsed time (time still passes)
                 if capital_balance > 0 and days_period > 0:
                     pref_accrued += capital_balance * hurdle_rate * days_period / 365.0
 
-                # Accrue period fees as unpaid (no cash available to pay them)
-                period_am = capital_balance * am_fee_pct * days_period / 365.0 if capital_balance > 0 else 0.0
-                unpaid_am_fee += period_am
-                period_exp = annual_expenses * days_period / 365.0
-                unpaid_expenses += period_exp
-
-                # Do NOT append to net_cashflows — investor receives nothing
+                # Append $0 cashflow so Python XIRR uses same inputs as Excel
+                net_cashflows.append((d, 0.0))
                 waterfall_detail.append({
                     "Date": str(d),
                     "Event": "Acquisition Fee",
@@ -576,17 +570,11 @@ def compute_net_waterfall_for_deal(deal_acct: pd.DataFrame, inv: pd.DataFrame,
             if capital_balance > 0 and days_period > 0:
                 pref_accrued += capital_balance * hurdle_rate * days_period / 365.0
 
-            # Compute fees: period amount + any carry-forward from acq fee periods
-            period_am = capital_balance * am_fee_pct * days_period / 365.0 if capital_balance > 0 else 0.0
-            am_fee_due = period_am + unpaid_am_fee
-            am_fee = min(am_fee_due, scaled_dist)  # cap at distribution
-            unpaid_am_fee = am_fee_due - am_fee  # carry forward any unpaid remainder
-
-            period_exp = annual_expenses * days_period / 365.0
-            exp_due = period_exp + unpaid_expenses
-            expenses = min(exp_due, max(0.0, scaled_dist - am_fee))  # cap at remainder
-            unpaid_expenses = exp_due - expenses  # carry forward any unpaid remainder
-
+            # Compute fees (independent, then cap sequentially)
+            am_fee = capital_balance * am_fee_pct * days_period / 365.0 if capital_balance > 0 else 0.0
+            am_fee = min(am_fee, scaled_dist)  # cap at distribution
+            expenses = annual_expenses * days_period / 365.0
+            expenses = min(expenses, max(0.0, scaled_dist - am_fee))  # cap at remainder
             available = scaled_dist - am_fee - expenses
 
             # Pay accrued pref
