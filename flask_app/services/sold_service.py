@@ -590,7 +590,19 @@ def compute_net_waterfall_for_deal(deal_acct: pd.DataFrame, inv: pd.DataFrame,
                 remaining -= capital_returned
 
             # Promote split on excess
-            gp_promote = remaining * promote_pct
+            # Capital events: promote only earned if investor's cumulative
+            # IRR (inception to this date, assuming full excess) >= hurdle.
+            # CF distributions: promote always applies.
+            if ev["is_capital"] and remaining > 0:
+                test_net = pref_paid + capital_returned + remaining
+                test_cfs = net_cashflows + [(d, test_net)]
+                test_irr = xirr(test_cfs) if len(test_cfs) >= 2 else None
+                if test_irr is not None and test_irr >= hurdle_rate:
+                    gp_promote = remaining * promote_pct
+                else:
+                    gp_promote = 0.0
+            else:
+                gp_promote = remaining * promote_pct
             investor_share = remaining - gp_promote
 
             net_to_investor = pref_paid + capital_returned + investor_share
@@ -782,6 +794,7 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
     #   A=Date  B=Event  C=Gross  D=Own%  E=Scaled  F=AcqFeePaid
     #   G=AMFee  H=Expenses  I=Available  J=PrefAccrued  K=PrefPaid
     #   L=CapReturned  M=Excess  N=Promote  O=NetToInvestor  P=CapBalance  Q=PrefBalance
+    #   R=TestNet (for Capital Distribution promote hurdle test)
     #
     # Assumption cells: B2=Ownership%, D2=AM Fee%, F2=Hurdle%, H2=Promote%, J2=AnnualExp
 
@@ -835,7 +848,7 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
             "Date", "Event", "Gross Amount", "Ownership %", "Scaled Amount",
             "Acq Fee Paid", "AM Fee", "Expenses", "Available", "Pref Accrued",
             "Pref Paid", "Capital Returned", "Excess", "Promote (GP)",
-            "Net to Investor", "Capital Balance", "Pref Balance",
+            "Net to Investor", "Capital Balance", "Pref Balance", "Test Net",
         ]
         for ci, col in enumerate(detail_cols, 1):
             cell = dws.cell(row=HDR, column=ci, value=col)
@@ -864,14 +877,20 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
             "Only on Capital Distribution events; 0 for CF Distributions.", "Formula")
         dws.cell(row=HDR, column=13).comment = Comment("= Available − Pref Paid − Capital Returned", "Formula")
         dws.cell(row=HDR, column=14).comment = Comment(
-            "= Excess × Promote %\n"
-            "0 for Acquisition Fee rows.", "Formula")
+            "CF Distributions: Excess × Promote % (always applies).\n"
+            "Capital Distributions: Excess × Promote % ONLY if\n"
+            "XIRR(Test Net, Dates) >= Hurdle Rate; otherwise 0.\n"
+            "Acquisition Fee: always 0.", "Formula")
         dws.cell(row=HDR, column=15).comment = Comment(
             "= Pref Paid + Capital Returned + Excess − Promote (GP)", "Formula")
         dws.cell(row=HDR, column=16).comment = Comment(
             "Contributions: prior + |Scaled Amount|\n"
             "Distributions: prior − Capital Returned", "Formula")
         dws.cell(row=HDR, column=17).comment = Comment("= Pref Accrued − Pref Paid", "Formula")
+        dws.cell(row=HDR, column=18).comment = Comment(
+            "Hypothetical Net to Investor assuming no promote on capital events.\n"
+            "Used for XIRR hurdle test: promote on a sale is only earned\n"
+            "if XIRR(Test Net, Dates) >= Hurdle Rate.", "Formula")
 
         # ── Data rows with formulas (row 5+) ──
         FDR = HDR + 1  # first data row
@@ -921,6 +940,11 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
                 # Q: Pref Balance (unchanged through contributions)
                 c = dws.cell(row=r, column=17)
                 c.value = 0.0 if is_first else f"=Q{p}"
+                c.number_format = CUR
+
+                # R: Test Net = Net to Investor (same for contributions)
+                c = dws.cell(row=r, column=18)
+                c.value = f"=O{r}"
                 c.number_format = CUR
 
             else:
@@ -984,9 +1008,22 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
                 c.value = f"=I{r}-K{r}-L{r}"
                 c.number_format = CUR
 
-                # N: Promote = Excess × Promote% (0 for Acquisition Fee rows)
+                # N: Promote
+                # CF Distributions: Excess × Promote% (always)
+                # Capital Distributions: only if XIRR(Test Net) >= Hurdle Rate
+                # Acquisition Fee: 0
                 c = dws.cell(row=r, column=14)
-                c.value = f'=IF(B{r}="Acquisition Fee",0,M{r}*{PRO})'
+                if is_first:
+                    c.value = f'=IF(B{r}="Acquisition Fee",0,M{r}*{PRO})'
+                else:
+                    cap_test = (
+                        f'IF(IFERROR(XIRR(R{FDR}:R{r},A{FDR}:A{r}),-1)>={HUR},'
+                        f'M{r}*{PRO},0)'
+                    )
+                    c.value = (
+                        f'=IF(B{r}="Acquisition Fee",0,'
+                        f'IF(B{r}="Capital Distribution",{cap_test},M{r}*{PRO}))'
+                    )
                 c.number_format = CUR
 
                 # O: Net to Investor = Pref + Capital + Excess - Promote
@@ -1005,6 +1042,12 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
                 # Q: Pref Balance = Accrued - Paid
                 c = dws.cell(row=r, column=17)
                 c.value = f"=J{r}-K{r}"
+                c.number_format = CUR
+
+                # R: Test Net — for Capital Distributions, full excess
+                #    (no promote) for hurdle test; otherwise actual Net
+                c = dws.cell(row=r, column=18)
+                c.value = f'=IF(B{r}="Capital Distribution",K{r}+L{r}+M{r},O{r})'
                 c.number_format = CUR
 
         # ── Summary metrics as formulas ──
@@ -1042,7 +1085,7 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
         }
 
         # ── Auto-size columns ──
-        col_widths = [12, 20, 16, 12, 16, 14, 14, 14, 14, 14, 14, 16, 14, 14, 16, 16, 14]
+        col_widths = [12, 20, 16, 12, 16, 14, 14, 14, 14, 14, 14, 16, 14, 14, 16, 16, 14, 14]
         for ci, w in enumerate(col_widths, 1):
             dws.column_dimensions[get_column_letter(ci)].width = w
 
