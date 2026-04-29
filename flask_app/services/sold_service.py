@@ -713,7 +713,6 @@ def compute_all_net_returns(inv_sold: pd.DataFrame, acct: pd.DataFrame,
         vcode_to_iids.setdefault(vc, []).append(iid)
 
     deal_results = []
-    portfolio_net_cashflows = []
 
     for _, deal_row in inv_sold.iterrows():
         deal_name = str(deal_row.get("Investment_Name", "")).strip()
@@ -746,33 +745,88 @@ def compute_all_net_returns(inv_sold: pd.DataFrame, acct: pd.DataFrame,
             "Net Distributions": result["net_distributions"],
             "waterfall_detail": result["waterfall_detail"],
         })
-        portfolio_net_cashflows.extend(result["net_cashflows"])
 
-    # Portfolio-level metrics from pooled cashflows
-    if portfolio_net_cashflows:
-        port_irr = xirr(portfolio_net_cashflows) if len(portfolio_net_cashflows) >= 2 else None
-        port_contribs = sum(abs(a) for _, a in portfolio_net_cashflows if a < 0)
-        port_distribs = sum(a for _, a in portfolio_net_cashflows if a > 0)
+    # Portfolio-level metrics — recompute promote with unified hurdle_cleared
+    # across all deals (matching the Excel Portfolio Detail sheet logic).
+    # Per-deal waterfall_detail provides pre-promote values; we re-run only
+    # the promote decision at the portfolio level.
+    hurdle_rate = assumptions.get("hurdle_rate", 0)
+    promote_pct = assumptions.get("promote_pct", 0)
+
+    # Collect all events across deals, sort chronologically
+    all_port_events = []
+    for dr in deal_results:
+        for row in dr["waterfall_detail"]:
+            all_port_events.append(row)
+    all_port_events.sort(key=lambda r: pd.to_datetime(r["Date"]))
+
+    if all_port_events:
+        port_net_cfs = []       # (date, net_amount) for XIRR
+        port_net_capital = []   # for ROE
+        port_net_cf_dists = []  # for ROE
+        hurdle_cleared = False
+
+        for row in all_port_events:
+            d = pd.to_datetime(row["Date"]).date()
+            event = row["Event"]
+
+            if event == "Contribution":
+                net_amt = row["Net to Investor"]  # negative
+                port_net_cfs.append((d, net_amt))
+                port_net_capital.append((d, net_amt))
+                continue
+
+            if event == "Acquisition Fee":
+                port_net_cfs.append((d, 0.0))
+                continue
+
+            # Distribution — recompute promote at portfolio level
+            pref_paid = row["Pref Paid"]
+            cap_returned = row["Capital Returned"]
+            excess = row["Excess"]
+            is_cap_event = (event == "Capital Distribution")
+
+            # Determine promote using portfolio-level hurdle_cleared
+            if hurdle_cleared:
+                # After hurdle cleared: all events test running XIRR
+                test_net = pref_paid + cap_returned + excess
+                test_cfs = port_net_cfs + [(d, test_net)]
+                test_irr = xirr(test_cfs) if len(test_cfs) >= 2 else None
+                if test_irr is not None and test_irr >= hurdle_rate:
+                    gp_promote = excess * promote_pct
+                else:
+                    gp_promote = 0.0
+            elif is_cap_event and excess > 0:
+                # Capital event before hurdle cleared: test XIRR
+                test_net = pref_paid + cap_returned + excess
+                test_cfs = port_net_cfs + [(d, test_net)]
+                test_irr = xirr(test_cfs) if len(test_cfs) >= 2 else None
+                if test_irr is not None and test_irr >= hurdle_rate:
+                    gp_promote = excess * promote_pct
+                    hurdle_cleared = True
+                else:
+                    gp_promote = 0.0
+            else:
+                # CF distribution before hurdle cleared: promote always
+                gp_promote = excess * promote_pct
+
+            net_to_investor = pref_paid + cap_returned + excess - gp_promote
+            port_net_cfs.append((d, net_to_investor))
+
+            if cap_returned > 0:
+                port_net_capital.append((d, cap_returned))
+            cf_dist = net_to_investor - cap_returned
+            if cf_dist > 0:
+                port_net_cf_dists.append((d, cf_dist))
+
+        port_irr = xirr(port_net_cfs) if len(port_net_cfs) >= 2 else None
+        port_contribs = sum(abs(a) for _, a in port_net_cfs if a < 0)
+        port_distribs = sum(a for _, a in port_net_cfs if a > 0)
         port_moic = port_distribs / port_contribs if port_contribs > 0 else 0.0
 
-        # Portfolio ROE from pooled net capital events / cf dists
-        port_net_capital = []
-        port_net_cf = []
-        for dr in deal_results:
-            for row in dr["waterfall_detail"]:
-                d = pd.to_datetime(row["Date"]).date()
-                if row["Event"] == "Contribution":
-                    port_net_capital.append((d, -abs(row["Scaled Amount"])))
-                else:
-                    if row["Capital Returned"] > 0:
-                        port_net_capital.append((d, row["Capital Returned"]))
-                    cf_dist = row["Net to Investor"] - row["Capital Returned"]
-                    if cf_dist > 0:
-                        port_net_cf.append((d, cf_dist))
-
-        port_start = min(d for d, _ in portfolio_net_cashflows)
-        port_end = max(d for d, _ in portfolio_net_cashflows)
-        port_roe = calculate_roe(port_net_capital, port_net_cf, port_start, port_end)
+        port_start = min(d for d, _ in port_net_cfs)
+        port_end = max(d for d, _ in port_net_cfs)
+        port_roe = calculate_roe(port_net_capital, port_net_cf_dists, port_start, port_end)
     else:
         port_irr = None
         port_contribs = 0.0
