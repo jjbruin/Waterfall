@@ -35,9 +35,9 @@ const detailColumns = [
   { key: 'MajorType', label: 'MajorType' },
   { key: 'Typename', label: 'Typename' },
   { key: 'Capital', label: 'Capital' },
-  { key: 'Amount', label: 'Amount', format: 'currency2', align: 'right' },
-  { key: 'Cashflow (XIRR)', label: 'Cashflow (XIRR)', format: 'currency2', align: 'right' },
-  { key: 'Capital Balance', label: 'Capital Balance', format: 'currency2', align: 'right' },
+  { key: 'Amount', label: 'Amount', format: 'currency', align: 'right' },
+  { key: 'Cashflow (XIRR)', label: 'Cashflow (XIRR)', format: 'currency', align: 'right' },
+  { key: 'Capital Balance', label: 'Capital Balance', format: 'currency', align: 'right' },
 ]
 
 onMounted(async () => {
@@ -113,7 +113,7 @@ const mergedSummary = computed(() => {
 // Formatters
 function fmtCur(v: any): string {
   if (v == null || v !== v) return '--'
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 0 }).format(v)
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(v)
 }
 function fmtPct(v: any): string {
   if (v == null || v !== v) return 'N/A'

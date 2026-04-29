@@ -11,7 +11,7 @@ function formatCell(value: any, format?: string): string {
   switch (format) {
     case 'currency':
       return new Intl.NumberFormat('en-US', {
-        style: 'currency', currency: 'USD', minimumFractionDigits: 0,
+        style: 'currency', currency: 'USD', minimumFractionDigits: 0, maximumFractionDigits: 0,
       }).format(value)
     case 'currency2':
       return new Intl.NumberFormat('en-US', {

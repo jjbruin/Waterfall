@@ -369,7 +369,7 @@ def generate_detail_excel(detail_rows: list[dict], deal_name: str,
                 cell.number_format = "MM/DD/YYYY"
             elif col in currency_cols:
                 cell.value = float(val) if pd.notna(val) else 0.0
-                cell.number_format = "$#,##0.00"
+                cell.number_format = "$#,##0"
             else:
                 cell.value = val
 
