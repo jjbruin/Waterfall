@@ -489,6 +489,8 @@ def compute_net_waterfall_for_deal(deal_acct: pd.DataFrame, inv: pd.DataFrame,
 
     capital_balance = 0.0
     pref_accrued = 0.0
+    unpaid_am_fee = 0.0
+    unpaid_expenses = 0.0
     last_date = None
     net_cashflows = []
     waterfall_detail = []
@@ -508,6 +510,7 @@ def compute_net_waterfall_for_deal(deal_acct: pd.DataFrame, inv: pd.DataFrame,
                 "Gross Amount": -abs(gross),
                 "Ownership %": ownership_pct,
                 "Scaled Amount": -contrib,
+                "Acq Fee Paid": 0.0,
                 "AM Fee": 0.0,
                 "Expenses": 0.0,
                 "Available": 0.0,
@@ -533,26 +536,36 @@ def compute_net_waterfall_for_deal(deal_acct: pd.DataFrame, inv: pd.DataFrame,
             else:
                 days_period = 0
 
-            # Acquisition Fee: pass through to investor without fees or promote.
-            # These are GP fees, not distributable profit.
+            # Acquisition Fee: entire distribution consumed by the fee.
+            # Investor gets $0. Period AM fees and expenses accrue unpaid.
             if is_acq_fee:
-                net_to_investor = scaled_dist
-                net_cashflows.append((d, net_to_investor))
+                # Accrue pref for elapsed time (time still passes)
+                if capital_balance > 0 and days_period > 0:
+                    pref_accrued += capital_balance * hurdle_rate * days_period / 365.0
+
+                # Accrue period fees as unpaid (no cash available to pay them)
+                period_am = capital_balance * am_fee_pct * days_period / 365.0 if capital_balance > 0 else 0.0
+                unpaid_am_fee += period_am
+                period_exp = annual_expenses * days_period / 365.0
+                unpaid_expenses += period_exp
+
+                # Do NOT append to net_cashflows — investor receives nothing
                 waterfall_detail.append({
                     "Date": str(d),
                     "Event": "Acquisition Fee",
                     "Gross Amount": abs(gross),
                     "Ownership %": ownership_pct,
                     "Scaled Amount": scaled_dist,
+                    "Acq Fee Paid": scaled_dist,
                     "AM Fee": 0.0,
                     "Expenses": 0.0,
-                    "Available": scaled_dist,
+                    "Available": 0.0,
                     "Pref Accrued": pref_accrued,
                     "Pref Paid": 0.0,
                     "Capital Returned": 0.0,
                     "Excess": 0.0,
                     "Promote (GP)": 0.0,
-                    "Net to Investor": net_to_investor,
+                    "Net to Investor": 0.0,
                     "Capital Balance": capital_balance,
                     "Pref Balance": pref_accrued,
                 })
@@ -563,11 +576,17 @@ def compute_net_waterfall_for_deal(deal_acct: pd.DataFrame, inv: pd.DataFrame,
             if capital_balance > 0 and days_period > 0:
                 pref_accrued += capital_balance * hurdle_rate * days_period / 365.0
 
-            # Compute fees (independent, then cap sequentially)
-            am_fee = capital_balance * am_fee_pct * days_period / 365.0 if capital_balance > 0 else 0.0
-            am_fee = min(am_fee, scaled_dist)  # cap at distribution
-            expenses = annual_expenses * days_period / 365.0
-            expenses = min(expenses, max(0.0, scaled_dist - am_fee))  # cap at remainder
+            # Compute fees: period amount + any carry-forward from acq fee periods
+            period_am = capital_balance * am_fee_pct * days_period / 365.0 if capital_balance > 0 else 0.0
+            am_fee_due = period_am + unpaid_am_fee
+            am_fee = min(am_fee_due, scaled_dist)  # cap at distribution
+            unpaid_am_fee = am_fee_due - am_fee  # carry forward any unpaid remainder
+
+            period_exp = annual_expenses * days_period / 365.0
+            exp_due = period_exp + unpaid_expenses
+            expenses = min(exp_due, max(0.0, scaled_dist - am_fee))  # cap at remainder
+            unpaid_expenses = exp_due - expenses  # carry forward any unpaid remainder
+
             available = scaled_dist - am_fee - expenses
 
             # Pay accrued pref
@@ -595,6 +614,7 @@ def compute_net_waterfall_for_deal(deal_acct: pd.DataFrame, inv: pd.DataFrame,
                 "Gross Amount": abs(gross),
                 "Ownership %": ownership_pct,
                 "Scaled Amount": scaled_dist,
+                "Acq Fee Paid": 0.0,
                 "AM Fee": am_fee,
                 "Expenses": expenses,
                 "Available": available,
@@ -875,9 +895,9 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
     # Users can change assumptions in B2/D2/F2/H2/J2 and the entire sheet recalculates.
     #
     # Column map (row 4 header, data from row 5):
-    #   A=Date  B=Event  C=Gross  D=Own%  E=Scaled  F=AMFee  G=Expenses
-    #   H=Available  I=PrefAccrued  J=PrefPaid  K=CapReturned  L=Excess
-    #   M=Promote  N=NetToInvestor  O=CapBalance  P=PrefBalance
+    #   A=Date  B=Event  C=Gross  D=Own%  E=Scaled  F=AcqFeePaid
+    #   G=AMFee  H=Expenses  I=Available  J=PrefAccrued  K=PrefPaid
+    #   L=CapReturned  M=Excess  N=Promote  O=NetToInvestor  P=CapBalance  Q=PrefBalance
     #
     # Assumption cells: B2=Ownership%, D2=AM Fee%, F2=Hurdle%, H2=Promote%, J2=AnnualExp
 
@@ -929,9 +949,9 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
         HDR = 4
         detail_cols = [
             "Date", "Event", "Gross Amount", "Ownership %", "Scaled Amount",
-            "AM Fee", "Expenses", "Available", "Pref Accrued", "Pref Paid",
-            "Capital Returned", "Excess", "Promote (GP)", "Net to Investor",
-            "Capital Balance", "Pref Balance",
+            "Acq Fee Paid", "AM Fee", "Expenses", "Available", "Pref Accrued",
+            "Pref Paid", "Capital Returned", "Excess", "Promote (GP)",
+            "Net to Investor", "Capital Balance", "Pref Balance",
         ]
         for ci, col in enumerate(detail_cols, 1):
             cell = dws.cell(row=HDR, column=ci, value=col)
@@ -942,28 +962,32 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
         # Add formula-explanation comments on headers
         dws.cell(row=HDR, column=5).comment = Comment("= Gross Amount × Ownership %", "Formula")
         dws.cell(row=HDR, column=6).comment = Comment(
-            "= prior Capital Balance × AM Fee % × Days / 365\n"
-            "Capped at Scaled Amount (fees cannot exceed the distribution).", "Formula")
+            "= Scaled Amount for Acquisition Fee rows; 0 otherwise.\n"
+            "Consumes the entire distribution — nothing left for the waterfall.", "Formula")
         dws.cell(row=HDR, column=7).comment = Comment(
+            "= prior Capital Balance × AM Fee % × Days / 365\n"
+            "Capped at Scaled Amount − Acq Fee Paid.", "Formula")
+        dws.cell(row=HDR, column=8).comment = Comment(
             "= Annual Expenses × Days / 365\n"
-            "Capped at Scaled Amount − AM Fee (remaining after AM Fee).", "Formula")
-        dws.cell(row=HDR, column=8).comment = Comment("= Scaled Amount − AM Fee − Expenses", "Formula")
+            "Capped at Scaled − Acq Fee − AM Fee.", "Formula")
         dws.cell(row=HDR, column=9).comment = Comment(
+            "= Scaled Amount − Acq Fee Paid − AM Fee − Expenses", "Formula")
+        dws.cell(row=HDR, column=10).comment = Comment(
             "= prior Pref Balance + prior Capital Balance × Hurdle Rate % × Days / 365", "Formula")
-        dws.cell(row=HDR, column=10).comment = Comment("= MIN(Pref Accrued, Available)", "Formula")
-        dws.cell(row=HDR, column=11).comment = Comment(
+        dws.cell(row=HDR, column=11).comment = Comment("= MIN(Pref Accrued, Available)", "Formula")
+        dws.cell(row=HDR, column=12).comment = Comment(
             "= MIN(prior Capital Balance, Available − Pref Paid)\n"
             "Only on Capital Distribution events; 0 for CF Distributions.", "Formula")
-        dws.cell(row=HDR, column=12).comment = Comment("= Available − Pref Paid − Capital Returned", "Formula")
-        dws.cell(row=HDR, column=13).comment = Comment(
-            "= Excess × Promote %\n"
-            "0 for Acquisition Fee rows (fees pass through without promote).", "Formula")
+        dws.cell(row=HDR, column=13).comment = Comment("= Available − Pref Paid − Capital Returned", "Formula")
         dws.cell(row=HDR, column=14).comment = Comment(
-            "= Pref Paid + Capital Returned + Excess − Promote (GP)", "Formula")
+            "= Excess × Promote %\n"
+            "0 for Acquisition Fee rows.", "Formula")
         dws.cell(row=HDR, column=15).comment = Comment(
+            "= Pref Paid + Capital Returned + Excess − Promote (GP)", "Formula")
+        dws.cell(row=HDR, column=16).comment = Comment(
             "Contributions: prior + |Scaled Amount|\n"
             "Distributions: prior − Capital Returned", "Formula")
-        dws.cell(row=HDR, column=16).comment = Comment("= Pref Accrued − Pref Paid", "Formula")
+        dws.cell(row=HDR, column=17).comment = Comment("= Pref Accrued − Pref Paid", "Formula")
 
         # ── Data rows with formulas (row 5+) ──
         FDR = HDR + 1  # first data row
@@ -996,102 +1020,107 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
             c.number_format = CUR
 
             if is_contrib:
-                # F-M: zeros for contributions (no fees, no waterfall)
-                for ci in range(6, 14):
+                # F-N: zeros for contributions (no fees, no waterfall)
+                for ci in range(6, 15):
                     dws.cell(row=r, column=ci, value=0).number_format = CUR
 
-                # N: Net to Investor = Scaled (negative contribution)
-                c = dws.cell(row=r, column=14)
+                # O: Net to Investor = Scaled (negative contribution)
+                c = dws.cell(row=r, column=15)
                 c.value = f"=E{r}"
                 c.number_format = CUR
 
-                # O: Capital Balance = prior + |contribution|
-                c = dws.cell(row=r, column=15)
-                c.value = f"=ABS(E{r})" if is_first else f"=O{p}+ABS(E{r})"
+                # P: Capital Balance = prior + |contribution|
+                c = dws.cell(row=r, column=16)
+                c.value = f"=ABS(E{r})" if is_first else f"=P{p}+ABS(E{r})"
                 c.number_format = CUR
 
-                # P: Pref Balance (unchanged through contributions)
-                c = dws.cell(row=r, column=16)
-                c.value = 0.0 if is_first else f"=P{p}"
+                # Q: Pref Balance (unchanged through contributions)
+                c = dws.cell(row=r, column=17)
+                c.value = 0.0 if is_first else f"=Q{p}"
                 c.number_format = CUR
 
             else:
                 # ── Distribution row: full waterfall formulas ──
 
-                # F: AM Fee = prior Capital Balance × AM Fee % × Days / 365
-                # Capped at scaled distribution (cannot exceed what's available)
+                # F: Acq Fee Paid = Scaled Amount if Acquisition Fee, else 0
                 c = dws.cell(row=r, column=6)
-                if is_first:
-                    c.value = 0.0
-                else:
-                    days = f"(A{r}-A{p})/365"
-                    am_raw = f"O{p}*{AMF}*{days}"
-                    c.value = f"=IF(O{p}<=0,0,MIN({am_raw},E{r}))"
+                c.value = f'=IF(B{r}="Acquisition Fee",E{r},0)'
                 c.number_format = CUR
 
-                # G: Expenses = Annual Expenses × Days / 365
-                # Capped at remaining after AM Fee (cannot exceed distribution - AM Fee)
+                # G: AM Fee = prior Capital Balance × AM Fee % × Days / 365
+                # Capped at Scaled − Acq Fee Paid
                 c = dws.cell(row=r, column=7)
                 if is_first:
                     c.value = 0.0
                 else:
                     days = f"(A{r}-A{p})/365"
-                    exp_raw = f"{EXP}*{days}"
-                    c.value = f"=MIN({exp_raw},MAX(0,E{r}-F{r}))"
+                    am_raw = f"P{p}*{AMF}*{days}"
+                    c.value = f"=IF(P{p}<=0,0,MIN({am_raw},E{r}-F{r}))"
                 c.number_format = CUR
 
-                # H: Available = Scaled - AM Fee - Expenses
+                # H: Expenses = Annual Expenses × Days / 365
+                # Capped at remaining after Acq Fee + AM Fee
                 c = dws.cell(row=r, column=8)
-                c.value = f"=E{r}-F{r}-G{r}"
+                if is_first:
+                    c.value = 0.0
+                else:
+                    days = f"(A{r}-A{p})/365"
+                    exp_raw = f"{EXP}*{days}"
+                    c.value = f"=MIN({exp_raw},MAX(0,E{r}-F{r}-G{r}))"
                 c.number_format = CUR
 
-                # I: Pref Accrued = prior Pref Balance + accrual
+                # I: Available = Scaled - Acq Fee - AM Fee - Expenses
                 c = dws.cell(row=r, column=9)
-                if is_first:
-                    c.value = 0.0
-                else:
-                    c.value = f"=P{p}+O{p}*{HUR}*(A{r}-A{p})/365"
+                c.value = f"=E{r}-F{r}-G{r}-H{r}"
                 c.number_format = CUR
 
-                # J: Pref Paid = MIN(Accrued, Available)
+                # J: Pref Accrued = prior Pref Balance + accrual
                 c = dws.cell(row=r, column=10)
-                c.value = f"=MIN(I{r},H{r})"
+                if is_first:
+                    c.value = 0.0
+                else:
+                    c.value = f"=Q{p}+P{p}*{HUR}*(A{r}-A{p})/365"
                 c.number_format = CUR
 
-                # K: Capital Returned (capital events only)
+                # K: Pref Paid = MIN(Accrued, Available)
                 c = dws.cell(row=r, column=11)
-                if is_first:
-                    c.value = 0.0
-                else:
-                    c.value = f'=IF(B{r}="Capital Distribution",MIN(O{p},H{r}-J{r}),0)'
+                c.value = f"=MIN(J{r},I{r})"
                 c.number_format = CUR
 
-                # L: Excess = Available - Pref Paid - Capital Returned
+                # L: Capital Returned (capital events only)
                 c = dws.cell(row=r, column=12)
-                c.value = f"=H{r}-J{r}-K{r}"
-                c.number_format = CUR
-
-                # M: Promote = Excess × Promote% (0 for Acquisition Fee rows)
-                c = dws.cell(row=r, column=13)
-                c.value = f'=IF(B{r}="Acquisition Fee",0,L{r}*{PRO})'
-                c.number_format = CUR
-
-                # N: Net to Investor = Pref + Capital + Excess - Promote
-                c = dws.cell(row=r, column=14)
-                c.value = f"=J{r}+K{r}+L{r}-M{r}"
-                c.number_format = CUR
-
-                # O: Capital Balance = prior - Capital Returned
-                c = dws.cell(row=r, column=15)
                 if is_first:
                     c.value = 0.0
                 else:
-                    c.value = f"=O{p}-K{r}"
+                    c.value = f'=IF(B{r}="Capital Distribution",MIN(P{p},I{r}-K{r}),0)'
                 c.number_format = CUR
 
-                # P: Pref Balance = Accrued - Paid
+                # M: Excess = Available - Pref Paid - Capital Returned
+                c = dws.cell(row=r, column=13)
+                c.value = f"=I{r}-K{r}-L{r}"
+                c.number_format = CUR
+
+                # N: Promote = Excess × Promote% (0 for Acquisition Fee rows)
+                c = dws.cell(row=r, column=14)
+                c.value = f'=IF(B{r}="Acquisition Fee",0,M{r}*{PRO})'
+                c.number_format = CUR
+
+                # O: Net to Investor = Pref + Capital + Excess - Promote
+                c = dws.cell(row=r, column=15)
+                c.value = f"=K{r}+L{r}+M{r}-N{r}"
+                c.number_format = CUR
+
+                # P: Capital Balance = prior - Capital Returned
                 c = dws.cell(row=r, column=16)
-                c.value = f"=I{r}-J{r}"
+                if is_first:
+                    c.value = 0.0
+                else:
+                    c.value = f"=P{p}-L{r}"
+                c.number_format = CUR
+
+                # Q: Pref Balance = Accrued - Paid
+                c = dws.cell(row=r, column=17)
+                c.value = f"=J{r}-K{r}"
                 c.number_format = CUR
 
         # ── Summary metrics as formulas ──
@@ -1101,12 +1130,12 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
 
         dws.cell(row=sr + 1, column=1, value="Net Contributions").font = bold_font
         c = dws.cell(row=sr + 1, column=2)
-        c.value = f'=SUMPRODUCT((B{FDR}:B{last_r}="Contribution")*N{FDR}:N{last_r})'
+        c.value = f'=SUMPRODUCT((B{FDR}:B{last_r}="Contribution")*O{FDR}:O{last_r})'
         c.number_format = CUR
 
         dws.cell(row=sr + 2, column=1, value="Net Distributions").font = bold_font
         c = dws.cell(row=sr + 2, column=2)
-        c.value = f'=SUMPRODUCT((B{FDR}:B{last_r}<>"Contribution")*N{FDR}:N{last_r})'
+        c.value = f'=SUMPRODUCT((B{FDR}:B{last_r}<>"Contribution")*O{FDR}:O{last_r})'
         c.number_format = CUR
 
         dws.cell(row=sr + 3, column=1, value="Net MOIC").font = bold_font
@@ -1116,11 +1145,11 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
 
         dws.cell(row=sr + 4, column=1, value="Net IRR").font = bold_font
         c = dws.cell(row=sr + 4, column=2)
-        c.value = f'=IFERROR(XIRR(N{FDR}:N{last_r},A{FDR}:A{last_r}),"N/A")'
+        c.value = f'=IFERROR(XIRR(O{FDR}:O{last_r},A{FDR}:A{last_r}),"N/A")'
         c.number_format = "0.00%"
 
         # ── Auto-size columns ──
-        col_widths = [12, 20, 16, 12, 16, 14, 14, 14, 14, 14, 16, 14, 14, 16, 16, 14]
+        col_widths = [12, 20, 16, 12, 16, 14, 14, 14, 14, 14, 14, 16, 14, 14, 16, 16, 14]
         for ci, w in enumerate(col_widths, 1):
             dws.column_dimensions[get_column_letter(ci)].width = w
 
