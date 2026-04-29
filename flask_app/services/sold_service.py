@@ -474,14 +474,20 @@ def compute_net_waterfall_for_deal(deal_acct: pd.DataFrame, inv: pd.DataFrame,
                 "waterfall_detail": [], "net_cashflows": []}
 
     # Build sorted event list
+    # Capital events identified by Typename (not the Capital flag from accounting):
+    #   "Distribution: Return of Capital" or "Distribution: Realized Gain"
+    # These are the events that trigger the promote XIRR hurdle test.
+    CAPITAL_TYPENAMES = {"return of capital", "realized gain"}
     events = []
     for _, r in pref.iterrows():
         amt = float(r["Amt"])
+        tn = str(r.get("Typename", "")).lower()
+        is_cap_event = any(kw in tn for kw in CAPITAL_TYPENAMES)
         events.append({
             "date": r["EffectiveDate"],
             "is_contribution": bool(r["is_contribution"]),
             "is_distribution": bool(r["is_distribution"]),
-            "is_capital": bool(r["is_capital"]),
+            "is_capital_event": is_cap_event,
             "gross_amount": amt,
             "typename": str(r.get("Typename", "")),
         })
@@ -490,6 +496,7 @@ def compute_net_waterfall_for_deal(deal_acct: pd.DataFrame, inv: pd.DataFrame,
     capital_balance = 0.0
     pref_accrued = 0.0
     last_date = None
+    hurdle_cleared = False  # set True once a capital event passes XIRR >= hurdle
     net_cashflows = []
     waterfall_detail = []
 
@@ -582,18 +589,27 @@ def compute_net_waterfall_for_deal(deal_acct: pd.DataFrame, inv: pd.DataFrame,
             pref_accrued -= pref_paid
             remaining = available - pref_paid
 
-            # Return capital if capital event
+            # Return capital if capital event (identified by Typename)
             capital_returned = 0.0
-            if ev["is_capital"] and remaining > 0:
+            if ev["is_capital_event"] and remaining > 0:
                 capital_returned = min(capital_balance, remaining)
                 capital_balance -= capital_returned
                 remaining -= capital_returned
 
             # Promote split on excess
-            # Capital events: promote only earned if investor's cumulative
-            # IRR (inception to this date, assuming full excess) >= hurdle.
-            # CF distributions: promote always applies.
-            if ev["is_capital"] and remaining > 0:
+            #
+            # Capital events (Return of Capital / Realized Gain):
+            #   Test XIRR — promote earned only if cumulative IRR >= hurdle.
+            #   If test passes, set hurdle_cleared = True.
+            #
+            # After hurdle is cleared:
+            #   ALL future distributions (CF or Capital) earn promote so long
+            #   as the running net IRR continues to exceed the hurdle rate.
+            #
+            # CF distributions before hurdle cleared:
+            #   Promote always applies (operating income).
+            if hurdle_cleared:
+                # Post-hurdle: all events get promote if running IRR >= hurdle
                 test_net = pref_paid + capital_returned + remaining
                 test_cfs = net_cashflows + [(d, test_net)]
                 test_irr = xirr(test_cfs) if len(test_cfs) >= 2 else None
@@ -601,7 +617,18 @@ def compute_net_waterfall_for_deal(deal_acct: pd.DataFrame, inv: pd.DataFrame,
                     gp_promote = remaining * promote_pct
                 else:
                     gp_promote = 0.0
+            elif ev["is_capital_event"] and remaining > 0:
+                # Capital event before hurdle cleared: test XIRR
+                test_net = pref_paid + capital_returned + remaining
+                test_cfs = net_cashflows + [(d, test_net)]
+                test_irr = xirr(test_cfs) if len(test_cfs) >= 2 else None
+                if test_irr is not None and test_irr >= hurdle_rate:
+                    gp_promote = remaining * promote_pct
+                    hurdle_cleared = True
+                else:
+                    gp_promote = 0.0
             else:
+                # CF distribution before hurdle cleared: promote always applies
                 gp_promote = remaining * promote_pct
             investor_share = remaining - gp_promote
 
@@ -610,7 +637,7 @@ def compute_net_waterfall_for_deal(deal_acct: pd.DataFrame, inv: pd.DataFrame,
 
             waterfall_detail.append({
                 "Date": str(d),
-                "Event": "Capital Distribution" if ev["is_capital"] else "CF Distribution",
+                "Event": "Capital Distribution" if ev["is_capital_event"] else "CF Distribution",
                 "Gross Amount": abs(gross),
                 "Ownership %": ownership_pct,
                 "Scaled Amount": scaled_dist,
@@ -848,7 +875,8 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
             "Date", "Event", "Gross Amount", "Ownership %", "Scaled Amount",
             "Acq Fee Paid", "AM Fee", "Expenses", "Available", "Pref Accrued",
             "Pref Paid", "Capital Returned", "Excess", "Promote (GP)",
-            "Net to Investor", "Capital Balance", "Pref Balance", "Test Net",
+            "Net to Investor", "Capital Balance", "Pref Balance",
+            "Test Net", "Hurdle Cleared",
         ]
         for ci, col in enumerate(detail_cols, 1):
             cell = dws.cell(row=HDR, column=ci, value=col)
@@ -877,9 +905,10 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
             "Only on Capital Distribution events; 0 for CF Distributions.", "Formula")
         dws.cell(row=HDR, column=13).comment = Comment("= Available − Pref Paid − Capital Returned", "Formula")
         dws.cell(row=HDR, column=14).comment = Comment(
-            "CF Distributions: Excess × Promote % (always applies).\n"
-            "Capital Distributions: Excess × Promote % ONLY if\n"
-            "XIRR(Test Net, Dates) >= Hurdle Rate; otherwise 0.\n"
+            "Capital events (ROC / Realized Gain): Excess × Promote %\n"
+            "only if XIRR(Test Net) >= Hurdle Rate.\n"
+            "After hurdle cleared: ALL events test XIRR.\n"
+            "Before hurdle cleared: CF Distributions always get promote.\n"
             "Acquisition Fee: always 0.", "Formula")
         dws.cell(row=HDR, column=15).comment = Comment(
             "= Pref Paid + Capital Returned + Excess − Promote (GP)", "Formula")
@@ -888,9 +917,12 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
             "Distributions: prior − Capital Returned", "Formula")
         dws.cell(row=HDR, column=17).comment = Comment("= Pref Accrued − Pref Paid", "Formula")
         dws.cell(row=HDR, column=18).comment = Comment(
-            "Hypothetical Net to Investor assuming no promote on capital events.\n"
-            "Used for XIRR hurdle test: promote on a sale is only earned\n"
-            "if XIRR(Test Net, Dates) >= Hurdle Rate.", "Formula")
+            "Hypothetical Net to Investor assuming no promote.\n"
+            "Used for XIRR hurdle test on all distribution types.", "Formula")
+        dws.cell(row=HDR, column=19).comment = Comment(
+            "TRUE once a Capital Distribution passes the XIRR hurdle test.\n"
+            "Once TRUE, stays TRUE. After hurdle cleared, promote on ALL\n"
+            "events is conditional on running XIRR >= Hurdle.", "Formula")
 
         # ── Data rows with formulas (row 5+) ──
         FDR = HDR + 1  # first data row
@@ -946,6 +978,10 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
                 c = dws.cell(row=r, column=18)
                 c.value = f"=O{r}"
                 c.number_format = CUR
+
+                # S: Hurdle Cleared (carry forward; FALSE for first row)
+                c = dws.cell(row=r, column=19)
+                c.value = False if is_first else f"=S{p}"
 
             else:
                 # ── Distribution row: full waterfall formulas ──
@@ -1008,21 +1044,32 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
                 c.value = f"=I{r}-K{r}-L{r}"
                 c.number_format = CUR
 
-                # N: Promote
-                # CF Distributions: Excess × Promote% (always)
-                # Capital Distributions: only if XIRR(Test Net) >= Hurdle Rate
-                # Acquisition Fee: 0
+                # N: Promote — logic depends on hurdle_cleared state (col S)
+                #   Before hurdle cleared:
+                #     Capital events: XIRR test → promote if passes (sets hurdle_cleared)
+                #     CF distributions: promote always applies
+                #   After hurdle cleared:
+                #     ALL events: promote if running XIRR >= hurdle
+                #   Acquisition Fee: always 0
                 c = dws.cell(row=r, column=14)
+                xirr_test = f'IFERROR(XIRR(R{FDR}:R{r},A{FDR}:A{r}),-1)>={HUR}'
                 if is_first:
-                    c.value = f'=IF(B{r}="Acquisition Fee",0,M{r}*{PRO})'
-                else:
-                    cap_test = (
-                        f'IF(IFERROR(XIRR(R{FDR}:R{r},A{FDR}:A{r}),-1)>={HUR},'
-                        f'M{r}*{PRO},0)'
-                    )
+                    # No prior hurdle state — capital events test, CF always
                     c.value = (
                         f'=IF(B{r}="Acquisition Fee",0,'
-                        f'IF(B{r}="Capital Distribution",{cap_test},M{r}*{PRO}))'
+                        f'IF(B{r}="Capital Distribution",'
+                        f'IF({xirr_test},M{r}*{PRO},0),'
+                        f'M{r}*{PRO}))'
+                    )
+                else:
+                    # S{p} = hurdle_cleared from prior row
+                    c.value = (
+                        f'=IF(B{r}="Acquisition Fee",0,'
+                        f'IF(S{p},'
+                        f'IF({xirr_test},M{r}*{PRO},0),'
+                        f'IF(B{r}="Capital Distribution",'
+                        f'IF({xirr_test},M{r}*{PRO},0),'
+                        f'M{r}*{PRO})))'
                     )
                 c.number_format = CUR
 
@@ -1044,11 +1091,19 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
                 c.value = f"=J{r}-K{r}"
                 c.number_format = CUR
 
-                # R: Test Net — for Capital Distributions, full excess
-                #    (no promote) for hurdle test; otherwise actual Net
+                # R: Test Net — full excess (no promote) for all distributions
+                #    Used by XIRR hurdle test; independent of Promote to avoid circularity
                 c = dws.cell(row=r, column=18)
-                c.value = f'=IF(B{r}="Capital Distribution",K{r}+L{r}+M{r},O{r})'
+                c.value = f"=K{r}+L{r}+M{r}"
                 c.number_format = CUR
+
+                # S: Hurdle Cleared — TRUE once a Capital Distribution passes XIRR test
+                c = dws.cell(row=r, column=19)
+                xirr_pass = f'AND(B{r}="Capital Distribution",IFERROR(XIRR(R{FDR}:R{r},A{FDR}:A{r}),-1)>={HUR})'
+                if is_first:
+                    c.value = f"={xirr_pass}"
+                else:
+                    c.value = f"=OR(S{p},{xirr_pass})"
 
         # ── Summary metrics as formulas ──
         last_r = FDR + len(detail) - 1
@@ -1085,7 +1140,7 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
         }
 
         # ── Auto-size columns ──
-        col_widths = [12, 20, 16, 12, 16, 14, 14, 14, 14, 14, 14, 16, 14, 14, 16, 16, 14, 14]
+        col_widths = [12, 20, 16, 12, 16, 14, 14, 14, 14, 14, 14, 16, 14, 14, 16, 16, 14, 14, 16]
         for ci, w in enumerate(col_widths, 1):
             dws.column_dimensions[get_column_letter(ci)].width = w
 
@@ -1286,16 +1341,16 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
     # Column map:
     #   A=Deal  B=Date  C=Event  D=Gross  E=Scaled  F=AcqFeePaid
     #   G=AMFee  H=Expenses  I=Available  J=PrefPaid  K=CapReturned
-    #   L=Excess  M=Promote  N=NetToInvestor  O=TestNet
+    #   L=Excess  M=Promote  N=NetToInvestor  O=TestNet  P=HurdleCleared
     #
-    # Promote uses the same hurdle test as per-deal sheets:
-    #   CF Distributions: Excess × Promote% (always)
-    #   Capital Distributions: Excess × Promote% only if XIRR(TestNet) >= Hurdle
+    # Promote logic (matches per-deal sheets + Python):
+    #   Before hurdle cleared: capital events test XIRR, CF dists always get promote
+    #   After hurdle cleared: ALL events get promote if running XIRR >= hurdle
     #   Acquisition Fee: 0
 
     pws = wb.create_sheet(title="Portfolio Detail")
 
-    # Assumption references (same cells as per-deal sheets — add a row for them)
+    # Assumption references
     pws.cell(row=1, column=1, value="Assumptions (same as deal sheets)").font = bold_font
     port_assumption_defs = [
         (1, "Hurdle Rate %", assumptions.get("hurdle_rate", 0), "0.00%"),
@@ -1314,7 +1369,7 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
         "Deal", "Date", "Event", "Gross Amount", "Scaled Amount",
         "Acq Fee Paid", "AM Fee", "Expenses", "Available",
         "Pref Paid", "Capital Returned", "Excess", "Promote (GP)",
-        "Net to Investor", "Test Net",
+        "Net to Investor", "Test Net", "Hurdle Cleared",
     ]
     for ci, col in enumerate(port_cols, 1):
         cell = pws.cell(row=HDR_P, column=ci, value=col)
@@ -1336,6 +1391,8 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
     FDR_P = HDR_P + 1  # first data row
     for idx, (deal_name, row) in enumerate(all_events):
         r = FDR_P + idx
+        p = r - 1  # previous row
+        is_contrib = (row["Event"] == "Contribution")
 
         pws.cell(row=r, column=1, value=deal_name)
 
@@ -1357,37 +1414,56 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
         c.value = f"=I{r}-J{r}-K{r}"
         c.number_format = CUR
 
-        # M: Promote — formula with XIRR hurdle test for capital events
+        # M: Promote — with hurdle_cleared state (col P)
         c = pws.cell(row=r, column=13)
-        if idx == 0:
-            c.value = f'=IF(C{r}="Acquisition Fee",0,L{r}*{P_PRO})'
-        else:
-            cap_test = (
-                f'IF(IFERROR(XIRR(O{FDR_P}:O{r},B{FDR_P}:B{r}),-1)>={P_HUR},'
-                f'L{r}*{P_PRO},0)'
-            )
+        xirr_test = f'IFERROR(XIRR(O{FDR_P}:O{r},B{FDR_P}:B{r}),-1)>={P_HUR}'
+        if is_contrib:
+            c.value = 0
+        elif idx == 0:
+            # First event, no prior hurdle state
             c.value = (
                 f'=IF(C{r}="Acquisition Fee",0,'
-                f'IF(C{r}="Capital Distribution",{cap_test},L{r}*{P_PRO}))'
+                f'IF(C{r}="Capital Distribution",'
+                f'IF({xirr_test},L{r}*{P_PRO},0),'
+                f'L{r}*{P_PRO}))'
+            )
+        else:
+            # P{p} = hurdle_cleared from prior row
+            c.value = (
+                f'=IF(C{r}="Acquisition Fee",0,'
+                f'IF(P{p},'
+                f'IF({xirr_test},L{r}*{P_PRO},0),'
+                f'IF(C{r}="Capital Distribution",'
+                f'IF({xirr_test},L{r}*{P_PRO},0),'
+                f'L{r}*{P_PRO})))'
             )
         c.number_format = CUR
 
-        # N: Net to Investor = Pref Paid + Capital Returned + Excess - Promote
+        # N: Net to Investor
         c = pws.cell(row=r, column=14)
-        is_contrib = (row["Event"] == "Contribution")
         if is_contrib:
             c.value = float(row["Net to Investor"])
         else:
             c.value = f"=J{r}+K{r}+L{r}-M{r}"
         c.number_format = CUR
 
-        # O: Test Net — full excess on capital events, else actual net
+        # O: Test Net — full excess (no promote) for all distributions
         c = pws.cell(row=r, column=15)
         if is_contrib:
             c.value = f"=N{r}"
         else:
-            c.value = f'=IF(C{r}="Capital Distribution",J{r}+K{r}+L{r},N{r})'
+            c.value = f"=J{r}+K{r}+L{r}"
         c.number_format = CUR
+
+        # P: Hurdle Cleared — TRUE once a Capital Distribution passes XIRR test
+        c = pws.cell(row=r, column=16)
+        xirr_pass = f'AND(C{r}="Capital Distribution",IFERROR(XIRR(O{FDR_P}:O{r},B{FDR_P}:B{r}),-1)>={P_HUR})'
+        if is_contrib:
+            c.value = False if idx == 0 else f"=P{p}"
+        elif idx == 0:
+            c.value = f"={xirr_pass}"
+        else:
+            c.value = f"=OR(P{p},{xirr_pass})"
 
     if all_events:
         last_r = FDR_P + len(all_events) - 1
@@ -1431,7 +1507,7 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
                 break
 
     # Auto-size Portfolio Detail columns
-    port_widths = [28, 12, 20, 16, 16, 14, 14, 14, 14, 14, 16, 14, 14, 16, 14]
+    port_widths = [28, 12, 20, 16, 16, 14, 14, 14, 14, 14, 16, 14, 14, 16, 14, 16]
     for ci, w in enumerate(port_widths, 1):
         pws.column_dimensions[get_column_letter(ci)].width = w
 
