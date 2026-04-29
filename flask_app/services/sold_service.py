@@ -1280,16 +1280,44 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
 
     # ── Phase 3: Portfolio Detail sheet ──
     # Pools all deals' waterfall events chronologically for portfolio-level validation.
+    # Uses formulas for Promote (with XIRR hurdle test) and Net to Investor so that
+    # changing promote assumptions recalculates the portfolio waterfall.
+    #
+    # Column map:
+    #   A=Deal  B=Date  C=Event  D=Gross  E=Scaled  F=AcqFeePaid
+    #   G=AMFee  H=Expenses  I=Available  J=PrefPaid  K=CapReturned
+    #   L=Excess  M=Promote  N=NetToInvestor  O=TestNet
+    #
+    # Promote uses the same hurdle test as per-deal sheets:
+    #   CF Distributions: Excess × Promote% (always)
+    #   Capital Distributions: Excess × Promote% only if XIRR(TestNet) >= Hurdle
+    #   Acquisition Fee: 0
+
     pws = wb.create_sheet(title="Portfolio Detail")
 
+    # Assumption references (same cells as per-deal sheets — add a row for them)
+    pws.cell(row=1, column=1, value="Assumptions (same as deal sheets)").font = bold_font
+    port_assumption_defs = [
+        (1, "Hurdle Rate %", assumptions.get("hurdle_rate", 0), "0.00%"),
+        (3, "Promote %", assumptions.get("promote_pct", 0), "0.00%"),
+    ]
+    for col, label, val, fmt in port_assumption_defs:
+        pws.cell(row=2, column=col, value=label).font = bold_font
+        c = pws.cell(row=2, column=col + 1, value=val)
+        c.number_format = fmt
+
+    P_HUR = "$B$2"  # Hurdle Rate
+    P_PRO = "$D$2"  # Promote %
+
+    HDR_P = 4  # header row
     port_cols = [
         "Deal", "Date", "Event", "Gross Amount", "Scaled Amount",
         "Acq Fee Paid", "AM Fee", "Expenses", "Available",
-        "Pref Paid", "Capital Returned", "Promote (GP)",
-        "Net to Investor",
+        "Pref Paid", "Capital Returned", "Excess", "Promote (GP)",
+        "Net to Investor", "Test Net",
     ]
     for ci, col in enumerate(port_cols, 1):
-        cell = pws.cell(row=1, column=ci, value=col)
+        cell = pws.cell(row=HDR_P, column=ci, value=col)
         cell.font = header_font
         cell.fill = header_fill
         cell.alignment = Alignment(horizontal="center")
@@ -1305,9 +1333,9 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
     all_events.sort(key=lambda x: (pd.to_datetime(x[1]["Date"]), x[0]))
 
     CUR = "$#,##0"
-    FDR = 2  # first data row
+    FDR_P = HDR_P + 1  # first data row
     for idx, (deal_name, row) in enumerate(all_events):
-        r = FDR + idx
+        r = FDR_P + idx
 
         pws.cell(row=r, column=1, value=deal_name)
 
@@ -1316,30 +1344,67 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
 
         pws.cell(row=r, column=3, value=row["Event"])
 
+        # D-K: static values from per-deal computation
         for ci, key in [
             (4, "Gross Amount"), (5, "Scaled Amount"), (6, "Acq Fee Paid"),
             (7, "AM Fee"), (8, "Expenses"), (9, "Available"),
-            (10, "Pref Paid"), (11, "Capital Returned"), (12, "Promote (GP)"),
-            (13, "Net to Investor"),
+            (10, "Pref Paid"), (11, "Capital Returned"),
         ]:
             pws.cell(row=r, column=ci, value=float(row[key])).number_format = CUR
 
+        # L: Excess = Available - Pref Paid - Capital Returned
+        c = pws.cell(row=r, column=12)
+        c.value = f"=I{r}-J{r}-K{r}"
+        c.number_format = CUR
+
+        # M: Promote — formula with XIRR hurdle test for capital events
+        c = pws.cell(row=r, column=13)
+        if idx == 0:
+            c.value = f'=IF(C{r}="Acquisition Fee",0,L{r}*{P_PRO})'
+        else:
+            cap_test = (
+                f'IF(IFERROR(XIRR(O{FDR_P}:O{r},B{FDR_P}:B{r}),-1)>={P_HUR},'
+                f'L{r}*{P_PRO},0)'
+            )
+            c.value = (
+                f'=IF(C{r}="Acquisition Fee",0,'
+                f'IF(C{r}="Capital Distribution",{cap_test},L{r}*{P_PRO}))'
+            )
+        c.number_format = CUR
+
+        # N: Net to Investor = Pref Paid + Capital Returned + Excess - Promote
+        c = pws.cell(row=r, column=14)
+        is_contrib = (row["Event"] == "Contribution")
+        if is_contrib:
+            c.value = float(row["Net to Investor"])
+        else:
+            c.value = f"=J{r}+K{r}+L{r}-M{r}"
+        c.number_format = CUR
+
+        # O: Test Net — full excess on capital events, else actual net
+        c = pws.cell(row=r, column=15)
+        if is_contrib:
+            c.value = f"=N{r}"
+        else:
+            c.value = f'=IF(C{r}="Capital Distribution",J{r}+K{r}+L{r},N{r})'
+        c.number_format = CUR
+
     if all_events:
-        last_r = FDR + len(all_events) - 1
+        last_r = FDR_P + len(all_events) - 1
         sr = last_r + 2
 
         pws.cell(row=sr, column=1, value="Portfolio Net Metrics").font = bold_font
 
-        # Net Contributions (sum of contribution Net to Investor values)
+        # Net Contributions
         pws.cell(row=sr + 1, column=1, value="Net Contributions").font = bold_font
         c = pws.cell(row=sr + 1, column=2)
-        c.value = f'=SUMPRODUCT((C{FDR}:C{last_r}="Contribution")*M{FDR}:M{last_r})'
+        c.value = f'=SUMPRODUCT((C{FDR_P}:C{last_r}="Contribution")*N{FDR_P}:N{last_r})'
         c.number_format = CUR
 
-        # Net Distributions (sum of non-contribution Net to Investor values)
+        # Net Distributions
         pws.cell(row=sr + 2, column=1, value="Net Distributions").font = bold_font
         c = pws.cell(row=sr + 2, column=2)
-        c.value = f'=SUMPRODUCT((C{FDR}:C{last_r}<>"Contribution")*M{FDR}:M{last_r})'
+        c.value = f'=SUMPRODUCT((C{FDR_P}:C{last_r}<>"Contribution")*N{FDR_P}:N{last_r})'
         c.number_format = CUR
 
         # Net MOIC
@@ -1348,16 +1413,14 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
         c.value = f'=IF(ABS(B{sr+1})>0,B{sr+2}/ABS(B{sr+1}),0)'
         c.number_format = '0.00"x"'
 
-        # Portfolio Net IRR — XIRR across all pooled cashflows
+        # Portfolio Net IRR
         pws.cell(row=sr + 4, column=1, value="Net IRR").font = bold_font
         c = pws.cell(row=sr + 4, column=2)
-        c.value = f'=IFERROR(XIRR(M{FDR}:M{last_r},B{FDR}:B{last_r}),"N/A")'
+        c.value = f'=IFERROR(XIRR(N{FDR_P}:N{last_r},B{FDR_P}:B{last_r}),"N/A")'
         c.number_format = "0.00%"
 
         # Update Summary Portfolio Total IRR to reference this sheet's formula
-        # Find the portfolio total row on summary (last data row before footnote)
         port_irr_cell = f"B{sr + 4}"
-        # Search for the portfolio total row on summary sheet
         for ri in range(2, row_idx):
             cv = ws.cell(row=ri, column=1).value
             if cv and "Portfolio Total" in str(cv):
@@ -1368,7 +1431,7 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
                 break
 
     # Auto-size Portfolio Detail columns
-    port_widths = [28, 12, 20, 16, 16, 14, 14, 14, 14, 14, 16, 14, 16]
+    port_widths = [28, 12, 20, 16, 16, 14, 14, 14, 14, 14, 16, 14, 14, 16, 14]
     for ci, w in enumerate(port_widths, 1):
         pws.column_dimensions[get_column_letter(ci)].width = w
 
