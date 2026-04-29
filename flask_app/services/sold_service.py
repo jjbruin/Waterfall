@@ -767,129 +767,25 @@ def compute_all_net_returns(inv_sold: pd.DataFrame, acct: pd.DataFrame,
 
 
 def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> bytes:
-    """Generate multi-sheet Excel with gross+net summary and per-deal waterfall detail."""
+    """Generate multi-sheet Excel with gross+net summary and per-deal waterfall detail.
+
+    Detail sheets are built first so the Summary can reference their formula cells
+    (Net IRR, Net MOIC, Net Contributions, Net Distributions), ensuring consistency.
+    """
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
     wb = Workbook()
-    ws = wb.active
-    ws.title = "Summary"
 
     header_font = Font(bold=True, color="FFFFFF")
     header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
     bold_font = Font(bold=True)
     top_border = Border(top=Side(style="medium"))
 
-    # Build summary columns
-    summary_cols = [
-        "Investment Name", "Acquisition Date", "Sale Date",
-        "Gross Contributions", "Gross Distributions", "Gross IRR", "Gross ROE", "Gross MOIC",
-        "",  # spacer
-        "Net Contributions", "Net Distributions", "Net IRR", "Net ROE", "Net MOIC",
-    ]
-
-    for ci, col in enumerate(summary_cols, 1):
-        cell = ws.cell(row=1, column=ci, value=col)
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = Alignment(horizontal="center")
-
-    # Spacer column narrow
-    spacer_idx = 9
-    ws.column_dimensions[ws.cell(row=1, column=spacer_idx).column_letter].width = 2
-
-    # Map net results by vcode
-    net_by_vcode = {dr["vcode"]: dr for dr in net_result["deal_results"]}
-    portfolio_net = net_result["portfolio"]
-
-    currency_cols = {4, 5, 10, 11}  # 1-indexed
-    pct_cols = {6, 7, 12, 13}
-    moic_cols = {8, 14}
-
-    row_idx = 2
-    for _, grow in gross_df.iterrows():
-        is_total = bool(grow.get("_is_deal_total", False))
-        vcode = str(grow.get("vcode", ""))
-
-        if is_total:
-            net_data = portfolio_net
-            net_contribs = net_data.get("Net Contributions", 0)
-            net_distribs = net_data.get("Net Distributions", 0)
-            net_irr = net_data.get("Net IRR")
-            net_roe = net_data.get("Net ROE", 0)
-            net_moic = net_data.get("Net MOIC", 0)
-        elif vcode in net_by_vcode:
-            nd = net_by_vcode[vcode]
-            net_contribs = nd.get("Net Contributions", 0)
-            net_distribs = nd.get("Net Distributions", 0)
-            net_irr = nd.get("Net IRR")
-            net_roe = nd.get("Net ROE", 0)
-            net_moic = nd.get("Net MOIC", 0)
-        else:
-            net_contribs = net_distribs = net_irr = net_roe = net_moic = None
-
-        values = [
-            grow.get("Investment Name", ""),
-            grow.get("Acquisition Date", ""),
-            grow.get("Sale Date", ""),
-            grow.get("Total Contributions", 0),
-            grow.get("Total Distributions", 0),
-            grow.get("IRR"),
-            grow.get("ROE"),
-            grow.get("MOIC", 0),
-            "",  # spacer
-            net_contribs,
-            net_distribs,
-            net_irr,
-            net_roe,
-            net_moic,
-        ]
-
-        for ci, val in enumerate(values, 1):
-            cell = ws.cell(row=row_idx, column=ci)
-            if ci == spacer_idx:
-                cell.value = ""
-            elif ci in currency_cols:
-                cell.value = float(val) if val is not None and pd.notna(val) else 0.0
-                cell.number_format = "$#,##0"
-            elif ci in pct_cols:
-                cell.value = float(val) if val is not None and pd.notna(val) else None
-                cell.number_format = "0.00%"
-            elif ci in moic_cols:
-                cell.value = float(val) if val is not None and pd.notna(val) else 0.0
-                cell.number_format = '0.00"x"'
-            else:
-                cell.value = val
-
-            if is_total:
-                cell.font = bold_font
-                cell.border = top_border
-
-        row_idx += 1
-
-    # Assumptions footnote
-    assumptions = net_result.get("assumptions", {})
-    foot_row = row_idx + 1
-    ws.cell(row=foot_row, column=1, value="Net Returns Assumptions:").font = bold_font
-    labels = [
-        f"Ownership: {assumptions.get('ownership_pct', 0) * 100:.1f}%",
-        f"AM Fee: {assumptions.get('am_fee_pct', 0) * 100:.2f}%",
-        f"Hurdle Rate: {assumptions.get('hurdle_rate', 0) * 100:.2f}%",
-        f"Promote: {assumptions.get('promote_pct', 0) * 100:.1f}%",
-        f"Annual Expenses: ${assumptions.get('annual_expenses', 0):,.0f}",
-    ]
-    ws.cell(row=foot_row + 1, column=1, value="  ".join(labels))
-
-    # Auto-size columns
-    for ci in range(1, len(summary_cols) + 1):
-        if ci == spacer_idx:
-            continue
-        max_len = len(str(summary_cols[ci - 1]))
-        for ri in range(2, row_idx):
-            cv = ws.cell(row=ri, column=ci).value
-            if cv is not None:
-                max_len = max(max_len, len(str(cv)))
-        ws.column_dimensions[ws.cell(row=1, column=ci).column_letter].width = min(max_len + 4, 30)
+    # ── Phase 1: Build per-deal detail sheets first ──
+    # Track cell references for each deal so Summary can link to them.
+    # detail_refs[vcode] = {"sheet": sheet_name, "irr_cell": "B23", "moic_cell": ...}
+    detail_refs = {}
 
     # Per-deal waterfall sheets — formula-driven for auditability
     # Users can change assumptions in B2/D2/F2/H2/J2 and the entire sheet recalculates.
@@ -1148,10 +1044,208 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
         c.value = f'=IFERROR(XIRR(O{FDR}:O{last_r},A{FDR}:A{last_r}),"N/A")'
         c.number_format = "0.00%"
 
+        # Record cell references for Summary cross-sheet formulas
+        detail_refs[dr["vcode"]] = {
+            "sheet": sheet_name,
+            "contribs": f"B{sr + 1}",
+            "distribs": f"B{sr + 2}",
+            "moic": f"B{sr + 3}",
+            "irr": f"B{sr + 4}",
+        }
+
         # ── Auto-size columns ──
         col_widths = [12, 20, 16, 12, 16, 14, 14, 14, 14, 14, 14, 16, 14, 14, 16, 16, 14]
         for ci, w in enumerate(col_widths, 1):
             dws.column_dimensions[get_column_letter(ci)].width = w
+
+    # ── Phase 2: Build Summary sheet (first tab) ──
+    # The default sheet was created by Workbook(); rename and use it.
+    ws = wb.active
+    ws.title = "Summary"
+    # Move Summary to be the first sheet
+    wb.move_sheet(ws, offset=-(len(wb.sheetnames) - 1))
+
+    summary_cols = [
+        "Investment Name", "Acquisition Date", "Sale Date",
+        "Gross Contributions", "Gross Distributions", "Gross IRR", "Gross ROE", "Gross MOIC",
+        "",  # spacer
+        "Net Contributions", "Net Distributions", "Net IRR", "Net ROE", "Net MOIC",
+    ]
+
+    for ci, col in enumerate(summary_cols, 1):
+        cell = ws.cell(row=1, column=ci, value=col)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center")
+
+    spacer_idx = 9
+    ws.column_dimensions[ws.cell(row=1, column=spacer_idx).column_letter].width = 2
+
+    net_by_vcode = {dr["vcode"]: dr for dr in net_result["deal_results"]}
+    portfolio_net = net_result["portfolio"]
+
+    currency_cols = {4, 5, 10, 11}
+    pct_cols = {6, 7, 12, 13}
+    moic_cols = {8, 14}
+
+    row_idx = 2
+    # Track which summary rows have detail sheet refs (for portfolio XIRR)
+    deal_summary_rows = []
+
+    for _, grow in gross_df.iterrows():
+        is_total = bool(grow.get("_is_deal_total", False))
+        vcode = str(grow.get("vcode", ""))
+
+        if is_total:
+            net_data = portfolio_net
+            net_roe = net_data.get("Net ROE", 0)
+        elif vcode in net_by_vcode:
+            nd = net_by_vcode[vcode]
+            net_roe = nd.get("Net ROE", 0)
+        else:
+            net_roe = None
+
+        # Gross columns (always static values)
+        gross_vals = [
+            grow.get("Investment Name", ""),
+            grow.get("Acquisition Date", ""),
+            grow.get("Sale Date", ""),
+            grow.get("Total Contributions", 0),
+            grow.get("Total Distributions", 0),
+            grow.get("IRR"),
+            grow.get("ROE"),
+            grow.get("MOIC", 0),
+            "",  # spacer
+        ]
+
+        for ci, val in enumerate(gross_vals, 1):
+            cell = ws.cell(row=row_idx, column=ci)
+            if ci == spacer_idx:
+                cell.value = ""
+            elif ci in currency_cols:
+                cell.value = float(val) if val is not None and pd.notna(val) else 0.0
+                cell.number_format = "$#,##0"
+            elif ci in pct_cols:
+                cell.value = float(val) if val is not None and pd.notna(val) else None
+                cell.number_format = "0.00%"
+            elif ci in moic_cols:
+                cell.value = float(val) if val is not None and pd.notna(val) else 0.0
+                cell.number_format = '0.00"x"'
+            else:
+                cell.value = val
+            if is_total:
+                cell.font = bold_font
+                cell.border = top_border
+
+        # Net columns — use cross-sheet formula references where available
+        ref = detail_refs.get(vcode)
+
+        if not is_total and ref:
+            # Per-deal: reference the detail sheet's formula cells
+            sn = ref["sheet"].replace("'", "''")  # escape single quotes
+            quoted = f"'{sn}'"
+
+            # Col 10: Net Contributions (formula)
+            c = ws.cell(row=row_idx, column=10)
+            c.value = f"={quoted}!{ref['contribs']}"
+            c.number_format = "$#,##0"
+
+            # Col 11: Net Distributions (formula)
+            c = ws.cell(row=row_idx, column=11)
+            c.value = f"={quoted}!{ref['distribs']}"
+            c.number_format = "$#,##0"
+
+            # Col 12: Net IRR (formula)
+            c = ws.cell(row=row_idx, column=12)
+            c.value = f"={quoted}!{ref['irr']}"
+            c.number_format = "0.00%"
+
+            # Col 13: Net ROE (still Python — no Excel formula for ROE)
+            c = ws.cell(row=row_idx, column=13)
+            c.value = float(net_roe) if net_roe is not None and pd.notna(net_roe) else None
+            c.number_format = "0.00%"
+
+            # Col 14: Net MOIC (formula)
+            c = ws.cell(row=row_idx, column=14)
+            c.value = f"={quoted}!{ref['moic']}"
+            c.number_format = '0.00"x"'
+
+            deal_summary_rows.append(row_idx)
+        elif is_total:
+            # Portfolio Total — aggregate from deal rows using SUM/XIRR formulas
+            deal_rows = deal_summary_rows
+
+            # Col 10: Net Contributions = SUM of deal contributions
+            c = ws.cell(row=row_idx, column=10)
+            if deal_rows:
+                refs_str = "+".join(f"J{r}" for r in deal_rows)
+                c.value = f"={refs_str}"
+            else:
+                c.value = 0.0
+            c.number_format = "$#,##0"
+
+            # Col 11: Net Distributions = SUM of deal distributions
+            c = ws.cell(row=row_idx, column=11)
+            if deal_rows:
+                refs_str = "+".join(f"K{r}" for r in deal_rows)
+                c.value = f"={refs_str}"
+            else:
+                c.value = 0.0
+            c.number_format = "$#,##0"
+
+            # Col 12: Net IRR — use Python value (portfolio XIRR across all deals
+            # can't be computed as a simple formula from per-deal IRRs)
+            c = ws.cell(row=row_idx, column=12)
+            pirr = portfolio_net.get("Net IRR")
+            c.value = float(pirr) if pirr is not None and pd.notna(pirr) else None
+            c.number_format = "0.00%"
+
+            # Col 13: Net ROE (Python)
+            c = ws.cell(row=row_idx, column=13)
+            c.value = float(net_roe) if net_roe is not None and pd.notna(net_roe) else None
+            c.number_format = "0.00%"
+
+            # Col 14: Net MOIC = Net Distributions / |Net Contributions|
+            c = ws.cell(row=row_idx, column=14)
+            c.value = f"=IF(ABS(J{row_idx})>0,K{row_idx}/ABS(J{row_idx}),0)"
+            c.number_format = '0.00"x"'
+
+            for ci in range(10, 15):
+                ws.cell(row=row_idx, column=ci).font = bold_font
+                ws.cell(row=row_idx, column=ci).border = top_border
+        else:
+            # No net data for this deal
+            for ci in range(10, 15):
+                cell = ws.cell(row=row_idx, column=ci)
+                cell.value = None
+                if is_total:
+                    cell.font = bold_font
+                    cell.border = top_border
+
+        row_idx += 1
+
+    # Assumptions footnote
+    foot_row = row_idx + 1
+    ws.cell(row=foot_row, column=1, value="Net Returns Assumptions:").font = bold_font
+    labels = [
+        f"Ownership: {assumptions.get('ownership_pct', 0) * 100:.1f}%",
+        f"AM Fee: {assumptions.get('am_fee_pct', 0) * 100:.2f}%",
+        f"Hurdle Rate: {assumptions.get('hurdle_rate', 0) * 100:.2f}%",
+        f"Promote: {assumptions.get('promote_pct', 0) * 100:.1f}%",
+        f"Annual Expenses: ${assumptions.get('annual_expenses', 0):,.0f}",
+    ]
+    ws.cell(row=foot_row + 1, column=1, value="  ".join(labels))
+
+    # Auto-size columns
+    for ci in range(1, len(summary_cols) + 1):
+        if ci == spacer_idx:
+            continue
+        max_len = len(str(summary_cols[ci - 1]))
+        for ri in range(2, row_idx):
+            cv = ws.cell(row=ri, column=ci).value
+            if cv is not None:
+                max_len = max(max_len, len(str(cv)))
+        ws.column_dimensions[ws.cell(row=1, column=ci).column_letter].width = min(max_len + 4, 30)
 
     buf = io.BytesIO()
     wb.save(buf)
