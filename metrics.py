@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from datetime import date
 from typing import List, Tuple, Optional, TYPE_CHECKING
-from scipy.optimize import brentq
+from scipy.optimize import brentq, newton
 
 if TYPE_CHECKING:
     from models import InvestorState
@@ -38,9 +38,30 @@ def xnpv(rate: float, cfs: List[Tuple[date, float]]) -> float:
     return npv
 
 
+def _xnpv_deriv(rate: float, cfs: List[Tuple[date, float]]) -> float:
+    """Derivative of XNPV with respect to rate, for Newton-Raphson solver."""
+    if not cfs or rate <= -1.0:
+        return float('inf')
+
+    cfs = sorted(cfs, key=lambda t: t[0])
+    t0 = cfs[0][0]
+
+    deriv = 0.0
+    for d, amount in cfs:
+        years = (d - t0).days / 365.0
+        if years == 0:
+            continue
+        deriv -= years * amount / ((1 + rate) ** (years + 1))
+
+    return deriv
+
+
 def xirr(cfs: List[Tuple[date, float]]) -> Optional[float]:
     """
-    Internal Rate of Return with irregular cashflow dates
+    Internal Rate of Return with irregular cashflow dates.
+
+    Uses Newton-Raphson with guess=0.1 to match Excel's XIRR algorithm.
+    Falls back to Brent's method if Newton fails to converge.
 
     Args:
         cfs: List of (date, amount) tuples
@@ -60,12 +81,25 @@ def xirr(cfs: List[Tuple[date, float]]) -> Optional[float]:
     if min(amounts) >= 0 or max(amounts) <= 0:
         return None
 
+    # Primary: Newton-Raphson matching Excel XIRR (guess=0.1, tol=1e-10)
     try:
-        # Find root between -99% and 1000% annual return
+        irr = newton(
+            lambda r: xnpv(r, cfs),
+            x0=0.1,
+            fprime=lambda r: _xnpv_deriv(r, cfs),
+            tol=1e-10,
+            maxiter=100,
+        )
+        if irr > -1.0:
+            return float(irr)
+    except (ValueError, RuntimeError):
+        pass
+
+    # Fallback: Brent's method for edge cases where Newton diverges
+    try:
         irr = brentq(lambda r: xnpv(r, cfs), -0.99, 10.0, maxiter=100)
         return float(irr)
     except (ValueError, RuntimeError):
-        # No root found in range
         return None
 
 
