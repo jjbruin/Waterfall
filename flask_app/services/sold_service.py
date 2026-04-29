@@ -648,7 +648,7 @@ def compute_net_waterfall_for_deal(deal_acct: pd.DataFrame, inv: pd.DataFrame,
                 "Pref Accrued": pref_accrued + pref_paid,  # show pre-payment balance
                 "Pref Paid": pref_paid,
                 "Capital Returned": capital_returned,
-                "Excess": remaining + gp_promote,
+                "Excess": remaining,
                 "Promote (GP)": gp_promote,
                 "Net to Investor": net_to_investor,
                 "Capital Balance": capital_balance,
