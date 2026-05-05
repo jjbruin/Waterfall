@@ -673,7 +673,6 @@ function toggleCollapsed() {
   font-weight: 600;
   padding: 1px 6px;
   border-radius: 3px;
-  background: rgba(255, 255, 255, 0.08);
 }
 .mri-server-badge.ok { color: #81c784; }
 .mri-server-badge.error { color: #ef5350; }
@@ -681,8 +680,6 @@ function toggleCollapsed() {
 .mri-query-list {
   max-height: 240px;
   overflow-y: auto;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 3px;
   margin-bottom: 4px;
 }
 
@@ -694,7 +691,7 @@ function toggleCollapsed() {
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 .mri-query-row:last-child { border-bottom: none; }
-.mri-query-row:hover { background: rgba(255, 255, 255, 0.05); }
+.mri-query-row:hover { color: white; }
 
 .mri-query-name {
   font-size: 10px;
@@ -721,10 +718,10 @@ function toggleCollapsed() {
   padding: 1px 5px;
   line-height: 1.2;
 }
-.mri-action-btn:hover { background: rgba(255, 255, 255, 0.15); color: white; }
+.mri-action-btn:hover { color: white; }
 .mri-action-btn:disabled { opacity: 0.3; cursor: not-allowed; }
 .mri-action-btn.import { color: #81c784; border-color: rgba(129, 199, 132, 0.3); }
-.mri-action-btn.import:hover { background: rgba(129, 199, 132, 0.15); }
+.mri-action-btn.import:hover { color: #a5d6a7; }
 
 .mri-running {
   font-size: 10px;
@@ -745,11 +742,10 @@ function toggleCollapsed() {
 }
 
 .mri-refresh-btn {
-  background: rgba(129, 199, 132, 0.1) !important;
   border-color: rgba(129, 199, 132, 0.3) !important;
 }
 .mri-refresh-btn:hover:not(:disabled) {
-  background: rgba(129, 199, 132, 0.2) !important;
+  color: #a5d6a7;
 }
 
 /* Database tools */
