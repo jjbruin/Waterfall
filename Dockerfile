@@ -12,9 +12,13 @@ RUN npm run build
 FROM python:3.12-slim
 WORKDIR /app
 
-# System deps for psycopg2 and scipy
+# System deps for psycopg2, scipy, and pyodbc (MRI SQL Server access)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpq-dev gcc \
+    libpq-dev gcc curl gnupg2 unixodbc-dev \
+    && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/debian/12/prod bookworm main" > /etc/apt/sources.list.d/mssql-release.list \
+    && apt-get update \
+    && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18 \
     && rm -rf /var/lib/apt/lists/*
 
 # Python dependencies
@@ -28,6 +32,9 @@ COPY *.txt ./
 
 # Flask app package
 COPY flask_app/ flask_app/
+
+# SQL query files for MRI database access
+COPY queries/ queries/
 
 # Vue built assets
 COPY --from=frontend-build /build/dist/ static/
