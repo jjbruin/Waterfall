@@ -28,6 +28,19 @@ const navItems = [
   { path: '/settings', label: 'Settings', icon: 'settings' },
 ]
 
+// MRI Data tools
+const showMriTools = ref(false)
+const mriQueries = ref<Array<{
+  name: string; server: string | null; description: string;
+  importable: boolean; sql_exists: boolean; target_table: string | null
+}>>([])
+const mriServers = ref<Record<string, { status: string; latency_ms?: number; error?: string }>>({})
+const mriLoading = ref(false)
+const mriRunning = ref<string | null>(null)
+const mriRefreshing = ref(false)
+const mriRefreshResults = ref<Record<string, any> | null>(null)
+const mriRunResult = ref<{ query: string; rows: number; csv_path?: string; elapsed_seconds: number } | null>(null)
+
 // Database tools
 const showDbTools = ref(false)
 const uploadFiles = ref<File[]>([])
@@ -153,6 +166,97 @@ async function handleConfigSave() {
   })
 }
 
+// MRI functions
+async function loadMriQueries() {
+  if (mriQueries.value.length > 0) return
+  mriLoading.value = true
+  try {
+    const client = (await import('../../api/client')).default
+    const [qRes, sRes] = await Promise.all([
+      client.get('/api/data/mri/queries'),
+      client.get('/api/data/mri/status'),
+    ])
+    mriQueries.value = qRes.data.queries
+    mriServers.value = sRes.data.servers
+  } catch (e: any) {
+    data.addToast('Failed to load MRI queries: ' + (e.response?.data?.error || e.message), 'error')
+  } finally {
+    mriLoading.value = false
+  }
+}
+
+async function handleMriRun(queryName: string) {
+  mriRunning.value = queryName
+  mriRunResult.value = null
+  try {
+    const client = (await import('../../api/client')).default
+    const res = await client.post(`/api/data/mri/queries/${queryName}/run`, {})
+    mriRunResult.value = res.data
+    data.addToast(`${queryName}: ${res.data.rows.toLocaleString()} rows downloaded`, 'success')
+  } catch (e: any) {
+    data.addToast(`${queryName} failed: ${e.response?.data?.error || e.message}`, 'error')
+  } finally {
+    mriRunning.value = null
+  }
+}
+
+async function handleMriDownload(queryName: string) {
+  mriRunning.value = queryName
+  try {
+    const client = (await import('../../api/client')).default
+    const res = await client.get(`/api/data/mri/queries/${queryName}/download`, { responseType: 'blob' })
+    const url = window.URL.createObjectURL(new Blob([res.data]))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${queryName}.csv`
+    a.click()
+    window.URL.revokeObjectURL(url)
+    data.addToast(`${queryName}: downloaded`, 'success')
+  } catch (e: any) {
+    data.addToast(`${queryName} download failed: ${e.response?.data?.error || e.message}`, 'error')
+  } finally {
+    mriRunning.value = null
+  }
+}
+
+async function handleMriRefresh() {
+  if (!confirm('Refresh ALL app data from MRI? This replaces current database tables.')) return
+  mriRefreshing.value = true
+  mriRefreshResults.value = null
+  try {
+    const client = (await import('../../api/client')).default
+    const res = await client.post('/api/data/mri/refresh', {})
+    mriRefreshResults.value = res.data.queries
+    const ok = Object.values(res.data.queries).filter((r: any) => r.status === 'ok').length
+    const err = Object.values(res.data.queries).filter((r: any) => r.status === 'error').length
+    data.addToast(
+      `MRI refresh: ${ok} tables updated in ${res.data.elapsed_seconds}s${err > 0 ? ', ' + err + ' errors' : ''}`,
+      err > 0 ? 'error' : 'success'
+    )
+    await data.loadDeals()
+  } catch (e: any) {
+    data.addToast('MRI refresh failed: ' + (e.response?.data?.error || e.message), 'error')
+  } finally {
+    mriRefreshing.value = false
+  }
+}
+
+async function handleMriRefreshSingle(queryName: string) {
+  mriRunning.value = queryName
+  try {
+    const client = (await import('../../api/client')).default
+    const res = await client.post(`/api/data/mri/refresh/${queryName}`, {})
+    const tables = res.data.tables || {}
+    const totalRows = Object.values(tables).reduce((s: number, t: any) => s + t.rows, 0)
+    data.addToast(`${queryName}: ${totalRows.toLocaleString()} rows imported (${res.data.elapsed_seconds}s)`, 'success')
+    await data.loadDeals()
+  } catch (e: any) {
+    data.addToast(`${queryName} import failed: ${e.response?.data?.error || e.message}`, 'error')
+  } finally {
+    mriRunning.value = null
+  }
+}
+
 // Sidebar collapse toggle
 const collapsed = ref(false)
 
@@ -230,6 +334,95 @@ function toggleCollapsed() {
           <button class="btn btn-xs btn-full" @click="handleConfigSave">
             Apply Settings
           </button>
+        </div>
+      </div>
+
+      <!-- MRI Data -->
+      <div class="tool-section">
+        <button class="section-toggle" @click="showMriTools = !showMriTools; if (showMriTools) loadMriQueries()">
+          {{ showMriTools ? '▾' : '▸' }} MRI Data
+        </button>
+        <div v-if="showMriTools" class="section-body">
+          <!-- Connection status -->
+          <div v-if="mriLoading" class="db-caption">Loading queries...</div>
+          <div v-else-if="Object.keys(mriServers).length" class="mri-status-row">
+            <span
+              v-for="(info, key) in mriServers"
+              :key="key"
+              class="mri-server-badge"
+              :class="info.status"
+              :title="info.status === 'ok' ? `${info.latency_ms}ms` : info.error"
+            >{{ key.toUpperCase() }} {{ info.status === 'ok' ? '●' : '✕' }}</span>
+          </div>
+
+          <!-- Query list -->
+          <div v-if="mriQueries.length" class="mri-query-list">
+            <div
+              v-for="q in mriQueries"
+              :key="q.name"
+              class="mri-query-row"
+              :title="q.description"
+            >
+              <span class="mri-query-name">{{ q.name }}</span>
+              <span class="mri-query-actions">
+                <button
+                  class="mri-action-btn"
+                  title="Download CSV"
+                  @click="handleMriDownload(q.name)"
+                  :disabled="mriRunning !== null || mriRefreshing"
+                >↓</button>
+                <button
+                  class="mri-action-btn"
+                  title="Run & save to network folder"
+                  @click="handleMriRun(q.name)"
+                  :disabled="mriRunning !== null || mriRefreshing"
+                >▶</button>
+                <button
+                  v-if="q.importable && auth.user?.role === 'admin'"
+                  class="mri-action-btn import"
+                  title="Import to database"
+                  @click="handleMriRefreshSingle(q.name)"
+                  :disabled="mriRunning !== null || mriRefreshing"
+                >⇪</button>
+              </span>
+            </div>
+          </div>
+
+          <!-- Running indicator -->
+          <div v-if="mriRunning" class="mri-running">
+            Running {{ mriRunning }}...
+          </div>
+
+          <!-- Run result -->
+          <div v-if="mriRunResult && !mriRunning" class="mri-run-result">
+            {{ mriRunResult.query }}: {{ mriRunResult.rows.toLocaleString() }} rows ({{ mriRunResult.elapsed_seconds }}s)
+          </div>
+
+          <!-- Admin: Full Refresh -->
+          <div v-if="auth.user?.role === 'admin'" class="db-sub" style="margin-top: 6px">
+            <button
+              class="btn btn-xs btn-full mri-refresh-btn"
+              @click="handleMriRefresh"
+              :disabled="mriRefreshing || mriRunning !== null"
+            >
+              {{ mriRefreshing ? 'Refreshing all tables...' : 'Refresh All Data from MRI' }}
+            </button>
+          </div>
+
+          <!-- Refresh results -->
+          <div v-if="mriRefreshResults" class="import-results">
+            <div
+              v-for="(res, qname) in mriRefreshResults"
+              :key="qname"
+              class="import-row"
+              :class="res.status"
+            >
+              <span class="import-table">{{ qname }}</span>
+              <span class="import-status">{{ res.status === 'ok'
+                ? Object.values(res.tables || {}).reduce((s: number, t: any) => s + t.rows, 0).toLocaleString() + ' rows'
+                : 'error' }}</span>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -466,6 +659,97 @@ function toggleCollapsed() {
   font-size: 10px;
   color: rgba(255, 255, 255, 0.5);
   margin: 2px 0;
+}
+
+/* MRI Data tools */
+.mri-status-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.mri-server-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+}
+.mri-server-badge.ok { color: #81c784; }
+.mri-server-badge.error { color: #ef5350; }
+
+.mri-query-list {
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+  margin-bottom: 4px;
+}
+
+.mri-query-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 3px 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.mri-query-row:last-child { border-bottom: none; }
+.mri-query-row:hover { background: rgba(255, 255, 255, 0.05); }
+
+.mri-query-name {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.8);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.mri-query-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.mri-action-btn {
+  background: none;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.7);
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 10px;
+  padding: 1px 5px;
+  line-height: 1.2;
+}
+.mri-action-btn:hover { background: rgba(255, 255, 255, 0.15); color: white; }
+.mri-action-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+.mri-action-btn.import { color: #81c784; border-color: rgba(129, 199, 132, 0.3); }
+.mri-action-btn.import:hover { background: rgba(129, 199, 132, 0.15); }
+
+.mri-running {
+  font-size: 10px;
+  color: #90caf9;
+  padding: 4px 0;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.mri-run-result {
+  font-size: 10px;
+  color: #81c784;
+  padding: 2px 0;
+}
+
+.mri-refresh-btn {
+  background: rgba(129, 199, 132, 0.1) !important;
+  border-color: rgba(129, 199, 132, 0.3) !important;
+}
+.mri-refresh-btn:hover:not(:disabled) {
+  background: rgba(129, 199, 132, 0.2) !important;
 }
 
 /* Database tools */

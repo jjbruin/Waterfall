@@ -257,3 +257,125 @@ def data_sources():
     """Show active data source for each table (database or API)."""
     from flask_app.services.data_adapters import get_source_info
     return jsonify({"sources": get_source_info()})
+
+
+# ── MRI Query Endpoints ──────────────────────────────────────────────────
+
+@data_bp.route("/mri/status", methods=["GET"])
+@login_required
+def mri_status():
+    """Test MRI server connectivity (VPN required)."""
+    from flask_app.services.mri_service import test_connection, MRI_SERVERS
+    results = {}
+    for key in MRI_SERVERS:
+        results[key] = test_connection(key)
+    return jsonify({"servers": results})
+
+
+@data_bp.route("/mri/queries", methods=["GET"])
+@login_required
+def mri_list_queries():
+    """List all available MRI queries."""
+    from flask_app.services.mri_service import list_queries
+    return jsonify({"queries": list_queries()})
+
+
+@data_bp.route("/mri/queries/<query_name>/run", methods=["POST"])
+@login_required
+def mri_run_query(query_name):
+    """Run a query and save CSV to the network downloads folder.
+
+    Any authenticated user can run queries and download results.
+    Body (optional): { server: "pmx"|"im" } — override server for unregistered queries.
+    Returns: { query, server, rows, columns, elapsed_seconds, csv_path }
+    """
+    from flask_app.services.mri_service import run_query
+
+    body = request.get_json(silent=True) or {}
+    server_key = body.get("server")
+
+    try:
+        result = run_query(query_name, server_key=server_key, save_csv=True)
+        # Remove internal DataFrame from response
+        result.pop("_dataframe", None)
+        return jsonify(result)
+    except FileNotFoundError as e:
+        return jsonify({"error": str(e)}), 404
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"Query failed: {str(e)[:300]}"}), 500
+
+
+@data_bp.route("/mri/queries/<query_name>/download", methods=["GET"])
+@login_required
+def mri_download_query(query_name):
+    """Run a query and return results directly as CSV download (no file save)."""
+    from flask_app.services.mri_service import run_query
+
+    try:
+        result = run_query(query_name, save_csv=False)
+        df = result["_dataframe"]
+        csv_buffer = io.StringIO()
+        df.to_csv(csv_buffer, index=False)
+        csv_bytes = csv_buffer.getvalue().encode("utf-8")
+        return send_file(
+            io.BytesIO(csv_bytes),
+            mimetype="text/csv",
+            as_attachment=True,
+            download_name=f"{query_name}.csv",
+        )
+    except FileNotFoundError as e:
+        return jsonify({"error": str(e)}), 404
+    except Exception as e:
+        return jsonify({"error": f"Query failed: {str(e)[:300]}"}), 500
+
+
+@data_bp.route("/mri/refresh", methods=["POST"])
+@login_required
+@role_required("admin")
+def mri_refresh_all():
+    """Refresh all app data from MRI (admin only).
+
+    Runs all importable queries against MRI databases and imports results
+    directly into the app's PostgreSQL database. Replaces CSV upload workflow.
+    Clears all caches after import.
+    """
+    from flask_app.services.mri_service import refresh_all
+
+    try:
+        results = refresh_all()
+
+        # Clear all caches after import
+        data_service.reload()
+        compute_service.clear_cache()
+        from flask_app.services.psckoc_service import clear_cache as clear_psckoc
+        clear_psckoc()
+
+        return jsonify(results)
+    except Exception as e:
+        return jsonify({"error": f"Refresh failed: {str(e)[:300]}"}), 500
+
+
+@data_bp.route("/mri/refresh/<query_name>", methods=["POST"])
+@login_required
+@role_required("admin")
+def mri_refresh_single(query_name):
+    """Refresh a single table from MRI (admin only).
+
+    Runs one query and imports directly into the app database.
+    """
+    from flask_app.services.mri_service import import_query_to_database
+
+    try:
+        result = import_query_to_database(query_name)
+
+        # Clear caches
+        data_service.reload()
+        compute_service.clear_cache()
+
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"Import failed: {str(e)[:300]}"}), 500
