@@ -304,6 +304,8 @@ def mri_run_query(query_name):
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
+        import logging, traceback
+        logging.getLogger(__name__).error(f"MRI query '{query_name}' failed:\n{traceback.format_exc()}")
         return jsonify({"error": f"Query failed: {str(e)[:300]}"}), 500
 
 
@@ -354,6 +356,8 @@ def mri_refresh_all():
 
         return jsonify(results)
     except Exception as e:
+        import logging, traceback
+        logging.getLogger(__name__).error(f"MRI refresh_all failed:\n{traceback.format_exc()}")
         return jsonify({"error": f"Refresh failed: {str(e)[:300]}"}), 500
 
 
@@ -378,4 +382,6 @@ def mri_refresh_single(query_name):
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
+        import logging, traceback
+        logging.getLogger(__name__).error(f"MRI import '{query_name}' failed:\n{traceback.format_exc()}")
         return jsonify({"error": f"Import failed: {str(e)[:300]}"}), 500

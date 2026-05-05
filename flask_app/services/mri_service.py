@@ -208,6 +208,7 @@ def run_query(query_name: str, server_key: str = None, save_csv: bool = True) ->
     logger.info(f"Running query '{query_name}' on {server_key} ({MRI_SERVERS[server_key]['server']})...")
     t0 = time.time()
     conn = _get_connection(server_key)
+    conn.timeout = 600  # 10-minute query timeout for large queries like ISBS
     df = pd.read_sql(sql, conn)
     conn.close()
     elapsed = time.time() - t0
@@ -227,13 +228,18 @@ def run_query(query_name: str, server_key: str = None, save_csv: bool = True) ->
     }
 
     if save_csv:
-        downloads = Path(DOWNLOADS_FOLDER)
-        downloads.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        csv_path = downloads / f"{query_name}_{timestamp}.csv"
-        df.to_csv(csv_path, index=False)
-        result["csv_path"] = str(csv_path)
-        logger.info(f"Saved CSV: {csv_path}")
+        try:
+            downloads = Path(DOWNLOADS_FOLDER)
+            downloads.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            csv_path = downloads / f"{query_name}_{timestamp}.csv"
+            df.to_csv(csv_path, index=False)
+            result["csv_path"] = str(csv_path)
+            logger.info(f"Saved CSV: {csv_path}")
+        except OSError as e:
+            # Network folder not available (e.g., running on Azure)
+            logger.warning(f"Could not save CSV to network folder: {e}")
+            result["csv_path"] = None
 
     # Attach DataFrame for callers that need it (not serialized to JSON)
     result["_dataframe"] = df
