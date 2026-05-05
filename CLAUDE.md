@@ -135,6 +135,14 @@ cd vue_app && npm run dev        # Frontend on http://localhost:5173
 
 ## Key Concepts
 
+### Acquisition Date
+- **Derived from accounting feed**: `min(EffectiveDate)` per `InvestmentID` from the accounting table, mapped to vcode via investment map
+- **Enriched at load time**: `data_service.py:load_all()` overwrites `Acquisition_Date` in `inv` DataFrame after loading both `inv` and `acct`. Also re-applied in `refresh_table()` when the deals table is refreshed.
+- **Date parsing**: Raw `EffectiveDate` in the accounting adapter is strings (e.g., `"11/21/2016 0:00"`). Must parse via `pd.to_datetime()` before `groupby().min()` — string comparison is alphabetical, not chronological.
+- **Rationale**: The MRI `Acquisition_Date` field may not reflect the true closing date. The earliest accounting activity (e.g., acquisition fee collected at closing) is the authoritative date. For development deals, first funding may occur months after acquisition (e.g., 3rd Ave & Indian School: acquisition fee 11/21/2016, first funding 5/15/2017).
+- **Fallback**: If a deal has no accounting activity, the original MRI `Acquisition_Date` is preserved
+- **Consumers**: Deal Analysis metadata, Sold Portfolio summary, One Pager general info — all use `inv["Acquisition_Date"]` automatically
+
 ### Waterfall Types
 - **CF Waterfall**: Operating cash distributions (does NOT reduce capital outstanding)
 - **Capital Waterfall**: Refi/sale proceeds (DOES reduce capital outstanding)
@@ -363,25 +371,28 @@ Projected Returns Summary with Excel export. Vue: `ReportsView.vue`. Flask: `rep
 Historical returns for sold deals computed from accounting_feed (no forecast waterfalls). Vue: `SoldPortfolioView.vue`. Flask: `sold_portfolio.py` + `sold_service.py`.
 - **Data Source**: Accounting history only — contributions (`is_contribution`), distributions (`is_distribution`). Raw `acct` is normalised via `normalize_accounting_feed()` on first use.
 - **Pref Equity Only**: Filters out OP partners (`InvestorID` starting with "OP"). Case-insensitive InvestorID grouping handles mixed-case entity IDs.
+- **Capital event identification**: Uses **Typename** from accounting (not the `Capital` flag, which is unreliable for sale events). Events with Typename containing "Return of Capital" or "Realized Gain" (case-insensitive) are treated as capital events. Used in both gross and net ROE calculations to correctly separate operating income from capital activity.
+- **ROE definition**: Annualized operating cash yield on invested capital. ROE numerator = CF distributions (operating income) only. Capital events (sale/refi proceeds including pref paid at sale and gain on sale) are **excluded** from the ROE numerator — they only affect the weighted average capital denominator. A development deal sold before stabilization with no operating distributions has 0% ROE.
 - **Summary Table**: Inline `<table>` (not DataTable) with column group headers. One row per deal + bold Portfolio Total row. Gross columns: Investment Name, Acquisition Date, Sale Date, Total Contributions, Total Distributions, IRR, ROE, MOIC. Net columns (visible after computation): Net IRR, Net ROE, Net MOIC. Visual divider (4px border column) separates Gross and Net sections.
 - **Deal Detail Drill-Down**: Selectbox to pick a deal → expander with every pref equity accounting row sorted by date. Columns: Date, InvestorID, MajorType, Typename, Capital, Amount, Cashflow (XIRR), Capital Balance (running). IRR/ROE/MOIC metric cards below. Download Activity Detail exports the table + summary metrics to Excel for independent return verification.
 - **Net Returns**: Theoretical investor net-of-fees returns computed via simplified waterfall. User inputs assumptions (Ownership %, AM Fee %, Hurdle Rate %, Promote %, Annual Expenses) in a horizontal panel, clicks "Compute Net Returns". Results merged into summary table alongside gross columns.
   - **Per-deal waterfall** (`compute_net_waterfall_for_deal()`): Walks accounting events chronologically. Contributions scaled by ownership %. Distributions: deduct AM fee (on capital balance) and expenses, accrue pref at hurdle rate (Act/365 simple), pay accrued pref first, return capital (capital events only), split excess by promote %. Fees capped at distribution amount (prorated if AM Fee + Expenses > Scaled Distribution).
-  - **Capital event identification**: Uses **Typename** from accounting (not the `Capital` flag). Events with Typename containing "Return of Capital" or "Realized Gain" (case-insensitive) are treated as capital events. This determines both capital return (reducing capital balance) and promote hurdle testing.
-  - **Promote hurdle logic** (3 states):
-    1. **Capital event, hurdle not yet cleared**: Test XIRR(Test Net cashflows) >= Hurdle Rate. If passes → promote earned, `hurdle_cleared = True`.
-    2. **Any event after hurdle cleared**: Promote applies to ALL subsequent cashflows (CF or Capital) as long as running XIRR stays >= hurdle rate.
-    3. **CF distribution before hurdle cleared**: Promote always applies (operating income).
+  - **Promote logic** (hybrid xnpv + pref):
+    - **Capital events** (sale/refi): xnpv hurdle test. `hurdle_amount = -XNPV(hurdle_rate, prior_net_cfs) × (1+hurdle)^years`. Promote = `MAX(0, total_distribution - hurdle_amount) × promote_pct`. Promote is deducted from total payout (can reduce pref/capital portions).
+    - **CF distributions**: Promote = `Excess × promote_pct`. Pref paid IS the hurdle return (accrued at hurdle rate on outstanding capital), so promote only applies to the profit portion after pref.
+    - No state tracking needed — capital events use xnpv independently, CF distributions use the waterfall's pref mechanism.
   - **Acquisition Fees**: Typename "Acquisition Fee" — entire distribution consumed by fee, investor gets $0, pref still accrues. $0 cashflow appended for XIRR alignment with Excel.
-  - **Portfolio total**: All net cashflows pooled across deals; IRR/ROE/MOIC computed once from the combined pool (not averaged).
+  - **Net ROE**: Only "CF Distribution" events count as operating income. Capital event proceeds (including pref paid at sale and gain on sale) go entirely to capital_events — they reduce weighted avg capital but are NOT operating income. Net capital returned is capped at Net to Investor (promote reduces what investor actually gets back).
+  - **Portfolio-level expenses**: Dynamic scaling based on active deal count. `Annual Expenses = (3 + 0.25 × active_deals) × per_deal_annual_expenses`. Active deals = deals with capital balance > 0. As deals sell, their proportion drops out. Per-deal sheets use flat per-deal expenses; portfolio-level uses the scaled formula.
+  - **Portfolio total**: Full portfolio-level waterfall recomputation — AM fee on portfolio capital, pref accrual on portfolio capital, dynamic expenses with active deal tracking. All net cashflows pooled chronologically; IRR/ROE/MOIC computed from the combined pool. Portfolio-level promote uses same xnpv hurdle logic.
   - **Assumptions footnote**: Displayed below summary table when net returns are shown.
 - **Excel Exports**:
   - Summary workbook (`sold_portfolio_returns.xlsx`) — gross returns only
   - Per-deal activity detail (`sold_activity_{name}.xlsx`) — accounting rows + metrics
   - **Net Returns workbook** (`sold_portfolio_net_returns.xlsx`) — multi-sheet:
-    - Sheet 1 "Summary": Gross + Net side by side with assumptions footnote. Net IRR references per-deal detail sheets via cross-sheet formulas; Portfolio Total IRR references Portfolio Detail sheet.
-    - Per-deal sheets: Full waterfall detail with **Excel formulas** (not static values). Editable assumptions block in row 2 (B2=Ownership%, D2=AM Fee%, F2=Hurdle%, H2=Promote%, J2=Annual Expenses) — changing any assumption recalculates the entire sheet. 19 formula columns (A-S): Date, Event, Gross, Ownership%, Scaled, AcqFeePaid, AMFee, Expenses, Available, PrefAccrued, PrefPaid, CapReturned, Excess, Promote, NetToInvestor, CapBalance, PrefBalance, **Test Net** (full excess assuming no promote — used for XIRR hurdle test to avoid circularity), **Hurdle Cleared** (TRUE once a Capital Distribution passes XIRR test, stays TRUE via `=OR(prior, test)`). Summary section: XIRR formula, MOIC formula, SUMPRODUCT for contributions/distributions. Column headers have comments explaining each formula.
-    - "Portfolio Detail" sheet: All deals' events pooled chronologically. Same formula-driven Promote/TestNet/HurdleCleared columns. Portfolio-level XIRR/MOIC formulas. Assumption cells for Hurdle Rate and Promote %.
+    - Sheet 1 "Summary": Gross + Net side by side with assumptions footnote. Net columns reference per-deal detail sheets via cross-sheet formulas (IRR, ROE, MOIC, Contributions, Distributions); Portfolio Total IRR references Portfolio Detail sheet.
+    - Per-deal sheets: Full waterfall detail with **Excel formulas** (not static values). Editable assumptions block in row 2 (B2=Ownership%, D2=AM Fee%, F2=Hurdle%, H2=Promote%, J2=Annual Expenses) — changing any assumption recalculates the entire sheet. 18 formula columns (A-R): Date, Event, Gross, Ownership%, Scaled, AcqFeePaid, AMFee, Expenses, Available, PrefAccrued, PrefPaid, CapReturned, Excess, **Hurdle Amount** (`=MAX(0,-XNPV(hurdle,prior_net_cfs)*(1+hurdle)^years)`), Promote (hybrid IF: capital events use hurdle, CF uses Excess), NetToInvestor, CapBalance, PrefBalance. Summary metrics: XIRR, MOIC, ROE (Python-computed), SUMPRODUCT for contributions/distributions.
+    - "Portfolio Detail" sheet: All deals' events pooled chronologically. **Fully formula-driven** (19 cols A-S). Editable assumptions (B2=AM Fee%, D2=Hurdle%, F2=Promote%, H2=Annual Expenses per deal). Column S = `# Active Deals` (Python-computed from per-deal capital balances). Expense formula: `=(3+0.25×ActiveDeals)×AnnualExp×days/365`. AM Fee, Pref Accrued, Pref Paid, Capital Returned, Excess all calculated from portfolio-level Capital Balance and Pref Balance. XNPV-based Hurdle Amount and hybrid Promote formulas. Summary metrics: XIRR, MOIC, ROE.
 - **API Endpoints** (`/api/sold-portfolio`): `GET /summary`, `GET /summary/excel`, `GET /detail/<vcode>`, `GET /detail/<vcode>/excel`, `POST /net-returns` (JSON), `POST /net-returns/excel` (multi-sheet workbook). Net endpoints accept `{ownership_pct, am_fee_pct, hurdle_rate, promote_pct, annual_expenses}` as decimals.
 - **Acquisition Fees included**: Unlike the Deal Analysis waterfall path, Sold Portfolio includes all accounting entries (including Acquisition Fees) in its gross return calculations.
 
@@ -397,9 +408,12 @@ Upstream waterfall analysis for the PSCKOC holding entity, showing how deal-leve
 - **XIRR Cash Flows**: Combined cashflow table per member (contributions + distributions).
 - **Excel Export**: 4-sheet workbook (Partner Returns, Income Schedule, AM Fee Schedule, XIRR Cash Flows).
 - **New Waterfall vStates** (in `waterfall.py`):
-  - `AMFee`: Post-distribution fee deducted from source investor (vNotes), paid to recipient (PropCode). Pool-neutral. `nPercent` = annual rate, `mAmount` = periods/yr.
+  - `AMFee`: Post-distribution fee deducted from source investor (vNotes), paid to recipient (PropCode). Pool-neutral. `nPercent` = annual rate, `mAmount` = periods/yr. Supports investment exclusions via `vNotes` syntax: `SOURCE_PC;exclude:IID1,IID2` — subtracts entity's capital in excluded investments (scaled by source investor's ownership %) from the fee base. Pre-computed via `build_amfee_exclusions()` from accounting data, threaded as `amfee_exclusions` dict through `run_waterfall()`, `run_upstream_waterfall_period()`, and `run_recursive_upstream_waterfalls()`.
   - `Promote`: Cumulative catch-up. `FXRate` = carry share, `nPercent` = target carry %. `vNotes` = comma-separated capital investors. Math: `E >= target/(1-target) * P`.
+  - `Amt`: Fixed-amount distribution. `mAmount` = dollar amount per period. Reduces the remaining cash pool (unlike AMFee). Use for entity expenses off the top before waterfall splits.
+  - `IRR`: IRR-targeted hurdle gate. `nPercent` = target IRR. Computes additional distribution needed for investor to reach target IRR using full cashflow history (net of AM fees and expenses). Used in Cap_WF to gate promote.
 - **New InvestorState Fields** (`models.py`): `promote_base` (cumulative pref for catch-up denominator), `promote_carry` (cumulative carry from catch-up).
+- **Waterfall Setup Guide** (`waterfall_setup_rules.txt`): Comprehensive modeling reference. Sections: vState vocabulary, Add vs Tag, pool routing, operating capital, FXRate, mAmount, deal patterns (A-E), expenses, promote/IRR structure, AMFee exclusions, TGA22 JV example, checklist, troubleshooting.
 
 ## Key Functions
 
@@ -410,6 +424,9 @@ Upstream waterfall analysis for the PSCKOC holding entity, showing how deal-leve
 - `prepare_cap_lookups()` - Pre-compute normalized DataFrames and lookup dicts for batch capitalization (compute.py)
 - `xirr(cfs)` - Calculate IRR with irregular dates; Newton-Raphson (guess=0.1) matching Excel XIRR, Brent fallback (metrics.py)
 - `accrue_pref_to_date()` - Daily pref accrual (waterfall.py)
+- `parse_amfee_vnotes()` - Parse AMFee vNotes for source investor and exclusions (waterfall.py)
+- `build_amfee_exclusions()` - Pre-compute net capital by (InvestmentID, InvestorID) for AMFee exclusions (waterfall.py)
+- `get_amfee_excluded_capital()` - Compute capital to exclude from AMFee base, scaled by ownership % (waterfall.py)
 - `seed_states_from_accounting()` - Build InvestorState from historical accounting; accepts `cutoff_date` to limit to actuals boundary (waterfall.py)
 - `InvestorState` - Tracks capital, pref, cashflows per investor (models.py)
 - `Loan` - Debt structure with fixed/variable rates (models.py)

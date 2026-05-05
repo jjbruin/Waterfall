@@ -191,12 +191,15 @@ def run_upstream_analysis(entity_id: str, distribution_amount: float,
 
     # Run upstream waterfalls
     try:
+        from waterfall import build_amfee_exclusions
+        _excl = {}  # No accounting data available in test analysis
         upstream_alloc, entity_states, beneficiary_totals = \
             run_recursive_upstream_waterfalls(
                 deal_allocations=alloc,
                 wf_steps=wf_steps,
                 relationships=relationships,
                 wf_type="CF_WF",
+                amfee_exclusions=_excl,
             )
     except Exception as e:
         return {"error": f"Upstream waterfall failed: {e}"}

@@ -81,8 +81,13 @@ def load_forecast(df: pd.DataFrame = None, coa: pd.DataFrame = None, pro_yr_base
     """
     if df is not None and not df.empty:
         fc = df.copy()
-    else:
+    elif df is None:
         fc = execute_query("SELECT * FROM forecasts")
+    else:
+        # df is an empty DataFrame — return it as-is rather than silently
+        # loading all forecasts from the database (which would cause callers
+        # to process unrelated deals' data).
+        return df.copy()
 
     fc.columns = [str(c).strip() for c in fc.columns]
     fc = fc.rename(columns={"Vcode": "vcode", "Date": "event_date"})
@@ -232,7 +237,11 @@ def normalize_accounting_feed(acct: pd.DataFrame = None) -> pd.DataFrame:
     # Ignore system quarter-end rows
     a = a[a["MajorType"] != ""].copy()
 
-    a["Amt"] = pd.to_numeric(a["Amt"], errors="coerce").fillna(0.0).astype(float)
+    a["_raw_amt"] = a["Amt"].copy()
+    a["Amt"] = pd.to_numeric(
+        a["Amt"].astype(str).str.replace(",", "", regex=False).str.replace("$", "", regex=False).str.replace("(", "-", regex=False).str.replace(")", "", regex=False).str.strip(),
+        errors="coerce"
+    ).fillna(0.0).astype(float)
 
     a["Capital"] = a["Capital"].fillna("").astype(str).str.strip().str.upper()
     a["is_capital"] = a["Capital"].eq("Y")

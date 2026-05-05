@@ -75,6 +75,14 @@ def xirr(cfs: List[Tuple[date, float]]) -> Optional[float]:
     if not cfs or len(cfs) < 2:
         return None
 
+    # Filter out zero-value cashflows — they contribute nothing to NPV at any
+    # rate but can cause solver convergence issues (e.g., acquisition fees that
+    # precede the first contribution produce $0 entries that confuse Newton).
+    cfs = [(d, a) for d, a in cfs if abs(a) > 1e-10]
+
+    if len(cfs) < 2:
+        return None
+
     amounts = [a for _, a in cfs]
 
     # Must have both negative (investments) and positive (returns)

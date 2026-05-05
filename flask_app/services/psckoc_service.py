@@ -166,6 +166,11 @@ def run_psckoc_computation(deal_vcodes: list[str], data: dict,
     combined_cf = pd.concat(all_cf_allocs, ignore_index=True) if all_cf_allocs else pd.DataFrame()
     combined_cap = pd.concat(all_cap_allocs, ignore_index=True) if all_cap_allocs else pd.DataFrame()
 
+    # Pre-compute AMFee exclusion capital for upstream waterfalls
+    from waterfall import build_amfee_exclusions
+    _acct = data.get("acct")
+    _excl = build_amfee_exclusions(_acct, relationships) if _acct is not None else {}
+
     # Run CF upstream waterfalls
     cf_upstream_alloc = pd.DataFrame()
     cf_entity_states = {}
@@ -177,6 +182,7 @@ def run_psckoc_computation(deal_vcodes: list[str], data: dict,
                 wf_steps=wf_steps,
                 relationships=relationships,
                 wf_type="CF_WF",
+                amfee_exclusions=_excl,
             )
 
     # Run Cap upstream waterfalls
@@ -190,6 +196,7 @@ def run_psckoc_computation(deal_vcodes: list[str], data: dict,
                 wf_steps=wf_steps,
                 relationships=relationships,
                 wf_type="Cap_WF",
+                amfee_exclusions=_excl,
             )
 
     # Build structured results

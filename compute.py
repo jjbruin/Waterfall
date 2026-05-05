@@ -583,7 +583,7 @@ def compute_deal_analysis(
     )
 
     sub_portfolio_msg = None
-    if consolidation_info.get('is_sub_portfolio', False):
+    if consolidation_info.get('is_sub_portfolio', False) and not consolidated_fc.empty:
         fc_raw_local = consolidated_fc.copy()
         source = consolidation_info.get('forecast_source', 'unknown')
 
@@ -599,7 +599,10 @@ def compute_deal_analysis(
         sub_portfolio_msg = f"📦 Sub-portfolio: {prop_count} properties consolidated from {source}"
     else:
         fc_deal_full = fc[fc["vcode"].astype(str) == str(deal_vcode)].copy()
-        debug_msgs.append(f"Not a sub-portfolio deal (InvestmentID: {deal_investment_id})")
+        if consolidation_info.get('is_sub_portfolio', False):
+            debug_msgs.append(f"Sub-portfolio deal but no child forecasts; using parent forecast (InvestmentID: {deal_investment_id})")
+        else:
+            debug_msgs.append(f"Not a sub-portfolio deal (InvestmentID: {deal_investment_id})")
 
     if fc_deal_full.empty:
         return {
@@ -641,10 +644,15 @@ def compute_deal_analysis(
     model_end_full = max(fc_deal_full["event_date"])
 
     # --- Sale date ---
-    if sale_date_raw is None or (isinstance(sale_date_raw, float) and pd.isna(sale_date_raw)) or str(sale_date_raw).strip() == "":
-        sale_date = month_end(_horizon_end_date(int(start_year), int(horizon_years)))
-    else:
+    sale_date_explicit = not (
+        sale_date_raw is None
+        or (isinstance(sale_date_raw, float) and pd.isna(sale_date_raw))
+        or str(sale_date_raw).strip() == ""
+    )
+    if sale_date_explicit:
         sale_date = month_end(as_date(sale_date_raw))
+    else:
+        sale_date = month_end(_horizon_end_date(int(start_year), int(horizon_years)))
 
     if sale_date < month_end(model_start):
         sale_date = month_end(model_start)
@@ -665,6 +673,22 @@ def compute_deal_analysis(
         loans.extend(build_loans_from_mri_loans(mri_loans))
     else:
         debug_msgs.append("MRI_Loans.csv not provided; existing loans will NOT be modeled.")
+
+    # When no explicit sale date, default to max loan maturity
+    if not sale_date_explicit and loans:
+        max_maturity = max(
+            (ln.maturity_date for ln in loans if ln.maturity_date is not None),
+            default=None,
+        )
+        if max_maturity and month_end(max_maturity) > sale_me:
+            old_sale = sale_me
+            sale_me = month_end(max_maturity)
+            debug_msgs.append(
+                f"Sale date set to max loan maturity: {old_sale} -> {sale_me}"
+            )
+        elif max_maturity:
+            sale_me = month_end(max_maturity)
+            debug_msgs.append(f"Sale date set to max loan maturity: {sale_me}")
 
     # Planned loan sizing
     planned_dbg = None
@@ -1028,7 +1052,8 @@ def compute_deal_analysis(
     # --- Run waterfalls ---
     wf_steps = load_waterfalls(wf)
     seed_states = seed_states_from_accounting(acct, inv, wf_steps, deal_vcode,
-                                              cutoff_date=acct_cutoff)
+                                              cutoff_date=acct_cutoff,
+                                              child_vcodes=prop_vcodes_for_cap)
 
     cf_alloc, cap_alloc, cf_investors, cap_investors = run_interleaved_waterfalls(
         wf_steps, deal_vcode, cf_period_cash, cap_period_cash,
@@ -1220,6 +1245,19 @@ def build_partner_results(cf_investors, cap_investors, seed_states, cf_alloc, ca
         combined_state.cf_distributions = (
             cf_state.cf_distributions if cf_state and hasattr(cf_state, 'cf_distributions') else []
         )
+
+        import logging as _logging
+        _bpr_log = _logging.getLogger(__name__)
+        neg_cfs = [(d, a) for d, a in metrics_cfs if a < 0]
+        pos_cfs = [(d, a) for d, a in metrics_cfs if a > 0]
+        _bpr_log.info("build_partner_results(%s): %d metrics_cfs (%d neg, %d pos), "
+                      "seed_len=%d, cf_new=%d, cap_new=%d, unrealized=%.0f",
+                      partner, len(metrics_cfs), len(neg_cfs), len(pos_cfs),
+                      seed_len,
+                      len(cf_state.cashflows) - seed_len if cf_state and len(cf_state.cashflows) > seed_len else 0,
+                      len(cap_state.cashflows) - seed_len if cap_state and len(cap_state.cashflows) > seed_len else 0,
+                      unrealized)
+
         metrics = investor_metrics(combined_state, sale_me, unrealized_nav=unrealized)
 
         contrib = metrics.get('TotalContributions', 0.0)

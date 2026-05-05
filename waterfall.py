@@ -627,11 +627,21 @@ def run_waterfall_period(
             elif lead_state == "AMFee":
                 # Post-distribution AM fee: deduct from source investor, pay to recipient.
                 # Pool-neutral — does NOT reduce the remaining cash pool.
-                source_pc = str(lead.get("vNotes", "")).strip()
+                # vNotes syntax: "SOURCE_PC" or "SOURCE_PC;exclude:IID1,IID2"
+                raw_vnotes = str(lead.get("vNotes", "")).strip()
+                source_pc, excluded_iids = parse_amfee_vnotes(raw_vnotes)
                 periods_per_year = max(1.0, lead_m_amount) if lead_m_amount > 0 else 4.0
                 source_ist = istates.get(source_pc)
                 if source_ist:
-                    fee = source_ist.total_capital_outstanding * lead_rate / periods_per_year
+                    fee_base = source_ist.total_capital_outstanding
+                    # Subtract excluded investment capital if specified
+                    if excluded_iids and amfee_exclusions:
+                        fee_base -= get_amfee_excluded_capital(
+                            vcode, source_pc, excluded_iids,
+                            amfee_exclusions, relationships,
+                        )
+                        fee_base = max(0.0, fee_base)
+                    fee = fee_base * lead_rate / periods_per_year
                     if fee > 0:
                         # Deduct from source's share (negative cashflow on source)
                         source_ist.cashflows.append((period_date, -fee))
@@ -774,6 +784,108 @@ def run_waterfall_period(
 
 
 # ============================================================
+# AM FEE EXCLUSION HELPERS
+# ============================================================
+
+
+def parse_amfee_vnotes(vnotes: str) -> Tuple[str, List[str]]:
+    """Parse AMFee vNotes for source investor and optional exclusions.
+
+    Syntax: "SOURCE_PC" or "SOURCE_PC;exclude:IID1,IID2"
+
+    Returns:
+        (source_propcode, list_of_excluded_investment_ids)
+    """
+    parts = vnotes.split(";")
+    source_pc = parts[0].strip()
+    excluded = []
+    for part in parts[1:]:
+        part = part.strip()
+        if part.lower().startswith("exclude:"):
+            ids = part[len("exclude:"):].strip()
+            excluded = [x.strip() for x in ids.split(",") if x.strip()]
+    return source_pc, excluded
+
+
+def build_amfee_exclusions(
+    acct: Optional[pd.DataFrame],
+    relationships: Optional[pd.DataFrame],
+) -> dict:
+    """Pre-compute net capital by (InvestmentID, InvestorID) for AMFee exclusions.
+
+    Returns dict: {(investment_id_upper, investor_id_upper): net_capital}
+    where net_capital = abs(sum of contributions) - abs(sum of capital returns).
+    """
+    if acct is None or acct.empty:
+        return {}
+
+    if "is_contribution" not in acct.columns:
+        acct = normalize_accounting_feed(acct)
+
+    exclusion_capital = {}
+    # Group by (InvestmentID, InvestorID) — compute net capital outstanding
+    for (iid, inv_id), grp in acct.groupby(["InvestmentID", "InvestorID"]):
+        contribs = grp[grp["is_contribution"]]["Amt"].sum()  # negative
+        # Capital returns: distributions where Capital == 'Y'
+        cap_returns = grp[grp["is_distribution"] & grp["is_capital"]]["Amt"].sum()  # positive
+        net_capital = abs(contribs) - abs(cap_returns)
+        if net_capital > 0.01:
+            exclusion_capital[(str(iid).upper(), str(inv_id).upper())] = net_capital
+
+    return exclusion_capital
+
+
+def get_amfee_excluded_capital(
+    entity_id: str,
+    source_pc: str,
+    excluded_iids: List[str],
+    amfee_exclusions: dict,
+    relationships: Optional[pd.DataFrame] = None,
+) -> float:
+    """Compute capital to exclude from AMFee base for a source investor.
+
+    For each excluded InvestmentID:
+    - Look up entity's net capital in that investment
+    - Multiply by source investor's ownership % in entity (from relationships)
+
+    Args:
+        entity_id: The entity running the waterfall (e.g., "TGA22")
+        source_pc: The investor paying the fee (e.g., "TGAM")
+        excluded_iids: InvestmentIDs to exclude (e.g., ["PEGASU"])
+        amfee_exclusions: Pre-computed {(iid, investor_id): net_capital}
+        relationships: Ownership relationships DataFrame
+
+    Returns:
+        Total capital to exclude from the AMFee base
+    """
+    if not excluded_iids or not amfee_exclusions:
+        return 0.0
+
+    # Get source investor's ownership % in the entity
+    ownership_pct = 1.0
+    if relationships is not None and not relationships.empty:
+        rel_match = relationships[
+            (relationships["InvestmentID"].astype(str).str.upper() == entity_id.upper()) &
+            (relationships["InvestorID"].astype(str).str.upper() == source_pc.upper())
+        ]
+        if not rel_match.empty:
+            # Use most recent relationship (by StartDate if available)
+            pct = rel_match.iloc[-1].get("OwnershipPct", 100.0)
+            ownership_pct = float(pct) / 100.0 if float(pct) > 1.0 else float(pct)
+
+    total_excluded = 0.0
+    entity_upper = entity_id.upper()
+    for iid in excluded_iids:
+        iid_upper = iid.upper()
+        # Look up entity's capital in the excluded investment
+        key = (iid_upper, entity_upper)
+        capital = amfee_exclusions.get(key, 0.0)
+        total_excluded += capital * ownership_pct
+
+    return total_excluded
+
+
+# ============================================================
 # FULL WATERFALL EXECUTION
 # ============================================================
 
@@ -785,6 +897,8 @@ def run_waterfall(
     initial_states: Optional[Dict[str, InvestorState]] = None,
     show_structure_when_no_cash: bool = True,
     capital_calls: Optional[List[dict]] = None,
+    amfee_exclusions: Optional[dict] = None,
+    relationships: Optional[pd.DataFrame] = None,
 ) -> Tuple[pd.DataFrame, Dict[str, InvestorState]]:
     """
     Run complete waterfall for all periods
@@ -955,6 +1069,7 @@ def seed_states_from_accounting(
     wf_steps: pd.DataFrame,
     target_vcode: str,
     cutoff_date=None,
+    child_vcodes: Optional[list] = None,
 ) -> Dict[str, InvestorState]:
     """
     Build InvestorState per PropCode from historical accounting
@@ -983,17 +1098,61 @@ def seed_states_from_accounting(
     Returns:
         Dict of InvestorState by PropCode
     """
+    import logging
+    _log = logging.getLogger(__name__)
+
     acct = normalize_accounting_feed(acct_raw)
     inv_to_vcode = build_investmentid_to_vcode(inv_map)
 
-    # Filter to target deal
+    # Filter to target deal (and child properties for sub-portfolio deals)
     acct["vcode"] = acct["InvestmentID"].map(inv_to_vcode)
-    acct = acct[acct["vcode"].astype(str) == str(target_vcode)].copy()
+
+    # Build set of vcodes to include: parent + any child properties
+    target_vcodes = {str(target_vcode)}
+    if child_vcodes:
+        target_vcodes.update(str(v) for v in child_vcodes)
+
+    direct_count = acct["vcode"].astype(str).isin(target_vcodes).sum()
+    _log.info("seed_states(%s): direct mapping found %d rows (child_vcodes=%s)",
+              target_vcode, direct_count, child_vcodes or [])
+
+    # If no rows match, try prefix matching for InvestmentID mismatches
+    # (e.g. accounting has "BURTON" but investment_map has "BURT")
+    if direct_count == 0:
+        unmapped = set(acct.loc[acct["vcode"].isna(), "InvestmentID"].unique())
+        inv_ids_for_target = {
+            iid for iid, vc in inv_to_vcode.items()
+            if vc in target_vcodes
+        }
+        _log.info("seed_states(%s): prefix matching — inv_ids=%s, unmapped_count=%d",
+                  target_vcode, inv_ids_for_target, len(unmapped))
+        for acct_iid in unmapped:
+            for inv_iid in inv_ids_for_target:
+                if (acct_iid.upper().startswith(inv_iid.upper())
+                        or inv_iid.upper().startswith(acct_iid.upper())):
+                    inv_to_vcode[acct_iid] = inv_to_vcode[inv_iid]
+                    _log.info("seed_states(%s): prefix match %s -> %s",
+                              target_vcode, acct_iid, inv_iid)
+                    break
+        acct["vcode"] = acct["InvestmentID"].map(inv_to_vcode)
+
+    acct = acct[acct["vcode"].astype(str).isin(target_vcodes)].copy()
+    _log.info("seed_states(%s): final acct rows=%d", target_vcode, len(acct))
 
     # Filter to cutoff date (only include actuals through this date)
     if cutoff_date is not None:
         cutoff_ts = pd.Timestamp(cutoff_date)
-        acct = acct[pd.to_datetime(acct["EffectiveDate"]) <= cutoff_ts].copy()
+        pre_cutoff = len(acct)
+        acct_dates = pd.to_datetime(acct["EffectiveDate"])
+        # Log contribution rows for diagnostics
+        contribs = acct[acct["is_contribution"] == True]
+        for _, row in contribs.iterrows():
+            _log.info("seed_states(%s): contribution date=%s amt=%.2f investor=%s",
+                      target_vcode, row["EffectiveDate"], float(row["Amt"]),
+                      row.get("InvestorID", ""))
+        acct = acct[acct_dates <= cutoff_ts].copy()
+        _log.info("seed_states(%s): cutoff=%s, %d->%d rows after cutoff filter",
+                  target_vcode, cutoff_ts.date(), pre_cutoff, len(acct))
 
     # Build states
     states: Dict[str, InvestorState] = {}
@@ -1261,6 +1420,7 @@ def run_upstream_waterfall_period(
     source_vtranstype: str = "",
     source_typename: str = "",
     typename_routed: bool = False,
+    amfee_exclusions: Optional[dict] = None,
 ) -> Dict[str, float]:
     """
     Process upstream waterfall for a single entity in a single period.
@@ -1352,6 +1512,7 @@ def run_upstream_waterfall_period(
                     source_vtranstype=source_vtranstype,
                     source_typename=source_typename,
                     typename_routed=True,
+                    amfee_exclusions=amfee_exclusions,
                 )
 
         # Determine which waterfall type to use based on source_vtranstype.
@@ -1465,12 +1626,21 @@ def run_upstream_waterfall_period(
                     elif state == "AMFee":
                         # Post-distribution AM fee: deduct from source, pay to recipient.
                         # Pool-neutral — does NOT reduce the remaining cash pool.
-                        source_pc = str(step.get("vNotes", "")).strip()
+                        # vNotes syntax: "SOURCE_PC" or "SOURCE_PC;exclude:IID1,IID2"
+                        raw_vnotes = str(step.get("vNotes", "")).strip()
+                        source_pc, excluded_iids = parse_amfee_vnotes(raw_vnotes)
                         m_amount = float(step.get("mAmount", 0) or 0)
                         periods_per_year = max(1.0, m_amount) if m_amount > 0 else 4.0
                         source_ist = entity_states.get(source_pc)
                         if source_ist:
-                            fee = source_ist.total_capital_outstanding * rate / periods_per_year
+                            fee_base = source_ist.total_capital_outstanding
+                            if excluded_iids and amfee_exclusions:
+                                fee_base -= get_amfee_excluded_capital(
+                                    entity_id, source_pc, excluded_iids,
+                                    amfee_exclusions, relationships,
+                                )
+                                fee_base = max(0.0, fee_base)
+                            fee = fee_base * rate / periods_per_year
                             if fee > 0:
                                 source_ist.cashflows.append((period_date, -fee))
                                 source_ist.cashflow_labels.append(step_vtlabel)
@@ -1540,6 +1710,7 @@ def run_upstream_waterfall_period(
                             current_depth=current_depth + 1,
                             source_vtranstype=step_vtranstype,
                             source_typename=source_typename,
+                            amfee_exclusions=amfee_exclusions,
                         )
                         for term_id, term_cash in sub_terminal.items():
                             terminal_cash[term_id] = terminal_cash.get(term_id, 0.0) + term_cash
@@ -1604,6 +1775,7 @@ def run_upstream_waterfall_period(
                             current_depth=current_depth + 1,
                             source_vtranstype=tag_vtranstype,
                             source_typename=source_typename,
+                            amfee_exclusions=amfee_exclusions,
                         )
                         for term_id, term_cash in sub_terminal.items():
                             terminal_cash[term_id] = terminal_cash.get(term_id, 0.0) + term_cash
@@ -1695,6 +1867,7 @@ def run_upstream_waterfall_period(
                 current_depth=current_depth + 1,
                 source_vtranstype=source_vtranstype,
                 source_typename=source_typename,
+                amfee_exclusions=amfee_exclusions,
             )
             for term_id, term_cash in sub_terminal.items():
                 terminal_cash[term_id] = terminal_cash.get(term_id, 0.0) + term_cash
@@ -1708,6 +1881,7 @@ def run_recursive_upstream_waterfalls(
     relationships: pd.DataFrame,
     wf_type: str = "CF_WF",
     target_beneficiary: str = None,
+    amfee_exclusions: Optional[dict] = None,
 ) -> Tuple[pd.DataFrame, Dict[str, InvestorState], Dict[str, float]]:
     """
     Run recursive upstream waterfalls starting from deal-level allocations.
@@ -1785,6 +1959,7 @@ def run_recursive_upstream_waterfalls(
                 current_depth=0,
                 source_vtranstype=deal_vtranstype,
                 source_typename=deal_typename,
+                amfee_exclusions=amfee_exclusions,
             )
 
             # Aggregate beneficiary totals

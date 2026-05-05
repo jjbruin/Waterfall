@@ -130,6 +130,24 @@ def load_all(db_path: str, pro_yr_base: int = 2025) -> dict:
         inv = inv.rename(columns={"vCode": "vcode"})
     inv["vcode"] = inv["vcode"].astype(str)
 
+    # Derive Acquisition_Date from earliest accounting activity per deal.
+    # This captures the true acquisition date (e.g., fee collected at closing)
+    # even when first funding occurs much later (development deals).
+    if not acct.empty and "EffectiveDate" in acct.columns and "InvestmentID" in acct.columns:
+        acct_dates = acct[["InvestmentID", "EffectiveDate"]].copy()
+        acct_dates["_dt"] = pd.to_datetime(acct_dates["EffectiveDate"], errors="coerce")
+        earliest = (
+            acct_dates.dropna(subset=["_dt"])
+            .groupby("InvestmentID")["_dt"]
+            .min()
+        )
+        if "InvestmentID" in inv.columns:
+            inv["Acquisition_Date"] = (
+                inv["InvestmentID"].astype(str).str.strip()
+                .map(earliest)
+                .fillna(inv.get("Acquisition_Date"))
+            )
+
     # Replace empty DataFrames from optional reads with None where appropriate
     if relationships_raw.empty:
         relationships_raw = None
@@ -220,6 +238,16 @@ def refresh_table(table_name: str):
                 if "vcode" not in fresh.columns and "vCode" in fresh.columns:
                     fresh = fresh.rename(columns={"vCode": "vcode"})
                 fresh["vcode"] = fresh["vcode"].astype(str)
+                # Re-derive Acquisition_Date from accounting
+                acct_df = data.get("acct")
+                if acct_df is not None and not acct_df.empty and "InvestmentID" in fresh.columns:
+                    _ad = acct_df[["InvestmentID", "EffectiveDate"]].copy()
+                    _ad["_dt"] = pd.to_datetime(_ad["EffectiveDate"], errors="coerce")
+                    earliest = _ad.dropna(subset=["_dt"]).groupby("InvestmentID")["_dt"].min()
+                    fresh["Acquisition_Date"] = (
+                        fresh["InvestmentID"].astype(str).str.strip()
+                        .map(earliest).fillna(fresh.get("Acquisition_Date"))
+                    )
             elif table_name == "waterfalls" and not fresh.empty:
                 fresh.columns = [str(c).strip() for c in fresh.columns]
                 if "vCode" in fresh.columns and "vcode" not in fresh.columns:

@@ -2,7 +2,7 @@ WATERFALL SETUP RULES
 =====================
 Guide for the deal modeling team on structuring waterfall steps in MRI/database.
 
-Last updated: 2026-02-04
+Last updated: 2026-04-29
 
 
 1. vState VOCABULARY
@@ -29,9 +29,29 @@ Each waterfall step has a vState that controls how the engine processes it.
              Does not interact with any capital pool.
 
   IRR        IRR-targeted distribution (hurdle gate).
-             nPercent = target IRR threshold.
+             nPercent = target IRR threshold (e.g. 0.08 = 8%).
+             Computes how much additional distribution the investor needs
+             to reach the target IRR based on their full cashflow history
+             (including any AM fee deductions and reduced distributions
+             after expenses). Used as the promote hurdle in Cap_WF.
 
   Amt        Fixed-amount distribution. mAmount = dollar amount per period.
+             Unlike AMFee, this DOES reduce the remaining cash pool.
+             Use for entity-level expenses that come off the top before
+             waterfall splits (e.g. quarterly operating expenses).
+
+  AMFee      Post-distribution asset management fee. Pool-neutral — does NOT
+             reduce the remaining cash pool. Computed as:
+               fee = source_capital * nPercent / mAmount
+             Where nPercent = annual rate (e.g. 0.95 = 0.95%), mAmount =
+             periods per year (e.g. 4 = quarterly).
+             PropCode = fee recipient. vNotes = source investor paying the
+             fee. Supports investment exclusions (see Section 10).
+
+  Promote    Cumulative catch-up for carried interest. FXRate = carry share,
+             nPercent = target carry %. vNotes = comma-separated list of
+             capital investors whose promote_base is used for the catch-up
+             denominator.
 
   Def&Int    Default interest + principal combined.
              In CF_WF pays interest only; in Cap_WF also pays principal.
@@ -235,7 +255,142 @@ Pattern D: Multi-tier pref (Cocoplum pattern)
   Higher-priority (lower iOrder) tiers are paid first.
 
 
-8. MODELING CHECKLIST
+8. ENTITY EXPENSES (Amt STEPS)
+-------------------------------
+Entity-level expenses (accounting, legal, admin) that are reimbursed to the
+manager from available cash flow BEFORE the waterfall splits proceeds to
+GP and LP.
+
+  iOrder  PropCode  vState  FXRate  nPercent  mAmount  vtranstype
+  1       PSCMAN    Amt     1       0         12500    Quarterly Expenses
+
+Key points:
+  - Place at iOrder=1 so expenses come off the top before pref and sharing.
+  - mAmount = dollar amount per period (e.g. $50,000/yr ÷ 4 = $12,500/qtr).
+  - Amt steps DO reduce the remaining cash pool. If there isn't enough cash
+    to cover expenses, only available cash is paid (no deficit carry).
+  - Use the same Amt step in both CF_WF and Cap_WF.
+
+
+9. PROMOTE / IRR HURDLE STRUCTURE (Cap_WF)
+-------------------------------------------
+When the GP/manager earns a promote (carried interest) on profits above
+a target IRR hurdle, use the IRR step to gate the promote:
+
+  iOrder  PropCode  vState    FXRate  nPercent  vtranstype
+  10      LP        Pref      0.90    0.08      Pref Return
+  10      GP        Tag       0.10    0         Pref Return
+  20      LP        Initial   0.90    0         Return of Capital
+  20      GP        Tag       0.10    0         Return of Capital
+  25      LP        IRR       0.90    0.08      IRR Hurdle
+  25      GP        Tag       0.10    0         IRR Hurdle
+  30      MANAGER   Share     0.20    0         GP Promote
+  30      LP        Tag       0.72    0         LP Residual
+  30      GP        Tag       0.08    0         GP Co-Invest Residual
+
+How it flows at sale:
+  Step 10: Pay accrued preferred return (LP 90%, GP 10%).
+  Step 20: Return invested capital (LP 90%, GP 10%).
+  Step 25: IRR Hurdle — engine computes how much additional cash LP needs
+           to reach the target IRR (8% in this example). The IRR calculation
+           uses LP's FULL cashflow history including any AM fee deductions
+           and reduced distributions after expenses, so the hurdle is
+           automatically "net of fees." GP gets a pro-rata Tag.
+  Step 30: Remaining proceeds split — Manager 20% promote, LP 72%, GP 8%.
+
+FXRate at step 30 must sum to 1.0 (0.20 + 0.72 + 0.08 = 1.00).
+
+Note: The IRR step only appears in Cap_WF (sale/refi). In CF_WF, operating
+distributions flow through Pref → Share without an IRR gate.
+
+
+10. AM FEE WITH INVESTMENT EXCLUSIONS
+--------------------------------------
+When an entity's AM fee should exclude capital invested in specific deals
+(e.g., a joint venture where the AM fee doesn't apply to one underlying
+investment), use the exclude syntax in vNotes:
+
+  vNotes syntax: "SOURCE_PC;exclude:IID1,IID2"
+
+  Where:
+    SOURCE_PC  = PropCode of the investor paying the fee
+    IID1,IID2  = InvestmentIDs to exclude from the fee base
+
+  Example — TGA22 pays 0.95% AM fee on TGAM's capital excluding PEGASU:
+
+    iOrder  PropCode  vState  FXRate  nPercent  mAmount  vtranstype  vNotes
+    900     PSCMAN    AMFee   1       0.95      4        AM Fee      TGAM;exclude:PEGASU
+
+  The engine computes:
+    1. TGAM's total capital outstanding in TGA22
+    2. Subtracts TGA22's net capital in PEGASU × TGAM's ownership %
+       (looked up from accounting and relationships)
+    3. fee = adjusted_base × 0.95% / 4
+
+  Without the exclude directive, the fee base is the source investor's
+  full capital outstanding:
+
+    900     PSCMAN    AMFee   1       0.95      4        AM Fee      TGAM
+
+Key points:
+  - AMFee is ALWAYS pool-neutral — it does not reduce available cash.
+  - The fee is deducted from the source investor's cashflows (negative entry)
+    and paid to the recipient (positive entry). Other investors are unaffected.
+  - Place AMFee at a high iOrder (e.g. 900) so it runs after all distributions.
+  - In CF_WF, the fee runs every period regardless of available cash.
+  - For Cap_WF, include the AMFee step to charge the final period's fee.
+    The AMFee does NOT catch up on unpaid fees from prior periods — each
+    period's fee is computed independently.
+  - Avoid placing AMFee in BOTH CF_WF and Cap_WF for the same quarter to
+    prevent double-charging in the sale period.
+
+
+11. PATTERN E: JV WITH AM FEE, EXPENSES, AND PROMOTE (e.g. TGA22)
+-------------------------------------------------------------------
+A joint venture entity with:
+  - LP (TGAM, 90%) and GP co-invest (PSC1, 10%)
+  - Manager (PSCMAN) receives quarterly expenses and AM fee
+  - 8% pref rate
+  - 0.95% annual AM fee on LP capital (excluding specific investments)
+  - 20% promote to manager after LP achieves 8% net IRR
+
+  CF_WF:
+    iOrder  PropCode  vState  FXRate  nPercent  mAmount  vtranstype          vNotes
+    1       PSCMAN    Amt     1       0         12500    Quarterly Expenses
+    10      TGAM      Pref    0.90    8         0        Pref Return
+    10      PSC1      Tag     0.10    0         0        Pref Return
+    20      TGAM      Share   0.90    0         0        Residual Share
+    20      PSC1      Tag     0.10    0         0        Residual Share
+    900     PSCMAN    AMFee   1       0.95      4        AM Fee              TGAM;exclude:PEGASU
+
+  Cap_WF:
+    iOrder  PropCode  vState    FXRate  nPercent  mAmount  vtranstype              vNotes
+    1       PSCMAN    Amt       1       0         12500    Quarterly Expenses
+    10      TGAM      Pref      0.90    8         0        Pref Return
+    10      PSC1      Tag       0.10    0         0        Pref Return
+    20      TGAM      Initial   0.90    0         0        Return of Capital
+    20      PSC1      Tag       0.10    0         0        Return of Capital
+    25      TGAM      IRR       0.90    0.08      0        IRR Hurdle
+    25      PSC1      Tag       0.10    0         0        IRR Hurdle
+    30      PSCMAN    Share     0.20    0         0        GP Promote
+    30      TGAM      Tag       0.72    0         0        LP Residual
+    30      PSC1      Tag       0.08    0         0        GP Co-Invest Residual
+    900     PSCMAN    AMFee     1       0.95      4        AM Fee                  TGAM;exclude:PEGASU
+
+  Notes:
+    - Expenses (iOrder 1) come off the top in both CF and Cap waterfalls.
+    - Pref (iOrder 10): 90/10 split using Lead+Tag.
+    - CF_WF uses Share at iOrder 20 (operating income, no capital return).
+    - Cap_WF uses Initial at iOrder 20 (capital return at sale).
+    - IRR Hurdle (iOrder 25, Cap_WF only): ensures TGAM reaches 8% net IRR
+      before promote kicks in. The IRR calculation automatically accounts
+      for AM fee deductions and expense reductions on TGAM's cashflows.
+    - Promote (iOrder 30): PSCMAN gets 20% of remaining, TGAM 72%, PSC1 8%.
+    - AMFee (iOrder 900): 0.95% annual on TGAM capital, PEGASU excluded.
+      Pool-neutral — deducted from TGAM only, PSC1 unaffected.
+
+
+12. MODELING CHECKLIST
 ----------------------
 
 When setting up a new deal:
@@ -261,13 +416,29 @@ When setting up a new deal:
 
 [ ] Set up both CF_WF and Cap_WF with the same step structure.
     Remember: CF_WF never reduces non-operating capital; Cap_WF does.
+    Exception: IRR hurdle and promote steps typically only appear in Cap_WF.
 
 [ ] Verify vtranstype text matches the routing rules (Section 3).
     Incorrect vtranstype will route to the wrong pool.
 
+[ ] If entity has operating expenses: add Amt step at iOrder=1 with
+    mAmount = annual expense / periods per year.
 
-9. TROUBLESHOOTING
--------------------
+[ ] If entity has an AM fee: add AMFee step at high iOrder (900).
+    Set nPercent = annual rate, mAmount = periods/year.
+    Use exclude syntax in vNotes if fee excludes specific investments.
+
+[ ] If deal has a promote/carried interest:
+    - Add IRR step in Cap_WF before the promote split.
+    - Add Share step for the manager's promote percentage.
+    - Add Tag steps for LP and GP residual shares.
+    - FXRates at the promote iOrder must sum to 1.0.
+
+[ ] Verify promote FXRate split: manager % + LP % + GP % = 1.00.
+
+
+13. TROUBLESHOOTING
+--------------------
 
 Symptom: Investor's capital_outstanding never decreases.
   Check: Is the step vState=Tag? Tags don't route to pools.
@@ -284,3 +455,24 @@ Symptom: Operating capital exceeds contributed amount.
 Symptom: Wrong pool receives distributions.
   Check: Does vtranstype text match the routing table in Section 3?
   Fix: Update vtranstype to match the correct pool keyword.
+
+Symptom: AM fee is too high / includes excluded investment capital.
+  Check: Does vNotes include the exclude directive?
+  Fix: Use "SOURCE_PC;exclude:IID" syntax (e.g. "TGAM;exclude:PEGASU").
+
+Symptom: AM fee is being charged to both GP and LP.
+  Check: AMFee is pool-neutral and only charges the source in vNotes.
+         If vNotes = "TGAM", only TGAM pays. Verify vNotes is set correctly.
+
+Symptom: Promote triggers even though LP hasn't reached hurdle IRR.
+  Check: Is the IRR step placed before the promote Share step in iOrder?
+  Fix: IRR step must have a lower iOrder than the promote Share step.
+
+Symptom: Expenses reduce LP/GP distributions unevenly.
+  Check: Is the Amt step placed before the Share/Tag split?
+  Fix: Place Amt at iOrder=1 so expenses come off the top before any split.
+
+Symptom: AM fee is double-charged in the sale quarter.
+  Check: Is AMFee in both CF_WF and Cap_WF?
+  Fix: Consider removing AMFee from Cap_WF if the CF_WF already covers
+       the sale quarter, or accept one extra period's fee at sale.
