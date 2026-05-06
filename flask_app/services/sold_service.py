@@ -1146,7 +1146,7 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
                 else:
                     # XNPV of prior net cashflows at hurdle rate
                     # Hurdle amount = MAX(0, -XNPV × (1+hurdle)^years)
-                    xnpv_prior = f"XNPV({HUR},P{FDR}:P{p},A{FDR}:A{p})"
+                    xnpv_prior = f"_xlfn.XNPV({HUR},P{FDR}:P{p},A{FDR}:A{p})"
                     years = f"((A{r}-A{FDR})/365)"
                     c.value = f'=IF(B{r}="Acquisition Fee",0,MAX(0,-{xnpv_prior}*(1+{HUR})^{years}))'
                 c.number_format = CUR
@@ -1204,7 +1204,7 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
 
         dws.cell(row=sr + 4, column=1, value="Net IRR").font = bold_font
         c = dws.cell(row=sr + 4, column=2)
-        c.value = f'=IFERROR(XIRR(FILTER(P{FDR}:P{last_r},P{FDR}:P{last_r}<>0),FILTER(A{FDR}:A{last_r},P{FDR}:P{last_r}<>0)),"N/A")'
+        c.value = f'=_xlfn.IFERROR(_xlfn.XIRR(_xlfn._xlws.FILTER(P{FDR}:P{last_r},P{FDR}:P{last_r}<>0),_xlfn._xlws.FILTER(A{FDR}:A{last_r},P{FDR}:P{last_r}<>0)),"N/A")'
         c.number_format = "0.00%"
 
         dws.cell(row=sr + 5, column=1, value="Net ROE").font = bold_font
@@ -1597,7 +1597,7 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
             if is_first:
                 c.value = 0.0
             else:
-                xnpv_prior = f"XNPV({P_HUR},P{FDR_P}:P{p},B{FDR_P}:B{p})"
+                xnpv_prior = f"_xlfn.XNPV({P_HUR},P{FDR_P}:P{p},B{FDR_P}:B{p})"
                 years = f"((B{r}-B{FDR_P})/365)"
                 c.value = f'=IF(C{r}="Acquisition Fee",0,MAX(0,-{xnpv_prior}*(1+{P_HUR})^{years}))'
             c.number_format = CUR
@@ -1657,7 +1657,7 @@ def generate_net_returns_excel(gross_df: pd.DataFrame, net_result: dict) -> byte
         # Portfolio Net IRR
         pws.cell(row=sr + 4, column=1, value="Net IRR").font = bold_font
         c = pws.cell(row=sr + 4, column=2)
-        c.value = f'=IFERROR(XIRR(FILTER(P{FDR_P}:P{last_r},P{FDR_P}:P{last_r}<>0),FILTER(B{FDR_P}:B{last_r},P{FDR_P}:P{last_r}<>0)),"N/A")'
+        c.value = f'=_xlfn.IFERROR(_xlfn.XIRR(_xlfn._xlws.FILTER(P{FDR_P}:P{last_r},P{FDR_P}:P{last_r}<>0),_xlfn._xlws.FILTER(B{FDR_P}:B{last_r},P{FDR_P}:P{last_r}<>0)),"N/A")'
         c.number_format = "0.00%"
 
         # Portfolio Net ROE (Python-computed — weighted avg capital calc not feasible in Excel)
