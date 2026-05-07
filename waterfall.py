@@ -1543,6 +1543,14 @@ def run_upstream_waterfall_period(
                 if str(pc) not in entity_states:
                     entity_states[str(pc)] = InvestorState(propcode=str(pc))
 
+            # Accrue pref on all entity states to current period date
+            # (needed for pre-seeded states with capital_outstanding)
+            p_date = period_date if isinstance(period_date, date) else pd.to_datetime(period_date).date()
+            for pc in steps["PropCode"].unique():
+                stt = entity_states.get(str(pc))
+                if stt:
+                    accrue_all_pools(stt, p_date)
+
             # Run the waterfall period (simplified - use Share distribution)
             remaining = cash_available
             is_cf_wf = (effective_wf_type in ("CF_WF", "Promote_WF"))
@@ -1882,6 +1890,7 @@ def run_recursive_upstream_waterfalls(
     wf_type: str = "CF_WF",
     target_beneficiary: str = None,
     amfee_exclusions: Optional[dict] = None,
+    pre_seeded_states: Optional[Dict[str, InvestorState]] = None,
 ) -> Tuple[pd.DataFrame, Dict[str, InvestorState], Dict[str, float]]:
     """
     Run recursive upstream waterfalls starting from deal-level allocations.
@@ -1907,7 +1916,7 @@ def run_recursive_upstream_waterfalls(
         return pd.DataFrame(), {}, {}
 
     upstream_entities = get_upstream_waterfall_entities(wf_steps)
-    entity_states: Dict[str, InvestorState] = {}
+    entity_states: Dict[str, InvestorState] = dict(pre_seeded_states) if pre_seeded_states else {}
     allocation_rows: List[dict] = []
     beneficiary_totals: Dict[str, float] = {}
 

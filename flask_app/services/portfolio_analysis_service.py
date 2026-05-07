@@ -16,6 +16,7 @@ from typing import Optional
 from ownership_tree import load_relationships
 from loaders import load_waterfalls
 from waterfall import run_recursive_upstream_waterfalls, build_amfee_exclusions
+from models import InvestorState
 from metrics import xirr, calculate_roe
 
 
@@ -275,6 +276,42 @@ def compute_portfolio_proposed(entity_id: str, data: dict,
     )
 
 
+def _build_entity_seeded_states(entity_id: str, acct) -> dict:
+    """Build pre-seeded InvestorStates for entity investors from accounting.
+
+    The upstream waterfall creates empty InvestorStates by default, so
+    capital_outstanding=0 and pref never accrues. This function seeds states
+    with net capital (contributions - capital returned) from entity accounting
+    so that Pref/Def_Int steps in the entity waterfall work correctly.
+    """
+    if acct is None or acct.empty:
+        return {}
+
+    ent = acct[acct["InvestmentID"].astype(str).str.strip() == entity_id].copy()
+    if ent.empty:
+        return {}
+
+    ent["_amt"] = pd.to_numeric(ent["Amt"], errors="coerce").fillna(0)
+    ent["_iid"] = ent["InvestorID"].astype(str).str.strip()
+    ent["_date"] = pd.to_datetime(ent["EffectiveDate"], format="mixed", dayfirst=False)
+
+    states = {}
+    for iid, grp in ent.groupby("_iid"):
+        # Net capital = sum of contributions (negative) + capital returns (positive)
+        net_capital = -grp["_amt"].sum()  # flip sign: contributions are negative in acct
+        if net_capital <= 0:
+            continue
+        st = InvestorState(propcode=iid)
+        st.capital_outstanding = net_capital
+        # Set last_accrual_date to earliest contribution date so pref accrues from start
+        dates = grp.loc[grp["_amt"] < 0, "_date"].dropna()
+        if not dates.empty:
+            st.get_pool("initial").last_accrual_date = dates.min().date()
+        states[iid] = st
+
+    return states
+
+
 def _run_upstream_computation(entity_id: str, deal_vcodes: list[str],
                               data: dict, start_year: int,
                               horizon_years: int, pro_yr_base: int,
@@ -342,6 +379,9 @@ def _run_upstream_computation(entity_id: str, deal_vcodes: list[str],
     _acct = data.get("acct")
     _excl = build_amfee_exclusions(_acct, relationships) if _acct is not None else {}
 
+    # Seed entity-level InvestorStates with capital from accounting so pref accrues
+    seeded = _build_entity_seeded_states(entity_id, _acct)
+
     # Run CF upstream waterfalls
     cf_upstream_alloc = pd.DataFrame()
     cf_entity_states = {}
@@ -353,6 +393,7 @@ def _run_upstream_computation(entity_id: str, deal_vcodes: list[str],
                 relationships=relationships,
                 wf_type="CF_WF",
                 amfee_exclusions=_excl,
+                pre_seeded_states=seeded,
             )
 
     # Run Cap upstream waterfalls
@@ -366,6 +407,7 @@ def _run_upstream_computation(entity_id: str, deal_vcodes: list[str],
                 relationships=relationships,
                 wf_type="Cap_WF",
                 amfee_exclusions=_excl,
+                pre_seeded_states=seeded,
             )
 
     return _build_entity_results(
@@ -381,6 +423,7 @@ def _run_upstream_computation(entity_id: str, deal_vcodes: list[str],
         mode="actual",
         errors=errors,
         acct=data.get("acct"),
+        wf_raw=wf,
     )
 
 
@@ -775,7 +818,7 @@ def _build_entity_results(entity_id, cf_upstream_alloc, cap_upstream_alloc,
                           cf_entity_states, cap_entity_states,
                           deal_results, deal_vcodes, inv,
                           relationships_raw, mode, errors,
-                          acct=None):
+                          acct=None, wf_raw=None):
     """Build structured results from upstream waterfall outputs."""
     # Get investors in this entity
     investors = get_entity_investors(entity_id, relationships_raw)
@@ -816,6 +859,9 @@ def _build_entity_results(entity_id, cf_upstream_alloc, cap_upstream_alloc,
             continue
         entity_dists = alloc_df[alloc_df["Entity"].astype(str) == entity_id].copy()
         for _, row in entity_dists.iterrows():
+            # Extract source deal from Path (first segment before "->")
+            path_str = str(row.get("Path", ""))
+            source_deal = path_str.split("->")[0] if path_str else ""
             member_alloc_rows.append({
                 "Date": str(row.get("event_date", "")),
                 "Member": str(row.get("PropCode", "")),
@@ -824,6 +870,7 @@ def _build_entity_results(entity_id, cf_upstream_alloc, cap_upstream_alloc,
                 "vState": str(row.get("vState", "")),
                 "FXRate": float(row.get("FXRate", 0)),
                 "Amount": float(row.get("Allocated", 0)),
+                "source_deal": source_deal,
             })
 
     # Seed entity-level contributions from accounting data.
@@ -957,7 +1004,14 @@ def _build_entity_results(entity_id, cf_upstream_alloc, cap_upstream_alloc,
         "partner_results": partner_returns,
         "income_schedule": income_rows,
         "member_allocations": member_alloc_rows,
-        "allocation_table": _pivot_allocations_by_year(member_alloc_rows),
+        "allocation_table": _pivot_allocations_by_year(
+            member_alloc_rows,
+            deal_name_map=_build_deal_name_map(deal_vcodes, inv),
+            cf_entity_states=cf_entity_states,
+            cap_entity_states=cap_entity_states,
+            entity_id=entity_id,
+            wf_raw=wf_raw,
+        ),
         "deal_summary": {
             "deal_irr": deal_irr,
             "deal_moic": deal_moic,
@@ -1005,37 +1059,158 @@ def _get_entity_name(entity_id: str, relationships_raw: pd.DataFrame) -> str:
     return entity_id
 
 
-def _pivot_allocations_by_year(member_alloc_rows: list[dict]) -> dict:
+def _build_deal_name_map(deal_vcodes: list[str], inv: pd.DataFrame) -> dict:
+    """Build vcode -> display name mapping."""
+    name_map = {}
+    for vc in deal_vcodes:
+        match = inv[inv["vcode"].astype(str).str.strip() == vc]
+        if not match.empty:
+            name_map[vc] = str(match.iloc[0].get("Investment_Name", vc))
+        else:
+            name_map[vc] = vc
+    return name_map
+
+
+def _pivot_allocations_by_year(member_alloc_rows: list[dict],
+                                deal_name_map: dict = None,
+                                cf_entity_states: dict = None,
+                                cap_entity_states: dict = None,
+                                entity_id: str = None,
+                                wf_raw: pd.DataFrame = None) -> dict:
     """Pivot member allocations into yearly columns, matching Deal Analysis format.
 
-    Returns { "cf": { "rows": [...], "years": [...] }, "cap": { ... } }
-    Each row: { "label": "  01 | Pref | TGAM | Pref", "values": { "2026": 100, ... } }
+    Returns { "years": [...], "cf": { "rows": [...] }, "cap": { ... } }
+    Years are unified across CF and Cap for aligned display.
+    Each row: { "label": "2 | 90% | Pref | TGAM | 8.0%", "values": { "2026": 100, ... } }
     """
     from collections import OrderedDict
 
-    result = {}
+    if deal_name_map is None:
+        deal_name_map = {}
+
+    # Build step detail lookup from raw waterfall definitions, keyed per wf_type.
+    # Key: (wf_type, iOrder, PropCode) -> {nPercent, mAmount, FXRate (effective share)}
+    # A single PropCode at a given iOrder can have multiple rows (e.g. Capital Share
+    # FXRate=0.1 + GP Promote FXRate=0.2 for INV23). We collect unique FXRate values
+    # and sum them for the effective share.
+    # CF_WF steps have vAmtType starting with "6.02" or "EXP";
+    # Cap_WF steps have vAmtType starting with "6.03" or "EXP".
+    step_detail = {}  # (wf_type, iOrder, PropCode) -> {nPercent, mAmount, fx_values: set}
+    if wf_raw is not None and entity_id and not wf_raw.empty:
+        ent_wf = wf_raw[wf_raw["vcode"].astype(str).str.strip() == entity_id]
+
+        def _float(v):
+            try:
+                return float(v) if v is not None and str(v).strip() != "" else None
+            except (ValueError, TypeError):
+                return None
+
+        for _, s in ent_wf.iterrows():
+            order = int(s.get("iOrder", 0))
+            pc = str(s.get("PropCode", "")).strip()
+            n_pct = _float(s.get("nPercent"))
+            m_amt = _float(s.get("mAmount"))
+            fx = _float(s.get("FXRate")) or 0.0
+            vamt = str(s.get("vAmtType", "")).strip()
+
+            # Determine which wf_type(s) this step belongs to
+            wf_types = []
+            if vamt.startswith("6.02") or vamt == "EXP":
+                wf_types.append("CF")
+            if vamt.startswith("6.03") or vamt == "EXP":
+                wf_types.append("Cap")
+            if not wf_types:
+                wf_types = ["CF", "Cap"]  # fallback: include in both
+
+            for wft in wf_types:
+                detail_key = (wft, order, pc)
+                if detail_key not in step_detail:
+                    step_detail[detail_key] = {
+                        "nPercent": n_pct, "mAmount": m_amt, "fx_values": {fx},
+                    }
+                else:
+                    step_detail[detail_key]["fx_values"].add(fx)
+                    if n_pct is not None:
+                        step_detail[detail_key]["nPercent"] = n_pct
+                    if m_amt is not None:
+                        step_detail[detail_key]["mAmount"] = m_amt
+
+        # Convert fx_values sets to summed FXRate
+        for detail in step_detail.values():
+            detail["FXRate"] = sum(detail.pop("fx_values"))
+
+    # current_wf_type is set per iteration in the outer loop below
+    current_wf_type = "CF"
+
+    def _step_label(order, state, member, fx_from_row):
+        """Build descriptive step label with rates and sharing percentages."""
+        detail = step_detail.get((current_wf_type, order, member), {})
+        # FXRate: use summed value from step definition, fall back to allocation row
+        fx = detail.get("FXRate")
+        if fx is None or fx == 0:
+            fx = fx_from_row
+        fx_str = f"{fx * 100:g}%" if fx is not None and fx > 0 else ""
+        # nPercent (rate for Pref, Def_Int, etc.)
+        n_pct = detail.get("nPercent")
+        rate_str = f"{n_pct:g}%" if n_pct is not None and n_pct > 0 else ""
+        # mAmount (for Amt/fixed amount steps)
+        m_amt = detail.get("mAmount")
+        amt_str = f"${m_amt:,.0f}" if m_amt is not None and m_amt > 0 else ""
+
+        parts = [f"{order}"]
+        if fx_str:
+            parts.append(fx_str)
+        parts.append(state)
+        parts.append(member)
+        if rate_str:
+            parts.append(rate_str)
+        elif amt_str:
+            parts.append(amt_str)
+        return "  " + " | ".join(parts)
+
+    def _step_sort_key(label):
+        """Sort steps: by iOrder, then leads before tags."""
+        # Parse iOrder from label (first segment before |)
+        parts = label.strip().split(" | ")
+        try:
+            order = int(parts[0])
+        except (ValueError, IndexError):
+            order = 999
+        # Determine if this is a Tag row
+        is_tag = " | Tag | " in label
+        return (order, 1 if is_tag else 0, label)
+
+    # Collect ALL years across both waterfall types for unified columns
+    all_years_set = set()
+    for r in member_alloc_rows:
+        d = r.get("Date", "")
+        if d:
+            all_years_set.add(int(d[:4]))
+    all_years = sorted(all_years_set)
+
+    def _zero_values():
+        return {str(y): 0 for y in all_years}
+
+    def _none_values():
+        return {str(y): None for y in all_years}
+
+    result = {"years": all_years}
     for wf_type in ("CF", "Cap"):
+        current_wf_type = wf_type
         type_rows = [r for r in member_alloc_rows if r.get("Type") == wf_type]
         if not type_rows:
-            result[wf_type.lower()] = {"rows": [], "years": []}
+            result[wf_type.lower()] = {"rows": [], "years": all_years}
             continue
-
-        # Collect all years
-        years_set = set()
-        for r in type_rows:
-            d = r.get("Date", "")
-            if d:
-                years_set.add(int(d[:4]))
-        years = sorted(years_set)
 
         # Build step keys and aggregate by year
         step_totals = OrderedDict()  # step_key -> { year -> amount }
-        step_order_map = {}  # step_key -> iOrder (for sorting)
+        step_order_map = {}
         for r in type_rows:
             order = r.get("iOrder", 0)
             state = r.get("vState", "")
             member = r.get("Member", "")
-            key = f"  {order:>2} | {state} | {member}"
+            fx_from_row = r.get("FXRate", 0)
+            key = _step_label(order, state, member, fx_from_row)
             year = int(r["Date"][:4]) if r.get("Date") else None
             if year is None:
                 continue
@@ -1044,50 +1219,109 @@ def _pivot_allocations_by_year(member_alloc_rows: list[dict]) -> dict:
                 step_order_map[key] = order
             step_totals[key][year] = step_totals[key].get(year, 0) + r.get("Amount", 0)
 
-        # Sort by iOrder then label
-        sorted_keys = sorted(step_totals.keys(), key=lambda k: (step_order_map[k], k))
+        sorted_keys = sorted(step_totals.keys(), key=_step_sort_key)
 
         # Build partner totals
-        partner_totals = {}  # member -> { year -> amount }
+        partner_totals = {}
         for r in type_rows:
             member = r.get("Member", "")
             year = int(r["Date"][:4]) if r.get("Date") else None
             if year is None:
                 continue
-            if member not in partner_totals:
-                partner_totals[member] = {}
-            partner_totals[member][year] = partner_totals[member].get(year, 0) + r.get("Amount", 0)
+            partner_totals.setdefault(member, {})[year] = \
+                partner_totals.get(member, {}).get(year, 0) + r.get("Amount", 0)
 
         rows = []
-        # Step rows
+
+        # Capital event sources (Cap only): show which deals produced events
+        if wf_type == "Cap" and deal_name_map:
+            # Group source deals by year
+            deal_by_year = {}  # year -> set of deal names
+            deal_amt_by_year = {}  # year -> { deal_name: total_amount }
+            for r in type_rows:
+                sd = r.get("source_deal", "")
+                if not sd:
+                    continue
+                year = int(r["Date"][:4]) if r.get("Date") else None
+                if year is None:
+                    continue
+                dname = deal_name_map.get(sd, sd)
+                deal_by_year.setdefault(year, set()).add(dname)
+                deal_amt_by_year.setdefault(year, {})
+                deal_amt_by_year[year][dname] = \
+                    deal_amt_by_year[year].get(dname, 0) + r.get("Amount", 0)
+
+            # Add source deals header row
+            rows.append({"label": "Capital Event Sources:", "values": _none_values()})
+            # Collect all deal names across years
+            all_deal_names = sorted({
+                n for names in deal_by_year.values() for n in names
+            })
+            for dname in all_deal_names:
+                values = {}
+                for y in all_years:
+                    amt = deal_amt_by_year.get(y, {}).get(dname, 0)
+                    values[str(y)] = amt
+                rows.append({"label": f"  {dname}", "values": values})
+            rows.append({"label": "", "values": _none_values()})
+
+        # Step rows — with 0 placeholders for all unified years
         for key in sorted_keys:
             values = {}
-            for y in years:
-                val = step_totals[key].get(y, 0)
-                values[str(y)] = val
+            for y in all_years:
+                values[str(y)] = step_totals[key].get(y, 0)
             rows.append({"label": key, "values": values})
 
         # Blank separator
-        rows.append({"label": "", "values": {str(y): None for y in years}})
+        rows.append({"label": "", "values": _none_values()})
 
         # Partner totals section
-        rows.append({"label": "Partner Totals:", "values": {str(y): None for y in years}})
-        grand_total = {y: 0.0 for y in years}
+        rows.append({"label": "Partner Totals:", "values": _none_values()})
+        grand_total = {y: 0.0 for y in all_years}
         for member in sorted(partner_totals.keys()):
             values = {}
-            for y in years:
+            for y in all_years:
                 val = partner_totals[member].get(y, 0)
                 values[str(y)] = val
                 grand_total[y] += val
             rows.append({"label": f"  {member} Total", "values": values})
 
-        # Grand total row
         rows.append({
             "label": "  Total Distributions",
-            "values": {str(y): grand_total[y] for y in years},
+            "values": {str(y): grand_total[y] for y in all_years},
         })
 
-        result[wf_type.lower()] = {"rows": rows, "years": years}
+        # Entity investor state diagnostics (why steps 1-N are zero)
+        entity_states = cap_entity_states if wf_type == "Cap" else cf_entity_states
+        if entity_states:
+            rows.append({"label": "", "values": _none_values()})
+            rows.append({"label": "Entity Investor Balances (End of Projection):", "values": _none_values()})
+            for member in sorted(partner_totals.keys()):
+                if member.endswith("_EXP"):
+                    continue  # skip expense sinks
+                st = entity_states.get(member)
+                if not st:
+                    continue
+                cap_out = st.capital_outstanding
+                pref_unpaid = st.pref_unpaid_compounded + st.pref_accrued_current_year
+                rows.append({
+                    "label": f"  {member} Capital Outstanding",
+                    "values": _none_values(),
+                    "end_value": round(cap_out),
+                })
+                rows.append({
+                    "label": f"  {member} Accrued Pref",
+                    "values": _none_values(),
+                    "end_value": round(pref_unpaid),
+                })
+            # Show note about why steps are zero
+            if wf_type == "Cap":
+                rows.append({
+                    "label": "  Note: Steps with $0 indicate pref/capital was fully satisfied by prior CF distributions",
+                    "values": _none_values(),
+                })
+
+        result[wf_type.lower()] = {"rows": rows, "years": all_years}
 
     return result
 

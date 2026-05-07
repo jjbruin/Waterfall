@@ -152,6 +152,7 @@ const waterfallDetail = computed(() => results.value?.waterfall_detail || [])
 const computeErrors = computed(() => results.value?.errors || [])
 
 const allocationTable = computed(() => results.value?.allocation_table || {})
+const unifiedYears = computed(() => allocationTable.value.years || [])
 const cfAllocTable = computed(() => allocationTable.value.cf || { rows: [], years: [] })
 const capAllocTable = computed(() => allocationTable.value.cap || { rows: [], years: [] })
 
@@ -303,6 +304,30 @@ function fmtMult(v: any): string {
 function fmtInt(v: any): string {
   if (v == null || v !== v) return ''
   return new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(v)
+}
+
+// Allocation table helpers
+function allocRowClass(row: any): Record<string, boolean> {
+  const label = (row.label || '').trim()
+  return {
+    'section-header-row': label.endsWith(':'),
+    'blank-row': label === '',
+    'topline-row': label === 'Total Distributions',
+    'source-deal-row': row.label?.startsWith('  ') && !label.endsWith(':') && !label.endsWith('Total') && !label.includes('|') && !label.includes('Outstanding') && !label.includes('Pref'),
+    'diagnostic-row': label.includes('Outstanding') || label.includes('Accrued Pref'),
+    'note-row': label.startsWith('  Note:'),
+  }
+}
+
+function allocCellValue(row: any, y: number): string {
+  const label = (row.label || '').trim()
+  if (label === '' || label.endsWith(':')) return ''
+  if (label.startsWith('Note:')) return ''
+  // Diagnostic rows (entity balances) have no year values
+  if (row.end_value != null && row.values[String(y)] == null) return ''
+  const val = row.values[String(y)]
+  if (val == null) return ''
+  return fmtInt(val)
 }
 </script>
 
@@ -475,58 +500,39 @@ function fmtInt(v: any): string {
         </div>
         <div v-if="sections.allocations" class="section-body">
           <template v-if="cfAllocTable.rows.length || capAllocTable.rows.length">
-            <template v-if="cfAllocTable.rows.length">
-              <h4>CF Waterfall</h4>
-              <div class="forecast-table-wrapper">
-                <table class="forecast-table">
-                  <thead>
-                    <tr>
-                      <th class="label-col">Step</th>
-                      <th v-for="y in cfAllocTable.years" :key="y" class="year-col">{{ y }}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="(row, i) in cfAllocTable.rows" :key="'cf'+i"
-                        :class="{
-                          'section-header-row': row.label.endsWith(':'),
-                          'blank-row': row.label.trim() === '',
-                          'topline-row': row.label.trim() === 'Total Distributions',
-                        }">
-                      <td class="label-col">{{ row.label }}</td>
-                      <td v-for="y in cfAllocTable.years" :key="y" class="year-col">
-                        {{ (row.label.trim() === '' || row.label.endsWith(':')) ? '' : row.values[String(y)] != null ? fmtInt(row.values[String(y)]) : '' }}
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </template>
-            <template v-if="capAllocTable.rows.length">
-              <h4>Capital Waterfall</h4>
-              <div class="forecast-table-wrapper">
-                <table class="forecast-table">
-                  <thead>
-                    <tr>
-                      <th class="label-col">Step</th>
-                      <th v-for="y in capAllocTable.years" :key="y" class="year-col">{{ y }}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="(row, i) in capAllocTable.rows" :key="'cap'+i"
-                        :class="{
-                          'section-header-row': row.label.endsWith(':'),
-                          'blank-row': row.label.trim() === '',
-                          'topline-row': row.label.trim() === 'Total Distributions',
-                        }">
-                      <td class="label-col">{{ row.label }}</td>
-                      <td v-for="y in capAllocTable.years" :key="y" class="year-col">
-                        {{ (row.label.trim() === '' || row.label.endsWith(':')) ? '' : row.values[String(y)] != null ? fmtInt(row.values[String(y)]) : '' }}
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </template>
+            <div class="forecast-table-wrapper">
+              <table class="forecast-table">
+                <thead>
+                  <tr>
+                    <th class="label-col">Step</th>
+                    <th v-for="y in unifiedYears" :key="y" class="year-col">{{ y }}</th>
+                    <th v-if="cfAllocTable.rows.some((r: any) => r.end_value != null) || capAllocTable.rows.some((r: any) => r.end_value != null)" class="year-col">End Balance</th>
+                  </tr>
+                </thead>
+                <tbody v-if="cfAllocTable.rows.length">
+                  <tr class="wf-section-header"><td :colspan="unifiedYears.length + 2" class="wf-section-label">CF Waterfall (Section 6.02)</td></tr>
+                  <tr v-for="(row, i) in cfAllocTable.rows" :key="'cf'+i"
+                      :class="allocRowClass(row)">
+                    <td class="label-col">{{ row.label }}</td>
+                    <td v-for="y in unifiedYears" :key="y" class="year-col">
+                      {{ allocCellValue(row, y) }}
+                    </td>
+                    <td class="year-col">{{ row.end_value != null ? fmtInt(row.end_value) : '' }}</td>
+                  </tr>
+                </tbody>
+                <tbody v-if="capAllocTable.rows.length">
+                  <tr class="wf-section-header"><td :colspan="unifiedYears.length + 2" class="wf-section-label">Capital Waterfall (Section 6.03)</td></tr>
+                  <tr v-for="(row, i) in capAllocTable.rows" :key="'cap'+i"
+                      :class="allocRowClass(row)">
+                    <td class="label-col">{{ row.label }}</td>
+                    <td v-for="y in unifiedYears" :key="y" class="year-col">
+                      {{ allocCellValue(row, y) }}
+                    </td>
+                    <td class="year-col">{{ row.end_value != null ? fmtInt(row.end_value) : '' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </template>
           <p v-else class="placeholder">No member allocations found.</p>
         </div>
@@ -983,5 +989,33 @@ h4 { font-size: 13px; margin: 16px 0 8px 0; font-weight: 600; }
 .forecast-table .topline-row td {
   border-top: 2px solid #333;
   font-weight: 700;
+}
+
+.forecast-table .source-deal-row td {
+  font-style: italic;
+  color: #4472C4;
+}
+
+.forecast-table .diagnostic-row td {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-style: italic;
+}
+
+.forecast-table .note-row td {
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-style: italic;
+  border: none;
+}
+
+.wf-section-header {
+  background-color: #e8ecf0;
+}
+.wf-section-label {
+  font-weight: 700;
+  font-size: 13px;
+  padding: 6px 8px !important;
+  text-align: left !important;
 }
 </style>
