@@ -70,6 +70,11 @@ const routes = [
     component: () => import('../views/SoldPortfolioView.vue'),
   },
   {
+    path: '/portfolio-analysis',
+    name: 'Portfolio Analysis',
+    component: () => import('../views/PortfolioAnalysisView.vue'),
+  },
+  {
     path: '/psckoc',
     name: 'PSCKOC',
     component: () => import('../views/PsckocView.vue'),

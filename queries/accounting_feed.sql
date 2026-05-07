@@ -92,12 +92,44 @@ WITH IA_Combined AS (
             WHEN S.Typename IN ('Distribution: Preferred Return', 'Distribution: Excess Cash Flow') THEN 'Y'
             ELSE 'N'
         END AS ROE_Income
-    FROM 
+    FROM
         IA_Distribution D
-    LEFT JOIN 
-        IA_Subtype S 
+    LEFT JOIN
+        IA_Subtype S
         ON D.DistributionTypeID = S.SubtypeUID
         AND S.MajorType = 'Distribution'
+
+    UNION ALL
+
+    -- Non-cash transactions: transfers of ownership only
+    -- Sign flip: MRI stores capital balance movement (debit/credit);
+    -- we need cashflow direction (positive = cash received, negative = cash paid)
+    SELECT
+        N.InvestmentID,
+        N.InvestorID,
+        N.EffectiveDate,
+        N.NoncashTransTypeID AS TypeID,
+        (N.Amount * -1) AS Amt,
+        S.SubtypeUID,
+        S.MajorType,
+        S.Typename,
+        CASE
+            WHEN N.InvestorID LIKE 'OP%' THEN 'Operating Partner'
+            ELSE 'Preferred Equity'
+        END AS Partner,
+        NULL AS Cum_Amt,
+        CASE
+            WHEN S.Typename LIKE '%Capital%' THEN 'Y'
+            ELSE 'N'
+        END AS Capital,
+        'N' AS ROE_Income
+    FROM
+        IA_noncashtrans N
+    LEFT JOIN
+        IA_Subtype S
+        ON N.NoncashTransTypeID = S.SubtypeUID
+    WHERE
+        S.Typename LIKE 'Transfer of Ownership%'
 )
 SELECT *
 FROM IA_Combined IC1

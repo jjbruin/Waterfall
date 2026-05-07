@@ -118,6 +118,9 @@ def create_app(config_name: str = None) -> Flask:
     from flask_app.api.reviews import reviews_bp
     app.register_blueprint(reviews_bp, url_prefix="/api/reviews")
 
+    from flask_app.api.portfolio_analysis import portfolio_analysis_bp
+    app.register_blueprint(portfolio_analysis_bp, url_prefix="/api/portfolio-analysis")
+
     # Health check
     @app.route("/health")
     def health():
