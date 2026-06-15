@@ -63,8 +63,8 @@ QUERY_REGISTRY = {
     },
     "coa": {
         "server": "im",
-        "target_table": None,  # COA view on IM is permission-denied; local copy is authoritative
-        "description": "Chart of accounts (local only — IM COA view not accessible)",
+        "target_table": "coa",
+        "description": "Chart of accounts from vCOA view",
     },
     "MRI_Loans": {
         "server": "im",
