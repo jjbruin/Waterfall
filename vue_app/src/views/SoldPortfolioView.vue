@@ -29,6 +29,30 @@ const netResults = ref<any>(null)
 const netLoading = ref(false)
 const showNet = computed(() => netResults.value !== null)
 
+// Per-deal expense overrides: { vcode: expense_pct (0-100) }
+const expenseOverrides = ref<Record<string, number>>({
+  'P0000083': 50,  // Airport Plaza — shared with KOC portfolio
+})
+const showOverrides = ref(false)
+
+function addExpenseOverride() {
+  const vcode = prompt('Enter deal vcode (e.g., P0000083):')
+  if (vcode && !(vcode in expenseOverrides.value)) {
+    expenseOverrides.value[vcode] = 50
+  }
+}
+function removeExpenseOverride(vcode: string) {
+  delete expenseOverrides.value[vcode]
+}
+// Build { vcode: decimal_multiplier } for API
+function buildExpenseOverrides(): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const [k, v] of Object.entries(expenseOverrides.value)) {
+    out[k] = v / 100
+  }
+  return out
+}
+
 const detailColumns = [
   { key: 'Date', label: 'Date' },
   { key: 'InvestorID', label: 'InvestorID' },
@@ -141,6 +165,7 @@ async function computeNetReturns() {
       hurdle_rate: assumptions.value.hurdle_rate / 100,
       promote_pct: assumptions.value.promote_pct / 100,
       annual_expenses: assumptions.value.annual_expenses,
+      expense_overrides: buildExpenseOverrides(),
     })
     netResults.value = res.data
   } catch (e: any) {
@@ -153,7 +178,16 @@ async function computeNetReturns() {
 const assumptionsFootnote = computed(() => {
   if (!showNet.value) return ''
   const a = assumptions.value
-  return `Net Returns Assumptions: Investor Ownership ${a.ownership_pct.toFixed(1)}%, AM Fee ${a.am_fee_pct.toFixed(2)}%, Hurdle Rate ${a.hurdle_rate.toFixed(2)}%, Promote ${a.promote_pct.toFixed(1)}%, Annual Expenses $${a.annual_expenses.toLocaleString()}`
+  let text = `Net Returns Assumptions: Investor Ownership ${a.ownership_pct.toFixed(1)}%, AM Fee ${a.am_fee_pct.toFixed(2)}%, Hurdle Rate ${a.hurdle_rate.toFixed(2)}%, Promote ${a.promote_pct.toFixed(1)}%, Annual Expenses $${a.annual_expenses.toLocaleString()}`
+  const overrideEntries = Object.entries(expenseOverrides.value)
+  if (overrideEntries.length > 0) {
+    const parts = overrideEntries.map(([vc, pct]) => {
+      const deal = dealNames.value.find((d: any) => d.vcode === vc)
+      return `${deal?.name || vc}: ${pct}%`
+    })
+    text += ` | Expense Overrides: ${parts.join(', ')}`
+  }
+  return text
 })
 
 // Downloads
@@ -174,6 +208,7 @@ async function downloadNetExcel() {
     hurdle_rate: assumptions.value.hurdle_rate / 100,
     promote_pct: assumptions.value.promote_pct / 100,
     annual_expenses: assumptions.value.annual_expenses,
+    expense_overrides: buildExpenseOverrides(),
   }, { responseType: 'blob' })
   const url = URL.createObjectURL(new Blob([res.data]))
   const a = document.createElement('a')
@@ -235,6 +270,21 @@ async function downloadDetailExcel() {
         <button class="btn-compute" @click="computeNetReturns" :disabled="netLoading">
           {{ netLoading ? 'Computing...' : 'Compute Net Returns' }}
         </button>
+      </div>
+      <!-- Expense Overrides -->
+      <div class="overrides-toggle" @click="showOverrides = !showOverrides">
+        <span class="toggle-arrow">{{ showOverrides ? '▾' : '▸' }}</span>
+        Expense Overrides
+        <span v-if="Object.keys(expenseOverrides).length" class="override-count">({{ Object.keys(expenseOverrides).length }})</span>
+      </div>
+      <div v-if="showOverrides" class="overrides-section">
+        <div v-for="(pct, vcode) in expenseOverrides" :key="vcode" class="override-row">
+          <span class="override-deal">{{ dealNames.find((d: any) => d.vcode === vcode)?.name || vcode }}</span>
+          <input type="number" v-model.number="expenseOverrides[vcode]" step="5" min="0" max="100" class="override-input" />
+          <span class="override-unit">% of base</span>
+          <button class="override-remove" @click="removeExpenseOverride(vcode)" title="Remove override">&times;</button>
+        </div>
+        <button class="btn-add-override" @click="addExpenseOverride">+ Add Override</button>
       </div>
     </div>
 
@@ -433,6 +483,69 @@ h3 { font-size: 16px; margin: 0 0 12px 0; }
 }
 .btn-compute:hover { opacity: 0.9; }
 .btn-compute:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* Expense Overrides */
+.overrides-toggle {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+.overrides-toggle:hover { color: var(--color-text-primary); }
+.toggle-arrow { font-size: 10px; margin-right: 4px; }
+.override-count { color: #1565c0; font-weight: 600; }
+
+.overrides-section {
+  margin-top: 8px;
+  padding: 8px 0;
+}
+
+.override-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.override-deal {
+  font-size: 12px;
+  min-width: 200px;
+}
+
+.override-input {
+  width: 70px;
+  padding: 4px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font-size: 12px;
+  text-align: right;
+}
+
+.override-unit {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+.override-remove {
+  background: none;
+  border: none;
+  color: #c62828;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.btn-add-override {
+  font-size: 12px;
+  color: #1565c0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px 0;
+}
+.btn-add-override:hover { text-decoration: underline; }
 
 /* Summary Table */
 .summary-table-wrapper {

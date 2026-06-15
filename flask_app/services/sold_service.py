@@ -473,7 +473,10 @@ def compute_net_waterfall_for_deal(deal_acct: pd.DataFrame, inv: pd.DataFrame,
     am_fee_pct = assumptions["am_fee_pct"]
     hurdle_rate = assumptions["hurdle_rate"]
     promote_pct = assumptions["promote_pct"]
-    annual_expenses = assumptions["annual_expenses"]
+    base_annual_expenses = assumptions["annual_expenses"]
+    expense_overrides = assumptions.get("expense_overrides", {})
+    expense_mult = expense_overrides.get(deal_vcode, 1.0)
+    annual_expenses = base_annual_expenses * expense_mult
 
     # Filter to pref equity (no OP)
     pref = deal_acct[~deal_acct["InvestorID"].str.upper().str.startswith("OP")].copy()

@@ -135,6 +135,16 @@ def _parse_assumptions(body):
     if assumptions["annual_expenses"] < 0:
         return None, "annual_expenses must be >= 0"
 
+    # Per-deal expense multiplier overrides: { vcode: multiplier }
+    raw_overrides = body.get("expense_overrides", {})
+    if isinstance(raw_overrides, dict):
+        assumptions["expense_overrides"] = {
+            str(k): float(v) for k, v in raw_overrides.items()
+            if v is not None
+        }
+    else:
+        assumptions["expense_overrides"] = {}
+
     return assumptions, None
 
 
