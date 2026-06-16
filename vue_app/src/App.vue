@@ -5,6 +5,7 @@ import { useAuthStore } from './stores/auth'
 import AppSidebar from './components/layout/AppSidebar.vue'
 import AppHeader from './components/layout/AppHeader.vue'
 import ToastNotifications from './components/common/ToastNotifications.vue'
+import AiAssistant from './components/common/AiAssistant.vue'
 
 const route = useRoute()
 const auth = useAuthStore()
@@ -25,6 +26,7 @@ const isLoginPage = computed(() => route.path === '/login')
         <router-view />
       </main>
     </div>
+    <AiAssistant />
   </div>
 </template>
 
