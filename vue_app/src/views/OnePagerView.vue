@@ -355,7 +355,8 @@ const perfRows = computed(() => {
 function buildPerfRows(p: any) {
   return [
     { label: 'Economic Occ.', ytdA: fmtPct(p.economic_occ?.ytd_actual), ytdB: fmtPct(p.economic_occ?.ytd_budget),
-      variance: fmtVariance(p.economic_occ?.ytd_actual, p.economic_occ?.ytd_budget),
+      variance: p.economic_occ?.ytd_actual != null && p.economic_occ?.ytd_budget != null
+        ? (p.economic_occ.ytd_actual - p.economic_occ.ytd_budget).toFixed(1) + '%' : '',
       atClose: fmtPct(p.economic_occ?.at_close), actualYE: fmtPct(p.economic_occ?.actual_ye), uwYE: fmtPct(p.economic_occ?.uw_ye) },
     { label: 'Revenue', ytdA: fmtMil(p.revenue?.ytd_actual), ytdB: fmtMil(p.revenue?.ytd_budget),
       variance: fmtVariance(p.revenue?.ytd_actual, p.revenue?.ytd_budget),

@@ -790,7 +790,9 @@ def get_property_performance(
                     if ytd_avg_col in ytd_months.columns:
                         val = pd.to_numeric(ytd_months.iloc[-1][ytd_avg_col], errors='coerce')
                         if pd.notna(val):
-                            perf['economic_occ']['ytd_budget'] = val
+                            # ProjOccupancy stores as decimal (0.887 = 88.7%);
+                            # actual Occ% is in percentage points (88.7)
+                            perf['economic_occ']['ytd_budget'] = val * 100
 
     # Compute economic occupancy variance
     if perf['economic_occ']['ytd_actual'] is not None and perf['economic_occ']['ytd_budget'] is not None:
