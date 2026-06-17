@@ -156,7 +156,12 @@ TABLE_DEFINITIONS = {
         'csv': 'Tenant_Report.csv',
         'description': 'Commercial tenant roster by property',
         'key_columns': ['Code', 'Tenant Code']
-    }
+    },
+    'budget_econ_occ': {
+        'csv': 'MRI_Budget_Econ_Occ.csv',
+        'description': 'Budget economic occupancy from ProjOccupancy',
+        'key_columns': ['VCODE', 'DTPERIOD']
+    },
 }
 
 

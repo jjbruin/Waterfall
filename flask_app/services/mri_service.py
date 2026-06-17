@@ -91,6 +91,11 @@ QUERY_REGISTRY = {
         "target_table": None,  # download-only
         "description": "ROE analysis — contributions & distributions with capital tracking",
     },
+    "MRI_Budget_Econ_Occ": {
+        "server": "im",
+        "target_table": "budget_econ_occ",
+        "description": "Budget economic occupancy from ProjOccupancy",
+    },
 }
 
 # Network folder paths (SharePoint-synced)
