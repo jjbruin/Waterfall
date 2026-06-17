@@ -120,6 +120,7 @@ def load_all(db_path: str, pro_yr_base: int = 2025) -> dict:
     capital_calls_raw = get_adapter("capital_calls").load(config)
     isbs_raw, isbs_split = _assemble_isbs(config)
     occupancy_raw = get_adapter("occupancy").load(config)
+    budget_econ_occ = get_adapter("budget_econ_occ").load(config)
     commitments_raw = get_adapter("commitments").load(config)
     tenants_raw = get_adapter("tenants").load(config)
     prospective_loans_raw = get_adapter("prospective_loans").load(config)
@@ -157,6 +158,8 @@ def load_all(db_path: str, pro_yr_base: int = 2025) -> dict:
         isbs_raw = None
     if occupancy_raw.empty:
         occupancy_raw = None
+    if budget_econ_occ.empty:
+        budget_econ_occ = None
     if commitments_raw.empty:
         commitments_raw = None
     if tenants_raw.empty:
@@ -186,6 +189,7 @@ def load_all(db_path: str, pro_yr_base: int = 2025) -> dict:
         "isbs_projected_is": isbs_split.get("isbs_projected_is", pd.DataFrame()),
         "isbs_valuation_is": isbs_split.get("isbs_valuation_is", pd.DataFrame()),
         "occupancy_raw": occupancy_raw,
+        "budget_econ_occ": budget_econ_occ,
         "commitments_raw": commitments_raw,
         "tenants_raw": tenants_raw,
         "prospective_loans_raw": prospective_loans_raw,

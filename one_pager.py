@@ -557,7 +557,8 @@ def get_property_performance(
     quarter_str: str,
     isbs_df: pd.DataFrame,
     mri_val: pd.DataFrame,
-    occupancy_df: pd.DataFrame = None
+    occupancy_df: pd.DataFrame = None,
+    budget_econ_occ_df: pd.DataFrame = None,
 ) -> Dict[str, Any]:
     """
     Get property performance metrics for a quarter
@@ -568,6 +569,7 @@ def get_property_performance(
         isbs_df: ISBS DataFrame with income statement data
         mri_val: Valuations DataFrame for At Close data
         occupancy_df: Occupancy DataFrame
+        budget_econ_occ_df: Budget economic occupancy from ProjOccupancy
 
     Returns:
         Dictionary with performance metrics
@@ -764,6 +766,35 @@ def get_property_performance(
                                     bad_debt_pct = bd_amt / abs(rental) * 100  # as percentage points
 
                         perf['economic_occ']['ytd_actual'] = avg_physical_occ - bad_debt_pct
+
+    # Budget Economic Occupancy from ProjOccupancy (budget_econ_occ table)
+    if budget_econ_occ_df is not None and not budget_econ_occ_df.empty:
+        beo = budget_econ_occ_df.copy()
+        beo.columns = [str(c).strip() for c in beo.columns]
+        vcode_col = 'VCODE' if 'VCODE' in beo.columns else 'vcode'
+        if vcode_col in beo.columns:
+            beo[vcode_col] = beo[vcode_col].astype(str).str.strip().str.lower()
+            beo = beo[beo[vcode_col] == vcode_str]
+            if not beo.empty:
+                dt_col = 'DTPERIOD' if 'DTPERIOD' in beo.columns else 'dtperiod'
+                beo['_dt'] = pd.to_datetime(beo[dt_col], format='mixed', dayfirst=False, errors='coerce')
+                year = int(quarter_str.split('-')[0])
+                q = int(quarter_str.split('Q')[1])
+                end_month = q * 3
+                # Find the last budget month in the quarter (YTD avg through quarter end)
+                ytd_months = beo[(beo['_dt'].dt.year == year) & (beo['_dt'].dt.month <= end_month)]
+                if not ytd_months.empty:
+                    # Use the last row's YTDAvgPctOccupied (running avg through quarter end)
+                    ytd_months = ytd_months.sort_values('_dt')
+                    ytd_avg_col = 'YTDAvgPctOccupied' if 'YTDAvgPctOccupied' in ytd_months.columns else 'ytdavgpctoccupied'
+                    if ytd_avg_col in ytd_months.columns:
+                        val = pd.to_numeric(ytd_months.iloc[-1][ytd_avg_col], errors='coerce')
+                        if pd.notna(val):
+                            perf['economic_occ']['ytd_budget'] = val
+
+    # Compute economic occupancy variance
+    if perf['economic_occ']['ytd_actual'] is not None and perf['economic_occ']['ytd_budget'] is not None:
+        perf['economic_occ']['variance'] = perf['economic_occ']['ytd_actual'] - perf['economic_occ']['ytd_budget']
 
     return perf
 

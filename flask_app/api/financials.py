@@ -308,6 +308,7 @@ def one_pager(vcode):
             data["mri_loans_raw"], data["mri_val"],
             data["wf"], data["commitments_raw"], data["acct"],
             occupancy_raw=data["occupancy_raw"],
+            budget_econ_occ=data.get("budget_econ_occ"),
         )
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -406,6 +407,7 @@ def one_pager_batch():
                 data["mri_loans_raw"], data["mri_val"],
                 data["wf"], data["commitments_raw"], data["acct"],
                 occupancy_raw=data["occupancy_raw"],
+                budget_econ_occ=data.get("budget_econ_occ"),
             )
         except Exception as e:
             page["data"] = None
