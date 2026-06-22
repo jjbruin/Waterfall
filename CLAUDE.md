@@ -234,10 +234,13 @@ MRI's query record limits make exporting the monolithic `ISBS_Download.csv` (800
 - **Date parsing**: Uses `pd.to_datetime(format='mixed')` first; Excel serial fallback only when >50% NaT
 
 ### At Close Data (One Pager)
-- **Source**: ISBS `vSource='Projected IS'` at the earliest December 31 date per deal
+- **Primary source**: `at_close_noi` table (from `Prop_Info_AtClose.sql` MRI query) — pre-computed per deal with dynamic date selection
+- **Fallback**: ISBS `vSource='Projected IS'` at the earliest December 31 date per deal
 - **Meaning**: Due diligence audit performed at original closing — represents underwritten expectations
 - **Fields**: Revenue, Expenses, NOI, DSCR (debt service from Interest + Principal accounts)
-- **Implementation**: `get_property_performance()` in `one_pager.py` finds `min(dec_dates)` from Projected IS periods
+- **Sign convention**: MRI stores revenue as negative (credit); negated to positive for display
+- **Deal terms**: `deal_terms` table (from `Prop_Info_DealTerms.sql`) provides `econ_occ_at_close` and PE coupon/participation overrides
+- **Implementation**: `get_property_performance()` in `one_pager.py` checks `at_close_noi_df` first, falls back to ISBS Projected IS scan
 
 ### Economic Occupancy (One Pager)
 - **Formula**: `avg(physical occupancy YTD months) - bad_debt_concessions_pct`
@@ -298,7 +301,7 @@ Main waterfall computation, partner returns, capital accounts, XIRR/MOIC metrics
 **Excel Generators** (`compute_service.py`): Shared helpers `_excel_styles()`, `_write_header_row()`, `_autosize_columns()`. Per-section: `generate_partner_returns_excel()`, `generate_forecast_excel()`, `generate_debt_service_excel()`, `generate_cash_schedule_excel()`, `generate_capital_calls_excel()`, `generate_xirr_cashflows_excel()`. Full: `generate_full_deal_excel()` — 7 sheets including ROE/MOIC audit via `load_workbook` copy.
 
 **Audit Expanders** (after XIRR Cash Flows):
-- **ROE Audit — Return on Equity Breakdown**: Capital Balance Timeline table (each capital event with balance, days held, weighted capital), CF Distributions table (numerator detail), 5 metric cards per partner (Inception→End, Days/Years, CF Distributions, Wtd Avg Capital, ROE). Deal-level section with same breakdown. Excel download.
+- **ROE Audit — Return on Equity Breakdown**: Unified event table with all cashflows (contributions, CF distributions, capital returns) in date order. Event labels use accounting Typename (e.g., "Distribution: Preferred Return", "Contribution: Investments"). Each row shows amount, running capital balance, days since prior event, and weighted capital. CF distributions do not reduce capital balance; only capital events do. 6 metric cards per partner (Inception, End, Years, CF Distributions, Wtd Avg Capital, ROE). Deal-level section with same breakdown. Excel download.
 - **MOIC Audit — Multiple on Invested Capital**: Cashflow Breakdown table (Date, Description, Type, Amount), 6 metric cards per partner (Contributions, CF/Cap/Total Distributions, Unrealized NAV, MOIC). Deal-level section with note that deal MOIC uses realized distributions only. Excel download.
 
 ### 3. Property Financials
@@ -313,7 +316,7 @@ Standalone route at `/one-pager`. Vue: `OnePagerView.vue`. Flask: `financials.py
 - **Data Logic** (`one_pager.py`): `get_general_information()`, `get_capitalization_stack()`, `get_property_performance()`, `get_pe_performance()`, `get_one_pager_comments()`/`save_one_pager_comments()`.
 - **General Information** — Partner, Asset Type, Location, Investment Strategy, Units/SF, Date Closed, Year Built, Underwritten Exit.
 - **Capitalization / Exposure / Deal Terms** — Purchase Price (from deals `Acquisition_Price` or valuations), P.E. Coupon/Participation (from waterfall Pref/Share steps), Loan Terms string (maturity + rate + type), 2nd Loan Terms, Rate Cap, P.E. Yield on Exposure (NOI / (Debt + PE), computed in service layer). Capitalization table: Debt (from ISBS balance sheet)/Pref. Equity/Partner Equity/Total Cap with %. Valuation sorted by date descending (most recent used). P.E. Exposure on Total Cap and on Value. Pref Equity capitalization (investor breakdown from accounting contributions).
-- **Property Performance** — Table with YTD (Actual), YTD (Budget), Variance (% of budget), At Close (from Projected IS earliest Dec 31), Actual YE, U/W YE. Rows: Economic Occ. (avg physical occ - bad debt %), Revenue, Expenses, NOI, DSCR. Amounts in $M, DSCR as X.XXX. Editable performance comments.
+- **Property Performance** — Table with YTD (Actual), YTD (Budget), Variance (% of budget), At Close (from `at_close_noi` MRI table or Projected IS earliest Dec 31 fallback), Projected YE (YTD Actual + remainder-of-year Budget), U/W YE. Rows: Economic Occ., Revenue, Expenses (underlined), NOI, DSCR. Amounts in $M, DSCR as X.XXX. Economic Occ sources: YTD = avg physical occ - bad debt %, Projected YE = weighted avg of actual + budget remaining months, U/W YE = 1 - (vacancy 4030 / rental income 4010) from Projected IS, At Close = from `deal_terms` table `econ_occ_at_close`. Editable performance comments.
 - **Preferred Equity Performance** — Committed PE, Remaining to Fund, Funded to Date, Return of Capital, Current PE Balance, Accrued Balance, Coupon, Participation, ROE to Date, U/W ROE to Date. Editable accrued pref comment.
 - **Business Plan & Updates** — Editable free-text comments.
 - **Occupancy vs. NOI Chart** — ECharts dual-axis. Occupancy bars + NOI U/W and NOI ACT lines. Trailing 10-12 quarters. Values in $ millions.
