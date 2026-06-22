@@ -96,6 +96,21 @@ QUERY_REGISTRY = {
         "target_table": "budget_econ_occ",
         "description": "Budget economic occupancy from ProjOccupancy",
     },
+    "Prop_Info_Core": {
+        "server": "im",
+        "target_table": "_deals_upsert",  # special: upsert into deals, preserving manual columns
+        "description": "Core property metadata — upserts into deals table",
+    },
+    "Prop_Info_DealTerms": {
+        "server": "im",
+        "target_table": "deal_terms",
+        "description": "PE deal terms from txfinancial_IC (coupon, IRR hurdle, PE split)",
+    },
+    "Prop_Info_AtClose": {
+        "server": "im",
+        "target_table": "at_close_noi",
+        "description": "At-close underwriting NOI from Projected IS (dynamic dates)",
+    },
 }
 
 # Network folder paths (SharePoint-synced)
@@ -251,6 +266,93 @@ def run_query(query_name: str, server_key: str = None, save_csv: bool = True) ->
     return result
 
 
+def _upsert_deals(df: pd.DataFrame, engine) -> dict:
+    """Upsert MRI property data into the deals table.
+
+    Updates MRI-sourced columns for existing rows, inserts new rows,
+    and preserves manually-maintained columns (InvestmentID, Portfolio_Name,
+    Sale_Status, Investment_Strategy, PSC_Asset_Manager, etc.).
+    """
+    import sqlalchemy as sa
+
+    # Columns that come from MRI (will be overwritten on upsert)
+    MRI_COLUMNS = {
+        "vcode", "Investment_Name", "City", "State", "Asset_Type",
+        "Operating_Partner", "Total_Units", "Size_Sqf", "Acquisition_Date",
+        "Lifecycle", "Year_Built", "Acquisition_Price", "Sale_Date",
+    }
+
+    # Normalize incoming column names
+    df = df.copy()
+    df.columns = [str(c).strip() for c in df.columns]
+    if "vcode" not in df.columns and "vCode" in df.columns:
+        df = df.rename(columns={"vCode": "vcode"})
+    df["vcode"] = df["vcode"].astype(str).str.strip()
+
+    # Convert Timestamp/datetime columns to strings for SQLite compatibility
+    for col in df.columns:
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            df[col] = df[col].dt.strftime("%m/%d/%Y %H:%M").where(df[col].notna())
+        elif df[col].dtype == object:
+            # Check for mixed Timestamp objects in object columns
+            has_ts = df[col].apply(lambda x: isinstance(x, pd.Timestamp)).any()
+            if has_ts:
+                df[col] = df[col].apply(
+                    lambda x: x.strftime("%m/%d/%Y %H:%M") if isinstance(x, pd.Timestamp) else x
+                )
+
+    # Load existing deals
+    with engine.connect() as conn:
+        try:
+            existing = pd.read_sql("SELECT * FROM deals", conn)
+        except Exception:
+            existing = pd.DataFrame()
+
+    if existing.empty:
+        # No existing table — just create it
+        with engine.begin() as conn:
+            df.to_sql("deals", conn, if_exists="replace", index=False)
+        logger.info(f"  deals: {len(df)} rows (fresh table)")
+        return {"deals": {"rows": len(df), "status": "ok", "new": len(df), "updated": 0}}
+
+    existing.columns = [str(c).strip() for c in existing.columns]
+    if "vcode" not in existing.columns and "vCode" in existing.columns:
+        existing = existing.rename(columns={"vCode": "vcode"})
+    existing["vcode"] = existing["vcode"].astype(str).str.strip()
+
+    existing_vcodes = set(existing["vcode"].unique())
+    incoming_vcodes = set(df["vcode"].unique())
+
+    # Update existing rows: overwrite only MRI columns
+    mri_cols_present = [c for c in df.columns if c in MRI_COLUMNS and c != "vcode"]
+    updated = 0
+    for _, row in df[df["vcode"].isin(existing_vcodes)].iterrows():
+        vc = row["vcode"]
+        mask = existing["vcode"] == vc
+        for col in mri_cols_present:
+            if pd.notna(row[col]):
+                existing.loc[mask, col] = row[col]
+        updated += 1
+
+    # Insert new rows (vcodes not in existing)
+    new_vcodes = incoming_vcodes - existing_vcodes
+    if new_vcodes:
+        new_rows = df[df["vcode"].isin(new_vcodes)].copy()
+        # Add missing columns that existing table has, with correct dtypes
+        for col in existing.columns:
+            if col not in new_rows.columns:
+                new_rows[col] = pd.Series([None] * len(new_rows), dtype="object")
+        existing = pd.concat([existing, new_rows[existing.columns]], ignore_index=True)
+
+    # Write back
+    with engine.begin() as conn:
+        conn.execute(sa.text("DROP TABLE IF EXISTS deals"))
+        existing.to_sql("deals", conn, if_exists="replace", index=False)
+
+    logger.info(f"  deals: {len(existing)} rows ({updated} updated, {len(new_vcodes)} new)")
+    return {"deals": {"rows": len(existing), "status": "ok", "new": len(new_vcodes), "updated": updated}}
+
+
 def import_query_to_database(query_name: str, engine=None) -> dict:
     """Run a query and import results directly into the app database.
 
@@ -278,7 +380,12 @@ def import_query_to_database(query_name: str, engine=None) -> dict:
 
     import_results = {}
 
-    if info["target_table"] == "_isbs_split":
+    if info["target_table"] == "_deals_upsert":
+        # Special handling: upsert into deals table, preserving manual columns
+        # (InvestmentID, Portfolio_Name, Sale_Status, Investment_Strategy, etc.)
+        import_results = _upsert_deals(df, engine)
+
+    elif info["target_table"] == "_isbs_split":
         # Special handling: split ISBS by vSource
         isbs_split_map = {
             "Interim IS": "isbs_interim_is",

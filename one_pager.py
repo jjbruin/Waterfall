@@ -559,6 +559,8 @@ def get_property_performance(
     mri_val: pd.DataFrame,
     occupancy_df: pd.DataFrame = None,
     budget_econ_occ_df: pd.DataFrame = None,
+    at_close_noi_df: pd.DataFrame = None,
+    deal_terms_df: pd.DataFrame = None,
 ) -> Dict[str, Any]:
     """
     Get property performance metrics for a quarter
@@ -570,6 +572,8 @@ def get_property_performance(
         mri_val: Valuations DataFrame for At Close data
         occupancy_df: Occupancy DataFrame
         budget_econ_occ_df: Budget economic occupancy from ProjOccupancy
+        at_close_noi_df: Pre-computed at-close NOI from Prop_Info_AtClose query
+        deal_terms_df: Deal terms with econ_occ_at_close from txfinancial_IC
 
     Returns:
         Dictionary with performance metrics
@@ -691,6 +695,38 @@ def get_property_performance(
         if ds > 0:
             perf['dscr']['ytd_budget'] = noi / ds
 
+    # Projected YE = YTD Actual + remainder-of-year Budget
+    year = int(quarter_str.split('-')[0])
+    if not actual_data.empty and not budget_data.empty:
+        # YTD Actual: cumulative at quarter end (already computed above as ytd_date)
+        ytd_rev = perf['revenue']['ytd_actual']
+        ytd_exp = perf['expenses']['ytd_actual']
+        ytd_noi = perf['noi']['ytd_actual']
+        ytd_ds = 0
+        if not actual_data.empty and ytd_date is not None:
+            ytd_is = actual_data[actual_data['dtEntry_parsed'] == ytd_date]
+            if not ytd_is.empty:
+                for cat, accts in IS_ACCOUNTS['DEBT_SERVICE'].items():
+                    ytd_ds += ytd_is[ytd_is['vAccount'].isin(accts)]['mAmount'].sum()
+
+        # Remainder Budget: months after quarter end through Dec 31
+        remainder_start = pd.Timestamp(quarter_end)
+        dec31 = pd.Timestamp(f"{year}-12-31")
+        rem_rev, rem_exp, rem_noi, rem_ds = calc_amounts(budget_data, sum_range=(remainder_start, dec31))
+
+        perf['revenue']['actual_ye'] = ytd_rev + rem_rev
+        perf['expenses']['actual_ye'] = ytd_exp + rem_exp
+        perf['noi']['actual_ye'] = ytd_noi + rem_noi
+        total_ds = abs(ytd_ds) + abs(rem_ds)
+        if total_ds > 0:
+            perf['dscr']['actual_ye'] = (ytd_noi + rem_noi) / total_ds
+    elif not actual_data.empty:
+        # No budget data — use YTD actual only
+        perf['revenue']['actual_ye'] = perf['revenue']['ytd_actual']
+        perf['expenses']['actual_ye'] = perf['expenses']['ytd_actual']
+        perf['noi']['actual_ye'] = perf['noi']['ytd_actual']
+        perf['dscr']['actual_ye'] = perf['dscr']['ytd_actual']
+
     # Get U/W YE (full year projected)
     # Underwriting (Projected IS) is YTD cumulative — use December snapshot
     if not uw_data.empty:
@@ -706,16 +742,70 @@ def get_property_performance(
             if ds > 0:
                 perf['dscr']['uw_ye'] = noi / ds
 
-        # At Close: earliest December 31 in Projected IS = due diligence audit
-        dec_dates = [pd.Timestamp(p) for p in uw_periods if pd.Timestamp(p).month == 12]
-        if dec_dates:
-            at_close_date = min(dec_dates)
-            rev, exp, noi, ds = calc_amounts(uw_data, as_of_date=at_close_date)
-            perf['revenue']['at_close'] = rev
-            perf['expenses']['at_close'] = exp
-            perf['noi']['at_close'] = noi
-            if ds > 0:
-                perf['dscr']['at_close'] = noi / ds
+            # U/W YE Economic Occupancy from Projected IS: 1 - (vacancy / rental income)
+            # 4010 = Rental Income (negative/credit), 4030 = Vacancy Loss (positive/debit)
+            uw_dec = uw_data[uw_data['dtEntry_parsed'] == dec_date]
+            if not uw_dec.empty:
+                rental = uw_dec[uw_dec['vAccount'] == '4010']['mAmount'].sum()  # negative
+                vacancy = uw_dec[uw_dec['vAccount'] == '4030']['mAmount'].sum()  # positive
+                if rental != 0:
+                    perf['economic_occ']['uw_ye'] = (1 - vacancy / abs(rental)) * 100
+
+        # At Close: use pre-computed at_close_noi table if available (faster, dynamic dates)
+        at_close_filled = False
+        if at_close_noi_df is not None and not at_close_noi_df.empty:
+            acn = at_close_noi_df.copy()
+            acn.columns = [str(c).strip() for c in acn.columns]
+            if 'vcode' not in acn.columns and 'vCode' in acn.columns:
+                acn = acn.rename(columns={'vCode': 'vcode'})
+            if 'vcode' in acn.columns:
+                acn['vcode'] = acn['vcode'].astype(str).str.strip().str.lower()
+                acn_row = acn[acn['vcode'] == vcode_str]
+                if not acn_row.empty:
+                    r = acn_row.iloc[0]
+                    acn_rev = pd.to_numeric(r.get('at_close_revenue'), errors='coerce')
+                    acn_exp = pd.to_numeric(r.get('at_close_expenses'), errors='coerce')
+                    acn_int = pd.to_numeric(r.get('at_close_interest'), errors='coerce')
+                    acn_prin = pd.to_numeric(r.get('at_close_principal'), errors='coerce')
+                    if pd.notna(acn_rev):
+                        perf['revenue']['at_close'] = -float(acn_rev)
+                    if pd.notna(acn_exp):
+                        perf['expenses']['at_close'] = float(acn_exp)
+                    acn_noi = pd.to_numeric(r.get('at_close_noi'), errors='coerce')
+                    if pd.notna(acn_noi):
+                        perf['noi']['at_close'] = -float(acn_noi)
+                    ds = abs(float(acn_int or 0)) + abs(float(acn_prin or 0))
+                    if ds > 0 and pd.notna(acn_noi):
+                        perf['dscr']['at_close'] = -float(acn_noi) / ds
+                    at_close_filled = True
+
+        # Fallback: earliest December 31 in Projected IS = due diligence audit
+        if not at_close_filled:
+            dec_dates = [pd.Timestamp(p) for p in uw_periods if pd.Timestamp(p).month == 12]
+            if dec_dates:
+                at_close_date = min(dec_dates)
+                rev, exp, noi, ds = calc_amounts(uw_data, as_of_date=at_close_date)
+                perf['revenue']['at_close'] = rev
+                perf['expenses']['at_close'] = exp
+                perf['noi']['at_close'] = noi
+                if ds > 0:
+                    perf['dscr']['at_close'] = noi / ds
+
+    # Economic Occupancy at Close from deal_terms (txfinancial_IC)
+    # Outside the uw_data block — deal_terms is independent of ISBS data
+    if deal_terms_df is not None and not deal_terms_df.empty:
+        dtf = deal_terms_df.copy()
+        dtf.columns = [str(c).strip() for c in dtf.columns]
+        if 'vcode' not in dtf.columns and 'vCode' in dtf.columns:
+            dtf = dtf.rename(columns={'vCode': 'vcode'})
+        if 'vcode' in dtf.columns:
+            dtf['vcode'] = dtf['vcode'].astype(str).str.strip().str.lower()
+            dt_row = dtf[dtf['vcode'] == vcode_str]
+            if not dt_row.empty:
+                eoc = pd.to_numeric(dt_row.iloc[0].get('econ_occ_at_close'), errors='coerce')
+                if pd.notna(eoc) and eoc > 0:
+                    # Stored as decimal (0.909 = 90.9%), display as percentage
+                    perf['economic_occ']['at_close'] = float(eoc) * 100 if eoc <= 1 else float(eoc)
 
     # Calculate variances
     for metric in ['revenue', 'expenses', 'noi']:
@@ -797,6 +887,45 @@ def get_property_performance(
     # Compute economic occupancy variance
     if perf['economic_occ']['ytd_actual'] is not None and perf['economic_occ']['ytd_budget'] is not None:
         perf['economic_occ']['variance'] = perf['economic_occ']['ytd_actual'] - perf['economic_occ']['ytd_budget']
+
+    # Projected YE Economic Occupancy = avg of actual months + budget remaining months
+    q_num = int(quarter_str.split('Q')[1])
+    actual_months = q_num * 3  # e.g. Q1 = 3 actual months
+    remaining_months = 12 - actual_months
+    if perf['economic_occ']['ytd_actual'] is not None and remaining_months > 0:
+        # Get budget occupancy for remaining months from budget_econ_occ
+        budget_remaining_occ = None
+        if budget_econ_occ_df is not None and not budget_econ_occ_df.empty:
+            beo2 = budget_econ_occ_df.copy()
+            beo2.columns = [str(c).strip() for c in beo2.columns]
+            vc2 = 'VCODE' if 'VCODE' in beo2.columns else 'vcode'
+            if vc2 in beo2.columns:
+                beo2[vc2] = beo2[vc2].astype(str).str.strip().str.lower()
+                beo2 = beo2[beo2[vc2] == vcode_str]
+                if not beo2.empty:
+                    dt2 = 'DTPERIOD' if 'DTPERIOD' in beo2.columns else 'dtperiod'
+                    beo2['_dt'] = pd.to_datetime(beo2[dt2], format='mixed', dayfirst=False, errors='coerce')
+                    # Remaining months: after quarter end through Dec
+                    rem_months = beo2[(beo2['_dt'].dt.year == year) & (beo2['_dt'].dt.month > actual_months)]
+                    if not rem_months.empty:
+                        occ_col2 = 'PctOccupied' if 'PctOccupied' in rem_months.columns else 'pctoccupied'
+                        if occ_col2 in rem_months.columns:
+                            rem_vals = pd.to_numeric(rem_months[occ_col2], errors='coerce').dropna()
+                            if len(rem_vals) > 0:
+                                # ProjOccupancy stores as decimal; convert to percentage
+                                budget_remaining_occ = rem_vals.mean() * 100
+
+        if budget_remaining_occ is not None:
+            # Weighted average: actual months at actual occ + remaining months at budget occ
+            perf['economic_occ']['actual_ye'] = (
+                perf['economic_occ']['ytd_actual'] * actual_months
+                + budget_remaining_occ * remaining_months
+            ) / 12
+        else:
+            perf['economic_occ']['actual_ye'] = perf['economic_occ']['ytd_actual']
+    elif perf['economic_occ']['ytd_actual'] is not None:
+        # Q4 — full year actual, no remainder needed
+        perf['economic_occ']['actual_ye'] = perf['economic_occ']['ytd_actual']
 
     return perf
 

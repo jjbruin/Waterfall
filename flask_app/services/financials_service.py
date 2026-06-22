@@ -809,7 +809,7 @@ def get_tenant_roster(tenants_raw: pd.DataFrame, vcode: str, inv: Optional[pd.Da
 
 def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
                        waterfalls, commitments, acct, occupancy_raw=None,
-                       budget_econ_occ=None):
+                       budget_econ_occ=None, deal_terms=None, at_close_noi=None):
     """Aggregate all One Pager sections into a single response."""
     from one_pager import (
         get_general_information, get_capitalization_stack,
@@ -827,9 +827,15 @@ def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
     cap_stack = get_capitalization_stack(vcode, mri_loans, mri_val, waterfalls, commitments, acct, inv,
                                          isbs_raw=isbs_raw, quarter_str=quarter_str)
     prop_perf = get_property_performance(vcode, quarter_str, isbs_raw, mri_val, occupancy_raw,
-                                          budget_econ_occ_df=budget_econ_occ) if quarter_str else {}
+                                          budget_econ_occ_df=budget_econ_occ,
+                                          at_close_noi_df=at_close_noi,
+                                          deal_terms_df=deal_terms) if quarter_str else {}
     pe_perf = get_pe_performance(vcode, quarter_str, acct, commitments, waterfalls, inv) if quarter_str else {}
     comments = get_one_pager_comments(vcode, quarter_str) if quarter_str else {}
+
+    # Enrich cap_stack with deal_terms if available (authoritative MRI values)
+    if deal_terms is not None and not deal_terms.empty:
+        _enrich_cap_stack_from_deal_terms(cap_stack, deal_terms, vcode)
 
     # Compute PE Yield on Exposure = Actual YE NOI / (Debt + PE)
     if prop_perf and cap_stack:
@@ -846,6 +852,44 @@ def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
         "pe_performance": pe_perf,
         "comments": comments,
     }
+
+
+def _enrich_cap_stack_from_deal_terms(cap_stack: dict, deal_terms, vcode: str):
+    """Override cap_stack PE coupon/participation with authoritative MRI deal terms."""
+    import pandas as pd
+
+    dt = deal_terms.copy()
+    dt.columns = [str(c).strip() for c in dt.columns]
+    if "vcode" not in dt.columns and "vCode" in dt.columns:
+        dt = dt.rename(columns={"vCode": "vcode"})
+    if "vcode" not in dt.columns:
+        return
+    dt["vcode"] = dt["vcode"].astype(str).str.strip()
+    row = dt[dt["vcode"] == str(vcode).strip()]
+    if row.empty:
+        return
+
+    r = row.iloc[0]
+
+    # PE Coupon — authoritative over waterfall-derived value
+    coupon = pd.to_numeric(r.get("pe_coupon"), errors="coerce")
+    if pd.notna(coupon) and coupon > 0:
+        cap_stack["pe_coupon"] = coupon if coupon < 1 else coupon / 100
+
+    # PE Split (capital event) — use as participation if available
+    pe_split = pd.to_numeric(r.get("pe_split_capital"), errors="coerce")
+    if pd.notna(pe_split) and pe_split > 0:
+        cap_stack["pe_participation"] = pe_split if pe_split < 1 else pe_split / 100
+
+    # IRR Lookback — new field
+    irr = pd.to_numeric(r.get("irr_lookback"), errors="coerce")
+    if pd.notna(irr) and irr > 0:
+        cap_stack["irr_lookback"] = irr if irr < 1 else irr / 100
+
+    # Econ Occ at Close — new field
+    eoc = pd.to_numeric(r.get("econ_occ_at_close"), errors="coerce")
+    if pd.notna(eoc):
+        cap_stack["econ_occ_at_close"] = eoc
 
 
 def get_one_pager_chart(vcode, isbs_raw, occupancy_raw, num_quarters=12):

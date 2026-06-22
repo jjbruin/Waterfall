@@ -363,7 +363,7 @@ function buildPerfRows(p: any) {
       atClose: fmtMil(p.revenue?.at_close), actualYE: fmtMil(p.revenue?.actual_ye), uwYE: fmtMil(p.revenue?.uw_ye) },
     { label: 'Expenses', ytdA: fmtMil(p.expenses?.ytd_actual), ytdB: fmtMil(p.expenses?.ytd_budget),
       variance: fmtVariance(p.expenses?.ytd_actual, p.expenses?.ytd_budget),
-      atClose: fmtMil(p.expenses?.at_close), actualYE: fmtMil(p.expenses?.actual_ye), uwYE: fmtMil(p.expenses?.uw_ye) },
+      atClose: fmtMil(p.expenses?.at_close), actualYE: fmtMil(p.expenses?.actual_ye), uwYE: fmtMil(p.expenses?.uw_ye), underline: true },
     { label: 'NOI', ytdA: fmtMil(p.noi?.ytd_actual), ytdB: fmtMil(p.noi?.ytd_budget),
       variance: fmtVariance(p.noi?.ytd_actual, p.noi?.ytd_budget),
       atClose: fmtMil(p.noi?.at_close), actualYE: fmtMil(p.noi?.actual_ye), uwYE: fmtMil(p.noi?.uw_ye) },
@@ -595,11 +595,11 @@ function printOnePager() {
             </tr>
             <tr>
               <th></th><th class="col-hdr">YTD (Actual)</th><th class="col-hdr">YTD (Budget)</th><th class="col-hdr">Variance</th>
-              <th class="spacer-col"></th><th class="col-hdr">At Close</th><th class="col-hdr">Actual YE</th><th class="col-hdr">U/W YE</th>
+              <th class="spacer-col"></th><th class="col-hdr">At Close</th><th class="col-hdr">Projected YE</th><th class="col-hdr">U/W YE</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="row in perfRows" :key="row.label">
+            <tr v-for="row in perfRows" :key="row.label" :class="{ 'underline-row': row.underline }">
               <td class="row-label">{{ row.label }}</td>
               <td class="val right">{{ row.ytdA }}</td><td class="val right">{{ row.ytdB }}</td>
               <td class="val right">{{ row.variance }}</td><td class="spacer-col"></td>
@@ -760,11 +760,11 @@ function printOnePager() {
               </tr>
               <tr>
                 <th></th><th class="col-hdr">YTD (Actual)</th><th class="col-hdr">YTD (Budget)</th><th class="col-hdr">Variance</th>
-                <th class="spacer-col"></th><th class="col-hdr">At Close</th><th class="col-hdr">Actual YE</th><th class="col-hdr">U/W YE</th>
+                <th class="spacer-col"></th><th class="col-hdr">At Close</th><th class="col-hdr">Projected YE</th><th class="col-hdr">U/W YE</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="row in buildPerfRows(pg.data.property_performance || {})" :key="row.label">
+              <tr v-for="row in buildPerfRows(pg.data.property_performance || {})" :key="row.label" :class="{ 'underline-row': row.underline }">
                 <td class="row-label">{{ row.label }}</td>
                 <td class="val right">{{ row.ytdA }}</td><td class="val right">{{ row.ytdB }}</td>
                 <td class="val right">{{ row.variance }}</td><td class="spacer-col"></td>
@@ -1000,6 +1000,7 @@ function printOnePager() {
 .perf-table .val { font-size: 11px; }
 .perf-table .right { text-align: right; }
 .perf-table .spacer-col { width: 20px; }
+.perf-table tr.underline-row td { border-bottom: 1px solid #000; }
 
 /* Comments row */
 .comments-row-table {
