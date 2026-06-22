@@ -1134,8 +1134,6 @@ async function downloadExcel(url: string, filename: string) {
             <div v-for="pa in deals.currentRoe.partners" :key="pa.partner" class="audit-partner">
               <h4>{{ pa.partner }}</h4>
 
-              <!-- Timeline -->
-              <h5>Capital Balance Timeline</h5>
               <DataTable
                 :columns="[
                   { key: 'Date', label: 'Date' },
@@ -1148,17 +1146,6 @@ async function downloadExcel(url: string, filename: string) {
                 :rows="pa.timeline"
               />
 
-              <!-- CF Distributions -->
-              <h5>CF Distributions</h5>
-              <DataTable
-                :columns="[
-                  { key: 'Date', label: 'Date' },
-                  { key: 'Amount', label: 'Amount', format: 'currency', align: 'right' },
-                ]"
-                :rows="pa.cf_distributions"
-              />
-
-              <!-- Summary -->
               <div class="metrics-row" v-if="pa.summary">
                 <KpiCard label="Inception" :value="pa.summary.inception" />
                 <KpiCard label="End" :value="pa.summary.end" />

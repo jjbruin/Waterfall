@@ -117,83 +117,94 @@ def get_all_cached_vcodes() -> list[str]:
 # ROE / MOIC Audit Builders  (extracted from app.py)
 # ============================================================
 
-def build_roe_timeline(combined_cashflows, cf_only_distributions, end_date):
-    """Replay calculate_roe logic to produce an audit trail.
+def build_roe_timeline(cashflow_details, cf_only_distributions, end_date):
+    """Build a unified ROE audit trail from cashflow_details.
 
-    Returns (timeline_rows, cf_dist_rows, summary_dict) — all JSON-safe.
+    Uses the accounting Typename (via cashflow_details Description) as the
+    event label.  CF distributions (from cf_only_distributions) do NOT reduce
+    capital; all other positive cashflows reduce capital.
+
+    Returns (timeline_rows, summary_dict) — all JSON-safe.
     """
-    cf_by_date = {}
+    # Build set of CF distribution (date, amount) for matching
+    cf_remaining = {}
     for d, a in cf_only_distributions:
         if a > 0:
-            cf_by_date[d] = cf_by_date.get(d, 0.0) + a
+            cf_remaining[d] = cf_remaining.get(d, 0.0) + a
 
-    events = []
-    for d, amt in combined_cashflows:
+    # Build events from cashflow_details with capital impact
+    events = []  # (date, description, amount, capital_change)
+    for cf in cashflow_details:
+        amt = cf['Amount']
+        desc = cf.get('Description', '') or ''
+        d = cf['Date']
+        if not hasattr(d, 'year'):
+            continue
+
         if amt < 0:
-            events.append((d, -amt))
+            # Contribution: increases capital
+            events.append((d, desc or 'Contribution', amt, -amt))
         elif amt > 0:
-            cf_at_date = cf_by_date.get(d, 0.0)
-            if cf_at_date > 0:
-                consumed = min(cf_at_date, amt)
-                cf_by_date[d] -= consumed
-                cap_return = amt - consumed
+            # Check if this is a CF distribution (no capital impact)
+            cf_avail = cf_remaining.get(d, 0.0)
+            if cf_avail >= amt - 0.005:
+                # Entirely CF distribution
+                cf_remaining[d] = cf_avail - amt
+                events.append((d, desc or 'CF Distribution', amt, 0.0))
+            elif cf_avail > 0.005:
+                # Split: partial CF distribution + partial capital return
+                cf_part = cf_avail
+                cap_part = amt - cf_avail
+                cf_remaining[d] = 0.0
+                events.append((d, desc or 'CF Distribution', cf_part, 0.0))
+                events.append((d, desc + ' (capital)', cap_part, -cap_part))
             else:
-                cap_return = amt
-            if cap_return > 0.005:
-                events.append((d, -cap_return))
-    events = sorted(events, key=lambda x: x[0])
+                # Entirely capital return
+                events.append((d, desc or 'Capital Return', amt, -amt))
 
+    events = sorted(events, key=lambda x: x[0])
     if not events:
-        return [], [], {}
+        return [], {}
 
     inception = events[0][0]
     rows = []
     current_balance = 0.0
     prev_date = inception
     total_weighted = 0.0
+    total_cf_dist = 0.0
 
-    for evt_date, change in events:
+    for evt_date, label, display_amt, cap_change in events:
+        # Accumulate weighted capital for days held since last event
         days = (evt_date - prev_date).days
         weighted = current_balance * days
-        if days > 0 and current_balance > 0:
-            rows.append({
-                'Date': prev_date.isoformat(), 'Event': '(holding period)',
-                'Amount': None, 'Capital Balance': current_balance,
-                'Days at Balance': days, 'Weighted Capital': weighted,
-            })
         total_weighted += weighted
-        current_balance = max(0, current_balance + change)
-        orig_amt = -change
-        if orig_amt < 0:
-            event_label = 'Contribution'
-        elif orig_amt > 0:
-            event_label = 'Capital Return'
-        else:
-            event_label = 'Event'
+
+        # Apply capital change
+        current_balance = max(0, current_balance + cap_change)
+        if cap_change == 0.0 and display_amt > 0:
+            total_cf_dist += display_amt
+
         rows.append({
-            'Date': evt_date.isoformat(), 'Event': event_label,
-            'Amount': orig_amt, 'Capital Balance': current_balance,
-            'Days at Balance': 0, 'Weighted Capital': 0.0,
+            'Date': evt_date.isoformat(), 'Event': label,
+            'Amount': display_amt, 'Capital Balance': current_balance,
+            'Days at Balance': days, 'Weighted Capital': weighted,
         })
         prev_date = evt_date
 
+    # Final holding period to end date
     if end_date and prev_date < end_date:
         days = (end_date - prev_date).days
         weighted = current_balance * days
-        if days > 0:
-            rows.append({
-                'Date': prev_date.isoformat(), 'Event': '(holding period)',
-                'Amount': None, 'Capital Balance': current_balance,
-                'Days at Balance': days, 'Weighted Capital': weighted,
-            })
-            total_weighted += weighted
+        total_weighted += weighted
+        rows.append({
+            'Date': end_date.isoformat(), 'Event': '(end)',
+            'Amount': None, 'Capital Balance': current_balance,
+            'Days at Balance': days, 'Weighted Capital': weighted,
+        })
 
     total_days = (end_date - inception).days if end_date else 0
     wac = total_weighted / total_days if total_days > 0 else 0.0
     years = total_days / 365.0 if total_days > 0 else 0.0
-
-    cf_rows = [{'Date': d.isoformat(), 'Amount': a} for d, a in cf_only_distributions if a > 0]
-    total_cf_dist = sum(r['Amount'] for r in cf_rows)
     roe = (total_cf_dist / wac) / years if wac > 0 and years > 0 else 0.0
 
     summary = {
@@ -201,7 +212,7 @@ def build_roe_timeline(combined_cashflows, cf_only_distributions, end_date):
         'total_days': total_days, 'years': years,
         'total_cf_dist': total_cf_dist, 'wac': wac, 'roe': roe,
     }
-    return rows, cf_rows, summary
+    return rows, summary
 
 
 def build_roe_audit(partner_results, deal_summary, sale_me):
@@ -211,25 +222,25 @@ def build_roe_audit(partner_results, deal_summary, sale_me):
     """
     partners = []
     for pr in partner_results:
-        tl, cf, summary = build_roe_timeline(
-            pr['combined_cashflows'], pr['cf_only_distributions'], sale_me)
+        tl, summary = build_roe_timeline(
+            pr.get('cashflow_details', []), pr['cf_only_distributions'], sale_me)
         partners.append({
             'partner': pr['partner'],
             'timeline': tl,
-            'cf_distributions': cf,
             'summary': summary,
         })
 
-    # Deal-level
-    all_cfs = deal_summary.get('all_combined_cashflows', [])
+    # Deal-level: combine all partners' cashflow_details
+    all_details = []
     all_cf_dist = []
     for pr in partner_results:
+        all_details.extend(pr.get('cashflow_details', []))
         all_cf_dist.extend(pr['cf_only_distributions'])
-    tl, cf, summary = build_roe_timeline(all_cfs, all_cf_dist, sale_me)
+    tl, summary = build_roe_timeline(all_details, all_cf_dist, sale_me)
 
     return {
         'partners': partners,
-        'deal_level': {'timeline': tl, 'cf_distributions': cf, 'summary': summary},
+        'deal_level': {'timeline': tl, 'summary': summary},
     }
 
 
@@ -325,12 +336,10 @@ def generate_roe_audit_excel(partner_results, deal_summary, sale_me) -> bytes:
             c.alignment = Alignment(horizontal="center")
         return r + 1
 
-    def _write_roe_section(ws, row, tl_rows, cf_rows, summary, label):
+    def _write_roe_section(ws, row, tl_rows, summary, label):
         ws.cell(row=row, column=1, value=label).font = Font(bold=True, size=12)
         row += 1
 
-        ws.cell(row=row, column=1, value="Capital Balance Timeline").font = bold_font
-        row += 1
         tl_cols = ['Date', 'Event', 'Amount', 'Capital Balance', 'Days at Balance', 'Weighted Capital']
         row = write_header(ws, row, tl_cols)
         for tr in tl_rows:
@@ -352,20 +361,6 @@ def generate_roe_audit_excel(partner_results, deal_summary, sale_me) -> bytes:
         ws.cell(row=row, column=6).border = top_border
         row += 2
 
-        ws.cell(row=row, column=1, value="CF Distributions").font = bold_font
-        row += 1
-        row = write_header(ws, row, ['Date', 'Amount'])
-        for cr in cf_rows:
-            ws.cell(row=row, column=1, value=cr['Date']).number_format = date_fmt
-            ws.cell(row=row, column=2, value=cr['Amount']).number_format = curr_fmt
-            row += 1
-        ws.cell(row=row, column=1, value="Total").font = bold_font
-        ws.cell(row=row, column=1).border = top_border
-        ws.cell(row=row, column=2, value=summary.get('total_cf_dist', 0)).font = bold_font
-        ws.cell(row=row, column=2).number_format = curr_fmt
-        ws.cell(row=row, column=2).border = top_border
-        row += 2
-
         ws.cell(row=row, column=1, value="ROE Summary").font = bold_font
         row += 1
         row = write_header(ws, row, ['Inception', 'End Date', 'Total Days', 'Years',
@@ -382,17 +377,18 @@ def generate_roe_audit_excel(partner_results, deal_summary, sale_me) -> bytes:
 
     # Per-partner sections
     for pr in partner_results:
-        tl, cf, summary = build_roe_timeline(
-            pr['combined_cashflows'], pr['cf_only_distributions'], sale_me)
-        row = _write_roe_section(ws, row, tl, cf, summary, f"Partner: {pr['partner']}")
+        tl, summary = build_roe_timeline(
+            pr.get('cashflow_details', []), pr['cf_only_distributions'], sale_me)
+        row = _write_roe_section(ws, row, tl, summary, f"Partner: {pr['partner']}")
 
     # Deal-level
-    all_cfs = deal_summary.get('all_combined_cashflows', [])
+    all_details = []
     all_cf_dist = []
     for pr in partner_results:
+        all_details.extend(pr.get('cashflow_details', []))
         all_cf_dist.extend(pr['cf_only_distributions'])
-    tl, cf, summary = build_roe_timeline(all_cfs, all_cf_dist, sale_me)
-    _write_roe_section(ws, row, tl, cf, summary, "Deal-Level ROE")
+    tl, summary = build_roe_timeline(all_details, all_cf_dist, sale_me)
+    _write_roe_section(ws, row, tl, summary, "Deal-Level ROE")
 
     for col in ws.columns:
         max_len = max((len(str(cell.value or "")) for cell in col), default=0)
