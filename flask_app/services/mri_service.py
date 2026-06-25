@@ -21,12 +21,12 @@ logger = logging.getLogger(__name__)
 
 MRI_SERVERS = {
     "pmx": {
-        "server": "10.219.226.17,1433",
+        "server": "10.219.226.9,1433",
         "database": "BV6899900001",
         "description": "PMX — Accounting, Relationships, Commitments",
     },
     "im": {
-        "server": "10.219.226.18,1433",
+        "server": "10.219.226.10,1433",
         "database": "PSC",
         "description": "IM — ISBS, Valuations, Loans, Occupancy, Tenants",
     },
