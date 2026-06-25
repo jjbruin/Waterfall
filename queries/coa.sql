@@ -1,4 +1,3 @@
-select vcode,vdescription,vtype,iNOI,vMisc,vAccountType
+select vaccount as vcode, vAccountType
 from vCOA
-where ISNUMERIC(vcode)=1
-and vcode not like 'M%'
+where ISNUMERIC(vaccount)=1
