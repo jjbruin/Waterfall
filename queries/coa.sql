@@ -1,3 +1,4 @@
 select vcode,vdescription,vtype,iNOI,vMisc,vAccountType
-from COA
-where vcode not like 'M%'
+from vCOA
+where ISNUMERIC(vcode)=1
+and vcode not like 'M%'
