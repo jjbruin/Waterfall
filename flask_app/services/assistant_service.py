@@ -183,6 +183,38 @@ TOOLS = [
             "required": ["entity_code"],
         },
     },
+    {
+        "name": "get_one_pager",
+        "description": "Get the One Pager investor report data for a deal. Returns capitalization stack (debt, pref equity, partner equity, LTV, PE exposure), property performance (revenue, expenses, NOI, DSCR for YTD actual, budget, at close, projected year-end), PE performance (committed, funded, return of capital, current balance, accrued, ROE), and general deal information. This is the primary tool for answering questions about current NOI, PE exposure, deal terms, DSCR, and property performance.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "vcode": {
+                    "type": "string",
+                    "description": "The deal's vcode identifier",
+                },
+                "quarter": {
+                    "type": "string",
+                    "description": "Quarter to report on (e.g., '2026-Q2'). Defaults to the latest available quarter if omitted.",
+                },
+            },
+            "required": ["vcode"],
+        },
+    },
+    {
+        "name": "get_annual_forecast",
+        "description": "Get the annual forecast/projection table for a deal. Returns Revenue, Expenses, NOI, Tax Abatement, Debt Service (Interest + Principal), Capital Expenditures, FAD (Funds Available for Distribution), and DSCR by year. Use this to answer questions about projected NOI, when DSCR drops below a threshold, future cash flows, and year-over-year trends.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "vcode": {
+                    "type": "string",
+                    "description": "The deal's vcode identifier",
+                },
+            },
+            "required": ["vcode"],
+        },
+    },
 ]
 
 # ── System prompt ────────────────────────────────────────────────────
@@ -197,6 +229,13 @@ You have access to the full portfolio database, deal computation engine, and fin
 - Running ad-hoc SQL queries for custom analysis
 - Explaining how waterfall structures work
 - Computing IRR, ROE, MOIC for specific deals
+- Getting One Pager data (cap stack, property performance, PE metrics, deal terms)
+- Getting annual forecast projections (Revenue, Expenses, NOI, Debt Service, FAD, DSCR by year)
+
+Tool selection tips:
+- Use get_one_pager for current NOI, PE exposure, DSCR, cap stack, deal terms, property performance
+- Use get_annual_forecast for projected/future NOI, multi-year trends, DSCR forecasts, FAD projections
+- Use compute_deal_returns for IRR, ROE, MOIC, sale date, sale proceeds
 
 Key conventions:
 - Cashflow signs: negative = contribution (money in), positive = distribution (money out)
@@ -337,6 +376,10 @@ def execute_tool(tool_name: str, tool_input: dict) -> str:
             return _tool_get_financial_statement(tool_input)
         elif tool_name == "get_waterfall_structure":
             return _tool_get_waterfall(tool_input)
+        elif tool_name == "get_one_pager":
+            return _tool_get_one_pager(tool_input)
+        elif tool_name == "get_annual_forecast":
+            return _tool_get_annual_forecast(tool_input)
         else:
             return json.dumps({"error": f"Unknown tool: {tool_name}"})
     except Exception as e:
@@ -586,6 +629,108 @@ def _tool_get_waterfall(inp):
             "vtranstype", "vAmtType", "vNotes"]
     available = [c for c in cols if c in filtered.columns]
     return json.dumps(_df_to_json(filtered[available], limit=100))
+
+
+def _tool_get_one_pager(inp):
+    """Get One Pager investor report data for a deal."""
+    vcode = str(inp["vcode"]).strip()
+    quarter = inp.get("quarter")
+    try:
+        from flask_app.services.financials_service import get_one_pager_data
+        data = _get_data()
+        result = get_one_pager_data(
+            vcode, quarter, data["inv"], data["isbs_raw"],
+            data["mri_loans_raw"], data["mri_val"],
+            data["wf"], data["commitments_raw"], data["acct"],
+            occupancy_raw=data["occupancy_raw"],
+            budget_econ_occ=data.get("budget_econ_occ"),
+            deal_terms=data.get("deal_terms_raw"),
+            at_close_noi=data.get("at_close_noi_raw"),
+        )
+        if not result:
+            return json.dumps({"error": f"No One Pager data for {vcode}"})
+
+        # Flatten for concise tool output
+        out = {"vcode": vcode}
+        if result.get("available_quarters"):
+            out["available_quarters"] = result["available_quarters"][:8]
+        if result.get("general"):
+            out["general"] = result["general"]
+        if result.get("cap_stack"):
+            out["cap_stack"] = result["cap_stack"]
+        if result.get("property_performance"):
+            out["property_performance"] = result["property_performance"]
+        if result.get("pe_performance"):
+            out["pe_performance"] = result["pe_performance"]
+        # Skip comments — not useful for AI queries
+        return json.dumps(out, default=str)
+    except Exception as e:
+        return json.dumps({"error": f"One Pager error: {str(e)}"})
+
+
+def _tool_get_annual_forecast(inp):
+    """Get annual forecast/projection table for a deal."""
+    vcode = str(inp["vcode"]).strip()
+    try:
+        from flask_app.services.compute_service import get_cached_deal_result
+        from reporting import annual_aggregation_table
+        data = _get_data()
+        start_year = current_app.config["DEFAULT_START_YEAR"]
+        horizon_years = current_app.config["DEFAULT_HORIZON_YEARS"]
+        pro_yr_base = current_app.config["PRO_YR_BASE_DEFAULT"]
+        actuals_through = current_app.config.get("ACTUALS_THROUGH")
+        result = get_cached_deal_result(
+            vcode, start_year, horizon_years, pro_yr_base, data,
+            actuals_through=actuals_through,
+        )
+        if not result:
+            return json.dumps({"error": f"Could not compute forecast for {vcode}"})
+
+        fc_display = result.get("fc_deal_display")
+        if fc_display is None or fc_display.empty:
+            return json.dumps({"error": f"No forecast data for {vcode}"})
+
+        cap_events = result.get("cap_events_df")
+        proceeds_by_year = None
+        if cap_events is not None and not cap_events.empty and "Year" in cap_events.columns:
+            proceeds_by_year = cap_events.groupby("Year")["amount"].sum()
+
+        table = annual_aggregation_table(
+            fc_display, start_year, horizon_years,
+            proceeds_by_year=proceeds_by_year,
+            cf_alloc=result.get("cf_alloc"),
+            cap_alloc=result.get("cap_alloc"),
+            cash_schedule=result.get("cash_schedule"),
+        )
+
+        if table.empty or "Year" not in table.columns:
+            return json.dumps({"error": f"No forecast data for {vcode}"})
+
+        # Pivot to {row_label: {year: value}} for readability
+        wide = table.set_index("Year").T
+        # Filter to key rows only (skip blank separators and waterfall detail)
+        key_rows = [
+            "Revenues", "Expenses", "NOI", "Tax Abatement",
+            "Interest", "Principal", "Total Debt Service",
+            "Capital Expenditures", "Other Below-the-Line",
+            "Funds Available for Distribution", "Debt Service Coverage Ratio",
+        ]
+        out = {"vcode": vcode, "years": [int(y) for y in wide.columns]}
+        forecast = {}
+        for label in key_rows:
+            if label in wide.index:
+                row_data = wide.loc[label]
+                vals = {}
+                for yr in wide.columns:
+                    v = row_data.get(yr)
+                    if pd.notna(v):
+                        vals[str(int(yr))] = round(float(v), 2)
+                if vals:
+                    forecast[label] = vals
+        out["forecast"] = forecast
+        return json.dumps(out, default=str)
+    except Exception as e:
+        return json.dumps({"error": f"Forecast error: {str(e)}"})
 
 
 # ── Chat session management ──────────────────────────────────────────
