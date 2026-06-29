@@ -376,29 +376,39 @@ def _tool_compute_deal_returns(inp):
             return json.dumps({"error": f"Could not compute returns for {vcode}"})
 
         pr = result["partner_results"]
-        # Extract summary metrics
+        # Extract summary metrics (keys are lowercase from compute.py)
         summary = []
         for row in pr:
             summary.append({
-                "partner": row.get("Partner", ""),
-                "contributions": row.get("Contributions", 0),
-                "cf_distributions": row.get("CF Distributions", 0),
-                "cap_distributions": row.get("Capital Distributions", 0),
-                "total_distributions": row.get("Total Distributions", 0),
-                "irr": row.get("IRR", ""),
-                "roe": row.get("ROE", ""),
-                "moic": row.get("MOIC", ""),
-                "is_deal_total": row.get("_is_deal_total", False),
+                "partner": row.get("partner", ""),
+                "contributions": row.get("contributions", 0),
+                "cf_distributions": row.get("cf_distributions", 0),
+                "cap_distributions": row.get("cap_distributions", 0),
+                "total_distributions": row.get("total_distributions", 0),
+                "irr": row.get("irr", ""),
+                "roe": row.get("roe", ""),
+                "moic": row.get("moic", ""),
+                "is_pref_equity": row.get("is_pref_equity", False),
+                "capital_outstanding": row.get("capital_outstanding", 0),
+                "unrealized_nav": row.get("unrealized_nav", 0),
             })
-        # Include deal-level summary if available
-        deal_summary = {}
-        if "sale_date" in result:
-            deal_summary["sale_date"] = str(result["sale_date"])
-        if "sale_price" in result:
-            deal_summary["sale_price"] = result["sale_price"]
-        if "cap_rate_at_sale" in result:
-            deal_summary["cap_rate_at_sale"] = result["cap_rate_at_sale"]
-        return json.dumps({"partner_returns": summary, "deal_summary": deal_summary}, default=str)
+        # Deal-level summary from compute engine
+        ds = result.get("deal_summary", {})
+        deal_info = {
+            "deal_irr": ds.get("deal_irr"),
+            "deal_roe": ds.get("deal_roe"),
+            "deal_moic": ds.get("deal_moic"),
+            "total_contributions": ds.get("total_contributions", 0),
+            "total_distributions": ds.get("total_distributions", 0),
+        }
+        if result.get("sale_me"):
+            deal_info["sale_date"] = str(result["sale_me"])
+        if result.get("sale_dbg"):
+            dbg = result["sale_dbg"]
+            if isinstance(dbg, dict):
+                deal_info["sale_price"] = dbg.get("sale_price") or dbg.get("value_net_selling_cost")
+                deal_info["cap_rate_at_sale"] = dbg.get("cap_rate")
+        return json.dumps({"partner_returns": summary, "deal_summary": deal_info}, default=str)
     except Exception as e:
         return json.dumps({"error": f"Computation error: {str(e)}"})
 
