@@ -240,7 +240,7 @@ interface BatchPage {
 
 const investors = ref<Investor[]>([])
 const selectedInvestor = ref('')
-const batchQuarter = ref('')
+const batchQuarter = ref('2026-Q2')
 const batchPages = ref<BatchPage[]>([])
 const batchLoading = ref(false)
 const batchProgress = ref('')
