@@ -59,7 +59,7 @@ async function onDealSelect(event: Event) {
 // ============================================================
 const opData = ref<Record<string, any> | null>(null)
 const chartResult = ref<Record<string, any> | null>(null)
-const selectedQuarter = ref('')
+const selectedQuarter = ref('2026-Q2')
 const loading = ref(false)
 const saving = ref(false)
 
