@@ -21,6 +21,7 @@ def chat():
     """
     body = request.get_json(force=True)
     messages = body.get("messages", [])
+    page_context = body.get("page_context", {})
 
     if not messages:
         return jsonify({"error": "No messages provided"}), 400
@@ -37,7 +38,7 @@ def chat():
 
         def generate():
             try:
-                for event in chat_completion(messages, stream=True):
+                for event in chat_completion(messages, stream=True, page_context=page_context):
                     yield f"data: {json.dumps(event)}\n\n"
             except ValueError as e:
                 # Missing API key

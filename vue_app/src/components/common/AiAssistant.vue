@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { ref, nextTick, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import api from '../../api/client'
+import { useDataStore } from '../../stores/data'
+import { useDealsStore } from '../../stores/deals'
 
 interface Message {
   role: 'user' | 'assistant'
@@ -11,6 +14,10 @@ interface ToolEvent {
   name: string
   input: Record<string, unknown>
 }
+
+const route = useRoute()
+const dataStore = useDataStore()
+const dealsStore = useDealsStore()
 
 const isOpen = ref(false)
 const isAvailable = ref(false)
@@ -47,6 +54,25 @@ function scrollToBottom() {
   })
 }
 
+function getPageContext(): Record<string, string> {
+  const ctx: Record<string, string> = {}
+  ctx.page = (route.name as string) || route.path
+  ctx.path = route.path
+
+  // Current deal from deals store (Deal Analysis, Property Financials, One Pager)
+  const vcode = dealsStore.currentVcode
+  if (vcode) {
+    ctx.current_vcode = vcode
+    ctx.current_deal_name = dataStore.getDealName(vcode)
+  }
+
+  // Query params that indicate deal/quarter selection
+  if (route.query.vcode) ctx.current_vcode = route.query.vcode as string
+  if (route.query.quarter) ctx.selected_quarter = route.query.quarter as string
+
+  return ctx
+}
+
 async function sendMessage() {
   const text = inputText.value.trim()
   if (!text || isLoading.value) return
@@ -74,7 +100,7 @@ async function sendMessage() {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`,
       },
-      body: JSON.stringify({ messages: apiMessages }),
+      body: JSON.stringify({ messages: apiMessages, page_context: getPageContext() }),
     })
 
     if (!response.ok) {

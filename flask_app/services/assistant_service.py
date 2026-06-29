@@ -198,6 +198,8 @@ When answering questions:
 - If a query returns too much data, summarize the key findings
 - Always explain what the numbers mean in context
 
+When the user asks a question, use the page context (provided below) to understand what they are looking at. If they ask about a deal without specifying which one, assume they mean the deal currently selected on their page. If their question requires data from a different tab (e.g., asking about expected returns while on the One Pager), use the current deal's vcode to fetch that data from the appropriate source (e.g., compute_deal_returns for Deal Analysis metrics).
+
 Today's date is """ + date.today().isoformat() + "."
 
 
@@ -482,17 +484,39 @@ def get_client():
     return anthropic.Anthropic(api_key=api_key)
 
 
-def chat_completion(messages: list, stream: bool = True):
+def _build_system_prompt(page_context: dict = None) -> str:
+    """Build system prompt with optional page context."""
+    prompt = SYSTEM_PROMPT
+    if page_context:
+        lines = ["\n\n--- Current Page Context ---"]
+        if page_context.get("page"):
+            lines.append(f"Page: {page_context['page']}")
+        if page_context.get("path"):
+            lines.append(f"Route: {page_context['path']}")
+        if page_context.get("current_deal_name"):
+            lines.append(f"Selected Deal: {page_context['current_deal_name']} (vcode: {page_context.get('current_vcode', 'unknown')})")
+        elif page_context.get("current_vcode"):
+            lines.append(f"Selected Deal vcode: {page_context['current_vcode']}")
+        if page_context.get("selected_quarter"):
+            lines.append(f"Selected Quarter: {page_context['selected_quarter']}")
+        lines.append("--- End Page Context ---")
+        prompt += "\n".join(lines)
+    return prompt
+
+
+def chat_completion(messages: list, stream: bool = True, page_context: dict = None):
     """Run a chat completion with tool use loop.
 
     Args:
         messages: Conversation history [{role, content}, ...]
         stream: Whether to stream the response
+        page_context: Current UI state (page, selected deal, quarter, etc.)
 
     Yields:
         dict events: {type: "text_delta"|"tool_use"|"done"|"error", ...}
     """
     client = get_client()
+    system_prompt = _build_system_prompt(page_context)
 
     # Agentic loop — keep going until Claude stops calling tools
     max_iterations = 10
@@ -502,7 +526,7 @@ def chat_completion(messages: list, stream: bool = True):
             with client.messages.stream(
                 model="claude-sonnet-4-6",
                 max_tokens=4096,
-                system=SYSTEM_PROMPT,
+                system=system_prompt,
                 tools=TOOLS,
                 messages=messages,
             ) as response_stream:
@@ -517,7 +541,7 @@ def chat_completion(messages: list, stream: bool = True):
             final_message = client.messages.create(
                 model="claude-sonnet-4-6",
                 max_tokens=4096,
-                system=SYSTEM_PROMPT,
+                system=system_prompt,
                 tools=TOOLS,
                 messages=messages,
             )
