@@ -363,7 +363,15 @@ def _tool_compute_deal_returns(inp):
     vcode = str(inp["vcode"]).strip()
     try:
         from flask_app.services.compute_service import get_cached_deal_result
-        result = get_cached_deal_result(vcode)
+        data = _get_data()
+        start_year = current_app.config["DEFAULT_START_YEAR"]
+        horizon_years = current_app.config["DEFAULT_HORIZON_YEARS"]
+        pro_yr_base = current_app.config["PRO_YR_BASE_DEFAULT"]
+        actuals_through = current_app.config.get("ACTUALS_THROUGH")
+        result = get_cached_deal_result(
+            vcode, start_year, horizon_years, pro_yr_base, data,
+            actuals_through=actuals_through,
+        )
         if not result or "partner_results" not in result:
             return json.dumps({"error": f"Could not compute returns for {vcode}"})
 
@@ -382,7 +390,15 @@ def _tool_compute_deal_returns(inp):
                 "moic": row.get("MOIC", ""),
                 "is_deal_total": row.get("_is_deal_total", False),
             })
-        return json.dumps({"partner_returns": summary}, default=str)
+        # Include deal-level summary if available
+        deal_summary = {}
+        if "sale_date" in result:
+            deal_summary["sale_date"] = str(result["sale_date"])
+        if "sale_price" in result:
+            deal_summary["sale_price"] = result["sale_price"]
+        if "cap_rate_at_sale" in result:
+            deal_summary["cap_rate_at_sale"] = result["cap_rate_at_sale"]
+        return json.dumps({"partner_returns": summary, "deal_summary": deal_summary}, default=str)
     except Exception as e:
         return json.dumps({"error": f"Computation error: {str(e)}"})
 
