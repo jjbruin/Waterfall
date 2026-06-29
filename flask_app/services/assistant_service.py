@@ -106,7 +106,7 @@ TOOLS = [
     },
     {
         "name": "compute_deal_returns",
-        "description": "Compute IRR, ROE, and MOIC for a specific deal. Runs the full waterfall computation engine.",
+        "description": "Compute IRR, ROE, and MOIC for a specific deal. Runs the full waterfall computation engine. Also returns sale date, sale proceeds breakdown (NOI, cap rate, implied value, selling costs, loan payoffs, net proceeds), and per-partner metrics.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -537,8 +537,16 @@ def _tool_compute_deal_returns(inp):
         if result.get("sale_dbg"):
             dbg = result["sale_dbg"]
             if isinstance(dbg, dict):
-                deal_info["sale_price"] = dbg.get("sale_price") or dbg.get("value_net_selling_cost")
-                deal_info["cap_rate_at_sale"] = dbg.get("cap_rate")
+                deal_info["sale_proceeds_breakdown"] = {
+                    "noi_12m": dbg.get("NOI_12m_After_Sale"),
+                    "cap_rate": dbg.get("CapRate_Sale"),
+                    "implied_value": dbg.get("Implied_Value"),
+                    "selling_cost": dbg.get("Less_Selling_Cost_2pct"),
+                    "value_net_selling_cost": dbg.get("Value_Net_Selling_Cost"),
+                    "loan_balances": dbg.get("Less_Loan_Balances"),
+                    "tax_abatement_npv": dbg.get("Tax_Abatement_NPV"),
+                    "net_sale_proceeds": dbg.get("Net_Sale_Proceeds"),
+                }
         return json.dumps({"partner_returns": summary, "deal_summary": deal_info}, default=str)
     except Exception as e:
         return json.dumps({"error": f"Computation error: {str(e)}"})
