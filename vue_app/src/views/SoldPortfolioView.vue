@@ -21,9 +21,9 @@ const detailLoading = ref(false)
 const assumptions = ref({
   ownership_pct: 90,
   am_fee_pct: 1.0,
-  hurdle_rate: 8.0,
+  hurdle_rate: 9.0,
   promote_pct: 20,
-  annual_expenses: 50000,
+  annual_expenses: 10000,
 })
 const netResults = ref<any>(null)
 const netLoading = ref(false)
