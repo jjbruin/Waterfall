@@ -641,31 +641,47 @@ def chat_completion(messages: list, stream: bool = True, page_context: dict = No
 
     # Agentic loop — keep going until Claude stops calling tools
     max_iterations = 10
-    for _ in range(max_iterations):
-        if stream:
-            # Stream the response
-            with client.messages.stream(
-                model="claude-sonnet-4-6",
-                max_tokens=4096,
-                system=system_prompt,
-                tools=TOOLS,
-                messages=messages,
-            ) as response_stream:
-                # Collect text and tool use blocks as they stream
-                for event in response_stream:
-                    if event.type == "content_block_delta":
-                        if event.delta.type == "text_delta":
-                            yield {"type": "text_delta", "text": event.delta.text}
+    for iteration in range(max_iterations):
+        try:
+            if stream:
+                # Stream the response
+                with client.messages.stream(
+                    model="claude-sonnet-4-6",
+                    max_tokens=4096,
+                    system=system_prompt,
+                    tools=TOOLS,
+                    messages=messages,
+                ) as response_stream:
+                    # Collect text and tool use blocks as they stream
+                    for event in response_stream:
+                        if event.type == "content_block_delta":
+                            if event.delta.type == "text_delta":
+                                yield {"type": "text_delta", "text": event.delta.text}
 
-                final_message = response_stream.get_final_message()
-        else:
-            final_message = client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=4096,
-                system=system_prompt,
-                tools=TOOLS,
-                messages=messages,
-            )
+                    final_message = response_stream.get_final_message()
+            else:
+                final_message = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=4096,
+                    system=system_prompt,
+                    tools=TOOLS,
+                    messages=messages,
+                )
+        except anthropic.RateLimitError as e:
+            # Rate limit hit — wait and retry once, or inform user
+            import time
+            if iteration < 2:  # Only retry on first couple iterations
+                yield {"type": "text_delta", "text": "\n\n*Rate limit reached — waiting a moment before continuing...*\n\n"}
+                time.sleep(15)
+                continue
+            else:
+                yield {"type": "text_delta", "text": f"\n\n**Rate limit reached.** The API has a token-per-minute limit. Please wait about 30 seconds and try a simpler question, or break this into smaller queries."}
+                yield {"type": "done"}
+                return
+        except anthropic.APIError as e:
+            yield {"type": "text_delta", "text": f"\n\n**API error:** {str(e)}"}
+            yield {"type": "done"}
+            return
 
         # Check if Claude wants to use tools
         tool_use_blocks = [b for b in final_message.content if b.type == "tool_use"]
