@@ -20,7 +20,7 @@ const loading = ref(false)
 const error = ref<string | null>(null)
 
 // Filters
-const quarterFilter = ref('')
+const quarterFilter = ref('2026-Q2')
 const statusFilter = ref('')
 
 // Summary counts
