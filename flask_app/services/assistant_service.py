@@ -17,6 +17,20 @@ logger = logging.getLogger(__name__)
 
 TOOLS = [
     {
+        "name": "resolve_deal",
+        "description": "Resolve a deal name (or partial name) to its vcode. Use this when the user mentions a deal by name and you need the vcode for other tools. Supports fuzzy/partial matching.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Full or partial deal name to search for (e.g., '30 Bearfoot', 'bearfoot', '3rd Ave')",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    {
         "name": "list_deals",
         "description": "List all deals (investments) in the portfolio. Returns deal name, vcode, asset type, status, acquisition date, and other metadata. Use this to find a deal's vcode before querying detail.",
         "input_schema": {
@@ -226,10 +240,84 @@ def _df_to_json(df, limit=100):
     return {"rows": records, "count": total, "showing": min(limit, total)}
 
 
+def _tool_resolve_deal(inp):
+    """Fuzzy match a deal name and return vcode + metadata."""
+    query = str(inp["name"]).strip().lower()
+    data = _get_data()
+    inv = data["inv"]
+
+    if "Investment_Name" not in inv.columns or "vcode" not in inv.columns:
+        return json.dumps({"error": "Deal data not available"})
+
+    # Build searchable frame
+    names = inv[["vcode", "Investment_Name"]].dropna(subset=["Investment_Name"]).copy()
+    names["name_lower"] = names["Investment_Name"].str.lower()
+
+    # Exact match first
+    exact = names[names["name_lower"] == query]
+    if not exact.empty:
+        row = exact.iloc[0]
+        return json.dumps({"vcode": row["vcode"], "name": row["Investment_Name"], "match": "exact"})
+
+    # Contains match
+    contains = names[names["name_lower"].str.contains(query, na=False)]
+    if len(contains) == 1:
+        row = contains.iloc[0]
+        return json.dumps({"vcode": row["vcode"], "name": row["Investment_Name"], "match": "contains"})
+    elif len(contains) > 1:
+        matches = [{"vcode": r["vcode"], "name": r["Investment_Name"]} for _, r in contains.head(10).iterrows()]
+        return json.dumps({"matches": matches, "count": len(contains), "message": "Multiple matches found. Please specify."})
+
+    # Token overlap match — each word in query checked against deal names
+    query_tokens = set(query.split())
+    scores = []
+    for _, r in names.iterrows():
+        name_tokens = set(r["name_lower"].split())
+        overlap = len(query_tokens & name_tokens)
+        if overlap > 0:
+            scores.append((overlap, r["vcode"], r["Investment_Name"]))
+    if scores:
+        scores.sort(key=lambda x: -x[0])
+        if scores[0][0] > 0:
+            matches = [{"vcode": s[1], "name": s[2], "token_overlap": s[0]} for s in scores[:5]]
+            if len(matches) == 1:
+                return json.dumps({"vcode": matches[0]["vcode"], "name": matches[0]["name"], "match": "token"})
+            return json.dumps({"matches": matches, "message": "Possible matches by keyword overlap."})
+
+    return json.dumps({"error": f"No deals found matching '{inp['name']}'"})
+
+
+def _enrich_deal_context(vcode: str) -> str:
+    """Pre-fetch deal metadata for a vcode to inject into system prompt."""
+    try:
+        data = _get_data()
+        inv = data["inv"]
+        match = inv[inv["vcode"].astype(str).str.strip() == vcode.strip()]
+        if match.empty:
+            return ""
+
+        row = match.iloc[0]
+        parts = [f"\nDeal Details (pre-loaded for {vcode}):"]
+        for field in ["Investment_Name", "Asset_Type", "Sale_Status", "Acquisition_Date",
+                       "Sale_Date", "Acquisition_Price", "Portfolio_Name", "vCity",
+                       "vState", "Units_SF", "Investment_Strategy", "Operating_Partner",
+                       "Asset_Manager"]:
+            if field in row.index and pd.notna(row[field]) and str(row[field]).strip():
+                val = row[field]
+                if isinstance(val, pd.Timestamp):
+                    val = val.strftime("%Y-%m-%d")
+                parts.append(f"  {field}: {val}")
+        return "\n".join(parts)
+    except Exception:
+        return ""
+
+
 def execute_tool(tool_name: str, tool_input: dict) -> str:
     """Execute a tool and return the result as a string."""
     try:
-        if tool_name == "list_deals":
+        if tool_name == "resolve_deal":
+            return _tool_resolve_deal(tool_input)
+        elif tool_name == "list_deals":
             return _tool_list_deals(tool_input)
         elif tool_name == "query_deal_data":
             return _tool_query_deal_data(tool_input)
@@ -511,7 +599,7 @@ def get_client():
 
 
 def _build_system_prompt(page_context: dict = None) -> str:
-    """Build system prompt with optional page context."""
+    """Build system prompt with optional page context and pre-loaded deal data."""
     prompt = SYSTEM_PROMPT
     if page_context:
         lines = ["\n\n--- Current Page Context ---"]
@@ -519,12 +607,19 @@ def _build_system_prompt(page_context: dict = None) -> str:
             lines.append(f"Page: {page_context['page']}")
         if page_context.get("path"):
             lines.append(f"Route: {page_context['path']}")
+        vcode = page_context.get("current_vcode")
         if page_context.get("current_deal_name"):
-            lines.append(f"Selected Deal: {page_context['current_deal_name']} (vcode: {page_context.get('current_vcode', 'unknown')})")
-        elif page_context.get("current_vcode"):
-            lines.append(f"Selected Deal vcode: {page_context['current_vcode']}")
+            lines.append(f"Selected Deal: {page_context['current_deal_name']} (vcode: {vcode or 'unknown'})")
+        elif vcode:
+            lines.append(f"Selected Deal vcode: {vcode}")
         if page_context.get("selected_quarter"):
             lines.append(f"Selected Quarter: {page_context['selected_quarter']}")
+        # Pre-load deal metadata so assistant doesn't need to call query_deal_data
+        if vcode:
+            deal_info = _enrich_deal_context(vcode)
+            if deal_info:
+                lines.append(deal_info)
+                lines.append("(Use this pre-loaded deal info directly — no need to call query_deal_data or list_deals for this deal.)")
         lines.append("--- End Page Context ---")
         prompt += "\n".join(lines)
     return prompt
