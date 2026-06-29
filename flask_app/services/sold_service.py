@@ -109,6 +109,19 @@ def compute_all_sold_returns(inv_sold: pd.DataFrame, acct: pd.DataFrame,
     if not all_rows:
         return pd.DataFrame()
 
+    # Weighted average hold period (weighted by contributions)
+    wtd_hold_num = 0.0
+    wtd_hold_den = 0.0
+    for row in all_rows:
+        acq = pd.to_datetime(row["Acquisition Date"], errors="coerce")
+        sale = pd.to_datetime(row["Sale Date"], errors="coerce")
+        contrib = row["Total Contributions"]
+        if pd.notna(acq) and pd.notna(sale) and contrib > 0:
+            years = (sale - acq).days / 365.25
+            wtd_hold_num += years * contrib
+            wtd_hold_den += contrib
+    wtd_hold_years = round(wtd_hold_num / wtd_hold_den, 1) if wtd_hold_den > 0 else None
+
     # Portfolio total row
     port_contribs = sum(abs(a) for _, a in portfolio_cashflows if a < 0)
     port_distribs = sum(a for _, a in portfolio_cashflows if a > 0)
@@ -123,7 +136,7 @@ def compute_all_sold_returns(inv_sold: pd.DataFrame, acct: pd.DataFrame,
         "Investment Name": "Portfolio Total",
         "vcode": "",
         "Acquisition Date": "",
-        "Sale Date": "",
+        "Sale Date": f"{wtd_hold_years} yrs" if wtd_hold_years is not None else "",
         "Total Contributions": port_contribs,
         "Total Distributions": port_distribs,
         "IRR": port_irr,
