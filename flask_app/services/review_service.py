@@ -391,6 +391,7 @@ def get_tracking_data(quarter_filter: str | None = None,
 
     # Exclude sold deals and child properties
     conditions.append("""COALESCE(d."Sale_Status", '') != 'SOLD'""")
+    conditions.append("""COALESCE(d."Lifecycle", '') != 'Sold'""")
     conditions.append("""COALESCE(d."Portfolio_Name", '') = ''""")
 
     if conditions:
@@ -427,6 +428,7 @@ def get_investor_list() -> list[str]:
           AND TRIM(upstream."InvestorID") NOT LIKE 'OP%'
           AND TRIM(upstream."InvestorID") NOT LIKE 'PPI%'
           AND COALESCE(d."Sale_Status", '') != 'SOLD'
+          AND COALESCE(d."Lifecycle", '') != 'Sold'
           AND COALESCE(d."Portfolio_Name", '') = ''
         ORDER BY investor_id
     """
