@@ -418,6 +418,62 @@ Upstream waterfall analysis for the PSCKOC holding entity, showing how deal-leve
 - **New InvestorState Fields** (`models.py`): `promote_base` (cumulative pref for catch-up denominator), `promote_carry` (cumulative carry from catch-up).
 - **Waterfall Setup Guide** (`waterfall_setup_rules.txt`): Comprehensive modeling reference. Sections: vState vocabulary, Add vs Tag, pool routing, operating capital, FXRate, mAmount, deal patterns (A-E), expenses, promote/IRR structure, AMFee exclusions, TGA22 JV example, checklist, troubleshooting.
 
+## AI Assistant
+
+Embedded Claude-powered chat panel for natural-language queries against the portfolio database.
+
+### Architecture
+- **Backend**: `flask_app/services/assistant_service.py` (tools + agentic loop), `flask_app/api/assistant.py` (SSE endpoint + history CRUD)
+- **Frontend**: `vue_app/src/components/common/AiAssistant.vue` (floating chat panel in App.vue)
+- **Model**: Claude Sonnet 4.6 (`claude-sonnet-4-6`), 4096 max tokens, streaming SSE
+- **Activation**: `ANTHROPIC_API_KEY` env var (`.env` for local, container env var for Azure)
+- **Agentic loop**: Up to 10 tool iterations per query via `chat_completion()`
+
+### Tools (19)
+
+| Tool | Description | Data Source |
+|------|-------------|-------------|
+| `resolve_deal` | Fuzzy name → vcode matching | `inv` DataFrame |
+| `list_deals` | Browse deals with status filter | `inv` DataFrame |
+| `query_deal_data` | Deal metadata by vcode | `inv` DataFrame |
+| `query_accounting` | Contributions/distributions | `acct` DataFrame |
+| `query_database` | Ad-hoc read-only SQL (SELECT only) | SQLAlchemy engine |
+| `get_portfolio_summary` | Portfolio-level KPIs | `inv` DataFrame |
+| `compute_deal_returns` | Full waterfall IRR/ROE/MOIC + sale proceeds | `get_cached_deal_result()` |
+| `get_loan_details` | Loan metadata (rate, maturity, lender) | `loans` DataFrame |
+| `get_occupancy` | Occupancy data by deal | `occ` DataFrame |
+| `get_financial_statement` | ISBS income statement (actual/budget/UW) | `isbs_raw` DataFrame |
+| `get_waterfall_structure` | Waterfall allocation rules | `wf` DataFrame |
+| `get_one_pager` | One Pager investor report (cap stack, perf, PE) | `financials_service` |
+| `get_annual_forecast` | Annual projections (NOI, DSCR, FAD by year) | `annual_aggregation_table()` |
+| `get_sold_returns` | Sold deal returns from accounting history | `sold_service` |
+| `get_capitalization` | Cap stack, debt, LTV, PE exposure | `get_deal_capitalization()` |
+| `compare_deals` | Side-by-side 2-10 deal comparison | multi-deal compute + cap |
+| `get_debt_service` | Loan summary + annual amortization schedule | compute result `loan_sched` |
+| `get_cash_management` | Cash schedule (reserves, CapEx, distributable) | compute result `cash_schedule` |
+| `get_tenant_roster` | Tenant list, occupancy, lease maturity rollover | `financials_service` |
+
+### Features
+- **Page context awareness**: Sends current page, selected deal vcode/name, and quarter to backend. System prompt includes pre-loaded deal metadata so assistant infers context from user's current view.
+- **Suggested questions**: Context-aware clickable chips based on current page (Dashboard, Deal Analysis, One Pager, Property Financials, Sold Portfolio) shown on first open.
+- **Conversation persistence**: `chat_history` table (user_id PK, messages JSON). Auto-loads on open, auto-saves after each response, clear button deletes server-side. Survives page refresh.
+- **Result truncation**: Large results include numeric column summaries (sum/min/max) and truncation notes with guidance.
+- **Smarter error messages**: `_error_hint()` maps common errors to actionable suggestions (missing deal → "use resolve_deal", no waterfall → "check get_waterfall_structure").
+- **Safety**: `query_database` enforces SELECT-only (blocks DROP/DELETE/UPDATE/INSERT/ALTER). Max 500 rows per query. All tools wrapped in try/except with error logging.
+
+### API Endpoints
+- `POST /api/assistant/chat` — Streaming SSE chat (login_required)
+- `GET /api/assistant/status` — Check if API key is configured
+- `GET /api/assistant/history` — Load saved chat history for current user
+- `PUT /api/assistant/history` — Save chat history
+- `DELETE /api/assistant/history` — Clear chat history
+
+### SSE Event Types
+- `text_delta` — Incremental text from Claude
+- `tool_use` — Tool call in progress (name + input shown as chip)
+- `done` — Response complete
+- `error` — Error message
+
 ## Key Functions
 
 ### Core Engine
