@@ -351,11 +351,11 @@ def get_tracking_data(quarter_filter: str | None = None,
     _ensure_tables()
     engine = get_engine()
 
-    # Build query
+    # Build query — double-quote mixed-case columns for PostgreSQL compatibility
     sql = """
         SELECT
             d.vcode,
-            d.Investment_Name as deal_name,
+            d."Investment_Name" as deal_name,
             COALESCE(rs.quarter, :default_quarter) as quarter,
             COALESCE(rs.status, 'draft') as status,
             COALESCE(rs.current_step, 0) as current_step,
@@ -379,23 +379,23 @@ def get_tracking_data(quarter_filter: str | None = None,
     if investor_filter:
         # Investor -> PPI -> Deal chain via relationships table
         conditions.append("""
-            TRIM(d.InvestmentID) IN (
-                SELECT TRIM(deal_rel.InvestmentID)
+            TRIM(d."InvestmentID") IN (
+                SELECT TRIM(deal_rel."InvestmentID")
                 FROM relationships deal_rel
                 JOIN relationships upstream
-                    ON TRIM(upstream.InvestmentID) = TRIM(deal_rel.InvestorID)
-                WHERE TRIM(upstream.InvestorID) = :inv
+                    ON TRIM(upstream."InvestmentID") = TRIM(deal_rel."InvestorID")
+                WHERE TRIM(upstream."InvestorID") = :inv
             )
         """)
         params["inv"] = investor_filter
 
     # Exclude sold deals and child properties
-    conditions.append("COALESCE(d.Sale_Status, '') != 'SOLD'")
-    conditions.append("COALESCE(d.Portfolio_Name, '') = ''")
+    conditions.append("""COALESCE(d."Sale_Status", '') != 'SOLD'""")
+    conditions.append("""COALESCE(d."Portfolio_Name", '') = ''""")
 
     if conditions:
         sql += " WHERE " + " AND ".join(conditions)
-    sql += " ORDER BY d.Investment_Name"
+    sql += """ ORDER BY d."Investment_Name" """
 
     with engine.connect() as conn:
         rows = conn.execute(text(sql), params).mappings().fetchall()
@@ -417,17 +417,17 @@ def get_investor_list() -> list[str]:
     """
     engine = get_engine()
     sql = """
-        SELECT DISTINCT TRIM(upstream.InvestorID) as investor_id
+        SELECT DISTINCT TRIM(upstream."InvestorID") as investor_id
         FROM relationships deal_rel
         JOIN relationships upstream
-            ON TRIM(upstream.InvestmentID) = TRIM(deal_rel.InvestorID)
+            ON TRIM(upstream."InvestmentID") = TRIM(deal_rel."InvestorID")
         JOIN deals d
-            ON TRIM(d.InvestmentID) = TRIM(deal_rel.InvestmentID)
-        WHERE TRIM(deal_rel.InvestorID) LIKE 'PPI%'
-          AND TRIM(upstream.InvestorID) NOT LIKE 'OP%'
-          AND TRIM(upstream.InvestorID) NOT LIKE 'PPI%'
-          AND COALESCE(d.Sale_Status, '') != 'SOLD'
-          AND COALESCE(d.Portfolio_Name, '') = ''
+            ON TRIM(d."InvestmentID") = TRIM(deal_rel."InvestmentID")
+        WHERE TRIM(deal_rel."InvestorID") LIKE 'PPI%'
+          AND TRIM(upstream."InvestorID") NOT LIKE 'OP%'
+          AND TRIM(upstream."InvestorID") NOT LIKE 'PPI%'
+          AND COALESCE(d."Sale_Status", '') != 'SOLD'
+          AND COALESCE(d."Portfolio_Name", '') = ''
         ORDER BY investor_id
     """
     with engine.connect() as conn:
