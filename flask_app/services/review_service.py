@@ -377,17 +377,19 @@ def get_tracking_data(quarter_filter: str | None = None,
             conditions.append("rs.status = :sf")
             params["sf"] = status_filter
     if investor_filter:
-        # Recursive traversal: investor → any depth of intermediaries → deal
+        # Recursive traversal through active relationships only (EndDate NULL = current)
         conditions.append("""
             TRIM(d."InvestmentID") IN (
                 WITH RECURSIVE reachable AS (
                     SELECT TRIM(r."InvestmentID") as investment_id
                     FROM relationships r
                     WHERE TRIM(r."InvestorID") = :inv
+                      AND (COALESCE(CAST(r."EndDate" AS TEXT), '') = '')
                     UNION
                     SELECT TRIM(r."InvestmentID")
                     FROM relationships r
                     JOIN reachable rc ON TRIM(r."InvestorID") = rc.investment_id
+                    WHERE COALESCE(CAST(r."EndDate" AS TEXT), '') = ''
                 )
                 SELECT investment_id FROM reachable
             )
@@ -436,7 +438,8 @@ def get_investor_list() -> list[str]:
                    TRIM(r."InvestmentID") as investment_id
             FROM relationships r
             JOIN deals d ON TRIM(d."InvestmentID") = TRIM(r."InvestmentID")
-            WHERE COALESCE(d."Sale_Status", '') != 'SOLD'
+            WHERE (COALESCE(CAST(r."EndDate" AS TEXT), '') = '')
+              AND COALESCE(d."Sale_Status", '') != 'SOLD'
               AND COALESCE(d."Lifecycle", '') != 'Sold'
               AND d.vcode NOT IN (
                   SELECT d2.vcode FROM deals d2
@@ -450,6 +453,7 @@ def get_investor_list() -> list[str]:
             SELECT TRIM(r."InvestorID"), TRIM(r."InvestmentID")
             FROM relationships r
             JOIN upstream u ON TRIM(r."InvestmentID") = u.investor_id
+            WHERE COALESCE(CAST(r."EndDate" AS TEXT), '') = ''
         )
         SELECT DISTINCT investor_id
         FROM upstream
