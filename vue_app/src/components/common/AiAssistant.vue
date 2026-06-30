@@ -37,6 +37,23 @@ onMounted(async () => {
   }
 })
 
+async function loadHistory() {
+  try {
+    const { data } = await api.get('/api/assistant/history')
+    if (data.messages && data.messages.length > 0) {
+      messages.value = data.messages
+      return true
+    }
+  } catch { /* ignore */ }
+  return false
+}
+
+async function saveHistory() {
+  try {
+    await api.put('/api/assistant/history', { messages: messages.value })
+  } catch { /* ignore */ }
+}
+
 function getSuggestedQuestions(): string[] {
   const page = (route.name as string) || route.path
   const vcode = dealsStore.currentVcode || (route.query.vcode as string)
@@ -85,14 +102,18 @@ function getSuggestedQuestions(): string[] {
   ]
 }
 
-function toggleChat() {
+async function toggleChat() {
   isOpen.value = !isOpen.value
   if (isOpen.value && messages.value.length === 0) {
+    const loaded = await loadHistory()
+    if (!loaded) {
+      messages.value.push({
+        role: 'assistant',
+        content: 'Hello! I\'m your AI assistant for the Waterfall app. I can help you look up deals, analyze returns, query financial data, and more. What would you like to know?',
+      })
+    }
     suggestions.value = getSuggestedQuestions()
-    messages.value.push({
-      role: 'assistant',
-      content: 'Hello! I\'m your AI assistant for the Waterfall app. I can help you look up deals, analyze returns, query financial data, and more. What would you like to know?',
-    })
+    scrollToBottom()
   }
 }
 
@@ -215,6 +236,7 @@ async function sendMessage() {
     isLoading.value = false
     toolActivity.value = []
     scrollToBottom()
+    saveHistory()
   }
 }
 
@@ -231,6 +253,8 @@ function clearChat() {
     content: 'Chat cleared. How can I help you?',
   }]
   toolActivity.value = []
+  suggestions.value = getSuggestedQuestions()
+  api.delete('/api/assistant/history').catch(() => {})
 }
 
 function formatToolName(name: string): string {

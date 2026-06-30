@@ -258,6 +258,48 @@ TOOLS = [
             "required": ["vcodes"],
         },
     },
+    {
+        "name": "get_debt_service",
+        "description": "Get the debt service schedule for a deal: loan amortization by period with interest, principal, ending balance, and balloon payment detection. Returns a summary per loan (rate, maturity, balance) plus the schedule. Use for questions about loan payments, maturity dates, remaining balance, and balloon payoffs.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "vcode": {
+                    "type": "string",
+                    "description": "The deal's vcode identifier",
+                },
+            },
+            "required": ["vcode"],
+        },
+    },
+    {
+        "name": "get_cash_management",
+        "description": "Get the cash management schedule for a deal: beginning cash, operating cash flow, CapEx funded from reserves, capital calls, distributable cash, and ending cash by period. Use for questions about cash reserves, distributable cash, CapEx funding, and cash flow timing.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "vcode": {
+                    "type": "string",
+                    "description": "The deal's vcode identifier",
+                },
+            },
+            "required": ["vcode"],
+        },
+    },
+    {
+        "name": "get_tenant_roster",
+        "description": "Get the tenant roster for a commercial deal: tenant names, SF leased, lease dates, rent per SF, % of GLA/ABR, vacancy, and lease maturity rollover by year. Use for questions about tenants, lease expirations, occupancy, and rent rolls.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "vcode": {
+                    "type": "string",
+                    "description": "The deal's vcode identifier",
+                },
+            },
+            "required": ["vcode"],
+        },
+    },
 ]
 
 # ── System prompt ────────────────────────────────────────────────────
@@ -277,6 +319,9 @@ You have access to the full portfolio database, deal computation engine, and fin
 - Checking capitalization stack, LTV, debt levels, PE exposure
 - Comparing deals side-by-side on returns and metrics
 - Analyzing sold deal returns and historical performance
+- Reviewing debt service schedules, loan amortization, and balloon payments
+- Checking cash reserves, distributable cash, and CapEx funding
+- Looking up tenant rosters, lease expirations, and rent rolls (commercial deals)
 
 Tool selection tips:
 - Use get_one_pager for current NOI, PE exposure, DSCR, cap stack, deal terms, property performance
@@ -285,6 +330,9 @@ Tool selection tips:
 - Use get_capitalization for LTV, debt outstanding, equity balances, capital structure
 - Use compare_deals when comparing 2+ deals (more efficient than calling compute_deal_returns multiple times)
 - Use get_sold_returns for sold/historical deals — they use accounting data, NOT the waterfall engine
+- Use get_debt_service for loan schedules, amortization, balloon payments, maturity dates
+- Use get_cash_management for cash reserves, distributable cash, CapEx from reserves
+- Use get_tenant_roster for tenant info, lease expirations, rent rolls (commercial deals only)
 
 Key conventions:
 - Cashflow signs: negative = contribution (money in), positive = distribution (money out)
@@ -472,6 +520,12 @@ def execute_tool(tool_name: str, tool_input: dict) -> str:
             return _tool_get_capitalization(tool_input)
         elif tool_name == "compare_deals":
             return _tool_compare_deals(tool_input)
+        elif tool_name == "get_debt_service":
+            return _tool_get_debt_service(tool_input)
+        elif tool_name == "get_cash_management":
+            return _tool_get_cash_management(tool_input)
+        elif tool_name == "get_tenant_roster":
+            return _tool_get_tenant_roster(tool_input)
         else:
             return json.dumps({"error": f"Unknown tool: {tool_name}"})
     except Exception as e:
@@ -1021,6 +1075,152 @@ def _tool_compare_deals(inp):
         comparisons.append(entry)
 
     return json.dumps({"comparisons": comparisons}, default=str)
+
+
+def _tool_get_debt_service(inp):
+    """Get debt service schedule for a deal."""
+    vcode = str(inp["vcode"]).strip()
+    try:
+        from flask_app.services.compute_service import get_cached_deal_result
+        data = _get_data()
+        start_year = current_app.config["DEFAULT_START_YEAR"]
+        horizon_years = current_app.config["DEFAULT_HORIZON_YEARS"]
+        pro_yr_base = current_app.config["PRO_YR_BASE_DEFAULT"]
+        actuals_through = current_app.config.get("ACTUALS_THROUGH")
+        result = get_cached_deal_result(
+            vcode, start_year, horizon_years, pro_yr_base, data,
+            actuals_through=actuals_through,
+        )
+        if not result:
+            return json.dumps({"error": f"Could not compute debt service for '{vcode}'. The deal may have no waterfall or forecast data."})
+
+        # Loan summary
+        loans = result.get("loans", [])
+        loan_summary = []
+        for ln in loans:
+            loan_summary.append({
+                "loan_id": getattr(ln, "loan_id", ""),
+                "original_amount": getattr(ln, "original_amount", 0),
+                "rate": getattr(ln, "rate", 0),
+                "rate_type": getattr(ln, "rate_type", ""),
+                "maturity": str(getattr(ln, "maturity_date", "")),
+                "lender": getattr(ln, "lender", ""),
+            })
+
+        # Amortization schedule (annual summary)
+        loan_sched = result.get("loan_sched")
+        annual_debt = {}
+        if loan_sched is not None and not loan_sched.empty:
+            ls = loan_sched.copy()
+            ls["event_date"] = pd.to_datetime(ls["event_date"], errors="coerce")
+            ls["year"] = ls["event_date"].dt.year
+            by_year = ls.groupby("year").agg(
+                interest=("interest", "sum"),
+                principal=("principal", "sum"),
+                ending_balance=("ending_balance", "last"),
+            ).reset_index()
+            for _, row in by_year.iterrows():
+                annual_debt[str(int(row["year"]))] = {
+                    "interest": round(float(row["interest"]), 2),
+                    "principal": round(float(row["principal"]), 2),
+                    "ending_balance": round(float(row["ending_balance"]), 2),
+                }
+
+        out = {"vcode": vcode, "loans": loan_summary}
+        if annual_debt:
+            out["annual_debt_service"] = annual_debt
+        if not loan_summary and not annual_debt:
+            out["note"] = "No loans modeled for this deal."
+        return json.dumps(out, default=str)
+    except Exception as e:
+        return json.dumps({"error": f"Debt service error for '{vcode}': {str(e)}"})
+
+
+def _tool_get_cash_management(inp):
+    """Get cash management schedule for a deal."""
+    vcode = str(inp["vcode"]).strip()
+    try:
+        from flask_app.services.compute_service import get_cached_deal_result
+        data = _get_data()
+        start_year = current_app.config["DEFAULT_START_YEAR"]
+        horizon_years = current_app.config["DEFAULT_HORIZON_YEARS"]
+        pro_yr_base = current_app.config["PRO_YR_BASE_DEFAULT"]
+        actuals_through = current_app.config.get("ACTUALS_THROUGH")
+        result = get_cached_deal_result(
+            vcode, start_year, horizon_years, pro_yr_base, data,
+            actuals_through=actuals_through,
+        )
+        if not result:
+            return json.dumps({"error": f"Could not compute cash schedule for '{vcode}'."})
+
+        cash_schedule = result.get("cash_schedule")
+        if cash_schedule is None or cash_schedule.empty:
+            return json.dumps({"error": f"No cash schedule for '{vcode}'. The deal may lack forecast data."})
+
+        # Annual summary
+        cs = cash_schedule.copy()
+        cs["event_date"] = pd.to_datetime(cs["event_date"], errors="coerce")
+        cs["year"] = cs["event_date"].dt.year
+
+        agg_cols = {}
+        for col in ["operating_cf", "capex_paid", "capex_unpaid", "capital_call",
+                     "deficit_covered", "distributable", "distributed"]:
+            if col in cs.columns:
+                agg_cols[col] = (col, "sum")
+        agg_cols["ending_cash"] = ("ending_cash", "last")
+        agg_cols["beginning_cash"] = ("beginning_cash", "first")
+
+        by_year = cs.groupby("year").agg(**agg_cols).reset_index()
+        annual = {}
+        for _, row in by_year.iterrows():
+            yr_data = {}
+            for col in by_year.columns:
+                if col != "year":
+                    yr_data[col] = round(float(row[col]), 2)
+            annual[str(int(row["year"]))] = yr_data
+
+        # Cash summary
+        cash_summary = result.get("cash_summary", {})
+
+        out = {"vcode": vcode, "annual_cash_schedule": annual}
+        if cash_summary:
+            out["summary"] = {k: round(float(v), 2) if isinstance(v, (int, float)) else v
+                              for k, v in cash_summary.items()}
+        return json.dumps(out, default=str)
+    except Exception as e:
+        return json.dumps({"error": f"Cash management error for '{vcode}': {str(e)}"})
+
+
+def _tool_get_tenant_roster(inp):
+    """Get tenant roster for a commercial deal."""
+    vcode = str(inp["vcode"]).strip()
+    try:
+        from flask_app.services.financials_service import get_tenant_roster
+        data = _get_data()
+        tenants_raw = data.get("tenants_raw")
+        if tenants_raw is None or tenants_raw.empty:
+            return json.dumps({"error": "No tenant data available in the database."})
+
+        result = get_tenant_roster(tenants_raw, vcode, inv=data["inv"])
+        if not result or not result.get("tenants"):
+            return json.dumps({"error": f"No tenant data for '{vcode}'. This may be a residential deal (tenant rosters are for commercial properties)."})
+
+        out = {"vcode": vcode}
+        out["summary"] = result.get("summary", {})
+        # Truncate tenant list for large rosters
+        tenants = result.get("tenants", [])
+        out["tenants"] = tenants[:30]
+        if len(tenants) > 30:
+            out["note"] = f"Showing first 30 of {len(tenants)} tenants."
+        out["total_tenants"] = len(tenants)
+
+        rollover = result.get("rollover", {})
+        if rollover.get("maturity_by_year"):
+            out["lease_maturity_by_year"] = rollover["maturity_by_year"]
+
+        return json.dumps(out, default=str)
+    except Exception as e:
+        return json.dumps({"error": f"Tenant roster error for '{vcode}': {str(e)}"})
 
 
 # ── Chat session management ──────────────────────────────────────────
