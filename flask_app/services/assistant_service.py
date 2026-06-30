@@ -215,6 +215,35 @@ TOOLS = [
             "required": ["vcode"],
         },
     },
+    {
+        "name": "get_capitalization",
+        "description": "Get the current capitalization stack for a deal: debt outstanding (from ISBS balance sheet), preferred equity, partner equity, total capitalization, LTV, current valuation, cap rate, and PE exposure on cap and value. Use this for questions about leverage, LTV, debt levels, equity balances, and capital structure.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "vcode": {
+                    "type": "string",
+                    "description": "The deal's vcode identifier",
+                },
+            },
+            "required": ["vcode"],
+        },
+    },
+    {
+        "name": "compare_deals",
+        "description": "Compare 2 or more deals side-by-side. Runs the waterfall computation for each deal and returns IRR, ROE, MOIC, contributions, distributions, sale date, and capitalization metrics in a comparison format. Use when the user asks to compare deals or rank them by a metric.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "vcodes": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of 2+ deal vcodes to compare",
+                },
+            },
+            "required": ["vcodes"],
+        },
+    },
 ]
 
 # ── System prompt ────────────────────────────────────────────────────
@@ -231,11 +260,15 @@ You have access to the full portfolio database, deal computation engine, and fin
 - Computing IRR, ROE, MOIC for specific deals
 - Getting One Pager data (cap stack, property performance, PE metrics, deal terms)
 - Getting annual forecast projections (Revenue, Expenses, NOI, Debt Service, FAD, DSCR by year)
+- Checking capitalization stack, LTV, debt levels, PE exposure
+- Comparing deals side-by-side on returns and metrics
 
 Tool selection tips:
 - Use get_one_pager for current NOI, PE exposure, DSCR, cap stack, deal terms, property performance
 - Use get_annual_forecast for projected/future NOI, multi-year trends, DSCR forecasts, FAD projections
 - Use compute_deal_returns for IRR, ROE, MOIC, sale date, sale proceeds
+- Use get_capitalization for LTV, debt outstanding, equity balances, capital structure
+- Use compare_deals when comparing 2+ deals (more efficient than calling compute_deal_returns multiple times)
 
 Key conventions:
 - Cashflow signs: negative = contribution (money in), positive = distribution (money out)
@@ -351,6 +384,24 @@ def _enrich_deal_context(vcode: str) -> str:
         return ""
 
 
+def _error_hint(tool_name: str, tool_input: dict, exc: Exception) -> str:
+    """Return a contextual hint for common errors."""
+    msg = str(exc).lower()
+    vcode = tool_input.get("vcode", tool_input.get("entity_code", ""))
+
+    if "not found" in msg or "no data" in msg:
+        return f"Deal '{vcode}' may not exist. Use resolve_deal to find the correct vcode."
+    if "no waterfall" in msg:
+        return f"Deal '{vcode}' has no waterfall steps configured. Check get_waterfall_structure."
+    if "no forecast" in msg or "fc_deal" in msg:
+        return f"Deal '{vcode}' has no forecast data. It may be a sold deal or missing valuation data."
+    if "keyerror" in msg or "key error" in msg:
+        return "A required data field is missing. The deal may have incomplete data in the database."
+    if "timeout" in msg or "timed out" in msg:
+        return "The computation timed out. Try a simpler query or a different deal."
+    return ""
+
+
 def execute_tool(tool_name: str, tool_input: dict) -> str:
     """Execute a tool and return the result as a string."""
     try:
@@ -380,11 +431,19 @@ def execute_tool(tool_name: str, tool_input: dict) -> str:
             return _tool_get_one_pager(tool_input)
         elif tool_name == "get_annual_forecast":
             return _tool_get_annual_forecast(tool_input)
+        elif tool_name == "get_capitalization":
+            return _tool_get_capitalization(tool_input)
+        elif tool_name == "compare_deals":
+            return _tool_compare_deals(tool_input)
         else:
             return json.dumps({"error": f"Unknown tool: {tool_name}"})
     except Exception as e:
         logger.exception(f"Tool execution error: {tool_name}")
-        return json.dumps({"error": str(e)})
+        hint = _error_hint(tool_name, tool_input, e)
+        msg = f"Error in {tool_name}: {str(e)}"
+        if hint:
+            msg += f". Hint: {hint}"
+        return json.dumps({"error": msg})
 
 
 def _tool_list_deals(inp):
@@ -411,7 +470,7 @@ def _tool_query_deal_data(inp):
     inv = data["inv"]
     match = inv[inv["vcode"].astype(str).str.strip() == vcode]
     if match.empty:
-        return json.dumps({"error": f"Deal {vcode} not found"})
+        return json.dumps({"error": f"Deal '{vcode}' not found. Use resolve_deal to find the correct vcode, or list_deals to see all deals."})
     row = match.iloc[0].to_dict()
     # Convert non-serializable types
     clean = {}
@@ -438,7 +497,7 @@ def _tool_query_accounting(inp):
     inv_ids = [k for k, v in id_map.items() if str(v).strip() == vcode]
 
     if not inv_ids:
-        return json.dumps({"error": f"No InvestmentID found for vcode {vcode}"})
+        return json.dumps({"error": f"No InvestmentID found for vcode '{vcode}'. Use resolve_deal to verify the vcode."})
 
     filtered = acct[acct["InvestmentID"].isin(inv_ids)].copy()
 
@@ -504,7 +563,7 @@ def _tool_compute_deal_returns(inp):
             actuals_through=actuals_through,
         )
         if not result or "partner_results" not in result:
-            return json.dumps({"error": f"Could not compute returns for {vcode}"})
+            return json.dumps({"error": f"Could not compute returns for '{vcode}'. The deal may have no waterfall steps or no forecast data. Use get_waterfall_structure to check."})
 
         pr = result["partner_results"]
         # Extract summary metrics (keys are lowercase from compute.py)
@@ -631,7 +690,7 @@ def _tool_get_waterfall(inp):
     filtered = wf[wf[pc_col].astype(str).str.strip() == entity_code]
 
     if filtered.empty:
-        return json.dumps({"error": f"No waterfall found for entity {entity_code}"})
+        return json.dumps({"error": f"No waterfall found for entity '{entity_code}'. Note: entity_code is the PropCode in the waterfall table, not always the deal vcode. Use query_database to check: SELECT DISTINCT PropCode FROM waterfalls"})
 
     cols = ["iOrder", "PropCode", "vState", "FXRate", "nPercent", "mAmount",
             "vtranstype", "vAmtType", "vNotes"]
@@ -656,7 +715,7 @@ def _tool_get_one_pager(inp):
             at_close_noi=data.get("at_close_noi_raw"),
         )
         if not result:
-            return json.dumps({"error": f"No One Pager data for {vcode}"})
+            return json.dumps({"error": f"No One Pager data for '{vcode}'. The deal may lack ISBS data or valuations needed for the One Pager."})
 
         # Flatten for concise tool output
         out = {"vcode": vcode}
@@ -739,6 +798,124 @@ def _tool_get_annual_forecast(inp):
         return json.dumps(out, default=str)
     except Exception as e:
         return json.dumps({"error": f"Forecast error: {str(e)}"})
+
+
+def _tool_get_capitalization(inp):
+    """Get capitalization stack for a deal."""
+    vcode = str(inp["vcode"]).strip()
+    try:
+        from compute import get_deal_capitalization
+        from consolidation import get_property_vcodes_for_deal
+        data = _get_data()
+        inv, acct, wf = data["inv"], data["acct"], data["wf"]
+        mri_loans = data.get("mri_loans_raw")
+        mri_val = data.get("mri_val")
+        isbs_raw = data.get("isbs_raw")
+
+        # Check deal exists
+        match = inv[inv["vcode"].astype(str).str.strip() == vcode]
+        if match.empty:
+            return json.dumps({"error": f"Deal {vcode} not found. Use resolve_deal or list_deals to find the correct vcode."})
+
+        property_vcodes = get_property_vcodes_for_deal(vcode, inv)
+        cap = get_deal_capitalization(
+            acct, inv, wf, mri_val, mri_loans, vcode,
+            property_vcodes=property_vcodes, isbs_raw=isbs_raw,
+        )
+
+        # Compute LTV
+        ltv = None
+        if cap.get("current_valuation") and cap["current_valuation"] > 0:
+            ltv = round(cap["debt"] / cap["current_valuation"], 4)
+
+        result = {
+            "vcode": vcode,
+            "deal_name": match.iloc[0].get("Investment_Name", vcode),
+            "debt": round(cap.get("debt", 0), 2),
+            "pref_equity": round(cap.get("pref_equity", 0), 2),
+            "partner_equity": round(cap.get("partner_equity", 0), 2),
+            "total_cap": round(cap.get("total_cap", 0), 2),
+            "current_valuation": round(cap.get("current_valuation", 0), 2),
+            "cap_rate": cap.get("cap_rate", 0),
+            "ltv": ltv,
+            "pe_exposure_on_cap": round(cap.get("pe_exposure_cap", 0), 4),
+            "pe_exposure_on_value": round(cap.get("pe_exposure_value", 0), 4),
+        }
+        return json.dumps(result, default=str)
+    except Exception as e:
+        return json.dumps({"error": f"Capitalization error for {vcode}: {str(e)}"})
+
+
+def _tool_compare_deals(inp):
+    """Compare 2+ deals side-by-side on returns and capitalization."""
+    vcodes = inp.get("vcodes", [])
+    if len(vcodes) < 2:
+        return json.dumps({"error": "Please provide at least 2 vcodes to compare."})
+    if len(vcodes) > 10:
+        return json.dumps({"error": "Maximum 10 deals can be compared at once."})
+
+    from flask_app.services.compute_service import get_cached_deal_result
+    from compute import get_deal_capitalization
+    from consolidation import get_property_vcodes_for_deal
+
+    data = _get_data()
+    inv = data["inv"]
+    start_year = current_app.config["DEFAULT_START_YEAR"]
+    horizon_years = current_app.config["DEFAULT_HORIZON_YEARS"]
+    pro_yr_base = current_app.config["PRO_YR_BASE_DEFAULT"]
+    actuals_through = current_app.config.get("ACTUALS_THROUGH")
+
+    comparisons = []
+    for vcode in vcodes:
+        vcode = str(vcode).strip()
+        entry = {"vcode": vcode}
+
+        # Deal name
+        match = inv[inv["vcode"].astype(str).str.strip() == vcode]
+        if match.empty:
+            entry["error"] = f"Deal {vcode} not found"
+            comparisons.append(entry)
+            continue
+        entry["deal_name"] = match.iloc[0].get("Investment_Name", vcode)
+        entry["asset_type"] = match.iloc[0].get("Asset_Type", "")
+
+        # Returns
+        try:
+            result = get_cached_deal_result(
+                vcode, start_year, horizon_years, pro_yr_base, data,
+                actuals_through=actuals_through,
+            )
+            if result and result.get("deal_summary"):
+                ds = result["deal_summary"]
+                entry["deal_irr"] = ds.get("deal_irr")
+                entry["deal_roe"] = ds.get("deal_roe")
+                entry["deal_moic"] = ds.get("deal_moic")
+                entry["total_contributions"] = ds.get("total_contributions", 0)
+                entry["total_distributions"] = ds.get("total_distributions", 0)
+            if result and result.get("sale_me"):
+                entry["sale_date"] = str(result["sale_me"])
+        except Exception as e:
+            entry["returns_error"] = str(e)
+
+        # Capitalization
+        try:
+            property_vcodes = get_property_vcodes_for_deal(vcode, inv)
+            cap = get_deal_capitalization(
+                data["acct"], inv, data["wf"], data.get("mri_val"),
+                data.get("mri_loans_raw"), vcode,
+                property_vcodes=property_vcodes, isbs_raw=data.get("isbs_raw"),
+            )
+            entry["debt"] = round(cap.get("debt", 0), 2)
+            entry["pref_equity"] = round(cap.get("pref_equity", 0), 2)
+            entry["total_cap"] = round(cap.get("total_cap", 0), 2)
+            if cap.get("current_valuation") and cap["current_valuation"] > 0:
+                entry["ltv"] = round(cap["debt"] / cap["current_valuation"], 4)
+        except Exception:
+            pass
+
+        comparisons.append(entry)
+
+    return json.dumps({"comparisons": comparisons}, default=str)
 
 
 # ── Chat session management ──────────────────────────────────────────
