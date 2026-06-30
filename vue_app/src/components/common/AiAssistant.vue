@@ -54,11 +54,17 @@ async function saveHistory() {
   } catch { /* ignore */ }
 }
 
+function getDealPartner(vcode: string): string {
+  const deal = dataStore.allDeals.find((d: Record<string, unknown>) => d.vcode === vcode)
+  return (deal?.Operating_Partner as string) || ''
+}
+
 function getSuggestedQuestions(): string[] {
   const page = (route.name as string) || route.path
   const vcode = dealsStore.currentVcode || (route.query.vcode as string)
   const dealName = vcode ? dataStore.getDealName(vcode) : ''
   const label = dealName || 'this deal'
+  const partner = vcode ? getDealPartner(vcode) : ''
 
   if (page === 'dashboard' || route.path === '/') {
     return [
@@ -68,17 +74,23 @@ function getSuggestedQuestions(): string[] {
     ]
   }
   if (page === 'deal-analysis' && vcode) {
+    const partnerQ = partner
+      ? `List all active deals with ${partner}`
+      : 'Show me the capitalization stack'
     return [
       `What is the projected IRR for ${label}?`,
       `What are the expected sale proceeds?`,
-      `Show me the capitalization stack`,
+      partnerQ,
     ]
   }
   if (page === 'one-pager' && vcode) {
+    const partnerQ = partner
+      ? `List all active deals with ${partner}`
+      : `What is the DSCR?`
     return [
       `What is the current NOI for ${label}?`,
       `What is the PE exposure?`,
-      `What is the DSCR?`,
+      partnerQ,
     ]
   }
   if (page === 'property-financials' && vcode) {
