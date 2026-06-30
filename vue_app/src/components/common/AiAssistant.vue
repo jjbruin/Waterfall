@@ -66,14 +66,14 @@ function getSuggestedQuestions(): string[] {
   const label = dealName || 'this deal'
   const partner = vcode ? getDealPartner(vcode) : ''
 
-  if (page === 'dashboard' || route.path === '/') {
+  if (page === 'Dashboard' || route.path === '/') {
     return [
       'What is the total portfolio value?',
       'Which deals have the highest IRR?',
       'Show me all active deals',
     ]
   }
-  if (page === 'deal-analysis' && vcode) {
+  if (page === 'Deal Analysis' && vcode) {
     const partnerQ = partner
       ? `List all active deals with ${partner}`
       : 'Show me the capitalization stack'
@@ -83,7 +83,7 @@ function getSuggestedQuestions(): string[] {
       partnerQ,
     ]
   }
-  if (page === 'one-pager' && vcode) {
+  if (page === 'One Pager' && vcode) {
     const partnerQ = partner
       ? `List all active deals with ${partner}`
       : `What is the DSCR?`
@@ -93,14 +93,14 @@ function getSuggestedQuestions(): string[] {
       partnerQ,
     ]
   }
-  if (page === 'property-financials' && vcode) {
+  if (page === 'Property Financials' && vcode) {
     return [
       `Show me the income statement for ${label}`,
       `What is the occupancy trend?`,
       `Compare actual vs budget NOI`,
     ]
   }
-  if (page === 'sold-portfolio') {
+  if (page === 'Sold Portfolio') {
     return [
       'What are the sold portfolio returns?',
       'Which sold deal had the highest IRR?',
