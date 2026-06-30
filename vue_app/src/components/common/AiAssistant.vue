@@ -26,6 +26,7 @@ const inputText = ref('')
 const isLoading = ref(false)
 const toolActivity = ref<ToolEvent[]>([])
 const chatBody = ref<HTMLElement | null>(null)
+const suggestions = ref<string[]>([])
 
 onMounted(async () => {
   try {
@@ -36,14 +37,69 @@ onMounted(async () => {
   }
 })
 
+function getSuggestedQuestions(): string[] {
+  const page = (route.name as string) || route.path
+  const vcode = dealsStore.currentVcode || (route.query.vcode as string)
+  const dealName = vcode ? dataStore.getDealName(vcode) : ''
+  const label = dealName || 'this deal'
+
+  if (page === 'dashboard' || route.path === '/') {
+    return [
+      'What is the total portfolio value?',
+      'Which deals have the highest IRR?',
+      'Show me all active deals',
+    ]
+  }
+  if (page === 'deal-analysis' && vcode) {
+    return [
+      `What is the projected IRR for ${label}?`,
+      `What are the expected sale proceeds?`,
+      `Show me the capitalization stack`,
+    ]
+  }
+  if (page === 'one-pager' && vcode) {
+    return [
+      `What is the current NOI for ${label}?`,
+      `What is the PE exposure?`,
+      `What is the DSCR?`,
+    ]
+  }
+  if (page === 'property-financials' && vcode) {
+    return [
+      `Show me the income statement for ${label}`,
+      `What is the occupancy trend?`,
+      `Compare actual vs budget NOI`,
+    ]
+  }
+  if (page === 'sold-portfolio') {
+    return [
+      'What are the sold portfolio returns?',
+      'Which sold deal had the highest IRR?',
+      'Show me the sold deal activity detail',
+    ]
+  }
+  return [
+    'List all active deals',
+    'What is the portfolio summary?',
+    'Compare two deals side-by-side',
+  ]
+}
+
 function toggleChat() {
   isOpen.value = !isOpen.value
   if (isOpen.value && messages.value.length === 0) {
+    suggestions.value = getSuggestedQuestions()
     messages.value.push({
       role: 'assistant',
       content: 'Hello! I\'m your AI assistant for the Waterfall app. I can help you look up deals, analyze returns, query financial data, and more. What would you like to know?',
     })
   }
+}
+
+function useSuggestion(text: string) {
+  inputText.value = text
+  suggestions.value = []
+  sendMessage()
 }
 
 function scrollToBottom() {
@@ -81,6 +137,7 @@ async function sendMessage() {
   inputText.value = ''
   isLoading.value = true
   toolActivity.value = []
+  suggestions.value = []
   scrollToBottom()
 
   // Build conversation for API (skip the initial greeting)
@@ -210,6 +267,16 @@ function formatToolName(name: string): string {
           :class="msg.role === 'user' ? 'ai-message--user' : 'ai-message--assistant'"
         >
           <div class="ai-message-bubble" v-html="renderMarkdown(msg.content)" />
+        </div>
+
+        <!-- Suggested questions -->
+        <div v-if="suggestions.length > 0 && !isLoading" class="ai-suggestions">
+          <button
+            v-for="(q, i) in suggestions"
+            :key="i"
+            class="ai-suggestion-chip"
+            @click="useSuggestion(q)"
+          >{{ q }}</button>
         </div>
 
         <!-- Tool activity indicator -->
@@ -357,6 +424,28 @@ function renderMarkdown(text: string): string {
   font-size: 12px;
 }
 .ai-message-bubble :deep(strong) { font-weight: 600; }
+
+.ai-suggestions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0;
+}
+.ai-suggestion-chip {
+  background: #fff;
+  color: var(--color-primary, #1F4E79);
+  border: 1px solid var(--color-primary, #1F4E79);
+  padding: 6px 12px;
+  border-radius: 16px;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s, color 0.15s;
+}
+.ai-suggestion-chip:hover {
+  background: var(--color-primary, #1F4E79);
+  color: #fff;
+}
 
 .ai-tool-activity {
   display: flex;

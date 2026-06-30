@@ -216,6 +216,20 @@ TOOLS = [
         },
     },
     {
+        "name": "get_sold_returns",
+        "description": "Get returns for sold deals computed from accounting history (not the waterfall engine). Returns IRR, ROE, MOIC, contributions, and distributions for each sold deal plus a portfolio total. Use this for any question about sold deals, historical returns, or realized performance. Optionally pass a vcode for a single deal's detailed activity.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "vcode": {
+                    "type": "string",
+                    "description": "Optional: specific sold deal vcode for detailed activity breakdown. Omit for portfolio summary.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "get_capitalization",
         "description": "Get the current capitalization stack for a deal: debt outstanding (from ISBS balance sheet), preferred equity, partner equity, total capitalization, LTV, current valuation, cap rate, and PE exposure on cap and value. Use this for questions about leverage, LTV, debt levels, equity balances, and capital structure.",
         "input_schema": {
@@ -262,6 +276,7 @@ You have access to the full portfolio database, deal computation engine, and fin
 - Getting annual forecast projections (Revenue, Expenses, NOI, Debt Service, FAD, DSCR by year)
 - Checking capitalization stack, LTV, debt levels, PE exposure
 - Comparing deals side-by-side on returns and metrics
+- Analyzing sold deal returns and historical performance
 
 Tool selection tips:
 - Use get_one_pager for current NOI, PE exposure, DSCR, cap stack, deal terms, property performance
@@ -269,6 +284,7 @@ Tool selection tips:
 - Use compute_deal_returns for IRR, ROE, MOIC, sale date, sale proceeds
 - Use get_capitalization for LTV, debt outstanding, equity balances, capital structure
 - Use compare_deals when comparing 2+ deals (more efficient than calling compute_deal_returns multiple times)
+- Use get_sold_returns for sold/historical deals — they use accounting data, NOT the waterfall engine
 
 Key conventions:
 - Cashflow signs: negative = contribution (money in), positive = distribution (money out)
@@ -299,17 +315,36 @@ def _get_data():
 
 
 def _df_to_json(df, limit=100):
-    """Convert DataFrame to JSON-friendly list of dicts, truncated."""
+    """Convert DataFrame to JSON-friendly list of dicts, truncated with summary."""
     if df is None or df.empty:
         return {"rows": [], "count": 0}
     total = len(df)
-    df = df.head(limit)
+    truncated = total > limit
+    df_out = df.head(limit).copy()
     # Convert dates and timestamps to strings
-    for col in df.columns:
-        if pd.api.types.is_datetime64_any_dtype(df[col]):
-            df[col] = df[col].dt.strftime("%Y-%m-%d").fillna("")
-    records = df.fillna("").to_dict(orient="records")
-    return {"rows": records, "count": total, "showing": min(limit, total)}
+    for col in df_out.columns:
+        if pd.api.types.is_datetime64_any_dtype(df_out[col]):
+            df_out[col] = df_out[col].dt.strftime("%Y-%m-%d").fillna("")
+    records = df_out.fillna("").to_dict(orient="records")
+    result = {"rows": records, "count": total, "showing": min(limit, total)}
+    if truncated:
+        result["truncated"] = True
+        result["note"] = f"Showing first {limit} of {total} rows. Use query_database with LIMIT/WHERE for more specific results."
+    # Add numeric column summaries for large results
+    if total > 20:
+        summaries = {}
+        for col in df.columns:
+            if pd.api.types.is_numeric_dtype(df[col]):
+                vals = df[col].dropna()
+                if len(vals) > 0:
+                    summaries[col] = {
+                        "sum": round(float(vals.sum()), 2),
+                        "min": round(float(vals.min()), 2),
+                        "max": round(float(vals.max()), 2),
+                    }
+        if summaries:
+            result["column_summaries"] = summaries
+    return result
 
 
 def _tool_resolve_deal(inp):
@@ -431,6 +466,8 @@ def execute_tool(tool_name: str, tool_input: dict) -> str:
             return _tool_get_one_pager(tool_input)
         elif tool_name == "get_annual_forecast":
             return _tool_get_annual_forecast(tool_input)
+        elif tool_name == "get_sold_returns":
+            return _tool_get_sold_returns(tool_input)
         elif tool_name == "get_capitalization":
             return _tool_get_capitalization(tool_input)
         elif tool_name == "compare_deals":
@@ -798,6 +835,74 @@ def _tool_get_annual_forecast(inp):
         return json.dumps(out, default=str)
     except Exception as e:
         return json.dumps({"error": f"Forecast error: {str(e)}"})
+
+
+def _tool_get_sold_returns(inp):
+    """Get sold portfolio returns from accounting history."""
+    vcode = inp.get("vcode", "").strip() if inp.get("vcode") else ""
+    try:
+        from flask_app.services.sold_service import get_sold_deals, compute_all_sold_returns, build_deal_detail
+        data = _get_data()
+        inv = data["inv"]
+        acct = data["acct"]
+
+        inv_sold = get_sold_deals(inv)
+        if inv_sold.empty:
+            return json.dumps({"error": "No sold deals found in the portfolio."})
+
+        if vcode:
+            # Single deal detail
+            detail = build_deal_detail(vcode, inv_sold, acct, inv)
+            if not detail or not detail.get("rows"):
+                return json.dumps({"error": f"No sold deal activity found for '{vcode}'. Check that it has Sale_Status='SOLD'."})
+            # Truncate rows for readability
+            rows = detail["rows"]
+            summary = detail.get("summary", {})
+            out = {
+                "vcode": vcode,
+                "deal_name": summary.get("deal_name", vcode),
+                "summary": {
+                    "total_contributions": summary.get("Total Contributions", 0),
+                    "total_distributions": summary.get("Total Distributions", 0),
+                    "irr": summary.get("IRR"),
+                    "roe": summary.get("ROE"),
+                    "moic": summary.get("MOIC"),
+                },
+                "activity_rows": rows[:50],
+                "total_rows": len(rows),
+            }
+            if len(rows) > 50:
+                out["note"] = f"Showing first 50 of {len(rows)} activity rows."
+            return json.dumps(out, default=str)
+        else:
+            # Portfolio summary
+            df = compute_all_sold_returns(inv_sold, acct, inv)
+            if df.empty:
+                return json.dumps({"error": "Could not compute sold portfolio returns."})
+            deals = []
+            portfolio_total = None
+            for _, row in df.iterrows():
+                entry = {
+                    "deal_name": row.get("Investment Name", ""),
+                    "vcode": row.get("vcode", ""),
+                    "acquisition_date": row.get("Acquisition Date", ""),
+                    "sale_date": row.get("Sale Date", ""),
+                    "contributions": row.get("Total Contributions", 0),
+                    "distributions": row.get("Total Distributions", 0),
+                    "irr": row.get("IRR"),
+                    "roe": row.get("ROE"),
+                    "moic": row.get("MOIC"),
+                }
+                if row.get("_is_deal_total"):
+                    portfolio_total = entry
+                else:
+                    deals.append(entry)
+            out = {"deals": deals}
+            if portfolio_total:
+                out["portfolio_total"] = portfolio_total
+            return json.dumps(out, default=str)
+    except Exception as e:
+        return json.dumps({"error": f"Sold portfolio error: {str(e)}"})
 
 
 def _tool_get_capitalization(inp):
