@@ -1,45 +1,43 @@
 """Email utilities for authentication workflows."""
 
+import json
 import logging
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import requests
 from flask import current_app
 
 log = logging.getLogger(__name__)
 
 
-def _get_smtp_config() -> dict:
-    cfg = current_app.config
-    return {
-        "host": cfg.get("SMTP_HOST", "smtp.office365.com"),
-        "port": cfg.get("SMTP_PORT", 587),
-        "user": cfg.get("SMTP_USER", ""),
-        "password": cfg.get("SMTP_PASSWORD", ""),
-        "from_addr": cfg.get("SMTP_FROM") or cfg.get("SMTP_USER", ""),
-    }
-
-
 def send_email(to: str, subject: str, html_body: str) -> bool:
-    """Send an email. Returns True on success."""
-    smtp = _get_smtp_config()
-    if not smtp["user"] or not smtp["password"]:
-        log.warning("SMTP not configured — email to %s not sent: %s", to, subject)
+    """Send an email via SendGrid API. Returns True on success."""
+    api_key = current_app.config.get("SENDGRID_API_KEY", "")
+    from_email = current_app.config.get("SENDGRID_FROM", "")
+    if not api_key or not from_email:
+        log.warning("SendGrid not configured — email to %s not sent: %s", to, subject)
         return False
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = smtp["from_addr"]
-    msg["To"] = to
-    msg.attach(MIMEText(html_body, "html"))
-
     try:
-        with smtplib.SMTP(smtp["host"], smtp["port"], timeout=15) as server:
-            server.starttls()
-            server.login(smtp["user"], smtp["password"])
-            server.send_message(msg)
-        log.info("Email sent to %s: %s", to, subject)
-        return True
+        resp = requests.post(
+            "https://api.sendgrid.com/v3/mail/send",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "personalizations": [{"to": [{"email": to}]}],
+                "from": {"email": from_email},
+                "subject": subject,
+                "content": [{"type": "text/html", "value": html_body}],
+            },
+            timeout=15,
+        )
+        if resp.status_code in (200, 202):
+            log.info("Email sent to %s: %s", to, subject)
+            return True
+        else:
+            log.error("SendGrid error %s sending to %s: %s",
+                       resp.status_code, to, resp.text)
+            return False
     except Exception as e:
         log.error("Failed to send email to %s: %s", to, e)
         return False
