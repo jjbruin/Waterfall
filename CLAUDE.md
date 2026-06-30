@@ -52,7 +52,7 @@ waterfall-xirr/
 │   ├── extensions.py         # Flask extensions
 │   ├── serializers.py        # JSON serialization helpers (NumpyEncoder, safe_json)
 │   ├── auth/                 # JWT authentication (login, SSO config, password reset, welcome emails)
-│   │   └── email_utils.py    # SMTP email sending (welcome emails, password reset)
+│   │   └── email_utils.py    # SendGrid email sending (welcome emails, password reset)
 │   ├── api/                  # API blueprints
 │   │   ├── dashboard.py      # Dashboard endpoints (KPIs, charts, SSE init-stream)
 │   │   ├── data.py           # Data endpoints (deals, upload-import, export, config)
@@ -358,10 +358,10 @@ Vue: `AppSidebar.vue` database tools section. Flask: `data.py` API endpoints.
 ### User Authentication
 - **JWT-based**: Login returns access token, stored in Pinia auth store, sent via Axios interceptor
 - **Roles**: `admin`, `analyst`, `viewer` — role-gated endpoints via `@role_required()` decorator
-- **Password Reset**: `ForgotPasswordView.vue` → email with reset token → `ResetPasswordView.vue`. Uses `flask_app/auth/email_utils.py` for SMTP
+- **Password Reset**: `ForgotPasswordView.vue` → email with reset token → `ResetPasswordView.vue`. Uses `flask_app/auth/email_utils.py` via SendGrid
 - **Welcome Emails**: Admin creates user → sends welcome email with temporary password and login link
 - **Forced Password Change**: Users with `must_change_password` flag are redirected to change password on login
-- **SMTP**: Configured via `SMTP_SERVER`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD` env vars (pending Office 365 setup)
+- **Email**: SendGrid Web API v3 (`requests` library, no SMTP). Configured via `SENDGRID_API_KEY` and `SENDGRID_FROM` env vars. Single Sender Verification on `jbruin@peaceablestreet.com`.
 
 ### 7. Reports
 Projected Returns Summary with Excel export. Vue: `ReportsView.vue`. Flask: `reports.py` + `reports_service.py`.
