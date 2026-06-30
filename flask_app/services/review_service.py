@@ -377,9 +377,13 @@ def get_tracking_data(quarter_filter: str | None = None,
             conditions.append("rs.status = :sf")
             params["sf"] = status_filter
     if investor_filter:
-        # Investor -> PPI -> Deal chain via relationships table
+        # Direct investor OR investor -> PPI -> Deal chain
         conditions.append("""
             TRIM(d."InvestmentID") IN (
+                SELECT TRIM(r."InvestmentID")
+                FROM relationships r
+                WHERE TRIM(r."InvestorID") = :inv
+                UNION
                 SELECT TRIM(deal_rel."InvestmentID")
                 FROM relationships deal_rel
                 JOIN relationships upstream
@@ -418,18 +422,30 @@ def get_investor_list() -> list[str]:
     """
     engine = get_engine()
     sql = """
-        SELECT DISTINCT TRIM(upstream."InvestorID") as investor_id
-        FROM relationships deal_rel
-        JOIN relationships upstream
-            ON TRIM(upstream."InvestmentID") = TRIM(deal_rel."InvestorID")
-        JOIN deals d
-            ON TRIM(d."InvestmentID") = TRIM(deal_rel."InvestmentID")
-        WHERE TRIM(deal_rel."InvestorID") LIKE 'PPI%'
-          AND TRIM(upstream."InvestorID") NOT LIKE 'OP%'
-          AND TRIM(upstream."InvestorID") NOT LIKE 'PPI%'
-          AND COALESCE(d."Sale_Status", '') != 'SOLD'
-          AND COALESCE(d."Lifecycle", '') != 'Sold'
-          AND COALESCE(d."Portfolio_Name", '') = ''
+        SELECT DISTINCT investor_id FROM (
+            SELECT TRIM(upstream."InvestorID") as investor_id
+            FROM relationships deal_rel
+            JOIN relationships upstream
+                ON TRIM(upstream."InvestmentID") = TRIM(deal_rel."InvestorID")
+            JOIN deals d
+                ON TRIM(d."InvestmentID") = TRIM(deal_rel."InvestmentID")
+            WHERE TRIM(deal_rel."InvestorID") LIKE 'PPI%'
+              AND TRIM(upstream."InvestorID") NOT LIKE 'OP%'
+              AND TRIM(upstream."InvestorID") NOT LIKE 'PPI%'
+              AND COALESCE(d."Sale_Status", '') != 'SOLD'
+              AND COALESCE(d."Lifecycle", '') != 'Sold'
+              AND COALESCE(d."Portfolio_Name", '') = ''
+            UNION
+            SELECT TRIM(r."InvestorID") as investor_id
+            FROM relationships r
+            JOIN deals d
+                ON TRIM(d."InvestmentID") = TRIM(r."InvestmentID")
+            WHERE TRIM(r."InvestorID") NOT LIKE 'OP%'
+              AND TRIM(r."InvestorID") NOT LIKE 'PPI%'
+              AND COALESCE(d."Sale_Status", '') != 'SOLD'
+              AND COALESCE(d."Lifecycle", '') != 'Sold'
+              AND COALESCE(d."Portfolio_Name", '') = ''
+        ) sub
         ORDER BY investor_id
     """
     with engine.connect() as conn:
