@@ -73,31 +73,52 @@ function getSuggestedQuestions(): string[] {
       'Show me all active deals',
     ]
   }
-  if (page === 'Deal Analysis' && vcode) {
-    const partnerQ = partner
-      ? `List all active deals with ${partner}`
-      : 'Show me the capitalization stack'
+  if (page === 'Deal Analysis') {
+    if (vcode) {
+      const partnerQ = partner
+        ? `List all active deals with ${partner}`
+        : 'Show me the capitalization stack'
+      return [
+        `What is the projected IRR for ${label}?`,
+        `What are the expected sale proceeds?`,
+        partnerQ,
+      ]
+    }
     return [
-      `What is the projected IRR for ${label}?`,
-      `What are the expected sale proceeds?`,
-      partnerQ,
+      'List all active deals',
+      'What is the portfolio summary?',
+      'Which deals have the highest IRR?',
     ]
   }
-  if (page === 'One Pager' && vcode) {
-    const partnerQ = partner
-      ? `List all active deals with ${partner}`
-      : `What is the DSCR?`
+  if (page === 'One Pager') {
+    if (vcode) {
+      const partnerQ = partner
+        ? `List all active deals with ${partner}`
+        : `What is the DSCR?`
+      return [
+        `What is the current NOI for ${label}?`,
+        `What is the PE exposure?`,
+        partnerQ,
+      ]
+    }
     return [
-      `What is the current NOI for ${label}?`,
-      `What is the PE exposure?`,
-      partnerQ,
+      'List all active deals',
+      'What is the portfolio summary?',
+      'Which deals have the highest IRR?',
     ]
   }
-  if (page === 'Property Financials' && vcode) {
+  if (page === 'Property Financials') {
+    if (vcode) {
+      return [
+        `Show me the income statement for ${label}`,
+        `What is the occupancy trend?`,
+        `Compare actual vs budget NOI`,
+      ]
+    }
     return [
-      `Show me the income statement for ${label}`,
-      `What is the occupancy trend?`,
-      `Compare actual vs budget NOI`,
+      'List all active deals',
+      'What is the portfolio summary?',
+      'Which deals have the highest IRR?',
     ]
   }
   if (page === 'Sold Portfolio') {
