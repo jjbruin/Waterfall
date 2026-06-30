@@ -5,7 +5,7 @@ from flask import Blueprint, request, jsonify, g
 from flask_app.auth.routes import login_required, role_required
 from flask_app.services.review_service import (
     get_submission, submit_for_review, approve, return_to_draft,
-    add_note, get_tracking_data, get_user_review_roles,
+    add_note, get_tracking_data, get_investor_list, get_user_review_roles,
     list_review_role_assignments, assign_review_role, remove_review_role,
     REVIEW_STEPS, REVIEW_ROLE_NAMES,
 )
@@ -117,9 +117,22 @@ def tracking():
     """Get production tracking data with optional filters."""
     quarter = request.args.get("quarter")
     status = request.args.get("status")
+    investor = request.args.get("investor")
     try:
-        data = get_tracking_data(quarter_filter=quarter, status_filter=status)
+        data = get_tracking_data(quarter_filter=quarter, status_filter=status,
+                                 investor_filter=investor)
         return jsonify({"items": data})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@reviews_bp.route("/investors", methods=["GET"])
+@login_required
+def investors():
+    """Get distinct upstream investor IDs for the tracking filter dropdown."""
+    try:
+        data = get_investor_list()
+        return jsonify({"investors": data})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

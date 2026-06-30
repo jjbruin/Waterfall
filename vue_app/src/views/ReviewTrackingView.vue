@@ -21,7 +21,9 @@ const error = ref<string | null>(null)
 
 // Filters
 const quarterFilter = ref('2026-Q2')
+const investorFilter = ref('')
 const statusFilter = ref('')
+const investorOptions = ref<string[]>([])
 
 // Summary counts
 const draftCount = computed(() => items.value.filter(i => i.status === 'draft').length)
@@ -31,7 +33,13 @@ const inReviewCount = computed(() => items.value.filter(i =>
 const returnedCount = computed(() => items.value.filter(i => i.status === 'returned').length)
 const approvedCount = computed(() => items.value.filter(i => i.status === 'approved').length)
 
-onMounted(() => loadTracking())
+onMounted(async () => {
+  try {
+    const res = await api.get('/api/reviews/investors')
+    investorOptions.value = res.data.investors || []
+  } catch { /* ignore */ }
+  loadTracking()
+})
 
 async function loadTracking() {
   loading.value = true
@@ -39,6 +47,7 @@ async function loadTracking() {
   try {
     const params: Record<string, string> = {}
     if (quarterFilter.value) params.quarter = quarterFilter.value
+    if (investorFilter.value) params.investor = investorFilter.value
     if (statusFilter.value) params.status = statusFilter.value
     const res = await api.get('/api/reviews/tracking', { params })
     items.value = res.data.items || []
@@ -97,6 +106,13 @@ function filterByStatus(status: string) {
           class="filter-input"
           @keyup.enter="loadTracking"
         />
+      </div>
+      <div class="filter-group">
+        <label>Investor:</label>
+        <select v-model="investorFilter" @change="loadTracking" class="filter-select">
+          <option value="">All</option>
+          <option v-for="inv in investorOptions" :key="inv" :value="inv">{{ inv }}</option>
+        </select>
       </div>
       <div class="filter-group">
         <label>Status:</label>

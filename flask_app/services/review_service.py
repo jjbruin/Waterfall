@@ -340,10 +340,13 @@ def is_editable(vcode: str, quarter: str) -> bool:
 # ── Tracking ─────────────────────────────────────────────────
 
 def get_tracking_data(quarter_filter: str | None = None,
-                      status_filter: str | None = None) -> list[dict]:
+                      status_filter: str | None = None,
+                      investor_filter: str | None = None) -> list[dict]:
     """Get production tracking data for all deals.
 
     LEFT JOINs deals with submissions so unsubmitted deals appear as 'Draft'.
+    Optional investor_filter restricts to deals where the given InvestorID
+    is an upstream investor (investor → PPI → deal via relationships).
     """
     _ensure_tables()
     engine = get_engine()
@@ -373,6 +376,18 @@ def get_tracking_data(quarter_filter: str | None = None,
         else:
             conditions.append("rs.status = :sf")
             params["sf"] = status_filter
+    if investor_filter:
+        # Investor -> PPI -> Deal chain via relationships table
+        conditions.append("""
+            TRIM(d.InvestmentID) IN (
+                SELECT TRIM(deal_rel.InvestmentID)
+                FROM relationships deal_rel
+                JOIN relationships upstream
+                    ON TRIM(upstream.InvestmentID) = TRIM(deal_rel.InvestorID)
+                WHERE TRIM(upstream.InvestorID) = :inv
+            )
+        """)
+        params["inv"] = investor_filter
 
     # Exclude sold deals and child properties
     conditions.append("COALESCE(d.Sale_Status, '') != 'SOLD'")
@@ -392,3 +407,29 @@ def get_tracking_data(quarter_filter: str | None = None,
         row_dict["step_label"] = step_info["label"]
         results.append(row_dict)
     return results
+
+
+def get_investor_list() -> list[str]:
+    """Get distinct upstream investor IDs that invest into active deals.
+
+    Traces the chain: investor → PPI entity → deal via the relationships table.
+    Excludes OP (operating partner) and PPI entities from the investor list.
+    """
+    engine = get_engine()
+    sql = """
+        SELECT DISTINCT TRIM(upstream.InvestorID) as investor_id
+        FROM relationships deal_rel
+        JOIN relationships upstream
+            ON TRIM(upstream.InvestmentID) = TRIM(deal_rel.InvestorID)
+        JOIN deals d
+            ON TRIM(d.InvestmentID) = TRIM(deal_rel.InvestmentID)
+        WHERE TRIM(deal_rel.InvestorID) LIKE 'PPI%'
+          AND TRIM(upstream.InvestorID) NOT LIKE 'OP%'
+          AND TRIM(upstream.InvestorID) NOT LIKE 'PPI%'
+          AND COALESCE(d.Sale_Status, '') != 'SOLD'
+          AND COALESCE(d.Portfolio_Name, '') = ''
+        ORDER BY investor_id
+    """
+    with engine.connect() as conn:
+        rows = conn.execute(text(sql)).fetchall()
+    return [r[0] for r in rows]
