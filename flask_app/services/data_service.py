@@ -123,6 +123,22 @@ def load_all(db_path: str, pro_yr_base: int = 2025) -> dict:
     budget_econ_occ = get_adapter("budget_econ_occ").load(config)
     commitments_raw = get_adapter("commitments").load(config)
     tenants_raw = get_adapter("tenants").load(config)
+    # Normalize MRI column names to CSV-friendly names used by get_tenant_roster()
+    _tenant_col_map = {
+        "vcode": "Code", "vpropertyname": "Property Name",
+        "iint": "Rentable SF", "vname": "Tenant Name",
+        "dtleasest": "Lease Start", "dtleaseend": "Lease End",
+        "nsfleased": "SF Leased", "mrent": "Rent",
+        "ivacated": "Vacated?", "imonthtomonth": "Month to Month?",
+        "vvendorcode": "Tenant Code", "icommsqft": "Occupancy SF",
+        "dtreported": "Occupancy Date", "vpartnershipname": "Fund Ownership %",
+        "fownership": "fOwnership", "vtype2": "Property Type",
+    }
+    if not tenants_raw.empty:
+        renames = {c: _tenant_col_map[c.lower()] for c in tenants_raw.columns
+                   if c.lower() in _tenant_col_map and c != _tenant_col_map.get(c.lower())}
+        if renames:
+            tenants_raw = tenants_raw.rename(columns=renames)
     prospective_loans_raw = get_adapter("prospective_loans").load(config)
     deal_terms_raw = get_adapter("deal_terms").load(config)
     at_close_noi_raw = get_adapter("at_close_noi").load(config)

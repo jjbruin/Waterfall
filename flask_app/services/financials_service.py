@@ -715,8 +715,32 @@ def get_tenant_roster(tenants_raw: pd.DataFrame, vcode: str, inv: Optional[pd.Da
         return {"tenants": [], "summary": {}, "rollover": {}}
 
     t = tenants_raw.copy()
+
+    # Normalize MRI column names to CSV-friendly names
+    _mri_to_csv = {
+        "vcode": "Code", "vpropertyname": "Property Name",
+        "iint": "Rentable SF", "vname": "Tenant Name",
+        "dtleasest": "Lease Start", "dtleaseend": "Lease End",
+        "nsfleased": "SF Leased", "mrent": "Rent",
+        "ivacated": "Vacated?", "imonthtomonth": "Month to Month?",
+        "vvendorcode": "Tenant Code", "icommsqft": "Occupancy SF",
+    }
+    renames = {c: _mri_to_csv[c.lower()] for c in t.columns
+               if c.lower() in _mri_to_csv and c != _mri_to_csv.get(c.lower())}
+    if renames:
+        t = t.rename(columns=renames)
+
     t['Code'] = t['Code'].astype(str).str.strip()
-    t = t[t['Code'] == str(vcode)]
+
+    # Include child property vcodes for sub-portfolio deals
+    vcodes = [str(vcode)]
+    if inv is not None:
+        from consolidation import get_property_vcodes_for_deal
+        children = get_property_vcodes_for_deal(str(vcode), inv)
+        if children:
+            vcodes = [str(vcode)] + [str(c) for c in children]
+
+    t = t[t['Code'].isin(vcodes)]
     if t.empty:
         return {"tenants": [], "summary": {}, "rollover": {}}
 
@@ -726,7 +750,7 @@ def get_tenant_roster(tenants_raw: pd.DataFrame, vcode: str, inv: Optional[pd.Da
     t['Rentable_SF'] = t['Rentable SF'].apply(_clean_number)
     t['RPSF'] = t.apply(lambda r: r['Annual_Rent'] / r['SF_Leased'] if r['SF_Leased'] > 0 else 0, axis=1)
 
-    total_rentable = t['Rentable_SF'].iloc[0] if len(t) > 0 else 0
+    total_rentable = t.drop_duplicates(subset='Code')['Rentable_SF'].sum() if len(t) > 0 else 0
     total_annual_rent = t['Annual_Rent'].sum()
     t['Pct_GLA'] = t['SF_Leased'] / total_rentable if total_rentable > 0 else 0
     t['Pct_ABR'] = t['Annual_Rent'] / total_annual_rent if total_annual_rent > 0 else 0
