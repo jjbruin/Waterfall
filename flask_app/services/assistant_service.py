@@ -32,7 +32,7 @@ TOOLS = [
     },
     {
         "name": "list_deals",
-        "description": "List all deals (investments) in the portfolio. Returns deal name, vcode, asset type, status, acquisition date, and other metadata. Use this to find a deal's vcode before querying detail.",
+        "description": "List all deals (investments) in the portfolio. Returns deal name, vcode, asset type, status, acquisition date, operating partner, and other metadata. Use this to find a deal's vcode before querying detail. Can filter by status and/or operating partner.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -40,6 +40,10 @@ TOOLS = [
                     "type": "string",
                     "description": "Optional filter: 'active', 'sold', or 'all' (default: 'all')",
                     "enum": ["active", "sold", "all"],
+                },
+                "operating_partner": {
+                    "type": "string",
+                    "description": "Optional: filter to deals with this operating partner (case-insensitive partial match)",
                 },
             },
             "required": [],
@@ -543,7 +547,7 @@ def _tool_list_deals(inp):
     status_filter = inp.get("status_filter", "all")
 
     cols = ["Investment_Name", "vcode", "Asset_Type", "Sale_Status",
-            "Acquisition_Date", "Sale_Date", "Portfolio_Name"]
+            "Acquisition_Date", "Sale_Date", "Portfolio_Name", "Operating_Partner"]
     available = [c for c in cols if c in inv.columns]
     result = inv[available].copy()
 
@@ -551,6 +555,10 @@ def _tool_list_deals(inp):
         result = result[result.get("Sale_Status", pd.Series()).str.upper() == "SOLD"]
     elif status_filter == "active":
         result = result[result.get("Sale_Status", pd.Series()).str.upper() != "SOLD"]
+
+    partner = inp.get("operating_partner", "").strip()
+    if partner and "Operating_Partner" in result.columns:
+        result = result[result["Operating_Partner"].fillna("").str.lower().str.contains(partner.lower())]
 
     return json.dumps(_df_to_json(result, limit=200))
 
