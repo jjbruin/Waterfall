@@ -116,14 +116,17 @@ function getSuggestedQuestions(): string[] {
 
 async function toggleChat() {
   isOpen.value = !isOpen.value
-  if (isOpen.value && messages.value.length === 0) {
-    const loaded = await loadHistory()
-    if (!loaded) {
-      messages.value.push({
-        role: 'assistant',
-        content: 'Hello! I\'m your AI assistant for the Waterfall app. I can help you look up deals, analyze returns, query financial data, and more. What would you like to know?',
-      })
+  if (isOpen.value) {
+    if (messages.value.length === 0) {
+      const loaded = await loadHistory()
+      if (!loaded) {
+        messages.value.push({
+          role: 'assistant',
+          content: 'Hello! I\'m your AI assistant for the Waterfall app. I can help you look up deals, analyze returns, query financial data, and more. What would you like to know?',
+        })
+      }
     }
+    // Always refresh suggestions for current page context
     suggestions.value = getSuggestedQuestions()
     scrollToBottom()
   }
