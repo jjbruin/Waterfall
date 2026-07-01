@@ -155,9 +155,11 @@ def create_app(config_name: str = None) -> Flask:
                 if path.startswith("assets/"):
                     resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
                 return resp
-            # index.html — always revalidate so deploys take effect immediately
+            # index.html — never cache so deploys take effect immediately
             resp = make_response(send_from_directory(static_dir, "index.html"))
-            resp.headers["Cache-Control"] = "no-cache"
+            resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            resp.headers["Pragma"] = "no-cache"
+            resp.headers["Expires"] = "0"
             return resp
     else:
         # Development mode — Vue dev server handles frontend
