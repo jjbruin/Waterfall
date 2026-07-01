@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuthStore } from './stores/auth'
+import { useVersionCheck } from './composables/useVersionCheck'
 import AppSidebar from './components/layout/AppSidebar.vue'
 import AppHeader from './components/layout/AppHeader.vue'
 import ToastNotifications from './components/common/ToastNotifications.vue'
@@ -9,12 +10,19 @@ import AiAssistant from './components/common/AiAssistant.vue'
 
 const route = useRoute()
 const auth = useAuthStore()
+const { updateAvailable, onNavigate, reloadApp } = useVersionCheck()
 
 const isLoginPage = computed(() => route.path === '/login')
+
+// Check for new version on every route change
+watch(() => route.path, () => onNavigate())
 </script>
 
 <template>
   <ToastNotifications />
+  <div v-if="updateAvailable" class="update-banner" @click="reloadApp">
+    A new version is available. Click here to reload.
+  </div>
   <div v-if="isLoginPage" class="login-layout">
     <router-view />
   </div>
@@ -89,6 +97,25 @@ body {
   :root {
     --sidebar-width: 200px;
   }
+}
+
+.update-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10000;
+  background: #1565c0;
+  color: white;
+  text-align: center;
+  padding: 10px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+}
+.update-banner:hover {
+  background: #0d47a1;
 }
 
 /* Print: hide app shell, let page content fill the page */

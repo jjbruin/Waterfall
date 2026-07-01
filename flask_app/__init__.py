@@ -129,6 +129,16 @@ def create_app(config_name: str = None) -> Flask:
     def health():
         return {"status": "ok"}
 
+    # Build version — lets frontend detect new deploys
+    import hashlib, glob as _glob
+    _static = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "assets")
+    if os.path.isdir(_static):
+        _asset_files = sorted(_glob.glob(os.path.join(_static, "*")))
+        _hash_input = "|".join(os.path.basename(f) for f in _asset_files)
+        app.config["BUILD_HASH"] = hashlib.md5(_hash_input.encode()).hexdigest()[:12]
+    else:
+        app.config["BUILD_HASH"] = "dev"
+
     # Serve Vue SPA in production (static/ directory from Docker build)
     static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
     if os.path.isdir(static_dir):

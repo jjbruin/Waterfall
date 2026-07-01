@@ -18,6 +18,12 @@ import pandas as pd
 data_bp = Blueprint("data", __name__)
 
 
+@data_bp.route("/version", methods=["GET"])
+def get_version():
+    """Return build hash for client-side version detection (no auth required)."""
+    return jsonify({"version": current_app.config.get("BUILD_HASH", "dev")})
+
+
 def _get_data():
     """Helper to load all data using current app config."""
     db_path = current_app.config["DB_PATH"]
