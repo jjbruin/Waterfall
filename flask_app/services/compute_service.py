@@ -26,6 +26,10 @@ def get_cached_deal_result(
     data: dict,
     force: bool = False,
     actuals_through=None,
+    contract_sale_price=None,
+    selling_cost_override=None,
+    selling_cost_type=None,
+    sale_date_override=None,
 ) -> dict:
     """Compute or retrieve cached deal result.
 
@@ -37,12 +41,21 @@ def get_cached_deal_result(
         data: Dict from data_service.load_all().
         force: If True, bypass cache.
         actuals_through: Date cutoff for actuals (None = full forecast).
+        contract_sale_price: Override sale price (None = NOI/cap rate).
+        selling_cost_override: Override selling cost value (None = default 2%).
+        selling_cost_type: 'pct' or 'fixed' for selling cost interpretation.
+        sale_date_override: Override sale date string (None = use investment_map).
 
     Returns:
         Full result dict from compute_deal_analysis().
     """
     at_str = str(actuals_through) if actuals_through else "none"
     cache_key = f"{vcode}|{start_year}|{horizon_years}|{pro_yr_base}|{at_str}"
+    # Sale overrides change the result but don't affect the cache key —
+    # force=True overwrites the entry, and GET endpoints reuse it.
+    has_sale_overrides = contract_sale_price is not None or selling_cost_override is not None or sale_date_override is not None
+    if has_sale_overrides:
+        force = True
     if not force and cache_key in _deal_cache:
         return _deal_cache[cache_key]
 
@@ -65,8 +78,8 @@ def get_cached_deal_result(
         raise ValueError(f"Deal not found: {vcode}")
     deal_investment_id = deal_row.iloc[0].get("InvestmentID", vcode)
 
-    # Sale date
-    sale_date_raw = deal_row.iloc[0].get("Sale_Date", None)
+    # Sale date — override takes precedence
+    sale_date_raw = sale_date_override if sale_date_override else deal_row.iloc[0].get("Sale_Date", None)
 
     result = compute_deal_analysis(
         deal_vcode=vcode,
@@ -88,6 +101,9 @@ def get_cached_deal_result(
         pro_yr_base=pro_yr_base,
         actuals_through=actuals_through,
         prospective_loans_raw=prospective_loans_raw,
+        contract_sale_price=contract_sale_price,
+        selling_cost_override=selling_cost_override,
+        selling_cost_type=selling_cost_type,
     )
 
     _deal_cache[cache_key] = result

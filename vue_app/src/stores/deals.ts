@@ -232,14 +232,68 @@ export const useDealsStore = defineStore('deals', () => {
     delete moicAudits.value[vcode]
   }
 
+  // Sale override state
+  const contractSalePrice = ref<Record<string, number | null>>({})
+  const sellingCostOverride = ref<Record<string, number | null>>({})
+  const sellingCostType = ref<Record<string, string>>({})  // 'pct' or 'fixed'
+  const saleOverrideSaved = ref<Record<string, boolean>>({})
+  const saleDateOverride = ref<Record<string, string | null>>({})
+
+  async function loadSaleOverride(vcode: string) {
+    try {
+      const res = await api.get(`/api/deals/${vcode}/sale-override`)
+      const o = res.data.override
+      if (o) {
+        contractSalePrice.value[vcode] = o.contract_sale_price
+        sellingCostOverride.value[vcode] = o.selling_cost_value
+        sellingCostType.value[vcode] = o.selling_cost_type || 'pct'
+        saleDateOverride.value[vcode] = o.sale_date_override || null
+        saleOverrideSaved.value[vcode] = true
+      }
+    } catch { /* ignore */ }
+  }
+
+  async function saveSaleOverride(vcode: string) {
+    await api.put(`/api/deals/${vcode}/sale-override`, {
+      contract_sale_price: contractSalePrice.value[vcode],
+      selling_cost_value: sellingCostOverride.value[vcode],
+      selling_cost_type: sellingCostType.value[vcode] || 'pct',
+      sale_date_override: saleDateOverride.value[vcode] || null,
+    })
+    saleOverrideSaved.value[vcode] = true
+  }
+
+  async function deleteSaleOverride(vcode: string) {
+    await api.delete(`/api/deals/${vcode}/sale-override`)
+    contractSalePrice.value[vcode] = null
+    sellingCostOverride.value[vcode] = null
+    sellingCostType.value[vcode] = 'pct'
+    saleDateOverride.value[vcode] = null
+    saleOverrideSaved.value[vcode] = false
+  }
+
   async function computeDeal(vcode: string, force = false) {
     computing.value = true
     error.value = null
     currentVcode.value = vcode
     try {
+      // Load saved overrides if we haven't already
+      if (!(vcode in contractSalePrice.value)) {
+        await loadSaleOverride(vcode)
+      }
+
+      // Build compute payload with optional sale overrides
+      const payload: Record<string, any> = { vcode, force }
+      if (contractSalePrice.value[vcode] != null) payload.contract_sale_price = contractSalePrice.value[vcode]
+      if (sellingCostOverride.value[vcode] != null) {
+        payload.selling_cost_override = sellingCostOverride.value[vcode]
+        payload.selling_cost_type = sellingCostType.value[vcode] || 'pct'
+      }
+      if (saleDateOverride.value[vcode]) payload.sale_date_override = saleDateOverride.value[vcode]
+
       // Fire compute + header in parallel
       const [compRes, headerRes] = await Promise.all([
-        api.post('/api/deals/compute', { vcode, force }),
+        api.post('/api/deals/compute', payload),
         api.get(`/api/deals/${vcode}/header`),
       ])
       partnerResults.value[vcode] = compRes.data.partner_results
@@ -434,6 +488,7 @@ export const useDealsStore = defineStore('deals', () => {
     xirrCashflows, roeAudits, moicAudits,
     prospectiveLoans, sizingResults, rawCapitalCalls,
     refiDbg, refiCapitalCallRequired, refiCapitalCallAmount,
+    contractSalePrice, sellingCostOverride, sellingCostType, saleOverrideSaved, saleDateOverride,
     // Computed
     currentPartners, currentSummary, currentHeader, currentForecast,
     currentDebt, currentCash, currentCapCalls, currentXirr,
@@ -451,5 +506,7 @@ export const useDealsStore = defineStore('deals', () => {
     // Raw capital calls
     loadRawCapitalCalls, createRawCapitalCall, updateRawCapitalCall,
     deleteRawCapitalCall,
+    // Sale overrides
+    loadSaleOverride, saveSaleOverride, deleteSaleOverride,
   }
 })

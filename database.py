@@ -311,11 +311,35 @@ def ensure_pg_tables(engine):
             "vState"        TEXT
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS sale_overrides (
+            vcode               TEXT PRIMARY KEY,
+            contract_sale_price  DOUBLE PRECISION,
+            selling_cost_value   DOUBLE PRECISION,
+            selling_cost_type    TEXT DEFAULT 'pct',
+            sale_date_override   TEXT,
+            updated_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_by           TEXT
+        )
+        """,
     ]
 
     with engine.connect() as conn:
         for ddl in ddl_statements:
             conn.execute(text(ddl))
+        conn.commit()
+        # Add sale_date_override column if missing (migration for existing tables)
+        try:
+            conn.execute(text("SAVEPOINT sp_sale_date_col"))
+            conn.execute(text("SELECT sale_date_override FROM sale_overrides LIMIT 1"))
+            conn.execute(text("RELEASE SAVEPOINT sp_sale_date_col"))
+        except Exception:
+            conn.execute(text("ROLLBACK TO SAVEPOINT sp_sale_date_col"))
+            try:
+                conn.execute(text("ALTER TABLE sale_overrides ADD COLUMN sale_date_override TEXT"))
+                conn.commit()
+            except Exception:
+                pass
 
         # Fix column types — the table may have been created with all-TEXT
         # columns via pandas to_sql or SQLite DDL passed through.
@@ -435,6 +459,19 @@ def create_additional_tables(conn: sqlite3.Connection):
             accrued_pref_comment TEXT,
             last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(vcode, reporting_period)
+        )
+    """)
+
+    # Sale overrides (contract price, selling cost)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sale_overrides (
+            vcode TEXT PRIMARY KEY,
+            contract_sale_price REAL,
+            selling_cost_value REAL,
+            selling_cost_type TEXT DEFAULT 'pct',
+            sale_date_override TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_by TEXT
         )
     """)
 
@@ -1062,7 +1099,7 @@ def delete_waterfall_steps(vcode: str, wf_type: str = None):
 
 
 # Tables managed exclusively via the app (never overwritten by CSV import)
-PROTECTED_TABLES = {'waterfalls', 'one_pager_comments', 'waterfall_audit', 'review_roles', 'review_submissions', 'review_notes', 'prospective_loans', 'prospective_loans_audit', 'planned_loans'}
+PROTECTED_TABLES = {'waterfalls', 'one_pager_comments', 'waterfall_audit', 'review_roles', 'review_submissions', 'review_notes', 'prospective_loans', 'prospective_loans_audit', 'planned_loans', 'sale_overrides'}
 
 
 def _get_import_connection():

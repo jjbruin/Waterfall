@@ -22,6 +22,24 @@ def _get_data():
     return data_service.load_all(db_path, pro_yr_base)
 
 
+def _load_sale_override(vcode: str):
+    """Load saved sale override from database, or None."""
+    try:
+        from flask_app.db import get_engine
+        from sqlalchemy import text
+        engine = get_engine()
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT contract_sale_price, selling_cost_value, selling_cost_type, sale_date_override FROM sale_overrides WHERE vcode = :v"),
+                {"v": vcode},
+            ).fetchone()
+        if row and (row[0] is not None or row[1] is not None or row[3] is not None):
+            return {"contract_sale_price": row[0], "selling_cost_value": row[1], "selling_cost_type": row[2], "sale_date_override": row[3]}
+    except Exception:
+        pass
+    return None
+
+
 def _params():
     """Extract standard query params with defaults."""
     return (
@@ -33,12 +51,21 @@ def _params():
 
 
 def _get_result(vcode, force=False):
-    """Get or compute deal result with standard params."""
+    """Get or compute deal result with standard params + saved sale overrides."""
     start_year, horizon, pro_yr_base, actuals_through = _params()
     data = _get_data()
+    saved = _load_sale_override(vcode)
+    csp = saved.get("contract_sale_price") if saved else None
+    sco = saved.get("selling_cost_value") if saved else None
+    sct = saved.get("selling_cost_type") if saved else None
+    sdo = saved.get("sale_date_override") if saved else None
     return compute_service.get_cached_deal_result(
         vcode, start_year, horizon, pro_yr_base, data, force=force,
         actuals_through=actuals_through,
+        contract_sale_price=csp,
+        selling_cost_override=sco,
+        selling_cost_type=sct,
+        sale_date_override=sdo,
     )
 
 
@@ -60,12 +87,29 @@ def compute_deal():
     pro_yr_base = body.get("pro_yr_base", current_app.config["PRO_YR_BASE_DEFAULT"])
     actuals_through = body.get("actuals_through", current_app.config.get("ACTUALS_THROUGH"))
     force = body.get("force", False)
+    contract_sale_price = body.get("contract_sale_price")
+    selling_cost_override = body.get("selling_cost_override")
+    selling_cost_type = body.get("selling_cost_type")
+    sale_date_override = body.get("sale_date_override")
+
+    # Load saved overrides if not provided in request
+    if contract_sale_price is None and selling_cost_override is None and sale_date_override is None:
+        saved = _load_sale_override(vcode)
+        if saved:
+            contract_sale_price = saved.get("contract_sale_price")
+            selling_cost_override = saved.get("selling_cost_value")
+            selling_cost_type = saved.get("selling_cost_type")
+            sale_date_override = saved.get("sale_date_override")
 
     data = _get_data()
     try:
         result = compute_service.get_cached_deal_result(
             vcode, start_year, horizon, pro_yr_base, data, force=force,
             actuals_through=actuals_through,
+            contract_sale_price=contract_sale_price,
+            selling_cost_override=selling_cost_override,
+            selling_cost_type=selling_cost_type,
+            sale_date_override=sale_date_override,
         )
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -810,3 +854,98 @@ def full_deal_excel(vcode):
 def cached_deals():
     """List currently cached deal vcodes."""
     return jsonify({"cached": compute_service.get_all_cached_vcodes()})
+
+
+# ============================================================
+# Sale Overrides
+# ============================================================
+
+@deals_bp.route("/<vcode>/sale-override", methods=["GET"])
+@login_required
+def get_sale_override(vcode):
+    """Get saved sale override for a deal."""
+    from flask_app.db import get_engine
+    from sqlalchemy import text
+    engine = get_engine()
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT contract_sale_price, selling_cost_value, selling_cost_type, sale_date_override FROM sale_overrides WHERE vcode = :v"),
+                {"v": vcode},
+            ).fetchone()
+    except Exception:
+        # Fallback if sale_date_override column doesn't exist yet
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT contract_sale_price, selling_cost_value, selling_cost_type FROM sale_overrides WHERE vcode = :v"),
+                {"v": vcode},
+            ).fetchone()
+        if not row:
+            return jsonify({"override": None})
+        return jsonify({"override": {
+            "contract_sale_price": row[0],
+            "selling_cost_value": row[1],
+            "selling_cost_type": row[2],
+            "sale_date_override": None,
+        }})
+    if not row:
+        return jsonify({"override": None})
+    return jsonify({"override": {
+        "contract_sale_price": row[0],
+        "selling_cost_value": row[1],
+        "selling_cost_type": row[2],
+        "sale_date_override": row[3],
+    }})
+
+
+@deals_bp.route("/<vcode>/sale-override", methods=["PUT"])
+@login_required
+def save_sale_override(vcode):
+    """Save or update sale override for a deal."""
+    from flask_app.db import get_engine
+    from sqlalchemy import text
+    body = request.get_json(silent=True) or {}
+    csp = body.get("contract_sale_price")
+    scv = body.get("selling_cost_value")
+    sct = body.get("selling_cost_type", "pct")
+    sdo = body.get("sale_date_override")
+    username = getattr(request, '_current_user', {}).get('username', '')
+
+    engine = get_engine()
+    with engine.connect() as conn:
+        # Upsert
+        existing = conn.execute(
+            text("SELECT 1 FROM sale_overrides WHERE vcode = :v"), {"v": vcode}
+        ).fetchone()
+        if existing:
+            conn.execute(text("""
+                UPDATE sale_overrides
+                SET contract_sale_price = :csp, selling_cost_value = :scv,
+                    selling_cost_type = :sct, sale_date_override = :sdo,
+                    updated_at = CURRENT_TIMESTAMP, updated_by = :user
+                WHERE vcode = :v
+            """), {"csp": csp, "scv": scv, "sct": sct, "sdo": sdo, "user": username, "v": vcode})
+        else:
+            conn.execute(text("""
+                INSERT INTO sale_overrides (vcode, contract_sale_price, selling_cost_value, selling_cost_type, sale_date_override, updated_by)
+                VALUES (:v, :csp, :scv, :sct, :sdo, :user)
+            """), {"v": vcode, "csp": csp, "scv": scv, "sct": sct, "sdo": sdo, "user": username})
+        conn.commit()
+
+    # Clear cache so next compute uses new overrides
+    compute_service.clear_cache(vcode)
+    return jsonify({"message": "Sale override saved"})
+
+
+@deals_bp.route("/<vcode>/sale-override", methods=["DELETE"])
+@login_required
+def delete_sale_override(vcode):
+    """Remove sale override for a deal."""
+    from flask_app.db import get_engine
+    from sqlalchemy import text
+    engine = get_engine()
+    with engine.connect() as conn:
+        conn.execute(text("DELETE FROM sale_overrides WHERE vcode = :v"), {"v": vcode})
+        conn.commit()
+    compute_service.clear_cache(vcode)
+    return jsonify({"message": "Sale override removed"})

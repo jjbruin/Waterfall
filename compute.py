@@ -556,6 +556,9 @@ def compute_deal_analysis(
     start_year, horizon_years, pro_yr_base,
     actuals_through=None,
     prospective_loans_raw=None,
+    contract_sale_price=None,
+    selling_cost_override=None,
+    selling_cost_type=None,
 ):
     """
     Compute all deal-level analysis results.
@@ -855,17 +858,76 @@ def compute_deal_analysis(
     # Note: deal_acct is not in scope here (same as original code where this block never executed)
     # Historical capital events from accounting are handled by seed_states_from_accounting
 
-    if mri_val is not None and not mri_val.empty:
+    can_compute_sale = (contract_sale_price is not None) or (mri_val is not None and not mri_val.empty)
+    if can_compute_sale:
         try:
             noi_12_sale = twelve_month_noi_after_date(fc_deal_modeled, sale_me)
-            cap_rate_sale = projected_cap_rate_at_date(mri_val, str(deal_vcode), sale_me)
+            cap_rate_sale = projected_cap_rate_at_date(
+                mri_val, str(deal_vcode), sale_me
+            ) if mri_val is not None and not mri_val.empty else 0.0
 
-            value_sale = (noi_12_sale / cap_rate_sale) if cap_rate_sale != 0 else 0.0
-            value_net_selling_cost = value_sale * (1.0 - SELLING_COST_RATE)
+            # Sale value: contract price overrides NOI/cap rate
+            if contract_sale_price is not None:
+                value_sale = float(contract_sale_price)
+                sale_price_source = "contract"
+            else:
+                value_sale = (noi_12_sale / cap_rate_sale) if cap_rate_sale != 0 else 0.0
+                sale_price_source = "noi_cap"
+
+            # Selling costs: override or default 2%
+            if selling_cost_override is not None:
+                if selling_cost_type == "fixed":
+                    selling_cost_amount = float(selling_cost_override)
+                else:
+                    selling_cost_amount = value_sale * float(selling_cost_override)
+                selling_cost_label = (
+                    f"${selling_cost_override:,.0f}" if selling_cost_type == "fixed"
+                    else f"{float(selling_cost_override) * 100:.1f}%"
+                )
+            else:
+                selling_cost_amount = value_sale * SELLING_COST_RATE
+                selling_cost_label = f"{SELLING_COST_RATE * 100:.0f}%"
+
+            value_net_selling_cost = value_sale - selling_cost_amount
 
             # Use ending_balance from schedule + balloon amounts that weren't
             # included in operating debt service (they are repaid from sale proceeds).
-            loan_bal_sale = total_loan_balance_at(loan_sched, sale_me) + balloon_total
+            # Anchor to ISBS actual balance when available — the modeled schedule
+            # amortizes from origination amount which may differ from reality.
+            modeled_bal_sale = total_loan_balance_at(loan_sched, sale_me)
+            isbs_debt = get_isbs_debt_balance(isbs_raw, deal_vcode)
+            if isbs_debt is not None and not loan_sched.empty:
+                # Find the ISBS anchor date (most recent BS period)
+                _isbs_df = isbs_raw.copy()
+                _isbs_df.columns = [str(c).strip() for c in _isbs_df.columns]
+                if 'vcode' in _isbs_df.columns:
+                    _isbs_df['vcode'] = _isbs_df['vcode'].astype(str).str.strip().str.lower()
+                    _isbs_df = _isbs_df[_isbs_df['vcode'] == str(deal_vcode).strip().lower()]
+                if 'vSource' in _isbs_df.columns:
+                    _isbs_df = _isbs_df[_isbs_df['vSource'].astype(str).str.strip() == 'Interim BS']
+                if 'dtEntry' in _isbs_df.columns and not _isbs_df.empty:
+                    _isbs_df['_dt'] = pd.to_datetime(_isbs_df['dtEntry'], format='mixed', dayfirst=False, errors='coerce')
+                    isbs_anchor_date = _isbs_df['_dt'].dropna().max()
+                    if pd.notna(isbs_anchor_date):
+                        anchor_date = isbs_anchor_date.date() if hasattr(isbs_anchor_date, 'date') else isbs_anchor_date
+                        modeled_bal_anchor = total_loan_balance_at(loan_sched, month_end(anchor_date))
+                        if modeled_bal_anchor > 0:
+                            # Scale modeled balance by ratio of actual to modeled at anchor
+                            scale = isbs_debt / modeled_bal_anchor
+                            loan_bal_sale = modeled_bal_sale * scale + balloon_total
+                            debug_msgs.append(
+                                f"Loan payoff anchored to ISBS balance ${isbs_debt:,.0f} "
+                                f"at {anchor_date} (modeled: ${modeled_bal_anchor:,.0f}, "
+                                f"scale: {scale:.4f})"
+                            )
+                        else:
+                            loan_bal_sale = modeled_bal_sale + balloon_total
+                    else:
+                        loan_bal_sale = modeled_bal_sale + balloon_total
+                else:
+                    loan_bal_sale = modeled_bal_sale + balloon_total
+            else:
+                loan_bal_sale = modeled_bal_sale + balloon_total
 
             sale_proceeds = max(0.0, value_net_selling_cost - loan_bal_sale)
 
@@ -890,7 +952,9 @@ def compute_deal_analysis(
                 "NOI_12m_After_Sale": noi_12_sale,
                 "CapRate_Sale": cap_rate_sale,
                 "Implied_Value": value_sale,
-                "Less_Selling_Cost_2pct": value_sale * SELLING_COST_RATE,
+                "Selling_Cost_Amount": selling_cost_amount,
+                "Selling_Cost_Label": selling_cost_label,
+                "Sale_Price_Source": sale_price_source,
                 "Value_Net_Selling_Cost": value_net_selling_cost,
                 "Less_Loan_Balances": loan_bal_sale,
                 "Tax_Abatement_NPV": abatement_npv,

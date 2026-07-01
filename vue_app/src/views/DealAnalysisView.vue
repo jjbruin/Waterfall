@@ -474,6 +474,87 @@ async function downloadExcel(url: string, filename: string) {
   a.click()
   URL.revokeObjectURL(a.href)
 }
+
+// ============================================================
+// Sale Override
+// ============================================================
+
+const sellingCostTypeLocal = ref('pct')
+
+const saleOverrideDisplay = computed(() => {
+  const vc = deals.currentVcode
+  const price = deals.contractSalePrice[vc]
+  const cost = deals.sellingCostOverride[vc]
+  return {
+    price: price != null ? fmtCur(price) : '',
+    cost: cost != null ? (deals.sellingCostType[vc] === 'fixed' ? fmtCur(cost) : `${(cost * 100).toFixed(1)}`) : '',
+  }
+})
+
+const hasSaleOverrides = computed(() => {
+  const vc = deals.currentVcode
+  return deals.contractSalePrice[vc] != null || deals.sellingCostOverride[vc] != null || !!deals.saleDateOverride[vc]
+})
+
+function parseSalePrice(event: Event) {
+  const raw = (event.target as HTMLInputElement).value.replace(/[^0-9.]/g, '')
+  const vc = deals.currentVcode
+  deals.contractSalePrice[vc] = raw ? parseFloat(raw) : null
+}
+
+function parseSellingCost(event: Event) {
+  const raw = (event.target as HTMLInputElement).value.replace(/[^0-9.]/g, '')
+  const vc = deals.currentVcode
+  if (!raw) {
+    deals.sellingCostOverride[vc] = null
+    return
+  }
+  const val = parseFloat(raw)
+  deals.sellingCostType[vc] = sellingCostTypeLocal.value
+  // If pct mode and user typed e.g. "3.5", store as 0.035
+  deals.sellingCostOverride[vc] = sellingCostTypeLocal.value === 'pct' ? val / 100 : val
+}
+
+async function recomputeWithOverrides() {
+  const vc = deals.currentVcode
+  if (vc) {
+    deals.saleOverrideSaved[vc] = false
+    await deals.computeDeal(vc, true)
+  }
+}
+
+const saleSaving = ref(false)
+
+async function saveSaleOverrides() {
+  const vc = deals.currentVcode
+  if (!vc) return
+  saleSaving.value = true
+  try {
+    await deals.saveSaleOverride(vc)
+  } finally {
+    saleSaving.value = false
+  }
+}
+
+async function clearSaleOverrides() {
+  const vc = deals.currentVcode
+  if (!vc) return
+  if (deals.saleOverrideSaved[vc]) {
+    await deals.deleteSaleOverride(vc)
+  } else {
+    deals.contractSalePrice[vc] = null
+    deals.sellingCostOverride[vc] = null
+    deals.sellingCostType[vc] = 'pct'
+    deals.saleDateOverride[vc] = null
+  }
+  sellingCostTypeLocal.value = 'pct'
+  deals.computeDeal(vc, true)
+}
+
+// Sync local selling cost type when deal changes
+watch(() => deals.currentVcode, (vc) => {
+  if (vc) sellingCostTypeLocal.value = deals.sellingCostType[vc] || 'pct'
+})
 </script>
 
 <template>
@@ -537,6 +618,54 @@ async function downloadExcel(url: string, filename: string) {
               <tr><td>PE Exp (Val)</td><td class="right">{{ fmtPct(deals.currentHeader.cap_data.pe_exposure_value) }}</td></tr>
             </table>
           </div>
+        </div>
+
+        <!-- Sale Assumptions Override -->
+        <div class="sale-override-row">
+          <div class="override-field">
+            <label>Contract Sale Price</label>
+            <input
+              type="text"
+              :value="saleOverrideDisplay.price"
+              @blur="parseSalePrice($event)"
+              @keyup.enter="recomputeWithOverrides"
+              placeholder="Leave blank for NOI / Cap Rate"
+              class="override-input"
+            />
+          </div>
+          <div class="override-field">
+            <label>Selling Costs</label>
+            <div class="selling-cost-group">
+              <input
+                type="text"
+                :value="saleOverrideDisplay.cost"
+                @blur="parseSellingCost($event)"
+                @keyup.enter="recomputeWithOverrides"
+                placeholder="Default 2%"
+                class="override-input override-input-sm"
+              />
+              <select v-model="sellingCostTypeLocal" class="override-select">
+                <option value="pct">%</option>
+                <option value="fixed">$</option>
+              </select>
+            </div>
+          </div>
+          <div class="override-field">
+            <label>Sale Date</label>
+            <input
+              type="date"
+              :value="deals.saleDateOverride[deals.currentVcode] || ''"
+              @change="deals.saleDateOverride[deals.currentVcode] = ($event.target as HTMLInputElement).value || null; deals.saleOverrideSaved[deals.currentVcode] = false"
+              class="override-input"
+            />
+          </div>
+          <button class="btn-recompute" @click="recomputeWithOverrides" :disabled="deals.computing">
+            {{ deals.computing ? '...' : 'Recompute' }}
+          </button>
+          <button v-if="hasSaleOverrides" class="btn-save-override" @click="saveSaleOverrides" :disabled="saleSaving">
+            {{ saleSaving ? '...' : (deals.saleOverrideSaved[deals.currentVcode] ? 'Saved ✓' : 'Save') }}
+          </button>
+          <button v-if="hasSaleOverrides" class="btn-clear-override" @click="clearSaleOverrides">Clear</button>
         </div>
       </div>
 
@@ -995,15 +1124,25 @@ async function downloadExcel(url: string, filename: string) {
                   <h5>Inputs</h5>
                   <table class="info-table">
                     <tr><td>Sale Date</td><td>{{ deals.currentDebt.sale_proceeds.Sale_Date }}</td></tr>
-                    <tr><td>NOI (12mo after sale)</td><td class="right">{{ fmtCur(deals.currentDebt.sale_proceeds.NOI_12m_After_Sale) }}</td></tr>
-                    <tr><td>Exit Cap Rate</td><td class="right">{{ fmtPct(deals.currentDebt.sale_proceeds.CapRate_Sale) }}</td></tr>
+                    <tr v-if="deals.currentDebt.sale_proceeds.Sale_Price_Source === 'contract'">
+                      <td>Contract Sale Price</td><td class="right">{{ fmtCur(deals.currentDebt.sale_proceeds.Implied_Value) }}</td>
+                    </tr>
+                    <template v-else>
+                      <tr><td>NOI (12mo after sale)</td><td class="right">{{ fmtCur(deals.currentDebt.sale_proceeds.NOI_12m_After_Sale) }}</td></tr>
+                      <tr><td>Exit Cap Rate</td><td class="right">{{ fmtPct(deals.currentDebt.sale_proceeds.CapRate_Sale) }}</td></tr>
+                    </template>
                   </table>
                 </div>
                 <div>
                   <h5>Calculation</h5>
                   <table class="info-table">
-                    <tr><td>Implied Value</td><td class="right">{{ fmtCur(deals.currentDebt.sale_proceeds.Implied_Value) }}</td></tr>
-                    <tr><td>Less Selling Costs (2%)</td><td class="right">{{ fmtCur(deals.currentDebt.sale_proceeds.Less_Selling_Cost_2pct) }}</td></tr>
+                    <tr v-if="deals.currentDebt.sale_proceeds.Sale_Price_Source !== 'contract'">
+                      <td>Implied Value</td><td class="right">{{ fmtCur(deals.currentDebt.sale_proceeds.Implied_Value) }}</td>
+                    </tr>
+                    <tr>
+                      <td>Less Selling Costs ({{ deals.currentDebt.sale_proceeds.Selling_Cost_Label || '2%' }})</td>
+                      <td class="right">{{ fmtCur(deals.currentDebt.sale_proceeds.Selling_Cost_Amount) }}</td>
+                    </tr>
                     <tr><td>Net of Costs</td><td class="right">{{ fmtCur(deals.currentDebt.sale_proceeds.Value_Net_Selling_Cost) }}</td></tr>
                     <tr v-if="deals.currentDebt.sale_proceeds.Tax_Abatement_NPV"><td>NPV (@5%) Tax Abatements</td><td class="right">{{ fmtCur(deals.currentDebt.sale_proceeds.Tax_Abatement_NPV) }}</td></tr>
                     <tr><td>Less Loan Payoff</td><td class="right">{{ fmtCur(deals.currentDebt.sale_proceeds.Less_Loan_Balances) }}</td></tr>
@@ -1390,6 +1529,81 @@ async function downloadExcel(url: string, filename: string) {
 .topline-row td {
   border-top: 2px solid #000;
 }
+
+/* Sale override row */
+.sale-override-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+  margin-top: 12px;
+  padding: 10px 14px;
+  background: #f8f9fa;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+}
+.override-field label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  margin-bottom: 3px;
+  text-transform: uppercase;
+}
+.override-input {
+  padding: 5px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font-size: 13px;
+  width: 180px;
+}
+.override-input-sm {
+  width: 120px;
+}
+.selling-cost-group {
+  display: flex;
+  gap: 4px;
+}
+.override-select {
+  padding: 5px 4px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font-size: 13px;
+  width: 42px;
+}
+.btn-recompute {
+  padding: 5px 14px;
+  background: var(--color-accent);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.btn-recompute:hover { opacity: 0.9; }
+.btn-recompute:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-save-override {
+  padding: 5px 14px;
+  background: #2e7d32;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.btn-save-override:hover { opacity: 0.9; }
+.btn-save-override:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-clear-override {
+  padding: 5px 10px;
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+.btn-clear-override:hover { border-color: #999; }
 
 /* Sale grid */
 .sale-grid {
