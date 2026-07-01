@@ -176,6 +176,17 @@ cd vue_app && npm run dev        # Frontend on http://localhost:5173
 - **Sale proceeds formula**: `max(0, value_net_selling_cost - loan_balances + tax_abatement_npv)`
 - **Groupby**: Loan schedule grouped by `["vcode", "LoanID", "event_date"]` to distinguish loans with same dates
 
+### Sale Overrides
+- **UI**: Contract Sale Price, Selling Costs (% or $), Sale Date — input row on Deal Analysis below capitalization table
+- **Contract Sale Price**: Overrides the NOI/cap rate implied value when populated
+- **Selling Costs**: Overrides the default 2% selling cost; supports percentage (`pct`) or fixed dollar (`fixed`) modes
+- **Sale Date**: Overrides the `Sale_Date` from investment_map table; threads through `compute_service.py` as `sale_date_override`
+- **Database**: `sale_overrides` table (vcode PK, contract_sale_price, selling_cost_value, selling_cost_type, sale_date_override, updated_at, updated_by). In `PROTECTED_TABLES`.
+- **Cache behavior**: Sale overrides do NOT create separate cache keys — `force=True` is set automatically when any override is present, overwriting the existing cache entry
+- **Workflow**: Enter values → Recompute → optionally Save (persists to DB) or Clear. Saved overrides auto-load on deal select.
+- **API**: `GET/PUT/DELETE /api/deals/<vcode>/sale-override`. POST `/compute` accepts overrides in body; falls back to saved overrides if not provided.
+- **ISBS-anchored loan payoff**: Modeled amortization balance at sale date is scaled by `(ISBS_actual_debt / modeled_debt_at_anchor_date)` ratio. The ISBS Interim BS gives the real current outstanding; the scale factor corrects for differences between MRI origination amount and actual paydown. Diagnostic message shows anchor date, actual/modeled balances, and scale factor.
+
 ### Cap Rate at Sale / Refinance
 - **Source column**: `fCapRate` from `valuations` table (MRI_Val)
 - **Date column**: `dtValuation` — the date each cap rate was assessed
@@ -351,7 +362,7 @@ View, edit, and create waterfall structures for any entity. Vue: `WaterfallSetup
 
 ### Sidebar: Database Tools & User
 Vue: `AppSidebar.vue` database tools section. Flask: `data.py` API endpoints.
-- **Import CSVs** — Browser file upload (no server-side folder scan — incompatible with Azure). Select CSV files → auto-matches filenames to table definitions → shows importable/protected/unmatched status → uploads one file at a time (sequential to avoid OOM on 2GB container) with progress indicator. Protected tables (`waterfalls`, `one_pager_comments`, `waterfall_audit`, `review_roles`, `review_submissions`, `review_notes`) are never overwritten. Uses chunked import (`import_csv_stream()`, 50K rows/chunk, `dtype=str`) for large files like ISBS (800K+ rows). Clears data and computation caches.
+- **Import CSVs** — Browser file upload (no server-side folder scan — incompatible with Azure). Select CSV files → auto-matches filenames to table definitions → shows importable/protected/unmatched status → uploads one file at a time (sequential to avoid OOM on 2GB container) with progress indicator. Protected tables (`waterfalls`, `one_pager_comments`, `waterfall_audit`, `review_roles`, `review_submissions`, `review_notes`, `prospective_loans`, `prospective_loans_audit`, `planned_loans`, `sale_overrides`) are never overwritten. Uses chunked import (`import_csv_stream()`, 50K rows/chunk, `dtype=str`) for large files like ISBS (800K+ rows). Clears data and computation caches.
 - **Export Database** — Export all tables as `waterfall_db_export_{timestamp}.zip` containing `{table_name}_db_export.csv` for every table.
 - **Logout Button** — Full-width button at bottom of sidebar showing username + role. Clears auth store and redirects to login page.
 
