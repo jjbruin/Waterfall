@@ -115,6 +115,11 @@ def load_all(db_path: str, pro_yr_base: int = 2025) -> dict:
 
     # Optional tables
     mri_loans_raw = get_adapter("loans").load(config)
+    # Exclude paid-off loans from all analysis
+    if not mri_loans_raw.empty:
+        _col = next((c for c in mri_loans_raw.columns if c.lower() == "vdatetype"), None)
+        if _col:
+            mri_loans_raw = mri_loans_raw[mri_loans_raw[_col].astype(str).str.strip().str.lower() != "paid off"].reset_index(drop=True)
     mri_val = get_adapter("valuations").load(config)
     relationships_raw = get_adapter("relationships").load(config)
     capital_calls_raw = get_adapter("capital_calls").load(config)
@@ -247,6 +252,7 @@ def refresh_table(table_name: str):
         "relationships": "relationships_raw",
         "prospective_loans": "prospective_loans_raw",
         "capital_calls": "capital_calls_raw",
+        "loans": "mri_loans_raw",
     }
     cache_key_name = table_to_key.get(table_name, table_name)
 
@@ -288,6 +294,11 @@ def refresh_table(table_name: str):
                     fresh["PropCode"] = fresh["PropCode"].astype(str).str.strip()
                 if "vState" in fresh.columns:
                     fresh["vState"] = fresh["vState"].astype(str).str.strip()
+            # Exclude paid-off loans on refresh
+            if table_name == "loans" and not fresh.empty:
+                _col = next((c for c in fresh.columns if c.lower() == "vdatetype"), None)
+                if _col:
+                    fresh = fresh[fresh[_col].astype(str).str.strip().str.lower() != "paid off"].reset_index(drop=True)
             data[cache_key_name] = fresh
 
             # Reassemble isbs_raw from split tables when a split table changes
