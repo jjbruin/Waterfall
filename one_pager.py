@@ -282,22 +282,33 @@ def get_capitalization_stack(
         if 'vCode' in loans.columns:
             loans['vCode'] = loans['vCode'].astype(str).str.strip()
             deal_loans = loans[loans['vCode'] == vcode_str]
+            if not deal_loans.empty and 'mOrigLoanAmt' in deal_loans.columns:
+                cap['debt'] = pd.to_numeric(deal_loans['mOrigLoanAmt'], errors='coerce').fillna(0).sum()
+
+    # Loan terms — always from MRI_Loans (independent of debt source)
+    if mri_loans is not None and not mri_loans.empty:
+        loans = mri_loans.copy()
+        loans.columns = [str(c).strip() for c in loans.columns]
+        if 'vCode' not in loans.columns and 'vcode' in loans.columns:
+            loans = loans.rename(columns={'vcode': 'vCode'})
+        if 'vCode' in loans.columns:
+            loans['vCode'] = loans['vCode'].astype(str).str.strip()
+            deal_loans = loans[loans['vCode'] == vcode_str]
 
             if not deal_loans.empty:
-                if 'mOrigLoanAmt' in deal_loans.columns:
-                    cap['debt'] = pd.to_numeric(deal_loans['mOrigLoanAmt'], errors='coerce').fillna(0).sum()
-
                 def _parse_loan(row):
-                    """Extract maturity, rate, type, rate_cap from a loan row."""
+                    """Extract maturity, rate, type, index, spread from a loan row."""
                     maturity = None
                     rate = 0.0
                     ltype = ''
+                    vindex = ''
+                    vspread = ''
                     for mat_col in ['dtMaturity', 'dtEvent']:
                         if mat_col in row.index and pd.notna(row[mat_col]):
                             try:
                                 maturity = pd.to_datetime(row[mat_col]).date()
                                 break
-                            except:
+                            except Exception:
                                 pass
                     if 'nRate' in row.index:
                         r = pd.to_numeric(row['nRate'], errors='coerce')
@@ -305,15 +316,31 @@ def get_capitalization_stack(
                             rate = r if r < 1 else r / 100
                     if 'vIntType' in row.index:
                         ltype = str(row['vIntType']).strip()
-                    return maturity, rate, ltype
+                    if 'vIndex' in row.index and pd.notna(row['vIndex']):
+                        vindex = str(row['vIndex']).strip()
+                    if 'vSpread' in row.index:
+                        s = pd.to_numeric(row['vSpread'], errors='coerce')
+                        if pd.notna(s):
+                            vspread = f"{s:.2%}" if s < 1 else f"{s:.2f}%"
+                    return maturity, rate, ltype, vindex, vspread
 
-                def _format_loan_str(maturity, rate, ltype):
+                def _format_loan_str(maturity, rate, ltype, vindex='', vspread=''):
+                    """Format: '3.68% | Fixed | 8/1/2029' or 'SOFR + 3.70% | 10/11/2026'."""
                     parts = []
+                    if ltype.lower() == 'fixed':
+                        if rate > 0:
+                            parts.append(f"{rate:.2%}")
+                        parts.append('Fixed')
+                    elif ltype.lower() == 'variable' and vindex:
+                        parts.append(f"{vindex} + {vspread}" if vspread else vindex)
+                    else:
+                        if rate > 0:
+                            parts.append(f"{rate:.2%}")
+                        if ltype:
+                            parts.append(ltype)
                     if maturity:
-                        parts.append(f"{maturity.month}/{maturity.day}/{maturity.year} maturity")
-                    if rate > 0:
-                        parts.append(f"{rate:.1%} {ltype.lower()}" if ltype else f"{rate:.1%}")
-                    return ', '.join(parts) if parts else 'N/A'
+                        parts.append(f"{maturity.month}/{maturity.day}/{maturity.year}")
+                    return ' | '.join(parts) if parts else 'N/A'
 
                 # Primary loan (largest by amount)
                 deal_loans_sorted = deal_loans.copy()
@@ -321,8 +348,8 @@ def get_capitalization_stack(
                 deal_loans_sorted = deal_loans_sorted.sort_values('_amt', ascending=False)
 
                 loan_row = deal_loans_sorted.iloc[0]
-                cap['loan_maturity'], cap['loan_rate'], cap['loan_type'] = _parse_loan(loan_row)
-                cap['loan_terms_str'] = _format_loan_str(cap['loan_maturity'], cap['loan_rate'], cap['loan_type'])
+                cap['loan_maturity'], cap['loan_rate'], cap['loan_type'], _idx, _sprd = _parse_loan(loan_row)
+                cap['loan_terms_str'] = _format_loan_str(cap['loan_maturity'], cap['loan_rate'], cap['loan_type'], _idx, _sprd)
 
                 # Rate cap (for variable loans)
                 if 'nFloor' in loan_row.index:
@@ -333,8 +360,8 @@ def get_capitalization_stack(
                 # Second loan
                 if len(deal_loans_sorted) > 1:
                     loan2 = deal_loans_sorted.iloc[1]
-                    cap['second_loan_maturity'], cap['second_loan_rate'], cap['second_loan_type'] = _parse_loan(loan2)
-                    cap['second_loan_terms_str'] = _format_loan_str(cap['second_loan_maturity'], cap['second_loan_rate'], cap['second_loan_type'])
+                    cap['second_loan_maturity'], cap['second_loan_rate'], cap['second_loan_type'], _idx2, _sprd2 = _parse_loan(loan2)
+                    cap['second_loan_terms_str'] = _format_loan_str(cap['second_loan_maturity'], cap['second_loan_rate'], cap['second_loan_type'], _idx2, _sprd2)
 
     # Get valuation from MRI_VAL
     if mri_val is not None and not mri_val.empty:
