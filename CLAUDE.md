@@ -143,6 +143,12 @@ cd vue_app && npm run dev        # Frontend on http://localhost:5173
 - **Fallback**: If a deal has no accounting activity, the original MRI `Acquisition_Date` is preserved
 - **Consumers**: Deal Analysis metadata, Sold Portfolio summary, One Pager general info — all use `inv["Acquisition_Date"]` automatically
 
+### Sale Date & Anticipated Exit
+- **Sale_Date**: NOT available in MRI — preserved during MRI upsert import (see `mri_service.py`). Comes from `investment_map.csv` or manual entry.
+- **Anticipated_Exit**: From MRI `event_dates` table (`veventtype = 'Asset Management' AND vevent = 'U/W Exit'`). Mapped via `Prop_Info_Core.sql` as `Anticipated_Exit` column.
+- **MRI refresh safety**: `MRI_COLUMNS` in `mri_service.py` lists only columns that MRI refresh may overwrite. `Sale_Date`, `Sale_Status`, `InvestmentID`, and `Portfolio_Name` are explicitly excluded — they are preserved during upsert.
+- **Sale date override**: Separate `sale_overrides` table (see Sale Overrides section) — completely independent of MRI refresh.
+
 ### Waterfall Types
 - **CF Waterfall**: Operating cash distributions (does NOT reduce capital outstanding)
 - **Capital Waterfall**: Refi/sale proceeds (DOES reduce capital outstanding)
@@ -169,12 +175,19 @@ cd vue_app && npm run dev        # Frontend on http://localhost:5173
 - **Below-the-line items**: Former "Excluded Accounts" renamed to "Other Below-the-Line" (`OTHER_EXCLUDED_ACCTS`): Interest Income (4050), Other Income/Expenses (5220, 5210, 5195, 7065), Partnership Expenses (5120, 5130), Extraordinary Expenses (5400)
 - **Conditional display**: Tax Abatement NPV line only appears in Sale Proceeds Calculation when deal has 7070 data
 
+### Paid-Off Loan Exclusion
+- **Filter**: Loans with `vDateType = "Paid Off"` are excluded from all analysis at the data layer
+- **Implementation**: `data_service.py:load_all()` filters `mri_loans_raw` after loading; same filter applied in `refresh_table()` for the `loans` table
+- **Column detection**: Case-insensitive lookup (`c.lower() == "vdatetype"`) for robustness across CSV/MRI sources
+- **Scope**: Affects all consumers — waterfall, capitalization, dashboard, debt service, assistant tools
+
 ### Balloon Loan Payoff at Sale
 - **Detection**: Loan schedule's last row has `ending_balance < 1.0` (float tolerance), `principal > 0`, and prior row's `ending_balance > 0`
 - **Forecast exclusion**: Balloon principal payments are excluded from forecast debt service rows (they are NOT operating expenses)
 - **Sale proceeds**: Net sale proceeds deduct `total_loan_balance_at(sale_date) + balloon_total` — uses pre-balloon balance since balloon is paid at sale
 - **Sale proceeds formula**: `max(0, value_net_selling_cost - loan_balances + tax_abatement_npv)`
 - **Groupby**: Loan schedule grouped by `["vcode", "LoanID", "event_date"]` to distinguish loans with same dates
+- **ISBS debt fallback**: When modeled loans aren't active at sale date (e.g. all loans paid off, or loan originates after sale), `compute.py` falls back to ISBS balance sheet debt (`get_isbs_debt_balance()`) for loan payoff amount. Also handles case where `loan_sched` is completely empty but ISBS shows outstanding debt.
 
 ### Sale Overrides
 - **UI**: Contract Sale Price, Selling Costs (% or $), Sale Date — input row on Deal Analysis below capitalization table

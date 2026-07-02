@@ -24,7 +24,7 @@ class Config:
     # Email / SendGrid
     SENDGRID_API_KEY = os.environ.get("SENDGRID_API_KEY", "")
     SENDGRID_FROM = os.environ.get("SENDGRID_FROM", "")
-    APP_URL = os.environ.get("APP_URL", "https://app-waterfall-dev.victoriousforest-f83586cf.eastus.azurecontainerapps.io")
+    APP_URL = os.environ.get("APP_URL", "https://app-waterfall-dev-v2.icyplant-026fb2db.eastus.azurecontainerapps.io")
 
     # Cache
     CACHE_TYPE = "SimpleCache"
