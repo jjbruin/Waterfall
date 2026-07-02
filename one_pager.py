@@ -1062,6 +1062,12 @@ def get_pe_performance(
                 deal_acct["TypeName"] = deal_acct["TypeName"].fillna("").astype(str).str.strip()
                 deal_acct["InvestorID"] = deal_acct["InvestorID"].astype(str).str.strip()
 
+                # Build cashflow lists for ROE calculation
+                # capital_events: all cashflows (contributions negative, distributions positive)
+                # cf_distributions: only CF (operating) distributions
+                capital_events = []
+                cf_distributions = []
+
                 # Sum contributions (funded) and ROC for non-OP investors (PE investors)
                 for _, row in deal_acct.iterrows():
                     investor_id = row["InvestorID"]
@@ -1071,12 +1077,29 @@ def get_pe_performance(
                     major_type = row["MajorType"].lower()
                     type_name = row["TypeName"].lower()
                     amt = float(row["Amt"])
+                    evt_date = row["EffectiveDate"].date() if pd.notna(row["EffectiveDate"]) else None
+                    if evt_date is None:
+                        continue
 
                     if "contrib" in major_type:
                         pe['funded_to_date'] += abs(amt)
-                    if "distri" in major_type and "return of capital" in type_name:
-                        pe['return_of_capital'] += abs(amt)
-        except Exception as e:
+                        capital_events.append((evt_date, -abs(amt)))
+                    elif "distri" in major_type:
+                        capital_events.append((evt_date, abs(amt)))
+                        if "return of capital" in type_name or "realized gain" in type_name:
+                            pe['return_of_capital'] += abs(amt)
+                        else:
+                            # CF (operating) distribution
+                            cf_distributions.append((evt_date, abs(amt)))
+
+                # Compute ROE to Date from actual accounting through quarter end
+                if capital_events:
+                    from metrics import calculate_roe
+                    inception = min(d for d, _ in capital_events)
+                    pe['roe_to_date'] = calculate_roe(
+                        capital_events, cf_distributions, inception, quarter_end
+                    )
+        except Exception:
             pass
 
     # Calculate derived metrics

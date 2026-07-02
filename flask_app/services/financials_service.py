@@ -896,9 +896,11 @@ def _enrich_pe_from_deal_result(pe: dict, vcode: str, data: dict):
     - current_pe_balance: capital outstanding as of today
     - accrued_balance: compounded unpaid pref + current year accrual
 
-    Uses partner_results (terminal waterfall state) for:
-    - roe_to_date: annualized ROE from full projection
+    Uses partner_results for:
     - committed_pe fallback: total contributions if no commitments table
+
+    Note: roe_to_date is computed from actual accounting data in
+    get_pe_performance() — not overridden here.
     """
     import logging
     from flask import current_app
@@ -925,13 +927,11 @@ def _enrich_pe_from_deal_result(pe: dict, vcode: str, data: dict):
         # These represent the real current state before the forecast waterfall runs
         total_accrued = 0.0
         total_capital_outstanding = 0.0
-        pe_partner_ids = set()
 
         for partner, state in seed_states.items():
             # Skip OP partners — only PE investors
             if partner.upper().startswith("OP"):
                 continue
-            pe_partner_ids.add(partner)
             total_capital_outstanding += state.total_capital_outstanding
             total_accrued += (state.pref_unpaid_compounded
                               + state.pref_accrued_current_year
@@ -940,10 +940,6 @@ def _enrich_pe_from_deal_result(pe: dict, vcode: str, data: dict):
 
         pe["accrued_balance"] = total_accrued
         pe["current_pe_balance"] = total_capital_outstanding
-
-        # ROE to Date from deal-level ROE (uses full projection)
-        deal_summary = result.get("deal_summary", {})
-        pe["roe_to_date"] = deal_summary.get("deal_roe", 0.0)
 
         # Committed PE: if commitments table was empty, use total PE contributions
         if pe.get("committed_pe", 0) == 0:
