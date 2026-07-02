@@ -279,7 +279,7 @@ def _upsert_deals(df: pd.DataFrame, engine) -> dict:
     MRI_COLUMNS = {
         "vcode", "Investment_Name", "City", "State", "Asset_Type",
         "Operating_Partner", "Total_Units", "Size_Sqf", "Acquisition_Date",
-        "Lifecycle", "Year_Built", "Acquisition_Price", "Sale_Date",
+        "Lifecycle", "Year_Built", "Acquisition_Price", "Anticipated_Exit",
     }
 
     # Normalize incoming column names

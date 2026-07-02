@@ -65,7 +65,7 @@ SELECT
     meta.vStatus                    AS Lifecycle,
     meta.vYearBuiltRange            AS Year_Built,
     pint.original_purchase_price    AS Acquisition_Price,
-    meta.uw_exit                    AS Sale_Date
+    meta.uw_exit                    AS Anticipated_Exit
 FROM
     Property p
     LEFT JOIN PropMeta meta ON p.vCode = meta.vCode
