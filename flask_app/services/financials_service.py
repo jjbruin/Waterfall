@@ -833,8 +833,15 @@ def get_tenant_roster(tenants_raw: pd.DataFrame, vcode: str, inv: Optional[pd.Da
 
 def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
                        waterfalls, commitments, acct, occupancy_raw=None,
-                       budget_econ_occ=None, deal_terms=None, at_close_noi=None):
-    """Aggregate all One Pager sections into a single response."""
+                       budget_econ_occ=None, deal_terms=None, at_close_noi=None,
+                       full_data=None):
+    """Aggregate all One Pager sections into a single response.
+
+    Args:
+        full_data: Optional full data dict from load_all(). When provided,
+            runs deal analysis waterfall to enrich PE performance metrics
+            (accrued balance, ROE, current balance).
+    """
     from one_pager import (
         get_general_information, get_capitalization_stack,
         get_property_performance, get_pe_performance,
@@ -857,6 +864,10 @@ def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
     pe_perf = get_pe_performance(vcode, quarter_str, acct, commitments, waterfalls, inv) if quarter_str else {}
     comments = get_one_pager_comments(vcode, quarter_str) if quarter_str else {}
 
+    # Enrich PE performance from deal analysis waterfall results
+    if pe_perf and full_data is not None:
+        _enrich_pe_from_deal_result(pe_perf, vcode, full_data)
+
     # Enrich cap_stack with deal_terms if available (authoritative MRI values)
     if deal_terms is not None and not deal_terms.empty:
         _enrich_cap_stack_from_deal_terms(cap_stack, deal_terms, vcode)
@@ -876,6 +887,76 @@ def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
         "pe_performance": pe_perf,
         "comments": comments,
     }
+
+
+def _enrich_pe_from_deal_result(pe: dict, vcode: str, data: dict):
+    """Enrich PE performance metrics from deal analysis waterfall results.
+
+    Uses seed_states (current balances at actuals boundary) for:
+    - current_pe_balance: capital outstanding as of today
+    - accrued_balance: compounded unpaid pref + current year accrual
+
+    Uses partner_results (terminal waterfall state) for:
+    - roe_to_date: annualized ROE from full projection
+    - committed_pe fallback: total contributions if no commitments table
+    """
+    import logging
+    from flask import current_app
+    from flask_app.services.compute_service import get_cached_deal_result
+
+    log = logging.getLogger(__name__)
+    try:
+        start_year = current_app.config["DEFAULT_START_YEAR"]
+        horizon_years = current_app.config["DEFAULT_HORIZON_YEARS"]
+        pro_yr_base = current_app.config["PRO_YR_BASE_DEFAULT"]
+        actuals_through = current_app.config.get("ACTUALS_THROUGH")
+
+        result = get_cached_deal_result(
+            vcode, start_year, horizon_years, pro_yr_base, data,
+            actuals_through=actuals_through,
+        )
+
+        partner_results = result.get("partner_results", [])
+        seed_states = result.get("seed_states", {})
+        if not partner_results and not seed_states:
+            return
+
+        # Current balances from seed_states (as of actuals boundary)
+        # These represent the real current state before the forecast waterfall runs
+        total_accrued = 0.0
+        total_capital_outstanding = 0.0
+        pe_partner_ids = set()
+
+        for partner, state in seed_states.items():
+            # Skip OP partners — only PE investors
+            if partner.upper().startswith("OP"):
+                continue
+            pe_partner_ids.add(partner)
+            total_capital_outstanding += state.total_capital_outstanding
+            total_accrued += (state.pref_unpaid_compounded
+                              + state.pref_accrued_current_year
+                              + state.add_pref_unpaid_compounded
+                              + state.add_pref_accrued_current_year)
+
+        pe["accrued_balance"] = total_accrued
+        pe["current_pe_balance"] = total_capital_outstanding
+
+        # ROE to Date from deal-level ROE (uses full projection)
+        deal_summary = result.get("deal_summary", {})
+        pe["roe_to_date"] = deal_summary.get("deal_roe", 0.0)
+
+        # Committed PE: if commitments table was empty, use total PE contributions
+        if pe.get("committed_pe", 0) == 0:
+            total_contrib = sum(
+                pr.get("contributions", 0.0)
+                for pr in partner_results
+                if pr.get("is_pref_equity")
+            )
+            pe["committed_pe"] = total_contrib
+            pe["remaining_to_fund"] = 0.0  # Fully funded if no commitments data
+
+    except Exception as e:
+        log.warning("Could not enrich PE performance from deal result for %s: %s", vcode, e)
 
 
 def _enrich_cap_stack_from_deal_terms(cap_stack: dict, deal_terms, vcode: str):
