@@ -896,7 +896,7 @@ def compute_deal_analysis(
             # amortizes from origination amount which may differ from reality.
             modeled_bal_sale = total_loan_balance_at(loan_sched, sale_me)
             isbs_debt = get_isbs_debt_balance(isbs_raw, deal_vcode)
-            if isbs_debt is not None and not loan_sched.empty:
+            if isbs_debt is not None and isbs_debt > 0 and not loan_sched.empty:
                 # Find the ISBS anchor date (most recent BS period)
                 _isbs_df = isbs_raw.copy()
                 _isbs_df.columns = [str(c).strip() for c in _isbs_df.columns]
@@ -920,12 +920,28 @@ def compute_deal_analysis(
                                 f"at {anchor_date} (modeled: ${modeled_bal_anchor:,.0f}, "
                                 f"scale: {scale:.4f})"
                             )
+                        elif modeled_bal_sale == 0:
+                            # Modeled loans don't cover the sale/anchor date (e.g. loan
+                            # originates after sale, or paid-off loans excluded) but
+                            # ISBS shows outstanding debt — use ISBS balance directly.
+                            loan_bal_sale = isbs_debt
+                            debug_msgs.append(
+                                f"Loan payoff from ISBS balance ${isbs_debt:,.0f} "
+                                f"(modeled loans not active at sale date)"
+                            )
                         else:
                             loan_bal_sale = modeled_bal_sale + balloon_total
                     else:
                         loan_bal_sale = modeled_bal_sale + balloon_total
                 else:
                     loan_bal_sale = modeled_bal_sale + balloon_total
+            elif isbs_debt is not None and isbs_debt > 0 and loan_sched.empty:
+                # No modeled loans but ISBS shows outstanding debt.
+                loan_bal_sale = isbs_debt
+                debug_msgs.append(
+                    f"Loan payoff from ISBS balance ${isbs_debt:,.0f} "
+                    f"(no modeled loan schedule)"
+                )
             else:
                 loan_bal_sale = modeled_bal_sale + balloon_total
 
