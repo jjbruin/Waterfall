@@ -60,6 +60,7 @@ waterfall-xirr/
 │   │   ├── financials.py     # Property Financials + One Pager endpoints
 │   │   ├── reports.py        # Report generation endpoints
 │   │   ├── reviews.py        # Review workflow endpoints (status, submit, approve, return, tracking, roles)
+│   │   ├── feedback.py       # Feedback & request tracking endpoints (submit, list, messages, email, webhook)
 │   │   └── ...               # Additional route blueprints
 │   └── services/             # Business logic (reuses compute.py, database.py, etc.)
 │       ├── dashboard_service.py  # KPI calculations, NOI pipeline, chart data
@@ -68,6 +69,7 @@ waterfall-xirr/
 │       ├── compute_service.py    # Deal computation cache, ROE/MOIC audit builders, Excel generators
 │       ├── review_service.py     # Review workflow business logic (approval pipeline)
 │       ├── financials_service.py # Property Financials + One Pager data aggregation
+│       ├── feedback_service.py   # Feedback & request tracking (CRUD, email, export)
 │       └── ...
 │
 ├── scripts/                  # Azure migration and setup scripts
@@ -375,9 +377,23 @@ View, edit, and create waterfall structures for any entity. Vue: `WaterfallSetup
 
 ### Sidebar: Database Tools & User
 Vue: `AppSidebar.vue` database tools section. Flask: `data.py` API endpoints.
-- **Import CSVs** — Browser file upload (no server-side folder scan — incompatible with Azure). Select CSV files → auto-matches filenames to table definitions → shows importable/protected/unmatched status → uploads one file at a time (sequential to avoid OOM on 2GB container) with progress indicator. Protected tables (`waterfalls`, `one_pager_comments`, `waterfall_audit`, `review_roles`, `review_submissions`, `review_notes`, `prospective_loans`, `prospective_loans_audit`, `planned_loans`, `sale_overrides`) are never overwritten. Uses chunked import (`import_csv_stream()`, 50K rows/chunk, `dtype=str`) for large files like ISBS (800K+ rows). Clears data and computation caches.
+- **Import CSVs** — Browser file upload (no server-side folder scan — incompatible with Azure). Select CSV files → auto-matches filenames to table definitions → shows importable/protected/unmatched status → uploads one file at a time (sequential to avoid OOM on 2GB container) with progress indicator. Protected tables (`waterfalls`, `one_pager_comments`, `waterfall_audit`, `review_roles`, `review_submissions`, `review_notes`, `prospective_loans`, `prospective_loans_audit`, `planned_loans`, `sale_overrides`, `user_requests`, `user_request_messages`) are never overwritten. Uses chunked import (`import_csv_stream()`, 50K rows/chunk, `dtype=str`) for large files like ISBS (800K+ rows). Clears data and computation caches.
 - **Export Database** — Export all tables as `waterfall_db_export_{timestamp}.zip` containing `{table_name}_db_export.csv` for every table.
+- **Feedback & Requests** — Collapsible sidebar section for users to submit errors, improvements, report requests, and analysis requests. Submit form (type, title, description, priority) + scrollable list of past requests with status badges and message counts. Click a request to see its full threaded conversation and add replies. Auto-opens when navigating with a `?reply=TOKEN` query param (from email links).
 - **Logout Button** — Full-width button at bottom of sidebar showing username + role. Clears auth store and redirects to login page.
+
+### 10. Feedback & Request Tracking
+Embedded request tracking system for users to report errors, suggest improvements, and request reports or analysis. Flask: `feedback.py` + `feedback_service.py`. Vue: sidebar section in `AppSidebar.vue`.
+- **Request Types**: `error`, `improvement`, `report`, `analysis`. Priorities: `low`, `medium`, `high`.
+- **Statuses**: `open` → `in_progress` → `resolved` / `closed`.
+- **Database Tables**: `user_requests` (id, user_id, username, request_type, title, description, priority, status, page_context, deal_context, reply_token, created_at, updated_at, resolved_at), `user_request_messages` (id, request_id, sender_type, sender_name, message, sent_via, created_at). Both in `PROTECTED_TABLES`.
+- **Threaded Messages**: Each request has a conversation thread (user submissions, admin responses, system status changes, email replies). `sender_type`: `user`, `admin`, `system`. `sent_via`: `app`, `email`.
+- **Email Communication**: Admin sends email to user via `POST /<id>/email` (SendGrid). Email includes "View & Reply" button with unique `reply_token` URL → opens app with sidebar auto-focused on that request. Reply token is per-request, generated at creation.
+- **Inbound Email Webhook**: `POST /api/feedback/inbound-email` — SendGrid Inbound Parse endpoint. Extracts reply token from `to` address (`requests+TOKEN@domain.com`), strips quoted text, stores reply in thread. Requires DNS MX record setup for full email reply flow.
+- **Design Session Export**: `GET /api/feedback/export` (admin) — returns all requests with full message threads for consumption during Claude design sessions.
+- **AI Assistant Integration**: `get_user_feedback` tool allows the embedded Claude assistant to query all feedback requests, filterable by status and type.
+- **API Endpoints** (`/api/feedback`): `POST /` (submit), `GET /` (list — admin sees all, users see own), `GET /<id>` (detail with thread), `POST /<id>/messages` (add reply), `GET /reply/<token>` (lookup by email token), `PUT /<id>/status` (admin: change status), `POST /<id>/email` (admin: email user), `GET /export` (admin: all requests for design sessions), `POST /inbound-email` (webhook).
+- **Page Context**: Automatically captures current route path when submitting, available for debugging context.
 
 ### User Authentication
 - **JWT-based**: Login returns access token, stored in Pinia auth store, sent via Axios interceptor
@@ -453,7 +469,7 @@ Embedded Claude-powered chat panel for natural-language queries against the port
 - **Activation**: `ANTHROPIC_API_KEY` env var (`.env` for local, container env var for Azure)
 - **Agentic loop**: Up to 10 tool iterations per query via `chat_completion()`
 
-### Tools (19)
+### Tools (20)
 
 | Tool | Description | Data Source |
 |------|-------------|-------------|
@@ -476,6 +492,7 @@ Embedded Claude-powered chat panel for natural-language queries against the port
 | `get_debt_service` | Loan summary + annual amortization schedule | compute result `loan_sched` |
 | `get_cash_management` | Cash schedule (reserves, CapEx, distributable) | compute result `cash_schedule` |
 | `get_tenant_roster` | Tenant list, occupancy, lease maturity rollover | `financials_service` |
+| `get_user_feedback` | User feedback requests with threads (for design sessions) | `feedback_service` |
 
 ### Features
 - **Page context awareness**: Sends current page, selected deal vcode/name, and quarter to backend. System prompt includes pre-loaded deal metadata so assistant infers context from user's current view.
@@ -569,6 +586,11 @@ Embedded Claude-powered chat panel for natural-language queries against the port
 - `compute_net_waterfall_for_deal()` - Per-deal net returns waterfall with fees/promote (sold_service.py)
 - `compute_all_net_returns()` - Orchestrator: loops sold deals, pools net cashflows for portfolio metrics (sold_service.py)
 - `generate_net_returns_excel()` - Multi-sheet workbook with formula-driven waterfall detail (sold_service.py)
+- `create_request()` - Create a new user feedback request with reply token (feedback_service.py)
+- `list_requests()` - List requests with optional user/status/type filters (feedback_service.py)
+- `send_request_email()` - Send email to request submitter via SendGrid with reply link (feedback_service.py)
+- `handle_inbound_email()` - Process inbound email reply, match token, store in thread (feedback_service.py)
+- `export_all_requests()` - Export all requests with full threads for design sessions (feedback_service.py)
 
 ## Account Classifications
 
