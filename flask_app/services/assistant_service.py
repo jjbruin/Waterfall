@@ -304,6 +304,23 @@ TOOLS = [
             "required": ["vcode"],
         },
     },
+    {
+        "name": "get_user_feedback",
+        "description": "Get all user-submitted feedback requests (errors, improvements, report requests, analysis requests) with full message threads. Use this during design sessions to understand what users have reported and requested.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "description": "Filter by status: open, in_progress, resolved, closed. Omit for all.",
+                },
+                "request_type": {
+                    "type": "string",
+                    "description": "Filter by type: error, improvement, report, analysis. Omit for all.",
+                },
+            },
+        },
+    },
 ]
 
 # ── System prompt ────────────────────────────────────────────────────
@@ -530,6 +547,8 @@ def execute_tool(tool_name: str, tool_input: dict) -> str:
             return _tool_get_cash_management(tool_input)
         elif tool_name == "get_tenant_roster":
             return _tool_get_tenant_roster(tool_input)
+        elif tool_name == "get_user_feedback":
+            return _tool_get_user_feedback(tool_input)
         else:
             return json.dumps({"error": f"Unknown tool: {tool_name}"})
     except Exception as e:
@@ -1229,6 +1248,36 @@ def _tool_get_tenant_roster(inp):
         return json.dumps(out, default=str)
     except Exception as e:
         return json.dumps({"error": f"Tenant roster error for '{vcode}': {str(e)}"})
+
+
+def _tool_get_user_feedback(inp):
+    """Get user feedback requests for design sessions."""
+    try:
+        from flask_app.services.feedback_service import export_all_requests, list_requests
+        status = inp.get("status")
+        request_type = inp.get("request_type")
+
+        items = list_requests(status=status, request_type=request_type)
+
+        if not items:
+            return json.dumps({"message": "No feedback requests found.", "count": 0})
+
+        # Include full threads for up to 20 requests
+        if len(items) <= 20:
+            from flask_app.services.feedback_service import get_request
+            detailed = []
+            for item in items:
+                detailed.append(get_request(item["id"]))
+            return json.dumps({"requests": detailed, "count": len(detailed)}, default=str)
+
+        # Summarize if too many
+        return json.dumps({
+            "requests": items[:20],
+            "count": len(items),
+            "note": f"Showing first 20 of {len(items)} requests. Filter by status or type for more focused results.",
+        }, default=str)
+    except Exception as e:
+        return json.dumps({"error": f"Feedback query error: {str(e)}"})
 
 
 # ── Chat session management ──────────────────────────────────────────

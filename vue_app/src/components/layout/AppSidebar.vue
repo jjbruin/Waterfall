@@ -80,6 +80,20 @@ onMounted(async () => {
     localActualsThrough.value = data.config.actuals_through
     useActuals.value = !!data.config.actuals_through
   }
+
+  // Auto-open feedback panel if reply token in URL
+  const replyToken = new URLSearchParams(window.location.search).get('reply')
+  if (replyToken) {
+    showFeedback.value = true
+    try {
+      const client = (await import('../../api/client')).default
+      const res = await client.get(`/api/feedback/reply/${replyToken}`)
+      feedbackDetail.value = res.data
+      await loadFeedback()
+    } catch {
+      data.addToast('Invalid or expired reply link', 'error')
+    }
+  }
 })
 
 async function handleReload() {
@@ -258,6 +272,102 @@ async function handleMriRefreshSingle(queryName: string) {
   }
 }
 
+// Feedback / Requests
+const showFeedback = ref(false)
+const feedbackType = ref('error')
+const feedbackTitle = ref('')
+const feedbackDesc = ref('')
+const feedbackPriority = ref('medium')
+const feedbackSubmitting = ref(false)
+const feedbackList = ref<any[]>([])
+const feedbackLoaded = ref(false)
+const feedbackDetail = ref<any | null>(null)
+const feedbackReply = ref('')
+const feedbackReplying = ref(false)
+
+const feedbackTypeLabels: Record<string, string> = {
+  error: 'Report Error',
+  improvement: 'Suggest Improvement',
+  report: 'Request Report',
+  analysis: 'Request Analysis',
+}
+
+const feedbackStatusColors: Record<string, string> = {
+  open: '#90caf9',
+  in_progress: '#ffb74d',
+  resolved: '#81c784',
+  closed: 'rgba(255,255,255,0.4)',
+}
+
+async function loadFeedback() {
+  if (feedbackLoaded.value) return
+  try {
+    const client = (await import('../../api/client')).default
+    const res = await client.get('/api/feedback')
+    feedbackList.value = res.data.items
+    feedbackLoaded.value = true
+  } catch (e: any) {
+    data.addToast('Failed to load requests: ' + (e.response?.data?.error || e.message), 'error')
+  }
+}
+
+async function submitFeedback() {
+  if (!feedbackTitle.value.trim() || !feedbackDesc.value.trim()) {
+    data.addToast('Title and description are required', 'error')
+    return
+  }
+  feedbackSubmitting.value = true
+  try {
+    const client = (await import('../../api/client')).default
+    await client.post('/api/feedback', {
+      request_type: feedbackType.value,
+      title: feedbackTitle.value.trim(),
+      description: feedbackDesc.value.trim(),
+      priority: feedbackPriority.value,
+      page_context: route.path,
+    })
+    data.addToast('Request submitted successfully', 'success')
+    feedbackTitle.value = ''
+    feedbackDesc.value = ''
+    feedbackPriority.value = 'medium'
+    feedbackLoaded.value = false
+    await loadFeedback()
+  } catch (e: any) {
+    data.addToast('Failed to submit: ' + (e.response?.data?.error || e.message), 'error')
+  } finally {
+    feedbackSubmitting.value = false
+  }
+}
+
+async function openFeedbackDetail(id: number) {
+  try {
+    const client = (await import('../../api/client')).default
+    const res = await client.get(`/api/feedback/${id}`)
+    feedbackDetail.value = res.data
+  } catch (e: any) {
+    data.addToast('Failed to load request: ' + (e.response?.data?.error || e.message), 'error')
+  }
+}
+
+async function sendFeedbackReply() {
+  if (!feedbackReply.value.trim() || !feedbackDetail.value) return
+  feedbackReplying.value = true
+  try {
+    const client = (await import('../../api/client')).default
+    const res = await client.post(`/api/feedback/${feedbackDetail.value.id}/messages`, {
+      message: feedbackReply.value.trim(),
+    })
+    feedbackDetail.value = res.data
+    feedbackReply.value = ''
+    feedbackLoaded.value = false
+    await loadFeedback()
+  } catch (e: any) {
+    data.addToast('Failed to send reply: ' + (e.response?.data?.error || e.message), 'error')
+  } finally {
+    feedbackReplying.value = false
+  }
+}
+
 // Sidebar collapse toggle
 const collapsed = ref(false)
 
@@ -422,6 +532,122 @@ function toggleCollapsed() {
               <span class="import-status">{{ res.status === 'ok'
                 ? Object.values(res.tables || {}).reduce((s: number, t: any) => s + t.rows, 0).toLocaleString() + ' rows'
                 : 'error' }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Feedback & Requests -->
+      <div class="tool-section">
+        <button class="section-toggle" @click="showFeedback = !showFeedback; if (showFeedback) loadFeedback()">
+          {{ showFeedback ? '▾' : '▸' }} Feedback &amp; Requests
+        </button>
+        <div v-if="showFeedback" class="section-body">
+          <!-- Detail view -->
+          <div v-if="feedbackDetail" class="fb-detail">
+            <button class="link-btn" @click="feedbackDetail = null" style="margin-bottom: 6px">&larr; Back</button>
+            <div class="fb-detail-header">
+              <span class="fb-type-badge" :style="{ color: feedbackStatusColors[feedbackDetail.status] || '#fff' }">
+                {{ feedbackDetail.status.replace('_', ' ') }}
+              </span>
+              <span class="fb-detail-title">{{ feedbackDetail.title }}</span>
+            </div>
+            <div class="fb-detail-meta">
+              {{ feedbackDetail.request_type }} | {{ feedbackDetail.priority }} priority
+            </div>
+            <!-- Messages -->
+            <div class="fb-messages">
+              <div
+                v-for="msg in feedbackDetail.messages"
+                :key="msg.id"
+                class="fb-msg"
+                :class="{ 'fb-msg-admin': msg.sender_type === 'admin', 'fb-msg-system': msg.sender_type === 'system' }"
+              >
+                <div class="fb-msg-header">
+                  <span class="fb-msg-sender">{{ msg.sender_name }}</span>
+                  <span class="fb-msg-via" v-if="msg.sent_via === 'email'">(email)</span>
+                  <span class="fb-msg-time">{{ new Date(msg.created_at).toLocaleDateString() }}</span>
+                </div>
+                <div class="fb-msg-body">{{ msg.message }}</div>
+              </div>
+            </div>
+            <!-- Reply -->
+            <div class="fb-reply">
+              <textarea
+                v-model="feedbackReply"
+                class="fb-textarea"
+                rows="2"
+                placeholder="Reply..."
+              ></textarea>
+              <button
+                class="btn btn-xs btn-full"
+                @click="sendFeedbackReply"
+                :disabled="feedbackReplying || !feedbackReply.trim()"
+                style="margin-top: 4px"
+              >
+                {{ feedbackReplying ? 'Sending...' : 'Send Reply' }}
+              </button>
+            </div>
+          </div>
+
+          <!-- Submit form + list view -->
+          <div v-else>
+            <!-- Quick submit form -->
+            <div class="fb-form">
+              <select v-model="feedbackType" class="fb-select">
+                <option v-for="(label, key) in feedbackTypeLabels" :key="key" :value="key">
+                  {{ label }}
+                </option>
+              </select>
+              <input
+                v-model="feedbackTitle"
+                class="fb-input"
+                placeholder="Brief title"
+                maxlength="120"
+              />
+              <textarea
+                v-model="feedbackDesc"
+                class="fb-textarea"
+                rows="3"
+                placeholder="Describe the issue or request..."
+              ></textarea>
+              <div class="fb-form-row">
+                <select v-model="feedbackPriority" class="fb-select fb-select-sm">
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </select>
+                <button
+                  class="btn btn-xs"
+                  @click="submitFeedback"
+                  :disabled="feedbackSubmitting || !feedbackTitle.trim() || !feedbackDesc.trim()"
+                >
+                  {{ feedbackSubmitting ? 'Submitting...' : 'Submit' }}
+                </button>
+              </div>
+            </div>
+
+            <!-- Previous requests -->
+            <div v-if="feedbackList.length" class="fb-list">
+              <div class="db-divider" style="margin: 6px 0"></div>
+              <span class="db-label">Your Requests</span>
+              <div
+                v-for="item in feedbackList"
+                :key="item.id"
+                class="fb-item"
+                @click="openFeedbackDetail(item.id)"
+              >
+                <div class="fb-item-top">
+                  <span class="fb-item-title">{{ item.title }}</span>
+                  <span class="fb-item-count" v-if="item.message_count > 1">{{ item.message_count }}</span>
+                </div>
+                <div class="fb-item-meta">
+                  <span class="fb-type-badge" :style="{ color: feedbackStatusColors[item.status] || '#fff' }">
+                    {{ item.status.replace('_', ' ') }}
+                  </span>
+                  <span>{{ item.request_type }}</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -900,6 +1126,164 @@ function toggleCollapsed() {
 .import-row.protected .import-status { color: #ffb74d; }
 .import-row.skipped .import-status { color: rgba(255, 255, 255, 0.5); }
 .import-row.error .import-status { color: #ef5350; }
+
+/* Feedback */
+.fb-form { display: flex; flex-direction: column; gap: 4px; }
+
+.fb-select {
+  width: 100%;
+  padding: 3px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.1);
+  color: white;
+  font-size: 11px;
+}
+.fb-select option { background: #1d4e7e; color: white; }
+.fb-select-sm { width: auto; min-width: 70px; }
+
+.fb-input {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.1);
+  color: white;
+  font-size: 11px;
+  box-sizing: border-box;
+}
+.fb-input::placeholder, .fb-textarea::placeholder {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.fb-textarea {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.1);
+  color: white;
+  font-size: 11px;
+  resize: vertical;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+.fb-form-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.fb-list { max-height: 200px; overflow-y: auto; }
+
+.fb-item {
+  padding: 4px 6px;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.fb-item:hover { background: rgba(255, 255, 255, 0.08); }
+
+.fb-item-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.fb-item-title {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.85);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.fb-item-count {
+  font-size: 9px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  padding: 0 5px;
+  color: rgba(255, 255, 255, 0.7);
+  flex-shrink: 0;
+  margin-left: 4px;
+}
+
+.fb-item-meta {
+  display: flex;
+  gap: 8px;
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.4);
+  margin-top: 1px;
+}
+
+.fb-type-badge {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+/* Detail view */
+.fb-detail-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+.fb-detail-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: white;
+}
+.fb-detail-meta {
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.4);
+  margin-bottom: 6px;
+  text-transform: capitalize;
+}
+
+.fb-messages {
+  max-height: 180px;
+  overflow-y: auto;
+  margin: 4px 0;
+}
+
+.fb-msg {
+  padding: 4px 6px;
+  margin-bottom: 3px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.05);
+}
+.fb-msg-admin {
+  background: rgba(29, 78, 126, 0.3);
+  border-left: 2px solid #90caf9;
+}
+.fb-msg-system {
+  background: none;
+  font-style: italic;
+}
+
+.fb-msg-header {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.5);
+  margin-bottom: 2px;
+}
+.fb-msg-sender { font-weight: 600; color: rgba(255, 255, 255, 0.7); }
+.fb-msg-via { font-style: italic; }
+.fb-msg-time { margin-left: auto; }
+
+.fb-msg-body {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.85);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.fb-reply { margin-top: 4px; }
 
 /* Buttons */
 .btn {

@@ -124,6 +124,9 @@ def create_app(config_name: str = None) -> Flask:
     from flask_app.api.assistant import assistant_bp
     app.register_blueprint(assistant_bp, url_prefix="/api/assistant")
 
+    from flask_app.api.feedback import feedback_bp
+    app.register_blueprint(feedback_bp, url_prefix="/api/feedback")
+
     # Health check
     @app.route("/health")
     def health():
