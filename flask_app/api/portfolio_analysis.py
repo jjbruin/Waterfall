@@ -35,7 +35,7 @@ def entities():
 def entity_deals(entity_id):
     """List deals linked to a portfolio entity."""
     data = _get_data()
-    deals = find_entity_deals(
+    deals, _match = find_entity_deals(
         entity_id, data["inv"], data["wf"], data["relationships_raw"]
     )
     investors = get_entity_investors(entity_id, data["relationships_raw"])

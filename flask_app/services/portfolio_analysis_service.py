@@ -101,7 +101,7 @@ def find_portfolio_entities(wf: pd.DataFrame,
 
 
 def find_entity_deals(entity_id: str, inv: pd.DataFrame, wf: pd.DataFrame,
-                      relationships_raw: pd.DataFrame) -> list[dict]:
+                      relationships_raw: pd.DataFrame) -> tuple[list[dict], set]:
     """Find deals linked to a specific portfolio entity through intermediaries.
 
     Uses recursive downward traversal to find all intermediate entities, then
@@ -110,7 +110,8 @@ def find_entity_deals(entity_id: str, inv: pd.DataFrame, wf: pd.DataFrame,
     that the selected entity doesn't have direct waterfall exposure to.
     Excludes sold deals and filters ended relationships.
 
-    Returns list of deal info dicts with vcode, name, PPI linkage, ownership.
+    Returns (deal_info_list, match_entities) where match_entities is the set
+    of downstream entity IDs + entity_id used for PropCode matching.
     """
     if relationships_raw is None or relationships_raw.empty:
         return []
@@ -202,7 +203,7 @@ def find_entity_deals(entity_id: str, inv: pd.DataFrame, wf: pd.DataFrame,
             row_info["entity_pct"] = ppi_pcts[ppi]
         result.append(row_info)
 
-    return result
+    return result, match_entities
 
 
 def get_entity_investors(entity_id: str,
@@ -240,7 +241,7 @@ def compute_portfolio_actual(entity_id: str, data: dict,
     wf = data["wf"]
     relationships_raw = data["relationships_raw"]
 
-    deal_list = find_entity_deals(entity_id, inv, wf, relationships_raw)
+    deal_list, match_entities = find_entity_deals(entity_id, inv, wf, relationships_raw)
     deal_vcodes = [d["vcode"] for d in deal_list]
 
     if not deal_vcodes:
@@ -254,6 +255,7 @@ def compute_portfolio_actual(entity_id: str, data: dict,
         horizon_years=horizon_years,
         pro_yr_base=pro_yr_base,
         wf_override=None,
+        match_entities=match_entities,
     )
 
 
@@ -272,7 +274,7 @@ def compute_portfolio_proposed(entity_id: str, data: dict,
     wf = data["wf"]
     relationships_raw = data["relationships_raw"]
 
-    deal_list = find_entity_deals(entity_id, inv, wf, relationships_raw)
+    deal_list, _match = find_entity_deals(entity_id, inv, wf, relationships_raw)
     deal_vcodes = [d["vcode"] for d in deal_list]
 
     if not deal_vcodes:
@@ -357,7 +359,7 @@ def _build_entity_seeded_states(entity_id: str, acct) -> dict:
 def _run_upstream_computation(entity_id: str, deal_vcodes: list[str],
                               data: dict, start_year: int,
                               horizon_years: int, pro_yr_base: int,
-                              wf_override) -> dict:
+                              wf_override, match_entities: set = None) -> dict:
     """Core computation: run deals + upstream waterfalls through entity."""
     from flask_app.services.compute_service import get_cached_deal_result
 
@@ -466,6 +468,7 @@ def _run_upstream_computation(entity_id: str, deal_vcodes: list[str],
         errors=errors,
         acct=data.get("acct"),
         wf_raw=wf,
+        match_entities=match_entities,
     )
 
 
@@ -830,7 +833,9 @@ def _apply_proposed_waterfall(entity_id: str,
     entity_irr = xirr(total_net_cashflows) if len(total_net_cashflows) >= 2 else None
     entity_moic = total_dists / abs(total_contribs) if total_contribs < 0 else 0.0
 
-    deal_returns_list, pref_eq_summary = _build_deal_returns(deal_vcodes, deal_results, inv)
+    deal_returns_list, pref_eq_summary = _build_deal_returns(
+        deal_vcodes, deal_results, inv,
+    )
 
     return {
         "entity_id": entity_id,
@@ -860,7 +865,7 @@ def _build_entity_results(entity_id, cf_upstream_alloc, cap_upstream_alloc,
                           cf_entity_states, cap_entity_states,
                           deal_results, deal_vcodes, inv,
                           relationships_raw, mode, errors,
-                          acct=None, wf_raw=None):
+                          acct=None, wf_raw=None, match_entities=None):
     """Build structured results from upstream waterfall outputs."""
     # Get investors in this entity
     investors = get_entity_investors(entity_id, relationships_raw)
@@ -1037,7 +1042,9 @@ def _build_entity_results(entity_id, cf_upstream_alloc, cap_upstream_alloc,
     deal_irr = xirr(xirr_cfs) if xirr_cfs else None
     deal_moic = total_distributions / abs(total_contributions) if total_contributions < 0 else 0.0
 
-    deal_returns_list, pref_eq_summary = _build_deal_returns(deal_vcodes, deal_results, inv)
+    deal_returns_list, pref_eq_summary = _build_deal_returns(
+        deal_vcodes, deal_results, inv, match_entities=match_entities,
+    )
 
     return {
         "entity_id": entity_id,
@@ -1384,12 +1391,16 @@ def _build_deal_info(deal_vcodes, deal_results, inv):
     return deal_info
 
 
-def _build_deal_returns(deal_vcodes, deal_results, inv):
+def _build_deal_returns(deal_vcodes, deal_results, inv, match_entities=None):
     """Build per-deal pref equity returns for the summary table.
 
     Shows the preferred equity partner's returns for each deal, since upstream
     investors only participate in the pref equity component. Also computes
     a portfolio-level aggregate of all pref equity cashflows.
+
+    When match_entities is provided, only includes pref partners whose PropCode
+    is in the match set (entity's downstream chain). This ensures we show the
+    entity's share of PE, not the full deal PE.
 
     Returns (deal_returns_list, pref_equity_summary).
     """
@@ -1416,6 +1427,13 @@ def _build_deal_returns(deal_vcodes, deal_results, inv):
 
         partner_results = deal_results[vc].get("partner_results", [])
         pref_partners = [pr for pr in partner_results if pr.get("is_pref_equity", False)]
+
+        # Filter to only partners in the entity's ownership chain
+        if match_entities and pref_partners:
+            pref_partners = [
+                pr for pr in pref_partners
+                if pr["partner"] in match_entities
+            ]
 
         if pref_partners:
             contribs = sum(pr["contributions"] for pr in pref_partners)
