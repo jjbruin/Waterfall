@@ -428,16 +428,18 @@ const partnerCols = [
 // Deal metrics
 // ============================================================
 
-const dealMetrics = computed(() => {
+type KpiFormat = 'currency' | 'currency2' | 'currency-millions' | 'percent' | 'number' | 'integer'
+
+const dealMetrics = computed<Array<{ label: string; value: string | number; format: KpiFormat }>>(() => {
   const ds = deals.currentSummary
   if (!ds) return []
   return [
-    { label: 'Deal IRR', value: ds.deal_irr, format: 'percent' },
-    { label: 'Deal ROE', value: ds.deal_roe, format: 'percent' },
-    { label: 'Deal MOIC', value: ds.deal_moic, format: 'number' },
-    { label: 'Contributions', value: ds.total_contributions, format: 'currency' },
-    { label: 'CF Distributions', value: ds.total_cf_distributions, format: 'currency' },
-    { label: 'Cap Distributions', value: ds.total_cap_distributions, format: 'currency' },
+    { label: 'Deal IRR', value: ds.deal_irr ?? '—', format: 'percent' },
+    { label: 'Deal ROE', value: ds.deal_roe ?? '—', format: 'percent' },
+    { label: 'Deal MOIC', value: ds.deal_moic ?? '—', format: 'number' },
+    { label: 'Contributions', value: ds.total_contributions ?? 0, format: 'currency' },
+    { label: 'CF Distributions', value: ds.total_cf_distributions ?? 0, format: 'currency' },
+    { label: 'Cap Distributions', value: ds.total_cap_distributions ?? 0, format: 'currency' },
   ]
 })
 
@@ -811,10 +813,10 @@ watch(() => deals.currentVcode, (vc) => {
                   <tr><th>Metric</th><th class="right">Max Loan</th><th>Binding?</th></tr>
                 </thead>
                 <tbody>
-                  <tr v-for="(c, name) in deals.currentRefiDbg.constraints" :key="name">
-                    <td>{{ name === 'ltv' ? `LTV (${(c.max_ltv * 100).toFixed(0)}%)` : name === 'dscr' ? `DSCR (${c.min_dscr}x)` : name === 'debt_yield' ? `Debt Yield (${(c.min_debt_yield * 100).toFixed(1)}%)` : 'Quoted' }}</td>
+                  <tr v-for="(c, name) in deals.currentRefiDbg.constraints" :key="String(name)">
+                    <td>{{ String(name) === 'ltv' ? `LTV (${(c.max_ltv * 100).toFixed(0)}%)` : String(name) === 'dscr' ? `DSCR (${c.min_dscr}x)` : String(name) === 'debt_yield' ? `Debt Yield (${(c.min_debt_yield * 100).toFixed(1)}%)` : 'Quoted' }}</td>
                     <td class="right">{{ fmtCur(c.max_loan) }}</td>
-                    <td><strong v-if="deals.currentRefiDbg.binding_constraint === name">Yes</strong></td>
+                    <td><strong v-if="deals.currentRefiDbg.binding_constraint === String(name)">Yes</strong></td>
                   </tr>
                 </tbody>
               </table>
@@ -1044,19 +1046,19 @@ watch(() => deals.currentVcode, (vc) => {
         <div v-if="expanded.forecast" class="section-body">
           <p v-if="deals.loadingSection === 'forecast'" class="loading-msg">Loading forecast...</p>
           <div v-else-if="deals.currentForecast" class="forecast-table-wrapper">
-            <table class="forecast-table" v-if="deals.currentForecast.rows.length">
+            <table class="forecast-table" v-if="deals.currentForecast?.rows?.length">
               <thead>
                 <tr>
                   <th class="label-col">Line Item</th>
-                  <th v-for="y in deals.currentForecast.years" :key="y" class="year-col">{{ y }}</th>
+                  <th v-for="y in deals.currentForecast?.years" :key="y" class="year-col">{{ y }}</th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="(row, i) in deals.currentForecast.rows" :key="i"
+                <tr v-for="(row, i) in deals.currentForecast?.rows" :key="i"
                     :class="{ 'section-header-row': row.label.endsWith(':'), 'blank-row': row.label.trim() === '', 'underline-row': ['Expenses', 'Capital Expenditures', 'Other Below-the-Line'].includes(row.label.trim()), 'topline-row': row.label.trim() === 'Total Distributions' }">
                   <td class="label-col">{{ row.label }}</td>
-                  <td v-for="y in deals.currentForecast.years" :key="y" class="year-col">
-                    {{ (row.label.trim() === '' || row.label.endsWith(':')) ? '' : row.values[String(y)] != null ? (row.label === 'Debt Service Coverage Ratio' ? row.values[String(y)].toFixed(2) : fmtInt(row.values[String(y)])) : '' }}
+                  <td v-for="y in deals.currentForecast?.years" :key="y" class="year-col">
+                    {{ (row.label.trim() === '' || row.label.endsWith(':')) ? '' : row.values[String(y)] != null ? (row.label === 'Debt Service Coverage Ratio' ? row.values[String(y)]?.toFixed(2) : fmtInt(row.values[String(y)])) : '' }}
                   </td>
                 </tr>
               </tbody>

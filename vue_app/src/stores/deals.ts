@@ -99,7 +99,7 @@ export interface MoicAudit {
 }
 
 export interface XirrCashflows {
-  [partner: string]: Array<{ date: string; amount: number }>
+  [partner: string]: Array<{ date: string; amount: number; description?: string }>
 }
 
 export interface ProspectiveLoan {

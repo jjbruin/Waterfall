@@ -33,7 +33,7 @@ interface NoiData {
 }
 
 interface OccByType {
-  data: Array<{ asset_type: string; occupancy: number; above_avg: boolean }>
+  data: Array<{ asset_type: string; occupancy: number; above_avg: boolean; property_count?: number }>
   portfolio_avg: number
 }
 
@@ -42,6 +42,7 @@ interface AssetAlloc {
   pref_equity: number
   pct: number
   count: number
+  property_count?: number
 }
 
 interface LoanMaturity {

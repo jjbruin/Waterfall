@@ -22,7 +22,7 @@ onMounted(async () => {
 
 // Computed helpers
 const partnerResults = computed(() => psckoc.results?.partner_results || [])
-const dealSummary = computed(() => psckoc.results?.deal_summary || {})
+const dealSummary = computed<Record<string, any>>(() => psckoc.results?.deal_summary || {})
 const incomeSchedule = computed(() => psckoc.results?.income_schedule || [])
 const memberAllocations = computed(() => psckoc.results?.member_allocations || [])
 const amFeeSchedule = computed(() => psckoc.results?.am_fee_schedule || [])

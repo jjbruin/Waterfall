@@ -18,7 +18,7 @@ const deals = useDealsStore()
 const route = useRoute()
 
 // Review workflow state
-const reviewStatus = ref<Record<string, any> | null>(null)
+const reviewStatus = ref<any>(null)
 const reviewLoading = ref(false)
 
 onMounted(async () => {

@@ -1,10 +1,16 @@
 <script setup lang="ts">
+import type { CSSProperties } from 'vue'
+
 defineProps<{
   columns: Array<{ key: string; label: string; format?: string; align?: string }>
   rows: Array<Record<string, any>>
   highlightTotal?: boolean
   rowClass?: (row: Record<string, any>) => string | Record<string, boolean> | undefined
 }>()
+
+function cellStyle(align?: string): CSSProperties {
+  return { textAlign: (align || 'left') as CSSProperties['textAlign'] }
+}
 
 function formatCell(value: any, format?: string): string {
   if (value == null) return '—'
@@ -32,7 +38,7 @@ function formatCell(value: any, format?: string): string {
     <table class="data-table">
       <thead>
         <tr>
-          <th v-for="col in columns" :key="col.key" :style="{ textAlign: col.align || 'left' }">
+          <th v-for="col in columns" :key="col.key" :style="cellStyle(col.align)">
             {{ col.label }}
           </th>
         </tr>
@@ -43,7 +49,7 @@ function formatCell(value: any, format?: string): string {
           :key="idx"
           :class="[{ 'total-row': highlightTotal && row._is_deal_total }, rowClass?.(row)]"
         >
-          <td v-for="col in columns" :key="col.key" :style="{ textAlign: col.align || 'left' }">
+          <td v-for="col in columns" :key="col.key" :style="cellStyle(col.align)">
             {{ formatCell(row[col.key], col.format) }}
           </td>
         </tr>
