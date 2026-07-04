@@ -9,8 +9,8 @@ from io import BytesIO
 from datetime import date
 from typing import Optional
 
-from ownership_tree import load_relationships
-from loaders import load_waterfalls
+from ownership_tree import load_relationships, build_ownership_tree, get_ultimate_investors
+from loaders import load_waterfalls, build_investmentid_to_vcode
 from waterfall import run_recursive_upstream_waterfalls
 from metrics import xirr, calculate_roe
 
@@ -24,41 +24,68 @@ _psckoc_cache: dict = {}
 
 def find_psckoc_deals(inv: pd.DataFrame, wf: pd.DataFrame,
                       relationships_raw: pd.DataFrame) -> list[dict]:
-    """Find deals whose upstream waterfall chain passes through PSCKOC.
+    """Find deals whose upstream ownership chain passes through PSCKOC.
+
+    Uses recursive ownership tree traversal (same as Reports partner list)
+    to discover all deals where PSCKOC is an ultimate investor, regardless
+    of how many intermediate entities exist in the chain.
 
     Returns list of deal info dicts with vcode, name, asset type, PPI linkage.
     """
     if relationships_raw is None or relationships_raw.empty:
         return []
-    if wf is None or wf.empty:
-        return []
     if inv is None or inv.empty:
         return []
 
-    rel = relationships_raw.copy()
-    rel["InvestorID"] = rel["InvestorID"].astype(str).str.strip()
-    rel["InvestmentID"] = rel["InvestmentID"].astype(str).str.strip()
+    relationships = load_relationships(relationships_raw)
 
-    # Step 1: entities where PSCKOC is an investor
-    psckoc_investments = set(
-        rel[rel["InvestorID"] == PSCKOC_ENTITY]["InvestmentID"].unique()
-    )
-    if not psckoc_investments:
-        return []
+    # Filter out ended relationships
+    if "EndDate" in relationships.columns:
+        end_col = relationships["EndDate"]
+        is_empty = end_col.isna() | (end_col.astype(str).str.strip().isin(["", "NaT", "nan", "None"]))
+        relationships = relationships[is_empty].copy()
 
-    # Step 2: find deal vcodes whose waterfall steps reference a PSCKOC investment entity
-    wf_norm = wf.copy()
-    wf_norm["PropCode"] = wf_norm["PropCode"].fillna("").astype(str).str.strip()
-    wf_norm["vcode"] = wf_norm["vcode"].fillna("").astype(str).str.strip()
+    nodes = build_ownership_tree(relationships)
+    inv_to_vcode = build_investmentid_to_vcode(inv)
 
-    deal_vcodes_set = set(inv["vcode"].astype(str).str.strip())
-    wf_vcodes_set = set(wf_norm["vcode"].unique())
-
+    # For each deal, trace ultimate investors; keep deals where PSCKOC is one
     deal_vcodes = set()
-    ppi_for_deal = {}  # deal_vcode -> (ppi_entity, ownership_pct)
+    deal_vcodes_set = set(inv["vcode"].astype(str).str.strip())
+    wf_vcodes_set = set()
+    if wf is not None and not wf.empty:
+        wf_vcodes_set = set(wf["vcode"].fillna("").astype(str).str.strip().unique())
 
-    # Build PPI ownership percentages
-    psckoc_inv = rel[rel["InvestorID"] == PSCKOC_ENTITY]
+    for inv_id, vc in inv_to_vcode.items():
+        vc = str(vc)
+        if vc not in deal_vcodes_set:
+            continue
+        # Only include deals that have waterfalls (can be computed)
+        if wf_vcodes_set and vc not in wf_vcodes_set:
+            continue
+        if inv_id not in nodes:
+            continue
+        ultimate = get_ultimate_investors(inv_id, nodes, normalize=True)
+        for investor_id, _ in ultimate:
+            if investor_id == PSCKOC_ENTITY:
+                deal_vcodes.add(vc)
+                break
+
+    # Also check direct relationships (InvestorID → InvestmentID → vcode)
+    for _, rel_row in relationships.iterrows():
+        inv_id = str(rel_row.get("InvestmentID", "")).strip()
+        investor_id = str(rel_row.get("InvestorID", "")).strip()
+        vc = inv_to_vcode.get(inv_id)
+        if vc and str(vc) in deal_vcodes_set and investor_id == PSCKOC_ENTITY:
+            deal_vcodes.add(str(vc))
+
+    # Remove PSCKOC itself and members (not actual deals)
+    deal_vcodes -= {PSCKOC_ENTITY} | set(PSCKOC_MEMBERS)
+
+    # Build PPI linkage info for display
+    rel_norm = relationships.copy()
+    rel_norm["InvestorID"] = rel_norm["InvestorID"].astype(str).str.strip()
+    rel_norm["InvestmentID"] = rel_norm["InvestmentID"].astype(str).str.strip()
+    psckoc_inv = rel_norm[rel_norm["InvestorID"] == PSCKOC_ENTITY]
     ppi_pcts = {}
     for _, r in psckoc_inv.iterrows():
         ppi = r["InvestmentID"]
@@ -66,16 +93,6 @@ def find_psckoc_deals(inv: pd.DataFrame, wf: pd.DataFrame,
         if pct > 1:
             pct = pct / 100.0
         ppi_pcts[ppi] = pct
-
-    for ppi in psckoc_investments:
-        refs = wf_norm[wf_norm["PropCode"] == ppi]["vcode"].unique()
-        for vc in refs:
-            if vc in deal_vcodes_set and vc in wf_vcodes_set:
-                deal_vcodes.add(vc)
-                ppi_for_deal[vc] = (ppi, ppi_pcts.get(ppi, 0))
-
-    # Remove PSCKOC itself, members, and PPI intermediaries
-    deal_vcodes -= {PSCKOC_ENTITY} | set(PSCKOC_MEMBERS) | psckoc_investments
 
     # Build deal info list
     result = []
@@ -87,10 +104,16 @@ def find_psckoc_deals(inv: pd.DataFrame, wf: pd.DataFrame,
             row_info["name"] = str(r.get("Investment_Name", vc))
             row_info["asset_type"] = str(r.get("Asset_Type", ""))
             row_info["sale_status"] = str(r.get("Sale_Status", "Active") or "Active")
-        if vc in ppi_for_deal:
-            ppi, pct = ppi_for_deal[vc]
-            row_info["ppi_entity"] = ppi
-            row_info["psckoc_pct"] = pct
+        # Find PPI entity linking this deal to PSCKOC (for display)
+        if vc in inv_to_vcode.values():
+            inv_id_for_vc = next((k for k, v in inv_to_vcode.items() if str(v) == vc), None)
+            if inv_id_for_vc and inv_id_for_vc in nodes:
+                # Walk up one level to find the intermediate entity
+                for investor_id, pct in nodes[inv_id_for_vc].investors:
+                    if investor_id in ppi_pcts:
+                        row_info["ppi_entity"] = investor_id
+                        row_info["psckoc_pct"] = ppi_pcts[investor_id]
+                        break
         result.append(row_info)
 
     return result
