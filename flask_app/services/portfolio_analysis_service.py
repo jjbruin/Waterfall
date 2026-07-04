@@ -153,18 +153,19 @@ def find_entity_deals(entity_id: str, inv: pd.DataFrame, wf: pd.DataFrame,
 
     downstream = _get_downstream_entities(entity_id)
 
-    # Find deals whose waterfall PropCode references a downstream entity.
-    # This ensures the deal actually allocates cash through the entity's chain,
-    # preventing false matches from shared holding entities.
+    # Find deals whose waterfall PropCode references the entity itself or a
+    # downstream entity. Including the entity itself catches deals that list
+    # it directly as a PropCode (e.g., Life Storage lists TGA22 as PropCode).
     wf_norm = wf.copy() if wf is not None and not wf.empty else pd.DataFrame()
     deal_vcodes = set()
     ppi_for_deal = {}
+    match_entities = downstream | {entity_id}
 
     if not wf_norm.empty:
         wf_norm["PropCode"] = wf_norm["PropCode"].fillna("").astype(str).str.strip()
         wf_norm["vcode"] = wf_norm["vcode"].fillna("").astype(str).str.strip()
 
-        for entity in downstream:
+        for entity in match_entities:
             refs = wf_norm[wf_norm["PropCode"] == entity]["vcode"].unique()
             for vc in refs:
                 if vc in deal_vcodes_set:
