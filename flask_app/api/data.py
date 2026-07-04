@@ -25,10 +25,7 @@ def get_version():
 
 
 def _get_data():
-    """Helper to load all data using current app config."""
-    db_path = current_app.config["DB_PATH"]
-    pro_yr_base = current_app.config["PRO_YR_BASE_DEFAULT"]
-    return data_service.load_all(db_path, pro_yr_base)
+    return data_service.get_data()
 
 
 @data_bp.route("/deals", methods=["GET"])

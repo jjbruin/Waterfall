@@ -377,10 +377,7 @@ Today's date is """ + date.today().isoformat() + "."
 # ── Tool execution ───────────────────────────────────────────────────
 
 def _get_data():
-    """Load app data (cached)."""
-    db_path = current_app.config["DB_PATH"]
-    pro_yr_base = current_app.config["PRO_YR_BASE_DEFAULT"]
-    return data_service.load_all(db_path, pro_yr_base)
+    return data_service.get_data()
 
 
 def _df_to_json(df, limit=100):

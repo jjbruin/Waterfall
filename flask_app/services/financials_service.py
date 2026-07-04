@@ -12,6 +12,7 @@ from datetime import datetime, date
 from typing import Optional
 
 from config import IS_ACCOUNTS, BS_ACCOUNTS
+from flask_app.services.isbs_helpers import compute_cumulative_noi, cumulative_to_periodic, aggregate_periodic
 
 
 # ============================================================
@@ -101,66 +102,17 @@ def get_performance_chart_data(
     rev_accounts = [a for lst in IS_ACCOUNTS['REVENUES'].values() for a in lst]
     exp_accounts = [a for lst in IS_ACCOUNTS['EXPENSES'].values() for a in lst]
 
-    def _compute_cumulative_noi(data, dates):
-        noi_by_date = {}
-        for dt in dates:
-            period = data[data['dtEntry_parsed'] == dt]
-            rev = period[period['vAccount'].isin(rev_accounts)]['mAmount'].sum()
-            exp = period[period['vAccount'].isin(exp_accounts)]['mAmount'].sum()
-            noi_by_date[dt] = (-rev) - exp
-        return noi_by_date
-
     actual_dates = sorted(actual_data['dtEntry_parsed'].dropna().unique())
     uw_dates = sorted(uw_data['dtEntry_parsed'].dropna().unique())
 
-    actual_cum = _compute_cumulative_noi(actual_data, actual_dates) if actual_dates else {}
-    uw_cum = _compute_cumulative_noi(uw_data, uw_dates) if uw_dates else {}
+    actual_cum = compute_cumulative_noi(actual_data, actual_dates, rev_accounts, exp_accounts) if actual_dates else {}
+    uw_cum = compute_cumulative_noi(uw_data, uw_dates, rev_accounts, exp_accounts) if uw_dates else {}
 
-    def _cumulative_to_periodic(cum_dict, sorted_dates):
-        periodic = {}
-        for i, dt in enumerate(sorted_dates):
-            dt_ts = pd.Timestamp(dt)
-            if dt_ts.month == 1:
-                periodic[dt_ts] = cum_dict[dt]
-            else:
-                prior = None
-                for j in range(i - 1, -1, -1):
-                    p = pd.Timestamp(sorted_dates[j])
-                    if p.year == dt_ts.year:
-                        prior = sorted_dates[j]
-                        break
-                periodic[dt_ts] = cum_dict[dt] - cum_dict.get(prior, 0) if prior else cum_dict[dt]
-        return periodic
+    actual_periodic = cumulative_to_periodic(actual_cum, actual_dates)
+    uw_periodic = cumulative_to_periodic(uw_cum, uw_dates)
 
-    actual_periodic = _cumulative_to_periodic(actual_cum, actual_dates)
-    uw_periodic = _cumulative_to_periodic(uw_cum, uw_dates)
-
-    def _aggregate(periodic_dict, freq):
-        if not periodic_dict:
-            return {}
-        if freq == "Monthly":
-            return periodic_dict
-        elif freq == "Quarterly":
-            quarterly = {}
-            month_counts = {}
-            for dt, val in sorted(periodic_dict.items()):
-                dt_ts = pd.Timestamp(dt)
-                q_month = ((dt_ts.month - 1) // 3 + 1) * 3
-                q_end = pd.Timestamp(year=dt_ts.year, month=q_month, day=1) + pd.offsets.MonthEnd(0)
-                quarterly[q_end] = quarterly.get(q_end, 0) + val
-                month_counts[q_end] = month_counts.get(q_end, 0) + 1
-            return {k: v for k, v in quarterly.items() if month_counts.get(k, 0) == 3}
-        else:  # Annually
-            annual = {}
-            month_counts = {}
-            for dt, val in sorted(periodic_dict.items()):
-                yr_end = pd.Timestamp(year=pd.Timestamp(dt).year, month=12, day=31)
-                annual[yr_end] = annual.get(yr_end, 0) + val
-                month_counts[yr_end] = month_counts.get(yr_end, 0) + 1
-            return {k: v for k, v in annual.items() if month_counts.get(k, 0) == 12}
-
-    actual_agg = _aggregate(actual_periodic, freq)
-    uw_agg = _aggregate(uw_periodic, freq)
+    actual_agg = aggregate_periodic(actual_periodic, freq)
+    uw_agg = aggregate_periodic(uw_periodic, freq)
 
     all_period_ends = sorted(set(actual_agg.keys()) | set(uw_agg.keys()))
     if not all_period_ends:

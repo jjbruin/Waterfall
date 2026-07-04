@@ -17,9 +17,7 @@ deals_bp = Blueprint("deals", __name__)
 
 
 def _get_data():
-    db_path = current_app.config["DB_PATH"]
-    pro_yr_base = current_app.config["PRO_YR_BASE_DEFAULT"]
-    return data_service.load_all(db_path, pro_yr_base)
+    return data_service.get_data()
 
 
 def _load_sale_override(vcode: str):
@@ -114,6 +112,25 @@ def compute_deal():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+    # Build header data inline to avoid a separate /header round-trip
+    inv = data["inv"]
+    deal_row = inv[inv["vcode"] == vcode]
+    metadata = {}
+    if not deal_row.empty:
+        row = deal_row.iloc[0]
+        metadata = {
+            "vcode": vcode,
+            "Investment_Name": row.get("Investment_Name", vcode),
+            "InvestmentID": row.get("InvestmentID", ""),
+            "Asset_Type": row.get("Asset_Type", ""),
+            "Lifecycle": row.get("Lifecycle", ""),
+            "Total_Units": row.get("Total_Units", ""),
+            "Total_SQF": row.get("Total_SQF", ""),
+            "Acquisition_Date": str(row.get("Acquisition_Date", "")),
+            "Sale_Date": str(row.get("Sale_Date", "")),
+            "Sale_Status": row.get("Sale_Status", ""),
+        }
+
     return jsonify({
         "vcode": vcode,
         "partner_results": safe_json(result.get("partner_results", [])),
@@ -122,6 +139,12 @@ def compute_deal():
         "refi_dbg": safe_json(result.get("refi_dbg")),
         "refi_capital_call_required": result.get("refi_capital_call_required", False),
         "refi_capital_call_amount": result.get("refi_capital_call_amount", 0),
+        "header": safe_json({
+            "metadata": metadata,
+            "cap_data": result.get("cap_data", {}),
+            "consolidation": result.get("consolidation_info", {}),
+            "sub_portfolio_msg": result.get("sub_portfolio_msg"),
+        }),
     })
 
 

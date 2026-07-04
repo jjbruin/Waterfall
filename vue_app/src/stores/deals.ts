@@ -291,15 +291,12 @@ export const useDealsStore = defineStore('deals', () => {
       }
       if (saleDateOverride.value[vcode]) payload.sale_date_override = saleDateOverride.value[vcode]
 
-      // Fire compute + header in parallel
-      const [compRes, headerRes] = await Promise.all([
-        api.post('/api/deals/compute', payload),
-        api.get(`/api/deals/${vcode}/header`),
-      ])
+      // Single compute call — header data included in response
+      const compRes = await api.post('/api/deals/compute', payload)
       partnerResults.value[vcode] = compRes.data.partner_results
       dealSummaries.value[vcode] = compRes.data.deal_summary
       debugMsgs.value[vcode] = compRes.data.debug_msgs || []
-      headers.value[vcode] = headerRes.data
+      headers.value[vcode] = compRes.data.header || {}
 
       // Store refi info
       refiDbg.value[vcode] = compRes.data.refi_dbg || null

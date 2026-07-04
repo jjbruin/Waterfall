@@ -302,6 +302,14 @@ def refresh_table(table_name: str):
             break
 
 
+def get_data() -> dict:
+    """Load all data using current Flask app config. Replaces per-blueprint _get_data()."""
+    from flask import current_app
+    db_path = current_app.config["DB_PATH"]
+    pro_yr_base = current_app.config["PRO_YR_BASE_DEFAULT"]
+    return load_all(db_path, pro_yr_base)
+
+
 def get_inv_display(inv: pd.DataFrame) -> pd.DataFrame:
     """Filter out sold deals — equivalent to inv_disp in app.py."""
     if inv is None or inv.empty:
