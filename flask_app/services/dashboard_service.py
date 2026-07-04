@@ -419,35 +419,15 @@ def compute_portfolio_noi(isbs_raw, inv_disp, frequency="Quarterly",
     if isbs_raw is None or isbs_raw.empty:
         return {"periods": [], "actual_noi": [], "uw_noi": [], "occupancy": []}
 
-    isbs = isbs_raw.copy()
-    normalize_columns(isbs)
-
-    # Filter to parent deal vcodes only
+    # ISBS is pre-normalized at load time — just filter by parent vcodes
     parent_vcodes = set(inv_disp["vcode"].astype(str).str.strip().str.lower())
-    if "vcode" in isbs.columns:
-        isbs["vcode"] = isbs["vcode"].astype(str).str.strip().str.lower()
-        isbs = isbs[isbs["vcode"].isin(parent_vcodes)]
+    if "vcode" in isbs_raw.columns:
+        isbs = isbs_raw[isbs_raw["vcode"].isin(parent_vcodes)]
+    else:
+        isbs = isbs_raw
 
-    if isbs.empty or "dtEntry" not in isbs.columns:
+    if isbs.empty or "dtEntry_parsed" not in isbs.columns:
         return {"periods": [], "actual_noi": [], "uw_noi": [], "occupancy": []}
-
-    # Parse dates
-    try:
-        isbs["dtEntry_parsed"] = pd.to_datetime(
-            isbs["dtEntry"], unit="D", origin="1899-12-30", errors="coerce")
-    except Exception:
-        isbs["dtEntry_parsed"] = pd.to_datetime(isbs["dtEntry"], errors="coerce")
-    null_dates = isbs["dtEntry_parsed"].isna()
-    if null_dates.any():
-        isbs.loc[null_dates, "dtEntry_parsed"] = pd.to_datetime(
-            isbs.loc[null_dates, "dtEntry"], errors="coerce")
-
-    if "vSource" in isbs.columns:
-        isbs["vSource"] = isbs["vSource"].astype(str).str.strip()
-    if "vAccount" in isbs.columns:
-        isbs["vAccount"] = isbs["vAccount"].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
-    if "mAmount" in isbs.columns:
-        isbs["mAmount"] = pd.to_numeric(isbs["mAmount"], errors="coerce").fillna(0)
 
     actual_data = isbs[isbs["vSource"] == "Interim IS"]
     uw_data = isbs[isbs["vSource"] == "Projected IS"]
@@ -590,33 +570,15 @@ def _get_deal_trailing_noi(isbs_raw, inv_disp, num_quarters=4) -> dict:
     if isbs_raw is None or isbs_raw.empty:
         return {}
 
-    isbs = isbs_raw.copy()
-    normalize_columns(isbs)
-
+    # ISBS is pre-normalized at load time — just filter by parent vcodes
     parent_vcodes = set(inv_disp["vcode"].astype(str).str.strip().str.lower())
-    if "vcode" in isbs.columns:
-        isbs["vcode"] = isbs["vcode"].astype(str).str.strip().str.lower()
-        isbs = isbs[isbs["vcode"].isin(parent_vcodes)]
+    if "vcode" in isbs_raw.columns:
+        isbs = isbs_raw[isbs_raw["vcode"].isin(parent_vcodes)]
+    else:
+        isbs = isbs_raw
 
-    if isbs.empty or "dtEntry" not in isbs.columns:
+    if isbs.empty or "dtEntry_parsed" not in isbs.columns:
         return {}
-
-    try:
-        isbs["dtEntry_parsed"] = pd.to_datetime(
-            isbs["dtEntry"], unit="D", origin="1899-12-30", errors="coerce")
-    except Exception:
-        isbs["dtEntry_parsed"] = pd.to_datetime(isbs["dtEntry"], errors="coerce")
-    null_dates = isbs["dtEntry_parsed"].isna()
-    if null_dates.any():
-        isbs.loc[null_dates, "dtEntry_parsed"] = pd.to_datetime(
-            isbs.loc[null_dates, "dtEntry"], errors="coerce")
-
-    if "vSource" in isbs.columns:
-        isbs["vSource"] = isbs["vSource"].astype(str).str.strip()
-    if "vAccount" in isbs.columns:
-        isbs["vAccount"] = isbs["vAccount"].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
-    if "mAmount" in isbs.columns:
-        isbs["mAmount"] = pd.to_numeric(isbs["mAmount"], errors="coerce").fillna(0)
 
     actual_data = isbs[isbs["vSource"] == "Interim IS"]
     if actual_data.empty:

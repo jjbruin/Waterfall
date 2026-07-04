@@ -60,50 +60,26 @@ def get_isbs_debt_balance(isbs_raw, vcode, as_of_date=None):
         log.info("get_isbs_debt_balance(%s): isbs_raw is None/empty", vcode)
         return None
 
-    df = isbs_raw.copy()
-    normalize_columns(df)
-
-    # Filter to deal
+    # ISBS is pre-normalized at load time (vcode lowered, vSource/vAccount stripped,
+    # mAmount numeric, dtEntry_parsed datetime). Just filter.
+    df = isbs_raw
     if 'vcode' in df.columns:
-        df['vcode'] = df['vcode'].astype(str).str.strip().str.lower()
         df = df[df['vcode'] == str(vcode).strip().lower()]
     if df.empty:
         log.info("get_isbs_debt_balance(%s): no rows after vcode filter", vcode)
         return None
 
-    # Filter to Interim BS
     if 'vSource' in df.columns:
-        df['vSource'] = df['vSource'].astype(str).str.strip()
         df = df[df['vSource'] == 'Interim BS']
     if df.empty:
         log.info("get_isbs_debt_balance(%s): no Interim BS rows", vcode)
         return None
 
-    # Parse dates — handle string dates, timestamps, and Excel serial numbers
-    if 'dtEntry' in df.columns:
-        log.info("get_isbs_debt_balance(%s): dtEntry dtype=%s, sample=%s",
-                 vcode, df['dtEntry'].dtype, df['dtEntry'].iloc[0] if len(df) > 0 else 'N/A')
-        df['_dt'] = pd.to_datetime(df['dtEntry'], format='mixed', dayfirst=False, errors='coerce')
-        nat_count = df['_dt'].isna().sum()
-        log.info("get_isbs_debt_balance(%s): after parse, %d/%d NaT", vcode, nat_count, len(df))
-        # If most dates are NaT, try Excel serial number parsing
-        if nat_count > len(df) * 0.5:
-            try:
-                numeric_dates = pd.to_numeric(df['dtEntry'], errors='coerce')
-                serial_dates = pd.to_datetime(numeric_dates, unit='D', origin='1899-12-30', errors='coerce')
-                df.loc[df['_dt'].isna(), '_dt'] = serial_dates[df['_dt'].isna()]
-                log.info("get_isbs_debt_balance(%s): after serial parse, %d/%d NaT",
-                         vcode, df['_dt'].isna().sum(), len(df))
-            except Exception as e:
-                log.warning("get_isbs_debt_balance(%s): serial parse error: %s", vcode, e)
-    else:
-        log.info("get_isbs_debt_balance(%s): no dtEntry column", vcode)
+    if 'dtEntry_parsed' not in df.columns:
+        log.info("get_isbs_debt_balance(%s): no dtEntry_parsed column", vcode)
         return None
 
-    # Filter to debt accounts
-    # Strip trailing '.0' — PostgreSQL BIGINT nullable columns read as float64
     if 'vAccount' in df.columns:
-        df['vAccount'] = df['vAccount'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
         df = df[df['vAccount'].isin(DEBT_BS_ACCTS)]
     if df.empty:
         log.info("get_isbs_debt_balance(%s): no debt account rows", vcode)
@@ -112,25 +88,23 @@ def get_isbs_debt_balance(isbs_raw, vcode, as_of_date=None):
     # Select period
     if as_of_date is not None:
         target = pd.Timestamp(as_of_date)
-        available = sorted(df['_dt'].dropna().unique())
+        available = sorted(df['dtEntry_parsed'].dropna().unique())
         candidates = [d for d in available if d <= target]
         if not candidates:
             log.info("get_isbs_debt_balance(%s): no periods on or before %s", vcode, as_of_date)
             return None
         period = candidates[-1]
     else:
-        period = df['_dt'].dropna().max()
+        period = df['dtEntry_parsed'].dropna().max()
 
-    period_data = df[df['_dt'] == period]
+    period_data = df[df['dtEntry_parsed'] == period]
     if period_data.empty:
         return None
 
-    if 'mAmount' in period_data.columns:
-        total = pd.to_numeric(period_data['mAmount'], errors='coerce').fillna(0).sum()
-        result = abs(float(total))
-        log.info("get_isbs_debt_balance(%s): period=%s, debt=%.2f", vcode, period, result)
-        return result
-    return None
+    total = period_data['mAmount'].sum()
+    result = abs(float(total))
+    log.info("get_isbs_debt_balance(%s): period=%s, debt=%.2f", vcode, period, result)
+    return result
 
 
 def prepare_cap_lookups(acct, inv, mri_val, mri_loans):
@@ -908,16 +882,14 @@ def compute_deal_analysis(
             isbs_debt = get_isbs_debt_balance(isbs_raw, deal_vcode)
             if isbs_debt is not None and isbs_debt > 0 and not loan_sched.empty:
                 # Find the ISBS anchor date (most recent BS period)
-                _isbs_df = isbs_raw.copy()
-                normalize_columns(_isbs_df)
+                # ISBS is pre-normalized — just filter
+                _isbs_df = isbs_raw
                 if 'vcode' in _isbs_df.columns:
-                    _isbs_df['vcode'] = _isbs_df['vcode'].astype(str).str.strip().str.lower()
                     _isbs_df = _isbs_df[_isbs_df['vcode'] == str(deal_vcode).strip().lower()]
                 if 'vSource' in _isbs_df.columns:
-                    _isbs_df = _isbs_df[_isbs_df['vSource'].astype(str).str.strip() == 'Interim BS']
-                if 'dtEntry' in _isbs_df.columns and not _isbs_df.empty:
-                    _isbs_df['_dt'] = pd.to_datetime(_isbs_df['dtEntry'], format='mixed', dayfirst=False, errors='coerce')
-                    isbs_anchor_date = _isbs_df['_dt'].dropna().max()
+                    _isbs_df = _isbs_df[_isbs_df['vSource'] == 'Interim BS']
+                if 'dtEntry_parsed' in _isbs_df.columns and not _isbs_df.empty:
+                    isbs_anchor_date = _isbs_df['dtEntry_parsed'].dropna().max()
                     if pd.notna(isbs_anchor_date):
                         anchor_date = isbs_anchor_date.date() if hasattr(isbs_anchor_date, 'date') else isbs_anchor_date
                         modeled_bal_anchor = total_loan_balance_at(loan_sched, month_end(anchor_date))

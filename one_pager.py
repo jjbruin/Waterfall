@@ -74,23 +74,14 @@ def get_available_quarters(isbs_df: pd.DataFrame) -> List[str]:
     if isbs_df is None or isbs_df.empty:
         return []
 
-    df = isbs_df.copy()
-    normalize_columns(df)
-
-    # Filter for actual data only
+    # ISBS is pre-normalized at load time — just filter
+    df = isbs_df
     if 'vSource' in df.columns:
-        df = df[df['vSource'].astype(str).str.strip() == 'Interim IS']
+        df = df[df['vSource'] == 'Interim IS']
 
-    if 'dtEntry' not in df.columns:
+    if 'dtEntry_parsed' not in df.columns:
         return []
 
-    # Parse dates
-    try:
-        df['dtEntry_parsed'] = pd.to_datetime(df['dtEntry'], unit='D', origin='1899-12-30', errors='coerce')
-    except:
-        df['dtEntry_parsed'] = pd.to_datetime(df['dtEntry'], errors='coerce')
-
-    # Get unique quarters
     quarters = set()
     for dt in df['dtEntry_parsed'].dropna():
         quarters.add(get_quarter_from_date(dt.date()))
@@ -621,35 +612,14 @@ def get_property_performance(
     _, quarter_end = quarter_to_date_range(quarter_str)
     year_start = get_year_start(quarter_str)
 
-    # Prepare ISBS data
-    isbs = isbs_df.copy()
-    normalize_columns(isbs)
-
-    if 'vcode' in isbs.columns:
-        isbs['vcode'] = isbs['vcode'].astype(str).str.strip().str.lower()
-        isbs = isbs[isbs['vcode'] == vcode_str]
+    # ISBS is pre-normalized at load time — just filter by deal
+    if 'vcode' in isbs_df.columns:
+        isbs = isbs_df[isbs_df['vcode'] == vcode_str]
+    else:
+        isbs = isbs_df
 
     if isbs.empty:
         return perf
-
-    # Parse dates — handle string dates, timestamps, and Excel serial numbers
-    if 'dtEntry' in isbs.columns:
-        isbs['dtEntry_parsed'] = pd.to_datetime(isbs['dtEntry'], format='mixed', dayfirst=False, errors='coerce')
-        if isbs['dtEntry_parsed'].isna().sum() > len(isbs) * 0.5:
-            try:
-                numeric_dates = pd.to_numeric(isbs['dtEntry'], errors='coerce')
-                serial_dates = pd.to_datetime(numeric_dates, unit='D', origin='1899-12-30', errors='coerce')
-                isbs.loc[isbs['dtEntry_parsed'].isna(), 'dtEntry_parsed'] = serial_dates[isbs['dtEntry_parsed'].isna()]
-            except Exception:
-                pass
-
-    # Normalize columns
-    if 'vSource' in isbs.columns:
-        isbs['vSource'] = isbs['vSource'].astype(str).str.strip()
-    if 'vAccount' in isbs.columns:
-        isbs['vAccount'] = isbs['vAccount'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
-    if 'mAmount' in isbs.columns:
-        isbs['mAmount'] = pd.to_numeric(isbs['mAmount'], errors='coerce').fillna(0)
 
     # Helper to calculate amounts from ISBS data
     def calc_amounts(data_df, as_of_date=None, sum_range=None):

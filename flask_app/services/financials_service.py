@@ -21,30 +21,20 @@ from utils import normalize_columns
 # ============================================================
 
 def _prepare_isbs(isbs_raw, vcode):
-    """Filter and parse ISBS data for a deal."""
+    """Filter pre-normalized ISBS data for a deal.
+
+    ISBS is normalized once at load time (data_service._normalize_isbs):
+    column names stripped, vcode lowercased, vSource/vAccount stripped,
+    mAmount numeric, dtEntry_parsed datetime. This function just filters.
+    """
     if isbs_raw is None or isbs_raw.empty:
         return pd.DataFrame()
-    isbs = isbs_raw.copy()
-    normalize_columns(isbs)
-    if 'vcode' in isbs.columns:
-        isbs['vcode'] = isbs['vcode'].astype(str).str.strip().str.lower()
-        isbs = isbs[isbs['vcode'] == str(vcode).strip().lower()]
-    if isbs.empty or 'dtEntry' not in isbs.columns:
+    if 'vcode' in isbs_raw.columns:
+        isbs = isbs_raw[isbs_raw['vcode'] == str(vcode).strip().lower()]
+    else:
+        isbs = isbs_raw
+    if isbs.empty or 'dtEntry_parsed' not in isbs.columns:
         return pd.DataFrame()
-    try:
-        isbs['dtEntry_parsed'] = pd.to_datetime(isbs['dtEntry'], unit='D', origin='1899-12-30', errors='coerce')
-    except Exception:
-        isbs['dtEntry_parsed'] = pd.to_datetime(isbs['dtEntry'], errors='coerce')
-    null_dates = isbs['dtEntry_parsed'].isna()
-    if null_dates.any():
-        isbs.loc[null_dates, 'dtEntry_parsed'] = pd.to_datetime(
-            isbs.loc[null_dates, 'dtEntry'], errors='coerce')
-    if 'vSource' in isbs.columns:
-        isbs['vSource'] = isbs['vSource'].astype(str).str.strip()
-    if 'vAccount' in isbs.columns:
-        isbs['vAccount'] = isbs['vAccount'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
-    if 'mAmount' in isbs.columns:
-        isbs['mAmount'] = pd.to_numeric(isbs['mAmount'], errors='coerce').fillna(0)
     return isbs
 
 

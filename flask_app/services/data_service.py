@@ -74,6 +74,39 @@ def _normalize_waterfall_df(wf: pd.DataFrame) -> pd.DataFrame:
     return wf
 
 
+def _normalize_isbs(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize ISBS DataFrame once at load time.
+
+    Strips column names, lowercases vcode, strips vSource/vAccount,
+    converts mAmount to numeric, and parses dtEntry dates (with Excel
+    serial number fallback). Consumers can filter directly without
+    repeating this work.
+    """
+    if df.empty:
+        return df
+    normalize_columns(df)
+    if 'vcode' in df.columns:
+        df['vcode'] = df['vcode'].astype(str).str.strip().str.lower()
+    if 'vSource' in df.columns:
+        df['vSource'] = df['vSource'].astype(str).str.strip()
+    if 'vAccount' in df.columns:
+        df['vAccount'] = df['vAccount'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+    if 'mAmount' in df.columns:
+        df['mAmount'] = pd.to_numeric(df['mAmount'], errors='coerce').fillna(0)
+    if 'dtEntry' in df.columns:
+        df['dtEntry_parsed'] = pd.to_datetime(
+            df['dtEntry'], format='mixed', dayfirst=False, errors='coerce')
+        nat_count = int(df['dtEntry_parsed'].isna().sum())
+        if nat_count > len(df) * 0.5:
+            try:
+                numeric = pd.to_numeric(df['dtEntry'], errors='coerce')
+                serial = pd.to_datetime(numeric, unit='D', origin='1899-12-30', errors='coerce')
+                df.loc[df['dtEntry_parsed'].isna(), 'dtEntry_parsed'] = serial[df['dtEntry_parsed'].isna()]
+            except Exception:
+                pass
+    return df
+
+
 def _assemble_isbs(config: dict) -> tuple:
     """Load split ISBS tables and assemble into a single DataFrame.
 
@@ -150,6 +183,7 @@ def load_all(db_path: str, pro_yr_base: int = 2025) -> dict:
     relationships_raw = get_adapter("relationships").load(config)
     capital_calls_raw = get_adapter("capital_calls").load(config)
     isbs_raw, isbs_split = _assemble_isbs(config)
+    isbs_raw = _normalize_isbs(isbs_raw)
     occupancy_raw = get_adapter("occupancy").load(config)
     budget_econ_occ = get_adapter("budget_econ_occ").load(config)
     commitments_raw = get_adapter("commitments").load(config)
@@ -292,6 +326,7 @@ def refresh_table(table_name: str):
             # Reassemble isbs_raw from split tables when a split table changes
             if is_isbs_split:
                 assembled, _ = _assemble_isbs(config)
+                assembled = _normalize_isbs(assembled)
                 data["isbs_raw"] = assembled if not assembled.empty else None
         except Exception:
             # If single-table refresh fails, fall back to full reload

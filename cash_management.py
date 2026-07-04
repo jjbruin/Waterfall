@@ -10,7 +10,6 @@ from typing import Dict, List, Tuple
 from datetime import datetime
 
 from config import CASH_BALANCE_ACCTS
-from utils import normalize_columns
 
 log = logging.getLogger(__name__)
 
@@ -30,46 +29,25 @@ def load_beginning_cash_balance(isbs_df: pd.DataFrame, deal_vcode: str, forecast
     if isbs_df is None or isbs_df.empty:
         return 0.0
 
-    # Normalize column names
-    isbs = isbs_df.copy()
-    normalize_columns(isbs)
-
-    # Check if required columns exist
-    required_cols = ['vcode', 'dtEntry', 'vSource', 'vAccount', 'mAmount']
-    missing = [col for col in required_cols if col not in isbs.columns]
+    # ISBS is pre-normalized at load time — just filter
+    required_cols = ['vcode', 'dtEntry_parsed', 'vSource', 'vAccount', 'mAmount']
+    missing = [col for col in required_cols if col not in isbs_df.columns]
     if missing:
         log.warning("load_beginning_cash(%s): missing columns %s", deal_vcode, missing)
         return 0.0
 
-    # Filter for the deal (case-insensitive)
-    isbs['vcode'] = isbs['vcode'].astype(str).str.strip().str.lower()
     deal_vcode_lower = str(deal_vcode).strip().lower()
-    isbs = isbs[isbs['vcode'] == deal_vcode_lower]
+    isbs = isbs_df[isbs_df['vcode'] == deal_vcode_lower]
 
     if isbs.empty:
         log.warning("load_beginning_cash(%s): no ISBS rows for deal", deal_vcode)
         return 0.0
 
-    # Filter for Interim BS (balance sheet) - exact match with stripped whitespace
-    isbs['vSource'] = isbs['vSource'].astype(str).str.strip()
     isbs = isbs[isbs['vSource'] == 'Interim BS']
 
     if isbs.empty:
         log.warning("load_beginning_cash(%s): no Interim BS rows", deal_vcode)
         return 0.0
-
-    # Parse dates — try standard first, fall back to Excel serial numbers
-    isbs['dtEntry_parsed'] = pd.to_datetime(isbs['dtEntry'], format='mixed',
-                                            dayfirst=False, errors='coerce')
-    nat_count = int(isbs['dtEntry_parsed'].isna().sum())
-    # If most dates are NaT, try Excel serial number fallback
-    if nat_count > len(isbs) * 0.5:
-        try:
-            numeric = pd.to_numeric(isbs['dtEntry'], errors='coerce')
-            serial = pd.to_datetime(numeric, unit='D', origin='1899-12-30', errors='coerce')
-            isbs.loc[isbs['dtEntry_parsed'].isna(), 'dtEntry_parsed'] = serial[isbs['dtEntry_parsed'].isna()]
-        except Exception:
-            pass
 
     # Convert forecast_start_date to datetime
     if not isinstance(forecast_start_date, pd.Timestamp):
