@@ -49,7 +49,13 @@ def find_psckoc_deals(inv: pd.DataFrame, wf: pd.DataFrame,
     inv_to_vcode = build_investmentid_to_vcode(inv)
     vcode_to_inv_id = {str(v): k for k, v in inv_to_vcode.items()}
 
-    deal_vcodes_set = set(inv["vcode"].astype(str).str.strip())
+    # Exclude sold deals
+    inv_norm = inv.copy()
+    inv_norm["vcode"] = inv_norm["vcode"].astype(str).str.strip()
+    inv_norm["_sale"] = inv_norm.get("Sale_Status", "").fillna("").astype(str).str.strip().str.upper()
+    inv_norm["_life"] = inv_norm.get("Lifecycle", "").fillna("").astype(str).str.strip().str.upper()
+    active = inv_norm[(inv_norm["_sale"] != "SOLD") & (inv_norm["_life"] != "SOLD")]
+    deal_vcodes_set = set(active["vcode"])
     wf_vcodes_set = set()
     if wf is not None and not wf.empty:
         wf_vcodes_set = set(wf["vcode"].fillna("").astype(str).str.strip().unique())
