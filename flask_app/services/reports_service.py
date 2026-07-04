@@ -149,6 +149,12 @@ def get_upstream_investor_deals(
     from loaders import build_investmentid_to_vcode
 
     relationships = load_relationships(relationships_raw)
+
+    # Filter out ended relationships (matching Review Tracking behaviour)
+    if "EndDate" in relationships.columns:
+        end = relationships["EndDate"].fillna("").astype(str).str.strip()
+        relationships = relationships[end == ""].copy()
+
     nodes = build_ownership_tree(relationships)
     inv_to_vcode = build_investmentid_to_vcode(inv)
 
