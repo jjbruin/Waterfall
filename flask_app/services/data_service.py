@@ -62,16 +62,52 @@ def _enrich_acquisition_dates(inv: pd.DataFrame, acct: pd.DataFrame) -> None:
 
 
 def _normalize_waterfall_df(wf: pd.DataFrame) -> pd.DataFrame:
-    """Normalize waterfall DataFrame columns (strip names, rename vCode, strip values)."""
+    """Fully normalize waterfall DataFrame at load time.
+
+    Performs all normalization that load_waterfalls() in loaders.py would do:
+    column stripping, vCode rename, string stripping, numeric conversions,
+    nPercent_dec, date parsing, and sorting. This allows load_waterfalls()
+    to short-circuit when it receives an already-normalized DataFrame.
+    """
     if wf.empty:
         return wf
     normalize_columns(wf)
     if "vCode" in wf.columns and "vcode" not in wf.columns:
         wf = wf.rename(columns={"vCode": "vcode"})
+    if "vcode" not in wf.columns:
+        return wf
     for col in ("vcode", "vmisc", "PropCode", "vState"):
         if col in wf.columns:
             wf[col] = wf[col].astype(str).str.strip()
+    # Numeric conversions (match loaders.py load_waterfalls)
+    if "iOrder" in wf.columns:
+        wf["iOrder"] = pd.to_numeric(wf["iOrder"], errors="coerce").fillna(9999).astype(int)
+    if "FXRate" in wf.columns:
+        wf["FXRate"] = pd.to_numeric(wf["FXRate"], errors="coerce").fillna(0.0).astype(float)
+    if "nPercent" in wf.columns:
+        import numpy as np
+        p = pd.to_numeric(wf["nPercent"], errors="coerce").fillna(0.0).astype(float)
+        wf["nPercent_dec"] = np.where(p > 1.0, p / 100.0, p)
+    if "mAmount" in wf.columns:
+        wf["mAmount"] = pd.to_numeric(wf["mAmount"], errors="coerce").fillna(0.0).astype(float)
+    if "dteffective" in wf.columns:
+        wf["dteffective"] = pd.to_datetime(wf["dteffective"], errors="coerce").dt.date
+    wf = wf.sort_values(["vcode", "vmisc", "iOrder"]).reset_index(drop=True)
     return wf
+
+
+def _normalize_accounting(acct: pd.DataFrame) -> pd.DataFrame:
+    """Normalize accounting feed once at load time.
+
+    Performs the same normalization as loaders.normalize_accounting_feed():
+    column stripping, type coercion, MajorType filtering, Amt parsing,
+    contribution/distribution classification. Consumers can use the result
+    directly without calling normalize_accounting_feed() again.
+    """
+    if acct is None or acct.empty:
+        return acct if acct is not None else pd.DataFrame()
+    from loaders import normalize_accounting_feed
+    return normalize_accounting_feed(acct)
 
 
 def _normalize_isbs(df: pd.DataFrame) -> pd.DataFrame:
@@ -216,6 +252,9 @@ def load_all(db_path: str, pro_yr_base: int = 2025) -> dict:
 
     _enrich_acquisition_dates(inv, acct)
 
+    # Normalize accounting once (avoids repeated normalize_accounting_feed() per deal)
+    acct = _normalize_accounting(acct)
+
     # Replace empty DataFrames from optional reads with None where appropriate
     if relationships_raw.empty:
         relationships_raw = None
@@ -319,6 +358,8 @@ def refresh_table(table_name: str):
                 _enrich_acquisition_dates(fresh, data.get("acct"))
             elif table_name == "waterfalls":
                 fresh = _normalize_waterfall_df(fresh)
+            if table_name == "accounting":
+                fresh = _normalize_accounting(fresh)
             if table_name == "loans":
                 fresh = _filter_paid_off_loans(fresh)
             data[cache_key_name] = fresh

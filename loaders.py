@@ -161,16 +161,21 @@ def load_mri_loans(df: pd.DataFrame = None) -> pd.DataFrame:
 
 def load_waterfalls(df: pd.DataFrame = None) -> pd.DataFrame:
     """
-    Load waterfall definitions from database
-    
+    Normalize waterfall definitions for computation.
+
     Args:
-        df: Ignored (kept for backward compatibility)
-    
+        df: Pre-loaded waterfall DataFrame (from data_service cache).
+            Falls back to database query if None.
+
     Returns:
-        Waterfalls DataFrame
+        Normalized waterfalls DataFrame with numeric types and nPercent_dec.
     """
-    wf = execute_query("SELECT * FROM waterfalls")
-    
+    if df is not None and not df.empty and "nPercent_dec" in df.columns:
+        # Already fully normalized (by data_service at load time)
+        return df
+
+    wf = df if df is not None and not df.empty else execute_query("SELECT * FROM waterfalls")
+
     w = wf.copy()
     normalize_columns(w)
     
@@ -211,17 +216,22 @@ def load_waterfalls(df: pd.DataFrame = None) -> pd.DataFrame:
 
 def normalize_accounting_feed(acct: pd.DataFrame = None) -> pd.DataFrame:
     """
-    Normalize accounting feed from database
-    
+    Normalize accounting feed from database.
+
     Args:
-        acct: Accounting DataFrame or None to load from database
-    
+        acct: Accounting DataFrame or None to load from database.
+            If already normalized (has 'is_contribution' column), returns as-is.
+
     Returns:
         Normalized accounting DataFrame
     """
     if acct is None:
         acct = execute_query("SELECT * FROM accounting")
-    
+
+    # Short-circuit if already normalized (by data_service at load time)
+    if "is_contribution" in acct.columns:
+        return acct
+
     a = acct.copy()
     normalize_columns(a)
 
