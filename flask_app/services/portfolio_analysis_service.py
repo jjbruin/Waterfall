@@ -13,8 +13,8 @@ from io import BytesIO
 from datetime import date, datetime
 from typing import Optional
 
-from ownership_tree import load_relationships
-from loaders import load_waterfalls
+from ownership_tree import load_relationships, build_ownership_tree
+from loaders import load_waterfalls, build_investmentid_to_vcode
 from waterfall import run_recursive_upstream_waterfalls, build_amfee_exclusions
 from models import InvestorState
 from metrics import xirr, calculate_roe
@@ -104,50 +104,79 @@ def find_entity_deals(entity_id: str, inv: pd.DataFrame, wf: pd.DataFrame,
                       relationships_raw: pd.DataFrame) -> list[dict]:
     """Find deals linked to a specific portfolio entity through intermediaries.
 
+    Uses recursive downward traversal through ownership tree to discover all
+    deals the entity ultimately invests in, regardless of intermediate depth.
+    Excludes sold deals and filters ended relationships.
+
     Returns list of deal info dicts with vcode, name, PPI linkage, ownership.
     """
     if relationships_raw is None or relationships_raw.empty:
         return []
+    if inv is None or inv.empty:
+        return []
 
-    rel = relationships_raw.copy()
-    rel["InvestorID"] = rel["InvestorID"].astype(str).str.strip()
-    rel["InvestmentID"] = rel["InvestmentID"].astype(str).str.strip()
+    relationships = load_relationships(relationships_raw)
 
-    wf_norm = wf.copy()
-    wf_norm["PropCode"] = wf_norm["PropCode"].fillna("").astype(str).str.strip()
-    wf_norm["vcode"] = wf_norm["vcode"].fillna("").astype(str).str.strip()
+    # Filter out ended relationships
+    if "EndDate" in relationships.columns:
+        end_col = relationships["EndDate"]
+        is_empty = end_col.isna() | (end_col.astype(str).str.strip().isin(["", "NaT", "nan", "None"]))
+        relationships = relationships[is_empty].copy()
 
-    deal_vcodes_set = set(inv["vcode"].astype(str).str.strip())
+    nodes = build_ownership_tree(relationships)
+    inv_to_vcode = build_investmentid_to_vcode(inv)
+    vcode_to_inv_id = {str(v): k for k, v in inv_to_vcode.items()}
 
-    # Step 1: entities where this entity is an investor (current only)
-    current_rel = rel[rel["EndDate"].isna()]
-    entity_investments = set(
-        current_rel[current_rel["InvestorID"] == entity_id]["InvestmentID"].unique()
-    )
+    # Exclude sold deals
+    inv_norm = inv.copy()
+    inv_norm["vcode"] = inv_norm["vcode"].astype(str).str.strip()
+    inv_norm["_sale"] = inv_norm.get("Sale_Status", "").fillna("").astype(str).str.strip().str.upper()
+    inv_norm["_life"] = inv_norm.get("Lifecycle", "").fillna("").astype(str).str.strip().str.upper()
+    active = inv_norm[(inv_norm["_sale"] != "SOLD") & (inv_norm["_life"] != "SOLD")]
+    deal_vcodes_set = set(active["vcode"])
 
-    # Step 2: find deal vcodes whose waterfall PropCodes reference those entities
+    wf_vcodes_set = set()
+    if wf is not None and not wf.empty:
+        wf_vcodes_set = set(wf["vcode"].fillna("").astype(str).str.strip().unique())
+
+    # Trace DOWNWARD from entity through investments recursively
+    def _get_downstream_entities(eid: str, visited: set = None) -> set:
+        if visited is None:
+            visited = set()
+        if eid in visited:
+            return set()
+        visited.add(eid)
+        result = set()
+        node = nodes.get(eid)
+        if not node:
+            return result
+        for child in node.investments:
+            result.add(child)
+            result |= _get_downstream_entities(child, visited)
+        return result
+
+    downstream = _get_downstream_entities(entity_id)
+
+    # Match downstream entities to deal vcodes
     deal_vcodes = set()
-    ppi_for_deal = {}
+    for did in downstream:
+        vc = inv_to_vcode.get(did)
+        if vc and str(vc) in deal_vcodes_set:
+            if not wf_vcodes_set or str(vc) in wf_vcodes_set:
+                deal_vcodes.add(str(vc))
 
-    # Build PPI ownership percentages
-    entity_inv_rels = current_rel[current_rel["InvestorID"] == entity_id]
+    # Remove the entity itself from results
+    deal_vcodes -= {entity_id}
+
+    # Build entity's direct investment ownership percentages (for display)
+    entity_inv_rels = relationships[relationships["InvestorID"].astype(str).str.strip() == entity_id]
     ppi_pcts = {}
     for _, r in entity_inv_rels.iterrows():
-        ppi = r["InvestmentID"]
+        ppi = str(r["InvestmentID"]).strip()
         pct = float(r.get("OwnershipPct", 0))
         if pct > 1:
             pct = pct / 100.0
         ppi_pcts[ppi] = pct
-
-    for ppi in entity_investments:
-        refs = wf_norm[wf_norm["PropCode"] == ppi]["vcode"].unique()
-        for vc in refs:
-            if vc in deal_vcodes_set:
-                deal_vcodes.add(vc)
-                ppi_for_deal[vc] = (ppi, ppi_pcts.get(ppi, 0))
-
-    # Remove the entity itself and intermediaries from results
-    deal_vcodes -= {entity_id} | entity_investments
 
     # Build deal info list
     result = []
@@ -159,10 +188,14 @@ def find_entity_deals(entity_id: str, inv: pd.DataFrame, wf: pd.DataFrame,
             row_info["name"] = str(r.get("Investment_Name", vc))
             row_info["asset_type"] = str(r.get("Asset_Type", ""))
             row_info["sale_status"] = str(r.get("Sale_Status", "") or "Active")
-        if vc in ppi_for_deal:
-            ppi, pct = ppi_for_deal[vc]
-            row_info["ppi_entity"] = ppi
-            row_info["entity_pct"] = pct
+        # Find intermediate entity linking this deal to the portfolio entity
+        inv_id_for_vc = vcode_to_inv_id.get(vc)
+        if inv_id_for_vc and inv_id_for_vc in nodes:
+            for investor_id, pct in nodes[inv_id_for_vc].investors:
+                if investor_id in ppi_pcts:
+                    row_info["ppi_entity"] = investor_id
+                    row_info["entity_pct"] = ppi_pcts[investor_id]
+                    break
         result.append(row_info)
 
     return result
@@ -176,7 +209,12 @@ def get_entity_investors(entity_id: str,
     rel = relationships_raw.copy()
     rel["InvestorID"] = rel["InvestorID"].astype(str).str.strip()
     rel["InvestmentID"] = rel["InvestmentID"].astype(str).str.strip()
-    current = rel[(rel["InvestmentID"] == entity_id) & (rel["EndDate"].isna())]
+    if "EndDate" in rel.columns:
+        end_col = rel["EndDate"]
+        is_empty = end_col.isna() | (end_col.astype(str).str.strip().isin(["", "NaT", "nan", "None"]))
+    else:
+        is_empty = True
+    current = rel[(rel["InvestmentID"] == entity_id) & is_empty]
     investors = []
     for _, r in current.iterrows():
         investors.append({
