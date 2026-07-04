@@ -7,6 +7,7 @@ import os
 from flask_app.auth.routes import login_required, role_required
 from flask_app.services import data_service
 from flask_app.services import compute_service
+from flask_app.services.sold_service import clear_sold_cache
 from flask_app.serializers import df_to_response, safe_json
 from database import (
     import_csvs_to_database, import_single_csv, import_csv_dataframe,
@@ -71,6 +72,7 @@ def import_csvs():
     # Clear caches after import
     data_service.reload()
     compute_service.clear_cache()
+    clear_sold_cache()
 
     return jsonify({"results": results})
 
@@ -153,6 +155,7 @@ def upload_import():
     # Clear caches after import
     data_service.reload()
     compute_service.clear_cache()
+    clear_sold_cache()
 
     return jsonify({"results": results})
 
@@ -231,6 +234,7 @@ def update_config():
         current_app.config["ACTUALS_THROUGH"] = body["actuals_through"]  # ISO date string or None
         # Actuals cutoff changes computation results — clear compute cache
         compute_service.clear_cache()
+    clear_sold_cache()
 
     return jsonify({"message": "Config updated", **{
         "start_year": current_app.config["DEFAULT_START_YEAR"],
@@ -246,6 +250,7 @@ def reload_all():
     """Clear ALL caches (data, compute, PSCKOC) and reload."""
     data_service.reload()
     compute_service.clear_cache()
+    clear_sold_cache()
 
     # Clear PSCKOC cache too
     from flask_app.services.psckoc_service import clear_cache as clear_psckoc
@@ -354,6 +359,7 @@ def mri_refresh_all():
         # Clear all caches after import
         data_service.reload()
         compute_service.clear_cache()
+    clear_sold_cache()
         from flask_app.services.psckoc_service import clear_cache as clear_psckoc
         clear_psckoc()
 
@@ -380,6 +386,7 @@ def mri_refresh_single(query_name):
         # Clear caches
         data_service.reload()
         compute_service.clear_cache()
+    clear_sold_cache()
 
         return jsonify(result)
     except ValueError as e:

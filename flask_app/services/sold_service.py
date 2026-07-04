@@ -11,6 +11,14 @@ from typing import Optional
 from loaders import normalize_accounting_feed, build_investmentid_to_vcode
 from metrics import xirr, xnpv, calculate_roe
 
+# Module-level sold returns cache — cleared by clear_sold_cache()
+_sold_cache: dict = {}
+
+
+def clear_sold_cache():
+    """Clear the sold portfolio returns cache."""
+    _sold_cache.clear()
+
 
 def compute_all_sold_returns(inv_sold: pd.DataFrame, acct: pd.DataFrame,
                              inv: pd.DataFrame) -> pd.DataFrame:
@@ -23,6 +31,12 @@ def compute_all_sold_returns(inv_sold: pd.DataFrame, acct: pd.DataFrame,
     Returns DataFrame with columns: Investment Name, Acquisition Date, Sale Date,
     Total Contributions, Total Distributions, IRR, ROE, MOIC, _is_deal_total, vcode.
     """
+    # Cache by sorted sold vcodes — stable across calls with same sold deals
+    sold_vcodes = sorted(inv_sold["vcode"].astype(str).tolist()) if not inv_sold.empty else []
+    cache_key = "|".join(sold_vcodes)
+    if cache_key in _sold_cache:
+        return _sold_cache[cache_key].copy()
+
     if "is_contribution" not in acct.columns:
         acct = normalize_accounting_feed(acct)
 
@@ -145,7 +159,9 @@ def compute_all_sold_returns(inv_sold: pd.DataFrame, acct: pd.DataFrame,
         "_is_deal_total": True,
     })
 
-    return pd.DataFrame(all_rows)
+    result = pd.DataFrame(all_rows)
+    _sold_cache[cache_key] = result
+    return result.copy()
 
 
 def build_deal_detail(vcode: str, inv_sold: pd.DataFrame, acct: pd.DataFrame,
