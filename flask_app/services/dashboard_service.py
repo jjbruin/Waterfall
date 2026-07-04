@@ -9,7 +9,7 @@ import numpy as np
 from typing import Optional
 
 from compute import get_deal_capitalization
-from consolidation import get_property_vcodes_for_deal
+from consolidation import build_property_map
 from config import IS_ACCOUNTS
 from flask_app.services.isbs_helpers import compute_cumulative_noi, cumulative_to_periodic, aggregate_periodic
 from utils import normalize_columns
@@ -18,34 +18,13 @@ from utils import normalize_columns
 def get_child_vcodes(inv: pd.DataFrame) -> set:
     """Return the set of vcodes that are child properties of a sub-portfolio.
 
-    A deal is a child if its Portfolio_Name matches another deal's Investment_Name
-    (and it is not that parent deal itself). These should be excluded from
-    portfolio-level aggregations because their data is already rolled up into
-    the parent deal's capitalization.
+    Uses build_property_map() to avoid redundant DataFrame normalization.
     """
-    if inv is None or inv.empty:
-        return set()
-
-    df = inv.copy()
-    normalize_columns(df)
-    if "Portfolio_Name" not in df.columns or "Investment_Name" not in df.columns:
-        return set()
-
-    df["vcode"] = df["vcode"].astype(str).str.strip()
-    df["Investment_Name"] = df["Investment_Name"].fillna("").astype(str).str.strip()
-    df["Portfolio_Name"] = df["Portfolio_Name"].fillna("").astype(str).str.strip()
-
-    # Parent Investment_Names that have children referencing them
-    parent_names = set(df[df["Portfolio_Name"] != ""]["Portfolio_Name"].unique())
-    # Only keep names that actually match an existing deal's Investment_Name
-    parent_names &= set(df["Investment_Name"].unique())
-
-    # Children: Portfolio_Name matches a parent name AND Investment_Name != Portfolio_Name
-    child_mask = (
-        df["Portfolio_Name"].isin(parent_names)
-        & (df["Investment_Name"] != df["Portfolio_Name"])
-    )
-    return set(df.loc[child_mask, "vcode"])
+    prop_map = build_property_map(inv)
+    children = set()
+    for child_list in prop_map.values():
+        children.update(child_list)
+    return children
 
 
 def get_portfolio_caps(inv_disp, inv, wf, acct, mri_val, mri_loans_raw,
@@ -138,6 +117,9 @@ def get_latest_occupancy(inv_disp, occupancy_raw, inv=None) -> dict:
             raw = pd.to_numeric(r.get("Total_Units", 0), errors="coerce")
             units_map[vc] = float(raw) if pd.notna(raw) and raw > 0 else 1.0
 
+    # Pre-build property map once for sub-portfolio rollup
+    prop_map = build_property_map(inv) if inv is not None else {}
+
     occ_map = {}
     for _, row in inv_disp.iterrows():
         vc = str(row["vcode"]).strip().lower()
@@ -145,7 +127,7 @@ def get_latest_occupancy(inv_disp, occupancy_raw, inv=None) -> dict:
             occ_map[str(row["vcode"])] = _latest_occ[vc]
         elif inv is not None:
             # Sub-portfolio parent: roll up child property occupancy
-            children = get_property_vcodes_for_deal(str(row["vcode"]), inv)
+            children = prop_map.get(str(row["vcode"]), [])
             if children:
                 weighted_sum = 0.0
                 total_units = 0.0
@@ -333,9 +315,9 @@ def get_loan_maturity_data(mri_loans_raw, inv_disp, inv) -> dict:
     # Filter to known deal vcodes + child property vcodes
     parent_vcodes = set(inv_disp["vcode"].astype(str).str.strip())
     all_vcodes = set(parent_vcodes)
+    prop_map = build_property_map(inv)
     for vc in parent_vcodes:
-        children = get_property_vcodes_for_deal(vc, inv)
-        for child_vc in children:
+        for child_vc in prop_map.get(vc, []):
             all_vcodes.add(str(child_vc).strip())
     loans = loans[loans["vCode"].isin(all_vcodes)]
 

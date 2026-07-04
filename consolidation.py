@@ -86,6 +86,51 @@ def get_deal_vcode(investment_id: str, deals: pd.DataFrame) -> Optional[str]:
     return None
 
 
+def build_property_map(deals: pd.DataFrame) -> Dict[str, List[str]]:
+    """Build a lookup dict mapping deal vcode → list of child property vcodes.
+
+    Pre-computes the same result as calling get_property_vcodes_for_deal() for
+    every deal, but normalizes the DataFrame only once. Use this in loops
+    instead of calling get_property_vcodes_for_deal() per deal.
+
+    Returns:
+        Dict mapping parent vcode → [child vcodes]. Only parent deals with
+        children are included; standalone deals are absent (not empty-list).
+    """
+    if deals is None or deals.empty:
+        return {}
+
+    df = deals.copy()
+    normalize_columns(df)
+    for col in ['vcode', 'Investment_Name', 'Portfolio_Name']:
+        if col not in df.columns:
+            return {}
+
+    df['vcode'] = df['vcode'].astype(str).str.strip()
+    df['Investment_Name'] = df['Investment_Name'].fillna('').astype(str).str.strip()
+    df['Portfolio_Name'] = df['Portfolio_Name'].fillna('').astype(str).str.strip()
+
+    # Build name → vcodes mapping
+    vcode_to_name: Dict[str, str] = {}
+    name_to_vcodes: Dict[str, List[str]] = {}
+    for _, r in df.iterrows():
+        vc = str(r['vcode'])
+        nm = str(r['Investment_Name'])
+        pn = str(r['Portfolio_Name'])
+        vcode_to_name[vc] = nm
+        if pn:
+            name_to_vcodes.setdefault(pn, []).append(vc)
+
+    # Map deal vcode → child property vcodes
+    prop_map: Dict[str, List[str]] = {}
+    for vc, nm in vcode_to_name.items():
+        children = [c for c in name_to_vcodes.get(nm, []) if c != vc]
+        if children:
+            prop_map[vc] = children
+
+    return prop_map
+
+
 def get_property_vcodes_for_deal(deal_vcode: str, deals: pd.DataFrame) -> List[str]:
     """
     Get property vcodes for a deal using Portfolio_Name.
@@ -93,12 +138,8 @@ def get_property_vcodes_for_deal(deal_vcode: str, deals: pd.DataFrame) -> List[s
     Returns list of property vcodes (NOT including the deal itself).
     Returns empty list if deal is standalone (no sub-properties).
 
-    Args:
-        deal_vcode: The deal's vcode (e.g., 'P0000033')
-        deals: investment_map DataFrame with Portfolio_Name column
-
-    Returns:
-        List of property vcodes belonging to this deal
+    Note: For batch use in loops, prefer build_property_map() to avoid
+    redundant DataFrame normalization per call.
     """
     deals_df = deals.copy()
     normalize_columns(deals_df)
