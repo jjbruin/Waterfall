@@ -9,7 +9,7 @@ from io import BytesIO
 from datetime import date
 from typing import Optional
 
-from ownership_tree import load_relationships, build_ownership_tree, get_ultimate_investors
+from ownership_tree import load_relationships, build_ownership_tree
 from loaders import load_waterfalls, build_investmentid_to_vcode
 from waterfall import run_recursive_upstream_waterfalls
 from metrics import xirr, calculate_roe
@@ -47,48 +47,48 @@ def find_psckoc_deals(inv: pd.DataFrame, wf: pd.DataFrame,
 
     nodes = build_ownership_tree(relationships)
     inv_to_vcode = build_investmentid_to_vcode(inv)
+    vcode_to_inv_id = {str(v): k for k, v in inv_to_vcode.items()}
 
-    # For each deal, trace ultimate investors; keep deals where PSCKOC is one
-    deal_vcodes = set()
     deal_vcodes_set = set(inv["vcode"].astype(str).str.strip())
     wf_vcodes_set = set()
     if wf is not None and not wf.empty:
         wf_vcodes_set = set(wf["vcode"].fillna("").astype(str).str.strip().unique())
 
-    for inv_id, vc in inv_to_vcode.items():
-        vc = str(vc)
-        if vc not in deal_vcodes_set:
-            continue
-        # Only include deals that have waterfalls (can be computed)
-        if wf_vcodes_set and vc not in wf_vcodes_set:
-            continue
-        if inv_id not in nodes:
-            continue
-        ultimate = get_ultimate_investors(inv_id, nodes, normalize=True)
-        for investor_id, _ in ultimate:
-            if investor_id == PSCKOC_ENTITY:
-                deal_vcodes.add(vc)
-                break
+    # Trace DOWNWARD from PSCKOC through investments recursively
+    def _get_downstream_entities(entity_id: str, visited: set = None) -> set:
+        """Recursively collect all entities downstream of entity_id."""
+        if visited is None:
+            visited = set()
+        if entity_id in visited:
+            return set()
+        visited.add(entity_id)
+        result = set()
+        node = nodes.get(entity_id)
+        if not node:
+            return result
+        for child in node.investments:
+            result.add(child)
+            result |= _get_downstream_entities(child, visited)
+        return result
 
-    # Also check direct relationships (InvestorID → InvestmentID → vcode)
-    for _, rel_row in relationships.iterrows():
-        inv_id = str(rel_row.get("InvestmentID", "")).strip()
-        investor_id = str(rel_row.get("InvestorID", "")).strip()
-        vc = inv_to_vcode.get(inv_id)
-        if vc and str(vc) in deal_vcodes_set and investor_id == PSCKOC_ENTITY:
-            deal_vcodes.add(str(vc))
+    downstream = _get_downstream_entities(PSCKOC_ENTITY)
+
+    # Match downstream entities to deal vcodes
+    deal_vcodes = set()
+    for entity_id in downstream:
+        vc = inv_to_vcode.get(entity_id)
+        if vc and str(vc) in deal_vcodes_set:
+            if not wf_vcodes_set or str(vc) in wf_vcodes_set:
+                deal_vcodes.add(str(vc))
 
     # Remove PSCKOC itself and members (not actual deals)
     deal_vcodes -= {PSCKOC_ENTITY} | set(PSCKOC_MEMBERS)
 
-    # Build PPI linkage info for display
-    rel_norm = relationships.copy()
-    rel_norm["InvestorID"] = rel_norm["InvestorID"].astype(str).str.strip()
-    rel_norm["InvestmentID"] = rel_norm["InvestmentID"].astype(str).str.strip()
-    psckoc_inv = rel_norm[rel_norm["InvestorID"] == PSCKOC_ENTITY]
+    # Build PPI linkage info for display (PSCKOC's direct investments)
+    psckoc_inv = relationships[relationships["InvestorID"].astype(str).str.strip() == PSCKOC_ENTITY]
     ppi_pcts = {}
     for _, r in psckoc_inv.iterrows():
-        ppi = r["InvestmentID"]
+        ppi = str(r["InvestmentID"]).strip()
         pct = float(r.get("OwnershipPct", 0))
         if pct > 1:
             pct = pct / 100.0
@@ -104,16 +104,16 @@ def find_psckoc_deals(inv: pd.DataFrame, wf: pd.DataFrame,
             row_info["name"] = str(r.get("Investment_Name", vc))
             row_info["asset_type"] = str(r.get("Asset_Type", ""))
             row_info["sale_status"] = str(r.get("Sale_Status", "Active") or "Active")
-        # Find PPI entity linking this deal to PSCKOC (for display)
-        if vc in inv_to_vcode.values():
-            inv_id_for_vc = next((k for k, v in inv_to_vcode.items() if str(v) == vc), None)
-            if inv_id_for_vc and inv_id_for_vc in nodes:
-                # Walk up one level to find the intermediate entity
-                for investor_id, pct in nodes[inv_id_for_vc].investors:
-                    if investor_id in ppi_pcts:
-                        row_info["ppi_entity"] = investor_id
-                        row_info["psckoc_pct"] = ppi_pcts[investor_id]
-                        break
+        # Find the intermediate entity linking this deal to PSCKOC
+        inv_id_for_vc = vcode_to_inv_id.get(vc)
+        if inv_id_for_vc and inv_id_for_vc in nodes:
+            # Walk up investors to find one that's in PSCKOC's direct investments
+            for investor_id, pct in nodes[inv_id_for_vc].investors:
+                if investor_id in ppi_pcts:
+                    row_info["ppi_entity"] = investor_id
+                    row_info["psckoc_pct"] = ppi_pcts[investor_id]
+                    break
+
         result.append(row_info)
 
     return result
