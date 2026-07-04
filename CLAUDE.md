@@ -442,7 +442,7 @@ Historical returns for sold deals computed from accounting_feed (no forecast wat
 ### 9. PSCKOC
 Upstream waterfall analysis for the PSCKOC holding entity, showing how deal-level distributions flow through PPI entities to PSCKOC members. Vue: `PsckocView.vue`. Flask: `psckoc_service.py`.
 - **Members**: PSC1 (GP co-invest, Capital Units), KCREIT (LP, Capital Units), PCBLE (GP promote + AM fee recipient, Carry Units)
-- **Deal Discovery**: Traces chain: relationships (PSCKOC as investor) → PPI entities → deals referencing those PPIs in waterfalls. Currently discovers 8 underlying deals.
+- **Deal Discovery**: Recursive downward traversal from PSCKOC through ownership tree (`node.investments`), matching downstream entities to deal vcodes. Excludes sold deals (`Sale_Status=SOLD` or `Lifecycle=Sold`) and filters ended relationships (`EndDate`).
 - **Computation**: Button-gated. Runs `get_cached_deal_result()` per deal + `run_recursive_upstream_waterfalls()` for CF and Cap. Results cached in `st.session_state['_psckoc_results']`.
 - **Partner Returns**: KPI cards (IRR, ROE, MOIC) per member + styled summary table with deal-level totals.
 - **Income Schedule**: PSCKOC's projected income by period and source deal (CF vs Cap).
