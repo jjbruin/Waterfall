@@ -584,27 +584,16 @@ def generate_partner_returns_excel(result: dict) -> bytes:
     return buf.getvalue()
 
 
-def generate_forecast_excel(result: dict, start_year: int, horizon_years: int) -> bytes:
-    """Excel for Annual Forecast section."""
-    from openpyxl import Workbook
+def _build_forecast_table(result: dict, start_year: int, horizon_years: int):
+    """Build the annual aggregation table from a deal result. Returns (table, wide, years) or None."""
     from reporting import annual_aggregation_table
-    s = _excel_styles()
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Annual Forecast"
-
     fc_display = result.get("fc_deal_display")
     if fc_display is None or fc_display.empty:
-        ws.cell(row=1, column=1, value="No forecast data available")
-        buf = BytesIO()
-        wb.save(buf)
-        return buf.getvalue()
-
+        return None
     cap_events = result.get("cap_events_df")
     proceeds_by_year = None
     if cap_events is not None and not cap_events.empty and "Year" in cap_events.columns:
         proceeds_by_year = cap_events.groupby("Year")["amount"].sum()
-
     table = annual_aggregation_table(
         fc_display, start_year, horizon_years,
         proceeds_by_year=proceeds_by_year,
@@ -612,19 +601,17 @@ def generate_forecast_excel(result: dict, start_year: int, horizon_years: int) -
         cap_alloc=result.get("cap_alloc"),
         cash_schedule=result.get("cash_schedule"),
     )
-
     if "Year" not in table.columns:
-        ws.cell(row=1, column=1, value="No forecast data available")
-        buf = BytesIO()
-        wb.save(buf)
-        return buf.getvalue()
-
+        return None
     wide = table.set_index("Year").T
     years = [int(y) for y in wide.columns]
+    return table, wide, years
 
+
+def _write_forecast_to_sheet(ws, wide, years, s):
+    """Write forecast wide table to an Excel worksheet. Returns next row."""
     fcols = ['Line Item'] + [str(y) for y in years]
     frow = _write_header_row(ws, 1, fcols, s)
-
     for label, row_data in wide.iterrows():
         label_str = str(label)
         ws.cell(row=frow, column=1, value=label_str).font = s['bold'] if label_str.strip() in {
@@ -640,8 +627,28 @@ def generate_forecast_excel(result: dict, start_year: int, horizon_years: int) -
                 else:
                     cell.number_format = s['curr']
         frow += 1
-
     _autosize_columns(ws)
+    return frow
+
+
+def generate_forecast_excel(result: dict, start_year: int, horizon_years: int) -> bytes:
+    """Excel for Annual Forecast section."""
+    from openpyxl import Workbook
+    s = _excel_styles()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Annual Forecast"
+
+    built = _build_forecast_table(result, start_year, horizon_years)
+    if built is None:
+        ws.cell(row=1, column=1, value="No forecast data available")
+        buf = BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
+
+    _table, wide, years = built
+    _write_forecast_to_sheet(ws, wide, years, s)
+
     buf = BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -852,39 +859,15 @@ def generate_full_deal_excel(result: dict, start_year: int, horizon_years: int) 
 
     # --- Sheet 2: Annual Forecast ---
     ws2 = wb.create_sheet("Annual Forecast")
-    fc_display = result.get("fc_deal_display")
-    if fc_display is not None and not fc_display.empty:
-        from reporting import annual_aggregation_table
-        cap_events = result.get("cap_events_df")
-        proceeds_by_year = None
-        if cap_events is not None and not cap_events.empty and "Year" in cap_events.columns:
-            proceeds_by_year = cap_events.groupby("Year")["amount"].sum()
-        try:
-            table = annual_aggregation_table(
-                fc_display, start_year, horizon_years,
-                proceeds_by_year=proceeds_by_year,
-                cf_alloc=result.get("cf_alloc"),
-                cap_alloc=result.get("cap_alloc"),
-                cash_schedule=result.get("cash_schedule"),
-            )
-            if "Year" in table.columns:
-                wide = table.set_index("Year").T
-                years = [int(y) for y in wide.columns]
-                fcols = ['Line Item'] + [str(y) for y in years]
-                frow = _write_header_row(ws2, 1, fcols, s)
-                for label, row_data in wide.iterrows():
-                    ws2.cell(row=frow, column=1, value=str(label))
-                    for ci, y in enumerate(years, 2):
-                        val = row_data.get(y)
-                        if val is not None and not (isinstance(val, float) and val != val):
-                            cell = ws2.cell(row=frow, column=ci, value=float(val))
-                            cell.number_format = s['dec2'] if 'DSCR' in str(label) else s['curr']
-                    frow += 1
-                _autosize_columns(ws2)
-        except Exception:
-            ws2.cell(row=1, column=1, value="Error generating forecast")
-    else:
-        ws2.cell(row=1, column=1, value="No forecast data")
+    try:
+        built = _build_forecast_table(result, start_year, horizon_years)
+        if built:
+            _table, wide, years = built
+            _write_forecast_to_sheet(ws2, wide, years, s)
+        else:
+            ws2.cell(row=1, column=1, value="No forecast data")
+    except Exception:
+        ws2.cell(row=1, column=1, value="Error generating forecast")
 
     # --- Sheet 3: Debt Service ---
     ws3 = wb.create_sheet("Debt Service")

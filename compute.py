@@ -729,6 +729,7 @@ def compute_deal_analysis(
                         debug_msgs.append(f"Planned loan sizing failed for {supp_row['vCode']}: {e}")
 
     # --- Prospective loans (refinance / new mortgage from app DB) ---
+    original_loan_sched = pd.DataFrame()
     refi_dbg = None
     refi_capital_call_required = False
     refi_capital_call_amount = 0.0
@@ -743,7 +744,8 @@ def compute_deal_analysis(
         if not accepted.empty:
             prospect = accepted.iloc[0].to_dict()
             try:
-                # Build original loan schedule BEFORE replacing for correct balance calc
+                # Build loan schedule ONCE — reused for prospective loan sizing and (if no
+                # loans are replaced) as the base for the final loan_sched below.
                 original_loan_sched = pd.DataFrame()
                 if loans:
                     orig_scheds = []
@@ -790,13 +792,21 @@ def compute_deal_analysis(
             except Exception as e:
                 debug_msgs.append(f"Prospective loan processing failed: {e}")
 
-    # Generate loan schedules
+    # Generate loan schedules — reuse pre-built schedules for unchanged loans
     if loans:
+        # Build lookup of already-amortized schedules from prospective loan sizing
+        _prebuilt = {}
+        if not original_loan_sched.empty and "LoanID" in original_loan_sched.columns:
+            for lid, grp in original_loan_sched.groupby("LoanID"):
+                _prebuilt[lid] = grp
         schedules = []
         for ln in loans:
-            s = amortize_monthly_schedule(ln, model_start, model_end_full)
-            if not s.empty:
-                schedules.append(s)
+            if ln.loan_id in _prebuilt:
+                schedules.append(_prebuilt[ln.loan_id])
+            else:
+                s = amortize_monthly_schedule(ln, model_start, model_end_full)
+                if not s.empty:
+                    schedules.append(s)
         if schedules:
             loan_sched = pd.concat(schedules, ignore_index=True)
     else:
@@ -1025,20 +1035,24 @@ def compute_deal_analysis(
 
     # Build cash flow schedule
     cash_summary = {}
+    fad_monthly = pd.DataFrame()
     try:
         fad_monthly = cashflows_monthly_fad(fc_deal_modeled)
-        cash_schedule = build_cash_flow_schedule_from_fad(
-            fad_monthly=fad_monthly,
-            capital_calls=capital_calls,
-            beginning_cash=beginning_cash,
-            deal_vcode=deal_vcode
-        )
-        cash_summary = summarize_cash_usage(cash_schedule)
+    except Exception as e:
+        debug_msgs.append(f"Error computing monthly FAD: {str(e)}")
+    try:
+        if not fad_monthly.empty:
+            cash_schedule = build_cash_flow_schedule_from_fad(
+                fad_monthly=fad_monthly,
+                capital_calls=capital_calls,
+                beginning_cash=beginning_cash,
+                deal_vcode=deal_vcode
+            )
+            cash_summary = summarize_cash_usage(cash_schedule)
     except Exception as e:
         debug_msgs.append(f"Error building cash flow schedule: {str(e)}")
         try:
-            fad_monthly_fallback = cashflows_monthly_fad(fc_deal_modeled)
-            cash_schedule = fad_monthly_fallback.copy()
+            cash_schedule = fad_monthly.copy()
             cash_schedule['distributable'] = cash_schedule['fad']
             cash_schedule['beginning_cash'] = beginning_cash
             cash_schedule['ending_cash'] = beginning_cash

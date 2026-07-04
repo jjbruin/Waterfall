@@ -29,6 +29,29 @@ _ISBS_SPLIT = {
 }
 
 
+def _filter_paid_off_loans(df: pd.DataFrame) -> pd.DataFrame:
+    """Exclude loans with vDateType = 'Paid Off' (case-insensitive)."""
+    if df.empty:
+        return df
+    col = next((c for c in df.columns if c.lower() == "vdatetype"), None)
+    if col:
+        df = df[df[col].astype(str).str.strip().str.lower() != "paid off"].reset_index(drop=True)
+    return df
+
+
+def _normalize_waterfall_df(wf: pd.DataFrame) -> pd.DataFrame:
+    """Normalize waterfall DataFrame columns (strip names, rename vCode, strip values)."""
+    if wf.empty:
+        return wf
+    wf.columns = [str(c).strip() for c in wf.columns]
+    if "vCode" in wf.columns and "vcode" not in wf.columns:
+        wf = wf.rename(columns={"vCode": "vcode"})
+    for col in ("vcode", "vmisc", "PropCode", "vState"):
+        if col in wf.columns:
+            wf[col] = wf[col].astype(str).str.strip()
+    return wf
+
+
 def _assemble_isbs(config: dict) -> tuple:
     """Load split ISBS tables and assemble into a single DataFrame.
 
@@ -43,8 +66,8 @@ def _assemble_isbs(config: dict) -> tuple:
         df = get_adapter(table_name).load(config)
         split_dict[table_name] = df
         if not df.empty:
-            df = df.copy()
             if 'vSource' not in df.columns:
+                df = df.copy()
                 df['vSource'] = vsource
             parts.append(df)
 
@@ -91,21 +114,7 @@ def load_all(db_path: str, pro_yr_base: int = 2025) -> dict:
 
     # Required tables
     inv = get_adapter("deals").load(config)
-    wf = get_adapter("waterfalls").load(config)
-
-    # Normalize waterfall columns (raw table may have vCode, unstripped vmisc, etc.)
-    if not wf.empty:
-        wf.columns = [str(c).strip() for c in wf.columns]
-        if "vCode" in wf.columns and "vcode" not in wf.columns:
-            wf = wf.rename(columns={"vCode": "vcode"})
-        if "vcode" in wf.columns:
-            wf["vcode"] = wf["vcode"].astype(str).str.strip()
-        if "vmisc" in wf.columns:
-            wf["vmisc"] = wf["vmisc"].astype(str).str.strip()
-        if "PropCode" in wf.columns:
-            wf["PropCode"] = wf["PropCode"].astype(str).str.strip()
-        if "vState" in wf.columns:
-            wf["vState"] = wf["vState"].astype(str).str.strip()
+    wf = _normalize_waterfall_df(get_adapter("waterfalls").load(config))
 
     coa_raw = get_adapter("coa").load(config)
     coa = load_coa(coa_raw)
@@ -114,12 +123,7 @@ def load_all(db_path: str, pro_yr_base: int = 2025) -> dict:
     fc = load_forecast(fc_raw, coa, pro_yr_base)
 
     # Optional tables
-    mri_loans_raw = get_adapter("loans").load(config)
-    # Exclude paid-off loans from all analysis
-    if not mri_loans_raw.empty:
-        _col = next((c for c in mri_loans_raw.columns if c.lower() == "vdatetype"), None)
-        if _col:
-            mri_loans_raw = mri_loans_raw[mri_loans_raw[_col].astype(str).str.strip().str.lower() != "paid off"].reset_index(drop=True)
+    mri_loans_raw = _filter_paid_off_loans(get_adapter("loans").load(config))
     mri_val = get_adapter("valuations").load(config)
     relationships_raw = get_adapter("relationships").load(config)
     capital_calls_raw = get_adapter("capital_calls").load(config)
@@ -282,23 +286,10 @@ def refresh_table(table_name: str):
                         fresh["InvestmentID"].astype(str).str.strip()
                         .map(earliest).fillna(fresh.get("Acquisition_Date"))
                     )
-            elif table_name == "waterfalls" and not fresh.empty:
-                fresh.columns = [str(c).strip() for c in fresh.columns]
-                if "vCode" in fresh.columns and "vcode" not in fresh.columns:
-                    fresh = fresh.rename(columns={"vCode": "vcode"})
-                if "vcode" in fresh.columns:
-                    fresh["vcode"] = fresh["vcode"].astype(str).str.strip()
-                if "vmisc" in fresh.columns:
-                    fresh["vmisc"] = fresh["vmisc"].astype(str).str.strip()
-                if "PropCode" in fresh.columns:
-                    fresh["PropCode"] = fresh["PropCode"].astype(str).str.strip()
-                if "vState" in fresh.columns:
-                    fresh["vState"] = fresh["vState"].astype(str).str.strip()
-            # Exclude paid-off loans on refresh
-            if table_name == "loans" and not fresh.empty:
-                _col = next((c for c in fresh.columns if c.lower() == "vdatetype"), None)
-                if _col:
-                    fresh = fresh[fresh[_col].astype(str).str.strip().str.lower() != "paid off"].reset_index(drop=True)
+            elif table_name == "waterfalls":
+                fresh = _normalize_waterfall_df(fresh)
+            if table_name == "loans":
+                fresh = _filter_paid_off_loans(fresh)
             data[cache_key_name] = fresh
 
             # Reassemble isbs_raw from split tables when a split table changes
