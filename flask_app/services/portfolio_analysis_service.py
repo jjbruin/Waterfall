@@ -14,7 +14,7 @@ from datetime import date, datetime
 from typing import Optional
 
 from ownership_tree import load_relationships, build_ownership_tree
-from loaders import load_waterfalls, build_investmentid_to_vcode
+from loaders import load_waterfalls
 from waterfall import run_recursive_upstream_waterfalls, build_amfee_exclusions
 from models import InvestorState
 from metrics import xirr, calculate_roe
@@ -104,8 +104,10 @@ def find_entity_deals(entity_id: str, inv: pd.DataFrame, wf: pd.DataFrame,
                       relationships_raw: pd.DataFrame) -> list[dict]:
     """Find deals linked to a specific portfolio entity through intermediaries.
 
-    Uses recursive downward traversal through ownership tree to discover all
-    deals the entity ultimately invests in, regardless of intermediate depth.
+    Uses recursive downward traversal to find all intermediate entities, then
+    filters to only deals whose waterfall PropCode references one of those
+    entities. This prevents pulling in deals from shared holding entities
+    that the selected entity doesn't have direct waterfall exposure to.
     Excludes sold deals and filters ended relationships.
 
     Returns list of deal info dicts with vcode, name, PPI linkage, ownership.
@@ -124,8 +126,6 @@ def find_entity_deals(entity_id: str, inv: pd.DataFrame, wf: pd.DataFrame,
         relationships = relationships[is_empty].copy()
 
     nodes = build_ownership_tree(relationships)
-    inv_to_vcode = build_investmentid_to_vcode(inv)
-    vcode_to_inv_id = {str(v): k for k, v in inv_to_vcode.items()}
 
     # Exclude sold deals
     inv_norm = inv.copy()
@@ -134,10 +134,6 @@ def find_entity_deals(entity_id: str, inv: pd.DataFrame, wf: pd.DataFrame,
     inv_norm["_life"] = inv_norm.get("Lifecycle", "").fillna("").astype(str).str.strip().str.upper()
     active = inv_norm[(inv_norm["_sale"] != "SOLD") & (inv_norm["_life"] != "SOLD")]
     deal_vcodes_set = set(active["vcode"])
-
-    wf_vcodes_set = set()
-    if wf is not None and not wf.empty:
-        wf_vcodes_set = set(wf["vcode"].fillna("").astype(str).str.strip().unique())
 
     # Trace DOWNWARD from entity through investments recursively
     def _get_downstream_entities(eid: str, visited: set = None) -> set:
@@ -157,13 +153,23 @@ def find_entity_deals(entity_id: str, inv: pd.DataFrame, wf: pd.DataFrame,
 
     downstream = _get_downstream_entities(entity_id)
 
-    # Match downstream entities to deal vcodes
+    # Find deals whose waterfall PropCode references a downstream entity.
+    # This ensures the deal actually allocates cash through the entity's chain,
+    # preventing false matches from shared holding entities.
+    wf_norm = wf.copy() if wf is not None and not wf.empty else pd.DataFrame()
     deal_vcodes = set()
-    for did in downstream:
-        vc = inv_to_vcode.get(did)
-        if vc and str(vc) in deal_vcodes_set:
-            if not wf_vcodes_set or str(vc) in wf_vcodes_set:
-                deal_vcodes.add(str(vc))
+    ppi_for_deal = {}
+
+    if not wf_norm.empty:
+        wf_norm["PropCode"] = wf_norm["PropCode"].fillna("").astype(str).str.strip()
+        wf_norm["vcode"] = wf_norm["vcode"].fillna("").astype(str).str.strip()
+
+        for entity in downstream:
+            refs = wf_norm[wf_norm["PropCode"] == entity]["vcode"].unique()
+            for vc in refs:
+                if vc in deal_vcodes_set:
+                    deal_vcodes.add(vc)
+                    ppi_for_deal[vc] = entity
 
     # Remove the entity itself from results
     deal_vcodes -= {entity_id}
@@ -188,14 +194,11 @@ def find_entity_deals(entity_id: str, inv: pd.DataFrame, wf: pd.DataFrame,
             row_info["name"] = str(r.get("Investment_Name", vc))
             row_info["asset_type"] = str(r.get("Asset_Type", ""))
             row_info["sale_status"] = str(r.get("Sale_Status", "") or "Active")
-        # Find intermediate entity linking this deal to the portfolio entity
-        inv_id_for_vc = vcode_to_inv_id.get(vc)
-        if inv_id_for_vc and inv_id_for_vc in nodes:
-            for investor_id, pct in nodes[inv_id_for_vc].investors:
-                if investor_id in ppi_pcts:
-                    row_info["ppi_entity"] = investor_id
-                    row_info["entity_pct"] = ppi_pcts[investor_id]
-                    break
+        # Show intermediate entity that links this deal
+        ppi = ppi_for_deal.get(vc)
+        if ppi and ppi in ppi_pcts:
+            row_info["ppi_entity"] = ppi
+            row_info["entity_pct"] = ppi_pcts[ppi]
         result.append(row_info)
 
     return result
