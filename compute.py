@@ -406,12 +406,12 @@ def run_interleaved_waterfalls(
     cf_steps = wf_steps[
         (wf_steps["vcode"].astype(str) == str(deal_vcode)) &
         (wf_steps["vmisc"] == "CF_WF")
-    ].copy().sort_values("iOrder")
+    ].sort_values("iOrder")
 
     cap_steps = wf_steps[
         (wf_steps["vcode"].astype(str) == str(deal_vcode)) &
         (wf_steps["vmisc"] == "Cap_WF")
-    ].copy().sort_values("iOrder")
+    ].sort_values("iOrder")
 
     # --- 2. Extract pref rates (cross-waterfall) ---
     pref_rates = pref_rates_from_waterfall_steps(wf_steps, deal_vcode)
@@ -672,7 +672,7 @@ def compute_deal_analysis(
         debug_msgs.append(f"Loans loaded: {len(loans)} from deal/property level")
     elif mri_loans_raw is not None and not mri_loans_raw.empty:
         mri_loans = load_mri_loans(mri_loans_raw)
-        mri_loans = mri_loans[mri_loans["vCode"].astype(str) == str(deal_vcode)].copy()
+        mri_loans = mri_loans[mri_loans["vCode"].astype(str) == str(deal_vcode)]
         loans.extend(build_loans_from_mri_loans(mri_loans))
     else:
         debug_msgs.append("MRI_Loans.csv not provided; existing loans will NOT be modeled.")
@@ -832,7 +832,7 @@ def compute_deal_analysis(
 
     # --- Replace forecast debt service with modeled ---
     fc_deal_modeled = fc_deal_full.copy()
-    fc_deal_modeled = fc_deal_modeled[~fc_deal_modeled["vAccount"].isin(INTEREST_ACCTS | PRINCIPAL_ACCTS)].copy()
+    fc_deal_modeled = fc_deal_modeled[~fc_deal_modeled["vAccount"].isin(INTEREST_ACCTS | PRINCIPAL_ACCTS)]
 
     if not loan_sched.empty:
         monthly = loan_sched.groupby(["vcode", "LoanID", "event_date"], as_index=False)[
@@ -1084,8 +1084,8 @@ def compute_deal_analysis(
         cap_period_cash = ce.groupby("event_date", as_index=False)["amount"].sum().rename(columns={"amount": "cash_available"})
 
     if not cf_period_cash.empty:
-        cf_period_cash = cf_period_cash[cf_period_cash["event_date"] <= sale_me].copy()
-    cap_period_cash = cap_period_cash[cap_period_cash["event_date"] <= sale_me].copy()
+        cf_period_cash = cf_period_cash[cf_period_cash["event_date"] <= sale_me]
+    cap_period_cash = cap_period_cash[cap_period_cash["event_date"] <= sale_me]
 
     # --- Actuals/Forecast boundary ---
     # Accounting cashflows are used through the cutoff; waterfall runs after.
@@ -1096,9 +1096,9 @@ def compute_deal_analysis(
         acct_cutoff = pd.Timestamp(_dt(int(start_year) - 1, 12, 31))
     # Convert event_date to Timestamp for safe comparison (avoids Timestamp vs date error)
     if not cf_period_cash.empty:
-        cf_period_cash = cf_period_cash[pd.to_datetime(cf_period_cash["event_date"]) > acct_cutoff].copy()
+        cf_period_cash = cf_period_cash[pd.to_datetime(cf_period_cash["event_date"]) > acct_cutoff]
     if not cap_period_cash.empty:
-        cap_period_cash = cap_period_cash[pd.to_datetime(cap_period_cash["event_date"]) > acct_cutoff].copy()
+        cap_period_cash = cap_period_cash[pd.to_datetime(cap_period_cash["event_date"]) > acct_cutoff]
     debug_msgs.append(
         f"Actuals/forecast boundary: accounting through {acct_cutoff.date()}, waterfall after"
     )

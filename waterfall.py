@@ -1156,7 +1156,7 @@ def seed_states_from_accounting(
 
     # Build states
     states: Dict[str, InvestorState] = {}
-    acct = acct.sort_values(["EffectiveDate", "InvestorID"]).copy()
+    acct = acct.sort_values(["EffectiveDate", "InvestorID"])
 
     for _, r in acct.iterrows():
         pc = str(r["InvestorID"])  # InvestorID == PropCode

@@ -294,7 +294,7 @@ def investor_metrics(
     cf_distributions = ist.cf_distributions if hasattr(ist, 'cf_distributions') else []
 
     # Capital events (all cashflows - used for weighted average capital)
-    capital_events = ist.cashflows.copy()
+    capital_events = ist.cashflows
 
     # For unrealized IRR, add terminal value
     cfs_with_terminal = ist.cashflows.copy()

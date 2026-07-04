@@ -199,7 +199,7 @@ def total_loan_balance_at(loan_sched_df: pd.DataFrame, asof_me: date) -> float:
         return 0.0
     
     s = loan_sched_df.copy()
-    s = s[s["event_date"] <= asof_me].copy()
+    s = s[s["event_date"] <= asof_me]
     
     if s.empty:
         return 0.0

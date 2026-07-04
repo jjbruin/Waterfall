@@ -130,7 +130,7 @@ def load_mri_loans(df: pd.DataFrame = None) -> pd.DataFrame:
     if df is not None and not df.empty:
         d = df.copy()
     else:
-        d = execute_query("SELECT * FROM loans").copy()
+        d = execute_query("SELECT * FROM loans")
     normalize_columns(d)
     
     if "vCode" not in d.columns:

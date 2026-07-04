@@ -80,7 +80,7 @@ def build_capital_call_schedule(cc_df: pd.DataFrame, deal_vcode: str = None) -> 
     
     # Filter by deal if specified
     if deal_vcode and 'deal_name' in cc_df.columns:
-        cc_df = cc_df[cc_df['deal_name'] == deal_vcode].copy()
+        cc_df = cc_df[cc_df['deal_name'] == deal_vcode]
     
     # Build schedule
     schedule = []
