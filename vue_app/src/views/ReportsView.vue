@@ -8,7 +8,7 @@ import api from '../api/client'
 const data = useDataStore()
 const deals = useDealsStore()
 
-const population = ref<'current' | 'select' | 'partner' | 'upstream' | 'all'>('all')
+const population = ref<'current' | 'select' | 'partner' | 'all'>('all')
 const selectedVcodes = ref<string[]>([])
 const results = ref<any[]>([])
 const errors = ref<any[]>([])
@@ -18,9 +18,7 @@ const showErrors = ref(false)
 // Population selector data
 const eligibleDeals = ref<any[]>([])
 const partners = ref<any[]>([])
-const upstreamInvestors = ref<any[]>([])
 const selectedPartner = ref('')
-const selectedInvestor = ref('')
 
 onMounted(async () => {
   if (data.deals.length === 0) await data.loadDeals()
@@ -31,18 +29,12 @@ onMounted(async () => {
   } catch { /* ignore */ }
 })
 
-// Load partner/investor data when population changes
+// Load partner data when population changes
 watch(population, async (val) => {
   if (val === 'partner' && partners.value.length === 0) {
     try {
       const res = await api.get('/api/reports/partners')
       partners.value = res.data.partners
-    } catch { /* ignore */ }
-  }
-  if (val === 'upstream' && upstreamInvestors.value.length === 0) {
-    try {
-      const res = await api.get('/api/reports/upstream-investors')
-      upstreamInvestors.value = res.data.investors
     } catch { /* ignore */ }
   }
 })
@@ -56,10 +48,6 @@ const resolvedVcodes = computed(() => {
     case 'partner': {
       const p = partners.value.find((p) => p.partner === selectedPartner.value)
       return p ? p.vcodes : []
-    }
-    case 'upstream': {
-      const inv = upstreamInvestors.value.find((i) => i.investor_id === selectedInvestor.value)
-      return inv ? inv.vcodes : []
     }
     case 'all':
       return eligibleDeals.value.map((d) => d.vcode)
@@ -77,8 +65,6 @@ const populationLabel = computed(() => {
       return `${count} deal(s) selected`
     case 'partner':
       return selectedPartner.value ? `${selectedPartner.value} — ${count} deal(s)` : 'Select a partner'
-    case 'upstream':
-      return selectedInvestor.value ? `${count} deal(s)` : 'Select an investor'
     case 'all':
       return `${count} deals with waterfalls`
     default:
@@ -144,7 +130,6 @@ function toggleDeal(vcode: string) {
           <option value="current">Current Deal</option>
           <option value="select">Select Deals</option>
           <option value="partner">By Partner</option>
-          <option value="upstream">By Upstream Investor</option>
           <option value="all">All Deals</option>
         </select>
       </div>
@@ -155,18 +140,7 @@ function toggleDeal(vcode: string) {
         <select v-model="selectedPartner">
           <option value="">-- Select partner --</option>
           <option v-for="p in partners" :key="p.partner" :value="p.partner">
-            {{ p.partner }} ({{ p.deal_count }} deals)
-          </option>
-        </select>
-      </div>
-
-      <!-- Upstream investor selector -->
-      <div v-if="population === 'upstream'" class="control-group">
-        <label>Investor:</label>
-        <select v-model="selectedInvestor">
-          <option value="">-- Select investor --</option>
-          <option v-for="inv in upstreamInvestors" :key="inv.investor_id" :value="inv.investor_id">
-            {{ inv.display }} ({{ inv.deal_count }} deals)
+            {{ p.display || p.partner }} ({{ p.deal_count }} deals)
           </option>
         </select>
       </div>

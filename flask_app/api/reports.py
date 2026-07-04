@@ -8,7 +8,7 @@ from flask_app.auth.routes import login_required
 from flask_app.services import data_service, compute_service
 from flask_app.services.reports_service import (
     build_partner_returns, generate_returns_excel,
-    build_deal_lookup, get_partner_deals, get_upstream_investor_deals,
+    build_deal_lookup, get_upstream_investor_deals,
 )
 from flask_app.serializers import safe_json
 
@@ -33,42 +33,28 @@ def deal_lookup():
 @reports_bp.route("/partners", methods=["GET"])
 @login_required
 def partners():
-    """Get partners and their associated deals for By Partner selector."""
-    data = _get_data()
-    lookup = build_deal_lookup(data["inv"], data["wf"])
-    partner_deals = get_partner_deals(
-        lookup["wf_norm"], lookup["eligible_vcodes"], lookup["vcode_to_label"]
-    )
-    # Return as list of {partner, deals: [{vcode, label}]}
-    result = []
-    for partner, vcodes in partner_deals.items():
-        result.append({
-            "partner": partner,
-            "deal_count": len(vcodes),
-            "vcodes": vcodes,
-        })
-    return jsonify({"partners": result})
+    """Get upstream investors and their associated deals for By Partner selector.
 
-
-@reports_bp.route("/upstream-investors", methods=["GET"])
-@login_required
-def upstream_investors():
-    """Get upstream investors and their deal exposure for By Upstream Investor selector."""
+    Uses the same upstream investor list as Review Tracking — recursive
+    ownership chain traversal excluding OP% and PPI% entities.
+    """
     data = _get_data()
     lookup = build_deal_lookup(data["inv"], data["wf"])
     investor_deals = get_upstream_investor_deals(
         data.get("relationships_raw"), data["inv"], lookup["eligible_vcodes"]
     )
+    # Filter to same set as Review Tracking (exclude OP% and PPI%)
     result = []
     for iid, info in investor_deals.items():
+        if iid.startswith("OP") or iid.startswith("PPI"):
+            continue
         result.append({
-            "investor_id": iid,
-            "name": info["name"],
+            "partner": iid,
             "display": info["display"],
             "deal_count": len(info["vcodes"]),
             "vcodes": info["vcodes"],
         })
-    return jsonify({"investors": result})
+    return jsonify({"partners": result})
 
 
 @reports_bp.route("/projected-returns", methods=["POST"])

@@ -406,7 +406,7 @@ Embedded request tracking system for users to report errors, suggest improvement
 ### 7. Reports
 Projected Returns Summary with Excel export. Vue: `ReportsView.vue`. Flask: `reports.py` + `reports_service.py`.
 - **Report Type**: Extensible selector (currently: Projected Returns Summary)
-- **Population Selectors**: Current Deal, Select Deals, By Partner, By Upstream Investor, All Deals
+- **Population Selectors**: Current Deal, Select Deals, By Partner (upstream investors via ownership chain, same as Review Tracking — excludes OP/PPI entities), All Deals
 - **Output**: Partner-level rows (Contributions, CF Distributions, Capital Distributions, IRR, ROE, MOIC) plus bold deal-level total row with solid top border
 - **Excel Export**: Formatted workbook via openpyxl (currency/pct/multiple formats, auto-width, deal-total rows bold with top border)
 
