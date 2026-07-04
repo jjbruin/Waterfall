@@ -35,7 +35,7 @@ def month_ends_between(start_d: date, end_d: date) -> List[date]:
     end_me = month_end(end_d)
     if end_me < start_me:
         return []
-    rng = pd.date_range(start=start_me, end=end_me, freq="M")
+    rng = pd.date_range(start=start_me, end=end_me, freq="ME")
     return [x.date() for x in rng]
 
 
