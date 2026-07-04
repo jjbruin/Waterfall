@@ -916,8 +916,9 @@ def run_waterfall(
         (allocations_df, investor_states_dict)
     """
     # Filter steps to this deal and waterfall type
+    # vcode is already str from load_waterfalls(); may be pre-filtered to deal
     steps = wf_steps[
-        (wf_steps["vcode"].astype(str) == str(vcode)) &
+        (wf_steps["vcode"] == str(vcode)) &
         (wf_steps["vmisc"] == wf_name)
     ].copy()
     steps = steps.sort_values("iOrder")
@@ -1023,10 +1024,10 @@ def pref_rates_from_waterfall_steps(wf_steps: pd.DataFrame, vcode: str) -> dict:
     Returns dict of PropCode -> rate (float) for single-rate deals,
     or PropCode -> [rate1, rate2, ...] for multi-tier deals (e.g. Cocoplum).
     """
-    s = wf_steps[wf_steps["vcode"].astype(str) == str(vcode)].copy()
+    s = wf_steps[wf_steps["vcode"] == str(vcode)].copy()
     if s.empty:
         return {}
-    pref = s[s["vState"].astype(str).str.strip() == "Pref"].copy()
+    pref = s[s["vState"] == "Pref"].copy()
     if pref.empty:
         return {}
     pref = pref.sort_values(["vmisc", "iOrder"])
@@ -1047,7 +1048,7 @@ def pref_rates_from_waterfall_steps(wf_steps: pd.DataFrame, vcode: str) -> dict:
 
 def add_pref_rates_from_waterfall_steps(wf_steps: pd.DataFrame, vcode: str) -> dict:
     """Extract pref rates from waterfall Add steps where vtranstype contains 'pref'"""
-    s = wf_steps[wf_steps["vcode"].astype(str) == str(vcode)].copy()
+    s = wf_steps[wf_steps["vcode"] == str(vcode)].copy()
     if s.empty:
         return {}
     add_pref = s[
@@ -1222,9 +1223,9 @@ def seed_states_from_accounting(
             # Get pref rate from waterfall steps
             pref_rate = 0.0
             pref_steps = wf_steps[
-                (wf_steps["vcode"].astype(str) == str(target_vcode)) &
-                (wf_steps["PropCode"].astype(str) == pc) &
-                (wf_steps["vState"].astype(str).str.strip() == "Pref")
+                (wf_steps["vcode"] == str(target_vcode)) &
+                (wf_steps["PropCode"] == str(pc)) &
+                (wf_steps["vState"] == "Pref")
             ]
             if not pref_steps.empty:
                 rate_col = "nPercent_dec" if "nPercent_dec" in pref_steps.columns else "nPercent"
@@ -1385,7 +1386,7 @@ def get_upstream_waterfall_entities(wf_steps: pd.DataFrame) -> set:
     """
     if wf_steps.empty:
         return set()
-    vcodes = set(wf_steps["vcode"].astype(str).unique())
+    vcodes = set(wf_steps["vcode"].unique())
     return vcodes
 
 
@@ -1523,7 +1524,7 @@ def run_upstream_waterfall_period(
         effective_wf_type = wf_type
         if source_vtranstype and "Promote" in source_vtranstype:
             promote_steps = wf_steps[
-                (wf_steps["vcode"].astype(str) == str(entity_id)) &
+                (wf_steps["vcode"] == str(entity_id)) &
                 (wf_steps["vmisc"] == "Promote_WF")
             ]
             if not promote_steps.empty:
@@ -1531,7 +1532,7 @@ def run_upstream_waterfall_period(
 
         # Run this entity's waterfall
         steps = wf_steps[
-            (wf_steps["vcode"].astype(str) == str(entity_id)) &
+            (wf_steps["vcode"] == str(entity_id)) &
             (wf_steps["vmisc"] == effective_wf_type)
         ].copy()
 

@@ -377,19 +377,14 @@ def run_interleaved_waterfalls(
         compatible with build_partner_results().
     """
     # --- 1. Filter steps for each waterfall type ---
-    cf_steps = wf_steps[
-        (wf_steps["vcode"].astype(str) == str(deal_vcode)) &
-        (wf_steps["vmisc"] == "CF_WF")
-    ].sort_values("iOrder")
-
-    cap_steps = wf_steps[
-        (wf_steps["vcode"].astype(str) == str(deal_vcode)) &
-        (wf_steps["vmisc"] == "Cap_WF")
-    ].sort_values("iOrder")
+    # wf_steps may already be pre-filtered to this deal's vcode
+    deal_steps = wf_steps[wf_steps["vcode"] == str(deal_vcode)] if len(wf_steps["vcode"].unique()) > 1 else wf_steps
+    cf_steps = deal_steps[deal_steps["vmisc"] == "CF_WF"].sort_values("iOrder")
+    cap_steps = deal_steps[deal_steps["vmisc"] == "Cap_WF"].sort_values("iOrder")
 
     # --- 2. Extract pref rates (cross-waterfall) ---
-    pref_rates = pref_rates_from_waterfall_steps(wf_steps, deal_vcode)
-    add_pref_rates = add_pref_rates_from_waterfall_steps(wf_steps, deal_vcode)
+    pref_rates = pref_rates_from_waterfall_steps(deal_steps, deal_vcode)
+    add_pref_rates = add_pref_rates_from_waterfall_steps(deal_steps, deal_vcode)
 
     # --- 3. Build merged timeline with wf_type tag ---
     cf_timeline = []
@@ -1117,12 +1112,14 @@ def compute_deal_analysis(
 
     # --- Run waterfalls ---
     wf_steps = load_waterfalls(wf)
-    seed_states = seed_states_from_accounting(acct, inv, wf_steps, deal_vcode,
+    # Pre-filter steps for this deal once (avoids repeated .astype(str) on full table)
+    deal_wf_steps = wf_steps[wf_steps["vcode"] == str(deal_vcode)]
+    seed_states = seed_states_from_accounting(acct, inv, deal_wf_steps, deal_vcode,
                                               cutoff_date=acct_cutoff,
                                               child_vcodes=prop_vcodes_for_cap)
 
     cf_alloc, cap_alloc, cf_investors, cap_investors = run_interleaved_waterfalls(
-        wf_steps, deal_vcode, cf_period_cash, cap_period_cash,
+        deal_wf_steps, deal_vcode, cf_period_cash, cap_period_cash,
         seed_states, capital_calls=capital_calls,
     )
 
