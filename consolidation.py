@@ -12,6 +12,7 @@ Handles cases where:
 import pandas as pd
 from typing import Dict, List, Tuple, Optional
 from datetime import date
+from utils import normalize_columns
 
 
 def identify_sub_portfolio_deals(
@@ -37,7 +38,7 @@ def identify_sub_portfolio_deals(
         Dict mapping deal InvestmentID -> list of property InvestmentIDs
     """
     deals_df = deals.copy()
-    deals_df.columns = [str(c).strip() for c in deals_df.columns]
+    normalize_columns(deals_df)
 
     # Ensure required columns exist
     for col in ['InvestmentID', 'Investment_Name', 'Portfolio_Name', 'vcode']:
@@ -77,7 +78,7 @@ def identify_sub_portfolio_deals(
 def get_deal_vcode(investment_id: str, deals: pd.DataFrame) -> Optional[str]:
     """Get vcode for an InvestmentID"""
     deals_df = deals.copy()
-    deals_df.columns = [str(c).strip() for c in deals_df.columns]
+    normalize_columns(deals_df)
 
     match = deals_df[deals_df['InvestmentID'].astype(str) == str(investment_id)]
     if not match.empty:
@@ -100,7 +101,7 @@ def get_property_vcodes_for_deal(deal_vcode: str, deals: pd.DataFrame) -> List[s
         List of property vcodes belonging to this deal
     """
     deals_df = deals.copy()
-    deals_df.columns = [str(c).strip() for c in deals_df.columns]
+    normalize_columns(deals_df)
     deals_df['vcode'] = deals_df['vcode'].astype(str).str.strip()
 
     # Find the deal's Investment_Name
@@ -137,7 +138,7 @@ def get_parent_deal_for_property(property_vcode: str, deals: pd.DataFrame) -> Op
         Returns None if this is not a child property (standalone or parent deal)
     """
     deals_df = deals.copy()
-    deals_df.columns = [str(c).strip() for c in deals_df.columns]
+    normalize_columns(deals_df)
     deals_df['vcode'] = deals_df['vcode'].astype(str).str.strip()
     deals_df['Portfolio_Name'] = deals_df['Portfolio_Name'].fillna('').astype(str).str.strip()
     deals_df['Investment_Name'] = deals_df['Investment_Name'].fillna('').astype(str).str.strip()
@@ -253,7 +254,7 @@ def get_deal_loans(
         return pd.DataFrame()
 
     ln = loans.copy()
-    ln.columns = [str(c).strip() for c in ln.columns]
+    normalize_columns(ln)
 
     # Normalize vCode column
     if 'vcode' in ln.columns and 'vCode' not in ln.columns:
@@ -366,7 +367,7 @@ def get_sub_portfolio_summary(
         return pd.DataFrame()
 
     deals_df = deals.copy()
-    deals_df.columns = [str(c).strip() for c in deals_df.columns]
+    normalize_columns(deals_df)
 
     rows = []
     for deal_inv_id, property_inv_ids in sub_portfolios.items():

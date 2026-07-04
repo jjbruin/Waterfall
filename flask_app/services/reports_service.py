@@ -8,6 +8,7 @@ import io
 from typing import Optional
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+from utils import normalize_columns
 
 
 def build_partner_returns(deal_result: dict, deal_name: str) -> list[dict]:
@@ -87,7 +88,7 @@ def build_deal_lookup(inv: pd.DataFrame, wf: pd.DataFrame) -> dict:
 
     # Waterfall normalisation
     wf_norm = wf.copy()
-    wf_norm.columns = [str(c).strip() for c in wf_norm.columns]
+    normalize_columns(wf_norm)
     if "vCode" in wf_norm.columns and "vcode" not in wf_norm.columns:
         wf_norm = wf_norm.rename(columns={"vCode": "vcode"})
     wf_norm["vcode"] = wf_norm["vcode"].astype(str)

@@ -16,7 +16,7 @@ from config import (INTEREST_ACCTS, PRINCIPAL_ACCTS, SELLING_COST_RATE,
                     GROSS_REVENUE_ACCTS, CONTRA_REVENUE_ACCTS, EXPENSE_ACCTS,
                     TAX_ABATEMENT_ACCTS, TAX_ABATEMENT_DISCOUNT_RATE,
                     DEBT_BS_ACCTS, typename_to_pool)
-from utils import month_end, as_date
+from utils import month_end, as_date, normalize_columns
 from metrics import investor_metrics, xirr, calculate_roe
 from models import InvestorState
 from loaders import (load_coa, load_forecast, load_mri_loans,
@@ -61,7 +61,7 @@ def get_isbs_debt_balance(isbs_raw, vcode, as_of_date=None):
         return None
 
     df = isbs_raw.copy()
-    df.columns = [str(c).strip() for c in df.columns]
+    normalize_columns(df)
 
     # Filter to deal
     if 'vcode' in df.columns:
@@ -151,7 +151,7 @@ def prepare_cap_lookups(acct, inv, mri_val, mri_loans):
     # 2. Normalized accounting DataFrame (done once)
     if acct is not None and not acct.empty:
         acct_norm = acct.copy()
-        acct_norm.columns = [str(c).strip() for c in acct_norm.columns]
+        normalize_columns(acct_norm)
         acct_norm["InvestmentID"] = acct_norm["InvestmentID"].astype(str).str.strip()
         if 'EffectiveDate' in acct_norm.columns:
             acct_norm['EffectiveDate'] = pd.to_datetime(acct_norm['EffectiveDate'], errors='coerce')
@@ -182,7 +182,7 @@ def prepare_cap_lookups(acct, inv, mri_val, mri_loans):
     # 4. Normalized valuations DataFrame (done once, including date parsing)
     if mri_val is not None and not mri_val.empty:
         val_norm = mri_val.copy()
-        val_norm.columns = [str(c).strip() for c in val_norm.columns]
+        normalize_columns(val_norm)
         if 'vcode' not in val_norm.columns and 'vCode' in val_norm.columns:
             val_norm = val_norm.rename(columns={'vCode': 'vcode'})
         if 'vcode' in val_norm.columns:
@@ -196,7 +196,7 @@ def prepare_cap_lookups(acct, inv, mri_val, mri_loans):
 
     # 5. Pre-compute property vcodes for all deals
     inv_df = inv.copy()
-    inv_df.columns = [str(c).strip() for c in inv_df.columns]
+    normalize_columns(inv_df)
     inv_df['vcode'] = inv_df['vcode'].astype(str).str.strip()
     inv_df['Portfolio_Name'] = inv_df['Portfolio_Name'].fillna('').astype(str).str.strip() if 'Portfolio_Name' in inv_df.columns else ''
     # Build name→vcode and vcode→name
@@ -259,7 +259,7 @@ def get_deal_capitalization(acct, inv, wf, mri_val, mri_loans, deal_vcode,
             deal_investment_ids = [iid for iid, vc in inv_to_vcode.items() if str(vc) == str(deal_vcode)]
             acct_norm = acct.copy() if acct is not None and not acct.empty else None
             if acct_norm is not None:
-                acct_norm.columns = [str(c).strip() for c in acct_norm.columns]
+                normalize_columns(acct_norm)
                 acct_norm["InvestmentID"] = acct_norm["InvestmentID"].astype(str).str.strip()
                 acct_norm["MajorType"] = acct_norm["MajorType"].fillna("").astype(str).str.strip()
                 acct_norm["Amt"] = pd.to_numeric(acct_norm["Amt"], errors="coerce").fillna(0.0)
@@ -332,7 +332,7 @@ def get_deal_capitalization(acct, inv, wf, mri_val, mri_loans, deal_vcode,
         vn = val_norm if lookups else None
         if vn is None and mri_val is not None and not mri_val.empty:
             vn = mri_val.copy()
-            vn.columns = [str(c).strip() for c in vn.columns]
+            normalize_columns(vn)
             if 'vcode' not in vn.columns and 'vCode' in vn.columns:
                 vn = vn.rename(columns={'vCode': 'vcode'})
             if 'vcode' in vn.columns:
@@ -591,7 +591,7 @@ def compute_deal_analysis(
         source = consolidation_info.get('forecast_source', 'unknown')
 
         if 'vAccountType' in fc_raw_local.columns and 'mAmount_norm' in fc_raw_local.columns:
-            fc_deal_full = fc_raw_local.copy()
+            fc_deal_full = fc_raw_local
         else:
             if 'vcode' in fc_raw_local.columns and 'Vcode' not in fc_raw_local.columns:
                 fc_raw_local = fc_raw_local.rename(columns={'vcode': 'Vcode'})
@@ -627,7 +627,7 @@ def compute_deal_analysis(
             fc_deal_full["vAccount"].isin(operating_accts)
         )
         trimmed_count = mask.sum()
-        fc_deal_full = fc_deal_full[~mask].copy()
+        fc_deal_full = fc_deal_full[~mask]
         debug_msgs.append(
             f"Actuals through {actuals_through}: {trimmed_count} forecast operating rows trimmed"
         )
@@ -637,7 +637,7 @@ def compute_deal_analysis(
     from datetime import date as _date
     _cutoff = _date(int(start_year) - 2, 1, 1)
     _pre = len(fc_deal_full)
-    fc_deal_full = fc_deal_full[fc_deal_full["event_date"] >= _cutoff].copy()
+    fc_deal_full = fc_deal_full[fc_deal_full["event_date"] >= _cutoff]
     if len(fc_deal_full) < _pre:
         debug_msgs.append(
             f"Filtered {_pre - len(fc_deal_full)} forecast rows before {_cutoff}"
@@ -700,7 +700,7 @@ def compute_deal_analysis(
 
     if mri_supp is not None and not mri_supp.empty:
         ms = mri_supp.copy()
-        ms.columns = [str(c).strip() for c in ms.columns]
+        normalize_columns(ms)
         if "vCode" not in ms.columns and "vcode" in ms.columns:
             ms = ms.rename(columns={"vcode": "vCode"})
         ms["vCode"] = ms["vCode"].astype(str)
@@ -909,7 +909,7 @@ def compute_deal_analysis(
             if isbs_debt is not None and isbs_debt > 0 and not loan_sched.empty:
                 # Find the ISBS anchor date (most recent BS period)
                 _isbs_df = isbs_raw.copy()
-                _isbs_df.columns = [str(c).strip() for c in _isbs_df.columns]
+                normalize_columns(_isbs_df)
                 if 'vcode' in _isbs_df.columns:
                     _isbs_df['vcode'] = _isbs_df['vcode'].astype(str).str.strip().str.lower()
                     _isbs_df = _isbs_df[_isbs_df['vcode'] == str(deal_vcode).strip().lower()]

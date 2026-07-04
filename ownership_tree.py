@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Set, Tuple, Optional
 import pandas as pd
 from datetime import date
+from utils import normalize_columns
 
 
 @dataclass
@@ -47,7 +48,7 @@ def load_relationships(df: pd.DataFrame) -> pd.DataFrame:
     Expected columns: InvestmentID, InvestorID, OwnershipPct, Name, StartDate
     """
     rel = df.copy()
-    rel.columns = [str(c).strip() for c in rel.columns]
+    normalize_columns(rel)
     
     required = {"InvestmentID", "InvestorID", "OwnershipPct"}
     missing = [c for c in required if c not in rel.columns]

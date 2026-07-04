@@ -12,6 +12,7 @@ from compute import get_deal_capitalization
 from consolidation import get_property_vcodes_for_deal
 from config import IS_ACCOUNTS
 from flask_app.services.isbs_helpers import compute_cumulative_noi, cumulative_to_periodic, aggregate_periodic
+from utils import normalize_columns
 
 
 def get_child_vcodes(inv: pd.DataFrame) -> set:
@@ -26,7 +27,7 @@ def get_child_vcodes(inv: pd.DataFrame) -> set:
         return set()
 
     df = inv.copy()
-    df.columns = [str(c).strip() for c in df.columns]
+    normalize_columns(df)
     if "Portfolio_Name" not in df.columns or "Investment_Name" not in df.columns:
         return set()
 
@@ -103,7 +104,7 @@ def get_latest_occupancy(inv_disp, occupancy_raw, inv=None) -> dict:
         return {}
 
     occ = occupancy_raw.copy()
-    occ.columns = [str(c).strip() for c in occ.columns]
+    normalize_columns(occ)
 
     if "vCode" not in occ.columns:
         return {}
@@ -320,7 +321,7 @@ def get_loan_maturity_data(mri_loans_raw, inv_disp, inv) -> dict:
         return {"yearly": [], "fixed_rates": [], "detail": []}
 
     loans = mri_loans_raw.copy()
-    loans.columns = [str(c).strip() for c in loans.columns]
+    normalize_columns(loans)
 
     if "vCode" not in loans.columns and "vcode" in loans.columns:
         loans = loans.rename(columns={"vcode": "vCode"})
@@ -419,7 +420,7 @@ def compute_portfolio_noi(isbs_raw, inv_disp, frequency="Quarterly",
         return {"periods": [], "actual_noi": [], "uw_noi": [], "occupancy": []}
 
     isbs = isbs_raw.copy()
-    isbs.columns = [str(c).strip() for c in isbs.columns]
+    normalize_columns(isbs)
 
     # Filter to parent deal vcodes only
     parent_vcodes = set(inv_disp["vcode"].astype(str).str.strip().str.lower())
@@ -505,7 +506,7 @@ def compute_portfolio_noi(isbs_raw, inv_disp, frequency="Quarterly",
     occ_by_period = {}
     if occupancy_raw is not None and not occupancy_raw.empty:
         occ = occupancy_raw.copy()
-        occ.columns = [str(c).strip() for c in occ.columns]
+        normalize_columns(occ)
         if "vCode" in occ.columns:
             occ["vCode"] = occ["vCode"].astype(str).str.strip().str.lower()
             occ = occ[occ["vCode"].isin(parent_vcodes)]
@@ -590,7 +591,7 @@ def _get_deal_trailing_noi(isbs_raw, inv_disp, num_quarters=4) -> dict:
         return {}
 
     isbs = isbs_raw.copy()
-    isbs.columns = [str(c).strip() for c in isbs.columns]
+    normalize_columns(isbs)
 
     parent_vcodes = set(inv_disp["vcode"].astype(str).str.strip().str.lower())
     if "vcode" in isbs.columns:
@@ -707,7 +708,7 @@ def _get_deal_trailing_occupancy(inv_disp, occupancy_raw, num_quarters=4) -> dic
         return {}
 
     occ = occupancy_raw.copy()
-    occ.columns = [str(c).strip() for c in occ.columns]
+    normalize_columns(occ)
     if "vCode" not in occ.columns:
         return {}
 

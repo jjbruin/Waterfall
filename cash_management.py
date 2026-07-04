@@ -10,6 +10,7 @@ from typing import Dict, List, Tuple
 from datetime import datetime
 
 from config import CASH_BALANCE_ACCTS
+from utils import normalize_columns
 
 log = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ def load_beginning_cash_balance(isbs_df: pd.DataFrame, deal_vcode: str, forecast
 
     # Normalize column names
     isbs = isbs_df.copy()
-    isbs.columns = [str(c).strip() for c in isbs.columns]
+    normalize_columns(isbs)
 
     # Check if required columns exist
     required_cols = ['vcode', 'dtEntry', 'vSource', 'vAccount', 'mAmount']

@@ -15,6 +15,7 @@ import numpy as np
 from datetime import date, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 from database import execute_query, get_db_connection
+from utils import normalize_columns
 
 
 # ============================================================
@@ -74,7 +75,7 @@ def get_available_quarters(isbs_df: pd.DataFrame) -> List[str]:
         return []
 
     df = isbs_df.copy()
-    df.columns = [str(c).strip() for c in df.columns]
+    normalize_columns(df)
 
     # Filter for actual data only
     if 'vSource' in df.columns:
@@ -154,7 +155,7 @@ def get_general_information(inv_map: pd.DataFrame, vcode: str) -> Dict[str, Any]
         return info
 
     df = inv_map.copy()
-    df.columns = [str(c).strip() for c in df.columns]
+    normalize_columns(df)
 
     # Normalize vcode column
     if 'vcode' not in df.columns and 'vCode' in df.columns:
@@ -276,7 +277,7 @@ def get_capitalization_stack(
     elif mri_loans is not None and not mri_loans.empty:
         # Fallback: origination amounts from MRI_Loans
         loans = mri_loans.copy()
-        loans.columns = [str(c).strip() for c in loans.columns]
+        normalize_columns(loans)
         if 'vCode' not in loans.columns and 'vcode' in loans.columns:
             loans = loans.rename(columns={'vcode': 'vCode'})
         if 'vCode' in loans.columns:
@@ -288,7 +289,7 @@ def get_capitalization_stack(
     # Loan terms — always from MRI_Loans (independent of debt source)
     if mri_loans is not None and not mri_loans.empty:
         loans = mri_loans.copy()
-        loans.columns = [str(c).strip() for c in loans.columns]
+        normalize_columns(loans)
         if 'vCode' not in loans.columns and 'vcode' in loans.columns:
             loans = loans.rename(columns={'vcode': 'vCode'})
         if 'vCode' in loans.columns:
@@ -366,7 +367,7 @@ def get_capitalization_stack(
     # Get valuation from MRI_VAL
     if mri_val is not None and not mri_val.empty:
         val = mri_val.copy()
-        val.columns = [str(c).strip() for c in val.columns]
+        normalize_columns(val)
         if 'vcode' not in val.columns and 'vCode' in val.columns:
             val = val.rename(columns={'vCode': 'vcode'})
         if 'vcode' in val.columns:
@@ -409,7 +410,7 @@ def get_capitalization_stack(
     # Fallback: purchase price from investment map (deals table)
     if cap['purchase_price'] == 0 and inv_map is not None and not inv_map.empty:
         im = inv_map.copy()
-        im.columns = [str(c).strip() for c in im.columns]
+        normalize_columns(im)
         if 'vcode' not in im.columns and 'vCode' in im.columns:
             im = im.rename(columns={'vCode': 'vcode'})
         if 'vcode' in im.columns:
@@ -429,7 +430,7 @@ def get_capitalization_stack(
     # Get PE coupon and participation from waterfalls
     if waterfalls is not None and not waterfalls.empty:
         wf = waterfalls.copy()
-        wf.columns = [str(c).strip() for c in wf.columns]
+        normalize_columns(wf)
         if 'vcode' not in wf.columns and 'vCode' in wf.columns:
             wf = wf.rename(columns={'vCode': 'vcode'})
         if 'vcode' in wf.columns:
@@ -454,7 +455,7 @@ def get_capitalization_stack(
     # Get committed PE from commitments
     if commitments is not None and not commitments.empty:
         comm = commitments.copy()
-        comm.columns = [str(c).strip() for c in comm.columns]
+        normalize_columns(comm)
         # Filter by vcode or EntityID
         if 'vcode' in comm.columns:
             comm['vcode'] = comm['vcode'].astype(str).str.strip()
@@ -471,7 +472,7 @@ def get_capitalization_stack(
             deal_investment_ids = [iid for iid, vc in inv_to_vcode.items() if str(vc) == vcode_str]
 
             acct_norm = acct.copy()
-            acct_norm.columns = [str(c).strip() for c in acct_norm.columns]
+            normalize_columns(acct_norm)
             acct_norm["InvestmentID"] = acct_norm["InvestmentID"].astype(str).str.strip()
             deal_acct = acct_norm[acct_norm["InvestmentID"].isin(deal_investment_ids)].copy()
 
@@ -622,7 +623,7 @@ def get_property_performance(
 
     # Prepare ISBS data
     isbs = isbs_df.copy()
-    isbs.columns = [str(c).strip() for c in isbs.columns]
+    normalize_columns(isbs)
 
     if 'vcode' in isbs.columns:
         isbs['vcode'] = isbs['vcode'].astype(str).str.strip().str.lower()
@@ -782,7 +783,7 @@ def get_property_performance(
         at_close_filled = False
         if at_close_noi_df is not None and not at_close_noi_df.empty:
             acn = at_close_noi_df.copy()
-            acn.columns = [str(c).strip() for c in acn.columns]
+            normalize_columns(acn)
             if 'vcode' not in acn.columns and 'vCode' in acn.columns:
                 acn = acn.rename(columns={'vCode': 'vcode'})
             if 'vcode' in acn.columns:
@@ -822,7 +823,7 @@ def get_property_performance(
     # Outside the uw_data block — deal_terms is independent of ISBS data
     if deal_terms_df is not None and not deal_terms_df.empty:
         dtf = deal_terms_df.copy()
-        dtf.columns = [str(c).strip() for c in dtf.columns]
+        normalize_columns(dtf)
         if 'vcode' not in dtf.columns and 'vCode' in dtf.columns:
             dtf = dtf.rename(columns={'vCode': 'vcode'})
         if 'vcode' in dtf.columns:
@@ -844,7 +845,7 @@ def get_property_performance(
     # Economic Occupancy = avg physical occ (YTD months) - bad debt/concessions %
     if occupancy_df is not None and not occupancy_df.empty:
         occ = occupancy_df.copy()
-        occ.columns = [str(c).strip() for c in occ.columns]
+        normalize_columns(occ)
         if 'vCode' in occ.columns or 'vcode' in occ.columns:
             vcode_col = 'vCode' if 'vCode' in occ.columns else 'vcode'
             occ[vcode_col] = occ[vcode_col].astype(str).str.strip().str.lower()
@@ -887,7 +888,7 @@ def get_property_performance(
     # Budget Economic Occupancy from ProjOccupancy (budget_econ_occ table)
     if budget_econ_occ_df is not None and not budget_econ_occ_df.empty:
         beo = budget_econ_occ_df.copy()
-        beo.columns = [str(c).strip() for c in beo.columns]
+        normalize_columns(beo)
         vcode_col = 'VCODE' if 'VCODE' in beo.columns else 'vcode'
         if vcode_col in beo.columns:
             beo[vcode_col] = beo[vcode_col].astype(str).str.strip().str.lower()
@@ -924,7 +925,7 @@ def get_property_performance(
         budget_remaining_occ = None
         if budget_econ_occ_df is not None and not budget_econ_occ_df.empty:
             beo2 = budget_econ_occ_df.copy()
-            beo2.columns = [str(c).strip() for c in beo2.columns]
+            normalize_columns(beo2)
             vc2 = 'VCODE' if 'VCODE' in beo2.columns else 'vcode'
             if vc2 in beo2.columns:
                 beo2[vc2] = beo2[vc2].astype(str).str.strip().str.lower()
@@ -1002,7 +1003,7 @@ def get_pe_performance(
     # Get coupon and participation from waterfalls
     if waterfalls is not None and not waterfalls.empty:
         wf = waterfalls.copy()
-        wf.columns = [str(c).strip() for c in wf.columns]
+        normalize_columns(wf)
         if 'vcode' not in wf.columns and 'vCode' in wf.columns:
             wf = wf.rename(columns={'vCode': 'vcode'})
         if 'vcode' in wf.columns:
@@ -1025,7 +1026,7 @@ def get_pe_performance(
     # Get committed PE from commitments
     if commitments is not None and not commitments.empty:
         comm = commitments.copy()
-        comm.columns = [str(c).strip() for c in comm.columns]
+        normalize_columns(comm)
         if 'vcode' in comm.columns:
             comm['vcode'] = comm['vcode'].astype(str).str.strip()
             deal_comm = comm[comm['vcode'] == vcode_str]
@@ -1041,7 +1042,7 @@ def get_pe_performance(
             deal_investment_ids = [iid for iid, vc in inv_to_vcode.items() if str(vc) == vcode_str]
 
             acct_norm = acct.copy()
-            acct_norm.columns = [str(c).strip() for c in acct_norm.columns]
+            normalize_columns(acct_norm)
             acct_norm["InvestmentID"] = acct_norm["InvestmentID"].astype(str).str.strip()
             acct_norm["EffectiveDate"] = pd.to_datetime(acct_norm["EffectiveDate"], errors='coerce')
 

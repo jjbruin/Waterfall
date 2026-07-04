@@ -9,6 +9,12 @@ from typing import List
 import pandas as pd
 
 
+def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Strip whitespace from all DataFrame column names."""
+    df.columns = [str(c).strip() for c in df.columns]
+    return df
+
+
 def is_streamlit_cloud() -> bool:
     """Check if running on Streamlit Cloud"""
     return Path("/mount/src").exists()

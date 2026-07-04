@@ -18,6 +18,7 @@ from typing import Optional, List, Dict, Any
 import logging
 import io
 import zipfile
+from utils import normalize_columns
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -597,7 +598,7 @@ def init_database(data_folder: Optional[str] = None) -> Dict[str, Any]:
             df = pd.read_csv(csv_file)
             
             # Normalize column names (strip whitespace)
-            df.columns = [str(c).strip() for c in df.columns]
+            normalize_columns(df)
             
             # Load to database
             df.to_sql(table_name, conn, if_exists='replace', index=False)
@@ -721,8 +722,8 @@ def refresh_table_from_csv(
         df = pd.read_csv(csv_path)
         
         # Normalize column names
-        df.columns = [str(c).strip() for c in df.columns]
-        
+        normalize_columns(df)
+
         conn = get_db_connection()
         
         # Import data
@@ -1165,7 +1166,7 @@ def import_csv_dataframe(
     conn, is_postgres = _get_import_connection()
 
     try:
-        df.columns = [str(c).strip() for c in df.columns]
+        normalize_columns(df)
         _import_dataframe(conn, is_postgres, table_name, df)
         _log_import(conn, is_postgres, table_name, len(df), source)
 
@@ -1220,7 +1221,7 @@ def import_csv_stream(
 
         for chunk in pd.read_csv(file_stream, chunksize=chunk_size, low_memory=False,
                                   dtype=str):
-            chunk.columns = [str(c).strip() for c in chunk.columns]
+            normalize_columns(chunk)
             mode = 'replace' if first_chunk else 'append'
             chunk.to_sql(table_name, engine, if_exists=mode, index=False)
             total_rows += len(chunk)

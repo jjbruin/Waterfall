@@ -16,7 +16,7 @@ from scipy.optimize import brentq
 
 from models import Loan
 from config import GROSS_REVENUE_ACCTS, CONTRA_REVENUE_ACCTS, EXPENSE_ACCTS, INTEREST_ACCTS, PRINCIPAL_ACCTS
-from utils import as_date, month_end, add_months, month_ends_between
+from utils import as_date, month_end, add_months, month_ends_between, normalize_columns
 
 
 def projected_cap_rate_at_date(mri_val: pd.DataFrame, vcode: str, asof_date: date, proj_begin: date = None) -> float:
@@ -28,7 +28,7 @@ def projected_cap_rate_at_date(mri_val: pd.DataFrame, vcode: str, asof_date: dat
     Falls back to proj_begin if no date column is available.
     """
     dv = mri_val.copy()
-    dv.columns = [str(c).strip() for c in dv.columns]
+    normalize_columns(dv)
     if "vcode" not in dv.columns and "vCode" in dv.columns:
         dv = dv.rename(columns={"vCode": "vcode"})
     if "vcode" not in dv.columns or "fCapRate" not in dv.columns:

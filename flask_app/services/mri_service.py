@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from utils import normalize_columns
+
 logger = logging.getLogger(__name__)
 
 # ── MRI Server Configuration ─────────────────────────────────────────────
@@ -284,7 +286,7 @@ def _upsert_deals(df: pd.DataFrame, engine) -> dict:
 
     # Normalize incoming column names
     df = df.copy()
-    df.columns = [str(c).strip() for c in df.columns]
+    normalize_columns(df)
     if "vcode" not in df.columns and "vCode" in df.columns:
         df = df.rename(columns={"vCode": "vcode"})
     df["vcode"] = df["vcode"].astype(str).str.strip()
@@ -315,7 +317,7 @@ def _upsert_deals(df: pd.DataFrame, engine) -> dict:
         logger.info(f"  deals: {len(df)} rows (fresh table)")
         return {"deals": {"rows": len(df), "status": "ok", "new": len(df), "updated": 0}}
 
-    existing.columns = [str(c).strip() for c in existing.columns]
+    normalize_columns(existing)
     if "vcode" not in existing.columns and "vCode" in existing.columns:
         existing = existing.rename(columns={"vCode": "vcode"})
     existing["vcode"] = existing["vcode"].astype(str).str.strip()

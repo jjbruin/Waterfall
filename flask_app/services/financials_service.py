@@ -13,6 +13,7 @@ from typing import Optional
 
 from config import IS_ACCOUNTS, BS_ACCOUNTS
 from flask_app.services.isbs_helpers import compute_cumulative_noi, cumulative_to_periodic, aggregate_periodic
+from utils import normalize_columns
 
 
 # ============================================================
@@ -24,7 +25,7 @@ def _prepare_isbs(isbs_raw, vcode):
     if isbs_raw is None or isbs_raw.empty:
         return pd.DataFrame()
     isbs = isbs_raw.copy()
-    isbs.columns = [str(c).strip() for c in isbs.columns]
+    normalize_columns(isbs)
     if 'vcode' in isbs.columns:
         isbs['vcode'] = isbs['vcode'].astype(str).str.strip().str.lower()
         isbs = isbs[isbs['vcode'] == str(vcode).strip().lower()]
@@ -52,7 +53,7 @@ def _parse_occupancy(occupancy_raw, vcode):
     if occupancy_raw is None or occupancy_raw.empty:
         return {}
     occ = occupancy_raw.copy()
-    occ.columns = [str(c).strip() for c in occ.columns]
+    normalize_columns(occ)
     if 'vCode' not in occ.columns:
         return {}
     occ['vCode'] = occ['vCode'].astype(str).str.strip().str.lower()
@@ -912,7 +913,7 @@ def _enrich_cap_stack_from_deal_terms(cap_stack: dict, deal_terms, vcode: str):
     import pandas as pd
 
     dt = deal_terms.copy()
-    dt.columns = [str(c).strip() for c in dt.columns]
+    normalize_columns(dt)
     if "vcode" not in dt.columns and "vCode" in dt.columns:
         dt = dt.rename(columns={"vCode": "vcode"})
     if "vcode" not in dt.columns:

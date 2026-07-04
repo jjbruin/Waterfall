@@ -12,6 +12,7 @@ from typing import Dict
 from config import (GROSS_REVENUE_ACCTS, CONTRA_REVENUE_ACCTS, EXPENSE_ACCTS, TAX_ABATEMENT_ACCTS,
                     INTEREST_ACCTS, PRINCIPAL_ACCTS, CAPEX_ACCTS, ALL_EXCLUDED)
 from database import execute_query
+from utils import normalize_columns
 
 
 def load_coa(df: pd.DataFrame = None) -> pd.DataFrame:
@@ -29,7 +30,7 @@ def load_coa(df: pd.DataFrame = None) -> pd.DataFrame:
     else:
         coa = execute_query("SELECT * FROM coa")
     
-    coa.columns = [str(c).strip() for c in coa.columns]
+    normalize_columns(coa)
     
     if "vcode" in coa.columns and "vAccount" not in coa.columns:
         coa = coa.rename(columns={"vcode": "vAccount"})
@@ -89,7 +90,7 @@ def load_forecast(df: pd.DataFrame = None, coa: pd.DataFrame = None, pro_yr_base
         # to process unrelated deals' data).
         return df.copy()
 
-    fc.columns = [str(c).strip() for c in fc.columns]
+    normalize_columns(fc)
     fc = fc.rename(columns={"Vcode": "vcode", "Date": "event_date"})
     
     required = {"vcode", "event_date", "vAccount", "mAmount", "Pro_Yr"}
@@ -130,7 +131,7 @@ def load_mri_loans(df: pd.DataFrame = None) -> pd.DataFrame:
         d = df.copy()
     else:
         d = execute_query("SELECT * FROM loans").copy()
-    d.columns = [str(c).strip() for c in d.columns]
+    normalize_columns(d)
     
     if "vCode" not in d.columns:
         raise ValueError("loans table missing column: vCode")
@@ -171,7 +172,7 @@ def load_waterfalls(df: pd.DataFrame = None) -> pd.DataFrame:
     wf = execute_query("SELECT * FROM waterfalls")
     
     w = wf.copy()
-    w.columns = [str(c).strip() for c in w.columns]
+    normalize_columns(w)
     
     # Normalize vCode -> vcode
     ren = {}
@@ -222,7 +223,7 @@ def normalize_accounting_feed(acct: pd.DataFrame = None) -> pd.DataFrame:
         acct = execute_query("SELECT * FROM accounting")
     
     a = acct.copy()
-    a.columns = [str(c).strip() for c in a.columns]
+    normalize_columns(a)
 
     required = {"InvestmentID", "InvestorID", "EffectiveDate", "MajorType", "Amt", "Capital"}
     missing = [c for c in required if c not in a.columns]
@@ -282,7 +283,7 @@ def build_investmentid_to_vcode(inv_map: pd.DataFrame = None) -> dict:
         inv_map = execute_query("SELECT * FROM deals")
     
     inv = inv_map.copy()
-    inv.columns = [str(c).strip() for c in inv.columns]
+    normalize_columns(inv)
     
     if "InvestmentID" not in inv.columns:
         raise ValueError("deals table must include InvestmentID")
@@ -315,7 +316,7 @@ def load_fund_deals(df: pd.DataFrame = None) -> pd.DataFrame:
         # Table doesn't exist yet
         return pd.DataFrame()
     
-    fd.columns = [str(c).strip() for c in fd.columns]
+    normalize_columns(fd)
     
     required = {"FundID", "vcode", "PPI_PropCode", "Ownership_Pct"}
     missing = [c for c in required if c not in fd.columns]
@@ -351,7 +352,7 @@ def load_investor_waterfalls(df: pd.DataFrame = None) -> pd.DataFrame:
         # Table doesn't exist yet
         return pd.DataFrame()
     
-    iw.columns = [str(c).strip() for c in iw.columns]
+    normalize_columns(iw)
     
     required = {"FundID", "iOrder", "InvestorID", "vState"}
     missing = [c for c in required if c not in iw.columns]
@@ -390,7 +391,7 @@ def load_investor_accounting(df: pd.DataFrame = None) -> pd.DataFrame:
         # Table doesn't exist yet
         return pd.DataFrame()
     
-    ia.columns = [str(c).strip() for c in ia.columns]
+    normalize_columns(ia)
     
     required = {"FundID", "InvestorID", "EffectiveDate", "TransType", "Amount"}
     missing = [c for c in required if c not in ia.columns]
