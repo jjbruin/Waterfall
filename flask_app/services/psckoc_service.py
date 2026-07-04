@@ -121,7 +121,6 @@ def find_psckoc_deals(inv: pd.DataFrame, wf: pd.DataFrame,
         if ppi and ppi in ppi_pcts:
             row_info["ppi_entity"] = ppi
             row_info["psckoc_pct"] = ppi_pcts[ppi]
-                    break
 
         result.append(row_info)
 
