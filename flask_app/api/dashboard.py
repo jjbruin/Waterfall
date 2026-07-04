@@ -21,10 +21,18 @@ from flask_app.serializers import safe_json
 
 dashboard_bp = Blueprint("dashboard", __name__)
 
-# Module-level cache for caps/occ (cleared on reload)
+# Module-level caches (cleared by clear_dashboard_cache())
 _caps_cache = {}
 _occ_cache = {}
+_noi_cache = {}
 _caps_lock = threading.Lock()
+
+
+def clear_dashboard_cache():
+    """Clear all dashboard caches. Called on data reload."""
+    _caps_cache.clear()
+    _occ_cache.clear()
+    _noi_cache.clear()
 
 
 @dashboard_bp.errorhandler(Exception)
@@ -170,6 +178,12 @@ def noi_trend():
     Query params: freq (Monthly|Quarterly|Annually), periods (int).
     """
     freq = request.args.get("freq", "Quarterly")
+
+    # Check cache first
+    noi_key = freq
+    if noi_key in _noi_cache:
+        return jsonify(safe_json(_noi_cache[noi_key]))
+
     data = _get_data()
     inv_disp = data_service.get_inv_display(data["inv"])
     # Exclude child properties — NOI data rolls up via ISBS vcode matching
@@ -179,6 +193,7 @@ def noi_trend():
         data["isbs_raw"], inv_disp, frequency=freq,
         occupancy_raw=data["occupancy_raw"],
     )
+    _noi_cache[noi_key] = noi_data
     return jsonify(safe_json(noi_data))
 
 
