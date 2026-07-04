@@ -152,8 +152,9 @@ def get_upstream_investor_deals(
 
     # Filter out ended relationships (matching Review Tracking behaviour)
     if "EndDate" in relationships.columns:
-        end = relationships["EndDate"].fillna("").astype(str).str.strip()
-        relationships = relationships[end == ""].copy()
+        end_col = relationships["EndDate"]
+        is_empty = end_col.isna() | (end_col.astype(str).str.strip().isin(["", "NaT", "nan", "None"]))
+        relationships = relationships[is_empty].copy()
 
     nodes = build_ownership_tree(relationships)
     inv_to_vcode = build_investmentid_to_vcode(inv)
