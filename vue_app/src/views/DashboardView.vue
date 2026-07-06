@@ -68,7 +68,13 @@ const noiOption = computed(() => {
     })
   }
   return {
-    tooltip: { trigger: 'axis' },
+    tooltip: { trigger: 'axis', formatter: (params: any) => {
+      let label = params[0]?.axisValueLabel ?? ''
+      return `<b>${label}</b><br/>` + params.map((p: any) => {
+        if (p.seriesName === 'Occupancy') return `${p.marker} ${p.seriesName}: ${p.value != null ? p.value.toFixed(1) : '—'}%`
+        return `${p.marker} ${p.seriesName}: ${p.value != null ? '$' + p.value.toFixed(1) + 'M' : '—'}`
+      }).join('<br/>')
+    }},
     legend: { bottom: 0 },
     grid: { left: 60, right: 60, top: 45, bottom: 40 },
     xAxis: { type: 'category', data: d.periods },
@@ -231,7 +237,10 @@ const returnsOption = computed(() => {
   if (!d.length) return null
   const sorted = [...d].filter(r => r.irr != null).sort((a, b) => (a.irr ?? 0) - (b.irr ?? 0))
   return {
-    tooltip: { trigger: 'axis' },
+    tooltip: { trigger: 'axis', formatter: (params: any) => {
+      const p = params[0]
+      return `<b>${p.name}</b><br/>${p.marker} IRR: ${p.value}%`
+    }},
     grid: { left: 160, right: 40, top: 10, bottom: 30 },
     xAxis: { type: 'value', name: 'IRR (%)', axisLabel: { formatter: '{value}%' } },
     yAxis: { type: 'category', data: sorted.map(r => r.name) },

@@ -95,7 +95,7 @@ def get_latest_occupancy(inv_disp, occupancy_raw, inv=None) -> dict:
     if occ_col is None or "dtReported" not in occ.columns:
         return {}
 
-    occ["occ_val"] = pd.to_numeric(occ[occ_col], errors="coerce")
+    occ["occ_val"] = pd.to_numeric(occ[occ_col], errors="coerce").clip(upper=100)
     try:
         occ["date_parsed"] = pd.to_datetime(
             occ["dtReported"], unit="D", origin="1899-12-30", errors="coerce")
@@ -475,7 +475,7 @@ def compute_portfolio_noi(isbs_raw, inv_disp, frequency="Quarterly",
         occ_col = "Occ%" if "Occ%" in occ.columns else (
             "OccupancyPercent" if "OccupancyPercent" in occ.columns else None)
         if occ_col and "dtReported" in occ.columns:
-            occ["occ_val"] = pd.to_numeric(occ[occ_col], errors="coerce")
+            occ["occ_val"] = pd.to_numeric(occ[occ_col], errors="coerce").clip(upper=100)
             try:
                 occ["date_parsed"] = pd.to_datetime(
                     occ["dtReported"], unit="D", origin="1899-12-30", errors="coerce")
@@ -662,7 +662,7 @@ def _get_deal_trailing_occupancy(inv_disp, occupancy_raw, num_quarters=4) -> dic
     if occ_col is None or "dtReported" not in occ.columns:
         return {}
 
-    occ["occ_val"] = pd.to_numeric(occ[occ_col], errors="coerce")
+    occ["occ_val"] = pd.to_numeric(occ[occ_col], errors="coerce").clip(upper=100)
     try:
         occ["date_parsed"] = pd.to_datetime(
             occ["dtReported"], unit="D", origin="1899-12-30", errors="coerce")

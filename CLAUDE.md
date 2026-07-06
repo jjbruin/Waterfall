@@ -279,6 +279,16 @@ MRI's query record limits make exporting the monolithic `ISBS_Download.csv` (800
 - Loans aggregate UP from properties to parent deal level
 - See `consolidation.py` for implementation
 
+### Forecast Assembly (Multi-Source)
+- **Priority 1**: `forecast_feed.csv` (admin-uploaded via CSV import → `forecasts` table). Overrides everything for deals it covers. Used for draft/updated valuations before MRI approval.
+- **Priority 2**: ISBS `vSource = 'Valuation IS'` — annual valuation cash flow projections (periodic monthly). These are the MRI-approved 10-year projections from the December 31 valuation exercise.
+- **Priority 3**: ISBS `vSource = 'Projected IS'` — underwriting projections (YTD cumulative, auto-converted to periodic monthly).
+- **Assembly**: `_assemble_forecasts()` in `data_service.py` — identifies deals covered by forecast_feed, then fills gaps from ISBS Valuation IS, then ISBS Projected IS. Combined result passed to `load_forecast()`.
+- **Cumulative→Periodic**: Projected IS conversion subtracts prior same-year cumulative value; January = start of new year (no subtraction).
+- **Pro_Yr derivation**: For ISBS-sourced rows, `Pro_Yr = date.year - pro_yr_base`.
+- **vcode case**: ISBS normalizes vcodes to lowercase; `_restore_case()` converts back to original case (e.g., `p0000008` → `P0000008`) for case-sensitive matching in `compute_deal_analysis()`.
+- **Cache refresh**: `refresh_table()` reassembles forecasts when `forecasts`, `isbs`, or any ISBS split table changes.
+
 ### Forecast Date Filtering
 - **Anomalous dates**: MRI valuation exports can include "Year 0" base entries with dates far in the past (e.g. 2015-12-31 for a 2025 deal). `compute_deal_analysis()` filters out forecast rows with `event_date` before `start_year - 2` to prevent `model_start` from being set to an unreasonable date.
 - **Beginning cash fallback**: If no ISBS Interim BS data exists before `model_start` (e.g. new acquisition where forecast starts before balance sheet history), `load_beginning_cash_balance()` falls back to the earliest available ISBS date instead of returning $0.
@@ -562,6 +572,7 @@ Embedded Claude-powered chat panel for natural-language queries against the port
 - `import_csv_stream()` - Chunked CSV import (50K rows, dtype=str) for large files (database.py)
 - `split_isbs_table()` - Migrate monolithic isbs table into 6 split tables by vSource; idempotent (database.py)
 - `_assemble_isbs()` - Load split ISBS tables, restore vSource column, concatenate; fallback to legacy (data_service.py)
+- `_assemble_forecasts()` - Merge forecast_feed CSV > ISBS Valuation IS > ISBS Projected IS with per-deal priority (data_service.py)
 
 ### Flask Services
 - `get_cached_deal_result()` - Shared multi-deal cache wrapper (compute_service.py)

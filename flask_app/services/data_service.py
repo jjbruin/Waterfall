@@ -110,6 +110,143 @@ def _normalize_accounting(acct: pd.DataFrame) -> pd.DataFrame:
     return normalize_accounting_feed(acct)
 
 
+def _assemble_forecasts(fc_raw: pd.DataFrame, isbs_raw: pd.DataFrame,
+                        pro_yr_base: int) -> pd.DataFrame:
+    """Assemble forecast data from multiple sources with priority:
+
+    1. forecast_feed CSV (``forecasts`` table) — admin-uploaded overrides
+    2. ISBS ``Valuation IS`` — annual valuation cash flow projections (periodic monthly)
+    3. ISBS ``Projected IS`` — underwriting projections (YTD cumulative, converted to periodic)
+
+    Deals present in the forecast_feed take full priority; ISBS sources fill
+    in only for deals NOT already covered by the forecast_feed.
+    """
+    parts = []
+    covered_vcodes: set[str] = set()
+
+    # --- Priority 1: forecast_feed (the ``forecasts`` table) ---
+    if fc_raw is not None and not fc_raw.empty:
+        fc = fc_raw.copy()
+        normalize_columns(fc)
+        vc_col = "Vcode" if "Vcode" in fc.columns else (
+            "vcode" if "vcode" in fc.columns else None)
+        if vc_col:
+            covered_vcodes = set(fc[vc_col].astype(str).str.strip().str.lower())
+        parts.append(fc_raw)
+        logger.info(
+            "Forecast assembly: %d deals from forecast_feed", len(covered_vcodes))
+
+    if isbs_raw is None or isbs_raw.empty:
+        if parts:
+            return pd.concat(parts, ignore_index=True)
+        return fc_raw if fc_raw is not None else pd.DataFrame()
+
+    # Build vcode case map from ISBS (lowercase → original) so downstream
+    # case-sensitive matching works.  ISBS is already normalised (lowercase).
+    # We restore original case from the raw dtEntry column (not ideal but the
+    # vcode is the only grouping key we have).  Fallback: uppercase first char.
+    def _restore_case(vc_lower: str) -> str:
+        return "P" + vc_lower[1:] if vc_lower.startswith("p") else vc_lower.upper()
+
+    def _isbs_to_forecast(isbs_subset: pd.DataFrame, source_label: str,
+                          cumulative: bool = False) -> pd.DataFrame:
+        """Convert an ISBS subset to forecast-compatible DataFrame.
+
+        For periodic data (Valuation IS): direct column mapping.
+        For cumulative data (Projected IS): convert YTD → periodic first.
+        """
+        if isbs_subset.empty:
+            return pd.DataFrame()
+
+        df = isbs_subset[["vcode", "dtEntry", "vAccount", "mAmount"]].copy()
+
+        if cumulative:
+            # Parse dates for cum→periodic conversion
+            dt_parsed = pd.to_datetime(
+                df["dtEntry"], format="mixed", dayfirst=False, errors="coerce")
+            df["_dt"] = dt_parsed
+            df = df.dropna(subset=["_dt"])
+            if df.empty:
+                return pd.DataFrame()
+
+            # Convert cumulative YTD → periodic per (vcode, vAccount)
+            periodic_rows = []
+            for (vc, acct), grp in df.groupby(["vcode", "vAccount"]):
+                grp = grp.sort_values("_dt")
+                dates = grp["_dt"].tolist()
+                amounts = grp["mAmount"].tolist()
+                dt_entries = grp["dtEntry"].tolist()
+                for i, (dt, amt, dt_str) in enumerate(
+                        zip(dates, amounts, dt_entries)):
+                    if dt.month == 1:
+                        periodic_amt = amt
+                    else:
+                        # Find prior same-year row
+                        periodic_amt = amt
+                        for j in range(i - 1, -1, -1):
+                            if dates[j].year == dt.year:
+                                periodic_amt = amt - amounts[j]
+                                break
+                    periodic_rows.append({
+                        "vcode": vc, "dtEntry": dt_str,
+                        "vAccount": acct, "mAmount": periodic_amt,
+                    })
+            df = pd.DataFrame(periodic_rows)
+            if df.empty:
+                return pd.DataFrame()
+
+        # Parse dates for Pro_Yr computation
+        dt_parsed = pd.to_datetime(
+            df["dtEntry"], format="mixed", dayfirst=False, errors="coerce")
+        df["_year"] = dt_parsed.dt.year
+
+        # Build output in forecasts-table format
+        out = pd.DataFrame({
+            "Vcode": df["vcode"].apply(_restore_case),
+            "Date": df["dtEntry"],
+            "vAccount": df["vAccount"],
+            "mAmount": df["mAmount"],
+            "Pro_Yr": df["_year"] - pro_yr_base,
+            "vSource": source_label,
+        })
+        return out
+
+    # --- Priority 2: ISBS Valuation IS (periodic monthly) ---
+    val_is = isbs_raw[isbs_raw["vSource"] == "Valuation IS"]
+    if not val_is.empty:
+        val_vcodes = set(val_is["vcode"].astype(str).str.strip().str.lower())
+        new_vcodes = val_vcodes - covered_vcodes
+        if new_vcodes:
+            subset = val_is[val_is["vcode"].isin(new_vcodes)]
+            converted = _isbs_to_forecast(subset, "Valuation IS")
+            if not converted.empty:
+                parts.append(converted)
+                covered_vcodes |= new_vcodes
+                logger.info(
+                    "Forecast assembly: %d deals from ISBS Valuation IS",
+                    len(new_vcodes))
+
+    # --- Priority 3: ISBS Projected IS (YTD cumulative → periodic) ---
+    proj_is = isbs_raw[isbs_raw["vSource"] == "Projected IS"]
+    if not proj_is.empty:
+        proj_vcodes = set(proj_is["vcode"].astype(str).str.strip().str.lower())
+        new_vcodes = proj_vcodes - covered_vcodes
+        if new_vcodes:
+            subset = proj_is[proj_is["vcode"].isin(new_vcodes)]
+            converted = _isbs_to_forecast(
+                subset, "Projected IS", cumulative=True)
+            if not converted.empty:
+                parts.append(converted)
+                covered_vcodes |= new_vcodes
+                logger.info(
+                    "Forecast assembly: %d deals from ISBS Projected IS",
+                    len(new_vcodes))
+
+    if parts:
+        return pd.concat(parts, ignore_index=True)
+    return fc_raw if fc_raw is not None else pd.DataFrame()
+
+
 def _normalize_isbs(df: pd.DataFrame) -> pd.DataFrame:
     """Normalize ISBS DataFrame once at load time.
 
@@ -210,16 +347,21 @@ def load_all(db_path: str, pro_yr_base: int = 2025) -> dict:
     coa_raw = get_adapter("coa").load(config)
     coa = load_coa(coa_raw)
     acct = get_adapter("accounting").load(config)
-    fc_raw = get_adapter("forecasts").load(config)
-    fc = load_forecast(fc_raw, coa, pro_yr_base)
+
+    # Load ISBS first — needed for forecast assembly
+    isbs_raw, isbs_split = _assemble_isbs(config)
+    isbs_raw = _normalize_isbs(isbs_raw)
+
+    # Assemble forecasts: forecast_feed CSV > ISBS Valuation IS > ISBS Projected IS
+    fc_feed_raw = get_adapter("forecasts").load(config)
+    fc_assembled = _assemble_forecasts(fc_feed_raw, isbs_raw, pro_yr_base)
+    fc = load_forecast(fc_assembled, coa, pro_yr_base)
 
     # Optional tables
     mri_loans_raw = _filter_paid_off_loans(get_adapter("loans").load(config))
     mri_val = get_adapter("valuations").load(config)
     relationships_raw = get_adapter("relationships").load(config)
     capital_calls_raw = get_adapter("capital_calls").load(config)
-    isbs_raw, isbs_split = _assemble_isbs(config)
-    isbs_raw = _normalize_isbs(isbs_raw)
     occupancy_raw = get_adapter("occupancy").load(config)
     budget_econ_occ = get_adapter("budget_econ_occ").load(config)
     commitments_raw = get_adapter("commitments").load(config)
@@ -369,6 +511,14 @@ def refresh_table(table_name: str):
                 assembled, _ = _assemble_isbs(config)
                 assembled = _normalize_isbs(assembled)
                 data["isbs_raw"] = assembled if not assembled.empty else None
+
+            # Reassemble forecasts when forecasts table or ISBS sources change
+            if table_name == "forecasts" or is_isbs_split or table_name == "isbs":
+                fc_feed = get_adapter("forecasts").load(config)
+                isbs_for_fc = data.get("isbs_raw")
+                fc_assembled = _assemble_forecasts(fc_feed, isbs_for_fc, pro_yr_base)
+                coa = data.get("coa")
+                data["fc"] = load_forecast(fc_assembled, coa, pro_yr_base)
         except Exception:
             # If single-table refresh fails, fall back to full reload
             _cache.clear()
