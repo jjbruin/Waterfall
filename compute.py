@@ -1005,6 +1005,10 @@ def compute_deal_analysis(
     fad_monthly = pd.DataFrame()
     try:
         fad_monthly = cashflows_monthly_fad(fc_deal_modeled)
+        # Truncate cash schedule at sale date — post-sale periods should not
+        # generate FAD (the property is sold).
+        if not fad_monthly.empty and sale_me:
+            fad_monthly = fad_monthly[fad_monthly["event_date"] <= sale_me].copy()
     except Exception as e:
         debug_msgs.append(f"Error computing monthly FAD: {str(e)}")
     try:
