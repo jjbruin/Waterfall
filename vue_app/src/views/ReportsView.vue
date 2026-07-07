@@ -8,28 +8,75 @@ import api from '../api/client'
 const data = useDataStore()
 const deals = useDealsStore()
 
-// --- Report type ---
-const reportType = ref<'projected-returns' | 'roe-summary'>('projected-returns')
+// --- Report registry ---
+interface ReportDef {
+  value: string
+  label: string
+  description: string
+  endpoint: string
+  excelEndpoint: string
+  excelFilename: string
+  columns: { key: string; label: string; format?: string; align?: string }[]
+  hasReportDate?: boolean
+  highlightTotal?: boolean
+}
 
-const reportTypes = [
-  { value: 'projected-returns', label: 'Projected Returns Summary' },
-  { value: 'roe-summary', label: 'ROE Summary' },
+const reportDefs: ReportDef[] = [
+  {
+    value: 'projected-returns',
+    label: 'Projected Returns Summary',
+    description: 'Partner-level projected IRR, ROE, and MOIC from waterfall analysis',
+    endpoint: '/api/reports/projected-returns',
+    excelEndpoint: '/api/reports/projected-returns/excel',
+    excelFilename: 'projected_returns.xlsx',
+    highlightTotal: true,
+    columns: [
+      { key: 'Deal Name', label: 'Deal Name' },
+      { key: 'Partner', label: 'Partner' },
+      { key: 'Contributions', label: 'Contributions', format: 'currency', align: 'right' },
+      { key: 'CF Distributions', label: 'CF Distributions', format: 'currency', align: 'right' },
+      { key: 'Capital Distributions', label: 'Capital Distributions', format: 'currency', align: 'right' },
+      { key: 'IRR', label: 'IRR', format: 'percent', align: 'right' },
+      { key: 'ROE', label: 'ROE', format: 'percent', align: 'right' },
+      { key: 'MOIC', label: 'MOIC', format: 'multiple', align: 'right' },
+    ],
+  },
+  {
+    value: 'roe-summary',
+    label: 'ROE Summary',
+    description: 'Inception-to-date return on equity by deal from actual accounting data',
+    endpoint: '/api/reports/roe-summary',
+    excelEndpoint: '/api/reports/roe-summary/excel',
+    excelFilename: 'roe_summary.xlsx',
+    hasReportDate: true,
+    columns: [
+      { key: 'Deal Name', label: 'Deal Name' },
+      { key: 'Total Funded', label: 'Total Funded', format: 'currency', align: 'right' },
+      { key: 'Return of Capital', label: 'Return of Capital', format: 'currency', align: 'right' },
+      { key: 'Current Balance', label: 'Current Balance', format: 'currency', align: 'right' },
+      { key: 'Wtd Avg Balance', label: 'Wtd Avg Balance', format: 'currency', align: 'right' },
+      { key: 'CF Received', label: 'CF Received', format: 'currency', align: 'right' },
+      { key: 'Accrued Pref', label: 'Accrued Pref', format: 'currency', align: 'right' },
+      { key: 'ITD ROE', label: 'ITD ROE', format: 'percent', align: 'right' },
+    ],
+  },
 ]
 
-// --- Shared filters ---
+// --- State ---
+const selectedReport = ref('')
 const population = ref<'current' | 'select' | 'partner' | 'all'>('all')
 const selectedVcodes = ref<string[]>([])
 const results = ref<any[]>([])
 const errors = ref<any[]>([])
 const loading = ref(false)
 const showErrors = ref(false)
+const reportDate = ref(new Date().toISOString().slice(0, 10))
 
 const eligibleDeals = ref<any[]>([])
 const partners = ref<any[]>([])
 const selectedPartner = ref('')
 
-// Report date for ROE Summary (defaults to today)
-const reportDate = ref(new Date().toISOString().slice(0, 10))
+const activeReport = computed(() => reportDefs.find((r) => r.value === selectedReport.value))
 
 onMounted(async () => {
   if (data.deals.length === 0) await data.loadDeals()
@@ -48,8 +95,8 @@ watch(population, async (val) => {
   }
 })
 
-// Clear results when report type changes
-watch(reportType, () => {
+// Clear results when report changes
+watch(selectedReport, () => {
   results.value = []
   errors.value = []
 })
@@ -87,68 +134,20 @@ const populationLabel = computed(() => {
   }
 })
 
-// --- Report-specific columns ---
-const projectedReturnsCols = [
-  { key: 'Deal Name', label: 'Deal Name' },
-  { key: 'Partner', label: 'Partner' },
-  { key: 'Contributions', label: 'Contributions', format: 'currency', align: 'right' },
-  { key: 'CF Distributions', label: 'CF Distributions', format: 'currency', align: 'right' },
-  { key: 'Capital Distributions', label: 'Capital Distributions', format: 'currency', align: 'right' },
-  { key: 'IRR', label: 'IRR', format: 'percent', align: 'right' },
-  { key: 'ROE', label: 'ROE', format: 'percent', align: 'right' },
-  { key: 'MOIC', label: 'MOIC', format: 'multiple', align: 'right' },
-]
-
-const roeSummaryCols = [
-  { key: 'Deal Name', label: 'Deal Name' },
-  { key: 'Total Funded', label: 'Total Funded', format: 'currency', align: 'right' },
-  { key: 'Return of Capital', label: 'Return of Capital', format: 'currency', align: 'right' },
-  { key: 'Current Balance', label: 'Current Balance', format: 'currency', align: 'right' },
-  { key: 'Wtd Avg Balance', label: 'Wtd Avg Balance', format: 'currency', align: 'right' },
-  { key: 'CF Received', label: 'CF Received', format: 'currency', align: 'right' },
-  { key: 'Accrued Pref', label: 'Accrued Pref', format: 'currency', align: 'right' },
-  { key: 'ITD ROE', label: 'ITD ROE', format: 'percent', align: 'right' },
-]
-
-const columns = computed(() => {
-  return reportType.value === 'roe-summary' ? roeSummaryCols : projectedReturnsCols
-})
-
-const placeholder = computed(() => {
-  return reportType.value === 'roe-summary'
-    ? 'Generate a report to see ROE summary by deal.'
-    : 'Generate a report to see projected returns.'
-})
-
-// --- API calls ---
-const apiEndpoint = computed(() => {
-  return reportType.value === 'roe-summary' ? '/api/reports/roe-summary' : '/api/reports/projected-returns'
-})
-
-const excelEndpoint = computed(() => {
-  return reportType.value === 'roe-summary' ? '/api/reports/roe-summary/excel' : '/api/reports/projected-returns/excel'
-})
-
-const excelFilename = computed(() => {
-  return reportType.value === 'roe-summary' ? 'roe_summary.xlsx' : 'projected_returns.xlsx'
-})
-
 function buildPayload() {
   const payload: any = { vcodes: resolvedVcodes.value }
-  if (reportType.value === 'roe-summary') {
+  if (activeReport.value?.hasReportDate) {
     payload.report_date = reportDate.value
   }
   return payload
 }
 
 async function generate() {
-  const vcodes = resolvedVcodes.value
-  if (vcodes.length === 0) return
-
+  if (!activeReport.value || resolvedVcodes.value.length === 0) return
   loading.value = true
   errors.value = []
   try {
-    const res = await api.post(apiEndpoint.value, buildPayload())
+    const res = await api.post(activeReport.value.endpoint, buildPayload())
     results.value = res.data.rows
     errors.value = res.data.errors || []
   } finally {
@@ -157,14 +156,12 @@ async function generate() {
 }
 
 async function downloadExcel() {
-  const vcodes = resolvedVcodes.value
-  if (vcodes.length === 0) return
-
-  const res = await api.post(excelEndpoint.value, buildPayload(), { responseType: 'blob' })
+  if (!activeReport.value || resolvedVcodes.value.length === 0) return
+  const res = await api.post(activeReport.value.excelEndpoint, buildPayload(), { responseType: 'blob' })
   const url = URL.createObjectURL(new Blob([res.data]))
   const a = document.createElement('a')
   a.href = url
-  a.download = excelFilename.value
+  a.download = activeReport.value.excelFilename
   a.click()
   URL.revokeObjectURL(url)
 }
@@ -180,85 +177,115 @@ function toggleDeal(vcode: string) {
   <div class="reports">
     <h2>Reports</h2>
 
-    <!-- Report type selector -->
-    <div class="report-type-bar">
-      <button
-        v-for="rt in reportTypes"
-        :key="rt.value"
-        :class="['report-type-btn', { active: reportType === rt.value }]"
-        @click="reportType = rt.value as any"
-      >
-        {{ rt.label }}
-      </button>
+    <div class="reports-layout">
+      <!-- Left: report list + filters -->
+      <div class="reports-sidebar">
+        <!-- Report list -->
+        <div class="section-label">Select Report</div>
+        <div class="report-list">
+          <div
+            v-for="rt in reportDefs"
+            :key="rt.value"
+            :class="['report-item', { active: selectedReport === rt.value }]"
+            @click="selectedReport = rt.value"
+          >
+            <div class="report-item-label">{{ rt.label }}</div>
+            <div class="report-item-desc">{{ rt.description }}</div>
+          </div>
+        </div>
+
+        <!-- Filters -->
+        <template v-if="selectedReport">
+          <div class="section-label">Filters</div>
+
+          <div class="filter-group">
+            <label>Population</label>
+            <select v-model="population">
+              <option value="current">Current Deal</option>
+              <option value="select">Select Deals</option>
+              <option value="partner">By Partner</option>
+              <option value="all">All Deals</option>
+            </select>
+          </div>
+
+          <div v-if="population === 'partner'" class="filter-group">
+            <label>Partner</label>
+            <select v-model="selectedPartner">
+              <option value="">-- Select partner --</option>
+              <option v-for="p in partners" :key="p.partner" :value="p.partner">
+                {{ p.display || p.partner }} ({{ p.deal_count }} deals)
+              </option>
+            </select>
+          </div>
+
+          <div v-if="activeReport?.hasReportDate" class="filter-group">
+            <label>As of Date</label>
+            <input type="date" v-model="reportDate" />
+          </div>
+
+          <!-- Deal picker inline -->
+          <div v-if="population === 'select'" class="deal-picker">
+            <div class="deal-picker-header">
+              <span>{{ selectedVcodes.length }} / {{ eligibleDeals.length }}</span>
+              <button class="btn-sm" @click="selectedVcodes = eligibleDeals.map(d => d.vcode)">All</button>
+              <button class="btn-sm" @click="selectedVcodes = []">Clear</button>
+            </div>
+            <div class="deal-picker-list">
+              <label v-for="d in eligibleDeals" :key="d.vcode" class="deal-checkbox">
+                <input type="checkbox" :checked="selectedVcodes.includes(d.vcode)" @change="toggleDeal(d.vcode)" />
+                {{ d.label }}
+              </label>
+            </div>
+          </div>
+
+          <div class="population-label">{{ populationLabel }}</div>
+
+          <button
+            class="btn-generate"
+            @click="generate"
+            :disabled="loading || resolvedVcodes.length === 0"
+          >
+            {{ loading ? 'Generating...' : 'Generate Report' }}
+          </button>
+        </template>
+      </div>
+
+      <!-- Right: results -->
+      <div class="reports-main">
+        <template v-if="!selectedReport">
+          <p class="placeholder">Select a report from the list to get started.</p>
+        </template>
+        <template v-else>
+          <div class="results-header">
+            <h3>{{ activeReport?.label }}</h3>
+            <button v-if="results.length" class="btn-download" @click="downloadExcel">
+              Download Excel
+            </button>
+          </div>
+
+          <!-- Errors -->
+          <div v-if="errors.length > 0" class="error-section">
+            <button class="btn-sm" @click="showErrors = !showErrors">
+              {{ errors.length }} deal(s) skipped {{ showErrors ? '&#9662;' : '&#9656;' }}
+            </button>
+            <div v-if="showErrors" class="error-list">
+              <p v-for="(e, i) in errors" :key="i">{{ e.deal_name || e.vcode }}: {{ e.error }}</p>
+            </div>
+          </div>
+
+          <DataTable
+            v-if="results.length"
+            :columns="activeReport?.columns || []"
+            :rows="results"
+            :highlight-total="activeReport?.highlightTotal ?? false"
+          />
+          <p v-else-if="!loading" class="placeholder">
+            Set filters and click Generate Report.
+          </p>
+          <p v-if="loading" class="placeholder">Generating report...</p>
+        </template>
+      </div>
     </div>
-
-    <div class="controls">
-      <!-- Population Selector -->
-      <div class="control-group">
-        <label>Population:</label>
-        <select v-model="population">
-          <option value="current">Current Deal</option>
-          <option value="select">Select Deals</option>
-          <option value="partner">By Partner</option>
-          <option value="all">All Deals</option>
-        </select>
-      </div>
-
-      <!-- Partner selector -->
-      <div v-if="population === 'partner'" class="control-group">
-        <label>Partner:</label>
-        <select v-model="selectedPartner">
-          <option value="">-- Select partner --</option>
-          <option v-for="p in partners" :key="p.partner" :value="p.partner">
-            {{ p.display || p.partner }} ({{ p.deal_count }} deals)
-          </option>
-        </select>
-      </div>
-
-      <!-- Report date for ROE Summary -->
-      <div v-if="reportType === 'roe-summary'" class="control-group">
-        <label>As of:</label>
-        <input type="date" v-model="reportDate" class="date-input" />
-      </div>
-
-      <span class="population-label">{{ populationLabel }}</span>
-
-      <button class="btn-generate" @click="generate" :disabled="loading || resolvedVcodes.length === 0">
-        {{ loading ? 'Generating...' : 'Generate Report' }}
-      </button>
-      <button v-if="results.length" class="btn-download" @click="downloadExcel">
-        Download Excel
-      </button>
-    </div>
-
-    <!-- Multi-select deal picker -->
-    <div v-if="population === 'select'" class="deal-picker">
-      <div class="deal-picker-header">
-        <span>{{ selectedVcodes.length }} of {{ eligibleDeals.length }} deals selected</span>
-        <button class="btn-sm" @click="selectedVcodes = eligibleDeals.map(d => d.vcode)">Select All</button>
-        <button class="btn-sm" @click="selectedVcodes = []">Clear</button>
-      </div>
-      <div class="deal-picker-list">
-        <label v-for="d in eligibleDeals" :key="d.vcode" class="deal-checkbox">
-          <input type="checkbox" :checked="selectedVcodes.includes(d.vcode)" @change="toggleDeal(d.vcode)" />
-          {{ d.label }}
-        </label>
-      </div>
-    </div>
-
-    <!-- Errors -->
-    <div v-if="errors.length > 0" class="error-section">
-      <button class="btn-sm" @click="showErrors = !showErrors">
-        {{ errors.length }} deal(s) skipped {{ showErrors ? '&#9662;' : '&#9656;' }}
-      </button>
-      <div v-if="showErrors" class="error-list">
-        <p v-for="(e, i) in errors" :key="i">{{ e.deal_name || e.vcode }}: {{ e.error }}</p>
-      </div>
-    </div>
-
-    <!-- Results Table -->
-    <DataTable v-if="results.length" :columns="columns" :rows="results" :highlight-total="reportType === 'projected-returns'" />
-    <p v-else-if="!loading" class="placeholder">{{ placeholder }}</p>
   </div>
 </template>
 
@@ -266,117 +293,134 @@ function toggleDeal(vcode: string) {
 .reports { padding: 0 0 40px 0; }
 h2 { font-size: 20px; margin-bottom: 16px; }
 
-.report-type-bar {
+.reports-layout {
   display: flex;
-  gap: 0;
-  margin-bottom: 16px;
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
-  overflow: hidden;
-  width: fit-content;
+  gap: 24px;
+  align-items: flex-start;
 }
 
-.report-type-btn {
-  padding: 8px 20px;
-  border: none;
-  border-right: 1px solid var(--color-border);
-  background: var(--color-surface);
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 500;
+/* --- Sidebar --- */
+.reports-sidebar {
+  width: 280px;
+  flex-shrink: 0;
+}
+
+.section-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
   color: var(--color-text-secondary);
-  transition: background 0.15s, color 0.15s;
+  margin-bottom: 6px;
+  margin-top: 16px;
 }
 
-.report-type-btn:last-child { border-right: none; }
-.report-type-btn:hover:not(.active) { background: #f0f0f0; }
+.section-label:first-child { margin-top: 0; }
 
-.report-type-btn.active {
+.report-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.report-item {
+  padding: 10px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.12s;
+}
+
+.report-item:hover { background: #f5f5f5; }
+
+.report-item.active {
   background: var(--color-accent);
   color: white;
-  font-weight: 600;
+  border-color: var(--color-accent);
 }
 
-.controls {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 16px;
-  flex-wrap: wrap;
-}
+.report-item.active .report-item-desc { color: rgba(255,255,255,0.8); }
 
-.control-group {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.control-group label {
+.report-item-label {
   font-size: 13px;
   font-weight: 600;
 }
 
-.control-group select,
-.date-input {
+.report-item-desc {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  margin-top: 2px;
+  line-height: 1.3;
+}
+
+/* --- Filters --- */
+.filter-group {
+  margin-top: 8px;
+}
+
+.filter-group label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 3px;
+}
+
+.filter-group select,
+.filter-group input {
+  width: 100%;
   padding: 7px 10px;
   border: 1px solid var(--color-border);
   border-radius: 6px;
   font-size: 13px;
+  box-sizing: border-box;
 }
 
 .population-label {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--color-text-secondary);
   font-style: italic;
+  margin-top: 8px;
 }
 
-.btn-generate, .btn-download {
-  padding: 8px 20px;
+.btn-generate {
+  width: 100%;
+  margin-top: 12px;
+  padding: 10px 20px;
   border: none;
   border-radius: 6px;
   cursor: pointer;
   font-size: 13px;
+  font-weight: 600;
+  background: var(--color-accent);
+  color: white;
 }
 
-.btn-generate { background: var(--color-accent); color: white; }
 .btn-generate:hover:not(:disabled) { background: #3a63ad; }
 .btn-generate:disabled { opacity: 0.6; cursor: not-allowed; }
-.btn-download { background: var(--color-pref); color: white; }
 
-.btn-sm {
-  padding: 3px 10px;
-  border: 1px solid var(--color-border);
-  background: var(--color-surface);
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 12px;
-}
-
-.btn-sm:hover { background: #eee; }
-
-/* Deal picker */
+/* --- Deal picker --- */
 .deal-picker {
-  margin-bottom: 16px;
+  margin-top: 8px;
   border: 1px solid var(--color-border);
   border-radius: 6px;
-  padding: 10px;
+  padding: 8px;
 }
 
 .deal-picker-header {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 8px;
-  font-size: 12px;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 11px;
   color: var(--color-text-secondary);
 }
 
 .deal-picker-list {
-  max-height: 200px;
+  max-height: 180px;
   overflow-y: auto;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .deal-checkbox {
@@ -391,6 +435,45 @@ h2 { font-size: 20px; margin-bottom: 16px; }
 
 .deal-checkbox:hover { background: #f5f5f5; }
 .deal-checkbox input { cursor: pointer; }
+
+.btn-sm {
+  padding: 2px 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.btn-sm:hover { background: #eee; }
+
+/* --- Main results --- */
+.reports-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.results-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.results-header h3 {
+  font-size: 16px;
+  margin: 0;
+}
+
+.btn-download {
+  padding: 7px 16px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  background: var(--color-pref);
+  color: white;
+}
 
 /* Errors */
 .error-section { margin-bottom: 12px; }
