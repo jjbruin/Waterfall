@@ -291,7 +291,7 @@ MRI's query record limits make exporting the monolithic `ISBS_Download.csv` (800
 
 ### Forecast Date Filtering
 - **Anomalous dates**: MRI valuation exports can include "Year 0" base entries with dates far in the past (e.g. 2015-12-31 for a 2025 deal). `compute_deal_analysis()` filters out forecast rows with `event_date` before `start_year - 2` to prevent `model_start` from being set to an unreasonable date.
-- **Beginning cash fallback**: If no ISBS Interim BS data exists before `model_start` (e.g. new acquisition where forecast starts before balance sheet history), `load_beginning_cash_balance()` falls back to the earliest available ISBS date instead of returning $0.
+- **Beginning cash date selection**: `load_beginning_cash_balance()` uses the **most recent** available Interim BS date (not restricted to pre-model_start). This ensures account reclassifications (e.g. security deposits moved from 1010→1080) are reflected in the beginning cash. Previously restricted to dates before `model_start`, which could include misclassified balances from older periods.
 
 ### Actuals Through Cutoff
 - Global setting (`actuals_through`): date or None (default None = full forecast)
@@ -337,7 +337,7 @@ Main waterfall computation, partner returns, capital accounts, XIRR/MOIC metrics
 **Excel Generators** (`compute_service.py`): Shared helpers `_excel_styles()`, `_write_header_row()`, `_autosize_columns()`. Per-section: `generate_partner_returns_excel()`, `generate_forecast_excel()`, `generate_debt_service_excel()`, `generate_cash_schedule_excel()`, `generate_capital_calls_excel()`, `generate_xirr_cashflows_excel()`. Full: `generate_full_deal_excel()` — 7 sheets including ROE/MOIC audit via `load_workbook` copy.
 
 **Audit Expanders** (after XIRR Cash Flows):
-- **ROE Audit — Return on Equity Breakdown**: Unified event table with all cashflows (contributions, CF distributions, capital returns) in date order. Event labels use accounting Typename (e.g., "Distribution: Preferred Return", "Contribution: Investments"). Each row shows amount, running capital balance, days since prior event, and weighted capital. CF distributions do not reduce capital balance; only capital events do. 6 metric cards per partner (Inception, End, Years, CF Distributions, Wtd Avg Capital, ROE). Deal-level section with same breakdown. Excel download.
+- **ROE Audit — Return on Equity Breakdown**: Unified event table with all cashflows (contributions, CF distributions, capital returns) in date order. Event labels use accounting Typename (e.g., "Distribution: Preferred Return", "Contribution: Investments"). Each row shows amount, running capital balance, days since prior event, and weighted capital. CF distributions do not reduce capital balance; only capital events do. Additional columns: Pref Due (cumulative pref owed at waterfall rate), Pref Paid (cumulative pref payments), Pref Accrued (due minus paid), ITD ROE (inception-to-date ROE at each event). Metric cards per partner include Pref Due, Pref Paid, Pref Accrued. Deal-level section with same breakdown. Excel download.
 - **MOIC Audit — Multiple on Invested Capital**: Cashflow Breakdown table (Date, Description, Type, Amount), 6 metric cards per partner (Contributions, CF/Cap/Total Distributions, Unrealized NAV, MOIC). Deal-level section with note that deal MOIC uses realized distributions only. Excel download.
 
 ### 3. Property Financials
@@ -414,11 +414,24 @@ Embedded request tracking system for users to report errors, suggest improvement
 - **Email**: SendGrid Web API v3 (`requests` library, no SMTP). Configured via `SENDGRID_API_KEY` and `SENDGRID_FROM` env vars. Single Sender Verification on `jbruin@peaceablestreet.com`.
 
 ### 7. Reports
-Projected Returns Summary with Excel export. Vue: `ReportsView.vue`. Flask: `reports.py` + `reports_service.py`.
-- **Report Type**: Extensible selector (currently: Projected Returns Summary)
-- **Population Selectors**: Current Deal, Select Deals, By Partner (upstream investors via ownership chain, same as Review Tracking — excludes OP/PPI entities), All Deals
+Multi-report section with sidebar layout. Vue: `ReportsView.vue`. Flask: `reports.py` + `reports_service.py`.
+- **Layout**: Left sidebar (report list + shared filters + Generate button) | Right main area (results table + Excel download). Report definitions are a registry array (`reportDefs`) in the Vue component — adding a new report requires one array entry + backend endpoints.
+- **Shared Filters**: Population (Current Deal, Select Deals, By Partner, All Deals). By Partner uses upstream investors via ownership chain (same as Review Tracking — excludes OP/PPI entities). Report-specific filters (e.g. As of Date) are conditionally shown per report definition.
+- **API Endpoints**: `GET /api/reports/deal-lookup` (eligible deals), `GET /api/reports/partners` (upstream investors).
+
+#### Report: Projected Returns Summary
+- **Endpoint**: `POST /api/reports/projected-returns` (JSON), `POST /api/reports/projected-returns/excel`
+- **Data Source**: Waterfall analysis via `get_cached_deal_result()` — projected returns through sale
 - **Output**: Partner-level rows (Contributions, CF Distributions, Capital Distributions, IRR, ROE, MOIC) plus bold deal-level total row with solid top border
-- **Excel Export**: Formatted workbook via openpyxl (currency/pct/multiple formats, auto-width, deal-total rows bold with top border)
+- **Excel**: Formatted workbook via openpyxl (currency/pct/multiple formats, auto-width, deal-total rows bold with top border)
+
+#### Report: ROE Summary
+- **Endpoint**: `POST /api/reports/roe-summary` (JSON), `POST /api/reports/roe-summary/excel`
+- **Filter**: As of Date (defaults to today)
+- **Data Source**: Actual accounting data through the report date (same formula as One Pager ROE to Date). Accrued Pref computed directly from accounting history + waterfall pref rates via `_compute_accrued_pref()` in `reports_service.py` (daily accrual at waterfall rate, year-end compounding with 45-day grace, TypeID 1019 pref payments reduce balance).
+- **Output**: One row per deal — Total Funded, Return of Capital, Current Balance, Wtd Avg Balance, CF Received, Accrued Pref, ITD ROE
+- **ROE Formula**: `(Total CF Distributions / Weighted Average Capital) / Years`. CF distributions = operating only (excludes Return of Capital, Realized Gain). Capital balance reduced by capital returns only, not CF distributions. Uses `calculate_roe_detailed()` in `metrics.py`.
+- **Excel**: Formatted workbook (currency/pct formats, auto-width)
 
 ### 8. Sold Portfolio
 Historical returns for sold deals computed from accounting_feed (no forecast waterfalls). Vue: `SoldPortfolioView.vue`. Flask: `sold_portfolio.py` + `sold_service.py`.
@@ -537,7 +550,7 @@ Embedded Claude-powered chat panel for natural-language queries against the port
 - `parse_amfee_vnotes()` - Parse AMFee vNotes for source investor and exclusions (waterfall.py)
 - `build_amfee_exclusions()` - Pre-compute net capital by (InvestmentID, InvestorID) for AMFee exclusions (waterfall.py)
 - `get_amfee_excluded_capital()` - Compute capital to exclude from AMFee base, scaled by ownership % (waterfall.py)
-- `seed_states_from_accounting()` - Build InvestorState from historical accounting; accepts `cutoff_date` to limit to actuals boundary (waterfall.py)
+- `seed_states_from_accounting()` - Build InvestorState from historical accounting; accepts `cutoff_date` to limit to actuals boundary. Non-capital distributions recorded in `cf_distributions` for ROE audit (waterfall.py)
 - `InvestorState` - Tracks capital, pref, cashflows per investor (models.py)
 - `Loan` - Debt structure with fixed/variable rates (models.py)
 - `get_property_vcodes_for_deal()` - Get child properties for aggregation (consolidation.py)
@@ -545,7 +558,7 @@ Embedded Claude-powered chat panel for natural-language queries against the port
 - `annual_aggregation_table()` - Annual pivot table for forecast display; accepts cash_schedule for reserve-adjusted FAD (reporting.py)
 - `build_cash_flow_schedule_from_fad()` - Transforms FAD into distributable; funds CapEx from reserves, tracks shortfalls (cash_management.py)
 - `get_isbs_debt_balance()` - Current debt from ISBS balance sheet, fallback to MRI_Loans (compute.py)
-- `load_beginning_cash_balance()` - Beginning cash balance from ISBS Interim BS using CASH_BALANCE_ACCTS; falls back to earliest available ISBS date if none before forecast start (cash_management.py)
+- `load_beginning_cash_balance()` - Beginning cash balance from ISBS Interim BS using CASH_BALANCE_ACCTS; uses most recent available BS date for accurate account classification (cash_management.py)
 - `get_deal_capitalization()` - Deal cap stack with ISBS debt support (compute.py)
 - `projected_cap_rate_at_date()` - Cap rate with annual escalation from valuation date (planned_loans.py)
 - `twelve_month_noi_after_date()` - Forward 12-month NOI from forecast for sale/refi valuation (planned_loans.py)
