@@ -114,7 +114,13 @@ def annual_aggregation_table(
         cs = cash_schedule.copy()
         cs['Year'] = pd.to_datetime(cs['event_date']).dt.year
         capex_from_reserves = cs.groupby('Year')['capex_paid'].sum().reindex(out.index, fill_value=0.0)
-    out["Funds Available for Distribution"] = base_fad + capex_from_reserves
+    fad = base_fad + capex_from_reserves
+    # Zero out FAD for years with no operating activity (post-sale).
+    # fc_deal_display zeroes mAmount_norm after sale, so Revenue/Expenses are $0,
+    # but capex_from_reserves from the cash schedule could still be non-zero.
+    no_activity = (out["Revenues"].fillna(0) == 0) & (out["Expenses"].fillna(0) == 0)
+    fad = fad.where(~no_activity, 0.0)
+    out["Funds Available for Distribution"] = fad
 
     tds_abs = out["Total Debt Service"].abs().replace(0, pd.NA)
     out["Debt Service Coverage Ratio"] = out["NOI"] / tds_abs
