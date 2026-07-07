@@ -15,6 +15,8 @@ SELECT
     L.nRequiredDCR,
     L.dtMaturity,
     L.vNotes,
+    L.vHedged,
+    L.vHedgedStrat,
     LD.vDateType,
     LD.dtEvent
 FROM 
