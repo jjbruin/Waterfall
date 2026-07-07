@@ -3,12 +3,16 @@
 Extracts pure logic from reports_ui.py (no Streamlit dependency).
 """
 
+import logging
 import pandas as pd
 import io
+from datetime import date
 from typing import Optional
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 from utils import normalize_columns
+
+log = logging.getLogger(__name__)
 
 
 def build_partner_returns(deal_result: dict, deal_name: str) -> list[dict]:
@@ -244,6 +248,152 @@ def generate_returns_excel(df: pd.DataFrame) -> bytes:
 
     for col_idx, col_name in enumerate(display_cols, 1):
         ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = max(len(col_name) + 2, 14)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# ROE Summary Report
+# ---------------------------------------------------------------------------
+
+def build_roe_summary_row(
+    vcode: str,
+    deal_name: str,
+    acct: pd.DataFrame,
+    inv_map: pd.DataFrame,
+    report_date: date,
+    seed_states: Optional[dict] = None,
+) -> Optional[dict]:
+    """Build one ROE summary row from accounting data through report_date.
+
+    Returns dict with: Deal Name, Total Funded, Return of Capital,
+    Current Balance, Wtd Avg Balance, CF Received, Accrued Pref, ITD ROE.
+    """
+    from loaders import build_investmentid_to_vcode
+    from metrics import calculate_roe_detailed
+
+    vcode_str = str(vcode).strip()
+
+    inv_to_vcode = build_investmentid_to_vcode(inv_map)
+    deal_iids = [iid for iid, vc in inv_to_vcode.items() if str(vc) == vcode_str]
+    if not deal_iids:
+        return None
+
+    acct_norm = acct.copy()
+    normalize_columns(acct_norm)
+    acct_norm["InvestmentID"] = acct_norm["InvestmentID"].astype(str).str.strip()
+    acct_norm["EffectiveDate"] = pd.to_datetime(acct_norm["EffectiveDate"], errors="coerce")
+
+    deal_acct = acct_norm[
+        (acct_norm["InvestmentID"].isin(deal_iids))
+        & (acct_norm["EffectiveDate"].dt.date <= report_date)
+    ].copy()
+
+    if deal_acct.empty:
+        return None
+
+    deal_acct["MajorType"] = deal_acct["MajorType"].fillna("").astype(str).str.strip()
+    deal_acct["Amt"] = pd.to_numeric(deal_acct["Amt"], errors="coerce").fillna(0.0)
+    if "TypeName" not in deal_acct.columns and "Typename" in deal_acct.columns:
+        deal_acct["TypeName"] = deal_acct["Typename"]
+    elif "TypeName" not in deal_acct.columns:
+        deal_acct["TypeName"] = ""
+    deal_acct["TypeName"] = deal_acct["TypeName"].fillna("").astype(str).str.strip()
+    deal_acct["InvestorID"] = deal_acct["InvestorID"].astype(str).str.strip()
+
+    funded = 0.0
+    roc = 0.0
+    capital_events = []
+    cf_distributions = []
+
+    for _, row in deal_acct.iterrows():
+        if row["InvestorID"].upper().startswith("OP"):
+            continue
+        major = row["MajorType"].lower()
+        tname = row["TypeName"].lower()
+        amt = float(row["Amt"])
+        evt_date = row["EffectiveDate"].date() if pd.notna(row["EffectiveDate"]) else None
+        if evt_date is None:
+            continue
+
+        if "contrib" in major:
+            funded += abs(amt)
+            capital_events.append((evt_date, -abs(amt)))
+        elif "distri" in major:
+            capital_events.append((evt_date, abs(amt)))
+            if "return of capital" in tname or "realized gain" in tname:
+                roc += abs(amt)
+            else:
+                cf_distributions.append((evt_date, abs(amt)))
+
+    if not capital_events:
+        return None
+
+    inception = min(d for d, _ in capital_events)
+    detail = calculate_roe_detailed(capital_events, cf_distributions, inception, report_date)
+
+    current_balance = funded - roc
+
+    # Accrued pref from seed_states (waterfall engine)
+    accrued = 0.0
+    if seed_states:
+        for partner, state in seed_states.items():
+            if partner.upper().startswith("OP"):
+                continue
+            accrued += (state.pref_unpaid_compounded
+                        + state.pref_accrued_current_year
+                        + state.add_pref_unpaid_compounded
+                        + state.add_pref_accrued_current_year)
+
+    return {
+        "Deal Name": deal_name,
+        "Total Funded": funded,
+        "Return of Capital": roc,
+        "Current Balance": current_balance,
+        "Wtd Avg Balance": detail["weighted_avg_capital"],
+        "CF Received": detail["total_cf_distributions"],
+        "Accrued Pref": accrued,
+        "ITD ROE": detail["roe"],
+    }
+
+
+def generate_roe_summary_excel(df: pd.DataFrame) -> bytes:
+    """Generate formatted Excel for ROE Summary report."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "ROE Summary"
+
+    display_cols = [c for c in df.columns if not c.startswith("_")]
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+
+    for col_idx, col_name in enumerate(display_cols, 1):
+        cell = ws.cell(row=1, column=col_idx, value=col_name)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center")
+
+    currency_cols = {"Total Funded", "Return of Capital", "Current Balance",
+                     "Wtd Avg Balance", "CF Received", "Accrued Pref"}
+    pct_cols = {"ITD ROE"}
+
+    for row_idx, (_, row) in enumerate(df.iterrows(), 2):
+        for col_idx, col_name in enumerate(display_cols, 1):
+            val = row[col_name]
+            cell = ws.cell(row=row_idx, column=col_idx)
+            if col_name in currency_cols:
+                cell.value = float(val) if pd.notna(val) else 0.0
+                cell.number_format = "$#,##0"
+            elif col_name in pct_cols:
+                cell.value = float(val) if pd.notna(val) else None
+                cell.number_format = "0.00%"
+            else:
+                cell.value = val
+
+    for col_idx, col_name in enumerate(display_cols, 1):
+        ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = max(len(col_name) + 2, 16)
 
     buf = io.BytesIO()
     wb.save(buf)

@@ -8,6 +8,15 @@ import api from '../api/client'
 const data = useDataStore()
 const deals = useDealsStore()
 
+// --- Report type ---
+const reportType = ref<'projected-returns' | 'roe-summary'>('projected-returns')
+
+const reportTypes = [
+  { value: 'projected-returns', label: 'Projected Returns Summary' },
+  { value: 'roe-summary', label: 'ROE Summary' },
+]
+
+// --- Shared filters ---
 const population = ref<'current' | 'select' | 'partner' | 'all'>('all')
 const selectedVcodes = ref<string[]>([])
 const results = ref<any[]>([])
@@ -15,21 +24,21 @@ const errors = ref<any[]>([])
 const loading = ref(false)
 const showErrors = ref(false)
 
-// Population selector data
 const eligibleDeals = ref<any[]>([])
 const partners = ref<any[]>([])
 const selectedPartner = ref('')
 
+// Report date for ROE Summary (defaults to today)
+const reportDate = ref(new Date().toISOString().slice(0, 10))
+
 onMounted(async () => {
   if (data.deals.length === 0) await data.loadDeals()
-  // Load eligible deals for selectors
   try {
     const res = await api.get('/api/reports/deal-lookup')
     eligibleDeals.value = res.data.eligible
   } catch { /* ignore */ }
 })
 
-// Load partner data when population changes
 watch(population, async (val) => {
   if (val === 'partner' && partners.value.length === 0) {
     try {
@@ -37,6 +46,12 @@ watch(population, async (val) => {
       partners.value = res.data.partners
     } catch { /* ignore */ }
   }
+})
+
+// Clear results when report type changes
+watch(reportType, () => {
+  results.value = []
+  errors.value = []
 })
 
 const resolvedVcodes = computed(() => {
@@ -72,7 +87,8 @@ const populationLabel = computed(() => {
   }
 })
 
-const columns = [
+// --- Report-specific columns ---
+const projectedReturnsCols = [
   { key: 'Deal Name', label: 'Deal Name' },
   { key: 'Partner', label: 'Partner' },
   { key: 'Contributions', label: 'Contributions', format: 'currency', align: 'right' },
@@ -83,6 +99,48 @@ const columns = [
   { key: 'MOIC', label: 'MOIC', format: 'multiple', align: 'right' },
 ]
 
+const roeSummaryCols = [
+  { key: 'Deal Name', label: 'Deal Name' },
+  { key: 'Total Funded', label: 'Total Funded', format: 'currency', align: 'right' },
+  { key: 'Return of Capital', label: 'Return of Capital', format: 'currency', align: 'right' },
+  { key: 'Current Balance', label: 'Current Balance', format: 'currency', align: 'right' },
+  { key: 'Wtd Avg Balance', label: 'Wtd Avg Balance', format: 'currency', align: 'right' },
+  { key: 'CF Received', label: 'CF Received', format: 'currency', align: 'right' },
+  { key: 'Accrued Pref', label: 'Accrued Pref', format: 'currency', align: 'right' },
+  { key: 'ITD ROE', label: 'ITD ROE', format: 'percent', align: 'right' },
+]
+
+const columns = computed(() => {
+  return reportType.value === 'roe-summary' ? roeSummaryCols : projectedReturnsCols
+})
+
+const placeholder = computed(() => {
+  return reportType.value === 'roe-summary'
+    ? 'Generate a report to see ROE summary by deal.'
+    : 'Generate a report to see projected returns.'
+})
+
+// --- API calls ---
+const apiEndpoint = computed(() => {
+  return reportType.value === 'roe-summary' ? '/api/reports/roe-summary' : '/api/reports/projected-returns'
+})
+
+const excelEndpoint = computed(() => {
+  return reportType.value === 'roe-summary' ? '/api/reports/roe-summary/excel' : '/api/reports/projected-returns/excel'
+})
+
+const excelFilename = computed(() => {
+  return reportType.value === 'roe-summary' ? 'roe_summary.xlsx' : 'projected_returns.xlsx'
+})
+
+function buildPayload() {
+  const payload: any = { vcodes: resolvedVcodes.value }
+  if (reportType.value === 'roe-summary') {
+    payload.report_date = reportDate.value
+  }
+  return payload
+}
+
 async function generate() {
   const vcodes = resolvedVcodes.value
   if (vcodes.length === 0) return
@@ -90,7 +148,7 @@ async function generate() {
   loading.value = true
   errors.value = []
   try {
-    const res = await api.post('/api/reports/projected-returns', { vcodes })
+    const res = await api.post(apiEndpoint.value, buildPayload())
     results.value = res.data.rows
     errors.value = res.data.errors || []
   } finally {
@@ -102,11 +160,11 @@ async function downloadExcel() {
   const vcodes = resolvedVcodes.value
   if (vcodes.length === 0) return
 
-  const res = await api.post('/api/reports/projected-returns/excel', { vcodes }, { responseType: 'blob' })
+  const res = await api.post(excelEndpoint.value, buildPayload(), { responseType: 'blob' })
   const url = URL.createObjectURL(new Blob([res.data]))
   const a = document.createElement('a')
   a.href = url
-  a.download = 'projected_returns.xlsx'
+  a.download = excelFilename.value
   a.click()
   URL.revokeObjectURL(url)
 }
@@ -121,6 +179,18 @@ function toggleDeal(vcode: string) {
 <template>
   <div class="reports">
     <h2>Reports</h2>
+
+    <!-- Report type selector -->
+    <div class="report-type-bar">
+      <button
+        v-for="rt in reportTypes"
+        :key="rt.value"
+        :class="['report-type-btn', { active: reportType === rt.value }]"
+        @click="reportType = rt.value as any"
+      >
+        {{ rt.label }}
+      </button>
+    </div>
 
     <div class="controls">
       <!-- Population Selector -->
@@ -143,6 +213,12 @@ function toggleDeal(vcode: string) {
             {{ p.display || p.partner }} ({{ p.deal_count }} deals)
           </option>
         </select>
+      </div>
+
+      <!-- Report date for ROE Summary -->
+      <div v-if="reportType === 'roe-summary'" class="control-group">
+        <label>As of:</label>
+        <input type="date" v-model="reportDate" class="date-input" />
       </div>
 
       <span class="population-label">{{ populationLabel }}</span>
@@ -173,7 +249,7 @@ function toggleDeal(vcode: string) {
     <!-- Errors -->
     <div v-if="errors.length > 0" class="error-section">
       <button class="btn-sm" @click="showErrors = !showErrors">
-        {{ errors.length }} deal(s) skipped {{ showErrors ? '▾' : '▸' }}
+        {{ errors.length }} deal(s) skipped {{ showErrors ? '&#9662;' : '&#9656;' }}
       </button>
       <div v-if="showErrors" class="error-list">
         <p v-for="(e, i) in errors" :key="i">{{ e.deal_name || e.vcode }}: {{ e.error }}</p>
@@ -181,14 +257,45 @@ function toggleDeal(vcode: string) {
     </div>
 
     <!-- Results Table -->
-    <DataTable v-if="results.length" :columns="columns" :rows="results" :highlight-total="true" />
-    <p v-else-if="!loading" class="placeholder">Generate a report to see projected returns.</p>
+    <DataTable v-if="results.length" :columns="columns" :rows="results" :highlight-total="reportType === 'projected-returns'" />
+    <p v-else-if="!loading" class="placeholder">{{ placeholder }}</p>
   </div>
 </template>
 
 <style scoped>
 .reports { padding: 0 0 40px 0; }
 h2 { font-size: 20px; margin-bottom: 16px; }
+
+.report-type-bar {
+  display: flex;
+  gap: 0;
+  margin-bottom: 16px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  overflow: hidden;
+  width: fit-content;
+}
+
+.report-type-btn {
+  padding: 8px 20px;
+  border: none;
+  border-right: 1px solid var(--color-border);
+  background: var(--color-surface);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  transition: background 0.15s, color 0.15s;
+}
+
+.report-type-btn:last-child { border-right: none; }
+.report-type-btn:hover:not(.active) { background: #f0f0f0; }
+
+.report-type-btn.active {
+  background: var(--color-accent);
+  color: white;
+  font-weight: 600;
+}
 
 .controls {
   display: flex;
@@ -209,7 +316,8 @@ h2 { font-size: 20px; margin-bottom: 16px; }
   font-weight: 600;
 }
 
-.control-group select {
+.control-group select,
+.date-input {
   padding: 7px 10px;
   border: 1px solid var(--color-border);
   border-radius: 6px;

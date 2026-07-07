@@ -229,6 +229,76 @@ def calculate_roe(
     return (total_cf_distributions / weighted_avg_capital) / years
 
 
+def calculate_roe_detailed(
+    capital_events: List[Tuple[date, float]],
+    cf_distributions: List[Tuple[date, float]],
+    start_date: date,
+    end_date: date
+) -> dict:
+    """Same logic as calculate_roe but returns component values.
+
+    Returns dict with: roe, weighted_avg_capital, total_cf_distributions, years
+    """
+    roe = calculate_roe(capital_events, cf_distributions, start_date, end_date)
+
+    total_contributions = sum(
+        -amt for d, amt in capital_events
+        if amt < 0 and start_date <= d <= end_date
+    )
+    if total_contributions <= 0:
+        return {"roe": 0.0, "weighted_avg_capital": 0.0,
+                "total_cf_distributions": 0.0, "years": 0.0}
+
+    # Rebuild weighted avg capital (same logic as calculate_roe)
+    cf_by_date: dict = {}
+    for d, a in cf_distributions:
+        if a > 0 and start_date <= d <= end_date:
+            cf_by_date[d] = cf_by_date.get(d, 0.0) + a
+
+    events = []
+    for d, amt in capital_events:
+        if d < start_date or d > end_date:
+            continue
+        if amt < 0:
+            events.append((d, -amt))
+        elif amt > 0:
+            cf_at_date = cf_by_date.get(d, 0.0)
+            if cf_at_date > 0:
+                consumed = min(cf_at_date, amt)
+                cf_by_date[d] -= consumed
+                cap_return = amt - consumed
+            else:
+                cap_return = amt
+            if cap_return > 0.005:
+                events.append((d, -cap_return))
+
+    events = sorted(events, key=lambda x: x[0])
+    total_weighted_capital = 0.0
+    current_balance = 0.0
+    prev_date = start_date
+    for evt_date, change in events:
+        days = (evt_date - prev_date).days
+        total_weighted_capital += current_balance * days
+        current_balance = max(0, current_balance + change)
+        prev_date = evt_date
+    days = (end_date - prev_date).days
+    total_weighted_capital += current_balance * days
+
+    total_days = (end_date - start_date).days
+    weighted_avg = total_weighted_capital / total_days if total_days > 0 else 0.0
+    years = total_days / 365.0
+
+    total_cf = sum(amt for d, amt in cf_distributions
+                   if amt > 0 and start_date <= d <= end_date)
+
+    return {
+        "roe": roe,
+        "weighted_avg_capital": weighted_avg,
+        "total_cf_distributions": total_cf,
+        "years": years,
+    }
+
+
 def calculate_moic(
     contributions: List[Tuple[date, float]],
     distributions: List[Tuple[date, float]],
