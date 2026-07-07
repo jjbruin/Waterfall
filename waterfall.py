@@ -1205,8 +1205,11 @@ def seed_states_from_accounting(
             if is_capital:
                 capital_return = min(cf, max(0.0, stt.capital_outstanding))
                 stt.capital_outstanding -= capital_return
-
-            # CF distributions (is_capital=N) do NOT touch capital_outstanding
+            else:
+                # CF distributions (is_capital=N) do NOT touch capital_outstanding
+                # but must be recorded for ROE audit (so they aren't treated as
+                # capital returns in build_roe_timeline)
+                stt.cf_distributions.append((d, cf))
 
     # CRITICAL FIX: Set last_accrual_date to the LATEST historical date
     # This prevents the forward model from re-accruing pref that was already

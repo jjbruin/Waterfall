@@ -687,6 +687,7 @@ def roe_audit(vcode):
 
     audit = compute_service.build_roe_audit(
         result["partner_results"], result["deal_summary"], result.get("sale_me"),
+        wf_steps=result.get("wf_steps"), vcode=vcode,
     )
     return jsonify(safe_json(audit))
 
@@ -717,6 +718,7 @@ def roe_audit_excel(vcode):
 
     excel_bytes = compute_service.generate_roe_audit_excel(
         result["partner_results"], result["deal_summary"], result.get("sale_me"),
+        wf_steps=result.get("wf_steps"), vcode=vcode,
     )
     return send_file(
         io.BytesIO(excel_bytes),

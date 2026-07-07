@@ -1283,6 +1283,12 @@ watch(() => deals.currentVcode, (vc) => {
                   { key: 'Capital Balance', label: 'Capital Balance', format: 'currency', align: 'right' },
                   { key: 'Days at Balance', label: 'Days', align: 'right' },
                   { key: 'Weighted Capital', label: 'Weighted Capital', format: 'currency', align: 'right' },
+                  ...(pa.summary?.pref_due ? [
+                    { key: 'Pref Due', label: 'Pref Due', format: 'currency', align: 'right' },
+                    { key: 'Pref Paid', label: 'Pref Paid', format: 'currency', align: 'right' },
+                    { key: 'Pref Accrued', label: 'Pref Accrued', format: 'currency', align: 'right' },
+                    { key: 'ITD ROE', label: 'ITD ROE', format: 'percent', align: 'right' },
+                  ] : []),
                 ]"
                 :rows="pa.timeline"
               />
@@ -1294,6 +1300,9 @@ watch(() => deals.currentVcode, (vc) => {
                 <KpiCard label="CF Distributions" :value="pa.summary.total_cf_dist" format="currency" />
                 <KpiCard label="Wtd Avg Capital" :value="pa.summary.wac" format="currency" />
                 <KpiCard label="ROE" :value="pa.summary.roe" format="percent" />
+                <KpiCard v-if="pa.summary.pref_due" label="Pref Due" :value="pa.summary.pref_due" format="currency" />
+                <KpiCard v-if="pa.summary.pref_due" label="Pref Paid" :value="pa.summary.pref_paid" format="currency" />
+                <KpiCard v-if="pa.summary.pref_due" label="Pref Accrued" :value="pa.summary.pref_accrued" format="currency" />
               </div>
             </div>
 

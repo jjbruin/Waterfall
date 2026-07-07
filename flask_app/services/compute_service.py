@@ -133,12 +133,16 @@ def get_all_cached_vcodes() -> list[str]:
 # ROE / MOIC Audit Builders  (extracted from app.py)
 # ============================================================
 
-def build_roe_timeline(cashflow_details, cf_only_distributions, end_date):
+def build_roe_timeline(cashflow_details, cf_only_distributions, end_date,
+                       pref_rate=0.0):
     """Build a unified ROE audit trail from cashflow_details.
 
     Uses the accounting Typename (via cashflow_details Description) as the
     event label.  CF distributions (from cf_only_distributions) do NOT reduce
     capital; all other positive cashflows reduce capital.
+
+    Includes pref tracking columns (Pref Due, Pref Paid, Pref Accrued) and
+    running ITD ROE at each event.
 
     Returns (timeline_rows, summary_dict) — all JSON-safe.
     """
@@ -149,7 +153,8 @@ def build_roe_timeline(cashflow_details, cf_only_distributions, end_date):
             cf_remaining[d] = cf_remaining.get(d, 0.0) + a
 
     # Build events from cashflow_details with capital impact
-    events = []  # (date, description, amount, capital_change)
+    # is_pref_payment flag tracks preferred return distributions
+    events = []  # (date, description, amount, capital_change, is_pref_payment)
     for cf in cashflow_details:
         amt = cf['Amount']
         desc = cf.get('Description', '') or ''
@@ -159,24 +164,25 @@ def build_roe_timeline(cashflow_details, cf_only_distributions, end_date):
 
         if amt < 0:
             # Contribution: increases capital
-            events.append((d, desc or 'Contribution', amt, -amt))
+            events.append((d, desc or 'Contribution', amt, -amt, False))
         elif amt > 0:
+            is_pref = 'preferred return' in desc.lower() or 'pref return' in desc.lower()
             # Check if this is a CF distribution (no capital impact)
             cf_avail = cf_remaining.get(d, 0.0)
             if cf_avail >= amt - 0.005:
                 # Entirely CF distribution
                 cf_remaining[d] = cf_avail - amt
-                events.append((d, desc or 'CF Distribution', amt, 0.0))
+                events.append((d, desc or 'CF Distribution', amt, 0.0, is_pref))
             elif cf_avail > 0.005:
                 # Split: partial CF distribution + partial capital return
                 cf_part = cf_avail
                 cap_part = amt - cf_avail
                 cf_remaining[d] = 0.0
-                events.append((d, desc or 'CF Distribution', cf_part, 0.0))
-                events.append((d, desc + ' (capital)', cap_part, -cap_part))
+                events.append((d, desc or 'CF Distribution', cf_part, 0.0, is_pref))
+                events.append((d, desc + ' (capital)', cap_part, -cap_part, False))
             else:
                 # Entirely capital return
-                events.append((d, desc or 'Capital Return', amt, -amt))
+                events.append((d, desc or 'Capital Return', amt, -amt, False))
 
     events = sorted(events, key=lambda x: x[0])
     if not events:
@@ -188,22 +194,42 @@ def build_roe_timeline(cashflow_details, cf_only_distributions, end_date):
     prev_date = inception
     total_weighted = 0.0
     total_cf_dist = 0.0
+    cumulative_pref_due = 0.0
+    cumulative_pref_paid = 0.0
 
-    for evt_date, label, display_amt, cap_change in events:
+    for evt_date, label, display_amt, cap_change, is_pref in events:
         # Accumulate weighted capital for days held since last event
         days = (evt_date - prev_date).days
         weighted = current_balance * days
         total_weighted += weighted
 
+        # Accrue pref for the period (daily accrual on capital balance)
+        if pref_rate > 0 and current_balance > 0 and days > 0:
+            cumulative_pref_due += current_balance * pref_rate * days / 365.0
+
         # Apply capital change
         current_balance = max(0, current_balance + cap_change)
+
+        # Track CF distributions and pref payments
         if cap_change == 0.0 and display_amt > 0:
             total_cf_dist += display_amt
+        if is_pref and display_amt > 0:
+            cumulative_pref_paid += display_amt
+
+        # Running ITD ROE
+        elapsed_days = (evt_date - inception).days
+        elapsed_years = elapsed_days / 365.0 if elapsed_days > 0 else 0.0
+        running_wac = total_weighted / elapsed_days if elapsed_days > 0 else 0.0
+        itd_roe = (total_cf_dist / running_wac) / elapsed_years if running_wac > 0 and elapsed_years > 0 else 0.0
 
         rows.append({
             'Date': evt_date.isoformat(), 'Event': label,
             'Amount': display_amt, 'Capital Balance': current_balance,
             'Days at Balance': days, 'Weighted Capital': weighted,
+            'Pref Due': cumulative_pref_due,
+            'Pref Paid': cumulative_pref_paid,
+            'Pref Accrued': cumulative_pref_due - cumulative_pref_paid,
+            'ITD ROE': itd_roe,
         })
         prev_date = evt_date
 
@@ -212,10 +238,16 @@ def build_roe_timeline(cashflow_details, cf_only_distributions, end_date):
         days = (end_date - prev_date).days
         weighted = current_balance * days
         total_weighted += weighted
+        if pref_rate > 0 and current_balance > 0 and days > 0:
+            cumulative_pref_due += current_balance * pref_rate * days / 365.0
         rows.append({
             'Date': end_date.isoformat(), 'Event': '(end)',
             'Amount': None, 'Capital Balance': current_balance,
             'Days at Balance': days, 'Weighted Capital': weighted,
+            'Pref Due': cumulative_pref_due,
+            'Pref Paid': cumulative_pref_paid,
+            'Pref Accrued': cumulative_pref_due - cumulative_pref_paid,
+            'ITD ROE': None,
         })
 
     total_days = (end_date - inception).days if end_date else 0
@@ -227,26 +259,55 @@ def build_roe_timeline(cashflow_details, cf_only_distributions, end_date):
         'inception': inception.isoformat(), 'end': end_date.isoformat() if end_date else None,
         'total_days': total_days, 'years': years,
         'total_cf_dist': total_cf_dist, 'wac': wac, 'roe': roe,
+        'pref_due': cumulative_pref_due, 'pref_paid': cumulative_pref_paid,
+        'pref_accrued': cumulative_pref_due - cumulative_pref_paid,
     }
     return rows, summary
 
 
-def build_roe_audit(partner_results, deal_summary, sale_me):
+def _get_pref_rates(wf_steps, vcode):
+    """Extract per-partner pref rates from waterfall steps."""
+    if wf_steps is None or (hasattr(wf_steps, 'empty') and wf_steps.empty):
+        return {}
+    import pandas as pd
+    s = wf_steps[wf_steps["vcode"] == str(vcode)].copy() if "vcode" in wf_steps.columns else wf_steps.copy()
+    pref = s[s["vState"] == "Pref"].copy() if "vState" in s.columns else pd.DataFrame()
+    if pref.empty:
+        return {}
+    rate_col = "nPercent_dec" if "nPercent_dec" in pref.columns else "nPercent"
+    if rate_col not in pref.columns:
+        return {}
+    rates = {}
+    for _, row in pref.iterrows():
+        pc = str(row.get("PropCode", ""))
+        r = float(row[rate_col]) if pd.notna(row[rate_col]) else 0.0
+        if pc and r > 0:
+            # Use first (primary) pref rate per partner
+            if pc not in rates:
+                rates[pc] = r
+    return rates
+
+
+def build_roe_audit(partner_results, deal_summary, sale_me, wf_steps=None, vcode=None):
     """Build full ROE audit data for all partners + deal level.
 
     Returns dict with 'partners' list and 'deal_level' dict.
     """
+    pref_rates = _get_pref_rates(wf_steps, vcode) if wf_steps is not None and vcode else {}
+
     partners = []
     for pr in partner_results:
+        rate = pref_rates.get(pr['partner'], 0.0)
         tl, summary = build_roe_timeline(
-            pr.get('cashflow_details', []), pr['cf_only_distributions'], sale_me)
+            pr.get('cashflow_details', []), pr['cf_only_distributions'], sale_me,
+            pref_rate=rate)
         partners.append({
             'partner': pr['partner'],
             'timeline': tl,
             'summary': summary,
         })
 
-    # Deal-level: combine all partners' cashflow_details
+    # Deal-level: combine all partners' cashflow_details (no pref tracking at deal level)
     all_details = []
     all_cf_dist = []
     for pr in partner_results:
@@ -324,10 +385,13 @@ def build_moic_audit(partner_results, deal_summary, sale_me):
 # Excel generators  (extracted from app.py)
 # ============================================================
 
-def generate_roe_audit_excel(partner_results, deal_summary, sale_me) -> bytes:
+def generate_roe_audit_excel(partner_results, deal_summary, sale_me,
+                             wf_steps=None, vcode=None) -> bytes:
     """Generate formatted Excel workbook for ROE audit."""
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+    pref_rates = _get_pref_rates(wf_steps, vcode) if wf_steps is not None and vcode else {}
 
     wb = Workbook()
     ws = wb.active
@@ -352,11 +416,13 @@ def generate_roe_audit_excel(partner_results, deal_summary, sale_me) -> bytes:
             c.alignment = Alignment(horizontal="center")
         return r + 1
 
-    def _write_roe_section(ws, row, tl_rows, summary, label):
+    def _write_roe_section(ws, row, tl_rows, summary, label, has_pref=False):
         ws.cell(row=row, column=1, value=label).font = Font(bold=True, size=12)
         row += 1
 
         tl_cols = ['Date', 'Event', 'Amount', 'Capital Balance', 'Days at Balance', 'Weighted Capital']
+        if has_pref:
+            tl_cols += ['Pref Due', 'Pref Paid', 'Pref Accrued', 'ITD ROE']
         row = write_header(ws, row, tl_cols)
         for tr in tl_rows:
             ws.cell(row=row, column=1, value=tr['Date']).number_format = date_fmt
@@ -366,6 +432,13 @@ def generate_roe_audit_excel(partner_results, deal_summary, sale_me) -> bytes:
             ws.cell(row=row, column=4, value=tr['Capital Balance']).number_format = curr_fmt
             ws.cell(row=row, column=5, value=tr['Days at Balance']).number_format = num_fmt
             ws.cell(row=row, column=6, value=tr['Weighted Capital']).number_format = curr_fmt
+            if has_pref:
+                ws.cell(row=row, column=7, value=tr.get('Pref Due', 0)).number_format = curr_fmt
+                ws.cell(row=row, column=8, value=tr.get('Pref Paid', 0)).number_format = curr_fmt
+                ws.cell(row=row, column=9, value=tr.get('Pref Accrued', 0)).number_format = curr_fmt
+                itd = tr.get('ITD ROE')
+                if itd is not None:
+                    ws.cell(row=row, column=10, value=itd).number_format = pct_fmt
             row += 1
         ws.cell(row=row, column=1, value="Totals").font = bold_font
         ws.cell(row=row, column=1).border = top_border
@@ -379,8 +452,11 @@ def generate_roe_audit_excel(partner_results, deal_summary, sale_me) -> bytes:
 
         ws.cell(row=row, column=1, value="ROE Summary").font = bold_font
         row += 1
-        row = write_header(ws, row, ['Inception', 'End Date', 'Total Days', 'Years',
-                                      'CF Distributions', 'Wtd Avg Capital', 'ROE'])
+        sum_cols = ['Inception', 'End Date', 'Total Days', 'Years',
+                    'CF Distributions', 'Wtd Avg Capital', 'ROE']
+        if has_pref:
+            sum_cols += ['Pref Due', 'Pref Paid', 'Pref Accrued']
+        row = write_header(ws, row, sum_cols)
         ws.cell(row=row, column=1, value=summary.get('inception')).number_format = date_fmt
         ws.cell(row=row, column=2, value=summary.get('end')).number_format = date_fmt
         ws.cell(row=row, column=3, value=summary.get('total_days', 0)).number_format = num_fmt
@@ -388,16 +464,23 @@ def generate_roe_audit_excel(partner_results, deal_summary, sale_me) -> bytes:
         ws.cell(row=row, column=5, value=summary.get('total_cf_dist', 0)).number_format = curr_fmt
         ws.cell(row=row, column=6, value=summary.get('wac', 0)).number_format = curr_fmt
         ws.cell(row=row, column=7, value=summary.get('roe', 0)).number_format = pct_fmt
+        if has_pref:
+            ws.cell(row=row, column=8, value=summary.get('pref_due', 0)).number_format = curr_fmt
+            ws.cell(row=row, column=9, value=summary.get('pref_paid', 0)).number_format = curr_fmt
+            ws.cell(row=row, column=10, value=summary.get('pref_accrued', 0)).number_format = curr_fmt
         row += 2
         return row
 
     # Per-partner sections
     for pr in partner_results:
+        rate = pref_rates.get(pr['partner'], 0.0)
         tl, summary = build_roe_timeline(
-            pr.get('cashflow_details', []), pr['cf_only_distributions'], sale_me)
-        row = _write_roe_section(ws, row, tl, summary, f"Partner: {pr['partner']}")
+            pr.get('cashflow_details', []), pr['cf_only_distributions'], sale_me,
+            pref_rate=rate)
+        row = _write_roe_section(ws, row, tl, summary, f"Partner: {pr['partner']}",
+                                 has_pref=(rate > 0))
 
-    # Deal-level
+    # Deal-level (no pref tracking)
     all_details = []
     all_cf_dist = []
     for pr in partner_results:
@@ -938,7 +1021,10 @@ def generate_full_deal_excel(result: dict, start_year: int, horizon_years: int) 
 
     # --- Sheet 6: ROE Audit ---
     try:
-        roe_bytes = generate_roe_audit_excel(pr_list, ds, sale_me)
+        _wf = result.get("wf_steps")
+        _vc = _wf["vcode"].iloc[0] if _wf is not None and not _wf.empty and "vcode" in _wf.columns else None
+        roe_bytes = generate_roe_audit_excel(
+            pr_list, ds, sale_me, wf_steps=_wf, vcode=_vc)
         from openpyxl import load_workbook
         roe_wb = load_workbook(BytesIO(roe_bytes))
         roe_src = roe_wb.active
