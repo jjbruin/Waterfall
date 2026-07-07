@@ -53,17 +53,15 @@ def load_beginning_cash_balance(isbs_df: pd.DataFrame, deal_vcode: str, forecast
     if not isinstance(forecast_start_date, pd.Timestamp):
         forecast_start_date = pd.to_datetime(forecast_start_date)
 
-    # Find most recent entry before forecast start
-    before = isbs[isbs['dtEntry_parsed'] < forecast_start_date]
-
-    if before.empty:
-        # Fallback: use earliest available balance sheet date (deal may have
-        # started after forecast model start, e.g. new acquisition)
-        log.info("load_beginning_cash(%s): no rows before %s, using earliest available",
-                 deal_vcode, forecast_start_date)
-        most_recent_date = isbs['dtEntry_parsed'].min()
-    else:
-        most_recent_date = before['dtEntry_parsed'].max()
+    # Use the most recent available Interim BS date.  This is more accurate
+    # than restricting to dates before model_start because account
+    # reclassifications (e.g. security deposits moved from 1010→1080) are
+    # only reflected in later balance sheets.  If the most recent date is
+    # before model_start, that's fine — it's the closest snapshot we have.
+    most_recent_date = isbs['dtEntry_parsed'].max()
+    if pd.isna(most_recent_date):
+        log.warning("load_beginning_cash(%s): all dtEntry_parsed are NaT", deal_vcode)
+        return 0.0
 
     isbs = isbs[isbs['dtEntry_parsed'] == most_recent_date]
 
