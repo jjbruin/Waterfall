@@ -258,12 +258,122 @@ def generate_returns_excel(df: pd.DataFrame) -> bytes:
 # ROE Summary Report
 # ---------------------------------------------------------------------------
 
+def _compute_accrued_pref(deal_acct: pd.DataFrame, report_date: date,
+                          pref_rates: dict) -> float:
+    """Compute total accrued (unpaid) pref across all PE investors through report_date.
+
+    Walks accounting chronologically per investor, accrues pref daily on capital
+    balance at the waterfall pref rate, reduces accrued by pref payments (TypeID 1019).
+    Compounds at year-end with 45-day grace period (matching seed_states logic).
+    """
+    if not pref_rates:
+        return 0.0
+
+    total_accrued = 0.0
+
+    for investor_id, grp in deal_acct.groupby("InvestorID"):
+        if investor_id.upper().startswith("OP"):
+            continue
+        pref_rate = pref_rates.get(investor_id, 0.0)
+        if pref_rate <= 0:
+            continue
+
+        rows = grp.sort_values("EffectiveDate")
+        capital = 0.0
+        pref_compounded = 0.0
+        pref_cy = 0.0
+        prev_date = None
+
+        # Detect TypeID column
+        has_typeid = "TypeID" in rows.columns
+
+        for _, r in rows.iterrows():
+            evt_date = r["EffectiveDate"].date() if pd.notna(r["EffectiveDate"]) else None
+            if evt_date is None:
+                continue
+            amt = float(r["Amt"])
+            major = r["MajorType"].lower()
+            tname = r["TypeName"].lower()
+
+            # Accrue pref from prev_date to this event
+            if prev_date is not None and capital > 0 and evt_date > prev_date:
+                cur = prev_date
+                while cur < evt_date:
+                    year_end = date(cur.year, 12, 31)
+                    next_stop = min(evt_date, year_end)
+                    days = (next_stop - cur).days
+                    if days > 0:
+                        base = max(0.0, capital + pref_compounded)
+                        pref_cy += base * pref_rate * (days / 365.0)
+                    if next_stop == year_end and next_stop < evt_date:
+                        days_past = (evt_date - year_end).days
+                        if days_past >= 45:
+                            pref_compounded += pref_cy
+                            pref_cy = 0.0
+                        cur = date(cur.year + 1, 1, 1)
+                    else:
+                        break
+
+            # Apply pref payment (TypeID 1019 = Preferred Return distribution)
+            is_pref_payment = False
+            if has_typeid:
+                try:
+                    is_pref_payment = float(r.get("TypeID", 0)) == 1019.0
+                except (ValueError, TypeError):
+                    pass
+            if not is_pref_payment:
+                is_pref_payment = "preferred return" in tname or "pref return" in tname
+            if is_pref_payment and "distri" in major:
+                payment = abs(amt)
+                # Reduce compounded first, then current year
+                if pref_compounded > 0:
+                    pay = min(payment, pref_compounded)
+                    pref_compounded -= pay
+                    payment -= pay
+                if pref_cy > 0 and payment > 0:
+                    pay = min(payment, pref_cy)
+                    pref_cy -= pay
+
+            # Update capital balance
+            if "contrib" in major:
+                capital += abs(amt)
+            elif "distri" in major:
+                if "return of capital" in tname or "realized gain" in tname:
+                    capital = max(0.0, capital - abs(amt))
+
+            prev_date = evt_date
+
+        # Accrue from last transaction to report_date
+        if prev_date is not None and capital > 0 and report_date > prev_date:
+            cur = prev_date
+            while cur < report_date:
+                year_end = date(cur.year, 12, 31)
+                next_stop = min(report_date, year_end)
+                days = (next_stop - cur).days
+                if days > 0:
+                    base = max(0.0, capital + pref_compounded)
+                    pref_cy += base * pref_rate * (days / 365.0)
+                if next_stop == year_end and next_stop < report_date:
+                    days_past = (report_date - year_end).days
+                    if days_past >= 45:
+                        pref_compounded += pref_cy
+                        pref_cy = 0.0
+                    cur = date(cur.year + 1, 1, 1)
+                else:
+                    break
+
+        total_accrued += pref_compounded + pref_cy
+
+    return total_accrued
+
+
 def build_roe_summary_row(
     vcode: str,
     deal_name: str,
     acct: pd.DataFrame,
     inv_map: pd.DataFrame,
     report_date: date,
+    wf_steps: Optional[pd.DataFrame] = None,
     seed_states: Optional[dict] = None,
 ) -> Optional[dict]:
     """Build one ROE summary row from accounting data through report_date.
@@ -336,16 +446,19 @@ def build_roe_summary_row(
 
     current_balance = funded - roc
 
-    # Accrued pref from seed_states (waterfall engine)
-    accrued = 0.0
-    if seed_states:
-        for partner, state in seed_states.items():
-            if partner.upper().startswith("OP"):
-                continue
-            accrued += (state.pref_unpaid_compounded
-                        + state.pref_accrued_current_year
-                        + state.add_pref_unpaid_compounded
-                        + state.add_pref_accrued_current_year)
+    # Compute accrued pref directly from accounting + waterfall pref rates
+    pref_rates = {}
+    if wf_steps is not None and not wf_steps.empty:
+        wf_deal = wf_steps[wf_steps["vcode"] == vcode_str] if "vcode" in wf_steps.columns else wf_steps
+        pref_rows = wf_deal[wf_deal["vState"] == "Pref"] if "vState" in wf_deal.columns else pd.DataFrame()
+        rate_col = "nPercent_dec" if "nPercent_dec" in pref_rows.columns else "nPercent"
+        for _, pr in pref_rows.iterrows():
+            pc = str(pr.get("PropCode", "")).strip()
+            r = float(pr[rate_col]) if pd.notna(pr.get(rate_col)) else 0.0
+            if pc and r > 0 and pc not in pref_rates:
+                pref_rates[pc] = r
+
+    accrued = _compute_accrued_pref(deal_acct, report_date, pref_rates)
 
     return {
         "Deal Name": deal_name,

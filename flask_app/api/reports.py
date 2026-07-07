@@ -174,21 +174,18 @@ def roe_summary():
     if acct is None or acct.empty:
         return jsonify({"error": "No accounting data available"}), 400
 
+    # Load waterfall steps once for pref rate extraction
+    from loaders import load_waterfalls
+    wf_steps = load_waterfalls(data["wf"])
+
     for vcode in vcodes:
         deal_row = inv[inv["vcode"] == vcode]
         deal_name = deal_row.iloc[0].get("Investment_Name", vcode) if not deal_row.empty else vcode
 
         try:
-            # Get seed_states for accrued pref
-            result = compute_service.get_cached_deal_result(
-                vcode, start_year, horizon, pro_yr_base, data,
-                actuals_through=actuals_through,
-            )
-            seed_states = result.get("seed_states")
-
             row = build_roe_summary_row(
                 vcode, deal_name, acct, inv,
-                report_date, seed_states=seed_states,
+                report_date, wf_steps=wf_steps,
             )
             if row:
                 all_rows.append(row)
@@ -212,11 +209,6 @@ def roe_summary_excel():
     report_date_str = body.get("report_date")
     report_date = pd.to_datetime(report_date_str).date() if report_date_str else dt_date.today()
 
-    start_year = body.get("start_year", current_app.config["DEFAULT_START_YEAR"])
-    horizon = body.get("horizon_years", current_app.config["DEFAULT_HORIZON_YEARS"])
-    pro_yr_base = body.get("pro_yr_base", current_app.config["PRO_YR_BASE_DEFAULT"])
-    actuals_through = body.get("actuals_through", current_app.config.get("ACTUALS_THROUGH"))
-
     data = _get_data()
     inv = data["inv"]
     acct = data.get("acct")
@@ -225,18 +217,16 @@ def roe_summary_excel():
     if acct is None or acct.empty:
         return jsonify({"error": "No accounting data available"}), 400
 
+    from loaders import load_waterfalls
+    wf_steps = load_waterfalls(data["wf"])
+
     for vcode in vcodes:
         deal_row = inv[inv["vcode"] == vcode]
         deal_name = deal_row.iloc[0].get("Investment_Name", vcode) if not deal_row.empty else vcode
         try:
-            result = compute_service.get_cached_deal_result(
-                vcode, start_year, horizon, pro_yr_base, data,
-                actuals_through=actuals_through,
-            )
-            seed_states = result.get("seed_states")
             row = build_roe_summary_row(
                 vcode, deal_name, acct, inv,
-                report_date, seed_states=seed_states,
+                report_date, wf_steps=wf_steps,
             )
             if row:
                 all_rows.append(row)

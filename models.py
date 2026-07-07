@@ -200,12 +200,16 @@ class InvestorState:
 
     @property
     def total_pref_balance(self) -> float:
-        """Total pref owed across all pools and all tiers."""
-        return sum(
-            t.pref_unpaid_compounded + t.pref_accrued_current_year
-            for p in self.pools.values()
-            for t in p.pref_tiers
-        )
+        """Total pref owed across all pools and all tiers.
+
+        Includes compounded, current-year, and prior-year (grace period) buckets.
+        """
+        total = 0.0
+        for p in self.pools.values():
+            for t in p.pref_tiers:
+                total += t.pref_unpaid_compounded + t.pref_accrued_current_year
+                total += getattr(t, 'pref_accrued_prior_year', 0.0)
+        return total
 
 
 @dataclass
