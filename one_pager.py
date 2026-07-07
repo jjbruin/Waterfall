@@ -343,11 +343,10 @@ def get_capitalization_stack(
                 cap['loan_maturity'], cap['loan_rate'], cap['loan_type'], _idx, _sprd = _parse_loan(loan_row)
                 cap['loan_terms_str'] = _format_loan_str(cap['loan_maturity'], cap['loan_rate'], cap['loan_type'], _idx, _sprd)
 
-                # Rate cap (for variable loans)
-                if 'nFloor' in loan_row.index:
-                    rc = pd.to_numeric(loan_row.get('nFloor'), errors='coerce')
-                    if pd.notna(rc) and rc > 0:
-                        cap['rate_cap'] = f"{rc:.2%}"
+                # Rate cap — from vHedged/vHedgedStrat on largest loan
+                if 'vHedged' in loan_row.index and str(loan_row.get('vHedged', '')).strip().lower() == 'yes':
+                    strat = str(loan_row.get('vHedgedStrat', '')).strip() if pd.notna(loan_row.get('vHedgedStrat')) else ''
+                    cap['rate_cap'] = strat if strat else 'Yes'
 
                 # Second loan
                 if len(deal_loans_sorted) > 1:
