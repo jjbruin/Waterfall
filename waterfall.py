@@ -1208,8 +1208,11 @@ def seed_states_from_accounting(
             else:
                 # CF distributions (is_capital=N) do NOT touch capital_outstanding
                 # but must be recorded for ROE audit (so they aren't treated as
-                # capital returns in build_roe_timeline)
-                stt.cf_distributions.append((d, cf))
+                # capital returns in build_roe_timeline).
+                # Exclude Acquisition Fee — it's a fee, not operating income.
+                typename_str = str(r.get("Typename", "")).lower()
+                if "acquisition fee" not in typename_str:
+                    stt.cf_distributions.append((d, cf))
 
     # CRITICAL FIX: Set last_accrual_date to the LATEST historical date
     # This prevents the forward model from re-accruing pref that was already

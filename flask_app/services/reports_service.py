@@ -448,7 +448,7 @@ def build_roe_summary_row(
             capital_events.append((evt_date, abs(amt)))
             if "return of capital" in tname or "realized gain" in tname:
                 roc += abs(amt)
-            else:
+            elif "acquisition fee" not in tname:
                 cf_distributions.append((evt_date, abs(amt)))
 
     if not capital_events:

@@ -1058,8 +1058,8 @@ def get_pe_performance(
                         capital_events.append((evt_date, abs(amt)))
                         if "return of capital" in type_name or "realized gain" in type_name:
                             pe['return_of_capital'] += abs(amt)
-                        else:
-                            # CF (operating) distribution
+                        elif "acquisition fee" not in type_name:
+                            # CF (operating) distribution — exclude Acquisition Fee
                             cf_distributions.append((evt_date, abs(amt)))
 
                 # Compute ROE to Date from actual accounting through quarter end
