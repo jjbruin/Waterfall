@@ -1428,6 +1428,7 @@ def run_upstream_waterfall_period(
     source_typename: str = "",
     typename_routed: bool = False,
     amfee_exclusions: Optional[dict] = None,
+    amt_quarterly_tracker: Optional[Dict] = None,
 ) -> Dict[str, float]:
     """
     Process upstream waterfall for a single entity in a single period.
@@ -1520,6 +1521,7 @@ def run_upstream_waterfall_period(
                     source_typename=source_typename,
                     typename_routed=True,
                     amfee_exclusions=amfee_exclusions,
+                    amt_quarterly_tracker=amt_quarterly_tracker,
                 )
 
         # Determine which waterfall type to use based on source_vtranstype.
@@ -1588,9 +1590,21 @@ def run_upstream_waterfall_period(
                     step_max = remaining * fx if fx > 0 else remaining
 
                     if state == "Amt":
-                        # Fixed amount distribution (entity expenses, fees)
+                        # Fixed amount distribution (entity expenses, fees).
+                        # Cap at mAmount per quarter across all upstream periods
+                        # to prevent over-counting when multiple deal distributions
+                        # trigger the same entity waterfall in the same quarter.
                         m_amount = float(step.get("mAmount", 0) or 0)
-                        if m_amount > 0:
+                        if m_amount > 0 and amt_quarterly_tracker is not None:
+                            p_date = period_date if isinstance(period_date, date) else pd.to_datetime(period_date).date()
+                            qtr = (p_date.year, (p_date.month - 1) // 3)
+                            tracker_key = (entity_id, order, qtr)
+                            already_paid = amt_quarterly_tracker.get(tracker_key, 0.0)
+                            quarterly_remaining = max(0.0, m_amount - already_paid)
+                            allocated = min(step_max, quarterly_remaining)
+                            if allocated > 0:
+                                amt_quarterly_tracker[tracker_key] = already_paid + allocated
+                        elif m_amount > 0:
                             allocated = min(step_max, m_amount)
                         else:
                             allocated = step_max
@@ -1726,6 +1740,7 @@ def run_upstream_waterfall_period(
                             source_vtranstype=step_vtranstype,
                             source_typename=source_typename,
                             amfee_exclusions=amfee_exclusions,
+                            amt_quarterly_tracker=amt_quarterly_tracker,
                         )
                         for term_id, term_cash in sub_terminal.items():
                             terminal_cash[term_id] = terminal_cash.get(term_id, 0.0) + term_cash
@@ -1791,6 +1806,7 @@ def run_upstream_waterfall_period(
                             source_vtranstype=tag_vtranstype,
                             source_typename=source_typename,
                             amfee_exclusions=amfee_exclusions,
+                            amt_quarterly_tracker=amt_quarterly_tracker,
                         )
                         for term_id, term_cash in sub_terminal.items():
                             terminal_cash[term_id] = terminal_cash.get(term_id, 0.0) + term_cash
@@ -1883,6 +1899,7 @@ def run_upstream_waterfall_period(
                 source_vtranstype=source_vtranstype,
                 source_typename=source_typename,
                 amfee_exclusions=amfee_exclusions,
+                amt_quarterly_tracker=amt_quarterly_tracker,
             )
             for term_id, term_cash in sub_terminal.items():
                 terminal_cash[term_id] = terminal_cash.get(term_id, 0.0) + term_cash
@@ -1926,6 +1943,10 @@ def run_recursive_upstream_waterfalls(
     entity_states: Dict[str, InvestorState] = dict(pre_seeded_states) if pre_seeded_states else {}
     allocation_rows: List[dict] = []
     beneficiary_totals: Dict[str, float] = {}
+    # Track cumulative Amt step payments per (entity, iOrder, quarter)
+    # to cap fixed-amount steps at mAmount per quarter across multiple
+    # upstream waterfall invocations from different deal distributions.
+    amt_quarterly_tracker: Dict = {}
 
     # Group deal allocations by period and PropCode
     for period_date, period_group in deal_allocations.groupby("event_date"):
@@ -1976,6 +1997,7 @@ def run_recursive_upstream_waterfalls(
                 source_vtranstype=deal_vtranstype,
                 source_typename=deal_typename,
                 amfee_exclusions=amfee_exclusions,
+                amt_quarterly_tracker=amt_quarterly_tracker,
             )
 
             # Aggregate beneficiary totals
