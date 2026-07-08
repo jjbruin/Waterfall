@@ -536,6 +536,7 @@ def run_waterfall_period(
 
             lead_stt = istates[lead_pc]
             allocated = 0.0
+            amfee_actual = 0.0  # Track actual fee for AMFee display
 
             # Maximum this step can take (FXRate share of remaining)
             step_max = min(level_available * lead_fx, remaining) if lead_fx > 0 else remaining
@@ -631,6 +632,12 @@ def run_waterfall_period(
                 raw_vnotes = str(lead.get("vNotes", "")).strip()
                 source_pc, excluded_iids = parse_amfee_vnotes(raw_vnotes)
                 periods_per_year = max(1.0, lead_m_amount) if lead_m_amount > 0 else 4.0
+                # AMFee nPercent is always a percentage (e.g. 0.95 = 0.95%).
+                # nPercent_dec wrongly keeps values <= 1.0 as-is (treating
+                # 0.95 as 95%). Use raw nPercent / 100 for correct rate.
+                raw_pct = float(lead.get("nPercent", 0) or 0)
+                amfee_rate = raw_pct / 100.0 if raw_pct > 0.05 else raw_pct
+                amfee_actual = 0.0
                 source_ist = istates.get(source_pc)
                 if source_ist:
                     fee_base = source_ist.total_capital_outstanding
@@ -641,7 +648,7 @@ def run_waterfall_period(
                             amfee_exclusions, relationships,
                         )
                         fee_base = max(0.0, fee_base)
-                    fee = fee_base * lead_rate / periods_per_year
+                    fee = fee_base * amfee_rate / periods_per_year
                     if fee > 0:
                         # Deduct from source's share (negative cashflow on source)
                         source_ist.cashflows.append((period_date, -fee))
@@ -649,6 +656,7 @@ def run_waterfall_period(
                         # Pay to recipient (positive cashflow)
                         apply_distribution(lead_stt, period_date, fee, is_cf_wf,
                                            label=lead_vtranstype)
+                        amfee_actual = fee
                 allocated = 0.0  # Pool-neutral: does NOT reduce remaining cash
 
             elif lead_state == "Promote":
@@ -685,8 +693,10 @@ def run_waterfall_period(
             
             # Track for Tag calculation
             level_distributions[lead_pc] = (allocated, lead_fx)
-            
-            # Record allocation
+
+            # Record allocation — AMFee is pool-neutral (allocated=0) but
+            # we show the actual fee amount for display purposes.
+            display_allocated = amfee_actual if lead_state == "AMFee" else float(allocated)
             alloc_rows.append({
                 "event_date": period_date,
                 "Year": period_date.year,
@@ -697,7 +707,7 @@ def run_waterfall_period(
                 "vState": lead_state,
                 "FXRate": lead_fx,
                 "nPercent": lead_rate,
-                "Allocated": float(allocated),
+                "Allocated": display_allocated,
                 "RemainingAfter": float(remaining - allocated),
             })
             
@@ -1587,6 +1597,7 @@ def run_upstream_waterfall_period(
 
                     stt = entity_states[pc]
                     allocated = 0.0
+                    amfee_actual = 0.0  # Track actual fee for AMFee display
                     step_max = remaining * fx if fx > 0 else remaining
 
                     if state == "Amt":
@@ -1655,11 +1666,19 @@ def run_upstream_waterfall_period(
                     elif state == "AMFee":
                         # Post-distribution AM fee: deduct from source, pay to recipient.
                         # Pool-neutral — does NOT reduce the remaining cash pool.
+                        # Cap at one fee per quarter (same issue as Amt — multiple
+                        # deal distributions trigger the same entity waterfall).
                         # vNotes syntax: "SOURCE_PC" or "SOURCE_PC;exclude:IID1,IID2"
                         raw_vnotes = str(step.get("vNotes", "")).strip()
                         source_pc, excluded_iids = parse_amfee_vnotes(raw_vnotes)
                         m_amount = float(step.get("mAmount", 0) or 0)
                         periods_per_year = max(1.0, m_amount) if m_amount > 0 else 4.0
+                        # AMFee nPercent is always a percentage (e.g. 0.95 = 0.95%).
+                        # nPercent_dec wrongly keeps values <= 1.0 as-is (treating
+                        # 0.95 as 95%). Use raw nPercent / 100 for correct rate.
+                        raw_pct = float(step.get("nPercent", 0) or 0)
+                        amfee_rate = raw_pct / 100.0 if raw_pct > 0.05 else raw_pct
+                        amfee_actual = 0.0
                         source_ist = entity_states.get(source_pc)
                         if source_ist:
                             fee_base = source_ist.total_capital_outstanding
@@ -1669,12 +1688,27 @@ def run_upstream_waterfall_period(
                                     amfee_exclusions, relationships,
                                 )
                                 fee_base = max(0.0, fee_base)
-                            fee = fee_base * rate / periods_per_year
-                            if fee > 0:
+                            fee = fee_base * amfee_rate / periods_per_year
+                            # Cap at one fee per quarter to prevent over-counting
+                            if fee > 0 and amt_quarterly_tracker is not None:
+                                p_date = period_date if isinstance(period_date, date) else pd.to_datetime(period_date).date()
+                                qtr = (p_date.year, (p_date.month - 1) // 3)
+                                tracker_key = (entity_id, order, qtr)
+                                already_paid = amt_quarterly_tracker.get(tracker_key, 0.0)
+                                fee_remaining = max(0.0, fee - already_paid)
+                                if fee_remaining > 0:
+                                    source_ist.cashflows.append((period_date, -fee_remaining))
+                                    source_ist.cashflow_labels.append(step_vtlabel)
+                                    apply_distribution(stt, period_date, fee_remaining, is_cf_wf,
+                                                       label=step_vtlabel)
+                                    amfee_actual = fee_remaining
+                                    amt_quarterly_tracker[tracker_key] = already_paid + fee_remaining
+                            elif fee > 0:
                                 source_ist.cashflows.append((period_date, -fee))
                                 source_ist.cashflow_labels.append(step_vtlabel)
                                 apply_distribution(stt, period_date, fee, is_cf_wf,
                                                    label=step_vtlabel)
+                                amfee_actual = fee
                         allocated = 0.0  # Pool-neutral
 
                     elif state == "Promote":
@@ -1702,7 +1736,9 @@ def run_upstream_waterfall_period(
 
                     lead_distributions[pc] = (allocated, fx)
 
-                    # Record allocation
+                    # Record allocation — AMFee is pool-neutral (allocated=0) but
+                    # we show the actual fee amount for display purposes.
+                    display_allocated = amfee_actual if state == "AMFee" else float(allocated)
                     allocation_rows.append({
                         "event_date": period_date,
                         "Year": period_date.year,
@@ -1714,7 +1750,7 @@ def run_upstream_waterfall_period(
                         "vState": state,
                         "FXRate": fx,
                         "vtranstype": step.get("vtranstype", ""),
-                        "Allocated": float(allocated),
+                        "Allocated": display_allocated,
                         "WaterfallType": effective_wf_type,
                         "source_typename": source_typename,
                     })
