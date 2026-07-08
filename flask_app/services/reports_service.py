@@ -668,11 +668,26 @@ def build_pref_balance_detail(
 
     events.sort(key=lambda e: (e[0], 0 if not e[4] else 1))
 
-    # Walk through events computing pref accrual (Act/Act convention)
+    # Walk through events row-by-row matching Excel PE_Pref_Balances formulas.
+    # All "balance" columns use negative sign convention (owed = negative).
+    # Excel columns: F=InvBal, G=CompPref, H=Inv+Comp, I=Days, J=CurrDue,
+    #   K=AccrPref, L=TotalDue, M=PrefPaid, N=Remaining
+    # Key formulas:
+    #   H(row) = F(prior) + G(prior)          — accrual base is PRIOR row's values
+    #   J(row) = H(row) * rate / diy * days
+    #   K(row) = N(prior)                     — carry forward prior Remaining
+    #   L(row) = J + K                        — total owed this period
+    #   M(row) = payment if pref/excess CF    — positive (reduces debt)
+    #   N(row) = MIN(0, L + M)                — remaining after payment
+    #   G(row) = at 12/31: N(row)             — all unpaid pref compounds
+    #            else: MIN(0, G(prior) + M + J) if (M+J)>0, else G(prior)
+
     inv_id = deal_iids[0] if deal_iids else ""
-    capital = 0.0
-    pref_compounded = 0.0
-    pref_cy = 0.0
+
+    # State variables matching Excel row values (stored as positive magnitudes)
+    inv_bal = 0.0       # F: Investment Balance (positive = capital outstanding)
+    comp_pref = 0.0     # G: Compounded Pref (positive = compounded pref owed)
+    remaining = 0.0     # N: Remaining accrual (positive = pref owed)
     prev_date = None
     result_rows = []
 
@@ -680,10 +695,29 @@ def build_pref_balance_detail(
         major = major_type.lower()
         tname = typename.lower()
 
-        # Accrue pref from prev_date to this event
-        accrual_this_period = 0.0
-        compounded_snapshot = 0.0
-        if prev_date is not None and capital > 0 and evt_date > prev_date:
+        # --- Update capital balance FIRST (affects InvBal for this row) ---
+        if "contrib" in major:
+            inv_bal += abs(amt)
+        elif "distri" in major:
+            if "return of capital" in tname or "realized gain" in tname:
+                inv_bal = max(0.0, inv_bal - abs(amt))
+
+        # --- H: Inv+Comp = PRIOR row's InvBal + PRIOR row's CompPref ---
+        # On the first row there is no prior, so use current inv_bal (matches Excel
+        # where H first row = F first row since G starts at 0)
+        if not result_rows:
+            inv_plus_comp = inv_bal
+        else:
+            prior = result_rows[-1]
+            inv_plus_comp = abs(prior["Investment_Balance"]) + abs(prior["Compounded Pref"])
+
+        # --- I: Days since last event ---
+        days_since = (evt_date - prev_date).days if prev_date else 0
+
+        # --- J: Current Due = Inv+Comp * rate / diy * days ---
+        # Accrue across year boundaries for correct Act/Act
+        curr_due = 0.0
+        if prev_date is not None and inv_plus_comp > 0 and evt_date > prev_date:
             cur = prev_date
             while cur < evt_date:
                 year_end = date(cur.year, 12, 31)
@@ -691,72 +725,46 @@ def build_pref_balance_detail(
                 days = (next_stop - cur).days
                 if days > 0:
                     diy = _days_in_year(cur.year)
-                    base = max(0.0, capital + pref_compounded)
-                    inc = base * pref_rate * (days / diy)
-                    pref_cy += inc
-                    accrual_this_period += inc
+                    curr_due += inv_plus_comp * pref_rate * (days / diy)
                 if next_stop == year_end and next_stop < evt_date:
-                    # Year-end compounding (always compound at 12/31)
-                    pref_compounded += pref_cy
-                    compounded_snapshot = pref_compounded
-                    pref_cy = 0.0
                     cur = date(cur.year + 1, 1, 1)
                 else:
                     break
 
-        # Track the compounded pref to show at year-end generated rows
+        # --- K: Accrued Pref = prior row's Remaining ---
+        accr_pref = remaining  # carry forward from prior row
+
+        # --- L: Total Due = Current Due + Accrued Pref ---
+        total_due = curr_due + accr_pref
+
+        # --- M: Pref Paid (positive = payment that reduces owed balance) ---
+        pref_paid = 0.0
+        is_pref_payment = (type_id == 1019.0) or "preferred return" in tname or "pref return" in tname
+        is_excess_cf = (type_id == 1020.0) or "excess cash" in tname
+        if "distri" in major and (is_pref_payment or is_excess_cf):
+            pref_paid = abs(amt)
+
+        # --- N: Remaining = MIN(0, TotalDue + PrefPaid) ---
+        # TotalDue is positive (owed), PrefPaid is positive (paid).
+        # In Excel sign convention both are negative/positive respectively,
+        # but we track magnitudes: remaining_owed = max(0, total_due - pref_paid)
+        remaining = max(0.0, total_due - pref_paid)
+
+        # --- G: Compounded Pref ---
         is_year_end = evt_date.month == 12 and evt_date.day == 31
-        show_compounded = compounded_snapshot if compounded_snapshot > 0 else (
-            pref_compounded if is_year_end and is_generated else 0
-        )
+        if is_year_end:
+            # At 12/31, all remaining unpaid pref compounds
+            comp_pref = remaining
+        else:
+            # If (PrefPaid + CurrDue) net reduces the owed balance (payment > accrual),
+            # the excess reduces compounded pref. Otherwise comp_pref unchanged.
+            # Excel: MIN(0, G_prior + M + J) when (M+J)>0, else G_prior
+            # In our magnitude convention: payment exceeds accrual → reduce comp_pref
+            net_payment = pref_paid - curr_due  # positive if payment > accrual
+            if net_payment > 0:
+                comp_pref = max(0.0, comp_pref - net_payment)
 
-        # Carry-forward from prior period
-        carry_from_prior = (pref_compounded + pref_cy) - accrual_this_period
-
-        # Apply pref payment
-        pref_paid_this = 0.0
-        is_pref_payment = (type_id == 1019.0)
-        if not is_pref_payment:
-            is_pref_payment = "preferred return" in tname or "pref return" in tname
-        if is_pref_payment and "distri" in major:
-            payment = abs(amt)
-            if pref_compounded > 0:
-                pay = min(payment, pref_compounded)
-                pref_compounded -= pay
-                payment -= pay
-                pref_paid_this += pay
-            if pref_cy > 0 and payment > 0:
-                pay = min(payment, pref_cy)
-                pref_cy -= pay
-                pref_paid_this += pay
-
-        # Excess CF also reduces accrued pref (matching Excel convention)
-        is_excess_cf = "excess cash" in tname or type_id == 1020.0
-        if is_excess_cf and "distri" in major and (pref_compounded + pref_cy) > 0:
-            payment = abs(amt)
-            if pref_compounded > 0:
-                pay = min(payment, pref_compounded)
-                pref_compounded -= pay
-                payment -= pay
-                pref_paid_this += pay
-            if pref_cy > 0 and payment > 0:
-                pay = min(payment, pref_cy)
-                pref_cy -= pay
-                pref_paid_this += pay
-
-        # Update capital balance
-        if "contrib" in major:
-            capital += abs(amt)
-        elif "distri" in major:
-            if "return of capital" in tname or "realized gain" in tname:
-                capital = max(0.0, capital - abs(amt))
-
-        inv_plus_comp = capital + pref_compounded if capital > 0 else 0
-        days_since = (evt_date - prev_date).days if prev_date else 0
-        remaining = pref_compounded + pref_cy
-        total_due = carry_from_prior + accrual_this_period
-
-        # Sign convention: negative = owed/invested, positive = paid/received
+        # --- Sign convention for display: negative = owed/invested ---
         display_amt = -abs(amt) if "contrib" in major else (abs(amt) if amt != 0 else 0)
 
         row = {
@@ -765,22 +773,22 @@ def build_pref_balance_detail(
             "EffectiveDate": evt_date.isoformat(),
             "Amt": display_amt,
             "Typename": typename,
-            "Investment_Balance": -capital if capital > 0 else 0,
-            "Compounded Pref": -show_compounded if show_compounded > 0 else 0,
+            "Investment_Balance": -inv_bal if inv_bal > 0 else 0,
+            "Compounded Pref": -comp_pref if comp_pref > 0 else 0,
             "Inv + Comp": -inv_plus_comp if inv_plus_comp > 0 else 0,
             "DaysSinceLast": days_since,
-            "Current Due": -accrual_this_period if accrual_this_period > 0 else 0,
-            "Accrued Pref": -carry_from_prior if carry_from_prior > 0 else 0,
+            "Current Due": -curr_due if curr_due > 0 else 0,
+            "Accrued Pref": -accr_pref if accr_pref > 0 else 0,
             "Total Due": -total_due if total_due > 0 else 0,
-            "Pref Paid": pref_paid_this,
+            "Pref Paid": pref_paid,
             "Remaining Accrual": -remaining if remaining > 0 else 0,
         }
         result_rows.append(row)
         prev_date = evt_date
 
     # Build header
-    annual_pref_est = capital * pref_rate if capital > 0 and pref_rate > 0 else 0
-    total_accrued = pref_compounded + pref_cy
+    annual_pref_est = inv_bal * pref_rate if inv_bal > 0 and pref_rate > 0 else 0
+    total_accrued = remaining
 
     header = {
         "vcode": vcode_str,
@@ -788,9 +796,9 @@ def build_pref_balance_detail(
         "investment_id": inv_id,
         "pref_rate": pref_rate,
         "report_date": report_date.isoformat(),
-        "investment_balance": capital,
+        "investment_balance": inv_bal,
         "accrued_pref": total_accrued,
-        "total": capital + total_accrued,
+        "total": inv_bal + total_accrued,
         "annual_pref_est": annual_pref_est,
     }
 
