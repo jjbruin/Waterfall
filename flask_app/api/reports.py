@@ -10,6 +10,8 @@ from flask_app.services.reports_service import (
     build_partner_returns, generate_returns_excel,
     build_deal_lookup, get_upstream_investor_deals,
     build_roe_summary_row, generate_roe_summary_excel,
+    get_deal_pe_investors, build_pref_balance_detail,
+    generate_pref_balance_excel,
 )
 from flask_app.serializers import safe_json
 
@@ -241,4 +243,94 @@ def roe_summary_excel():
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         as_attachment=True,
         download_name="roe_summary.xlsx",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Pref Balance Detail
+# ---------------------------------------------------------------------------
+
+@reports_bp.route("/pref-balance-detail/investors/<vcode>", methods=["GET"])
+@login_required
+def pref_balance_investors(vcode):
+    """Get PE investors for a deal."""
+    data = _get_data()
+    acct = data.get("acct")
+    if acct is None or acct.empty:
+        return jsonify({"investors": []})
+    investors = get_deal_pe_investors(vcode, acct, data["inv"])
+    return jsonify({"investors": investors})
+
+
+@reports_bp.route("/pref-balance-detail", methods=["POST"])
+@login_required
+def pref_balance_detail():
+    """Generate pref balance detail for a deal + investor.
+
+    Body: { vcode, investor_id, report_date }
+    """
+    from datetime import date as dt_date
+
+    body = request.get_json(silent=True) or {}
+    vcode = body.get("vcode")
+    investor_id = body.get("investor_id")
+    if not vcode or not investor_id:
+        return jsonify({"error": "vcode and investor_id required"}), 400
+
+    report_date_str = body.get("report_date")
+    report_date = pd.to_datetime(report_date_str).date() if report_date_str else dt_date.today()
+
+    data = _get_data()
+    acct = data.get("acct")
+    if acct is None or acct.empty:
+        return jsonify({"error": "No accounting data available"}), 400
+
+    from loaders import load_waterfalls
+    wf_steps = load_waterfalls(data["wf"])
+
+    try:
+        result = build_pref_balance_detail(
+            vcode, investor_id, report_date, acct, data["inv"],
+            wf_steps=wf_steps,
+        )
+        return jsonify(safe_json(result))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@reports_bp.route("/pref-balance-detail/excel", methods=["POST"])
+@login_required
+def pref_balance_detail_excel():
+    """Download pref balance detail as Excel."""
+    from datetime import date as dt_date
+
+    body = request.get_json(silent=True) or {}
+    vcode = body.get("vcode")
+    investor_id = body.get("investor_id")
+    if not vcode or not investor_id:
+        return jsonify({"error": "vcode and investor_id required"}), 400
+
+    report_date_str = body.get("report_date")
+    report_date = pd.to_datetime(report_date_str).date() if report_date_str else dt_date.today()
+
+    data = _get_data()
+    acct = data.get("acct")
+    if acct is None or acct.empty:
+        return jsonify({"error": "No accounting data available"}), 400
+
+    from loaders import load_waterfalls
+    wf_steps = load_waterfalls(data["wf"])
+
+    result = build_pref_balance_detail(
+        vcode, investor_id, report_date, acct, data["inv"],
+        wf_steps=wf_steps,
+    )
+
+    excel_bytes = generate_pref_balance_excel(result["header"], result["rows"])
+
+    return send_file(
+        io.BytesIO(excel_bytes),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=f"pref_balance_{vcode}_{investor_id}.xlsx",
     )

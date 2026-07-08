@@ -4,6 +4,7 @@ Extracts pure logic from reports_ui.py (no Streamlit dependency).
 """
 
 import logging
+import calendar
 import pandas as pd
 import io
 from datetime import date
@@ -263,8 +264,9 @@ def _compute_accrued_pref(deal_acct: pd.DataFrame, report_date: date,
     """Compute total accrued (unpaid) pref across all PE investors through report_date.
 
     Walks accounting chronologically per investor, accrues pref daily on capital
-    balance at the waterfall pref rate, reduces accrued by pref payments (TypeID 1019).
-    Compounds at year-end with 45-day grace period (matching seed_states logic).
+    balance at the waterfall pref rate, reduces accrued by pref payments (TypeID 1019)
+    and excess CF distributions. Compounds at year-end (always, no grace period).
+    Uses Act/Act day count convention (366 for leap years).
     """
     if not pref_rates:
         return 0.0
@@ -294,8 +296,14 @@ def _compute_accrued_pref(deal_acct: pd.DataFrame, report_date: date,
             amt = float(r["Amt"])
             major = r["MajorType"].lower()
             tname = r["TypeName"].lower()
+            type_id = None
+            if has_typeid:
+                try:
+                    type_id = float(r.get("TypeID", 0))
+                except (ValueError, TypeError):
+                    pass
 
-            # Accrue pref from prev_date to this event
+            # Accrue pref from prev_date to this event (Act/Act)
             if prev_date is not None and capital > 0 and evt_date > prev_date:
                 cur = prev_date
                 while cur < evt_date:
@@ -303,29 +311,35 @@ def _compute_accrued_pref(deal_acct: pd.DataFrame, report_date: date,
                     next_stop = min(evt_date, year_end)
                     days = (next_stop - cur).days
                     if days > 0:
+                        diy = _days_in_year(cur.year)
                         base = max(0.0, capital + pref_compounded)
-                        pref_cy += base * pref_rate * (days / 365.0)
+                        pref_cy += base * pref_rate * (days / diy)
                     if next_stop == year_end and next_stop < evt_date:
-                        days_past = (evt_date - year_end).days
-                        if days_past >= 45:
-                            pref_compounded += pref_cy
-                            pref_cy = 0.0
+                        # Always compound at year-end
+                        pref_compounded += pref_cy
+                        pref_cy = 0.0
                         cur = date(cur.year + 1, 1, 1)
                     else:
                         break
 
             # Apply pref payment (TypeID 1019 = Preferred Return distribution)
-            is_pref_payment = False
-            if has_typeid:
-                try:
-                    is_pref_payment = float(r.get("TypeID", 0)) == 1019.0
-                except (ValueError, TypeError):
-                    pass
+            is_pref_payment = (type_id == 1019.0)
             if not is_pref_payment:
                 is_pref_payment = "preferred return" in tname or "pref return" in tname
             if is_pref_payment and "distri" in major:
                 payment = abs(amt)
-                # Reduce compounded first, then current year
+                if pref_compounded > 0:
+                    pay = min(payment, pref_compounded)
+                    pref_compounded -= pay
+                    payment -= pay
+                if pref_cy > 0 and payment > 0:
+                    pay = min(payment, pref_cy)
+                    pref_cy -= pay
+
+            # Excess CF also reduces accrued pref
+            is_excess_cf = "excess cash" in tname or type_id == 1020.0
+            if is_excess_cf and "distri" in major and (pref_compounded + pref_cy) > 0:
+                payment = abs(amt)
                 if pref_compounded > 0:
                     pay = min(payment, pref_compounded)
                     pref_compounded -= pay
@@ -343,7 +357,7 @@ def _compute_accrued_pref(deal_acct: pd.DataFrame, report_date: date,
 
             prev_date = evt_date
 
-        # Accrue from last transaction to report_date
+        # Accrue from last transaction to report_date (Act/Act)
         if prev_date is not None and capital > 0 and report_date > prev_date:
             cur = prev_date
             while cur < report_date:
@@ -351,13 +365,12 @@ def _compute_accrued_pref(deal_acct: pd.DataFrame, report_date: date,
                 next_stop = min(report_date, year_end)
                 days = (next_stop - cur).days
                 if days > 0:
+                    diy = _days_in_year(cur.year)
                     base = max(0.0, capital + pref_compounded)
-                    pref_cy += base * pref_rate * (days / 365.0)
+                    pref_cy += base * pref_rate * (days / diy)
                 if next_stop == year_end and next_stop < report_date:
-                    days_past = (report_date - year_end).days
-                    if days_past >= 45:
-                        pref_compounded += pref_cy
-                        pref_cy = 0.0
+                    pref_compounded += pref_cy
+                    pref_cy = 0.0
                     cur = date(cur.year + 1, 1, 1)
                 else:
                     break
@@ -507,6 +520,355 @@ def generate_roe_summary_excel(df: pd.DataFrame) -> bytes:
 
     for col_idx, col_name in enumerate(display_cols, 1):
         ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = max(len(col_name) + 2, 16)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Pref Balance Detail Report
+# ---------------------------------------------------------------------------
+
+def _days_in_year(yr: int) -> int:
+    """Return 366 for leap years, 365 otherwise (Act/Act convention)."""
+    return 366 if calendar.isleap(yr) else 365
+
+
+def get_deal_pe_investors(
+    vcode: str,
+    acct: pd.DataFrame,
+    inv_map: pd.DataFrame,
+) -> list[dict]:
+    """Return list of PE investors for a deal (excludes OP partners)."""
+    from loaders import build_investmentid_to_vcode
+
+    vcode_str = str(vcode).strip()
+    inv_to_vcode = build_investmentid_to_vcode(inv_map)
+    deal_iids = [iid for iid, vc in inv_to_vcode.items() if str(vc) == vcode_str]
+    if not deal_iids:
+        return []
+
+    acct_norm = acct.copy()
+    normalize_columns(acct_norm)
+    acct_norm["InvestorID"] = acct_norm["InvestorID"].astype(str).str.strip()
+    acct_norm["InvestmentID"] = acct_norm["InvestmentID"].astype(str).str.strip()
+
+    deal_acct = acct_norm[acct_norm["InvestmentID"].isin(deal_iids)]
+    investors = sorted(deal_acct["InvestorID"].unique())
+    return [{"investor_id": iid} for iid in investors]
+
+
+def _quarter_ends_between(start: date, end: date) -> list[date]:
+    """Return all quarter-end dates strictly between start and end."""
+    qends = []
+    yr = start.year
+    while yr <= end.year + 1:
+        for m in (3, 6, 9, 12):
+            d = date(yr, m, calendar.monthrange(yr, m)[1])
+            if start < d < end:
+                qends.append(d)
+        yr += 1
+    return qends
+
+
+def build_pref_balance_detail(
+    vcode: str,
+    investor_id: str,
+    report_date: date,
+    acct: pd.DataFrame,
+    inv_map: pd.DataFrame,
+    wf_steps: Optional[pd.DataFrame] = None,
+) -> dict:
+    """Build pref balance detail matching the PE_Pref_Balances Excel layout.
+
+    Returns dict with 'header' (summary info) and 'rows' (transaction detail).
+    Uses Act/Act day count convention (366 for leap years).
+    """
+    from loaders import build_investmentid_to_vcode
+
+    vcode_str = str(vcode).strip()
+    inv_to_vcode = build_investmentid_to_vcode(inv_map)
+    deal_iids = [iid for iid, vc in inv_to_vcode.items() if str(vc) == vcode_str]
+
+    # Get pref rate from waterfall
+    pref_rate = 0.0
+    if wf_steps is not None and not wf_steps.empty:
+        wf_deal = wf_steps[wf_steps["vcode"] == vcode_str] if "vcode" in wf_steps.columns else wf_steps
+        pref_rows = wf_deal[wf_deal["vState"] == "Pref"] if "vState" in wf_deal.columns else pd.DataFrame()
+        rate_col = "nPercent_dec" if "nPercent_dec" in pref_rows.columns else "nPercent"
+        # Find the rate for this investor
+        for _, pr in pref_rows.iterrows():
+            pc = str(pr.get("PropCode", "")).strip()
+            r = float(pr[rate_col]) if pd.notna(pr.get(rate_col)) else 0.0
+            if pc.upper() == investor_id.upper() and r > 0:
+                pref_rate = r
+                break
+        # Fallback: any Pref rate for this deal
+        if pref_rate <= 0:
+            for _, pr in pref_rows.iterrows():
+                r = float(pr[rate_col]) if pd.notna(pr.get(rate_col)) else 0.0
+                if r > 0:
+                    pref_rate = r
+                    break
+
+    # Normalize accounting data
+    acct_norm = acct.copy()
+    normalize_columns(acct_norm)
+    acct_norm["InvestorID"] = acct_norm["InvestorID"].astype(str).str.strip()
+    acct_norm["InvestmentID"] = acct_norm["InvestmentID"].astype(str).str.strip()
+    acct_norm["EffectiveDate"] = pd.to_datetime(acct_norm["EffectiveDate"], errors="coerce")
+    acct_norm["Amt"] = pd.to_numeric(acct_norm["Amt"], errors="coerce").fillna(0.0)
+    if "TypeName" not in acct_norm.columns and "Typename" in acct_norm.columns:
+        acct_norm["TypeName"] = acct_norm["Typename"]
+    elif "TypeName" not in acct_norm.columns:
+        acct_norm["TypeName"] = ""
+    acct_norm["TypeName"] = acct_norm["TypeName"].fillna("").astype(str).str.strip()
+    acct_norm["MajorType"] = acct_norm["MajorType"].fillna("").astype(str).str.strip()
+
+    deal_acct = acct_norm[
+        (acct_norm["InvestmentID"].isin(deal_iids))
+        & (acct_norm["InvestorID"].str.upper() == investor_id.upper())
+        & (acct_norm["EffectiveDate"].dt.date <= report_date)
+    ].sort_values("EffectiveDate").copy()
+
+    if deal_acct.empty:
+        return {"header": {}, "rows": []}
+
+    # Detect TypeID column
+    has_typeid = "TypeID" in deal_acct.columns
+
+    # Build event list: actual transactions + generated quarter-end markers
+    events = []  # (date, amt, typename, major_type, is_generated, type_id)
+    for _, r in deal_acct.iterrows():
+        evt_date = r["EffectiveDate"].date()
+        tid = None
+        if has_typeid:
+            try:
+                tid = float(r["TypeID"])
+            except (ValueError, TypeError):
+                pass
+        events.append((
+            evt_date, float(r["Amt"]), r["TypeName"], r["MajorType"],
+            False, tid,
+        ))
+
+    # Insert generated quarter-end rows between events and at report_date
+    if events:
+        first_date = events[0][0]
+        all_dates = set(e[0] for e in events)
+        qends = _quarter_ends_between(first_date, report_date)
+        for qe in qends:
+            if qe not in all_dates:
+                events.append((qe, 0, "Generated", "", True, None))
+        # Add report_date if not already present and not a quarter-end already added
+        added_dates = set(e[0] for e in events)
+        if report_date not in added_dates:
+            events.append((report_date, 0, "Generated", "", True, None))
+
+    events.sort(key=lambda e: (e[0], 0 if not e[4] else 1))
+
+    # Walk through events computing pref accrual (Act/Act convention)
+    inv_id = deal_iids[0] if deal_iids else ""
+    capital = 0.0
+    pref_compounded = 0.0
+    pref_cy = 0.0
+    prev_date = None
+    result_rows = []
+
+    for evt_date, amt, typename, major_type, is_generated, type_id in events:
+        major = major_type.lower()
+        tname = typename.lower()
+
+        # Accrue pref from prev_date to this event
+        accrual_this_period = 0.0
+        compounded_snapshot = 0.0
+        if prev_date is not None and capital > 0 and evt_date > prev_date:
+            cur = prev_date
+            while cur < evt_date:
+                year_end = date(cur.year, 12, 31)
+                next_stop = min(evt_date, year_end)
+                days = (next_stop - cur).days
+                if days > 0:
+                    diy = _days_in_year(cur.year)
+                    base = max(0.0, capital + pref_compounded)
+                    inc = base * pref_rate * (days / diy)
+                    pref_cy += inc
+                    accrual_this_period += inc
+                if next_stop == year_end and next_stop < evt_date:
+                    # Year-end compounding (always compound at 12/31)
+                    pref_compounded += pref_cy
+                    compounded_snapshot = pref_compounded
+                    pref_cy = 0.0
+                    cur = date(cur.year + 1, 1, 1)
+                else:
+                    break
+
+        # Track the compounded pref to show at year-end generated rows
+        is_year_end = evt_date.month == 12 and evt_date.day == 31
+        show_compounded = compounded_snapshot if compounded_snapshot > 0 else (
+            pref_compounded if is_year_end and is_generated else 0
+        )
+
+        # Carry-forward from prior period
+        carry_from_prior = (pref_compounded + pref_cy) - accrual_this_period
+
+        # Apply pref payment
+        pref_paid_this = 0.0
+        is_pref_payment = (type_id == 1019.0)
+        if not is_pref_payment:
+            is_pref_payment = "preferred return" in tname or "pref return" in tname
+        if is_pref_payment and "distri" in major:
+            payment = abs(amt)
+            if pref_compounded > 0:
+                pay = min(payment, pref_compounded)
+                pref_compounded -= pay
+                payment -= pay
+                pref_paid_this += pay
+            if pref_cy > 0 and payment > 0:
+                pay = min(payment, pref_cy)
+                pref_cy -= pay
+                pref_paid_this += pay
+
+        # Excess CF also reduces accrued pref (matching Excel convention)
+        is_excess_cf = "excess cash" in tname or type_id == 1020.0
+        if is_excess_cf and "distri" in major and (pref_compounded + pref_cy) > 0:
+            payment = abs(amt)
+            if pref_compounded > 0:
+                pay = min(payment, pref_compounded)
+                pref_compounded -= pay
+                payment -= pay
+                pref_paid_this += pay
+            if pref_cy > 0 and payment > 0:
+                pay = min(payment, pref_cy)
+                pref_cy -= pay
+                pref_paid_this += pay
+
+        # Update capital balance
+        if "contrib" in major:
+            capital += abs(amt)
+        elif "distri" in major:
+            if "return of capital" in tname or "realized gain" in tname:
+                capital = max(0.0, capital - abs(amt))
+
+        inv_plus_comp = capital + pref_compounded if capital > 0 else 0
+        days_since = (evt_date - prev_date).days if prev_date else 0
+        remaining = pref_compounded + pref_cy
+        total_due = carry_from_prior + accrual_this_period
+
+        # Sign convention: negative = owed/invested, positive = paid/received
+        display_amt = -abs(amt) if "contrib" in major else (abs(amt) if amt != 0 else 0)
+
+        row = {
+            "InvestmentID": inv_id,
+            "InvestorID": investor_id,
+            "EffectiveDate": evt_date.isoformat(),
+            "Amt": display_amt,
+            "Typename": typename,
+            "Investment_Balance": -capital if capital > 0 else 0,
+            "Compounded Pref": -show_compounded if show_compounded > 0 else 0,
+            "Inv + Comp": -inv_plus_comp if inv_plus_comp > 0 else 0,
+            "DaysSinceLast": days_since,
+            "Current Due": -accrual_this_period if accrual_this_period > 0 else 0,
+            "Accrued Pref": -carry_from_prior if carry_from_prior > 0 else 0,
+            "Total Due": -total_due if total_due > 0 else 0,
+            "Pref Paid": pref_paid_this,
+            "Remaining Accrual": -remaining if remaining > 0 else 0,
+        }
+        result_rows.append(row)
+        prev_date = evt_date
+
+    # Build header
+    annual_pref_est = capital * pref_rate if capital > 0 and pref_rate > 0 else 0
+    total_accrued = pref_compounded + pref_cy
+
+    header = {
+        "vcode": vcode_str,
+        "investor_id": investor_id,
+        "investment_id": inv_id,
+        "pref_rate": pref_rate,
+        "report_date": report_date.isoformat(),
+        "investment_balance": capital,
+        "accrued_pref": total_accrued,
+        "total": capital + total_accrued,
+        "annual_pref_est": annual_pref_est,
+    }
+
+    return {"header": header, "rows": result_rows}
+
+
+def generate_pref_balance_excel(header: dict, rows: list[dict]) -> bytes:
+    """Generate formatted Excel for Pref Balance Detail report."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Pref Balance Detail"
+
+    bold = Font(bold=True)
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    curr_fmt = '$#,##0'
+    pct_fmt = '0.00%'
+
+    # Header section
+    ws.cell(row=1, column=1, value="Property #:").font = bold
+    ws.cell(row=1, column=2, value=header.get("vcode", ""))
+    ws.cell(row=1, column=4, value="As of:").font = bold
+    ws.cell(row=1, column=5, value=header.get("report_date", ""))
+
+    ws.cell(row=2, column=1, value="Investment ID:").font = bold
+    ws.cell(row=2, column=2, value=header.get("investment_id", ""))
+    ws.cell(row=2, column=4, value="Investment Balance:").font = bold
+    c = ws.cell(row=2, column=5, value=header.get("investment_balance", 0))
+    c.number_format = curr_fmt
+    ws.cell(row=2, column=7, value="Annual Pref Est").font = bold
+    c = ws.cell(row=2, column=8, value=header.get("annual_pref_est", 0))
+    c.number_format = curr_fmt
+
+    ws.cell(row=3, column=1, value="Investor:").font = bold
+    ws.cell(row=3, column=2, value=header.get("investor_id", ""))
+    ws.cell(row=3, column=4, value="Accrued:").font = bold
+    c = ws.cell(row=3, column=5, value=header.get("accrued_pref", 0))
+    c.number_format = curr_fmt
+
+    ws.cell(row=4, column=1, value="Pref Rate:").font = bold
+    c = ws.cell(row=4, column=2, value=header.get("pref_rate", 0))
+    c.number_format = pct_fmt
+    ws.cell(row=4, column=4, value="Total:").font = bold
+    c = ws.cell(row=4, column=5, value=header.get("total", 0))
+    c.number_format = curr_fmt
+
+    # Column headers at row 6
+    columns = [
+        "InvestmentID", "InvestorID", "EffectiveDate", "Amt", "Typename",
+        "Investment_Balance", "Compounded Pref", "Inv + Comp",
+        "DaysSinceLast", "Current Due", "Accrued Pref", "Total Due",
+        "Pref Paid", "Remaining Accrual",
+    ]
+    for ci, col in enumerate(columns, 1):
+        cell = ws.cell(row=6, column=ci, value=col)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center")
+
+    currency_cols = {"Amt", "Investment_Balance", "Compounded Pref", "Inv + Comp",
+                     "Current Due", "Accrued Pref", "Total Due", "Pref Paid",
+                     "Remaining Accrual"}
+
+    for ri, row in enumerate(rows, 7):
+        for ci, col in enumerate(columns, 1):
+            val = row.get(col)
+            cell = ws.cell(row=ri, column=ci)
+            if col in currency_cols:
+                cell.value = float(val) if val is not None else 0.0
+                cell.number_format = curr_fmt
+            elif col == "DaysSinceLast":
+                cell.value = int(val) if val is not None else 0
+            else:
+                cell.value = val
+
+    # Auto-width
+    for ci, col in enumerate(columns, 1):
+        ws.column_dimensions[ws.cell(row=6, column=ci).column_letter].width = max(len(col) + 4, 16)
 
     buf = io.BytesIO()
     wb.save(buf)

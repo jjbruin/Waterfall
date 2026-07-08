@@ -19,6 +19,7 @@ interface ReportDef {
   columns: { key: string; label: string; format?: string; align?: string }[]
   hasReportDate?: boolean
   highlightTotal?: boolean
+  hasDealInvestorSelector?: boolean
 }
 
 const reportDefs: ReportDef[] = [
@@ -60,6 +61,30 @@ const reportDefs: ReportDef[] = [
       { key: 'ITD ROE', label: 'ITD ROE', format: 'percent', align: 'right' },
     ],
   },
+  {
+    value: 'pref-balance-detail',
+    label: 'Pref Balance Detail',
+    description: 'Accrued preferred return detail by deal and investor (Act/Act)',
+    endpoint: '/api/reports/pref-balance-detail',
+    excelEndpoint: '/api/reports/pref-balance-detail/excel',
+    excelFilename: 'pref_balance_detail.xlsx',
+    hasReportDate: true,
+    hasDealInvestorSelector: true,
+    columns: [
+      { key: 'EffectiveDate', label: 'Date' },
+      { key: 'Typename', label: 'Event' },
+      { key: 'Amt', label: 'Amount', format: 'currency', align: 'right' },
+      { key: 'Investment_Balance', label: 'Inv Balance', format: 'currency', align: 'right' },
+      { key: 'Compounded Pref', label: 'Compounded', format: 'currency', align: 'right' },
+      { key: 'Inv + Comp', label: 'Inv + Comp', format: 'currency', align: 'right' },
+      { key: 'DaysSinceLast', label: 'Days', align: 'right' },
+      { key: 'Current Due', label: 'Current Due', format: 'currency', align: 'right' },
+      { key: 'Accrued Pref', label: 'Accrued Pref', format: 'currency', align: 'right' },
+      { key: 'Total Due', label: 'Total Due', format: 'currency', align: 'right' },
+      { key: 'Pref Paid', label: 'Pref Paid', format: 'currency', align: 'right' },
+      { key: 'Remaining Accrual', label: 'Remaining', format: 'currency', align: 'right' },
+    ],
+  },
 ]
 
 // --- State ---
@@ -76,7 +101,14 @@ const eligibleDeals = ref<any[]>([])
 const partners = ref<any[]>([])
 const selectedPartner = ref('')
 
+// Pref Balance Detail state
+const prefDealVcode = ref('')
+const prefInvestorId = ref('')
+const prefInvestors = ref<any[]>([])
+const prefHeader = ref<any>(null)
+
 const activeReport = computed(() => reportDefs.find((r) => r.value === selectedReport.value))
+const isPrefDetail = computed(() => activeReport.value?.hasDealInvestorSelector ?? false)
 
 onMounted(async () => {
   if (data.deals.length === 0) await data.loadDeals()
@@ -99,6 +131,23 @@ watch(population, async (val) => {
 watch(selectedReport, () => {
   results.value = []
   errors.value = []
+  prefHeader.value = null
+  prefInvestorId.value = ''
+  prefInvestors.value = []
+  prefDealVcode.value = ''
+})
+
+// Load investors when deal changes for pref balance detail
+watch(prefDealVcode, async (vcode) => {
+  prefInvestorId.value = ''
+  prefInvestors.value = []
+  prefHeader.value = null
+  results.value = []
+  if (!vcode) return
+  try {
+    const res = await api.get(`/api/reports/pref-balance-detail/investors/${vcode}`)
+    prefInvestors.value = res.data.investors || []
+  } catch { /* ignore */ }
 })
 
 const resolvedVcodes = computed(() => {
@@ -134,7 +183,21 @@ const populationLabel = computed(() => {
   }
 })
 
+const canGenerate = computed(() => {
+  if (isPrefDetail.value) {
+    return prefDealVcode.value && prefInvestorId.value
+  }
+  return resolvedVcodes.value.length > 0
+})
+
 function buildPayload() {
+  if (isPrefDetail.value) {
+    return {
+      vcode: prefDealVcode.value,
+      investor_id: prefInvestorId.value,
+      report_date: reportDate.value,
+    }
+  }
   const payload: any = { vcodes: resolvedVcodes.value }
   if (activeReport.value?.hasReportDate) {
     payload.report_date = reportDate.value
@@ -143,25 +206,34 @@ function buildPayload() {
 }
 
 async function generate() {
-  if (!activeReport.value || resolvedVcodes.value.length === 0) return
+  if (!activeReport.value || !canGenerate.value) return
   loading.value = true
   errors.value = []
+  prefHeader.value = null
   try {
     const res = await api.post(activeReport.value.endpoint, buildPayload())
-    results.value = res.data.rows
-    errors.value = res.data.errors || []
+    if (isPrefDetail.value) {
+      results.value = res.data.rows || []
+      prefHeader.value = res.data.header || null
+    } else {
+      results.value = res.data.rows
+      errors.value = res.data.errors || []
+    }
   } finally {
     loading.value = false
   }
 }
 
 async function downloadExcel() {
-  if (!activeReport.value || resolvedVcodes.value.length === 0) return
+  if (!activeReport.value || !canGenerate.value) return
   const res = await api.post(activeReport.value.excelEndpoint, buildPayload(), { responseType: 'blob' })
   const url = URL.createObjectURL(new Blob([res.data]))
   const a = document.createElement('a')
   a.href = url
-  a.download = activeReport.value.excelFilename
+  const fn = isPrefDetail.value
+    ? `pref_balance_${prefDealVcode.value}_${prefInvestorId.value}.xlsx`
+    : activeReport.value.excelFilename
+  a.download = fn
   a.click()
   URL.revokeObjectURL(url)
 }
@@ -170,6 +242,16 @@ function toggleDeal(vcode: string) {
   const idx = selectedVcodes.value.indexOf(vcode)
   if (idx >= 0) selectedVcodes.value.splice(idx, 1)
   else selectedVcodes.value.push(vcode)
+}
+
+function fmtCurr(v: number | null | undefined): string {
+  if (v == null) return '-'
+  return '$' + Math.round(v).toLocaleString()
+}
+
+function fmtPct(v: number | null | undefined): string {
+  if (v == null) return '-'
+  return (v * 100).toFixed(2) + '%'
 }
 </script>
 
@@ -198,52 +280,78 @@ function toggleDeal(vcode: string) {
         <template v-if="selectedReport">
           <div class="section-label">Filters</div>
 
-          <div class="filter-group">
-            <label>Population</label>
-            <select v-model="population">
-              <option value="current">Current Deal</option>
-              <option value="select">Select Deals</option>
-              <option value="partner">By Partner</option>
-              <option value="all">All Deals</option>
-            </select>
-          </div>
+          <!-- Standard population selector (non-pref-detail reports) -->
+          <template v-if="!isPrefDetail">
+            <div class="filter-group">
+              <label>Population</label>
+              <select v-model="population">
+                <option value="current">Current Deal</option>
+                <option value="select">Select Deals</option>
+                <option value="partner">By Partner</option>
+                <option value="all">All Deals</option>
+              </select>
+            </div>
 
-          <div v-if="population === 'partner'" class="filter-group">
-            <label>Partner</label>
-            <select v-model="selectedPartner">
-              <option value="">-- Select partner --</option>
-              <option v-for="p in partners" :key="p.partner" :value="p.partner">
-                {{ p.display || p.partner }} ({{ p.deal_count }} deals)
-              </option>
-            </select>
-          </div>
+            <div v-if="population === 'partner'" class="filter-group">
+              <label>Partner</label>
+              <select v-model="selectedPartner">
+                <option value="">-- Select partner --</option>
+                <option v-for="p in partners" :key="p.partner" :value="p.partner">
+                  {{ p.display || p.partner }} ({{ p.deal_count }} deals)
+                </option>
+              </select>
+            </div>
+
+            <!-- Deal picker inline -->
+            <div v-if="population === 'select'" class="deal-picker">
+              <div class="deal-picker-header">
+                <span>{{ selectedVcodes.length }} / {{ eligibleDeals.length }}</span>
+                <button class="btn-sm" @click="selectedVcodes = eligibleDeals.map(d => d.vcode)">All</button>
+                <button class="btn-sm" @click="selectedVcodes = []">Clear</button>
+              </div>
+              <div class="deal-picker-list">
+                <label v-for="d in eligibleDeals" :key="d.vcode" class="deal-checkbox">
+                  <input type="checkbox" :checked="selectedVcodes.includes(d.vcode)" @change="toggleDeal(d.vcode)" />
+                  {{ d.label }}
+                </label>
+              </div>
+            </div>
+
+            <div class="population-label">{{ populationLabel }}</div>
+          </template>
+
+          <!-- Deal + Investor selectors (pref balance detail) -->
+          <template v-if="isPrefDetail">
+            <div class="filter-group">
+              <label>Deal</label>
+              <select v-model="prefDealVcode">
+                <option value="">-- Select deal --</option>
+                <option v-for="d in eligibleDeals" :key="d.vcode" :value="d.vcode">
+                  {{ d.label }}
+                </option>
+              </select>
+            </div>
+
+            <div v-if="prefDealVcode" class="filter-group">
+              <label>Investor</label>
+              <select v-model="prefInvestorId">
+                <option value="">-- Select investor --</option>
+                <option v-for="inv in prefInvestors" :key="inv.investor_id" :value="inv.investor_id">
+                  {{ inv.investor_id }}
+                </option>
+              </select>
+            </div>
+          </template>
 
           <div v-if="activeReport?.hasReportDate" class="filter-group">
             <label>As of Date</label>
             <input type="date" v-model="reportDate" />
           </div>
 
-          <!-- Deal picker inline -->
-          <div v-if="population === 'select'" class="deal-picker">
-            <div class="deal-picker-header">
-              <span>{{ selectedVcodes.length }} / {{ eligibleDeals.length }}</span>
-              <button class="btn-sm" @click="selectedVcodes = eligibleDeals.map(d => d.vcode)">All</button>
-              <button class="btn-sm" @click="selectedVcodes = []">Clear</button>
-            </div>
-            <div class="deal-picker-list">
-              <label v-for="d in eligibleDeals" :key="d.vcode" class="deal-checkbox">
-                <input type="checkbox" :checked="selectedVcodes.includes(d.vcode)" @change="toggleDeal(d.vcode)" />
-                {{ d.label }}
-              </label>
-            </div>
-          </div>
-
-          <div class="population-label">{{ populationLabel }}</div>
-
           <button
             class="btn-generate"
             @click="generate"
-            :disabled="loading || resolvedVcodes.length === 0"
+            :disabled="loading || !canGenerate"
           >
             {{ loading ? 'Generating...' : 'Generate Report' }}
           </button>
@@ -263,6 +371,22 @@ function toggleDeal(vcode: string) {
             </button>
           </div>
 
+          <!-- Pref Balance Header -->
+          <div v-if="prefHeader && isPrefDetail" class="pref-header">
+            <div class="pref-header-grid">
+              <div class="pref-kv"><span class="pref-label">Property #:</span> {{ prefHeader.vcode }}</div>
+              <div class="pref-kv"><span class="pref-label">As of:</span> {{ prefHeader.report_date }}</div>
+              <div class="pref-kv"><span class="pref-label">Investment ID:</span> {{ prefHeader.investment_id }}</div>
+              <div class="pref-kv"><span class="pref-label">Investment Balance:</span> {{ fmtCurr(prefHeader.investment_balance) }}</div>
+              <div class="pref-kv"><span class="pref-label">Investor:</span> {{ prefHeader.investor_id }}</div>
+              <div class="pref-kv"><span class="pref-label">Accrued:</span> {{ fmtCurr(prefHeader.accrued_pref) }}</div>
+              <div class="pref-kv"><span class="pref-label">Pref Rate:</span> {{ fmtPct(prefHeader.pref_rate) }}</div>
+              <div class="pref-kv"><span class="pref-label">Total:</span> <strong>{{ fmtCurr(prefHeader.total) }}</strong></div>
+              <div class="pref-kv"></div>
+              <div class="pref-kv"><span class="pref-label">Annual Pref Est:</span> {{ fmtCurr(prefHeader.annual_pref_est) }}</div>
+            </div>
+          </div>
+
           <!-- Errors -->
           <div v-if="errors.length > 0" class="error-section">
             <button class="btn-sm" @click="showErrors = !showErrors">
@@ -280,7 +404,7 @@ function toggleDeal(vcode: string) {
             :highlight-total="activeReport?.highlightTotal ?? false"
           />
           <p v-else-if="!loading" class="placeholder">
-            Set filters and click Generate Report.
+            {{ isPrefDetail ? 'Select a deal and investor, then click Generate Report.' : 'Set filters and click Generate Report.' }}
           </p>
           <p v-if="loading" class="placeholder">Generating report...</p>
         </template>
@@ -446,6 +570,28 @@ h2 { font-size: 20px; margin-bottom: 16px; }
 }
 
 .btn-sm:hover { background: #eee; }
+
+/* --- Pref Balance Header --- */
+.pref-header {
+  background: #f8f9fa;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 16px 20px;
+  margin-bottom: 16px;
+}
+
+.pref-header-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 32px;
+  font-size: 13px;
+}
+
+.pref-label {
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  margin-right: 6px;
+}
 
 /* --- Main results --- */
 .reports-main {
