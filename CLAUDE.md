@@ -325,7 +325,13 @@ Main waterfall computation, partner returns, capital accounts, XIRR/MOIC metrics
 
 **XIRR Cash Flows**: Merged side-by-side table with columns Date, Description (typename from `cashflow_details`), one amount column per partner, and Deal total column. Rows are keyed by (date, description); same-date/same-description cashflows for one partner are summed. Partner Returns IRR is computed from `combined_cfs` (the authoritative cashflow list); the XIRR Cash Flows table/Excel is a display-friendly pivot of the same data via `cashflow_details`.
 
-**Acquisition Fee Exclusion**: "Distribution:Acquisition Fee" entries from accounting are excluded from all waterfall-based XIRR/ROE/MOIC calculations and the XIRR Cash Flows display table (`build_partner_results()` in `compute.py`). Also excluded from IRR hurdle lookback (`irr_needed_distribution()` in `waterfall.py`). The Sold Portfolio tab is **not** affected — it computes returns directly from raw accounting data via `sold_service.py`.
+**Acquisition Fee Exclusion**: "Distribution:Acquisition Fee" entries from accounting are excluded from all XIRR/ROE/MOIC calculations system-wide. Acquisition Fees are fees, not operating income — they must never inflate ROE. Exclusion points:
+- `build_partner_results()` in `compute.py` — filters `metrics_cfs` and `cashflow_details` by label
+- `seed_states_from_accounting()` in `waterfall.py` — excludes from `cf_distributions` (affects Deal Analysis ROE Audit, partner/deal ROE)
+- `build_roe_summary_row()` in `reports_service.py` — excludes from `cf_distributions` (ROE Summary report)
+- `get_pe_performance()` in `one_pager.py` — excludes from `cf_distributions` (One Pager ROE to Date)
+- `irr_needed_distribution()` in `waterfall.py` — excluded from IRR hurdle lookback
+- The **Sold Portfolio** tab is **not** affected — it computes returns directly from raw accounting data via `sold_service.py` and handles Acquisition Fees separately (fee consumed, investor gets $0).
 
 **Annual Forecast Formatting**: Black border lines under Expenses, Capital Expenditures, and Other Below-the-Line rows (`underline-row` CSS class), black border above Total Distributions (`topline-row` CSS class). Row order: Revenues → Expenses → NOI → Tax Abatement → Interest → Principal → Total Debt Service → Capital Expenditures → Other Below-the-Line → FAD → DSCR → waterfall allocations.
 
@@ -431,7 +437,7 @@ Multi-report section with sidebar layout. Vue: `ReportsView.vue`. Flask: `report
 - **Filter**: As of Date (defaults to today)
 - **Data Source**: Actual accounting data through the report date (same formula as One Pager ROE to Date). Accrued Pref computed directly from accounting history + waterfall pref rates via `_compute_accrued_pref()` in `reports_service.py` (daily accrual at waterfall rate, year-end compounding with 45-day grace, TypeID 1019 pref payments reduce balance).
 - **Output**: One row per deal — Total Funded, Return of Capital, Current Balance, Wtd Avg Balance, CF Received, Accrued Pref, ITD ROE
-- **ROE Formula**: `(Total CF Distributions / Weighted Average Capital) / Years`. CF distributions = operating only (excludes Return of Capital, Realized Gain). Capital balance reduced by capital returns only, not CF distributions. Uses `calculate_roe_detailed()` in `metrics.py`.
+- **ROE Formula**: `(Total CF Distributions / Weighted Average Capital) / Years`. CF distributions = operating only (excludes Return of Capital, Realized Gain, and Acquisition Fee). Capital balance reduced by capital returns only, not CF distributions. Uses `calculate_roe_detailed()` in `metrics.py`.
 - **Excel**: Formatted workbook (currency/pct formats, auto-width)
 
 #### Report: Pref Balance Detail
