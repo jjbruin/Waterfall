@@ -70,6 +70,7 @@ waterfall-xirr/
 │       ├── review_service.py     # Review workflow business logic (approval pipeline)
 │       ├── financials_service.py # Property Financials + One Pager data aggregation
 │       ├── feedback_service.py   # Feedback & request tracking (CRUD, email, export)
+│       ├── reports_service.py    # Report builders (projected returns, ROE summary, pref balance detail)
 │       └── ...
 │
 ├── scripts/                  # Azure migration and setup scripts
@@ -433,6 +434,21 @@ Multi-report section with sidebar layout. Vue: `ReportsView.vue`. Flask: `report
 - **ROE Formula**: `(Total CF Distributions / Weighted Average Capital) / Years`. CF distributions = operating only (excludes Return of Capital, Realized Gain). Capital balance reduced by capital returns only, not CF distributions. Uses `calculate_roe_detailed()` in `metrics.py`.
 - **Excel**: Formatted workbook (currency/pct formats, auto-width)
 
+#### Report: Pref Balance Detail
+- **Endpoint**: `POST /api/reports/pref-balance-detail` (JSON), `POST /api/reports/pref-balance-detail/excel`
+- **Additional Endpoints**: `GET /api/reports/pref-balance-detail/investors/<vcode>` (PE investors for deal)
+- **Filter**: Single deal + single investor selector, As of Date (defaults to today)
+- **Data Source**: Actual accounting data through report date + generated quarter-end accrual markers
+- **Pref Rate Priority**: `deal_terms.pe_coupon` (authoritative) > waterfall Pref step matching investor > waterfall any Pref rate
+- **Day Count**: Act/Act — `days_in_year(event_date.year)`, no cross-year boundary splitting (matches Excel)
+- **Calculation**: Row-by-row replication of Excel PE_Pref_Balances formulas: `Inv+Comp = prior(InvBal) + prior(CompPref)`, `CurrDue = Inv+Comp × rate / diy × days`, `AccrPref = prior(Remaining)`, `TotalDue = CurrDue + AccrPref`, `Remaining = max(0, TotalDue - PrefPaid)`
+- **Compounding**: At 12/31 all remaining unpaid pref compounds (`CompPref = Remaining`). Mid-year, payments exceeding current accrual reduce CompPref.
+- **Same-date ordering**: Contributions → Pref Return → Return of Capital → Excess CF → other → Generated (quarter-end markers)
+- **Pref payment detection**: TypeID 1019 or Typename containing "Preferred Return"/"Pref Return"; excess CF via TypeID 1020 or "Excess Cash"
+- **Output**: Header (investment balance, accrued pref, total, annual pref estimate, pref rate) + transaction detail rows with 13 columns (InvestmentID, InvestorID, Date, Amount, Typename, Investment Balance, Compounded Pref, Inv+Comp, Days, Current Due, Accrued Pref, Total Due, Pref Paid, Remaining Accrual)
+- **Excel**: Formatted workbook with header section + detail table (currency formats, auto-width)
+- **Validation**: 55/120 investor/deal pairs match Excel exactly; remaining differences are data vintage (different accounting exports), not calculation logic
+
 ### 8. Sold Portfolio
 Historical returns for sold deals computed from accounting_feed (no forecast waterfalls). Vue: `SoldPortfolioView.vue`. Flask: `sold_portfolio.py` + `sold_service.py`.
 - **Data Source**: Accounting history only — contributions (`is_contribution`), distributions (`is_distribution`). Raw `acct` is normalised via `normalize_accounting_feed()` on first use.
@@ -610,6 +626,9 @@ Embedded Claude-powered chat panel for natural-language queries against the port
 - `compute_net_waterfall_for_deal()` - Per-deal net returns waterfall with fees/promote (sold_service.py)
 - `compute_all_net_returns()` - Orchestrator: loops sold deals, pools net cashflows for portfolio metrics (sold_service.py)
 - `generate_net_returns_excel()` - Multi-sheet workbook with formula-driven waterfall detail (sold_service.py)
+- `build_pref_balance_detail()` - Per-investor pref accrual detail matching Excel PE_Pref_Balances (reports_service.py)
+- `get_deal_pe_investors()` - List PE investors for a deal from accounting (reports_service.py)
+- `generate_pref_balance_excel()` - Pref balance detail Excel with header + transaction table (reports_service.py)
 - `create_request()` - Create a new user feedback request with reply token (feedback_service.py)
 - `list_requests()` - List requests with optional user/status/type filters (feedback_service.py)
 - `send_request_email()` - Send email to request submitter via SendGrid with reply link (feedback_service.py)
