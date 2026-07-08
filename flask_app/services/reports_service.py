@@ -591,20 +591,34 @@ def build_pref_balance_detail(
     inv_to_vcode = build_investmentid_to_vcode(inv_map)
     deal_iids = [iid for iid, vc in inv_to_vcode.items() if str(vc) == vcode_str]
 
-    # Get pref rate from waterfall
+    # Get pref rate — priority: deal_terms pe_coupon > waterfall
     pref_rate = 0.0
-    if wf_steps is not None and not wf_steps.empty:
+
+    # 1. deal_terms pe_coupon (authoritative contractual rate)
+    try:
+        from database import _sa_engine
+        if _sa_engine is not None:
+            dt_df = pd.read_sql(
+                "SELECT pe_coupon FROM deal_terms WHERE vcode = :vc",
+                _sa_engine, params={"vc": vcode_str},
+            )
+            if not dt_df.empty and pd.notna(dt_df.iloc[0]["pe_coupon"]):
+                pref_rate = float(dt_df.iloc[0]["pe_coupon"])
+    except Exception:
+        pass
+
+    # 2. Waterfall Pref step matching this investor
+    if pref_rate <= 0 and wf_steps is not None and not wf_steps.empty:
         wf_deal = wf_steps[wf_steps["vcode"] == vcode_str] if "vcode" in wf_steps.columns else wf_steps
         pref_rows = wf_deal[wf_deal["vState"] == "Pref"] if "vState" in wf_deal.columns else pd.DataFrame()
         rate_col = "nPercent_dec" if "nPercent_dec" in pref_rows.columns else "nPercent"
-        # Find the rate for this investor
         for _, pr in pref_rows.iterrows():
             pc = str(pr.get("PropCode", "")).strip()
             r = float(pr[rate_col]) if pd.notna(pr.get(rate_col)) else 0.0
             if pc.upper() == investor_id.upper() and r > 0:
                 pref_rate = r
                 break
-        # Fallback: any Pref rate for this deal
+        # 3. Any Pref rate for this deal
         if pref_rate <= 0:
             for _, pr in pref_rows.iterrows():
                 r = float(pr[rate_col]) if pd.notna(pr.get(rate_col)) else 0.0
@@ -643,9 +657,6 @@ def build_pref_balance_detail(
     for _, r in deal_acct.iterrows():
         evt_date = r["EffectiveDate"].date()
         tname_raw = r["TypeName"]
-        # Skip Acquisition Fee rows (not in Excel pref balance model)
-        if "acquisition fee" in tname_raw.lower():
-            continue
         tid = None
         if has_typeid:
             try:
