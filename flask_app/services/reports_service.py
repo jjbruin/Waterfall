@@ -642,6 +642,10 @@ def build_pref_balance_detail(
     events = []  # (date, amt, typename, major_type, is_generated, type_id)
     for _, r in deal_acct.iterrows():
         evt_date = r["EffectiveDate"].date()
+        tname_raw = r["TypeName"]
+        # Skip Acquisition Fee rows (not in Excel pref balance model)
+        if "acquisition fee" in tname_raw.lower():
+            continue
         tid = None
         if has_typeid:
             try:
@@ -649,7 +653,7 @@ def build_pref_balance_detail(
             except (ValueError, TypeError):
                 pass
         events.append((
-            evt_date, float(r["Amt"]), r["TypeName"], r["MajorType"],
+            evt_date, float(r["Amt"]), tname_raw, r["MajorType"],
             False, tid,
         ))
 
@@ -666,7 +670,25 @@ def build_pref_balance_detail(
         if report_date not in added_dates:
             events.append((report_date, 0, "Generated", "", True, None))
 
-    events.sort(key=lambda e: (e[0], 0 if not e[4] else 1))
+    def _evt_sort_key(e):
+        """Sort: date, then contributions first, pref return, excess CF, generated last."""
+        dt, _, tn, mt, is_gen, _ = e
+        tn_lower = tn.lower()
+        if is_gen:
+            order = 90
+        elif "contrib" in mt.lower():
+            order = 10
+        elif "preferred return" in tn_lower or "pref return" in tn_lower:
+            order = 20
+        elif "return of capital" in tn_lower or "realized gain" in tn_lower:
+            order = 25
+        elif "excess cash" in tn_lower:
+            order = 30
+        else:
+            order = 50
+        return (dt, order)
+
+    events.sort(key=_evt_sort_key)
 
     # Walk through events row-by-row matching Excel PE_Pref_Balances formulas.
     # All "balance" columns use negative sign convention (owed = negative).
@@ -703,10 +725,9 @@ def build_pref_balance_detail(
                 inv_bal = max(0.0, inv_bal - abs(amt))
 
         # --- H: Inv+Comp = PRIOR row's InvBal + PRIOR row's CompPref ---
-        # On the first row there is no prior, so use current inv_bal (matches Excel
-        # where H first row = F first row since G starts at 0)
+        # On the first row there is no prior, so Inv+Comp = 0 (matches Excel)
         if not result_rows:
-            inv_plus_comp = inv_bal
+            inv_plus_comp = 0.0
         else:
             prior = result_rows[-1]
             inv_plus_comp = abs(prior["Investment_Balance"]) + abs(prior["Compounded Pref"])
@@ -715,21 +736,12 @@ def build_pref_balance_detail(
         days_since = (evt_date - prev_date).days if prev_date else 0
 
         # --- J: Current Due = Inv+Comp * rate / diy * days ---
-        # Accrue across year boundaries for correct Act/Act
+        # Excel uses simple formula: total days × rate / days_in_year(event year)
+        # No splitting across year boundaries — matches Excel exactly.
         curr_due = 0.0
-        if prev_date is not None and inv_plus_comp > 0 and evt_date > prev_date:
-            cur = prev_date
-            while cur < evt_date:
-                year_end = date(cur.year, 12, 31)
-                next_stop = min(evt_date, year_end)
-                days = (next_stop - cur).days
-                if days > 0:
-                    diy = _days_in_year(cur.year)
-                    curr_due += inv_plus_comp * pref_rate * (days / diy)
-                if next_stop == year_end and next_stop < evt_date:
-                    cur = date(cur.year + 1, 1, 1)
-                else:
-                    break
+        if prev_date is not None and inv_plus_comp > 0 and days_since > 0:
+            diy = _days_in_year(evt_date.year)
+            curr_due = inv_plus_comp * pref_rate * (days_since / diy)
 
         # --- K: Accrued Pref = prior row's Remaining ---
         accr_pref = remaining  # carry forward from prior row
