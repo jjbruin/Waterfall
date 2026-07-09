@@ -534,8 +534,32 @@ def get_data() -> dict:
 
 
 def get_inv_display(inv: pd.DataFrame) -> pd.DataFrame:
-    """Filter out sold deals — equivalent to inv_disp in app.py."""
+    """Filter out sold/inactive deals and child properties, sorted alphabetically."""
     if inv is None or inv.empty:
         return pd.DataFrame()
+
+    # Exclude Sale_Status = SOLD
     mask = inv["Sale_Status"].fillna("").str.upper() != "SOLD" if "Sale_Status" in inv.columns else pd.Series(True, index=inv.index)
-    return inv[mask].copy()
+
+    # Exclude Lifecycle = Sold
+    if "Lifecycle" in inv.columns:
+        mask = mask & (inv["Lifecycle"].fillna("").str.strip().str.upper() != "SOLD")
+
+    result = inv[mask].copy()
+
+    # Exclude child properties (same logic as reports_service / review_service)
+    if "Portfolio_Name" in result.columns and "Investment_Name" in result.columns:
+        result["Portfolio_Name"] = result["Portfolio_Name"].fillna("").astype(str).str.strip()
+        parent_names = set(result["Investment_Name"].str.strip())
+        is_child = (
+            result["Portfolio_Name"].isin(parent_names)
+            & (result["Portfolio_Name"] != result["Investment_Name"].str.strip())
+            & (result["Portfolio_Name"] != "")
+        )
+        result = result[~is_child].copy()
+
+    # Sort alphabetically by Investment_Name
+    if "Investment_Name" in result.columns:
+        result = result.sort_values("Investment_Name", key=lambda s: s.str.lower()).reset_index(drop=True)
+
+    return result

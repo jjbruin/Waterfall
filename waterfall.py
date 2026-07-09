@@ -1224,12 +1224,23 @@ def seed_states_from_accounting(
                 if "acquisition fee" not in typename_str:
                     stt.cf_distributions.append((d, cf))
 
-    # CRITICAL FIX: Set last_accrual_date to the LATEST historical date
-    # This prevents the forward model from re-accruing pref that was already
-    # paid historically. The forward model will only accrue from this point.
-    # Also seed unpaid pref balance by calculating (expected accrual - actual paid).
+    # CRITICAL FIX: Set last_accrual_date to the actuals boundary so pref
+    # accrues through the full historical period.  When cutoff_date is set,
+    # use it — otherwise fall back to the latest accounting transaction.
+    # This prevents a gap between the last transaction and the model start
+    # where pref would silently go unaccrued.
     if not acct.empty:
-        latest_date = acct["EffectiveDate"].max()
+        latest_txn_date = pd.Timestamp(acct["EffectiveDate"].max())
+        if cutoff_date is not None:
+            # Accrue through the cutoff boundary so the forward model
+            # picks up exactly where actuals end.
+            cd = pd.Timestamp(cutoff_date)
+            latest_date = cd if cd > latest_txn_date else latest_txn_date
+        else:
+            latest_date = latest_txn_date
+        # Normalize to Python date for consistency with accrue_to_date()
+        if hasattr(latest_date, 'date'):
+            latest_date = latest_date.date()
 
         # Calculate unpaid pref for each investor
         for pc, stt in states.items():
