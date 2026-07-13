@@ -92,10 +92,14 @@ const router = createRouter({
 })
 
 // Navigation guard
-router.beforeEach((to) => {
+router.beforeEach(async (to) => {
   const auth = useAuthStore()
   if (to.meta.requiresAuth !== false && !auth.isAuthenticated) {
     return { name: 'Login', query: { redirect: to.fullPath } }
+  }
+  // Restore user object from token after page refresh
+  if (auth.isAuthenticated && !auth.user) {
+    await auth.fetchMe()
   }
 })
 
