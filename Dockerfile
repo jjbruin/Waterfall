@@ -22,7 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Python dependencies
-COPY flask_app/requirements.txt requirements.txt
+COPY requirements.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt gunicorn
 
 # Copy application code
@@ -32,9 +32,6 @@ COPY *.txt ./
 
 # Flask app package
 COPY flask_app/ flask_app/
-
-# SQL query files for MRI database access
-COPY queries/ queries/
 
 # Vue built assets
 COPY --from=frontend-build /build/dist/ static/
