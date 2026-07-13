@@ -73,6 +73,15 @@ def create_app(config_name: str = None) -> Flask:
             database.set_engine(engine)
             # Ensure app-managed tables exist on PostgreSQL
             database.ensure_pg_tables(engine)
+            # Ensure surveillance tables exist
+            from flask_app.services.surveillance_service import ensure_tables
+            ensure_tables(engine)
+
+    # Ensure surveillance tables (SQLite path — PG handled above)
+    if not app.config.get("DATABASE_URL"):
+        with app.app_context():
+            from flask_app.services.surveillance_service import ensure_tables
+            ensure_tables()
 
     # Configure data adapters (MRI API if env vars set, else database)
     with app.app_context():
@@ -126,6 +135,9 @@ def create_app(config_name: str = None) -> Flask:
 
     from flask_app.api.feedback import feedback_bp
     app.register_blueprint(feedback_bp, url_prefix="/api/feedback")
+
+    from flask_app.api.surveillance import surveillance_bp
+    app.register_blueprint(surveillance_bp, url_prefix="/api/surveillance")
 
     # Health check
     @app.route("/health")
