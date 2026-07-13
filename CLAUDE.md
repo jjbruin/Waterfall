@@ -1,5 +1,9 @@
 # Waterfall XIRR - Multi-Layer Waterfall Model
 
+## Shared Memory
+
+Shared project memory files are in `.claude/memory/`. Read `MEMORY.md` there at the start of every conversation for project context, conventions, and architecture notes. Update these files as you work — they are committed to git and shared across all developers.
+
 ## Project Overview
 
 A Flask + Vue financial modeling application for calculating investment waterfalls, XIRR, and related performance metrics for real estate investments. The application supports multi-layer distribution waterfalls with preferred returns, capital accounts, and investor-level tracking.
