@@ -26,6 +26,11 @@ class Config:
     SENDGRID_FROM = os.environ.get("SENDGRID_FROM", "")
     APP_URL = os.environ.get("APP_URL", "https://app-waterfall-dev-v2.icyplant-026fb2db.eastus.azurecontainerapps.io")
 
+    # Shared network folders (SharePoint-synced, per-developer OneDrive path)
+    DATA_DIR = os.environ.get("DATA_DIR", "")          # CSV imports folder
+    QUERIES_DIR = os.environ.get("QUERIES_DIR", "")     # MRI SQL query files
+    DOWNLOADS_DIR = os.environ.get("DOWNLOADS_DIR", "")  # MRI query result downloads
+
     # Cache
     CACHE_TYPE = "SimpleCache"
     CACHE_DEFAULT_TIMEOUT = 300

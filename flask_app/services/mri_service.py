@@ -115,9 +115,20 @@ QUERY_REGISTRY = {
     },
 }
 
-# Network folder paths (SharePoint-synced)
-QUERIES_FOLDER = r"C:\Users\jbruin\peaceablestreet.com\Peaceable Street Capital - Documents\Asset Mgmt\7. Azure App\queries"
-DOWNLOADS_FOLDER = r"C:\Users\jbruin\peaceablestreet.com\Peaceable Street Capital - Documents\Asset Mgmt\7. Azure App\data-downloads"
+# Network folder paths (SharePoint-synced, configured via env vars)
+from flask import current_app
+
+def _get_queries_folder() -> str:
+    try:
+        return current_app.config.get("QUERIES_DIR", "") or ""
+    except RuntimeError:
+        return os.environ.get("QUERIES_DIR", "")
+
+def _get_downloads_folder() -> str:
+    try:
+        return current_app.config.get("DOWNLOADS_DIR", "") or ""
+    except RuntimeError:
+        return os.environ.get("DOWNLOADS_DIR", "")
 
 
 def _get_connection(server_key: str):
@@ -139,7 +150,8 @@ def _get_connection(server_key: str):
 
 def _load_query_sql(query_name: str) -> str:
     """Load SQL from the network queries folder."""
-    sql_path = Path(QUERIES_FOLDER) / f"{query_name}.sql"
+    queries_folder = _get_queries_folder()
+    sql_path = Path(queries_folder) / f"{query_name}.sql" if queries_folder else Path("__nonexistent__")
     if not sql_path.exists():
         # Fallback to local queries folder
         sql_path = Path(__file__).resolve().parent.parent.parent / "queries" / f"{query_name}.sql"
@@ -179,7 +191,8 @@ def list_queries() -> list[dict]:
     queries = []
     for name, info in QUERY_REGISTRY.items():
         # Check if .sql file exists
-        sql_exists = (Path(QUERIES_FOLDER) / f"{name}.sql").exists()
+        queries_folder = _get_queries_folder()
+        sql_exists = (Path(queries_folder) / f"{name}.sql").exists() if queries_folder else False
         queries.append({
             "name": name,
             "server": info["server"],
@@ -191,7 +204,7 @@ def list_queries() -> list[dict]:
         })
     # Also list any .sql files in the network folder that aren't in the registry
     try:
-        for sql_file in Path(QUERIES_FOLDER).glob("*.sql"):
+        for sql_file in Path(_get_queries_folder()).glob("*.sql"):
             name = sql_file.stem
             if name not in QUERY_REGISTRY:
                 queries.append({
@@ -251,7 +264,7 @@ def run_query(query_name: str, server_key: str = None, save_csv: bool = True) ->
 
     if save_csv:
         try:
-            downloads = Path(DOWNLOADS_FOLDER)
+            downloads = Path(_get_downloads_folder())
             downloads.mkdir(parents=True, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             csv_path = downloads / f"{query_name}_{timestamp}.csv"
