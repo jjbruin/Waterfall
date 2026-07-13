@@ -80,6 +80,11 @@ const routes = [
     component: () => import('../views/PsckocView.vue'),
   },
   {
+    path: '/surveillance',
+    name: 'Surveillance',
+    component: () => import('../views/SurveillanceView.vue'),
+  },
+  {
     path: '/settings',
     name: 'Settings',
     component: () => import('../views/SettingsView.vue'),

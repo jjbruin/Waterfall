@@ -26,6 +26,7 @@ const navItems = [
   { path: '/sold-portfolio', label: 'Sold Portfolio', icon: 'archive' },
   { path: '/portfolio-analysis', label: 'Portfolio Analysis', icon: 'pie-chart' },
   { path: '/psckoc', label: 'PSCKOC', icon: 'share-2' },
+  { path: '/surveillance', label: 'Surveillance', icon: 'shield' },
   { path: '/settings', label: 'Settings', icon: 'settings' },
 ]
 
