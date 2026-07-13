@@ -10,6 +10,9 @@ vue_app/dist/
 
 # Database (migrated separately via migrate_to_postgres.py)
 *.db
+*.db-shm
+*.db-wal
+*.db-journal
 *.sqlite
 *.sqlite3
 
