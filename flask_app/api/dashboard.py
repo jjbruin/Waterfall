@@ -4,7 +4,6 @@ from flask import Blueprint, request, jsonify, current_app, send_file, Response
 import io
 import json
 import logging
-import threading
 
 log = logging.getLogger(__name__)
 
@@ -16,22 +15,20 @@ from flask_app.services.dashboard_service import (
     get_loan_maturity_data, compute_portfolio_noi, get_child_vcodes,
     _get_deal_trailing_noi, _get_deal_trailing_occupancy,
     generate_portfolio_schedule_excel, generate_loan_detail_excel,
+    get_cached_caps_and_occ, clear_shared_cache,
+    _caps_cache, _occ_cache,
 )
 from flask_app.serializers import safe_json
 
 dashboard_bp = Blueprint("dashboard", __name__)
 
-# Module-level caches (cleared by clear_dashboard_cache())
-_caps_cache = {}
-_occ_cache = {}
+# NOI cache is dashboard-only; caps/occ caches live in dashboard_service
 _noi_cache = {}
-_caps_lock = threading.Lock()
 
 
 def clear_dashboard_cache():
     """Clear all dashboard caches. Called on data reload."""
-    _caps_cache.clear()
-    _occ_cache.clear()
+    clear_shared_cache()
     _noi_cache.clear()
 
 
@@ -48,31 +45,11 @@ def _get_data():
 
 
 def _get_caps_and_occ(on_progress=None):
-    """Get or compute caps and occupancy (cached, thread-safe)."""
-    data = _get_data()
-    inv_disp = data_service.get_inv_display(data["inv"])
+    """Get or compute caps and occupancy (cached, thread-safe).
 
-    # Exclude child properties — their data rolls up into parent deals
-    child_vcodes = get_child_vcodes(data["inv"])
-    inv_disp = inv_disp[~inv_disp["vcode"].astype(str).isin(child_vcodes)]
-
-    cache_key = len(inv_disp)
-    if cache_key in _caps_cache and cache_key in _occ_cache:
-        return _caps_cache[cache_key], _occ_cache[cache_key], data, inv_disp
-
-    with _caps_lock:
-        # Double-check after acquiring lock
-        if cache_key not in _caps_cache:
-            _caps_cache[cache_key] = get_portfolio_caps(
-                inv_disp, data["inv"], data["wf"], data["acct"],
-                data["mri_val"], data["mri_loans_raw"],
-                on_progress=on_progress,
-                isbs_raw=data.get("isbs_raw"),
-            )
-        if cache_key not in _occ_cache:
-            _occ_cache[cache_key] = get_latest_occupancy(inv_disp, data["occupancy_raw"], inv=data["inv"])
-
-    return _caps_cache[cache_key], _occ_cache[cache_key], data, inv_disp
+    Delegates to the shared cache in dashboard_service.
+    """
+    return get_cached_caps_and_occ(on_progress=on_progress)
 
 
 @dashboard_bp.route("/init-stream", methods=["GET"])

@@ -2,16 +2,34 @@
 
 Reads from Waterfall's existing data sources (inv, occ, isbs_raw, loans)
 and a thin editable table (surveillance_properties) for manual fields.
+Computes live metrics (TTM NOI, DSCR, debt balance, loan maturity)
+consistently with Property Financials and Deal Analysis tabs.
 """
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 from sqlalchemy import text
 
+from config import IS_ACCOUNTS, DEBT_BS_ACCTS
+from compute import get_isbs_debt_balance
+from loans import build_loans_from_mri_loans
+from utils import normalize_columns
 from flask_app.db import get_engine
 from flask_app.services import data_service
+from flask_app.services.dashboard_service import (
+    get_latest_occupancy as _dashboard_occ,
+    get_child_vcodes,
+    get_cached_caps_and_occ,
+    get_portfolio_kpis,
+)
+from flask_app.services.financials_service import (
+    _prepare_isbs,
+    _get_cumulative_balances,
+    _add_balances,
+    _subtract_balances,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +72,16 @@ _SURVEILLANCE_DDL = [
         UNIQUE(vcode, ins_type)
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS surveillance_comments (
+        id                  {pk_type},
+        vcode               TEXT NOT NULL,
+        comment_date        TEXT NOT NULL,
+        comment_text        TEXT NOT NULL,
+        created_by          TEXT,
+        created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
 ]
 
 
@@ -71,20 +99,283 @@ def ensure_tables(engine=None):
 
 
 # ---------------------------------------------------------------------------
+# Live metric helpers — consistent with Property Financials / Deal Analysis
+# ---------------------------------------------------------------------------
+
+def _compute_ttm_noi_and_dscr(isbs_raw, vcode):
+    """Compute TTM NOI and DSCR for a deal, same formula as Property Financials.
+
+    Uses ISBS Interim IS (actuals), YTD cumulative → TTM conversion.
+    DSCR = NOI / abs(Debt Service).
+    Returns dict with noi, dscr, revenue, expenses, debt_service, period.
+    """
+    isbs = _prepare_isbs(isbs_raw, vcode)
+    if isbs.empty:
+        return {}
+
+    actual_data = isbs[isbs['vSource'] == 'Interim IS']
+    if actual_data.empty:
+        return {}
+
+    actual_periods = sorted(actual_data['dtEntry_parsed'].dropna().unique())
+    if not actual_periods:
+        return {}
+
+    ref_date = pd.Timestamp(actual_periods[-1])
+
+    # TTM calculation — same as _calculate_is_amounts(TTM, Actual, ...)
+    current_bal = _get_cumulative_balances(actual_data, ref_date, IS_ACCOUNTS)
+    if not current_bal:
+        return {}
+
+    dec_prior = next(
+        (pd.Timestamp(p) for p in actual_periods
+         if pd.Timestamp(p).year == ref_date.year - 1 and pd.Timestamp(p).month == 12),
+        None
+    )
+    same_month_ly = next(
+        (pd.Timestamp(p) for p in actual_periods
+         if pd.Timestamp(p).year == ref_date.year - 1 and pd.Timestamp(p).month == ref_date.month),
+        None
+    )
+
+    if dec_prior and same_month_ly:
+        dec_bal = _get_cumulative_balances(actual_data, dec_prior, IS_ACCOUNTS)
+        ly_bal = _get_cumulative_balances(actual_data, same_month_ly, IS_ACCOUNTS)
+        amounts = _subtract_balances(
+            _add_balances(current_bal, dec_bal, IS_ACCOUNTS), ly_bal, IS_ACCOUNTS
+        )
+    elif dec_prior:
+        dec_bal = _get_cumulative_balances(actual_data, dec_prior, IS_ACCOUNTS)
+        amounts = _add_balances(current_bal, dec_bal, IS_ACCOUNTS)
+    else:
+        amounts = current_bal
+
+    # Revenue (stored as credits/negative) → display positive
+    rev_total = sum(-v for v in amounts.get('REVENUES', {}).values())
+    exp_total = sum(v for v in amounts.get('EXPENSES', {}).values())
+    noi = rev_total - exp_total
+
+    # Debt service from IS_ACCOUNTS['DEBT_SERVICE']
+    ds_total = sum(v for v in amounts.get('DEBT_SERVICE', {}).values())
+    dscr = noi / abs(ds_total) if ds_total != 0 else None
+
+    return {
+        "noi": round(noi, 2),
+        "revenue": round(rev_total, 2),
+        "expenses": round(exp_total, 2),
+        "debt_service": round(ds_total, 2),
+        "dscr": round(dscr, 2) if dscr is not None else None,
+        "period": ref_date.strftime("%Y-%m"),
+    }
+
+
+def _compute_debt_balances(isbs_raw, vcodes):
+    """Compute ISBS debt balance for multiple vcodes at once.
+
+    Returns dict {vcode_lower: balance}.
+    """
+    result = {}
+    for vc in vcodes:
+        bal = get_isbs_debt_balance(isbs_raw, vc)
+        if bal is not None:
+            result[vc.lower()] = round(bal, 2)
+    return result
+
+
+def _compute_loan_maturities(mri_loans_raw):
+    """Get loan maturity dates per deal from MRI_Loans, same as Deal Analysis.
+
+    Uses build_loans_from_mri_loans() for consistent parsing.
+    Returns dict {vcode_lower: {maturity_date, loan_rate, loan_type, loan_balance}}.
+    """
+    if mri_loans_raw is None or mri_loans_raw.empty:
+        return {}
+
+    try:
+        loans = build_loans_from_mri_loans(mri_loans_raw)
+    except Exception:
+        logger.exception("Failed to build loans from MRI_Loans")
+        return {}
+
+    result = {}
+    for loan in loans:
+        vc = str(loan.vcode).strip().lower()
+        if vc not in result:
+            result[vc] = {
+                "maturity_date": None,
+                "loan_rate": None,
+                "loan_type": None,
+                "loan_balance": 0.0,
+            }
+        entry = result[vc]
+        entry["loan_balance"] += loan.orig_amount or 0
+        # Use the latest maturity date across all loans for the deal
+        if loan.maturity_date:
+            mat_str = loan.maturity_date.isoformat()
+            if entry["maturity_date"] is None or mat_str > entry["maturity_date"]:
+                entry["maturity_date"] = mat_str
+                entry["loan_rate"] = loan.fixed_rate
+                entry["loan_type"] = loan.int_type
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Reporting completeness — trailing 12 months
+# ---------------------------------------------------------------------------
+
+def _get_due_months(as_of: date = None) -> list[tuple[int, int]]:
+    """Return the 12 most recent (year, month) pairs whose reports are due.
+
+    Reports are due 30 days after month end, so a month is 'due' if
+    today >= month_end + 30 days.  E.g. on Jul 14 2026, May 2026 is due
+    (due Jun 30) but Jun 2026 is not yet (due Jul 31).
+    """
+    if as_of is None:
+        as_of = date.today()
+    months = []
+    yr, mo = as_of.year, as_of.month
+    for _ in range(14):  # check up to 14 to ensure we get 12
+        # month end of (yr, mo)
+        if mo == 12:
+            me = date(yr, 12, 31)
+        else:
+            me = date(yr, mo + 1, 1) - timedelta(days=1)
+        due_by = me + timedelta(days=30)
+        if as_of >= due_by:
+            months.append((yr, mo))
+        if len(months) == 12:
+            break
+        mo -= 1
+        if mo == 0:
+            mo = 12
+            yr -= 1
+    return months
+
+
+def _build_reported_months_map(df, vcode_col, date_col):
+    """Build {vcode_lower: set((year, month), ...)} from a DataFrame."""
+    if df is None or df.empty:
+        return {}
+    result = {}
+    for vc, grp in df.groupby(vcode_col):
+        dates = pd.to_datetime(grp[date_col], errors="coerce").dropna()
+        result[str(vc).strip().lower()] = {(d.year, d.month) for d in dates}
+    return result
+
+
+def _compute_reporting_completeness(occ, isbs_raw, tenants_raw, all_vcodes, is_commercial_set):
+    """Compute reporting completeness for all deals.
+
+    Returns dict {vcode_lower: {
+        occ_latest, occ_missing,
+        rent_roll_latest, rent_roll_missing,  (commercial only, None for residential)
+        is_latest, is_missing,
+        bs_latest, bs_missing,
+    }}
+    """
+    due_months = _get_due_months()
+    due_set = set(due_months)
+
+    # --- Occupancy reported months ---
+    occ_months = {}
+    if occ is not None and not occ.empty:
+        col_map = {c.lower(): c for c in occ.columns}
+        vc_col = col_map.get("vcode", col_map.get("propcode", "vcode"))
+        dt_col = col_map.get("dtreported", col_map.get("period", "dtReported"))
+        df = occ.copy()
+        df["_vc"] = df[vc_col].astype(str).str.strip().str.lower()
+        df["_dt"] = pd.to_datetime(df[dt_col], errors="coerce")
+        df = df.dropna(subset=["_dt"])
+        occ_months = _build_reported_months_map(df, "_vc", "_dt")
+
+    # --- Income Statement (Interim IS) reported months ---
+    is_months = {}
+    bs_months = {}
+    if isbs_raw is not None and not isbs_raw.empty:
+        if 'vSource' in isbs_raw.columns and 'dtEntry_parsed' in isbs_raw.columns:
+            is_df = isbs_raw[isbs_raw['vSource'] == 'Interim IS']
+            if not is_df.empty and 'vcode' in is_df.columns:
+                is_months = _build_reported_months_map(is_df, 'vcode', 'dtEntry_parsed')
+
+            bs_df = isbs_raw[isbs_raw['vSource'] == 'Interim BS']
+            if not bs_df.empty and 'vcode' in bs_df.columns:
+                bs_months = _build_reported_months_map(bs_df, 'vcode', 'dtEntry_parsed')
+
+    # --- Rent Roll (tenants) reported months ---
+    rr_months = {}
+    if tenants_raw is not None and not tenants_raw.empty:
+        t = tenants_raw.copy()
+        normalize_columns(t)
+        col_map_t = {c.lower(): c for c in t.columns}
+        vc_col_t = col_map_t.get("code", col_map_t.get("vcode", None))
+        dt_col_t = col_map_t.get("occupancy date", col_map_t.get("dtreported", None))
+        if vc_col_t and dt_col_t:
+            t["_vc"] = t[vc_col_t].astype(str).str.strip().str.lower()
+            t["_dt"] = pd.to_datetime(t[dt_col_t], errors="coerce")
+            t = t.dropna(subset=["_dt"])
+            rr_months = _build_reported_months_map(t, "_vc", "_dt")
+
+    def _fmt_latest(reported_set):
+        """Format the most recent reported month as 'M/YY'."""
+        if not reported_set:
+            return None
+        latest = max(reported_set)
+        return f"{latest[1]}/{str(latest[0])[2:]}"
+
+    def _count_missing(reported_set):
+        """Count how many of the trailing 12 due months are missing."""
+        if not reported_set:
+            return len(due_set)
+        return len(due_set - reported_set)
+
+    result = {}
+    for vc in all_vcodes:
+        vc_lower = vc.lower()
+        occ_set = occ_months.get(vc_lower, set())
+        is_set = is_months.get(vc_lower, set())
+        bs_set = bs_months.get(vc_lower, set())
+        is_comm = vc in is_commercial_set or vc_lower in is_commercial_set
+
+        entry = {
+            "occ_latest": _fmt_latest(occ_set),
+            "occ_missing": _count_missing(occ_set),
+            "is_latest": _fmt_latest(is_set),
+            "is_missing": _count_missing(is_set),
+            "bs_latest": _fmt_latest(bs_set),
+            "bs_missing": _count_missing(bs_set),
+        }
+
+        if is_comm:
+            rr_set = rr_months.get(vc_lower, set())
+            entry["rent_roll_latest"] = _fmt_latest(rr_set)
+            entry["rent_roll_missing"] = _count_missing(rr_set)
+        else:
+            entry["rent_roll_latest"] = None
+            entry["rent_roll_missing"] = None
+
+        result[vc_lower] = entry
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Surveillance table — main query
 # ---------------------------------------------------------------------------
 
 def get_surveillance_table() -> list[dict]:
     """Build the surveillance table by joining Waterfall data sources.
 
-    Returns one row per active deal with live occupancy, NOI, debt,
-    and editable surveillance fields.
+    Returns one row per active deal with live occupancy, TTM NOI, DSCR,
+    ISBS debt balance, loan maturity, and editable surveillance fields.
     """
     data = data_service.get_data()
     inv = data.get("inv", pd.DataFrame())
     occ = data.get("occupancy_raw", pd.DataFrame())
     isbs_raw = data.get("isbs_raw", pd.DataFrame())
     mri_loans_raw = data.get("mri_loans_raw", pd.DataFrame())
+    tenants_raw = data.get("tenants_raw", pd.DataFrame())
 
     if inv.empty:
         return []
@@ -109,20 +400,48 @@ def get_surveillance_table() -> list[dict]:
     lifecycle_disp = _find_col(active, ["Lifecycle", "lifecycle"])
     portfolio_col = _find_col(active, ["Portfolio_Name", "portfolio_name"])
 
+    # --- Collect all vcodes ---
+    all_vcodes = [str(deal.get(vcode_col, "")).strip()
+                  for _, deal in active.iterrows() if str(deal.get(vcode_col, "")).strip()]
+
+    # --- Determine commercial deals (have tenant data) ---
+    is_commercial_set = set()
+    if tenants_raw is not None and not tenants_raw.empty:
+        t_cols = {c.lower(): c for c in tenants_raw.columns}
+        t_vc_col = t_cols.get("code", t_cols.get("vcode"))
+        if t_vc_col:
+            is_commercial_set = set(tenants_raw[t_vc_col].astype(str).str.strip().str.lower().unique())
+
     # --- Latest occupancy per deal ---
     occ_latest = _latest_occupancy(occ)
 
-    # --- Latest NOI from ISBS actuals ---
-    noi_latest = _latest_noi(isbs_raw)
+    # --- TTM NOI + DSCR per deal (computed like Property Financials) ---
+    noi_dscr_map = {}
+    for vc in all_vcodes:
+        try:
+            noi_dscr_map[vc.lower()] = _compute_ttm_noi_and_dscr(isbs_raw, vc)
+        except Exception:
+            logger.exception("TTM NOI/DSCR failed for %s", vc)
 
-    # --- Loan summary per deal ---
-    loan_summary = _loan_summary(mri_loans_raw)
+    # --- Debt balance from ISBS (same as Deal Analysis) ---
+    debt_map = _compute_debt_balances(isbs_raw, all_vcodes)
+
+    # --- Loan maturity from MRI_Loans (same as Deal Analysis) ---
+    loan_map = _compute_loan_maturities(mri_loans_raw)
 
     # --- Load editable surveillance fields ---
     surv_fields = _load_surveillance_properties()
 
     # --- Load insurance ---
     insurance = _load_insurance_summary()
+
+    # --- Load latest comments ---
+    comments_map = _load_latest_comments()
+
+    # --- Reporting completeness ---
+    reporting_map = _compute_reporting_completeness(
+        occ, isbs_raw, tenants_raw, all_vcodes, is_commercial_set
+    )
 
     # --- Build result rows ---
     rows = []
@@ -133,10 +452,17 @@ def get_surveillance_table() -> list[dict]:
         vc_lower = vc.lower()
 
         occ_row = occ_latest.get(vc_lower, {})
-        noi_row = noi_latest.get(vc_lower, {})
-        loan_row = loan_summary.get(vc_lower, {})
+        noi_row = noi_dscr_map.get(vc_lower, {})
+        loan_row = loan_map.get(vc_lower, {})
         surv = surv_fields.get(vc, {})
         ins = insurance.get(vc, {})
+        comment_entry = comments_map.get(vc, {})
+        rpt = reporting_map.get(vc_lower, {})
+
+        # Debt: prefer ISBS balance, fall back to MRI_Loans origination total
+        debt_balance = debt_map.get(vc_lower)
+        if debt_balance is None:
+            debt_balance = loan_row.get("loan_balance")
 
         row = {
             "vcode": vc,
@@ -147,19 +473,20 @@ def get_surveillance_table() -> list[dict]:
             "partner": deal.get(partner_col, ""),
             "lifecycle": deal.get(lifecycle_disp, ""),
             "portfolio_name": deal.get(portfolio_col, ""),
-            # Live data
+            # Live data — consistent with Property Financials
             "occ_pct": occ_row.get("occ_pct"),
             "occ_period": occ_row.get("period"),
-            "noi_monthly": noi_row.get("noi"),
-            "revenue_monthly": noi_row.get("revenue"),
+            "noi_ttm": noi_row.get("noi"),
+            "revenue_ttm": noi_row.get("revenue"),
+            "dscr": noi_row.get("dscr"),
             "fin_period": noi_row.get("period"),
-            # Loan data
-            "loan_balance": loan_row.get("loan_balance"),
+            # Debt — consistent with Deal Analysis (ISBS balance)
+            "debt_balance": debt_balance,
+            # Loan data — consistent with Deal Analysis
             "loan_rate": loan_row.get("loan_rate"),
             "maturity_date": loan_row.get("maturity_date"),
             "loan_type": loan_row.get("loan_type"),
             # Editable surveillance fields
-            "dscr_val": surv.get("dscr_val"),
             "dscr_min": surv.get("dscr_min"),
             "dy_val": surv.get("dy_val"),
             "dy_min": surv.get("dy_min"),
@@ -169,21 +496,25 @@ def get_surveillance_table() -> list[dict]:
             "tax_due": surv.get("tax_due"),
             "ins_renewal": ins.get("nearest_expiration"),
             "tenant_exp": surv.get("tenant_exp"),
-            "comments": surv.get("comments"),
             "updated_at": surv.get("updated_at"),
             # Insurance
             "has_property_ins": ins.get("has_property", False),
             "has_gl_ins": ins.get("has_gl", False),
+            # Comments (latest)
+            "comment_text": comment_entry.get("comment_text"),
+            "comment_date": comment_entry.get("comment_date"),
+            "comment_id": comment_entry.get("id"),
+            # Reporting completeness
+            "rpt_occ_latest": rpt.get("occ_latest"),
+            "rpt_occ_missing": rpt.get("occ_missing"),
+            "rpt_rent_roll_latest": rpt.get("rent_roll_latest"),
+            "rpt_rent_roll_missing": rpt.get("rent_roll_missing"),
+            "rpt_is_latest": rpt.get("is_latest"),
+            "rpt_is_missing": rpt.get("is_missing"),
+            "rpt_bs_latest": rpt.get("bs_latest"),
+            "rpt_bs_missing": rpt.get("bs_missing"),
+            "is_commercial": vc_lower in is_commercial_set,
         }
-
-        # Flag logic: covenant breach or comments present
-        row["flagged"] = bool(
-            row["comments"]
-            or (row["dscr_val"] is not None and row["dscr_min"] is not None
-                and row["dscr_val"] < row["dscr_min"])
-            or (row["ltv_val"] is not None and row["ltv_min"] is not None
-                and row["ltv_val"] > row["ltv_min"])
-        )
 
         rows.append(row)
 
@@ -195,17 +526,21 @@ def get_surveillance_table() -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def get_dashboard() -> dict:
-    """Portfolio surveillance KPIs and chart data."""
+    """Portfolio surveillance KPIs and chart data.
+
+    Debt and occupancy are sourced from the same shared caps/occ cache
+    used by the Dashboard tab, ensuring identical numbers.
+    """
     rows = get_surveillance_table()
     if not rows:
         return {"total": 0}
 
+    # Use the shared caps/occ (same source as Dashboard KPIs)
+    caps, occ_map, _, _ = get_cached_caps_and_occ()
+    kpis = get_portfolio_kpis(caps, occ_map)
+
     total = len(rows)
-    total_debt = sum(r["loan_balance"] or 0 for r in rows)
-    occ_vals = [r["occ_pct"] for r in rows if r["occ_pct"] is not None]
-    avg_occ = sum(occ_vals) / len(occ_vals) if occ_vals else None
-    total_noi = sum(r["noi_monthly"] or 0 for r in rows)
-    flagged = sum(1 for r in rows if r["flagged"])
+    total_noi = sum(r["noi_ttm"] or 0 for r in rows)
 
     # Maturing within 12 months
     today = date.today()
@@ -228,10 +563,9 @@ def get_dashboard() -> dict:
 
     return {
         "total": total,
-        "total_debt": total_debt,
-        "avg_occ": round(avg_occ, 1) if avg_occ else None,
-        "total_noi_monthly": total_noi,
-        "flagged": flagged,
+        "total_debt": kpis.get("debt_outstanding"),
+        "avg_occ": round(kpis["portfolio_occupancy"], 1) if kpis.get("portfolio_occupancy") else None,
+        "total_noi_ttm": total_noi,
         "maturing_12mo": mat_12,
         "by_type": by_type,
     }
@@ -244,9 +578,9 @@ def get_dashboard() -> dict:
 def update_surveillance_property(vcode: str, fields: dict, username: str = None) -> dict:
     """Upsert editable surveillance fields for a deal."""
     allowed = {
-        "dscr_val", "dscr_min", "dy_val", "dy_min",
+        "dscr_min", "dy_val", "dy_min",
         "ltv_val", "ltv_min", "working_capital",
-        "tax_due", "ins_renewal", "tenant_exp", "comments",
+        "tax_due", "ins_renewal", "tenant_exp",
     }
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
@@ -258,7 +592,6 @@ def update_surveillance_property(vcode: str, fields: dict, username: str = None)
 
     engine = get_engine()
     with engine.begin() as conn:
-        # Check if row exists
         existing = conn.execute(
             text("SELECT vcode FROM surveillance_properties WHERE vcode = :vc"),
             {"vc": vcode}
@@ -280,6 +613,65 @@ def update_surveillance_property(vcode: str, fields: dict, username: str = None)
             )
 
     return {"status": "ok", "vcode": vcode}
+
+
+# ---------------------------------------------------------------------------
+# CRUD — surveillance comments (date-based)
+# ---------------------------------------------------------------------------
+
+def get_comments(vcode: str) -> list[dict]:
+    """Get all comments for a deal, newest first."""
+    engine = get_engine()
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text("SELECT id, vcode, comment_date, comment_text, created_by, created_at "
+                     "FROM surveillance_comments WHERE vcode = :vc ORDER BY comment_date DESC, id DESC"),
+                {"vc": vcode}
+            ).mappings().all()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
+def save_comment(vcode: str, comment_date: str, comment_text: str, username: str = None) -> dict:
+    """Save a comment for a deal on a specific date.
+
+    If a comment already exists for the same vcode+date, it is updated.
+    Otherwise a new record is created.
+    """
+    engine = get_engine()
+    with engine.begin() as conn:
+        existing = conn.execute(
+            text("SELECT id FROM surveillance_comments "
+                 "WHERE vcode = :vc AND comment_date = :cd"),
+            {"vc": vcode, "cd": comment_date}
+        ).fetchone()
+
+        if existing:
+            conn.execute(
+                text("UPDATE surveillance_comments "
+                     "SET comment_text = :ct, created_by = :cb "
+                     "WHERE id = :id"),
+                {"ct": comment_text, "cb": username, "id": existing[0]}
+            )
+            return {"status": "updated", "id": existing[0]}
+        else:
+            conn.execute(
+                text("INSERT INTO surveillance_comments "
+                     "(vcode, comment_date, comment_text, created_by) "
+                     "VALUES (:vc, :cd, :ct, :cb)"),
+                {"vc": vcode, "cd": comment_date, "ct": comment_text, "cb": username}
+            )
+            return {"status": "created"}
+
+
+def delete_comment(comment_id: int) -> dict:
+    """Delete a comment by ID."""
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM surveillance_comments WHERE id = :id"), {"id": comment_id})
+    return {"status": "deleted"}
 
 
 # ---------------------------------------------------------------------------
@@ -404,116 +796,31 @@ def _latest_occupancy(occ: pd.DataFrame) -> dict:
     return result
 
 
-def _latest_noi(isbs_raw: pd.DataFrame) -> dict:
-    """Get latest monthly NOI and Revenue from ISBS Interim IS actuals.
-
-    ISBS columns: vcode, dtEntry (or dtEntry_parsed), vSource, vAccount,
-    vAccountType, mAmount, iNOI.
-    """
-    if isbs_raw.empty:
-        return {}
-
-    col_map = {c.lower(): c for c in isbs_raw.columns}
-    source_col = col_map.get("vsource", "vSource")
-    vcode_col = col_map.get("vcode", "vcode")
-    # dtEntry_parsed is pre-parsed datetime; dtEntry is raw string
-    period_col = col_map.get("dtentry_parsed", col_map.get("dtentry", "dtEntry"))
-    amount_col = col_map.get("mamount", "mAmount")
-    acct_col = col_map.get("vaccount", "vAccount")
-    inoi_col = col_map.get("inoi", "iNOI")
-
-    # Filter to Interim IS (actuals)
-    df = isbs_raw.copy()
-    if source_col in df.columns:
-        df = df[df[source_col].astype(str).str.strip() == "Interim IS"]
-    if df.empty:
-        return {}
-
-    df["_vcode"] = df[vcode_col].astype(str).str.strip().str.lower()
-    df["_period"] = pd.to_datetime(df[period_col], format="mixed", errors="coerce")
-    df["_amount"] = pd.to_numeric(df[amount_col], errors="coerce").fillna(0)
-    df = df.dropna(subset=["_period"])
-
-    # Get latest period per deal
-    latest_period = df.groupby("_vcode")["_period"].max()
-
-    result = {}
-    for vc, max_period in latest_period.items():
-        deal_df = df[(df["_vcode"] == vc) & (df["_period"] == max_period)]
-        if deal_df.empty:
-            continue
-
-        # Revenue = 4xxx accounts (negative in MRI, negate to positive)
-        # Expenses = 5xxx accounts
-        revenue = 0.0
-        expenses = 0.0
-        for _, row in deal_df.iterrows():
-            acct = str(row.get(acct_col, "")).strip()
-            amt = row["_amount"]
-            if acct.startswith("4"):
-                revenue += abs(amt)
-            elif acct.startswith("5"):
-                expenses += abs(amt)
-
-        result[vc] = {
-            "noi": round(revenue - expenses, 2),
-            "revenue": round(revenue, 2),
-            "period": max_period.strftime("%Y-%m"),
-        }
-    return result
-
-
-def _loan_summary(mri_loans: pd.DataFrame) -> dict:
-    """Summarize loan data per deal from MRI_Loans."""
-    if mri_loans.empty:
-        return {}
-
-    col_map = {c.lower(): c for c in mri_loans.columns}
-    vcode_col = col_map.get("vcode", "vCode")
-    balance_col = col_map.get("morigloanamt", "mOrigLoanAmt")
-    rate_col = col_map.get("nrate", "nRate")
-    maturity_col = col_map.get("dtmaturity", "dtMaturity")
-    type_col = col_map.get("vinttype", "vIntType")
-
-    df = mri_loans.copy()
-    df["_vcode"] = df[vcode_col].astype(str).str.strip().str.lower()
-    df["_balance"] = pd.to_numeric(df.get(balance_col, pd.Series(dtype=float)), errors="coerce").fillna(0)
-
-    result = {}
-    for vc, group in df.groupby("_vcode"):
-        total_balance = group["_balance"].sum()
-        # Use the largest loan for rate/maturity/type
-        primary = group.loc[group["_balance"].idxmax()]
-        result[vc] = {
-            "loan_balance": round(total_balance, 2),
-            "loan_rate": _safe_float(primary.get(rate_col)),
-            "maturity_date": _safe_date_str(primary.get(maturity_col)),
-            "loan_type": str(primary.get(type_col, "")).strip() or None,
-        }
-    return result
-
-
-def _safe_float(val):
-    try:
-        v = float(val)
-        return round(v, 4) if v == v else None  # NaN check
-    except (TypeError, ValueError):
-        return None
-
-
-def _safe_date_str(val):
-    try:
-        return pd.to_datetime(val).strftime("%Y-%m-%d")
-    except Exception:
-        return None
-
-
 def _load_surveillance_properties() -> dict:
     """Load all editable surveillance fields keyed by vcode."""
     engine = get_engine()
     try:
         with engine.connect() as conn:
             rows = conn.execute(text("SELECT * FROM surveillance_properties")).mappings().all()
+        return {r["vcode"]: dict(r) for r in rows}
+    except Exception:
+        return {}
+
+
+def _load_latest_comments() -> dict:
+    """Load the most recent comment per vcode."""
+    engine = get_engine()
+    try:
+        with engine.connect() as conn:
+            # Get the max comment_date per vcode, then fetch the row
+            rows = conn.execute(text(
+                "SELECT sc.id, sc.vcode, sc.comment_date, sc.comment_text, sc.created_by "
+                "FROM surveillance_comments sc "
+                "INNER JOIN ("
+                "  SELECT vcode, MAX(comment_date) AS max_date "
+                "  FROM surveillance_comments GROUP BY vcode"
+                ") latest ON sc.vcode = latest.vcode AND sc.comment_date = latest.max_date"
+            )).mappings().all()
         return {r["vcode"]: dict(r) for r in rows}
     except Exception:
         return {}

@@ -1,46 +1,58 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, nextTick } from 'vue'
 import { useSurveillanceStore } from '../stores/surveillance'
 import type { SurveillanceRow } from '../stores/surveillance'
 
 const store = useSurveillanceStore()
 
-// Inline editing
-const editingVcode = ref<string | null>(null)
-const editFields = ref<Record<string, any>>({})
+// Comment editing
+const commentVcode = ref<string | null>(null)
+const commentText = ref('')
+const commentDate = ref(new Date().toISOString().split('T')[0])
+const showHistory = ref(false)
+const commentTextarea = ref<HTMLTextAreaElement | null>(null)
+
+// Expandable column groups
+const expandedGroups = ref<Record<string, boolean>>({ reporting: false })
+
+function toggleGroup(group: string) {
+  expandedGroups.value[group] = !expandedGroups.value[group]
+}
 
 onMounted(async () => {
   await Promise.all([store.loadTable(), store.loadDashboard()])
 })
 
-function startEdit(row: SurveillanceRow) {
-  editingVcode.value = row.vcode
-  editFields.value = {
-    dscr_val: row.dscr_val,
-    dscr_min: row.dscr_min,
-    ltv_val: row.ltv_val,
-    ltv_min: row.ltv_min,
-    comments: row.comments || '',
-  }
+function openCommentEditor(row: SurveillanceRow) {
+  commentVcode.value = row.vcode
+  commentText.value = ''
+  commentDate.value = new Date().toISOString().split('T')[0]
+  showHistory.value = false
+  store.loadComments(row.vcode)
+  nextTick(() => commentTextarea.value?.focus())
 }
 
-async function saveEdit() {
-  if (!editingVcode.value) return
+function closeCommentEditor() {
+  commentVcode.value = null
+  showHistory.value = false
+}
+
+async function saveComment() {
+  if (!commentVcode.value || !commentText.value.trim()) return
   try {
-    await store.updateProperty(editingVcode.value, editFields.value)
-    editingVcode.value = null
+    await store.saveComment(commentVcode.value, commentDate.value, commentText.value.trim())
+    commentText.value = ''
   } catch (e: any) {
     alert('Save failed: ' + e.message)
   }
 }
 
-function cancelEdit() {
-  editingVcode.value = null
-}
-
 function formatCurrency(val: number | null): string {
   if (val == null) return '\u2014'
-  if (Math.abs(val) >= 1_000_000) return '$' + (val / 1_000_000).toFixed(1) + 'M'
+  if (Math.abs(val) >= 1_000_000) {
+    const m = (val / 1_000_000).toFixed(1)
+    return '$' + Number(m).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + 'M'
+  }
   if (Math.abs(val) >= 1_000) return '$' + (val / 1_000).toFixed(0) + 'K'
   return '$' + val.toFixed(0)
 }
@@ -62,6 +74,13 @@ function formatRatio(val: number | null): string {
   return val.toFixed(2) + 'x'
 }
 
+function formatShortDate(dt: string | null): string {
+  if (!dt) return ''
+  const d = new Date(dt + 'T00:00:00')
+  if (isNaN(d.getTime())) return dt
+  return `${d.getMonth() + 1}/${d.getDate()}/${String(d.getFullYear()).slice(2)}`
+}
+
 function occupancyClass(val: number | null): string {
   if (val == null) return ''
   if (val >= 90) return 'occ-good'
@@ -77,18 +96,41 @@ function maturityClass(dt: string | null): string {
   return ''
 }
 
+function dscrClass(row: SurveillanceRow): string {
+  if (row.dscr != null && row.dscr_min != null && row.dscr < row.dscr_min) return 'breach'
+  return ''
+}
+
+function missingClass(val: number | null): string {
+  if (val == null) return ''
+  if (val === 0) return 'rpt-complete'
+  if (val <= 2) return 'rpt-warn'
+  return 'rpt-bad'
+}
+
+// Total columns for colspan on empty row
+function totalCols(): number {
+  return 8 + (expandedGroups.value.reporting ? 4 : 1)
+}
+
 function handleExportCsv() {
-  const headers = ['Property', 'Asset Type', 'Occupancy', 'NOI Monthly', 'Loan Balance', 'DSCR', 'LTV', 'Maturity', 'Flagged', 'Comments']
+  const headers = [
+    'Property', 'Asset Type', 'Occupancy', 'NOI (TTM)', 'DSCR', 'Debt Balance', 'Maturity', 'Comments',
+    'Occ Latest', 'Occ Missing', 'Rent Roll Latest', 'Rent Roll Missing',
+    'IS Latest', 'IS Missing', 'BS Latest', 'BS Missing',
+  ]
   const csvRows = store.filteredRows.map(r => [
     r.name, r.asset_type,
     r.occ_pct != null ? r.occ_pct.toFixed(1) : '',
-    r.noi_monthly != null ? r.noi_monthly.toFixed(0) : '',
-    r.loan_balance != null ? r.loan_balance.toFixed(0) : '',
-    r.dscr_val != null ? r.dscr_val.toFixed(2) : '',
-    r.ltv_val != null ? r.ltv_val.toFixed(1) : '',
+    r.noi_ttm != null ? r.noi_ttm.toFixed(0) : '',
+    r.dscr != null ? r.dscr.toFixed(2) : '',
+    r.debt_balance != null ? r.debt_balance.toFixed(0) : '',
     r.maturity_date || '',
-    r.flagged ? 'Yes' : 'No',
-    r.comments || '',
+    r.comment_text || '',
+    r.rpt_occ_latest || '', r.rpt_occ_missing ?? '',
+    r.rpt_rent_roll_latest || '', r.rpt_rent_roll_missing ?? '',
+    r.rpt_is_latest || '', r.rpt_is_missing ?? '',
+    r.rpt_bs_latest || '', r.rpt_bs_missing ?? '',
   ])
   const csv = [headers, ...csvRows].map(row => row.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n')
   const blob = new Blob([csv], { type: 'text/csv' })
@@ -122,12 +164,8 @@ function handleExportCsv() {
         <span class="kpi-label">Total Debt</span>
       </div>
       <div class="kpi-card">
-        <span class="kpi-value">{{ formatCurrency(store.dashboard.total_noi_monthly) }}</span>
-        <span class="kpi-label">NOI (Monthly)</span>
-      </div>
-      <div class="kpi-card" :class="{ 'kpi-alert': (store.dashboard.flagged ?? 0) > 0 }">
-        <span class="kpi-value">{{ store.dashboard.flagged }}</span>
-        <span class="kpi-label">Flagged</span>
+        <span class="kpi-value">{{ formatCurrency(store.dashboard.total_noi_ttm) }}</span>
+        <span class="kpi-label">NOI (TTM)</span>
       </div>
       <div class="kpi-card" :class="{ 'kpi-warn': (store.dashboard.maturing_12mo ?? 0) > 0 }">
         <span class="kpi-value">{{ store.dashboard.maturing_12mo }}</span>
@@ -143,11 +181,6 @@ function handleExportCsv() {
         class="filter-input search-input"
         placeholder="Search by name or vcode..."
       />
-      <select v-model="store.flagFilter" class="filter-select">
-        <option value="">All</option>
-        <option value="flagged">Flagged Only</option>
-        <option value="clear">Clear Only</option>
-      </select>
       <select v-model="store.assetTypeFilter" class="filter-select">
         <option value="">All Asset Types</option>
         <option v-for="t in store.assetTypes" :key="t" :value="t">{{ t }}</option>
@@ -168,27 +201,48 @@ function handleExportCsv() {
     <div v-else class="table-wrap">
       <table class="surv-table">
         <thead>
+          <!-- Group header row -->
+          <tr class="group-header-row">
+            <th :colspan="8" class="group-spacer"></th>
+            <!-- Reporting group toggle -->
+            <th
+              :colspan="expandedGroups.reporting ? 4 : 1"
+              class="group-header group-reporting"
+              @click="toggleGroup('reporting')"
+            >
+              <span class="group-toggle">{{ expandedGroups.reporting ? '\u25BC' : '\u25B6' }}</span>
+              Reporting
+            </th>
+          </tr>
+          <!-- Column header row -->
           <tr>
-            <th class="sticky-col">Property</th>
-            <th>Type</th>
-            <th>Occupancy</th>
-            <th>NOI (Mo)</th>
-            <th>Debt</th>
-            <th>DSCR</th>
-            <th>LTV</th>
-            <th>Maturity</th>
-            <th>Flag</th>
-            <th>Comments</th>
+            <th class="sticky-col col-property">Property</th>
+            <th class="col-type">Type</th>
+            <th class="col-occ">Occupancy</th>
+            <th class="col-noi">NOI (TTM)</th>
+            <th class="col-dscr">DSCR</th>
+            <th class="col-debt">Debt Balance</th>
+            <th class="col-mat">Maturity</th>
+            <th class="col-comment">Comments</th>
+            <!-- Reporting sub-columns -->
+            <template v-if="expandedGroups.reporting">
+              <th class="col-rpt">Occ</th>
+              <th class="col-rpt">Rent Roll</th>
+              <th class="col-rpt">Inc. Stmt</th>
+              <th class="col-rpt">Bal. Sheet</th>
+            </template>
+            <template v-else>
+              <th class="col-rpt-collapsed">&nbsp;</th>
+            </template>
           </tr>
         </thead>
         <tbody>
           <tr
             v-for="row in store.filteredRows"
             :key="row.vcode"
-            :class="{ 'row-flagged': row.flagged }"
           >
             <td class="sticky-col deal-name" :title="row.vcode">{{ row.name || row.vcode }}</td>
-            <td>{{ row.asset_type || '\u2014' }}</td>
+            <td class="col-type-cell">{{ row.asset_type || '\u2014' }}</td>
             <td :class="occupancyClass(row.occ_pct)">
               <div class="occ-cell" v-if="row.occ_pct != null">
                 <div class="occ-bar">
@@ -198,50 +252,99 @@ function handleExportCsv() {
               </div>
               <span v-else>&mdash;</span>
             </td>
-            <td class="num">{{ formatCurrency(row.noi_monthly) }}</td>
-            <td class="num">{{ formatCurrency(row.loan_balance) }}</td>
-
-            <!-- DSCR — inline edit when active -->
-            <template v-if="editingVcode === row.vcode">
-              <td>
-                <input v-model.number="editFields.dscr_val" class="edit-num" placeholder="Val" />
+            <td class="centered">{{ formatCurrency(row.noi_ttm) }}</td>
+            <td class="centered" :class="dscrClass(row)">
+              {{ formatRatio(row.dscr) }}
+            </td>
+            <td class="centered">{{ formatCurrency(row.debt_balance) }}</td>
+            <td class="centered" :class="maturityClass(row.maturity_date)">{{ formatDate(row.maturity_date) }}</td>
+            <td class="comment-cell" @click="openCommentEditor(row)" :title="row.comment_text || 'Click to add comment'">
+              <div class="comment-preview" v-if="row.comment_text">
+                <span class="comment-date-badge">{{ formatShortDate(row.comment_date) }}</span>
+                <span class="comment-snippet">{{ row.comment_text }}</span>
+              </div>
+              <span v-else class="comment-empty">+</span>
+            </td>
+            <!-- Reporting columns -->
+            <template v-if="expandedGroups.reporting">
+              <td class="rpt-cell" :class="missingClass(row.rpt_occ_missing)">
+                <span class="rpt-period">{{ row.rpt_occ_latest || '\u2014' }}</span>
+                <span v-if="row.rpt_occ_missing" class="rpt-missing" :title="row.rpt_occ_missing + ' missing in trailing 12mo'">{{ row.rpt_occ_missing }}</span>
               </td>
-              <td>
-                <input v-model.number="editFields.ltv_val" class="edit-num" placeholder="LTV" />
+              <td class="rpt-cell" :class="row.is_commercial ? missingClass(row.rpt_rent_roll_missing) : ''">
+                <template v-if="row.is_commercial">
+                  <span class="rpt-period">{{ row.rpt_rent_roll_latest || '\u2014' }}</span>
+                  <span v-if="row.rpt_rent_roll_missing" class="rpt-missing" :title="row.rpt_rent_roll_missing + ' missing in trailing 12mo'">{{ row.rpt_rent_roll_missing }}</span>
+                </template>
+                <span v-else class="rpt-na">n/a</span>
               </td>
-              <td :class="maturityClass(row.maturity_date)">{{ formatDate(row.maturity_date) }}</td>
-              <td>
-                <span v-if="row.flagged" class="flag-indicator">!</span>
+              <td class="rpt-cell" :class="missingClass(row.rpt_is_missing)">
+                <span class="rpt-period">{{ row.rpt_is_latest || '\u2014' }}</span>
+                <span v-if="row.rpt_is_missing" class="rpt-missing" :title="row.rpt_is_missing + ' missing in trailing 12mo'">{{ row.rpt_is_missing }}</span>
               </td>
-              <td class="edit-actions">
-                <input v-model="editFields.comments" class="edit-input" placeholder="Comment..." />
-                <div class="edit-btns">
-                  <button class="btn-save" @click="saveEdit">Save</button>
-                  <button class="btn-cancel" @click="cancelEdit">Cancel</button>
-                </div>
+              <td class="rpt-cell" :class="missingClass(row.rpt_bs_missing)">
+                <span class="rpt-period">{{ row.rpt_bs_latest || '\u2014' }}</span>
+                <span v-if="row.rpt_bs_missing" class="rpt-missing" :title="row.rpt_bs_missing + ' missing in trailing 12mo'">{{ row.rpt_bs_missing }}</span>
               </td>
             </template>
             <template v-else>
-              <td class="num" :class="{ 'breach': row.dscr_val != null && row.dscr_min != null && row.dscr_val < row.dscr_min }">
-                {{ formatRatio(row.dscr_val) }}
-              </td>
-              <td class="num" :class="{ 'breach': row.ltv_val != null && row.ltv_min != null && row.ltv_val > row.ltv_min }">
-                {{ formatPct(row.ltv_val) }}
-              </td>
-              <td :class="maturityClass(row.maturity_date)">{{ formatDate(row.maturity_date) }}</td>
-              <td>
-                <span v-if="row.flagged" class="flag-indicator">!</span>
-              </td>
-              <td class="comment-cell" @click="startEdit(row)" :title="row.comments || 'Click to edit'">
-                {{ row.comments || '' }}
+              <td class="rpt-summary-cell" :title="'Click Reporting header to expand'">
+                <span v-if="(row.rpt_occ_missing || 0) + (row.rpt_is_missing || 0) + (row.rpt_bs_missing || 0) === 0" class="rpt-ok-dot"></span>
+                <span v-else class="rpt-missing-total">{{ (row.rpt_occ_missing || 0) + (row.rpt_is_missing || 0) + (row.rpt_bs_missing || 0) + (row.is_commercial ? (row.rpt_rent_roll_missing || 0) : 0) }}</span>
               </td>
             </template>
           </tr>
           <tr v-if="!store.filteredRows.length && !store.loading">
-            <td colspan="10" class="empty-row">No deals match the current filters.</td>
+            <td :colspan="totalCols()" class="empty-row">No deals match the current filters.</td>
           </tr>
         </tbody>
       </table>
+    </div>
+
+    <!-- Comment Editor Overlay -->
+    <div v-if="commentVcode" class="comment-overlay" @click.self="closeCommentEditor">
+      <div class="comment-panel">
+        <div class="comment-panel-header">
+          <h3>Comments — {{ store.rows.find(r => r.vcode === commentVcode)?.name || commentVcode }}</h3>
+          <button class="btn-close" @click="closeCommentEditor">&times;</button>
+        </div>
+
+        <!-- New comment form -->
+        <div class="comment-form">
+          <div class="comment-form-row">
+            <label>Date:</label>
+            <input type="date" v-model="commentDate" class="comment-date-input" />
+          </div>
+          <textarea
+            ref="commentTextarea"
+            v-model="commentText"
+            class="comment-textarea"
+            placeholder="Enter comment..."
+            rows="3"
+          ></textarea>
+          <button class="btn-save" @click="saveComment" :disabled="!commentText.trim()">Save Comment</button>
+        </div>
+
+        <!-- Comment history -->
+        <div class="comment-history">
+          <div class="comment-history-header" @click="showHistory = !showHistory">
+            <span>{{ showHistory ? 'Hide' : 'Show' }} History ({{ store.comments.length }})</span>
+            <span class="toggle-icon">{{ showHistory ? '\u25B2' : '\u25BC' }}</span>
+          </div>
+          <div v-if="showHistory && store.comments.length" class="comment-list">
+            <div v-for="c in store.comments" :key="c.id" class="comment-item">
+              <div class="comment-item-header">
+                <span class="comment-item-date">{{ formatShortDate(c.comment_date) }}</span>
+                <span class="comment-item-by" v-if="c.created_by">{{ c.created_by }}</span>
+              </div>
+              <div class="comment-item-text">{{ c.comment_text }}</div>
+            </div>
+          </div>
+          <div v-if="showHistory && !store.comments.length" class="comment-list-empty">
+            No comments yet.
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -305,8 +408,6 @@ function handleExportCsv() {
   text-transform: uppercase;
 }
 
-.kpi-alert { border-color: #ef5350; }
-.kpi-alert .kpi-value { color: #c62828; }
 .kpi-warn { border-color: #ffb74d; }
 .kpi-warn .kpi-value { color: #e65100; }
 
@@ -382,17 +483,80 @@ function handleExportCsv() {
 
 th.sticky-col { z-index: 3; }
 
+/* Group header row */
+.group-header-row th {
+  padding: 6px 12px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 2px solid rgba(255, 255, 255, 0.3);
+}
+
+.group-spacer {
+  background: var(--color-accent) !important;
+  border: none;
+}
+
+.group-header {
+  cursor: pointer;
+  user-select: none;
+  text-align: center;
+  background: #37474f !important;
+  border-left: 2px solid rgba(255, 255, 255, 0.2);
+}
+.group-header:hover { background: #455a64 !important; }
+
+.group-toggle {
+  font-size: 9px;
+  margin-right: 4px;
+}
+
+/* Column widths */
+.col-property { width: 220px; min-width: 180px; }
+.col-type { width: 130px; min-width: 100px; }
+.col-occ { width: 130px; min-width: 110px; text-align: center; }
+.col-noi { width: 110px; min-width: 90px; text-align: center; }
+.col-dscr { width: 80px; min-width: 65px; text-align: center; }
+.col-debt { width: 120px; min-width: 95px; text-align: center; }
+.col-mat { width: 110px; min-width: 90px; text-align: center; }
+.col-comment { min-width: 200px; }
+
+/* Reporting sub-column headers */
+.col-rpt {
+  width: 85px;
+  min-width: 75px;
+  text-align: center;
+  font-size: 11px;
+  background: #455a64 !important;
+  border-left: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.col-rpt-collapsed {
+  width: 36px;
+  min-width: 36px;
+  text-align: center;
+  background: #455a64 !important;
+  border-left: 2px solid rgba(255, 255, 255, 0.2);
+}
+
 .surv-table tbody tr { background: white; }
 .surv-table tbody tr:hover { background: #f5f5f5; }
-
-.row-flagged { background: #fff8e1 !important; }
-.row-flagged:hover { background: #fff3c4 !important; }
 
 .deal-name {
   font-weight: 500;
   max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.col-type-cell {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.centered {
+  text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 
 .num {
@@ -410,6 +574,7 @@ th.sticky-col { z-index: 3; }
 .occ-cell {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
 }
 
@@ -442,78 +607,271 @@ th.sticky-col { z-index: 3; }
 .mat-urgent { color: #c62828; font-weight: 600; }
 .mat-soon { color: #e65100; }
 
-/* Flag indicator */
-.flag-indicator {
+/* Reporting cells */
+.rpt-cell {
+  text-align: center;
+  font-size: 12px;
+  border-left: 1px solid #e8e8e8;
+  padding: 5px 6px !important;
+}
+
+.rpt-period {
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.rpt-missing {
   display: inline-block;
-  background: #ffb74d;
-  color: #fff;
+  background: #ef5350;
+  color: white;
   font-size: 10px;
   font-weight: 700;
-  width: 18px;
+  min-width: 16px;
+  height: 16px;
+  line-height: 16px;
+  text-align: center;
+  border-radius: 8px;
+  margin-left: 4px;
+  cursor: default;
+}
+
+.rpt-complete .rpt-period { color: #2e7d32; }
+.rpt-warn .rpt-missing { background: #ff9800; }
+.rpt-bad .rpt-missing { background: #ef5350; }
+
+.rpt-na {
+  color: #bdbdbd;
+  font-size: 11px;
+  font-style: italic;
+}
+
+/* Collapsed reporting summary */
+.rpt-summary-cell {
+  text-align: center;
+  border-left: 2px solid #e0e0e0;
+  width: 36px;
+  padding: 5px 4px !important;
+}
+
+.rpt-ok-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #66bb6a;
+}
+
+.rpt-missing-total {
+  display: inline-block;
+  background: #ef5350;
+  color: white;
+  font-size: 10px;
+  font-weight: 700;
+  min-width: 18px;
   height: 18px;
   line-height: 18px;
   text-align: center;
-  border-radius: 50%;
+  border-radius: 9px;
 }
 
-/* Comment cell — clickable to edit */
+/* Comment cell — clickable */
 .comment-cell {
   cursor: pointer;
-  max-width: 180px;
+  max-width: 260px;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: var(--color-text-secondary);
-  font-size: 12px;
+  white-space: nowrap;
 }
 .comment-cell:hover { background: #f0f0f0; }
 
-/* Inline editing */
-.edit-num {
-  width: 60px;
-  padding: 2px 4px;
-  font-size: 12px;
-  border: 1px solid var(--color-border);
-  border-radius: 3px;
-  text-align: right;
+.comment-preview {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
-.edit-input {
-  width: 140px;
-  padding: 2px 6px;
-  font-size: 12px;
-  border: 1px solid var(--color-border);
+.comment-date-badge {
+  background: #e3f2fd;
+  color: #1565c0;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
   border-radius: 3px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
-.edit-actions {
+.comment-snippet {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.comment-empty {
+  color: #bdbdbd;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+/* Comment Overlay */
+.comment-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.3);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.comment-panel {
+  background: white;
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  width: 480px;
+  max-height: 80vh;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  overflow: hidden;
 }
 
-.edit-btns {
+.comment-panel-header {
   display: flex;
-  gap: 4px;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.comment-panel-header h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.btn-close {
+  background: none;
+  border: none;
+  font-size: 22px;
+  cursor: pointer;
+  color: var(--color-text-secondary);
+  line-height: 1;
+  padding: 0 4px;
+}
+.btn-close:hover { color: var(--color-text); }
+
+/* Comment form */
+.comment-form {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.comment-form-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.comment-form-row label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+}
+
+.comment-date-input {
+  padding: 4px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.comment-textarea {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+  margin-bottom: 8px;
+  box-sizing: border-box;
 }
 
 .btn-save {
-  padding: 2px 8px;
+  padding: 6px 16px;
   background: #2e7d32;
   color: white;
   border: none;
-  border-radius: 3px;
+  border-radius: 4px;
   cursor: pointer;
-  font-size: 11px;
+  font-size: 13px;
+}
+.btn-save:hover { opacity: 0.9; }
+.btn-save:disabled { opacity: 0.5; cursor: default; }
+
+/* Comment history */
+.comment-history {
+  overflow-y: auto;
+  flex: 1;
 }
 
-.btn-cancel {
-  padding: 2px 8px;
-  background: #757575;
-  color: white;
-  border: none;
-  border-radius: 3px;
+.comment-history-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 18px;
   cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  user-select: none;
+}
+.comment-history-header:hover { background: #fafafa; }
+
+.toggle-icon { font-size: 10px; }
+
+.comment-list {
+  padding: 0 18px 14px;
+}
+
+.comment-item {
+  padding: 8px 0;
+  border-bottom: 1px solid #f0f0f0;
+}
+.comment-item:last-child { border-bottom: none; }
+
+.comment-item-header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.comment-item-date {
+  font-size: 12px;
+  font-weight: 600;
+  color: #1565c0;
+}
+
+.comment-item-by {
   font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+.comment-item-text {
+  font-size: 13px;
+  color: var(--color-text);
+  white-space: pre-wrap;
+  line-height: 1.4;
+}
+
+.comment-list-empty {
+  padding: 12px 18px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  font-style: italic;
 }
 
 /* Shared */

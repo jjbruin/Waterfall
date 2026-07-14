@@ -35,6 +35,38 @@ def update_surveillance(vcode):
     return jsonify(result)
 
 
+# --- Comment endpoints ---
+
+@surveillance_bp.route("/<vcode>/comments", methods=["GET"])
+@login_required
+def get_comments(vcode):
+    """Get all comments for a deal (newest first)."""
+    comments = surveillance_service.get_comments(vcode)
+    return safe_json(comments)
+
+
+@surveillance_bp.route("/<vcode>/comments", methods=["POST"])
+@login_required
+def save_comment(vcode):
+    """Save a comment for a deal on a specific date."""
+    data = request.get_json(force=True)
+    comment_date = data.get("comment_date")
+    comment_text = data.get("comment_text", "").strip()
+    if not comment_date or not comment_text:
+        return jsonify({"error": "comment_date and comment_text required"}), 400
+    username = getattr(g, "username", None)
+    result = surveillance_service.save_comment(vcode, comment_date, comment_text, username)
+    return jsonify(result)
+
+
+@surveillance_bp.route("/comments/<int:comment_id>", methods=["DELETE"])
+@login_required
+def delete_comment(comment_id):
+    """Delete a comment by ID."""
+    result = surveillance_service.delete_comment(comment_id)
+    return jsonify(result)
+
+
 # --- Insurance endpoints ---
 
 @surveillance_bp.route("/insurance", methods=["GET"])

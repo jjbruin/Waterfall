@@ -4,6 +4,8 @@ All functions are pure Python (no Streamlit). They accept DataFrames and return
 dicts/DataFrames suitable for JSON serialization.
 """
 
+import threading
+
 import pandas as pd
 import numpy as np
 from typing import Optional
@@ -13,6 +15,54 @@ from consolidation import build_property_map
 from config import IS_ACCOUNTS
 from flask_app.services.isbs_helpers import compute_cumulative_noi, cumulative_to_periodic, aggregate_periodic
 from utils import normalize_columns
+
+# ---------------------------------------------------------------------------
+# Shared caps / occ cache — used by Dashboard AND Surveillance
+# ---------------------------------------------------------------------------
+_caps_cache: dict = {}
+_occ_cache: dict = {}
+_caps_lock = threading.Lock()
+
+
+def clear_shared_cache():
+    """Clear the shared caps/occ caches. Called on data reload."""
+    _caps_cache.clear()
+    _occ_cache.clear()
+
+
+def get_cached_caps_and_occ(on_progress=None):
+    """Get or compute caps and occupancy for parent-level deals (cached, thread-safe).
+
+    Returns (caps, occ_map, data, inv_disp).
+    Both Dashboard and Surveillance should use this single source of truth
+    for debt, occupancy, and other cap-derived KPIs.
+    """
+    from flask_app.services import data_service
+
+    data = data_service.get_data()
+    inv_disp = data_service.get_inv_display(data["inv"])
+
+    # Exclude child properties — their data rolls up into parent deals
+    child_vcodes = get_child_vcodes(data["inv"])
+    inv_disp = inv_disp[~inv_disp["vcode"].astype(str).isin(child_vcodes)]
+
+    cache_key = len(inv_disp)
+    if cache_key in _caps_cache and cache_key in _occ_cache:
+        return _caps_cache[cache_key], _occ_cache[cache_key], data, inv_disp
+
+    with _caps_lock:
+        # Double-check after acquiring lock
+        if cache_key not in _caps_cache:
+            _caps_cache[cache_key] = get_portfolio_caps(
+                inv_disp, data["inv"], data["wf"], data["acct"],
+                data["mri_val"], data["mri_loans_raw"],
+                on_progress=on_progress,
+                isbs_raw=data.get("isbs_raw"),
+            )
+        if cache_key not in _occ_cache:
+            _occ_cache[cache_key] = get_latest_occupancy(inv_disp, data["occupancy_raw"], inv=data["inv"])
+
+    return _caps_cache[cache_key], _occ_cache[cache_key], data, inv_disp
 
 
 def get_child_vcodes(inv: pd.DataFrame) -> set:

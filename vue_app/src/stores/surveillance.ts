@@ -11,19 +11,20 @@ export interface SurveillanceRow {
   partner: string
   lifecycle: string
   portfolio_name: string
-  // Live data
+  // Live data — consistent with Property Financials / Deal Analysis
   occ_pct: number | null
   occ_period: string | null
-  noi_monthly: number | null
-  revenue_monthly: number | null
+  noi_ttm: number | null
+  revenue_ttm: number | null
+  dscr: number | null
   fin_period: string | null
-  // Loan data
-  loan_balance: number | null
+  // Debt — ISBS balance (Deal Analysis consistent)
+  debt_balance: number | null
+  // Loan data — Deal Analysis consistent
   loan_rate: number | null
   maturity_date: string | null
   loan_type: string | null
   // Editable surveillance fields
-  dscr_val: number | null
   dscr_min: number | null
   dy_val: number | null
   dy_min: number | null
@@ -33,23 +34,42 @@ export interface SurveillanceRow {
   tax_due: string | null
   ins_renewal: string | null
   tenant_exp: string | null
-  comments: string | null
   updated_at: string | null
   // Insurance
   has_property_ins: boolean
   has_gl_ins: boolean
-  // Computed
-  flagged: boolean
+  // Comments (latest)
+  comment_text: string | null
+  comment_date: string | null
+  comment_id: number | null
+  // Reporting completeness
+  rpt_occ_latest: string | null
+  rpt_occ_missing: number | null
+  rpt_rent_roll_latest: string | null
+  rpt_rent_roll_missing: number | null
+  rpt_is_latest: string | null
+  rpt_is_missing: number | null
+  rpt_bs_latest: string | null
+  rpt_bs_missing: number | null
+  is_commercial: boolean
 }
 
 export interface SurveillanceDashboard {
   total: number
   total_debt: number | null
   avg_occ: number | null
-  total_noi_monthly: number | null
-  flagged: number
+  total_noi_ttm: number | null
   maturing_12mo: number
   by_type: Record<string, number>
+}
+
+export interface SurveillanceComment {
+  id: number
+  vcode: string
+  comment_date: string
+  comment_text: string
+  created_by: string | null
+  created_at: string | null
 }
 
 export interface InsuranceRecord {
@@ -70,9 +90,12 @@ export const useSurveillanceStore = defineStore('surveillance', () => {
   const loading = ref(false)
   const error = ref<string | null>(null)
 
+  // Comments for a selected deal
+  const commentsDealVcode = ref<string | null>(null)
+  const comments = ref<SurveillanceComment[]>([])
+
   // Filters
   const searchQuery = ref('')
-  const flagFilter = ref('')
   const assetTypeFilter = ref('')
 
   const assetTypes = computed(() => {
@@ -87,13 +110,6 @@ export const useSurveillanceStore = defineStore('surveillance', () => {
       result = result.filter(r =>
         r.name?.toLowerCase().includes(q) || r.vcode.toLowerCase().includes(q)
       )
-    }
-    if (flagFilter.value) {
-      if (flagFilter.value === 'flagged') {
-        result = result.filter(r => r.flagged)
-      } else if (flagFilter.value === 'clear') {
-        result = result.filter(r => !r.flagged)
-      }
     }
     if (assetTypeFilter.value) {
       result = result.filter(r => r.asset_type === assetTypeFilter.value)
@@ -133,6 +149,44 @@ export const useSurveillanceStore = defineStore('surveillance', () => {
     }
   }
 
+  // --- Comments ---
+  async function loadComments(vcode: string) {
+    commentsDealVcode.value = vcode
+    try {
+      const res = await api.get(`/api/surveillance/${vcode}/comments`)
+      comments.value = res.data
+    } catch (e: any) {
+      error.value = e.response?.data?.error || e.message
+    }
+  }
+
+  async function saveComment(vcode: string, commentDate: string, commentText: string) {
+    try {
+      await api.post(`/api/surveillance/${vcode}/comments`, {
+        comment_date: commentDate,
+        comment_text: commentText,
+      })
+      // Reload comments and update the row's latest comment
+      await loadComments(vcode)
+      await loadTable()
+    } catch (e: any) {
+      throw new Error(e.response?.data?.error || e.message)
+    }
+  }
+
+  async function deleteComment(commentId: number) {
+    try {
+      await api.delete(`/api/surveillance/comments/${commentId}`)
+      if (commentsDealVcode.value) {
+        await loadComments(commentsDealVcode.value)
+        await loadTable()
+      }
+    } catch (e: any) {
+      throw new Error(e.response?.data?.error || e.message)
+    }
+  }
+
+  // --- Insurance ---
   async function loadInsurance() {
     try {
       const res = await api.get('/api/surveillance/insurance')
@@ -162,9 +216,11 @@ export const useSurveillanceStore = defineStore('surveillance', () => {
 
   return {
     rows, dashboard, insurance, loading, error,
-    searchQuery, flagFilter, assetTypeFilter,
+    searchQuery, assetTypeFilter,
     assetTypes, filteredRows,
+    commentsDealVcode, comments,
     loadTable, loadDashboard, updateProperty,
+    loadComments, saveComment, deleteComment,
     loadInsurance, saveInsurance, deleteInsurance,
   }
 })
