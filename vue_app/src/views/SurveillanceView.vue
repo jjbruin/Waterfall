@@ -13,7 +13,15 @@ const showHistory = ref(false)
 const commentTextarea = ref<HTMLTextAreaElement | null>(null)
 
 // Expandable column groups
-const expandedGroups = ref<Record<string, boolean>>({ reporting: false })
+const expandedGroups = ref<Record<string, boolean>>({
+  reporting: false,
+  covenants: false,
+  taxes: false,
+  insurance: false,
+  ground_leases: false,
+  escrows: false,
+  collateral: false,
+})
 
 function toggleGroup(group: string) {
   expandedGroups.value[group] = !expandedGroups.value[group]
@@ -108,9 +116,24 @@ function missingClass(val: number | null): string {
   return 'rpt-bad'
 }
 
+// Expandable group definitions: key, label, sub-column headers
+const groupDefs = [
+  { key: 'reporting', label: 'Reporting', cols: ['Occ', 'Rent Roll', 'Inc. Stmt', 'Bal. Sheet'] },
+  { key: 'covenants', label: 'Debt Covenants', cols: ['DSCR Min', 'Debt Yield', 'DY Min', 'LTV', 'LTV Max'] },
+  { key: 'taxes', label: 'Real Estate Taxes', cols: ['Tax Due', 'Status', 'Amount'] },
+  { key: 'insurance', label: 'Insurance', cols: ['Property', 'GL', 'Renewal'] },
+  { key: 'ground_leases', label: 'Ground Leases', cols: ['Lease Exp', 'Rent', 'Status'] },
+  { key: 'escrows', label: 'Escrows', cols: ['Tax', 'Insurance', 'CapEx'] },
+  { key: 'collateral', label: "Add'l Collateral", cols: ['Type', 'Value', 'Notes'] },
+]
+
 // Total columns for colspan on empty row
 function totalCols(): number {
-  return 8 + (expandedGroups.value.reporting ? 4 : 1)
+  let count = 8 // base columns
+  for (const g of groupDefs) {
+    count += expandedGroups.value[g.key] ? g.cols.length : 1
+  }
+  return count
 }
 
 function handleExportCsv() {
@@ -204,14 +227,16 @@ function handleExportCsv() {
           <!-- Group header row -->
           <tr class="group-header-row">
             <th :colspan="8" class="group-spacer"></th>
-            <!-- Reporting group toggle -->
             <th
-              :colspan="expandedGroups.reporting ? 4 : 1"
-              class="group-header group-reporting"
-              @click="toggleGroup('reporting')"
+              v-for="g in groupDefs"
+              :key="g.key"
+              :colspan="expandedGroups[g.key] ? g.cols.length : 1"
+              class="group-header"
+              :class="'group-' + g.key"
+              @click="toggleGroup(g.key)"
             >
-              <span class="group-toggle">{{ expandedGroups.reporting ? '\u25BC' : '\u25B6' }}</span>
-              Reporting
+              <span class="group-toggle">{{ expandedGroups[g.key] ? '\u25BC' : '\u25B6' }}</span>
+              {{ g.label }}
             </th>
           </tr>
           <!-- Column header row -->
@@ -224,15 +249,14 @@ function handleExportCsv() {
             <th class="col-debt">Debt Balance</th>
             <th class="col-mat">Maturity</th>
             <th class="col-comment">Comments</th>
-            <!-- Reporting sub-columns -->
-            <template v-if="expandedGroups.reporting">
-              <th class="col-rpt">Occ</th>
-              <th class="col-rpt">Rent Roll</th>
-              <th class="col-rpt">Inc. Stmt</th>
-              <th class="col-rpt">Bal. Sheet</th>
-            </template>
-            <template v-else>
-              <th class="col-rpt-collapsed">&nbsp;</th>
+            <!-- Expandable group sub-columns -->
+            <template v-for="g in groupDefs" :key="'hdr-' + g.key">
+              <template v-if="expandedGroups[g.key]">
+                <th v-for="col in g.cols" :key="g.key + '-' + col" class="col-rpt">{{ col }}</th>
+              </template>
+              <template v-else>
+                <th class="col-rpt-collapsed">&nbsp;</th>
+              </template>
             </template>
           </tr>
         </thead>
@@ -293,6 +317,62 @@ function handleExportCsv() {
                 <span v-else class="rpt-missing-total">{{ (row.rpt_occ_missing || 0) + (row.rpt_is_missing || 0) + (row.rpt_bs_missing || 0) + (row.is_commercial ? (row.rpt_rent_roll_missing || 0) : 0) }}</span>
               </td>
             </template>
+
+            <!-- Debt Covenants -->
+            <template v-if="expandedGroups.covenants">
+              <td class="rpt-cell">{{ row.dscr_min != null ? row.dscr_min.toFixed(2) + 'x' : '\u2014' }}</td>
+              <td class="rpt-cell">{{ row.dy_val != null ? formatPct(row.dy_val) : '\u2014' }}</td>
+              <td class="rpt-cell">{{ row.dy_min != null ? formatPct(row.dy_min) : '\u2014' }}</td>
+              <td class="rpt-cell">{{ row.ltv_val != null ? formatPct(row.ltv_val) : '\u2014' }}</td>
+              <td class="rpt-cell">{{ row.ltv_min != null ? formatPct(row.ltv_min) : '\u2014' }}</td>
+            </template>
+            <td v-else class="rpt-summary-cell"><span class="placeholder-dot"></span></td>
+
+            <!-- Real Estate Taxes -->
+            <template v-if="expandedGroups.taxes">
+              <td class="rpt-cell">{{ row.tax_due ? formatShortDate(row.tax_due) : '\u2014' }}</td>
+              <td class="rpt-cell">&mdash;</td>
+              <td class="rpt-cell">&mdash;</td>
+            </template>
+            <td v-else class="rpt-summary-cell"><span class="placeholder-dot"></span></td>
+
+            <!-- Insurance -->
+            <template v-if="expandedGroups.insurance">
+              <td class="rpt-cell">
+                <span v-if="row.has_property_ins" class="rpt-ok-dot"></span>
+                <span v-else>&mdash;</span>
+              </td>
+              <td class="rpt-cell">
+                <span v-if="row.has_gl_ins" class="rpt-ok-dot"></span>
+                <span v-else>&mdash;</span>
+              </td>
+              <td class="rpt-cell">{{ row.ins_renewal ? formatShortDate(row.ins_renewal) : '\u2014' }}</td>
+            </template>
+            <td v-else class="rpt-summary-cell"><span class="placeholder-dot"></span></td>
+
+            <!-- Ground Leases -->
+            <template v-if="expandedGroups.ground_leases">
+              <td class="rpt-cell">&mdash;</td>
+              <td class="rpt-cell">&mdash;</td>
+              <td class="rpt-cell">&mdash;</td>
+            </template>
+            <td v-else class="rpt-summary-cell"><span class="placeholder-dot"></span></td>
+
+            <!-- Escrows -->
+            <template v-if="expandedGroups.escrows">
+              <td class="rpt-cell">&mdash;</td>
+              <td class="rpt-cell">&mdash;</td>
+              <td class="rpt-cell">&mdash;</td>
+            </template>
+            <td v-else class="rpt-summary-cell"><span class="placeholder-dot"></span></td>
+
+            <!-- Add'l Collateral -->
+            <template v-if="expandedGroups.collateral">
+              <td class="rpt-cell">&mdash;</td>
+              <td class="rpt-cell">&mdash;</td>
+              <td class="rpt-cell">&mdash;</td>
+            </template>
+            <td v-else class="rpt-summary-cell"><span class="placeholder-dot"></span></td>
           </tr>
           <tr v-if="!store.filteredRows.length && !store.loading">
             <td :colspan="totalCols()" class="empty-row">No deals match the current filters.</td>
@@ -673,6 +753,28 @@ th.sticky-col { z-index: 3; }
   text-align: center;
   border-radius: 9px;
 }
+
+.placeholder-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #e0e0e0;
+}
+
+/* Alternating group header colors for visual separation */
+.group-covenants { background: #4a5568 !important; }
+.group-covenants:hover { background: #5a6778 !important; }
+.group-taxes { background: #37474f !important; }
+.group-taxes:hover { background: #455a64 !important; }
+.group-insurance { background: #4a5568 !important; }
+.group-insurance:hover { background: #5a6778 !important; }
+.group-ground_leases { background: #37474f !important; }
+.group-ground_leases:hover { background: #455a64 !important; }
+.group-escrows { background: #4a5568 !important; }
+.group-escrows:hover { background: #5a6778 !important; }
+.group-collateral { background: #37474f !important; }
+.group-collateral:hover { background: #455a64 !important; }
 
 /* Comment cell — clickable */
 .comment-cell {
