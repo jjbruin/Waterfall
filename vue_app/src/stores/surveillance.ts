@@ -36,9 +36,14 @@ export interface SurveillanceRow {
   ltv_max: number | null
   ltv_ext: number | null
   extension_options: string | null
+  // Real Estate Taxes
+  re_tax_ttm: number | null
+  tax_due: string | null
+  tax_status: string | null
+  // Insurance expense
+  ins_exp_ttm: number | null
   // Other surveillance fields
   working_capital: number | null
-  tax_due: string | null
   ins_renewal: string | null
   tenant_exp: string | null
   updated_at: string | null

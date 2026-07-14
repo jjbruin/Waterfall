@@ -50,6 +50,7 @@ _SURVEILLANCE_DDL = [
         ltv_min             DOUBLE PRECISION,
         working_capital     DOUBLE PRECISION,
         tax_due             TEXT,
+        tax_status          TEXT,
         ins_renewal         TEXT,
         tenant_exp          TEXT,
         comments            TEXT,
@@ -96,6 +97,14 @@ def ensure_tables(engine=None):
     with engine.begin() as conn:
         for ddl in _SURVEILLANCE_DDL:
             conn.execute(text(ddl.replace("{pk_type}", pk_type)))
+
+        # Migration: add tax_status column if missing
+        try:
+            conn.execute(text(
+                "ALTER TABLE surveillance_properties ADD COLUMN tax_status TEXT"
+            ))
+        except Exception:
+            pass  # column already exists
 
 
 # ---------------------------------------------------------------------------
@@ -160,12 +169,21 @@ def _compute_ttm_noi_and_dscr(isbs_raw, vcode):
     ds_total = sum(v for v in amounts.get('DEBT_SERVICE', {}).values())
     dscr = noi / abs(ds_total) if ds_total != 0 else None
 
+    # Real estate taxes — account 5090 within EXPENSES
+    expenses_detail = amounts.get('EXPENSES', {})
+    re_tax = expenses_detail.get('Real Estate Taxes', 0.0)
+
+    # Insurance expense — accounts 5110, 5114
+    ins_exp = expenses_detail.get('Property & Liability Insurance', 0.0)
+
     return {
         "noi": round(noi, 2),
         "revenue": round(rev_total, 2),
         "expenses": round(exp_total, 2),
         "debt_service": round(ds_total, 2),
         "dscr": round(dscr, 2) if dscr is not None else None,
+        "re_tax_ttm": round(abs(re_tax), 2) if re_tax else None,
+        "ins_exp_ttm": round(abs(ins_exp), 2) if ins_exp else None,
         "period": ref_date.strftime("%Y-%m"),
     }
 
@@ -650,9 +668,14 @@ def get_surveillance_table() -> list[dict]:
             "ltv_max": cov.get("ltv_max"),
             "ltv_ext": cov.get("ltv_ext"),
             "extension_options": cov.get("extension_options"),
+            # Real Estate Taxes — TTM from ISBS
+            "re_tax_ttm": noi_row.get("re_tax_ttm"),
+            "tax_due": surv.get("tax_due"),
+            "tax_status": surv.get("tax_status"),
+            # Insurance expense — TTM from ISBS
+            "ins_exp_ttm": noi_row.get("ins_exp_ttm"),
             # Other surveillance fields
             "working_capital": surv.get("working_capital"),
-            "tax_due": surv.get("tax_due"),
             "ins_renewal": ins.get("nearest_expiration"),
             "tenant_exp": surv.get("tenant_exp"),
             "updated_at": surv.get("updated_at"),
@@ -739,7 +762,7 @@ def update_surveillance_property(vcode: str, fields: dict, username: str = None)
     allowed = {
         "dscr_min", "dy_val", "dy_min",
         "ltv_val", "ltv_min", "working_capital",
-        "tax_due", "ins_renewal", "tenant_exp",
+        "tax_due", "tax_status", "ins_renewal", "tenant_exp",
     }
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:

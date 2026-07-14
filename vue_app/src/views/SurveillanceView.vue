@@ -149,8 +149,8 @@ function missingClass(val: number | null): string {
 const groupDefs = [
   { key: 'reporting', label: 'Reporting', cols: ['Occ', 'Rent Roll', 'Inc. Stmt', 'Bal. Sheet'] },
   { key: 'covenants', label: 'Debt Covenants', cols: ['DSCR', 'Debt Yield', 'LTV', 'Ext Options'] },
-  { key: 'taxes', label: 'Real Estate Taxes', cols: ['Tax Due', 'Status', 'Amount'] },
-  { key: 'insurance', label: 'Insurance', cols: ['Property', 'GL', 'Renewal'] },
+  { key: 'taxes', label: 'Real Estate Taxes', cols: ['Due Date', 'Status', 'TTM Amount'] },
+  { key: 'insurance', label: 'Insurance', cols: ['Property', 'GL', 'Renewal', 'TTM Amount'] },
   { key: 'ground_leases', label: 'Ground Leases', cols: ['Lease Exp', 'Rent', 'Status'] },
   { key: 'escrows', label: 'Escrows', cols: ['Tax', 'Insurance', 'CapEx'] },
   { key: 'collateral', label: "Add'l Collateral", cols: ['Type', 'Value', 'Notes'] },
@@ -170,6 +170,8 @@ function handleExportCsv() {
     'Property', 'Asset Type', 'Occupancy', 'NOI (TTM)', 'DSCR', 'Debt Balance', 'Maturity', 'Comments',
     'Occ Latest', 'Occ Missing', 'Rent Roll Latest', 'Rent Roll Missing',
     'IS Latest', 'IS Missing', 'BS Latest', 'BS Missing',
+    'DSCR Min', 'DSCR Ext', 'DY Actual', 'DY Min', 'DY Ext', 'LTV Actual', 'LTV Max', 'LTV Ext', 'Ext Options',
+    'Tax Due', 'Tax Status', 'RE Tax TTM', 'Ins Exp TTM',
   ]
   const csvRows = store.filteredRows.map(r => [
     r.name, r.asset_type,
@@ -183,6 +185,13 @@ function handleExportCsv() {
     r.rpt_rent_roll_latest || '', r.rpt_rent_roll_missing ?? '',
     r.rpt_is_latest || '', r.rpt_is_missing ?? '',
     r.rpt_bs_latest || '', r.rpt_bs_missing ?? '',
+    r.dscr_min ?? '', r.dscr_ext ?? '',
+    r.dy_val != null ? (r.dy_val * 100).toFixed(1) + '%' : '', r.dy_min != null ? (r.dy_min * 100).toFixed(1) + '%' : '', r.dy_ext != null ? (r.dy_ext * 100).toFixed(1) + '%' : '',
+    r.ltv_val != null ? (r.ltv_val * 100).toFixed(1) + '%' : '', r.ltv_max != null ? (r.ltv_max * 100).toFixed(1) + '%' : '', r.ltv_ext != null ? (r.ltv_ext * 100).toFixed(1) + '%' : '',
+    r.extension_options || '',
+    r.tax_due || '', r.tax_status || '',
+    r.re_tax_ttm != null ? r.re_tax_ttm.toFixed(0) : '',
+    r.ins_exp_ttm != null ? r.ins_exp_ttm.toFixed(0) : '',
   ])
   const csv = [headers, ...csvRows].map(row => row.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n')
   const blob = new Blob([csv], { type: 'text/csv' })
@@ -381,10 +390,16 @@ function handleExportCsv() {
             <!-- Real Estate Taxes -->
             <template v-if="expandedGroups.taxes">
               <td class="rpt-cell">{{ row.tax_due ? formatShortDate(row.tax_due) : '\u2014' }}</td>
-              <td class="rpt-cell">&mdash;</td>
-              <td class="rpt-cell">&mdash;</td>
+              <td class="rpt-cell">
+                <span v-if="row.tax_status" :class="'tax-status tax-' + row.tax_status.toLowerCase()">{{ row.tax_status }}</span>
+                <span v-else>&mdash;</span>
+              </td>
+              <td class="rpt-cell num">{{ formatCurrency(row.re_tax_ttm) }}</td>
             </template>
-            <td v-else class="rpt-summary-cell"><span class="placeholder-dot"></span></td>
+            <td v-else class="rpt-summary-cell">
+              <span v-if="row.re_tax_ttm != null" class="rpt-ok-dot"></span>
+              <span v-else class="placeholder-dot"></span>
+            </td>
 
             <!-- Insurance -->
             <template v-if="expandedGroups.insurance">
@@ -397,8 +412,12 @@ function handleExportCsv() {
                 <span v-else>&mdash;</span>
               </td>
               <td class="rpt-cell">{{ row.ins_renewal ? formatShortDate(row.ins_renewal) : '\u2014' }}</td>
+              <td class="rpt-cell num">{{ formatCurrency(row.ins_exp_ttm) }}</td>
             </template>
-            <td v-else class="rpt-summary-cell"><span class="placeholder-dot"></span></td>
+            <td v-else class="rpt-summary-cell">
+              <span v-if="row.has_property_ins || row.has_gl_ins" class="rpt-ok-dot"></span>
+              <span v-else class="placeholder-dot"></span>
+            </td>
 
             <!-- Ground Leases -->
             <template v-if="expandedGroups.ground_leases">
@@ -869,6 +888,21 @@ th.sticky-col { z-index: 3; }
   white-space: normal;
   max-width: 140px;
 }
+
+/* Tax status badges */
+.tax-status {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.tax-current { background: #e8f5e9; color: #2e7d32; }
+.tax-paid { background: #e8f5e9; color: #2e7d32; }
+.tax-pending { background: #fff3e0; color: #e65100; }
+.tax-delinquent { background: #ffebee; color: #c62828; }
+.tax-appealed { background: #e3f2fd; color: #1565c0; }
 
 /* Alternating group header colors for visual separation */
 .group-covenants { background: #4a5568 !important; }
