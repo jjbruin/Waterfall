@@ -42,6 +42,18 @@ export interface SurveillanceRow {
   tax_status: string | null
   // Insurance expense
   ins_exp_ttm: number | null
+  // Ground Leases
+  ground_lease_exp: string | null
+  ground_lease_rent: number | null
+  ground_lease_status: string | null
+  // Escrows
+  escrow_tax: string | null
+  escrow_insurance: string | null
+  escrow_capex: string | null
+  // Add'l Collateral
+  collateral_type: string | null
+  collateral_value: number | null
+  collateral_notes: string | null
   // Other surveillance fields
   working_capital: number | null
   ins_renewal: string | null

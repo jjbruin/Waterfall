@@ -465,27 +465,50 @@ function handleExportCsv() {
 
             <!-- Ground Leases -->
             <template v-if="expandedGroups.ground_leases">
-              <td class="rpt-cell">&mdash;</td>
-              <td class="rpt-cell">&mdash;</td>
-              <td class="rpt-cell">&mdash;</td>
+              <td class="rpt-cell" :class="maturityClass(row.ground_lease_exp)">
+                {{ row.ground_lease_exp ? formatShortDate(row.ground_lease_exp) : '\u2014' }}
+              </td>
+              <td class="rpt-cell num">{{ row.ground_lease_rent != null ? formatCurrency(row.ground_lease_rent) : '\u2014' }}</td>
+              <td class="rpt-cell">
+                <span v-if="row.ground_lease_status" :class="'gl-status gl-' + row.ground_lease_status.toLowerCase()">{{ row.ground_lease_status }}</span>
+                <span v-else>&mdash;</span>
+              </td>
             </template>
-            <td v-else class="rpt-summary-cell"><span class="placeholder-dot"></span></td>
+            <td v-else class="rpt-summary-cell">
+              <span v-if="row.ground_lease_exp" class="rpt-ok-dot"></span>
+              <span v-else class="placeholder-dot"></span>
+            </td>
 
             <!-- Escrows -->
             <template v-if="expandedGroups.escrows">
-              <td class="rpt-cell">&mdash;</td>
-              <td class="rpt-cell">&mdash;</td>
-              <td class="rpt-cell">&mdash;</td>
+              <td class="rpt-cell">
+                <span v-if="row.escrow_tax" :class="'escrow-badge escrow-' + row.escrow_tax.toLowerCase()">{{ row.escrow_tax }}</span>
+                <span v-else>&mdash;</span>
+              </td>
+              <td class="rpt-cell">
+                <span v-if="row.escrow_insurance" :class="'escrow-badge escrow-' + row.escrow_insurance.toLowerCase()">{{ row.escrow_insurance }}</span>
+                <span v-else>&mdash;</span>
+              </td>
+              <td class="rpt-cell">
+                <span v-if="row.escrow_capex" :class="'escrow-badge escrow-' + row.escrow_capex.toLowerCase()">{{ row.escrow_capex }}</span>
+                <span v-else>&mdash;</span>
+              </td>
             </template>
-            <td v-else class="rpt-summary-cell"><span class="placeholder-dot"></span></td>
+            <td v-else class="rpt-summary-cell">
+              <span v-if="row.escrow_tax || row.escrow_insurance || row.escrow_capex" class="rpt-ok-dot"></span>
+              <span v-else class="placeholder-dot"></span>
+            </td>
 
             <!-- Add'l Collateral -->
             <template v-if="expandedGroups.collateral">
-              <td class="rpt-cell">&mdash;</td>
-              <td class="rpt-cell">&mdash;</td>
-              <td class="rpt-cell">&mdash;</td>
+              <td class="rpt-cell">{{ row.collateral_type || '\u2014' }}</td>
+              <td class="rpt-cell num">{{ row.collateral_value != null ? formatCurrency(row.collateral_value) : '\u2014' }}</td>
+              <td class="rpt-cell coll-notes" :title="row.collateral_notes || ''">{{ row.collateral_notes || '\u2014' }}</td>
             </template>
-            <td v-else class="rpt-summary-cell"><span class="placeholder-dot"></span></td>
+            <td v-else class="rpt-summary-cell">
+              <span v-if="row.collateral_type" class="rpt-ok-dot"></span>
+              <span v-else class="placeholder-dot"></span>
+            </td>
           </tr>
           <tr v-if="!store.filteredRows.length && !store.loading">
             <td :colspan="totalCols()" class="empty-row">No deals match the current filters.</td>
@@ -982,6 +1005,41 @@ th.sticky-col { z-index: 3; }
 .tax-pending { background: #fff3e0; color: #e65100; }
 .tax-delinquent { background: #ffebee; color: #c62828; }
 .tax-appealed { background: #e3f2fd; color: #1565c0; }
+
+/* Ground lease status */
+.gl-status {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+  text-transform: uppercase;
+}
+.gl-active { background: #e8f5e9; color: #2e7d32; }
+.gl-expiring { background: #fff3e0; color: #e65100; }
+.gl-expired { background: #ffebee; color: #c62828; }
+.gl-n\/a, .gl-none { background: #f5f5f5; color: #9e9e9e; }
+
+/* Escrow badges */
+.escrow-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+  text-transform: uppercase;
+}
+.escrow-yes, .escrow-required { background: #e8f5e9; color: #2e7d32; }
+.escrow-no, .escrow-waived { background: #fff3e0; color: #e65100; }
+.escrow-partial { background: #e3f2fd; color: #1565c0; }
+
+/* Collateral notes */
+.coll-notes {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
 
 /* Alternating group header colors for visual separation */
 .group-covenants { background: #4a5568 !important; }

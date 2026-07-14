@@ -54,6 +54,15 @@ _SURVEILLANCE_DDL = [
         ins_renewal         TEXT,
         tenant_exp          TEXT,
         comments            TEXT,
+        ground_lease_exp    TEXT,
+        ground_lease_rent   DOUBLE PRECISION,
+        ground_lease_status TEXT,
+        escrow_tax          TEXT,
+        escrow_insurance    TEXT,
+        escrow_capex        TEXT,
+        collateral_type     TEXT,
+        collateral_value    DOUBLE PRECISION,
+        collateral_notes    TEXT,
         updated_at          TIMESTAMP,
         updated_by          TEXT
     )
@@ -98,13 +107,25 @@ def ensure_tables(engine=None):
         for ddl in _SURVEILLANCE_DDL:
             conn.execute(text(ddl.replace("{pk_type}", pk_type)))
 
-        # Migration: add tax_status column if missing
-        try:
-            conn.execute(text(
-                "ALTER TABLE surveillance_properties ADD COLUMN tax_status TEXT"
-            ))
-        except Exception:
-            pass  # column already exists
+        # Migration: add columns if missing
+        for col_def in [
+            "tax_status TEXT",
+            "ground_lease_exp TEXT",
+            "ground_lease_rent DOUBLE PRECISION",
+            "ground_lease_status TEXT",
+            "escrow_tax TEXT",
+            "escrow_insurance TEXT",
+            "escrow_capex TEXT",
+            "collateral_type TEXT",
+            "collateral_value DOUBLE PRECISION",
+            "collateral_notes TEXT",
+        ]:
+            try:
+                conn.execute(text(
+                    f"ALTER TABLE surveillance_properties ADD COLUMN {col_def}"
+                ))
+            except Exception:
+                pass  # column already exists
 
 
 # ---------------------------------------------------------------------------
@@ -674,6 +695,18 @@ def get_surveillance_table() -> list[dict]:
             "tax_status": surv.get("tax_status"),
             # Insurance expense — TTM from ISBS
             "ins_exp_ttm": noi_row.get("ins_exp_ttm"),
+            # Ground Leases
+            "ground_lease_exp": surv.get("ground_lease_exp"),
+            "ground_lease_rent": surv.get("ground_lease_rent"),
+            "ground_lease_status": surv.get("ground_lease_status"),
+            # Escrows
+            "escrow_tax": surv.get("escrow_tax"),
+            "escrow_insurance": surv.get("escrow_insurance"),
+            "escrow_capex": surv.get("escrow_capex"),
+            # Add'l Collateral
+            "collateral_type": surv.get("collateral_type"),
+            "collateral_value": surv.get("collateral_value"),
+            "collateral_notes": surv.get("collateral_notes"),
             # Other surveillance fields
             "working_capital": surv.get("working_capital"),
             "ins_renewal": ins.get("nearest_expiration"),
@@ -767,6 +800,9 @@ def update_surveillance_property(vcode: str, fields: dict, username: str = None)
         "dscr_min", "dy_val", "dy_min",
         "ltv_val", "ltv_min", "working_capital",
         "tax_due", "tax_status", "ins_renewal", "tenant_exp",
+        "ground_lease_exp", "ground_lease_rent", "ground_lease_status",
+        "escrow_tax", "escrow_insurance", "escrow_capex",
+        "collateral_type", "collateral_value", "collateral_notes",
     }
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
