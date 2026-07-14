@@ -55,7 +55,7 @@
 - **PG credentials**: `wfadmin` / `Wf3d9097e0365c445456dcc52e!` on `waterfall_xirr` database
 - **PG firewall**: Must add current public IP (`az postgres flexible-server firewall-rule create`). IPs added: local-dev (50.251.58.254), local-dev-2 (73.112.240.56), local-dev-3 (71.59.67.132), local-dev-4 (73.112.240.56)
 - **Auth login endpoint**: `/auth/login` (not `/api/auth/login`), returns `token` key (not `access_token`)
-- **Current revision**: v139 (deployed Jul 14, 2026) — Surveillance unified + MRI query files in repo. Phases 1-6 committed locally (not yet deployed).
+- **Current revision**: v140 (deployed Jul 14, 2026) — Surveillance Phases 1-6 (Debt Covenants, RE Taxes, Insurance, Ground Leases, Escrows, Collateral)
 - **Shared folders**: `DATA_DIR`, `QUERIES_DIR`, `DOWNLOADS_DIR` env vars (per-developer OneDrive paths)
 - **Shared memory**: `.claude/memory/` in repo (committed, shared via git). Auto-memory redirects here.
 - **Email**: SendGrid Web API v3 (replaces SMTP, blocked by O365 MFA). Env vars: `SENDGRID_API_KEY`, `SENDGRID_FROM`. Single Sender Verification on `jbruin@peaceablestreet.com`.
