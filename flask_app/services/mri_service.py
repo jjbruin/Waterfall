@@ -119,10 +119,21 @@ QUERY_REGISTRY = {
 from flask import current_app
 
 def _get_queries_folder() -> str:
+    """Return the queries folder path.
+
+    Priority: QUERIES_DIR env var (SharePoint/OneDrive) → repo queries/ folder.
+    The repo fallback ensures queries work in the Azure container and for
+    developers who haven't set the env var.
+    """
     try:
-        return current_app.config.get("QUERIES_DIR", "") or ""
+        env_dir = current_app.config.get("QUERIES_DIR", "") or ""
     except RuntimeError:
-        return os.environ.get("QUERIES_DIR", "")
+        env_dir = os.environ.get("QUERIES_DIR", "")
+    if env_dir and Path(env_dir).is_dir():
+        return env_dir
+    # Fallback to repo queries/ folder (works locally and in Docker container)
+    repo_dir = Path(__file__).resolve().parent.parent.parent / "queries"
+    return str(repo_dir) if repo_dir.is_dir() else ""
 
 def _get_downloads_folder() -> str:
     try:
@@ -149,12 +160,11 @@ def _get_connection(server_key: str):
 
 
 def _load_query_sql(query_name: str) -> str:
-    """Load SQL from the network queries folder."""
+    """Load SQL from the queries folder."""
     queries_folder = _get_queries_folder()
-    sql_path = Path(queries_folder) / f"{query_name}.sql" if queries_folder else Path("__nonexistent__")
-    if not sql_path.exists():
-        # Fallback to local queries folder
-        sql_path = Path(__file__).resolve().parent.parent.parent / "queries" / f"{query_name}.sql"
+    if not queries_folder:
+        raise FileNotFoundError(f"Query file not found: {query_name}.sql")
+    sql_path = Path(queries_folder) / f"{query_name}.sql"
     if not sql_path.exists():
         raise FileNotFoundError(f"Query file not found: {query_name}.sql")
     text = sql_path.read_text(encoding="utf-8-sig")  # utf-8-sig strips BOM

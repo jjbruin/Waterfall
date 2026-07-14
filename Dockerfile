@@ -33,6 +33,9 @@ COPY *.txt ./
 # Flask app package
 COPY flask_app/ flask_app/
 
+# MRI SQL query files (for data refresh from Azure)
+COPY queries/ queries/
+
 # Vue built assets
 COPY --from=frontend-build /build/dist/ static/
 
