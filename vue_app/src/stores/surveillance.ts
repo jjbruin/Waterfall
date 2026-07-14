@@ -24,12 +24,19 @@ export interface SurveillanceRow {
   loan_rate: number | null
   maturity_date: string | null
   loan_type: string | null
-  // Editable surveillance fields
-  dscr_min: number | null
+  // Debt Covenants — computed actuals
   dy_val: number | null
-  dy_min: number | null
   ltv_val: number | null
-  ltv_min: number | null
+  prop_value: number | null
+  // Debt Covenants — requirements from MRI Loan table
+  dscr_min: number | null
+  dscr_ext: number | null
+  dy_min: number | null
+  dy_ext: number | null
+  ltv_max: number | null
+  ltv_ext: number | null
+  extension_options: string | null
+  // Other surveillance fields
   working_capital: number | null
   tax_due: string | null
   ins_renewal: string | null

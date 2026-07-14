@@ -221,6 +221,138 @@ def _compute_loan_maturities(mri_loans_raw):
     return result
 
 
+def _get_property_values(mri_val):
+    """Get most recent property value per deal from valuations.
+
+    Returns dict {vcode_lower: value}.
+    """
+    if mri_val is None or mri_val.empty:
+        return {}
+
+    df = mri_val.copy()
+    col_map = {c.lower(): c for c in df.columns}
+    vc_col = col_map.get("vcode")
+    val_col = col_map.get("mincomecapconcludedvalue")
+    dt_col = col_map.get("dtvaluation")
+
+    if not vc_col or not val_col:
+        return {}
+
+    df["_vc"] = df[vc_col].astype(str).str.strip().str.lower()
+    df["_val"] = pd.to_numeric(df[val_col].astype(str).str.replace(",", ""), errors="coerce")
+    if dt_col:
+        df["_dt"] = pd.to_datetime(df[dt_col], errors="coerce")
+        df = df.dropna(subset=["_dt"]).sort_values("_dt", ascending=False)
+
+    result = {}
+    for vc, grp in df.groupby("_vc"):
+        val = grp["_val"].dropna()
+        if not val.empty:
+            result[vc] = float(val.iloc[0])
+    return result
+
+
+def _compute_loan_covenants(mri_loans_raw):
+    """Extract debt covenant requirements per deal from MRI_Loans.
+
+    For deals with multiple loans, uses the most restrictive (highest
+    minimum) covenant across all loans.  Tracks both general requirements
+    and extension-specific requirements separately.
+
+    Returns dict {vcode_lower: {
+        dscr_min, dscr_ext,
+        dy_min, dy_ext,
+        ltv_max, ltv_ext,
+        extension_options,
+    }}.
+    """
+    if mri_loans_raw is None or mri_loans_raw.empty:
+        return {}
+
+    df = mri_loans_raw.copy()
+    col_map = {c.lower(): c for c in df.columns}
+
+    # Column name mapping — case-insensitive lookup
+    vc_col = col_map.get("vcode", col_map.get("pcode"))
+    dscr_min_col = col_map.get("nrequireddcr")
+    dscr_ext_col = col_map.get("nreqdsr")
+    dy_min_col = col_map.get("ndy")
+    dy_ext_col = col_map.get("nrequireddy")
+    ltv_max_col = col_map.get("nltv")
+    ltv_ext_col = col_map.get("nrequiredltv")
+    ext_options_col = col_map.get("extensionoptions", col_map.get("vamortamt"))
+
+    if not vc_col:
+        return {}
+
+    # Filter to maturity rows only (avoid duplicates from multiple Loan_Date rows)
+    vdt_col = col_map.get("vdatetype")
+    if vdt_col:
+        mat_df = df[df[vdt_col].fillna("").str.lower() == "maturity"]
+        if not mat_df.empty:
+            df = mat_df
+
+    def _safe_float(val):
+        try:
+            v = float(val)
+            if pd.isna(v):
+                return None
+            return v
+        except (TypeError, ValueError):
+            return None
+
+    result = {}
+    for _, row in df.iterrows():
+        vc = str(row.get(vc_col, "")).strip().lower()
+        if not vc:
+            continue
+
+        entry = result.get(vc, {
+            "dscr_min": None, "dscr_ext": None,
+            "dy_min": None, "dy_ext": None,
+            "ltv_max": None, "ltv_ext": None,
+            "extension_options": None,
+        })
+
+        # Most restrictive = highest minimum DSCR/DY, lowest max LTV
+        def _update_max(cur, new):
+            """Take the more restrictive (higher) value."""
+            if new is None:
+                return cur
+            if cur is None:
+                return new
+            return max(cur, new)
+
+        def _update_min(cur, new):
+            """Take the more restrictive (lower) value for LTV."""
+            if new is None:
+                return cur
+            if cur is None:
+                return new
+            return min(cur, new)
+
+        if dscr_min_col:
+            entry["dscr_min"] = _update_max(entry["dscr_min"], _safe_float(row.get(dscr_min_col)))
+        if dscr_ext_col:
+            entry["dscr_ext"] = _update_max(entry["dscr_ext"], _safe_float(row.get(dscr_ext_col)))
+        if dy_min_col:
+            entry["dy_min"] = _update_max(entry["dy_min"], _safe_float(row.get(dy_min_col)))
+        if dy_ext_col:
+            entry["dy_ext"] = _update_max(entry["dy_ext"], _safe_float(row.get(dy_ext_col)))
+        if ltv_max_col:
+            entry["ltv_max"] = _update_min(entry["ltv_max"], _safe_float(row.get(ltv_max_col)))
+        if ltv_ext_col:
+            entry["ltv_ext"] = _update_min(entry["ltv_ext"], _safe_float(row.get(ltv_ext_col)))
+        if ext_options_col:
+            opt = row.get(ext_options_col)
+            if opt and str(opt).strip() and str(opt).strip().upper() != "NA":
+                entry["extension_options"] = str(opt).strip()
+
+        result[vc] = entry
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Reporting completeness — trailing 12 months
 # ---------------------------------------------------------------------------
@@ -429,6 +561,13 @@ def get_surveillance_table() -> list[dict]:
     # --- Loan maturity from MRI_Loans (same as Deal Analysis) ---
     loan_map = _compute_loan_maturities(mri_loans_raw)
 
+    # --- Loan covenant requirements from MRI_Loans ---
+    covenant_map = _compute_loan_covenants(mri_loans_raw)
+
+    # --- Property values from valuations (most recent per deal) ---
+    mri_val = data.get("mri_val", pd.DataFrame())
+    value_map = _get_property_values(mri_val)
+
     # --- Load editable surveillance fields ---
     surv_fields = _load_surveillance_properties()
 
@@ -454,6 +593,7 @@ def get_surveillance_table() -> list[dict]:
         occ_row = occ_latest.get(vc_lower, {})
         noi_row = noi_dscr_map.get(vc_lower, {})
         loan_row = loan_map.get(vc_lower, {})
+        cov = covenant_map.get(vc_lower, {})
         surv = surv_fields.get(vc, {})
         ins = insurance.get(vc, {})
         comment_entry = comments_map.get(vc, {})
@@ -463,6 +603,18 @@ def get_surveillance_table() -> list[dict]:
         debt_balance = debt_map.get(vc_lower)
         if debt_balance is None:
             debt_balance = loan_row.get("loan_balance")
+
+        # Computed Debt Yield = TTM NOI / Debt Balance
+        noi = noi_row.get("noi")
+        dy_val = None
+        if noi and debt_balance and debt_balance > 0:
+            dy_val = round(noi / debt_balance, 4)
+
+        # Computed LTV = Debt Balance / Property Value
+        prop_value = value_map.get(vc_lower)
+        ltv_val = None
+        if debt_balance and prop_value and prop_value > 0:
+            ltv_val = round(debt_balance / prop_value, 4)
 
         row = {
             "vcode": vc,
@@ -486,12 +638,19 @@ def get_surveillance_table() -> list[dict]:
             "loan_rate": loan_row.get("loan_rate"),
             "maturity_date": loan_row.get("maturity_date"),
             "loan_type": loan_row.get("loan_type"),
-            # Editable surveillance fields
-            "dscr_min": surv.get("dscr_min"),
-            "dy_val": surv.get("dy_val"),
-            "dy_min": surv.get("dy_min"),
-            "ltv_val": surv.get("ltv_val"),
-            "ltv_min": surv.get("ltv_min"),
+            # Debt Covenants — computed actuals
+            "dy_val": dy_val,
+            "ltv_val": ltv_val,
+            "prop_value": prop_value,
+            # Debt Covenants — requirements from MRI Loan table
+            "dscr_min": cov.get("dscr_min"),
+            "dscr_ext": cov.get("dscr_ext"),
+            "dy_min": cov.get("dy_min"),
+            "dy_ext": cov.get("dy_ext"),
+            "ltv_max": cov.get("ltv_max"),
+            "ltv_ext": cov.get("ltv_ext"),
+            "extension_options": cov.get("extension_options"),
+            # Other surveillance fields
             "working_capital": surv.get("working_capital"),
             "tax_due": surv.get("tax_due"),
             "ins_renewal": ins.get("nearest_expiration"),

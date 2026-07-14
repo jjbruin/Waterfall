@@ -109,6 +109,35 @@ function dscrClass(row: SurveillanceRow): string {
   return ''
 }
 
+// Debt Covenant helpers
+function covBreachClass(actual: number | null, min: number | null): string {
+  if (actual == null || min == null) return ''
+  return actual < min ? 'cov-breach' : 'cov-pass'
+}
+
+function covBreachClassLtv(actual: number | null, max: number | null): string {
+  if (actual == null || max == null) return ''
+  return actual > max ? 'cov-breach' : 'cov-pass'
+}
+
+function covSummaryClass(row: SurveillanceRow): string {
+  const breaches = []
+  if (row.dscr != null && row.dscr_min != null && row.dscr < row.dscr_min) breaches.push('dscr')
+  if (row.dy_val != null && row.dy_min != null && row.dy_val < row.dy_min) breaches.push('dy')
+  if (row.ltv_val != null && row.ltv_max != null && row.ltv_val > row.ltv_max) breaches.push('ltv')
+  if (breaches.length > 0) return 'rpt-missing-total'
+  if (row.dscr_min != null || row.dy_min != null || row.ltv_max != null) return 'rpt-ok-dot'
+  return 'placeholder-dot'
+}
+
+function covSummaryTitle(row: SurveillanceRow): string {
+  const parts = []
+  if (row.dscr != null && row.dscr_min != null && row.dscr < row.dscr_min) parts.push('DSCR breach')
+  if (row.dy_val != null && row.dy_min != null && row.dy_val < row.dy_min) parts.push('DY breach')
+  if (row.ltv_val != null && row.ltv_max != null && row.ltv_val > row.ltv_max) parts.push('LTV breach')
+  return parts.length ? parts.join(', ') : 'Click to expand covenants'
+}
+
 function missingClass(val: number | null): string {
   if (val == null) return ''
   if (val === 0) return 'rpt-complete'
@@ -119,7 +148,7 @@ function missingClass(val: number | null): string {
 // Expandable group definitions: key, label, sub-column headers
 const groupDefs = [
   { key: 'reporting', label: 'Reporting', cols: ['Occ', 'Rent Roll', 'Inc. Stmt', 'Bal. Sheet'] },
-  { key: 'covenants', label: 'Debt Covenants', cols: ['DSCR Min', 'Debt Yield', 'DY Min', 'LTV', 'LTV Max'] },
+  { key: 'covenants', label: 'Debt Covenants', cols: ['DSCR', 'Debt Yield', 'LTV', 'Ext Options'] },
   { key: 'taxes', label: 'Real Estate Taxes', cols: ['Tax Due', 'Status', 'Amount'] },
   { key: 'insurance', label: 'Insurance', cols: ['Property', 'GL', 'Renewal'] },
   { key: 'ground_leases', label: 'Ground Leases', cols: ['Lease Exp', 'Rent', 'Status'] },
@@ -320,13 +349,34 @@ function handleExportCsv() {
 
             <!-- Debt Covenants -->
             <template v-if="expandedGroups.covenants">
-              <td class="rpt-cell">{{ row.dscr_min != null ? row.dscr_min.toFixed(2) + 'x' : '\u2014' }}</td>
-              <td class="rpt-cell">{{ row.dy_val != null ? formatPct(row.dy_val) : '\u2014' }}</td>
-              <td class="rpt-cell">{{ row.dy_min != null ? formatPct(row.dy_min) : '\u2014' }}</td>
-              <td class="rpt-cell">{{ row.ltv_val != null ? formatPct(row.ltv_val) : '\u2014' }}</td>
-              <td class="rpt-cell">{{ row.ltv_min != null ? formatPct(row.ltv_min) : '\u2014' }}</td>
+              <td class="cov-cell" :class="covBreachClass(row.dscr, row.dscr_min)">
+                <div class="cov-actual">{{ row.dscr != null ? row.dscr.toFixed(2) + 'x' : '\u2014' }}</div>
+                <div class="cov-reqs">
+                  <span v-if="row.dscr_min != null" class="cov-req" title="Minimum">{{ row.dscr_min.toFixed(2) }}x</span>
+                  <span v-if="row.dscr_ext != null" class="cov-ext" title="Extension">{{ row.dscr_ext.toFixed(2) }}x</span>
+                </div>
+              </td>
+              <td class="cov-cell" :class="covBreachClass(row.dy_val, row.dy_min)">
+                <div class="cov-actual">{{ row.dy_val != null ? (row.dy_val * 100).toFixed(1) + '%' : '\u2014' }}</div>
+                <div class="cov-reqs">
+                  <span v-if="row.dy_min != null" class="cov-req" title="Minimum">{{ (row.dy_min * 100).toFixed(1) }}%</span>
+                  <span v-if="row.dy_ext != null" class="cov-ext" title="Extension">{{ (row.dy_ext * 100).toFixed(1) }}%</span>
+                </div>
+              </td>
+              <td class="cov-cell" :class="covBreachClassLtv(row.ltv_val, row.ltv_max)">
+                <div class="cov-actual">{{ row.ltv_val != null ? (row.ltv_val * 100).toFixed(1) + '%' : '\u2014' }}</div>
+                <div class="cov-reqs">
+                  <span v-if="row.ltv_max != null" class="cov-req" title="Maximum">{{ (row.ltv_max * 100).toFixed(1) }}%</span>
+                  <span v-if="row.ltv_ext != null" class="cov-ext" title="Extension">{{ (row.ltv_ext * 100).toFixed(1) }}%</span>
+                </div>
+              </td>
+              <td class="cov-cell cov-ext-opts">
+                {{ row.extension_options || '\u2014' }}
+              </td>
             </template>
-            <td v-else class="rpt-summary-cell"><span class="placeholder-dot"></span></td>
+            <td v-else class="rpt-summary-cell" :title="covSummaryTitle(row)">
+              <span :class="covSummaryClass(row)"></span>
+            </td>
 
             <!-- Real Estate Taxes -->
             <template v-if="expandedGroups.taxes">
@@ -760,6 +810,64 @@ th.sticky-col { z-index: 3; }
   height: 8px;
   border-radius: 50%;
   background: #e0e0e0;
+}
+
+/* Debt Covenant cells */
+.cov-cell {
+  text-align: center;
+  font-size: 12px;
+  border-left: 1px solid #e8e8e8;
+  padding: 4px 6px !important;
+  vertical-align: top;
+}
+
+.cov-actual {
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 2px;
+}
+
+.cov-reqs {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+.cov-req {
+  color: #546e7a;
+  background: #eceff1;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-weight: 500;
+}
+
+.cov-ext {
+  color: #6a1b9a;
+  background: #f3e5f5;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-weight: 500;
+}
+
+.cov-breach .cov-actual {
+  color: #c62828;
+}
+.cov-breach {
+  background: #fff5f5 !important;
+}
+
+.cov-pass .cov-actual {
+  color: #2e7d32;
+}
+
+.cov-ext-opts {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  white-space: normal;
+  max-width: 140px;
 }
 
 /* Alternating group header colors for visual separation */
