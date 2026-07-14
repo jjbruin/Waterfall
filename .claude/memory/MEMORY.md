@@ -55,7 +55,7 @@
 - **PG credentials**: `wfadmin` / `Wf3d9097e0365c445456dcc52e!` on `waterfall_xirr` database
 - **PG firewall**: Must add current public IP (`az postgres flexible-server firewall-rule create`). IPs added: local-dev (50.251.58.254), local-dev-2 (73.112.240.56), local-dev-3 (71.59.67.132), local-dev-4 (73.112.240.56)
 - **Auth login endpoint**: `/auth/login` (not `/api/auth/login`), returns `token` key (not `access_token`)
-- **Current revision**: v139 (deployed Jul 14, 2026) — Surveillance unified + MRI query files in repo
+- **Current revision**: v139 (deployed Jul 14, 2026) — Surveillance unified + MRI query files in repo. Phases 1-6 committed locally (not yet deployed).
 - **Shared folders**: `DATA_DIR`, `QUERIES_DIR`, `DOWNLOADS_DIR` env vars (per-developer OneDrive paths)
 - **Shared memory**: `.claude/memory/` in repo (committed, shared via git). Auto-memory redirects here.
 - **Email**: SendGrid Web API v3 (replaces SMTP, blocked by O365 MFA). Env vars: `SENDGRID_API_KEY`, `SENDGRID_FROM`. Single Sender Verification on `jbruin@peaceablestreet.com`.
@@ -181,9 +181,13 @@
 - **Live metrics** (consistent with other tabs): TTM NOI (Property Financials formula), DSCR (NOI/abs(debt service)), debt balance (ISBS via `get_isbs_debt_balance()`), loan maturity (`build_loans_from_mri_loans()`)
 - **KPI strip**: Debt and occupancy sourced from shared `get_cached_caps_and_occ()` — identical to Dashboard
 - **Comments**: `surveillance_comments` table (vcode, comment_date, comment_text, created_by). Date-based, upsert on same date. Newest-first display with collapsible history.
-- **Reporting completeness**: Expandable column groups showing latest reported period (M/YY) and missing count in trailing 12 months for Occupancy, Rent Roll (commercial only), Income Statement, Balance Sheet. Due date = month end + 30 days.
-- **Commercial detection**: Deals with rows in `tenants_raw` table are commercial (rent roll tracked); others residential (n/a)
-- **DB tables**: `surveillance_properties` (editable covenant fields), `insurance`, `surveillance_comments` (all in PROTECTED_TABLES)
+- **7 expandable column groups**: Reporting, Debt Covenants, Real Estate Taxes, Insurance, Ground Leases, Escrows, Add'l Collateral
+- **Debt Covenants**: DSCR/DY/LTV actuals (computed from ISBS/valuations) vs general and extension requirements (from MRI Loans: nRequiredDCR, nReqDSR, nDY, nRequiredDY, nLTV, nRequiredLTV). Most restrictive aggregation for multi-loan deals. Breach highlighting (red/green). Extension options text (vAmortAmt).
+- **Real Estate Taxes**: TTM tax amount from ISBS account 5090 (extracted during NOI computation — no redundant query). Editable tax_due date and tax_status (Current/Paid/Pending/Delinquent/Appealed).
+- **Insurance**: Carrier name + expiration date per policy type (Property, GL) with urgency highlighting (<30d orange, expired red). TTM insurance expense from ISBS accounts 5110/5114. Insurance CRUD table for policy details.
+- **Ground Leases/Escrows/Collateral**: Editable fields in surveillance_properties table. Ground leases: expiration + maturity urgency, annual rent, status. Escrows: Yes/No/Waived/Partial badges for tax/insurance/capex. Collateral: type, value, notes.
+- **Reporting completeness**: Latest reported period (M/YY) and missing count in trailing 12 months for Occupancy, Rent Roll (commercial only), Income Statement, Balance Sheet. Due date = month end + 30 days.
+- **DB tables**: `surveillance_properties` (editable fields with column migration), `insurance`, `surveillance_comments` (all in PROTECTED_TABLES)
 
 ## Agreed Roadmap
 - ~~Purchase 2nd MRI VPN license → configure Azure VPN Gateway tunnel → enable MRI queries from Azure~~ DONE (Jun 24, 2026)
