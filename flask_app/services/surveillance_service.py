@@ -384,7 +384,7 @@ def _compute_loan_covenants(mri_loans_raw):
             entry["ltv_ext"] = _update_min(entry["ltv_ext"], _safe_float(row.get(ltv_ext_col)))
         if ext_options_col:
             opt = row.get(ext_options_col)
-            if opt and str(opt).strip() and str(opt).strip().upper() != "NA":
+            if opt and not pd.isna(opt) and str(opt).strip() and str(opt).strip().upper() not in ("NA", "NAN"):
                 entry["extension_options"] = str(opt).strip()
 
         result[vc] = entry
