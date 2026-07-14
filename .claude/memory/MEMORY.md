@@ -34,8 +34,9 @@
 - `get_cached_deal_result()` — single entry for all deal computation consumers (compute_service.py)
 - `build_partner_results()` — single source of truth for partner/deal metrics (compute.py)
 - `prepare_cap_lookups()` — batch pre-computation for dashboard capitalization loop (3.7x faster)
+- `get_cached_caps_and_occ()` — shared caps/occ cache in `dashboard_service.py`, used by both Dashboard and Surveillance for identical KPIs (debt, occupancy). Eliminates redundant computation and double-counting of child property debt.
 - `run_interleaved_waterfalls()` — merges CF/Cap timelines chronologically with shared InvestorState
-- `PROTECTED_TABLES` = waterfalls, one_pager_comments, waterfall_audit, review_roles, review_submissions, review_notes, prospective_loans, prospective_loans_audit, planned_loans, sale_overrides, user_requests, user_request_messages
+- `PROTECTED_TABLES` = waterfalls, one_pager_comments, waterfall_audit, review_roles, review_submissions, review_notes, prospective_loans, prospective_loans_audit, planned_loans, sale_overrides, user_requests, user_request_messages, surveillance_comments
 
 ## MRI Data Refresh (May 2026)
 - **MRI Query Service**: `mri_service.py` + 7 API endpoints + Vue sidebar UI
@@ -54,7 +55,7 @@
 - **PG credentials**: `wfadmin` / `Wf3d9097e0365c445456dcc52e!` on `waterfall_xirr` database
 - **PG firewall**: Must add current public IP (`az postgres flexible-server firewall-rule create`). IPs added: local-dev (50.251.58.254), local-dev-2 (73.112.240.56), local-dev-3 (71.59.67.132), local-dev-4 (73.112.240.56)
 - **Auth login endpoint**: `/auth/login` (not `/api/auth/login`), returns `token` key (not `access_token`)
-- **Current revision**: v137 (deployed Jul 13, 2026) — Surveillance backend + Vue frontend + authlib fix
+- **Current revision**: v138 (deployed Jul 14, 2026) — Surveillance unified with app-wide data sources
 - **Shared folders**: `DATA_DIR`, `QUERIES_DIR`, `DOWNLOADS_DIR` env vars (per-developer OneDrive paths)
 - **Shared memory**: `.claude/memory/` in repo (committed, shared via git). Auto-memory redirects here.
 - **Email**: SendGrid Web API v3 (replaces SMTP, blocked by O365 MFA). Env vars: `SENDGRID_API_KEY`, `SENDGRID_FROM`. Single Sender Verification on `jbruin@peaceablestreet.com`.
@@ -173,6 +174,16 @@
 - **Email flow**: Admin sends via `POST /<id>/email` (SendGrid). Email has "View & Reply" link with unique reply_token → auto-opens sidebar feedback panel. SendGrid Inbound Parse webhook at `POST /inbound-email` for email replies (requires DNS MX setup).
 - **AI assistant tool**: `get_user_feedback` — returns all requests with threads, filterable by status/type. For use during Claude design sessions.
 - **Admin endpoints**: `PUT /<id>/status` (change status), `POST /<id>/email` (email user), `GET /export` (all requests for design sessions)
+
+## Property Surveillance Tab (Jul 2026)
+- **Backend**: `flask_app/services/surveillance_service.py` + `flask_app/api/surveillance.py`
+- **Frontend**: `vue_app/src/views/SurveillanceView.vue` + `vue_app/src/stores/surveillance.ts`
+- **Live metrics** (consistent with other tabs): TTM NOI (Property Financials formula), DSCR (NOI/abs(debt service)), debt balance (ISBS via `get_isbs_debt_balance()`), loan maturity (`build_loans_from_mri_loans()`)
+- **KPI strip**: Debt and occupancy sourced from shared `get_cached_caps_and_occ()` — identical to Dashboard
+- **Comments**: `surveillance_comments` table (vcode, comment_date, comment_text, created_by). Date-based, upsert on same date. Newest-first display with collapsible history.
+- **Reporting completeness**: Expandable column groups showing latest reported period (M/YY) and missing count in trailing 12 months for Occupancy, Rent Roll (commercial only), Income Statement, Balance Sheet. Due date = month end + 30 days.
+- **Commercial detection**: Deals with rows in `tenants_raw` table are commercial (rent roll tracked); others residential (n/a)
+- **DB tables**: `surveillance_properties` (editable covenant fields), `insurance`, `surveillance_comments` (all in PROTECTED_TABLES)
 
 ## Agreed Roadmap
 - ~~Purchase 2nd MRI VPN license → configure Azure VPN Gateway tunnel → enable MRI queries from Azure~~ DONE (Jun 24, 2026)
