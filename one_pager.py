@@ -928,6 +928,102 @@ def get_property_performance(
 
 
 # ============================================================
+# U/W PE DISTRIBUTIONS (for U/W ROE)
+# ============================================================
+
+UW_PE_DIST_ACCT = '7071'  # Underwritten distribution to preferred equity
+
+def _get_uw_pe_distributions(
+    isbs_raw: pd.DataFrame,
+    vcode: str,
+    inception: date,
+    end_date: date,
+) -> List[Tuple[date, float]]:
+    """Extract periodic underwritten PE distributions from Projected IS.
+
+    Account 7071 in ISBS vSource='Projected IS' stores YTD cumulative
+    amounts (same convention as Actuals).  This function converts to
+    periodic amounts and returns them as (date, amount) tuples suitable
+    for the ROE numerator.
+
+    The sign convention in MRI: distributions are stored as positive
+    (debit).  We take abs() to be safe.
+
+    Returns list of (date, amount) for each period with a non-zero
+    distribution, covering inception through end_date.
+    """
+    if isbs_raw is None or isbs_raw.empty:
+        return []
+
+    # Filter to deal + Projected IS + account 7071
+    df = isbs_raw.copy()
+    if 'vcode' in df.columns:
+        df = df[df['vcode'] == str(vcode).strip().lower()]
+    if df.empty:
+        return []
+
+    if 'vSource' in df.columns:
+        df = df[df['vSource'] == 'Projected IS']
+    if df.empty or 'vAccount' not in df.columns:
+        return []
+
+    df = df[df['vAccount'] == UW_PE_DIST_ACCT]
+    if df.empty:
+        return []
+
+    if 'dtEntry_parsed' not in df.columns:
+        return []
+
+    df = df.dropna(subset=['dtEntry_parsed'])
+    df = df.sort_values('dtEntry_parsed')
+
+    # Get all available periods
+    periods = sorted(df['dtEntry_parsed'].unique())
+    if not periods:
+        return []
+
+    # Convert YTD cumulative → periodic amounts
+    # Within a year: periodic = current_ytd - prior_ytd (same year)
+    # January (or first period of year): periodic = current_ytd
+    distributions = []
+    prev_by_year = {}  # {year: last_cumulative_amount}
+
+    for period in periods:
+        period_ts = pd.Timestamp(period)
+        period_date = period_ts.date()
+
+        # Only include periods within our time range
+        if period_date < inception or period_date > end_date:
+            # Still track cumulative for YTD math
+            period_data = df[df['dtEntry_parsed'] == period]
+            cumulative = float(period_data['mAmount'].sum())
+            prev_by_year[period_ts.year] = cumulative
+            continue
+
+        period_data = df[df['dtEntry_parsed'] == period]
+        cumulative = float(period_data['mAmount'].sum())
+
+        # Convert cumulative to periodic
+        year = period_ts.year
+        if year in prev_by_year:
+            periodic = cumulative - prev_by_year[year]
+        else:
+            periodic = cumulative
+
+        prev_by_year[year] = cumulative
+
+        # Reset at year boundary (Jan is just the cumulative itself)
+        if period_ts.month == 1:
+            periodic = cumulative
+
+        amount = abs(periodic)
+        if amount > 0.01:
+            distributions.append((period_date, amount))
+
+    return distributions
+
+
+# ============================================================
 # PREFERRED EQUITY PERFORMANCE
 # ============================================================
 
@@ -937,7 +1033,8 @@ def get_pe_performance(
     acct: pd.DataFrame,
     commitments: pd.DataFrame,
     waterfalls: pd.DataFrame,
-    inv_map: pd.DataFrame
+    inv_map: pd.DataFrame,
+    isbs_raw: pd.DataFrame = None,
 ) -> Dict[str, Any]:
     """
     Get Preferred Equity performance metrics
@@ -949,6 +1046,7 @@ def get_pe_performance(
         commitments: Commitments DataFrame
         waterfalls: Waterfalls DataFrame
         inv_map: Investment map DataFrame
+        isbs_raw: ISBS DataFrame (for U/W ROE from Projected IS account 7071)
 
     Returns:
         Dictionary with PE performance metrics
@@ -1069,6 +1167,18 @@ def get_pe_performance(
                     pe['roe_to_date'] = calculate_roe(
                         capital_events, cf_distributions, inception, quarter_end
                     )
+
+                    # Compute U/W ROE to Date from Projected IS account 7071
+                    # Same capital events (actual contributions/returns), but
+                    # substitute underwritten distributions for CF distributions
+                    if isbs_raw is not None and not isbs_raw.empty:
+                        uw_dists = _get_uw_pe_distributions(
+                            isbs_raw, vcode, inception, quarter_end
+                        )
+                        if uw_dists:
+                            pe['uw_roe_to_date'] = calculate_roe(
+                                capital_events, uw_dists, inception, quarter_end
+                            )
         except Exception:
             pass
 

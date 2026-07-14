@@ -804,7 +804,7 @@ def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
                                           budget_econ_occ_df=budget_econ_occ,
                                           at_close_noi_df=at_close_noi,
                                           deal_terms_df=deal_terms) if quarter_str else {}
-    pe_perf = get_pe_performance(vcode, quarter_str, acct, commitments, waterfalls, inv) if quarter_str else {}
+    pe_perf = get_pe_performance(vcode, quarter_str, acct, commitments, waterfalls, inv, isbs_raw=isbs_raw) if quarter_str else {}
     comments = get_one_pager_comments(vcode, quarter_str) if quarter_str else {}
 
     # Enrich PE performance from deal analysis waterfall results
