@@ -40,7 +40,7 @@
 
 ## MRI Data Refresh (May 2026)
 - **MRI Query Service**: `mri_service.py` + 7 API endpoints + Vue sidebar UI
-- **13 queries** in `queries/` folder; network copies in SharePoint `queries/` folder (loaded first, fallback to local)
+- **15 queries** committed in `queries/` folder (copied from SharePoint). `_get_queries_folder()` checks `QUERIES_DIR` env var first (SharePoint/OneDrive), falls back to repo `queries/` folder. Dockerfile copies `queries/` into container.
 - **Works from Azure** via S2S VPN tunnel (Jun 24, 2026) — both PMX (.9) and IM (.10) fully operational
 - **Server IPs (tunnel)**: PMX=10.219.226.9, IM=10.219.226.10 (old FortiClient IPs .17/.18 no longer used)
 - **Credentials**: UID=PSCVPN, PWD=NVc8MkB^PlRuv*
@@ -55,7 +55,7 @@
 - **PG credentials**: `wfadmin` / `Wf3d9097e0365c445456dcc52e!` on `waterfall_xirr` database
 - **PG firewall**: Must add current public IP (`az postgres flexible-server firewall-rule create`). IPs added: local-dev (50.251.58.254), local-dev-2 (73.112.240.56), local-dev-3 (71.59.67.132), local-dev-4 (73.112.240.56)
 - **Auth login endpoint**: `/auth/login` (not `/api/auth/login`), returns `token` key (not `access_token`)
-- **Current revision**: v138 (deployed Jul 14, 2026) — Surveillance unified with app-wide data sources
+- **Current revision**: v139 (deployed Jul 14, 2026) — Surveillance unified + MRI query files in repo
 - **Shared folders**: `DATA_DIR`, `QUERIES_DIR`, `DOWNLOADS_DIR` env vars (per-developer OneDrive paths)
 - **Shared memory**: `.claude/memory/` in repo (committed, shared via git). Auto-memory redirects here.
 - **Email**: SendGrid Web API v3 (replaces SMTP, blocked by O365 MFA). Env vars: `SENDGRID_API_KEY`, `SENDGRID_FROM`. Single Sender Verification on `jbruin@peaceablestreet.com`.
