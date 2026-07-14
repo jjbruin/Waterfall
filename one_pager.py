@@ -1169,15 +1169,38 @@ def get_pe_performance(
                     )
 
                     # Compute U/W ROE to Date from Projected IS account 7071
-                    # Same capital events (actual contributions/returns), but
-                    # substitute underwritten distributions for CF distributions
+                    # Same actual capital structure (contributions/returns), but
+                    # substitute underwritten distributions for CF distributions.
+                    # Build capital-only events (no CF dists) so calculate_roe
+                    # doesn't try to match actual CF dates against UW dates.
                     if isbs_raw is not None and not isbs_raw.empty:
                         uw_dists = _get_uw_pe_distributions(
                             isbs_raw, vcode, inception, quarter_end
                         )
                         if uw_dists:
+                            # capital_only: contributions (neg) + capital returns (pos)
+                            # Exclude CF distributions from capital_events
+                            cf_dates_amounts: dict = {}
+                            for d, a in cf_distributions:
+                                cf_dates_amounts[d] = cf_dates_amounts.get(d, 0.0) + a
+                            capital_only = []
+                            cf_remaining = dict(cf_dates_amounts)
+                            for d, amt in capital_events:
+                                if amt < 0:
+                                    capital_only.append((d, amt))  # contribution
+                                else:
+                                    # Subtract CF portion to isolate capital returns
+                                    cf_at = cf_remaining.get(d, 0.0)
+                                    if cf_at > 0:
+                                        consumed = min(cf_at, amt)
+                                        cf_remaining[d] -= consumed
+                                        cap_ret = amt - consumed
+                                    else:
+                                        cap_ret = amt
+                                    if cap_ret > 0.005:
+                                        capital_only.append((d, cap_ret))
                             pe['uw_roe_to_date'] = calculate_roe(
-                                capital_events, uw_dists, inception, quarter_end
+                                capital_only, uw_dists, inception, quarter_end
                             )
         except Exception:
             pass
