@@ -50,6 +50,10 @@ export interface SurveillanceRow {
   // Insurance
   has_property_ins: boolean
   has_gl_ins: boolean
+  property_carrier: string | null
+  property_expiration: string | null
+  gl_carrier: string | null
+  gl_expiration: string | null
   // Comments (latest)
   comment_text: string | null
   comment_date: string | null

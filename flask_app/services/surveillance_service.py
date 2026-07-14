@@ -682,6 +682,10 @@ def get_surveillance_table() -> list[dict]:
             # Insurance
             "has_property_ins": ins.get("has_property", False),
             "has_gl_ins": ins.get("has_gl", False),
+            "property_carrier": ins.get("property_carrier"),
+            "property_expiration": ins.get("property_expiration"),
+            "gl_carrier": ins.get("gl_carrier"),
+            "gl_expiration": ins.get("gl_expiration"),
             # Comments (latest)
             "comment_text": comment_entry.get("comment_text"),
             "comment_date": comment_entry.get("comment_date"),
@@ -1009,7 +1013,14 @@ def _load_latest_comments() -> dict:
 
 
 def _load_insurance_summary() -> dict:
-    """Load insurance summary per vcode (has_property, has_gl, nearest_expiration)."""
+    """Load insurance summary per vcode.
+
+    Returns dict {vcode: {
+        has_property, has_gl, nearest_expiration,
+        property_carrier, property_expiration,
+        gl_carrier, gl_expiration,
+    }}.
+    """
     engine = get_engine()
     try:
         with engine.connect() as conn:
@@ -1021,13 +1032,22 @@ def _load_insurance_summary() -> dict:
     for r in rows:
         vc = r["vcode"]
         if vc not in result:
-            result[vc] = {"has_property": False, "has_gl": False, "nearest_expiration": None}
+            result[vc] = {
+                "has_property": False, "has_gl": False,
+                "nearest_expiration": None,
+                "property_carrier": None, "property_expiration": None,
+                "gl_carrier": None, "gl_expiration": None,
+            }
         entry = result[vc]
+        exp = r.get("expiration_date")
         if r["ins_type"] == "Property":
             entry["has_property"] = True
+            entry["property_carrier"] = r.get("carrier")
+            entry["property_expiration"] = exp
         elif r["ins_type"] == "General Liability":
             entry["has_gl"] = True
-        exp = r.get("expiration_date")
+            entry["gl_carrier"] = r.get("carrier")
+            entry["gl_expiration"] = exp
         if exp:
             if entry["nearest_expiration"] is None or exp < entry["nearest_expiration"]:
                 entry["nearest_expiration"] = exp

@@ -138,6 +138,46 @@ function covSummaryTitle(row: SurveillanceRow): string {
   return parts.length ? parts.join(', ') : 'Click to expand covenants'
 }
 
+function insSummaryClass(row: SurveillanceRow): string {
+  if (!row.has_property_ins && !row.has_gl_ins) return 'placeholder-dot'
+  // Check for expiring/expired policies
+  const exps = [row.property_expiration, row.gl_expiration].filter(Boolean)
+  for (const dt of exps) {
+    const days = Math.floor((new Date(dt!).getTime() - Date.now()) / 86400000)
+    if (days < 0) return 'rpt-missing-total'
+    if (days <= 30) return 'rpt-missing-total'
+  }
+  if (row.has_property_ins && row.has_gl_ins) return 'rpt-ok-dot'
+  return 'rpt-ok-dot'
+}
+
+function insSummaryTitle(row: SurveillanceRow): string {
+  if (!row.has_property_ins && !row.has_gl_ins) return 'No insurance on file'
+  const parts = []
+  if (!row.has_property_ins) parts.push('No property ins')
+  if (!row.has_gl_ins) parts.push('No GL ins')
+  const exps = [
+    { label: 'Property', dt: row.property_expiration },
+    { label: 'GL', dt: row.gl_expiration },
+  ]
+  for (const { label, dt } of exps) {
+    if (!dt) continue
+    const days = Math.floor((new Date(dt).getTime() - Date.now()) / 86400000)
+    if (days < 0) parts.push(`${label} expired`)
+    else if (days <= 30) parts.push(`${label} expires in ${days}d`)
+  }
+  return parts.length ? parts.join(', ') : 'Insurance on file'
+}
+
+function insExpirationClass(dt: string | null): string {
+  if (!dt) return ''
+  const days = Math.floor((new Date(dt).getTime() - Date.now()) / 86400000)
+  if (days < 0) return 'ins-expired'
+  if (days <= 30) return 'ins-urgent'
+  if (days <= 90) return 'ins-soon'
+  return ''
+}
+
 function missingClass(val: number | null): string {
   if (val == null) return ''
   if (val === 0) return 'rpt-complete'
@@ -150,7 +190,7 @@ const groupDefs = [
   { key: 'reporting', label: 'Reporting', cols: ['Occ', 'Rent Roll', 'Inc. Stmt', 'Bal. Sheet'] },
   { key: 'covenants', label: 'Debt Covenants', cols: ['DSCR', 'Debt Yield', 'LTV', 'Ext Options'] },
   { key: 'taxes', label: 'Real Estate Taxes', cols: ['Due Date', 'Status', 'TTM Amount'] },
-  { key: 'insurance', label: 'Insurance', cols: ['Property', 'GL', 'Renewal', 'TTM Amount'] },
+  { key: 'insurance', label: 'Insurance', cols: ['Property', 'GL', 'TTM Expense'] },
   { key: 'ground_leases', label: 'Ground Leases', cols: ['Lease Exp', 'Rent', 'Status'] },
   { key: 'escrows', label: 'Escrows', cols: ['Tax', 'Insurance', 'CapEx'] },
   { key: 'collateral', label: "Add'l Collateral", cols: ['Type', 'Value', 'Notes'] },
@@ -403,20 +443,24 @@ function handleExportCsv() {
 
             <!-- Insurance -->
             <template v-if="expandedGroups.insurance">
-              <td class="rpt-cell">
-                <span v-if="row.has_property_ins" class="rpt-ok-dot"></span>
-                <span v-else>&mdash;</span>
+              <td class="ins-cell" :class="insExpirationClass(row.property_expiration)">
+                <template v-if="row.has_property_ins">
+                  <div class="ins-carrier">{{ row.property_carrier || 'On file' }}</div>
+                  <div class="ins-exp" v-if="row.property_expiration">{{ formatShortDate(row.property_expiration) }}</div>
+                </template>
+                <span v-else class="ins-none">&mdash;</span>
               </td>
-              <td class="rpt-cell">
-                <span v-if="row.has_gl_ins" class="rpt-ok-dot"></span>
-                <span v-else>&mdash;</span>
+              <td class="ins-cell" :class="insExpirationClass(row.gl_expiration)">
+                <template v-if="row.has_gl_ins">
+                  <div class="ins-carrier">{{ row.gl_carrier || 'On file' }}</div>
+                  <div class="ins-exp" v-if="row.gl_expiration">{{ formatShortDate(row.gl_expiration) }}</div>
+                </template>
+                <span v-else class="ins-none">&mdash;</span>
               </td>
-              <td class="rpt-cell">{{ row.ins_renewal ? formatShortDate(row.ins_renewal) : '\u2014' }}</td>
               <td class="rpt-cell num">{{ formatCurrency(row.ins_exp_ttm) }}</td>
             </template>
-            <td v-else class="rpt-summary-cell">
-              <span v-if="row.has_property_ins || row.has_gl_ins" class="rpt-ok-dot"></span>
-              <span v-else class="placeholder-dot"></span>
+            <td v-else class="rpt-summary-cell" :title="insSummaryTitle(row)">
+              <span :class="insSummaryClass(row)"></span>
             </td>
 
             <!-- Ground Leases -->
@@ -888,6 +932,41 @@ th.sticky-col { z-index: 3; }
   white-space: normal;
   max-width: 140px;
 }
+
+/* Insurance cells */
+.ins-cell {
+  text-align: center;
+  font-size: 12px;
+  border-left: 1px solid #e8e8e8;
+  padding: 4px 6px !important;
+  vertical-align: top;
+}
+
+.ins-carrier {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100px;
+}
+
+.ins-exp {
+  font-size: 10px;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.ins-none {
+  color: #bdbdbd;
+}
+
+.ins-expired { background: #ffebee !important; }
+.ins-expired .ins-exp { color: #c62828; font-weight: 600; }
+.ins-urgent { background: #fff3e0 !important; }
+.ins-urgent .ins-exp { color: #e65100; font-weight: 600; }
+.ins-soon .ins-exp { color: #f57f17; }
 
 /* Tax status badges */
 .tax-status {
