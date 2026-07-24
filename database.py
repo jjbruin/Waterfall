@@ -838,34 +838,44 @@ def list_all_tables() -> List[Dict[str, Any]]:
         List of table metadata dictionaries
     """
     conn = get_db_connection()
-    
-    tables = pd.read_sql("""
-        SELECT name, sql 
-        FROM sqlite_master 
-        WHERE type='table' 
-        ORDER BY name
-    """, conn)
-    
+
+    if _sa_engine is not None:
+        # PostgreSQL — use information_schema
+        tables = pd.read_sql("""
+            SELECT table_name AS name
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+            ORDER BY table_name
+        """, conn)
+    else:
+        # SQLite
+        tables = pd.read_sql("""
+            SELECT name
+            FROM sqlite_master
+            WHERE type='table'
+            ORDER BY name
+        """, conn)
+
     table_list = []
-    
+
     for _, row in tables.iterrows():
         table_name = row['name']
-        
+
         # Get row count
-        count = pd.read_sql(f"SELECT COUNT(*) as cnt FROM {table_name}", conn)
+        count = pd.read_sql(f'SELECT COUNT(*) as cnt FROM "{table_name}"', conn)
         row_count = count['cnt'].iloc[0]
-        
+
         # Get description from definitions if available
         description = TABLE_DEFINITIONS.get(table_name, {}).get('description', '')
-        
+
         table_list.append({
             'name': table_name,
             'rows': row_count,
             'description': description
         })
-    
+
     conn.close()
-    
+
     return table_list
 
 
@@ -885,18 +895,25 @@ def backup_database(backup_dir: str = "backups") -> Dict[str, Any]:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     conn = get_db_connection()
-    
+
     # Get all tables
-    tables = pd.read_sql(
-        "SELECT name FROM sqlite_master WHERE type='table'", 
-        conn
-    )
-    
+    if _sa_engine is not None:
+        tables = pd.read_sql(
+            "SELECT table_name AS name FROM information_schema.tables "
+            "WHERE table_schema = 'public' AND table_type = 'BASE TABLE'",
+            conn,
+        )
+    else:
+        tables = pd.read_sql(
+            "SELECT name FROM sqlite_master WHERE type='table'",
+            conn,
+        )
+
     results = {}
-    
+
     for table_name in tables['name']:
         try:
-            df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
+            df = pd.read_sql(f'SELECT * FROM "{table_name}"', conn)
             
             filename = f"{table_name}_{timestamp}.csv"
             filepath = backup_path / filename

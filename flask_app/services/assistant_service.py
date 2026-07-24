@@ -3,7 +3,7 @@
 import os
 import json
 import logging
-from datetime import date
+from datetime import date, datetime
 
 import anthropic
 import pandas as pd
@@ -391,6 +391,11 @@ def _df_to_json(df, limit=100):
     for col in df_out.columns:
         if pd.api.types.is_datetime64_any_dtype(df_out[col]):
             df_out[col] = df_out[col].dt.strftime("%Y-%m-%d").fillna("")
+        elif df_out[col].dtype == object:
+            # Handle Python date/datetime objects in object-dtype columns
+            df_out[col] = df_out[col].apply(
+                lambda x: x.isoformat() if isinstance(x, (date, datetime)) else x
+            )
     records = df_out.fillna("").to_dict(orient="records")
     result = {"rows": records, "count": total, "showing": min(limit, total)}
     if truncated:

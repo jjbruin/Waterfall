@@ -369,6 +369,12 @@ def _upsert_deals(df: pd.DataFrame, engine) -> dict:
                 new_rows[col] = pd.Series([None] * len(new_rows), dtype="object")
         existing = pd.concat([existing, new_rows[existing.columns]], ignore_index=True)
 
+    # Coerce all columns to string to avoid dtype mismatches on write
+    for col in existing.columns:
+        existing[col] = existing[col].apply(
+            lambda x: str(x) if pd.notna(x) and not isinstance(x, str) else x
+        )
+
     # Write back
     with engine.begin() as conn:
         conn.execute(sa.text("DROP TABLE IF EXISTS deals"))
