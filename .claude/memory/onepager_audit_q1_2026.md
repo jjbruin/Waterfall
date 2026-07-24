@@ -4,18 +4,21 @@ Audit comparison of Azure One Pager vs Excel model across 39 deals (959 total di
 PDF report generated: `OnePager_Audit_Variance_Analysis.pdf` (project root).
 Source audit file: `audit_comparison_final.xlsx` (SharePoint / Downloads).
 
-## Status: Pending Team Review (Jul 22, 2026)
+## Status: Fixes 1, 5, 7 Deployed (v144); Fixes 3, 4, 6 Investigated (Jul 24, 2026)
 
-Team is reviewing recommendations. No code changes made yet.
+- **Fix 1+7 (DSCR)**: Deployed v144. Principal from IS acct 7060 (YTD Actual), BS balance change fallback. U/W uses acct 7010.
+- **Fix 5 (Budget Econ Occ)**: Deployed v144. Bad debt % deducted from Budget IS (4040+4041+4043 / abs(4010)).
+- **Fix 2 (PE Exposure)**: Already correct — verified with Ascent on Steamboat (107.5% match). 45th & Main gap is Bug 4 (construction draws).
+- **Fix 3 (At Close)**: Investigated — see below. Data gap, not code bug.
+- **Fix 4 (ROE to Date)**: Investigated — see below. Methodology difference, not data freshness.
+- **Fix 6 (Chart Quarters)**: Investigated — see below. Code correct, data freshness issue.
 
 ## Code/Logic Bugs to Fix (~293 discrepancies, 31%)
 
-### Bug 1: DSCR Principal Accounts (P0) — ~87 rows
-- `one_pager.py:566-568` uses BS accounts {2145, 2150, 2152, 2154, 2156} for debt service principal
-- These accounts don't exist in vSource='Interim IS', so principal = $0, DSCR = NOI/Interest only
-- Should use IS account {7060} per `config.py:53` PRINCIPAL_ACCTS
-- **Fix**: Change line 568 to `'Principal': ['7060'],`
-- Example: 30 Bearfoot DSCR: Azure 2.96X vs Excel 1.72X
+### Bug 1: DSCR Principal Accounts (P0) — ~87 rows — FIXED (v144)
+- Was using BS accounts {2145, 2150, 2152, 2154, 2156} — don't exist in Interim IS
+- Fixed: YTD Actual uses IS acct 7060, fallback to BS balance change estimation
+- U/W YE uses acct 7010 (total debt service from Projected IS)
 
 ### Bug 2: PE Capitalization Shows PPI Entities (P0) — 39 rows
 - `one_pager.py:495-518` reads InvestorID from accounting directly
@@ -23,34 +26,43 @@ Team is reviewing recommendations. No code changes made yet.
 - Excel maps through PPI to actual investors (PSC 69%, Declaration 31%)
 - **Fix**: Add logic to resolve PPI entities to upstream investors via ownership/relationships table
 
-### Bug 3: PE Exposure on Value Formula (P1) — ~22 rows
-- Azure shows ~1% while Excel shows ~107% — wrong denominator or valuation amount
-- Example: 45th & Main: Azure 1.4% vs Excel 107.2%
-- **Fix**: Verify pe_exposure_on_value uses pref_equity / most_recent_valuation
+### Bug 3: PE Exposure on Value Formula (P1) — ~22 rows — VERIFIED CORRECT
+- Formula `(debt + pref_equity) / current_valuation` is correct
+- Verified: Ascent on Steamboat matches Excel exactly (107.5%)
+- 45th & Main gap (140.6%) caused by Bug 4 (construction draw debt source), not formula
 
 ### Bug 4: Capitalization Debt Source (P1) — ~53 rows
 - Construction loans: Azure falls back to MRI mOrigLoanAmt (commitment) instead of ISBS drawn balance
 - Example: 45th & Main Debt: Azure $47.0M (commitment) vs Excel $31.4M (drawn)
 - **Fix**: Ensure ISBS Interim BS data loaded for Q1 2026; verify quarter-date selection logic
 
-### Bug 5: ROE to Date (P1) — ~30 rows
+### Bug 5: ROE to Date (P1) — ~30 rows — INVESTIGATED (methodology difference)
 - Example: 30 Bearfoot: Azure 21.3% vs Excel 14.3%
-- **Fix**: Step-through audit of ROE calculation for 30 Bearfoot vs Excel to isolate formula vs data
+- **Data freshness ruled out**: 30 Bearfoot has distributions through May 2026 (well past Q1 end)
+- **Root cause**: Methodology/formula difference vs Excel, NOT data timing
+- Possible causes: different annualization (simple vs compound), OP investor inclusion, weighted avg capital method
+- **Next step**: Needs side-by-side Excel workbook comparison to identify exact formula difference
 
-### Bug 6: Economic Occupancy Variances (P2) — ~56 rows
-- Small but consistent differences in Variance, Projected YE, Budget occupancy
-- Likely different budget_econ_occ data source or bad debt formula
-- **Fix**: Audit budget_econ_occ source and bad debt formula (4040+4043 / abs(4010))
+### Bug 6: Economic Occupancy Variances (P2) — ~56 rows — PARTIALLY FIXED (v144)
+- Budget econ occ now deducts bad debt % from Budget IS (4040+4041+4043 / abs(4010))
+- Remaining small variances likely budget_econ_occ data source differences
 
-### Bug 7: Chart Issues (P2) — 17 missing quarters, 24 value mismatches
-- Town Fair Tire: values "shifted one quarter late"
-- **Fix**: Audit period-end alignment in cumulative_to_periodic and aggregate_periodic()
+### Bug 7: Chart Issues (P2) — 17 missing quarters, 24 value mismatches — INVESTIGATED (data freshness)
+- Chart code is correct: `cumulative_to_periodic()` and `aggregate_periodic()` logic verified
+- "One quarter lag" for Town Fair Tire: Q1 2026 has only 1/3 months loaded in Interim IS → correctly excluded
+- `aggregate_periodic` requires 3 months per quarter — incomplete quarters are rightfully omitted
+- Missing quarters across deals = incomplete ISBS Interim IS data, not a code bug
+- **No code fix needed** — charts auto-correct as MRI data is refreshed
 
 ## Data Gaps for Team (~540 discrepancies, 56%)
 
+### Fix 3 Investigation: At Close — Burton Retail & Pontchartrain
+- **Pontchartrain (P0000037)**: Data EXISTS in `at_close_noi` (NOI=$933K). Should display correctly. No issue.
+- **Burton Retail (P0000109)**: Acquired 08/28/2025. NOT in `at_close_noi` table, no Projected IS fallback. Data gap — AM team needs to load at-close data via `Prop_Info_AtClose.sql`.
+
 | Pri | Action | Owner | Count |
 |-----|--------|-------|-------|
-| P0 | Import at_close_noi (Prop_Info_AtClose.sql) + deal_terms (Prop_Info_DealTerms.sql) | Data Team | ~200 |
+| P0 | Import at_close_noi (Prop_Info_AtClose.sql) + deal_terms (Prop_Info_DealTerms.sql) — Burton Retail confirmed missing | Data Team | ~200 |
 | P0 | Import/verify ISBS Projected IS (all deals, Dec 31 rows) | Data Team | ~62 |
 | P1 | Enter Q1 2026 Business Plan comments for all 39 deals | Asset Managers | 39 |
 | P1 | Enter Q1 2026 Accrued Pref comments for all 39 deals | Asset Managers | 39 |
