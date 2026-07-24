@@ -941,7 +941,23 @@ def get_property_performance(
                         if pd.notna(val):
                             # ProjOccupancy stores as decimal (0.887 = 88.7%);
                             # actual Occ% is in percentage points (88.7)
-                            perf['economic_occ']['ytd_budget'] = val * 100
+                            budget_occ = val * 100
+                            # Subtract bad debt/concessions % from Budget IS (matching Excel)
+                            # Accounts: 4040 (Concessions), 4041 (Commercial Concessions), 4043 (Bad Debt)
+                            bad_debt_pct_budget = 0
+                            if not budget_data.empty:
+                                jan1_b = pd.Timestamp(f"{year}-01-01") - pd.DateOffset(days=1)
+                                qtr_end_b = pd.Timestamp(quarter_end)
+                                bud_range = budget_data[
+                                    (budget_data['dtEntry_parsed'] > jan1_b) &
+                                    (budget_data['dtEntry_parsed'] <= qtr_end_b)
+                                ]
+                                if not bud_range.empty:
+                                    bad_debt_sum = bud_range[bud_range['vAccount'].isin(['4040', '4041', '4043'])]['mAmount'].sum()
+                                    rental_sum = bud_range[bud_range['vAccount'] == '4010']['mAmount'].sum()
+                                    if rental_sum != 0:
+                                        bad_debt_pct_budget = bad_debt_sum / abs(rental_sum) * 100
+                            perf['economic_occ']['ytd_budget'] = budget_occ - bad_debt_pct_budget
 
     # Compute economic occupancy variance
     if perf['economic_occ']['ytd_actual'] is not None and perf['economic_occ']['ytd_budget'] is not None:
