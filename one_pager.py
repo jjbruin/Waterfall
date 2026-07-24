@@ -565,8 +565,12 @@ IS_ACCOUNTS = {
     },
     'DEBT_SERVICE': {
         'Interest': ['5190'],
-        'Principal': ['2145', '2150', '2152', '2154', '2156'],
+        'Principal': ['7060'],
     },
+    # Balance-sheet debt accounts for principal estimation from balance changes
+    'DEBT_BS_ACCTS': ['2145', '2150', '2152', '2154', '2156'],
+    # Underwriting total debt service account (Projected IS)
+    'UW_DEBT_SERVICE': ['7010'],
 }
 
 
@@ -659,54 +663,108 @@ def get_property_performance(
 
     # Get actual data (Interim IS)
     actual_data = isbs[isbs['vSource'] == 'Interim IS']
+    bs_data = isbs[isbs['vSource'] == 'Interim BS']
     budget_data = isbs[isbs['vSource'] == 'Budget IS']
     uw_data = isbs[isbs['vSource'] == 'Projected IS']
 
+    # Helper: estimate YTD principal from Interim BS balance changes
+    # Principal payments reduce loan balances, so principal = (prior_bal - current_bal)
+    # extrapolated by months elapsed in the quarter period
+    def _estimate_principal_from_bs(bs_df, qtr_end_ts, months_elapsed):
+        """Estimate YTD principal from BS debt account balance changes."""
+        if bs_df.empty:
+            return 0
+        bs_accts = IS_ACCOUNTS['DEBT_BS_ACCTS']
+        debt_bs = bs_df[bs_df['vAccount'].isin(bs_accts)]
+        if debt_bs.empty:
+            return 0
+        bs_periods = sorted(debt_bs['dtEntry_parsed'].dropna().unique())
+        if not bs_periods:
+            return 0
+        # Find latest BS period on or before quarter end
+        current_date = None
+        for p in reversed(bs_periods):
+            if pd.Timestamp(p) <= qtr_end_ts:
+                current_date = pd.Timestamp(p)
+                break
+        if current_date is None:
+            return 0
+        current_bal = abs(debt_bs[debt_bs['dtEntry_parsed'] == current_date]['mAmount'].sum())
+        # Find prior month's BS balance
+        prior_date = None
+        for p in reversed(bs_periods):
+            if pd.Timestamp(p) < current_date:
+                prior_date = pd.Timestamp(p)
+                break
+        if prior_date is None:
+            return 0
+        prior_bal = abs(debt_bs[debt_bs['dtEntry_parsed'] == prior_date]['mAmount'].sum())
+        # Monthly principal = balance decrease; extrapolate to YTD
+        monthly_principal = max(0, prior_bal - current_bal)
+        return monthly_principal * months_elapsed
+
+    # Determine months elapsed for the quarter
+    qtr_num = int(quarter_str.split('-Q')[1]) if '-Q' in quarter_str else 1
+    months_elapsed = qtr_num * 3  # Q1=3, Q2=6, Q3=9, Q4=12
+
     # Find the as-of date for YTD actual (last date in quarter or closest available)
+    ytd_date = None
     if not actual_data.empty:
         actual_periods = sorted(actual_data['dtEntry_parsed'].dropna().unique())
         # Find period closest to or before quarter end
-        ytd_date = None
         for p in reversed(actual_periods):
             if pd.Timestamp(p).date() <= quarter_end:
                 ytd_date = pd.Timestamp(p)
                 break
 
         if ytd_date:
-            rev, exp, noi, ds = calc_amounts(actual_data, as_of_date=ytd_date)
+            rev, exp, noi, _ = calc_amounts(actual_data, as_of_date=ytd_date)
             perf['revenue']['ytd_actual'] = rev
             perf['expenses']['ytd_actual'] = exp
             perf['noi']['ytd_actual'] = noi
-            if ds > 0:
-                perf['dscr']['ytd_actual'] = noi / ds
 
-    # Get YTD budget
+            # YTD Actual DSCR: Interest (5190) + Principal (7060 if available, else BS balance change)
+            ytd_is = actual_data[actual_data['dtEntry_parsed'] == ytd_date]
+            ytd_interest = abs(ytd_is[ytd_is['vAccount'] == '5190']['mAmount'].sum())
+            ytd_principal_is = abs(ytd_is[ytd_is['vAccount'] == '7060']['mAmount'].sum())
+            if ytd_principal_is > 0:
+                ytd_principal = ytd_principal_is
+            else:
+                ytd_principal = _estimate_principal_from_bs(bs_data, pd.Timestamp(quarter_end), months_elapsed)
+            ytd_actual_ds = ytd_interest + ytd_principal
+            if ytd_actual_ds > 0:
+                perf['dscr']['ytd_actual'] = noi / ytd_actual_ds
+
+    # Get YTD budget — Budget IS is periodic, sum 5190+7060 over date range
     if not budget_data.empty:
-        # Sum budget from year start to quarter end
         jan1 = pd.Timestamp(f"{quarter_str.split('-')[0]}-01-01") - pd.DateOffset(days=1)
         qtr_end = pd.Timestamp(quarter_end)
         rev, exp, noi, ds = calc_amounts(budget_data, sum_range=(jan1, qtr_end))
         perf['revenue']['ytd_budget'] = rev
         perf['expenses']['ytd_budget'] = exp
         perf['noi']['ytd_budget'] = noi
-        if ds > 0:
-            perf['dscr']['ytd_budget'] = noi / ds
+        if abs(ds) > 0:
+            perf['dscr']['ytd_budget'] = noi / abs(ds)
 
     # Projected YE = YTD Actual + remainder-of-year Budget
     year = int(quarter_str.split('-')[0])
     if not actual_data.empty and not budget_data.empty:
-        # YTD Actual: cumulative at quarter end (already computed above as ytd_date)
         ytd_rev = perf['revenue']['ytd_actual']
         ytd_exp = perf['expenses']['ytd_actual']
         ytd_noi = perf['noi']['ytd_actual']
-        ytd_ds = 0
-        if not actual_data.empty and ytd_date is not None:
-            ytd_is = actual_data[actual_data['dtEntry_parsed'] == ytd_date]
-            if not ytd_is.empty:
-                for cat, accts in IS_ACCOUNTS['DEBT_SERVICE'].items():
-                    ytd_ds += ytd_is[ytd_is['vAccount'].isin(accts)]['mAmount'].sum()
 
-        # Remainder Budget: months after quarter end through Dec 31
+        # YTD actual debt service (interest + principal, same logic as ytd_actual DSCR above)
+        ytd_ds = 0
+        if ytd_date is not None:
+            ytd_is = actual_data[actual_data['dtEntry_parsed'] == ytd_date]
+            ytd_interest = abs(ytd_is[ytd_is['vAccount'] == '5190']['mAmount'].sum())
+            ytd_principal_is = abs(ytd_is[ytd_is['vAccount'] == '7060']['mAmount'].sum())
+            if ytd_principal_is > 0:
+                ytd_ds = ytd_interest + ytd_principal_is
+            else:
+                ytd_ds = ytd_interest + _estimate_principal_from_bs(bs_data, pd.Timestamp(quarter_end), months_elapsed)
+
+        # Remainder Budget: months after quarter end through Dec 31 (5190+7060)
         remainder_start = pd.Timestamp(quarter_end)
         dec31 = pd.Timestamp(f"{year}-12-31")
         rem_rev, rem_exp, rem_noi, rem_ds = calc_amounts(budget_data, sum_range=(remainder_start, dec31))
@@ -732,12 +790,16 @@ def get_property_performance(
         dec_date = next((pd.Timestamp(p) for p in reversed(uw_periods)
                          if pd.Timestamp(p).year == year and pd.Timestamp(p).month == 12), None)
         if dec_date:
-            rev, exp, noi, ds = calc_amounts(uw_data, as_of_date=dec_date)
+            rev, exp, noi, _ = calc_amounts(uw_data, as_of_date=dec_date)
             perf['revenue']['uw_ye'] = rev
             perf['expenses']['uw_ye'] = exp
             perf['noi']['uw_ye'] = noi
-            if ds > 0:
-                perf['dscr']['uw_ye'] = noi / ds
+
+            # Fix 7: U/W DSCR uses account 7010 (total debt service) from Projected IS
+            uw_dec = uw_data[uw_data['dtEntry_parsed'] == dec_date]
+            uw_ds = abs(uw_dec[uw_dec['vAccount'].isin(IS_ACCOUNTS['UW_DEBT_SERVICE'])]['mAmount'].sum())
+            if uw_ds > 0:
+                perf['dscr']['uw_ye'] = noi / uw_ds
 
             # U/W YE Economic Occupancy from Projected IS: 1 - (vacancy / rental income)
             # 4010 = Rental Income (negative/credit), 4030 = Vacancy Loss (positive/debit)
