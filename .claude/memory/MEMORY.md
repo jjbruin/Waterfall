@@ -8,6 +8,7 @@
 - [mri_databases.md](mri_databases.md) — MRI database sources, query service, Azure connectivity status
 - [portfolio_analysis.md](portfolio_analysis.md) — Portfolio Analysis tab (upstream entity analysis, actual/proposed modes)
 - [transfer_aware_returns.md](transfer_aware_returns.md) — Design doc: transfer-aware IRR/ROE/MOIC (scoped, not yet implemented)
+- [onepager_audit_q1_2026.md](onepager_audit_q1_2026.md) — Q1 2026 audit: Azure vs Excel One Pager (959 discrepancies, 7 code bugs, data gaps)
 - [session_handoff_may7b.md](session_handoff_may7b.md) — Session handoff: pref accrual fix, combined table, TGA23 step deletion
 - [ai_assistant.md](ai_assistant.md) — Embedded AI assistant (Claude API, tools, streaming chat)
 - [ai_assistant_roadmap.md](ai_assistant_roadmap.md) — AI assistant enhancement plan (15 items, prioritized)
@@ -55,7 +56,7 @@
 - **PG credentials**: `wfadmin` / `Wf3d9097e0365c445456dcc52e!` on `waterfall_xirr` database
 - **PG firewall**: Must add current public IP (`az postgres flexible-server firewall-rule create`). IPs added: local-dev (50.251.58.254), local-dev-2 (73.112.240.56), local-dev-3 (71.59.67.132), local-dev-4 (73.112.240.56)
 - **Auth login endpoint**: `/auth/login` (not `/api/auth/login`), returns `token` key (not `access_token`)
-- **Current revision**: v140 (deployed Jul 14, 2026) — Surveillance Phases 1-6 (Debt Covenants, RE Taxes, Insurance, Ground Leases, Escrows, Collateral)
+- **Current revision**: v144 (deployed Jul 24, 2026) — DSCR fix (principal from 7060/BS, U/W from 7010), budget econ occ bad-debt deduction, 3 prod error fixes
 - **Shared folders**: `DATA_DIR`, `QUERIES_DIR`, `DOWNLOADS_DIR` env vars (per-developer OneDrive paths)
 - **Shared memory**: `.claude/memory/` in repo (committed, shared via git). Auto-memory redirects here.
 - **Email**: SendGrid Web API v3 (replaces SMTP, blocked by O365 MFA). Env vars: `SENDGRID_API_KEY`, `SENDGRID_FROM`. Single Sender Verification on `jbruin@peaceablestreet.com`.
@@ -109,7 +110,7 @@
   - **Current PE Balance**: from `seed_states` capital_outstanding — not terminal waterfall state
   - **Committed PE fallback**: total PE contributions from partner_results if commitments table empty
 - **ROE to Date**: Computed in `get_pe_performance()` (`one_pager.py`) from actual accounting distributions through quarter end, using `calculate_roe()`. Does NOT include projected waterfall returns.
-- **U/W ROE to Date**: Still 0% — needs separate data source (deal terms or projected IS)
+- **U/W ROE to Date**: Computed from ISBS Projected IS account 7071 (underwritten PE distributions). Shows 0% when acct 7071 data is missing.
 
 ## Forecast Assembly (Jul 2026)
 - **Multi-source priority**: forecast_feed CSV > ISBS Valuation IS > ISBS Projected IS
