@@ -56,7 +56,7 @@
 - **PG credentials**: `wfadmin` / `Wf3d9097e0365c445456dcc52e!` on `waterfall_xirr` database
 - **PG firewall**: Must add current public IP (`az postgres flexible-server firewall-rule create`). IPs added: local-dev (50.251.58.254), local-dev-2 (73.112.240.56), local-dev-3 (71.59.67.132), local-dev-4 (73.112.240.56)
 - **Auth login endpoint**: `/auth/login` (not `/api/auth/login`), returns `token` key (not `access_token`)
-- **Current revision**: v144 (deployed Jul 24, 2026) — DSCR fix (principal from 7060/BS, U/W from 7010), budget econ occ bad-debt deduction, 3 prod error fixes
+- **Current revision**: v147 (deployed Jul 27, 2026) — Fix 1 loan extension options, Fix 2 PE investor names, Fix 2b comments import
 - **Shared folders**: `DATA_DIR`, `QUERIES_DIR`, `DOWNLOADS_DIR` env vars (per-developer OneDrive paths)
 - **Shared memory**: `.claude/memory/` in repo (committed, shared via git). Auto-memory redirects here.
 - **Email**: SendGrid Web API v3 (replaces SMTP, blocked by O365 MFA). Env vars: `SENDGRID_API_KEY`, `SENDGRID_FROM`. Single Sender Verification on `jbruin@peaceablestreet.com`.
@@ -104,7 +104,9 @@
 - **APP_URL fix**: Default `APP_URL` in `flask_app/config.py` updated from old deleted app to `app-waterfall-dev-v2`. Also set as Azure container env var.
 
 ## One Pager Enhancements (Jul 2026)
-- **Loan Terms format**: `nRate% | Fixed | M/D/YYYY` or `vIndex + vSpread% | M/D/YYYY`. Uses `vIndex`, `vSpread` for variable, `nRate` for fixed. Primary = largest `mOrigLoanAmt`, 2nd = next largest. Loan terms populate regardless of debt source (ISBS or MRI_Loans).
+- **Loan Terms format**: `nRate% | Fixed | M/D/YYYY (+ext)` or `vIndex + vSpread% | M/D/YYYY (+ext)`. Uses `vIndex`, `vSpread` for variable, `nRate` for fixed. Primary = largest `mOrigLoanAmt`, 2nd = next largest. Loan terms populate regardless of debt source (ISBS or MRI_Loans). Extension options from `ExtensionOptions` column (exists on PG, not local SQLite).
+- **PE Capitalization investor names**: Resolved via `underlying_investors` column in `one_pager_comments` table (human-readable, e.g. "PSC 69%, Declaration 31%"). Fallback: PPI→upstream entity resolution via `relationships` table. Fallback 2: raw PPI entity ID.
+- **one_pager_comments table**: Added `underlying_investors TEXT` column (Jul 2026). 139 rows imported from Charlene's compiled spreadsheet (71 deals x Q4 2025 + Q1 2026). Protected table — not overwritten by CSV import.
 - **PE Performance enrichment**: `_enrich_pe_from_deal_result()` in `financials_service.py` runs `get_cached_deal_result()` to pull:
   - **Accrued Balance**: from `seed_states` (pref_unpaid_compounded + pref_accrued_current_year) — represents current state at actuals boundary
   - **Current PE Balance**: from `seed_states` capital_outstanding — not terminal waterfall state
