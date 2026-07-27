@@ -310,6 +310,7 @@ def one_pager(vcode):
             deal_terms=data.get("deal_terms_raw"),
             at_close_noi=data.get("at_close_noi_raw"),
             full_data=data,
+            relationships=data.get("relationships_raw"),
         )
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -412,6 +413,7 @@ def one_pager_batch():
                 deal_terms=data.get("deal_terms_raw"),
                 at_close_noi=data.get("at_close_noi_raw"),
                 full_data=data,
+                relationships=data.get("relationships_raw"),
             )
         except Exception as e:
             page["data"] = None

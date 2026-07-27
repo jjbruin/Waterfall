@@ -833,6 +833,7 @@ def _tool_get_one_pager(inp):
             budget_econ_occ=data.get("budget_econ_occ"),
             deal_terms=data.get("deal_terms_raw"),
             at_close_noi=data.get("at_close_noi_raw"),
+            relationships=data.get("relationships_raw"),
         )
         if not result:
             return json.dumps({"error": f"No One Pager data for '{vcode}'. The deal may lack ISBS data or valuations needed for the One Pager."})

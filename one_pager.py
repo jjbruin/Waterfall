@@ -206,6 +206,7 @@ def get_capitalization_stack(
     inv_map: pd.DataFrame,
     isbs_raw: pd.DataFrame = None,
     quarter_str: str = None,
+    relationships: pd.DataFrame = None,
 ) -> Dict[str, Any]:
     """
     Get capitalization stack and deal terms
@@ -506,6 +507,35 @@ def get_capitalization_stack(
                         )
                         if contribs_only > 0:
                             pe_investor_contribs[investor_id] = contribs_only
+
+                # Resolve PPI entities to upstream investors via relationships
+                if pe_investor_contribs and relationships is not None and not relationships.empty:
+                    resolved_contribs = {}
+                    rel = relationships.copy()
+                    # Normalize columns
+                    if 'OwnershipPct' not in rel.columns:
+                        for c in rel.columns:
+                            if c.lower() == 'ownershippct':
+                                rel = rel.rename(columns={c: 'OwnershipPct'})
+                                break
+                    for inv_id, amt in pe_investor_contribs.items():
+                        if inv_id.upper().startswith('PPI'):
+                            # Find current (no EndDate) upstream investors for this PPI
+                            ppi_rels = rel[rel['InvestmentID'].str.strip() == inv_id.strip()].copy()
+                            if 'EndDate' in ppi_rels.columns:
+                                ppi_rels = ppi_rels[ppi_rels['EndDate'].isna() | (ppi_rels['EndDate'].astype(str).str.strip().isin(['', 'None', 'NaT', 'nan']))]
+                            if not ppi_rels.empty and 'OwnershipPct' in ppi_rels.columns:
+                                ppi_rels['OwnershipPct'] = pd.to_numeric(ppi_rels['OwnershipPct'], errors='coerce').fillna(0)
+                                total_own = ppi_rels['OwnershipPct'].sum()
+                                if total_own > 0:
+                                    for _, r in ppi_rels.iterrows():
+                                        upstream_id = str(r['InvestorID']).strip()
+                                        share = r['OwnershipPct'] / total_own
+                                        resolved_contribs[upstream_id] = resolved_contribs.get(upstream_id, 0) + amt * share
+                                    continue
+                            # Fallback: keep PPI if no relationships found
+                        resolved_contribs[inv_id] = resolved_contribs.get(inv_id, 0) + amt
+                    pe_investor_contribs = resolved_contribs
 
                 # Build pref equity capitalization string (e.g. "TIAA 46%, PSC 46%, F&F 8%")
                 if pe_investor_contribs:

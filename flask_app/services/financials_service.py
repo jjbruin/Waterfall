@@ -777,7 +777,7 @@ def get_tenant_roster(tenants_raw: pd.DataFrame, vcode: str, inv: Optional[pd.Da
 def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
                        waterfalls, commitments, acct, occupancy_raw=None,
                        budget_econ_occ=None, deal_terms=None, at_close_noi=None,
-                       full_data=None):
+                       full_data=None, relationships=None):
     """Aggregate all One Pager sections into a single response.
 
     Args:
@@ -799,7 +799,8 @@ def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
 
     general = get_general_information(inv, vcode)
     cap_stack = get_capitalization_stack(vcode, mri_loans, mri_val, waterfalls, commitments, acct, inv,
-                                         isbs_raw=isbs_raw, quarter_str=quarter_str)
+                                         isbs_raw=isbs_raw, quarter_str=quarter_str,
+                                         relationships=relationships)
     prop_perf = get_property_performance(vcode, quarter_str, isbs_raw, mri_val, occupancy_raw,
                                           budget_econ_occ_df=budget_econ_occ,
                                           at_close_noi_df=at_close_noi,
