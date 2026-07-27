@@ -317,8 +317,17 @@ def get_capitalization_stack(
                             vspread = f"{s:.2%}" if s < 1 else f"{s:.2f}%"
                     return maturity, rate, ltype, vindex, vspread
 
-                def _format_loan_str(maturity, rate, ltype, vindex='', vspread=''):
-                    """Format: '3.68% | Fixed | 8/1/2029' or 'SOFR + 3.70% | 10/11/2026'."""
+                def _get_extension_options(row):
+                    """Extract extension options from loan row (e.g. '2x12', '1X24')."""
+                    for col in ['ExtensionOptions', 'extensionoptions', 'Extension Options']:
+                        if col in row.index and pd.notna(row[col]):
+                            val = str(row[col]).strip()
+                            if val and val.upper() not in ('NA', 'NAN', 'NONE', ''):
+                                return val
+                    return ''
+
+                def _format_loan_str(maturity, rate, ltype, vindex='', vspread='', extension=''):
+                    """Format: '3.68% | Fixed | 8/1/2029 (+2x12)' or 'SOFR + 3.70% | 10/11/2026'."""
                     parts = []
                     if ltype.lower() == 'fixed':
                         if rate > 0:
@@ -332,7 +341,12 @@ def get_capitalization_stack(
                         if ltype:
                             parts.append(ltype)
                     if maturity:
-                        parts.append(f"{maturity.month}/{maturity.day}/{maturity.year}")
+                        mat_str = f"{maturity.month}/{maturity.day}/{maturity.year}"
+                        if extension:
+                            mat_str += f" (+{extension})"
+                        parts.append(mat_str)
+                    elif extension:
+                        parts.append(f"(+{extension})")
                     return ' | '.join(parts) if parts else 'N/A'
 
                 # Primary loan (largest by amount)
@@ -342,7 +356,8 @@ def get_capitalization_stack(
 
                 loan_row = deal_loans_sorted.iloc[0]
                 cap['loan_maturity'], cap['loan_rate'], cap['loan_type'], _idx, _sprd = _parse_loan(loan_row)
-                cap['loan_terms_str'] = _format_loan_str(cap['loan_maturity'], cap['loan_rate'], cap['loan_type'], _idx, _sprd)
+                _ext = _get_extension_options(loan_row)
+                cap['loan_terms_str'] = _format_loan_str(cap['loan_maturity'], cap['loan_rate'], cap['loan_type'], _idx, _sprd, _ext)
 
                 # Rate cap — from vHedged/vHedgedStrat on largest loan
                 if 'vHedged' in loan_row.index and str(loan_row.get('vHedged', '')).strip().lower() == 'yes':
@@ -353,7 +368,8 @@ def get_capitalization_stack(
                 if len(deal_loans_sorted) > 1:
                     loan2 = deal_loans_sorted.iloc[1]
                     cap['second_loan_maturity'], cap['second_loan_rate'], cap['second_loan_type'], _idx2, _sprd2 = _parse_loan(loan2)
-                    cap['second_loan_terms_str'] = _format_loan_str(cap['second_loan_maturity'], cap['second_loan_rate'], cap['second_loan_type'], _idx2, _sprd2)
+                    _ext2 = _get_extension_options(loan2)
+                    cap['second_loan_terms_str'] = _format_loan_str(cap['second_loan_maturity'], cap['second_loan_rate'], cap['second_loan_type'], _idx2, _sprd2, _ext2)
 
     # Get valuation from MRI_VAL
     if mri_val is not None and not mri_val.empty:
@@ -1381,12 +1397,13 @@ def get_one_pager_comments(vcode: str, reporting_period: str) -> Dict[str, str]:
         'econ_comments': '',
         'business_plan_comments': '',
         'accrued_pref_comment': '',
+        'underlying_investors': '',
     }
 
     try:
         conn = get_db_connection()
         result = pd.read_sql(
-            """SELECT econ_comments, business_plan_comments, accrued_pref_comment
+            """SELECT econ_comments, business_plan_comments, accrued_pref_comment, underlying_investors
                FROM one_pager_comments
                WHERE vcode = ? AND reporting_period = ?""",
             conn,
@@ -1399,6 +1416,8 @@ def get_one_pager_comments(vcode: str, reporting_period: str) -> Dict[str, str]:
             comments['econ_comments'] = str(row['econ_comments']) if pd.notna(row['econ_comments']) else ''
             comments['business_plan_comments'] = str(row['business_plan_comments']) if pd.notna(row['business_plan_comments']) else ''
             comments['accrued_pref_comment'] = str(row['accrued_pref_comment']) if pd.notna(row['accrued_pref_comment']) else ''
+            if 'underlying_investors' in row.index:
+                comments['underlying_investors'] = str(row['underlying_investors']) if pd.notna(row['underlying_investors']) else ''
     except Exception as e:
         pass  # Table may not exist yet
 

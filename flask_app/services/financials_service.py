@@ -808,6 +808,10 @@ def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
     pe_perf = get_pe_performance(vcode, quarter_str, acct, commitments, waterfalls, inv, isbs_raw=isbs_raw) if quarter_str else {}
     comments = get_one_pager_comments(vcode, quarter_str) if quarter_str else {}
 
+    # Override PE capitalization with human-readable investor names from comments
+    if comments.get('underlying_investors') and cap_stack:
+        cap_stack['pref_equity_capitalization'] = comments['underlying_investors']
+
     # Enrich PE performance from deal analysis waterfall results
     if pe_perf and full_data is not None:
         _enrich_pe_from_deal_result(pe_perf, vcode, full_data)

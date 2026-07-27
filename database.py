@@ -458,6 +458,7 @@ def create_additional_tables(conn: sqlite3.Connection):
             econ_comments TEXT,
             business_plan_comments TEXT,
             accrued_pref_comment TEXT,
+            underlying_investors TEXT,
             last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(vcode, reporting_period)
         )
