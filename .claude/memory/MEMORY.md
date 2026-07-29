@@ -56,7 +56,7 @@
 - **PG credentials**: `wfadmin` / `Wf3d9097e0365c445456dcc52e!` on `waterfall_xirr` database
 - **PG firewall**: Must add current public IP (`az postgres flexible-server firewall-rule create`). IPs added: local-dev (50.251.58.254), local-dev-2 (73.112.240.56), local-dev-3 (71.59.67.132), local-dev-4 (73.112.240.56)
 - **Auth login endpoint**: `/auth/login` (not `/api/auth/login`), returns `token` key (not `access_token`)
-- **Current revision**: v149 (deployed Jul 29, 2026) — PE capitalization comment box, Property Performance column swap
+- **Current revision**: v150 (deployed Jul 29, 2026) — PE cap comment box, Property Perf column swap, PG comments fix
 - **Shared folders**: `DATA_DIR`, `QUERIES_DIR`, `DOWNLOADS_DIR` env vars (per-developer OneDrive paths)
 - **Shared memory**: `.claude/memory/` in repo (committed, shared via git). Auto-memory redirects here.
 - **Email**: SendGrid Web API v3 (replaces SMTP, blocked by O365 MFA). Env vars: `SENDGRID_API_KEY`, `SENDGRID_FROM`. Single Sender Verification on `jbruin@peaceablestreet.com`.
