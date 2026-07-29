@@ -1104,16 +1104,22 @@ function printOnePager() {
 
   .no-print { display: none !important; }
 
-  /* Suppress browser headers/footers (title, URL, date) */
+  /* Suppress browser headers/footers (title, URL, date, page number)
+     by setting @page margin to 0 and using body padding for content margins */
   @page {
     size: letter portrait;
-    margin: 0.4in 0.5in;
+    margin: 0;
   }
 
   body, html {
     margin: 0 !important;
     padding: 0 !important;
     font-size: 10px !important;
+  }
+
+  /* Content padding replaces @page margin (keeps headers/footers off the page) */
+  .one-pager-page {
+    padding: 0.4in 0.5in !important;
   }
 
   .one-pager-page {
@@ -1127,6 +1133,9 @@ function printOnePager() {
     padding: 0;
     box-shadow: none;
     margin-bottom: 0;
+    display: flex;
+    flex-direction: column;
+    min-height: calc(100vh - 0.8in); /* fill page minus top+bottom padding */
   }
 
   .op-sheet.page-break {
@@ -1160,15 +1169,20 @@ function printOnePager() {
     height: auto !important;
   }
 
-  /* Business plan: auto-expand, no scrollbar, fill available space */
+  /* Business plan: auto-expand, no scrollbar, fill remaining space above chart */
   .bp-section {
     overflow: visible !important;
+    flex: 1 1 auto;
   }
   .bp-input {
     overflow: visible !important;
     max-height: none !important;
     min-height: 0 !important;
-    height: auto !important;
+    height: 100% !important;
+    scrollbar-width: none !important;
+  }
+  .bp-input::-webkit-scrollbar {
+    display: none !important;
   }
   .comment-text.bp-text {
     overflow: visible !important;
@@ -1176,10 +1190,11 @@ function printOnePager() {
     min-height: 0 !important;
   }
 
-  /* Chart fills remaining page space */
+  /* Chart anchored to bottom of page */
   .chart-section {
     break-inside: avoid;
-    flex-grow: 1;
+    flex-shrink: 0;
+    margin-top: auto;
   }
 
   /* Force chart to print */
