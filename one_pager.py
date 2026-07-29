@@ -249,7 +249,6 @@ def get_capitalization_stack(
         'pe_exposure_on_value': 0.0,
         'pe_yield_on_exposure': 0.0,
         'committed_pe': 0.0,
-        'pref_equity_capitalization': '',
     }
 
     vcode_str = str(vcode).strip()
@@ -509,59 +508,11 @@ def get_capitalization_stack(
                     if "distri" in major_type and "return of capital" in type_name:
                         investor_balances[investor_id] -= abs(amt)
 
-                pe_investor_contribs = {}
                 for investor_id, balance in investor_balances.items():
                     if investor_id.upper().startswith("OP"):
                         cap['partner_equity'] += max(0, balance)
                     else:
                         cap['pref_equity'] += max(0, balance)
-                        # Track PE investor contributions for capitalization breakdown
-                        contribs_only = sum(
-                            abs(float(r["Amt"]))
-                            for _, r in deal_acct[deal_acct["InvestorID"] == investor_id].iterrows()
-                            if "contrib" in r["MajorType"].lower()
-                        )
-                        if contribs_only > 0:
-                            pe_investor_contribs[investor_id] = contribs_only
-
-                # Resolve PPI entities to upstream investors via relationships
-                if pe_investor_contribs and relationships is not None and not relationships.empty:
-                    resolved_contribs = {}
-                    rel = relationships.copy()
-                    # Normalize columns
-                    if 'OwnershipPct' not in rel.columns:
-                        for c in rel.columns:
-                            if c.lower() == 'ownershippct':
-                                rel = rel.rename(columns={c: 'OwnershipPct'})
-                                break
-                    for inv_id, amt in pe_investor_contribs.items():
-                        if inv_id.upper().startswith('PPI'):
-                            # Find current (no EndDate) upstream investors for this PPI
-                            ppi_rels = rel[rel['InvestmentID'].str.strip() == inv_id.strip()].copy()
-                            if 'EndDate' in ppi_rels.columns:
-                                ppi_rels = ppi_rels[ppi_rels['EndDate'].isna() | (ppi_rels['EndDate'].astype(str).str.strip().isin(['', 'None', 'NaT', 'nan']))]
-                            if not ppi_rels.empty and 'OwnershipPct' in ppi_rels.columns:
-                                ppi_rels['OwnershipPct'] = pd.to_numeric(ppi_rels['OwnershipPct'], errors='coerce').fillna(0)
-                                total_own = ppi_rels['OwnershipPct'].sum()
-                                if total_own > 0:
-                                    for _, r in ppi_rels.iterrows():
-                                        upstream_id = str(r['InvestorID']).strip()
-                                        share = r['OwnershipPct'] / total_own
-                                        resolved_contribs[upstream_id] = resolved_contribs.get(upstream_id, 0) + amt * share
-                                    continue
-                            # Fallback: keep PPI if no relationships found
-                        resolved_contribs[inv_id] = resolved_contribs.get(inv_id, 0) + amt
-                    pe_investor_contribs = resolved_contribs
-
-                # Build pref equity capitalization string (e.g. "TIAA 46%, PSC 46%, F&F 8%")
-                if pe_investor_contribs:
-                    total_pe_contribs = sum(pe_investor_contribs.values())
-                    if total_pe_contribs > 0:
-                        parts = []
-                        for inv_id, amt in sorted(pe_investor_contribs.items(), key=lambda x: -x[1]):
-                            pct = amt / total_pe_contribs * 100
-                            parts.append(f"{inv_id} {pct:.0f}%")
-                        cap['pref_equity_capitalization'] = ', '.join(parts)
         except Exception as e:
             pass
 
@@ -1398,18 +1349,18 @@ def get_one_pager_comments(vcode: str, reporting_period: str) -> Dict[str, str]:
         'business_plan_comments': '',
         'accrued_pref_comment': '',
         'underlying_investors': '',
+        'pe_cap_comment': '',
     }
 
     try:
         conn = get_db_connection()
         result = pd.read_sql(
-            """SELECT econ_comments, business_plan_comments, accrued_pref_comment, underlying_investors
+            """SELECT econ_comments, business_plan_comments, accrued_pref_comment, underlying_investors, pe_cap_comment
                FROM one_pager_comments
                WHERE vcode = ? AND reporting_period = ?""",
             conn,
             params=(str(vcode), str(reporting_period))
         )
-        conn.close()
 
         if not result.empty:
             row = result.iloc[0]
@@ -1418,6 +1369,23 @@ def get_one_pager_comments(vcode: str, reporting_period: str) -> Dict[str, str]:
             comments['accrued_pref_comment'] = str(row['accrued_pref_comment']) if pd.notna(row['accrued_pref_comment']) else ''
             if 'underlying_investors' in row.index:
                 comments['underlying_investors'] = str(row['underlying_investors']) if pd.notna(row['underlying_investors']) else ''
+            if 'pe_cap_comment' in row.index:
+                comments['pe_cap_comment'] = str(row['pe_cap_comment']) if pd.notna(row['pe_cap_comment']) else ''
+
+        # pe_cap_comment doesn't change quarter to quarter — fall back to most recent non-empty value for this vcode
+        if not comments['pe_cap_comment']:
+            fallback = pd.read_sql(
+                """SELECT pe_cap_comment FROM one_pager_comments
+                   WHERE vcode = ? AND pe_cap_comment IS NOT NULL AND pe_cap_comment != ''
+                   ORDER BY reporting_period DESC LIMIT 1""",
+                conn,
+                params=(str(vcode),)
+            )
+            if not fallback.empty:
+                val = fallback.iloc[0]['pe_cap_comment']
+                comments['pe_cap_comment'] = str(val) if pd.notna(val) else ''
+
+        conn.close()
     except Exception as e:
         pass  # Table may not exist yet
 
@@ -1429,7 +1397,8 @@ def save_one_pager_comments(
     reporting_period: str,
     econ_comments: str = None,
     business_plan_comments: str = None,
-    accrued_pref_comment: str = None
+    accrued_pref_comment: str = None,
+    pe_cap_comment: str = None
 ) -> bool:
     """
     Save comments for a deal and reporting period
@@ -1440,6 +1409,7 @@ def save_one_pager_comments(
         econ_comments: Economic comments text
         business_plan_comments: Business plan comments text
         accrued_pref_comment: Accrued pref comment text
+        pe_cap_comment: Pref equity capitalization comment text
 
     Returns:
         True if successful
@@ -1468,6 +1438,9 @@ def save_one_pager_comments(
             if accrued_pref_comment is not None:
                 updates.append("accrued_pref_comment = ?")
                 params.append(accrued_pref_comment)
+            if pe_cap_comment is not None:
+                updates.append("pe_cap_comment = ?")
+                params.append(pe_cap_comment)
 
             if updates:
                 updates.append("last_updated = CURRENT_TIMESTAMP")
@@ -1480,10 +1453,10 @@ def save_one_pager_comments(
             # Insert
             cursor.execute(
                 """INSERT INTO one_pager_comments
-                   (vcode, reporting_period, econ_comments, business_plan_comments, accrued_pref_comment, last_updated)
-                   VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+                   (vcode, reporting_period, econ_comments, business_plan_comments, accrued_pref_comment, pe_cap_comment, last_updated)
+                   VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
                 (str(vcode), str(reporting_period),
-                 econ_comments or '', business_plan_comments or '', accrued_pref_comment or '')
+                 econ_comments or '', business_plan_comments or '', accrued_pref_comment or '', pe_cap_comment or '')
             )
 
         conn.commit()

@@ -342,6 +342,19 @@ def ensure_pg_tables(engine):
             except Exception:
                 pass
 
+        # Add pe_cap_comment column to one_pager_comments if missing
+        try:
+            conn.execute(text("SAVEPOINT sp_pe_cap_col"))
+            conn.execute(text("SELECT pe_cap_comment FROM one_pager_comments LIMIT 1"))
+            conn.execute(text("RELEASE SAVEPOINT sp_pe_cap_col"))
+        except Exception:
+            conn.execute(text("ROLLBACK TO SAVEPOINT sp_pe_cap_col"))
+            try:
+                conn.execute(text("ALTER TABLE one_pager_comments ADD COLUMN pe_cap_comment TEXT"))
+                conn.commit()
+            except Exception:
+                pass
+
         # Fix column types — the table may have been created with all-TEXT
         # columns via pandas to_sql or SQLite DDL passed through.
         # Migrate to proper types so PostgreSQL returns ints/floats.
@@ -459,10 +472,16 @@ def create_additional_tables(conn: sqlite3.Connection):
             business_plan_comments TEXT,
             accrued_pref_comment TEXT,
             underlying_investors TEXT,
+            pe_cap_comment TEXT,
             last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(vcode, reporting_period)
         )
     """)
+    # Migration: add pe_cap_comment column if missing (existing databases)
+    try:
+        conn.execute("ALTER TABLE one_pager_comments ADD COLUMN pe_cap_comment TEXT")
+    except Exception:
+        pass  # Column already exists
 
     # Sale overrides (contract price, selling cost)
     conn.execute("""

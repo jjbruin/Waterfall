@@ -67,6 +67,7 @@ const saving = ref(false)
 const econComments = ref('')
 const businessPlanComments = ref('')
 const accruedPrefComment = ref('')
+const peCapComment = ref('')
 
 function parseQuarter(q: string): [number, number] {
   const [yStr, qStr] = q.split('-')
@@ -107,6 +108,7 @@ async function loadOnePager(vcode: string) {
     econComments.value = c.econ_comments || ''
     businessPlanComments.value = c.business_plan_comments || ''
     accruedPrefComment.value = c.accrued_pref_comment || ''
+    peCapComment.value = c.pe_cap_comment || ''
     // Load review status after quarter is known
     await loadReviewStatus()
   } catch (e: any) {
@@ -131,6 +133,7 @@ async function saveComments() {
       econ_comments: econComments.value,
       business_plan_comments: businessPlanComments.value,
       accrued_pref_comment: accruedPrefComment.value,
+      pe_cap_comment: peCapComment.value,
     })
   } catch (e: any) {
     error.value = e.response?.data?.error || e.message
@@ -576,7 +579,7 @@ function printOnePager() {
               <td class="val right">{{ fmtPct(cap.pe_exposure_on_cap) }}</td>
             </tr>
             <tr>
-              <td class="lbl">Pref Equity capitalization:</td><td class="val">{{ cap.pref_equity_capitalization || 'N/A' }}</td>
+              <td class="lbl">Pref Equity capitalization:</td><td class="val"><textarea v-model="peCapComment" class="inline-comment" rows="1" placeholder="" spellcheck="true" lang="en" :readonly="commentsLocked"></textarea></td>
               <td class="lbl">P.E. Expos. on {{ cap.valuation_year ? cap.valuation_year.slice(-2) + '/' + selectedQuarter.split('-')[1] : '' }} Value:</td>
               <td></td><td class="val right">{{ fmtPct(cap.pe_exposure_on_value) }}</td>
             </tr>
@@ -741,7 +744,7 @@ function printOnePager() {
                 <td class="val right">{{ fmtPct(pg.data.cap_stack?.pe_exposure_on_cap) }}</td>
               </tr>
               <tr>
-                <td class="lbl">Pref Equity capitalization:</td><td class="val">{{ pg.data.cap_stack?.pref_equity_capitalization || 'N/A' }}</td>
+                <td class="lbl">Pref Equity capitalization:</td><td class="val">{{ pg.data.comments?.pe_cap_comment || '' }}</td>
                 <td class="lbl">P.E. Expos. on {{ pg.data.cap_stack?.valuation_year ? pg.data.cap_stack.valuation_year.slice(-2) + '/' + (batchQuarter ? batchQuarter.split('-')[1] : '') : '' }} Value:</td>
                 <td></td><td class="val right">{{ fmtPct(pg.data.cap_stack?.pe_exposure_on_value) }}</td>
               </tr>
@@ -1021,6 +1024,18 @@ function printOnePager() {
   color: #000;
 }
 .comment-input.small { font-size: 9px; }
+.inline-comment {
+  width: 100%;
+  border: none;
+  padding: 0;
+  font-family: inherit;
+  font-size: 10px;
+  line-height: 1.35;
+  resize: none;
+  background: transparent;
+  outline: none;
+  overflow: hidden;
+}
 .comment-text {
   font-size: 10px;
   line-height: 1.35;

@@ -353,6 +353,7 @@ def save_comments(vcode):
             econ_comments=body.get("econ_comments"),
             business_plan_comments=body.get("business_plan_comments"),
             accrued_pref_comment=body.get("accrued_pref_comment"),
+            pe_cap_comment=body.get("pe_cap_comment"),
         )
     except Exception as e:
         return jsonify({"error": str(e)}), 500
