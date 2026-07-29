@@ -1353,13 +1353,11 @@ def get_one_pager_comments(vcode: str, reporting_period: str) -> Dict[str, str]:
     }
 
     try:
-        conn = get_db_connection()
-        result = pd.read_sql(
+        result = execute_query(
             """SELECT econ_comments, business_plan_comments, accrued_pref_comment, underlying_investors, pe_cap_comment
                FROM one_pager_comments
                WHERE vcode = ? AND reporting_period = ?""",
-            conn,
-            params=(str(vcode), str(reporting_period))
+            (str(vcode), str(reporting_period))
         )
 
         if not result.empty:
@@ -1374,18 +1372,15 @@ def get_one_pager_comments(vcode: str, reporting_period: str) -> Dict[str, str]:
 
         # pe_cap_comment doesn't change quarter to quarter — fall back to most recent non-empty value for this vcode
         if not comments['pe_cap_comment']:
-            fallback = pd.read_sql(
+            fallback = execute_query(
                 """SELECT pe_cap_comment FROM one_pager_comments
                    WHERE vcode = ? AND pe_cap_comment IS NOT NULL AND pe_cap_comment != ''
                    ORDER BY reporting_period DESC LIMIT 1""",
-                conn,
-                params=(str(vcode),)
+                (str(vcode),)
             )
             if not fallback.empty:
                 val = fallback.iloc[0]['pe_cap_comment']
                 comments['pe_cap_comment'] = str(val) if pd.notna(val) else ''
-
-        conn.close()
     except Exception as e:
         pass  # Table may not exist yet
 
@@ -1415,52 +1410,86 @@ def save_one_pager_comments(
         True if successful
     """
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        from database import _sa_engine
+        use_pg = _sa_engine is not None
 
         # Check if record exists
-        cursor.execute(
+        check = execute_query(
             "SELECT 1 FROM one_pager_comments WHERE vcode = ? AND reporting_period = ?",
             (str(vcode), str(reporting_period))
         )
-        exists = cursor.fetchone() is not None
+        exists = not check.empty
 
-        if exists:
-            # Update
-            updates = []
-            params = []
-            if econ_comments is not None:
-                updates.append("econ_comments = ?")
-                params.append(econ_comments)
-            if business_plan_comments is not None:
-                updates.append("business_plan_comments = ?")
-                params.append(business_plan_comments)
-            if accrued_pref_comment is not None:
-                updates.append("accrued_pref_comment = ?")
-                params.append(accrued_pref_comment)
-            if pe_cap_comment is not None:
-                updates.append("pe_cap_comment = ?")
-                params.append(pe_cap_comment)
+        conn = get_db_connection()
 
-            if updates:
-                updates.append("last_updated = CURRENT_TIMESTAMP")
-                params.extend([str(vcode), str(reporting_period)])
-                cursor.execute(
-                    f"UPDATE one_pager_comments SET {', '.join(updates)} WHERE vcode = ? AND reporting_period = ?",
-                    params
-                )
+        if use_pg:
+            from sqlalchemy import text as sa_text
+            if exists:
+                sets = []
+                p = {}
+                if econ_comments is not None:
+                    sets.append("econ_comments = :ec")
+                    p['ec'] = econ_comments
+                if business_plan_comments is not None:
+                    sets.append("business_plan_comments = :bp")
+                    p['bp'] = business_plan_comments
+                if accrued_pref_comment is not None:
+                    sets.append("accrued_pref_comment = :ap")
+                    p['ap'] = accrued_pref_comment
+                if pe_cap_comment is not None:
+                    sets.append("pe_cap_comment = :pe")
+                    p['pe'] = pe_cap_comment
+                if sets:
+                    sets.append("last_updated = CURRENT_TIMESTAMP")
+                    p['v'] = str(vcode)
+                    p['r'] = str(reporting_period)
+                    conn.execute(sa_text(
+                        f"UPDATE one_pager_comments SET {', '.join(sets)} WHERE vcode = :v AND reporting_period = :r"
+                    ), p)
+            else:
+                conn.execute(sa_text(
+                    """INSERT INTO one_pager_comments
+                       (vcode, reporting_period, econ_comments, business_plan_comments, accrued_pref_comment, pe_cap_comment, last_updated)
+                       VALUES (:v, :r, :ec, :bp, :ap, :pe, CURRENT_TIMESTAMP)"""
+                ), {'v': str(vcode), 'r': str(reporting_period),
+                    'ec': econ_comments or '', 'bp': business_plan_comments or '',
+                    'ap': accrued_pref_comment or '', 'pe': pe_cap_comment or ''})
+            conn.commit()
+            conn.close()
         else:
-            # Insert
-            cursor.execute(
-                """INSERT INTO one_pager_comments
-                   (vcode, reporting_period, econ_comments, business_plan_comments, accrued_pref_comment, pe_cap_comment, last_updated)
-                   VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
-                (str(vcode), str(reporting_period),
-                 econ_comments or '', business_plan_comments or '', accrued_pref_comment or '', pe_cap_comment or '')
-            )
-
-        conn.commit()
-        conn.close()
+            cursor = conn.cursor()
+            if exists:
+                updates = []
+                params = []
+                if econ_comments is not None:
+                    updates.append("econ_comments = ?")
+                    params.append(econ_comments)
+                if business_plan_comments is not None:
+                    updates.append("business_plan_comments = ?")
+                    params.append(business_plan_comments)
+                if accrued_pref_comment is not None:
+                    updates.append("accrued_pref_comment = ?")
+                    params.append(accrued_pref_comment)
+                if pe_cap_comment is not None:
+                    updates.append("pe_cap_comment = ?")
+                    params.append(pe_cap_comment)
+                if updates:
+                    updates.append("last_updated = CURRENT_TIMESTAMP")
+                    params.extend([str(vcode), str(reporting_period)])
+                    cursor.execute(
+                        f"UPDATE one_pager_comments SET {', '.join(updates)} WHERE vcode = ? AND reporting_period = ?",
+                        params
+                    )
+            else:
+                cursor.execute(
+                    """INSERT INTO one_pager_comments
+                       (vcode, reporting_period, econ_comments, business_plan_comments, accrued_pref_comment, pe_cap_comment, last_updated)
+                       VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+                    (str(vcode), str(reporting_period),
+                     econ_comments or '', business_plan_comments or '', accrued_pref_comment or '', pe_cap_comment or '')
+                )
+            conn.commit()
+            conn.close()
         return True
     except Exception as e:
         return False
