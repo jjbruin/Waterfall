@@ -589,22 +589,22 @@ function printOnePager() {
           <thead>
             <tr>
               <th></th>
-              <th class="sub-header" colspan="3"><span class="sub-label">As of: {{ asOfDate }}</span></th>
-              <th class="spacer-col"></th>
               <th class="sub-header" colspan="3"><span class="sub-label">Annual Financial Comparison</span></th>
+              <th class="spacer-col"></th>
+              <th class="sub-header" colspan="3"><span class="sub-label">As of: {{ asOfDate }}</span></th>
             </tr>
             <tr>
-              <th></th><th class="col-hdr">YTD (Actual)</th><th class="col-hdr">YTD (Budget)</th><th class="col-hdr">Variance</th>
-              <th class="spacer-col"></th><th class="col-hdr">At Close</th><th class="col-hdr">Projected YE</th><th class="col-hdr">U/W YE</th>
+              <th></th><th class="col-hdr">At Close</th><th class="col-hdr">Projected YE</th><th class="col-hdr">U/W YE</th>
+              <th class="spacer-col"></th><th class="col-hdr">YTD (Actual)</th><th class="col-hdr">YTD (Budget)</th><th class="col-hdr">Variance</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="row in perfRows" :key="row.label" :class="{ 'underline-row': row.underline }">
               <td class="row-label">{{ row.label }}</td>
-              <td class="val right">{{ row.ytdA }}</td><td class="val right">{{ row.ytdB }}</td>
-              <td class="val right">{{ row.variance }}</td><td class="spacer-col"></td>
               <td class="val right">{{ row.atClose }}</td><td class="val right">{{ row.actualYE }}</td>
-              <td class="val right">{{ row.uwYE }}</td>
+              <td class="val right">{{ row.uwYE }}</td><td class="spacer-col"></td>
+              <td class="val right">{{ row.ytdA }}</td><td class="val right">{{ row.ytdB }}</td>
+              <td class="val right">{{ row.variance }}</td>
             </tr>
           </tbody>
         </table>
@@ -754,22 +754,22 @@ function printOnePager() {
             <thead>
               <tr>
                 <th></th>
-                <th class="sub-header" colspan="3"><span class="sub-label">As of: {{ getAsOfDate(batchQuarter) }}</span></th>
-                <th class="spacer-col"></th>
                 <th class="sub-header" colspan="3"><span class="sub-label">Annual Financial Comparison</span></th>
+                <th class="spacer-col"></th>
+                <th class="sub-header" colspan="3"><span class="sub-label">As of: {{ getAsOfDate(batchQuarter) }}</span></th>
               </tr>
               <tr>
-                <th></th><th class="col-hdr">YTD (Actual)</th><th class="col-hdr">YTD (Budget)</th><th class="col-hdr">Variance</th>
-                <th class="spacer-col"></th><th class="col-hdr">At Close</th><th class="col-hdr">Projected YE</th><th class="col-hdr">U/W YE</th>
+                <th></th><th class="col-hdr">At Close</th><th class="col-hdr">Projected YE</th><th class="col-hdr">U/W YE</th>
+                <th class="spacer-col"></th><th class="col-hdr">YTD (Actual)</th><th class="col-hdr">YTD (Budget)</th><th class="col-hdr">Variance</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="row in buildPerfRows(pg.data.property_performance || {})" :key="row.label" :class="{ 'underline-row': row.underline }">
                 <td class="row-label">{{ row.label }}</td>
-                <td class="val right">{{ row.ytdA }}</td><td class="val right">{{ row.ytdB }}</td>
-                <td class="val right">{{ row.variance }}</td><td class="spacer-col"></td>
                 <td class="val right">{{ row.atClose }}</td><td class="val right">{{ row.actualYE }}</td>
-                <td class="val right">{{ row.uwYE }}</td>
+                <td class="val right">{{ row.uwYE }}</td><td class="spacer-col"></td>
+                <td class="val right">{{ row.ytdA }}</td><td class="val right">{{ row.ytdB }}</td>
+                <td class="val right">{{ row.variance }}</td>
               </tr>
             </tbody>
           </table>
