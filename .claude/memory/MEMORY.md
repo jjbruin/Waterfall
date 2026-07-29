@@ -105,8 +105,8 @@
 
 ## One Pager Enhancements (Jul 2026)
 - **Loan Terms format**: `nRate% | Fixed | M/D/YYYY (+ext)` or `vIndex + vSpread% | M/D/YYYY (+ext)`. Uses `vIndex`, `vSpread` for variable, `nRate` for fixed. Primary = largest `mOrigLoanAmt`, 2nd = next largest. Loan terms populate regardless of debt source (ISBS or MRI_Loans). Extension options from `ExtensionOptions` column (exists on PG, not local SQLite).
-- **PE Capitalization investor names**: Resolved via `underlying_investors` column in `one_pager_comments` table (human-readable, e.g. "PSC 69%, Declaration 31%"). Fallback: PPI→upstream entity resolution via `relationships` table. Fallback 2: raw PPI entity ID.
-- **one_pager_comments table**: Added `underlying_investors TEXT` column (Jul 2026). 139 rows imported from Charlene's compiled spreadsheet (71 deals x Q4 2025 + Q1 2026). Protected table — not overwritten by CSV import.
+- **PE Capitalization**: Editable borderless comment box (`pe_cap_comment` column in `one_pager_comments`). Carries forward across quarters via vcode-level fallback. Replaced computed investor % formula (Jul 29, 2026). 178 rows imported from One_Pager_Comments.xlsx (89 deals x Q4 2025 + Q1 2026).
+- **one_pager_comments table**: Columns: econ_comments, business_plan_comments, accrued_pref_comment, underlying_investors (legacy), pe_cap_comment. Protected table — not overwritten by CSV import. **PostgreSQL fix**: `get_one_pager_comments` uses `execute_query()` (handles `?`→`%s` conversion); `save_one_pager_comments` uses SQLAlchemy `text()` with named params on PG.
 - **PE Performance enrichment**: `_enrich_pe_from_deal_result()` in `financials_service.py` runs `get_cached_deal_result()` to pull:
   - **Accrued Balance**: from `seed_states` (pref_unpaid_compounded + pref_accrued_current_year) — represents current state at actuals boundary
   - **Current PE Balance**: from `seed_states` capital_outstanding — not terminal waterfall state
