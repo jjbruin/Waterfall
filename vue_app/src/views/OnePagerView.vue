@@ -430,8 +430,17 @@ const chartOption = computed(() => buildChartOption(chartResult.value))
 // ============================================================
 // Print
 // ============================================================
+const printTimestamp = ref('')
 function printOnePager() {
-  window.print()
+  const now = new Date()
+  printTimestamp.value = `${now.getMonth() + 1}/${now.getDate()}/${now.getFullYear()}, ${now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}`
+  // Blank the page title so browser doesn't print "Waterfall XIRR" in the header
+  const origTitle = document.title
+  document.title = ' '
+  nextTick(() => {
+    window.print()
+    document.title = origTitle
+  })
 }
 </script>
 
@@ -515,6 +524,7 @@ function printOnePager() {
       <div v-if="loading" class="loading">Loading one pager...</div>
 
       <div v-else-if="opData" class="op-sheet">
+        <div class="print-date">{{ printTimestamp }}</div>
         <h1 class="op-title">{{ gen.investment_name || deals.currentVcode }}</h1>
 
         <!-- GENERAL INFORMATION -->
@@ -680,6 +690,7 @@ function printOnePager() {
       <!-- Batch pages — one op-sheet per deal, page-break between -->
       <template v-for="(pg, idx) in batchPages" :key="pg.vcode">
         <div v-if="pg.data" class="op-sheet" :class="{ 'page-break': idx < batchPages.length - 1 }">
+          <div class="print-date">{{ printTimestamp }}</div>
           <h1 class="op-title">{{ pg.data.general?.investment_name || pg.vcode }}</h1>
 
           <!-- GENERAL INFORMATION -->
@@ -917,6 +928,11 @@ function printOnePager() {
   margin-bottom: 16px;
 }
 
+/* Print date — hidden on screen */
+.print-date {
+  display: none;
+}
+
 /* Title */
 .op-title {
   text-align: center;
@@ -1088,6 +1104,7 @@ function printOnePager() {
 
   .no-print { display: none !important; }
 
+  /* Suppress browser headers/footers (title, URL, date) */
   @page {
     size: letter portrait;
     margin: 0.4in 0.5in;
@@ -1116,6 +1133,14 @@ function printOnePager() {
     page-break-after: always;
   }
 
+  /* Print-only date/time in upper left */
+  .print-date {
+    display: block !important;
+    font-size: 9px;
+    color: #333;
+    margin-bottom: 2px;
+  }
+
   .op-title { font-size: 18px; }
   .section-header { font-size: 10px; }
 
@@ -1131,12 +1156,30 @@ function printOnePager() {
     resize: none !important;
     background: transparent !important;
     font-size: 10px !important;
-    overflow: visible;
+    overflow: visible !important;
     height: auto !important;
   }
 
+  /* Business plan: auto-expand, no scrollbar, fill available space */
+  .bp-section {
+    overflow: visible !important;
+  }
+  .bp-input {
+    overflow: visible !important;
+    max-height: none !important;
+    min-height: 0 !important;
+    height: auto !important;
+  }
+  .comment-text.bp-text {
+    overflow: visible !important;
+    max-height: none !important;
+    min-height: 0 !important;
+  }
+
+  /* Chart fills remaining page space */
   .chart-section {
     break-inside: avoid;
+    flex-grow: 1;
   }
 
   /* Force chart to print */
