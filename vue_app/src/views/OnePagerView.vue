@@ -437,9 +437,22 @@ function printOnePager() {
   // Blank the page title so browser doesn't print "Waterfall XIRR" in the header
   const origTitle = document.title
   document.title = ' '
+  // Auto-size all textareas to their content so print doesn't clip
+  const textareas = document.querySelectorAll('.comment-input')
+  const origHeights: string[] = []
+  textareas.forEach(ta => {
+    const el = ta as HTMLTextAreaElement
+    origHeights.push(el.style.height)
+    el.style.height = 'auto'
+    el.style.height = el.scrollHeight + 'px'
+  })
   nextTick(() => {
     window.print()
     document.title = origTitle
+    // Restore original textarea heights
+    textareas.forEach((ta, i) => {
+      ;(ta as HTMLTextAreaElement).style.height = origHeights[i]
+    })
   })
 }
 </script>
@@ -1119,13 +1132,9 @@ function printOnePager() {
 
   /* Content padding replaces @page margin (keeps headers/footers off the page) */
   .one-pager-page {
-    padding: 0.4in 0.5in !important;
-  }
-
-  .one-pager-page {
     max-width: none;
     margin: 0;
-    padding: 0;
+    padding: 0.4in 0.5in !important;
   }
 
   .op-sheet {
@@ -1178,7 +1187,7 @@ function printOnePager() {
     overflow: visible !important;
     max-height: none !important;
     min-height: 0 !important;
-    height: 100% !important;
+    height: auto !important;
     scrollbar-width: none !important;
   }
   .bp-input::-webkit-scrollbar {
