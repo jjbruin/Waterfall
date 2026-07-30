@@ -98,9 +98,19 @@ def send_welcome_email(email: str, username: str, temp_password: str) -> bool:
             </a>
         </p>
         <hr style="border: none; border-top: 1px solid #eee; margin: 24px 0;" />
-        <p style="font-size: 13px; color: #666;">
-            Tip: After logging in, you can save a shortcut to your desktop by
-            dragging the URL from your browser's address bar to your desktop.
+        <p style="font-weight: 600; margin-bottom: 8px;">Add a desktop shortcut:</p>
+        <ol style="font-size: 13px; color: #444; padding-left: 20px; margin-top: 0;">
+            <li>Click the button below to download the setup file</li>
+            <li>Open the downloaded file (double-click it)</li>
+            <li>A "Waterfall XIRR" shortcut will appear on your desktop</li>
+        </ol>
+        <p style="margin: 16px 0;">
+            <a href="{app_url}/api/auth/shortcut/install"
+               style="background: #548235; color: white; padding: 10px 20px;
+                      text-decoration: none; border-radius: 6px; display: inline-block;
+                      font-size: 13px;">
+                Download Desktop Shortcut Setup
+            </a>
         </p>
     </div>
     """

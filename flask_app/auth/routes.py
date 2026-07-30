@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from functools import wraps
 
 import jwt
-from flask import Blueprint, request, jsonify, current_app, g
+from flask import Blueprint, request, jsonify, current_app, g, send_file
 
 from flask_app.auth.models import (
     authenticate, get_user_by_id, ensure_default_admin,
@@ -409,3 +409,60 @@ def get_roles():
         {"name": "analyst", "description": "Run computations, edit waterfalls, generate reports"},
         {"name": "admin", "description": "Full access: manage users, import data, configure system"},
     ]})
+
+
+# ── Desktop shortcut installer ──────────────────────────────
+
+@auth_bp.route("/shortcut/icon", methods=["GET"])
+def shortcut_icon():
+    """Serve the application icon for desktop shortcut."""
+    import os
+    ico_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "waterfall_xirr.ico")
+    if not os.path.isfile(ico_path):
+        return jsonify({"error": "Icon file not found"}), 404
+    return send_file(ico_path, mimetype="image/x-icon", download_name="waterfall_xirr.ico")
+
+
+@auth_bp.route("/shortcut/install", methods=["GET"])
+def shortcut_installer():
+    """Serve a .bat file that creates a desktop shortcut with custom icon. One-click: download and double-click."""
+    app_url = current_app.config.get("APP_URL", request.host_url.rstrip("/"))
+
+    # The .bat uses certutil to decode an embedded base64 PowerShell script,
+    # avoiding all cmd.exe escaping issues with parentheses/pipes.
+    import base64
+    ps_script = f'''$IconDir = Join-Path $env:LOCALAPPDATA 'WaterfallXIRR'
+if (-not (Test-Path $IconDir)) {{ New-Item -ItemType Directory -Path $IconDir -Force | Out-Null }}
+$IconPath = Join-Path $IconDir 'waterfall_xirr.ico'
+try {{
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Invoke-WebRequest -Uri '{app_url}/api/auth/shortcut/icon' -OutFile $IconPath -UseBasicParsing
+}} catch {{ $IconPath = $null }}
+$Desktop = [Environment]::GetFolderPath('Desktop')
+$WshShell = New-Object -ComObject WScript.Shell
+$Shortcut = $WshShell.CreateShortcut((Join-Path $Desktop 'Waterfall XIRR.lnk'))
+$Shortcut.TargetPath = '{app_url}/dashboard'
+if ($IconPath -and (Test-Path $IconPath)) {{ $Shortcut.IconLocation = "$IconPath,0" }}
+$Shortcut.Save()
+'''
+    ps_b64 = base64.b64encode(ps_script.encode('utf-16-le')).decode('ascii')
+
+    script = f'''@echo off
+title Waterfall XIRR Setup
+echo.
+echo   Setting up Waterfall XIRR desktop shortcut...
+echo.
+powershell -ExecutionPolicy Bypass -NoProfile -EncodedCommand {ps_b64}
+echo.
+echo   Done! Look for "Waterfall XIRR" on your desktop.
+echo.
+echo   Press any key to close this window...
+pause >nul
+'''
+    import io
+    return send_file(
+        io.BytesIO(script.encode()),
+        mimetype="application/x-msdos-program",
+        as_attachment=True,
+        download_name="Setup Waterfall XIRR.bat",
+    )
