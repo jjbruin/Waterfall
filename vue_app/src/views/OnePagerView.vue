@@ -1155,10 +1155,10 @@ function printOnePager() {
   }
 
   .op-title { font-size: 18px; }
-  .section-header { font-size: 10px; }
+  .section-header { font-size: 11px; }
 
   .info-table td, .cap-table td, .perf-table th, .perf-table td, .pe-table td {
-    font-size: 10px;
+    font-size: 10.5px;
     padding: 1px 4px 1px 0;
   }
 
@@ -1168,7 +1168,7 @@ function printOnePager() {
     padding: 0 !important;
     resize: none !important;
     background: transparent !important;
-    font-size: 10px !important;
+    font-size: 10.5px !important;
     overflow: visible !important;
     height: auto !important;
   }
@@ -1180,7 +1180,7 @@ function printOnePager() {
   }
   .bp-print-text {
     display: block !important;
-    font-size: 10px !important;
+    font-size: 11px !important;
     font-family: inherit;
     white-space: pre-wrap;
     overflow: visible !important;
