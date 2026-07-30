@@ -329,6 +329,23 @@ def one_pager_chart(vcode):
     return jsonify(safe_json(chart))
 
 
+@financials_bp.route("/<vcode>/one-pager/snapshot", methods=["GET"])
+@login_required
+def one_pager_snapshot(vcode):
+    """Get frozen approved snapshot of a One Pager."""
+    quarter = request.args.get("quarter")
+    if not quarter:
+        return jsonify({"error": "quarter parameter required"}), 400
+    try:
+        from flask_app.services.review_service import get_snapshot
+        result = get_snapshot(vcode, quarter)
+        if result is None:
+            return jsonify({"error": "No approved snapshot found"}), 404
+        return jsonify(safe_json(result))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @financials_bp.route("/<vcode>/one-pager/comments", methods=["PUT"])
 @login_required
 def save_comments(vcode):

@@ -159,6 +159,7 @@ async function loadReviewStatus() {
 }
 
 const commentsLocked = computed(() => {
+  if (viewingSnapshot.value) return true
   if (!reviewStatus.value) return false
   return !reviewStatus.value.is_editable
 })
@@ -306,10 +307,10 @@ async function refreshBatch() {
 // ============================================================
 // Shortcut accessors (single mode)
 // ============================================================
-const gen = computed(() => opData.value?.general || {})
-const cap = computed(() => opData.value?.cap_stack || {})
-const perf = computed(() => opData.value?.property_performance || {})
-const pe = computed(() => opData.value?.pe_performance || {})
+const gen = computed(() => activeOpData.value?.general || {})
+const cap = computed(() => activeOpData.value?.cap_stack || {})
+const perf = computed(() => activeOpData.value?.property_performance || {})
+const pe = computed(() => activeOpData.value?.pe_performance || {})
 
 // ============================================================
 // Formatting helpers
@@ -425,7 +426,71 @@ function buildChartOption(cr: Record<string, any> | null) {
   }
 }
 
-const chartOption = computed(() => buildChartOption(chartResult.value))
+const chartOption = computed(() => buildChartOption(activeChartResult.value))
+
+// ============================================================
+// Approved Snapshot
+// ============================================================
+const viewingSnapshot = ref(false)
+const snapshotMeta = ref<{ approved_by: string; approved_at: string } | null>(null)
+const snapshotData = ref<Record<string, any> | null>(null)
+const snapshotChart = ref<Record<string, any> | null>(null)
+
+const hasApprovedSnapshot = computed(() => {
+  return reviewStatus.value?.has_snapshot === true
+})
+
+// Saved live comment values for restoring after snapshot view
+const savedComments = ref({ econ: '', bp: '', pref: '', peCap: '' })
+
+async function toggleSnapshot() {
+  if (viewingSnapshot.value) {
+    // Switch back to live data — restore saved comments
+    viewingSnapshot.value = false
+    econComments.value = savedComments.value.econ
+    businessPlanComments.value = savedComments.value.bp
+    accruedPrefComment.value = savedComments.value.pref
+    peCapComment.value = savedComments.value.peCap
+    snapshotData.value = null
+    snapshotChart.value = null
+    snapshotMeta.value = null
+    return
+  }
+  // Load snapshot
+  if (!deals.currentVcode || !selectedQuarter.value) return
+  // Save current live comments before switching
+  savedComments.value = {
+    econ: econComments.value,
+    bp: businessPlanComments.value,
+    pref: accruedPrefComment.value,
+    peCap: peCapComment.value,
+  }
+  loading.value = true
+  try {
+    const res = await api.get(
+      `/api/financials/${deals.currentVcode}/one-pager/snapshot`,
+      { params: { quarter: selectedQuarter.value } }
+    )
+    snapshotData.value = res.data.snapshot.data
+    snapshotChart.value = res.data.snapshot.chart
+    snapshotMeta.value = { approved_by: res.data.approved_by, approved_at: res.data.approved_at }
+    // Load snapshot comments into the refs
+    const sc = res.data.snapshot.data?.comments || {}
+    econComments.value = sc.econ_comments || ''
+    businessPlanComments.value = sc.business_plan_comments || ''
+    accruedPrefComment.value = sc.accrued_pref_comment || ''
+    peCapComment.value = sc.pe_cap_comment || ''
+    viewingSnapshot.value = true
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
+  } finally {
+    loading.value = false
+  }
+}
+
+// Active data source — snapshot or live
+const activeOpData = computed(() => viewingSnapshot.value ? snapshotData.value : opData.value)
+const activeChartResult = computed(() => viewingSnapshot.value ? snapshotChart.value : chartResult.value)
 
 // ============================================================
 // Print
@@ -476,8 +541,11 @@ function printOnePager() {
           </select>
         </div>
         <button v-if="opData" class="btn btn-sm" @click="printOnePager">Print</button>
-        <button v-if="opData && !commentsLocked" class="btn btn-sm btn-save" @click="saveComments" :disabled="saving">
+        <button v-if="opData && !commentsLocked && !viewingSnapshot" class="btn btn-sm btn-save" @click="saveComments" :disabled="saving">
           {{ saving ? 'Saving...' : 'Save Comments' }}
+        </button>
+        <button v-if="hasApprovedSnapshot" class="btn btn-sm" :class="{ 'btn-active': viewingSnapshot }" @click="toggleSnapshot">
+          {{ viewingSnapshot ? 'View Live Data' : 'View Approved Version' }}
         </button>
       </template>
 
@@ -510,7 +578,7 @@ function printOnePager() {
 
     <!-- Review Panel (single mode only) -->
     <ReviewPanel
-      v-if="mode === 'single' && opData && selectedQuarter"
+      v-if="mode === 'single' && opData && selectedQuarter && !viewingSnapshot"
       :review="reviewStatus"
       :loading="reviewLoading"
       @submit="handleReviewSubmit"
@@ -523,7 +591,13 @@ function printOnePager() {
     <template v-if="mode === 'single'">
       <div v-if="loading" class="loading">Loading one pager...</div>
 
-      <div v-else-if="opData" class="op-sheet">
+      <template v-else-if="activeOpData">
+        <!-- Snapshot banner -->
+        <div v-if="viewingSnapshot && snapshotMeta" class="snapshot-banner no-print">
+          Viewing approved snapshot — approved by {{ snapshotMeta.approved_by }} on {{ new Date(snapshotMeta.approved_at).toLocaleDateString() }}
+        </div>
+
+        <div class="op-sheet">
         <div class="print-date">{{ printTimestamp }}</div>
         <h1 class="op-title">{{ gen.investment_name || deals.currentVcode }}</h1>
 
@@ -673,6 +747,7 @@ function printOnePager() {
           <p v-else class="empty">No chart data available.</p>
         </div>
       </div>
+      </template>
 
       <p v-else-if="!loading" class="empty no-print">Select a deal to view the one pager.</p>
     </template>
@@ -914,6 +989,8 @@ function printOnePager() {
 .btn-sm { padding: 5px 12px; }
 .btn-save { background: #548235; }
 .btn-save:disabled { opacity: 0.5; cursor: default; }
+.snapshot-banner { background: #eff6ff; border: 1px solid #93c5fd; color: #1e40af; padding: 8px 14px; border-radius: 6px; margin-bottom: 12px; font-size: 13px; text-align: center; font-weight: 500; }
+.btn-active { background: #1e40af !important; color: #fff !important; }
 .error-banner { background: #fef2f2; border: 1px solid #fca5a5; color: #991b1b; padding: 8px 14px; border-radius: 6px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
 .error-banner button { background: none; border: 1px solid #fca5a5; color: #991b1b; padding: 3px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
 .loading { text-align: center; padding: 40px; color: #666; font-style: italic; font-size: 14px; }

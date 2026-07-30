@@ -1,7 +1,11 @@
 """Review workflow service for One Pager approval pipeline."""
 
+import json
+import logging
 from sqlalchemy import text
 from flask_app.db import get_engine, is_postgres
+
+logger = logging.getLogger(__name__)
 
 
 # Sequential review steps
@@ -56,6 +60,17 @@ def _ensure_tables():
                 action TEXT NOT NULL,
                 note_text TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS one_pager_snapshots (
+                id {pk},
+                vcode TEXT NOT NULL,
+                quarter TEXT NOT NULL,
+                snapshot_data TEXT NOT NULL,
+                approved_by TEXT NOT NULL,
+                approved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(vcode, quarter)
             )
         """))
 
@@ -283,6 +298,11 @@ def approve(vcode: str, quarter: str, user_id: int, username: str,
     next_step = REVIEW_STEPS[current_step_num + 1]
     _update_submission(vcode, quarter, next_step["status"], next_step["step"])
     _add_note(vcode, quarter, user_id, username, current_step_def["role"], "approve", note_text)
+
+    # When CEO approves (step 4 → step 5 approved), save snapshot
+    if next_step["status"] == "approved":
+        _save_snapshot(vcode, quarter, username)
+
     return get_submission(vcode, quarter)
 
 
@@ -335,6 +355,73 @@ def is_editable(vcode: str, quarter: str) -> bool:
     if row is None:
         return True  # No submission yet = draft
     return row[0] in ("draft", "returned")
+
+
+# ── Snapshots ────────────────────────────────────────────────
+
+def _save_snapshot(vcode: str, quarter: str, approved_by: str):
+    """Capture the current One Pager computed data as a frozen snapshot."""
+    try:
+        from flask_app.services import data_service
+        from flask_app.services.financials_service import get_one_pager_data, get_one_pager_chart
+        from flask_app.serializers import safe_json
+
+        data = data_service.get_data()
+        op_data = get_one_pager_data(
+            vcode, quarter, data["inv"], data["isbs_raw"],
+            data["mri_loans_raw"], data["mri_val"],
+            data["wf"], data["commitments_raw"], data["acct"],
+            occupancy_raw=data["occupancy_raw"],
+            budget_econ_occ=data.get("budget_econ_occ"),
+            deal_terms=data.get("deal_terms_raw"),
+            at_close_noi=data.get("at_close_noi_raw"),
+            full_data=data,
+            relationships=data.get("relationships_raw"),
+        )
+        chart_data = get_one_pager_chart(vcode, data["isbs_raw"], data["occupancy_raw"])
+
+        snapshot = safe_json({"data": op_data, "chart": chart_data})
+        snapshot_json = json.dumps(snapshot)
+
+        engine = get_engine()
+        with engine.begin() as conn:
+            # Upsert: delete existing then insert (cross-DB compatible)
+            conn.execute(
+                text("DELETE FROM one_pager_snapshots WHERE vcode = :v AND quarter = :q"),
+                {"v": vcode, "q": quarter},
+            )
+            conn.execute(
+                text("""
+                    INSERT INTO one_pager_snapshots (vcode, quarter, snapshot_data, approved_by)
+                    VALUES (:v, :q, :data, :by)
+                """),
+                {"v": vcode, "q": quarter, "data": snapshot_json, "by": approved_by},
+            )
+        logger.info("Saved One Pager snapshot for %s %s", vcode, quarter)
+    except Exception:
+        logger.exception("Failed to save One Pager snapshot for %s %s", vcode, quarter)
+
+
+def get_snapshot(vcode: str, quarter: str) -> dict | None:
+    """Retrieve a frozen One Pager snapshot. Returns None if not found."""
+    _ensure_tables()
+    engine = get_engine()
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("""
+                SELECT snapshot_data, approved_by, approved_at
+                FROM one_pager_snapshots
+                WHERE vcode = :v AND quarter = :q
+            """),
+            {"v": vcode, "q": quarter},
+        ).mappings().fetchone()
+    if not row:
+        return None
+    return {
+        "snapshot": json.loads(row["snapshot_data"]),
+        "approved_by": row["approved_by"],
+        "approved_at": row["approved_at"].isoformat() if hasattr(row["approved_at"], "isoformat") else str(row["approved_at"]),
+    }
 
 
 # ── Tracking ─────────────────────────────────────────────────

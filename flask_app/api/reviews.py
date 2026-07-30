@@ -7,7 +7,7 @@ from flask_app.services.review_service import (
     get_submission, submit_for_review, approve, return_to_draft,
     add_note, get_tracking_data, get_investor_list, get_user_review_roles,
     list_review_role_assignments, assign_review_role, remove_review_role,
-    REVIEW_STEPS, REVIEW_ROLE_NAMES,
+    get_snapshot, REVIEW_STEPS, REVIEW_ROLE_NAMES,
 )
 
 reviews_bp = Blueprint("reviews", __name__)
@@ -35,6 +35,7 @@ def get_review_status(vcode, quarter):
         )
         sub["can_return"] = sub["can_approve"]
         sub["is_editable"] = sub["status"] in ("draft", "returned") or sub["id"] is None
+        sub["has_snapshot"] = get_snapshot(vcode, quarter) is not None
 
         return jsonify(sub)
     except Exception as e:
