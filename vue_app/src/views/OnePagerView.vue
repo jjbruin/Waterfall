@@ -1139,7 +1139,8 @@ function printOnePager() {
     margin-bottom: 0;
     display: flex;
     flex-direction: column;
-    min-height: calc(100vh - 0.8in); /* fill page minus top+bottom padding */
+    height: calc(100vh - 0.8in); /* exactly one page minus top+bottom padding */
+    overflow: hidden;
   }
 
   .op-sheet.page-break {
@@ -1183,17 +1184,19 @@ function printOnePager() {
     height: auto !important;
   }
 
-  /* Business plan: show plain div instead of textarea, fill remaining space */
+  /* Business plan: fill remaining space, clip if too long */
   .bp-section {
-    overflow: visible !important;
+    overflow: hidden !important;
     flex: 1 1 auto;
+    min-height: 0;
   }
   .bp-print-text {
     display: block !important;
     font-size: 13px !important;
     font-family: inherit;
     white-space: pre-wrap;
-    overflow: visible !important;
+    overflow: hidden !important;
+    height: 100%;
   }
   .comment-text.bp-text {
     overflow: visible !important;
