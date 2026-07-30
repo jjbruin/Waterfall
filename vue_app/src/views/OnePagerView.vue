@@ -597,7 +597,7 @@ function printOnePager() {
         </table>
 
         <!-- PROPERTY PERFORMANCE -->
-        <div class="section-header">Property Performance</div>
+        <div class="section-header">PROPERTY PERFORMANCE</div>
         <table class="perf-table">
           <thead>
             <tr>
@@ -631,7 +631,7 @@ function printOnePager() {
         </table>
 
         <!-- PE PERFORMANCE -->
-        <div class="section-header">Preferred Equity Performance</div>
+        <div class="section-header">PREFERRED EQUITY PERFORMANCE</div>
         <table class="pe-table">
           <tbody>
             <tr>
@@ -661,7 +661,7 @@ function printOnePager() {
         </table>
 
         <!-- BUSINESS PLAN -->
-        <div class="section-header">Business Plan &amp; Updates</div>
+        <div class="section-header">BUSINESS PLAN &amp; UPDATES</div>
         <div class="bp-section">
           <textarea v-model="businessPlanComments" class="comment-input bp-input print-hide" rows="6" placeholder="Business plan and updates..." spellcheck="true" lang="en" :readonly="commentsLocked"></textarea>
           <div class="bp-print-text print-only">{{ businessPlanComments }}</div>
@@ -764,7 +764,7 @@ function printOnePager() {
           </table>
 
           <!-- PROPERTY PERFORMANCE -->
-          <div class="section-header">Property Performance</div>
+          <div class="section-header">PROPERTY PERFORMANCE</div>
           <table class="perf-table">
             <thead>
               <tr>
@@ -798,7 +798,7 @@ function printOnePager() {
           </table>
 
           <!-- PE PERFORMANCE -->
-          <div class="section-header">Preferred Equity Performance</div>
+          <div class="section-header">PREFERRED EQUITY PERFORMANCE</div>
           <table class="pe-table">
             <tbody>
               <tr>
@@ -828,7 +828,7 @@ function printOnePager() {
           </table>
 
           <!-- BUSINESS PLAN -->
-          <div class="section-header">Business Plan &amp; Updates</div>
+          <div class="section-header">BUSINESS PLAN &amp; UPDATES</div>
           <div class="bp-section">
             <div class="comment-text bp-text">{{ pg.data.comments?.business_plan_comments || '' }}</div>
           </div>
