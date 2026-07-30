@@ -4,7 +4,9 @@ Audit comparison of Azure One Pager vs Excel model across 39 deals (959 total di
 PDF report generated: `OnePager_Audit_Variance_Analysis.pdf` (project root).
 Source audit file: `audit_comparison_final.xlsx` (SharePoint / Downloads).
 
-## Status: v164 Deployed (Jul 30, 2026)
+## Status: v168 Deployed (Jul 30, 2026)
+**Azure Container App**: `app-waterfall-dev-v2` (renamed from `app-waterfall-dev`).
+**URL**: `https://app-waterfall-dev-v2.icyplant-026fb2db.eastus.azurecontainerapps.io`
 
 - **Fix 1+7 (DSCR)**: Deployed v144. Principal from IS acct 7060 (YTD Actual), BS balance change fallback. U/W uses acct 7010.
 - **Fix 5 (Budget Econ Occ)**: Deployed v144. Bad debt % deducted from Budget IS (4040+4041+4043 / abs(4010)).
@@ -25,6 +27,13 @@ Source audit file: `audit_comparison_final.xlsx` (SharePoint / Downloads).
 - All font sizes +2px across categories. `.op-sheet` set to exact page height with `overflow: hidden` for single-page constraint.
 - Section headers all uppercase (GENERAL INFORMATION, PROPERTY PERFORMANCE, etc.).
 - Uniform section spacing, flex layout for business plan to fill available space.
+
+### Desktop Shortcut Installer (v166-v168, Jul 30, 2026)
+- **One-click install**: `GET /auth/shortcut/install` returns a `.bat` file that creates "Waterfall XIRR" desktop shortcut with custom icon.
+- **Icon**: `GET /auth/shortcut/icon` serves `waterfall_xirr.ico` from project root. Downloaded via `curl.exe` (Windows 10+ built-in, corporate proxy compatible).
+- **Tech**: Base64-encoded PowerShell (`-EncodedCommand`) wrapped in `.bat` for non-technical users. Icon cached in `%LOCALAPPDATA%\WaterfallXIRR\`.
+- **Welcome email**: Green "Download Desktop Shortcut Setup" button with step-by-step instructions added to `send_welcome_email()` in `email_utils.py`.
+- **Dockerfile**: `COPY waterfall_xirr.ico ./` added for production container.
 
 ### Action Plan v9 Fixes (Jul 30, 2026)
 - **AP Fix 1 (Loan Extensions)**: DEPLOYED v147. `ExtensionOptions` column exists on PG `loans` table (not local SQLite). No code change needed — data-driven.

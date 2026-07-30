@@ -56,6 +56,7 @@ waterfall-xirr/
 │   ├── extensions.py         # Flask extensions
 │   ├── serializers.py        # JSON serialization helpers (NumpyEncoder, safe_json)
 │   ├── auth/                 # JWT authentication (login, SSO config, password reset, welcome emails)
+│   │   ├── routes.py         # Auth routes (login, users, desktop shortcut installer)
 │   │   └── email_utils.py    # SendGrid email sending (welcome emails, password reset)
 │   ├── api/                  # API blueprints
 │   │   ├── dashboard.py      # Dashboard endpoints (KPIs, charts, SSE init-stream)
@@ -369,10 +370,11 @@ Standalone route at `/one-pager`. Vue: `OnePagerView.vue`. Flask: `financials.py
 - **Occupancy vs. NOI Chart** — ECharts dual-axis. Occupancy bars + NOI U/W and NOI ACT lines. Trailing 10-12 quarters. Values in $ millions.
 - **Comments** — Four editable fields (performance, accrued pref, business plan, PE capitalization) persisted to `one_pager_comments` table per vcode + quarter. PE capitalization is a borderless inline textarea that carries forward across quarters. Comments are locked (read-only) when the document is in review or approved.
 - **Review Workflow** — Sequential approval pipeline: Asset Manager → Head of AM → President → CCO → CEO → Approved. `ReviewPanel.vue` component shows status indicator, approve/return buttons (role-gated), and threaded review notes. Return sends document back to Draft with a required note. Comments locked when status is not draft/returned.
+- **Snapshot System** — On CEO final approval, all computed One Pager data + chart frozen into `one_pager_snapshots` table as JSON via `_save_snapshot()` in `review_service.py`. "View Approved Version" / "View Live Data" toggle button renders frozen data with blue banner (approver + date). Comments read-only from snapshot. API: `GET /api/financials/<vcode>/one-pager/snapshot?quarter=X`. Review status includes `has_snapshot` flag.
 - **Print** — `@media print` CSS produces clean single-page output matching the PDF template. Textareas render as plain text in print. ReviewPanel hidden in print. `@page { margin: 0 }` suppresses browser headers/footers (URL, page number); content padding on `.one-pager-page`. Page title temporarily blanked during print to remove "Waterfall XIRR". Business Plan section uses flex layout to expand and fill available space (scrollbar hidden); chart anchored to page bottom. Custom date/time stamp rendered in upper left via `printTimestamp` ref.
-- **API Endpoints**: `GET /api/financials/<vcode>/one-pager` (all data), `GET /api/financials/<vcode>/one-pager/chart` (quarterly chart data), `PUT /api/financials/<vcode>/one-pager/comments` (save comments, blocked when in review).
+- **API Endpoints**: `GET /api/financials/<vcode>/one-pager` (all data), `GET /api/financials/<vcode>/one-pager/chart` (quarterly chart data), `PUT /api/financials/<vcode>/one-pager/comments` (save comments, blocked when in review), `GET /api/financials/<vcode>/one-pager/snapshot?quarter=X` (frozen approved snapshot).
 - **Review API Endpoints** (`/api/reviews`): `GET /<vcode>/<quarter>` (status + notes + permissions), `POST /<vcode>/<quarter>/submit` (submit for review), `POST /<vcode>/<quarter>/approve` (advance step), `POST /<vcode>/<quarter>/return` (return to draft), `POST /<vcode>/<quarter>/note` (add discussion note), `GET /tracking` (production pipeline data), `GET /roles` (list assignments), `POST /roles` (assign role), `DELETE /roles/<id>` (remove role).
-- **Database Tables**: `review_roles` (user↔review_role, UNIQUE), `review_submissions` (vcode+quarter, status, current_step), `review_notes` (audit trail with action/note_text). All three in `PROTECTED_TABLES`.
+- **Database Tables**: `review_roles` (user↔review_role, UNIQUE), `review_submissions` (vcode+quarter, status, current_step), `review_notes` (audit trail with action/note_text), `one_pager_snapshots` (vcode+quarter UNIQUE, snapshot_data JSON, approved_by, approved_at). All four in `PROTECTED_TABLES`.
 
 ### 4a. Review Tracking
 Standalone view at `/review-tracking` (`ReviewTrackingView.vue`). Production pipeline dashboard for One Pager approval status across all active deals.
@@ -398,7 +400,7 @@ View, edit, and create waterfall structures for any entity. Vue: `WaterfallSetup
 
 ### Sidebar: Database Tools & User
 Vue: `AppSidebar.vue` database tools section. Flask: `data.py` API endpoints.
-- **Import CSVs** — Browser file upload (no server-side folder scan — incompatible with Azure). Select CSV files → auto-matches filenames to table definitions → shows importable/protected/unmatched status → uploads one file at a time (sequential to avoid OOM on 2GB container) with progress indicator. Protected tables (`waterfalls`, `one_pager_comments`, `waterfall_audit`, `review_roles`, `review_submissions`, `review_notes`, `prospective_loans`, `prospective_loans_audit`, `planned_loans`, `sale_overrides`, `user_requests`, `user_request_messages`) are never overwritten. Uses chunked import (`import_csv_stream()`, 50K rows/chunk, `dtype=str`) for large files like ISBS (800K+ rows). Clears data and computation caches.
+- **Import CSVs** — Browser file upload (no server-side folder scan — incompatible with Azure). Select CSV files → auto-matches filenames to table definitions → shows importable/protected/unmatched status → uploads one file at a time (sequential to avoid OOM on 2GB container) with progress indicator. Protected tables (`waterfalls`, `one_pager_comments`, `waterfall_audit`, `review_roles`, `review_submissions`, `review_notes`, `one_pager_snapshots`, `prospective_loans`, `prospective_loans_audit`, `planned_loans`, `sale_overrides`, `user_requests`, `user_request_messages`) are never overwritten. Uses chunked import (`import_csv_stream()`, 50K rows/chunk, `dtype=str`) for large files like ISBS (800K+ rows). Clears data and computation caches.
 - **Export Database** — Export all tables as `waterfall_db_export_{timestamp}.zip` containing `{table_name}_db_export.csv` for every table.
 - **Feedback & Requests** — Collapsible sidebar section for users to submit errors, improvements, report requests, and analysis requests. Submit form (type, title, description, priority) + scrollable list of past requests with status badges and message counts. Click a request to see its full threaded conversation and add replies. Auto-opens when navigating with a `?reply=TOKEN` query param (from email links).
 - **Logout Button** — Full-width button at bottom of sidebar showing username + role. Clears auth store and redirects to login page.
@@ -420,9 +422,10 @@ Embedded request tracking system for users to report errors, suggest improvement
 - **JWT-based**: Login returns access token, stored in Pinia auth store, sent via Axios interceptor
 - **Roles**: `admin`, `analyst`, `viewer` — role-gated endpoints via `@role_required()` decorator
 - **Password Reset**: `ForgotPasswordView.vue` → email with reset token → `ResetPasswordView.vue`. Uses `flask_app/auth/email_utils.py` via SendGrid
-- **Welcome Emails**: Admin creates user → sends welcome email with temporary password and login link
+- **Welcome Emails**: Admin creates user → sends welcome email with temporary password, login link, and desktop shortcut installer button
 - **Forced Password Change**: Users with `must_change_password` flag are redirected to change password on login
 - **Email**: SendGrid Web API v3 (`requests` library, no SMTP). Configured via `SENDGRID_API_KEY` and `SENDGRID_FROM` env vars. Single Sender Verification on `jbruin@peaceablestreet.com`.
+- **Desktop Shortcut Installer**: One-click `.bat` download via `GET /auth/shortcut/install`. Downloads `waterfall_xirr.ico` from `GET /auth/shortcut/icon`, creates "Waterfall XIRR" desktop shortcut with custom icon. Uses base64-encoded PowerShell (`-EncodedCommand`) wrapped in a `.bat` file for non-technical users. `curl.exe` (built into Windows 10+) for corporate proxy compatibility. Green "Download Desktop Shortcut Setup" button included in welcome email.
 
 ### 7. Reports
 Multi-report section with sidebar layout. Vue: `ReportsView.vue`. Flask: `reports.py` + `reports_service.py`.
@@ -633,6 +636,8 @@ Embedded Claude-powered chat panel for natural-language queries against the port
 - `return_to_draft()` - Return document to draft with required note (review_service.py)
 - `is_editable()` - Check if comments can be edited based on review status (review_service.py)
 - `get_tracking_data()` - Production tracking data with filters, LEFT JOINs deals with submissions (review_service.py)
+- `_save_snapshot()` - Freeze all computed One Pager data + chart as JSON on CEO approval (review_service.py)
+- `get_snapshot()` - Retrieve and deserialize a frozen snapshot by vcode+quarter (review_service.py)
 - `compute_net_waterfall_for_deal()` - Per-deal net returns waterfall with fees/promote (sold_service.py)
 - `compute_all_net_returns()` - Orchestrator: loops sold deals, pools net cashflows for portfolio metrics (sold_service.py)
 - `generate_net_returns_excel()` - Multi-sheet workbook with formula-driven waterfall detail (sold_service.py)
