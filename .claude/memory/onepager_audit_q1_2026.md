@@ -4,7 +4,7 @@ Audit comparison of Azure One Pager vs Excel model across 39 deals (959 total di
 PDF report generated: `OnePager_Audit_Variance_Analysis.pdf` (project root).
 Source audit file: `audit_comparison_final.xlsx` (SharePoint / Downloads).
 
-## Status: v155 Deployed (Jul 30, 2026)
+## Status: v164 Deployed (Jul 30, 2026)
 
 - **Fix 1+7 (DSCR)**: Deployed v144. Principal from IS acct 7060 (YTD Actual), BS balance change fallback. U/W uses acct 7010.
 - **Fix 5 (Budget Econ Occ)**: Deployed v144. Bad debt % deducted from Budget IS (4040+4041+4043 / abs(4010)).
@@ -12,6 +12,19 @@ Source audit file: `audit_comparison_final.xlsx` (SharePoint / Downloads).
 - **Fix 3 (At Close)**: Investigated — see below. Data gap, not code bug.
 - **Fix 4 (ROE to Date)**: Investigated — see below. Methodology difference, not data freshness.
 - **Fix 6 (Chart Quarters)**: Investigated — see below. Code correct, data freshness issue.
+
+### One Pager Snapshot System (v164, Jul 30, 2026)
+- **Approved snapshot**: On CEO final approval, all computed One Pager data + chart frozen into `one_pager_snapshots` table as JSON.
+- **Table**: `one_pager_snapshots` (vcode, quarter, snapshot_data JSON, approved_by, approved_at). UNIQUE(vcode, quarter). In `PROTECTED_TABLES`.
+- **Hook**: `_save_snapshot()` in `review_service.py`, triggered when `approve()` advances to status "approved" (step 5).
+- **API**: `GET /api/financials/<vcode>/one-pager/snapshot?quarter=X` returns frozen data. Review status includes `has_snapshot` flag.
+- **Vue**: "View Approved Version" / "View Live Data" toggle button. Blue banner shows approver + date. Comments read-only from snapshot. All computed sections (gen, cap, perf, pe, chart) render from frozen data.
+
+### Print Layout (v157-v163, Jul 30, 2026)
+- Business plan textarea replaced with `print-hide`/`print-only` div pattern for clean print rendering.
+- All font sizes +2px across categories. `.op-sheet` set to exact page height with `overflow: hidden` for single-page constraint.
+- Section headers all uppercase (GENERAL INFORMATION, PROPERTY PERFORMANCE, etc.).
+- Uniform section spacing, flex layout for business plan to fill available space.
 
 ### Action Plan v9 Fixes (Jul 30, 2026)
 - **AP Fix 1 (Loan Extensions)**: DEPLOYED v147. `ExtensionOptions` column exists on PG `loans` table (not local SQLite). No code change needed — data-driven.
