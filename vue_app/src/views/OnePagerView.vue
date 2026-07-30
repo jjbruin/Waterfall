@@ -1155,13 +1155,28 @@ function printOnePager() {
     margin-bottom: 2px;
   }
 
-  .op-title { font-size: 20px; }
-  .section-header { font-size: 13px; }
+  .op-title { font-size: 20px; margin-bottom: 1px !important; padding-bottom: 2px !important; }
+
+  /* Uniform tight spacing between all sections */
+  .section-header {
+    font-size: 13px;
+    padding: 2px 0 1px 0 !important;
+    margin: 1px 0 1px 0 !important;
+  }
+
+  /* Tighten comments row between Property Performance and PE section */
+  .comments-row-table { margin: 0 !important; }
+  .comments-row-table td { padding: 1px 4px !important; }
+
+  /* Remove internal spacer row in PE table */
+  .pe-table tr td[style*="height"] { height: 0px !important; padding: 0 !important; }
 
   .info-table td, .cap-table td, .perf-table th, .perf-table td, .pe-table td {
     font-size: 12.5px;
-    padding: 1px 3px 1px 0;
+    padding: 0.5px 3px 0.5px 0;
   }
+  .info-table, .pe-table { margin-bottom: 0 !important; }
+  .perf-table { margin-bottom: 0 !important; }
 
   /* Tighten label widths to prevent wrapping at larger font */
   .info-table .lbl { width: 20% !important; }
