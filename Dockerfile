@@ -29,6 +29,7 @@ RUN pip install --no-cache-dir -r requirements.txt gunicorn
 # Root-level modules (waterfall engine, compute, database, etc.)
 COPY *.py ./
 COPY *.txt ./
+COPY waterfall_xirr.ico ./
 
 # Flask app package
 COPY flask_app/ flask_app/

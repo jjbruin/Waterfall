@@ -436,7 +436,7 @@ if (-not (Test-Path $IconDir)) {{ New-Item -ItemType Directory -Path $IconDir -F
 $IconPath = Join-Path $IconDir 'waterfall_xirr.ico'
 try {{
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    Invoke-WebRequest -Uri '{app_url}/api/auth/shortcut/icon' -OutFile $IconPath -UseBasicParsing
+    Invoke-WebRequest -Uri '{app_url}/auth/shortcut/icon' -OutFile $IconPath -UseBasicParsing
 }} catch {{ $IconPath = $null }}
 $Desktop = [Environment]::GetFolderPath('Desktop')
 $WshShell = New-Object -ComObject WScript.Shell

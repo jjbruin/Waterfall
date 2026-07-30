@@ -105,7 +105,7 @@ def send_welcome_email(email: str, username: str, temp_password: str) -> bool:
             <li>A "Waterfall XIRR" shortcut will appear on your desktop</li>
         </ol>
         <p style="margin: 16px 0;">
-            <a href="{app_url}/api/auth/shortcut/install"
+            <a href="{app_url}/auth/shortcut/install"
                style="background: #548235; color: white; padding: 10px 20px;
                       text-decoration: none; border-radius: 6px; display: inline-block;
                       font-size: 13px;">
