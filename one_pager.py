@@ -1059,7 +1059,8 @@ def _get_uw_pe_distributions(
 
     # Convert YTD cumulative → periodic amounts
     # Within a year: periodic = current_ytd - prior_ytd (same year)
-    # January (or first period of year): periodic = current_ytd
+    # First period of a year with no prior: pro-rate cumulative by month
+    # (e.g. $70K cumulative at July → $10K/month × 1 month = $10K periodic)
     distributions = []
     prev_by_year = {}  # {year: last_cumulative_amount}
 
@@ -1082,14 +1083,15 @@ def _get_uw_pe_distributions(
         year = period_ts.year
         if year in prev_by_year:
             periodic = cumulative - prev_by_year[year]
-        else:
+        elif period_ts.month == 1:
+            # January: cumulative IS the single-month amount
             periodic = cumulative
+        else:
+            # Mid-year start with no prior data: pro-rate cumulative
+            # evenly across the months it covers
+            periodic = cumulative / period_ts.month
 
         prev_by_year[year] = cumulative
-
-        # Reset at year boundary (Jan is just the cumulative itself)
-        if period_ts.month == 1:
-            periodic = cumulative
 
         amount = abs(periodic)
         if amount > 0.01:
