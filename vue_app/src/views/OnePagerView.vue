@@ -437,22 +437,9 @@ function printOnePager() {
   // Blank the page title so browser doesn't print "Waterfall XIRR" in the header
   const origTitle = document.title
   document.title = ' '
-  // Auto-size all textareas to their content so print doesn't clip
-  const textareas = document.querySelectorAll('.comment-input')
-  const origHeights: string[] = []
-  textareas.forEach(ta => {
-    const el = ta as HTMLTextAreaElement
-    origHeights.push(el.style.height)
-    el.style.height = 'auto'
-    el.style.height = el.scrollHeight + 'px'
-  })
   nextTick(() => {
     window.print()
     document.title = origTitle
-    // Restore original textarea heights
-    textareas.forEach((ta, i) => {
-      ;(ta as HTMLTextAreaElement).style.height = origHeights[i]
-    })
   })
 }
 </script>
@@ -676,7 +663,8 @@ function printOnePager() {
         <!-- BUSINESS PLAN -->
         <div class="section-header">Business Plan &amp; Updates</div>
         <div class="bp-section">
-          <textarea v-model="businessPlanComments" class="comment-input bp-input" rows="6" placeholder="Business plan and updates..." spellcheck="true" lang="en" :readonly="commentsLocked"></textarea>
+          <textarea v-model="businessPlanComments" class="comment-input bp-input print-hide" rows="6" placeholder="Business plan and updates..." spellcheck="true" lang="en" :readonly="commentsLocked"></textarea>
+          <div class="bp-print-text print-only">{{ businessPlanComments }}</div>
         </div>
 
         <!-- CHART -->
@@ -1101,6 +1089,12 @@ function printOnePager() {
 .bp-input {
   min-height: 80px;
 }
+.bp-print-text {
+  display: none;
+}
+.print-only {
+  display: none;
+}
 
 /* Chart */
 .chart-section {
@@ -1115,7 +1109,8 @@ function printOnePager() {
 @media print {
   * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 
-  .no-print { display: none !important; }
+  .no-print, .print-hide { display: none !important; }
+  .print-only { display: block !important; }
 
   /* Suppress browser headers/footers (title, URL, date, page number)
      by setting @page margin to 0 and using body padding for content margins */
@@ -1178,20 +1173,17 @@ function printOnePager() {
     height: auto !important;
   }
 
-  /* Business plan: auto-expand, no scrollbar, fill remaining space above chart */
+  /* Business plan: show plain div instead of textarea, fill remaining space */
   .bp-section {
     overflow: visible !important;
     flex: 1 1 auto;
   }
-  .bp-input {
+  .bp-print-text {
+    display: block !important;
+    font-size: 10px !important;
+    font-family: inherit;
+    white-space: pre-wrap;
     overflow: visible !important;
-    max-height: none !important;
-    min-height: 0 !important;
-    height: auto !important;
-    scrollbar-width: none !important;
-  }
-  .bp-input::-webkit-scrollbar {
-    display: none !important;
   }
   .comment-text.bp-text {
     overflow: visible !important;
