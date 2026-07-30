@@ -102,7 +102,7 @@ waterfall-xirr/
 
 ### Production (Azure)
 **Desktop shortcut**: Double-click **"Waterfall XIRR"** on the desktop — opens the Azure app in the browser.
-- **URL**: https://app-waterfall-dev.victoriousforest-f83586cf.eastus.azurecontainerapps.io
+- **URL**: https://app-waterfall-dev-v2.icyplant-026fb2db.eastus.azurecontainerapps.io
 - Default login: admin / admin
 
 ### Deploying Changes
@@ -112,7 +112,7 @@ All deploys use Azure CLI (GitHub Actions secrets are not configured):
 az acr build --registry acrwaterfalldev -g rg-waterfall-dev --image waterfall-xirr:latest --no-logs .
 
 # 2. Deploy to Container Apps (use incrementing suffix to force new revision)
-az containerapp update -g rg-waterfall-dev -n app-waterfall-dev --image acrwaterfalldev.azurecr.io/waterfall-xirr:latest --revision-suffix v30
+az containerapp update -g rg-waterfall-dev -n app-waterfall-dev-v2 --image acrwaterfalldev.azurecr.io/waterfall-xirr:latest --revision-suffix v154
 ```
 **Note**: ACR build agent has transient failures (5-second runs) — retry if it fails. Use `--no-logs` to avoid Azure CLI unicode crash (`✓` character).
 
@@ -130,11 +130,11 @@ cd vue_app && npm run dev        # Frontend on http://localhost:5173
 ```
 
 ### Azure Infrastructure
-- **Container App**: app-waterfall-dev (1 CPU, 2GB RAM, 2 Gunicorn workers)
+- **Container App**: app-waterfall-dev-v2 (1 CPU, 2GB RAM, 2 Gunicorn workers)
 - **PostgreSQL**: psql-waterfall-dev.postgres.database.azure.com (B1ms, v16)
 - **Container Registry**: acrwaterfalldev.azurecr.io
 - **Resource Group**: rg-waterfall-dev (eastus)
-- View logs: `az containerapp logs show -g rg-waterfall-dev -n app-waterfall-dev --type console --tail 50`
+- View logs: `az containerapp logs show -g rg-waterfall-dev -n app-waterfall-dev-v2 --type console --tail 50`
 
 ### Caching
 - `index.html` served with `Cache-Control: no-cache` — browser always checks for new version on deploy
