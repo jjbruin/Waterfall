@@ -1149,18 +1149,28 @@ function printOnePager() {
   /* Print-only date/time in upper left */
   .print-date {
     display: block !important;
-    font-size: 9px;
+    font-size: 11px;
     color: #333;
     margin-bottom: 2px;
   }
 
-  .op-title { font-size: 18px; }
-  .section-header { font-size: 11px; }
+  .op-title { font-size: 20px; }
+  .section-header { font-size: 13px; }
 
   .info-table td, .cap-table td, .perf-table th, .perf-table td, .pe-table td {
-    font-size: 10.5px;
-    padding: 1px 4px 1px 0;
+    font-size: 12.5px;
+    padding: 1px 3px 1px 0;
   }
+
+  /* Tighten label widths to prevent wrapping at larger font */
+  .info-table .lbl { width: 20% !important; }
+  .info-table .val { width: 30% !important; }
+  .cap-table .lbl { width: 16% !important; }
+  .cap-table .val { width: 16% !important; }
+  .cap-table td:nth-child(3) { padding-left: 12px !important; }
+  .pe-table td { padding: 1px 4px 1px 0 !important; }
+  .perf-table .spacer-col { width: 12px !important; }
+  .perf-table .row-label { padding-right: 6px !important; }
 
   /* Make textareas look like plain text in print */
   .comment-input {
@@ -1168,7 +1178,7 @@ function printOnePager() {
     padding: 0 !important;
     resize: none !important;
     background: transparent !important;
-    font-size: 10.5px !important;
+    font-size: 12.5px !important;
     overflow: visible !important;
     height: auto !important;
   }
@@ -1180,7 +1190,7 @@ function printOnePager() {
   }
   .bp-print-text {
     display: block !important;
-    font-size: 11px !important;
+    font-size: 13px !important;
     font-family: inherit;
     white-space: pre-wrap;
     overflow: visible !important;
