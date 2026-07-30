@@ -1360,15 +1360,41 @@ def get_one_pager_comments(vcode: str, reporting_period: str) -> Dict[str, str]:
             (str(vcode), str(reporting_period))
         )
 
-        if not result.empty:
-            row = result.iloc[0]
-            comments['econ_comments'] = str(row['econ_comments']) if pd.notna(row['econ_comments']) else ''
-            comments['business_plan_comments'] = str(row['business_plan_comments']) if pd.notna(row['business_plan_comments']) else ''
-            comments['accrued_pref_comment'] = str(row['accrued_pref_comment']) if pd.notna(row['accrued_pref_comment']) else ''
+        def _extract_comments(row):
+            """Extract comment fields from a query result row."""
+            c = {}
+            c['econ_comments'] = str(row['econ_comments']) if pd.notna(row['econ_comments']) else ''
+            c['business_plan_comments'] = str(row['business_plan_comments']) if pd.notna(row['business_plan_comments']) else ''
+            c['accrued_pref_comment'] = str(row['accrued_pref_comment']) if pd.notna(row['accrued_pref_comment']) else ''
             if 'underlying_investors' in row.index:
-                comments['underlying_investors'] = str(row['underlying_investors']) if pd.notna(row['underlying_investors']) else ''
+                c['underlying_investors'] = str(row['underlying_investors']) if pd.notna(row['underlying_investors']) else ''
             if 'pe_cap_comment' in row.index:
-                comments['pe_cap_comment'] = str(row['pe_cap_comment']) if pd.notna(row['pe_cap_comment']) else ''
+                c['pe_cap_comment'] = str(row['pe_cap_comment']) if pd.notna(row['pe_cap_comment']) else ''
+            return c
+
+        if not result.empty:
+            extracted = _extract_comments(result.iloc[0])
+            comments.update(extracted)
+
+        # If the exact quarter has no econ/business_plan comments, fall back to
+        # the most recent quarter that does — comments are entered per reporting
+        # cycle and the viewed quarter may not have them yet.
+        if not comments['econ_comments'].strip() and not comments['business_plan_comments'].strip():
+            fallback_all = execute_query(
+                """SELECT econ_comments, business_plan_comments, accrued_pref_comment, underlying_investors, pe_cap_comment
+                   FROM one_pager_comments
+                   WHERE vcode = ?
+                     AND (econ_comments IS NOT NULL AND econ_comments != ''
+                          OR business_plan_comments IS NOT NULL AND business_plan_comments != '')
+                   ORDER BY reporting_period DESC LIMIT 1""",
+                (str(vcode),)
+            )
+            if not fallback_all.empty:
+                fb = _extract_comments(fallback_all.iloc[0])
+                # Only fill in fields that are still empty
+                for key in ('econ_comments', 'business_plan_comments', 'accrued_pref_comment'):
+                    if not comments[key].strip() and fb.get(key, '').strip():
+                        comments[key] = fb[key]
 
         # pe_cap_comment doesn't change quarter to quarter — fall back to most recent non-empty value for this vcode
         if not comments['pe_cap_comment']:
