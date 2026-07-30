@@ -163,6 +163,11 @@ TABLE_DEFINITIONS = {
         'description': 'Budget economic occupancy from ProjOccupancy',
         'key_columns': ['VCODE', 'DTPERIOD']
     },
+    'event_dates': {
+        'csv': 'MRI_Event_Dates.csv',
+        'description': 'MRI event dates (acquisition, U/W exit, lease events)',
+        'key_columns': ['vCode', 'vEventType', 'vEvent', 'dtEvent']
+    },
 }
 
 
