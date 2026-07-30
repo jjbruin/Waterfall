@@ -4,7 +4,7 @@ Audit comparison of Azure One Pager vs Excel model across 39 deals (959 total di
 PDF report generated: `OnePager_Audit_Variance_Analysis.pdf` (project root).
 Source audit file: `audit_comparison_final.xlsx` (SharePoint / Downloads).
 
-## Status: v147 Deployed (Jul 27, 2026)
+## Status: v155 Deployed (Jul 30, 2026)
 
 - **Fix 1+7 (DSCR)**: Deployed v144. Principal from IS acct 7060 (YTD Actual), BS balance change fallback. U/W uses acct 7010.
 - **Fix 5 (Budget Econ Occ)**: Deployed v144. Bad debt % deducted from Budget IS (4040+4041+4043 / abs(4010)).
@@ -13,13 +13,20 @@ Source audit file: `audit_comparison_final.xlsx` (SharePoint / Downloads).
 - **Fix 4 (ROE to Date)**: Investigated — see below. Methodology difference, not data freshness.
 - **Fix 6 (Chart Quarters)**: Investigated — see below. Code correct, data freshness issue.
 
-### Action Plan v6/v7 Fixes (Jul 27, 2026)
-- **AP Fix 1 (Loan Extensions)**: DEPLOYED v147. `ExtensionOptions` column exists on PG `loans` table (not local SQLite). `_get_extension_options()` + `(+2x12)` appended to maturity in loan terms display. 10 of 16 target deals have extension data; 4 have none; 2 have no loan data.
-- **AP Fix 2 (PPI Entities)**: DEPLOYED v146+v147. Phase 1 (v146): PPI→upstream entity via relationships table. Phase 2 (v147): `underlying_investors` column in `one_pager_comments` overrides with human-readable names (e.g. "PSC 69%, Declaration 31%"). 72 deals have investor names.
-- **AP Fix 2b (Comments)**: DEPLOYED v147. 139 rows imported from Charlene's compiled spreadsheet into both SQLite and PG (71 deals x 2 quarters). 109 with business plan, 72 with underlying investors.
-- **AP Fix 3 (U/W Exit)**: BLOCKED. No "UW Exit Changes" table exists. No `Anticipated_Exit` column in deals table. Decision needed from Charlene/Matt on approach (new CSV, MRI update, or deals column).
-- **AP Fix 4 (Construction Debt)**: BLOCKED. No "Inspection List" table exists in either SQLite (38 tables) or PG (44 tables). Need CSV from AM with vcode + mHardCost.
-- **AP Fix 5 (Chart Quarters)**: Investigation complete. 18 deals no data, 25 one-month lag, 24 stale. Full report in response doc.
+### Action Plan v9 Fixes (Jul 30, 2026)
+- **AP Fix 1 (Loan Extensions)**: DEPLOYED v147. `ExtensionOptions` column exists on PG `loans` table (not local SQLite). No code change needed — data-driven.
+- **AP Fix 2b (Comment Fallback)**: DEPLOYED v154. Comments now fall back to most recent quarter when exact match is empty. Vue default quarter changed from hardcoded to dynamic.
+- **AP Fix 4 (Construction Debt)**: BLOCKED. No `Inspection` table in PG (44 tables). MRI query written (`queries/MRI_Inspection.sql`) and sent to Charlene. Awaiting data.
+- **AP Fix 5 (Chart Classification)**: Complete. 95 rows: 38 Azure data gap, 57 need account-level comparison, 0 code bugs. Excel sent to Charlene.
+- **AP Fix 9 (U/W ROE)**: DEPLOYED v155. Fixed `_get_uw_pe_distributions()` mid-year cumulative-to-periodic bug. Was treating full YTD cumulative as single period when data starts mid-year (e.g. Donald Lynch July 2021 = $70K YTD treated as one month). Now pro-rates by dividing cumulative by month number.
+- **AP Fix 10 (Budget Econ Occ)**: Already on main (commit 2285431). No additional changes needed.
+
+### Prior Action Plan Fixes (v146-v147, Jul 27, 2026)
+- **AP Fix 1 (Loan Extensions)**: DEPLOYED v147. `_get_extension_options()` + `(+2x12)` appended to maturity.
+- **AP Fix 2 (PPI Entities)**: DEPLOYED v146+v147. `underlying_investors` column in `one_pager_comments` overrides with human-readable names.
+- **AP Fix 2b (Comments Import)**: DEPLOYED v147. 139 rows imported from Charlene's spreadsheet (71 deals x 2 quarters).
+- **AP Fix 3 (U/W Exit)**: BLOCKED. No "UW Exit Changes" table exists. Decision needed on approach.
+- **AP Fix 5 (Chart Quarters)**: Investigation complete. 18 deals no data, 25 one-month lag, 24 stale.
 
 ## Code/Logic Bugs to Fix (~293 discrepancies, 31%)
 
