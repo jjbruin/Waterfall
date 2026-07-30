@@ -431,13 +431,14 @@ def shortcut_installer():
     # The .bat uses certutil to decode an embedded base64 PowerShell script,
     # avoiding all cmd.exe escaping issues with parentheses/pipes.
     import base64
+    # Use curl.exe (built into Windows 10+) for the icon download since
+    # PowerShell's Invoke-WebRequest may be blocked by corporate proxies.
+    # The shortcut creation still needs PowerShell (WScript.Shell COM).
     ps_script = f'''$IconDir = Join-Path $env:LOCALAPPDATA 'WaterfallXIRR'
 if (-not (Test-Path $IconDir)) {{ New-Item -ItemType Directory -Path $IconDir -Force | Out-Null }}
 $IconPath = Join-Path $IconDir 'waterfall_xirr.ico'
-try {{
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    Invoke-WebRequest -Uri '{app_url}/auth/shortcut/icon' -OutFile $IconPath -UseBasicParsing
-}} catch {{ $IconPath = $null }}
+& curl.exe -sL -o $IconPath '{app_url}/auth/shortcut/icon'
+if (-not (Test-Path $IconPath)) {{ $IconPath = $null }}
 $Desktop = [Environment]::GetFolderPath('Desktop')
 $WshShell = New-Object -ComObject WScript.Shell
 $Shortcut = $WshShell.CreateShortcut((Join-Path $Desktop 'Waterfall XIRR.lnk'))
