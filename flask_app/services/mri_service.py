@@ -348,8 +348,14 @@ def _upsert_deals(df: pd.DataFrame, engine) -> dict:
     existing_vcodes = set(existing["vcode"].unique())
     incoming_vcodes = set(df["vcode"].unique())
 
-    # Update existing rows: overwrite only MRI columns
+    # Add new MRI columns that don't exist in the current table
     mri_cols_present = [c for c in df.columns if c in MRI_COLUMNS and c != "vcode"]
+    for col in mri_cols_present:
+        if col not in existing.columns:
+            existing[col] = None
+            logger.info(f"  deals: added new column '{col}'")
+
+    # Update existing rows: overwrite only MRI columns
     updated = 0
     for _, row in df[df["vcode"].isin(existing_vcodes)].iterrows():
         vc = row["vcode"]

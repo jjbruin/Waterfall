@@ -120,12 +120,22 @@ def get_performance_chart_data(
         except Exception:
             sel_idx = len(all_period_ends) - 1
     else:
-        # Default: most recent period with actual NOI data
+        # Default: most recent period with actual NOI data, then extend
+        # to include any UW-only periods immediately following (up to 2)
+        # so projections just beyond the actuals boundary are visible.
         actual_end_set = set(actual_agg.keys())
+        uw_end_set = set(uw_agg.keys())
         sel_idx = len(all_period_ends) - 1  # fallback
         for i in range(len(all_period_ends) - 1, -1, -1):
             if all_period_ends[i] in actual_end_set:
-                sel_idx = i
+                # Extend past last actual to include trailing UW-only periods
+                ext = i
+                for j in range(i + 1, min(i + 3, len(all_period_ends))):
+                    if all_period_ends[j] in uw_end_set:
+                        ext = j
+                    else:
+                        break
+                sel_idx = ext
                 break
 
     start_idx = max(0, sel_idx - periods + 1)
