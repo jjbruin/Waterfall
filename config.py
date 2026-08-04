@@ -35,7 +35,7 @@ CONTRA_REVENUE_ACCTS = {4040, 4043, 4030, 4042}
 REVENUE_ACCTS = {
     4010, 4012, 4020, 4041, 4045, 4040, 4043, 4030, 4042, 4070,
     4091, 4092, 4090, 4097, 4093, 4094, 4096, 4095,
-    4063, 4060, 4061, 4062, 4080, 4065
+    4063, 4060, 4061, 4062, 4080, 4065, 4075
 }
 
 GROSS_REVENUE_ACCTS = REVENUE_ACCTS - CONTRA_REVENUE_ACCTS
@@ -46,13 +46,13 @@ EXPENSE_ACCTS = {
     5060, 5067, 5063, 5069, 5061, 5064, 5065, 5068, 5070, 5066,
     5020, 5022, 5021, 5023, 5025, 5026,
     5045, 5080, 5087, 5085, 5040,
-    5096, 5095, 5091, 5100
+    5096, 5095, 5091, 5100, 5092, 5120, 5130, 5160, 5165
 }
 
 INTEREST_ACCTS = {5190, 7030}
 PRINCIPAL_ACCTS = {7060}
 CAPEX_ACCTS = {7050}
-OTHER_EXCLUDED_ACCTS = {4050, 5220, 5210, 5195, 7065, 5120, 5130, 5400}
+OTHER_EXCLUDED_ACCTS = {4050, 5220, 5210, 5195, 7065, 5400}
 TAX_ABATEMENT_ACCTS = {7070}
 
 ALL_EXCLUDED = INTEREST_ACCTS | PRINCIPAL_ACCTS | CAPEX_ACCTS | OTHER_EXCLUDED_ACCTS
@@ -243,19 +243,19 @@ IS_ACCOUNTS = {
         'RET': ['4091'],
         'INS': ['4092'],
         'CAM': ['4090', '4097', '4093', '4094', '4096', '4095'],
-        'Other Income': ['4063', '4060', '4061', '4062', '4080', '4065'],
+        'Other Income': ['4063', '4060', '4061', '4062', '4080', '4065', '4075'],
     },
     'EXPENSES': {
         'Real Estate Taxes': ['5090'],
         'Property & Liability Insurance': ['5110', '5114'],
         'Salary & Benefits': ['5018', '5010', '5016', '5012', '5014'],
         'Utilities': ['5051', '5053', '5050', '5052', '5054', '5055'],
-        'Repairs & Maintenance': ['5060', '5067', '5063', '5069', '5061', '5064', '5065', '5068', '5070', '5066'],
+        'Repairs & Maintenance': ['5060', '5067', '5063', '5069', '5061', '5064', '5065', '5068', '5070', '5066', '5092'],
         'Administrative': ['5020', '5022', '5021', '5023', '5025', '5026', '5080'],
         'Marketing & Advertising': ['5045'],
         'Legal & Professional': ['5087', '5085'],
         'Management Fee': ['5040'],
-        'Other Expenses': ['5096', '5095', '5091', '5100'],
+        'Other Expenses': ['5096', '5095', '5091', '5100', '5120', '5130', '5160', '5165'],
     },
     'DEBT_SERVICE': {
         'Interest': ['5190'],
@@ -265,7 +265,6 @@ IS_ACCOUNTS = {
         'Interest Income': ['4050'],
         'Other (Income) Expenses': ['5220', '5210', '5195', '7065'],
         'Capital Expenditures': ['7050'],
-        'Partnership Expenses': ['5120', '5130'],
         'Extraordinary Expenses': ['5400'],
     },
 }

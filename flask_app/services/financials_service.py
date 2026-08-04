@@ -53,6 +53,7 @@ def _parse_occupancy(occupancy_raw, vcode):
     if not occ_col or 'dtReported' not in occ.columns:
         return {}
     occ['occ_val'] = pd.to_numeric(occ[occ_col], errors='coerce')
+    occ['occ_val'] = occ['occ_val'].clip(upper=100.0)
     try:
         occ['date_parsed'] = pd.to_datetime(occ['dtReported'], unit='D', origin='1899-12-30', errors='coerce')
     except Exception:

@@ -180,7 +180,7 @@ cd vue_app && npm run dev        # Frontend on http://localhost:5173
 - **Sign convention**: MRI stores abatements as negative (credit); `normalize_forecast_signs()` in `loaders.py` forces `base.abs()` (positive) since abatements increase cash flow
 - **Annual Forecast**: Displayed as "Tax Abatement" row below NOI, included in FAD calculation. FAD adds back CapEx funded from cash reserves (`reporting.py`)
 - **NPV at Sale**: Remaining abatement payments after sale date are discounted to PV at `TAX_ABATEMENT_DISCOUNT_RATE` (5%) and added to net sale proceeds (`compute.py`). Shown as "NPV (@5%) Tax Abatements" in Sale Proceeds Calculation (Debt Service section)
-- **Below-the-line items**: Former "Excluded Accounts" renamed to "Other Below-the-Line" (`OTHER_EXCLUDED_ACCTS`): Interest Income (4050), Other Income/Expenses (5220, 5210, 5195, 7065), Partnership Expenses (5120, 5130), Extraordinary Expenses (5400)
+- **Below-the-line items**: Former "Excluded Accounts" renamed to "Other Below-the-Line" (`OTHER_EXCLUDED_ACCTS`): Interest Income (4050), Other Income/Expenses (5220, 5210, 5195, 7065), Extraordinary Expenses (5400). Partnership Expenses (5120, 5130) and Depreciation/Amortization (5160, 5165) moved into NOI as operating expenses.
 - **Conditional display**: Tax Abatement NPV line only appears in Sale Proceeds Calculation when deal has 7070 data
 
 ### Paid-Off Loan Exclusion
