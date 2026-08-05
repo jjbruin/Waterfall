@@ -821,7 +821,7 @@ def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
 
     # Enrich PE performance from deal analysis waterfall results
     if pe_perf and full_data is not None:
-        _enrich_pe_from_deal_result(pe_perf, vcode, full_data)
+        _enrich_pe_from_deal_result(pe_perf, vcode, full_data, quarter_str=quarter_str)
 
     # Enrich cap_stack with deal_terms if available (authoritative MRI values)
     if deal_terms is not None and not deal_terms.empty:
@@ -844,12 +844,14 @@ def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
     }
 
 
-def _enrich_pe_from_deal_result(pe: dict, vcode: str, data: dict):
+def _enrich_pe_from_deal_result(pe: dict, vcode: str, data: dict, quarter_str: str = None):
     """Enrich PE performance metrics from deal analysis waterfall results.
 
     Uses seed_states (current balances at actuals boundary) for:
     - current_pe_balance: capital outstanding as of today
-    - accrued_balance: compounded unpaid pref + current year accrual
+
+    Uses build_pref_balance_detail (authoritative row-by-row calculation) for:
+    - accrued_balance: matches the Pref Balance Detail report exactly
 
     Uses partner_results for:
     - committed_pe fallback: total contributions if no commitments table
@@ -878,23 +880,33 @@ def _enrich_pe_from_deal_result(pe: dict, vcode: str, data: dict):
         if not partner_results and not seed_states:
             return
 
-        # Current balances from seed_states (as of actuals boundary)
-        # These represent the real current state before the forecast waterfall runs
-        total_accrued = 0.0
+        # Current PE balance from seed_states (as of actuals boundary)
         total_capital_outstanding = 0.0
-
         for partner, state in seed_states.items():
-            # Skip OP partners — only PE investors
             if partner.upper().startswith("OP"):
                 continue
             total_capital_outstanding += state.total_capital_outstanding
-            total_accrued += (state.pref_unpaid_compounded
-                              + state.pref_accrued_current_year
-                              + state.add_pref_unpaid_compounded
-                              + state.add_pref_accrued_current_year)
 
-        pe["accrued_balance"] = total_accrued
         pe["current_pe_balance"] = total_capital_outstanding
+
+        # Accrued balance from authoritative Pref Balance Detail calculation
+        # This ties the One Pager to the Pref Balance Detail report exactly
+        accrued_from_detail = _compute_accrued_from_pref_detail(
+            vcode, data, quarter_str, seed_states
+        )
+        if accrued_from_detail is not None:
+            pe["accrued_balance"] = accrued_from_detail
+        else:
+            # Fallback to seed_states if pref detail fails
+            total_accrued = 0.0
+            for partner, state in seed_states.items():
+                if partner.upper().startswith("OP"):
+                    continue
+                total_accrued += (state.pref_unpaid_compounded
+                                  + state.pref_accrued_current_year
+                                  + state.add_pref_unpaid_compounded
+                                  + state.add_pref_accrued_current_year)
+            pe["accrued_balance"] = total_accrued
 
         # Committed PE: if commitments table was empty, use total PE contributions
         if pe.get("committed_pe", 0) == 0:
@@ -908,6 +920,55 @@ def _enrich_pe_from_deal_result(pe: dict, vcode: str, data: dict):
 
     except Exception as e:
         log.warning("Could not enrich PE performance from deal result for %s: %s", vcode, e)
+
+
+def _compute_accrued_from_pref_detail(vcode: str, data: dict, quarter_str: str,
+                                       seed_states: dict) -> float | None:
+    """Compute total accrued pref using the authoritative Pref Balance Detail engine.
+
+    Sums accrued_pref from build_pref_balance_detail() across all PE investors.
+    Returns None if calculation fails (caller should fall back to seed_states).
+    """
+    import logging
+    from one_pager import quarter_to_date_range
+    from flask_app.services.reports_service import build_pref_balance_detail, get_deal_pe_investors
+
+    log = logging.getLogger(__name__)
+    try:
+        if not quarter_str:
+            return None
+
+        _, report_date = quarter_to_date_range(quarter_str)
+        acct = data.get("acct")
+        inv_map = data.get("inv")
+        wf_steps = data.get("wf")
+
+        if acct is None or inv_map is None:
+            return None
+
+        # Get PE investors (non-OP) for this deal
+        pe_investors = get_deal_pe_investors(vcode, acct, inv_map)
+        if not pe_investors:
+            return None
+
+        total_accrued = 0.0
+        for inv_info in pe_investors:
+            investor_id = inv_info["investor_id"]
+            if investor_id.upper().startswith("OP"):
+                continue
+            detail = build_pref_balance_detail(
+                vcode, investor_id, report_date, acct, inv_map, wf_steps=wf_steps,
+            )
+            header = detail.get("header", {})
+            accrued = header.get("accrued_pref", 0.0)
+            # accrued_pref from the detail report is negative (credit convention)
+            total_accrued += abs(accrued)
+
+        return total_accrued
+
+    except Exception as e:
+        log.warning("Pref detail calculation failed for %s, falling back: %s", vcode, e)
+        return None
 
 
 def _enrich_cap_stack_from_deal_terms(cap_stack: dict, deal_terms, vcode: str):
