@@ -261,7 +261,7 @@ def get_capitalization_stack(
         if quarter_str:
             _, q_end = quarter_to_date_range(quarter_str)
             as_of = q_end
-        isbs_debt = get_isbs_debt_balance(isbs_raw, vcode, as_of_date=as_of)
+        isbs_debt = get_isbs_debt_balance(isbs_raw, vcode, as_of_date=as_of, mri_loans=mri_loans)
 
     if isbs_debt is not None:
         cap['debt'] = isbs_debt

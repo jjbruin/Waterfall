@@ -42,13 +42,15 @@ def _horizon_end_date(start_yr: int, horizon_yrs: int) -> date:
     return date(y, 12, 31)
 
 
-def get_isbs_debt_balance(isbs_raw, vcode, as_of_date=None):
+def get_isbs_debt_balance(isbs_raw, vcode, as_of_date=None, mri_loans=None):
     """Get current debt outstanding from ISBS balance sheet.
 
     Args:
         isbs_raw: Raw ISBS DataFrame
         vcode: Deal vcode
         as_of_date: Optional date to get balance at. If None, uses most recent.
+        mri_loans: Optional MRI Loans DataFrame. When provided, stale debt
+            accounts are only treated as paid off if no active MRI loan exists.
 
     Returns:
         Debt balance (float) or None if no ISBS data available.
@@ -91,15 +93,27 @@ def get_isbs_debt_balance(isbs_raw, vcode, as_of_date=None):
         return 0.0
 
     # If debt account data is stale (older than latest BS period), the loan
-    # was paid off — MRI stops reporting the account rather than writing $0.
-    # Only applies when requesting current debt or a date after the last debt entry.
+    # may have been paid off — MRI stops reporting the account rather than writing $0.
+    # Only zero out if no active loan exists in MRI Loans table for this deal.
     latest_debt_period = df['dtEntry_parsed'].dropna().max()
     if pd.notna(latest_bs_period) and pd.notna(latest_debt_period) and latest_debt_period < latest_bs_period:
         check_date = pd.Timestamp(as_of_date) if as_of_date is not None else latest_bs_period
         if check_date > latest_debt_period:
-            log.info("get_isbs_debt_balance(%s): debt stale (%s) vs BS (%s), requested %s -> paid off",
-                     vcode, latest_debt_period, latest_bs_period, check_date)
-            return 0.0
+            # Check MRI Loans — if an active loan exists, debt is NOT paid off
+            has_active_mri_loan = False
+            if mri_loans is not None and not mri_loans.empty:
+                vc_col = next((c for c in mri_loans.columns if c.lower() == 'vcode'), None)
+                if vc_col:
+                    deal_loans = mri_loans[mri_loans[vc_col].astype(str).str.strip().str.lower() == str(vcode).strip().lower()]
+                    if not deal_loans.empty:
+                        has_active_mri_loan = True
+            if not has_active_mri_loan:
+                log.info("get_isbs_debt_balance(%s): debt stale (%s) vs BS (%s), no active MRI loan -> paid off",
+                         vcode, latest_debt_period, latest_bs_period)
+                return 0.0
+            else:
+                log.info("get_isbs_debt_balance(%s): debt stale (%s) vs BS (%s) but active MRI loan exists, using last known balance",
+                         vcode, latest_debt_period, latest_bs_period)
 
     # Select period
     if as_of_date is not None:
@@ -289,13 +303,13 @@ def get_deal_capitalization(acct, inv, wf, mri_val, mri_loans, deal_vcode,
                         cap_data['pref_equity'] += max(0, balance)
 
         # Get debt from ISBS balance sheet (current outstanding), fallback to MRI_Loans (origination)
-        isbs_debt = get_isbs_debt_balance(isbs_raw, deal_vcode)
+        isbs_debt = get_isbs_debt_balance(isbs_raw, deal_vcode, mri_loans=mri_loans)
         if isbs_debt is not None:
             cap_data['debt'] = isbs_debt
             # For portfolio deals, also add child property debt from ISBS
             if property_vcodes:
                 for pv in property_vcodes:
-                    child_debt = get_isbs_debt_balance(isbs_raw, pv)
+                    child_debt = get_isbs_debt_balance(isbs_raw, pv, mri_loans=mri_loans)
                     if child_debt:
                         cap_data['debt'] += child_debt
         else:
@@ -890,7 +904,7 @@ def compute_deal_analysis(
             # Anchor to ISBS actual balance when available — the modeled schedule
             # amortizes from origination amount which may differ from reality.
             modeled_bal_sale = total_loan_balance_at(loan_sched, sale_me)
-            isbs_debt = get_isbs_debt_balance(isbs_raw, deal_vcode)
+            isbs_debt = get_isbs_debt_balance(isbs_raw, deal_vcode, mri_loans=mri_loans_raw)
             if isbs_debt is not None and isbs_debt > 0 and not loan_sched.empty:
                 # Find the ISBS anchor date (most recent BS period)
                 # ISBS is pre-normalized — just filter

@@ -209,14 +209,14 @@ def _compute_ttm_noi_and_dscr(isbs_raw, vcode):
     }
 
 
-def _compute_debt_balances(isbs_raw, vcodes):
+def _compute_debt_balances(isbs_raw, vcodes, mri_loans=None):
     """Compute ISBS debt balance for multiple vcodes at once.
 
     Returns dict {vcode_lower: balance}.
     """
     result = {}
     for vc in vcodes:
-        bal = get_isbs_debt_balance(isbs_raw, vc)
+        bal = get_isbs_debt_balance(isbs_raw, vc, mri_loans=mri_loans)
         if bal is not None:
             result[vc.lower()] = round(bal, 2)
     return result
@@ -595,7 +595,7 @@ def get_surveillance_table() -> list[dict]:
             logger.exception("TTM NOI/DSCR failed for %s", vc)
 
     # --- Debt balance from ISBS (same as Deal Analysis) ---
-    debt_map = _compute_debt_balances(isbs_raw, all_vcodes)
+    debt_map = _compute_debt_balances(isbs_raw, all_vcodes, mri_loans=mri_loans_raw)
 
     # --- Loan maturity from MRI_Loans (same as Deal Analysis) ---
     loan_map = _compute_loan_maturities(mri_loans_raw)
