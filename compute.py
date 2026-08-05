@@ -79,11 +79,27 @@ def get_isbs_debt_balance(isbs_raw, vcode, as_of_date=None):
         log.info("get_isbs_debt_balance(%s): no dtEntry_parsed column", vcode)
         return None
 
+    # Remember the most recent BS period for this deal (across all accounts)
+    # before filtering to debt accounts
+    latest_bs_period = df['dtEntry_parsed'].dropna().max()
+
     if 'vAccount' in df.columns:
         df = df[df['vAccount'].isin(DEBT_BS_ACCTS)]
     if df.empty:
-        log.info("get_isbs_debt_balance(%s): no debt account rows", vcode)
-        return None
+        # Deal has BS data but no debt accounts at all — no debt
+        log.info("get_isbs_debt_balance(%s): no debt account rows (latest BS: %s) -> 0", vcode, latest_bs_period)
+        return 0.0
+
+    # If debt account data is stale (older than latest BS period), the loan
+    # was paid off — MRI stops reporting the account rather than writing $0.
+    # Only applies when requesting current debt or a date after the last debt entry.
+    latest_debt_period = df['dtEntry_parsed'].dropna().max()
+    if pd.notna(latest_bs_period) and pd.notna(latest_debt_period) and latest_debt_period < latest_bs_period:
+        check_date = pd.Timestamp(as_of_date) if as_of_date is not None else latest_bs_period
+        if check_date > latest_debt_period:
+            log.info("get_isbs_debt_balance(%s): debt stale (%s) vs BS (%s), requested %s -> paid off",
+                     vcode, latest_debt_period, latest_bs_period, check_date)
+            return 0.0
 
     # Select period
     if as_of_date is not None:
