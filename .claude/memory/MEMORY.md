@@ -124,6 +124,16 @@
 - **P0000008 (5-15 Broad St)**: Had no forecast on Azure because forecast_feed only had Val_IS_2025 (not Val_IS_2024). Now auto-filled from ISBS Valuation IS.
 - **Occupancy >100% fix**: `.clip(upper=100)` on all `occ_val` reads in `dashboard_service.py`. Root cause: Prestige Storage (P0000080) had bad iResidentialUnits=364 in MRI (2023-2024), corrected to 3145 in 2025.
 
+## NOI Account Mapping History (Aug 2026)
+Three consecutive changes to which accounts sit in NOI. Read together — no single commit tells the whole story.
+- **d152629** (Aug 4) added six accounts to NOI: 4075 (Other Revenue) to `REVENUE_ACCTS`; 5092 (Maintenance Flex), 5120 (AM Fee/Partnership), 5130 (Other Partnership Costs), 5160 (Depreciation), 5165 (Amortization) to `EXPENSE_ACCTS`. 5120/5130 were moved OUT of `OTHER_EXCLUDED_ACCTS` and the `Partnership Expenses` below-the-line row was deleted. 4075/5092/5160/5165 had previously appeared in NO list at all (silently dropped).
+- **6af039f** (Aug 4, 8 minutes later) reverted depreciation: 5160/5165 out of `EXPENSE_ACCTS`, into `OTHER_EXCLUDED_ACCTS`, with a new `Depreciation & Amortization` below-the-line row. Not a true revert — pre-d152629 they were in no list, so they are now in `ALL_EXCLUDED` for the first time, which affects the forecast/FAD path in `loaders.py`/`reporting.py`, not just display.
+- **This change** (Aug 5) reverts 5120 and 5130 out of NOI, restoring the `Partnership Expenses` below-the-line row. **5092 and 4075 remain in NOI by Charlene's decision.** Portfolio analysis flagged 5092 as also diverging from the investor model, but it was kept intentionally pending model confirmation — revisit.
+- **Current state**: in NOI → 4075, 5092. Below-the-line → 5120, 5130, 5160, 5165.
+- **Blast radius method**: only ISBS `Interim IS` (NOI ACT) and `Projected IS` (NOI U/W) feed the One Pager / Property Financials chart, so account changes only move the chart for deals with activity in those two sources. A deal can have activity in Budget IS / Valuation IS / forecast_feed and show no chart change — 8 of 61 such deals did. Per-account attribution is exact because the cumulative→periodic→quarterly pipeline is linear.
+- **Guardrail pattern** (for future mapping changes, not committed — local scripts embed per-developer OneDrive paths): read the before-mapping from `git show HEAD:config.py` and the after-mapping from the working-tree `config.py`, then assert (a) the account set that left/joined NOI is exactly what was intended, (b) every moved deal-quarter belongs to a deal with activity in those accounts, (c) each move equals that account's own contribution. A typo then fails a check instead of being assumed away.
+- **Deploy reality**: pushing to origin/main does NOT deploy (no GitHub Actions secrets). Live app keeps serving the prior image until someone runs `az acr build` + `az containerapp update`.
+
 ## Key Technical Notes
 - `waterfall.db` exceeds GitHub 100MB — not committed, lives locally
 - InvestmentID mapping: `build_investmentid_to_vcode()` returns `{InvestmentID: vcode}`

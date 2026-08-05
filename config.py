@@ -46,13 +46,13 @@ EXPENSE_ACCTS = {
     5060, 5067, 5063, 5069, 5061, 5064, 5065, 5068, 5070, 5066,
     5020, 5022, 5021, 5023, 5025, 5026,
     5045, 5080, 5087, 5085, 5040,
-    5096, 5095, 5091, 5100, 5092, 5120, 5130
+    5096, 5095, 5091, 5100, 5092
 }
 
 INTEREST_ACCTS = {5190, 7030}
 PRINCIPAL_ACCTS = {7060}
 CAPEX_ACCTS = {7050}
-OTHER_EXCLUDED_ACCTS = {4050, 5220, 5210, 5195, 7065, 5400, 5160, 5165}
+OTHER_EXCLUDED_ACCTS = {4050, 5220, 5210, 5195, 7065, 5400, 5160, 5165, 5120, 5130}
 TAX_ABATEMENT_ACCTS = {7070}
 
 ALL_EXCLUDED = INTEREST_ACCTS | PRINCIPAL_ACCTS | CAPEX_ACCTS | OTHER_EXCLUDED_ACCTS
@@ -255,7 +255,7 @@ IS_ACCOUNTS = {
         'Marketing & Advertising': ['5045'],
         'Legal & Professional': ['5087', '5085'],
         'Management Fee': ['5040'],
-        'Other Expenses': ['5096', '5095', '5091', '5100', '5120', '5130'],
+        'Other Expenses': ['5096', '5095', '5091', '5100'],
     },
     'DEBT_SERVICE': {
         'Interest': ['5190'],
@@ -265,6 +265,7 @@ IS_ACCOUNTS = {
         'Interest Income': ['4050'],
         'Other (Income) Expenses': ['5220', '5210', '5195', '7065'],
         'Capital Expenditures': ['7050'],
+        'Partnership Expenses': ['5120', '5130'],
         'Depreciation & Amortization': ['5160', '5165'],
         'Extraordinary Expenses': ['5400'],
     },
