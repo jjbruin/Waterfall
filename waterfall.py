@@ -1368,6 +1368,8 @@ def seed_states_from_accounting(
 
                 # Accrue from last transaction to latest_date
                 if prev_date is not None and latest_date > prev_date:
+                    _debug_pre_cy = pref_accrued_current_year
+                    _debug_pre_comp = pref_unpaid_compounded
                     final_accrued, final_compounded, final_prior_year = accrue_to_date(
                         prev_date, latest_date, current_capital, pref_unpaid_compounded, pref_accrued_prior_year
                     )
@@ -1382,9 +1384,27 @@ def seed_states_from_accounting(
                         pref_accrued_current_year += final_accrued
                     pref_unpaid_compounded = final_compounded
                     pref_accrued_prior_year = final_prior_year
+                    # Temporary debug logging
+                    if str(target_vcode).upper() == "P0000066" and str(pc).upper() == "TGA22":
+                        import logging
+                        logging.getLogger(__name__).warning(
+                            f"PREF_DEBUG P0000066/TGA22: prev_date={prev_date}, latest_date={latest_date}, "
+                            f"capital={current_capital:.2f}, pre_cy={_debug_pre_cy:.2f}, pre_comp={_debug_pre_comp:.2f}, "
+                            f"final_accrued={final_accrued:.2f}, final_compounded={final_compounded:.2f}, "
+                            f"post_cy={pref_accrued_current_year:.2f}, post_comp={pref_unpaid_compounded:.2f}, "
+                            f"year_cross={prev_date.year < latest_date.year}"
+                        )
 
                 # Total unpaid pref
                 unpaid_pref = pref_accrued_current_year + pref_unpaid_compounded + pref_accrued_prior_year
+                # Temporary debug logging
+                if str(target_vcode).upper() == "P0000066" and str(pc).upper() == "TGA22":
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        f"PREF_DEBUG P0000066/TGA22 TOTAL: unpaid_pref={unpaid_pref:.2f}, "
+                        f"cy={pref_accrued_current_year:.2f}, comp={pref_unpaid_compounded:.2f}, "
+                        f"prior_yr={pref_accrued_prior_year:.2f}, pref_rate={pref_rate}"
+                    )
 
                 # Seed unpaid pref into the initial pool's tier
                 pool = stt.get_pool("initial")
