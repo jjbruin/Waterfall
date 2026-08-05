@@ -1272,7 +1272,9 @@ def seed_states_from_accounting(
                 prev_date = None
 
                 # Get pref distributions for reducing accrued amounts
-                pref_dists = inv_acct[inv_acct["TypeID"] == 1019.0][["EffectiveDate", "Amt"]].copy()
+                # TypeID may be string ('1019.0') or float — coerce to float for comparison
+                _type_ids = pd.to_numeric(inv_acct["TypeID"], errors="coerce")
+                pref_dists = inv_acct[_type_ids == 1019.0][["EffectiveDate", "Amt"]].copy()
                 pref_dists["Amt"] = pref_dists["Amt"].abs()
 
                 def accrue_to_date(from_date, to_date, capital, compounded, accrued_prior_year=0.0):
@@ -1349,7 +1351,9 @@ def seed_states_from_accounting(
                         pref_accrued_current_year += accrued
 
                     # Handle pref distribution (reduces accrued pref)
-                    if tr["TypeID"] == 1019.0:
+                    # TypeID may be string — coerce for safe comparison
+                    _tid = pd.to_numeric(tr["TypeID"], errors="coerce") if isinstance(tr["TypeID"], str) else tr["TypeID"]
+                    if _tid == 1019.0:
                         pref_accrued_current_year, pref_unpaid_compounded, pref_accrued_prior_year = apply_pref_payment(
                             abs(tr_amt), pref_accrued_current_year, pref_unpaid_compounded, pref_accrued_prior_year
                         )
@@ -1363,11 +1367,19 @@ def seed_states_from_accounting(
                     prev_date = tr_date
 
                 # Accrue from last transaction to latest_date
-                if prev_date is not None:
+                if prev_date is not None and latest_date > prev_date:
                     final_accrued, final_compounded, final_prior_year = accrue_to_date(
                         prev_date, latest_date, current_capital, pref_unpaid_compounded, pref_accrued_prior_year
                     )
-                    pref_accrued_current_year = final_accrued
+                    # If the final period crossed a year-end, the loop's accumulated
+                    # pref_accrued_current_year needs to compound too
+                    if prev_date.year < latest_date.year:
+                        # Year boundary crossed — loop's CY should compound
+                        final_compounded += pref_accrued_current_year
+                        pref_accrued_current_year = final_accrued
+                    else:
+                        # Same year — add final period accrual to running total
+                        pref_accrued_current_year += final_accrued
                     pref_unpaid_compounded = final_compounded
                     pref_accrued_prior_year = final_prior_year
 
