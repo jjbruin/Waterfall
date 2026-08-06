@@ -375,16 +375,17 @@ def _upsert_deals(df: pd.DataFrame, engine) -> dict:
                 new_rows[col] = pd.Series([None] * len(new_rows), dtype="object")
         existing = pd.concat([existing, new_rows[existing.columns]], ignore_index=True)
 
-    # Coerce all columns to string to avoid dtype mismatches on write
+    # Coerce all columns to string to avoid dtype mismatches on write.
+    # Prevents PostgreSQL TEXT column rejecting float values from pandas.
     for col in existing.columns:
         existing[col] = existing[col].apply(
-            lambda x: str(x) if pd.notna(x) and not isinstance(x, str) else x
+            lambda x: str(x) if pd.notna(x) else None
         )
 
     # Write back
     with engine.begin() as conn:
         conn.execute(sa.text("DROP TABLE IF EXISTS deals"))
-        existing.to_sql("deals", conn, if_exists="replace", index=False)
+        existing.to_sql("deals", conn, if_exists="replace", index=False, dtype={c: sa.Text() for c in existing.columns})
 
     logger.info(f"  deals: {len(existing)} rows ({updated} updated, {len(new_vcodes)} new)")
     return {"deals": {"rows": len(existing), "status": "ok", "new": len(new_vcodes), "updated": updated}}
