@@ -207,6 +207,49 @@ def get_general_information(inv_map: pd.DataFrame, vcode: str) -> Dict[str, Any]
 # CAPITALIZATION / EXPOSURE / DEAL TERMS
 # ============================================================
 
+def _child_vcodes_for_parent(vcode: str, inv_map: pd.DataFrame) -> List[str]:
+    """Child property vcodes for a parent deal; empty list if this is not a parent.
+
+    A deal counts as a parent only when Property_Count >= 1 — every child property
+    carries 0, which is what stops siblings from picking up each other's loans.
+
+    Children are matched on Portfolio_Name against either the parent's Investment_Name
+    (the usual convention, e.g. 'Berger Pittsburgh Portfolio') or the parent's own
+    Portfolio_Name, which covers deals whose portfolio label differs from their name
+    (e.g. 'Burton Retail Portfolio' sitting inside the 'Burton Portfolio' group).
+    """
+    if inv_map is None or inv_map.empty:
+        return []
+
+    df = inv_map.copy()
+    normalize_columns(df)
+    if 'vcode' not in df.columns and 'vCode' in df.columns:
+        df = df.rename(columns={'vCode': 'vcode'})
+    if 'vcode' not in df.columns or 'Portfolio_Name' not in df.columns:
+        return []
+
+    df['vcode'] = df['vcode'].astype(str).str.strip()
+    df['Portfolio_Name'] = df['Portfolio_Name'].fillna('').astype(str).str.strip()
+    df['Investment_Name'] = df['Investment_Name'].fillna('').astype(str).str.strip() \
+        if 'Investment_Name' in df.columns else ''
+
+    deal_row = df[df['vcode'] == str(vcode).strip()]
+    if deal_row.empty:
+        return []
+    row = deal_row.iloc[0]
+
+    prop_count = pd.to_numeric(row.get('Property_Count'), errors='coerce')
+    if pd.isna(prop_count) or prop_count < 1:
+        return []
+
+    labels = {row['Investment_Name'], row['Portfolio_Name']} - {''}
+    if not labels:
+        return []
+
+    children = df[(df['Portfolio_Name'].isin(labels)) & (df['vcode'] != row['vcode'])]
+    return children['vcode'].tolist()
+
+
 def get_capitalization_stack(
     vcode: str,
     mri_loans: pd.DataFrame,
@@ -297,6 +340,14 @@ def get_capitalization_stack(
         if 'vCode' in loans.columns:
             loans['vCode'] = loans['vCode'].astype(str).str.strip()
             deal_loans = loans[loans['vCode'] == vcode_str]
+
+            if deal_loans.empty:
+                # A parent portfolio deal can hold all its debt on the child properties
+                # (e.g. Burton Retail Portfolio). Without this the parent renders 'N/A'
+                # even though the loans are in the table.
+                child_vcodes = {c.upper() for c in _child_vcodes_for_parent(vcode_str, inv_map)}
+                if child_vcodes:
+                    deal_loans = loans[loans['vCode'].str.upper().isin(child_vcodes)]
 
             if not deal_loans.empty:
                 def _parse_loan(row):
