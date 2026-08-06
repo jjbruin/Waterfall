@@ -38,16 +38,18 @@ def debug_pref(vcode, investor_id):
             out["seed_pref_total"] = round(t.pref_accrued_current_year + t.pref_unpaid_compounded + getattr(t, "pref_accrued_prior_year", 0), 2)
         out["seed_capital"] = round(ss.capital_outstanding, 2)
         out["seed_last_accrual"] = str(ss.last_accrual_date)
-    # Partner results
-    for p in result.get("partner_results", []):
-        if p.get("investor_id") == investor_id:
-            out["irr"] = round(p.get("irr", 0) * 100, 4)
-            out["cf_distributions"] = round(p.get("cf_distributions", 0), 2)
-            out["cap_distributions"] = round(p.get("cap_distributions", 0), 2)
-            out["contributions"] = round(p.get("contributions", 0), 2)
-    # Cap allocations
+    # Partner results — dump all keys for the target investor
+    pr = result.get("partner_results", [])
+    out["partner_results_count"] = len(pr)
+    for p in pr:
+        pid = p.get("investor_id", p.get("partner", ""))
+        if pid == investor_id:
+            out["partner_match"] = {k: (round(v, 4) if isinstance(v, float) else v)
+                                     for k, v in p.items() if k != "combined_cfs"}
+    # Cap allocations — dump all unique PropCode values + TGA22 rows
     cap_alloc = result.get("cap_alloc")
     if cap_alloc is not None and not cap_alloc.empty:
+        out["cap_alloc_propcodes"] = sorted(cap_alloc["PropCode"].unique().tolist())
         steps = cap_alloc[cap_alloc["PropCode"] == investor_id]
         out["cap_steps"] = []
         for _, row in steps.iterrows():
@@ -56,6 +58,8 @@ def debug_pref(vcode, investor_id):
                 "allocated": round(float(row.get("allocated", 0)), 2),
                 "vtranstype": str(row.get("vtranstype", ""))[:50],
             })
+    else:
+        out["cap_alloc_empty"] = True
     return jsonify(out)
 
 
