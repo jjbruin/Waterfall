@@ -16,53 +16,6 @@ from database import (
 deals_bp = Blueprint("deals", __name__)
 
 
-# TEMPORARY debug endpoint — remove after investigation
-@deals_bp.route("/debug-pref/<vcode>/<investor_id>", methods=["GET"])
-def debug_pref(vcode, investor_id):
-    """Temporary endpoint to inspect seed pref and partner results."""
-    from datetime import date
-    data = _get_data()
-    result = compute_service.get_cached_deal_result(
-        vcode, date.today().year, 10, date.today().year - 1, data, force=True
-    )
-    out = {"vcode": vcode, "investor_id": investor_id}
-    # Seed state
-    ss = result.get("seed_states", {}).get(investor_id)
-    if ss:
-        pool = ss.get_pool("initial")
-        if pool and pool.pref_tiers:
-            t = pool.pref_tiers[0]
-            out["seed_pref_cy"] = round(t.pref_accrued_current_year, 2)
-            out["seed_pref_comp"] = round(t.pref_unpaid_compounded, 2)
-            out["seed_pref_prior"] = round(getattr(t, "pref_accrued_prior_year", 0), 2)
-            out["seed_pref_total"] = round(t.pref_accrued_current_year + t.pref_unpaid_compounded + getattr(t, "pref_accrued_prior_year", 0), 2)
-        out["seed_capital"] = round(ss.capital_outstanding, 2)
-        out["seed_last_accrual"] = str(ss.last_accrual_date)
-    # Partner results — dump all keys for the target investor
-    pr = result.get("partner_results", [])
-    out["partner_results_count"] = len(pr)
-    for p in pr:
-        pid = p.get("investor_id", p.get("partner", ""))
-        if pid == investor_id:
-            out["partner_match"] = {k: (round(v, 4) if isinstance(v, float) else v)
-                                     for k, v in p.items() if k != "combined_cfs"}
-    # Cap allocations — dump all unique PropCode values + TGA22 rows
-    cap_alloc = result.get("cap_alloc")
-    if cap_alloc is not None and not cap_alloc.empty:
-        out["cap_alloc_propcodes"] = sorted(cap_alloc["PropCode"].unique().tolist())
-        steps = cap_alloc[cap_alloc["PropCode"] == investor_id]
-        out["cap_steps"] = []
-        for _, row in steps.iterrows():
-            out["cap_steps"].append({
-                "vState": row.get("vState", ""),
-                "allocated": round(float(row.get("allocated", 0)), 2),
-                "vtranstype": str(row.get("vtranstype", ""))[:50],
-            })
-    else:
-        out["cap_alloc_empty"] = True
-    return jsonify(out)
-
-
 def _get_data():
     return data_service.get_data()
 
