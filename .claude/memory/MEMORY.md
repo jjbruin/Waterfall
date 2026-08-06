@@ -412,9 +412,50 @@ loan, so already forced to 0). This is a JB-Fair-Park-specific data gap, not a s
   data layer by the portfolio-wide paid-off filter (3 of 89 rows). No branch created — the
   requested change would re-do work already shipped.
 
+### Burton child-loan aggregation — DONE, on a branch (Aug 6, 2026)
+
+Branch **`fix/burton-child-loans`** commit `e725134` — **not merged, not deployed.**
+New helper `_child_vcodes_for_parent()` in `one_pager.py`; the loan-terms block falls back
+to child loans only when the deal has none of its own.
+
+**Parent/child topology (from `scripts/burton_relmap.py`)** — 7 Portfolio_Name groups,
+38 of 134 deals carry a Portfolio_Name. Two naming conventions coexist:
+- usual: child.Portfolio_Name == parent.Investment_Name (Berger, Brainerd, Giant 7, OREI,
+  Town Fair, Donald Lynch) — this is what `consolidation.get_property_vcodes_for_deal()`
+  already matches.
+- **Burton is the exception**: parent Investment_Name 'Burton Retail Portfolio' but the
+  group is 'Burton Portfolio', so the existing helper finds nothing. The fix therefore
+  matches Portfolio_Name against *either* the parent's Investment_Name or its own
+  Portfolio_Name.
+- **`Property_Count` is the parent discriminator**: parents have >= 1, every genuine child
+  property has 0. Without it, a group-name match would wrongly give 22 child properties
+  (7 Giant 7, 9 Brainerd buildings, 6 Town Fair stores) their sibling's loan terms.
+  Only P0000109 looks like a child by name but has Property_Count 3 — that is Burton itself.
+
+**Verified blast radius** (`burton_loandump.py` dumps all 134 deals through the production
+path, before vs after): **131 byte-for-byte identical, 3 changed**, `debt` unchanged on
+every deal (display-only, as intended).
+- P0000109 Burton Retail Portfolio: 'N/A' → `5.67% | Fixed | 8/28/2032` (3 child loans)
+- P0000007 Berger Pittsburgh Portfolio: 'N/A' → `2.93% | Fixed | 8/1/2030` (+2nd
+  `2.95% | Fixed | 9/1/2030`; 8 child loans across 4 children)
+- P0000049 Donald Lynch: 'N/A' → `3.95% | Fixed | 7/1/2028` (1 loan on P0000073)
+
+All three are parents that previously rendered N/A while holding loans on children — the
+intended population. No standalone deal changed.
+
 ### Status — HELD, nothing started
 
 **NOT yet run:** `Debug_Progress.xlsx`.
+
+**Open model-definition questions for Charlene (not bugs — Claude Code cannot see the model):**
+- Brainerd Partner Equity: does the model include `Contribution: Others` 4,550,000?
+  (excluding → 7,457,677 vs Azure 12,007,677)
+- OREI: should `Contribution: Operating Capital` count? (excluding → pref 10,786,868 /
+  partner 6,890,613 vs Azure 13,391,868 / 8,124,512)
+- Development deals: does the model expect funded-to-date rather than closing capitalisation?
+
+**For Jim:** JB Fair Park BS backfill (data stops 6/30/2025; debt reads a 12/31/2022 row);
+refresh the released Actual for Nottingham / Trolley / Belleville recent contributions.
 
 **Held pending exec decisions:**
 1. **Reversal netting** — should opposite-signed rows net or keep current abs()? Affects
