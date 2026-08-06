@@ -189,6 +189,17 @@ def get_general_information(inv_map: pd.DataFrame, vcode: str) -> Dict[str, Any]
                     info[key] = str(val).strip()
                 break
 
+    # Location is displayed as "City, State". City alone is ambiguous across the
+    # portfolio (e.g. multiple Portland / Milford deals in different states).
+    state = ''
+    for col in ['State', 'state']:
+        if col in row.index and pd.notna(row[col]):
+            state = str(row[col]).strip()
+            break
+    city = info['location']
+    if state and state.lower() not in city.lower():
+        info['location'] = f"{city}, {state}" if city else state
+
     return info
 
 
