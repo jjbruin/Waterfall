@@ -302,10 +302,22 @@ def _calculate_is_amounts(period_type, source, ref_date, year, accounts_dict,
             return _get_cumulative_balances(actual_data, dec_date, accounts_dict) if dec_date else {}
 
         elif period_type == "Estimate":
-            ytd = _get_cumulative_balances(actual_data, ref_date, accounts_dict)
-            dec_end = pd.Timestamp(f"{ref_date.year}-12-31")
-            remainder = _get_budget_sum(budget_data, ref_date, dec_end, accounts_dict)
-            return _add_balances(ytd, remainder, accounts_dict)
+            # YTD actuals through the last reported period in the selected year,
+            # plus budget for months between the last actual and the selected date.
+            last_actual = next(
+                (pd.Timestamp(p) for p in reversed(actual_periods)
+                 if pd.Timestamp(p).year == ref_date.year and pd.Timestamp(p) <= ref_date),
+                None,
+            )
+            if last_actual is not None:
+                ytd = _get_cumulative_balances(actual_data, last_actual, accounts_dict)
+                if last_actual < ref_date:
+                    remainder = _get_budget_sum(budget_data, last_actual, ref_date, accounts_dict)
+                    return _add_balances(ytd, remainder, accounts_dict)
+                return ytd
+            # No actuals in this year — fall back to budget through the date
+            jan1 = pd.Timestamp(f"{ref_date.year}-01-01") - pd.DateOffset(days=1)
+            return _get_budget_sum(budget_data, jan1, ref_date, accounts_dict)
 
         else:  # Custom
             return _get_cumulative_balances(actual_data, ref_date, accounts_dict)
