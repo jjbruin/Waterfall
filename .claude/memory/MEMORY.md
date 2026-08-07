@@ -457,6 +457,190 @@ intended population. No standalone deal changed.
 **For Jim:** JB Fair Park BS backfill (data stops 6/30/2025; debt reads a 12/31/2022 row);
 refresh the released Actual for Nottingham / Trolley / Belleville recent contributions.
 
+## Session Aug 6, 2026 (evening) — U/W ROE deep-dive + abs() row-level proof
+
+**No code changed, no branch created, no commit authored in this session.** Everything below is
+read-only diagnostics against **live Azure PostgreSQL** (`psql-waterfall-dev` / `waterfall_xirr`),
+plus one read-only COM read of Charlene's open Excel model. The only file written was this
+MEMORY.md (the "stale underwriting" correction), which **Charlene** committed as `72fa80d`.
+Commit `6b3d54e` and branch `fix/burton-child-loans` (`e725134`) are from a **different** session —
+not this one. Scripts live in the session scratchpad and are **not committed** (they embed the PG
+password and per-developer paths).
+
+### Verified against the source U/W workbook (new — this is the authority, not the ISBS feed)
+
+File: `...\Asset Mgmt\MF - Berger\42. The Gathering\02. Budget, CF, UW\USE THIS The Gathering at
+University Village Underwriting (3) v03.xlsm`, sheet **`PSC Investor Equity Structure`**.
+Read live from Charlene's open Excel session via COM (openpyxl could not open it — Excel holds an
+exclusive lock).
+- **`G16` = 5,768,443.30**, row label "Capital Transactions", formula `=+PSC!E78-G15`. Ties to
+  ISBS acct 7073 to the cent.
+- Row 7 `Total Equity` = `+PSC!D62..L62`; row 16 D16/E16 = `PSC!B75`/`PSC!C75`. **The Excel model
+  never reads actual contributions anywhere — it is 100% underwritten.**
+- Row 2 headers are period ENDs on a 10/1 fiscal year (`=DATE(YEAR($D$2)+G4,...)`), so G16 sits in
+  the year 10/1/2022–9/30/2023. ISBS pins the same figure to 11/30/2022.
+- Row 22–26 terms: Coupon **8.0%**, Asset Management 0.75%, Promote 12.50%, Annual Costs 9,000.
+  Note `deal_terms.pe_coupon` on the DB says **9.0%** — different vintages.
+
+### THE BIG ONE: the Excel ROE is a different metric, not just a different denominator
+
+**`H18 = H15/H7`** — single-period Distributable Cash Flow over that period's equity balance.
+**Not time-weighted, not inception-to-date, not annualised.** G18 = 3.6% (yr 1), H18 = I18 = 9.0%.
+`metrics.calculate_roe()` is ITD dollar-day weighted and annualised. They only agree on The
+Gathering because its underwritten steady state is flat (−31,551.35/mo). **On a deal with a lumpy
+7071 schedule the two definitions diverge even with a perfectly correct denominator.**
+→ Decide which metric the One Pager is meant to report before touching code.
+
+### Proposed-model testing (numerator held at the 7071 total 1,883,127.20; cutoff 2026-Q2)
+
+| scenario | wtd avg capital | U/W ROE |
+|---|---|---|
+| as shipped (denominator 100% actual) | 8,329,059.44 | 4.7619% |
+| **7073 replaces the actual ROC** | **4,421,261.26** | **8.9707%** |
+| + acquisition fee left in | 4,327,986.26 | 9.1641% |
+| only the pure equity step (5,120,654) reduces capital | 4,910,187.06 | 8.0775% |
+| that + participation (647,789.30) in the numerator | 4,910,187.06 | 10.8561% |
+| 7073 dated on the Excel yr-2 bucket 10/1/23 | 5,421,357.74 | 7.3159% |
+| fully U/W timeline (U/W contrib dates + 10/1/23) | 5,692,095.04 | 6.9679% |
+
+- **7073 decomposes**: Total Equity steps 9,327,500 → 4,206,846, so **5,120,654 is returned capital
+  and 647,789.30 is profit above capital.** Scenario 2 hits 9.0% partly *because* it lets the whole
+  5.77M reduce the balance — right answer, arguably wrong reason.
+- **Date choice is worth 1.65pp** (ISBS 11/30/2022 vs Excel 10/1/2023).
+
+### 707x identity + signs (extends the table in the earlier 707x section)
+
+`vInput` is the only real label. All PSC-side accounts stored **negative (credit), zero sign
+flips**; 7075 stored positive. **There is NO projected-contribution account anywhere in 707x** —
+the "projected contributions increase capital" leg of the proposed model has no data behind it.
+7072 = SPONSOR CASH FLOW and 7074 = SPONSOR DISPOSITION PROCEEDS are the **sponsor's** (Gencore/
+Berger) side, not PSC's; 7075 = RESERVES FOR REPLACEMENT is not an equity flow.
+**`7010` = `DEBT SERVICE PROPERTY`** (~1.6M/yr) — ruled out of the numerator.
+
+### Numerator scope confirmed — 7071 only, and it ties to the Excel
+
+Excel numerator = row 15 = row 13 (`+PSC!D27..L27`) + row 14 (0 on every column). Row 16 capital is
+**excluded** (ROE = row15/row7), so the 647,789 participation is out of the Excel numerator too.
+Reconciling 7071 (with a **corrected** cumulative→periodic conversion) to row 13 on 10/1–9/30 years:
+**FY4 and FY5 tie to $0.17**; other years differ only from the calendar-vs-fiscal boundary.
+**Adding 7072 destroys the tie** (FY4 833,030 vs 378,616) — independent proof the sponsor account
+does not belong.
+
+### GL accounts for PSC capital contributions (new topic)
+
+- **The `accounting` table has NO GL account column.** Contributions are `MajorType='Contribution'`
+  + TypeID: **1018 `Contribution: Investments` (2,597 rows)**, 1023 Partnership Expenses (400),
+  1024 PSC KOC I LLC Expenses (70), 1020 Management Fees (34), 1019 In Kind (8), 1025 Operating
+  Capital (7), 1022 Others (5), 1021 Organizational Costs (2).
+  **TypeID 1018 is not unique** — it is also `Non Resident Withholding` on the Distribution side
+  (33 rows), so TypeID alone is not a key.
+  **`"contrib" in MajorType.lower()` sweeps all eight**, so partnership expenses and management
+  fees land in `funded_to_date` alongside real capital. Same over-broad match on both the ROE and
+  capitalisation paths.
+- **GL side: `2526` = "PSC Pref Equity"** (`config.py:228`). Verified on The Gathering:
+  `2526` / `344500-00 CAPITAL - PEACEABLE` = **−9,327,500.50**, matching PPIGPA funded-to-date to
+  the cent, flat since Jan-2024 (gross, never netted for the 983,287.41 ROC).
+- **2526 is unreliable — only 19 of 85 deals have a row in it.** PSC-labelled capital also sits in
+  **2530 (22 deals)**, 2534 (1), 2540 (2). 18 deals have PSC-labelled capital and no 2526 row at
+  all, incl. 30 Bearfoot, Apple Self Storage, Pontchartrain, Willowdale, Donald Lynch, Quakertown.
+- **MRI has no standardised chart of accounts** — each property carries its own native GL string in
+  `vInput` (`344500-00`, `3105 -`, `31051-000`, `320014 -`, `2730-0500`, `505610-460-00`). The 25xx
+  number is PSC's normalised mapping bucket, applied inconsistently. **Filter on `vInput` text, not
+  the account number.** The `coa` table is useless here: only `vcode` + `vAccountType`, and it types
+  every 70xx as `Expenses`.
+- **Gotchas**: the misspelling **`PEACABLE`** appears in live data (`CAPITAL CONTR-PEACABLE`,
+  `325800-00 DRAWS - PEACABLE`, `ACCRUED PREF-PEACABLE`) — any text filter must include it.
+  2530/2536 **mix contributions with draws** (`325800-00 DRAWS - PEACEABLE` sits beside
+  `344500-00 CAPITAL - PEACEABLE`; on The Gathering that draws line is +4,589,104.78 = cumulative
+  pref *and* capital). **`p0000073` and `P0000073` both exist** as distinct vcodes in
+  `isbs_interim_bs` (Donald Lynch) — double-counts on any GL-side aggregation.
+
+### 30 Bearfoot (P0000001) — the 2023-03 cluster is a RED HERRING
+
+Full unfiltered ledger, 123 rows, 2 investors (`OPMCCORD`, `PPI27`). The 2023-03-01..2023-04-15
+window has exactly 6 rows:
+- `+210,000` (03-17), **`−210,000` (03-23)**, `+210,000` (03-23) — all **OPMCCORD**, TypeID 1016
+  Return of Capital. Pattern is book → reverse → re-book same day; net +210,000.
+- **`+315,000` (03-23) is a SEPARATE STANDALONE row** — PPI27, TypeID 1016, Return of Capital. Only
+  row in all 123 with |Amt| = 315,000; no `Cum_Amt` equals it. Not a net, not a rollup.
+- **This cluster contributes ZERO to ROE**: every 210,000 row is OPMCCORD, an operating partner,
+  skipped at `one_pager.py:1219`; and Return of Capital is out of the numerator regardless.
+- **The real offenders are 4 negative `Distribution: Excess Cash flow` rows, all PPI27, TypeID
+  1020, `ROE_Income='Y'`**: 2023-06-23 −11,007.12 · 2023-07-24 −10,652.05 · 2023-08-21 −11,007.12 ·
+  2023-09-22 −11,007.12. Sum −43,673.41 → **phantom 87,346.82** (6.80% of the shipped numerator).
+  The same magnitudes recur positively on 9 other dates, so they read as reversals of a recurring
+  monthly distribution — nothing marks them as such.
+- **ROE to Date (cutoff 2026-06-30, inception 2021-01-12): 22.0236% as shipped → 20.5260%
+  respecting signs, −1.4975pp.** Wtd avg capital **identical** at 988,843.47 both ways — zero
+  denominator-side offenders on this deal. Fixes about half the gap to the audit's ~21.3%; the rest
+  is the acquisition fee in the denominator and CF-after-payoff (separate from the sign bug).
+- Method note: the sign-respecting walk was **asserted against `metrics.calculate_roe_detailed`**
+  (match to 1e-12 on ROE, to the cent on wtd avg capital) before any output was written.
+
+### Partner-equity abs() bug — row-level proof for 4 deals (confirms Investigations 3+4)
+
+Replicates `one_pager.get_capitalization_stack():489-526`. **No date filter** (`:494`).
+`max(0, balance)` floor per investor at `:524` was **not** in play on any of these four.
+
+| deal | vcode | OP* rows | as shipped | corrected | overstatement | driving row |
+|---|---|---|---|---|---|---|
+| JB Fair Park | P0000021 | 4 | 11,550,000.00 | 3,850,000.00 | **7,700,000.00** | 2020-12-18 OPTREV **+3,850,000.00** |
+| Cocoplum Apartments | P0000084 | 10 | 29,978,294.10 | 23,350,000.00 | **6,628,294.10** | 2023-09-06 OPASH **+3,314,147.05** |
+| OREI Portfolio | P0000033 | 8 | 8,124,512.33 | 8,124,512.33 | **0.00** | none — zero sign flips |
+| Pegasus Life Storage | P0000066 | 8 | 3,476,389.73 | 2,573,473.25 | **902,916.48** | 2023-08-08 OPPEGA **+451,458.24** |
+
+Total 53,129,196.16 → 37,897,985.58 (**15,231,210.58** overstated across the four).
+Every offender is a **positive `Contribution: Investments` (TypeID 1018)** on the operating partner;
+**no negative Return-of-Capital row on any of the four.** Corrected totals land on round figures
+(3,850,000 / 23,350,000), which is independent evidence the netting is right. JB Fair Park is the
+starkest: 3 contribution rows netting −3,850,000 but summed by `abs()` to 11,550,000 = **3x** true
+equity. **Belleville (+1,949,830) was NOT re-verified this session** — still only from `inv34`.
+
+**OREI is purely definitional — confirmed, and one correction to the earlier note:** zero
+sign-flipped rows, so `abs()` cannot be its cause. Partner-side breakdown is
+`Contribution: Investments` 6,890,613.07 (2 rows) + **`Contribution: Operating Capital`
+1,233,899.26 (6 rows)**. **There are NO `Contribution: Others` rows on OREI at all** — that
+Typename does not appear on this deal, so it is not part of OREI's gap (it is Brainerd's).
+
+**New flag — Pegasus investor bucketing:** Pegasus has **three** investors — `OPPEGA`, `PPILFS` and
+**`TGA22`**. Only `OPPEGA` starts with `OP`, so **TGA22 is bucketed into PREF equity** by `:526`.
+Given TGA22 is the PSCKOC JV entity, whether that is intended is worth a look. Does not affect the
+902,916.48 above, but it does affect how Pegasus's cap stack splits pref vs partner.
+
+### Deliverables (Charlene's Downloads folder, formula-driven where useful)
+
+- `The_Gathering_UW_ROE_Audit_v2.xlsx` — 8 tabs; every formula recalculated in Excel and tied to the
+  app's values (numerator 1,883,127.20, wtd cap 8,329,059.44, U/W ROE 4.7619%). v1 exists but was
+  locked open in Excel, so v2 carries the corrected root cause.
+- `30_Bearfoot_abs_bug_audit.xlsx` — Raw Rows / Numerator Build / Summary.
+- `Cocoplum_partner_equity_abs_bug.xlsx` — Full Ledger / Offending Rows / Summary.
+- `Partner_Equity_abs_bug_4_deals.xlsx` — Portfolio Summary + a tab per deal.
+
+### Open — needs Charlene's decision
+
+1. **Which metric is U/W ROE meant to be?** Match the Excel's per-period `row15/row7`, or a correct
+   inception-to-date annualised ROE? They are not the same target and no denominator fix reconciles
+   them on lumpy deals.
+2. **Route 7073 into the denominator?** If yes: (a) full 5,768,443.30 or only the 5,120,654 equity
+   step; (b) where does the 647,789.30 participation go; (c) ISBS date 11/30/2022 or the Excel's
+   10/1/2023 bucket. Scope: **54 deals carry 7073.**
+3. **Pro-rate trap on any 7073 fix** — 7073 is lumpy, not monthly. Through the existing
+   `one_pager.py:1092` branch its cumulative would be divided by month 11, keeping 524,403.94 and
+   silently discarding **5,244,039.36**. Disposition accounts need different handling from monthly
+   cash-flow accounts.
+4. **Reversal netting policy** (still open from the earlier session) — now with row-level proof:
+   4 partner-equity rows and 4 numerator rows across the deals examined. Affects Total Cap, ROE and
+   the waterfall seed simultaneously.
+5. **OREI**: does `Contribution: Operating Capital` 1,233,899.26 count as partner equity?
+   (excluding → 6,890,613.07)
+6. **`"contrib"` over-broad match** — should Partnership Expenses / Management Fees / Organizational
+   Costs really land in `funded_to_date` and in the ROE denominator?
+7. **Pegasus TGA22** pref-vs-partner bucketing (above).
+8. **Anchoring** (informational, no decision needed): actual vs U/W starting capital differ by
+   **$0.50** in level, so anchoring year 0 to actuals is safe; the timing differs by **166 days** on
+   tranche 2 (U/W 4/1/22 vs actual 9/14/22) = 469,186,965 dollar-days = **$270,737** on weighted-avg
+   capital.
+
 **Held pending exec decisions:**
 1. **Reversal netting** — should opposite-signed rows net or keep current abs()? Affects
    Total Cap, ROE, and the waterfall seed simultaneously. Scope carefully: proven for 5
@@ -466,3 +650,329 @@ refresh the released Actual for Nottingham / Trolley / Belleville recent contrib
 
 Investigation 1's fix also has to design around three interacting subtleties: the
 unmatched fund-level rows, the missing date filter, and the `max(0, balance)` floor.
+
+## Session log — Aug 6, 2026 (One Pager audit: Investigations 3/4/5, Prompt B, Burton fix, live NOI pull)
+
+Driven by two handoff docs in `~/Downloads` — `OnePager_Resume_Investigations_and_Fixes.docx`
+and `OnePager_Next_Steps.docx` — plus an ad-hoc live-NOI request. Fuller detail for each area
+is in the two sections above; this is the end-to-end record of what was run and decided.
+
+### Method change that mattered
+
+Investigations 1 & 2 (previous session) used the local `accounting_feed.csv` snapshot dated
+5/4/2026. **This session switched to live Azure PostgreSQL, and that changed conclusions.**
+Azure `accounting` = 12,300 rows, max EffectiveDate **2026-08-03**, vs 11,466 rows /
+2026-05-01 in the CSV — **+834 rows**. Azure PG is directly reachable from local dev (the
+firewall already allows it); use the `wfadmin` credentials in the Azure Infrastructure
+section above. Three of the five "Pref Equity discrepancies" turned out to be nothing but
+this staleness.
+
+### What was run (all read-only unless noted)
+
+| script | purpose |
+|---|---|
+| `scripts/inv34_equity_composition.py` | per-investor / per-typename composition of the equity block, plus abs() and date-filter deltas |
+| `scripts/inv34b_basis_variants.py` | recomputes each deal under 6 alternative bases to isolate definition differences |
+| `scripts/inv5_jbfairpark_debt.py` | traces both branches of the One Pager debt figure for P0000021 |
+| `scripts/inv5b_stale_debt_scan.py` | portfolio-wide scan for stale ISBS debt snapshots |
+| `scripts/fixB_verify.py` | before/after for Fix 12, verification for Fix 1 and Fix 11 |
+| `scripts/burton_relmap.py` | prints all 7 parent/child portfolio groups and where the loans sit |
+| `scripts/burton_blastradius.py` | evaluates the proposed child-loan rule against all 134 deals |
+| `scripts/burton_loandump.py` | dumps rendered loan display for all 134 deals to JSON; has a `--diff` mode |
+| `scripts/pull_live_noi_requested.py` | live NOI ACT / U-W for named deal-quarter combinations |
+
+**All of these remain UNTRACKED on purpose — they embed the Postgres password.** Confirmed
+still untracked at end of session. Worth a `.gitignore` rule if this keeps recurring.
+
+### Key findings, with numbers
+
+**Equity block** — `one_pager.py:518` (`+= abs(amt)`) and the `max(0, balance)` floor at
+`one_pager.py:526`. Keyed on `deals.InvestmentID` (1:1 map). **No date filter** —
+`quarter_str` reaches only the debt line (`one_pager.py:272-274`).
+
+- abs() reversal bug confirmed on exactly **4** Partner Equity deals, each exactly 2x a single
+  positive-signed `Contribution: Investments` row: JB Fair Park +7,700,000 · Cocoplum
+  +6,628,294 · Belleville +1,949,830 · Pegasus +902,916.
+- **Brainerd Place and OREI Portfolio are zero-delta on every mechanism tested** — not abs(),
+  not the date filter, not child properties (OREI's 2 and Brainerd's 9 children carry zero
+  contribution / return-of-capital rows). Reduced to a basis question; see open items below.
+- **Pref Equity: abs() touches none of the 5 named deals.** Nottingham 2,923,427 (6/1/2026),
+  Trolley 2,544,582 (4/20 + 5/15/2026), Belleville 125,000 (6/10/2026) are all post-Q1 rows
+  counted in the Q1 figure *and* newer than the released Actual. Azure is more current.
+
+**JB Fair Park debt — the reported premise was wrong.** Not `mOrigLoanAmt` (77,368,000).
+`cap['debt']` = **66,363,992**, from one stale ISBS Interim BS row on account 2150 dated
+**12/31/2022**. The deal's BS data stops at 6/30/2025 while peers run to 6/30/2026.
+`get_isbs_debt_balance()` detects the staleness at `compute.py:98-116` but keeps the
+last-known balance because an active MRI loan exists (LoanID 335, `vDateType='Maturity'`).
+Interest expense on accounts 5190/7030 = **0** in every period. Portfolio scan: only **3 of
+83** deals show stale debt (JB Fair Park 30 months, Post Commons 1 month, Pegasus 21 months
+but already forced to 0).
+
+**Fix 1 and Fix 11 were largely false alarms.** Town Fair Tire Portfolio renders
+`SOFR + 3.50% | 2/14/2032` correctly. Fix 11's 2nd-loan terms already render on 4 of 5 deals;
+only Ascent on Steamboat is blank, and that is correct — both its supplementals are
+`vDateType='Paid Off'` and are dropped by the data-layer filter (3 of 89 rows portfolio-wide).
+Live revision v153 (Jul 29) includes the Jul 27 loan-terms commit 972990d, so this holds on
+Azure too. **No branch was created for Fix 11** — it would have re-done shipped work.
+
+### Commits made this session
+
+| hash | branch | what |
+|---|---|---|
+| `09ec333` | main (pushed) | **Fix 12** — Location renders "City, State" (`one_pager.py:192-202`). 108 of 134 deals change; 20 stay blank (no City and no State); the append is skipped when the state string is already inside the city string (P0000107 → 'CT, RI'). |
+| `72fa80d` | main (pushed) | MEMORY.md — Investigations 1-5 and the U/W ROE 707x findings |
+| `6b3d54e` | main (pushed) | MEMORY.md — Burton topology, blast radius, open questions |
+| `e725134` | **`fix/burton-child-loans` — NOT merged, NOT deployed** | parent deals aggregate child-property loans: new `_child_vcodes_for_parent()` at `one_pager.py:210` (branch numbering), fallback wired in at `one_pager.py:348` |
+
+`git pull` reported "Already up to date" early in the session, but the remote had moved by the
+time Fix 12 was pushed — 4 commits (`a7d5e8d` plus 3 debug-endpoint commits) touching only
+`flask_app/services/mri_service.py`. Rebased cleanly, no overlap.
+
+**Nothing was deployed.** Live is still v153; pushing to main does not deploy.
+
+### Burton fix — guardrail evidence
+
+`Property_Count` is the parent discriminator (parents >= 1, every genuine child 0). Without it
+a group-name match would have wrongly given **22 child properties** their sibling's loan terms
+(7 Giant 7, 9 Brainerd buildings, 6 Town Fair stores). Burton is the one deal that looks like a
+child by name — `Investment_Name` 'Burton Retail Portfolio' vs group 'Burton Portfolio' — but
+carries Property_Count 3.
+
+Verified blast radius across all 134 deals: **131 byte-for-byte identical, 3 changed, `debt`
+unchanged everywhere** (display-only). P0000109 → `5.67% | Fixed | 8/28/2032`; P0000007 Berger
+Pittsburgh → `2.93% | Fixed | 8/1/2030`; P0000049 Donald Lynch → `3.95% | Fixed | 7/1/2028`.
+Berger and Donald Lynch were not named in the request but meet the stated criterion (a parent
+showing N/A while holding loans on children).
+
+### Live NOI pull (read-only, no code change)
+
+49 deal/metric/quarter combinations pulled through the production pipeline verbatim:
+`config.IS_ACCOUNTS` (config.py:236) → `data_service._normalize_isbs` → `isbs_helpers`
+compute_cumulative_noi / cumulative_to_periodic / aggregate_periodic. NOI ACT = ISBS
+`Interim IS`; NOI U/W = `Projected IS`. Mapping confirmed live as **4075 and 5092 IN NOI**,
+**5120, 5130, 5160, 5165 below the line** — the post-`6c292ef` state.
+
+48 of 49 returned a value. The one blank — **Town Fair Tire Portfolio NOI ACT Q1 2025 — is
+suppressed by design**: the deal closed 2/14/2025, its actuals series starts 2025-03-31, and
+`aggregate_periodic` drops any quarter without all 3 monthly rows
+(`flask_app/services/isbs_helpers.py:80`). The lone March row carries the full Jan-Mar YTD
+(405,627) because it is first in the series and hits the `prior is None` branch — that number
+is NOT what the app displays and must not be pasted in as a quarterly value. First displayable
+quarter is Q2 2025. The full 49-row result table was returned in chat, not duplicated here.
+
+### Still open / needs Charlene's decision
+
+1. **Brainerd Partner Equity basis** — does the model include `Contribution: Others`
+   4,550,000? Azure shows 12,007,677; excluding it gives 7,457,677. (Return of Capital
+   6,770,190 does net today.)
+2. **OREI basis** — should `Contribution: Operating Capital` count? Azure pref 13,391,868 /
+   partner 8,124,512; excluding it gives 10,786,868 / 6,890,613.
+3. **Development-deal basis** — funded-to-date vs closing capitalisation for Belleville,
+   JB Fair Park, Trolley Square, Brainerd, Pegasus.
+4. **Burton branch** — review and decide whether to merge `fix/burton-child-loans`, including
+   whether Berger and Donald Lynch also changing is acceptable.
+5. **Ascent on Steamboat** — leave the paid-off supplemental hidden, or display it?
+6. Still held from before: abs() reversal netting, CF-after-payoff in the ROE numerator, the
+   U/W ROE mid-year pro-rate fix, Committed Pref Equity SQL (Jim), `Debug_Progress.xlsx`.
+
+**For Jim:** backfill JB Fair Park balance-sheet data past 6/30/2025; refresh the released
+Actual so Nottingham / Trolley / Belleville pick up the recent contributions; deploy to pick
+up Fix 12.
+
+**Security note:** a JWT for user `cbui` (admin) was pasted into the session chat. It was never
+used — direct PG access covered everything. Recommend rotating it.
+
+## Session Aug 6, 2026 (portfolio sweep) — abs() full map, U/W ROE pro-rate across all deals, 7076
+
+**Read-only. No code changed, no branch, no commit authored in this session.** (`git log`
+confirms nothing new since `6b3d54e`; `72fa80d`, `6b3d54e` and branch `fix/burton-child-loans`
+belong to other sessions.) Sole artifact: **`abs_bug_evidence_2026-08-06.xlsx`** in the project
+root, untracked. All DB access SELECT-only against live Azure PG (`psql-waterfall-dev` /
+`waterfall_xirr`): accounting **12,403** rows, deals 134, `isbs_projected_is` acct 7071 **4,079**.
+Local `accounting_feed.csv` is staler (11,466 rows) — prefer Azure.
+
+This section is **portfolio-wide and complements the deal-level proofs in the "evening" section
+above**; where we overlap the numbers agree (see Corroboration below). It does not supersede it.
+
+### 1. Pro-rate branch — swept EVERY 7071 deal (the earlier note covered 6 of 8)
+
+As-of 2026-03-31. 49 vcodes have 7071 data → 40 computable, **32 move if the
+`one_pager.py:1090-1092` pro-rate branch is removed**, 8 unchanged, 9 have no PE accounting.
+Numerator restored **$2,443,476.63** (excluding the bad Westbank hit: **$2,027,032.18**).
+
+Discriminating test: compare the pro-rated period's cumulative to the following month's delta.
+`cum/run-rate ≈ 1` → single month (pro-rate wrong); `≈ m` → real m-month YTD (pro-rate right).
+**31 of 32 test as a single month.** Movers incl. Berger Pittsburgh 12.3355→12.5132% ·
+Giant 7 12.1805→12.3244% · Camp Creek 8.2161→8.4336% · Gallery 7.8104→7.8919% ·
+Mount Prospect 7.3840→7.5693% · **870 DLB 28.2011→28.6713% (+0.47pp, largest)** ·
+30 Bearfoot 9.8070→10.1710%.
+
+**STOP — Centre at Westbank (P0000010), hit 2022-03-31.** The one deal where removing the
+pro-rate makes it worse. Series jumps 2021-12-31 (cum −156,166.67, flat since Mar-2021) straight
+to 2022-03-31 cum **−624,666.67** with **no Jan/Feb 2022 rows**. 2022 run rate −58,266.87/mo, so
+1 month ≈ 58k, 3 months ≈ 175k — observed is **10.72×** run rate. −624,666.67 is exactly the
+full-year 2018/2019/2020 total (12 × 52,055.56): a stale prior-year value at the wrong date.
+  as-coded (÷3)        numerator 5,627,633.12 → 10.3418%
+  full fix             numerator 6,083,119.24 → 11.1789%   ← over-counts by ~416,444
+  fix except this hit  numerator 5,666,674.79 → 10.4136%   ← recommended shape
+**Untestable:** Asbury Commons (P0000004) — one row in its entire 7071 series (2023-03-31 =
+909.99), no comparator. Impact $606.66; ROE 0.0030→0.0090%.
+Cleared on the discriminating test (lease-up ramps, fail a naive equality test): JB Fair Park
+(ratio 0.15), Addison Princeton (0.69), Dorsett Ridge (0.78), Belleville (1.62 / 0.08).
+
+### 2. Complete abs() map — 138 production sites (228 total; 90 in untracked `scripts/`)
+
+| Class | Sites | Verdict |
+|---|---|---|
+| A. Sign-forcing on accounting `Amt` | ~34 | BUG |
+| B. `abs(periodic)` on ISBS 7071 (`one_pager.py:1107`) | 1 | BUG |
+| C. Genuine magnitude (DSCR denominators, variance %, loan sizing, ISBS debt) | ~62 | OK |
+| D. Defensive no-ops (capital-call amounts, waterfall `mAmount`) | ~25 | OK, but they normalise the idiom |
+| E. Tolerance / date-distance | ~16 | OK |
+
+Class A: `waterfall.py:97,99,841,1190,1197,1203,1210,1278,1358,1363,1365` ·
+`compute.py:296,298` · `one_pager.py:518,520,1241,1242,1244,1246,1249` ·
+`reports_service.py:330,342,353,356,445,446,448,450,452,733,736,744,768,791` ·
+`sold_service.py:214,216,253,255,267,270,461,465,549,555,576,598,676,716,832,845` ·
+`portfolio.py:114,116,122`.
+**Line numbers in older notes have drifted** — memory cites `one_pager.py:507` and `:1233,1238`;
+current code is `:518,520` and `:1241,1249`.
+**Latent inconsistency:** `metrics.py:320` uses `abs(sum(a for _,a in contributions if a < 0))`
+but `metrics.py:395` uses `abs(sum(a for _,a in contributions))` — **no `< 0` filter**. Two
+different totals from one list if a positive row ever appears. Not currently reachable.
+
+### 3. Distribution-side reversals, portfolio-wide — NEW (earlier notes were contributions only)
+
+- Contributions positive: **59 rows / $39,994,127** → abs() overstates by **$79,988,255**
+- **Distributions negative: 230 rows / −$17,277,262 → overstates by $34,554,524**
+
+By Typename: Carried Interest 119 / −10,986,820 · **Non Resident Withholding 32 / −3,699,011** ·
+Other 8 / −894,284 · Preferred Return 27 / −784,795 · Excess CF 6 / −283,073 · Return of Capital
+7 / −270,556 · Acquisition Fee 4 / −257,997 · Income 20 / −55,970 · **Professional Fee Holdback
+4 / −41,712** · Tax 3 / −3,046.
+
+**Non Resident Withholding and Professional Fee Holdback are NOT reversals** — legitimately
+negative (withheld *from* a distribution), no pairing question, no netting logic needed to fix.
+abs() converts $3.83M of withholding into investor income. Also **TypeID 1019 has 35 negative
+rows totalling −$8,625,980** that `waterfall.py:1278` and `reports_service.py:330` flip into pref
+*payments*, wrongly clearing accrued balances.
+
+### 4. Evidence workbook — `abs_bug_evidence_2026-08-06.xlsx` (project root, untracked)
+
+Tabs: Deal Summary (31) · Offending Transactions (369) · Ambiguous - Review (209) · Validation
+(22) · Method (33). As-of **2026-06-30** (last completed quarter, derived not hardcoded).
+ROE replica asserted against `metrics.calculate_roe` to **0.00e+00**; two harness bugs had to be
+fixed first — CF must not reduce the capital balance, and `one_pager` passes **all** cashflows to
+`calculate_roe` and lets it net CF out itself.
+
+369 offending rows / **$119,151,496 phantom**; (a) reversal pair 21, (b) adjustment 139,
+(c) ambiguous 209. **All 209 ambiguous are fund-level InvestmentIDs with no vcode** ($85.6M:
+PSCPGH 21.5M, PSC3 15.9M, PSCKOC 12.3M, INVF5 11.5M, PPISPM 11.3M, PSCDIF 5.1M) — they never
+reach a One Pager. **Deal-scope phantom ≈ $33.5M.**
+*Classifier caveat:* the fund-level test short-circuits before the pairing test, so some of the
+209 may be clean reversal pairs never tested. Re-classify if a fix extends to fund-level entities.
+
+**18 deals where a shipped figure actually moves.** Largest:
+**Apple Self Storage P0000003 — Actual ROE 22.77 → 15.02% (−7.75pp, the largest single error
+found, and NOT on the original audit list).** All 37 of its offending rows are Non Resident
+Withholding + Professional Fee Holdback. Then: JB Fair Park PE 11,550,000→3,850,000 · Cocoplum
+PE 29,978,294→23,350,000 · **Belleville P0000006 PE 3,652,245→1,702,415 (−1,949,830) and U/W ROE
+1.92→0.26%** · Adirondack PADIRON PE 1,962,500→762,500 · 30 Bearfoot ROE 22.02→20.53% and U/W
+9.81→6.44% · Pegasus PE 3,476,390→2,573,473 · Deptford U/W 10.73→9.59% · Pontchartrain ROE
+4.88→3.96% · East Manchester U/W 10.73→9.79% · Prestige ROE 8.58→7.96% · Middle Island U/W
+2.06→1.55% · Quakertown U/W 10.33→10.09% · Evergreen U/W 12.32→12.17% · Westbank U/W 10.43→10.39%.
+13 further deals carry offending rows but nothing moves. **Donald Lynch P0000073 holds $2.18M of
+7071 phantom that displays nowhere** — it surfaces the moment that vcode gets PE accounting.
+
+**Corroboration with the "evening" section above:** 30 Bearfoot 22.02→20.53% and the four
+partner-equity deals (JB Fair Park 7,700,000 · Cocoplum 6,628,294 · Pegasus 902,916 · OREI 0.00)
+reproduce **exactly** via an independent code path. **Belleville, flagged there as not
+re-verified, is now verified at −1,949,830.**
+
+### 5. `ROE_Income` flag exists in the feed and is NEVER read by Python — NEW
+
+`queries/accounting_feed.sql:43` sets `ROE_Income`, marking exactly TypeID 1019 (Preferred
+Return) and 1020 (Excess Cash flow). Grep hits only .sql and memory docs — **zero hits in any
+.py**. The code re-derives from `Typename` and disagrees. Deal scope (PE investors, vcode deals):
+  code's Typename rule  **$169,654,101**
+  ROE_Income='Y'        **$146,054,445**   difference **$23,599,656 (1.16×)**
+Code is a strict superset. Extra: Distribution: Income 156 rows +27,186,460 · Distribution: Tax
+9 +288,632 · Professional Fee Holdback 4 −41,712 · Non Resident Withholding 33 −3,833,721.
+With abs() applied the effective numerator is **$177,404,967 (1.21×)** — and those 37
+withholding/holdback rows are exactly the Apple Self Storage phantom ($7,750,866). Cross-checks.
+
+### 6. Four different capital-event classifiers on the same rows — NEW
+
+| Path | Driver | Effect |
+|---|---|---|
+| One Pager ROE, ROE Summary | `Typename` string | Realized Gain = capital event |
+| Deal Analysis ROE Audit, partner ROE | `Capital` flag (`loaders.py:258`) | Realized Gain is `Capital='N'` → **operating income** |
+| Sold Portfolio | `Typename` (deliberate — CLAUDE.md notes the flag is unreliable at sale) | capital event |
+| Pref Balance Detail | `TypeID` 1019/1020 | narrowest |
+
+**$73,574,410 of Realized Gain (41 rows, deal scope) is a capital return on the One Pager and
+operating income in the Deal Analysis ROE Audit.** One deal legitimately shows two ROEs on two
+tabs — 30 Bearfoot: Deal Analysis 24.62% (incl. projections) vs One Pager 22.02% (actuals only).
+
+### 7. Account 7076 (TENANT IMPROVEMENTS) is completely unmodeled — NEW
+
+Verified: `7076 in ALL_EXCLUDED / CAPEX_ACCTS / EXPENSE_ACCTS / REVENUE_ACCTS` = **False on all
+four**. Every aggregation in `reporting.py:83-95` uses explicit set membership with no
+"everything else" bucket → TI never reduces NOI, FAD, distributable cash, or the waterfall.
+
+**Camp Creek (P0000075, Retail Non-Grocery)**, driver `forecast_feed` (which carries 2,784 rows
+of 7076 portfolio-wide): TI ignored **$4,024,004** (2026-2036) vs modeled CapEx 7050 of only
+**$2,902,452** — the unmodeled line is **1.4× the modeled one**. 4.6% of cumulative NOI, peaking
+at **10% of NOI in 2035** ($902,011) as rollover hits. 37 deals carry 7076 in Valuation IS:
+Camp Creek $8.20M · Woodlands Square $3.56M · Poplar Prairie $2.70M · Donald Lynch $2.69M ·
+Merle Hay $2.68M · Deptford $2.60M · Evergreen $2.51M · Giant 7 $1.41M · Mount Prospect $1.37M.
+**Sources disagree 2×:** Valuation IS says Camp Creek $8.20M, forecast_feed (priority 1, wins)
+says $4.02M. Resolve before acting.
+Recommended shape if included: add to `CAPEX_ACCTS`, not a flat deduction — reserve funding
+(`capex_paid`, `cash_management.py`) and sign normalisation (`normalize_forecast_signs` forces
+`-base.abs()` for `ALL_EXCLUDED`) both come free; one line in `config.py`. Almost no actuals
+(1 Interim IS row portfolio-wide) so projections only; history and realised returns unaffected.
+Also confirms the earlier 707x table: **7076 = TENANT IMPROVEMENTS** joins 7071-7075, and 7073
+carries three `vInput` labels (DISPOSITION PROCEEDS / CAPITAL PROCEEDS / RELEASE COMMITTED
+CAPITAL), 7074 two — do not key logic off the label string.
+
+### 8. Why abs() exists at all — git archaeology
+
+No commit ever reasoned about accounting-feed signs. The calls arrived incidentally inside larger
+features: `waterfall.py` seed_states in **`3bd3c56`** (Feb 2026, "Add loan aggregation for
+sub-portfolios and fix pref accrual bugs"); `one_pager.py` PE in **`950ae4e`** (Jul 2026, "Fix One
+Pager ROE to Date to use actual payments only"). Neither message mentions signs.
+There *was* a deliberate six-commit sign effort in Jan 2026 — **`ee9c5f3`** (`Implement
+normalize_forecast_signs`) → `032c01e` → `18bf8f6` → **`5c7ef98`** (`Introduce NO_REVERSE_ACCTS`)
+→ `134bd75` — but entirely on the **forecast/ISBS** side. The sub-ledger never got one.
+Root cause: direction is carried by `MajorType` (`loaders.py:261-262`), never by `sign(Amt)`, so
+`-abs(amt)` reads as "contributions are negative", not as paranoia. It is right **~97.7%** of the
+time (289 offending rows / 12,403), so nothing surfaced it. The idiom is **correct** on the
+forecast side (an account's nature is fixed; a wrong sign is an export artifact) and **wrong** on
+the sub-ledger (there the sign is information). Same three characters, opposite correctness.
+Confirms the earlier finding that no reversal concept exists anywhere: grep
+`revers|adjust|void|cancel` = zero hits, and no Typename marks a reversal.
+
+### Still open — needs Charlene / Jim decision (additions to the lists above)
+
+A. **Sign authority (the real fix).** Make `sign(Amt)` authoritative and `MajorType` a label,
+   then delete the ~34 class-A abs() calls — rather than 34 point edits. Moves Partner Equity,
+   ROE, MOIC and IRR on 18 deals at once. Requires a before/after sweep first.
+B. **Withholding rows can ship independently and far more safely** — Non Resident Withholding +
+   Professional Fee Holdback are unambiguous, need no pairing logic, and are the entire Apple
+   Self Storage −7.75pp error. Lowest-risk real win available.
+C. **U/W ROE pro-rate:** remove it **plus a guard** (if first-period cumulative > ~2× the next
+   month's delta, log and fall back) so Centre at Westbank surfaces instead of over-counting.
+   Alternative: fix the MRI extract — Westbank's Jan/Feb 2022 rows are simply missing.
+D. **`ROE_Income` flag vs the Typename rule** — $23.6M apart. Which is the house definition? Is
+   `Distribution: Income` operating income? The flag exists and nobody is choosing.
+E. **Realized Gain classification** — should the Deal Analysis path move off the `Capital` flag
+   onto `Typename` to agree with the One Pager? $73.6M at stake.
+F. **7076 Tenant Improvements** — include in FAD? First check whether 7075 Reserves for
+   Replacement is the intended funding source (double-count risk) and whether a lender TI/LC
+   holdback pays it.
+
+**Housekeeping:** `abs_bug_evidence_2026-08-06.xlsx` sits untracked in the project root — commit,
+move, or delete. During this session MEMORY.md grew 468 → 652 → 784 lines from a concurrent
+session; this block was appended at the true end after re-reading. Nothing above it was altered.
