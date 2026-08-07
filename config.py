@@ -244,7 +244,7 @@ IS_ACCOUNTS = {
         'Other Income': ['4063', '4060', '4061', '4062', '4080', '4065', '4075'],
     },
     'EXPENSES': {
-        'Real Estate Taxes': ['5090'],
+        'Real Estate Taxes': ['5090', '7070'],
         'Property & Liability Insurance': ['5110', '5114'],
         'Salary & Benefits': ['5018', '5010', '5016', '5012', '5014'],
         'Utilities': ['5051', '5053', '5050', '5052', '5054', '5055'],
