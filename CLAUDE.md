@@ -673,3 +673,33 @@ Embedded Claude-powered chat panel for natural-language queries against the port
 - Cashflow signs: negative = contribution, positive = distribution
 - Rates as decimals (0.08 = 8%)
 - Use Python date objects for dates
+
+## One Pager NOI/Occupancy chart cap (Aug 7, 2026)
+
+Commit `becdf96` (branch `fix/onepager-chart-cap`) — **merged into `main`; not yet deployed.**
+
+**What changed.** `get_performance_chart_data()` in `flask_app/services/financials_service.py`
+takes a new `cap_to_last_actual: bool = False`. When True it filters `uw_agg` to
+`max(actual_agg.keys())` *before* `all_period_ends` is built — one filter point that caps the
+series, the x-axis, the `available_period_ends` dropdown and the 2-quarter UW lookahead
+together, so the three series stay aligned.
+
+**Scoping.** `get_one_pager_chart()` passes `cap_to_last_actual=True` (covers the
+`/one-pager/chart` endpoint, the bulk print pages, and `_save_snapshot()`). Property
+Financials calls `get_performance_chart_data()` directly and **intentionally keeps its
+2-quarter underwriting lookahead — do not cap it unless asked.**
+
+**Why the cap is data-derived.** It uses `max(actual_agg.keys())` — the newest actual
+reporting quarter — **not today's date**. Reporting lags the calendar, so a today-based cap
+would wrongly yield 26Q3; the reporting quarter is currently **26Q2**. The cap advances
+automatically as quarters are reported, and `aggregate_periodic` already drops quarters with
+<3 months, so a partially-reported quarter cannot become the cap. Deals with no actuals fall
+through uncapped so their projection-only chart still renders.
+
+**Open items.**
+1. Rule verified on local data only (all deals' actuals end Q4 2025 in the Apr-15 ISBS
+   snapshot). The specific **26Q2** result must be spot-checked on live Azure after deploy.
+2. Snapshots frozen before this change keep future quarters in their stored JSON —
+   would need backfilling.
+3. `review_service.py:381` `_save_snapshot()` uses the capped chart for **new** snapshots.
+4. Deploy requires `az acr build` + `az containerapp update` — merging alone ships nothing.
