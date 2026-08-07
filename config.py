@@ -3,15 +3,13 @@ config.py
 Configuration and constants for waterfall model
 """
 
-from datetime import date
-
 # ============================================================
 # DEFAULT SETTINGS
 # ============================================================
-DEFAULT_START_YEAR = date.today().year
+DEFAULT_START_YEAR = 2026
 DEFAULT_HORIZON_YEARS = 10
-PRO_YR_BASE_DEFAULT = date.today().year - 1
-DEFAULT_ACTUALS_THROUGH = None  # None = full forecast; date = actuals cutoff
+PRO_YR_BASE_DEFAULT = 2025
+DEFAULT_ACTUALS_THROUGH = "2026-07-31"  # None = full forecast; date = actuals cutoff
 
 # Balance sheet debt accounts (Mortgages and Loans from ISBS)
 DEBT_BS_ACCTS = {'2150', '2152', '2210'}

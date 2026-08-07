@@ -1,7 +1,7 @@
 """Flask application configuration."""
 
 import os
-from datetime import date
+
 from pathlib import Path
 
 # Project root is one level up from flask_app/
@@ -36,10 +36,10 @@ class Config:
     CACHE_DEFAULT_TIMEOUT = 300
 
     # Defaults matching Streamlit sidebar
-    DEFAULT_START_YEAR = date.today().year
+    DEFAULT_START_YEAR = 2026
     DEFAULT_HORIZON_YEARS = 10
-    PRO_YR_BASE_DEFAULT = date.today().year - 1
-    ACTUALS_THROUGH = None  # None = full forecast; ISO date string = actuals cutoff
+    PRO_YR_BASE_DEFAULT = 2025
+    ACTUALS_THROUGH = "2026-07-31"  # None = full forecast; ISO date string = actuals cutoff
 
 
 class DevelopmentConfig(Config):
