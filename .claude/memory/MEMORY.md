@@ -1051,3 +1051,82 @@ unreachable all session (PG firewall, no Azure CLI locally). Azure carries **~24
 in that CSV, so another parent with co-terminous child loans would also collapse — correctly, but
 it was not in the sweep. Re-run `scripts/burton_loandump.py` (which reads PG directly) once the
 firewall allows it.
+
+## Deploy handoff to Jim — Aug 7, 2026
+
+**Time-sensitive: both fixes need to be live before Monday for KOC investor reporting.**
+Two branches handed over, neither merged, neither deployed.
+
+### Fix 1 — One Pager chart window
+
+Branch **`feat/onepager-chart-window`**, head **`8f59bb5`** — pushed to origin, based on
+`b62135c` (origin/main). **merged: no · deployed: no.** Three commits:
+
+- **`45539ff`** — the window change. Replaces and **deletes** `cap_to_last_actual` (from
+  `becdf96`), which the new rule subsumes and would contradict.
+- **`b9021ce`** — guardrail + CLAUDE.md.
+- **`8f59bb5`** — Date-Closed pre-close zero-fill.
+
+The chart now shows a **rolling 10-quarter window ending at the SELECTED dropdown quarter**
+(26Q1 → 23Q4–26Q1; 26Q2 → 24Q1–26Q2), not at the latest actual. Every calendar quarter keeps
+its x-axis slot; previously the window was index-sliced over the union of periods that *have
+data*, so quarters a deal predated were never slots at all — Burton rendered a **one-bar
+chart**.
+
+**Quarter wiring confirmed end-to-end:** dropdown (`OnePagerView.vue`) → `?quarter=` →
+`request.args` → `get_one_pager_chart` → `_quarter_window`. Proven by driving the real view
+body inside a request context with `?quarter=` on the URL; with the param omitted the same
+deals fall back to the old data-derived window and land elsewhere, which is what rules out a
+hardcoded latest-actual. Before this, **no call site passed the quarter at all.**
+
+**Pre-close quarters are forced to 0** on all three series (ACT, U/W, Occupancy) ahead of the
+data lookups, from `inv['Acquisition_Date']`. Fixes **ReNew Glenmoore P0000099** (closed
+2025-02-19), which showed a stray **0.78M U/W line in Q4 2024** off 60 pre-close Projected IS
+rows — underwriting projections routinely predate closing. **Child properties inherit the
+parent's Date Closed** (child `Portfolio_Name` == parent `Investment_Name`): Burton — Westwood
+Plaza P0000113 went from unknown → 2025-08-28. Quarters **on or after** Date Closed keep the
+data-driven zero-vs-gap split, so a quarter the deal existed for but that simply was not
+reported is **not** force-zeroed (P0000085, closed 23Q4, no actuals until 25Q4).
+
+**Guardrail** (`scripts/onepager_chart_window_check.py`, three-way capture: origin/main /
+window-only / final): **6 deals × 2 quarters pass.** Only ReNew's **4 stray pre-close values**
+changed. Burton intact — 1 bar → 10 slots, 7 zero-filled, 25Q4 actual 2.61M preserved. No
+post-close quarter moved. Wiring proof in `scripts/onepager_chart_verify_wiring.py`.
+
+### Fix 2 — Burton co-terminous loans
+
+Branch **`fix/burton-coterminous-loans`**, commit **`55686b0`** — see the section above for
+full detail. Replaces the **currently-live double-loan display**: the live commit is
+**`2086ebc`** *(an earlier note cited `becea60`; that hash does not exist)*, which stopped the
+parent showing 'N/A' but rendered the same loan twice. Collapses to **one term, 2nd = N/A**,
+debt **0 → $75,302,500**.
+
+### Handoff method
+
+Sent Jim a Word doc — **`OnePager_Deploy_Handoff_for_Jim.docx`** — with branches, commits,
+deploy commands and caveats, so **his Claude Code can execute the deploy**. The doc asks Jim's
+Claude to send back a **"Deploy_Result"** doc containing build status, the new revision number,
+and any errors.
+
+### Open caveats for deploy
+
+1. **The Vue change was never typecheck-compiled locally.** `vue_app/src/views/OnePagerView.vue`
+   (from `45539ff`) only compiles during the Docker / `az acr build` step — `vue_app/node_modules`
+   is absent on this machine. **Jim's Claude must confirm that build step passes**, not assume it.
+   A TS error fails the build rather than shipping a broken page, but it blocks the deploy.
+2. **Post-deploy spot-checks.** (a) The chart ends at the selected quarter **with real values on
+   live** — the local ISBS snapshot stops at 25Q4, so the gaps and zero-fill in the test output
+   are local artifacts. (b) **Burton's debt line reads a sensible current balance** — the
+   0 → $75.3M roll-up only fires when ISBS returns no parent balance, since
+   `get_isbs_debt_balance()` takes precedence over the `MRI_Loans` fallback.
+3. **Frozen snapshots keep their old arrays.** One Pager snapshots approved before the chart
+   change still hold the old sparse quarter arrays and would need backfilling.
+
+### Process note — concurrent Claude Code sessions
+
+Multiple sessions running against the **same working tree** moved HEAD mid-run repeatedly this
+session: an implementation commit landed on **`main`** instead of its feature branch, another
+session's memory commit landed on the **feature branch**, and a new branch was created off the
+**wrong base**. All repaired — `main` restored, commits relocated, the duplicate dropped — but
+the fix cost real time and risked losing work. **Work one tab at a time, or give each session
+its own `git worktree`.**
