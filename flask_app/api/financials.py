@@ -324,7 +324,8 @@ def one_pager_chart(vcode):
     quarter = request.args.get("quarter")
     data = _get_data()
     try:
-        chart = get_one_pager_chart(vcode, data["isbs_raw"], data["occupancy_raw"], quarter=quarter)
+        chart = get_one_pager_chart(vcode, data["isbs_raw"], data["occupancy_raw"],
+                                    quarter=quarter, inv=data["inv"])
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     return jsonify(safe_json(chart))
@@ -439,7 +440,8 @@ def one_pager_batch():
             page["error"] = str(e)
         try:
             page["chart"] = get_one_pager_chart(
-                vcode, data["isbs_raw"], data["occupancy_raw"], quarter=quarter)
+                vcode, data["isbs_raw"], data["occupancy_raw"], quarter=quarter,
+                inv=data["inv"])
         except Exception:
             page["chart"] = None
         pages.append(page)

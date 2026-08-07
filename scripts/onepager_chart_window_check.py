@@ -28,10 +28,17 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from flask_app.services.financials_service import get_one_pager_chart
 
+try:  # only present once the Date-Closed rule lands
+    from flask_app.services.financials_service import _resolve_date_closed
+except ImportError:  # older trees (before / mid captures)
+    _resolve_date_closed = lambda inv, vcode: None  # noqa: E731
+
 CSV_DIR = (r"C:\Users\cbui\OneDrive - peaceablestreet.com\Peaceable Street Capital - Documents"
            r"\Asset Mgmt\8. Asset_Mgmt_System\csv_data")
 ISBS_CSV = os.path.join(CSV_DIR, "ISBS_Download.csv")
 OCC_CSV = os.path.join(CSV_DIR, "MRI_Occupancy_Download.csv")
+ACCT_CSV = os.path.join(CSV_DIR, "accounting_feed.csv")
+MAP_CSV = os.path.join(CSV_DIR, "investment_map.csv")
 
 SCRATCH = (r"C:\Users\cbui\AppData\Local\Temp\1\claude"
            r"\C--Users-cbui-Documents-waterfall-xirr"
@@ -63,6 +70,23 @@ def normalize_isbs(df):
     return df
 
 
+def load_inv():
+    """investment_map with Acquisition_Date enriched from the accounting feed —
+    mirrors data_service._enrich_acquisition_dates, which is what live `inv`
+    carries."""
+    inv = pd.read_csv(MAP_CSV, dtype=str)
+    inv.columns = [c.strip() for c in inv.columns]
+    acct = pd.read_csv(ACCT_CSV, dtype=str, usecols=["InvestmentID", "EffectiveDate"])
+    acct["_dt"] = pd.to_datetime(acct["EffectiveDate"], errors="coerce")
+    earliest = acct.dropna(subset=["_dt"]).groupby(
+        acct["InvestmentID"].astype(str).str.strip())["_dt"].min()
+    inv["Acquisition_Date"] = (
+        inv["InvestmentID"].astype(str).str.strip()
+        .map(earliest).fillna(pd.to_datetime(inv.get("Acquisition_Date"), errors="coerce"))
+    )
+    return inv
+
+
 def load_data():
     if os.path.exists(CACHE):
         isbs = pd.read_pickle(CACHE)
@@ -80,16 +104,28 @@ def load_data():
 
 
 def capture(side):
-    """Run the committed get_one_pager_chart and dump results to JSON."""
+    """Run the committed get_one_pager_chart on this tree and dump to JSON.
+
+    before = origin/main (quarter-blind, cap_to_last_actual)
+    mid    = calendar window, zero-fill driven purely by absence of data
+    after  = same, plus pre-close quarters forced to 0 from Date Closed
+    """
     isbs, occ = load_data()
+    inv = load_inv() if side == "after" else None
     out = {}
     for vcode, _ in DEALS:
         if side == "before":
             # main's signature is quarter-blind — one window per deal.
-            out[vcode] = {"(data-derived)": get_one_pager_chart(vcode, isbs, occ)}
+            entry = {"(data-derived)": get_one_pager_chart(vcode, isbs, occ)}
+        elif side == "mid":
+            entry = {q: get_one_pager_chart(vcode, isbs, occ, quarter=q)
+                     for q in QUARTERS}
         else:
-            out[vcode] = {q: get_one_pager_chart(vcode, isbs, occ, quarter=q)
-                          for q in QUARTERS}
+            entry = {q: get_one_pager_chart(vcode, isbs, occ, quarter=q, inv=inv)
+                     for q in QUARTERS}
+            dc = _resolve_date_closed(inv, vcode)
+            entry["_date_closed"] = None if dc is None else str(pd.Timestamp(dc).date())
+        out[vcode] = entry
     path = os.path.join(SCRATCH, f"chart_{side}.json")
     with open(path, "w") as f:
         json.dump(out, f)
@@ -106,11 +142,22 @@ def fmt(c, i):
             f"UW {m(c['uw_noi'][i])}  OCC {p(c['occupancy'][i])}")
 
 
+def _pre_close(label, dc):
+    """Is this quarter label's period end strictly before Date Closed?"""
+    if not dc:
+        return False
+    qn, yr = label.split()[0][1:], label.split()[1]
+    end = pd.Timestamp(year=int(yr), month=int(qn) * 3, day=1) + pd.offsets.MonthEnd(0)
+    return end < pd.Timestamp(dc)
+
+
 def report():
     with open(os.path.join(SCRATCH, "chart_before.json")) as f:
         before = json.load(f)
     with open(os.path.join(SCRATCH, "chart_after.json")) as f:
         after = json.load(f)
+    mid_path = os.path.join(SCRATCH, "chart_mid.json")
+    mid = json.load(open(mid_path)) if os.path.exists(mid_path) else None
 
     failures = []
     for vcode, note in DEALS:
@@ -125,16 +172,19 @@ def report():
         if not b["periods"]:
             print("   (empty)")
 
+        dc = after[vcode].get("_date_closed")
         for q in QUARTERS:
             a = after[vcode][q]
             zeros = sum(1 for i in range(len(a["periods"]))
                         if a["actual_noi"][i] == 0 and a["uw_noi"][i] == 0)
             gaps = sum(1 for i in range(len(a["periods"]))
                        if a["actual_noi"][i] is None or a["uw_noi"][i] is None)
-            print(f"-- AFTER  quarter={q}  ({len(a['periods'])} quarters, "
-                  f"{zeros} zero-filled, {gaps} with a gap) --")
+            print(f"-- AFTER  quarter={q}  (Date Closed {dc or 'unknown'}; "
+                  f"{len(a['periods'])} quarters, {zeros} zero-filled, "
+                  f"{gaps} with a gap) --")
             for i in range(len(a["periods"])):
-                print("   " + fmt(a, i))
+                tag = "   PRE-CLOSE" if _pre_close(a["periods"][i], dc) else ""
+                print("   " + fmt(a, i) + tag)
 
             # invariants
             yr, qn = q.split("-Q")
@@ -145,13 +195,62 @@ def report():
             if len({len(a[k]) for k in ("periods", "actual_noi", "uw_noi", "occupancy")}) != 1:
                 failures.append(f"{vcode} {q}: series lengths differ")
 
-            # no value may change on a quarter both sides reported
+            # every pre-close quarter must be a hard zero on all three series
+            for i, lbl in enumerate(a["periods"]):
+                if not _pre_close(lbl, dc):
+                    continue
+                vals = (a["actual_noi"][i], a["uw_noi"][i], a["occupancy"][i])
+                if any(v != 0 for v in vals):
+                    failures.append(f"{vcode} {q}: pre-close {lbl} not zeroed -> {vals}")
+
+            # no value may change on a post-close quarter both sides reported
             bmap = dict(zip(b["periods"], b["actual_noi"]))
             for i, lbl in enumerate(a["periods"]):
+                if _pre_close(lbl, dc):
+                    continue  # intentionally rewritten
                 bv, av = bmap.get(lbl), a["actual_noi"][i]
                 if bv is not None and av is not None and abs(bv - av) > 0.01:
                     failures.append(f"{vcode} {q}: {lbl} ACT drifted {bv:,.0f} -> {av:,.0f}")
+
+            # post-close quarters must be untouched by the Date-Closed rule
+            if mid:
+                m = mid[vcode][q]
+                for i, lbl in enumerate(a["periods"]):
+                    if _pre_close(lbl, dc):
+                        continue
+                    for k in ("actual_noi", "uw_noi", "occupancy"):
+                        if m[k][i] != a[k][i]:
+                            failures.append(
+                                f"{vcode} {q}: post-close {lbl} {k} regressed "
+                                f"{m[k][i]} -> {a[k][i]}")
         print()
+
+    if mid:
+        print("#" * 78)
+        print("# PRE-CLOSE ENFORCEMENT — data-driven zero (mid) vs Date Closed (after)")
+        print("#" * 78)
+        changed = 0
+        for vcode, _ in DEALS:
+            dc = after[vcode].get("_date_closed")
+            rows = []
+            for q in QUARTERS:
+                m, a = mid[vcode][q], after[vcode][q]
+                for i, lbl in enumerate(a["periods"]):
+                    if not _pre_close(lbl, dc):
+                        continue
+                    for k, nm in (("actual_noi", "ACT"), ("uw_noi", "UW"),
+                                  ("occupancy", "OCC")):
+                        if m[k][i] != a[k][i]:
+                            rows.append(f"     {q}  {lbl:<9} {nm:<4} "
+                                        f"{m[k][i]} -> {a[k][i]}")
+            print(f"  {vcode}  Date Closed {dc or 'unknown'}")
+            if rows:
+                changed += len(rows)
+                for r in rows:
+                    print(r)
+            else:
+                print("     (no pre-close value changed — already zero)")
+        print(f"\n  {changed} stray pre-close value(s) now forced to zero.\n")
 
     print("=" * 78)
     if failures:
@@ -160,7 +259,8 @@ def report():
             print("  - " + f_)
         sys.exit(1)
     print("PASS — every window is exactly 10 quarters, ends at the selected "
-          "quarter, series aligned, and no reported value drifted.")
+          "quarter, series aligned, every pre-close quarter is a hard zero on "
+          "all three series, and no post-close quarter changed.")
 
 
 if __name__ == "__main__":

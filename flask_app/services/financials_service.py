@@ -118,6 +118,39 @@ def _period_month_counts(periodic_dict: dict, freq: str) -> dict:
     return counts
 
 
+def _resolve_date_closed(inv: pd.DataFrame, vcode: str):
+    """Deal's Date Closed as a Timestamp, falling back to its portfolio parent.
+
+    Same field the One Pager's "Date Closed" shows — inv['Acquisition_Date'],
+    which data_service._enrich_acquisition_dates derives from the earliest
+    accounting activity per InvestmentID. Child properties carry no accounting
+    of their own (it sits at the parent), so they inherit the parent's date,
+    matched the way consolidation.py pairs them: child Portfolio_Name equals
+    parent Investment_Name. Returns None when nothing resolves.
+    """
+    if inv is None or getattr(inv, "empty", True) or "vcode" not in inv.columns:
+        return None
+    row = inv[inv["vcode"].astype(str).str.strip().str.lower()
+              == str(vcode).strip().lower()]
+    if row.empty:
+        return None
+    row = row.iloc[0]
+
+    dc = pd.to_datetime(row.get("Acquisition_Date"), errors="coerce")
+    if pd.notna(dc):
+        return pd.Timestamp(dc)
+
+    parent_name = str(row.get("Portfolio_Name") or "").strip()
+    own_name = str(row.get("Investment_Name") or "").strip()
+    if not parent_name or parent_name == own_name:
+        return None  # no parent, or the self-referencing parent row itself
+    parent = inv[inv["Investment_Name"].astype(str).str.strip() == parent_name]
+    if parent.empty:
+        return None
+    dc = pd.to_datetime(parent.iloc[0].get("Acquisition_Date"), errors="coerce")
+    return pd.Timestamp(dc) if pd.notna(dc) else None
+
+
 def _slot_value(agg: dict, counts: dict, dt: pd.Timestamp, zero_fill: bool, required: int):
     """Value for one x-axis slot.
 
@@ -143,6 +176,7 @@ def get_performance_chart_data(
     period_end: Optional[str] = None,
     window_end_quarter: Optional[str] = None,
     zero_fill: bool = False,
+    date_closed: Optional[pd.Timestamp] = None,
 ) -> dict:
     """Build performance chart data (NOI + occupancy) for a single deal.
 
@@ -159,6 +193,13 @@ def get_performance_chart_data(
         with window_end_quarter — see _slot_value for the in-progress-period
         carve-out. Property Financials leaves both off and keeps its
         data-derived window and 2-quarter underwriting lookahead.
+    date_closed: the deal's Date Closed. Every period ending strictly before it
+        is forced to 0 across all three series, ahead of any data lookup, so
+        stray pre-close rows (underwriting projections commonly predate
+        closing) cannot show through on a period the deal did not exist for.
+        Periods on or after the date are untouched and follow the normal
+        data-driven path, so a period the deal existed for but that simply has
+        not been reported still reads as zero-fill or gap on its own merits.
     """
     isbs = _prepare_isbs(isbs_raw, vcode)
     if isbs.empty:
@@ -266,6 +307,17 @@ def get_performance_chart_data(
         else:
             label = str(dt_ts.year)
         period_labels.append(label)
+
+        # Pre-close: the deal did not exist for this period, so it is zero by
+        # definition. Forced ahead of the lookups below — stray rows dated
+        # before closing (underwriting projections routinely are) must not
+        # show through.
+        if date_closed is not None and dt_ts < pd.Timestamp(date_closed):
+            actual_noi.append(0.0)
+            uw_noi.append(0.0)
+            occupancy.append(0.0)
+            continue
+
         req = _MONTHS_PER_PERIOD.get(freq, 3)
         actual_noi.append(_slot_value(actual_agg, actual_counts, dt_ts, zero_fill, req))
         uw_noi.append(_slot_value(uw_agg, uw_counts, dt_ts, zero_fill, req))
@@ -1111,7 +1163,8 @@ def _enrich_cap_stack_from_deal_terms(cap_stack: dict, deal_terms, vcode: str):
         cap_stack["econ_occ_at_close"] = eoc
 
 
-def get_one_pager_chart(vcode, isbs_raw, occupancy_raw, quarter=None, num_quarters=10):
+def get_one_pager_chart(vcode, isbs_raw, occupancy_raw, quarter=None, num_quarters=10,
+                        inv=None):
     """Build quarterly NOI chart data for One Pager (same pipeline as perf chart, fixed quarterly).
 
     Rolling window of exactly `num_quarters` quarters ending at the selected
@@ -1120,14 +1173,22 @@ def get_one_pager_chart(vcode, isbs_raw, occupancy_raw, quarter=None, num_quarte
     did not exist yet), and a quarter still in progress reads null so it shows
     as a gap rather than claiming zero NOI.
 
+    Quarters ending before the deal's Date Closed are zero by definition, not
+    by absence of rows — pass `inv` to enforce that (see _resolve_date_closed,
+    which also covers child properties via their portfolio parent).
+
     Without a quarter it falls back to the data-derived window — the old
     behaviour, kept for callers that have no report quarter in hand.
     Property Financials calls get_performance_chart_data directly and keeps
     its data-derived window and 2-quarter UW lookahead.
     """
+    # Only meaningful alongside the calendar window; the data-derived fallback
+    # has no pre-close slots to force.
+    date_closed = _resolve_date_closed(inv, vcode) if (inv is not None and quarter) else None
     return get_performance_chart_data(
         isbs_raw, occupancy_raw, vcode, freq="Quarterly", periods=num_quarters,
-        window_end_quarter=quarter or None, zero_fill=bool(quarter))
+        window_end_quarter=quarter or None, zero_fill=bool(quarter),
+        date_closed=date_closed)
 
 
 # ============================================================
