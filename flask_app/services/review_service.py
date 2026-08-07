@@ -378,7 +378,8 @@ def _save_snapshot(vcode: str, quarter: str, approved_by: str):
             full_data=data,
             relationships=data.get("relationships_raw"),
         )
-        chart_data = get_one_pager_chart(vcode, data["isbs_raw"], data["occupancy_raw"])
+        chart_data = get_one_pager_chart(
+            vcode, data["isbs_raw"], data["occupancy_raw"], quarter=quarter)
 
         snapshot = safe_json({"data": op_data, "chart": chart_data})
         snapshot_json = json.dumps(snapshot)
