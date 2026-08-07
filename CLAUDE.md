@@ -182,6 +182,9 @@ cd vue_app && npm run dev        # Frontend on http://localhost:5173
 - **NPV at Sale**: Remaining abatement payments after sale date are discounted to PV at `TAX_ABATEMENT_DISCOUNT_RATE` (5%) and added to net sale proceeds (`compute.py`). Shown as "NPV (@5%) Tax Abatements" in Sale Proceeds Calculation (Debt Service section)
 - **Below-the-line items**: Former "Excluded Accounts" renamed to "Other Below-the-Line" (`OTHER_EXCLUDED_ACCTS`): Interest Income (4050), Other Income/Expenses (5220, 5210, 5195, 7065), Partnership Expenses (5120, 5130), Depreciation & Amortization (5160, 5165), Extraordinary Expenses (5400). Other Revenue (4075) and Maintenance Flex (5092) are in NOI.
 - **Conditional display**: Tax Abatement NPV line only appears in Sale Proceeds Calculation when deal has 7070 data
+- **Comparability fix**: In U/W Projected IS, 7070 appears below NOI as a separate line item, but in actuals the abatement is netted into account 5090 (Real Estate Taxes). To ensure apples-to-apples comparison across all columns:
+  - **One Pager** (`one_pager.py`): `calc_amounts()` folds 7070 into expenses (negative credit reduces expenses). `TAX_ABATEMENT: ['7070']` added to `IS_ACCOUNTS`. Separate adjustment for the pre-computed `at_close_noi_df` path.
+  - **Property Financials** (`config.py`): `'7070'` added to `Real Estate Taxes` account list in `IS_ACCOUNTS['EXPENSES']`, so the income statement includes it alongside 5090 in all source comparisons.
 
 ### Paid-Off Loan Exclusion
 - **Filter**: Loans with `vDateType = "Paid Off"` are excluded from all analysis at the data layer
