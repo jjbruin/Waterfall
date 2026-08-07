@@ -77,10 +77,19 @@ def get_performance_chart_data(
     freq: str = "Quarterly",
     periods: int = 12,
     period_end: Optional[str] = None,
+    cap_to_last_actual: bool = False,
 ) -> dict:
     """Build performance chart data (NOI + occupancy) for a single deal.
 
     Full pipeline: cumulative → periodic monthly → aggregate to frequency.
+
+    cap_to_last_actual: when True, drop every period after the latest period
+        that has actual reported data. The cap is derived from the data (the
+        newest Interim IS period surviving aggregation), never from today's
+        date — reporting lags the calendar, so a today-based cap would run a
+        quarter ahead of what has actually been reported. Used by the One
+        Pager, which must not show underwriting beyond the reporting quarter.
+        Property Financials leaves this False and keeps its forward look.
     """
     isbs = _prepare_isbs(isbs_raw, vcode)
     if isbs.empty:
@@ -105,6 +114,14 @@ def get_performance_chart_data(
 
     actual_agg = aggregate_periodic(actual_periodic, freq)
     uw_agg = aggregate_periodic(uw_periodic, freq)
+
+    # Cap at the last actually-reported period. Applied before all_period_ends is
+    # built so it trims the series, the x-axis, the available_period_ends dropdown
+    # and the UW-only lookahead below in one place. Deals with no actuals yet are
+    # left uncapped so their projection-only chart still renders.
+    if cap_to_last_actual and actual_agg:
+        last_reported = max(actual_agg.keys())
+        uw_agg = {k: v for k, v in uw_agg.items() if pd.Timestamp(k) <= last_reported}
 
     all_period_ends = sorted(set(actual_agg.keys()) | set(uw_agg.keys()))
     if not all_period_ends:
@@ -1022,8 +1039,14 @@ def _enrich_cap_stack_from_deal_terms(cap_stack: dict, deal_terms, vcode: str):
 
 
 def get_one_pager_chart(vcode, isbs_raw, occupancy_raw, num_quarters=12):
-    """Build quarterly NOI chart data for One Pager (same pipeline as perf chart, fixed quarterly)."""
-    return get_performance_chart_data(isbs_raw, occupancy_raw, vcode, freq="Quarterly", periods=num_quarters)
+    """Build quarterly NOI chart data for One Pager (same pipeline as perf chart, fixed quarterly).
+
+    Capped at the last reported quarter — the One Pager must not show underwriting
+    quarters beyond the reporting period. Property Financials calls
+    get_performance_chart_data directly and keeps its 2-quarter UW lookahead.
+    """
+    return get_performance_chart_data(isbs_raw, occupancy_raw, vcode, freq="Quarterly",
+                                      periods=num_quarters, cap_to_last_actual=True)
 
 
 # ============================================================
