@@ -101,6 +101,9 @@ async function loadOnePager(vcode: string) {
     const chartReq = selectedQuarter.value
       ? api.get(`/api/financials/${vcode}/one-pager/chart`, { params })
       : null
+    // Awaited below — this only keeps a chart failure from surfacing as an
+    // unhandled rejection if the one-pager request rejects first.
+    chartReq?.catch(() => {})
     const opRes = await api.get(`/api/financials/${vcode}/one-pager`, { params })
     opData.value = opRes.data
     if (!selectedQuarter.value && opRes.data.available_quarters?.length) {
