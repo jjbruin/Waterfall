@@ -1018,30 +1018,34 @@ def get_property_performance(
 # ============================================================
 
 UW_PE_DIST_ACCT = '7071'  # Underwritten distribution to preferred equity
+UW_PE_ROC_ACCT = '7073'   # Underwritten return of capital to preferred equity
 
-def _get_uw_pe_distributions(
+
+def _get_uw_pe_periodic(
     isbs_raw: pd.DataFrame,
     vcode: str,
     inception: date,
     end_date: date,
+    account: str = UW_PE_DIST_ACCT,
 ) -> List[Tuple[date, float]]:
-    """Extract periodic underwritten PE distributions from Projected IS.
+    """Extract periodic underwritten PE amounts from Projected IS.
 
-    Account 7071 in ISBS vSource='Projected IS' stores YTD cumulative
+    Accounts in ISBS vSource='Projected IS' store YTD cumulative
     amounts (same convention as Actuals).  This function converts to
-    periodic amounts and returns them as (date, amount) tuples suitable
-    for the ROE numerator.
+    periodic amounts and returns them as (date, amount) tuples.
 
-    The sign convention in MRI: distributions are stored as positive
+    Used for both distributions (7071) and return of capital (7073).
+
+    The sign convention in MRI: these amounts are stored as positive
     (debit).  We take abs() to be safe.
 
     Returns list of (date, amount) for each period with a non-zero
-    distribution, covering inception through end_date.
+    amount, covering inception through end_date.
     """
     if isbs_raw is None or isbs_raw.empty:
         return []
 
-    # Filter to deal + Projected IS + account 7071
+    # Filter to deal + Projected IS + target account
     df = isbs_raw.copy()
     if 'vcode' in df.columns:
         df = df[df['vcode'] == str(vcode).strip().lower()]
@@ -1053,7 +1057,7 @@ def _get_uw_pe_distributions(
     if df.empty or 'vAccount' not in df.columns:
         return []
 
-    df = df[df['vAccount'] == UW_PE_DIST_ACCT]
+    df = df[df['vAccount'] == account]
     if df.empty:
         return []
 
@@ -1109,6 +1113,13 @@ def _get_uw_pe_distributions(
             distributions.append((period_date, amount))
 
     return distributions
+
+
+def _get_uw_pe_distributions(
+    isbs_raw: pd.DataFrame, vcode: str, inception: date, end_date: date,
+) -> List[Tuple[date, float]]:
+    """Backward-compatible wrapper — extracts UW PE distributions (7071)."""
+    return _get_uw_pe_periodic(isbs_raw, vcode, inception, end_date, UW_PE_DIST_ACCT)
 
 
 # ============================================================
@@ -1266,7 +1277,10 @@ def get_pe_performance(
                         capital_events, cf_distributions, inception, quarter_end
                     )
 
-                    # Compute U/W ROE to Date from Projected IS account 7071
+                    # Compute U/W ROE to Date from Projected IS
+                    # 7071 = underwritten PE distributions (ROE numerator)
+                    # 7073 = underwritten return of capital (reduces denominator,
+                    #         NOT counted as distributions)
                     # Same actual capital structure (contributions/returns), but
                     # substitute underwritten distributions for CF distributions.
                     # Build capital-only events (no CF dists) so calculate_roe
@@ -1297,6 +1311,17 @@ def get_pe_performance(
                                         cap_ret = amt
                                     if cap_ret > 0.005:
                                         capital_only.append((d, cap_ret))
+
+                            # Add underwritten return of capital (7073)
+                            # as positive capital events — reduces weighted
+                            # avg capital but does NOT count as distributions
+                            uw_roc = _get_uw_pe_periodic(
+                                isbs_raw, vcode, inception, quarter_end,
+                                UW_PE_ROC_ACCT
+                            )
+                            for d, amt in uw_roc:
+                                capital_only.append((d, amt))
+
                             pe['uw_roe_to_date'] = calculate_roe(
                                 capital_only, uw_dists, inception, quarter_end
                             )
