@@ -307,7 +307,7 @@ MRI's query record limits make exporting the monolithic `ISBS_Download.csv` (800
 - **Waterfall**: `cf_period_cash` and `cap_period_cash` filtered to post-cutoff periods only (always, not just when `actuals_through` is set)
 - **Date comparison safety**: Period filtering uses `pd.to_datetime()` on `event_date`/`EffectiveDate` columns before comparing with `pd.Timestamp` cutoff to avoid `Timestamp vs datetime.date` errors
 - **Cache key**: includes `actuals_through` so toggling triggers recomputation
-- **Dynamic defaults**: `DEFAULT_START_YEAR = date.today().year`, `PRO_YR_BASE_DEFAULT = date.today().year - 1`
+- **Defaults**: `DEFAULT_START_YEAR = 2026`, `DEFAULT_HORIZON_YEARS = 10`, `PRO_YR_BASE_DEFAULT = 2025`, `DEFAULT_ACTUALS_THROUGH = "2026-07-31"` (YTD Actuals enabled through July 2026)
 - **UI**: Vue sidebar in Report Settings (checkbox + month-end selector)
 - **Flask**: `ACTUALS_THROUGH` in config, passed via query params / request body, included in `/api/data/config`
 
