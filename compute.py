@@ -548,6 +548,111 @@ def run_interleaved_waterfalls(
     return cf_alloc_df, cap_alloc_df, cf_investors, cap_investors
 
 
+def _extract_isbs_actuals_for_forecast(
+    isbs_raw, deal_vcode, prop_vcodes, cutoff, start_year, pro_yr_base,
+    coa, debug_msgs,
+):
+    """Extract ISBS Interim IS actuals as periodic monthly forecast rows.
+
+    Converts YTD cumulative ISBS data to periodic monthly amounts and returns
+    a DataFrame matching the forecast schema (vcode, event_date, vAccount,
+    mAmount, mAmount_norm, Pro_Yr, Year, vAccountType).
+    """
+    from config import (REVENUE_ACCTS, EXPENSE_ACCTS, GROSS_REVENUE_ACCTS,
+                        CONTRA_REVENUE_ACCTS, ALL_EXCLUDED,
+                        TAX_ABATEMENT_ACCTS)
+    from loaders import normalize_forecast_signs
+
+    if isbs_raw is None or isbs_raw.empty:
+        return pd.DataFrame()
+
+    # Determine which vcodes to pull from ISBS (parent + children for sub-portfolios)
+    vc_list = [str(v).strip().lower() for v in ([deal_vcode] + list(prop_vcodes or []))]
+    vc_set = set(vc_list)
+
+    isbs = isbs_raw.copy()
+    if 'vcode' not in isbs.columns or 'vSource' not in isbs.columns:
+        return pd.DataFrame()
+
+    # Filter to Interim IS actuals for these vcodes
+    actual = isbs[
+        (isbs['vSource'] == 'Interim IS') &
+        (isbs['vcode'].isin(vc_set))
+    ].copy()
+    if actual.empty or 'dtEntry_parsed' not in actual.columns:
+        return pd.DataFrame()
+
+    # Only keep operating accounts (revenue + expense)
+    operating_accts = REVENUE_ACCTS | EXPENSE_ACCTS
+    actual['_acct_int'] = pd.to_numeric(actual['vAccount'], errors='coerce')
+    actual = actual[actual['_acct_int'].isin(operating_accts)].copy()
+    if actual.empty:
+        return pd.DataFrame()
+
+    # Filter to dates within the current year up to cutoff
+    actual = actual[actual['dtEntry_parsed'].notna()].copy()
+    actual['_dt'] = pd.to_datetime(actual['dtEntry_parsed'])
+    actual = actual[
+        (actual['_dt'].dt.year >= start_year) &
+        (actual['_dt'] <= cutoff)
+    ]
+    if actual.empty:
+        return pd.DataFrame()
+
+    # Convert YTD cumulative to periodic monthly per (vcode, vAccount)
+    periodic_rows = []
+    for (vc, acct), grp in actual.groupby(['vcode', '_acct_int']):
+        grp = grp.sort_values('_dt')
+        dates = grp['_dt'].tolist()
+        amounts = grp['mAmount'].tolist()
+        for i, (dt, amt) in enumerate(zip(dates, amounts)):
+            if dt.month == 1:
+                periodic_amt = amt
+            else:
+                periodic_amt = amt
+                for j in range(i - 1, -1, -1):
+                    if dates[j].year == dt.year:
+                        periodic_amt = amt - amounts[j]
+                        break
+            # ISBS month-end date as the event_date
+            me = (dt + pd.offsets.MonthEnd(0)).date()
+            periodic_rows.append({
+                'vcode': str(deal_vcode),
+                'event_date': me,
+                'vAccount': int(acct),
+                'mAmount': periodic_amt,
+                'Pro_Yr': dt.year - pro_yr_base,
+            })
+
+    if not periodic_rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(periodic_rows)
+
+    # Aggregate in case sub-portfolio properties produce duplicate (date, account) rows
+    df = df.groupby(['vcode', 'event_date', 'vAccount', 'Pro_Yr'], as_index=False)['mAmount'].sum()
+
+    # Add Year column
+    df['Year'] = df['event_date'].apply(lambda d: pd.Timestamp(d).year).astype('Int64')
+    df['vAccount'] = df['vAccount'].astype('Int64')
+
+    # Merge COA for vAccountType
+    if coa is not None and not coa.empty:
+        df = df.merge(coa, on='vAccount', how='left')
+        df['vAccountType'] = df['vAccountType'].fillna('').astype(str)
+
+    # Normalize signs (same convention as forecast)
+    # ISBS stores revenue as negative (credit), expenses as positive (debit)
+    # The normalize function uses abs() rules, so we can use it directly
+    # since ISBS mAmount signs match the raw forecast mAmount signs
+    df = normalize_forecast_signs(df)
+
+    debug_msgs.append(
+        f"Injected {len(df)} ISBS actual rows for display (months <= {cutoff.date()})"
+    )
+    return df
+
+
 def compute_deal_analysis(
     deal_vcode, deal_investment_id, sale_date_raw,
     inv, wf, acct, fc, coa,
@@ -617,6 +722,9 @@ def compute_deal_analysis(
     # --- Actuals through: trim forecast operating rows for months <= cutoff ---
     # The accounting seed already captures actual partner cash flows for these
     # months. The waterfall will only run on periods after the cutoff.
+    # ISBS actuals are injected into fc_deal_display (not fc_deal_modeled) later
+    # so the annual forecast table shows actual + forecast blend.
+    _trimmed_forecast_rows = pd.DataFrame()  # saved for display fallback
     if actuals_through is not None:
         from config import REVENUE_ACCTS, EXPENSE_ACCTS
         cutoff = pd.Timestamp(actuals_through)
@@ -627,6 +735,7 @@ def compute_deal_analysis(
             fc_deal_full["vAccount"].isin(operating_accts)
         )
         trimmed_count = mask.sum()
+        _trimmed_forecast_rows = fc_deal_full[mask].copy()
         fc_deal_full = fc_deal_full[~mask]
         debug_msgs.append(
             f"Actuals through {actuals_through}: {trimmed_count} forecast operating rows trimmed"
@@ -997,6 +1106,33 @@ def compute_deal_analysis(
     fc_deal_display = fc_deal_modeled.copy()
     after_sale_mask = fc_deal_display["event_date"] > sale_me
     fc_deal_display.loc[after_sale_mask, "mAmount_norm"] = 0.0
+
+    # Inject ISBS actuals into display for months trimmed by actuals_through.
+    # For months where ISBS data isn't available yet, restore the original
+    # forecast/budget rows so the annual table isn't missing data.
+    if actuals_through is not None and not _trimmed_forecast_rows.empty:
+        actuals_rows = _extract_isbs_actuals_for_forecast(
+            isbs_raw, deal_vcode, prop_vcodes_for_cap,
+            pd.Timestamp(actuals_through), int(start_year), int(pro_yr_base),
+            coa, debug_msgs,
+        )
+        if not actuals_rows.empty:
+            # Zero out actuals after sale date (same as forecast)
+            actuals_after_sale = actuals_rows["event_date"] > sale_me
+            actuals_rows.loc[actuals_after_sale, "mAmount_norm"] = 0.0
+            # Restore forecast rows for months that have NO ISBS actuals
+            actual_months = set(actuals_rows["event_date"].unique())
+            fallback = _trimmed_forecast_rows[
+                ~_trimmed_forecast_rows["event_date"].isin(actual_months)
+            ]
+            fc_deal_display = pd.concat(
+                [fc_deal_display, actuals_rows, fallback], ignore_index=True
+            )
+        else:
+            # No ISBS actuals — restore all trimmed forecast rows for display
+            fc_deal_display = pd.concat(
+                [fc_deal_display, _trimmed_forecast_rows], ignore_index=True
+            )
 
     # --- Capital calls, cash management ---
     capital_calls = []
