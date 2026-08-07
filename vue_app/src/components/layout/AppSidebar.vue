@@ -369,6 +369,20 @@ async function sendFeedbackReply() {
   }
 }
 
+async function resolveFeedback() {
+  if (!feedbackDetail.value) return
+  try {
+    const client = (await import('../../api/client')).default
+    const res = await client.post(`/api/feedback/${feedbackDetail.value.id}/resolve`)
+    feedbackDetail.value = res.data
+    feedbackLoaded.value = false
+    await loadFeedback()
+    data.addToast('Request marked as resolved', 'success')
+  } catch (e: any) {
+    data.addToast('Failed to resolve: ' + (e.response?.data?.error || e.message), 'error')
+  }
+}
+
 // Sidebar collapse toggle
 const collapsed = ref(false)
 
@@ -589,6 +603,15 @@ function toggleCollapsed() {
                 {{ feedbackReplying ? 'Sending...' : 'Send Reply' }}
               </button>
             </div>
+            <!-- Mark Resolved -->
+            <button
+              v-if="feedbackDetail.status !== 'resolved' && feedbackDetail.status !== 'closed'"
+              class="btn btn-xs btn-full"
+              style="margin-top: 6px; background: #388e3c"
+              @click="resolveFeedback"
+            >
+              ✓ Mark Resolved
+            </button>
           </div>
 
           <!-- Submit form + list view -->

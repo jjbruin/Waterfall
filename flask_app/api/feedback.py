@@ -122,6 +122,25 @@ def get_by_token(reply_token):
 
 # ── Admin endpoints ─────────────────────────────────────────
 
+@feedback_bp.route("/<int:request_id>/resolve", methods=["POST"])
+@login_required
+def resolve_own_request(request_id):
+    """Allow the initiator to mark their own request as resolved."""
+    try:
+        req = get_request(request_id)
+        if req["user_id"] != g.current_user["id"]:
+            return jsonify({"error": "Not authorized"}), 403
+        if req["status"] in ("resolved", "closed"):
+            return jsonify({"error": "Already resolved"}), 400
+        result = update_request_status(
+            request_id, "resolved",
+            admin_name=g.current_user["username"],
+        )
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+
 @feedback_bp.route("/<int:request_id>/status", methods=["PUT"])
 @login_required
 @role_required("admin")
