@@ -408,14 +408,14 @@ Vue: `AppSidebar.vue` database tools section. Flask: `data.py` API endpoints.
 ### 10. Feedback & Request Tracking
 Embedded request tracking system for users to report errors, suggest improvements, and request reports or analysis. Flask: `feedback.py` + `feedback_service.py`. Vue: sidebar section in `AppSidebar.vue`.
 - **Request Types**: `error`, `improvement`, `report`, `analysis`. Priorities: `low`, `medium`, `high`.
-- **Statuses**: `open` → `in_progress` → `resolved` / `closed`.
+- **Statuses**: `open` → `in_progress` → `resolved` / `closed`. Initiators can self-resolve via "Mark Resolved" button; admins can set any status.
 - **Database Tables**: `user_requests` (id, user_id, username, request_type, title, description, priority, status, page_context, deal_context, reply_token, created_at, updated_at, resolved_at), `user_request_messages` (id, request_id, sender_type, sender_name, message, sent_via, created_at). Both in `PROTECTED_TABLES`.
 - **Threaded Messages**: Each request has a conversation thread (user submissions, admin responses, system status changes, email replies). `sender_type`: `user`, `admin`, `system`. `sent_via`: `app`, `email`.
 - **Email Communication**: Admin sends email to user via `POST /<id>/email` (SendGrid). Email includes "View & Reply" button with unique `reply_token` URL → opens app with sidebar auto-focused on that request. Reply token is per-request, generated at creation.
 - **Inbound Email Webhook**: `POST /api/feedback/inbound-email` — SendGrid Inbound Parse endpoint. Extracts reply token from `to` address (`requests+TOKEN@domain.com`), strips quoted text, stores reply in thread. Requires DNS MX record setup for full email reply flow.
 - **Design Session Export**: `GET /api/feedback/export` (admin) — returns all requests with full message threads for consumption during Claude design sessions.
 - **AI Assistant Integration**: `get_user_feedback` tool allows the embedded Claude assistant to query all feedback requests, filterable by status and type.
-- **API Endpoints** (`/api/feedback`): `POST /` (submit), `GET /` (list — admin sees all, users see own), `GET /<id>` (detail with thread), `POST /<id>/messages` (add reply), `GET /reply/<token>` (lookup by email token), `PUT /<id>/status` (admin: change status), `POST /<id>/email` (admin: email user), `GET /export` (admin: all requests for design sessions), `POST /inbound-email` (webhook).
+- **API Endpoints** (`/api/feedback`): `POST /` (submit), `GET /` (list — admin sees all, users see own), `GET /<id>` (detail with thread), `POST /<id>/messages` (add reply), `POST /<id>/resolve` (initiator: mark own request resolved), `GET /reply/<token>` (lookup by email token), `PUT /<id>/status` (admin: change status), `POST /<id>/email` (admin: email user), `GET /export` (admin: all requests for design sessions), `POST /inbound-email` (webhook).
 - **Page Context**: Automatically captures current route path when submitting, available for debugging context.
 
 ### User Authentication
