@@ -344,7 +344,7 @@ def add_note(vcode: str, quarter: str, user_id: int, username: str,
 
 
 def is_editable(vcode: str, quarter: str) -> bool:
-    """Check if comments can be edited (only in draft or returned status)."""
+    """Check if comments can be edited (locked only after final approval)."""
     _ensure_tables()
     engine = get_engine()
     with engine.connect() as conn:
@@ -354,7 +354,7 @@ def is_editable(vcode: str, quarter: str) -> bool:
         ).fetchone()
     if row is None:
         return True  # No submission yet = draft
-    return row[0] in ("draft", "returned")
+    return row[0] != "approved"
 
 
 # ── Snapshots ────────────────────────────────────────────────

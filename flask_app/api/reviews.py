@@ -34,7 +34,7 @@ def get_review_status(vcode, quarter):
             and step_role in user_roles
         )
         sub["can_return"] = sub["can_approve"]
-        sub["is_editable"] = sub["status"] in ("draft", "returned") or sub["id"] is None
+        sub["is_editable"] = sub["status"] != "approved" or sub["id"] is None
         sub["has_snapshot"] = get_snapshot(vcode, quarter) is not None
 
         return jsonify(sub)
@@ -53,7 +53,7 @@ def submit(vcode, quarter):
             g.current_user["id"], g.current_user["username"],
             note_text=body.get("note"),
         )
-        result["is_editable"] = result["status"] in ("draft", "returned") or result.get("id") is None
+        result["is_editable"] = result["status"] != "approved" or result.get("id") is None
         return jsonify(result)
     except PermissionError as e:
         return jsonify({"error": str(e)}), 403
@@ -72,7 +72,7 @@ def approve_review(vcode, quarter):
             g.current_user["id"], g.current_user["username"],
             note_text=body.get("note"),
         )
-        result["is_editable"] = result["status"] in ("draft", "returned") or result.get("id") is None
+        result["is_editable"] = result["status"] != "approved" or result.get("id") is None
         return jsonify(result)
     except PermissionError as e:
         return jsonify({"error": str(e)}), 403
@@ -91,7 +91,7 @@ def return_review(vcode, quarter):
             g.current_user["id"], g.current_user["username"],
             note_text=body.get("note", ""),
         )
-        result["is_editable"] = result["status"] in ("draft", "returned") or result.get("id") is None
+        result["is_editable"] = result["status"] != "approved" or result.get("id") is None
         return jsonify(result)
     except PermissionError as e:
         return jsonify({"error": str(e)}), 403
