@@ -976,3 +976,73 @@ F. **7076 Tenant Improvements** — include in FAD? First check whether 7075 Res
 **Housekeeping:** `abs_bug_evidence_2026-08-06.xlsx` sits untracked in the project root — commit,
 move, or delete. During this session MEMORY.md grew 468 → 652 → 784 lines from a concurrent
 session; this block was appended at the true end after re-reading. Nothing above it was altered.
+
+## Burton co-terminous child loans — Aug 7, 2026
+
+**Appended, nothing above altered.** Second of two Burton fixes; read with the
+"Burton child-loan aggregation" section above, which it builds on and partly corrects.
+
+### Problem
+
+Burton Retail Portfolio (**P0000109**, `Property_Count` 3) is a portfolio parent that holds
+**no loans of its own** — all three sit on the children: LoanID 324 Foley Square P0000111
+($18,226,000), 325 Jubilee Square P0000112 ($30,166,500), 326 Westwood Plaza P0000113
+($26,910,000). They are **one co-terminous financing split across the properties**: identical
+5.665% Fixed, 84-month term, 360 amort, DCR 1.25, maturing 8/28/2032. Note `dtMaturity` is
+**blank on all three** — the date lives in `dtEvent`.
+
+The earlier fix (branch `fix/burton-child-loans`, commit **`2086ebc`**, pre-rebase `e725134`,
+merged to main in `1a5e277`) correctly stopped the parent rendering 'N/A', but inherited a
+primary/second selection rule written for a single property with a real capital stack. Sorting
+the three inherited loans by `mOrigLoanAmt` descending gave Jubilee → primary, **Westwood →
+phantom "second loan"**, Foley → silently dropped. Because all three are identical the second
+line rendered the same string as the first, reading as a duplicate. Debt also stayed **0**: the
+`MRI_Loans` fallback filtered on the parent's own vcode and found nothing.
+*(A prior note cited this commit as `becea60` — that hash does not exist; the correct one is
+`2086ebc`.)*
+
+### Fix
+
+Branch **`fix/burton-coterminous-loans`**, commit **`55686b0`** — pushed to origin,
+**merged: no · deployed: no.** `one_pager.py`, +56/−2.
+
+New `_loans_share_terms()` — true when every row shares rate, maturity and interest type
+(maturity read `dtMaturity` then `dtEvent`, matching `_parse_loan`). On the
+**parent-inheritance path only**, gated by a new `inherited_from_children` flag:
+- the shared term renders as the single/primary loan
+- the second slot stays **N/A**
+- the debt fallback sums `mOrigLoanAmt` across the children: **0 → $75,302,500**
+
+Burton's cap stack then recomputes: total cap 37,997,500 → **113,300,000**; debt **66.46%**,
+pref 23.48%, partner 10.06% (sums to 100.0000%); PE exposure on cap 89.94%; **~69% LTV** on a
+$109,000,000 purchase price. No negatives, nothing over 100%. Pref/partner dollars unchanged.
+`current_valuation`, `pe_exposure_on_value` and `pe_yield_on_exposure` are 0 before *and* after —
+`MRI_VAL` has no row for P0000109. Pre-existing, unrelated to this fix.
+
+### Guardrail
+
+110 deals compared, **only Burton changed, 109 byte-for-byte identical.** The **11 genuine
+primary + second-tranche deals keep their second loan** (P0000003 3.20%/5.94%, P0000069
+5.35%/SOFR+2.50%, …) — excluded by the same-terms guard, **not special-cased**. Berger
+Pittsburgh, OREI and Donald Lynch untouched: Berger's 8 child loans carry **6 distinct term
+sets** (senior ~2.9% plus mezz ~7.3% per property) so it fails the guard naturally; OREI has its
+own loan so never reaches the inheritance path; Donald Lynch has 1 child loan. **Berger's
+differing-terms parent case is a separate open follow-up** — it still shows a primary and a
+second and silently drops six loans.
+
+### Post-deploy check still needed — Burton's debt line
+
+The 0 → $75.3M roll-up **only fires when ISBS returns no balance for P0000109**:
+`get_isbs_debt_balance()` runs first and ISBS Interim BS takes precedence over the `MRI_Loans`
+fallback. Verified here with `isbs_raw=None`, so the fallback ran. On Azure, if ISBS carries a
+parent balance that value wins instead and may differ — including the possibility of a
+**JB-Fair-Park-style stale row** kept alive by an active MRI loan. The **loan-term collapse is
+independent of ISBS and holds either way.**
+
+### Guardrail caveat
+
+Ran against the **Apr-15 `MRI_Loans.csv` snapshot (78 loan rows, 110 deals)**; live Azure was
+unreachable all session (PG firewall, no Azure CLI locally). Azure carries **~24 more deals** not
+in that CSV, so another parent with co-terminous child loans would also collapse — correctly, but
+it was not in the sweep. Re-run `scripts/burton_loandump.py` (which reads PG directly) once the
+firewall allows it.
