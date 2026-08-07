@@ -82,20 +82,21 @@ def compute_all_sold_returns(inv_sold: pd.DataFrame, acct: pd.DataFrame,
         pref_cashflows = []
         pref_capital_events = []
         pref_cf_distributions = []
+        contribs = 0.0
+        distribs = 0.0
 
         for _, grp in deal_acct.groupby("_investor_key"):
-            _, _, _, _, _, cashflows, capital_events, cf_dists = (
+            p_contribs, p_distribs, _, _, _, cashflows, capital_events, cf_dists = (
                 _compute_partner_metrics(grp)
             )
             pref_cashflows.extend(cashflows)
             pref_capital_events.extend(capital_events)
             pref_cf_distributions.extend(cf_dists)
+            contribs += p_contribs
+            distribs += p_distribs
 
         if not pref_cashflows:
             continue
-
-        contribs = sum(abs(a) for _, a in pref_cashflows if a < 0)
-        distribs = sum(a for _, a in pref_cashflows if a > 0)
         irr_val = xirr(pref_cashflows) if len(pref_cashflows) >= 2 else None
 
         start = min(d for d, _ in pref_cashflows)
@@ -137,8 +138,9 @@ def compute_all_sold_returns(inv_sold: pd.DataFrame, acct: pd.DataFrame,
     wtd_hold_years = round(wtd_hold_num / wtd_hold_den, 1) if wtd_hold_den > 0 else None
 
     # Portfolio total row
-    port_contribs = sum(abs(a) for _, a in portfolio_cashflows if a < 0)
-    port_distribs = sum(a for _, a in portfolio_cashflows if a > 0)
+    # Accumulate from deal rows (correctly handles negative distribution corrections)
+    port_contribs = sum(r["Total Contributions"] for r in all_rows)
+    port_distribs = sum(r["Total Distributions"] for r in all_rows)
     port_irr = xirr(portfolio_cashflows) if len(portfolio_cashflows) >= 2 else None
 
     port_start = min(d for d, _ in portfolio_cashflows)
@@ -213,7 +215,7 @@ def build_deal_detail(vcode: str, inv_sold: pd.DataFrame, acct: pd.DataFrame,
         if r["is_contribution"]:
             cashflow = -abs(amt)
         elif r["is_distribution"]:
-            cashflow = abs(amt)
+            cashflow = amt  # Preserve sign — negative means correction/reversal
         else:
             cashflow = 0.0
 
@@ -247,14 +249,16 @@ def build_deal_detail(vcode: str, inv_sold: pd.DataFrame, acct: pd.DataFrame,
     # Compute summary metrics — use original EffectiveDate (date objects) for XIRR
     # The df "Date" column is stringified for JSON; rebuild cashflows from deal_acct
     cashflows = []
+    contribs = 0.0
+    distribs = 0.0
     for _, r in deal_acct.iterrows():
         amt = float(r["Amt"])
         if r["is_contribution"]:
             cashflows.append((r["EffectiveDate"], -abs(amt)))
+            contribs += abs(amt)
         elif r["is_distribution"]:
-            cashflows.append((r["EffectiveDate"], abs(amt)))
-    contribs = sum(abs(cf) for _, cf in cashflows if cf < 0)
-    distribs = sum(cf for _, cf in cashflows if cf > 0)
+            cashflows.append((r["EffectiveDate"], amt))
+            distribs += amt  # Negative corrections reduce total
     irr_val = xirr(cashflows) if len(cashflows) >= 2 else None
     moic_val = distribs / contribs if contribs > 0 else 0.0
 
@@ -267,7 +271,7 @@ def build_deal_detail(vcode: str, inv_sold: pd.DataFrame, acct: pd.DataFrame,
             cf = -abs(amt)
             capital_events.append((r["EffectiveDate"], cf))
         elif r["is_distribution"]:
-            cf = abs(amt)
+            cf = amt  # Preserve sign — negative means correction/reversal
             if r["is_capital"]:
                 capital_events.append((r["EffectiveDate"], cf))
             else:
@@ -452,6 +456,8 @@ def _compute_partner_metrics(partner_acct):
     cashflows = []
     capital_events = []
     cf_distributions = []
+    contributions = 0.0
+    distributions = 0.0
 
     for _, r in partner_acct.iterrows():
         d = r["EffectiveDate"]
@@ -461,18 +467,17 @@ def _compute_partner_metrics(partner_acct):
             cf = -abs(amt)
             cashflows.append((d, cf))
             capital_events.append((d, cf))
+            contributions += abs(amt)
         elif r["is_distribution"]:
-            cf = abs(amt)
+            cf = amt  # Preserve sign — negative means correction/reversal
             cashflows.append((d, cf))
+            distributions += amt  # Negative corrections reduce total
             tn = str(r.get("Typename", "")).lower()
             is_cap = any(kw in tn for kw in CAPITAL_TYPENAMES)
             if is_cap:
                 capital_events.append((d, cf))
             else:
                 cf_distributions.append((d, cf))
-
-    contributions = sum(abs(a) for _, a in cashflows if a < 0)
-    distributions = sum(a for _, a in cashflows if a > 0)
 
     irr_val = xirr(cashflows) if len(cashflows) >= 2 else None
 

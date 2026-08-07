@@ -219,9 +219,10 @@ def calculate_roe(
         return 0.0
 
     # Sum CF waterfall distributions (operating income only)
+    # Include negative amounts — corrections/reversals should reduce the total
     total_cf_distributions = sum(
         amt for d, amt in cf_distributions
-        if amt > 0 and start_date <= d <= end_date
+        if start_date <= d <= end_date
     )
 
     # Annualized ROE = (CF distributions / weighted avg capital) / years
@@ -289,7 +290,7 @@ def calculate_roe_detailed(
     years = total_days / 365.0
 
     total_cf = sum(amt for d, amt in cf_distributions
-                   if amt > 0 and start_date <= d <= end_date)
+                   if start_date <= d <= end_date)
 
     return {
         "roe": roe,
@@ -322,7 +323,8 @@ def calculate_moic(
     if total_invested == 0:
         return 0.0
 
-    total_distributed = sum(amt for _, amt in distributions if amt > 0)
+    # Sum all distribution amounts — negative corrections reduce the total
+    total_distributed = sum(amt for _, amt in distributions)
 
     return (total_distributed + unrealized_value) / total_invested
 
@@ -357,8 +359,16 @@ def investor_metrics(
         }
 
     # Separate contributions and all distributions
-    contributions = [(d, a) for d, a in ist.cashflows if a < 0]
-    distributions = [(d, a) for d, a in ist.cashflows if a > 0]
+    # Use cashflow_types when available to correctly handle negative distribution
+    # corrections (which look like contributions by sign alone)
+    types = ist.cashflow_types if hasattr(ist, 'cashflow_types') else []
+    if types and len(types) == len(ist.cashflows):
+        contributions = [(d, a) for (d, a), t in zip(ist.cashflows, types) if t == 'C']
+        distributions = [(d, a) for (d, a), t in zip(ist.cashflows, types) if t == 'D']
+    else:
+        # Fallback to sign-based separation
+        contributions = [(d, a) for d, a in ist.cashflows if a < 0]
+        distributions = [(d, a) for d, a in ist.cashflows if a > 0]
 
     # CF waterfall distributions only (for ROE)
     cf_distributions = ist.cf_distributions if hasattr(ist, 'cf_distributions') else []

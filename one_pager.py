@@ -1241,12 +1241,22 @@ def get_pe_performance(
                         pe['funded_to_date'] += abs(amt)
                         capital_events.append((evt_date, -abs(amt)))
                     elif "distri" in major_type:
-                        capital_events.append((evt_date, abs(amt)))
                         if "return of capital" in type_name or "realized gain" in type_name:
-                            pe['return_of_capital'] += abs(amt)
+                            # Capital return (or correction if amt < 0)
+                            capital_events.append((evt_date, amt))
+                            pe['return_of_capital'] += amt
                         elif "acquisition fee" not in type_name:
-                            # CF (operating) distribution — exclude Acquisition Fee
-                            cf_distributions.append((evt_date, abs(amt)))
+                            # CF (operating) distribution — preserve sign so
+                            # negative corrections reduce ROE instead of inflating it.
+                            # Only positive CF dists go to capital_events (negative
+                            # corrections must not inflate weighted avg capital).
+                            if amt >= 0:
+                                capital_events.append((evt_date, amt))
+                            cf_distributions.append((evt_date, amt))
+                        else:
+                            # Acquisition fee — still affects capital balance timeline
+                            if amt >= 0:
+                                capital_events.append((evt_date, amt))
 
                 # Compute ROE to Date from actual accounting through quarter end
                 if capital_events:

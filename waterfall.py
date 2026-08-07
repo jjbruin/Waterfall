@@ -86,6 +86,7 @@ def apply_distribution(ist: InvestorState, d: date, amt: float,
         return
     ist.cashflows.append((d, float(amt)))
     ist.cashflow_labels.append(label)
+    ist.cashflow_types.append('D')
     if is_cf_waterfall:
         ist.cf_distributions.append((d, float(amt)))
 
@@ -96,6 +97,7 @@ def apply_contribution(ist: InvestorState, d: date, amt: float, label: str = "")
         return
     ist.cashflows.append((d, -abs(float(amt))))
     ist.cashflow_labels.append(label)
+    ist.cashflow_types.append('C')
     ist.capital_outstanding += abs(float(amt))
 
 
@@ -653,6 +655,7 @@ def run_waterfall_period(
                         # Deduct from source's share (negative cashflow on source)
                         source_ist.cashflows.append((period_date, -fee))
                         source_ist.cashflow_labels.append(lead_vtranstype)
+                        source_ist.cashflow_types.append('C')
                         # Pay to recipient (positive cashflow)
                         apply_distribution(lead_stt, period_date, fee, is_cf_wf,
                                            label=lead_vtranstype)
@@ -986,6 +989,7 @@ def run_waterfall(
                         pool.cumulative_cap += amount
                     stt.cashflows.append((pc['_date'], -amount))
                     stt.cashflow_labels.append(pc.get('typename', 'Capital Call'))
+                    stt.cashflow_types.append('C')
                 pc['_applied'] = True
 
         _rem, rows = run_waterfall_period(
@@ -1190,6 +1194,7 @@ def seed_states_from_accounting(
             cf = amt if amt < 0 else -abs(amt)  # Ensure negative
             stt.cashflows.append((d, cf))
             stt.cashflow_labels.append(str(r.get("Typename", "")))
+            stt.cashflow_types.append('C')
 
             # Route to named pool via Typename
             pool_name = typename_to_pool(str(r.get("Typename", "")))
@@ -1207,9 +1212,10 @@ def seed_states_from_accounting(
 
         # DISTRIBUTIONS: Record cashflow, reduce capital if capital event
         elif r["is_distribution"]:
-            cf = amt if amt > 0 else abs(amt)  # Ensure positive
+            cf = amt  # Preserve sign — negative means correction/reversal
             stt.cashflows.append((d, cf))
             stt.cashflow_labels.append(str(r.get("Typename", "")))
+            stt.cashflow_types.append('D')
 
             # ONLY capital distributions reduce capital_outstanding
             if is_capital:
@@ -1722,6 +1728,7 @@ def run_upstream_waterfall_period(
                                 if fee_remaining > 0:
                                     source_ist.cashflows.append((period_date, -fee_remaining))
                                     source_ist.cashflow_labels.append(step_vtlabel)
+                                    source_ist.cashflow_types.append('C')
                                     apply_distribution(stt, period_date, fee_remaining, is_cf_wf,
                                                        label=step_vtlabel)
                                     amfee_actual = fee_remaining
@@ -1729,6 +1736,7 @@ def run_upstream_waterfall_period(
                             elif fee > 0:
                                 source_ist.cashflows.append((period_date, -fee))
                                 source_ist.cashflow_labels.append(step_vtlabel)
+                                source_ist.cashflow_types.append('C')
                                 apply_distribution(stt, period_date, fee, is_cf_wf,
                                                    label=step_vtlabel)
                                 amfee_actual = fee

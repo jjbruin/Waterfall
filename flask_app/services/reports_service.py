@@ -445,11 +445,18 @@ def build_roe_summary_row(
             funded += abs(amt)
             capital_events.append((evt_date, -abs(amt)))
         elif "distri" in major:
-            capital_events.append((evt_date, abs(amt)))
             if "return of capital" in tname or "realized gain" in tname:
-                roc += abs(amt)
+                capital_events.append((evt_date, amt))
+                roc += amt
             elif "acquisition fee" not in tname:
-                cf_distributions.append((evt_date, abs(amt)))
+                # CF distribution — preserve sign so negative corrections
+                # reduce ROE instead of inflating it.
+                if amt >= 0:
+                    capital_events.append((evt_date, amt))
+                cf_distributions.append((evt_date, amt))
+            else:
+                if amt >= 0:
+                    capital_events.append((evt_date, amt))
 
     if not capital_events:
         return None

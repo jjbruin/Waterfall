@@ -113,15 +113,17 @@ def seed_investor_states_from_accounting(
         if r["is_contribution"]:
             cf = amt if amt < 0 else -abs(amt)
             stt.cashflows.append((d, cf))
+            stt.cashflow_types.append('C')
             stt.capital_outstanding += abs(cf)
-            
+
             if stt.last_accrual_date is None:
                 stt.last_accrual_date = d
-        
+
         elif r["is_distribution"]:
-            cf = amt if amt > 0 else abs(amt)
+            cf = amt  # Preserve sign — negative means correction/reversal
             stt.cashflows.append((d, cf))
-            
+            stt.cashflow_types.append('D')
+
             # Fund distributions typically return capital
             capital_return = min(cf, max(0.0, stt.capital_outstanding))
             stt.capital_outstanding -= capital_return

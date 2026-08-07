@@ -64,6 +64,9 @@ class InvestorState:
     # Cashflows: negative = contribution, positive = distribution
     cashflow_labels: List[str] = field(default_factory=list)
     # Parallel to cashflows: cashflow_labels[i] is the Typename for cashflows[i]
+    cashflow_types: List[str] = field(default_factory=list)
+    # Parallel to cashflows: 'C' = contribution, 'D' = distribution
+    # Needed because negative distribution corrections look like contributions by sign
     cf_distributions: List[Tuple[date, float]] = field(default_factory=list)
     # CF waterfall distributions only (operating income for ROE calculation)
     promote_base: float = 0.0    # Cumulative pref distributions counting toward promote catch-up

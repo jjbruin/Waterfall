@@ -475,6 +475,7 @@ def run_interleaved_waterfalls(
                         pool.cumulative_cap += amount
                     stt.cashflows.append((pc_call['_date'], -amount))
                     stt.cashflow_labels.append(pc_call.get('typename', 'Capital Call'))
+                    stt.cashflow_types.append('C')
                 pc_call['_applied'] = True
 
         # c. Capital call cashflows always go to CF bucket

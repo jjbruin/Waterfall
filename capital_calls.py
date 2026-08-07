@@ -142,6 +142,7 @@ def apply_capital_calls_to_states(capital_calls: List[Dict], investor_states: Di
             if call_date is not None:
                 d = call_date.date() if hasattr(call_date, 'date') else call_date
                 stt.cashflows.append((d, -abs(amount)))
+                stt.cashflow_types.append('C')
 
     return investor_states
 
