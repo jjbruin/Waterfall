@@ -414,7 +414,9 @@ loan, so already forced to 0). This is a JB-Fair-Park-specific data gap, not a s
 
 ### Burton child-loan aggregation — DONE, on a branch (Aug 6, 2026)
 
-Branch **`fix/burton-child-loans`** commit `e725134` — **not merged, not deployed.**
+Branch **`fix/burton-child-loans`** commit `e725134` — ~~not merged, not deployed~~ **SUPERSEDED
+Aug 7, 2026: rebased to `2086ebc`, merged to main in `1a5e277`, and CONFIRMED DEPLOYED.** It
+shipped with a flaw — see "Burton co-terminous child loans — Aug 7, 2026" at the end of this file.
 New helper `_child_vcodes_for_parent()` in `one_pager.py`; the loan-terms block falls back
 to child loans only when the deal has none of its own.
 
@@ -723,7 +725,7 @@ Azure too. **No branch was created for Fix 11** — it would have re-done shippe
 | `09ec333` | main (pushed) | **Fix 12** — Location renders "City, State" (`one_pager.py:192-202`). 108 of 134 deals change; 20 stay blank (no City and no State); the append is skipped when the state string is already inside the city string (P0000107 → 'CT, RI'). |
 | `72fa80d` | main (pushed) | MEMORY.md — Investigations 1-5 and the U/W ROE 707x findings |
 | `6b3d54e` | main (pushed) | MEMORY.md — Burton topology, blast radius, open questions |
-| `e725134` | **`fix/burton-child-loans` — NOT merged, NOT deployed** | parent deals aggregate child-property loans: new `_child_vcodes_for_parent()` at `one_pager.py:210` (branch numbering), fallback wired in at `one_pager.py:348` |
+| `e725134` | ~~NOT merged, NOT deployed~~ **as of Aug 7: rebased `2086ebc`, merged `1a5e277`, DEPLOYED** | parent deals aggregate child-property loans: new `_child_vcodes_for_parent()` at `one_pager.py:210` (branch numbering), fallback wired in at `one_pager.py:348` |
 
 `git pull` reported "Already up to date" early in the session, but the remote had moved by the
 time Fix 12 was pushed — 4 commits (`a7d5e8d` plus 3 debug-endpoint commits) touching only
@@ -992,7 +994,10 @@ Burton Retail Portfolio (**P0000109**, `Property_Count` 3) is a portfolio parent
 **blank on all three** — the date lives in `dtEvent`.
 
 The earlier fix (branch `fix/burton-child-loans`, commit **`2086ebc`**, pre-rebase `e725134`,
-merged to main in `1a5e277`) correctly stopped the parent rendering 'N/A', but inherited a
+merged to main in `1a5e277`) is **merged AND DEPLOYED — confirmed live by Charlene on Aug 7,
+2026**, the tell being that Burton renders the double-loan flaw on the live app (pre-fix it
+showed 'N/A', so two identical terms can only come from this commit). It correctly stopped the
+parent rendering 'N/A', but inherited a
 primary/second selection rule written for a single property with a real capital stack. Sorting
 the three inherited loans by `mOrigLoanAmt` descending gave Jubilee → primary, **Westwood →
 phantom "second loan"**, Foley → silently dropped. Because all three are identical the second
