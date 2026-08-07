@@ -53,6 +53,7 @@ def submit(vcode, quarter):
             g.current_user["id"], g.current_user["username"],
             note_text=body.get("note"),
         )
+        result["is_editable"] = result["status"] in ("draft", "returned") or result.get("id") is None
         return jsonify(result)
     except PermissionError as e:
         return jsonify({"error": str(e)}), 403
@@ -71,6 +72,7 @@ def approve_review(vcode, quarter):
             g.current_user["id"], g.current_user["username"],
             note_text=body.get("note"),
         )
+        result["is_editable"] = result["status"] in ("draft", "returned") or result.get("id") is None
         return jsonify(result)
     except PermissionError as e:
         return jsonify({"error": str(e)}), 403
@@ -89,6 +91,7 @@ def return_review(vcode, quarter):
             g.current_user["id"], g.current_user["username"],
             note_text=body.get("note", ""),
         )
+        result["is_editable"] = result["status"] in ("draft", "returned") or result.get("id") is None
         return jsonify(result)
     except PermissionError as e:
         return jsonify({"error": str(e)}), 403
