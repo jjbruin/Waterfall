@@ -575,6 +575,10 @@ IS_ACCOUNTS = {
         'Interest': ['5190'],
         'Principal': ['7060'],
     },
+    # Tax abatement — in U/W (Projected IS) this is below NOI in acct 7070,
+    # but in actuals it's netted into 5090 (Real Estate Taxes).  Include here
+    # so calc_amounts() can fold it into expenses for apples-to-apples comparison.
+    'TAX_ABATEMENT': ['7070'],
     # Balance-sheet debt accounts for principal estimation from balance changes
     'DEBT_BS_ACCTS': ['2145', '2150', '2152', '2154', '2156'],
     # Underwriting total debt service account (Projected IS)
@@ -662,6 +666,14 @@ def get_property_performance(
         # Expense accounts are stored as positive (debit convention)
         for category, acct_list in IS_ACCOUNTS['EXPENSES'].items():
             expenses += period_data[period_data['vAccount'].isin(acct_list)]['mAmount'].sum()
+
+        # Tax abatement (7070): stored as negative (credit) in U/W Projected IS,
+        # but in actuals it's already netted into 5090.  Adding it here reduces
+        # expenses for U/W and is zero for actuals — makes columns comparable.
+        abatement = period_data[
+            period_data['vAccount'].isin(IS_ACCOUNTS['TAX_ABATEMENT'])
+        ]['mAmount'].sum()
+        expenses += abatement  # negative credit reduces expenses
 
         for category, acct_list in IS_ACCOUNTS['DEBT_SERVICE'].items():
             debt_service += period_data[period_data['vAccount'].isin(acct_list)]['mAmount'].sum()
@@ -845,6 +857,28 @@ def get_property_performance(
                     if ds > 0 and pd.notna(acn_noi):
                         perf['dscr']['at_close'] = -float(acn_noi) / ds
                     at_close_filled = True
+
+                    # Adjust for tax abatement (7070) in Projected IS at close.
+                    # The MRI pre-computed at_close_noi uses 5xxx for expenses,
+                    # so 7070 (below-NOI abatement) is not included.  Find it
+                    # from the Projected IS at the earliest December date.
+                    if not uw_data.empty and at_close_filled:
+                        uw_periods_all = sorted(uw_data['dtEntry_parsed'].dropna().unique())
+                        ac_dec = next(
+                            (pd.Timestamp(p) for p in uw_periods_all if pd.Timestamp(p).month == 12),
+                            None,
+                        )
+                        if ac_dec is not None:
+                            ac_period = uw_data[uw_data['dtEntry_parsed'] == ac_dec]
+                            ac_abate = ac_period[
+                                ac_period['vAccount'].isin(IS_ACCOUNTS['TAX_ABATEMENT'])
+                            ]['mAmount'].sum()
+                            if ac_abate != 0:
+                                perf['expenses']['at_close'] += ac_abate
+                                perf['noi']['at_close'] = perf['revenue']['at_close'] - perf['expenses']['at_close']
+                                ds = abs(float(acn_int or 0)) + abs(float(acn_prin or 0))
+                                if ds > 0:
+                                    perf['dscr']['at_close'] = perf['noi']['at_close'] / ds
 
         # Fallback: earliest December 31 in Projected IS = due diligence audit
         if not at_close_filled:
