@@ -321,9 +321,11 @@ def one_pager(vcode):
 @login_required
 def one_pager_chart(vcode):
     """Get one pager quarterly NOI chart data."""
+    quarter = request.args.get("quarter")
     data = _get_data()
     try:
-        chart = get_one_pager_chart(vcode, data["isbs_raw"], data["occupancy_raw"])
+        chart = get_one_pager_chart(vcode, data["isbs_raw"], data["occupancy_raw"],
+                                    quarter=quarter, inv=data["inv"])
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     return jsonify(safe_json(chart))
@@ -437,7 +439,9 @@ def one_pager_batch():
             page["data"] = None
             page["error"] = str(e)
         try:
-            page["chart"] = get_one_pager_chart(vcode, data["isbs_raw"], data["occupancy_raw"])
+            page["chart"] = get_one_pager_chart(
+                vcode, data["isbs_raw"], data["occupancy_raw"], quarter=quarter,
+                inv=data["inv"])
         except Exception:
             page["chart"] = None
         pages.append(page)

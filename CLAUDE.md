@@ -370,7 +370,7 @@ Standalone route at `/one-pager`. Vue: `OnePagerView.vue`. Flask: `financials.py
 - **Property Performance** — Table with At Close (from `at_close_noi` MRI table or Projected IS earliest Dec 31 fallback), Projected YE (YTD Actual + remainder-of-year Budget), U/W YE on the left (Annual Financial Comparison); YTD (Actual), YTD (Budget), Variance (% of budget) on the right (As of quarter end). Rows: Economic Occ., Revenue, Expenses (underlined), NOI, DSCR. Amounts in $M, DSCR as X.XXX. Economic Occ sources: YTD = avg physical occ - bad debt %, Projected YE = weighted avg of actual + budget remaining months, U/W YE = 1 - (vacancy 4030 / rental income 4010) from Projected IS, At Close = from `deal_terms` table `econ_occ_at_close`. Editable performance comments.
 - **Preferred Equity Performance** — Committed PE, Remaining to Fund, Funded to Date, Return of Capital, Current PE Balance, Accrued Balance, Coupon, Participation, ROE to Date, U/W ROE to Date. Editable accrued pref comment. Enriched from deal analysis waterfall via `_enrich_pe_from_deal_result()` in `financials_service.py`: Current PE Balance and Accrued Balance from `seed_states` (current state at actuals boundary, not terminal projected state); ROE to Date from actual accounting distributions through quarter end via `calculate_roe()` (not projected); Committed PE falls back to total PE contributions if commitments table empty. U/W ROE to Date uses actual capital structure (contributions/returns from accounting) with underwritten distributions from Projected IS account 7071 (numerator) and underwritten return of capital from account 7073 (reduces weighted avg capital denominator, not counted as distributions).
 - **Business Plan & Updates** — Editable free-text comments.
-- **Occupancy vs. NOI Chart** — ECharts dual-axis. Occupancy bars + NOI U/W and NOI ACT lines. Trailing 10-12 quarters. Values in $ millions. Capped at the last reported actual quarter (`cap_to_last_actual=True` in `get_one_pager_chart()`) — does not show U/W quarters beyond reporting period. Property Financials chart keeps its forward U/W lookahead.
+- **Occupancy vs. NOI Chart** — ECharts dual-axis. Occupancy bars + NOI U/W and NOI ACT lines. Values in $ millions. Rolling window of exactly 10 quarters ending at the selected report quarter (`window_end_quarter` in `get_one_pager_chart()`); quarters the deal predates keep their x-axis slot at 0, an in-progress quarter renders as a gap. Property Financials chart keeps its data-derived window and forward U/W lookahead.
 - **Comments** — Four editable fields (performance, accrued pref, business plan, PE capitalization) persisted to `one_pager_comments` table per vcode + quarter. PE capitalization is a borderless inline textarea that carries forward across quarters. Comments are editable throughout the review process and locked (read-only) only after final approval.
 - **Review Workflow** — Sequential approval pipeline: Asset Manager → Head of AM → President → CCO → CEO → Approved. `ReviewPanel.vue` component shows status indicator, approve/return buttons (role-gated), and threaded review notes. Return sends document back to Draft with a required note. Comments editable during review, locked only after final approval.
 - **Snapshot System** — On CEO final approval, all computed One Pager data + chart frozen into `one_pager_snapshots` table as JSON via `_save_snapshot()` in `review_service.py`. "View Approved Version" / "View Live Data" toggle button renders frozen data with blue banner (approver + date). Comments read-only from snapshot. API: `GET /api/financials/<vcode>/one-pager/snapshot?quarter=X`. Review status includes `has_snapshot` flag.
@@ -674,32 +674,73 @@ Embedded Claude-powered chat panel for natural-language queries against the port
 - Rates as decimals (0.08 = 8%)
 - Use Python date objects for dates
 
-## One Pager NOI/Occupancy chart cap (Aug 7, 2026)
+## One Pager NOI/Occupancy chart window (Aug 7, 2026)
 
-Commit `becdf96` (branch `fix/onepager-chart-cap`) — **merged into `main`; not yet deployed.**
+Branch `feat/onepager-chart-window` — **not merged, not deployed.** Supersedes the
+`cap_to_last_actual` rule from `becdf96`, which is deleted.
 
 **What changed.** `get_performance_chart_data()` in `flask_app/services/financials_service.py`
-takes a new `cap_to_last_actual: bool = False`. When True it filters `uw_agg` to
-`max(actual_agg.keys())` *before* `all_period_ends` is built — one filter point that caps the
-series, the x-axis, the `available_period_ends` dropdown and the 2-quarter UW lookahead
-together, so the three series stay aligned.
+takes `window_end_quarter: Optional[str]` and `zero_fill: bool`. With a window quarter it
+skips the index slice over `all_period_ends` entirely and builds `display_dates` from the
+calendar via `_quarter_window()` — exactly `periods` consecutive quarters ending at the
+selected report quarter.
 
-**Scoping.** `get_one_pager_chart()` passes `cap_to_last_actual=True` (covers the
-`/one-pager/chart` endpoint, the bulk print pages, and `_save_snapshot()`). Property
-Financials calls `get_performance_chart_data()` directly and **intentionally keeps its
-2-quarter underwriting lookahead — do not cap it unless asked.**
+**Why the old window was wrong.** `all_period_ends` is the union of periods that *have
+data*, so `periods` meant "10 quarters that have rows," not 10 calendar quarters. A deal
+acquired mid-window was not missing bars — those quarters were never x-axis slots. Burton
+(`p0000109`, first reported quarter 25Q3) rendered a **one-bar chart**.
 
-**Why the cap is data-derived.** It uses `max(actual_agg.keys())` — the newest actual
-reporting quarter — **not today's date**. Reporting lags the calendar, so a today-based cap
-would wrongly yield 26Q3; the reporting quarter is currently **26Q2**. The cap advances
-automatically as quarters are reported, and `aggregate_periodic` already drops quarters with
-<3 months, so a partially-reported quarter cannot become the cap. Deals with no actuals fall
-through uncapped so their projection-only chart still renders.
+**Pre-close quarters are zero by definition.** `date_closed` is resolved by
+`_resolve_date_closed()` from `inv['Acquisition_Date']` (the same field the One Pager's
+"Date Closed" shows, derived by `data_service._enrich_acquisition_dates` from the earliest
+accounting activity). Any slot ending strictly before it is forced to `0` across ACT, U/W
+and Occupancy **ahead of the data lookups** — underwriting projections routinely predate
+closing, and those rows must not show through on a quarter the deal did not exist for.
+ReNew Glenmoore (`p0000099`, closed 2025-02-19) carried 60 Projected IS rows in Q4 2024
+worth 0.78M; that quarter now reads 0.
+
+**Child properties inherit the parent's date.** Their accounting sits at the parent, so
+`Acquisition_Date` is blank — `_resolve_date_closed()` falls back via child
+`Portfolio_Name` == parent `Investment_Name`, the same pairing `consolidation.py` uses
+(the parent row self-references and is skipped). Burton — Westwood Plaza (`p0000113`)
+resolves to the portfolio's 2025-08-28.
+
+**Zero vs gap, for everything on or after Date Closed.** `_slot_value()` splits the two
+cases using `_period_month_counts()`: a quarter with **no** months of data is a real `0`,
+while a quarter with **some** months but fewer than three stays `null` and renders as a
+gap, so an in-progress quarter never claims zero NOI. Occupancy is an average, so a partial
+quarter keeps its real reading and only a quarter with no readings falls to 0. A quarter
+the deal existed for but that simply has not been reported stays on this data-driven path
+— it is **not** force-zeroed (`p0000085`, closed 23Q4 with no actuals until 25Q4).
+
+**Scoping.** `get_one_pager_chart(vcode, isbs_raw, occupancy_raw, quarter=None,
+num_quarters=10)` — note 12 → 10. The quarter is threaded from `/one-pager/chart`
+(`request.args`), the batch/print endpoint, and `_save_snapshot()`; `OnePagerView.vue`
+sends it and, on first load only, waits for the quarter to resolve before requesting the
+chart. Without a quarter it falls back to the old data-derived window. Property Financials
+calls `get_performance_chart_data()` directly and **keeps its data-derived window and
+2-quarter underwriting lookahead — do not window it unless asked.**
+
+**Guardrails.** `scripts/onepager_chart_window_check.py` — runs the real committed function
+on each side (`capture before` from a worktree at `origin/main`, `capture mid` from the
+window-only commit, `capture after` on the working tree, then `report`). 6 deals ×
+2 quarters: every window is 10 quarters, ends at the selected quarter, series lengths
+aligned, every pre-close quarter is a hard zero on all three series, and no post-close
+quarter changed between mid and after. Burton goes 1 bar → 10 slots with 7 zero-filled and
+its 25Q4 actual (2.61M) intact.
+
+`scripts/onepager_chart_verify_wiring.py` — proves the report quarter reaches the window by
+calling the real `/one-pager/chart` view body inside a request context with `?quarter=` on
+the URL (only `_get_data` stubbed, only `@login_required` bypassed), and prints every window
+quarter against Date Closed. With the param omitted the same deals fall back to the
+data-derived window and land elsewhere, which is what rules out a hardcoded latest-actual.
 
 **Open items.**
-1. Rule verified on local data only (all deals' actuals end Q4 2025 in the Apr-15 ISBS
-   snapshot). The specific **26Q2** result must be spot-checked on live Azure after deploy.
-2. Snapshots frozen before this change keep future quarters in their stored JSON —
-   would need backfilling.
+1. Verified on the local Apr-15 ISBS snapshot, whose actuals stop at 25Q4 — so 26Q1 shows
+   as a gap and 26Q2 as zero-fill locally. Live Azure has complete data and both should be
+   real values; spot-check after deploy.
+2. Snapshots frozen before this change keep their old sparse arrays — would need
+   backfilling.
+3. Vue change is untypechecked locally (`vue_app/node_modules` absent; build runs in Docker).
 3. `review_service.py:381` `_save_snapshot()` uses the capped chart for **new** snapshots.
 4. Deploy requires `az acr build` + `az containerapp update` — merging alone ships nothing.

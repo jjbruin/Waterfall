@@ -95,15 +95,24 @@ async function loadOnePager(vcode: string) {
   try {
     const params: any = {}
     if (selectedQuarter.value) params.quarter = selectedQuarter.value
-    const [opRes, chartRes] = await Promise.all([
-      api.get(`/api/financials/${vcode}/one-pager`, { params }),
-      api.get(`/api/financials/${vcode}/one-pager/chart`),
-    ])
+    // The chart window now ends at the selected quarter, so it can only be
+    // requested once the quarter is known. On first load the quarter comes back
+    // with the one-pager; after that it is already set and both go out together.
+    const chartReq = selectedQuarter.value
+      ? api.get(`/api/financials/${vcode}/one-pager/chart`, { params })
+      : null
+    // Awaited below — this only keeps a chart failure from surfacing as an
+    // unhandled rejection if the one-pager request rejects first.
+    chartReq?.catch(() => {})
+    const opRes = await api.get(`/api/financials/${vcode}/one-pager`, { params })
     opData.value = opRes.data
-    chartResult.value = chartRes.data
     if (!selectedQuarter.value && opRes.data.available_quarters?.length) {
       selectedQuarter.value = getMostRecentCompletedQuarter(opRes.data.available_quarters)
     }
+    const chartRes = await (chartReq ?? api.get(
+      `/api/financials/${vcode}/one-pager/chart`,
+      { params: selectedQuarter.value ? { quarter: selectedQuarter.value } : {} }))
+    chartResult.value = chartRes.data
     const c = opRes.data.comments || {}
     econComments.value = c.econ_comments || ''
     businessPlanComments.value = c.business_plan_comments || ''
