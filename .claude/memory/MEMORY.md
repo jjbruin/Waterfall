@@ -1052,10 +1052,9 @@ in that CSV, so another parent with co-terminous child loans would also collapse
 it was not in the sweep. Re-run `scripts/burton_loandump.py` (which reads PG directly) once the
 firewall allows it.
 
-## Deploy handoff to Jim — Aug 7, 2026
+## Deploy handoff to Jim — Aug 7–8, 2026 (COMPLETED)
 
-**Time-sensitive: both fixes need to be live before Monday for KOC investor reporting.**
-Two branches handed over, neither merged, neither deployed.
+Both fixes merged, deployed (v197), and a follow-up cap stack fix deployed (v198).
 
 ### Fix 1 — One Pager chart window
 
@@ -1108,18 +1107,26 @@ deploy commands and caveats, so **his Claude Code can execute the deploy**. The 
 Claude to send back a **"Deploy_Result"** doc containing build status, the new revision number,
 and any errors.
 
-### Open caveats for deploy
+### Deploy result — completed Aug 8, 2026
 
-1. **The Vue change was never typecheck-compiled locally.** `vue_app/src/views/OnePagerView.vue`
-   (from `45539ff`) only compiles during the Docker / `az acr build` step — `vue_app/node_modules`
-   is absent on this machine. **Jim's Claude must confirm that build step passes**, not assume it.
-   A TS error fails the build rather than shipping a broken page, but it blocks the deploy.
-2. **Post-deploy spot-checks.** (a) The chart ends at the selected quarter **with real values on
-   live** — the local ISBS snapshot stops at 25Q4, so the gaps and zero-fill in the test output
-   are local artifacts. (b) **Burton's debt line reads a sensible current balance** — the
-   0 → $75.3M roll-up only fires when ISBS returns no parent balance, since
-   `get_isbs_debt_balance()` takes precedence over the `MRI_Loans` fallback.
-3. **Frozen snapshots keep their old arrays.** One Pager snapshots approved before the chart
+Both branches **merged and deployed** by Jim's Claude Code.
+- ACR build **ca9c** succeeded (Vue/TS compiled cleanly). Revision **v197**.
+- Merge commits: `f711e2e` (chart window), `f73ef23` (Burton loans). Final main: `f73ef23`.
+
+### Follow-up fix — Cap stack equity quarter filtering (v198)
+
+Burton had a **$27,630,000 PPI contribution on July 1, 2026** (4th property acquisition) — one
+day after Q2 ends. The cap stack equity computation (`get_capitalization_stack()` in
+`one_pager.py`) had **no date filter** on accounting transactions, so the contribution showed
+in the Q2 2026 report. Debt was already filtered via `get_isbs_debt_balance(as_of_date=quarter_end)`.
+
+**Fix** (`9086f16`, revision **v198**): Filter `deal_acct` to `EffectiveDate <= quarter_end`
+when `quarter_str` is provided, before computing pref equity and partner equity balances.
+Without `quarter_str` (non-One Pager callers), behavior unchanged.
+
+### Remaining caveats
+
+1. **Frozen snapshots keep their old arrays.** One Pager snapshots approved before the chart
    change still hold the old sparse quarter arrays and would need backfilling.
 
 ### Process note — concurrent Claude Code sessions
