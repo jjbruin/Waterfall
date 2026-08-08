@@ -374,7 +374,7 @@ async function resolveFeedback() {
   try {
     const client = (await import('../../api/client')).default
     const res = await client.post(`/api/feedback/${feedbackDetail.value.id}/resolve`)
-    feedbackDetail.value = res.data
+    feedbackDetail.value = null
     feedbackLoaded.value = false
     await loadFeedback()
     data.addToast('Request marked as resolved', 'success')
@@ -652,11 +652,11 @@ function toggleCollapsed() {
             </div>
 
             <!-- Previous requests -->
-            <div v-if="feedbackList.length" class="fb-list">
+            <div v-if="feedbackList.some(r => r.status !== 'resolved' && r.status !== 'closed')" class="fb-list">
               <div class="db-divider" style="margin: 6px 0"></div>
               <span class="db-label">Your Requests</span>
               <div
-                v-for="item in feedbackList"
+                v-for="item in feedbackList.filter(r => r.status !== 'resolved' && r.status !== 'closed')"
                 :key="item.id"
                 class="fb-item"
                 @click="openFeedbackDetail(item.id)"
