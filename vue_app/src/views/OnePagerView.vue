@@ -914,7 +914,8 @@ function printOnePager() {
           <!-- BUSINESS PLAN -->
           <div class="section-header">BUSINESS PLAN &amp; UPDATES</div>
           <div class="bp-section">
-            <div class="comment-text bp-text">{{ pg.data.comments?.business_plan_comments || '' }}</div>
+            <div class="comment-text bp-text print-hide">{{ pg.data.comments?.business_plan_comments || '' }}</div>
+            <div class="bp-print-text print-only">{{ pg.data.comments?.business_plan_comments || '' }}</div>
           </div>
 
           <!-- CHART -->
@@ -1274,15 +1275,18 @@ function printOnePager() {
   .perf-table .spacer-col { width: 12px !important; }
   .perf-table .row-label { padding-right: 6px !important; }
 
-  /* Make textareas look like plain text in print */
-  .comment-input {
+  /* Make textareas and comment text look like plain text in print */
+  .comment-input,
+  .comment-text {
     border: none !important;
+    border-bottom: none !important;
     padding: 0 !important;
     resize: none !important;
     background: transparent !important;
     font-size: 12.5px !important;
     overflow: visible !important;
     height: auto !important;
+    min-height: 0 !important;
   }
 
   /* Business plan: fill remaining space, clip if too long */
