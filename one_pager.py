@@ -585,7 +585,7 @@ def get_capitalization_stack(
             if not deal_comm.empty and 'CommittedAmount' in deal_comm.columns:
                 cap['committed_pe'] = pd.to_numeric(deal_comm['CommittedAmount'], errors='coerce').fillna(0).sum()
 
-    # Get equity from accounting feed
+    # Get equity from accounting feed (filtered to quarter end when available)
     if acct is not None and not acct.empty and inv_map is not None:
         from loaders import build_investmentid_to_vcode
 
@@ -597,6 +597,12 @@ def get_capitalization_stack(
             normalize_columns(acct_norm)
             acct_norm["InvestmentID"] = acct_norm["InvestmentID"].astype(str).str.strip()
             deal_acct = acct_norm[acct_norm["InvestmentID"].isin(deal_investment_ids)].copy()
+
+            # Filter to transactions on or before the quarter end date
+            if not deal_acct.empty and quarter_str:
+                _, q_end = quarter_to_date_range(quarter_str)
+                deal_acct["EffectiveDate"] = pd.to_datetime(deal_acct["EffectiveDate"], errors="coerce")
+                deal_acct = deal_acct[deal_acct["EffectiveDate"].dt.date <= q_end].copy()
 
             if not deal_acct.empty:
                 deal_acct["MajorType"] = deal_acct["MajorType"].fillna("").astype(str).str.strip()
