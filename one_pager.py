@@ -250,6 +250,40 @@ def _child_vcodes_for_parent(vcode: str, inv_map: pd.DataFrame) -> List[str]:
     return children['vcode'].tolist()
 
 
+def _loans_share_terms(deal_loans: pd.DataFrame) -> bool:
+    """True when every loan row carries the same rate, maturity and interest type.
+
+    Only meaningful on the portfolio-parent inheritance path. A portfolio financed by
+    one co-terminous facility split across its properties yields N child loan rows with
+    identical terms (Burton: 3 rows, all 5.665% Fixed maturing 8/28/2032). Those are one
+    loan, not a tranche stack, so they must render as a single term with no second loan.
+
+    Loans that genuinely differ fail this and keep the existing primary + second
+    behaviour — e.g. Berger Pittsburgh's children each carry a senior plus a mezz piece
+    (6 distinct term sets across 8 rows).
+
+    Maturity is read from dtMaturity with a dtEvent fallback, matching _parse_loan below;
+    in the MRI feed dtMaturity is frequently blank and the date lives in dtEvent.
+    """
+    if deal_loans is None or len(deal_loans) < 2:
+        return False
+
+    keys = set()
+    for _, row in deal_loans.iterrows():
+        rate = pd.to_numeric(row.get('nRate'), errors='coerce')
+        rate = round(float(rate), 6) if pd.notna(rate) else None
+        maturity = None
+        for col in ('dtMaturity', 'dtEvent'):
+            if col in row.index and pd.notna(row[col]):
+                try:
+                    maturity = pd.to_datetime(row[col]).date()
+                    break
+                except Exception:
+                    pass
+        keys.add((rate, maturity, str(row.get('vIntType', '')).strip().lower()))
+    return len(keys) == 1
+
+
 def get_capitalization_stack(
     vcode: str,
     mri_loans: pd.DataFrame,
@@ -328,6 +362,15 @@ def get_capitalization_stack(
         if 'vCode' in loans.columns:
             loans['vCode'] = loans['vCode'].astype(str).str.strip()
             deal_loans = loans[loans['vCode'] == vcode_str]
+            if deal_loans.empty:
+                # Portfolio parent holding its debt on the children: when those child
+                # loans are one co-terminous facility, the parent's loan amount is their
+                # sum. Differing-terms parents are left alone (debt stays 0 here).
+                child_vcodes = {c.upper() for c in _child_vcodes_for_parent(vcode_str, inv_map)}
+                if child_vcodes:
+                    inherited = loans[loans['vCode'].str.upper().isin(child_vcodes)]
+                    if _loans_share_terms(inherited):
+                        deal_loans = inherited
             if not deal_loans.empty and 'mOrigLoanAmt' in deal_loans.columns:
                 cap['debt'] = pd.to_numeric(deal_loans['mOrigLoanAmt'], errors='coerce').fillna(0).sum()
 
@@ -340,6 +383,7 @@ def get_capitalization_stack(
         if 'vCode' in loans.columns:
             loans['vCode'] = loans['vCode'].astype(str).str.strip()
             deal_loans = loans[loans['vCode'] == vcode_str]
+            inherited_from_children = False
 
             if deal_loans.empty:
                 # A parent portfolio deal can hold all its debt on the child properties
@@ -348,6 +392,7 @@ def get_capitalization_stack(
                 child_vcodes = {c.upper() for c in _child_vcodes_for_parent(vcode_str, inv_map)}
                 if child_vcodes:
                     deal_loans = loans[loans['vCode'].str.upper().isin(child_vcodes)]
+                    inherited_from_children = not deal_loans.empty
 
             if not deal_loans.empty:
                 def _parse_loan(row):
@@ -425,8 +470,17 @@ def get_capitalization_stack(
                     strat = str(loan_row.get('vHedgedStrat', '')).strip() if pd.notna(loan_row.get('vHedgedStrat')) else ''
                     cap['rate_cap'] = strat if strat else 'Yes'
 
-                # Second loan
-                if len(deal_loans_sorted) > 1:
+                # Second loan — suppressed when a portfolio parent has inherited its
+                # children's loans and those are one co-terminous facility split across
+                # the properties. Sorting by amount would otherwise promote a sibling
+                # property's identical loan into the second slot as a phantom tranche
+                # (Burton: Jubilee primary, Westwood "second", Foley dropped).
+                # A single property with a real primary + second tranche is unaffected:
+                # inherited_from_children is False for it.
+                collapse_to_single = (inherited_from_children
+                                      and _loans_share_terms(deal_loans_sorted))
+
+                if len(deal_loans_sorted) > 1 and not collapse_to_single:
                     loan2 = deal_loans_sorted.iloc[1]
                     cap['second_loan_maturity'], cap['second_loan_rate'], cap['second_loan_type'], _idx2, _sprd2 = _parse_loan(loan2)
                     _ext2 = _get_extension_options(loan2)
