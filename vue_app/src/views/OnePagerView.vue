@@ -401,6 +401,48 @@ const asOfDate = computed(() => getAsOfDate(selectedQuarter.value))
 // ============================================================
 // Chart option builder
 // ============================================================
+
+/** Smallest "round" number >= v that divides into 5 clean axis ticks. */
+function niceCeil(v: number) {
+  if (!(v > 0)) return 0
+  const mag = Math.pow(10, Math.floor(Math.log10(v / 5)))
+  for (const s of [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) {
+    if (s * mag * 5 >= v) return s * mag * 5
+  }
+  return Math.ceil(v)
+}
+
+/**
+ * Right-axis (NOI, $M) bounds for the Occupancy vs. NOI chart.
+ *
+ * Occupancy is pinned 0-100 on the left, so a bar's top sits at occ/100 of the
+ * plot height. Left to itself, ECharts auto-fits the right axis to the NOI data
+ * — the peak NOI point lands near the top of the plot area and the auto min sits
+ * above zero — so the lines render above the bar tops and read as "NOI exceeds
+ * occupancy" even though the units are unrelated.
+ *
+ * So scale the axis from the window's own data (never hardcoded): the tallest
+ * NOI point may reach at most `headroom` of the plot height, taken from the
+ * shortest real occupancy bar in the window. Zero-occupancy slots are ignored —
+ * a pre-close quarter is 0 on all three series by definition, so there is no bar
+ * to sit under. The 0.45 floor keeps a lease-up window from crushing the lines
+ * into the axis; scripts/onepager_chart_axis_check.py verifies per quarter that
+ * no NOI point renders above its own bar.
+ */
+function noiAxisBounds(uw: (number | null)[], act: (number | null)[], occ: (number | null)[]) {
+  const noi = [...uw, ...act].filter((v): v is number => v != null)
+  const bars = occ.filter((v): v is number => v != null && v > 0)
+  const maxNoi = noi.length ? Math.max(...noi) : 0
+  const minNoi = noi.length ? Math.min(...noi) : 0
+  const headroom = Math.min(0.95, Math.max(0.45, (bars.length ? Math.min(...bars) : 95) / 100))
+  // 0 is always a meaningful reference, so it anchors whichever end the data leaves open
+  const min = minNoi < 0 ? -niceCeil(-minNoi) : 0
+  const top = Math.max(maxNoi, 0)
+  // solve (top - min) / (max - min) <= headroom
+  const max = niceCeil(Math.max(min + (top - min) / headroom, 0.05))
+  return { min, max }
+}
+
 function buildChartOption(cr: Record<string, any> | null) {
   if (!cr || !cr.periods?.length) return null
   const labels = cr.periods.map((p: string) => {
@@ -410,6 +452,7 @@ function buildChartOption(cr: Record<string, any> | null) {
   const actualNoi = cr.actual_noi.map((v: number | null) => v != null ? +(v / 1_000_000).toFixed(2) : null)
   const uwNoi = cr.uw_noi.map((v: number | null) => v != null ? +(v / 1_000_000).toFixed(2) : null)
   const occ = cr.occupancy.map((v: number | null) => v != null ? +v.toFixed(1) : null)
+  const noiAxis = noiAxisBounds(uwNoi, actualNoi, occ)
   return {
     title: { text: 'Occupancy vs. NOI', subtext: '($ Millions)', left: 'center', top: 0,
       textStyle: { fontSize: 13, fontWeight: 'bold' }, subtextStyle: { fontSize: 11 } },
@@ -418,9 +461,11 @@ function buildChartOption(cr: Record<string, any> | null) {
     grid: { left: 55, right: 55, top: 55, bottom: 45 },
     xAxis: { type: 'category', data: labels, axisLabel: { fontSize: 10, rotate: 0 } },
     yAxis: [
-      { type: 'value', name: '', position: 'left', min: 0, max: 100,
+      { type: 'value', name: '', position: 'left', min: 0, max: 100, interval: 20,
         axisLabel: { formatter: '{value}.0%', fontSize: 10 } },
+      // 5 intervals on both axes keeps the two sets of gridlines on top of each other
       { type: 'value', name: '', position: 'right',
+        min: noiAxis.min, max: noiAxis.max, interval: (noiAxis.max - noiAxis.min) / 5,
         axisLabel: { formatter: (v: number) => v.toFixed(2), fontSize: 10 } },
     ],
     series: [
