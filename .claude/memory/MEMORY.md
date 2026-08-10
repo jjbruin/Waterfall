@@ -1137,3 +1137,42 @@ session's memory commit landed on the **feature branch**, and a new branch was c
 **wrong base**. All repaired — `main` restored, commits relocated, the duplicate dropped — but
 the fix cost real time and risked losing work. **Work one tab at a time, or give each session
 its own `git worktree`.**
+
+## One Pager NOI/Occupancy chart — dual-axis scaling fix (Aug 10, 2026)
+
+Committed **straight to `main` as `34b8d92`** (rebased onto `origin/main` `6a5a43c` first, pushed
+clean). **Not deployed** — handed to Jim, time-sensitive for Monday KOC reporting.
+
+**The bug.** Occupancy is pinned 0-100 on the left axis, so a bar's top sits at `occ/100` of the
+plot height. The right axis (NOI, $M — orange U/W and grey ACT lines) had **no `min` and no
+`max`**, so ECharts auto-fit it to the NOI data: the peak NOI point always landed near the top of
+the plot area and the auto *min* sat above zero, lifting the whole line off the baseline. The
+lines rendered **above** the bar tops, reading as "NOI exceeds occupancy" even though the units
+are unrelated. Worst case was OREI Portfolio (`p0000033`): the U/W line ran at 86-100% of plot
+height while the bars fell to 68% — floating up to **32% of the plot** above them.
+
+**The fix** (`noiAxisBounds()` + `niceCeil()` in `OnePagerView.vue`). Right-axis bounds are
+computed from the window's own data, **never hardcoded**: the tallest NOI point may reach at most
+`headroom` of the plot height, taken from the *shortest real occupancy bar* in the window. Two
+things that are easy to get wrong:
+- The bound must be solved against the **actual axis floor** — `(top - min) / (max - min) <=
+  headroom`, not `max/headroom`. A deal with a negative-NOI quarter drops the floor below zero,
+  and the naive form still overshot (Town Fair Tire - Avon `p0000101`, ACT -0.48 in 25Q3, was the
+  one deal that failed the first formula).
+- **Zero-occupancy slots are excluded** from the bar minimum — a pre-close quarter is 0 on all
+  three series by definition (see the chart-window entry above), so there is no bar to sit under.
+
+A 0.45 `headroom` floor keeps a lease-up window from crushing the lines into the axis. Worst
+compression in the sample is Old Kinderhook (`p0000031`) at 37% of the axis: its occupancy feed
+is 0.0 for nine of ten quarters with a single 38.2% reading, and it has negative-NOI quarters.
+Both axes now get 5 intervals so their gridlines coincide.
+
+**Guardrail**: `scripts/onepager_chart_axis_check.py` — runs the real `get_one_pager_chart` over
+11 deals x 2 report quarters (~0.2M to ~2.6M quarterly NOI) and checks, **per quarter**, where
+each NOI point lands as a fraction of plot height versus that quarter's *own* bar. PASS requires
+no NOI point above its bar, nothing clipped, and peak NOI still using >=33% of the axis. Burton
+(`p0000109`) keeps its 25Q4 actual of 2.61M at 87% under a 95% bar.
+
+**Deploy note**: this is a **Vue/TS change**, so the `az acr build` step is the real check —
+`vue_app/node_modules` is absent locally and the build only runs in Docker, so it was **not
+typechecked here**. Verified on the local Apr-15 ISBS snapshot; live Azure data is more complete.
