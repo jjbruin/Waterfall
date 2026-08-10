@@ -1176,3 +1176,9 @@ no NOI point above its bar, nothing clipped, and peak NOI still using >=33% of t
 **Deploy note**: this is a **Vue/TS change**, so the `az acr build` step is the real check —
 `vue_app/node_modules` is absent locally and the build only runs in Docker, so it was **not
 typechecked here**. Verified on the local Apr-15 ISBS snapshot; live Azure data is more complete.
+
+**Physical Occupancy relabel** (`78cbc29`, same deploy): the chart title became "Physical
+Occupancy vs. NOI" and the bar series "Physical Occupancy" — the chart plots physical occupancy
+from MRI_Occupancy_Download, while Property Performance above it reports *economic* occupancy
+(physical less bad debt/concessions). Label-only; the series `name` is the single source for both
+legend and tooltip.
