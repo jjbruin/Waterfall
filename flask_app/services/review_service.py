@@ -375,6 +375,7 @@ def _save_snapshot(vcode: str, quarter: str, approved_by: str):
             budget_econ_occ=data.get("budget_econ_occ"),
             deal_terms=data.get("deal_terms_raw"),
             at_close_noi=data.get("at_close_noi_raw"),
+            event_dates=data.get("event_dates_raw"),
             full_data=data,
             relationships=data.get("relationships_raw"),
         )

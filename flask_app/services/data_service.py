@@ -385,6 +385,7 @@ def load_all(db_path: str, pro_yr_base: int = 2025) -> dict:
     prospective_loans_raw = get_adapter("prospective_loans").load(config)
     deal_terms_raw = get_adapter("deal_terms").load(config)
     at_close_noi_raw = get_adapter("at_close_noi").load(config)
+    event_dates_raw = get_adapter("event_dates").load(config)
 
     # Normalize investment map
     normalize_columns(inv)
@@ -418,6 +419,8 @@ def load_all(db_path: str, pro_yr_base: int = 2025) -> dict:
         deal_terms_raw = None
     if at_close_noi_raw.empty:
         at_close_noi_raw = None
+    if event_dates_raw.empty:
+        event_dates_raw = None
 
     data = {
         "inv": inv,
@@ -447,6 +450,7 @@ def load_all(db_path: str, pro_yr_base: int = 2025) -> dict:
         "prospective_loans_raw": prospective_loans_raw,
         "deal_terms_raw": deal_terms_raw,
         "at_close_noi_raw": at_close_noi_raw,
+        "event_dates_raw": event_dates_raw,
     }
 
     _cache[cache_key] = data
@@ -478,6 +482,7 @@ def refresh_table(table_name: str):
         "prospective_loans": "prospective_loans_raw",
         "capital_calls": "capital_calls_raw",
         "loans": "mri_loans_raw",
+        "event_dates": "event_dates_raw",
     }
     cache_key_name = table_to_key.get(table_name, table_name)
 

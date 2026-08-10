@@ -674,7 +674,9 @@ function printOnePager() {
             </tr>
             <tr>
               <td class="lbl">Year Built:</td><td class="val">{{ gen.year_built || '—' }}</td>
-              <td class="lbl">Underwritten Exit:</td><td class="val">{{ fmtDate(gen.anticipated_exit) }}</td>
+              <td class="lbl">Underwritten Exit:</td>
+              <td class="val exit-pair">{{ fmtDate(gen.anticipated_exit) }}
+                <span class="lbl-inline">| Current Anticipated Exit:</span> {{ fmtDate(gen.current_anticipated_exit) }}</td>
             </tr>
           </tbody>
         </table>
@@ -842,7 +844,9 @@ function printOnePager() {
               </tr>
               <tr>
                 <td class="lbl">Year Built:</td><td class="val">{{ pg.data.general?.year_built || '—' }}</td>
-                <td class="lbl">Underwritten Exit:</td><td class="val">{{ fmtDate(pg.data.general?.anticipated_exit) }}</td>
+                <td class="lbl">Underwritten Exit:</td>
+                <td class="val exit-pair">{{ fmtDate(pg.data.general?.anticipated_exit) }}
+                  <span class="lbl-inline">| Current Anticipated Exit:</span> {{ fmtDate(pg.data.general?.current_anticipated_exit) }}</td>
               </tr>
             </tbody>
           </table>
@@ -1104,6 +1108,16 @@ function printOnePager() {
 }
 .info-table .val {
   width: 28%;
+}
+/* Second label sharing a value cell (Underwritten | Current Anticipated Exit).
+   Matches .lbl weight/style; nowrap keeps the pair on one line, which widens
+   this column under auto table layout rather than wrapping to a second row. */
+.info-table .lbl-inline {
+  font-weight: 700;
+  font-style: italic;
+}
+.info-table .exit-pair {
+  white-space: nowrap;
 }
 
 /* Cap table overrides */

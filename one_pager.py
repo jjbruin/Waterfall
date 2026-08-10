@@ -118,13 +118,55 @@ def get_trailing_quarters(quarter_str: str, count: int = 10) -> List[str]:
 # GENERAL INFORMATION
 # ============================================================
 
-def get_general_information(inv_map: pd.DataFrame, vcode: str) -> Dict[str, Any]:
+def get_current_anticipated_exit(event_dates: Optional[pd.DataFrame],
+                                 vcode: str) -> Optional[date]:
+    """Current anticipated exit date for a deal, from the MRI event_dates table.
+
+    The row is identified by all four of: vEventType = 'Disposition',
+    vEvent = 'Closing', vDateType = 'Projected', and vCode = the deal. The value
+    is dtEvent.
+
+    A deal can carry more than one matching row (the projected closing gets
+    revised as an exit approaches), so the **latest** dtEvent wins — the same
+    duplicate handling Prop_Info_Core.sql already uses upstream for the U/W exit
+    (`MAX(CASE WHEN ... THEN dtevent END) ... GROUP BY vcode`).
+
+    Returns None when the table is absent, the deal has no matching row, or the
+    date will not parse — which renders as "N/A", matching Underwritten Exit.
+    """
+    if event_dates is None or getattr(event_dates, 'empty', True) or not vcode:
+        return None
+
+    # Column case varies by source: MRI/CSV gives vCode/vEventType/dtEvent,
+    # PostgreSQL folds unquoted identifiers to lowercase.
+    cols = {str(c).strip().lower(): c for c in event_dates.columns}
+    if not all(k in cols for k in ('vcode', 'veventtype', 'vevent', 'vdatetype', 'dtevent')):
+        return None
+
+    df = event_dates
+    mask = (df[cols['vcode']].astype(str).str.strip().str.lower()
+            == str(vcode).strip().lower())
+    for col_key, want in (('veventtype', 'disposition'),
+                          ('vevent', 'closing'),
+                          ('vdatetype', 'projected')):
+        mask &= df[cols[col_key]].astype(str).str.strip().str.lower() == want
+
+    hits = pd.to_datetime(df.loc[mask, cols['dtevent']], errors='coerce').dropna()
+    if hits.empty:
+        return None
+    return hits.max().date()
+
+
+def get_general_information(inv_map: pd.DataFrame, vcode: str,
+                            event_dates: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
     """
     Get general deal information from investment_map
 
     Args:
         inv_map: Investment map DataFrame
         vcode: Deal vcode
+        event_dates: Optional MRI event_dates DataFrame, source of
+            current_anticipated_exit. Omitted -> that field stays None.
 
     Returns:
         Dictionary with general info fields
@@ -139,8 +181,13 @@ def get_general_information(inv_map: pd.DataFrame, vcode: str) -> Dict[str, Any]
         'date_closed': None,
         'year_built': '',
         'anticipated_exit': None,
+        'current_anticipated_exit': None,
         'investment_name': '',
     }
+
+    # Set before the inv_map guards: this one comes from event_dates, so it is
+    # available even for a deal the investment map does not cover.
+    info['current_anticipated_exit'] = get_current_anticipated_exit(event_dates, vcode)
 
     if inv_map is None or inv_map.empty:
         return info
