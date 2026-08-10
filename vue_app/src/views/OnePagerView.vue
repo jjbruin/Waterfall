@@ -454,7 +454,7 @@ function buildChartOption(cr: Record<string, any> | null) {
   const occ = cr.occupancy.map((v: number | null) => v != null ? +v.toFixed(1) : null)
   const noiAxis = noiAxisBounds(uwNoi, actualNoi, occ)
   return {
-    title: { text: 'Occupancy vs. NOI', subtext: '($ Millions)', left: 'center', top: 0,
+    title: { text: 'Physical Occupancy vs. NOI', subtext: '($ Millions)', left: 'center', top: 0,
       textStyle: { fontSize: 13, fontWeight: 'bold' }, subtextStyle: { fontSize: 11 } },
     tooltip: { trigger: 'axis' },
     legend: { bottom: 0, textStyle: { fontSize: 10 } },
@@ -469,7 +469,7 @@ function buildChartOption(cr: Record<string, any> | null) {
         axisLabel: { formatter: (v: number) => v.toFixed(2), fontSize: 10 } },
     ],
     series: [
-      { name: 'Occupancy', type: 'bar', yAxisIndex: 0, data: occ,
+      { name: 'Physical Occupancy', type: 'bar', yAxisIndex: 0, data: occ,
         itemStyle: { color: '#5B9BD5' }, barMaxWidth: 45,
         label: { show: true, position: 'top', formatter: (p: any) => p.value != null ? p.value.toFixed(1) + '%' : '', fontSize: 9 } },
       { name: 'NOI U/W', type: 'line', yAxisIndex: 1, data: uwNoi,
