@@ -1182,3 +1182,52 @@ Occupancy vs. NOI" and the bar series "Physical Occupancy" — the chart plots p
 from MRI_Occupancy_Download, while Property Performance above it reports *economic* occupancy
 (physical less bad debt/concessions). Label-only; the series `name` is the single source for both
 legend and tooltip.
+
+## One Pager — Physical Occupancy relabel + Current Anticipated Exit (Aug 10, 2026)
+
+Deploy handoff entry for the three changes now on `main`, head **`a2d242f`**.
+
+**Physical Occupancy relabel** (`78cbc29`, `OnePagerView.vue`): chart title "Occupancy vs. NOI"
+→ "Physical Occupancy vs. NOI", and the bar series "Occupancy" → "Physical Occupancy". The chart
+plots *physical* occupancy from MRI_Occupancy_Download, while Property Performance on the same
+page reports *economic* occupancy (physical less bad debt/concessions) — same word, two different
+numbers. The series `name` is the single source for both legend and tooltip.
+
+**Current Anticipated Exit field** (`a2d242f`): new date pipe-separated next to "Underwritten
+Exit" on the One Pager, in **both** the single and batch/print views. Sourced from the
+`event_dates` table: `vEventType='Disposition'` AND `vEvent='Closing'` AND `vDateType='Projected'`,
+matched by `vCode`, value from `dtEvent`. Duplicates take **MAX(dtEvent)** (latest wins) — a
+projected closing gets revised as an exit approaches, and this matches the
+`Prop_Info_Core.sql:22` precedent for the U/W exit. Empty / no matching row / unparseable date →
+`None` → renders **N/A**, same as Underwritten Exit already does. New
+`get_current_anticipated_exit()` in `one_pager.py`; `event_dates` loads through the existing
+adapter registry in `load_all`, is added to `refresh_table`'s `table_to_key` so a CSV re-import
+invalidates it, and is threaded through **all four** `get_one_pager_data` call sites (single,
+batch/print, assistant tool, snapshot freeze).
+
+⚠️ **`event_dates` population in Azure was NOT verified** — the dev machine has no local copy of
+the table (absent from `waterfall.db` and `csv_data/`), no `.env`/`DATABASE_URL`, no `az` CLI and
+no `psql`. If the table lacks matching rows the field shows **N/A on every deal**; the rest of the
+page is unaffected. Note the deals table's `Anticipated_Exit` comes from `Prop_Info_Core.sql` run
+against MRI *directly*, so it is **not** evidence that this table has rows here.
+`scripts/event_dates_exit_probe.py` (read-only, one SELECT) reports match counts, sample dates,
+duplicate deals and active-deal coverage — run it with `DATABASE_URL` set, ideally *before*
+spending a deploy.
+
+**Post-deploy spot-check**: confirm real dates appear (not N/A), and that the pipe line does not
+wrap awkwardly in print — the value cell is 28% wide (30% print) and now carries ~45 characters.
+`white-space: nowrap` should widen the column instead of wrapping, but this could not be rendered
+locally (`vue_app/node_modules` absent). Fallback if it wraps: give the exit pair its own
+`colspan="4"` row.
+
+**Known bug, deliberately deferred**: `fmtDate` displays dates **one day early** — JS parses the
+`YYYY-MM-DD` the API sends as UTC midnight, then reads it back with local getters, shifting back a
+day in any negative-UTC-offset zone (verified in Node at America/New_York: `2027-06-30` →
+`6/29/2027`). Affects **Date Closed, Underwritten Exit, and the new Current Anticipated Exit**
+consistently. Left untouched on purpose — to be fixed after KOC as a separate change, which would
+correct all three date fields together.
+
+**Deploy status**: all three merged to `main` — `34b8d92` (NOI axis scaling), `78cbc29` (relabel),
+`a2d242f` (exit field) — head **`a2d242f`**, handed to Jim, time-sensitive for Monday KOC
+reporting. **Not yet deployed.** All three are Vue/TS changes, so `az acr build` is the real
+typecheck; nothing was typechecked locally.
