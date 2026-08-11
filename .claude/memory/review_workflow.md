@@ -32,10 +32,12 @@ type: project
 - `GET /api/reviews/investors` — distinct upstream investor IDs for filter dropdown
 - `GET/POST/DELETE /api/reviews/roles` — admin-only role assignment CRUD
 
-### Comment Lockout
-- `financials.py` save_comments endpoint checks `is_editable(vcode, quarter)` before allowing saves
-- Returns 403 when document is in review/approved
+### Comment Editing Policy
+- Comments are **editable throughout the entire review process** (draft, in review, returned)
+- Comments are locked (read-only) **only after final approval** (status = `approved`)
+- `financials.py` save_comments endpoint checks `is_editable(vcode, quarter)` — returns 403 only when `approved`
 - Vue textareas get `:readonly="commentsLocked"`, "Save Comments" button hidden when locked
+- **Bug fix (Aug 2026)**: `post_note` endpoint was missing `is_editable` in its response, causing `commentsLocked` to become `true` after posting a review note. Fixed by adding `result["is_editable"]` to the response (same as all other review endpoints).
 
 ### Vue Components
 - `ReviewPanel.vue`: Status dot + label, Submit/Approve/Return buttons (role-gated), collapsible notes list, add-note input. Hidden in print (`no-print` class).
