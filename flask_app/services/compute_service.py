@@ -78,8 +78,14 @@ def get_cached_deal_result(
         raise ValueError(f"Deal not found: {vcode}")
     deal_investment_id = deal_row.iloc[0].get("InvestmentID", vcode)
 
-    # Sale date — override takes precedence
-    sale_date_raw = sale_date_override if sale_date_override else deal_row.iloc[0].get("Sale_Date", None)
+    # Sale date — override > event_dates projected disposition
+    sale_date_raw = sale_date_override
+    if not sale_date_raw or (isinstance(sale_date_raw, float) and pd.isna(sale_date_raw)) or str(sale_date_raw).strip() == "":
+        from one_pager import get_current_anticipated_exit
+        event_dates_raw = data.get("event_dates_raw")
+        exit_dt = get_current_anticipated_exit(event_dates_raw, vcode)
+        if exit_dt:
+            sale_date_raw = exit_dt
 
     result = compute_deal_analysis(
         deal_vcode=vcode,
