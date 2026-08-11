@@ -254,6 +254,41 @@ function fmtPct(v: number | null | undefined): string {
   if (v == null) return '-'
   return (v * 100).toFixed(2) + '%'
 }
+
+function fmtDate(val: string | null | undefined): string {
+  if (!val) return ''
+  const m = String(val).match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (m) return `${parseInt(m[2])}/${parseInt(m[3])}/${m[1]}`
+  return String(val)
+}
+
+// --- ROE Detail (single-deal drill-down) ---
+const isRoeSummary = computed(() => activeReport.value?.value === 'roe-summary')
+
+const roeDetailRow = computed(() => {
+  if (!isRoeSummary.value || results.value.length !== 1) return null
+  const row = results.value[0]
+  if (!row._detail_rows || !row._detail_rows.length) return null
+  return row
+})
+
+const roeDetailColumns = [
+  { key: 'Date', label: 'Date' },
+  { key: 'Event', label: 'Event' },
+  { key: 'Amount', label: 'Amount', format: 'currency', align: 'right' },
+  { key: 'Days', label: 'Days', align: 'right' },
+  { key: 'Capital Balance', label: 'Capital Balance', format: 'currency', align: 'right' },
+  { key: 'Weighted Capital', label: 'Weighted Capital', format: 'currency', align: 'right' },
+  { key: 'New Balance', label: 'New Balance', format: 'currency', align: 'right' },
+]
+
+const roeDetailRows = computed(() => {
+  if (!roeDetailRow.value) return []
+  return roeDetailRow.value._detail_rows.map((r: any) => ({
+    ...r,
+    Date: fmtDate(r.Date),
+  }))
+})
 </script>
 
 <template>
@@ -404,7 +439,53 @@ function fmtPct(v: number | null | undefined): string {
             :rows="results"
             :highlight-total="activeReport?.highlightTotal ?? false"
           />
-          <p v-else-if="!loading" class="placeholder">
+
+          <!-- ROE Detail: event-by-event breakdown for single deal -->
+          <template v-if="roeDetailRow">
+            <div class="roe-detail-section">
+              <h4>ITD ROE Calculation — {{ roeDetailRow['Deal Name'] }}</h4>
+              <div class="roe-metrics">
+                <div class="roe-metric">
+                  <span class="roe-metric-label">Total Funded</span>
+                  <span class="roe-metric-value">{{ fmtCurr(roeDetailRow['Total Funded']) }}</span>
+                </div>
+                <div class="roe-metric">
+                  <span class="roe-metric-label">Return of Capital</span>
+                  <span class="roe-metric-value">{{ fmtCurr(roeDetailRow['Return of Capital']) }}</span>
+                </div>
+                <div class="roe-metric">
+                  <span class="roe-metric-label">Current Balance</span>
+                  <span class="roe-metric-value">{{ fmtCurr(roeDetailRow['Current Balance']) }}</span>
+                </div>
+                <div class="roe-metric">
+                  <span class="roe-metric-label">Wtd Avg Balance</span>
+                  <span class="roe-metric-value">{{ fmtCurr(roeDetailRow['Wtd Avg Balance']) }}</span>
+                </div>
+                <div class="roe-metric">
+                  <span class="roe-metric-label">CF Received</span>
+                  <span class="roe-metric-value">{{ fmtCurr(roeDetailRow['CF Received']) }}</span>
+                </div>
+                <div class="roe-metric">
+                  <span class="roe-metric-label">Days</span>
+                  <span class="roe-metric-value">{{ roeDetailRow._total_days?.toLocaleString() }}</span>
+                </div>
+                <div class="roe-metric">
+                  <span class="roe-metric-label">Years</span>
+                  <span class="roe-metric-value">{{ roeDetailRow._years?.toFixed(4) }}</span>
+                </div>
+                <div class="roe-metric highlight">
+                  <span class="roe-metric-label">ITD ROE</span>
+                  <span class="roe-metric-value">{{ fmtPct(roeDetailRow['ITD ROE']) }}</span>
+                </div>
+              </div>
+              <DataTable
+                :columns="roeDetailColumns"
+                :rows="roeDetailRows"
+              />
+            </div>
+          </template>
+
+          <p v-else-if="!results.length && !loading" class="placeholder">
             {{ isPrefDetail ? 'Select a deal and investor, then click Generate Report.' : 'Set filters and click Generate Report.' }}
           </p>
           <p v-if="loading" class="placeholder">Generating report...</p>
@@ -640,5 +721,57 @@ h2 { font-size: 20px; margin-bottom: 16px; }
   font-style: italic;
   text-align: center;
   padding: 40px 0;
+}
+
+/* --- ROE Detail --- */
+.roe-detail-section {
+  margin-top: 24px;
+  border-top: 2px solid var(--color-border);
+  padding-top: 16px;
+}
+
+.roe-detail-section h4 {
+  font-size: 14px;
+  margin: 0 0 12px 0;
+}
+
+.roe-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.roe-metric {
+  background: #f8f9fa;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 8px 14px;
+  min-width: 120px;
+}
+
+.roe-metric.highlight {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+.roe-metric.highlight .roe-metric-label,
+.roe-metric.highlight .roe-metric-value {
+  color: white;
+}
+
+.roe-metric-label {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: var(--color-text-secondary);
+  margin-bottom: 2px;
+}
+
+.roe-metric-value {
+  font-size: 14px;
+  font-weight: 700;
 }
 </style>
