@@ -480,6 +480,72 @@ def build_roe_summary_row(
 
     accrued = _compute_accrued_pref(deal_acct, report_date, pref_rates)
 
+    # Build event-by-event detail for Excel audit trail
+    events_sorted = sorted(capital_events, key=lambda x: x[0])
+    detail_rows = []
+    running_balance = 0.0
+    prev_dt = min(d for d, _ in events_sorted)
+    total_weighted = 0.0
+
+    # Build CF lookup for separating CF dists from capital returns
+    cf_lookup: dict = {}
+    for d, a in cf_distributions:
+        if a > 0:
+            cf_lookup[d] = cf_lookup.get(d, 0.0) + a
+    cf_remaining = dict(cf_lookup)
+
+    for evt_date, amt in events_sorted:
+        days = (evt_date - prev_dt).days
+        weighted = running_balance * days
+        total_weighted += weighted
+
+        # Determine event type and balance change
+        if amt < 0:
+            event_type = "Contribution"
+            balance_change = -amt  # positive increase
+        else:
+            cf_at = cf_remaining.get(evt_date, 0.0)
+            if cf_at > 0:
+                consumed = min(cf_at, amt)
+                cf_remaining[evt_date] -= consumed
+                cap_return = amt - consumed
+            else:
+                cap_return = amt
+            if cap_return > 0.005:
+                event_type = "Capital Return"
+                balance_change = -cap_return
+            else:
+                event_type = "CF Distribution"
+                balance_change = 0.0
+
+        new_balance = max(0.0, running_balance + balance_change)
+        detail_rows.append({
+            "Date": evt_date,
+            "Event": event_type,
+            "Amount": abs(amt),
+            "Days": days,
+            "Capital Balance": running_balance,
+            "Weighted Capital": weighted,
+            "New Balance": new_balance,
+        })
+        running_balance = new_balance
+        prev_dt = evt_date
+
+    # Final period to report_date
+    final_days = (report_date - prev_dt).days
+    final_weighted = running_balance * final_days
+    total_weighted += final_weighted
+    if final_days > 0:
+        detail_rows.append({
+            "Date": report_date,
+            "Event": "(Report Date)",
+            "Amount": 0.0,
+            "Days": final_days,
+            "Capital Balance": running_balance,
+            "Weighted Capital": final_weighted,
+            "New Balance": running_balance,
+        })
+
     return {
         "Deal Name": deal_name,
         "Total Funded": funded,
@@ -489,11 +555,19 @@ def build_roe_summary_row(
         "CF Received": detail["total_cf_distributions"],
         "Accrued Pref": accrued,
         "ITD ROE": detail["roe"],
+        "_detail_rows": detail_rows,
+        "_years": detail["years"],
+        "_total_days": (report_date - min(d for d, _ in events_sorted)).days,
+        "_inception": min(d for d, _ in events_sorted),
     }
 
 
-def generate_roe_summary_excel(df: pd.DataFrame) -> bytes:
-    """Generate formatted Excel for ROE Summary report."""
+def generate_roe_summary_excel(df: pd.DataFrame, all_rows: list = None) -> bytes:
+    """Generate formatted Excel for ROE Summary report.
+
+    Sheet 1: ROE Summary table.
+    Per-deal sheets: event-by-event weighted capital calculation with formulas.
+    """
     wb = Workbook()
     ws = wb.active
     ws.title = "ROE Summary"
@@ -501,6 +575,8 @@ def generate_roe_summary_excel(df: pd.DataFrame) -> bytes:
     display_cols = [c for c in df.columns if not c.startswith("_")]
     header_font = Font(bold=True, color="FFFFFF")
     header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    bold_font = Font(bold=True)
+    label_font = Font(bold=True, italic=True)
 
     for col_idx, col_name in enumerate(display_cols, 1):
         cell = ws.cell(row=1, column=col_idx, value=col_name)
@@ -527,6 +603,117 @@ def generate_roe_summary_excel(df: pd.DataFrame) -> bytes:
 
     for col_idx, col_name in enumerate(display_cols, 1):
         ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = max(len(col_name) + 2, 16)
+
+    # ---- Per-deal detail sheets ----
+    if all_rows:
+        for row_data in all_rows:
+            detail = row_data.get("_detail_rows")
+            if not detail:
+                continue
+            deal_name = row_data["Deal Name"]
+            # Sheet name max 31 chars, no invalid chars
+            sheet_name = deal_name[:28].replace("/", "-").replace("\\", "-").replace("*", "").replace("?", "").replace("[", "").replace("]", "").replace(":", "")
+            ds = wb.create_sheet(title=sheet_name)
+
+            # Header section — deal-level metrics
+            ds.cell(row=1, column=1, value="Deal:").font = label_font
+            ds.cell(row=1, column=2, value=deal_name)
+            ds.cell(row=2, column=1, value="Inception:").font = label_font
+            ds.cell(row=2, column=2, value=row_data.get("_inception"))
+            ds.cell(row=2, column=2).number_format = "M/D/YYYY"
+            ds.cell(row=2, column=3, value="Total Days:").font = label_font
+            ds.cell(row=2, column=4, value=row_data.get("_total_days", 0))
+            ds.cell(row=2, column=5, value="Years:").font = label_font
+            ds.cell(row=2, column=6, value=row_data.get("_years", 0.0))
+            ds.cell(row=2, column=6).number_format = "0.00"
+
+            # Summary metrics
+            ds.cell(row=4, column=1, value="Total Funded:").font = label_font
+            ds.cell(row=4, column=2, value=row_data["Total Funded"])
+            ds.cell(row=4, column=2).number_format = "$#,##0"
+            ds.cell(row=4, column=3, value="Return of Capital:").font = label_font
+            ds.cell(row=4, column=4, value=row_data["Return of Capital"])
+            ds.cell(row=4, column=4).number_format = "$#,##0"
+            ds.cell(row=4, column=5, value="Current Balance:").font = label_font
+            ds.cell(row=4, column=6, value=row_data["Current Balance"])
+            ds.cell(row=4, column=6).number_format = "$#,##0"
+
+            ds.cell(row=5, column=1, value="CF Received:").font = label_font
+            ds.cell(row=5, column=2, value=row_data["CF Received"])
+            ds.cell(row=5, column=2).number_format = "$#,##0"
+            ds.cell(row=5, column=3, value="Wtd Avg Balance:").font = label_font
+            ds.cell(row=5, column=4, value=row_data["Wtd Avg Balance"])
+            ds.cell(row=5, column=4).number_format = "$#,##0"
+            ds.cell(row=5, column=5, value="Accrued Pref:").font = label_font
+            ds.cell(row=5, column=6, value=row_data["Accrued Pref"])
+            ds.cell(row=5, column=6).number_format = "$#,##0"
+
+            # ROE formula explanation
+            ds.cell(row=7, column=1, value="ROE Formula:").font = label_font
+            roe_val = row_data["ITD ROE"]
+            ds.cell(row=7, column=2,
+                    value=f"(CF Received / Wtd Avg Balance) / Years = "
+                          f"({row_data['CF Received']:,.0f} / {row_data['Wtd Avg Balance']:,.0f}) / {row_data.get('_years', 0):.2f}")
+            ds.cell(row=7, column=6, value=roe_val)
+            ds.cell(row=7, column=6).number_format = "0.00%"
+            ds.cell(row=7, column=6).font = bold_font
+
+            # Event detail table
+            detail_start = 9
+            detail_cols = ["Date", "Event", "Amount", "Days",
+                           "Capital Balance", "Weighted Capital", "New Balance"]
+            for ci, col_name in enumerate(detail_cols, 1):
+                cell = ds.cell(row=detail_start, column=ci, value=col_name)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal="center")
+
+            currency_detail = {"Amount", "Capital Balance", "Weighted Capital", "New Balance"}
+            for ri, evt in enumerate(detail, 1):
+                r = detail_start + ri
+                for ci, col_name in enumerate(detail_cols, 1):
+                    cell = ds.cell(row=r, column=ci)
+                    val = evt[col_name]
+                    if col_name == "Date":
+                        cell.value = val
+                        cell.number_format = "M/D/YYYY"
+                    elif col_name in currency_detail:
+                        cell.value = float(val)
+                        cell.number_format = "$#,##0"
+                    else:
+                        cell.value = val
+
+            # Totals row
+            total_row = detail_start + len(detail) + 1
+            ds.cell(row=total_row, column=1, value="TOTAL").font = bold_font
+            top_border = Border(top=Side(style="thin"))
+            # Sum of Weighted Capital
+            sum_col = detail_cols.index("Weighted Capital") + 1
+            days_col = detail_cols.index("Days") + 1
+            for ci in [days_col, sum_col]:
+                cell = ds.cell(row=total_row, column=ci)
+                first_data = detail_start + 1
+                last_data = detail_start + len(detail)
+                col_letter = cell.column_letter
+                cell.value = f"=SUM({col_letter}{first_data}:{col_letter}{last_data})"
+                cell.font = bold_font
+                cell.border = top_border
+                if ci == sum_col:
+                    cell.number_format = "$#,##0"
+
+            # Wtd Avg Capital formula
+            avg_row = total_row + 1
+            ds.cell(row=avg_row, column=1, value="Wtd Avg Capital =").font = label_font
+            sum_letter = ds.cell(row=total_row, column=sum_col).column_letter
+            days_letter = ds.cell(row=total_row, column=days_col).column_letter
+            ds.cell(row=avg_row, column=2,
+                    value=f"={sum_letter}{total_row}/{days_letter}{total_row}")
+            ds.cell(row=avg_row, column=2).number_format = "$#,##0"
+
+            # Column widths
+            widths = [12, 16, 14, 8, 16, 18, 16]
+            for ci, w in enumerate(widths, 1):
+                ds.column_dimensions[ds.cell(row=1, column=ci).column_letter].width = w
 
     buf = io.BytesIO()
     wb.save(buf)

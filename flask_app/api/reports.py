@@ -236,7 +236,7 @@ def roe_summary_excel():
             continue
 
     df = pd.DataFrame(all_rows)
-    excel_bytes = generate_roe_summary_excel(df)
+    excel_bytes = generate_roe_summary_excel(df, all_rows=all_rows)
 
     return send_file(
         io.BytesIO(excel_bytes),
