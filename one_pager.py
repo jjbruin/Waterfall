@@ -118,21 +118,14 @@ def get_trailing_quarters(quarter_str: str, count: int = 10) -> List[str]:
 # GENERAL INFORMATION
 # ============================================================
 
-def get_current_anticipated_exit(event_dates: Optional[pd.DataFrame],
-                                 vcode: str) -> Optional[date]:
-    """Current anticipated exit date for a deal, from the MRI event_dates table.
+def _lookup_event_date(event_dates: Optional[pd.DataFrame], vcode: str,
+                       event_type: str, event: str,
+                       date_type: str) -> Optional[date]:
+    """Look up a date from the MRI event_dates table by event criteria.
 
-    The row is identified by all four of: vEventType = 'Disposition',
-    vEvent = 'Closing', vDateType = 'Projected', and vCode = the deal. The value
-    is dtEvent.
-
-    A deal can carry more than one matching row (the projected closing gets
-    revised as an exit approaches), so the **latest** dtEvent wins — the same
-    duplicate handling Prop_Info_Core.sql already uses upstream for the U/W exit
-    (`MAX(CASE WHEN ... THEN dtevent END) ... GROUP BY vcode`).
-
-    Returns None when the table is absent, the deal has no matching row, or the
-    date will not parse — which renders as "N/A", matching Underwritten Exit.
+    Filters to vCode + vEventType + vEvent + vDateType, returns the latest
+    dtEvent.  Returns None when the table is absent, no row matches, or the
+    date cannot be parsed.
     """
     if event_dates is None or getattr(event_dates, 'empty', True) or not vcode:
         return None
@@ -146,15 +139,29 @@ def get_current_anticipated_exit(event_dates: Optional[pd.DataFrame],
     df = event_dates
     mask = (df[cols['vcode']].astype(str).str.strip().str.lower()
             == str(vcode).strip().lower())
-    for col_key, want in (('veventtype', 'disposition'),
-                          ('vevent', 'closing'),
-                          ('vdatetype', 'projected')):
+    for col_key, want in (('veventtype', event_type.lower()),
+                          ('vevent', event.lower()),
+                          ('vdatetype', date_type.lower())):
         mask &= df[cols[col_key]].astype(str).str.strip().str.lower() == want
 
     hits = pd.to_datetime(df.loc[mask, cols['dtevent']], errors='coerce').dropna()
     if hits.empty:
         return None
     return hits.max().date()
+
+
+def get_current_anticipated_exit(event_dates: Optional[pd.DataFrame],
+                                 vcode: str) -> Optional[date]:
+    """Current anticipated exit: Disposition / Closing / Projected."""
+    return _lookup_event_date(event_dates, vcode,
+                              'Disposition', 'Closing', 'Projected')
+
+
+def get_underwritten_exit(event_dates: Optional[pd.DataFrame],
+                          vcode: str) -> Optional[date]:
+    """Underwritten exit: Asset Management / U/W Exit / Actual."""
+    return _lookup_event_date(event_dates, vcode,
+                              'Asset Management', 'U/W Exit', 'Actual')
 
 
 def get_general_information(inv_map: pd.DataFrame, vcode: str,
@@ -185,8 +192,8 @@ def get_general_information(inv_map: pd.DataFrame, vcode: str,
         'investment_name': '',
     }
 
-    # Set before the inv_map guards: this one comes from event_dates, so it is
-    # available even for a deal the investment map does not cover.
+    # Both exit dates come from event_dates — available even without inv_map.
+    info['anticipated_exit'] = get_underwritten_exit(event_dates, vcode)
     info['current_anticipated_exit'] = get_current_anticipated_exit(event_dates, vcode)
 
     if inv_map is None or inv_map.empty:
@@ -217,7 +224,7 @@ def get_general_information(inv_map: pd.DataFrame, vcode: str,
         'sqft': ['Size_Sqf', 'SF', 'SquareFeet', 'SqFt', 'sqft', 'mSF'],
         'date_closed': ['Acquisition_Date', 'DateClosed', 'Date_Closed', 'dtClosed', 'ClosingDate'],
         'year_built': ['Year_Built', 'YearBuilt', 'iYearBuilt'],
-        'anticipated_exit': ['Sale_Date', 'AnticipatedExit', 'Anticipated_Exit', 'dtExit', 'ExitDate'],
+        # anticipated_exit is sourced from event_dates above, not from inv
         'investment_name': ['Investment_Name', 'InvestmentName', 'vName'],
     }
 
@@ -227,7 +234,7 @@ def get_general_information(inv_map: pd.DataFrame, vcode: str,
                 val = row[col]
                 if key in ['units', 'sqft']:
                     info[key] = int(float(val)) if pd.notna(val) else 0
-                elif key in ['date_closed', 'anticipated_exit']:
+                elif key in ['date_closed']:
                     try:
                         info[key] = pd.to_datetime(val).date()
                     except:
