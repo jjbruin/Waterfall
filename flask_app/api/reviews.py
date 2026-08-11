@@ -110,6 +110,7 @@ def post_note(vcode, quarter):
             g.current_user["id"], g.current_user["username"],
             note_text=body.get("note", ""),
         )
+        result["is_editable"] = result["status"] != "approved" or result.get("id") is None
         return jsonify(result)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400

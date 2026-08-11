@@ -358,11 +358,11 @@ def save_comments(vcode):
     if not quarter:
         return jsonify({"error": "quarter required"}), 400
 
-    # Block comment edits when document is in review/approved
+    # Block comment edits only after final approval
     try:
         from flask_app.services.review_service import is_editable
         if not is_editable(vcode, quarter):
-            return jsonify({"error": "Comments are locked while the document is in review"}), 403
+            return jsonify({"error": "Comments are locked after final approval"}), 403
     except Exception:
         pass  # If review tables don't exist yet, allow edits
 
