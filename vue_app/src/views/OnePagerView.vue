@@ -348,6 +348,9 @@ function fmtDscr(val: number | null | undefined): string {
 }
 function fmtDate(val: string | null | undefined): string {
   if (!val) return 'N/A'
+  // Parse as local date parts to avoid UTC→local timezone shift (e.g. 2026-05-01 midnight UTC → 4/30 in US timezones)
+  const m = String(val).match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (m) return `${parseInt(m[2])}/${parseInt(m[3])}/${m[1]}`
   const d = new Date(val)
   if (isNaN(d.getTime())) return String(val)
   return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`
