@@ -168,6 +168,11 @@ TABLE_DEFINITIONS = {
         'description': 'MRI event dates (acquisition, U/W exit, lease events)',
         'key_columns': ['vCode', 'vEventType', 'vEvent', 'dtEvent']
     },
+    'inspection': {
+        'csv': 'MRI_Inspection.csv',
+        'description': 'Construction draw inspection data for development deals',
+        'key_columns': ['vCode', 'LoanID', 'InspectionID']
+    },
 }
 
 

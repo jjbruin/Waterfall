@@ -113,6 +113,16 @@ QUERY_REGISTRY = {
         "target_table": "at_close_noi",
         "description": "At-close underwriting NOI from Projected IS (dynamic dates)",
     },
+    "MRI_Event_Dates": {
+        "server": "im",
+        "target_table": "event_dates",
+        "description": "Event dates (acquisition, U/W exit, lease events)",
+    },
+    "MRI_Inspection": {
+        "server": "im",
+        "target_table": "inspection",
+        "description": "Construction draw inspection data for development deals",
+    },
 }
 
 # Network folder paths (SharePoint-synced, configured via env vars)
