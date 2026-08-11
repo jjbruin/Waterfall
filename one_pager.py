@@ -1456,10 +1456,8 @@ def get_pe_performance(
                             if amt >= 0:
                                 capital_events.append((evt_date, amt))
                             cf_distributions.append((evt_date, amt))
-                        else:
-                            # Acquisition fee — still affects capital balance timeline
-                            if amt >= 0:
-                                capital_events.append((evt_date, amt))
+                        # else: acquisition fee — excluded from both capital_events
+                        # and cf_distributions (no effect on ROE)
 
                 # Compute ROE to Date from actual accounting through quarter end
                 if capital_events:
