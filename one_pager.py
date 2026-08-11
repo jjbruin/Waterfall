@@ -1314,6 +1314,97 @@ def _get_uw_pe_distributions(
     return _get_uw_pe_periodic(isbs_raw, vcode, inception, end_date, UW_PE_DIST_ACCT)
 
 
+def _get_uw_roc_events(
+    isbs_raw: pd.DataFrame,
+    vcode: str,
+    inception: date,
+    end_date: date,
+    capital_balance: float,
+) -> List[Tuple[date, float]]:
+    """Extract underwritten return-of-capital events from Projected IS account 7073.
+
+    Account 7073 in Projected IS stores YTD cumulative amounts.  Planned ROC
+    events appear as a jump in the cumulative on the event date, then the same
+    cumulative repeats each subsequent month through year-end.
+
+    This function detects each jump (delta > $1) as a distinct ROC event on the
+    date it first appears, ignoring the flat repeats.
+
+    ``capital_balance`` is the PE capital outstanding at inception (total
+    contributions minus actual returns of capital).  The returned events are
+    capped so they never reduce the running capital below zero.
+
+    Returns list of (date, amount) for each ROC event within inception..end_date.
+    """
+    if isbs_raw is None or isbs_raw.empty:
+        return []
+
+    df = isbs_raw.copy()
+    if 'vcode' in df.columns:
+        df = df[df['vcode'] == str(vcode).strip().lower()]
+    if df.empty:
+        return []
+
+    if 'vSource' in df.columns:
+        df = df[df['vSource'] == 'Projected IS']
+    if df.empty or 'vAccount' not in df.columns:
+        return []
+
+    df = df[df['vAccount'] == UW_PE_ROC_ACCT]
+    if df.empty:
+        return []
+
+    if 'dtEntry_parsed' not in df.columns:
+        return []
+
+    df = df.dropna(subset=['dtEntry_parsed'])
+    df = df.sort_values('dtEntry_parsed')
+
+    periods = sorted(df['dtEntry_parsed'].unique())
+    if not periods:
+        return []
+
+    events = []
+    prev_cumulative = None
+    prev_year = None
+    remaining_capital = capital_balance
+
+    for period in periods:
+        period_ts = pd.Timestamp(period)
+        period_date = period_ts.date()
+        year = period_ts.year
+
+        period_data = df[df['dtEntry_parsed'] == period]
+        cumulative = abs(float(period_data['mAmount'].sum()))
+
+        # Reset tracking at year boundary
+        if prev_year is not None and year != prev_year:
+            prev_cumulative = None
+
+        # Detect a jump: new cumulative exceeds prior by > $1
+        if prev_cumulative is None:
+            delta = cumulative
+        else:
+            delta = cumulative - prev_cumulative
+
+        prev_cumulative = cumulative
+        prev_year = year
+
+        if delta < 1.0:
+            continue
+        if period_date < inception or period_date > end_date:
+            continue
+        if remaining_capital <= 0:
+            continue
+
+        # Cap so capital never goes negative
+        capped = min(delta, remaining_capital)
+        remaining_capital -= capped
+        events.append((period_date, capped))
+
+    return events
+
+
 # ============================================================
 # PREFERRED EQUITY PERFORMANCE
 # ============================================================
@@ -1504,10 +1595,14 @@ def get_pe_performance(
 
                             # Add underwritten return of capital (7073)
                             # as positive capital events — reduces weighted
-                            # avg capital but does NOT count as distributions
-                            uw_roc = _get_uw_pe_periodic(
+                            # avg capital but does NOT count as distributions.
+                            # Detect distinct ROC events from ISBS jumps;
+                            # cap so capital never goes negative.
+                            cap_bal = sum(abs(a) for d, a in capital_only if a < 0) \
+                                    - sum(a for d, a in capital_only if a > 0)
+                            uw_roc = _get_uw_roc_events(
                                 isbs_raw, vcode, inception, quarter_end,
-                                UW_PE_ROC_ACCT
+                                cap_bal
                             )
                             for d, amt in uw_roc:
                                 capital_only.append((d, amt))

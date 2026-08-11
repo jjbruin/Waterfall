@@ -488,7 +488,7 @@ def build_roe_summary_row(
     uw_roc_total = 0.0
 
     if isbs_raw is not None and not isbs_raw.empty:
-        from one_pager import _get_uw_pe_periodic, UW_PE_DIST_ACCT, UW_PE_ROC_ACCT
+        from one_pager import _get_uw_pe_periodic, _get_uw_roc_events, UW_PE_DIST_ACCT, UW_PE_ROC_ACCT
         inception_dt = min(d for d, _ in capital_events)
 
         uw_dists = _get_uw_pe_periodic(isbs_raw, vcode, inception_dt, report_date, UW_PE_DIST_ACCT)
@@ -516,8 +516,12 @@ def build_roe_summary_row(
                     if cap_ret > 0.005:
                         capital_only.append((d, cap_ret))
 
-            # Add U/W return of capital (7073) as capital events
-            uw_roc_events = _get_uw_pe_periodic(isbs_raw, vcode, inception_dt, report_date, UW_PE_ROC_ACCT)
+            # Add U/W return of capital (7073) as capital events.
+            # Detect distinct ROC events from ISBS cumulative jumps;
+            # cap so capital never goes negative.
+            cap_bal = sum(abs(a) for d, a in capital_only if a < 0) \
+                    - sum(a for d, a in capital_only if a > 0)
+            uw_roc_events = _get_uw_roc_events(isbs_raw, vcode, inception_dt, report_date, cap_bal)
             for d, amt in uw_roc_events:
                 capital_only.append((d, amt))
                 uw_roc_total += amt
