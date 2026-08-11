@@ -171,7 +171,7 @@ TABLE_DEFINITIONS = {
     'inspection': {
         'csv': 'MRI_Inspection.csv',
         'description': 'Construction draw inspection data for development deals',
-        'key_columns': ['vCode', 'LoanID', 'InspectionID']
+        'key_columns': ['vCode', 'InspectionID', 'dtInspect']
     },
 }
 

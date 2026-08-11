@@ -1,49 +1,43 @@
 -- MRI_Inspection.sql
 -- Construction draw inspection data for development deals.
 -- Server: IM
--- Returns inspection records with drawn amounts per property.
--- Used to determine actual drawn balance on construction loans
--- (vs mOrigLoanAmt which is the full commitment amount).
+-- Returns inspection records with draw amounts per property.
 --
 -- Output table name: inspection
 -- Key columns:
 --   vCode        - Property code (P-series)
---   LoanID       - Links to MRI_Loans for loan identification
---   InspectionID - Unique inspection record
---   dtInspection - Date of draw inspection
---   mHardCost    - Hard cost amount drawn
---   mSoftCost    - Soft cost amount drawn
+--   InspectionID - Unique inspection record (UID)
+--   dtInspect    - Date of draw inspection
+--   mHardCosts   - Hard cost amount drawn
+--   mSoftCosts   - Soft cost amount drawn
 --   mTotalDraw   - Total draw amount (hard + soft)
---   mCumDrawn    - Cumulative amount drawn to date
---   mCommitment  - Total loan commitment
---   pctDrawn     - Percent of commitment drawn
+--   mAmtToDate   - Cumulative amount to date
+--   nPctComplete - Percent complete
 
 SELECT
-    IL.vCode,
-    IL.LoanID,
+    I.vCode,
     P.vPropertyName,
-    IL.UID                          AS InspectionID,
-    IL.dtInspection,
-    IL.mHardCost,
-    IL.mSoftCost,
-    ISNULL(IL.mHardCost, 0)
-        + ISNULL(IL.mSoftCost, 0)   AS mTotalDraw,
-    IL.mRetainage,
-    IL.mCumDisbursed                AS mCumDrawn,
-    L.mOrigLoanAmt                  AS mCommitment,
-    CASE
-        WHEN L.mOrigLoanAmt > 0
-        THEN IL.mCumDisbursed / L.mOrigLoanAmt * 100
-        ELSE NULL
-    END                             AS pctDrawn,
-    IL.vStatus,
-    IL.vNotes
+    I.UID                           AS InspectionID,
+    I.vSiteVisitNo,
+    I.dtSiteVisit,
+    I.dtInspect,
+    I.nPctComplete,
+    I.mHardCosts,
+    I.mSoftCosts,
+    ISNULL(I.mHardCosts, 0)
+        + ISNULL(I.mSoftCosts, 0)   AS mTotalDraw,
+    I.mContingency,
+    I.mRetainage,
+    I.mAmtToDate,
+    I.mCertAmt,
+    I.mChgOrders,
+    I.fRequestNo,
+    I.vNotes
 FROM
-    Inspection IL
-    INNER JOIN Loan L ON IL.LoanID = L.UID AND L.delete_flag IS NULL
-    LEFT JOIN Property P ON IL.vCode = P.vCode
+    Inspection I
+    LEFT JOIN Property P ON I.vCode = P.vCode
 WHERE
-    IL.delete_flag IS NULL
-    AND IL.vCode LIKE 'P%'
+    I.delete_flag IS NULL
+    AND I.vCode LIKE 'P%'
 ORDER BY
-    IL.vCode, IL.LoanID, IL.dtInspection
+    I.vCode, I.dtInspect
