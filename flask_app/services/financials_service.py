@@ -1062,6 +1062,58 @@ def _enrich_pe_from_deal_result(pe: dict, vcode: str, data: dict, quarter_str: s
                                   + state.add_pref_accrued_current_year)
             pe["accrued_balance"] = total_accrued
 
+        # Reduce accrued balance by pref payments received within 45 days
+        # after quarter end (payments are not due until 30 days after close
+        # of quarter, so a 45-day grace window captures timely payments).
+        if pe["accrued_balance"] > 0 and quarter_str:
+            from one_pager import quarter_to_date_range
+            from datetime import timedelta
+            _, q_end = quarter_to_date_range(quarter_str)
+            grace_end = q_end + timedelta(days=45)
+            acct_df = data.get("acct")
+            inv_map = data.get("inv")
+            if acct_df is not None and inv_map is not None and not acct_df.empty:
+                deal_ids = inv_map.loc[
+                    inv_map["vcode"] == vcode, "InvestmentID"
+                ].astype(str).str.strip().tolist()
+                if deal_ids:
+                    acct_norm = acct_df.copy()
+                    acct_norm["InvestmentID"] = acct_norm["InvestmentID"].astype(str).str.strip()
+                    acct_norm["EffectiveDate"] = pd.to_datetime(acct_norm["EffectiveDate"], errors="coerce")
+                    grace_mask = (
+                        acct_norm["InvestmentID"].isin(deal_ids)
+                        & (acct_norm["EffectiveDate"].dt.date > q_end)
+                        & (acct_norm["EffectiveDate"].dt.date <= grace_end)
+                    )
+                    grace_rows = acct_norm.loc[grace_mask].copy()
+                    if not grace_rows.empty:
+                        grace_rows["MajorType"] = grace_rows["MajorType"].fillna("").astype(str).str.strip().str.lower()
+                        grace_rows["Amt"] = pd.to_numeric(grace_rows["Amt"], errors="coerce").fillna(0.0)
+                        tname_col = "TypeName" if "TypeName" in grace_rows.columns else "Typename"
+                        if tname_col not in grace_rows.columns:
+                            tname_col = None
+                        if tname_col:
+                            grace_rows["_tname"] = grace_rows[tname_col].fillna("").astype(str).str.strip().str.lower()
+                        else:
+                            grace_rows["_tname"] = ""
+                        if "TypeID" in grace_rows.columns:
+                            grace_rows["_tid"] = pd.to_numeric(grace_rows["TypeID"], errors="coerce").fillna(0)
+                        else:
+                            grace_rows["_tid"] = 0
+                        # Filter to pref payments from non-OP investors
+                        grace_rows["InvestorID"] = grace_rows["InvestorID"].astype(str).str.strip()
+                        pref_mask = (
+                            ~grace_rows["InvestorID"].str.upper().str.startswith("OP")
+                            & grace_rows["MajorType"].str.contains("distri")
+                            & (
+                                (grace_rows["_tid"] == 1019.0)
+                                | grace_rows["_tname"].str.contains("preferred return")
+                                | grace_rows["_tname"].str.contains("pref return")
+                            )
+                        )
+                        pref_paid = grace_rows.loc[pref_mask, "Amt"].sum()
+                        pe["accrued_balance"] = max(0.0, pe["accrued_balance"] - abs(pref_paid))
+
         # Committed PE: if commitments table was empty, use total PE contributions
         if pe.get("committed_pe", 0) == 0:
             total_contrib = sum(
