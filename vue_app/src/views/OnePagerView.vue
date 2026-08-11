@@ -661,22 +661,21 @@ function printOnePager() {
           <tbody>
             <tr>
               <td class="lbl">Partner:</td><td class="val">{{ gen.partner || '—' }}</td>
-              <td class="lbl">Asset Type:</td><td class="val">{{ gen.asset_type || '—' }}</td>
-            </tr>
-            <tr>
-              <td class="lbl">Location:</td><td class="val">{{ gen.location || '—' }}</td>
               <td class="lbl">Investment Strategy:</td><td class="val">{{ gen.investment_strategy || '—' }}</td>
             </tr>
             <tr>
-              <td class="lbl"># Units | SF:</td>
-              <td class="val">{{ gen.units ? gen.units.toLocaleString() : '—' }}{{ gen.sqft ? ' | ' + (gen.sqft >= 1000 ? Math.round(gen.sqft / 1000).toLocaleString() + 'K' : gen.sqft.toLocaleString()) : '' }}</td>
+              <td class="lbl">Location:</td><td class="val">{{ gen.location || '—' }}</td>
               <td class="lbl">Date Closed:</td><td class="val">{{ fmtDate(gen.date_closed) }}</td>
             </tr>
             <tr>
-              <td class="lbl">Year Built:</td><td class="val">{{ gen.year_built || '—' }}</td>
-              <td class="lbl">Underwritten Exit:</td>
-              <td class="val exit-pair">{{ fmtDate(gen.anticipated_exit) }}
-                <span class="lbl-inline">| Current Anticipated Exit:</span> {{ fmtDate(gen.current_anticipated_exit) }}</td>
+              <td class="lbl">Asset Type / Year Built:</td>
+              <td class="val">{{ gen.asset_type || '—' }} | {{ gen.year_built || '—' }}</td>
+              <td class="lbl">Underwritten Exit:</td><td class="val">{{ fmtDate(gen.anticipated_exit) }}</td>
+            </tr>
+            <tr>
+              <td class="lbl"># Units / SF:</td>
+              <td class="val">{{ gen.units ? gen.units.toLocaleString() : '—' }}{{ gen.sqft ? ' | ' + (gen.sqft >= 1000 ? Math.round(gen.sqft / 1000).toLocaleString() + 'K' : gen.sqft.toLocaleString()) : '' }}</td>
+              <td class="lbl">Current Anticipated Exit:</td><td class="val">{{ fmtDate(gen.current_anticipated_exit) }}</td>
             </tr>
           </tbody>
         </table>
@@ -831,22 +830,21 @@ function printOnePager() {
             <tbody>
               <tr>
                 <td class="lbl">Partner:</td><td class="val">{{ pg.data.general?.partner || '—' }}</td>
-                <td class="lbl">Asset Type:</td><td class="val">{{ pg.data.general?.asset_type || '—' }}</td>
-              </tr>
-              <tr>
-                <td class="lbl">Location:</td><td class="val">{{ pg.data.general?.location || '—' }}</td>
                 <td class="lbl">Investment Strategy:</td><td class="val">{{ pg.data.general?.investment_strategy || '—' }}</td>
               </tr>
               <tr>
-                <td class="lbl"># Units | SF:</td>
-                <td class="val">{{ pg.data.general?.units ? pg.data.general.units.toLocaleString() : '—' }}{{ pg.data.general?.sqft ? ' | ' + (pg.data.general.sqft >= 1000 ? Math.round(pg.data.general.sqft / 1000).toLocaleString() + 'K' : pg.data.general.sqft.toLocaleString()) : '' }}</td>
+                <td class="lbl">Location:</td><td class="val">{{ pg.data.general?.location || '—' }}</td>
                 <td class="lbl">Date Closed:</td><td class="val">{{ fmtDate(pg.data.general?.date_closed) }}</td>
               </tr>
               <tr>
-                <td class="lbl">Year Built:</td><td class="val">{{ pg.data.general?.year_built || '—' }}</td>
-                <td class="lbl">Underwritten Exit:</td>
-                <td class="val exit-pair">{{ fmtDate(pg.data.general?.anticipated_exit) }}
-                  <span class="lbl-inline">| Current Anticipated Exit:</span> {{ fmtDate(pg.data.general?.current_anticipated_exit) }}</td>
+                <td class="lbl">Asset Type / Year Built:</td>
+                <td class="val">{{ pg.data.general?.asset_type || '—' }} | {{ pg.data.general?.year_built || '—' }}</td>
+                <td class="lbl">Underwritten Exit:</td><td class="val">{{ fmtDate(pg.data.general?.anticipated_exit) }}</td>
+              </tr>
+              <tr>
+                <td class="lbl"># Units / SF:</td>
+                <td class="val">{{ pg.data.general?.units ? pg.data.general.units.toLocaleString() : '—' }}{{ pg.data.general?.sqft ? ' | ' + (pg.data.general.sqft >= 1000 ? Math.round(pg.data.general.sqft / 1000).toLocaleString() + 'K' : pg.data.general.sqft.toLocaleString()) : '' }}</td>
+                <td class="lbl">Current Anticipated Exit:</td><td class="val">{{ fmtDate(pg.data.general?.current_anticipated_exit) }}</td>
               </tr>
             </tbody>
           </table>
@@ -1108,16 +1106,6 @@ function printOnePager() {
 }
 .info-table .val {
   width: 28%;
-}
-/* Second label sharing a value cell (Underwritten | Current Anticipated Exit).
-   Matches .lbl weight/style; nowrap keeps the pair on one line, which widens
-   this column under auto table layout rather than wrapping to a second row. */
-.info-table .lbl-inline {
-  font-weight: 700;
-  font-style: italic;
-}
-.info-table .exit-pair {
-  white-space: nowrap;
 }
 
 /* Cap table overrides */
