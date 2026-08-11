@@ -2,6 +2,14 @@
 config.py
 Configuration and constants for waterfall model
 """
+import math
+
+def _isnan(v):
+    """Safe NaN check for float values."""
+    try:
+        return math.isnan(v)
+    except (TypeError, ValueError):
+        return False
 
 # ============================================================
 # DEFAULT SETTINGS
@@ -86,7 +94,10 @@ def typename_to_pool(typename: str) -> str:
     Scans TYPENAME_TO_POOL for keyword matches (case-insensitive).
     Returns "initial" if no keyword matches.
     """
-    t = (typename or "").strip().lower()
+    t = typename
+    if t is None or (isinstance(t, float) and _isnan(t)):
+        t = ""
+    t = str(t).strip().lower()
     for keyword, pool in TYPENAME_TO_POOL.items():
         if keyword in t:
             return pool
@@ -110,7 +121,10 @@ def resolve_upstream_typename_route(typename: str, entity_id: str) -> str | None
     Case-insensitive substring matching (consistent with typename_to_pool).
     Returns None when no routing applies — caller continues normal waterfall.
     """
-    t = (typename or "").strip().lower()
+    t = typename
+    if t is None or (isinstance(t, float) and _isnan(t)):
+        t = ""
+    t = str(t).strip().lower()
     if not t:
         return None
     for keyword, target in UPSTREAM_TYPENAME_ROUTING.items():
@@ -140,7 +154,10 @@ def resolve_pool_and_action(vstate: str, vtranstype: str, is_capital_waterfall: 
     Returns:
         (pool_name, action) tuple
     """
-    vt = (vtranstype or "").strip().lower()
+    vt = vtranstype
+    if vt is None or (isinstance(vt, float) and _isnan(vt)):
+        vt = ""
+    vt = str(vt).strip().lower()
 
     if vstate == "Pref":
         return ("initial", "pay_pref")

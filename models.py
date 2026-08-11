@@ -250,7 +250,10 @@ class Loan:
 
     def is_variable(self) -> bool:
         """Check if loan is variable rate"""
-        return (self.int_type or "").strip().lower().startswith("var")
+        v = self.int_type
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            v = ""
+        return str(v).strip().lower().startswith("var")
 
     def rate_for_month(self) -> float:
         """
@@ -265,7 +268,10 @@ class Loan:
           else: effective_index = base
           annual_rate = max(floor + spread, effective_index + spread)
         """
-        idx = (self.index_name or "").strip().upper()
+        _idx = self.index_name
+        if _idx is None or (isinstance(_idx, float) and pd.isna(_idx)):
+            _idx = ""
+        idx = str(_idx).strip().upper()
 
         if not self.is_variable():
             return self._as_decimal(self.fixed_rate)
