@@ -753,6 +753,7 @@ def get_property_performance(
     budget_econ_occ_df: pd.DataFrame = None,
     at_close_noi_df: pd.DataFrame = None,
     deal_terms_df: pd.DataFrame = None,
+    mri_loans_all_df: pd.DataFrame = None,
 ) -> Dict[str, Any]:
     """
     Get property performance metrics for a quarter
@@ -766,6 +767,7 @@ def get_property_performance(
         budget_econ_occ_df: Budget economic occupancy from ProjOccupancy
         at_close_noi_df: Pre-computed at-close NOI from Prop_Info_AtClose query
         deal_terms_df: Deal terms with econ_occ_at_close from txfinancial_IC
+        mri_loans_all_df: All MRI loans including Paid Off (for refi detection)
 
     Returns:
         Dictionary with performance metrics
@@ -845,9 +847,32 @@ def get_property_performance(
     budget_data = isbs[isbs['vSource'] == 'Budget IS']
     uw_data = isbs[isbs['vSource'] == 'Projected IS']
 
+    # Detect refi / payoff events from MRI_Loans for this deal.
+    # When a loan has vDateType='Paid Off', the BS balance change in that month
+    # reflects the payoff (not amortization) and must be excluded.
+    _refi_months = set()  # set of (year, month) tuples where a payoff occurred
+    if mri_loans_all_df is not None and not mri_loans_all_df.empty:
+        vc_col = next((c for c in mri_loans_all_df.columns if c.lower() == 'vcode'), None)
+        dt_col = next((c for c in mri_loans_all_df.columns if c.lower() == 'vdatetype'), None)
+        ev_col = next((c for c in mri_loans_all_df.columns if c.lower() == 'dtevent'), None)
+        if vc_col and dt_col and ev_col:
+            deal_loans = mri_loans_all_df[
+                mri_loans_all_df[vc_col].astype(str).str.strip().str.lower() == vcode_str
+            ]
+            paid_off = deal_loans[
+                deal_loans[dt_col].astype(str).str.strip().str.lower() == 'paid off'
+            ]
+            for _, row in paid_off.iterrows():
+                po_date = pd.to_datetime(row[ev_col], errors='coerce')
+                if pd.notna(po_date):
+                    _refi_months.add((po_date.year, po_date.month))
+
     # Helper: estimate YTD principal from Interim BS balance changes
     # Principal payments reduce loan balances, so principal = (prior_bal - current_bal)
-    # extrapolated by months elapsed in the quarter period
+    # extrapolated by months elapsed in the quarter period.
+    # When a refi/payoff occurred, the month-over-month balance change includes the
+    # payoff amount and is not representative of amortization.  Use pre-refi periods
+    # to estimate the monthly amortization instead.
     def _estimate_principal_from_bs(bs_df, qtr_end_ts, months_elapsed):
         """Estimate YTD principal from BS debt account balance changes."""
         if bs_df.empty:
@@ -857,28 +882,36 @@ def get_property_performance(
         if debt_bs.empty:
             return 0
         bs_periods = sorted(debt_bs['dtEntry_parsed'].dropna().unique())
-        if not bs_periods:
+        if len(bs_periods) < 2:
             return 0
-        # Find latest BS period on or before quarter end
-        current_date = None
-        for p in reversed(bs_periods):
-            if pd.Timestamp(p) <= qtr_end_ts:
-                current_date = pd.Timestamp(p)
-                break
-        if current_date is None:
+
+        # Build list of (period_date, balance) tuples on or before quarter end
+        period_bals = []
+        for p in bs_periods:
+            ts = pd.Timestamp(p)
+            if ts <= qtr_end_ts:
+                bal = abs(debt_bs[debt_bs['dtEntry_parsed'] == p]['mAmount'].sum())
+                period_bals.append((ts, bal))
+        if len(period_bals) < 2:
             return 0
-        current_bal = abs(debt_bs[debt_bs['dtEntry_parsed'] == current_date]['mAmount'].sum())
-        # Find prior month's BS balance
-        prior_date = None
-        for p in reversed(bs_periods):
-            if pd.Timestamp(p) < current_date:
-                prior_date = pd.Timestamp(p)
-                break
-        if prior_date is None:
-            return 0
-        prior_bal = abs(debt_bs[debt_bs['dtEntry_parsed'] == prior_date]['mAmount'].sum())
-        # Monthly principal = balance decrease; extrapolate to YTD
-        monthly_principal = max(0, prior_bal - current_bal)
+
+        # Compute month-over-month balance changes, skipping refi months
+        clean_deltas = []
+        for i in range(1, len(period_bals)):
+            cur_ts, cur_bal = period_bals[i]
+            prv_ts, prv_bal = period_bals[i - 1]
+            # Skip if the current period's month had a loan payoff
+            if (cur_ts.year, cur_ts.month) in _refi_months:
+                continue
+            delta = max(0, prv_bal - cur_bal)
+            clean_deltas.append(delta)
+
+        if clean_deltas:
+            monthly_principal = sum(clean_deltas) / len(clean_deltas)
+        else:
+            # All periods contaminated by refi — fall back to zero principal
+            monthly_principal = 0
+
         return monthly_principal * months_elapsed
 
     # Determine months elapsed for the quarter

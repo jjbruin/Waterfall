@@ -358,7 +358,8 @@ def load_all(db_path: str, pro_yr_base: int = 2025) -> dict:
     fc = load_forecast(fc_assembled, coa, pro_yr_base)
 
     # Optional tables
-    mri_loans_raw = _filter_paid_off_loans(get_adapter("loans").load(config))
+    mri_loans_all = get_adapter("loans").load(config)  # unfiltered — includes Paid Off
+    mri_loans_raw = _filter_paid_off_loans(mri_loans_all)
     mri_val = get_adapter("valuations").load(config)
     relationships_raw = get_adapter("relationships").load(config)
     capital_calls_raw = get_adapter("capital_calls").load(config)
@@ -429,6 +430,7 @@ def load_all(db_path: str, pro_yr_base: int = 2025) -> dict:
         "fc": fc,
         "coa": coa,
         "mri_loans_raw": mri_loans_raw,
+        "mri_loans_all": mri_loans_all,
         "mri_supp": pd.DataFrame(),
         "mri_val": mri_val,
         "fund_deals_raw": pd.DataFrame(),
