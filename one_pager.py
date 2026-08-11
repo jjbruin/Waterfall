@@ -1183,8 +1183,8 @@ def get_property_performance(
                     # Remaining months: after quarter end through Dec
                     rem_months = beo2[(beo2['_dt'].dt.year == year) & (beo2['_dt'].dt.month > actual_months)]
                     if not rem_months.empty:
-                        occ_col2 = 'PctOccupied' if 'PctOccupied' in rem_months.columns else 'pctoccupied'
-                        if occ_col2 in rem_months.columns:
+                        occ_col2 = next((c for c in rem_months.columns if c.lower() == 'pctoccupied'), None)
+                        if occ_col2:
                             rem_vals = pd.to_numeric(rem_months[occ_col2], errors='coerce').dropna()
                             if len(rem_vals) > 0:
                                 # ProjOccupancy stores as decimal; convert to percentage
