@@ -454,9 +454,8 @@ def build_roe_summary_row(
                 if amt >= 0:
                     capital_events.append((evt_date, amt))
                 cf_distributions.append((evt_date, amt))
-            else:
-                if amt >= 0:
-                    capital_events.append((evt_date, amt))
+            # else: acquisition fee — excluded from both capital_events
+            # and cf_distributions (no effect on ROE)
 
     if not capital_events:
         return None
