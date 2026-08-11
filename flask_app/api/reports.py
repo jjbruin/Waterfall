@@ -170,6 +170,7 @@ def roe_summary():
     data = _get_data()
     inv = data["inv"]
     acct = data.get("acct")
+    isbs_raw = data.get("isbs_raw")
     all_rows = []
     errors = []
 
@@ -188,6 +189,7 @@ def roe_summary():
             row = build_roe_summary_row(
                 vcode, deal_name, acct, inv,
                 report_date, wf_steps=wf_steps,
+                isbs_raw=isbs_raw,
             )
             if row:
                 all_rows.append(row)
@@ -214,6 +216,7 @@ def roe_summary_excel():
     data = _get_data()
     inv = data["inv"]
     acct = data.get("acct")
+    isbs_raw = data.get("isbs_raw")
     all_rows = []
 
     if acct is None or acct.empty:
@@ -229,6 +232,7 @@ def roe_summary_excel():
             row = build_roe_summary_row(
                 vcode, deal_name, acct, inv,
                 report_date, wf_steps=wf_steps,
+                isbs_raw=isbs_raw,
             )
             if row:
                 all_rows.append(row)

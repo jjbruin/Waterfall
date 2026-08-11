@@ -388,14 +388,16 @@ def build_roe_summary_row(
     report_date: date,
     wf_steps: Optional[pd.DataFrame] = None,
     seed_states: Optional[dict] = None,
+    isbs_raw: Optional[pd.DataFrame] = None,
 ) -> Optional[dict]:
     """Build one ROE summary row from accounting data through report_date.
 
     Returns dict with: Deal Name, Total Funded, Return of Capital,
-    Current Balance, Wtd Avg Balance, CF Received, Accrued Pref, ITD ROE.
+    Current Balance, Wtd Avg Balance, CF Received, Accrued Pref, ITD ROE,
+    U/W ITD ROE (from Projected IS accounts 7071/7073).
     """
     from loaders import build_investmentid_to_vcode
-    from metrics import calculate_roe_detailed
+    from metrics import calculate_roe, calculate_roe_detailed
 
     vcode_str = str(vcode).strip()
 
@@ -479,6 +481,116 @@ def build_roe_summary_row(
 
     accrued = _compute_accrued_pref(deal_acct, report_date, pref_rates)
 
+    # ---- U/W ROE to Date (Projected IS accounts 7071/7073) ----
+    uw_roe = 0.0
+    uw_detail_rows = []
+    uw_cf_total = 0.0
+    uw_roc_total = 0.0
+
+    if isbs_raw is not None and not isbs_raw.empty:
+        from one_pager import _get_uw_pe_periodic, UW_PE_DIST_ACCT, UW_PE_ROC_ACCT
+        inception_dt = min(d for d, _ in capital_events)
+
+        uw_dists = _get_uw_pe_periodic(isbs_raw, vcode, inception_dt, report_date, UW_PE_DIST_ACCT)
+        if uw_dists:
+            uw_cf_total = sum(a for _, a in uw_dists)
+
+            # Build capital-only events: contributions + actual capital returns
+            # Exclude actual CF distributions from capital_events
+            cf_dates_amounts: dict = {}
+            for d, a in cf_distributions:
+                cf_dates_amounts[d] = cf_dates_amounts.get(d, 0.0) + a
+            capital_only = []
+            cf_rem = dict(cf_dates_amounts)
+            for d, amt in capital_events:
+                if amt < 0:
+                    capital_only.append((d, amt))  # contribution
+                else:
+                    cf_at = cf_rem.get(d, 0.0)
+                    if cf_at > 0:
+                        consumed = min(cf_at, amt)
+                        cf_rem[d] -= consumed
+                        cap_ret = amt - consumed
+                    else:
+                        cap_ret = amt
+                    if cap_ret > 0.005:
+                        capital_only.append((d, cap_ret))
+
+            # Add U/W return of capital (7073) as capital events
+            uw_roc_events = _get_uw_pe_periodic(isbs_raw, vcode, inception_dt, report_date, UW_PE_ROC_ACCT)
+            for d, amt in uw_roc_events:
+                capital_only.append((d, amt))
+                uw_roc_total += amt
+
+            uw_roe = calculate_roe(capital_only, uw_dists, inception_dt, report_date)
+
+            # Build U/W detail rows from capital_only + uw_dists merged chronologically
+            uw_events = []
+            for d, amt in capital_only:
+                if amt < 0:
+                    uw_events.append((d, "Contribution", abs(amt), abs(amt)))
+                else:
+                    uw_events.append((d, "Capital Return (Actual)", amt, -amt))
+            for d, amt in uw_roc_events:
+                uw_events.append((d, "U/W Return of Capital (7073)", amt, -amt))
+                # Remove the duplicate from capital_only added above
+            # Deduplicate: capital_only already includes uw_roc_events, rebuild cleanly
+            uw_events = []
+            for d, amt in capital_events:
+                if amt < 0:
+                    uw_events.append((d, "Contribution", abs(amt), abs(amt)))
+            # Actual capital returns (ROC/realized gain only — no CF, no acq fee)
+            for _, row in deal_acct.iterrows():
+                if row["InvestorID"].upper().startswith("OP"):
+                    continue
+                evt_date = row["EffectiveDate"].date() if pd.notna(row["EffectiveDate"]) else None
+                if evt_date is None:
+                    continue
+                amt = float(row["Amt"])
+                major = row["MajorType"].lower()
+                tname = row["TypeName"].lower()
+                if "distri" in major and ("return of capital" in tname or "realized gain" in tname):
+                    uw_events.append((evt_date, "Capital Return (Actual)", abs(amt), -abs(amt)))
+            # U/W ROC (7073)
+            for d, amt in uw_roc_events:
+                uw_events.append((d, "U/W Return of Capital (7073)", amt, -amt))
+            # U/W distributions (7071)
+            for d, amt in uw_dists:
+                uw_events.append((d, "U/W Distribution (7071)", amt, 0.0))
+
+            uw_events.sort(key=lambda x: x[0])
+
+            uw_balance = 0.0
+            uw_prev = inception_dt
+            for evt_date, event_type, amount, balance_change in uw_events:
+                days = (evt_date - uw_prev).days
+                weighted = uw_balance * days
+                new_bal = max(0.0, uw_balance + balance_change)
+                uw_detail_rows.append({
+                    "Date": evt_date,
+                    "Event": event_type,
+                    "Amount": amount,
+                    "Days": days,
+                    "Capital Balance": uw_balance,
+                    "Weighted Capital": weighted,
+                    "New Balance": new_bal,
+                })
+                uw_balance = new_bal
+                uw_prev = evt_date
+
+            # Final period
+            uw_final_days = (report_date - uw_prev).days
+            if uw_final_days > 0:
+                uw_detail_rows.append({
+                    "Date": report_date,
+                    "Event": "(Report Date)",
+                    "Amount": 0.0,
+                    "Days": uw_final_days,
+                    "Capital Balance": uw_balance,
+                    "Weighted Capital": uw_balance * uw_final_days,
+                    "New Balance": uw_balance,
+                })
+
     # Build event-by-event detail for Excel audit trail.
     # Use the original accounting rows (with known MajorType/TypeName) so event
     # classification is authoritative — avoids same-date mis-tagging.
@@ -552,7 +664,11 @@ def build_roe_summary_row(
         "CF Received": detail["total_cf_distributions"],
         "Accrued Pref": accrued,
         "ITD ROE": detail["roe"],
+        "U/W ITD ROE": uw_roe,
         "_detail_rows": detail_rows,
+        "_uw_detail_rows": uw_detail_rows,
+        "_uw_cf_total": uw_cf_total,
+        "_uw_roc_total": uw_roc_total,
         "_years": detail["years"],
         "_total_days": (report_date - inception).days,
         "_inception": inception,
@@ -583,7 +699,7 @@ def generate_roe_summary_excel(df: pd.DataFrame, all_rows: list = None) -> bytes
 
     currency_cols = {"Total Funded", "Return of Capital", "Current Balance",
                      "Wtd Avg Balance", "CF Received", "Accrued Pref"}
-    pct_cols = {"ITD ROE"}
+    pct_cols = {"ITD ROE", "U/W ITD ROE"}
 
     for row_idx, (_, row) in enumerate(df.iterrows(), 2):
         for col_idx, col_name in enumerate(display_cols, 1):
@@ -709,6 +825,106 @@ def generate_roe_summary_excel(df: pd.DataFrame, all_rows: list = None) -> bytes
 
             # Column widths
             widths = [12, 16, 14, 8, 16, 18, 16]
+            for ci, w in enumerate(widths, 1):
+                ds.column_dimensions[ds.cell(row=1, column=ci).column_letter].width = w
+
+        # ---- U/W ROE detail sheets ----
+        for row_data in all_rows:
+            uw_detail = row_data.get("_uw_detail_rows")
+            if not uw_detail:
+                continue
+            deal_name = row_data["Deal Name"]
+            safe_name = deal_name[:25].replace("/", "-").replace("\\", "-").replace("*", "").replace("?", "").replace("[", "").replace("]", "").replace(":", "")
+            ds = wb.create_sheet(title=f"UW {safe_name}")
+
+            uw_fill = PatternFill(start_color="548235", end_color="548235", fill_type="solid")
+
+            ds.cell(row=1, column=1, value="Deal:").font = label_font
+            ds.cell(row=1, column=2, value=deal_name)
+            ds.cell(row=1, column=4, value="U/W ROE to Date").font = Font(bold=True, color="548235", size=12)
+            ds.cell(row=2, column=1, value="Inception:").font = label_font
+            ds.cell(row=2, column=2, value=row_data.get("_inception"))
+            ds.cell(row=2, column=2).number_format = "M/D/YYYY"
+            ds.cell(row=2, column=3, value="Total Days:").font = label_font
+            ds.cell(row=2, column=4, value=row_data.get("_total_days", 0))
+            ds.cell(row=2, column=5, value="Years:").font = label_font
+            ds.cell(row=2, column=6, value=row_data.get("_years", 0.0))
+            ds.cell(row=2, column=6).number_format = "0.00"
+
+            ds.cell(row=4, column=1, value="Total Funded (Actual):").font = label_font
+            ds.cell(row=4, column=2, value=row_data["Total Funded"])
+            ds.cell(row=4, column=2).number_format = "$#,##0"
+            ds.cell(row=4, column=3, value="U/W Distributions (7071):").font = label_font
+            ds.cell(row=4, column=4, value=row_data.get("_uw_cf_total", 0.0))
+            ds.cell(row=4, column=4).number_format = "$#,##0"
+            ds.cell(row=4, column=5, value="U/W ROC (7073):").font = label_font
+            ds.cell(row=4, column=6, value=row_data.get("_uw_roc_total", 0.0))
+            ds.cell(row=4, column=6).number_format = "$#,##0"
+
+            ds.cell(row=5, column=1, value="Capital Structure:").font = label_font
+            ds.cell(row=5, column=2, value="Actual contributions + actual capital returns + U/W ROC (7073)")
+
+            # U/W ROE formula
+            uw_roe_val = row_data.get("U/W ITD ROE", 0.0)
+            years = row_data.get("_years", 0.0)
+            ds.cell(row=7, column=1, value="U/W ROE Formula:").font = label_font
+            ds.cell(row=7, column=2,
+                    value="(U/W Distributions / Wtd Avg Capital) / Years")
+            ds.cell(row=7, column=6, value=uw_roe_val)
+            ds.cell(row=7, column=6).number_format = "0.00%"
+            ds.cell(row=7, column=6).font = bold_font
+
+            # Event detail table
+            detail_start = 9
+            detail_cols = ["Date", "Event", "Amount", "Days",
+                           "Capital Balance", "Weighted Capital", "New Balance"]
+            for ci, col_name in enumerate(detail_cols, 1):
+                cell = ds.cell(row=detail_start, column=ci, value=col_name)
+                cell.font = header_font
+                cell.fill = uw_fill
+                cell.alignment = Alignment(horizontal="center")
+
+            currency_detail = {"Amount", "Capital Balance", "Weighted Capital", "New Balance"}
+            for ri, evt in enumerate(uw_detail, 1):
+                r = detail_start + ri
+                for ci, col_name in enumerate(detail_cols, 1):
+                    cell = ds.cell(row=r, column=ci)
+                    val = evt[col_name]
+                    if col_name == "Date":
+                        cell.value = val
+                        cell.number_format = "M/D/YYYY"
+                    elif col_name in currency_detail:
+                        cell.value = float(val)
+                        cell.number_format = "$#,##0"
+                    else:
+                        cell.value = val
+
+            # Totals row
+            total_row = detail_start + len(uw_detail) + 1
+            ds.cell(row=total_row, column=1, value="TOTAL").font = bold_font
+            top_border = Border(top=Side(style="thin"))
+            sum_col = detail_cols.index("Weighted Capital") + 1
+            days_col = detail_cols.index("Days") + 1
+            for ci in [days_col, sum_col]:
+                cell = ds.cell(row=total_row, column=ci)
+                first_data = detail_start + 1
+                last_data = detail_start + len(uw_detail)
+                col_letter = cell.column_letter
+                cell.value = f"=SUM({col_letter}{first_data}:{col_letter}{last_data})"
+                cell.font = bold_font
+                cell.border = top_border
+                if ci == sum_col:
+                    cell.number_format = "$#,##0"
+
+            avg_row = total_row + 1
+            ds.cell(row=avg_row, column=1, value="Wtd Avg Capital =").font = label_font
+            sum_letter = ds.cell(row=total_row, column=sum_col).column_letter
+            days_letter = ds.cell(row=total_row, column=days_col).column_letter
+            ds.cell(row=avg_row, column=2,
+                    value=f"={sum_letter}{total_row}/{days_letter}{total_row}")
+            ds.cell(row=avg_row, column=2).number_format = "$#,##0"
+
+            widths = [12, 30, 14, 8, 16, 18, 16]
             for ci, w in enumerate(widths, 1):
                 ds.column_dimensions[ds.cell(row=1, column=ci).column_letter].width = w
 

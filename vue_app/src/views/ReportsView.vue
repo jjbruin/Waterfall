@@ -59,6 +59,7 @@ const reportDefs: ReportDef[] = [
       { key: 'CF Received', label: 'CF Received', format: 'currency', align: 'right' },
       { key: 'Accrued Pref', label: 'Accrued Pref', format: 'currency', align: 'right' },
       { key: 'ITD ROE', label: 'ITD ROE', format: 'percent', align: 'right' },
+      { key: 'U/W ITD ROE', label: 'U/W ITD ROE', format: 'percent', align: 'right' },
     ],
   },
   {
