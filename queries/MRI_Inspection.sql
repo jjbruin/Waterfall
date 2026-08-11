@@ -39,7 +39,7 @@ SELECT
     IL.vStatus,
     IL.vNotes
 FROM
-    InspectionList IL
+    Inspection IL
     INNER JOIN Loan L ON IL.LoanID = L.UID AND L.delete_flag IS NULL
     LEFT JOIN Property P ON IL.vCode = P.vCode
 WHERE
