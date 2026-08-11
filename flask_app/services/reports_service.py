@@ -480,49 +480,47 @@ def build_roe_summary_row(
 
     accrued = _compute_accrued_pref(deal_acct, report_date, pref_rates)
 
-    # Build event-by-event detail for Excel audit trail
-    events_sorted = sorted(capital_events, key=lambda x: x[0])
+    # Build event-by-event detail for Excel audit trail.
+    # Use the original accounting rows (with known MajorType/TypeName) so event
+    # classification is authoritative — avoids same-date mis-tagging.
+    acct_events = []
+    for _, row in deal_acct.iterrows():
+        if row["InvestorID"].upper().startswith("OP"):
+            continue
+        evt_date = row["EffectiveDate"].date() if pd.notna(row["EffectiveDate"]) else None
+        if evt_date is None:
+            continue
+        amt = float(row["Amt"])
+        major = row["MajorType"].lower()
+        tname = row["TypeName"].lower()
+
+        if "contrib" in major:
+            acct_events.append((evt_date, "Contribution", abs(amt), abs(amt)))
+        elif "distri" in major:
+            if "return of capital" in tname or "realized gain" in tname:
+                acct_events.append((evt_date, "Capital Return", abs(amt), -abs(amt)))
+            elif "acquisition fee" in tname:
+                acct_events.append((evt_date, "Acquisition Fee", abs(amt), 0.0))
+            else:
+                acct_events.append((evt_date, "CF Distribution", amt, 0.0))
+
+    acct_events.sort(key=lambda x: x[0])
+
     detail_rows = []
     running_balance = 0.0
-    prev_dt = min(d for d, _ in events_sorted)
+    prev_dt = inception = min(d for d, _ in capital_events)
     total_weighted = 0.0
 
-    # Build CF lookup for separating CF dists from capital returns
-    cf_lookup: dict = {}
-    for d, a in cf_distributions:
-        if a > 0:
-            cf_lookup[d] = cf_lookup.get(d, 0.0) + a
-    cf_remaining = dict(cf_lookup)
-
-    for evt_date, amt in events_sorted:
+    for evt_date, event_type, amount, balance_change in acct_events:
         days = (evt_date - prev_dt).days
         weighted = running_balance * days
         total_weighted += weighted
-
-        # Determine event type and balance change
-        if amt < 0:
-            event_type = "Contribution"
-            balance_change = -amt  # positive increase
-        else:
-            cf_at = cf_remaining.get(evt_date, 0.0)
-            if cf_at > 0:
-                consumed = min(cf_at, amt)
-                cf_remaining[evt_date] -= consumed
-                cap_return = amt - consumed
-            else:
-                cap_return = amt
-            if cap_return > 0.005:
-                event_type = "Capital Return"
-                balance_change = -cap_return
-            else:
-                event_type = "CF Distribution"
-                balance_change = 0.0
 
         new_balance = max(0.0, running_balance + balance_change)
         detail_rows.append({
             "Date": evt_date,
             "Event": event_type,
-            "Amount": abs(amt),
+            "Amount": amount,
             "Days": days,
             "Capital Balance": running_balance,
             "Weighted Capital": weighted,
@@ -557,8 +555,8 @@ def build_roe_summary_row(
         "ITD ROE": detail["roe"],
         "_detail_rows": detail_rows,
         "_years": detail["years"],
-        "_total_days": (report_date - min(d for d, _ in events_sorted)).days,
-        "_inception": min(d for d, _ in events_sorted),
+        "_total_days": (report_date - inception).days,
+        "_inception": inception,
     }
 
 
