@@ -76,6 +76,9 @@ def create_app(config_name: str = None) -> Flask:
             # Ensure surveillance tables exist
             from flask_app.services.surveillance_service import ensure_tables
             ensure_tables(engine)
+            # Ensure lease review tables exist
+            from flask_app.services.lease_review_service import ensure_lease_tables
+            ensure_lease_tables(engine)
 
     # Ensure surveillance tables (SQLite path — PG handled above)
     if not app.config.get("DATABASE_URL"):
@@ -138,6 +141,9 @@ def create_app(config_name: str = None) -> Flask:
 
     from flask_app.api.surveillance import surveillance_bp
     app.register_blueprint(surveillance_bp, url_prefix="/api/surveillance")
+
+    from flask_app.api.lease_review import lease_review_bp
+    app.register_blueprint(lease_review_bp)
 
     # Health check
     @app.route("/health")
