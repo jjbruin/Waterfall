@@ -87,7 +87,7 @@ waterfall-xirr/
     ├── src/
     │   ├── api/client.ts     # Axios instance with JWT interceptors
     │   ├── stores/           # Pinia stores (auth, data, dashboard, deals)
-    │   ├── views/            # Page components (DashboardView, DealAnalysisView, OnePagerView, ForgotPasswordView, ResetPasswordView, etc.)
+    │   ├── views/            # Page components (DashboardView, DealAnalysisView, OnePagerView, DataExplorerView, ForgotPasswordView, ResetPasswordView, etc.)
     │   └── components/       # Shared components (KpiCard, DataTable, ReviewPanel, AppSidebar)
     ├── vite.config.ts        # Vite config (proxies /api to Flask)
     └── package.json
@@ -318,6 +318,26 @@ MRI's query record limits make exporting the monolithic `ISBS_Download.csv` (800
 - **UI**: Vue sidebar in Report Settings (checkbox + month-end selector)
 - **Flask**: `ACTUALS_THROUGH` in config, passed via query params / request body, included in `/api/data/config`
 
+## Sidebar Navigation
+
+The sidebar (`AppSidebar.vue`) is organized into major sections with expandable dropdowns. Section headers are uppercase bold; child items are indented. Sections auto-expand when navigating to a child route.
+
+| Section | Type | Children |
+|---------|------|----------|
+| **Dashboard** | Standalone link | `/dashboard` |
+| **Asset Management** | Expandable | Deal Analysis, Property Financials, Surveillance, One Pager, Review Tracking, Ownership, Waterfall Setup, Report Settings (expandable config panel) |
+| **Accounting** | Future (dimmed) | — |
+| **New Business** | Future (dimmed) | — |
+| **Investment Management** | Future (dimmed) | — |
+| **Reports** | Standalone link | `/reports` (Projected Returns, ROE Summary, Pref Balance Detail, Sold Portfolio, PSCKOC, Portfolio Analysis) |
+| **Data Management** | Expandable | Data Explorer, MRI Data (expandable panel), Database Tools (expandable panel), Reload Data, Settings |
+| **Feedback & Requests** | Expandable | Submit form + request list (standalone section below nav) |
+
+- **Report Settings** under Asset Management: expandable inline config panel (Start Year, Horizon, Pro_Yr Base, YTD Actuals + Apply Settings button)
+- **MRI Data** under Data Management: expandable panel with server status, query list, per-query download/run/import buttons, admin "Refresh All Data from MRI"
+- **Database Tools** under Data Management: expandable panel with Import CSVs (file upload + match), Export Database (.zip download)
+- **Sold Portfolio**, **PSCKOC**, and **Portfolio Analysis** are embedded as custom view reports inside the Reports page (selected from the report list sidebar). Their Vue components accept an `embedded` prop that hides their standalone headers.
+
 ## Application Tabs
 
 ### 1. Dashboard
@@ -406,12 +426,21 @@ View, edit, and create waterfall structures for any entity. Vue: `WaterfallSetup
 - **Actions** — Save to Database (with audit trail + cache invalidation via `refresh_table` + `clear_cache`), Reset to Saved, Copy CF_WF->Cap_WF, Export CSV, Preview Waterfall ($100k test).
 - **Guidance Panel** — Collapsible reference from `waterfall_setup_rules.txt`.
 
-### Sidebar: Database Tools & User
-Vue: `AppSidebar.vue` database tools section. Flask: `data.py` API endpoints.
-- **Import CSVs** — Browser file upload (no server-side folder scan — incompatible with Azure). Select CSV files → auto-matches filenames to table definitions → shows importable/protected/unmatched status → uploads one file at a time (sequential to avoid OOM on 2GB container) with progress indicator. Protected tables (`waterfalls`, `one_pager_comments`, `waterfall_audit`, `review_roles`, `review_submissions`, `review_notes`, `one_pager_snapshots`, `prospective_loans`, `prospective_loans_audit`, `planned_loans`, `sale_overrides`, `user_requests`, `user_request_messages`) are never overwritten. Uses chunked import (`import_csv_stream()`, 50K rows/chunk, `dtype=str`) for large files like ISBS (800K+ rows). Clears data and computation caches.
-- **Export Database** — Export all tables as `waterfall_db_export_{timestamp}.zip` containing `{table_name}_db_export.csv` for every table.
-- **Feedback & Requests** — Collapsible sidebar section for users to submit errors, improvements, report requests, and analysis requests. Submit form (type, title, description, priority) + scrollable list of past requests with status badges and message counts. Click a request to see its full threaded conversation and add replies. Auto-opens when navigating with a `?reply=TOKEN` query param (from email links).
+### Sidebar: Data Management Tools
+Vue: `AppSidebar.vue` — tools are organized under the Data Management section dropdown. Flask: `data.py` API endpoints.
+- **Import CSVs** (under Database Tools) — Browser file upload (no server-side folder scan — incompatible with Azure). Select CSV files → auto-matches filenames to table definitions → shows importable/protected/unmatched status → uploads one file at a time (sequential to avoid OOM on 2GB container) with progress indicator. Protected tables (`waterfalls`, `one_pager_comments`, `waterfall_audit`, `review_roles`, `review_submissions`, `review_notes`, `one_pager_snapshots`, `prospective_loans`, `prospective_loans_audit`, `planned_loans`, `sale_overrides`, `user_requests`, `user_request_messages`) are never overwritten. Uses chunked import (`import_csv_stream()`, 50K rows/chunk, `dtype=object`) for large files like ISBS (800K+ rows). Clears data and computation caches.
+- **Export Database** (under Database Tools) — Export all tables as `waterfall_db_export_{timestamp}.zip` containing `{table_name}_db_export.csv` for every table.
+- **Reload Data** (under Data Management) — Reloads all cached data from the database.
+- **Feedback & Requests** — Standalone expandable section below nav. Submit errors, improvements, report requests, and analysis requests. Submit form (type, title, description, priority) + scrollable list of past requests with status badges and message counts. Click a request to see its full threaded conversation and add replies. Auto-opens when navigating with a `?reply=TOKEN` query param (from email links).
 - **Logout Button** — Full-width button at bottom of sidebar showing username + role. Clears auth store and redirects to login page.
+
+### Data Explorer
+Full-page database table browser. Vue: `DataExplorerView.vue`. Flask: `GET /api/data/tables/<table_name>/rows`.
+- **Table List** — Left sidebar listing all database tables. Click to load.
+- **Data Grid** — Sortable columns (click header), per-column text filter, pagination (configurable page size).
+- **Column Visibility** — Checkbox dropdown to show/hide columns.
+- **URL State** — Selected table tracked via `?table=` query param.
+- **API** — Parameterized SQL with `sa.text()` for safety. Supports `page`, `page_size`, `sort`, `order`, `filter__<col>` query params.
 
 ### 10. Feedback & Request Tracking
 Embedded request tracking system for users to report errors, suggest improvements, and request reports or analysis. Flask: `feedback.py` + `feedback_service.py`. Vue: sidebar section in `AppSidebar.vue`.
@@ -438,7 +467,8 @@ Embedded request tracking system for users to report errors, suggest improvement
 ### 7. Reports
 Multi-report section with sidebar layout. Vue: `ReportsView.vue`. Flask: `reports.py` + `reports_service.py`.
 - **Layout**: Left sidebar (report list + shared filters + Generate button) | Right main area (results table + Excel download). Report definitions are a registry array (`reportDefs`) in the Vue component — adding a new report requires one array entry + backend endpoints.
-- **Shared Filters**: Population (Current Deal, Select Deals, By Partner, All Deals). By Partner uses upstream investors via ownership chain (same as Review Tracking — excludes OP/PPI entities). Report-specific filters (e.g. As of Date) are conditionally shown per report definition.
+- **Custom View Reports**: Reports with `isCustomView: true` in `reportDefs` render their standalone Vue component (with `embedded` prop) instead of the standard filter/table layout. Currently: Sold Portfolio (`SoldPortfolioView`), PSCKOC (`PsckocView`), Portfolio Analysis (`PortfolioAnalysisView`).
+- **Shared Filters**: Population (Current Deal, Select Deals, By Partner, All Deals). By Partner uses upstream investors via ownership chain (same as Review Tracking — excludes OP/PPI entities). Report-specific filters (e.g. As of Date) are conditionally shown per report definition. Filters are hidden for custom view reports.
 - **API Endpoints**: `GET /api/reports/deal-lookup` (eligible deals), `GET /api/reports/partners` (upstream investors).
 
 #### Report: Projected Returns Summary
@@ -472,7 +502,7 @@ Multi-report section with sidebar layout. Vue: `ReportsView.vue`. Flask: `report
 - **Validation**: 55/120 investor/deal pairs match Excel exactly; remaining differences are data vintage (different accounting exports), not calculation logic
 
 ### 8. Sold Portfolio
-Historical returns for sold deals computed from accounting_feed (no forecast waterfalls). Vue: `SoldPortfolioView.vue`. Flask: `sold_portfolio.py` + `sold_service.py`.
+Historical returns for sold deals computed from accounting_feed (no forecast waterfalls). Accessed via Reports section (embedded as custom view). Vue: `SoldPortfolioView.vue` (accepts `embedded` prop). Flask: `sold_portfolio.py` + `sold_service.py`.
 - **Data Source**: Accounting history only — contributions (`is_contribution`), distributions (`is_distribution`). Raw `acct` is normalised via `normalize_accounting_feed()` on first use.
 - **Pref Equity Only**: Filters out OP partners (`InvestorID` starting with "OP"). Case-insensitive InvestorID grouping handles mixed-case entity IDs.
 - **Capital event identification**: Uses **Typename** from accounting (not the `Capital` flag, which is unreliable for sale events). Events with Typename containing "Return of Capital" or "Realized Gain" (case-insensitive) are treated as capital events. Used in both gross and net ROE calculations to correctly separate operating income from capital activity.
@@ -501,7 +531,7 @@ Historical returns for sold deals computed from accounting_feed (no forecast wat
 - **Acquisition Fees included**: Unlike the Deal Analysis waterfall path, Sold Portfolio includes all accounting entries (including Acquisition Fees) in its gross return calculations.
 
 ### 9. PSCKOC
-Upstream waterfall analysis for the PSCKOC holding entity, showing how deal-level distributions flow through PPI entities to PSCKOC members. Vue: `PsckocView.vue`. Flask: `psckoc_service.py`.
+Upstream waterfall analysis for the PSCKOC holding entity, showing how deal-level distributions flow through PPI entities to PSCKOC members. Accessed via Reports section (embedded as custom view). Vue: `PsckocView.vue` (accepts `embedded` prop). Flask: `psckoc_service.py`.
 - **Members**: PSC1 (GP co-invest, Capital Units), KCREIT (LP, Capital Units), PCBLE (GP promote + AM fee recipient, Carry Units)
 - **Deal Discovery**: Hybrid approach — recursive downward traversal from PSCKOC through ownership tree (`node.investments`) to find all intermediate entities, then filters to deals whose waterfall PropCode references one of those entities or PSCKOC itself. Prevents false matches from shared holding entities. Excludes sold deals (`Sale_Status=SOLD` or `Lifecycle=Sold`) and filters ended relationships (`EndDate`).
 - **Computation**: Button-gated. Runs `get_cached_deal_result()` per deal + `run_recursive_upstream_waterfalls()` for CF and Cap. Results cached in `st.session_state['_psckoc_results']`.
@@ -518,6 +548,13 @@ Upstream waterfall analysis for the PSCKOC holding entity, showing how deal-leve
   - `IRR`: IRR-targeted hurdle gate. `nPercent` = target IRR. Computes additional distribution needed for investor to reach target IRR using full cashflow history (net of AM fees and expenses). Used in Cap_WF to gate promote.
 - **New InvestorState Fields** (`models.py`): `promote_base` (cumulative pref for catch-up denominator), `promote_carry` (cumulative carry from catch-up).
 - **Waterfall Setup Guide** (`waterfall_setup_rules.txt`): Comprehensive modeling reference. Sections: vState vocabulary, Add vs Tag, pool routing, operating capital, FXRate, mAmount, deal patterns (A-E), expenses, promote/IRR structure, AMFee exclusions, TGA22 JV example, checklist, troubleshooting.
+
+### 10a. Portfolio Analysis
+Upstream waterfall analysis for any portfolio entity (generalized version of PSCKOC). Accessed via Reports section (embedded as custom view). Vue: `PortfolioAnalysisView.vue` (accepts `embedded` prop). Flask: `portfolio_analysis.py`.
+- **Entity Selection** — Dropdown of portfolio entities from ownership tree.
+- **Mode** — Actual or Proposed (with editable assumptions: AM fee, hurdle, promote, expenses).
+- **Computation** — Button-gated. Runs deal-level waterfalls + recursive upstream waterfalls for the selected entity.
+- **Output** — Partner returns, deal detail drill-down, investor-level metrics.
 
 ## AI Assistant
 
@@ -624,7 +661,7 @@ Embedded Claude-powered chat panel for natural-language queries against the port
 - `import_csvs_to_database()` - Refresh all tables from CSVs, protecting DB-managed tables (database.py)
 - `export_all_tables_to_zip()` - Export all tables as labeled CSVs in a zip archive (database.py)
 - `set_engine()` - Wire SQLAlchemy engine for PostgreSQL support (database.py)
-- `import_csv_stream()` - Chunked CSV import (50K rows, dtype=str) for large files (database.py)
+- `import_csv_stream()` - Chunked CSV import (50K rows, dtype=object) for large files (database.py)
 - `split_isbs_table()` - Migrate monolithic isbs table into 6 split tables by vSource; idempotent (database.py)
 - `_assemble_isbs()` - Load split ISBS tables, restore vSource column, concatenate; fallback to legacy (data_service.py)
 - `_append_uw_supplements()` - Append isbs_uw_supplements rows to assembled ISBS; defaults vSource='Projected IS' (data_service.py)
