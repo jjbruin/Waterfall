@@ -289,8 +289,12 @@ def _append_uw_supplements(assembled: pd.DataFrame, config: dict) -> pd.DataFram
     try:
         supp = get_adapter("isbs_uw_supplements").load(config)
         if supp is not None and not supp.empty:
+            supp = supp.copy()
+            # Normalize column names to match ISBS convention (lowercase vcode)
+            col_map = {c: c.lower() for c in supp.columns if c.lower() == 'vcode' and c != 'vcode'}
+            if col_map:
+                supp = supp.rename(columns=col_map)
             if 'vSource' not in supp.columns:
-                supp = supp.copy()
                 supp['vSource'] = 'Projected IS'
             assembled = pd.concat([assembled, supp], ignore_index=True)
             logger.info(f"ISBS appended {len(supp):,} UW supplement rows")
