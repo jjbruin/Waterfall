@@ -493,6 +493,15 @@ function toggleCollapsed() {
         <span class="nav-section-header future">Investment Management</span>
       </div>
 
+      <!-- Reports — standalone section-level link -->
+      <router-link
+        to="/reports"
+        class="nav-section-link"
+        :class="{ active: route.path === '/reports' }"
+      >
+        Reports
+      </router-link>
+
       <!-- Data Management -->
       <div class="nav-section">
         <button
