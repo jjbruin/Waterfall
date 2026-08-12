@@ -5,6 +5,8 @@ import ProgressOverlay from '../components/common/ProgressOverlay.vue'
 import api from '../api/client'
 import { useDataStore } from '../stores/data'
 
+defineProps<{ embedded?: boolean }>()
+
 const dataStore = useDataStore()
 
 // State
@@ -333,8 +335,8 @@ function allocCellValue(row: any, y: number): string {
 
 <template>
   <div class="portfolio-analysis">
-    <h2>Portfolio Analysis</h2>
-    <p class="subtitle">Upstream waterfall analysis — traces deal cash flows through to portfolio entity investors.</p>
+    <h2 v-if="!embedded">Portfolio Analysis</h2>
+    <p v-if="!embedded" class="subtitle">Upstream waterfall analysis — traces deal cash flows through to portfolio entity investors.</p>
 
     <ProgressOverlay :visible="computing" message="Running portfolio computation..." />
 

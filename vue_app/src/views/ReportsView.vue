@@ -4,6 +4,8 @@ import { useDataStore } from '../stores/data'
 import { useDealsStore } from '../stores/deals'
 import DataTable from '../components/common/DataTable.vue'
 import SoldPortfolioView from './SoldPortfolioView.vue'
+import PsckocView from './PsckocView.vue'
+import PortfolioAnalysisView from './PortfolioAnalysisView.vue'
 import api from '../api/client'
 
 const data = useDataStore()
@@ -92,6 +94,26 @@ const reportDefs: ReportDef[] = [
     value: 'sold-portfolio',
     label: 'Sold Portfolio',
     description: 'Historical returns for sold deals from accounting data',
+    isCustomView: true,
+    endpoint: '',
+    excelEndpoint: '',
+    excelFilename: '',
+    columns: [],
+  },
+  {
+    value: 'psckoc',
+    label: 'PSCKOC',
+    description: 'Upstream waterfall analysis for the PSCKOC holding entity',
+    isCustomView: true,
+    endpoint: '',
+    excelEndpoint: '',
+    excelFilename: '',
+    columns: [],
+  },
+  {
+    value: 'portfolio-analysis',
+    label: 'Portfolio Analysis',
+    description: 'Upstream waterfall analysis for portfolio entity investors',
     isCustomView: true,
     endpoint: '',
     excelEndpoint: '',
@@ -446,6 +468,8 @@ const roeDetailCF = computed(() => {
         </template>
         <template v-else-if="isCustomView">
           <SoldPortfolioView v-if="activeReport?.value === 'sold-portfolio'" :embedded="true" />
+          <PsckocView v-else-if="activeReport?.value === 'psckoc'" :embedded="true" />
+          <PortfolioAnalysisView v-else-if="activeReport?.value === 'portfolio-analysis'" :embedded="true" />
         </template>
         <template v-else>
           <div class="results-header">

@@ -7,6 +7,8 @@ import ProgressOverlay from '../components/common/ProgressOverlay.vue'
 import api from '../api/client'
 import { useDataStore } from '../stores/data'
 
+defineProps<{ embedded?: boolean }>()
+
 const psckoc = usePsckocStore()
 const dataStore = useDataStore()
 
@@ -178,8 +180,8 @@ async function downloadExcel() {
 
 <template>
   <div class="psckoc">
-    <h2>PSCKOC Entity Analysis</h2>
-    <p class="subtitle">Upstream waterfall analysis — traces deal cash flows through to PSC1, KCREIT, and PCBLE.</p>
+    <h2 v-if="!embedded">PSCKOC Entity Analysis</h2>
+    <p v-if="!embedded" class="subtitle">Upstream waterfall analysis — traces deal cash flows through to PSC1, KCREIT, and PCBLE.</p>
 
     <ProgressOverlay :visible="psckoc.computing" message="Running PSCKOC computation..." />
 
