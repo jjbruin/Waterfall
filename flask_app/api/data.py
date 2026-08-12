@@ -202,6 +202,110 @@ def list_tables():
     return jsonify({"tables": safe_json(tables)})
 
 
+@data_bp.route("/tables/<table_name>/rows", methods=["GET"])
+@login_required
+def table_rows(table_name):
+    """Return paginated, sortable, filterable rows from a database table.
+
+    Query params:
+        page (int): Page number, 1-based (default 1)
+        page_size (int): Rows per page, max 500 (default 100)
+        sort (str): Column name to sort by
+        order (str): 'asc' or 'desc' (default 'asc')
+        filter__<col> (str): Filter value for column <col> (case-insensitive contains)
+    """
+    import sqlalchemy as sa
+    from flask_app.db import get_engine
+
+    engine = get_engine()
+
+    # Validate table exists
+    with engine.connect() as conn:
+        if engine.dialect.name == "postgresql":
+            check = conn.execute(sa.text(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema='public' AND table_name=:t"
+            ), {"t": table_name})
+        else:
+            check = conn.execute(sa.text(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=:t"
+            ), {"t": table_name})
+        if not check.fetchone():
+            return jsonify({"error": f"Table '{table_name}' not found"}), 404
+
+    page = max(1, int(request.args.get("page", 1)))
+    page_size = min(500, max(1, int(request.args.get("page_size", 100))))
+    sort_col = request.args.get("sort", "")
+    sort_order = request.args.get("order", "asc").lower()
+
+    # Build column filters from query params like filter__vcode=P000
+    filters = {}
+    for key, val in request.args.items():
+        if key.startswith("filter__") and val.strip():
+            col_name = key[len("filter__"):]
+            filters[col_name] = val.strip()
+
+    with engine.connect() as conn:
+        # Get columns
+        if engine.dialect.name == "postgresql":
+            col_rows = conn.execute(sa.text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema='public' AND table_name=:t ORDER BY ordinal_position"
+            ), {"t": table_name}).fetchall()
+            columns = [r[0] for r in col_rows]
+        else:
+            col_rows = conn.execute(sa.text(f'PRAGMA table_info("{table_name}")')).fetchall()
+            columns = [r[1] for r in col_rows]
+
+        # Build query with filters
+        where_clauses = []
+        params = {}
+        for i, (col, val) in enumerate(filters.items()):
+            if col not in columns:
+                continue
+            param_name = f"fv{i}"
+            if engine.dialect.name == "postgresql":
+                where_clauses.append(f'CAST("{col}" AS TEXT) ILIKE :{param_name}')
+            else:
+                where_clauses.append(f'CAST("{col}" AS TEXT) LIKE :{param_name} COLLATE NOCASE')
+            params[param_name] = f"%{val}%"
+
+        where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+        # Total count (filtered)
+        count_row = conn.execute(
+            sa.text(f'SELECT COUNT(*) FROM "{table_name}"{where_sql}'), params
+        ).fetchone()
+        total = count_row[0]
+
+        # Sort
+        order_sql = ""
+        if sort_col and sort_col in columns:
+            direction = "DESC" if sort_order == "desc" else "ASC"
+            order_sql = f' ORDER BY "{sort_col}" {direction}'
+
+        # Paginate
+        offset = (page - 1) * page_size
+        limit_sql = f" LIMIT {page_size} OFFSET {offset}"
+
+        rows = conn.execute(
+            sa.text(f'SELECT * FROM "{table_name}"{where_sql}{order_sql}{limit_sql}'),
+            params,
+        ).fetchall()
+
+        data = [dict(zip(columns, row)) for row in rows]
+
+    return jsonify({
+        "table": table_name,
+        "columns": columns,
+        "rows": safe_json(data),
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": max(1, -(-total // page_size)),
+    })
+
+
 @data_bp.route("/config", methods=["GET"])
 @login_required
 def get_config():
