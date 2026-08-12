@@ -264,12 +264,19 @@ function fmtDate(val: string | null | undefined): string {
 
 // --- ROE Detail (single-deal drill-down) ---
 const isRoeSummary = computed(() => activeReport.value?.value === 'roe-summary')
+const roeDetailMode = ref<'actual' | 'uw'>('actual')
 
 const roeDetailRow = computed(() => {
   if (!isRoeSummary.value || results.value.length !== 1) return null
   const row = results.value[0]
   if (!row._detail_rows || !row._detail_rows.length) return null
   return row
+})
+
+const hasUwDetail = computed(() => {
+  if (!roeDetailRow.value) return false
+  const uw = roeDetailRow.value._uw_detail_rows
+  return uw && uw.length > 0
 })
 
 const roeDetailColumns = [
@@ -284,10 +291,35 @@ const roeDetailColumns = [
 
 const roeDetailRows = computed(() => {
   if (!roeDetailRow.value) return []
-  return roeDetailRow.value._detail_rows.map((r: any) => ({
+  const source = roeDetailMode.value === 'uw'
+    ? roeDetailRow.value._uw_detail_rows || []
+    : roeDetailRow.value._detail_rows || []
+  return source.map((r: any) => ({
     ...r,
     Date: fmtDate(r.Date),
   }))
+})
+
+const roeDetailTitle = computed(() => {
+  if (!roeDetailRow.value) return ''
+  const name = roeDetailRow.value['Deal Name']
+  return roeDetailMode.value === 'uw'
+    ? `U/W ITD ROE Calculation — ${name}`
+    : `ITD ROE Calculation — ${name}`
+})
+
+const roeDetailROE = computed(() => {
+  if (!roeDetailRow.value) return 0
+  return roeDetailMode.value === 'uw'
+    ? roeDetailRow.value['U/W ITD ROE']
+    : roeDetailRow.value['ITD ROE']
+})
+
+const roeDetailCF = computed(() => {
+  if (!roeDetailRow.value) return 0
+  return roeDetailMode.value === 'uw'
+    ? roeDetailRow.value._uw_cf_total
+    : roeDetailRow.value['CF Received']
 })
 </script>
 
@@ -443,7 +475,19 @@ const roeDetailRows = computed(() => {
           <!-- ROE Detail: event-by-event breakdown for single deal -->
           <template v-if="roeDetailRow">
             <div class="roe-detail-section">
-              <h4>ITD ROE Calculation — {{ roeDetailRow['Deal Name'] }}</h4>
+              <div class="roe-detail-header">
+                <h4>{{ roeDetailTitle }}</h4>
+                <div v-if="hasUwDetail" class="roe-toggle">
+                  <button
+                    :class="['roe-toggle-btn', { active: roeDetailMode === 'actual' }]"
+                    @click="roeDetailMode = 'actual'"
+                  >ITD ROE</button>
+                  <button
+                    :class="['roe-toggle-btn', { active: roeDetailMode === 'uw' }]"
+                    @click="roeDetailMode = 'uw'"
+                  >U/W ITD ROE</button>
+                </div>
+              </div>
               <div class="roe-metrics">
                 <div class="roe-metric">
                   <span class="roe-metric-label">Total Funded</span>
@@ -462,8 +506,8 @@ const roeDetailRows = computed(() => {
                   <span class="roe-metric-value">{{ fmtCurr(roeDetailRow['Wtd Avg Balance']) }}</span>
                 </div>
                 <div class="roe-metric">
-                  <span class="roe-metric-label">CF Received</span>
-                  <span class="roe-metric-value">{{ fmtCurr(roeDetailRow['CF Received']) }}</span>
+                  <span class="roe-metric-label">{{ roeDetailMode === 'uw' ? 'U/W CF (7071)' : 'CF Received' }}</span>
+                  <span class="roe-metric-value">{{ fmtCurr(roeDetailCF) }}</span>
                 </div>
                 <div class="roe-metric">
                   <span class="roe-metric-label">Days</span>
@@ -474,8 +518,8 @@ const roeDetailRows = computed(() => {
                   <span class="roe-metric-value">{{ roeDetailRow._years?.toFixed(4) }}</span>
                 </div>
                 <div class="roe-metric highlight">
-                  <span class="roe-metric-label">ITD ROE</span>
-                  <span class="roe-metric-value">{{ fmtPct(roeDetailRow['ITD ROE']) }}</span>
+                  <span class="roe-metric-label">{{ roeDetailMode === 'uw' ? 'U/W ITD ROE' : 'ITD ROE' }}</span>
+                  <span class="roe-metric-value">{{ fmtPct(roeDetailROE) }}</span>
                 </div>
               </div>
               <DataTable
@@ -730,9 +774,46 @@ h2 { font-size: 20px; margin-bottom: 16px; }
   padding-top: 16px;
 }
 
-.roe-detail-section h4 {
+.roe-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.roe-detail-header h4 {
   font-size: 14px;
-  margin: 0 0 12px 0;
+  margin: 0;
+}
+
+.roe-toggle {
+  display: flex;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.roe-toggle-btn {
+  padding: 5px 14px;
+  border: none;
+  background: var(--color-surface);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.roe-toggle-btn + .roe-toggle-btn {
+  border-left: 1px solid var(--color-border);
+}
+
+.roe-toggle-btn.active {
+  background: var(--color-accent);
+  color: white;
+}
+
+.roe-toggle-btn:hover:not(.active) {
+  background: #eee;
 }
 
 .roe-metrics {
