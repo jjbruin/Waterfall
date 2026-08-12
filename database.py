@@ -1272,7 +1272,7 @@ def import_csv_stream(
         engine = _sa_engine if is_postgres else conn
 
         for chunk in pd.read_csv(file_stream, chunksize=chunk_size, low_memory=False,
-                                  dtype=str):
+                                  dtype="object"):
             normalize_columns(chunk)
             mode = 'replace' if first_chunk else 'append'
             chunk.to_sql(table_name, engine, if_exists=mode, index=False)
