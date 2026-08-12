@@ -556,6 +556,17 @@ Upstream waterfall analysis for any portfolio entity (generalized version of PSC
 - **Computation** — Button-gated. Runs deal-level waterfalls + recursive upstream waterfalls for the selected entity.
 - **Output** — Partner returns, deal detail drill-down, investor-level metrics.
 
+### 11. New Business (Planned — Phase 1 Design)
+Deal pipeline and quick evaluation workspace under the "New Business" sidebar section. **Design document:** `docs/New_Business_Design_Phase1.md` (PDF version available for team review).
+- **Deal Pipeline** — Kanban board + table view. Stages: Lead → Screening → LOI → DD → IC Review → Closing → Closed / Passed. Fields: deal name, location, asset type, GLA/units, partner, purchase price, assigned to, target close.
+- **Quick Deal Evaluator** — Assumptions form (acquisition, debt, equity structure, partnership terms, NOI, exit) → instant computed returns using existing engines. Results: PSC IRR/ROE/MOIC, Investor IRR/ROE/MOIC, property-level returns, annual summary table, capital stack visualization, sensitivity matrix.
+- **Scenarios** — Multiple saved assumption sets per deal (Base Case, Downside, different hold periods). Side-by-side comparison view.
+- **Engine reuse** — `build_prospect_analysis()` creates synthetic data structures from form inputs, then calls `compute_deal_analysis()` with the same waterfall/XIRR/ROE engines used by Deal Analysis.
+- **Onboard to Portfolio** — One-click wizard converts a closed prospect to a portfolio deal (creates inv, waterfalls, loans, forecast entries). No re-keying.
+- **Database tables** — `prospect_deals`, `prospect_assumptions`, `prospect_cashflows`, `prospect_activity` (all in `PROTECTED_TABLES`).
+- **Future phases** — Excel cash flow import, rent roll analysis, lease testing, IC memo generation, cross-portfolio analysis, term sheet generator.
+- **Status** — Design complete, pending team input.
+
 ## AI Assistant
 
 Embedded Claude-powered chat panel for natural-language queries against the portfolio database.
