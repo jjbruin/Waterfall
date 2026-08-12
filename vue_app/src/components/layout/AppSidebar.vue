@@ -23,7 +23,7 @@ function toggleSection(key: string) {
 
 // Auto-expand section containing current route
 const amRoutes = ['/deal-analysis', '/property-financials', '/surveillance', '/one-pager', '/review-tracking', '/ownership', '/waterfall-setup', '/reports']
-const nbRoutes = ['/lease-review']
+const nbRoutes = ['/pipeline', '/lease-review']
 const dmRoutes = ['/data-explorer', '/settings']
 
 watch(() => route.path, (path) => {
@@ -496,6 +496,7 @@ function toggleCollapsed() {
           <span class="section-chevron">{{ expandedSections.nb ? '&#x25BE;' : '&#x25B8;' }}</span>
         </button>
         <div v-show="expandedSections.nb" class="nav-section-body">
+          <router-link to="/pipeline" class="nav-item" :class="{ active: route.path === '/pipeline' }">Pipeline</router-link>
           <router-link to="/lease-review" class="nav-item" :class="{ active: route.path === '/lease-review' }">Lease Review</router-link>
         </div>
       </div>
