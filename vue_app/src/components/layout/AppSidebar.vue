@@ -23,7 +23,6 @@ const navItems = [
   { path: '/ownership', label: 'Ownership', icon: 'git-branch' },
   { path: '/waterfall-setup', label: 'Waterfall Setup', icon: 'layers' },
   { path: '/reports', label: 'Reports', icon: 'file-text' },
-  { path: '/sold-portfolio', label: 'Sold Portfolio', icon: 'archive' },
   { path: '/portfolio-analysis', label: 'Portfolio Analysis', icon: 'pie-chart' },
   { path: '/psckoc', label: 'PSCKOC', icon: 'share-2' },
   { path: '/surveillance', label: 'Surveillance', icon: 'shield' },

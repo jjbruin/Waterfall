@@ -3,6 +3,7 @@ import { ref, onMounted, computed, watch } from 'vue'
 import { useDataStore } from '../stores/data'
 import { useDealsStore } from '../stores/deals'
 import DataTable from '../components/common/DataTable.vue'
+import SoldPortfolioView from './SoldPortfolioView.vue'
 import api from '../api/client'
 
 const data = useDataStore()
@@ -20,6 +21,7 @@ interface ReportDef {
   hasReportDate?: boolean
   highlightTotal?: boolean
   hasDealInvestorSelector?: boolean
+  isCustomView?: boolean
 }
 
 const reportDefs: ReportDef[] = [
@@ -86,6 +88,16 @@ const reportDefs: ReportDef[] = [
       { key: 'Remaining Accrual', label: 'Remaining', format: 'currency', align: 'right' },
     ],
   },
+  {
+    value: 'sold-portfolio',
+    label: 'Sold Portfolio',
+    description: 'Historical returns for sold deals from accounting data',
+    isCustomView: true,
+    endpoint: '',
+    excelEndpoint: '',
+    excelFilename: '',
+    columns: [],
+  },
 ]
 
 // --- State ---
@@ -110,6 +122,7 @@ const prefHeader = ref<any>(null)
 
 const activeReport = computed(() => reportDefs.find((r) => r.value === selectedReport.value))
 const isPrefDetail = computed(() => activeReport.value?.hasDealInvestorSelector ?? false)
+const isCustomView = computed(() => activeReport.value?.isCustomView ?? false)
 
 onMounted(async () => {
   if (data.deals.length === 0) await data.loadDeals()
@@ -344,8 +357,8 @@ const roeDetailCF = computed(() => {
           </div>
         </div>
 
-        <!-- Filters -->
-        <template v-if="selectedReport">
+        <!-- Filters (hidden for custom view reports like Sold Portfolio) -->
+        <template v-if="selectedReport && !isCustomView">
           <div class="section-label">Filters</div>
 
           <!-- Standard population selector (non-pref-detail reports) -->
@@ -430,6 +443,9 @@ const roeDetailCF = computed(() => {
       <div class="reports-main">
         <template v-if="!selectedReport">
           <p class="placeholder">Select a report from the list to get started.</p>
+        </template>
+        <template v-else-if="isCustomView">
+          <SoldPortfolioView v-if="activeReport?.value === 'sold-portfolio'" :embedded="true" />
         </template>
         <template v-else>
           <div class="results-header">

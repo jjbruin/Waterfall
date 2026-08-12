@@ -5,6 +5,8 @@ import KpiCard from '../components/common/KpiCard.vue'
 import api from '../api/client'
 import { useDataStore } from '../stores/data'
 
+defineProps<{ embedded?: boolean }>()
+
 const dataStore = useDataStore()
 
 const summary = ref<any[]>([])
@@ -232,7 +234,7 @@ async function downloadDetailExcel() {
 
 <template>
   <div class="sold-portfolio">
-    <h2>Sold Portfolio — Historical Returns</h2>
+    <h2 v-if="!embedded">Sold Portfolio — Historical Returns</h2>
 
     <!-- Toolbar -->
     <div class="toolbar">
