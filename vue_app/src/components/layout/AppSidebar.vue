@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, reactive, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { useDataStore } from '../../stores/data'
@@ -14,19 +14,21 @@ function handleLogout() {
   router.push('/login')
 }
 
-const navItems = [
-  { path: '/dashboard', label: 'Dashboard', icon: 'grid' },
-  { path: '/deal-analysis', label: 'Deal Analysis', icon: 'trending-up' },
-  { path: '/property-financials', label: 'Property Financials', icon: 'building' },
-  { path: '/one-pager', label: 'One Pager', icon: 'file' },
-  { path: '/review-tracking', label: 'Review Tracking', icon: 'check-square' },
-  { path: '/ownership', label: 'Ownership', icon: 'git-branch' },
-  { path: '/waterfall-setup', label: 'Waterfall Setup', icon: 'layers' },
-  { path: '/reports', label: 'Reports', icon: 'file-text' },
-  { path: '/surveillance', label: 'Surveillance', icon: 'shield' },
-  { path: '/data-explorer', label: 'Data Explorer', icon: 'eye' },
-  { path: '/settings', label: 'Settings', icon: 'settings' },
-]
+// --- Section expand/collapse ---
+const expandedSections = reactive<Record<string, boolean>>({})
+
+function toggleSection(key: string) {
+  expandedSections[key] = !expandedSections[key]
+}
+
+// Auto-expand section containing current route
+const amRoutes = ['/deal-analysis', '/property-financials', '/surveillance', '/one-pager', '/review-tracking', '/ownership', '/waterfall-setup', '/reports']
+const dmRoutes = ['/data-explorer', '/settings']
+
+watch(() => route.path, (path) => {
+  if (amRoutes.some(r => path.startsWith(r))) expandedSections.am = true
+  if (dmRoutes.some(r => path.startsWith(r))) expandedSections.dm = true
+}, { immediate: true })
 
 // MRI Data tools
 const showMriTools = ref(false)
@@ -403,157 +405,299 @@ function toggleCollapsed() {
     </div>
 
     <nav class="sidebar-nav" v-show="!collapsed">
+      <!-- Dashboard — standalone, styled like section headers -->
       <router-link
-        v-for="item in navItems"
-        :key="item.path"
-        :to="item.path"
-        class="nav-item"
-        :class="{ active: route.path === item.path }"
+        to="/dashboard"
+        class="nav-section-link"
+        :class="{ active: route.path === '/dashboard' }"
       >
-        {{ item.label }}
+        Dashboard
       </router-link>
-    </nav>
 
-    <div class="sidebar-tools" v-show="!collapsed">
-      <!-- Reload -->
-      <button class="btn btn-sm btn-full" @click="handleReload">
-        Reload Data
-      </button>
-
-      <!-- Report Settings -->
-      <div class="tool-section">
-        <button class="section-toggle" @click="showConfig = !showConfig">
-          {{ showConfig ? '▾' : '▸' }} Report Settings
+      <!-- Asset Management -->
+      <div class="nav-section">
+        <button
+          class="nav-section-header"
+          :class="{ expanded: expandedSections.am }"
+          @click="toggleSection('am')"
+        >
+          <span>Asset Management</span>
+          <span class="section-chevron">{{ expandedSections.am ? '&#x25BE;' : '&#x25B8;' }}</span>
         </button>
-        <div v-if="showConfig" class="section-body">
-          <div class="config-row">
-            <label>Start Year</label>
-            <input type="number" v-model.number="localStartYear" min="2000" max="2100" />
-          </div>
-          <div class="config-row">
-            <label>Horizon (yrs)</label>
-            <input type="number" v-model.number="localHorizon" min="1" max="30" />
-          </div>
-          <div class="config-row">
-            <label>Pro_Yr Base</label>
-            <input type="number" v-model.number="localProYrBase" min="1900" max="2100" />
-          </div>
-          <div class="config-row">
-            <label>
-              <input type="checkbox" v-model="useActuals" style="margin-right: 4px;" />
-              YTD Actuals
-            </label>
-          </div>
-          <div v-if="useActuals && monthEndOptions.length" class="config-row">
-            <label>Through</label>
-            <select v-model="localActualsThrough" class="config-select">
-              <option v-for="opt in monthEndOptions" :key="opt.value" :value="opt.value">
-                {{ opt.label }}
-              </option>
-            </select>
-          </div>
-          <div v-if="useActuals && !monthEndOptions.length" class="config-caption">
-            No completed months yet this year.
-          </div>
-          <button class="btn btn-xs btn-full" @click="handleConfigSave">
-            Apply Settings
+        <div v-show="expandedSections.am" class="nav-section-body">
+          <router-link to="/deal-analysis" class="nav-item" :class="{ active: route.path === '/deal-analysis' }">Deal Analysis</router-link>
+          <router-link to="/property-financials" class="nav-item" :class="{ active: route.path === '/property-financials' }">Property Financials</router-link>
+          <router-link to="/surveillance" class="nav-item" :class="{ active: route.path === '/surveillance' }">Surveillance</router-link>
+          <router-link to="/one-pager" class="nav-item" :class="{ active: route.path === '/one-pager' }">One Pager</router-link>
+          <router-link to="/review-tracking" class="nav-item" :class="{ active: route.path === '/review-tracking' }">Review Tracking</router-link>
+          <router-link to="/ownership" class="nav-item" :class="{ active: route.path === '/ownership' }">Ownership</router-link>
+          <router-link to="/waterfall-setup" class="nav-item" :class="{ active: route.path === '/waterfall-setup' }">Waterfall Setup</router-link>
+
+          <!-- Report Settings — expandable config panel -->
+          <button
+            class="nav-item tool-toggle"
+            @click="showConfig = !showConfig"
+          >
+            <span>Report Settings</span>
+            <span class="tool-chevron">{{ showConfig ? '&#x25BE;' : '&#x25B8;' }}</span>
           </button>
-        </div>
-      </div>
-
-      <!-- MRI Data -->
-      <div class="tool-section">
-        <button class="section-toggle" @click="showMriTools = !showMriTools; if (showMriTools) loadMriQueries()">
-          {{ showMriTools ? '▾' : '▸' }} MRI Data
-        </button>
-        <div v-if="showMriTools" class="section-body">
-          <!-- Connection status -->
-          <div v-if="mriLoading" class="db-caption">Loading queries...</div>
-          <div v-else-if="Object.keys(mriServers).length" class="mri-status-row">
-            <span
-              v-for="(info, key) in mriServers"
-              :key="key"
-              class="mri-server-badge"
-              :class="info.status"
-              :title="info.status === 'ok' ? `${info.latency_ms}ms` : info.error"
-            >{{ key.toUpperCase() }} {{ info.status === 'ok' ? '●' : '✕' }}</span>
-          </div>
-
-          <!-- Query list -->
-          <div v-if="mriQueries.length" class="mri-query-list">
-            <div
-              v-for="q in mriQueries"
-              :key="q.name"
-              class="mri-query-row"
-              :title="q.description"
-            >
-              <span class="mri-query-name">{{ q.name }}</span>
-              <span class="mri-query-actions">
-                <button
-                  class="mri-action-btn"
-                  title="Download CSV"
-                  @click="handleMriDownload(q.name)"
-                  :disabled="mriRunning !== null || mriRefreshing"
-                >↓</button>
-                <button
-                  class="mri-action-btn"
-                  title="Run & save to network folder"
-                  @click="handleMriRun(q.name)"
-                  :disabled="mriRunning !== null || mriRefreshing"
-                >▶</button>
-                <button
-                  v-if="q.importable && auth.user?.role === 'admin'"
-                  class="mri-action-btn import"
-                  title="Import to database"
-                  @click="handleMriRefreshSingle(q.name)"
-                  :disabled="mriRunning !== null || mriRefreshing"
-                >⇪</button>
-              </span>
+          <div v-if="showConfig" class="tool-panel">
+            <div class="config-row">
+              <label>Start Year</label>
+              <input type="number" v-model.number="localStartYear" min="2000" max="2100" />
             </div>
-          </div>
-
-          <!-- Running indicator -->
-          <div v-if="mriRunning" class="mri-running">
-            Running {{ mriRunning }}...
-          </div>
-
-          <!-- Run result -->
-          <div v-if="mriRunResult && !mriRunning" class="mri-run-result">
-            {{ mriRunResult.query }}: {{ mriRunResult.rows.toLocaleString() }} rows ({{ mriRunResult.elapsed_seconds }}s)
-          </div>
-
-          <!-- Admin: Full Refresh -->
-          <div v-if="auth.user?.role === 'admin'" class="db-sub" style="margin-top: 6px">
-            <button
-              class="btn btn-xs btn-full mri-refresh-btn"
-              @click="handleMriRefresh"
-              :disabled="mriRefreshing || mriRunning !== null"
-            >
-              {{ mriRefreshing ? 'Refreshing all tables...' : 'Refresh All Data from MRI' }}
+            <div class="config-row">
+              <label>Horizon (yrs)</label>
+              <input type="number" v-model.number="localHorizon" min="1" max="30" />
+            </div>
+            <div class="config-row">
+              <label>Pro_Yr Base</label>
+              <input type="number" v-model.number="localProYrBase" min="1900" max="2100" />
+            </div>
+            <div class="config-row">
+              <label>
+                <input type="checkbox" v-model="useActuals" style="margin-right: 4px;" />
+                YTD Actuals
+              </label>
+            </div>
+            <div v-if="useActuals && monthEndOptions.length" class="config-row">
+              <label>Through</label>
+              <select v-model="localActualsThrough" class="config-select">
+                <option v-for="opt in monthEndOptions" :key="opt.value" :value="opt.value">
+                  {{ opt.label }}
+                </option>
+              </select>
+            </div>
+            <div v-if="useActuals && !monthEndOptions.length" class="config-caption">
+              No completed months yet this year.
+            </div>
+            <button class="btn btn-xs btn-full" @click="handleConfigSave">
+              Apply Settings
             </button>
           </div>
-
-          <!-- Refresh results -->
-          <div v-if="mriRefreshResults" class="import-results">
-            <div
-              v-for="(res, qname) in mriRefreshResults"
-              :key="qname"
-              class="import-row"
-              :class="res.status"
-            >
-              <span class="import-table">{{ qname }}</span>
-              <span class="import-status">{{ res.status === 'ok'
-                ? Object.values(res.tables || {}).reduce((s: number, t: any) => s + t.rows, 0).toLocaleString() + ' rows'
-                : 'error' }}</span>
-            </div>
-          </div>
         </div>
       </div>
 
-      <!-- Feedback & Requests -->
+      <!-- Accounting (future) -->
+      <div class="nav-section">
+        <span class="nav-section-header future">Accounting</span>
+      </div>
+
+      <!-- New Business (future) -->
+      <div class="nav-section">
+        <span class="nav-section-header future">New Business</span>
+      </div>
+
+      <!-- Investment Management (future) -->
+      <div class="nav-section">
+        <span class="nav-section-header future">Investment Management</span>
+      </div>
+
+      <!-- Data Management -->
+      <div class="nav-section">
+        <button
+          class="nav-section-header"
+          :class="{ expanded: expandedSections.dm }"
+          @click="toggleSection('dm')"
+        >
+          <span>Data Management</span>
+          <span class="section-chevron">{{ expandedSections.dm ? '&#x25BE;' : '&#x25B8;' }}</span>
+        </button>
+        <div v-show="expandedSections.dm" class="nav-section-body">
+          <router-link to="/data-explorer" class="nav-item" :class="{ active: route.path === '/data-explorer' }">Data Explorer</router-link>
+
+          <!-- MRI Data — expandable tool panel -->
+          <button
+            class="nav-item tool-toggle"
+            @click="showMriTools = !showMriTools; if (showMriTools) loadMriQueries()"
+          >
+            <span>MRI Data</span>
+            <span class="tool-chevron">{{ showMriTools ? '&#x25BE;' : '&#x25B8;' }}</span>
+          </button>
+          <div v-if="showMriTools" class="tool-panel">
+            <!-- Connection status -->
+            <div v-if="mriLoading" class="db-caption">Loading queries...</div>
+            <div v-else-if="Object.keys(mriServers).length" class="mri-status-row">
+              <span
+                v-for="(info, key) in mriServers"
+                :key="key"
+                class="mri-server-badge"
+                :class="info.status"
+                :title="info.status === 'ok' ? `${info.latency_ms}ms` : info.error"
+              >{{ key.toUpperCase() }} {{ info.status === 'ok' ? '&#x25CF;' : '&#x2715;' }}</span>
+            </div>
+
+            <!-- Query list -->
+            <div v-if="mriQueries.length" class="mri-query-list">
+              <div
+                v-for="q in mriQueries"
+                :key="q.name"
+                class="mri-query-row"
+                :title="q.description"
+              >
+                <span class="mri-query-name">{{ q.name }}</span>
+                <span class="mri-query-actions">
+                  <button
+                    class="mri-action-btn"
+                    title="Download CSV"
+                    @click="handleMriDownload(q.name)"
+                    :disabled="mriRunning !== null || mriRefreshing"
+                  >&#x2193;</button>
+                  <button
+                    class="mri-action-btn"
+                    title="Run & save to network folder"
+                    @click="handleMriRun(q.name)"
+                    :disabled="mriRunning !== null || mriRefreshing"
+                  >&#x25B6;</button>
+                  <button
+                    v-if="q.importable && auth.user?.role === 'admin'"
+                    class="mri-action-btn import"
+                    title="Import to database"
+                    @click="handleMriRefreshSingle(q.name)"
+                    :disabled="mriRunning !== null || mriRefreshing"
+                  >&#x21EA;</button>
+                </span>
+              </div>
+            </div>
+
+            <!-- Running indicator -->
+            <div v-if="mriRunning" class="mri-running">
+              Running {{ mriRunning }}...
+            </div>
+
+            <!-- Run result -->
+            <div v-if="mriRunResult && !mriRunning" class="mri-run-result">
+              {{ mriRunResult.query }}: {{ mriRunResult.rows.toLocaleString() }} rows ({{ mriRunResult.elapsed_seconds }}s)
+            </div>
+
+            <!-- Admin: Full Refresh -->
+            <div v-if="auth.user?.role === 'admin'" class="db-sub" style="margin-top: 6px">
+              <button
+                class="btn btn-xs btn-full mri-refresh-btn"
+                @click="handleMriRefresh"
+                :disabled="mriRefreshing || mriRunning !== null"
+              >
+                {{ mriRefreshing ? 'Refreshing all tables...' : 'Refresh All Data from MRI' }}
+              </button>
+            </div>
+
+            <!-- Refresh results -->
+            <div v-if="mriRefreshResults" class="import-results">
+              <div
+                v-for="(res, qname) in mriRefreshResults"
+                :key="qname"
+                class="import-row"
+                :class="res.status"
+              >
+                <span class="import-table">{{ qname }}</span>
+                <span class="import-status">{{ res.status === 'ok'
+                  ? Object.values(res.tables || {}).reduce((s: number, t: any) => s + t.rows, 0).toLocaleString() + ' rows'
+                  : 'error' }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Database Tools — expandable tool panel -->
+          <button
+            class="nav-item tool-toggle"
+            @click="showDbTools = !showDbTools"
+          >
+            <span>Database Tools</span>
+            <span class="tool-chevron">{{ showDbTools ? '&#x25BE;' : '&#x25B8;' }}</span>
+          </button>
+          <div v-if="showDbTools" class="tool-panel">
+            <!-- Import CSVs -->
+            <div class="db-sub">
+              <span class="db-label">Import CSVs</span>
+              <p class="db-caption">Select MRI CSV files to upload and import.</p>
+              <input
+                type="file"
+                multiple
+                accept=".csv"
+                class="db-file-input"
+                @change="handleFileSelect"
+              />
+
+              <!-- Matched file list -->
+              <div v-if="uploadMatches.length" class="csv-list" style="margin-top: 4px">
+                <div class="csv-list-header">
+                  <span class="csv-count">{{ uploadMatches.filter(m => m.table_name && !m.protected).length }} importable</span>
+                </div>
+                <div
+                  v-for="m in uploadMatches"
+                  :key="m.file.name"
+                  class="csv-row"
+                  :class="{ 'csv-missing': !m.table_name, 'csv-protected': m.protected }"
+                >
+                  <span class="csv-label" :title="m.description || m.file.name">
+                    <span class="csv-name">{{ m.table_name || m.file.name }}</span>
+                    <span v-if="m.protected" class="csv-badge protected">locked</span>
+                    <span v-else-if="!m.table_name" class="csv-badge missing">no match</span>
+                    <span v-else class="csv-badge" style="color: #81c784">{{ (m.file.size / 1024).toFixed(0) }}KB</span>
+                  </span>
+                </div>
+              </div>
+
+              <p class="db-caption">Protected tables (waterfalls, comments) are never overwritten.</p>
+              <button
+                class="btn btn-xs btn-full"
+                style="margin-top: 4px"
+                @click="handleUploadImport"
+                :disabled="uploading || uploadMatches.filter(m => m.table_name && !m.protected).length === 0"
+              >
+                {{ uploading ? `Importing ${uploadProgress}` : uploadMatches.filter(m => m.table_name && !m.protected).length === 0 ? 'Select CSV Files' : `Upload & Import ${uploadMatches.filter(m => m.table_name && !m.protected).length} CSV${uploadMatches.filter(m => m.table_name && !m.protected).length > 1 ? 's' : ''}` }}
+              </button>
+            </div>
+
+            <!-- Import Results -->
+            <div v-if="data.importResult" class="import-results">
+              <div
+                v-for="(res, table) in data.importResult"
+                :key="table"
+                class="import-row"
+                :class="res.status"
+              >
+                <span class="import-table">{{ table }}</span>
+                <span class="import-status">{{ res.status }}</span>
+              </div>
+            </div>
+
+            <div class="db-divider"></div>
+
+            <!-- Export Database -->
+            <div class="db-sub">
+              <span class="db-label">Export Database</span>
+              <button
+                class="btn btn-xs btn-full"
+                @click="handleExport"
+                :disabled="data.exporting"
+              >
+                {{ data.exporting ? 'Preparing...' : 'Download Export (.zip)' }}
+              </button>
+            </div>
+
+            <!-- DB Info -->
+            <div v-if="data.config" class="db-info">
+              <span>DB: {{ data.config.db_path }}</span>
+            </div>
+          </div>
+
+          <!-- Reload Data -->
+          <button class="nav-item reload-btn" @click="handleReload">
+            Reload Data
+          </button>
+
+          <!-- Settings -->
+          <router-link to="/settings" class="nav-item" :class="{ active: route.path === '/settings' }">Settings</router-link>
+        </div>
+      </div>
+    </nav>
+
+    <!-- Feedback & Requests — standalone below nav -->
+    <div class="sidebar-extras" v-show="!collapsed">
       <div class="tool-section">
         <button class="section-toggle" @click="showFeedback = !showFeedback; if (showFeedback) loadFeedback()">
-          {{ showFeedback ? '▾' : '▸' }} Feedback &amp; Requests
+          {{ showFeedback ? '&#x25BE;' : '&#x25B8;' }} Feedback &amp; Requests
         </button>
         <div v-if="showFeedback" class="section-body">
           <!-- Detail view -->
@@ -608,7 +752,7 @@ function toggleCollapsed() {
               style="margin-top: 6px; background: #388e3c"
               @click="resolveFeedback"
             >
-              ✓ Mark Resolved
+              Mark Resolved
             </button>
           </div>
 
@@ -674,89 +818,6 @@ function toggleCollapsed() {
           </div>
         </div>
       </div>
-
-      <!-- Database Tools -->
-      <div class="tool-section">
-        <button class="section-toggle" @click="showDbTools = !showDbTools">
-          {{ showDbTools ? '▾' : '▸' }} Database Tools
-        </button>
-        <div v-if="showDbTools" class="section-body">
-          <!-- Import CSVs -->
-          <div class="db-sub">
-            <span class="db-label">Import CSVs</span>
-            <p class="db-caption">Select MRI CSV files to upload and import.</p>
-            <input
-              type="file"
-              multiple
-              accept=".csv"
-              class="db-file-input"
-              @change="handleFileSelect"
-            />
-
-            <!-- Matched file list -->
-            <div v-if="uploadMatches.length" class="csv-list" style="margin-top: 4px">
-              <div class="csv-list-header">
-                <span class="csv-count">{{ uploadMatches.filter(m => m.table_name && !m.protected).length }} importable</span>
-              </div>
-              <div
-                v-for="m in uploadMatches"
-                :key="m.file.name"
-                class="csv-row"
-                :class="{ 'csv-missing': !m.table_name, 'csv-protected': m.protected }"
-              >
-                <span class="csv-label" :title="m.description || m.file.name">
-                  <span class="csv-name">{{ m.table_name || m.file.name }}</span>
-                  <span v-if="m.protected" class="csv-badge protected">locked</span>
-                  <span v-else-if="!m.table_name" class="csv-badge missing">no match</span>
-                  <span v-else class="csv-badge" style="color: #81c784">{{ (m.file.size / 1024).toFixed(0) }}KB</span>
-                </span>
-              </div>
-            </div>
-
-            <p class="db-caption">Protected tables (waterfalls, comments) are never overwritten.</p>
-            <button
-              class="btn btn-xs btn-full"
-              style="margin-top: 4px"
-              @click="handleUploadImport"
-              :disabled="uploading || uploadMatches.filter(m => m.table_name && !m.protected).length === 0"
-            >
-              {{ uploading ? `Importing ${uploadProgress}` : uploadMatches.filter(m => m.table_name && !m.protected).length === 0 ? 'Select CSV Files' : `Upload & Import ${uploadMatches.filter(m => m.table_name && !m.protected).length} CSV${uploadMatches.filter(m => m.table_name && !m.protected).length > 1 ? 's' : ''}` }}
-            </button>
-          </div>
-
-          <!-- Import Results -->
-          <div v-if="data.importResult" class="import-results">
-            <div
-              v-for="(res, table) in data.importResult"
-              :key="table"
-              class="import-row"
-              :class="res.status"
-            >
-              <span class="import-table">{{ table }}</span>
-              <span class="import-status">{{ res.status }}</span>
-            </div>
-          </div>
-
-          <div class="db-divider"></div>
-
-          <!-- Export Database -->
-          <div class="db-sub">
-            <span class="db-label">Export Database</span>
-            <button
-              class="btn btn-xs btn-full"
-              @click="handleExport"
-              :disabled="data.exporting"
-            >
-              {{ data.exporting ? 'Preparing...' : 'Download Export (.zip)' }}
-            </button>
-          </div>
-
-          <!-- DB Info -->
-          <div v-if="data.config" class="db-info">
-            <span>DB: {{ data.config.db_path }}</span>
-          </div>
-        </div>
-      </div>
     </div>
 
     <div class="sidebar-footer" v-show="!collapsed">
@@ -819,58 +880,139 @@ function toggleCollapsed() {
   color: white;
 }
 
+/* --- Navigation sections --- */
 .sidebar-nav {
   padding: 4px 0;
+  flex: 1;
 }
 
-.nav-item {
+/* Dashboard & other standalone section-level links */
+.nav-section-link {
   display: block;
-  padding: 9px 16px;
-  color: rgba(255, 255, 255, 0.7);
+  padding: 10px 16px;
+  color: rgba(255, 255, 255, 0.85);
   text-decoration: none;
   font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
   transition: all 0.15s;
 }
 
-.nav-item:hover {
+.nav-section-link:hover {
   color: white;
   background: rgba(255, 255, 255, 0.1);
 }
 
-.nav-item.active {
+.nav-section-link.active {
   color: white;
   background: rgba(255, 255, 255, 0.15);
   border-left: 3px solid white;
 }
 
-/* Tools Section */
-.sidebar-tools {
-  padding: 8px 12px;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
+/* Section containers */
+.nav-section {
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 
-.tool-section {
-  margin-top: 8px;
-}
-
-.section-toggle {
+/* Section headers (Asset Management, Data Management, etc.) */
+.nav-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 10px 16px;
   background: none;
   border: none;
-  color: rgba(255, 255, 255, 0.8);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
   cursor: pointer;
-  font-size: 12px;
-  padding: 4px 0;
-  width: 100%;
+  transition: all 0.15s;
   text-align: left;
 }
 
-.section-toggle:hover { color: white; }
-
-.section-body {
-  padding: 6px 0 4px 0;
+.nav-section-header:hover {
+  color: white;
+  background: rgba(255, 255, 255, 0.06);
 }
 
-/* Config */
+.nav-section-header.expanded {
+  color: white;
+}
+
+.nav-section-header.future {
+  color: rgba(255, 255, 255, 0.3);
+  cursor: default;
+}
+
+.section-chevron {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+/* Expanded section body */
+.nav-section-body {
+  padding-bottom: 4px;
+}
+
+/* Child nav items (page links) */
+.nav-item {
+  display: block;
+  padding: 7px 16px 7px 28px;
+  color: rgba(255, 255, 255, 0.65);
+  text-decoration: none;
+  font-size: 12.5px;
+  font-weight: 400;
+  transition: all 0.15s;
+  border: none;
+  background: none;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+
+.nav-item:hover {
+  color: white;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.nav-item.active {
+  color: white;
+  background: rgba(255, 255, 255, 0.12);
+  border-left: 3px solid rgba(255, 255, 255, 0.7);
+  padding-left: 25px;
+}
+
+/* Tool toggle items (MRI Data, Database Tools, Report Settings) */
+.tool-toggle {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.tool-chevron {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+/* Reload Data button styling */
+.reload-btn {
+  color: rgba(144, 202, 249, 0.8);
+}
+.reload-btn:hover {
+  color: #90caf9;
+  background: rgba(144, 202, 249, 0.08);
+}
+
+/* Inline tool panels */
+.tool-panel {
+  padding: 6px 16px 8px 28px;
+}
+
+/* --- Config --- */
 .config-row {
   display: flex;
   align-items: center;
@@ -910,7 +1052,7 @@ function toggleCollapsed() {
   margin: 2px 0;
 }
 
-/* MRI Data tools */
+/* --- MRI Data tools --- */
 .mri-status-row {
   display: flex;
   gap: 8px;
@@ -997,7 +1139,7 @@ function toggleCollapsed() {
   color: #a5d6a7;
 }
 
-/* Database tools */
+/* --- Database tools --- */
 .db-sub { margin-bottom: 8px; }
 
 .db-label {
@@ -1128,7 +1270,7 @@ function toggleCollapsed() {
   word-break: break-all;
 }
 
-/* Import results */
+/* --- Import results --- */
 .import-results {
   max-height: 120px;
   overflow-y: auto;
@@ -1149,7 +1291,34 @@ function toggleCollapsed() {
 .import-row.skipped .import-status { color: rgba(255, 255, 255, 0.5); }
 .import-row.error .import-status { color: #ef5350; }
 
-/* Feedback */
+/* --- Sidebar extras (Feedback, etc.) --- */
+.sidebar-extras {
+  padding: 4px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.tool-section {
+  margin-top: 4px;
+}
+
+.section-toggle {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 0;
+  width: 100%;
+  text-align: left;
+}
+
+.section-toggle:hover { color: white; }
+
+.section-body {
+  padding: 6px 0 4px 0;
+}
+
+/* --- Feedback --- */
 .fb-form { display: flex; flex-direction: column; gap: 4px; }
 
 .fb-select {
@@ -1307,7 +1476,7 @@ function toggleCollapsed() {
 
 .fb-reply { margin-top: 4px; }
 
-/* Buttons */
+/* --- Buttons --- */
 .btn {
   padding: 4px 12px;
   border: 1px solid rgba(255, 255, 255, 0.3);
@@ -1329,7 +1498,7 @@ function toggleCollapsed() {
   padding: 0;
 }
 
-/* Footer */
+/* --- Footer --- */
 .sidebar-footer {
   padding: 10px 12px;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
