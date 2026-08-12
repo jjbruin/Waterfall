@@ -53,19 +53,60 @@ Future phases will add rent roll analysis, lease testing, Excel cash flow import
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
 | Deal Name | Text | Yes | e.g., "Vestavia Hills City Center" |
-| Location | Text | Yes | City, State |
+| Location | Text | Yes | City, State (deal-level summary) |
 | Asset Type | Select | Yes | Retail, Multifamily, Office, Industrial, Mixed-Use |
-| GLA (SF) | Number | No | Gross leasable area |
-| Units | Number | No | For multifamily |
-| Year Built | Number | No | |
 | Partner Name | Text | No | e.g., "Burton Property Group" |
 | Stage | Select | Yes | See stages above |
 | Assigned To | Select | No | Team member |
 | Target Close Date | Date | No | |
-| Purchase Price | Currency | No | Can be entered later |
+| Purchase Price | Currency | No | Total deal price; allocates down to properties |
 | Source / Broker | Text | No | |
 | Pass Reason | Text | No | Required when stage = Passed |
 | Notes | Text | No | Free-form |
+
+### Property Fields (per property within a deal)
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| Property Name | Text | Yes | e.g., "Windsor Square", "Westwood Plaza" |
+| Address | Text | No | Street address |
+| City / State / Zip | Text | No | |
+| Asset Type | Select | No | Property-level; may differ from deal for mixed-use |
+| GLA (SF) | Number | No | Gross leasable area |
+| Units | Number | No | For multifamily |
+| Year Built | Number | No | |
+| Acreage | Number | No | |
+| Allocated Price | Currency | No | This property's share of total purchase price |
+| Occupancy | Percent | No | Current occupancy at evaluation time |
+| In-Place NOI | Currency | No | Current NOI for this property |
+
+A single-property deal has one property row that inherits the deal name. Multi-property
+portfolio deals (like Burton with 7 properties) have multiple rows — GLA, NOI, and price
+roll up to the deal level automatically.
+
+### Entity & Investor Structure
+
+The ownership structure being formed for the deal. Pre-planned IDs become real EntityIDs
+and InvestorIDs on onboarding.
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| Entity Name | Text | Yes | e.g., "PPI-WS Holdings LLC" |
+| Entity Type | Select | Yes | deal_jv, gp, lp, holding, property |
+| Planned EntityID | Text | No | Pre-assigned ID for MRI (becomes InvestmentID) |
+| Parent Entity | Select | No | For nested structures (JV → holding → property) |
+| Ownership % | Percent | No | This entity's ownership share in parent |
+| Role | Select | No | sponsor, investor, co_investor, manager |
+
+Each entity contains investors:
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| Investor Name | Text | Yes | e.g., "PSC1", "KCREIT" |
+| Planned InvestorID | Text | No | Pre-assigned ID (flows to waterfall PropCode) |
+| Commitment | Currency | No | Capital commitment amount |
+| Ownership % | Percent | No | Share within this entity |
+| Investor Type | Select | No | pref_equity, op_equity, co_invest |
 
 ### Pipeline Views
 
@@ -244,19 +285,41 @@ When a prospect's stage is set to "Closed," a wizard converts it to a portfolio 
 
 | Step | Action | Target Table |
 |------|--------|--------------|
-| 1 | Assign vcode (auto or manual) | — |
-| 2 | Create deal record | `inv` (deals) |
-| 3 | Create waterfall steps | `waterfalls` |
-| 4 | Create loan record | `loans` |
-| 5 | Generate Projected IS entries | `forecast_feed` or `isbs_projected_is` |
-| 6 | Create entity relationships | `relationships` |
-| 7 | Link prospect to portfolio deal | `prospect_deals.onboarded_vcode` |
+| 1 | Assign parent vcode (auto or manual) | — |
+| 2 | Create parent deal record | `inv` (deals) — `Investment_Name` = deal_name |
+| 3 | Create property records (if multi-property) | `inv` (deals) — child rows with `Portfolio_Name` = deal_name |
+| 4 | Assign property vcodes | Each property gets a unique vcode |
+| 5 | Create entity relationships | `relationships` — from `prospect_entities` + `prospect_investors` |
+| 6 | Create waterfall steps | `waterfalls` — from partnership terms + entity structure |
+| 7 | Create loan record(s) | `loans` — from debt assumptions |
+| 8 | Generate Projected IS entries | `forecast_feed` or `isbs_projected_is` — from prospect cashflows |
+| 9 | Link prospect to portfolio deal | `prospect_deals.onboarded_vcode`, `prospect_properties.onboarded_vcode` |
 
-The wizard pre-fills all fields from the prospect's assumptions. The user reviews and adjusts before confirming. After onboarding, the deal appears in Dashboard, Deal Analysis, One Pager, and all reports.
+**Single-property deal:** Steps 2-3 collapse — one `inv` row created, no `Portfolio_Name` linkage needed.
+
+**Multi-property deal:** Parent row has `Property_Count > 1`. Each child row's `Portfolio_Name` = parent's `Investment_Name`. This mirrors existing portfolios like Burton (parent P0000109, children P0000113-P0000119 all with `Portfolio_Name = "Burton"`).
+
+The wizard pre-fills all fields from the prospect's assumptions, properties, and entities. The user reviews and adjusts before confirming. After onboarding, the deal appears in Dashboard, Deal Analysis, One Pager, and all reports. Lease reviews remain linked to their properties — the `prospect_property_id` FK persists as a historical reference even after the property is onboarded to `inv`.
 
 ---
 
 ## 6. Data Architecture
+
+### Design Principles
+
+The new business data model mirrors the asset management structure so that onboarding is a
+direct mapping rather than a re-keying exercise:
+
+| New Business | Asset Management | Relationship |
+|-------------|-----------------|--------------|
+| `prospect_deals` | `inv` (parent deal) | 1:1 on close — creates parent deal row with vcode |
+| `prospect_properties` | `inv` (child properties) | 1:1 per property — creates child rows with `Portfolio_Name` = deal name |
+| `prospect_entities` | `relationships` + `waterfalls` | Entity/investor IDs flow to waterfall PropCode and relationship InvestorID |
+| `lease_reviews` | — (no AM equivalent) | Due diligence artifact; linked to property via `prospect_property_id` |
+
+A **single-property deal** has one `prospect_properties` row (the deal IS the property).
+A **multi-property portfolio** has multiple rows — NOI, GLA, and purchase price roll up
+from properties to the deal level, just as AM aggregates child properties into the parent.
 
 ### New Database Tables
 
@@ -264,23 +327,67 @@ The wizard pre-fills all fields from the prospect's assumptions. The user review
 prospect_deals
     id              INTEGER PRIMARY KEY AUTOINCREMENT
     deal_name       TEXT NOT NULL
-    location        TEXT
-    asset_type      TEXT
-    gla_sf          REAL
-    units           INTEGER
-    year_built      INTEGER
+    location        TEXT                -- City, State (deal-level summary)
+    asset_type      TEXT                -- Primary asset type; properties may differ for mixed-use
     partner_name    TEXT
     source_broker   TEXT
     assigned_to     TEXT
     stage           TEXT DEFAULT 'lead'
     pass_reason     TEXT
-    target_close    TEXT  (ISO date)
-    purchase_price  REAL
+    target_close    TEXT                -- ISO date
+    purchase_price  REAL                -- Total deal purchase price
     closing_cost_pct REAL DEFAULT 0.02
     capex_at_close  REAL DEFAULT 0
     notes           TEXT
-    onboarded_vcode TEXT  (links to inv after close)
+    onboarded_vcode TEXT                -- Links to parent inv row after close
     created_by      TEXT
+    created_at      TEXT
+    updated_at      TEXT
+
+prospect_properties
+    id              INTEGER PRIMARY KEY AUTOINCREMENT
+    prospect_id     INTEGER NOT NULL REFERENCES prospect_deals(id)
+    property_name   TEXT NOT NULL       -- e.g., "Windsor Square" or "Westwood Plaza"
+    address         TEXT                -- Street address
+    city            TEXT
+    state           TEXT
+    zip             TEXT
+    asset_type      TEXT                -- Property-level type (may differ from deal for mixed-use)
+    gla_sf          REAL                -- Gross leasable area (square feet)
+    units           INTEGER             -- For multifamily
+    year_built      INTEGER
+    acreage         REAL
+    property_price  REAL                -- Allocated purchase price for this property
+    occupancy_pct   REAL                -- Current occupancy at time of evaluation
+    noi_in_place    REAL                -- In-place NOI for this property
+    notes           TEXT
+    onboarded_vcode TEXT                -- Links to child inv row after close
+    sort_order      INTEGER DEFAULT 0   -- Display ordering
+    created_at      TEXT
+    updated_at      TEXT
+
+prospect_entities
+    id              INTEGER PRIMARY KEY AUTOINCREMENT
+    prospect_id     INTEGER NOT NULL REFERENCES prospect_deals(id)
+    entity_name     TEXT NOT NULL       -- e.g., "PPI-WS Holdings LLC"
+    entity_type     TEXT                -- 'deal_jv', 'gp', 'lp', 'holding', 'property'
+    planned_entity_id TEXT              -- Pre-planned EntityID (becomes InvestmentID on onboard)
+    parent_entity_id INTEGER            -- Self-ref FK for entity hierarchy (NULL = top-level)
+    ownership_pct   REAL                -- Ownership percentage in parent entity
+    role            TEXT                -- 'sponsor', 'investor', 'co_investor', 'manager'
+    notes           TEXT
+    created_at      TEXT
+    updated_at      TEXT
+
+prospect_investors
+    id              INTEGER PRIMARY KEY AUTOINCREMENT
+    entity_id       INTEGER NOT NULL REFERENCES prospect_entities(id)
+    investor_name   TEXT NOT NULL       -- e.g., "PSC1", "KCREIT"
+    planned_investor_id TEXT            -- Pre-planned InvestorID (flows to waterfall PropCode)
+    commitment      REAL                -- Committed capital amount
+    ownership_pct   REAL                -- Share within this entity
+    investor_type   TEXT                -- 'pref_equity', 'op_equity', 'co_invest'
+    notes           TEXT
     created_at      TEXT
     updated_at      TEXT
 
@@ -306,15 +413,16 @@ prospect_assumptions
     capex_reserve_psf REAL DEFAULT 0.80
     noi_year1       REAL
     noi_growth_rate REAL DEFAULT 0.02
-    crossed_vcodes  TEXT  (future: comma-separated vcodes)
+    crossed_vcodes  TEXT                -- Future: comma-separated vcodes for cross-portfolio
     created_at      TEXT
     updated_at      TEXT
 
 prospect_cashflows
     id              INTEGER PRIMARY KEY AUTOINCREMENT
     prospect_id     INTEGER REFERENCES prospect_deals(id)
+    property_id     INTEGER REFERENCES prospect_properties(id)  -- NULL = deal-level
     version         INTEGER DEFAULT 1
-    period_date     TEXT  (ISO date)
+    period_date     TEXT                -- ISO date
     revenue         REAL
     expenses        REAL
     noi             REAL
@@ -326,10 +434,46 @@ prospect_activity
     id              INTEGER PRIMARY KEY AUTOINCREMENT
     prospect_id     INTEGER REFERENCES prospect_deals(id)
     username        TEXT
-    action          TEXT  (created, stage_change, note, evaluated, etc.)
+    action          TEXT                -- created, stage_change, note, evaluated, property_added, etc.
     note            TEXT
     created_at      TEXT
 ```
+
+#### Lease Review Integration
+
+The existing `lease_reviews` table gains a nullable FK to `prospect_properties`:
+
+```
+lease_reviews (MODIFIED — add column)
+    prospect_property_id  INTEGER REFERENCES prospect_properties(id)  -- nullable
+```
+
+This links a lease review to a specific property within a prospect deal. A property
+may have zero or one lease review. When `prospect_property_id` is NULL, the review is
+standalone (e.g., existing Windsor Square review created before the prospect pipeline).
+
+The lease review's `property_name` and `property_address` are denormalized copies —
+they match the prospect property at creation time but can be updated independently
+(the review is a snapshot of due diligence, not a live reference).
+
+#### Entity/Investor → Onboarding Mapping
+
+On deal close, the onboard wizard maps prospect entities to AM structures:
+
+| prospect_entities field | AM target |
+|------------------------|-----------|
+| `entity_name` | `relationships.Investment_Name` or entity label |
+| `planned_entity_id` | `relationships.InvestmentID` (= `inv.InvestmentID`) |
+| `entity_type='deal_jv'` | Parent deal row in `inv` |
+| `entity_type='property'` | Child property rows in `inv` |
+| `ownership_pct` | `relationships.Percent` |
+
+| prospect_investors field | AM target |
+|-------------------------|-----------|
+| `planned_investor_id` | `waterfalls.PropCode` and `relationships.InvestorID` |
+| `investor_name` | `relationships.Investor_Name` |
+| `commitment` | Seeded into `capital_calls` or `accounting` |
+| `investor_type='pref_equity'` | Waterfall Pref steps auto-generated |
 
 All prospect tables will be added to `PROTECTED_TABLES` to prevent accidental overwrite during CSV imports.
 
@@ -339,9 +483,24 @@ All prospect tables will be added to `PROTECTED_TABLES` to prevent accidental ov
 Pipeline:
   GET    /api/prospects                        List all (filterable by stage, assigned_to)
   POST   /api/prospects                        Create new prospect
-  GET    /api/prospects/<id>                    Get detail
+  GET    /api/prospects/<id>                    Get detail (includes properties + entities)
   PUT    /api/prospects/<id>                    Update (including stage changes)
   DELETE /api/prospects/<id>                    Archive/delete
+
+Properties:
+  GET    /api/prospects/<id>/properties         List properties for deal
+  POST   /api/prospects/<id>/properties         Add property
+  PUT    /api/prospects/<id>/properties/<pid>   Update property
+  DELETE /api/prospects/<id>/properties/<pid>   Remove property
+
+Entities & Investors:
+  GET    /api/prospects/<id>/entities           List entities + investors
+  POST   /api/prospects/<id>/entities           Add entity
+  PUT    /api/prospects/<id>/entities/<eid>     Update entity
+  DELETE /api/prospects/<id>/entities/<eid>     Remove entity
+  POST   /api/prospects/<id>/entities/<eid>/investors    Add investor to entity
+  PUT    /api/prospects/<id>/investors/<iid>              Update investor
+  DELETE /api/prospects/<id>/investors/<iid>              Remove investor
 
 Assumptions & Evaluation:
   GET    /api/prospects/<id>/assumptions        List scenarios
@@ -352,6 +511,10 @@ Assumptions & Evaluation:
 
 Cash Flow Import (Future Phase):
   POST   /api/prospects/<id>/import-cf          Upload Excel cash flow
+
+Lease Review (links to existing lease review system):
+  POST   /api/prospects/<id>/properties/<pid>/lease-review   Create review for property
+  GET    /api/prospects/<id>/lease-reviews                    List reviews for all properties
 
 Onboarding:
   POST   /api/prospects/<id>/onboard            Convert to portfolio deal

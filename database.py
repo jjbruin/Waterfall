@@ -1152,7 +1152,7 @@ def delete_waterfall_steps(vcode: str, wf_type: str = None):
 
 
 # Tables managed exclusively via the app (never overwritten by CSV import)
-PROTECTED_TABLES = {'waterfalls', 'one_pager_comments', 'waterfall_audit', 'review_roles', 'review_submissions', 'review_notes', 'one_pager_snapshots', 'prospective_loans', 'prospective_loans_audit', 'planned_loans', 'sale_overrides', 'user_requests', 'user_request_messages', 'surveillance_properties', 'insurance', 'surveillance_comments', 'lease_reviews', 'lease_tenants', 'lease_documents', 'lease_rent_steps', 'lease_cotenancy', 'lease_cotenancy_refs', 'lease_exclusive_use', 'lease_options', 'lease_validation'}
+PROTECTED_TABLES = {'waterfalls', 'one_pager_comments', 'waterfall_audit', 'review_roles', 'review_submissions', 'review_notes', 'one_pager_snapshots', 'prospective_loans', 'prospective_loans_audit', 'planned_loans', 'sale_overrides', 'user_requests', 'user_request_messages', 'surveillance_properties', 'insurance', 'surveillance_comments', 'lease_reviews', 'lease_tenants', 'lease_documents', 'lease_rent_steps', 'lease_cotenancy', 'lease_cotenancy_refs', 'lease_exclusive_use', 'lease_options', 'lease_validation', 'prospect_deals', 'prospect_properties', 'prospect_entities', 'prospect_investors', 'prospect_assumptions', 'prospect_cashflows', 'prospect_activity'}
 
 
 def _get_import_connection():

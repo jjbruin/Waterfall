@@ -145,6 +145,9 @@ def create_app(config_name: str = None) -> Flask:
     from flask_app.api.lease_review import lease_review_bp
     app.register_blueprint(lease_review_bp)
 
+    from flask_app.api.prospects import prospects_bp
+    app.register_blueprint(prospects_bp)
+
     # Health check
     @app.route("/health")
     def health():

@@ -81,6 +81,7 @@ LEASE_DDL_PG = [
         total_annual_rent DOUBLE PRECISION,
         total_tenants   INTEGER,
         rent_roll_date  TEXT,
+        prospect_property_id INTEGER,
         status          TEXT DEFAULT 'in_progress',
         source_folder   TEXT,
         created_by      TEXT,
