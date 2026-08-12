@@ -1299,51 +1299,58 @@ def _get_uw_pe_periodic(
     df = df.dropna(subset=['dtEntry_parsed'])
     df = df.sort_values('dtEntry_parsed')
 
-    # Get all available periods
-    periods = sorted(df['dtEntry_parsed'].unique())
-    if not periods:
-        return []
+    # Separate supplement rows (periodic) from base ISBS rows (YTD cumulative)
+    is_supp = df.get('_is_supplement', pd.Series(False, index=df.index)).fillna(False).astype(bool)
+    base_df = df[~is_supp]
+    supp_df = df[is_supp]
 
-    # Convert YTD cumulative → periodic amounts
-    # Within a year: periodic = current_ytd - prior_ytd (same year)
-    # First period of a year with no prior: pro-rate cumulative by month
-    # (e.g. $70K cumulative at July → $10K/month × 1 month = $10K periodic)
     distributions = []
-    prev_by_year = {}  # {year: last_cumulative_amount}
 
-    for period in periods:
-        period_ts = pd.Timestamp(period)
-        period_date = period_ts.date()
+    # Process base ISBS rows: YTD cumulative → periodic conversion
+    if not base_df.empty:
+        periods = sorted(base_df['dtEntry_parsed'].unique())
+        prev_by_year = {}  # {year: last_cumulative_amount}
 
-        # Only include periods within our time range
-        if period_date < inception or period_date > end_date:
-            # Still track cumulative for YTD math
-            period_data = df[df['dtEntry_parsed'] == period]
+        for period in periods:
+            period_ts = pd.Timestamp(period)
+            period_date = period_ts.date()
+
+            # Only include periods within our time range
+            if period_date < inception or period_date > end_date:
+                # Still track cumulative for YTD math
+                period_data = base_df[base_df['dtEntry_parsed'] == period]
+                cumulative = float(period_data['mAmount'].sum())
+                prev_by_year[period_ts.year] = cumulative
+                continue
+
+            period_data = base_df[base_df['dtEntry_parsed'] == period]
             cumulative = float(period_data['mAmount'].sum())
-            prev_by_year[period_ts.year] = cumulative
+
+            # Convert cumulative to periodic
+            year = period_ts.year
+            if year in prev_by_year:
+                periodic = cumulative - prev_by_year[year]
+            elif period_ts.month == 1:
+                periodic = cumulative
+            else:
+                periodic = cumulative / period_ts.month
+
+            prev_by_year[year] = cumulative
+
+            amount = abs(periodic)
+            if amount > 0.01:
+                distributions.append((period_date, amount))
+
+    # Process supplement rows: already periodic, no cumulative conversion
+    for _, row in supp_df.iterrows():
+        period_date = pd.Timestamp(row['dtEntry_parsed']).date()
+        if period_date < inception or period_date > end_date:
             continue
-
-        period_data = df[df['dtEntry_parsed'] == period]
-        cumulative = float(period_data['mAmount'].sum())
-
-        # Convert cumulative to periodic
-        year = period_ts.year
-        if year in prev_by_year:
-            periodic = cumulative - prev_by_year[year]
-        elif period_ts.month == 1:
-            # January: cumulative IS the single-month amount
-            periodic = cumulative
-        else:
-            # Mid-year start with no prior data: pro-rate cumulative
-            # evenly across the months it covers
-            periodic = cumulative / period_ts.month
-
-        prev_by_year[year] = cumulative
-
-        amount = abs(periodic)
+        amount = abs(float(row['mAmount']))
         if amount > 0.01:
             distributions.append((period_date, amount))
 
+    distributions.sort(key=lambda x: x[0])
     return distributions
 
 
@@ -1391,40 +1398,55 @@ def _get_uw_7073_signed(
     df = df.dropna(subset=['dtEntry_parsed'])
     df = df.sort_values('dtEntry_parsed')
 
-    periods = sorted(df['dtEntry_parsed'].unique())
-    if not periods:
-        return []
+    # Separate supplement rows (periodic) from base ISBS rows (YTD cumulative)
+    is_supp = df.get('_is_supplement', pd.Series(False, index=df.index)).fillna(False).astype(bool)
+    base_df = df[~is_supp]
+    supp_df = df[is_supp]
 
     events: List[Tuple[date, float]] = []
-    prev_by_year: dict = {}
 
-    for period in periods:
-        period_ts = pd.Timestamp(period)
-        period_date = period_ts.date()
+    # Process base ISBS rows: YTD cumulative → periodic conversion
+    if not base_df.empty:
+        periods = sorted(base_df['dtEntry_parsed'].unique())
+        prev_by_year: dict = {}
 
-        period_data = df[df['dtEntry_parsed'] == period]
-        cumulative = float(period_data['mAmount'].sum())
+        for period in periods:
+            period_ts = pd.Timestamp(period)
+            period_date = period_ts.date()
 
-        year = period_ts.year
-        if year in prev_by_year:
-            periodic = cumulative - prev_by_year[year]
-        elif period_ts.month == 1:
-            periodic = cumulative
-        else:
-            periodic = cumulative / period_ts.month
+            period_data = base_df[base_df['dtEntry_parsed'] == period]
+            cumulative = float(period_data['mAmount'].sum())
 
-        prev_by_year[year] = cumulative
+            year = period_ts.year
+            if year in prev_by_year:
+                periodic = cumulative - prev_by_year[year]
+            elif period_ts.month == 1:
+                periodic = cumulative
+            else:
+                periodic = cumulative / period_ts.month
 
+            prev_by_year[year] = cumulative
+
+            if period_date < inception or period_date > end_date:
+                continue
+
+            if abs(periodic) < 0.01:
+                continue
+
+            events.append((period_date, -periodic))
+
+    # Process supplement rows: already periodic, no cumulative conversion
+    for _, row in supp_df.iterrows():
+        period_date = pd.Timestamp(row['dtEntry_parsed']).date()
         if period_date < inception or period_date > end_date:
             continue
-
+        periodic = float(row['mAmount'])
         if abs(periodic) < 0.01:
             continue
-
-        # positive periodic = contribution → negative cashflow for ROE
-        # negative periodic = return of capital → positive cashflow for ROE
+        # positive = contribution → negative cashflow; negative = ROC → positive cashflow
         events.append((period_date, -periodic))
 
+    events.sort(key=lambda x: x[0])
     return events
 
 

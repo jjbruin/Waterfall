@@ -296,6 +296,7 @@ def _append_uw_supplements(assembled: pd.DataFrame, config: dict) -> pd.DataFram
                 supp = supp.rename(columns=col_map)
             if 'vSource' not in supp.columns:
                 supp['vSource'] = 'Projected IS'
+            supp['_is_supplement'] = True
             assembled = pd.concat([assembled, supp], ignore_index=True)
             logger.info(f"ISBS appended {len(supp):,} UW supplement rows")
     except Exception as e:
