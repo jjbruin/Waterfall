@@ -182,10 +182,8 @@ def occupancy_by_type():
     occ_data = get_occupancy_by_type(caps, occ_map)
 
     # Compute portfolio average for reference line
-    if occ_data:
-        avg = sum(d["occupancy"] for d in occ_data) / len(occ_data)
-    else:
-        avg = 0
+    valid = [d["occupancy"] for d in occ_data if d["occupancy"] is not None]
+    avg = sum(valid) / len(valid) if valid else 0
     return jsonify(safe_json({"data": occ_data, "portfolio_avg": avg}))
 
 

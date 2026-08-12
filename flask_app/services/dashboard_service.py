@@ -270,7 +270,7 @@ def get_occupancy_by_type(caps: list[dict], occ_map: dict) -> list[dict]:
     for c in caps:
         vc = c.get("vcode", "")
         occ = occ_map.get(vc)
-        if occ is not None:
+        if occ is not None and pd.notna(occ):
             at = (c.get("asset_type", "") or "").strip() or "Unknown"
             units = c.get("total_units", 0) or 1
             prop_count = c.get("property_count", 0) or 0
