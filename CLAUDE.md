@@ -450,9 +450,10 @@ Multi-report section with sidebar layout. Vue: `ReportsView.vue`. Flask: `report
 - **Endpoint**: `POST /api/reports/roe-summary` (JSON), `POST /api/reports/roe-summary/excel`
 - **Filter**: As of Date (defaults to today)
 - **Data Source**: Actual accounting data through the report date (same formula as One Pager ROE to Date). Accrued Pref computed directly from accounting history + waterfall pref rates via `_compute_accrued_pref()` in `reports_service.py` (daily accrual at waterfall rate, year-end compounding with 45-day grace, TypeID 1019 pref payments reduce balance).
-- **Output**: One row per deal — Total Funded, Return of Capital, Current Balance, Wtd Avg Balance, CF Received, Accrued Pref, ITD ROE
+- **Output**: One row per deal — Total Funded, Return of Capital, Current Balance, Wtd Avg Balance, CF Received, Accrued Pref, ITD ROE, U/W ITD ROE
 - **ROE Formula**: `(Total CF Distributions / Weighted Average Capital) / Years`. CF distributions = operating only (excludes Return of Capital, Realized Gain, and Acquisition Fee). Capital balance reduced by capital returns only, not CF distributions. Uses `calculate_roe_detailed()` in `metrics.py`.
-- **Excel**: Formatted workbook (currency/pct formats, auto-width)
+- **Single-deal detail view**: When exactly one deal is selected, displays event-by-event weighted capital calculation table below the summary row with metric cards (Total Funded, Return of Capital, Current Balance, Wtd Avg Balance, CF Received, Days, Years, ITD ROE). Toggle button switches between ITD ROE (actual, default) and U/W ITD ROE (underwritten from Projected IS accounts 7071/7073). Detail data comes from `_detail_rows` and `_uw_detail_rows` in the API response.
+- **Excel**: Formatted workbook (currency/pct formats, auto-width) with per-deal detail sheets
 
 #### Report: Pref Balance Detail
 - **Endpoint**: `POST /api/reports/pref-balance-detail` (JSON), `POST /api/reports/pref-balance-detail/excel`
