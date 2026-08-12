@@ -23,10 +23,12 @@ function toggleSection(key: string) {
 
 // Auto-expand section containing current route
 const amRoutes = ['/deal-analysis', '/property-financials', '/surveillance', '/one-pager', '/review-tracking', '/ownership', '/waterfall-setup', '/reports']
+const nbRoutes = ['/lease-review']
 const dmRoutes = ['/data-explorer', '/settings']
 
 watch(() => route.path, (path) => {
   if (amRoutes.some(r => path.startsWith(r))) expandedSections.am = true
+  if (nbRoutes.some(r => path.startsWith(r))) expandedSections.nb = true
   if (dmRoutes.some(r => path.startsWith(r))) expandedSections.dm = true
 }, { immediate: true })
 
@@ -483,9 +485,19 @@ function toggleCollapsed() {
         <span class="nav-section-header future">Accounting</span>
       </div>
 
-      <!-- New Business (future) -->
+      <!-- New Business -->
       <div class="nav-section">
-        <span class="nav-section-header future">New Business</span>
+        <button
+          class="nav-section-header"
+          :class="{ expanded: expandedSections.nb }"
+          @click="toggleSection('nb')"
+        >
+          <span>New Business</span>
+          <span class="section-chevron">{{ expandedSections.nb ? '&#x25BE;' : '&#x25B8;' }}</span>
+        </button>
+        <div v-show="expandedSections.nb" class="nav-section-body">
+          <router-link to="/lease-review" class="nav-item" :class="{ active: route.path === '/lease-review' }">Lease Review</router-link>
+        </div>
       </div>
 
       <!-- Investment Management (future) -->

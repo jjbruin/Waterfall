@@ -90,6 +90,11 @@ const routes = [
     component: () => import('../views/DataExplorerView.vue'),
   },
   {
+    path: '/lease-review',
+    name: 'Lease Review',
+    component: () => import('../views/LeaseReviewView.vue'),
+  },
+  {
     path: '/settings',
     name: 'Settings',
     component: () => import('../views/SettingsView.vue'),

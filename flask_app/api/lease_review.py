@@ -265,6 +265,30 @@ def download_excel(review_id):
         return jsonify({'error': str(e)}), 500
 
 
+@lease_review_bp.route('/reviews/<int:review_id>/validation', methods=['GET'])
+@login_required
+def get_validation(review_id):
+    """Get persisted validation results."""
+    from sqlalchemy import text
+    engine = get_engine()
+
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT t.tenant_name, t.suite, v.field_name, v.source_type,
+                   v.seller_value, v.lease_value, v.status, v.notes
+            FROM lease_validation v
+            JOIN lease_tenants t ON t.id = v.tenant_id
+            WHERE t.review_id = :rid
+            ORDER BY t.tenant_name, v.source_type, v.field_name
+        """), {'rid': review_id}).fetchall()
+
+    return jsonify([{
+        'tenant': r[0], 'suite': r[1], 'field': r[2],
+        'source_type': r[3], 'seller_value': r[4],
+        'lease_value': r[5], 'status': r[6], 'notes': r[7],
+    } for r in rows])
+
+
 @lease_review_bp.route('/reviews/<int:review_id>/tenants/<int:tenant_id>/documents', methods=['GET'])
 @login_required
 def get_tenant_documents(review_id, tenant_id):
