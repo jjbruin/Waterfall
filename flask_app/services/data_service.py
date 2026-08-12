@@ -280,6 +280,25 @@ def _normalize_isbs(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _append_uw_supplements(assembled: pd.DataFrame, config: dict) -> pd.DataFrame:
+    """Append supplemental ISBS Projected IS records (isbs_uw_supplements table).
+
+    These are admin-uploaded records (e.g. account 7073 capital contributions)
+    that persist across MRI refreshes. The CSV already has vSource='Projected IS'.
+    """
+    try:
+        supp = get_adapter("isbs_uw_supplements").load(config)
+        if supp is not None and not supp.empty:
+            if 'vSource' not in supp.columns:
+                supp = supp.copy()
+                supp['vSource'] = 'Projected IS'
+            assembled = pd.concat([assembled, supp], ignore_index=True)
+            logger.info(f"ISBS appended {len(supp):,} UW supplement rows")
+    except Exception as e:
+        logger.debug(f"No UW supplements table: {e}")
+    return assembled
+
+
 def _assemble_isbs(config: dict) -> tuple:
     """Load split ISBS tables and assemble into a single DataFrame.
 
@@ -316,12 +335,14 @@ def _assemble_isbs(config: dict) -> tuple:
                     assembled = pd.concat([assembled, legacy_supplement], ignore_index=True)
 
         logger.info(f"ISBS assembled from split tables: {len(assembled):,} rows")
+        assembled = _append_uw_supplements(assembled, config)
         return assembled, split_dict
 
     # Fallback: try legacy monolithic table
     legacy = get_adapter("isbs").load(config)
     if not legacy.empty:
         logger.info(f"ISBS fallback to legacy table: {len(legacy):,} rows")
+        legacy = _append_uw_supplements(legacy, config)
         return legacy, split_dict
 
     return pd.DataFrame(), split_dict
@@ -488,8 +509,8 @@ def refresh_table(table_name: str):
     }
     cache_key_name = table_to_key.get(table_name, table_name)
 
-    # If an ISBS split table is refreshed, also reassemble isbs_raw
-    is_isbs_split = table_name in _ISBS_SPLIT
+    # If an ISBS split table or UW supplements is refreshed, also reassemble isbs_raw
+    is_isbs_split = table_name in _ISBS_SPLIT or table_name == 'isbs_uw_supplements'
 
     for cache_key, data in _cache.items():
         db_path = cache_key.split("|")[0]

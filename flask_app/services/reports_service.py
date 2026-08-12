@@ -481,119 +481,92 @@ def build_roe_summary_row(
 
     accrued = _compute_accrued_pref(deal_acct, report_date, pref_rates)
 
-    # ---- U/W ROE to Date (Projected IS accounts 7071/7073) ----
+    # ---- U/W ROE to Date (ISBS Projected IS only — no actual accounting) ----
+    # 7073: positive = contribution, negative = return of capital
+    # 7071: underwritten distributions (ROE numerator)
     uw_roe = 0.0
     uw_detail_rows = []
     uw_cf_total = 0.0
     uw_roc_total = 0.0
 
     if isbs_raw is not None and not isbs_raw.empty:
-        from one_pager import _get_uw_pe_periodic, _get_uw_roc_events, UW_PE_DIST_ACCT, UW_PE_ROC_ACCT
-        inception_dt = min(d for d, _ in capital_events)
+        from one_pager import _get_uw_pe_periodic, _get_uw_7073_signed, UW_PE_DIST_ACCT, UW_PE_ROC_ACCT
 
-        uw_dists = _get_uw_pe_periodic(isbs_raw, vcode, inception_dt, report_date, UW_PE_DIST_ACCT)
-        if uw_dists:
-            uw_cf_total = sum(a for _, a in uw_dists)
+        # Use earliest contribution from 7073 as inception, or fall back to actual
+        uw_capital_events_raw = _get_uw_pe_periodic(
+            isbs_raw, vcode, date(2000, 1, 1), report_date, UW_PE_ROC_ACCT
+        )
+        uw_dists = _get_uw_pe_periodic(
+            isbs_raw, vcode, date(2000, 1, 1), report_date, UW_PE_DIST_ACCT
+        )
 
-            # Build capital-only events: contributions + actual capital returns
-            # Exclude actual CF distributions from capital_events
-            cf_dates_amounts: dict = {}
-            for d, a in cf_distributions:
-                cf_dates_amounts[d] = cf_dates_amounts.get(d, 0.0) + a
-            capital_only = []
-            cf_rem = dict(cf_dates_amounts)
-            for d, amt in capital_events:
-                if amt < 0:
-                    capital_only.append((d, amt))  # contribution
-                else:
-                    cf_at = cf_rem.get(d, 0.0)
-                    if cf_at > 0:
-                        consumed = min(cf_at, amt)
-                        cf_rem[d] -= consumed
-                        cap_ret = amt - consumed
+        if uw_capital_events_raw or uw_dists:
+            # Build capital events from 7073:
+            # _get_uw_pe_periodic returns abs(periodic) — we need sign convention:
+            # positive original = contribution, negative original = return of capital
+            # Re-read raw 7073 to get signs
+            uw_capital_events = _get_uw_7073_signed(
+                isbs_raw, vcode, date(2000, 1, 1), report_date
+            )
+
+            if uw_capital_events or uw_dists:
+                # Determine inception from earliest event
+                all_dates = [d for d, _ in uw_capital_events] + [d for d, _ in uw_dists]
+                if not all_dates:
+                    all_dates = [d for d, _ in capital_events] if capital_events else [report_date]
+                inception_dt = min(all_dates)
+
+                # Filter to report date range
+                uw_capital_events = [(d, a) for d, a in uw_capital_events if d <= report_date]
+                uw_dists = [(d, a) for d, a in uw_dists if d >= inception_dt and d <= report_date]
+
+                uw_cf_total = sum(a for _, a in uw_dists)
+                uw_roc_total = sum(a for _, a in uw_capital_events if a > 0)
+
+                uw_roe = calculate_roe(uw_capital_events, uw_dists, inception_dt, report_date)
+
+                # Build detail rows
+                uw_events = []
+                for d, amt in uw_capital_events:
+                    if amt < 0:
+                        uw_events.append((d, "U/W Contribution (7073)", abs(amt), abs(amt)))
                     else:
-                        cap_ret = amt
-                    if cap_ret > 0.005:
-                        capital_only.append((d, cap_ret))
+                        uw_events.append((d, "U/W Return of Capital (7073)", amt, -amt))
+                for d, amt in uw_dists:
+                    uw_events.append((d, "U/W Distribution (7071)", amt, 0.0))
 
-            # Add U/W return of capital (7073) as capital events.
-            # Detect distinct ROC events from ISBS cumulative jumps;
-            # cap so capital never goes negative.
-            cap_bal = sum(abs(a) for d, a in capital_only if a < 0) \
-                    - sum(a for d, a in capital_only if a > 0)
-            uw_roc_events = _get_uw_roc_events(isbs_raw, vcode, inception_dt, report_date, cap_bal)
-            for d, amt in uw_roc_events:
-                capital_only.append((d, amt))
-                uw_roc_total += amt
+                uw_events.sort(key=lambda x: x[0])
 
-            uw_roe = calculate_roe(capital_only, uw_dists, inception_dt, report_date)
+                uw_balance = 0.0
+                uw_prev = inception_dt
+                for evt_date, event_type, amount, balance_change in uw_events:
+                    days = (evt_date - uw_prev).days
+                    weighted = uw_balance * days
+                    new_bal = max(0.0, uw_balance + balance_change)
+                    uw_detail_rows.append({
+                        "Date": evt_date,
+                        "Event": event_type,
+                        "Amount": amount,
+                        "Days": days,
+                        "Capital Balance": uw_balance,
+                        "Weighted Capital": weighted,
+                        "New Balance": new_bal,
+                    })
+                    uw_balance = new_bal
+                    uw_prev = evt_date
 
-            # Build U/W detail rows from capital_only + uw_dists merged chronologically
-            uw_events = []
-            for d, amt in capital_only:
-                if amt < 0:
-                    uw_events.append((d, "Contribution", abs(amt), abs(amt)))
-                else:
-                    uw_events.append((d, "Capital Return (Actual)", amt, -amt))
-            for d, amt in uw_roc_events:
-                uw_events.append((d, "U/W Return of Capital (7073)", amt, -amt))
-                # Remove the duplicate from capital_only added above
-            # Deduplicate: capital_only already includes uw_roc_events, rebuild cleanly
-            uw_events = []
-            for d, amt in capital_events:
-                if amt < 0:
-                    uw_events.append((d, "Contribution", abs(amt), abs(amt)))
-            # Actual capital returns (ROC/realized gain only — no CF, no acq fee)
-            for _, row in deal_acct.iterrows():
-                if row["InvestorID"].upper().startswith("OP"):
-                    continue
-                evt_date = row["EffectiveDate"].date() if pd.notna(row["EffectiveDate"]) else None
-                if evt_date is None:
-                    continue
-                amt = float(row["Amt"])
-                major = row["MajorType"].lower()
-                tname = row["TypeName"].lower()
-                if "distri" in major and ("return of capital" in tname or "realized gain" in tname):
-                    uw_events.append((evt_date, "Capital Return (Actual)", abs(amt), -abs(amt)))
-            # U/W ROC (7073)
-            for d, amt in uw_roc_events:
-                uw_events.append((d, "U/W Return of Capital (7073)", amt, -amt))
-            # U/W distributions (7071)
-            for d, amt in uw_dists:
-                uw_events.append((d, "U/W Distribution (7071)", amt, 0.0))
-
-            uw_events.sort(key=lambda x: x[0])
-
-            uw_balance = 0.0
-            uw_prev = inception_dt
-            for evt_date, event_type, amount, balance_change in uw_events:
-                days = (evt_date - uw_prev).days
-                weighted = uw_balance * days
-                new_bal = max(0.0, uw_balance + balance_change)
-                uw_detail_rows.append({
-                    "Date": evt_date,
-                    "Event": event_type,
-                    "Amount": amount,
-                    "Days": days,
-                    "Capital Balance": uw_balance,
-                    "Weighted Capital": weighted,
-                    "New Balance": new_bal,
-                })
-                uw_balance = new_bal
-                uw_prev = evt_date
-
-            # Final period
-            uw_final_days = (report_date - uw_prev).days
-            if uw_final_days > 0:
-                uw_detail_rows.append({
-                    "Date": report_date,
-                    "Event": "(Report Date)",
-                    "Amount": 0.0,
-                    "Days": uw_final_days,
-                    "Capital Balance": uw_balance,
-                    "Weighted Capital": uw_balance * uw_final_days,
-                    "New Balance": uw_balance,
-                })
+                # Final period
+                uw_final_days = (report_date - uw_prev).days
+                if uw_final_days > 0:
+                    uw_detail_rows.append({
+                        "Date": report_date,
+                        "Event": "(Report Date)",
+                        "Amount": 0.0,
+                        "Days": uw_final_days,
+                        "Capital Balance": uw_balance,
+                        "Weighted Capital": uw_balance * uw_final_days,
+                        "New Balance": uw_balance,
+                    })
 
     # Build event-by-event detail for Excel audit trail.
     # Use the original accounting rows (with known MajorType/TypeName) so event

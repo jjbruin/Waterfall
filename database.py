@@ -148,6 +148,11 @@ TABLE_DEFINITIONS = {
         'description': 'ISBS Valuation — periodic monthly from forecast_feed',
         'key_columns': ['vcode', 'dtEntry', 'vAccount']
     },
+    'isbs_uw_supplements': {
+        'csv': 'ISBS_UW_Supplements.csv',
+        'description': 'Supplemental ISBS Projected IS records (e.g. 7073 capital contributions) — persists across MRI refreshes',
+        'key_columns': ['vcode', 'dtEntry', 'vAccount']
+    },
     'one_pager_comments': {
         'csv': 'OnePager_Comments.csv',
         'description': 'One Pager report comments by deal and period',
@@ -1147,7 +1152,7 @@ def delete_waterfall_steps(vcode: str, wf_type: str = None):
 
 
 # Tables managed exclusively via the app (never overwritten by CSV import)
-PROTECTED_TABLES = {'waterfalls', 'one_pager_comments', 'waterfall_audit', 'review_roles', 'review_submissions', 'review_notes', 'one_pager_snapshots', 'prospective_loans', 'prospective_loans_audit', 'planned_loans', 'sale_overrides', 'user_requests', 'user_request_messages', 'surveillance_properties', 'insurance', 'surveillance_comments'}
+PROTECTED_TABLES = {'waterfalls', 'one_pager_comments', 'waterfall_audit', 'review_roles', 'review_submissions', 'review_notes', 'one_pager_snapshots', 'prospective_loans', 'prospective_loans_audit', 'planned_loans', 'sale_overrides', 'user_requests', 'user_request_messages', 'surveillance_properties', 'insurance', 'surveillance_comments', 'isbs_uw_supplements'}
 
 
 def _get_import_connection():

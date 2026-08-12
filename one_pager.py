@@ -1354,6 +1354,80 @@ def _get_uw_pe_distributions(
     return _get_uw_pe_periodic(isbs_raw, vcode, inception, end_date, UW_PE_DIST_ACCT)
 
 
+def _get_uw_7073_signed(
+    isbs_raw: pd.DataFrame,
+    vcode: str,
+    inception: date,
+    end_date: date,
+) -> List[Tuple[date, float]]:
+    """Extract signed capital events from ISBS Projected IS account 7073.
+
+    Sign convention in MRI: positive = contribution, negative = return of capital.
+    Returns cashflow-sign tuples for calculate_roe():
+      positive MRI → negative cashflow (contribution)
+      negative MRI → positive cashflow (return of capital)
+    """
+    if isbs_raw is None or isbs_raw.empty:
+        return []
+
+    df = isbs_raw.copy()
+    if 'vcode' in df.columns:
+        df = df[df['vcode'] == str(vcode).strip().lower()]
+    if df.empty:
+        return []
+
+    if 'vSource' in df.columns:
+        df = df[df['vSource'] == 'Projected IS']
+    if df.empty or 'vAccount' not in df.columns:
+        return []
+
+    df = df[df['vAccount'] == UW_PE_ROC_ACCT]
+    if df.empty:
+        return []
+
+    if 'dtEntry_parsed' not in df.columns:
+        return []
+
+    df = df.dropna(subset=['dtEntry_parsed'])
+    df = df.sort_values('dtEntry_parsed')
+
+    periods = sorted(df['dtEntry_parsed'].unique())
+    if not periods:
+        return []
+
+    events: List[Tuple[date, float]] = []
+    prev_by_year: dict = {}
+
+    for period in periods:
+        period_ts = pd.Timestamp(period)
+        period_date = period_ts.date()
+
+        period_data = df[df['dtEntry_parsed'] == period]
+        cumulative = float(period_data['mAmount'].sum())
+
+        year = period_ts.year
+        if year in prev_by_year:
+            periodic = cumulative - prev_by_year[year]
+        elif period_ts.month == 1:
+            periodic = cumulative
+        else:
+            periodic = cumulative / period_ts.month
+
+        prev_by_year[year] = cumulative
+
+        if period_date < inception or period_date > end_date:
+            continue
+
+        if abs(periodic) < 0.01:
+            continue
+
+        # positive periodic = contribution → negative cashflow for ROE
+        # negative periodic = return of capital → positive cashflow for ROE
+        events.append((period_date, -periodic))
+
+    return events
+
+
 def _get_uw_roc_events(
     isbs_raw: pd.DataFrame,
     vcode: str,
@@ -1598,57 +1672,24 @@ def get_pe_performance(
                         capital_events, cf_distributions, inception, quarter_end
                     )
 
-                    # Compute U/W ROE to Date from Projected IS
-                    # 7071 = underwritten PE distributions (ROE numerator)
-                    # 7073 = underwritten return of capital (reduces denominator,
-                    #         NOT counted as distributions)
-                    # Same actual capital structure (contributions/returns), but
-                    # substitute underwritten distributions for CF distributions.
-                    # Build capital-only events (no CF dists) so calculate_roe
-                    # doesn't try to match actual CF dates against UW dates.
+                    # Compute U/W ROE to Date from ISBS Projected IS ONLY
+                    # 7073: positive = contribution, negative = return of capital
+                    # 7071: underwritten distributions (ROE numerator)
+                    # No actual accounting data used.
                     if isbs_raw is not None and not isbs_raw.empty:
-                        uw_dists = _get_uw_pe_distributions(
-                            isbs_raw, vcode, inception, quarter_end
+                        uw_capital = _get_uw_7073_signed(
+                            isbs_raw, vcode, date(2000, 1, 1), quarter_end
                         )
-                        if uw_dists:
-                            # capital_only: contributions (neg) + capital returns (pos)
-                            # Exclude CF distributions from capital_events
-                            cf_dates_amounts: dict = {}
-                            for d, a in cf_distributions:
-                                cf_dates_amounts[d] = cf_dates_amounts.get(d, 0.0) + a
-                            capital_only = []
-                            cf_remaining = dict(cf_dates_amounts)
-                            for d, amt in capital_events:
-                                if amt < 0:
-                                    capital_only.append((d, amt))  # contribution
-                                else:
-                                    # Subtract CF portion to isolate capital returns
-                                    cf_at = cf_remaining.get(d, 0.0)
-                                    if cf_at > 0:
-                                        consumed = min(cf_at, amt)
-                                        cf_remaining[d] -= consumed
-                                        cap_ret = amt - consumed
-                                    else:
-                                        cap_ret = amt
-                                    if cap_ret > 0.005:
-                                        capital_only.append((d, cap_ret))
-
-                            # Add underwritten return of capital (7073)
-                            # as positive capital events — reduces weighted
-                            # avg capital but does NOT count as distributions.
-                            # Detect distinct ROC events from ISBS jumps;
-                            # cap so capital never goes negative.
-                            cap_bal = sum(abs(a) for d, a in capital_only if a < 0) \
-                                    - sum(a for d, a in capital_only if a > 0)
-                            uw_roc = _get_uw_roc_events(
-                                isbs_raw, vcode, inception, quarter_end,
-                                cap_bal
-                            )
-                            for d, amt in uw_roc:
-                                capital_only.append((d, amt))
-
+                        uw_dists = _get_uw_pe_distributions(
+                            isbs_raw, vcode, date(2000, 1, 1), quarter_end
+                        )
+                        if uw_capital or uw_dists:
+                            all_dates = [d for d, _ in uw_capital] + [d for d, _ in uw_dists]
+                            uw_inception = min(all_dates) if all_dates else inception
+                            uw_capital = [(d, a) for d, a in uw_capital if d <= quarter_end]
+                            uw_dists = [(d, a) for d, a in uw_dists if d >= uw_inception and d <= quarter_end]
                             pe['uw_roe_to_date'] = calculate_roe(
-                                capital_only, uw_dists, inception, quarter_end
+                                uw_capital, uw_dists, uw_inception, quarter_end
                             )
         except Exception:
             pass
