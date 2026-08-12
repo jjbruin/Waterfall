@@ -1,7 +1,20 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, type Directive } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '../api/client'
+
+// Click-outside directive
+const vClickOutside: Directive = {
+  mounted(el, binding) {
+    el._clickOutside = (e: MouseEvent) => {
+      if (!el.contains(e.target as Node)) binding.value()
+    }
+    document.addEventListener('click', el._clickOutside)
+  },
+  unmounted(el) {
+    document.removeEventListener('click', el._clickOutside)
+  },
+}
 
 const route = useRoute()
 const router = useRouter()
@@ -51,6 +64,7 @@ watch(selectedTable, () => {
   sortCol.value = ''
   sortOrder.value = 'asc'
   filters.value = {}
+  hiddenCols.value = new Set()
   if (selectedTable.value) {
     router.replace({ query: { table: selectedTable.value } })
     loadRows()
@@ -138,6 +152,26 @@ function handlePageSize(size: number) {
   page.value = 1
   loadRows()
 }
+
+// Column visibility
+const hiddenCols = ref<Set<string>>(new Set())
+const showColPicker = ref(false)
+
+const visibleColumns = computed(() =>
+  columns.value.filter(c => !hiddenCols.value.has(c))
+)
+
+function toggleColumn(col: string) {
+  const next = new Set(hiddenCols.value)
+  if (next.has(col)) next.delete(col)
+  else next.add(col)
+  hiddenCols.value = next
+}
+
+function showAllColumns() {
+  hiddenCols.value = new Set()
+}
+
 </script>
 
 <template>
@@ -188,6 +222,31 @@ function handlePageSize(size: number) {
                 {{ total.toLocaleString() }} row{{ total !== 1 ? 's' : '' }}
                 <template v-if="hasActiveFilters">(filtered)</template>
               </span>
+              <div class="col-picker-dropdown" v-click-outside="() => showColPicker = false">
+                <button class="btn-clear" @click="showColPicker = !showColPicker">
+                  Columns ({{ visibleColumns.length }}/{{ columns.length }})
+                </button>
+                <div v-if="showColPicker" class="col-picker-panel">
+                  <div class="col-picker-header">
+                    <span>Show/Hide Columns</span>
+                    <button class="col-picker-reset" @click="showAllColumns">Show All</button>
+                  </div>
+                  <div class="col-picker-list">
+                    <label
+                      v-for="col in columns"
+                      :key="col"
+                      class="col-picker-item"
+                    >
+                      <input
+                        type="checkbox"
+                        :checked="!hiddenCols.has(col)"
+                        @change="toggleColumn(col)"
+                      />
+                      {{ col }}
+                    </label>
+                  </div>
+                </div>
+              </div>
               <button
                 v-if="hasActiveFilters"
                 class="btn-clear"
@@ -214,7 +273,7 @@ function handlePageSize(size: number) {
                 <tr>
                   <th class="row-num-header">#</th>
                   <th
-                    v-for="col in columns"
+                    v-for="col in visibleColumns"
                     :key="col"
                     @click="handleSort(col)"
                     class="sortable-header"
@@ -227,7 +286,7 @@ function handlePageSize(size: number) {
                 <!-- Filter row -->
                 <tr class="filter-row">
                   <th></th>
-                  <th v-for="col in columns" :key="'f-' + col">
+                  <th v-for="col in visibleColumns" :key="'f-' + col">
                     <input
                       class="filter-input"
                       :placeholder="'Filter...'"
@@ -239,11 +298,11 @@ function handlePageSize(size: number) {
               </thead>
               <tbody>
                 <tr v-if="rows.length === 0 && !loading">
-                  <td :colspan="columns.length + 1" class="no-data">No data found</td>
+                  <td :colspan="visibleColumns.length + 1" class="no-data">No data found</td>
                 </tr>
                 <tr v-for="(row, idx) in rows" :key="idx">
                   <td class="row-num">{{ (page - 1) * pageSize + idx + 1 }}</td>
-                  <td v-for="col in columns" :key="col" :title="String(row[col] ?? '')">
+                  <td v-for="col in visibleColumns" :key="col" :title="String(row[col] ?? '')">
                     {{ row[col] ?? '' }}
                   </td>
                 </tr>
@@ -553,5 +612,62 @@ function handlePageSize(size: number) {
   font-size: 13px;
   color: #555;
   margin: 0 8px;
+}
+
+/* Column picker */
+.col-picker-dropdown {
+  position: relative;
+}
+.col-picker-panel {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 10;
+  background: white;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  width: 220px;
+  margin-top: 4px;
+}
+.col-picker-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  border-bottom: 1px solid #eee;
+  font-size: 12px;
+  font-weight: 600;
+}
+.col-picker-reset {
+  border: none;
+  background: none;
+  color: #1a5276;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 6px;
+}
+.col-picker-reset:hover {
+  text-decoration: underline;
+}
+.col-picker-list {
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+.col-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.col-picker-item:hover {
+  background: #f5f8fa;
+}
+.col-picker-item input[type="checkbox"] {
+  margin: 0;
 }
 </style>
