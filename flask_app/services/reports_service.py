@@ -290,6 +290,8 @@ def _compute_accrued_pref(deal_acct: pd.DataFrame, report_date: date,
         has_typeid = "TypeID" in rows.columns
 
         for _, r in rows.iterrows():
+            if r.get("is_commitment", False):
+                continue
             evt_date = r["EffectiveDate"].date() if pd.notna(r["EffectiveDate"]) else None
             if evt_date is None:
                 continue
@@ -436,6 +438,8 @@ def build_roe_summary_row(
     for _, row in deal_acct.iterrows():
         if row["InvestorID"].upper().startswith("OP"):
             continue
+        if row.get("is_commitment", False):
+            continue
         major = row["MajorType"].lower()
         tname = row["TypeName"].lower()
         amt = float(row["Amt"])
@@ -574,6 +578,8 @@ def build_roe_summary_row(
     acct_events = []
     for _, row in deal_acct.iterrows():
         if row["InvestorID"].upper().startswith("OP"):
+            continue
+        if row.get("is_commitment", False):
             continue
         evt_date = row["EffectiveDate"].date() if pd.notna(row["EffectiveDate"]) else None
         if evt_date is None:
@@ -1039,6 +1045,8 @@ def build_pref_balance_detail(
     # Build event list: actual transactions + generated quarter-end markers
     events = []  # (date, amt, typename, major_type, is_generated, type_id)
     for _, r in deal_acct.iterrows():
+        if r.get("is_commitment", False):
+            continue
         evt_date = r["EffectiveDate"].date()
         tname_raw = r["TypeName"]
         tid = None

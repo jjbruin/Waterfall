@@ -286,6 +286,8 @@ def get_deal_capitalization(acct, inv, wf, mri_val, mri_loans, deal_vcode,
                 # Calculate equity balances per investor
                 investor_balances: dict[str, float] = {}
                 for _, row in deal_acct.iterrows():
+                    if row.get("is_commitment", False):
+                        continue
                     investor_id = row["InvestorID"]
                     major_type = row["MajorType"].lower()
                     type_name = row["TypeName"].lower()
