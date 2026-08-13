@@ -16,6 +16,20 @@ from config import IS_ACCOUNTS
 from flask_app.services.isbs_helpers import compute_cumulative_noi, cumulative_to_periodic, aggregate_periodic
 from utils import normalize_columns
 
+
+def _normalize_occ_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Rename occupancy columns to expected casing (PostgreSQL lowercases them)."""
+    _expected = {"vcode": "vCode", "dtreported": "dtReported", "occ%": "Occ%",
+                 "occupancypercent": "OccupancyPercent"}
+    rename = {}
+    for col in df.columns:
+        mapped = _expected.get(col.lower().strip())
+        if mapped and col != mapped:
+            rename[col] = mapped
+    if rename:
+        df.rename(columns=rename, inplace=True)
+    return df
+
 # ---------------------------------------------------------------------------
 # Shared caps / occ cache — used by Dashboard AND Surveillance
 # ---------------------------------------------------------------------------
@@ -134,6 +148,7 @@ def get_latest_occupancy(inv_disp, occupancy_raw, inv=None) -> dict:
 
     occ = occupancy_raw.copy()
     normalize_columns(occ)
+    _normalize_occ_columns(occ)
 
     if "vCode" not in occ.columns:
         return {}
@@ -519,6 +534,7 @@ def compute_portfolio_noi(isbs_raw, inv_disp, frequency="Quarterly",
     if occupancy_raw is not None and not occupancy_raw.empty:
         occ = occupancy_raw.copy()
         normalize_columns(occ)
+        _normalize_occ_columns(occ)
         if "vCode" in occ.columns:
             occ["vCode"] = occ["vCode"].astype(str).str.strip().str.lower()
             occ = occ[occ["vCode"].isin(parent_vcodes)]
@@ -703,6 +719,7 @@ def _get_deal_trailing_occupancy(inv_disp, occupancy_raw, num_quarters=4) -> dic
 
     occ = occupancy_raw.copy()
     normalize_columns(occ)
+    _normalize_occ_columns(occ)
     if "vCode" not in occ.columns:
         return {}
 
