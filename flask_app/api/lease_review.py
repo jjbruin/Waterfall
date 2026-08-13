@@ -28,6 +28,34 @@ logger = logging.getLogger(__name__)
 lease_review_bp = Blueprint('lease_review', __name__, url_prefix='/api/lease-review')
 
 
+@lease_review_bp.route('/prospect-properties', methods=['GET'])
+@login_required
+def list_prospect_properties():
+    """List all prospect properties across all deals for lease review linking."""
+    from sqlalchemy import text
+    engine = get_engine()
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text("""
+                SELECT pp.id, pp.property_name, pp.address, pp.city, pp.state,
+                       pp.gla_sf, pd.deal_name, pd.id as deal_id,
+                       (SELECT lr.id FROM lease_reviews lr
+                        WHERE lr.prospect_property_id = pp.id LIMIT 1) as lease_review_id
+                FROM prospect_properties pp
+                JOIN prospect_deals pd ON pd.id = pp.prospect_id
+                ORDER BY pd.deal_name, pp.sort_order, pp.property_name
+            """)).fetchall()
+
+        return jsonify([{
+            'id': r[0], 'property_name': r[1], 'address': r[2],
+            'city': r[3], 'state': r[4], 'gla_sf': r[5],
+            'deal_name': r[6], 'deal_id': r[7],
+            'lease_review_id': r[8],
+        } for r in rows])
+    except Exception:
+        return jsonify([])
+
+
 @lease_review_bp.route('/reviews', methods=['GET'])
 @login_required
 def list_reviews():

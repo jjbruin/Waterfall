@@ -41,6 +41,8 @@ const newReviewName = ref('')
 const newReviewAddress = ref('')
 const newReviewGla = ref<number | null>(null)
 const creatingReview = ref(false)
+const prospectProperties = ref<any[]>([])
+const selectedProspectPropId = ref<number | null>(null)
 
 // Rent roll upload
 const uploadingRentRoll = ref(false)
@@ -137,6 +139,26 @@ async function downloadExcel() {
   URL.revokeObjectURL(url)
 }
 
+async function openNewReviewModal() {
+  showNewReview.value = true
+  try {
+    const res = await api.get('/api/lease-review/prospect-properties')
+    prospectProperties.value = res.data.filter((p: any) => !p.lease_review_id)
+  } catch {
+    prospectProperties.value = []
+  }
+}
+
+function onProspectPropertySelect() {
+  const prop = prospectProperties.value.find(p => p.id === selectedProspectPropId.value)
+  if (prop) {
+    newReviewName.value = prop.property_name || ''
+    const addr = [prop.address, prop.city, prop.state].filter(Boolean).join(', ')
+    newReviewAddress.value = addr
+    newReviewGla.value = prop.gla_sf || null
+  }
+}
+
 async function createNewReview() {
   if (!newReviewName.value.trim()) return
   creatingReview.value = true
@@ -145,6 +167,7 @@ async function createNewReview() {
       property_name: newReviewName.value.trim(),
       property_address: newReviewAddress.value.trim(),
       total_gla: newReviewGla.value || 0,
+      prospect_property_id: selectedProspectPropId.value || undefined,
     })
     // Reload reviews list and select the new one
     const listRes = await api.get('/api/lease-review/reviews')
@@ -155,6 +178,7 @@ async function createNewReview() {
     newReviewName.value = ''
     newReviewAddress.value = ''
     newReviewGla.value = null
+    selectedProspectPropId.value = null
   } catch (e: any) {
     console.error('Create review error', e)
     alert(e.response?.data?.error || 'Failed to create review')
@@ -328,7 +352,7 @@ function statusClass(s: string): string {
         <span v-else-if="review" class="property-name">{{ review.property_name }}</span>
       </div>
       <div class="header-right">
-        <button class="btn-new" @click="showNewReview = true">+ New Review</button>
+        <button class="btn-new" @click="openNewReviewModal">+ New Review</button>
         <button class="btn-excel" @click="downloadExcel" :disabled="!selectedReviewId || !tenants.length">
           Download Excel
         </button>
@@ -339,6 +363,15 @@ function statusClass(s: string): string {
     <div v-if="showNewReview" class="modal-overlay" @click.self="showNewReview = false">
       <div class="modal-box">
         <h3>New Lease Review</h3>
+        <div v-if="prospectProperties.length" class="form-field">
+          <label>Link to Pipeline Property</label>
+          <select v-model="selectedProspectPropId" @change="onProspectPropertySelect">
+            <option :value="null">— Enter manually —</option>
+            <option v-for="p in prospectProperties" :key="p.id" :value="p.id">
+              {{ p.deal_name }} — {{ p.property_name }}
+            </option>
+          </select>
+        </div>
         <div class="form-field">
           <label>Property Name *</label>
           <input v-model="newReviewName" placeholder="e.g. Windsor Square" />
@@ -370,7 +403,7 @@ function statusClass(s: string): string {
         Create a lease review to get started, or use the <strong>Pipeline</strong> tab
         to create one linked to a deal.
       </p>
-      <button class="btn-primary" style="margin-top: 1rem" @click="showNewReview = true">+ New Review</button>
+      <button class="btn-primary" style="margin-top: 1rem" @click="openNewReviewModal">+ New Review</button>
     </div>
 
     <!-- Rent roll upload bar (when review exists but no tenants) -->
