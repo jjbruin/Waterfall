@@ -16,6 +16,9 @@ from flask_app.services.lease_review_service import (
     get_cotenancy_matrix,
     get_scenario_analysis,
     generate_lease_review_excel,
+    parse_rent_roll_flexible,
+    import_rent_roll_to_review,
+    create_review_manual,
 )
 from io import BytesIO
 import logging
@@ -79,6 +82,72 @@ def create_review():
         return jsonify({'review_id': review_id, 'status': 'created'})
     except Exception as e:
         logger.error(f"Error creating review: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route('/reviews/create', methods=['POST'])
+@login_required
+@role_required('admin', 'analyst')
+def create_manual_review():
+    """Create a lease review manually (no folder scanning required).
+
+    Body: { "property_name": "...", "property_address": "...", "total_gla": 0 }
+    """
+    data = request.json
+    if not data or not data.get('property_name'):
+        return jsonify({'error': 'property_name is required'}), 400
+
+    engine = get_engine()
+    ensure_lease_tables(engine)
+
+    try:
+        review_id = create_review_manual(
+            engine=engine,
+            property_name=data['property_name'],
+            property_address=data.get('property_address', ''),
+            total_gla=float(data.get('total_gla', 0) or 0),
+            created_by=request.user.get('username', 'unknown'),
+            prospect_property_id=data.get('prospect_property_id'),
+        )
+        return jsonify({'review_id': review_id, 'status': 'created'}), 201
+    except Exception as e:
+        logger.error(f"Error creating manual review: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/upload-rent-roll', methods=['POST'])
+@login_required
+@role_required('admin', 'analyst')
+def upload_rent_roll(review_id):
+    """Upload a rent roll Excel/CSV file to populate tenants for a review.
+
+    Accepts multipart/form-data with a 'file' field.
+    Replaces any existing tenants in the review.
+    """
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file provided'}), 400
+
+    file = request.files['file']
+    if not file.filename:
+        return jsonify({'error': 'Empty filename'}), 400
+
+    engine = get_engine()
+    ensure_lease_tables(engine)
+
+    try:
+        file_bytes = file.read()
+        rr_df = parse_rent_roll_flexible(file_bytes, file.filename)
+        count = import_rent_roll_to_review(engine, review_id, rr_df)
+        return jsonify({
+            'status': 'imported',
+            'tenant_count': count,
+            'total_gla': float(rr_df['square_feet'].sum()),
+            'total_annual_rent': float(rr_df['annual_rent'].sum()),
+        })
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"Rent roll upload error: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 

@@ -231,13 +231,36 @@ LEASE_DDL_SQLITE = [
 
 
 def ensure_lease_tables(engine):
-    """Create lease review tables on PostgreSQL."""
-    from sqlalchemy import text
+    """Create lease review tables and migrate missing columns."""
+    from sqlalchemy import text, inspect
     with engine.connect() as conn:
-        for ddl in LEASE_DDL_PG:
-            conn.execute(text(ddl))
+        # Detect dialect for correct DDL
+        dialect = engine.dialect.name
+        if dialect == 'sqlite':
+            for ddl in LEASE_DDL_SQLITE:
+                conn.execute(text(ddl))
+        else:
+            for ddl in LEASE_DDL_PG:
+                conn.execute(text(ddl))
+
+        # Migrate: add prospect_property_id if missing
+        try:
+            insp = inspect(engine)
+            if 'lease_reviews' in insp.get_table_names():
+                cols = [c['name'] for c in insp.get_columns('lease_reviews')]
+                if 'prospect_property_id' not in cols:
+                    conn.execute(text(
+                        "ALTER TABLE lease_reviews "
+                        "ADD COLUMN prospect_property_id INTEGER"))
+                if 'rent_roll_date' not in cols:
+                    conn.execute(text(
+                        "ALTER TABLE lease_reviews "
+                        "ADD COLUMN rent_roll_date TEXT"))
+        except Exception:
+            pass  # Column may already exist
+
         conn.commit()
-    logger.info("Lease review tables ensured on PostgreSQL")
+    logger.info("Lease review tables ensured")
 
 
 def create_lease_tables_sqlite(conn):
@@ -409,6 +432,346 @@ def parse_rent_roll(file_path: str) -> pd.DataFrame:
         })
 
     return pd.DataFrame(rows)
+
+
+def parse_rent_roll_flexible(file_obj, filename: str = '') -> pd.DataFrame:
+    """Parse an uploaded rent roll from Excel or CSV using flexible column matching.
+
+    Handles Argus-format rent rolls, generic Excel exports, and CSVs.
+    Returns a DataFrame with standardized columns matching parse_rent_roll output.
+
+    Column matching is fuzzy — looks for keywords in header row:
+      tenant/name, suite/unit, sf/area/sqft, start, end/expir,
+      base rent/annual rent, monthly rent, lease type/status, deposit
+    """
+    import io
+
+    # Read into DataFrame
+    lower_fn = (filename or '').lower()
+    if lower_fn.endswith('.csv'):
+        if isinstance(file_obj, (str, bytes)):
+            df_raw = pd.read_csv(io.BytesIO(file_obj) if isinstance(file_obj, bytes)
+                                 else io.StringIO(file_obj))
+        else:
+            df_raw = pd.read_csv(file_obj)
+    else:
+        # Excel — try each sheet until we find one with tenant data
+        import openpyxl
+        if isinstance(file_obj, bytes):
+            file_obj = io.BytesIO(file_obj)
+        try:
+            wb = openpyxl.load_workbook(file_obj, data_only=True, read_only=True)
+        except Exception:
+            # Fallback: try pandas directly
+            file_obj.seek(0)
+            df_raw = pd.read_excel(file_obj, engine='openpyxl')
+            wb = None
+
+        if wb is not None:
+            df_raw = None
+            # Prioritize sheets with rent roll / tenant in the name
+            sheet_order = sorted(wb.sheetnames,
+                key=lambda s: (0 if any(kw in s.lower()
+                    for kw in ['rent roll', 'tenant', 'rent_roll']) else 1))
+            for sheet_name in sheet_order:
+                ws = wb[sheet_name]
+                data = list(ws.values)
+                if not data:
+                    continue
+                # Find header row — look for individual cells containing column names
+                # Argus exports use two-row headers; we want the row with names
+                header_idx = None
+                for i, row in enumerate(data[:30]):
+                    if row is None:
+                        continue
+                    # Check individual cells (not concatenated row string)
+                    # to avoid matching "Tenant Rent Roll" as both tenant+rent
+                    cell_vals = [str(c).lower().strip()
+                                 for c in row if c is not None]
+                    # Best: a cell that is exactly or contains "tenant name"
+                    if any('tenant name' in cv for cv in cell_vals):
+                        header_idx = i
+                        break
+                    # Require "tenant" in one cell AND a data keyword in
+                    # a DIFFERENT cell
+                    has_tenant = any('tenant' in cv and len(cv) < 30
+                                     for cv in cell_vals)
+                    if has_tenant:
+                        other_cells = [cv for cv in cell_vals
+                                       if 'tenant' not in cv]
+                        if any(kw in cv for cv in other_cells
+                               for kw in ['suite', 'unit', 'rent',
+                                          'sf', 'sqft', 'area']):
+                            header_idx = i
+                            break
+                if header_idx is not None:
+                    # Check if prior row is a sub-header (Argus two-row header)
+                    # Argus format: row N-1 has category prefixes (Potential,
+                    # Scheduled, etc.), row N has the column names (Base Rent,
+                    # Start Date, etc.). Concatenate them to get full names
+                    # like "Potential Base Rent", "Scheduled Base Rent".
+                    raw_headers = list(data[header_idx])
+                    if header_idx > 0:
+                        prior = data[header_idx - 1]
+                        if prior:
+                            prior_str = ' '.join(
+                                str(c).lower() for c in prior if c)
+                            if any(kw in prior_str for kw in [
+                                    'lease', 'rent', 'potential', 'expense',
+                                    'scheduled', 'absorption']):
+                                for j, c in enumerate(prior):
+                                    if c:
+                                        p = str(c).strip()
+                                        if raw_headers[j]:
+                                            # Concatenate: "Potential" + "Base Rent"
+                                            raw_headers[j] = (
+                                                p + ' ' + str(raw_headers[j]).strip())
+                                        else:
+                                            raw_headers[j] = p
+                    headers = [str(c).strip() if c else f'col_{j}'
+                               for j, c in enumerate(raw_headers)]
+                    rows = data[header_idx + 1:]
+                    df_raw = pd.DataFrame(rows, columns=headers)
+                    # If this sheet has enough rows, use it
+                    if len(df_raw.dropna(how='all')) >= 2:
+                        break
+                    df_raw = None
+            wb.close()
+            if df_raw is None:
+                raise ValueError("No rent roll data found in any sheet")
+
+    if df_raw is None or df_raw.empty:
+        raise ValueError("No data found in uploaded file")
+
+    # Drop fully empty rows
+    df_raw = df_raw.dropna(how='all').reset_index(drop=True)
+
+    # Fuzzy column matching
+    col_map = {}
+    cols_lower = {c: c.lower().strip() for c in df_raw.columns}
+
+    def _find_col(*keywords, exclude=None):
+        for col, cl in cols_lower.items():
+            if col in col_map.values():
+                continue
+            if exclude and any(e in cl for e in exclude):
+                continue
+            if any(kw in cl for kw in keywords):
+                return col
+        return None
+
+    col_map['tenant_name'] = _find_col('tenant', 'name', 'lessee', exclude=['group'])
+    col_map['suite'] = _find_col('suite', 'unit', 'space')
+    col_map['square_feet'] = _find_col('area', 'sqft', 'sq ft', 'square', 'sf', 'gla')
+    col_map['lease_type'] = _find_col('lease type', 'type', 'lease status', 'status')
+    col_map['lease_start'] = _find_col('start date', 'lease start', 'commence', 'begin')
+    if not col_map['lease_start']:
+        col_map['lease_start'] = _find_col('start', exclude=['date'])
+    col_map['lease_end'] = _find_col('end date', 'lease end', 'expir', 'termin',
+                                     'maturity')
+    col_map['annual_rent'] = _find_col('scheduled base', 'potential base',
+                                       'annual rent', 'annual', 'base rent',
+                                       exclude=['monthly', 'per sf', 'turnover',
+                                                'free', 'miscellaneous',
+                                                'percentage', 'absorption'])
+    col_map['monthly_rent'] = _find_col('monthly', 'month rent',
+                                        exclude=['annual', 'per sf'])
+    col_map['security_deposit'] = _find_col('deposit', 'security')
+
+    if not col_map.get('tenant_name'):
+        raise ValueError(
+            f"Cannot find tenant name column. Headers: {list(df_raw.columns)}")
+
+    def _safe_float(val):
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            return 0.0
+        try:
+            return float(str(val).replace(',', '').replace('$', '').strip())
+        except (ValueError, TypeError):
+            return 0.0
+
+    def _safe_date(val):
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            return None
+        if isinstance(val, (datetime, date)):
+            return val.strftime('%Y-%m-%d') if hasattr(val, 'strftime') else str(val)
+        s = str(val).strip()
+        if not s or s.lower() in ('none', 'nan', 'nat', 'tbd', ''):
+            return None
+        try:
+            return pd.to_datetime(s).strftime('%Y-%m-%d')
+        except Exception:
+            return s
+
+    result_rows = []
+    for _, row in df_raw.iterrows():
+        tname = row.get(col_map['tenant_name']) if col_map.get('tenant_name') else None
+        if tname is None or (isinstance(tname, float) and pd.isna(tname)):
+            continue
+        tname = str(tname).strip()
+        if not tname or tname.lower() in ('total', 'totals', 'subtotal', 'grand total',
+                                           'future', '', 'nan'):
+            continue
+
+        is_vacant = 'VACANT' in tname.upper()
+        sf = _safe_float(row.get(col_map.get('square_feet', ''), 0))
+        ann_rent = _safe_float(row.get(col_map.get('annual_rent', ''), 0))
+        mon_rent = _safe_float(row.get(col_map.get('monthly_rent', ''), 0))
+
+        # Derive missing fields
+        if ann_rent > 0 and mon_rent == 0:
+            mon_rent = ann_rent / 12
+        elif mon_rent > 0 and ann_rent == 0:
+            ann_rent = mon_rent * 12
+
+        rent_per_sf = ann_rent / sf if sf > 0 else 0
+
+        result_rows.append({
+            'tenant_name': tname,
+            'suite': str(row.get(col_map.get('suite', ''), '')).strip()
+                    if col_map.get('suite') else '',
+            'lease_type': str(row.get(col_map.get('lease_type', ''), '')).strip()
+                         if col_map.get('lease_type') else 'Retail',
+            'square_feet': sf,
+            'lease_start': _safe_date(row.get(col_map.get('lease_start', '')))
+                          if col_map.get('lease_start') else None,
+            'lease_end': _safe_date(row.get(col_map.get('lease_end', '')))
+                        if col_map.get('lease_end') else None,
+            'term_months': 0,
+            'monthly_rent': mon_rent,
+            'annual_rent': ann_rent,
+            'rent_per_sf_year': rent_per_sf,
+            'security_deposit': _safe_float(
+                row.get(col_map.get('security_deposit', ''), 0))
+                if col_map.get('security_deposit') else 0,
+            'is_vacant': is_vacant,
+        })
+
+    if not result_rows:
+        raise ValueError("No tenant rows found in uploaded file")
+
+    return pd.DataFrame(result_rows)
+
+
+def import_rent_roll_to_review(engine, review_id: int, rr_df: pd.DataFrame) -> int:
+    """Import parsed rent roll data into an existing lease review.
+
+    Clears existing tenants for the review and replaces with new data.
+    Returns count of tenants imported.
+    """
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        # Verify review exists
+        rev = conn.execute(text(
+            "SELECT id FROM lease_reviews WHERE id = :rid"
+        ), {'rid': review_id}).fetchone()
+        if not rev:
+            raise ValueError(f"Review {review_id} not found")
+
+        # Clear existing tenants and related data
+        conn.execute(text(
+            "DELETE FROM lease_validation WHERE tenant_id IN "
+            "(SELECT id FROM lease_tenants WHERE review_id = :rid)"), {'rid': review_id})
+        conn.execute(text(
+            "DELETE FROM lease_cotenancy_refs WHERE cotenancy_id IN "
+            "(SELECT id FROM lease_cotenancy WHERE review_id = :rid)"), {'rid': review_id})
+        conn.execute(text(
+            "DELETE FROM lease_cotenancy WHERE review_id = :rid"), {'rid': review_id})
+        conn.execute(text(
+            "DELETE FROM lease_documents WHERE review_id = :rid"), {'rid': review_id})
+        conn.execute(text(
+            "DELETE FROM lease_rent_steps WHERE tenant_id IN "
+            "(SELECT id FROM lease_tenants WHERE review_id = :rid)"), {'rid': review_id})
+        conn.execute(text(
+            "DELETE FROM lease_options WHERE tenant_id IN "
+            "(SELECT id FROM lease_tenants WHERE review_id = :rid)"), {'rid': review_id})
+        conn.execute(text(
+            "DELETE FROM lease_exclusive_use WHERE tenant_id IN "
+            "(SELECT id FROM lease_tenants WHERE review_id = :rid)"), {'rid': review_id})
+        conn.execute(text(
+            "DELETE FROM lease_tenants WHERE review_id = :rid"), {'rid': review_id})
+
+        # Insert tenants
+        count = 0
+        for _, row in rr_df.iterrows():
+            tname = row.get('tenant_name', '')
+            sf = float(row.get('square_feet', 0) or 0)
+            ann_rent = float(row.get('annual_rent', 0) or 0)
+            is_material = (sf >= MATERIAL_LEASE_SF_THRESHOLD or
+                           ann_rent >= MATERIAL_LEASE_RENT_THRESHOLD)
+
+            conn.execute(text("""
+                INSERT INTO lease_tenants
+                    (review_id, tenant_name, suite, square_feet, lease_type,
+                     lease_start, lease_end, term_months, monthly_rent,
+                     annual_rent, rent_per_sf, security_deposit,
+                     is_vacant, is_material, has_cotenancy, has_exclusive_use)
+                VALUES (:rid, :tn, :su, :sf, :lt,
+                        :ls, :le, :tm, :mr,
+                        :ar, :rpsf, :sd,
+                        :iv, :im, FALSE, FALSE)
+            """), {
+                'rid': review_id,
+                'tn': tname,
+                'su': row.get('suite', ''),
+                'sf': sf,
+                'lt': row.get('lease_type', 'Retail'),
+                'ls': row.get('lease_start'),
+                'le': row.get('lease_end'),
+                'tm': int(row.get('term_months', 0) or 0),
+                'mr': float(row.get('monthly_rent', 0) or 0),
+                'ar': ann_rent,
+                'rpsf': float(row.get('rent_per_sf_year', 0) or 0),
+                'sd': float(row.get('security_deposit', 0) or 0),
+                'iv': bool(row.get('is_vacant', False)),
+                'im': is_material,
+            })
+            count += 1
+
+        # Update review totals
+        total_gla = float(rr_df['square_feet'].sum()) if 'square_feet' in rr_df else 0
+        total_rent = float(rr_df['annual_rent'].sum()) if 'annual_rent' in rr_df else 0
+        conn.execute(text("""
+            UPDATE lease_reviews
+            SET total_gla = :gla, total_annual_rent = :rent,
+                total_tenants = :cnt, updated_at = CURRENT_TIMESTAMP
+            WHERE id = :rid
+        """), {'gla': total_gla, 'rent': total_rent, 'cnt': count, 'rid': review_id})
+
+        conn.commit()
+
+    logger.info(f"Imported {count} tenants into review {review_id}")
+    return count
+
+
+def create_review_manual(engine, property_name: str, property_address: str = '',
+                         total_gla: float = 0, created_by: str = 'system',
+                         prospect_property_id: int = None) -> int:
+    """Create a lease review without folder scanning.
+
+    Returns the review_id.
+    """
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        params = {
+            'pn': property_name, 'pa': property_address,
+            'gla': total_gla, 'ppid': prospect_property_id,
+            'cb': created_by,
+        }
+        result = conn.execute(text("""
+            INSERT INTO lease_reviews
+                (property_name, property_address, total_gla,
+                 prospect_property_id, status, created_by)
+            VALUES (:pn, :pa, :gla, :ppid, 'in_progress', :cb)
+            RETURNING id
+        """), params)
+        review_id = result.fetchone()[0]
+        conn.commit()
+
+    logger.info(f"Created manual review '{property_name}': review_id={review_id}")
+    return review_id
 
 
 # ---------------------------------------------------------------------------

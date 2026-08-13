@@ -35,6 +35,17 @@ const expandedTenant = ref<number | null>(null)
 const tenantDocs = ref<any[]>([])
 const expandedScenario = ref<string | null>(null)
 
+// New review creation
+const showNewReview = ref(false)
+const newReviewName = ref('')
+const newReviewAddress = ref('')
+const newReviewGla = ref<number | null>(null)
+const creatingReview = ref(false)
+
+// Rent roll upload
+const uploadingRentRoll = ref(false)
+const uploadMessage = ref('')
+
 // Load
 onMounted(async () => {
   const res = await api.get('/api/lease-review/reviews')
@@ -54,34 +65,46 @@ onMounted(async () => {
 async function loadReview(id: number) {
   loading.value = true
   try {
-    const [revRes, expRes, cotRes, scenRes, valRes] = await Promise.all([
-      api.get(`/api/lease-review/reviews/${id}`),
-      api.get(`/api/lease-review/reviews/${id}/expirations`),
-      api.get(`/api/lease-review/reviews/${id}/cotenancy`),
-      api.get(`/api/lease-review/reviews/${id}/scenarios`),
-      api.get(`/api/lease-review/reviews/${id}/validation`),
-    ])
+    const revRes = await api.get(`/api/lease-review/reviews/${id}`)
     review.value = revRes.data.review
     tenants.value = revRes.data.tenants
-    expirations.value = expRes.data
-    // Transform cotenancy API response into clauses array for the template
-    const cotData = cotRes.data
-    const clauses: any[] = []
-    if (cotData.details) {
-      for (const [tenantName, detail] of Object.entries(cotData.details) as any) {
-        clauses.push({
-          tenant_name: tenantName,
-          ...detail,
-          trigger_description: detail.trigger,
-          alt_rent_formula: detail.alt_rent,
-          cure_period_days: detail.cure_days,
-          named_cotenants: cotData.forward?.[tenantName] || [],
-        })
+
+    // Load secondary data — these may fail if no tenants yet
+    if (tenants.value.length) {
+      try {
+        const [expRes, cotRes, scenRes, valRes] = await Promise.all([
+          api.get(`/api/lease-review/reviews/${id}/expirations`),
+          api.get(`/api/lease-review/reviews/${id}/cotenancy`),
+          api.get(`/api/lease-review/reviews/${id}/scenarios`),
+          api.get(`/api/lease-review/reviews/${id}/validation`),
+        ])
+        expirations.value = expRes.data
+        const cotData = cotRes.data
+        const clauses: any[] = []
+        if (cotData.details) {
+          for (const [tenantName, detail] of Object.entries(cotData.details) as any) {
+            clauses.push({
+              tenant_name: tenantName,
+              ...detail,
+              trigger_description: detail.trigger,
+              alt_rent_formula: detail.alt_rent,
+              cure_period_days: detail.cure_days,
+              named_cotenants: cotData.forward?.[tenantName] || [],
+            })
+          }
+        }
+        cotenancy.value = { ...cotData, clauses }
+        scenarios.value = scenRes.data.scenarios || []
+        validation.value = valRes.data
+      } catch (e2: any) {
+        console.warn('Secondary data load error (expected for new reviews)', e2)
       }
+    } else {
+      expirations.value = null
+      cotenancy.value = null
+      scenarios.value = []
+      validation.value = []
     }
-    cotenancy.value = { ...cotData, clauses }
-    scenarios.value = scenRes.data.scenarios || []
-    validation.value = valRes.data
   } catch (e: any) {
     console.error('Load error', e)
   } finally {
@@ -112,6 +135,61 @@ async function downloadExcel() {
   a.download = `Lease_Review_${review.value?.property_name?.replace(/ /g, '_')}.xlsx`
   a.click()
   URL.revokeObjectURL(url)
+}
+
+async function createNewReview() {
+  if (!newReviewName.value.trim()) return
+  creatingReview.value = true
+  try {
+    const res = await api.post('/api/lease-review/reviews/create', {
+      property_name: newReviewName.value.trim(),
+      property_address: newReviewAddress.value.trim(),
+      total_gla: newReviewGla.value || 0,
+    })
+    // Reload reviews list and select the new one
+    const listRes = await api.get('/api/lease-review/reviews')
+    reviews.value = listRes.data
+    selectedReviewId.value = res.data.review_id
+    await loadReview(res.data.review_id)
+    showNewReview.value = false
+    newReviewName.value = ''
+    newReviewAddress.value = ''
+    newReviewGla.value = null
+  } catch (e: any) {
+    console.error('Create review error', e)
+    alert(e.response?.data?.error || 'Failed to create review')
+  } finally {
+    creatingReview.value = false
+  }
+}
+
+async function onRentRollUpload(event: Event) {
+  const input = event.target as HTMLInputElement
+  if (!input.files?.length || !selectedReviewId.value) return
+
+  const file = input.files[0]
+  const formData = new FormData()
+  formData.append('file', file)
+
+  uploadingRentRoll.value = true
+  uploadMessage.value = ''
+  try {
+    const res = await api.post(
+      `/api/lease-review/reviews/${selectedReviewId.value}/upload-rent-roll`,
+      formData,
+      { headers: { 'Content-Type': 'multipart/form-data' } }
+    )
+    uploadMessage.value = `Imported ${res.data.tenant_count} tenants (${(res.data.total_gla || 0).toLocaleString()} SF)`
+    // Reload the review data
+    await loadReview(selectedReviewId.value!)
+  } catch (e: any) {
+    uploadMessage.value = ''
+    console.error('Upload error', e)
+    alert(e.response?.data?.error || 'Failed to upload rent roll')
+  } finally {
+    uploadingRentRoll.value = false
+    input.value = ''
+  }
 }
 
 // Computed
@@ -244,15 +322,41 @@ function statusClass(s: string): string {
     <div class="page-header">
       <div class="header-left">
         <h1>Lease Review</h1>
-        <select v-if="reviews.length > 1" v-model="selectedReviewId" @change="onReviewChange" class="review-select">
+        <select v-if="reviews.length" v-model="selectedReviewId" @change="onReviewChange" class="review-select">
           <option v-for="r in reviews" :key="r.id" :value="r.id">{{ r.property_name }}</option>
         </select>
         <span v-else-if="review" class="property-name">{{ review.property_name }}</span>
       </div>
       <div class="header-right">
-        <button class="btn-excel" @click="downloadExcel" :disabled="!selectedReviewId">
+        <button class="btn-new" @click="showNewReview = true">+ New Review</button>
+        <button class="btn-excel" @click="downloadExcel" :disabled="!selectedReviewId || !tenants.length">
           Download Excel
         </button>
+      </div>
+    </div>
+
+    <!-- New Review Modal -->
+    <div v-if="showNewReview" class="modal-overlay" @click.self="showNewReview = false">
+      <div class="modal-box">
+        <h3>New Lease Review</h3>
+        <div class="form-field">
+          <label>Property Name *</label>
+          <input v-model="newReviewName" placeholder="e.g. Windsor Square" />
+        </div>
+        <div class="form-field">
+          <label>Address</label>
+          <input v-model="newReviewAddress" placeholder="e.g. Matthews, NC" />
+        </div>
+        <div class="form-field">
+          <label>Total GLA (SF)</label>
+          <input v-model.number="newReviewGla" type="number" placeholder="0" />
+        </div>
+        <div class="modal-actions">
+          <button class="btn-cancel" @click="showNewReview = false">Cancel</button>
+          <button class="btn-primary" @click="createNewReview" :disabled="!newReviewName.trim() || creatingReview">
+            {{ creatingReview ? 'Creating...' : 'Create Review' }}
+          </button>
+        </div>
       </div>
     </div>
 
@@ -263,9 +367,22 @@ function statusClass(s: string): string {
       <div class="empty-icon">&#128196;</div>
       <h3>No Lease Reviews Yet</h3>
       <p>
-        Lease reviews are created from the <strong>Pipeline</strong> tab.
-        Open a deal, add properties, then click <em>Start Lease Review</em> on a property.
+        Create a lease review to get started, or use the <strong>Pipeline</strong> tab
+        to create one linked to a deal.
       </p>
+      <button class="btn-primary" style="margin-top: 1rem" @click="showNewReview = true">+ New Review</button>
+    </div>
+
+    <!-- Rent roll upload bar (when review exists but no tenants) -->
+    <div v-if="review && !loading && !tenants.length" class="upload-bar">
+      <div class="upload-prompt">
+        <strong>{{ review.property_name }}</strong> has no tenant data yet.
+        Upload a rent roll to populate tenants.
+      </div>
+      <label class="btn-upload">
+        {{ uploadingRentRoll ? 'Uploading...' : 'Upload Rent Roll' }}
+        <input type="file" accept=".xlsx,.xls,.csv" @change="onRentRollUpload" :disabled="uploadingRentRoll" hidden />
+      </label>
     </div>
 
     <template v-if="review && !loading">
@@ -308,7 +425,16 @@ function statusClass(s: string): string {
 
       <!-- TAB: Overview (Tenant Roster) -->
       <div v-if="activeTab === 'overview'" class="tab-content">
-        <h2>Tenant Roster</h2>
+        <div class="section-header-row">
+          <h2>Tenant Roster</h2>
+          <div class="section-actions">
+            <span v-if="uploadMessage" class="upload-msg">{{ uploadMessage }}</span>
+            <label class="btn-upload-sm">
+              {{ uploadingRentRoll ? 'Uploading...' : 'Upload Rent Roll' }}
+              <input type="file" accept=".xlsx,.xls,.csv" @change="onRentRollUpload" :disabled="uploadingRentRoll" hidden />
+            </label>
+          </div>
+        </div>
         <div class="table-scroll">
           <table class="data-table">
             <thead>
@@ -744,4 +870,62 @@ function statusClass(s: string): string {
 .scenario-detail { padding: 0 1rem 0.75rem; }
 
 .uncurable { color: #9c0006; font-weight: 700; }
+
+/* New review / upload */
+.btn-new {
+  padding: 0.5rem 1rem; background: #548235; color: #fff; border: none;
+  border-radius: 4px; cursor: pointer; font-size: 0.85rem; margin-right: 0.5rem;
+}
+.btn-new:hover { background: #3d6127; }
+.btn-primary {
+  padding: 0.5rem 1rem; background: #1F4E79; color: #fff; border: none;
+  border-radius: 4px; cursor: pointer; font-size: 0.85rem;
+}
+.btn-primary:hover { background: #163a5c; }
+.btn-primary:disabled { opacity: 0.5; cursor: default; }
+.btn-cancel {
+  padding: 0.5rem 1rem; background: #e0e0e0; color: #333; border: none;
+  border-radius: 4px; cursor: pointer; font-size: 0.85rem;
+}
+
+/* Modal */
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 1000;
+  display: flex; align-items: center; justify-content: center;
+}
+.modal-box {
+  background: #fff; border-radius: 8px; padding: 1.5rem; width: 400px;
+  max-width: 90vw; box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+}
+.modal-box h3 { margin: 0 0 1rem; color: #1F4E79; font-size: 1.1rem; }
+.form-field { margin-bottom: 0.75rem; }
+.form-field label { display: block; font-size: 0.8rem; color: #555; margin-bottom: 0.25rem; }
+.form-field input {
+  width: 100%; padding: 0.5rem; border: 1px solid #ccc; border-radius: 4px;
+  font-size: 0.9rem; box-sizing: border-box;
+}
+.modal-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; }
+
+/* Upload bar */
+.upload-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 1rem 1.25rem; background: #f0f6ff; border: 1px solid #b4d4f0;
+  border-radius: 6px; margin-bottom: 1.5rem;
+}
+.upload-prompt { font-size: 0.9rem; color: #333; }
+.btn-upload, .btn-upload-sm {
+  display: inline-block; padding: 0.5rem 1rem; background: #1F4E79; color: #fff;
+  border-radius: 4px; cursor: pointer; font-size: 0.85rem;
+}
+.btn-upload:hover, .btn-upload-sm:hover { background: #163a5c; }
+.btn-upload-sm { padding: 0.35rem 0.75rem; font-size: 0.8rem; }
+
+/* Section header row */
+.section-header-row {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 0.75rem;
+}
+.section-header-row h2 { margin: 0; }
+.section-actions { display: flex; align-items: center; gap: 0.75rem; }
+.upload-msg { font-size: 0.8rem; color: #548235; }
 </style>
