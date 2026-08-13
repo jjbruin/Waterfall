@@ -955,13 +955,21 @@ def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
         get_general_information, get_capitalization_stack,
         get_property_performance, get_pe_performance,
         get_one_pager_comments, get_available_quarters,
+        most_recent_completed_quarter,
     )
 
     available = get_available_quarters(isbs_raw) if isbs_raw is not None else []
 
-    # Default to latest quarter if none provided
+    # Default to the most recent COMPLETED quarter when none is provided.
+    # This must agree with getMostRecentCompletedQuarter() in OnePagerView.vue:
+    # the Vue first load sends no quarter and only then labels the dropdown, so
+    # a different rule here serves one quarter's figures under another
+    # quarter's label. Defaulting to available[0] (newest) diverged as soon as
+    # an in-progress quarter's actuals landed — 26Q3 actuals made a page
+    # labelled 26Q2 render 26Q3 YTD figures, inflating the budget column by a
+    # full quarter (it is a cumulative Jan-to-date sum).
     if not quarter_str and available:
-        quarter_str = available[0]
+        quarter_str = most_recent_completed_quarter(available) or available[0]
 
     general = get_general_information(inv, vcode, event_dates=event_dates)
     cap_stack = get_capitalization_stack(vcode, mri_loans, mri_val, waterfalls, acct, inv,
