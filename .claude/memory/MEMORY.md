@@ -1036,6 +1036,80 @@ own loan so never reaches the inheritance path; Donald Lynch has 1 child loan. *
 differing-terms parent case is a separate open follow-up** — it still shows a primary and a
 second and silently drops six loans.
 
+## One Pager first-load quarter default — Aug 13, 2026
+
+**Appended, nothing above altered.**
+
+### Problem
+
+Reported as "dropdown set to 2026-Q2 but the numbers look like 26Q3 — the budget figures in
+particular are way off," starting right after Jim loaded 26Q3 data.
+
+The budget window math was **never wrong**. `one_pager.py` sums YTD Budget over
+`(Jan 1 − 1 day, quarter_end]`, which is correctly capped at the selected quarter, and the YTD
+Actual anchor cannot reach past `quarter_end` either — injecting Jul–Sep actuals leaves a Q2
+anchor pinned. **Explicitly selecting a quarter always worked.**
+
+The divergence is on **first load only**. `OnePagerView.vue:96-111` deliberately sends the first
+request with **no `quarter` param**, then labels the dropdown via `getMostRecentCompletedQuarter()`
+— **with no refetch**. The server filled that gap at `financials_service.py:963-964` with
+`available[0]`, the **newest** quarter with actuals anywhere in the portfolio
+(`get_available_quarters` runs on the full ISBS frame, **no vcode filter**). Two different
+defaults: newest vs most-recent-completed.
+
+While they coincided nothing showed. 26Q3 actuals split them, and a page **labelled 2026-Q2
+rendered 2026-Q3 figures**. YTD Budget is a **cumulative Jan-to-date sum**, so it absorbed a whole
+extra quarter — **Jan–Sep instead of Jan–Jun, ~51% overstated** — while YTD Actual, anchored to
+each deal's last reported month, barely moved. That asymmetry is why the **budget column looked
+wrong first**. The chart is requested only *after* the quarter resolves, so chart and tables on
+the same page disagreed by one quarter — a useful tell.
+
+Proven by running the real committed functions: before the Q3 load both defaults returned
+`2026-Q2` (bug invisible); after, backend `2026-Q3` vs label `2026-Q2`.
+
+### Fix
+
+Branch **`fix/onepager-quarter-default`**, commit **`c67976b`** — pushed to origin,
+**merged: no · deployed: no.** Backend only, no Vue change.
+
+New `most_recent_completed_quarter(quarters, today=None)` in `one_pager.py`, a server-side port of
+the Vue helper **including its fall back to the oldest entry when nothing has completed**. Call
+site becomes `most_recent_completed_quarter(available) or available[0]`, keeping `available[0]`
+only as a belt-and-braces fallback.
+
+### Guardrail
+
+`scripts/onepager_quarter_default_check.py` — **25 checks, all pass.** Three layers: **rule
+parity** against an independent transcription of the JS (quarter boundaries Jun 30 / Jul 1 /
+Dec 31 / Jan 1, lists with a hole at Q2, lists with nothing completed, empty and malformed input);
+**real data** on 5 deals, each corrected Jan–Sep → Jan–Jun (p0000007 12,070,567 → 7,998,113;
+p0000059 +52.2%, p0000088 +53.3%, p0000047 +50.5%, p0000053 +51.8% overstatement removed); and a
+**wiring assertion** via `inspect.getsource` that fails if the call site reverts to `available[0]`.
+
+**Caveat — the trigger is simulated.** The local ISBS snapshot is Apr 15 2026 (actuals stop
+2026-03-31) and so contains **no in-progress quarter**, the exact condition that causes the bug.
+Section 2 injects synthetic actuals for one donor deal to reproduce Jim's load; the rows are clones
+of that deal's latest monthly snapshot, moving only *which periods exist* (all the default rule
+reads), and no assertion depends on their amounts. **Needs one live confirmation after deploy:
+open a One Pager fresh and check the figures match the label before touching the dropdown.**
+
+**Residual:** minor timezone skew — server uses `date.today()`, browser uses local time, so on a
+quarter boundary they can disagree for a few hours. The helper takes a `today` arg if pinning is
+ever needed.
+
+### Two related defects found, NOT fixed — still open
+
+1. **Portfolio-wide dropdown.** `get_available_quarters` has no vcode filter, so one deal's newly
+   loaded quarter appears on **every** deal's dropdown, and the list can have **holes** (observed
+   offering Q3 but not Q2, since no deal had Q2 actuals). Confirmed behaviour.
+2. **Projected YE drops months** between a deal's last actual and the selected quarter-end — they
+   fall in neither the actual nor the remainder budget (remainder starts *after* `quarter_end`,
+   nothing backfills the gap). p0000007's Projected YE NOI falls 13.4M → 9.3M → 5.3M as the
+   dropdown advances; 81 of 81 deals in the Apr snapshot have actuals ending before 2026-06-30.
+   **Do NOT treat this as a confirmed bug** — it may be intended (budget starts after the selected
+   quarter, no backfill by design). Pending confirmation of whether loading the missing actuals
+   picks those months up.
+
 ### Post-deploy check still needed — Burton's debt line
 
 The 0 → $75.3M roll-up **only fires when ISBS returns no balance for P0000109**:
