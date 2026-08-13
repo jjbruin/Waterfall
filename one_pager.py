@@ -89,6 +89,44 @@ def get_available_quarters(isbs_df: pd.DataFrame) -> List[str]:
     return sorted(list(quarters), reverse=True)
 
 
+def _quarter_sort_key(quarter_str: str) -> Tuple[int, int]:
+    """(year, quarter number) for ordering — 2026-Q2 -> (2026, 2)."""
+    return (int(quarter_str.split('-')[0]), int(quarter_str.split('Q')[1]))
+
+
+def most_recent_completed_quarter(quarters: List[str],
+                                  today: Optional[date] = None) -> Optional[str]:
+    """Newest quarter in `quarters` that has fully ended.
+
+    Mirrors getMostRecentCompletedQuarter() in OnePagerView.vue. The Vue first
+    load deliberately sends no quarter and only labels the dropdown afterwards,
+    so the server-side default has to land on the same quarter the label
+    promises. Defaulting to the newest available quarter instead diverges the
+    moment an in-progress quarter's actuals arrive — the page then renders that
+    quarter's figures under the previous quarter's label.
+
+    Falls back to the oldest entry when nothing has completed, matching the Vue
+    helper's `quarters[quarters.length - 1]` (the list is sorted newest-first).
+    Returns None only for an empty list.
+    """
+    if not quarters:
+        return None
+    today = today or date.today()
+    current = (today.year, (today.month - 1) // 3 + 1)
+
+    completed = []
+    for q in quarters:
+        try:
+            if _quarter_sort_key(q) < current:
+                completed.append(q)
+        except (ValueError, IndexError):
+            continue  # ignore malformed entries rather than fail the report
+
+    if not completed:
+        return quarters[-1]
+    return max(completed, key=_quarter_sort_key)
+
+
 def get_trailing_quarters(quarter_str: str, count: int = 10) -> List[str]:
     """
     Get list of trailing quarters including the specified quarter
