@@ -258,8 +258,6 @@ def normalize_accounting_feed(acct: pd.DataFrame = None) -> pd.DataFrame:
     a["is_capital"] = a["Capital"].eq("Y")
 
     a["MajorTypeNorm"] = a["MajorType"].str.lower()
-    a["is_contribution"] = a["MajorTypeNorm"].str.contains("contrib")
-    a["is_distribution"] = a["MajorTypeNorm"].str.contains("distri")
 
     # Preserve Typename column for add-capital routing
     if "Typename" in a.columns:
@@ -267,14 +265,24 @@ def normalize_accounting_feed(acct: pd.DataFrame = None) -> pd.DataFrame:
     else:
         a["Typename"] = ""
 
+    # Commitment rows are pledges, not cash activity — exclude from is_contribution
+    # so they never enter waterfall, ROE, IRR, accrued pref, or MOIC calculations.
+    # Marked with is_commitment for One Pager committed PE lookup.
+    a["is_commitment"] = (
+        a["MajorTypeNorm"].str.contains("contrib", na=False) &
+        a["Typename"].str.lower().str.contains("commitment", na=False)
+    )
+    a["is_contribution"] = a["MajorTypeNorm"].str.contains("contrib") & ~a["is_commitment"]
+    a["is_distribution"] = a["MajorTypeNorm"].str.contains("distri")
+
     # Include Partner column if available (for equity classification)
     if "Partner" in a.columns:
         a["Partner"] = a["Partner"].fillna("").astype(str).str.strip()
     else:
         a["Partner"] = ""
 
-    # Keep only contrib/distr rows
-    a = a[a["is_contribution"] | a["is_distribution"]].copy()
+    # Keep contrib/distr/commitment rows
+    a = a[a["is_contribution"] | a["is_distribution"] | a["is_commitment"]].copy()
 
     return a
 

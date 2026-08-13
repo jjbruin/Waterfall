@@ -656,15 +656,12 @@ def get_capitalization_stack(
                 deal_acct["TypeName"] = deal_acct["TypeName"].fillna("").astype(str).str.strip()
                 deal_acct["InvestorID"] = deal_acct["InvestorID"].astype(str).str.strip()
 
-                # Get committed PE from accounting (MajorType=Contribution, Typename=Commitment)
-                commitment_mask = (
-                    deal_acct["MajorType"].str.lower().str.contains("contrib", na=False) &
-                    deal_acct["TypeName"].str.lower().str.contains("commitment", na=False)
-                )
-                non_op_mask = ~deal_acct["InvestorID"].str.upper().str.startswith("OP")
-                commitment_rows = deal_acct[commitment_mask & non_op_mask]
-                if not commitment_rows.empty:
-                    cap['committed_pe'] = commitment_rows["Amt"].abs().sum()
+                # Get committed PE from accounting commitment rows (non-OP only)
+                if "is_commitment" in deal_acct.columns:
+                    non_op_mask = ~deal_acct["InvestorID"].str.upper().str.startswith("OP")
+                    commitment_rows = deal_acct[deal_acct["is_commitment"] & non_op_mask]
+                    if not commitment_rows.empty:
+                        cap['committed_pe'] = commitment_rows["Amt"].abs().sum()
 
                 investor_balances = {}
                 for _, row in deal_acct.iterrows():
@@ -673,8 +670,8 @@ def get_capitalization_stack(
                     type_name = row["TypeName"].lower()
                     amt = float(row["Amt"])
 
-                    # Skip commitment rows — they represent total commitment, not actual funding
-                    if "contrib" in major_type and "commitment" in type_name:
+                    # Skip commitment rows — pledges, not cash activity
+                    if row.get("is_commitment", False):
                         continue
 
                     if investor_id not in investor_balances:
@@ -1637,15 +1634,12 @@ def get_pe_performance(
                 deal_acct["TypeName"] = deal_acct["TypeName"].fillna("").astype(str).str.strip()
                 deal_acct["InvestorID"] = deal_acct["InvestorID"].astype(str).str.strip()
 
-                # Get committed PE from accounting (MajorType=Contribution, Typename=Commitment)
-                commitment_mask = (
-                    deal_acct["MajorType"].str.lower().str.contains("contrib", na=False) &
-                    deal_acct["TypeName"].str.lower().str.contains("commitment", na=False)
-                )
-                non_op_mask = ~deal_acct["InvestorID"].str.upper().str.startswith("OP")
-                commitment_rows = deal_acct[commitment_mask & non_op_mask]
-                if not commitment_rows.empty:
-                    pe['committed_pe'] = commitment_rows["Amt"].abs().sum()
+                # Get committed PE from accounting commitment rows (non-OP only)
+                if "is_commitment" in deal_acct.columns:
+                    non_op_mask = ~deal_acct["InvestorID"].str.upper().str.startswith("OP")
+                    commitment_rows = deal_acct[deal_acct["is_commitment"] & non_op_mask]
+                    if not commitment_rows.empty:
+                        pe['committed_pe'] = commitment_rows["Amt"].abs().sum()
 
                 # Build cashflow lists for ROE calculation
                 # capital_events: all cashflows (contributions negative, distributions positive)
@@ -1666,8 +1660,8 @@ def get_pe_performance(
                     if evt_date is None:
                         continue
 
-                    # Skip commitment rows — they represent total commitment, not actual funding
-                    if "contrib" in major_type and "commitment" in type_name:
+                    # Skip commitment rows — pledges, not cash activity
+                    if row.get("is_commitment", False):
                         continue
 
                     if "contrib" in major_type:
