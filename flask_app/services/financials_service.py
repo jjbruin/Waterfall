@@ -940,7 +940,7 @@ def get_tenant_roster(tenants_raw: pd.DataFrame, vcode: str, inv: Optional[pd.Da
 # ============================================================
 
 def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
-                       waterfalls, commitments, acct, occupancy_raw=None,
+                       waterfalls, acct, occupancy_raw=None,
                        budget_econ_occ=None, deal_terms=None, at_close_noi=None,
                        full_data=None, relationships=None, event_dates=None,
                        mri_loans_all=None):
@@ -964,7 +964,7 @@ def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
         quarter_str = available[0]
 
     general = get_general_information(inv, vcode, event_dates=event_dates)
-    cap_stack = get_capitalization_stack(vcode, mri_loans, mri_val, waterfalls, commitments, acct, inv,
+    cap_stack = get_capitalization_stack(vcode, mri_loans, mri_val, waterfalls, acct, inv,
                                          isbs_raw=isbs_raw, quarter_str=quarter_str,
                                          relationships=relationships)
     prop_perf = get_property_performance(vcode, quarter_str, isbs_raw, mri_val, occupancy_raw,
@@ -972,7 +972,7 @@ def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
                                           at_close_noi_df=at_close_noi,
                                           deal_terms_df=deal_terms,
                                           mri_loans_all_df=mri_loans_all) if quarter_str else {}
-    pe_perf = get_pe_performance(vcode, quarter_str, acct, commitments, waterfalls, inv, isbs_raw=isbs_raw) if quarter_str else {}
+    pe_perf = get_pe_performance(vcode, quarter_str, acct, waterfalls, inv, isbs_raw=isbs_raw) if quarter_str else {}
     comments = get_one_pager_comments(vcode, quarter_str) if quarter_str else {}
 
     # Enrich PE performance from deal analysis waterfall results
@@ -1116,7 +1116,7 @@ def _enrich_pe_from_deal_result(pe: dict, vcode: str, data: dict, quarter_str: s
                         pref_paid = grace_rows.loc[pref_mask, "Amt"].sum()
                         pe["accrued_balance"] = max(0.0, pe["accrued_balance"] - abs(pref_paid))
 
-        # Committed PE: if commitments table was empty, use total PE contributions
+        # Committed PE: if no commitment rows in accounting, use total PE contributions
         if pe.get("committed_pe", 0) == 0:
             total_contrib = sum(
                 pr.get("contributions", 0.0)

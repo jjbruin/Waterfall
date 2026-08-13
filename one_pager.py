@@ -4,9 +4,9 @@ Core data retrieval and calculation functions for One Pager Investor Report
 
 Provides functions to extract and calculate:
 - General information from investment_map
-- Capitalization stack from MRI_Loans, MRI_VAL, waterfalls, commitments
+- Capitalization stack from MRI_Loans, MRI_VAL, waterfalls, accounting_feed
 - Property performance from ISBS_Download
-- PE performance from accounting_feed, commitments, waterfalls
+- PE performance from accounting_feed, waterfalls
 - Chart data for NOI/Occupancy trends
 """
 
@@ -343,7 +343,6 @@ def get_capitalization_stack(
     mri_loans: pd.DataFrame,
     mri_val: pd.DataFrame,
     waterfalls: pd.DataFrame,
-    commitments: pd.DataFrame,
     acct: pd.DataFrame,
     inv_map: pd.DataFrame,
     isbs_raw: pd.DataFrame = None,
@@ -358,7 +357,6 @@ def get_capitalization_stack(
         mri_loans: Loans DataFrame
         mri_val: Valuations DataFrame
         waterfalls: Waterfalls DataFrame
-        commitments: Commitments DataFrame
         acct: Accounting feed DataFrame
         inv_map: Investment map DataFrame
 
@@ -628,17 +626,6 @@ def get_capitalization_stack(
                     if pd.notna(part):
                         cap['pe_participation'] = part if part < 1 else part / 100
 
-    # Get committed PE from commitments
-    if commitments is not None and not commitments.empty:
-        comm = commitments.copy()
-        normalize_columns(comm)
-        # Filter by vcode or EntityID
-        if 'vcode' in comm.columns:
-            comm['vcode'] = comm['vcode'].astype(str).str.strip()
-            deal_comm = comm[comm['vcode'] == vcode_str]
-            if not deal_comm.empty and 'CommittedAmount' in deal_comm.columns:
-                cap['committed_pe'] = pd.to_numeric(deal_comm['CommittedAmount'], errors='coerce').fillna(0).sum()
-
     # Get equity from accounting feed (filtered to quarter end when available)
     if acct is not None and not acct.empty and inv_map is not None:
         from loaders import build_investmentid_to_vcode
@@ -669,12 +656,26 @@ def get_capitalization_stack(
                 deal_acct["TypeName"] = deal_acct["TypeName"].fillna("").astype(str).str.strip()
                 deal_acct["InvestorID"] = deal_acct["InvestorID"].astype(str).str.strip()
 
+                # Get committed PE from accounting (MajorType=Contribution, Typename=Commitment)
+                commitment_mask = (
+                    deal_acct["MajorType"].str.lower().str.contains("contrib", na=False) &
+                    deal_acct["TypeName"].str.lower().str.contains("commitment", na=False)
+                )
+                non_op_mask = ~deal_acct["InvestorID"].str.upper().str.startswith("OP")
+                commitment_rows = deal_acct[commitment_mask & non_op_mask]
+                if not commitment_rows.empty:
+                    cap['committed_pe'] = commitment_rows["Amt"].abs().sum()
+
                 investor_balances = {}
                 for _, row in deal_acct.iterrows():
                     investor_id = row["InvestorID"]
                     major_type = row["MajorType"].lower()
                     type_name = row["TypeName"].lower()
                     amt = float(row["Amt"])
+
+                    # Skip commitment rows — they represent total commitment, not actual funding
+                    if "contrib" in major_type and "commitment" in type_name:
+                        continue
 
                     if investor_id not in investor_balances:
                         investor_balances[investor_id] = 0.0
@@ -1549,7 +1550,6 @@ def get_pe_performance(
     vcode: str,
     quarter_str: str,
     acct: pd.DataFrame,
-    commitments: pd.DataFrame,
     waterfalls: pd.DataFrame,
     inv_map: pd.DataFrame,
     isbs_raw: pd.DataFrame = None,
@@ -1561,7 +1561,6 @@ def get_pe_performance(
         vcode: Deal vcode
         quarter_str: Quarter string
         acct: Accounting feed DataFrame
-        commitments: Commitments DataFrame
         waterfalls: Waterfalls DataFrame
         inv_map: Investment map DataFrame
         isbs_raw: ISBS DataFrame (for U/W ROE from Projected IS account 7071)
@@ -1608,17 +1607,7 @@ def get_pe_performance(
                     if pd.notna(part):
                         pe['participation'] = part if part < 1 else part / 100
 
-    # Get committed PE from commitments
-    if commitments is not None and not commitments.empty:
-        comm = commitments.copy()
-        normalize_columns(comm)
-        if 'vcode' in comm.columns:
-            comm['vcode'] = comm['vcode'].astype(str).str.strip()
-            deal_comm = comm[comm['vcode'] == vcode_str]
-            if not deal_comm.empty and 'CommittedAmount' in deal_comm.columns:
-                pe['committed_pe'] = pd.to_numeric(deal_comm['CommittedAmount'], errors='coerce').fillna(0).sum()
-
-    # Get funded and ROC from accounting feed
+    # Get funded, committed PE, and ROC from accounting feed
     if acct is not None and not acct.empty and inv_map is not None:
         from loaders import build_investmentid_to_vcode
 
@@ -1648,6 +1637,16 @@ def get_pe_performance(
                 deal_acct["TypeName"] = deal_acct["TypeName"].fillna("").astype(str).str.strip()
                 deal_acct["InvestorID"] = deal_acct["InvestorID"].astype(str).str.strip()
 
+                # Get committed PE from accounting (MajorType=Contribution, Typename=Commitment)
+                commitment_mask = (
+                    deal_acct["MajorType"].str.lower().str.contains("contrib", na=False) &
+                    deal_acct["TypeName"].str.lower().str.contains("commitment", na=False)
+                )
+                non_op_mask = ~deal_acct["InvestorID"].str.upper().str.startswith("OP")
+                commitment_rows = deal_acct[commitment_mask & non_op_mask]
+                if not commitment_rows.empty:
+                    pe['committed_pe'] = commitment_rows["Amt"].abs().sum()
+
                 # Build cashflow lists for ROE calculation
                 # capital_events: all cashflows (contributions negative, distributions positive)
                 # cf_distributions: only CF (operating) distributions
@@ -1665,6 +1664,10 @@ def get_pe_performance(
                     amt = float(row["Amt"])
                     evt_date = row["EffectiveDate"].date() if pd.notna(row["EffectiveDate"]) else None
                     if evt_date is None:
+                        continue
+
+                    # Skip commitment rows — they represent total commitment, not actual funding
+                    if "contrib" in major_type and "commitment" in type_name:
                         continue
 
                     if "contrib" in major_type:

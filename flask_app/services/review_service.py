@@ -370,7 +370,7 @@ def _save_snapshot(vcode: str, quarter: str, approved_by: str):
         op_data = get_one_pager_data(
             vcode, quarter, data["inv"], data["isbs_raw"],
             data["mri_loans_raw"], data["mri_val"],
-            data["wf"], data["commitments_raw"], data["acct"],
+            data["wf"], data["acct"],
             occupancy_raw=data["occupancy_raw"],
             budget_econ_occ=data.get("budget_econ_occ"),
             deal_terms=data.get("deal_terms_raw"),
