@@ -3,7 +3,7 @@ prospects.py
 API endpoints for the New Business deal pipeline.
 """
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, g, jsonify, request
 from flask_app.auth.routes import login_required, role_required
 from flask_app.db import get_engine
 from flask_app.services.prospect_service import (
@@ -55,7 +55,7 @@ def create_prospect_deal():
     data = request.json
     if not data or not data.get('deal_name'):
         return jsonify({'error': 'deal_name is required'}), 400
-    username = request.user.get('username', 'unknown')
+    username = g.current_user.get('username', 'unknown')
     result = create_deal(get_engine(), data, username)
     return jsonify({'id': result['id'], 'vcode': result['vcode'], 'status': 'created'}), 201
 
@@ -76,7 +76,7 @@ def get_prospect_deal(deal_id):
 def update_prospect_deal(deal_id):
     """Update a prospect deal."""
     data = request.json
-    username = request.user.get('username', 'unknown')
+    username = g.current_user.get('username', 'unknown')
     if not update_deal(get_engine(), deal_id, data, username):
         return jsonify({'error': 'Deal not found'}), 404
     return jsonify({'status': 'updated'})
@@ -112,7 +112,7 @@ def add_property(deal_id):
     data = request.json
     if not data or not data.get('property_name'):
         return jsonify({'error': 'property_name is required'}), 400
-    username = request.user.get('username', 'unknown')
+    username = g.current_user.get('username', 'unknown')
     result = create_property(get_engine(), deal_id, data, username)
     return jsonify({'id': result['id'], 'vcode': result['vcode'], 'status': 'created'}), 201
 
@@ -227,7 +227,7 @@ def add_deal_note(deal_id):
     data = request.json
     if not data or not data.get('note'):
         return jsonify({'error': 'note is required'}), 400
-    username = request.user.get('username', 'unknown')
+    username = g.current_user.get('username', 'unknown')
     note_id = add_activity_note(get_engine(), deal_id, username, data['note'])
     return jsonify({'id': note_id, 'status': 'created'}), 201
 
@@ -241,7 +241,7 @@ def add_deal_note(deal_id):
 @role_required('admin', 'analyst')
 def create_property_lease_review(deal_id, prop_id):
     """Create a lease review linked to a prospect property."""
-    username = request.user.get('username', 'unknown')
+    username = g.current_user.get('username', 'unknown')
     try:
         review_id = create_lease_review_for_property(
             get_engine(), deal_id, prop_id, username

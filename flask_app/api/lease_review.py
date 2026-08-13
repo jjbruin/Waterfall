@@ -3,7 +3,7 @@ lease_review.py
 API endpoints for lease review and due diligence.
 """
 
-from flask import Blueprint, jsonify, request, send_file
+from flask import Blueprint, g, jsonify, request, send_file
 from flask_app.auth.routes import login_required, role_required
 from flask_app.db import get_engine
 from flask_app.services.lease_review_service import (
@@ -77,7 +77,7 @@ def create_review():
             property_name=data['property_name'],
             property_address=data.get('property_address', ''),
             rent_roll_path=data.get('rent_roll_path'),
-            created_by=request.user.get('username', 'unknown'),
+            created_by=g.current_user.get('username', 'unknown'),
         )
         return jsonify({'review_id': review_id, 'status': 'created'})
     except Exception as e:
@@ -106,7 +106,7 @@ def create_manual_review():
             property_name=data['property_name'],
             property_address=data.get('property_address', ''),
             total_gla=float(data.get('total_gla', 0) or 0),
-            created_by=request.user.get('username', 'unknown'),
+            created_by=g.current_user.get('username', 'unknown'),
             prospect_property_id=data.get('prospect_property_id'),
         )
         return jsonify({'review_id': review_id, 'status': 'created'}), 201
