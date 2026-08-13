@@ -4,6 +4,9 @@ Business logic for the New Business deal pipeline.
 
 Manages prospect deals, properties, entities/investors, assumptions,
 and activity log. Properties link to lease reviews for due diligence.
+
+Vcodes: Auto-generated N-series codes (N0000001, N0000002, ...) for deals.
+Properties within a portfolio deal get child codes (N0000001-01, N0000001-02, ...).
 """
 
 import logging
@@ -15,6 +18,34 @@ from sqlalchemy import text
 logger = logging.getLogger(__name__)
 
 
+def _next_deal_vcode(conn) -> str:
+    """Generate the next available N-series vcode (N0000001, N0000002, ...)."""
+    row = conn.execute(text(
+        "SELECT vcode FROM prospect_deals "
+        "WHERE vcode IS NOT NULL AND vcode LIKE 'N%' "
+        "ORDER BY vcode DESC LIMIT 1"
+    )).fetchone()
+    if row and row[0]:
+        num = int(row[0][1:]) + 1
+    else:
+        num = 1
+    return f"N{num:07d}"
+
+
+def _next_property_vcode(conn, deal_vcode: str) -> str:
+    """Generate the next child vcode for a property within a deal (N0000001-01, -02, ...)."""
+    row = conn.execute(text(
+        "SELECT vcode FROM prospect_properties "
+        "WHERE vcode IS NOT NULL AND vcode LIKE :prefix "
+        "ORDER BY vcode DESC LIMIT 1"
+    ), {'prefix': f'{deal_vcode}-%'}).fetchone()
+    if row and row[0]:
+        suffix = int(row[0].split('-')[-1]) + 1
+    else:
+        suffix = 1
+    return f"{deal_vcode}-{suffix:02d}"
+
+
 # ---------------------------------------------------------------------------
 # DDL — PostgreSQL (SERIAL, DOUBLE PRECISION)
 # ---------------------------------------------------------------------------
@@ -23,7 +54,9 @@ PROSPECT_DDL_PG = [
     """
     CREATE TABLE IF NOT EXISTS prospect_deals (
         id              SERIAL PRIMARY KEY,
+        vcode           TEXT UNIQUE,
         deal_name       TEXT NOT NULL,
+        deal_structure  TEXT DEFAULT 'single_property',
         location        TEXT,
         asset_type      TEXT,
         partner_name    TEXT,
@@ -46,6 +79,7 @@ PROSPECT_DDL_PG = [
     CREATE TABLE IF NOT EXISTS prospect_properties (
         id              SERIAL PRIMARY KEY,
         prospect_id     INTEGER NOT NULL REFERENCES prospect_deals(id) ON DELETE CASCADE,
+        vcode           TEXT UNIQUE,
         property_name   TEXT NOT NULL,
         address         TEXT,
         city            TEXT,
@@ -186,7 +220,6 @@ def ensure_prospect_tables(engine):
                     ADD COLUMN IF NOT EXISTS prospect_property_id INTEGER
                 """))
             else:
-                # SQLite: check if column exists first
                 cols = conn.execute(text(
                     "PRAGMA table_info(lease_reviews)"
                 )).fetchall()
@@ -197,6 +230,29 @@ def ensure_prospect_tables(engine):
                     ))
         except Exception as e:
             logger.debug(f"prospect_property_id column migration: {e}")
+
+        # Migrate: add vcode and deal_structure columns to prospect tables
+        _migrate_columns = [
+            ('prospect_deals', 'vcode', 'TEXT'),
+            ('prospect_deals', 'deal_structure', "TEXT DEFAULT 'single_property'"),
+            ('prospect_properties', 'vcode', 'TEXT'),
+        ]
+        for table, col, col_type in _migrate_columns:
+            try:
+                if is_pg:
+                    conn.execute(text(
+                        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {col_type}"
+                    ))
+                else:
+                    cols = conn.execute(text(
+                        f"PRAGMA table_info({table})"
+                    )).fetchall()
+                    if col not in [c[1] for c in cols]:
+                        conn.execute(text(
+                            f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"
+                        ))
+            except Exception as e:
+                logger.debug(f"Migration {table}.{col}: {e}")
 
         conn.commit()
     logger.info("Prospect tables ensured")
@@ -214,7 +270,8 @@ def list_deals(engine, stage: Optional[str] = None,
                d.stage, d.assigned_to, d.target_close, d.purchase_price,
                d.source_broker, d.onboarded_vcode,
                d.created_by, d.created_at, d.updated_at,
-               (SELECT COUNT(*) FROM prospect_properties WHERE prospect_id = d.id) as property_count
+               (SELECT COUNT(*) FROM prospect_properties WHERE prospect_id = d.id) as property_count,
+               d.vcode, d.deal_structure
         FROM prospect_deals d
         WHERE 1=1
     """
@@ -238,6 +295,7 @@ def list_deals(engine, stage: Optional[str] = None,
         'created_at': str(r[12]) if r[12] else None,
         'updated_at': str(r[13]) if r[13] else None,
         'property_count': r[14],
+        'vcode': r[15], 'deal_structure': r[16],
     } for r in rows]
 
 
@@ -249,7 +307,8 @@ def get_deal(engine, deal_id: int) -> Optional[Dict]:
                    source_broker, assigned_to, stage, pass_reason,
                    target_close, purchase_price, closing_cost_pct,
                    capex_at_close, notes, onboarded_vcode,
-                   created_by, created_at, updated_at
+                   created_by, created_at, updated_at,
+                   vcode, deal_structure
             FROM prospect_deals WHERE id = :did
         """), {'did': deal_id}).fetchone()
         if not deal:
@@ -261,7 +320,8 @@ def get_deal(engine, deal_id: int) -> Optional[Dict]:
                    p.property_price, p.occupancy_pct, p.noi_in_place,
                    p.notes, p.onboarded_vcode, p.sort_order,
                    (SELECT lr.id FROM lease_reviews lr
-                    WHERE lr.prospect_property_id = p.id LIMIT 1) as lease_review_id
+                    WHERE lr.prospect_property_id = p.id LIMIT 1) as lease_review_id,
+                   p.vcode
             FROM prospect_properties p
             WHERE p.prospect_id = :did
             ORDER BY p.sort_order, p.property_name
@@ -311,6 +371,7 @@ def get_deal(engine, deal_id: int) -> Optional[Dict]:
             'created_by': deal[15],
             'created_at': str(deal[16]) if deal[16] else None,
             'updated_at': str(deal[17]) if deal[17] else None,
+            'vcode': deal[18], 'deal_structure': deal[19],
         },
         'properties': [{
             'id': p[0], 'property_name': p[1], 'address': p[2],
@@ -319,7 +380,7 @@ def get_deal(engine, deal_id: int) -> Optional[Dict]:
             'year_built': p[9], 'acreage': p[10], 'property_price': p[11],
             'occupancy_pct': p[12], 'noi_in_place': p[13],
             'notes': p[14], 'onboarded_vcode': p[15], 'sort_order': p[16],
-            'lease_review_id': p[17],
+            'lease_review_id': p[17], 'vcode': p[18],
         } for p in props],
         'entities': [{
             'id': e[0], 'entity_name': e[1], 'entity_type': e[2],
@@ -330,22 +391,29 @@ def get_deal(engine, deal_id: int) -> Optional[Dict]:
     }
 
 
-def create_deal(engine, data: Dict, username: str) -> int:
-    """Create a new prospect deal and log activity."""
+def create_deal(engine, data: Dict, username: str) -> Dict:
+    """Create a new prospect deal with auto-generated vcode and log activity.
+
+    Returns dict with 'id' and 'vcode'.
+    """
     with engine.connect() as conn:
+        vcode = _next_deal_vcode(conn)
+
         result = conn.execute(text("""
             INSERT INTO prospect_deals
-                (deal_name, location, asset_type, partner_name,
-                 source_broker, assigned_to, stage, target_close,
+                (vcode, deal_name, deal_structure, location, asset_type,
+                 partner_name, source_broker, assigned_to, stage, target_close,
                  purchase_price, closing_cost_pct, capex_at_close,
                  notes, created_by)
-            VALUES (:deal_name, :location, :asset_type, :partner_name,
-                    :source_broker, :assigned_to, :stage, :target_close,
+            VALUES (:vcode, :deal_name, :deal_structure, :location, :asset_type,
+                    :partner_name, :source_broker, :assigned_to, :stage, :target_close,
                     :purchase_price, :closing_cost_pct, :capex_at_close,
                     :notes, :created_by)
             RETURNING id
         """), {
+            'vcode': vcode,
             'deal_name': data['deal_name'],
+            'deal_structure': data.get('deal_structure', 'single_property'),
             'location': data.get('location', ''),
             'asset_type': data.get('asset_type', ''),
             'partner_name': data.get('partner_name', ''),
@@ -361,15 +429,14 @@ def create_deal(engine, data: Dict, username: str) -> int:
         })
         deal_id = result.fetchone()[0]
 
-        # Log creation
         conn.execute(text("""
             INSERT INTO prospect_activity (prospect_id, username, action, note)
             VALUES (:pid, :user, 'created', :note)
         """), {'pid': deal_id, 'user': username,
-               'note': f"Deal created: {data['deal_name']}"})
+               'note': f"Deal created: {data['deal_name']} ({vcode})"})
 
         conn.commit()
-    return deal_id
+    return {'id': deal_id, 'vcode': vcode}
 
 
 def update_deal(engine, deal_id: int, data: Dict, username: str) -> bool:
@@ -388,6 +455,7 @@ def update_deal(engine, deal_id: int, data: Dict, username: str) -> bool:
         conn.execute(text("""
             UPDATE prospect_deals SET
                 deal_name = COALESCE(:deal_name, deal_name),
+                deal_structure = COALESCE(:deal_structure, deal_structure),
                 location = COALESCE(:location, location),
                 asset_type = COALESCE(:asset_type, asset_type),
                 partner_name = COALESCE(:partner_name, partner_name),
@@ -405,6 +473,7 @@ def update_deal(engine, deal_id: int, data: Dict, username: str) -> bool:
         """), {
             'did': deal_id,
             'deal_name': data.get('deal_name'),
+            'deal_structure': data.get('deal_structure'),
             'location': data.get('location'),
             'asset_type': data.get('asset_type'),
             'partner_name': data.get('partner_name'),
@@ -454,7 +523,8 @@ def list_properties(engine, deal_id: int) -> List[Dict]:
                    p.property_price, p.occupancy_pct, p.noi_in_place,
                    p.notes, p.onboarded_vcode, p.sort_order,
                    (SELECT lr.id FROM lease_reviews lr
-                    WHERE lr.prospect_property_id = p.id LIMIT 1) as lease_review_id
+                    WHERE lr.prospect_property_id = p.id LIMIT 1) as lease_review_id,
+                   p.vcode
             FROM prospect_properties p
             WHERE p.prospect_id = :did
             ORDER BY p.sort_order, p.property_name
@@ -467,24 +537,35 @@ def list_properties(engine, deal_id: int) -> List[Dict]:
         'year_built': r[9], 'acreage': r[10], 'property_price': r[11],
         'occupancy_pct': r[12], 'noi_in_place': r[13],
         'notes': r[14], 'onboarded_vcode': r[15], 'sort_order': r[16],
-        'lease_review_id': r[17],
+        'lease_review_id': r[17], 'vcode': r[18],
     } for r in rows]
 
 
-def create_property(engine, deal_id: int, data: Dict, username: str) -> int:
-    """Add a property to a prospect deal."""
+def create_property(engine, deal_id: int, data: Dict, username: str) -> Dict:
+    """Add a property to a prospect deal with auto-generated child vcode.
+
+    Returns dict with 'id' and 'vcode'.
+    """
     with engine.connect() as conn:
+        # Get parent deal vcode for child vcode generation
+        deal_row = conn.execute(text(
+            "SELECT vcode FROM prospect_deals WHERE id = :did"
+        ), {'did': deal_id}).fetchone()
+        deal_vcode = deal_row[0] if deal_row and deal_row[0] else f"N{deal_id:07d}"
+        prop_vcode = _next_property_vcode(conn, deal_vcode)
+
         result = conn.execute(text("""
             INSERT INTO prospect_properties
-                (prospect_id, property_name, address, city, state, zip,
+                (prospect_id, vcode, property_name, address, city, state, zip,
                  asset_type, gla_sf, units, year_built, acreage,
                  property_price, occupancy_pct, noi_in_place, notes, sort_order)
-            VALUES (:pid, :property_name, :address, :city, :state, :zip,
+            VALUES (:pid, :vcode, :property_name, :address, :city, :state, :zip,
                     :asset_type, :gla_sf, :units, :year_built, :acreage,
                     :property_price, :occupancy_pct, :noi_in_place, :notes, :sort_order)
             RETURNING id
         """), {
             'pid': deal_id,
+            'vcode': prop_vcode,
             'property_name': data['property_name'],
             'address': data.get('address', ''),
             'city': data.get('city', ''),
@@ -507,10 +588,10 @@ def create_property(engine, deal_id: int, data: Dict, username: str) -> int:
             INSERT INTO prospect_activity (prospect_id, username, action, note)
             VALUES (:pid, :user, 'property_added', :note)
         """), {'pid': deal_id, 'user': username,
-               'note': f"Property added: {data['property_name']}"})
+               'note': f"Property added: {data['property_name']} ({prop_vcode})"})
 
         conn.commit()
-    return prop_id
+    return {'id': prop_id, 'vcode': prop_vcode}
 
 
 def update_property(engine, property_id: int, data: Dict) -> bool:

@@ -302,10 +302,12 @@ def get_occupancy_by_type(caps: list[dict], occ_map: dict) -> list[dict]:
         Total_Units=("Units", "sum"),
         Total_Properties=("Property_Count", "sum"),
     ).reset_index()
-    type_agg["Occupancy"] = type_agg["Total_Weighted_Occ"] / type_agg["Total_Units"]
+    type_agg["Occupancy"] = type_agg["Total_Weighted_Occ"] / type_agg["Total_Units"].replace(0, np.nan)
+    type_agg = type_agg.dropna(subset=["Occupancy"])
     type_agg = type_agg.sort_values("Occupancy", ascending=True)
 
-    avg_occ = type_agg["Total_Weighted_Occ"].sum() / type_agg["Total_Units"].sum()
+    total_units = type_agg["Total_Units"].sum()
+    avg_occ = type_agg["Total_Weighted_Occ"].sum() / total_units if total_units > 0 else 0
 
     result = []
     for _, r in type_agg.iterrows():

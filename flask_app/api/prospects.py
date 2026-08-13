@@ -56,8 +56,8 @@ def create_prospect_deal():
     if not data or not data.get('deal_name'):
         return jsonify({'error': 'deal_name is required'}), 400
     username = request.user.get('username', 'unknown')
-    deal_id = create_deal(get_engine(), data, username)
-    return jsonify({'id': deal_id, 'status': 'created'}), 201
+    result = create_deal(get_engine(), data, username)
+    return jsonify({'id': result['id'], 'vcode': result['vcode'], 'status': 'created'}), 201
 
 
 @prospects_bp.route('/<int:deal_id>', methods=['GET'])
@@ -113,8 +113,8 @@ def add_property(deal_id):
     if not data or not data.get('property_name'):
         return jsonify({'error': 'property_name is required'}), 400
     username = request.user.get('username', 'unknown')
-    prop_id = create_property(get_engine(), deal_id, data, username)
-    return jsonify({'id': prop_id, 'status': 'created'}), 201
+    result = create_property(get_engine(), deal_id, data, username)
+    return jsonify({'id': result['id'], 'vcode': result['vcode'], 'status': 'created'}), 201
 
 
 @prospects_bp.route('/<int:deal_id>/properties/<int:prop_id>', methods=['PUT'])

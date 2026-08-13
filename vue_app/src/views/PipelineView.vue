@@ -12,7 +12,9 @@ const route = useRoute()
 
 interface ProspectDeal {
   id: number
+  vcode: string | null
   deal_name: string
+  deal_structure: string
   location: string
   asset_type: string
   partner_name: string
@@ -30,6 +32,7 @@ interface ProspectDeal {
 
 interface Property {
   id: number
+  vcode: string | null
   property_name: string
   address: string
   city: string
@@ -95,7 +98,11 @@ const STAGES = [
   { key: 'passed', label: 'Passed', color: '#bdbdbd' },
 ]
 
-const ASSET_TYPES = ['Retail', 'Multifamily', 'Office', 'Industrial', 'Mixed-Use']
+const ASSET_TYPES = [
+  'Retail', 'Retail - Grocery', 'Retail - Non Groc.',
+  'Multifamily', 'Office', 'Industrial', 'Mixed-Use',
+  'Self Storage', 'RV Park', 'Resort',
+]
 
 function stageLabel(key: string): string {
   return STAGES.find(s => s.key === key)?.label || key
@@ -121,6 +128,7 @@ const assignedFilter = ref('')
 const showNewDeal = ref(false)
 const newDeal = ref({
   deal_name: '',
+  deal_structure: 'single_property',
   location: '',
   asset_type: '',
   partner_name: '',
@@ -263,8 +271,9 @@ async function createDeal() {
 
 function resetNewDeal() {
   newDeal.value = {
-    deal_name: '', location: '', asset_type: '', partner_name: '',
-    source_broker: '', purchase_price: null, target_close: '', notes: '',
+    deal_name: '', deal_structure: 'single_property', location: '',
+    asset_type: '', partner_name: '', source_broker: '',
+    purchase_price: null, target_close: '', notes: '',
   }
 }
 
@@ -623,7 +632,7 @@ onMounted(() => {
             @dragstart="onDragStart($event, d.id)"
             @click="openDeal(d.id)"
           >
-            <div class="card-name">{{ d.deal_name }}</div>
+            <div class="card-name">{{ d.deal_name }} <span v-if="d.vcode" class="vcode-badge small">{{ d.vcode }}</span></div>
             <div class="card-location" v-if="d.location">{{ d.location }}</div>
             <div class="card-meta">
               <span v-if="d.purchase_price" class="card-price">{{ fmtCurrency(d.purchase_price) }}</span>
@@ -699,6 +708,13 @@ onMounted(() => {
               <input v-model="newDeal.deal_name" placeholder="e.g., Vestavia Hills City Center" />
             </div>
             <div class="form-field">
+              <label>Deal Structure</label>
+              <select v-model="newDeal.deal_structure">
+                <option value="single_property">Single Property</option>
+                <option value="portfolio">Portfolio (Multiple Properties)</option>
+              </select>
+            </div>
+            <div class="form-field">
               <label>Location</label>
               <input v-model="newDeal.location" placeholder="City, State" />
             </div>
@@ -749,7 +765,7 @@ onMounted(() => {
           <div class="detail-header">
             <button class="btn-back" @click="closeDeal">&larr; Back to Pipeline</button>
             <div class="detail-title-row">
-              <h2>{{ deal.deal_name }}</h2>
+              <h2>{{ deal.deal_name }} <span v-if="deal.vcode" class="vcode-badge">{{ deal.vcode }}</span></h2>
               <select
                 class="stage-select"
                 :value="deal.stage"
@@ -763,6 +779,7 @@ onMounted(() => {
               <span v-if="deal.location">{{ deal.location }}</span>
               <span v-if="deal.asset_type"> | {{ deal.asset_type }}</span>
               <span v-if="deal.partner_name"> | {{ deal.partner_name }}</span>
+              <span v-if="deal.deal_structure === 'portfolio'"> | Portfolio</span>
             </div>
           </div>
 
@@ -815,7 +832,7 @@ onMounted(() => {
             <div v-else class="property-grid">
               <div v-for="p in properties" :key="p.id" class="property-card">
                 <div class="prop-header">
-                  <h4>{{ p.property_name }}</h4>
+                  <h4>{{ p.property_name }} <span v-if="p.vcode" class="vcode-badge small">{{ p.vcode }}</span></h4>
                   <div class="prop-actions">
                     <button class="btn-icon" @click="editProperty(p)" title="Edit">&#x270E;</button>
                     <button class="btn-icon btn-danger" @click="removeProperty(p.id)" title="Remove">&times;</button>
@@ -1107,6 +1124,20 @@ onMounted(() => {
 
 <style scoped>
 .pipeline-view { padding: 0 0 40px 0; }
+
+.vcode-badge {
+  display: inline-block;
+  background: #e3f2fd;
+  color: #1565c0;
+  font-size: 0.7em;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+  vertical-align: middle;
+  margin-left: 6px;
+  letter-spacing: 0.5px;
+}
+.vcode-badge.small { font-size: 0.65em; padding: 1px 6px; }
 
 /* Header */
 .pipeline-header {

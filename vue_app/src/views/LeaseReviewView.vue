@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import api from '../api/client'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
@@ -11,6 +12,8 @@ import {
 } from 'echarts/components'
 
 use([CanvasRenderer, BarChart, GridComponent, TooltipComponent, LegendComponent, MarkLineComponent])
+
+const route = useRoute()
 
 const CLR_DARK = '#1F4E79'
 const CLR_ACCENT = '#ED7D31'
@@ -36,7 +39,13 @@ const expandedScenario = ref<string | null>(null)
 onMounted(async () => {
   const res = await api.get('/api/lease-review/reviews')
   reviews.value = res.data
-  if (reviews.value.length) {
+
+  // Honor ?id= query param (from pipeline navigation)
+  const qid = Number(route.query.id)
+  if (qid && reviews.value.some(r => r.id === qid)) {
+    selectedReviewId.value = qid
+    await loadReview(qid)
+  } else if (reviews.value.length) {
     selectedReviewId.value = reviews.value[0].id
     await loadReview(reviews.value[0].id)
   }
@@ -248,6 +257,16 @@ function statusClass(s: string): string {
     </div>
 
     <div v-if="loading" class="loading">Loading lease review data...</div>
+
+    <!-- Empty state -->
+    <div v-if="!loading && !reviews.length" class="empty-state">
+      <div class="empty-icon">&#128196;</div>
+      <h3>No Lease Reviews Yet</h3>
+      <p>
+        Lease reviews are created from the <strong>Pipeline</strong> tab.
+        Open a deal, add properties, then click <em>Start Lease Review</em> on a property.
+      </p>
+    </div>
 
     <template v-if="review && !loading">
       <!-- KPI Cards -->
@@ -573,6 +592,24 @@ function statusClass(s: string): string {
 .lease-review-page {
   padding: 1.5rem;
   max-width: 1400px;
+}
+.empty-state {
+  text-align: center;
+  padding: 60px 20px;
+  color: #666;
+}
+.empty-state .empty-icon {
+  font-size: 48px;
+  margin-bottom: 12px;
+}
+.empty-state h3 {
+  margin: 0 0 8px;
+  color: #333;
+}
+.empty-state p {
+  max-width: 400px;
+  margin: 0 auto;
+  line-height: 1.5;
 }
 .page-header {
   display: flex;
