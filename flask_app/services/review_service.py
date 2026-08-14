@@ -65,12 +65,19 @@ def _ensure_tables():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
-        # Migration: add addressed columns if missing (existing tables)
-        try:
-            conn.execute(text(
-                "SELECT addressed FROM review_notes LIMIT 1"
-            ))
-        except Exception:
+    # Migration: add addressed columns if missing (existing tables)
+    with engine.begin() as conn:
+        if is_postgres():
+            row = conn.execute(text("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = 'review_notes' AND column_name = 'addressed'
+            """)).fetchone()
+            needs_migration = row is None
+        else:
+            cols = conn.execute(text("PRAGMA table_info(review_notes)")).fetchall()
+            needs_migration = not any(c[1] == 'addressed' for c in cols)
+
+        if needs_migration:
             conn.execute(text(
                 "ALTER TABLE review_notes ADD COLUMN addressed INTEGER NOT NULL DEFAULT 0"
             ))
