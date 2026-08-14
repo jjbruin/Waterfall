@@ -439,10 +439,86 @@ def parse_rent_roll(file_path: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def parse_rent_roll_flexible(file_obj, filename: str = '') -> pd.DataFrame:
-    """Parse an uploaded rent roll from Excel or CSV using flexible column matching.
+def _parse_pdf_rent_roll(file_obj) -> pd.DataFrame:
+    """Extract rent roll table from a PDF using pdfplumber.
 
-    Handles Argus-format rent rolls, generic Excel exports, and CSVs.
+    Scans all pages, extracts tables, and returns the best candidate —
+    the largest table whose headers contain a tenant/name keyword.
+    Multi-page tables with matching columns are concatenated.
+    """
+    import io
+    import pdfplumber
+
+    if isinstance(file_obj, bytes):
+        file_obj = io.BytesIO(file_obj)
+
+    best_df = None
+    best_size = 0
+
+    with pdfplumber.open(file_obj) as pdf:
+        # Collect all tables across all pages
+        all_tables = []
+        for page in pdf.pages:
+            tables = page.extract_tables()
+            for tbl in tables:
+                if tbl and len(tbl) >= 2:
+                    all_tables.append(tbl)
+
+    if not all_tables:
+        raise ValueError("No tables found in PDF. The rent roll may need "
+                         "to be converted to Excel or CSV first.")
+
+    def _has_tenant_header(headers):
+        lower_h = [str(h).lower() for h in headers if h]
+        return any(kw in h for h in lower_h
+                   for kw in ['tenant', 'name', 'lessee', 'occupant'])
+
+    # Try to find and concatenate tables with matching headers
+    groups = {}  # header_key -> list of row lists
+    for tbl in all_tables:
+        header = tuple(str(c).strip() if c else '' for c in tbl[0])
+        key = header
+        if key not in groups:
+            groups[key] = {'header': list(header), 'rows': []}
+        groups[key]['rows'].extend(tbl[1:])
+
+    for key, grp in groups.items():
+        headers = grp['header']
+        if not _has_tenant_header(headers):
+            continue
+        rows = grp['rows']
+        size = len(rows)
+        if size > best_size:
+            best_size = size
+            best_df = pd.DataFrame(rows, columns=headers)
+
+    # Fallback: use the largest table regardless of header match
+    if best_df is None:
+        for tbl in sorted(all_tables, key=len, reverse=True):
+            headers = [str(c).strip() if c else f'col_{i}'
+                       for i, c in enumerate(tbl[0])]
+            best_df = pd.DataFrame(tbl[1:], columns=headers)
+            break
+
+    if best_df is None or best_df.empty:
+        raise ValueError("Could not extract rent roll data from PDF tables.")
+
+    # Clean up: strip whitespace, drop fully empty rows
+    for col in best_df.columns:
+        if best_df[col].dtype == object:
+            best_df[col] = best_df[col].apply(
+                lambda x: str(x).strip() if x and str(x).strip() not in ('None', '') else None)
+    best_df = best_df.dropna(how='all').reset_index(drop=True)
+
+    logger.info(f"PDF rent roll: extracted {len(best_df)} rows, "
+                f"{len(best_df.columns)} columns")
+    return best_df
+
+
+def parse_rent_roll_flexible(file_obj, filename: str = '') -> pd.DataFrame:
+    """Parse an uploaded rent roll from Excel, CSV, or PDF using flexible column matching.
+
+    Handles Argus-format rent rolls, generic Excel exports, CSVs, and PDF tables.
     Returns a DataFrame with standardized columns matching parse_rent_roll output.
 
     Column matching is fuzzy — looks for keywords in header row:
@@ -453,7 +529,9 @@ def parse_rent_roll_flexible(file_obj, filename: str = '') -> pd.DataFrame:
 
     # Read into DataFrame
     lower_fn = (filename or '').lower()
-    if lower_fn.endswith('.csv'):
+    if lower_fn.endswith('.pdf'):
+        df_raw = _parse_pdf_rent_roll(file_obj)
+    elif lower_fn.endswith('.csv'):
         if isinstance(file_obj, (str, bytes)):
             df_raw = pd.read_csv(io.BytesIO(file_obj) if isinstance(file_obj, bytes)
                                  else io.StringIO(file_obj))

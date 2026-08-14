@@ -414,7 +414,7 @@ function statusClass(s: string): string {
       </div>
       <label class="btn-upload">
         {{ uploadingRentRoll ? 'Uploading...' : 'Upload Rent Roll' }}
-        <input type="file" accept=".xlsx,.xls,.csv" @change="onRentRollUpload" :disabled="uploadingRentRoll" hidden />
+        <input type="file" accept=".xlsx,.xls,.csv,.pdf" @change="onRentRollUpload" :disabled="uploadingRentRoll" hidden />
       </label>
     </div>
 
@@ -464,7 +464,7 @@ function statusClass(s: string): string {
             <span v-if="uploadMessage" class="upload-msg">{{ uploadMessage }}</span>
             <label class="btn-upload-sm">
               {{ uploadingRentRoll ? 'Uploading...' : 'Upload Rent Roll' }}
-              <input type="file" accept=".xlsx,.xls,.csv" @change="onRentRollUpload" :disabled="uploadingRentRoll" hidden />
+              <input type="file" accept=".xlsx,.xls,.csv,.pdf" @change="onRentRollUpload" :disabled="uploadingRentRoll" hidden />
             </label>
           </div>
         </div>

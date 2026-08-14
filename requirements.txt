@@ -19,6 +19,7 @@ pandas>=2.3
 numpy>=2.4
 scipy>=1.17
 openpyxl>=3.1
+pdfplumber>=0.11
 
 # HTTP / email
 requests>=2.32
