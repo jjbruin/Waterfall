@@ -274,7 +274,7 @@ IS_ACCOUNTS = {
     },
     'DEBT_SERVICE': {
         'Interest': ['5190'],
-        'Principal': ['2145', '2150', '2152', '2154', '2156'],
+        'Principal': [],  # Computed separately: BS balance change for Actuals, 7060 for Budget
     },
     'OTHER_BTL': {
         'Interest Income': ['4050'],

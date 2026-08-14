@@ -11,7 +11,7 @@ from io import BytesIO
 from datetime import datetime, date
 from typing import Optional
 
-from config import IS_ACCOUNTS, BS_ACCOUNTS
+from config import IS_ACCOUNTS, BS_ACCOUNTS, DEBT_BS_ACCTS
 from flask_app.services.isbs_helpers import compute_cumulative_noi, cumulative_to_periodic, aggregate_periodic
 from utils import normalize_columns
 
@@ -416,6 +416,53 @@ def _subtract_balances(bal1, bal2, accounts_dict):
     return result
 
 
+def _get_bs_principal(bs_data, start_date, end_date):
+    """Compute principal payments from BS debt balance change.
+
+    Principal paid = abs(balance at start) - abs(balance at end).
+    Returns a positive number when the balance decreased (principal paid).
+    """
+    if bs_data.empty:
+        return 0
+    debt_bs = bs_data[bs_data['vAccount'].isin(DEBT_BS_ACCTS)]
+    if debt_bs.empty:
+        return 0
+
+    bs_periods = sorted(debt_bs['dtEntry_parsed'].dropna().unique())
+
+    def _closest_balance(target, direction='le'):
+        """Find the BS balance at the period closest to target."""
+        candidates = []
+        for p in bs_periods:
+            ts = pd.Timestamp(p)
+            if direction == 'le' and ts <= target:
+                candidates.append((ts, p))
+            elif direction == 'ge' and ts >= target:
+                candidates.append((ts, p))
+        if not candidates:
+            return None
+        # le: pick the latest; ge: pick the earliest
+        best = candidates[-1] if direction == 'le' else candidates[0]
+        return abs(debt_bs[debt_bs['dtEntry_parsed'] == best[1]]['mAmount'].sum())
+
+    start_bal = _closest_balance(pd.Timestamp(start_date), 'le')
+    end_bal = _closest_balance(pd.Timestamp(end_date), 'le')
+    if start_bal is None or end_bal is None:
+        return 0
+    return max(0, start_bal - end_bal)
+
+
+def _get_budget_principal(budget_data, start_date, end_date):
+    """Sum account 7060 from Budget IS over a date range (periodic monthly)."""
+    if budget_data.empty:
+        return 0
+    period_data = budget_data[
+        (budget_data['dtEntry_parsed'] > pd.Timestamp(start_date))
+        & (budget_data['dtEntry_parsed'] <= pd.Timestamp(end_date))
+    ]
+    return abs(period_data[period_data['vAccount'] == '7060']['mAmount'].sum())
+
+
 def _calculate_is_amounts(period_type, source, ref_date, year, accounts_dict,
                           actual_data, actual_periods, budget_data, uw_data, fc_deal_modeled):
     ref_date = pd.Timestamp(ref_date)
@@ -573,10 +620,12 @@ def get_income_statement(
 
     if not isbs.empty:
         actual_data = isbs[isbs['vSource'] == 'Interim IS']
+        bs_data = isbs[isbs['vSource'] == 'Interim BS']
         budget_data = isbs[isbs['vSource'] == 'Budget IS']
         uw_data = isbs[isbs['vSource'] == 'Projected IS']
     else:
         actual_data = pd.DataFrame()
+        bs_data = pd.DataFrame()
         budget_data = pd.DataFrame()
         uw_data = pd.DataFrame()
 
@@ -661,20 +710,145 @@ def get_income_statement(
                   "var_usd": noi_var, "var_pct": (noi_var / abs(noi_right)) if noi_right != 0 else None})
 
     # Debt Service
+    # Principal is computed differently per source:
+    #   Actual/Estimate(actual portion): BS balance change (accounts 2150 etc.)
+    #   Budget/Underwriting/Valuation/Estimate(budget portion): account 7060
     if 'DEBT_SERVICE' in IS_ACCOUNTS:
+        def _compute_principal(source, period_type, ref, yr):
+            """Compute principal for a given source/period combination."""
+            ref_ts = pd.Timestamp(ref)
+            jan1 = pd.Timestamp(f"{yr}-01-01") - pd.DateOffset(days=1)
+            dec31 = pd.Timestamp(f"{yr}-12-31")
+
+            if source == "Actual":
+                if period_type == "YTD":
+                    # BS change from prior Dec 31 to as-of date
+                    return _get_bs_principal(bs_data, jan1, ref_ts)
+                elif period_type == "TTM":
+                    ttm_start = ref_ts - pd.DateOffset(months=12)
+                    return _get_bs_principal(bs_data, ttm_start, ref_ts)
+                elif period_type == "Full Year":
+                    return _get_bs_principal(bs_data, jan1, dec31)
+                elif period_type == "Estimate":
+                    # YTD actual from BS + remainder from budget 7060
+                    last_actual = next(
+                        (pd.Timestamp(p) for p in reversed(actual_periods)
+                         if pd.Timestamp(p).year == ref_ts.year and pd.Timestamp(p) <= ref_ts),
+                        None,
+                    )
+                    if last_actual is not None:
+                        bs_principal = _get_bs_principal(bs_data, jan1, last_actual)
+                        if last_actual < ref_ts:
+                            budget_principal = _get_budget_principal(
+                                budget_data, last_actual, ref_ts)
+                            return bs_principal + budget_principal
+                        return bs_principal
+                    return _get_budget_principal(budget_data, jan1, ref_ts)
+                else:  # Custom
+                    return _get_bs_principal(bs_data, jan1, ref_ts)
+
+            elif source == "Budget":
+                if period_type == "TTM":
+                    ttm_start = ref_ts - pd.DateOffset(months=12)
+                    return _get_budget_principal(budget_data, ttm_start, ref_ts)
+                elif period_type in ("YTD", "Custom"):
+                    return _get_budget_principal(budget_data, jan1, ref_ts)
+                elif period_type == "Full Year":
+                    return _get_budget_principal(budget_data, jan1, dec31)
+                elif period_type == "Estimate":
+                    return _get_budget_principal(budget_data, jan1, dec31)
+                return 0
+
+            elif source == "Underwriting":
+                # 7060 from Projected IS (YTD cumulative like Actuals)
+                uw_periods_list = sorted(
+                    uw_data['dtEntry_parsed'].dropna().unique()) if not uw_data.empty else []
+                if period_type == "YTD":
+                    uw_at = _get_cumulative_balances(
+                        uw_data, ref_ts, {'_': {'P': ['7060']}})
+                    return abs(uw_at.get('_', {}).get('P', 0))
+                elif period_type == "Full Year":
+                    dec = next((pd.Timestamp(p) for p in uw_periods_list
+                                if pd.Timestamp(p).year == yr and pd.Timestamp(p).month == 12), None)
+                    if dec:
+                        uw_at = _get_cumulative_balances(
+                            uw_data, dec, {'_': {'P': ['7060']}})
+                        return abs(uw_at.get('_', {}).get('P', 0))
+                elif period_type == "TTM":
+                    # cumulative at ref - cumulative at same month LY + dec prior
+                    cur = _get_cumulative_balances(uw_data, ref_ts, {'_': {'P': ['7060']}})
+                    dec_p = next((pd.Timestamp(p) for p in uw_periods_list
+                                  if pd.Timestamp(p).year == ref_ts.year - 1 and pd.Timestamp(p).month == 12), None)
+                    ly = next((pd.Timestamp(p) for p in uw_periods_list
+                               if pd.Timestamp(p).year == ref_ts.year - 1 and pd.Timestamp(p).month == ref_ts.month), None)
+                    c = abs(cur.get('_', {}).get('P', 0))
+                    d = abs(_get_cumulative_balances(uw_data, dec_p, {'_': {'P': ['7060']}}).get('_', {}).get('P', 0)) if dec_p else 0
+                    l = abs(_get_cumulative_balances(uw_data, ly, {'_': {'P': ['7060']}}).get('_', {}).get('P', 0)) if ly else 0
+                    return abs(c + d - l)
+                elif period_type == "Estimate":
+                    dec = next((pd.Timestamp(p) for p in uw_periods_list
+                                if pd.Timestamp(p).year == yr and pd.Timestamp(p).month == 12), None)
+                    if dec:
+                        uw_at = _get_cumulative_balances(
+                            uw_data, dec, {'_': {'P': ['7060']}})
+                        return abs(uw_at.get('_', {}).get('P', 0))
+                return 0
+
+            elif source == "Valuation":
+                # 7060 from forecast (periodic monthly)
+                if fc_deal_modeled is not None and not fc_deal_modeled.empty:
+                    if period_type == "TTM":
+                        start = ref_ts - pd.DateOffset(months=12)
+                        fc = fc_deal_modeled[
+                            (fc_deal_modeled['event_date'] > start.date())
+                            & (fc_deal_modeled['event_date'] <= ref_ts.date())
+                        ]
+                    elif period_type in ("YTD", "Custom"):
+                        fc = fc_deal_modeled[
+                            (fc_deal_modeled['event_date'] > jan1.date())
+                            & (fc_deal_modeled['event_date'] <= ref_ts.date())
+                        ]
+                    elif period_type in ("Full Year", "Estimate"):
+                        fc = fc_deal_modeled[
+                            (fc_deal_modeled['event_date'] > jan1.date())
+                            & (fc_deal_modeled['event_date'] <= dec31.date())
+                        ]
+                    else:
+                        fc = pd.DataFrame()
+                    if not fc.empty:
+                        fc_acct = fc.copy()
+                        fc_acct['vAccount'] = fc_acct['vAccount'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+                        return abs(fc_acct[fc_acct['vAccount'] == '7060']['mAmount_norm'].sum())
+                return 0
+
+            return 0
+
+        left_principal = _compute_principal(left_source, left_period, left_ref, left_year)
+        right_principal = _compute_principal(right_source, right_period, right_ref, right_year)
+
+        # Interest from IS amounts (always account 5190)
+        left_interest = left_amounts.get('DEBT_SERVICE', {}).get('Interest', 0)
+        right_interest = right_amounts.get('DEBT_SERVICE', {}).get('Interest', 0)
+
         rows.append({"account": "DEBT SERVICE", "level": 0, "is_header": True,
                       "left": None, "right": None, "var_usd": None, "var_pct": None})
-        ds_left_total = 0
-        ds_right_total = 0
-        for category in IS_ACCOUNTS['DEBT_SERVICE'].keys():
-            left_val = left_amounts.get('DEBT_SERVICE', {}).get(category, 0)
-            right_val = right_amounts.get('DEBT_SERVICE', {}).get(category, 0)
-            var_usd = left_val - right_val
-            rows.append({"account": category, "level": 1, "is_header": False,
-                          "left": left_val, "right": right_val,
-                          "var_usd": var_usd, "var_pct": (var_usd / abs(right_val)) if right_val != 0 else None})
-            ds_left_total += left_val
-            ds_right_total += right_val
+
+        # Interest row
+        int_var = left_interest - right_interest
+        rows.append({"account": "Interest", "level": 1, "is_header": False,
+                      "left": left_interest, "right": right_interest,
+                      "var_usd": int_var,
+                      "var_pct": (int_var / abs(right_interest)) if right_interest != 0 else None})
+
+        # Principal row
+        prin_var = left_principal - right_principal
+        rows.append({"account": "Principal", "level": 1, "is_header": False,
+                      "left": left_principal, "right": right_principal,
+                      "var_usd": prin_var,
+                      "var_pct": (prin_var / abs(right_principal)) if right_principal != 0 else None})
+
+        ds_left_total = left_interest + left_principal
+        ds_right_total = right_interest + right_principal
         rows.append({"account": "Total Debt Service", "level": 0, "is_total": True,
                       "left": ds_left_total, "right": ds_right_total,
                       "var_usd": ds_left_total - ds_right_total,

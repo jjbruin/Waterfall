@@ -802,8 +802,8 @@ IS_ACCOUNTS = {
     # but in actuals it's netted into 5090 (Real Estate Taxes).  Include here
     # so calc_amounts() can fold it into expenses for apples-to-apples comparison.
     'TAX_ABATEMENT': ['7070'],
-    # Balance-sheet debt accounts for principal estimation from balance changes
-    'DEBT_BS_ACCTS': ['2145', '2150', '2152', '2154', '2156'],
+    # Balance-sheet debt accounts for principal from balance changes
+    'DEBT_BS_ACCTS': ['2150', '2152', '2210'],
     # Underwriting total debt service account (Projected IS)
     'UW_DEBT_SERVICE': ['7010'],
 }
@@ -932,14 +932,51 @@ def get_property_performance(
                 if pd.notna(po_date):
                     _refi_months.add((po_date.year, po_date.month))
 
-    # Helper: estimate YTD principal from Interim BS balance changes
-    # Principal payments reduce loan balances, so principal = (prior_bal - current_bal)
-    # extrapolated by months elapsed in the quarter period.
-    # When a refi/payoff occurred, the month-over-month balance change includes the
-    # payoff amount and is not representative of amortization.  Use pre-refi periods
-    # to estimate the monthly amortization instead.
+    def _get_bs_principal_change(bs_df, quarter_str, ytd_date):
+        """Compute actual YTD principal from BS debt balance change.
+
+        Principal paid = abs(balance at prior Dec 31) - abs(balance at ytd_date).
+        This is the authoritative source for actual principal payments.
+        """
+        if bs_df.empty:
+            return 0
+        bs_accts = IS_ACCOUNTS['DEBT_BS_ACCTS']
+        debt_bs = bs_df[bs_df['vAccount'].isin(bs_accts)]
+        if debt_bs.empty:
+            return 0
+
+        year = int(quarter_str.split('-')[0])
+        bs_periods = sorted(debt_bs['dtEntry_parsed'].dropna().unique())
+
+        def _balance_at(target_ts, direction='le'):
+            candidates = [(pd.Timestamp(p), p) for p in bs_periods
+                          if (direction == 'le' and pd.Timestamp(p) <= target_ts)
+                          or (direction == 'ge' and pd.Timestamp(p) >= target_ts)]
+            if not candidates:
+                return None
+            best = candidates[-1] if direction == 'le' else candidates[0]
+            return abs(debt_bs[debt_bs['dtEntry_parsed'] == best[1]]['mAmount'].sum())
+
+        # Start balance: prior Dec 31 (or closest available before Jan 1)
+        prior_dec = pd.Timestamp(f"{year - 1}-12-31")
+        start_bal = _balance_at(prior_dec, 'le')
+
+        # End balance: at or before the YTD date
+        end_bal = _balance_at(pd.Timestamp(ytd_date), 'le')
+
+        if start_bal is None or end_bal is None:
+            return 0
+        return max(0, start_bal - end_bal)
+
+    # Helper: estimate YTD principal from Interim BS balance changes (fallback)
+    # Used when direct BS balance change is unavailable.
     def _estimate_principal_from_bs(bs_df, qtr_end_ts, months_elapsed):
-        """Estimate YTD principal from BS debt account balance changes."""
+        """Estimate YTD principal from BS debt account balance changes.
+
+        Uses only the trailing 12 months of balance sheet data and filters
+        out outlier deltas (> 3× median) that indicate loan restructuring
+        or payoff events rather than normal amortization.
+        """
         if bs_df.empty:
             return 0
         bs_accts = IS_ACCOUNTS['DEBT_BS_ACCTS']
@@ -950,18 +987,21 @@ def get_property_performance(
         if len(bs_periods) < 2:
             return 0
 
-        # Build list of (period_date, balance) tuples on or before quarter end
+        # Only consider periods within the trailing 12 months up to quarter end
+        lookback_start = qtr_end_ts - pd.DateOffset(months=12)
+
+        # Build list of (period_date, balance) tuples in the lookback window
         period_bals = []
         for p in bs_periods:
             ts = pd.Timestamp(p)
-            if ts <= qtr_end_ts:
+            if lookback_start <= ts <= qtr_end_ts:
                 bal = abs(debt_bs[debt_bs['dtEntry_parsed'] == p]['mAmount'].sum())
                 period_bals.append((ts, bal))
         if len(period_bals) < 2:
             return 0
 
         # Compute month-over-month balance changes, skipping refi months
-        clean_deltas = []
+        raw_deltas = []
         for i in range(1, len(period_bals)):
             cur_ts, cur_bal = period_bals[i]
             prv_ts, prv_bal = period_bals[i - 1]
@@ -969,12 +1009,23 @@ def get_property_performance(
             if (cur_ts.year, cur_ts.month) in _refi_months:
                 continue
             delta = max(0, prv_bal - cur_bal)
-            clean_deltas.append(delta)
+            raw_deltas.append(delta)
+
+        if not raw_deltas:
+            return 0
+
+        # Filter out outlier deltas (> 3× median) that indicate restructuring
+        # events rather than normal amortization
+        sorted_deltas = sorted(raw_deltas)
+        median_delta = sorted_deltas[len(sorted_deltas) // 2]
+        if median_delta > 0:
+            clean_deltas = [d for d in raw_deltas if d <= 3 * median_delta]
+        else:
+            clean_deltas = raw_deltas
 
         if clean_deltas:
             monthly_principal = sum(clean_deltas) / len(clean_deltas)
         else:
-            # All periods contaminated by refi — fall back to zero principal
             monthly_principal = 0
 
         return monthly_principal * months_elapsed
@@ -999,14 +1050,11 @@ def get_property_performance(
             perf['expenses']['ytd_actual'] = exp
             perf['noi']['ytd_actual'] = noi
 
-            # YTD Actual DSCR: Interest (5190) + Principal (7060 if available, else BS balance change)
+            # YTD Actual DSCR: Interest (5190) + Principal from BS balance change
+            # Principal comes from BS balance change (not 7060) to avoid double-counting
             ytd_is = actual_data[actual_data['dtEntry_parsed'] == ytd_date]
             ytd_interest = abs(ytd_is[ytd_is['vAccount'] == '5190']['mAmount'].sum())
-            ytd_principal_is = abs(ytd_is[ytd_is['vAccount'] == '7060']['mAmount'].sum())
-            if ytd_principal_is > 0:
-                ytd_principal = ytd_principal_is
-            else:
-                ytd_principal = _estimate_principal_from_bs(bs_data, pd.Timestamp(quarter_end), months_elapsed)
+            ytd_principal = _get_bs_principal_change(bs_data, quarter_str, ytd_date)
             ytd_actual_ds = ytd_interest + ytd_principal
             if ytd_actual_ds > 0:
                 perf['dscr']['ytd_actual'] = noi / ytd_actual_ds
@@ -1029,16 +1077,13 @@ def get_property_performance(
         ytd_exp = perf['expenses']['ytd_actual']
         ytd_noi = perf['noi']['ytd_actual']
 
-        # YTD actual debt service (interest + principal, same logic as ytd_actual DSCR above)
+        # YTD actual debt service (interest + principal from BS balance change)
         ytd_ds = 0
         if ytd_date is not None:
             ytd_is = actual_data[actual_data['dtEntry_parsed'] == ytd_date]
             ytd_interest = abs(ytd_is[ytd_is['vAccount'] == '5190']['mAmount'].sum())
-            ytd_principal_is = abs(ytd_is[ytd_is['vAccount'] == '7060']['mAmount'].sum())
-            if ytd_principal_is > 0:
-                ytd_ds = ytd_interest + ytd_principal_is
-            else:
-                ytd_ds = ytd_interest + _estimate_principal_from_bs(bs_data, pd.Timestamp(quarter_end), months_elapsed)
+            ytd_principal = _get_bs_principal_change(bs_data, quarter_str, ytd_date)
+            ytd_ds = ytd_interest + ytd_principal
 
         # Remainder Budget: months after quarter end through Dec 31 (5190+7060)
         remainder_start = pd.Timestamp(quarter_end)
