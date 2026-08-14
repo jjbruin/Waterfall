@@ -407,3 +407,229 @@ def get_tenant_documents(review_id, tenant_id):
         'doc_date': d[3], 'page_count': d[4],
         'extraction_status': d[5],
     } for d in docs])
+
+
+@lease_review_bp.route('/seed', methods=['POST'])
+@login_required
+@role_required('admin')
+def seed_review():
+    """Bulk-seed a full lease review with all related data (admin only).
+
+    Accepts JSON with: review, tenants, cotenancy, cotenancy_refs,
+    exclusive_use, options, rent_steps, validation.
+    """
+    from sqlalchemy import text
+    engine = get_engine()
+    ensure_lease_tables(engine)
+    data = request.json
+    if not data or 'review' not in data or 'tenants' not in data:
+        return jsonify({'error': 'review and tenants required'}), 400
+
+    rv = data['review']
+    prospect_property_id = rv.get('prospect_property_id')
+
+    try:
+        with engine.begin() as conn:
+            # Insert review
+            row = conn.execute(text("""
+                INSERT INTO lease_reviews
+                    (property_name, property_address, total_gla, total_annual_rent,
+                     total_tenants, rent_roll_date, prospect_property_id, status,
+                     source_folder, created_by)
+                VALUES (:pn, :pa, :gla, :rent, :tc, :rrd, :ppid, :status, :sf, :cb)
+                RETURNING id
+            """), {
+                'pn': rv.get('property_name', ''),
+                'pa': rv.get('property_address', ''),
+                'gla': rv.get('total_gla', 0),
+                'rent': rv.get('total_annual_rent', 0),
+                'tc': rv.get('total_tenants', 0),
+                'rrd': rv.get('rent_roll_date'),
+                'ppid': prospect_property_id,
+                'status': rv.get('status', 'in_progress'),
+                'sf': rv.get('source_folder'),
+                'cb': g.current_user.get('username', 'seed'),
+            }).fetchone()
+            review_id = row[0]
+            logger.info(f"Seeded review id={review_id}")
+
+            # Insert tenants, mapping local IDs to new IDs
+            local_to_new = {}
+            for t in data['tenants']:
+                local_id = t.get('id')
+                trow = conn.execute(text("""
+                    INSERT INTO lease_tenants
+                        (review_id, tenant_name, suite, square_feet, lease_type,
+                         lease_start, lease_end, term_months, monthly_rent,
+                         annual_rent, rent_per_sf, security_deposit,
+                         is_vacant, is_material, has_cotenancy, has_exclusive_use,
+                         extraction_status)
+                    VALUES (:rid, :tn, :su, :sf, :lt, :ls, :le, :tm, :mr,
+                            :ar, :rpsf, :sd, :iv, :im, :hc, :heu, :es)
+                    RETURNING id
+                """), {
+                    'rid': review_id,
+                    'tn': t.get('tenant_name', ''),
+                    'su': t.get('suite', ''),
+                    'sf': t.get('square_feet', 0),
+                    'lt': t.get('lease_type', ''),
+                    'ls': t.get('lease_start', ''),
+                    'le': t.get('lease_end', ''),
+                    'tm': t.get('term_months', 0),
+                    'mr': t.get('monthly_rent', 0),
+                    'ar': t.get('annual_rent', 0),
+                    'rpsf': t.get('rent_per_sf', 0),
+                    'sd': t.get('security_deposit', 0),
+                    'iv': bool(t.get('is_vacant')),
+                    'im': bool(t.get('is_material')),
+                    'hc': bool(t.get('has_cotenancy')),
+                    'heu': bool(t.get('has_exclusive_use')),
+                    'es': t.get('extraction_status', 'pending'),
+                }).fetchone()
+                local_to_new[local_id] = trow[0]
+
+            logger.info(f"Seeded {len(local_to_new)} tenants")
+
+            # Cotenancy
+            cot_id_map = {}
+            for c in data.get('cotenancy', []):
+                new_tid = local_to_new.get(c.get('tenant_id'))
+                if not new_tid:
+                    continue
+                crow = conn.execute(text("""
+                    INSERT INTO lease_cotenancy
+                        (tenant_id, review_id, clause_text, trigger_description,
+                         trigger_threshold, cure_period_days, alt_rent_formula,
+                         termination_right, termination_notice_days, sunset_provision,
+                         is_curable, waiver_mechanism, source_doc, source_page, notes)
+                    VALUES (:tid, :rid, :ct, :td, :tt, :cpd, :arf, :tr, :tnd,
+                            :sp, :ic, :wm, :sd, :spage, :n)
+                    RETURNING id
+                """), {
+                    'tid': new_tid, 'rid': review_id,
+                    'ct': c.get('clause_text'), 'td': c.get('trigger_description'),
+                    'tt': c.get('trigger_threshold'), 'cpd': c.get('cure_period_days'),
+                    'arf': c.get('alt_rent_formula'),
+                    'tr': bool(c.get('termination_right')),
+                    'tnd': c.get('termination_notice_days'),
+                    'sp': c.get('sunset_provision'),
+                    'ic': bool(c.get('is_curable', True)),
+                    'wm': c.get('waiver_mechanism'),
+                    'sd': c.get('source_doc'), 'spage': c.get('source_page'),
+                    'n': c.get('notes'),
+                }).fetchone()
+                cot_id_map[c.get('id')] = crow[0]
+
+            # Cotenancy refs
+            for cr in data.get('cotenancy_refs', []):
+                new_cot_id = cot_id_map.get(cr.get('cotenancy_id'))
+                new_tid = local_to_new.get(cr.get('tenant_id'))
+                ref_tid = local_to_new.get(cr.get('referenced_tenant_id'))
+                if not new_cot_id or not new_tid:
+                    continue
+                conn.execute(text("""
+                    INSERT INTO lease_cotenancy_refs
+                        (cotenancy_id, tenant_id, referenced_tenant_name,
+                         referenced_tenant_id, reference_type, notes)
+                    VALUES (:cid, :tid, :rtn, :rtid, :rt, :n)
+                """), {
+                    'cid': new_cot_id, 'tid': new_tid,
+                    'rtn': cr.get('referenced_tenant_name', ''),
+                    'rtid': ref_tid, 'rt': cr.get('reference_type', 'named'),
+                    'n': cr.get('notes'),
+                })
+
+            # Exclusive use
+            for eu in data.get('exclusive_use', []):
+                new_tid = local_to_new.get(eu.get('tenant_id'))
+                if not new_tid:
+                    continue
+                conn.execute(text("""
+                    INSERT INTO lease_exclusive_use
+                        (tenant_id, restriction_text, restricted_use, radius_feet, source_doc)
+                    VALUES (:tid, :rt, :ru, :rf, :sd)
+                """), {
+                    'tid': new_tid, 'rt': eu.get('restriction_text'),
+                    'ru': eu.get('restricted_use'), 'rf': eu.get('radius_feet'),
+                    'sd': eu.get('source_doc'),
+                })
+
+            # Options
+            for o in data.get('options', []):
+                new_tid = local_to_new.get(o.get('tenant_id'))
+                if not new_tid:
+                    continue
+                conn.execute(text("""
+                    INSERT INTO lease_options
+                        (tenant_id, option_type, option_number, total_options,
+                         term_years, notice_days, notice_deadline, rent_terms,
+                         auto_renewal, exercised, source_doc)
+                    VALUES (:tid, :ot, :on, :to_, :ty, :nd, :ndl, :rt,
+                            :ar, :ex, :sd)
+                """), {
+                    'tid': new_tid, 'ot': o.get('option_type', ''),
+                    'on': o.get('option_number'), 'to_': o.get('total_options'),
+                    'ty': o.get('term_years'), 'nd': o.get('notice_days'),
+                    'ndl': o.get('notice_deadline'), 'rt': o.get('rent_terms'),
+                    'ar': bool(o.get('auto_renewal')),
+                    'ex': bool(o.get('exercised')),
+                    'sd': o.get('source_doc'),
+                })
+
+            # Rent steps
+            for rs in data.get('rent_steps', []):
+                new_tid = local_to_new.get(rs.get('tenant_id'))
+                if not new_tid:
+                    continue
+                conn.execute(text("""
+                    INSERT INTO lease_rent_steps
+                        (tenant_id, effective_date, monthly_rent, annual_rent,
+                         rent_per_sf, source_doc, source_page)
+                    VALUES (:tid, :ed, :mr, :ar, :rpsf, :sd, :sp)
+                """), {
+                    'tid': new_tid, 'ed': rs.get('effective_date'),
+                    'mr': rs.get('monthly_rent'), 'ar': rs.get('annual_rent'),
+                    'rpsf': rs.get('rent_per_sf'),
+                    'sd': rs.get('source_doc'), 'sp': rs.get('source_page'),
+                })
+
+            # Validation
+            for v in data.get('validation', []):
+                new_tid = local_to_new.get(v.get('tenant_id'))
+                if not new_tid:
+                    continue
+                conn.execute(text("""
+                    INSERT INTO lease_validation
+                        (tenant_id, field_name, source_type, seller_value,
+                         lease_value, status, source_doc, notes)
+                    VALUES (:tid, :fn, :st, :sv, :lv, :s, :sd, :n)
+                """), {
+                    'tid': new_tid, 'fn': v.get('field_name', ''),
+                    'st': v.get('source_type', 'rent_roll'),
+                    'sv': v.get('seller_value'), 'lv': v.get('lease_value'),
+                    's': v.get('status', 'pending'),
+                    'sd': v.get('source_doc'), 'n': v.get('notes'),
+                })
+
+            logger.info(f"Seed complete: review={review_id}, "
+                        f"tenants={len(local_to_new)}, "
+                        f"cotenancy={len(cot_id_map)}, "
+                        f"refs={len(data.get('cotenancy_refs', []))}, "
+                        f"exclusive={len(data.get('exclusive_use', []))}, "
+                        f"options={len(data.get('options', []))}, "
+                        f"rent_steps={len(data.get('rent_steps', []))}, "
+                        f"validation={len(data.get('validation', []))}")
+
+        return jsonify({
+            'review_id': review_id,
+            'tenants': len(local_to_new),
+            'cotenancy': len(cot_id_map),
+            'cotenancy_refs': len(data.get('cotenancy_refs', [])),
+            'exclusive_use': len(data.get('exclusive_use', [])),
+            'options': len(data.get('options', [])),
+            'rent_steps': len(data.get('rent_steps', [])),
+            'validation': len(data.get('validation', [])),
+        }), 201
+    except Exception as e:
+        logger.error(f"Seed error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
