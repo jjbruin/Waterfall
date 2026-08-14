@@ -511,9 +511,20 @@ def get_tracking_data(quarter_filter: str | None = None,
             COALESCE(rs.status, 'draft') as status,
             COALESCE(rs.current_step, 0) as current_step,
             rs.updated_at,
-            rs.submitted_by
+            rs.submitted_by,
+            COALESCE(nc.addressable_count, 0) as addressable_count,
+            COALESCE(nc.addressed_count, 0) as addressed_count
         FROM deals d
         LEFT JOIN review_submissions rs ON rs.vcode = d.vcode
+        LEFT JOIN (
+            SELECT vcode, quarter,
+                   COUNT(*) as addressable_count,
+                   SUM(CASE WHEN addressed = 1 THEN 1 ELSE 0 END) as addressed_count
+            FROM review_notes
+            WHERE action IN ('return', 'note')
+              AND (review_role IS NOT NULL AND review_role != 'asset_manager')
+            GROUP BY vcode, quarter
+        ) nc ON nc.vcode = d.vcode AND nc.quarter = rs.quarter
     """
     params: dict = {"default_quarter": quarter_filter or ""}
 

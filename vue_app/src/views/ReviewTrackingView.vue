@@ -13,6 +13,8 @@ interface TrackingItem {
   current_step: number
   step_label: string
   updated_at: string | null
+  addressable_count: number
+  addressed_count: number
 }
 
 const items = ref<TrackingItem[]>([])
@@ -83,6 +85,19 @@ function formatDate(dt: string | null): string {
   const d = new Date(dt)
   if (isNaN(d.getTime())) return dt
   return `${d.getMonth() + 1}/${d.getDate()}`
+}
+
+function notesDisplay(item: TrackingItem): string {
+  if (item.addressable_count === 0) return '—'
+  if (item.addressed_count >= item.addressable_count) return 'All'
+  return `${item.addressed_count}/${item.addressable_count}`
+}
+
+function notesClass(item: TrackingItem): string {
+  if (item.addressable_count === 0) return ''
+  if (item.addressed_count >= item.addressable_count) return 'notes-all'
+  if (item.addressed_count > 0) return 'notes-partial'
+  return 'notes-none'
 }
 
 function filterByStatus(status: string) {
@@ -166,6 +181,7 @@ function filterByStatus(status: string) {
             <th>Deal</th>
             <th>Quarter</th>
             <th>Status</th>
+            <th>Notes</th>
             <th>Step</th>
             <th>Updated</th>
           </tr>
@@ -184,11 +200,12 @@ function filterByStatus(status: string) {
                 {{ statusLabel(item.status) }}
               </span>
             </td>
+            <td><span class="notes-indicator" :class="notesClass(item)">{{ notesDisplay(item) }}</span></td>
             <td>{{ item.step_label }}</td>
             <td>{{ formatDate(item.updated_at) }}</td>
           </tr>
           <tr v-if="!items.length && !loading">
-            <td colspan="5" class="empty-row">No deals found.</td>
+            <td colspan="6" class="empty-row">No deals found.</td>
           </tr>
         </tbody>
       </table>
@@ -326,6 +343,11 @@ h2 {
 .status-pending { background: #e3f2fd; color: #1565c0; }
 .status-returned { background: #fff3e0; color: #e65100; }
 .status-approved { background: #e8f5e9; color: #2e7d32; }
+
+.notes-indicator { font-size: 12px; font-weight: 600; }
+.notes-all { color: #2e7d32; }
+.notes-partial { color: #e65100; }
+.notes-none { color: #c62828; }
 
 .empty-row {
   text-align: center;
