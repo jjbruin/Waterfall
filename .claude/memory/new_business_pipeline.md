@@ -3,7 +3,7 @@
 ## What Was Built
 
 ### Lease Review System (prior sessions + Aug 12-13)
-- **Backend**: 9-table schema (`lease_reviews`, `lease_tenants`, `lease_documents`, `lease_rent_steps`, `lease_cotenancy`, `lease_cotenancy_refs`, `lease_exclusive_use`, `lease_options`, `lease_validation`)
+- **Backend**: 10-table schema (`lease_reviews`, `lease_tenants`, `lease_documents`, `lease_rent_steps`, `lease_cotenancy`, `lease_cotenancy_refs`, `lease_exclusive_use`, `lease_options`, `lease_validation`, `lease_field_resolutions`)
 - **PDF Extraction**: Claude API extracts lease terms from PDFs via `extract_lease_terms_via_api()` in `lease_review_service.py`
 - **Three-way Validation**: Rent Roll vs Lease, Argus vs Lease, Cotenancy Schedule vs Lease
 - **Vue Frontend**: `LeaseReviewView.vue` — 5 tabs (Overview, Expirations, Validation, Co-Tenancy, Scenarios) with ECharts
@@ -42,13 +42,21 @@ prospect_deals (deal/portfolio level)
 
 Mirrors AM: `prospect_deals` → parent `inv`, `prospect_properties` → child `inv` with `Portfolio_Name`
 
-## Current State (deployed v246)
+## Current State (deployed v259)
 - Pipeline view live at `/pipeline` under New Business sidebar section
 - Kanban drag-and-drop, table view, new deal modal, deal workspace with Properties/Entities/Activity tabs
 - Properties have "Start Lease Review" / "View Lease Review" links
 - Entities support planned EntityID/InvestorID pre-assignment
-- Lease Review "New Review" modal links to pipeline properties (dropdown with auto-fill)
-- Rent roll upload works on Azure (no folder scanning required)
+- Lease Review 7-step workflow stepper (Setup → Import Rent Roll → Upload Documents → AI Extraction → Validation → Analyst Review → Complete)
+- Non-destructive rent roll merge + destructive replace option
+- Document upload: **Select Files** (individual) and **Select Folder** (entire directory tree via `webkitdirectory`). Subfolder names used as tenant matching hints. SHA-256 hash dedup.
+- Extraction dedup on re-runs (composite key checks)
+- Per-tenant approval workflow (approve/flag/reset)
+- Lease Risk Analysis (`/lease-risk-analysis`): 7-tab analysis view using analyst-resolved data
+  - Field resolution via `lease_field_resolutions` table (UPSERT pattern)
+  - Overview (KPIs + editable tenant roster), Expirations, Validation, Co-Tenancy Risk, Scenarios, Exclusive Use, Options
+  - Inline field editing: double-click to override, "R" badge, revert button
+  - One-click "Use Seller" / "Use Lease" on validation mismatches
 
 ## Next Priority: New Business Deal Analysis
 
@@ -93,7 +101,8 @@ The engines in `compute.py`, `waterfall.py`, `metrics.py` expect specific DataFr
 - `flask_app/services/lease_review_service.py` — lease review (9 tables, extraction, validation)
 - `flask_app/api/lease_review.py` — lease review API
 - `vue_app/src/views/PipelineView.vue` — pipeline UI (Kanban + table + deal workspace)
-- `vue_app/src/views/LeaseReviewView.vue` — lease review UI (5 tabs)
+- `vue_app/src/views/LeaseReviewView.vue` — lease review UI (7-step workflow stepper)
+- `vue_app/src/views/LeaseRiskAnalysisView.vue` — risk analysis UI (7 tabs, field resolution)
 - `docs/New_Business_Design_Phase1.md` — design document
 
 ## Windsor Square Model Analysis (Aug 12)

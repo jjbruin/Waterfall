@@ -20,7 +20,7 @@
 - **Deployed to Azure Container Apps** (Apr 2026) — VNet-integrated (May 2026)
 - PostgreSQL on Azure (psql-waterfall-dev), local dev still supports SQLite via DATABASE_URL toggle
 - Data sourced from MRI (direct SQL via VPN locally, CSV upload as fallback)
-- 11+ Vue routes, 13 Flask API blueprints (~115 routes)
+- 13+ Vue routes, 13 Flask API blueprints (~120 routes)
 
 ## Architecture
 - **flask_app/**: App factory, JWT auth, 12 API blueprints, 11 service modules, serializers

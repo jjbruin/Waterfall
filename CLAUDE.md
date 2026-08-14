@@ -66,6 +66,8 @@ waterfall-xirr/
 │   │   ├── reports.py        # Report generation endpoints
 │   │   ├── reviews.py        # Review workflow endpoints (status, submit, approve, return, tracking, roles)
 │   │   ├── feedback.py       # Feedback & request tracking endpoints (submit, list, messages, email, webhook)
+│   │   ├── lease_review.py   # Lease review & risk analysis endpoints (DD workflow, document upload, field resolution)
+│   │   ├── prospects.py      # Pipeline prospect CRUD (deals, properties, entities, investors, assumptions)
 │   │   └── ...               # Additional route blueprints
 │   └── services/             # Business logic (reuses compute.py, database.py, etc.)
 │       ├── dashboard_service.py  # KPI calculations, NOI pipeline, chart data
@@ -76,6 +78,8 @@ waterfall-xirr/
 │       ├── financials_service.py # Property Financials + One Pager data aggregation
 │       ├── feedback_service.py   # Feedback & request tracking (CRUD, email, export)
 │       ├── reports_service.py    # Report builders (projected returns, ROE summary, pref balance detail)
+│       ├── lease_review_service.py  # Lease review DD workflow, document upload, extraction, field resolution
+│       ├── prospect_service.py      # Pipeline prospect CRUD, lease review creation, deal evaluation
 │       └── ...
 │
 ├── scripts/                  # Azure migration and setup scripts
@@ -327,7 +331,7 @@ The sidebar (`AppSidebar.vue`) is organized into major sections with expandable 
 | **Dashboard** | Standalone link | `/dashboard` |
 | **Asset Management** | Expandable | Deal Analysis, Property Financials, Surveillance, One Pager, Review Tracking, Ownership, Waterfall Setup, Report Settings (expandable config panel) |
 | **Accounting** | Future (dimmed) | — |
-| **New Business** | Future (dimmed) | — |
+| **New Business** | Expandable | Pipeline, Lease Review, Lease Risk Analysis |
 | **Investment Management** | Future (dimmed) | — |
 | **Reports** | Standalone link | `/reports` (Projected Returns, ROE Summary, Pref Balance Detail, Sold Portfolio, PSCKOC, Portfolio Analysis) |
 | **Data Management** | Expandable | Data Explorer, MRI Data (expandable panel), Database Tools (expandable panel), Reload Data, Settings |
@@ -556,16 +560,47 @@ Upstream waterfall analysis for any portfolio entity (generalized version of PSC
 - **Computation** — Button-gated. Runs deal-level waterfalls + recursive upstream waterfalls for the selected entity.
 - **Output** — Partner returns, deal detail drill-down, investor-level metrics.
 
-### 11. New Business (Planned — Phase 1 Design)
-Deal pipeline and quick evaluation workspace under the "New Business" sidebar section. **Design document:** `docs/New_Business_Design_Phase1.md` (PDF version available for team review).
+### 11. New Business
+Deal pipeline, lease due diligence, and deal evaluation workspace under the "New Business" sidebar section.
+
+#### 11a. Pipeline
+Vue: `PipelineView.vue`. Flask: `prospects.py` + `prospect_service.py`.
 - **Deal Pipeline** — Kanban board + table view. Stages: Lead → Screening → LOI → DD → IC Review → Closing → Closed / Passed. Fields: deal name, location, asset type, GLA/units, partner, purchase price, assigned to, target close.
+- **Deal Detail** — Right panel with properties, entities, activity log, and analysis tabs. Delete deal button at bottom.
 - **Quick Deal Evaluator** — Assumptions form (acquisition, debt, equity structure, partnership terms, NOI, exit) → instant computed returns using existing engines. Results: PSC IRR/ROE/MOIC, Investor IRR/ROE/MOIC, property-level returns, annual summary table, capital stack visualization, sensitivity matrix.
 - **Scenarios** — Multiple saved assumption sets per deal (Base Case, Downside, different hold periods). Side-by-side comparison view.
 - **Engine reuse** — `build_prospect_analysis()` creates synthetic data structures from form inputs, then calls `compute_deal_analysis()` with the same waterfall/XIRR/ROE engines used by Deal Analysis.
 - **Onboard to Portfolio** — One-click wizard converts a closed prospect to a portfolio deal (creates inv, waterfalls, loans, forecast entries). No re-keying.
-- **Database tables** — `prospect_deals`, `prospect_assumptions`, `prospect_cashflows`, `prospect_activity` (all in `PROTECTED_TABLES`).
-- **Future phases** — Excel cash flow import, rent roll analysis, lease testing, IC memo generation, cross-portfolio analysis, term sheet generator.
-- **Status** — Design complete, pending team input.
+- **Database tables** — `prospect_deals`, `prospect_properties`, `prospect_entities`, `prospect_investors`, `prospect_assumptions`, `prospect_cashflows`, `prospect_activity` (all in `PROTECTED_TABLES`).
+- **CRUD endpoints** — Full REST: `GET/POST/PUT/DELETE /api/prospects`, `/api/prospects/<id>/properties`, `/api/prospects/<id>/entities`, `/api/prospects/<id>/investors`, `/api/prospects/<id>/assumptions`.
+
+#### 11b. Lease Review
+Standalone route at `/lease-review`. Vue: `LeaseReviewView.vue`. Flask: `lease_review.py` + `lease_review_service.py`.
+Commercial lease due diligence workflow with 7-step stepper UI.
+- **Step 1: Setup** — Select or create a lease review (property name, review name, asset type).
+- **Step 2: Import Rent Roll** — Upload seller's rent roll (Excel/CSV/PDF). Two modes: **Import (Merge)** — non-destructive, fuzzy-matches tenants by `(suite, tenant_name)`, updates fields without touching extraction data; **Replace All** — destructive full reset. Merge function: `merge_rent_roll_to_review()`.
+- **Step 3: Upload Documents** — Multi-file PDF upload with SHA-256 hash dedup. Two buttons: **Select Files** (individual PDFs) and **Select Folder** (entire directory tree via `webkitdirectory`). Subfolder names sent as `folder_hints` for tenant matching — if files are in `Starbucks/Original Lease.pdf`, "Starbucks" is matched to tenants before falling back to filename matching. Function: `upload_documents_to_review()`, matching: `_match_file_to_tenant()`.
+- **Step 4: AI Extraction** — Run Claude extraction on pending documents. Pulls rent steps, cotenancy clauses, exclusive use, options, key dates. Dedup on re-runs: checks `(tenant_id, effective_date)` for rent steps, `(tenant_id, source_doc)` for cotenancy/options.
+- **Step 5: Validation** — Three-way comparison: seller rent roll vs lease extraction vs Argus (if provided). Summary cards (match/mismatch/pending counts) + per-tenant comparison table. Function: `validate_rent_roll()`.
+- **Step 6: Analyst Review** — Per-tenant Approve/Flag/Reset buttons. Blocks completion until all non-vacant tenants approved. Function: `approve_tenant()`.
+- **Step 7: Complete** — Excel download + summary charts.
+- **Workflow persistence** — `workflow_step` and `step_data` columns on `lease_reviews`. Progress endpoint: `GET /api/lease-review/reviews/<id>/progress`.
+- **Database tables** — `lease_reviews`, `lease_tenants`, `lease_documents`, `lease_rent_steps`, `lease_cotenancy`, `lease_cotenancy_refs`, `lease_exclusive_use`, `lease_options`, `lease_validation`, `lease_field_resolutions` (all in `PROTECTED_TABLES`).
+- **Seed endpoint** — `POST /api/lease-review/seed` — bulk data import for portability (admin only).
+
+#### 11c. Lease Risk Analysis
+Standalone route at `/lease-risk-analysis`. Vue: `LeaseRiskAnalysisView.vue`. Flask: endpoints in `lease_review.py`, service functions in `lease_review_service.py`.
+Analysis view using analyst-resolved data. Defaults to base data when no resolution exists; uses analyst's concluded value when a discrepancy has been resolved.
+- **Field Resolution** — `lease_field_resolutions` table with `UNIQUE(tenant_id, field_name)`. Resolvable fields: `square_feet`, `annual_rent`, `monthly_rent`, `rent_per_sf`, `lease_start`, `lease_end`, `security_deposit`. UPSERT pattern (PG `ON CONFLICT`, SQLite `INSERT OR REPLACE`). Functions: `resolve_field()`, `clear_resolution()`, `get_resolved_tenants()`.
+- **7 Tabs**:
+  - **Overview** — KPI summary cards (total tenants, GLA, annual rent, avg rent/SF, co-tenancy count, resolution count) + tenant roster with inline field editing (double-click to override, "R" badge marks resolved fields, revert button).
+  - **Lease Expirations** — Dual-axis bar chart (expiring SF + % of total rent by year) + yearly table + material lease detail per expiration year with co-tenancy implications.
+  - **Validation** — Match/mismatch/pending summary + per-tenant validation details with one-click "Use Seller" or "Use Lease" buttons on mismatches.
+  - **Co-Tenancy Risk** — Horizontal bar chart of rent at risk by named co-tenant + clause detail table + rent-at-risk summary.
+  - **Scenario Analysis** — Expandable departure scenario cards showing cascading impacts if a named co-tenant departs.
+  - **Exclusive Use** — Restriction table (tenant, suite, restricted use, restriction text).
+  - **Options** — Renewal/termination options table (type, term, notice period, deadline, rent terms, auto-renewal).
+- **API Endpoints**: `GET /api/lease-review/reviews/<id>/risk-analysis` (complete data bundle), `PUT /api/lease-review/reviews/<id>/tenants/<tid>/resolve` (resolve field), `DELETE /api/lease-review/reviews/<id>/tenants/<tid>/resolve/<field>` (clear resolution).
 
 ## AI Assistant
 
@@ -732,6 +767,7 @@ Embedded Claude-powered chat panel for natural-language queries against the port
 - Cashflow signs: negative = contribution, positive = distribution
 - Rates as decimals (0.08 = 8%)
 - Use Python date objects for dates
+- **InvestorID / InvestmentID case normalization**: All entity IDs are uppercased at data load time (`.str.strip().str.upper()`) in `loaders.py`, `data_service.py`, and `ownership_tree.py`. MRI accounting data occasionally has mixed-case entries (e.g. "Centre" instead of "CENTRE") which caused journal entries to be silently dropped from groupby/filter operations. Normalization happens at the lowest layer so all downstream consumers get consistent IDs.
 
 ## One Pager NOI/Occupancy chart window (Aug 7, 2026)
 
