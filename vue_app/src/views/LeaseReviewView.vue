@@ -311,9 +311,23 @@ async function onDocumentUpload(event: Event) {
   if (!input.files?.length || !selectedReviewId.value) return
 
   const formData = new FormData()
+  const folderHints: string[] = []
   for (const f of input.files) {
+    if (!f.name.toLowerCase().endsWith('.pdf')) continue
     formData.append('files', f)
+    // webkitRelativePath gives "FolderName/SubFolder/file.pdf"
+    // Extract the parent folder name as a tenant matching hint
+    const relPath = (f as any).webkitRelativePath || ''
+    const parts = relPath.split('/')
+    // Use the immediate parent folder (not the root folder selected)
+    const hint = parts.length > 2 ? parts[parts.length - 2] : (parts.length === 2 ? parts[0] : '')
+    folderHints.push(hint)
   }
+  if (!formData.has('files')) {
+    alert('No PDF files found in the selection.')
+    return
+  }
+  formData.append('folder_hints', JSON.stringify(folderHints))
 
   uploadingDocs.value = true
   docUploadReport.value = null
@@ -705,8 +719,12 @@ function statusClass(s: string): string {
 
         <div class="upload-actions">
           <label class="btn-primary btn-upload-label">
-            {{ uploadingDocs ? 'Uploading...' : 'Upload Lease PDFs' }}
+            {{ uploadingDocs ? 'Uploading...' : 'Select Files' }}
             <input type="file" accept=".pdf" multiple @change="onDocumentUpload" :disabled="uploadingDocs" hidden />
+          </label>
+          <label class="btn-primary btn-upload-label">
+            {{ uploadingDocs ? 'Uploading...' : 'Select Folder' }}
+            <input type="file" webkitdirectory @change="onDocumentUpload" :disabled="uploadingDocs" hidden />
           </label>
         </div>
 

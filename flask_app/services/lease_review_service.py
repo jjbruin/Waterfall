@@ -1046,11 +1046,14 @@ def upload_documents_to_review(
     review_id: int,
     files: List[Tuple[str, bytes]],
     uploaded_by: str = 'system',
+    folder_hints: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Upload multiple PDF documents to a review with dedup and auto-matching.
 
     Args:
         files: List of (filename, file_bytes) tuples.
+        folder_hints: Optional list of subfolder names (one per file, same order)
+                      used as additional signal for tenant matching.
 
     Returns dict with counts: {added, skipped_duplicate, unmatched, details}.
     """
@@ -1083,7 +1086,7 @@ def upload_documents_to_review(
         unmatched = 0
         details = []
 
-        for filename, file_bytes in files:
+        for i, (filename, file_bytes) in enumerate(files):
             file_hash = hashlib.sha256(file_bytes).hexdigest()
 
             # Dedup check
@@ -1096,8 +1099,12 @@ def upload_documents_to_review(
             doc_type = classify_document(filename)
             doc_date = parse_doc_date(filename)
 
-            # Fuzzy-match to tenant by filename
-            tenant_id = _match_file_to_tenant(filename, tenants)
+            # Fuzzy-match to tenant by filename + optional folder hint
+            folder_hint = (folder_hints[i]
+                           if folder_hints and i < len(folder_hints)
+                           else None)
+            tenant_id = _match_file_to_tenant(filename, tenants,
+                                              folder_hint=folder_hint)
 
             if tenant_id is None:
                 unmatched += 1
@@ -1146,8 +1153,13 @@ def upload_documents_to_review(
 def _match_file_to_tenant(
     filename: str,
     tenants: list,
+    folder_hint: Optional[str] = None,
 ) -> Optional[int]:
     """Match a PDF filename to a tenant by name containment.
+
+    If *folder_hint* is provided (the subfolder name the file was stored in),
+    it is used as an additional matching signal.  A folder-hint match is tried
+    first — if the subfolder name matches a tenant, that wins.
 
     Returns tenant_id or None.
     """
@@ -1155,6 +1167,23 @@ def _match_file_to_tenant(
     # Remove common prefixes/suffixes like date stamps
     fname_clean = re.sub(r'^\d{4}[.\-]\d{2}[.\-]\d{2}[_\s]*', '', fname_lower).strip()
 
+    # --- Try folder hint first (subfolder name = tenant name) ---
+    if folder_hint and folder_hint.strip():
+        hint = folder_hint.strip().lower().replace('_', ' ').replace('-', ' ')
+        hint_match = None
+        hint_len = 0
+        for t in tenants:
+            tname = str(t[1]).strip().lower()
+            if not tname:
+                continue
+            if tname in hint or hint in tname:
+                if len(tname) > hint_len:
+                    hint_match = t[0]
+                    hint_len = len(tname)
+        if hint_match is not None:
+            return hint_match
+
+    # --- Fall back to filename matching ---
     best_match = None
     best_len = 0
 

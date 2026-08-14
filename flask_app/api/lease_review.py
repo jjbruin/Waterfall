@@ -478,6 +478,7 @@ def upload_documents(review_id):
     ensure_lease_tables(engine)
 
     try:
+        import json as _json
         file_tuples = []
         for f in files_list:
             if f.filename:
@@ -486,9 +487,19 @@ def upload_documents(review_id):
         if not file_tuples:
             return jsonify({'error': 'No valid files'}), 400
 
+        # Parse folder hints sent from the frontend (subfolder names for matching)
+        folder_hints_raw = request.form.get('folder_hints')
+        folder_hints = None
+        if folder_hints_raw:
+            try:
+                folder_hints = _json.loads(folder_hints_raw)
+            except Exception:
+                pass
+
         report = upload_documents_to_review(
             engine, review_id, file_tuples,
             uploaded_by=g.current_user.get('username', 'unknown'),
+            folder_hints=folder_hints,
         )
         return jsonify({'status': 'uploaded', **report})
     except ValueError as e:
