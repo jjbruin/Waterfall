@@ -243,23 +243,28 @@ def ensure_lease_tables(engine):
             for ddl in LEASE_DDL_PG:
                 conn.execute(text(ddl))
 
-        # Migrate: add prospect_property_id if missing
-        try:
-            insp = inspect(engine)
-            if 'lease_reviews' in insp.get_table_names():
-                cols = [c['name'] for c in insp.get_columns('lease_reviews')]
-                if 'prospect_property_id' not in cols:
-                    conn.execute(text(
-                        "ALTER TABLE lease_reviews "
-                        "ADD COLUMN prospect_property_id INTEGER"))
-                if 'rent_roll_date' not in cols:
-                    conn.execute(text(
-                        "ALTER TABLE lease_reviews "
-                        "ADD COLUMN rent_roll_date TEXT"))
-        except Exception:
-            pass  # Column may already exist
-
         conn.commit()
+
+    # Migrate: add prospect_property_id and rent_roll_date if missing
+    with engine.begin() as conn:
+        if engine.dialect.name == 'postgresql':
+            for col in ['prospect_property_id', 'rent_roll_date']:
+                row = conn.execute(text("""
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_name = 'lease_reviews' AND column_name = :col
+                """), {'col': col}).fetchone()
+                if row is None:
+                    ctype = 'INTEGER' if col == 'prospect_property_id' else 'TEXT'
+                    conn.execute(text(
+                        f"ALTER TABLE lease_reviews ADD COLUMN {col} {ctype}"))
+        else:
+            cols = [r[1] for r in conn.execute(text("PRAGMA table_info(lease_reviews)")).fetchall()]
+            if 'prospect_property_id' not in cols:
+                conn.execute(text(
+                    "ALTER TABLE lease_reviews ADD COLUMN prospect_property_id INTEGER"))
+            if 'rent_roll_date' not in cols:
+                conn.execute(text(
+                    "ALTER TABLE lease_reviews ADD COLUMN rent_roll_date TEXT"))
     logger.info("Lease review tables ensured")
 
 
