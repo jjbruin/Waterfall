@@ -14,31 +14,33 @@ from flask_app.services.review_service import (
 reviews_bp = Blueprint("reviews", __name__)
 
 
+def _enrich_submission(sub: dict) -> dict:
+    """Add user permissions and action flags to a submission dict."""
+    user_roles = get_user_review_roles(g.current_user["id"])
+    sub["user_review_roles"] = user_roles
+    step = sub["current_step"]
+    step_role = sub.get("current_step_role")
+    sub["can_submit"] = (
+        sub["status"] in ("draft", "returned")
+        and "asset_manager" in user_roles
+    )
+    sub["can_approve"] = (
+        1 <= step <= 4
+        and step_role in user_roles
+    )
+    sub["can_return"] = sub["can_approve"]
+    sub["is_editable"] = sub["status"] != "approved" or sub["id"] is None
+    sub["has_snapshot"] = get_snapshot(sub["vcode"], sub["quarter"]) is not None
+    return sub
+
+
 @reviews_bp.route("/<vcode>/<quarter>", methods=["GET"])
 @login_required
 def get_review_status(vcode, quarter):
     """Get submission status, notes, and user permissions for this document."""
     try:
         sub = get_submission(vcode, quarter)
-        user_roles = get_user_review_roles(g.current_user["id"])
-        sub["user_review_roles"] = user_roles
-
-        # Determine what actions the current user can take
-        step = sub["current_step"]
-        step_role = sub.get("current_step_role")
-        sub["can_submit"] = (
-            sub["status"] in ("draft", "returned")
-            and "asset_manager" in user_roles
-        )
-        sub["can_approve"] = (
-            1 <= step <= 4
-            and step_role in user_roles
-        )
-        sub["can_return"] = sub["can_approve"]
-        sub["is_editable"] = sub["status"] != "approved" or sub["id"] is None
-        sub["has_snapshot"] = get_snapshot(vcode, quarter) is not None
-
-        return jsonify(sub)
+        return jsonify(_enrich_submission(sub))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -54,8 +56,7 @@ def submit(vcode, quarter):
             g.current_user["id"], g.current_user["username"],
             note_text=body.get("note"),
         )
-        result["is_editable"] = result["status"] != "approved" or result.get("id") is None
-        return jsonify(result)
+        return jsonify(_enrich_submission(result))
     except PermissionError as e:
         return jsonify({"error": str(e)}), 403
     except ValueError as e:
@@ -73,8 +74,7 @@ def approve_review(vcode, quarter):
             g.current_user["id"], g.current_user["username"],
             note_text=body.get("note"),
         )
-        result["is_editable"] = result["status"] != "approved" or result.get("id") is None
-        return jsonify(result)
+        return jsonify(_enrich_submission(result))
     except PermissionError as e:
         return jsonify({"error": str(e)}), 403
     except ValueError as e:
@@ -92,8 +92,7 @@ def return_review(vcode, quarter):
             g.current_user["id"], g.current_user["username"],
             note_text=body.get("note", ""),
         )
-        result["is_editable"] = result["status"] != "approved" or result.get("id") is None
-        return jsonify(result)
+        return jsonify(_enrich_submission(result))
     except PermissionError as e:
         return jsonify({"error": str(e)}), 403
     except ValueError as e:
@@ -111,8 +110,7 @@ def post_note(vcode, quarter):
             g.current_user["id"], g.current_user["username"],
             note_text=body.get("note", ""),
         )
-        result["is_editable"] = result["status"] != "approved" or result.get("id") is None
-        return jsonify(result)
+        return jsonify(_enrich_submission(result))
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
@@ -126,8 +124,7 @@ def acknowledge_review_note(vcode, quarter, note_id):
             note_id,
             g.current_user["id"], g.current_user["username"],
         )
-        result["is_editable"] = result["status"] != "approved" or result.get("id") is None
-        return jsonify(result)
+        return jsonify(_enrich_submission(result))
     except PermissionError as e:
         return jsonify({"error": str(e)}), 403
     except ValueError as e:
