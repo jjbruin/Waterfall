@@ -3023,3 +3023,470 @@ def generate_lease_review_excel(engine, review_id: int) -> bytes:
     buf = BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Lease Risk Analysis — field resolutions + resolved data
+# ---------------------------------------------------------------------------
+
+LEASE_RESOLUTION_DDL_PG = """
+CREATE TABLE IF NOT EXISTS lease_field_resolutions (
+    id              SERIAL PRIMARY KEY,
+    tenant_id       INTEGER NOT NULL REFERENCES lease_tenants(id),
+    field_name      TEXT NOT NULL,
+    resolved_value  TEXT,
+    resolved_source TEXT DEFAULT 'analyst_override',
+    resolved_by     TEXT,
+    resolved_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (tenant_id, field_name)
+)
+"""
+
+LEASE_RESOLUTION_DDL_SQLITE = (
+    LEASE_RESOLUTION_DDL_PG
+    .replace('SERIAL PRIMARY KEY', 'INTEGER PRIMARY KEY AUTOINCREMENT')
+    .replace('REFERENCES lease_tenants(id)', '')
+)
+
+
+def ensure_resolution_table(engine):
+    """Create the lease_field_resolutions table if it doesn't exist."""
+    from sqlalchemy import text
+    ddl = (LEASE_RESOLUTION_DDL_SQLITE
+           if engine.dialect.name == 'sqlite'
+           else LEASE_RESOLUTION_DDL_PG)
+    with engine.begin() as conn:
+        conn.execute(text(ddl))
+
+
+# Resolvable fields and which columns they map to on lease_tenants
+RESOLVABLE_FIELDS = {
+    'square_feet', 'annual_rent', 'monthly_rent', 'rent_per_sf',
+    'lease_start', 'lease_end', 'security_deposit',
+}
+
+
+def resolve_field(
+    engine,
+    tenant_id: int,
+    field_name: str,
+    resolved_value: str,
+    resolved_source: str = 'analyst_override',
+    resolved_by: str = 'system',
+) -> Dict[str, Any]:
+    """Save an analyst's resolution for a specific field on a tenant.
+
+    Uses UPSERT (INSERT ON CONFLICT UPDATE) to handle re-resolution.
+    """
+    from sqlalchemy import text
+
+    if field_name not in RESOLVABLE_FIELDS:
+        raise ValueError(f"Field '{field_name}' is not resolvable. "
+                         f"Valid: {sorted(RESOLVABLE_FIELDS)}")
+
+    ensure_resolution_table(engine)
+
+    with engine.begin() as conn:
+        if engine.dialect.name == 'postgresql':
+            conn.execute(text("""
+                INSERT INTO lease_field_resolutions
+                    (tenant_id, field_name, resolved_value, resolved_source,
+                     resolved_by, resolved_at)
+                VALUES (:tid, :fn, :rv, :rs, :rb, CURRENT_TIMESTAMP)
+                ON CONFLICT (tenant_id, field_name)
+                DO UPDATE SET resolved_value = :rv, resolved_source = :rs,
+                              resolved_by = :rb, resolved_at = CURRENT_TIMESTAMP
+            """), {
+                'tid': tenant_id, 'fn': field_name,
+                'rv': resolved_value, 'rs': resolved_source, 'rb': resolved_by,
+            })
+        else:
+            conn.execute(text("""
+                INSERT OR REPLACE INTO lease_field_resolutions
+                    (tenant_id, field_name, resolved_value, resolved_source,
+                     resolved_by, resolved_at)
+                VALUES (:tid, :fn, :rv, :rs, :rb, CURRENT_TIMESTAMP)
+            """), {
+                'tid': tenant_id, 'fn': field_name,
+                'rv': resolved_value, 'rs': resolved_source, 'rb': resolved_by,
+            })
+
+    return {'tenant_id': tenant_id, 'field_name': field_name,
+            'resolved_value': resolved_value, 'resolved_source': resolved_source}
+
+
+def clear_resolution(engine, tenant_id: int, field_name: str) -> None:
+    """Remove a field resolution, reverting to default data."""
+    from sqlalchemy import text
+    ensure_resolution_table(engine)
+    with engine.begin() as conn:
+        conn.execute(text("""
+            DELETE FROM lease_field_resolutions
+            WHERE tenant_id = :tid AND field_name = :fn
+        """), {'tid': tenant_id, 'fn': field_name})
+
+
+def get_resolved_tenants(engine, review_id: int) -> List[Dict[str, Any]]:
+    """Get all tenants for a review with analyst resolutions applied.
+
+    For each field, returns:
+    - The analyst's resolved value if one exists
+    - Otherwise the default from lease_tenants
+
+    Each tenant dict includes a 'resolutions' sub-dict showing
+    which fields have analyst overrides.
+    """
+    from sqlalchemy import text
+    ensure_resolution_table(engine)
+
+    with engine.connect() as conn:
+        tenants = conn.execute(text("""
+            SELECT id, tenant_name, suite, square_feet, lease_type,
+                   lease_start, lease_end, term_months, monthly_rent,
+                   annual_rent, rent_per_sf, security_deposit,
+                   is_vacant, is_material, has_cotenancy, has_exclusive_use,
+                   extraction_status, approval_status
+            FROM lease_tenants
+            WHERE review_id = :rid
+            ORDER BY suite
+        """), {'rid': review_id}).fetchall()
+
+        # Load all resolutions for this review's tenants
+        tenant_ids = [t[0] for t in tenants]
+        resolutions = {}
+        if tenant_ids:
+            # Build parameterized IN clause
+            placeholders = ', '.join(f':t{i}' for i in range(len(tenant_ids)))
+            params = {f't{i}': tid for i, tid in enumerate(tenant_ids)}
+            params['rid'] = review_id
+            res_rows = conn.execute(text(f"""
+                SELECT tenant_id, field_name, resolved_value, resolved_source,
+                       resolved_by
+                FROM lease_field_resolutions
+                WHERE tenant_id IN ({placeholders})
+            """), params).fetchall()
+            for r in res_rows:
+                resolutions.setdefault(r[0], {})[r[1]] = {
+                    'value': r[2], 'source': r[3], 'by': r[4],
+                }
+
+    result = []
+    for t in tenants:
+        tid = t[0]
+        tenant_res = resolutions.get(tid, {})
+
+        def resolved(field_name, default_val, idx=None):
+            """Return resolved value if exists, else default."""
+            if field_name in tenant_res:
+                raw = tenant_res[field_name]['value']
+                # Try numeric conversion for numeric fields
+                if field_name in ('square_feet', 'annual_rent', 'monthly_rent',
+                                  'rent_per_sf', 'security_deposit'):
+                    try:
+                        return float(raw) if raw else default_val
+                    except (ValueError, TypeError):
+                        return default_val
+                return raw
+            return default_val
+
+        row = {
+            'id': tid,
+            'tenant_name': t[1],
+            'suite': t[2],
+            'square_feet': resolved('square_feet', t[3]),
+            'lease_type': t[4],
+            'lease_start': resolved('lease_start', t[5]),
+            'lease_end': resolved('lease_end', t[6]),
+            'term_months': t[7],
+            'monthly_rent': resolved('monthly_rent', t[8]),
+            'annual_rent': resolved('annual_rent', t[9]),
+            'rent_per_sf': resolved('rent_per_sf', t[10]),
+            'security_deposit': resolved('security_deposit', t[11]),
+            'is_vacant': bool(t[12]),
+            'is_material': bool(t[13]),
+            'has_cotenancy': bool(t[14]),
+            'has_exclusive_use': bool(t[15]),
+            'extraction_status': t[16],
+            'approval_status': t[17] or 'pending',
+            'resolutions': {
+                fn: {'value': info['value'], 'source': info['source']}
+                for fn, info in tenant_res.items()
+            },
+        }
+        result.append(row)
+
+    return result
+
+
+def get_resolved_expiration_histogram(
+    engine, review_id: int, years: int = 10,
+) -> Dict[str, Any]:
+    """Expiration histogram using analyst-resolved tenant data."""
+    resolved = get_resolved_tenants(engine, review_id)
+    occupied = [t for t in resolved if not t['is_vacant'] and t['lease_end']]
+
+    total_gla = sum(t['square_feet'] or 0 for t in resolved if not t['is_vacant'])
+    total_rent = sum(t['annual_rent'] or 0 for t in resolved if not t['is_vacant'])
+
+    current_year = datetime.now().year
+    end_year = current_year + years
+
+    yearly = {}
+    for yr in range(current_year, end_year + 1):
+        yearly[yr] = {
+            'year': yr, 'expiring_sf': 0, 'expiring_rent': 0,
+            'pct_of_total_rent': 0, 'avg_rent_per_sf': 0, 'tenant_count': 0,
+        }
+
+    material_by_year = {}
+
+    for t in occupied:
+        try:
+            lease_end = pd.to_datetime(t['lease_end'])
+            exp_year = lease_end.year
+        except Exception:
+            continue
+
+        if exp_year < current_year or exp_year > end_year:
+            continue
+
+        sf = t['square_feet'] or 0
+        rent = t['annual_rent'] or 0
+
+        yearly[exp_year]['expiring_sf'] += sf
+        yearly[exp_year]['expiring_rent'] += rent
+        yearly[exp_year]['tenant_count'] += 1
+
+        if t['is_material']:
+            material_by_year.setdefault(exp_year, []).append({
+                'tenant_name': t['tenant_name'],
+                'suite': t['suite'],
+                'square_feet': sf,
+                'annual_rent': rent,
+                'rent_per_sf': t['rent_per_sf'] or 0,
+                'lease_end': t['lease_end'],
+                'has_cotenancy': t['has_cotenancy'],
+                'cotenancy_implication': (
+                    'Departure may trigger co-tenancy clauses in other leases'
+                    if t['has_cotenancy'] else None
+                ),
+            })
+
+    yearly_data = []
+    for yr in range(current_year, end_year + 1):
+        d = yearly[yr]
+        if total_rent > 0:
+            d['pct_of_total_rent'] = round(d['expiring_rent'] / total_rent * 100, 1)
+        if d['expiring_sf'] > 0:
+            d['avg_rent_per_sf'] = round(d['expiring_rent'] / d['expiring_sf'], 2)
+        yearly_data.append(d)
+
+    return {
+        'yearly_data': yearly_data,
+        'material_leases': material_by_year,
+        'totals': {'total_gla': total_gla, 'total_annual_rent': total_rent},
+    }
+
+
+def get_resolved_cotenancy_matrix(engine, review_id: int) -> Dict[str, Any]:
+    """Cotenancy matrix using analyst-resolved rent data for impact sizing."""
+    from sqlalchemy import text
+
+    # Get resolved tenants for rent overrides
+    resolved = get_resolved_tenants(engine, review_id)
+    rent_by_tid = {t['id']: t['annual_rent'] or 0 for t in resolved}
+
+    with engine.connect() as conn:
+        cotenancy = conn.execute(text("""
+            SELECT c.id, c.tenant_id, t.tenant_name, t.suite,
+                   c.clause_text, c.trigger_description, c.alt_rent_formula,
+                   c.termination_right, c.cure_period_days,
+                   c.sunset_provision, c.is_curable
+            FROM lease_cotenancy c
+            JOIN lease_tenants t ON t.id = c.tenant_id
+            WHERE c.review_id = :rid
+        """), {'rid': review_id}).fetchall()
+
+        refs = conn.execute(text("""
+            SELECT cr.cotenancy_id, cr.referenced_tenant_name
+            FROM lease_cotenancy_refs cr
+            JOIN lease_cotenancy c ON c.id = cr.cotenancy_id
+            WHERE c.review_id = :rid
+        """), {'rid': review_id}).fetchall()
+
+    forward = {}
+    cot_details = {}
+    for c in cotenancy:
+        tenant_name = c[2]
+        resolved_rent = rent_by_tid.get(c[1], 0)
+        forward[tenant_name] = []
+        cot_details[tenant_name] = {
+            'suite': c[3],
+            'annual_rent': resolved_rent,
+            'clause_summary': c[4][:200] if c[4] else '',
+            'trigger': c[5],
+            'alt_rent': c[6],
+            'termination_right': c[7],
+            'cure_days': c[8],
+            'sunset': c[9],
+            'is_curable': c[10],
+        }
+
+    cot_id_to_tenant = {c[0]: c[2] for c in cotenancy}
+    for ref in refs:
+        tenant_name = cot_id_to_tenant.get(ref[0])
+        if tenant_name:
+            forward[tenant_name].append(ref[1])
+
+    reverse = {}
+    for tenant, named_cotenants in forward.items():
+        for cotenant in named_cotenants:
+            reverse.setdefault(cotenant, [])
+            detail = cot_details.get(tenant, {})
+            reverse[cotenant].append({
+                'dependent_tenant': tenant,
+                'annual_rent': detail.get('annual_rent', 0),
+                'alt_rent': detail.get('alt_rent', ''),
+                'termination_right': detail.get('termination_right', False),
+            })
+
+    rent_at_risk = {}
+    for cotenant, dependents in reverse.items():
+        total_rent = sum(d.get('annual_rent', 0) or 0 for d in dependents)
+        term_count = sum(1 for d in dependents if d.get('termination_right'))
+        rent_at_risk[cotenant] = {
+            'total_dependent_rent': total_rent,
+            'dependent_count': len(dependents),
+            'termination_eligible_count': term_count,
+            'dependents': dependents,
+        }
+
+    return {
+        'forward': forward, 'reverse': reverse,
+        'rent_at_risk': rent_at_risk, 'details': cot_details,
+    }
+
+
+def get_resolved_scenario_analysis(engine, review_id: int) -> List[Dict]:
+    """Scenario analysis using resolved rent data."""
+    matrix = get_resolved_cotenancy_matrix(engine, review_id)
+
+    scenarios = []
+    for cotenant, risk in matrix['rent_at_risk'].items():
+        if risk['dependent_count'] == 0:
+            continue
+
+        scenario = {
+            'departing_tenant': cotenant,
+            'dependent_count': risk['dependent_count'],
+            'total_dependent_rent': risk['total_dependent_rent'],
+            'termination_eligible': risk['termination_eligible_count'],
+            'impacts': [],
+        }
+
+        for dep in risk['dependents']:
+            detail = matrix['details'].get(dep['dependent_tenant'], {})
+            scenario['impacts'].append({
+                'tenant': dep['dependent_tenant'],
+                'annual_rent': dep.get('annual_rent', 0),
+                'alt_rent_formula': dep.get('alt_rent', ''),
+                'can_terminate': dep.get('termination_right', False),
+                'cure_days': detail.get('cure_days'),
+                'sunset': detail.get('sunset'),
+                'is_curable': detail.get('is_curable', True),
+            })
+
+        scenarios.append(scenario)
+
+    scenarios.sort(key=lambda s: s['total_dependent_rent'], reverse=True)
+    return scenarios
+
+
+def get_risk_analysis_data(engine, review_id: int) -> Dict[str, Any]:
+    """Get complete risk analysis data bundle for a review.
+
+    Returns resolved tenants, validation results, expirations,
+    cotenancy matrix, and scenario analysis — all using analyst-resolved data.
+    """
+    from sqlalchemy import text
+
+    resolved = get_resolved_tenants(engine, review_id)
+    expirations = get_resolved_expiration_histogram(engine, review_id)
+    cotenancy = get_resolved_cotenancy_matrix(engine, review_id)
+    scenarios = get_resolved_scenario_analysis(engine, review_id)
+
+    # Get validation results
+    with engine.connect() as conn:
+        val_rows = conn.execute(text("""
+            SELECT t.id, t.tenant_name, t.suite, v.field_name, v.source_type,
+                   v.seller_value, v.lease_value, v.status, v.notes
+            FROM lease_validation v
+            JOIN lease_tenants t ON t.id = v.tenant_id
+            WHERE t.review_id = :rid
+            ORDER BY t.tenant_name, v.source_type, v.field_name
+        """), {'rid': review_id}).fetchall()
+
+    validation = [{
+        'tenant_id': r[0], 'tenant': r[1], 'suite': r[2],
+        'field': r[3], 'source_type': r[4],
+        'seller_value': r[5], 'lease_value': r[6],
+        'status': r[7], 'notes': r[8],
+    } for r in val_rows]
+
+    # Build cotenancy clauses for display
+    clauses = []
+    if cotenancy.get('details'):
+        for tenant_name, detail in cotenancy['details'].items():
+            clauses.append({
+                'tenant_name': tenant_name,
+                **detail,
+                'trigger_description': detail.get('trigger'),
+                'alt_rent_formula': detail.get('alt_rent'),
+                'cure_period_days': detail.get('cure_days'),
+                'named_cotenants': cotenancy['forward'].get(tenant_name, []),
+            })
+
+    # Get exclusive use data
+    with engine.connect() as conn:
+        exc_rows = conn.execute(text("""
+            SELECT t.tenant_name, t.suite, e.restriction_text, e.restricted_use
+            FROM lease_exclusive_use e
+            JOIN lease_tenants t ON t.id = e.tenant_id
+            WHERE t.review_id = :rid
+            ORDER BY t.tenant_name
+        """), {'rid': review_id}).fetchall()
+
+    exclusive_use = [{
+        'tenant_name': r[0], 'suite': r[1],
+        'restriction_text': r[2], 'restricted_use': r[3],
+    } for r in exc_rows]
+
+    # Get options
+    with engine.connect() as conn:
+        opt_rows = conn.execute(text("""
+            SELECT t.tenant_name, t.suite, o.option_type,
+                   o.option_number, o.total_options, o.term_years,
+                   o.notice_days, o.notice_deadline, o.rent_terms,
+                   o.auto_renewal, o.source_doc
+            FROM lease_options o
+            JOIN lease_tenants t ON t.id = o.tenant_id
+            WHERE t.review_id = :rid
+            ORDER BY t.tenant_name, o.option_number
+        """), {'rid': review_id}).fetchall()
+
+    options = [{
+        'tenant_name': r[0], 'suite': r[1], 'option_type': r[2],
+        'option_number': r[3], 'total_options': r[4], 'term_years': r[5],
+        'notice_days': r[6], 'notice_deadline': r[7], 'rent_terms': r[8],
+        'auto_renewal': bool(r[9]), 'source_doc': r[10],
+    } for r in opt_rows]
+
+    return {
+        'tenants': resolved,
+        'validation': validation,
+        'expirations': expirations,
+        'cotenancy': {**cotenancy, 'clauses': clauses},
+        'scenarios': scenarios,
+        'exclusive_use': exclusive_use,
+        'options': options,
+    }

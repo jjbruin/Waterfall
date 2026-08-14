@@ -100,6 +100,11 @@ const routes = [
     component: () => import('../views/LeaseReviewView.vue'),
   },
   {
+    path: '/lease-risk-analysis',
+    name: 'Lease Risk Analysis',
+    component: () => import('../views/LeaseRiskAnalysisView.vue'),
+  },
+  {
     path: '/settings',
     name: 'Settings',
     component: () => import('../views/SettingsView.vue'),

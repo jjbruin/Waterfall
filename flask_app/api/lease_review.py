@@ -25,6 +25,11 @@ from flask_app.services.lease_review_service import (
     approve_tenant,
     get_workflow_progress,
     update_workflow_step,
+    ensure_resolution_table,
+    resolve_field,
+    clear_resolution,
+    get_risk_analysis_data,
+    RESOLVABLE_FIELDS,
 )
 from io import BytesIO
 import logging
@@ -577,6 +582,73 @@ def set_workflow_step(review_id):
         return jsonify({'error': str(e)}), 400
     except Exception as e:
         logger.error(f"Workflow step error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+# ── Lease Risk Analysis endpoints ──────────────────────────────────────
+
+@lease_review_bp.route('/reviews/<int:review_id>/risk-analysis', methods=['GET'])
+@login_required
+def get_risk_analysis(review_id):
+    """Get complete risk analysis data bundle for a review."""
+    try:
+        engine = get_engine()
+        ensure_resolution_table(engine)
+        data = get_risk_analysis_data(engine, review_id)
+        return jsonify(data)
+    except Exception as e:
+        logger.error(f"Risk analysis error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route(
+    '/reviews/<int:review_id>/tenants/<int:tenant_id>/resolve',
+    methods=['PUT'],
+)
+@login_required
+@role_required('admin', 'analyst')
+def resolve_tenant_field(review_id, tenant_id):
+    """Resolve a field value for a tenant (analyst override)."""
+    try:
+        body = request.get_json(force=True)
+        field_name = body.get('field_name')
+        value = body.get('value')
+        source = body.get('source', 'analyst')
+
+        if not field_name:
+            return jsonify({'error': 'field_name is required'}), 400
+        if field_name not in RESOLVABLE_FIELDS:
+            return jsonify({
+                'error': f'Invalid field. Must be one of: {sorted(RESOLVABLE_FIELDS)}'
+            }), 400
+
+        engine = get_engine()
+        ensure_resolution_table(engine)
+        resolve_field(
+            engine, tenant_id, field_name, value, source,
+            resolved_by=g.user.get('username', 'unknown'),
+        )
+        return jsonify({'status': 'ok', 'field': field_name, 'value': value})
+    except Exception as e:
+        logger.error(f"Resolve field error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route(
+    '/reviews/<int:review_id>/tenants/<int:tenant_id>/resolve/<field_name>',
+    methods=['DELETE'],
+)
+@login_required
+@role_required('admin', 'analyst')
+def clear_tenant_resolution(review_id, tenant_id, field_name):
+    """Clear a field resolution, reverting to base data."""
+    try:
+        engine = get_engine()
+        ensure_resolution_table(engine)
+        clear_resolution(engine, tenant_id, field_name)
+        return jsonify({'status': 'ok', 'field': field_name, 'cleared': True})
+    except Exception as e:
+        logger.error(f"Clear resolution error: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 

@@ -8,8 +8,9 @@ BASE_URL = "https://app-waterfall-dev-v2.icyplant-026fb2db.eastus.azurecontainer
 
 
 def get_token():
+    pw = input("Azure admin password: ") if len(sys.argv) < 2 else sys.argv[1]
     r = requests.post(f"{BASE_URL}/auth/login",
-                      json={"username": "admin", "password": "admin"})
+                      json={"username": "admin", "password": pw})
     r.raise_for_status()
     return r.json()["token"]
 
@@ -20,7 +21,7 @@ def main():
 
     # Step 1: Create prospect deal
     print("1. Creating prospect deal...")
-    r = requests.post(f"{BASE_URL}/api/prospects/deals", headers=h, json={
+    r = requests.post(f"{BASE_URL}/api/prospects", headers=h, json={
         "deal_name": "Windsor Square",
         "location": "Matthews, NC",
         "asset_type": "Retail",
@@ -30,7 +31,7 @@ def main():
     print(f"   {r.status_code}: {r.text[:200]}")
     if r.status_code >= 400:
         print("   Trying to find existing deal...")
-        r2 = requests.get(f"{BASE_URL}/api/prospects/deals", headers=h)
+        r2 = requests.get(f"{BASE_URL}/api/prospects", headers=h)
         deals = r2.json() if r2.status_code == 200 else []
         deal_id = None
         for d in deals:
@@ -46,7 +47,7 @@ def main():
 
     # Step 2: Create prospect property
     print("2. Creating prospect property...")
-    r = requests.post(f"{BASE_URL}/api/prospects/deals/{deal_id}/properties",
+    r = requests.post(f"{BASE_URL}/api/prospects/{deal_id}/properties",
                       headers=h, json={
         "property_name": "Windsor Square",
         "address": "Matthews, NC",
@@ -54,7 +55,7 @@ def main():
     })
     print(f"   {r.status_code}: {r.text[:200]}")
     if r.status_code >= 400:
-        r2 = requests.get(f"{BASE_URL}/api/prospects/deals/{deal_id}", headers=h)
+        r2 = requests.get(f"{BASE_URL}/api/prospects/{deal_id}", headers=h)
         props = r2.json().get("properties", [])
         prop_id = props[0]["id"] if props else None
         if not prop_id:
