@@ -428,6 +428,15 @@ def seed_review():
     rv = data['review']
     prospect_property_id = rv.get('prospect_property_id')
 
+    def safe_float(v):
+        """Convert to float or None if not numeric."""
+        if v is None:
+            return None
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            return None
+
     try:
         with engine.begin() as conn:
             # Insert review
@@ -550,7 +559,7 @@ def seed_review():
                     VALUES (:tid, :rt, :ru, :rf, :sd)
                 """), {
                     'tid': new_tid, 'rt': eu.get('restriction_text'),
-                    'ru': eu.get('restricted_use'), 'rf': eu.get('radius_feet'),
+                    'ru': eu.get('restricted_use'), 'rf': safe_float(eu.get('radius_feet')),
                     'sd': eu.get('source_doc'),
                 })
 
@@ -569,7 +578,7 @@ def seed_review():
                 """), {
                     'tid': new_tid, 'ot': o.get('option_type', ''),
                     'on': o.get('option_number'), 'to_': o.get('total_options'),
-                    'ty': o.get('term_years'), 'nd': o.get('notice_days'),
+                    'ty': safe_float(o.get('term_years')), 'nd': o.get('notice_days'),
                     'ndl': o.get('notice_deadline'), 'rt': o.get('rent_terms'),
                     'ar': bool(o.get('auto_renewal')),
                     'ex': bool(o.get('exercised')),
@@ -588,8 +597,9 @@ def seed_review():
                     VALUES (:tid, :ed, :mr, :ar, :rpsf, :sd, :sp)
                 """), {
                     'tid': new_tid, 'ed': rs.get('effective_date'),
-                    'mr': rs.get('monthly_rent'), 'ar': rs.get('annual_rent'),
-                    'rpsf': rs.get('rent_per_sf'),
+                    'mr': safe_float(rs.get('monthly_rent')),
+                    'ar': safe_float(rs.get('annual_rent')),
+                    'rpsf': safe_float(rs.get('rent_per_sf')),
                     'sd': rs.get('source_doc'), 'sp': rs.get('source_page'),
                 })
 
