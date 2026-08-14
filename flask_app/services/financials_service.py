@@ -1168,10 +1168,18 @@ def _compute_accrued_from_pref_detail(vcode: str, data: dict, quarter_str: str,
             return None
 
         total_accrued = 0.0
+        # build_pref_balance_detail() matches InvestorID case-insensitively, so
+        # two casings of one investor would each return the full ledger and be
+        # summed twice.  get_deal_pe_investors() already collapses them; this
+        # guard keeps the invariant local to the summation that depends on it.
+        seen_investors: set[str] = set()
         for inv_info in pe_investors:
             investor_id = inv_info["investor_id"]
             if investor_id.upper().startswith("OP"):
                 continue
+            if investor_id.upper() in seen_investors:
+                continue
+            seen_investors.add(investor_id.upper())
             detail = build_pref_balance_detail(
                 vcode, investor_id, report_date, acct, inv_map, wf_steps=wf_steps,
             )

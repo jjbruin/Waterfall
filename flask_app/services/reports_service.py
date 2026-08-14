@@ -935,7 +935,8 @@ def get_deal_pe_investors(
 
     vcode_str = str(vcode).strip()
     inv_to_vcode = build_investmentid_to_vcode(inv_map)
-    deal_iids = [iid for iid, vc in inv_to_vcode.items() if str(vc) == vcode_str]
+    deal_iids = [iid for iid, vc in inv_to_vcode.items()
+                 if str(vc).strip().upper() == vcode_str.upper()]
     if not deal_iids:
         return []
 
@@ -945,8 +946,17 @@ def get_deal_pe_investors(
     acct_norm["InvestmentID"] = acct_norm["InvestmentID"].astype(str).str.strip()
 
     deal_acct = acct_norm[acct_norm["InvestmentID"].isin(deal_iids)]
-    investors = sorted(deal_acct["InvestorID"].unique())
-    return [{"investor_id": iid} for iid in investors]
+    # Collapse casing variants of one investor.  The accounting feed carries the
+    # same InvestorID under two casings on some deals (e.g. PPI11 and ppi11),
+    # and build_pref_balance_detail() matches InvestorID case-insensitively — so
+    # each variant returns the *whole* combined ledger.  Left un-deduped, every
+    # caller that iterates this list counts that ledger once per variant, which
+    # doubled the One Pager's accrued pref balance.  Sorted order puts the
+    # upper-case variant first, so that is the label kept.
+    canonical: dict[str, str] = {}
+    for iid in sorted(deal_acct["InvestorID"].unique()):
+        canonical.setdefault(iid.upper(), iid)
+    return [{"investor_id": iid} for iid in canonical.values()]
 
 
 def _quarter_ends_between(start: date, end: date) -> list[date]:
@@ -979,7 +989,8 @@ def build_pref_balance_detail(
 
     vcode_str = str(vcode).strip()
     inv_to_vcode = build_investmentid_to_vcode(inv_map)
-    deal_iids = [iid for iid, vc in inv_to_vcode.items() if str(vc) == vcode_str]
+    deal_iids = [iid for iid, vc in inv_to_vcode.items()
+                 if str(vc).strip().upper() == vcode_str.upper()]
 
     # Get pref rate — priority: deal_terms pe_coupon > waterfall
     pref_rate = 0.0
@@ -989,8 +1000,8 @@ def build_pref_balance_detail(
         from database import _sa_engine
         if _sa_engine is not None:
             dt_df = pd.read_sql(
-                "SELECT pe_coupon FROM deal_terms WHERE vcode = :vc",
-                _sa_engine, params={"vc": vcode_str},
+                "SELECT pe_coupon FROM deal_terms WHERE UPPER(vcode) = :vc",
+                _sa_engine, params={"vc": vcode_str.upper()},
             )
             if not dt_df.empty and pd.notna(dt_df.iloc[0]["pe_coupon"]):
                 pref_rate = float(dt_df.iloc[0]["pe_coupon"])

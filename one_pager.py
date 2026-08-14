@@ -61,6 +61,28 @@ def get_year_start(quarter_str: str) -> date:
     return date(year, 1, 1)
 
 
+def _canonical_vcode(vcode: str, inv_map: pd.DataFrame) -> str:
+    """Resolve an input vcode to the casing used in the deals table.
+
+    Routes, scripts and deep links may pass any casing, but the cap-stack and
+    PE blocks compare vcode case-sensitively against inv_map, waterfalls and
+    valuations.  A mismatched casing therefore matched nothing and rendered a
+    zero-filled section instead of raising — a blank report that looks real.
+    Resolving to the stored casing here leaves every downstream comparison
+    untouched for callers that already pass the right case.
+    """
+    raw = str(vcode).strip()
+    if inv_map is None or inv_map.empty:
+        return raw
+    col = 'vcode' if 'vcode' in inv_map.columns else ('vCode' if 'vCode' in inv_map.columns else None)
+    if col is None:
+        return raw
+    match = inv_map[inv_map[col].astype(str).str.strip().str.upper() == raw.upper()]
+    if match.empty:
+        return raw
+    return str(match.iloc[0][col]).strip()
+
+
 def get_available_quarters(isbs_df: pd.DataFrame) -> List[str]:
     """
     Get list of available quarters from ISBS actual data
@@ -429,7 +451,7 @@ def get_capitalization_stack(
         'committed_pe': 0.0,
     }
 
-    vcode_str = str(vcode).strip()
+    vcode_str = _canonical_vcode(vcode, inv_map)
 
     # Get debt from ISBS balance sheet (current outstanding for selected quarter)
     isbs_debt = None
@@ -1616,7 +1638,7 @@ def get_pe_performance(
         'accrued_balance': 0.0,
     }
 
-    vcode_str = str(vcode).strip()
+    vcode_str = _canonical_vcode(vcode, inv_map)
     _, quarter_end = quarter_to_date_range(quarter_str)
 
     # Get coupon and participation from waterfalls
