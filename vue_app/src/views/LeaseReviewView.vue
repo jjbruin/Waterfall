@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '../api/client'
 import VChart from 'vue-echarts'
@@ -30,10 +30,22 @@ const cotenancy = ref<any>(null)
 const scenarios = ref<any[]>([])
 const validation = ref<any[]>([])
 const loading = ref(false)
-const activeTab = ref('overview')
 const expandedTenant = ref<number | null>(null)
 const tenantDocs = ref<any[]>([])
 const expandedScenario = ref<string | null>(null)
+
+// Workflow stepper
+const STEPS = [
+  { key: 'setup', label: 'Setup', num: 1 },
+  { key: 'rent_roll', label: 'Import Rent Roll', num: 2 },
+  { key: 'documents', label: 'Upload Documents', num: 3 },
+  { key: 'extraction', label: 'AI Extraction', num: 4 },
+  { key: 'validation', label: 'Validation', num: 5 },
+  { key: 'review', label: 'Analyst Review', num: 6 },
+  { key: 'complete', label: 'Complete', num: 7 },
+]
+const activeStep = ref('setup')
+const progress = ref<any>(null)
 
 // New review creation
 const showNewReview = ref(false)
@@ -44,9 +56,22 @@ const creatingReview = ref(false)
 const prospectProperties = ref<any[]>([])
 const selectedProspectPropId = ref<number | null>(null)
 
-// Rent roll upload
+// Rent roll upload / merge
 const uploadingRentRoll = ref(false)
+const mergingRentRoll = ref(false)
 const uploadMessage = ref('')
+const mergeReport = ref<any>(null)
+
+// Document upload
+const uploadingDocs = ref(false)
+const docUploadReport = ref<any>(null)
+
+// Extraction
+const extracting = ref(false)
+const extractionMessage = ref('')
+
+// Validation
+const validating = ref(false)
 
 // Load
 onMounted(async () => {
@@ -70,6 +95,13 @@ async function loadReview(id: number) {
     const revRes = await api.get(`/api/lease-review/reviews/${id}`)
     review.value = revRes.data.review
     tenants.value = revRes.data.tenants
+    activeStep.value = review.value.workflow_step || 'setup'
+
+    // Load progress
+    try {
+      const progRes = await api.get(`/api/lease-review/reviews/${id}/progress`)
+      progress.value = progRes.data
+    } catch { progress.value = null }
 
     // Load secondary data — these may fail if no tenants yet
     if (tenants.value.length) {
@@ -118,6 +150,32 @@ async function onReviewChange() {
   if (selectedReviewId.value) await loadReview(selectedReviewId.value)
 }
 
+// Step navigation
+function stepIndex(key: string): number {
+  return STEPS.findIndex(s => s.key === key)
+}
+
+function isStepUnlocked(key: string): boolean {
+  // All steps up to and including current step +1 are unlocked
+  const current = stepIndex(activeStep.value)
+  const target = stepIndex(key)
+  return target <= current + 1
+}
+
+async function goToStep(key: string) {
+  if (!isStepUnlocked(key)) return
+  activeStep.value = key
+  // Persist to server
+  if (selectedReviewId.value) {
+    try {
+      await api.put(`/api/lease-review/reviews/${selectedReviewId.value}/workflow-step`, { step: key })
+    } catch (e) {
+      console.warn('Failed to persist step', e)
+    }
+  }
+}
+
+// Tenant docs
 async function toggleTenantDocs(tid: number) {
   if (expandedTenant.value === tid) {
     expandedTenant.value = null
@@ -128,6 +186,7 @@ async function toggleTenantDocs(tid: number) {
   tenantDocs.value = res.data
 }
 
+// Excel download
 async function downloadExcel() {
   if (!selectedReviewId.value) return
   const res = await api.get(`/api/lease-review/reviews/${selectedReviewId.value}/excel`, { responseType: 'blob' })
@@ -139,6 +198,7 @@ async function downloadExcel() {
   URL.revokeObjectURL(url)
 }
 
+// New review
 async function openNewReviewModal() {
   showNewReview.value = true
   try {
@@ -169,7 +229,6 @@ async function createNewReview() {
       total_gla: newReviewGla.value || 0,
       prospect_property_id: selectedProspectPropId.value || undefined,
     })
-    // Reload reviews list and select the new one
     const listRes = await api.get('/api/lease-review/reviews')
     reviews.value = listRes.data
     selectedReviewId.value = res.data.review_id
@@ -187,6 +246,7 @@ async function createNewReview() {
   }
 }
 
+// Destructive rent roll upload (original)
 async function onRentRollUpload(event: Event) {
   const input = event.target as HTMLInputElement
   if (!input.files?.length || !selectedReviewId.value) return
@@ -204,7 +264,6 @@ async function onRentRollUpload(event: Event) {
       { headers: { 'Content-Type': 'multipart/form-data' } }
     )
     uploadMessage.value = `Imported ${res.data.tenant_count} tenants (${(res.data.total_gla || 0).toLocaleString()} SF)`
-    // Reload the review data
     await loadReview(selectedReviewId.value!)
   } catch (e: any) {
     uploadMessage.value = ''
@@ -216,12 +275,116 @@ async function onRentRollUpload(event: Event) {
   }
 }
 
+// Non-destructive rent roll merge
+async function onRentRollMerge(event: Event) {
+  const input = event.target as HTMLInputElement
+  if (!input.files?.length || !selectedReviewId.value) return
+
+  const file = input.files[0]
+  const formData = new FormData()
+  formData.append('file', file)
+
+  mergingRentRoll.value = true
+  mergeReport.value = null
+  uploadMessage.value = ''
+  try {
+    const res = await api.post(
+      `/api/lease-review/reviews/${selectedReviewId.value}/merge-rent-roll`,
+      formData,
+      { headers: { 'Content-Type': 'multipart/form-data' } }
+    )
+    mergeReport.value = res.data
+    uploadMessage.value = `Merged: ${res.data.matched} updated, ${res.data.added} added, ${res.data.not_in_upload} not in upload`
+    await loadReview(selectedReviewId.value!)
+  } catch (e: any) {
+    console.error('Merge error', e)
+    alert(e.response?.data?.error || 'Failed to merge rent roll')
+  } finally {
+    mergingRentRoll.value = false
+    input.value = ''
+  }
+}
+
+// Document upload
+async function onDocumentUpload(event: Event) {
+  const input = event.target as HTMLInputElement
+  if (!input.files?.length || !selectedReviewId.value) return
+
+  const formData = new FormData()
+  for (const f of input.files) {
+    formData.append('files', f)
+  }
+
+  uploadingDocs.value = true
+  docUploadReport.value = null
+  try {
+    const res = await api.post(
+      `/api/lease-review/reviews/${selectedReviewId.value}/upload-documents`,
+      formData,
+      { headers: { 'Content-Type': 'multipart/form-data' } }
+    )
+    docUploadReport.value = res.data
+    await loadReview(selectedReviewId.value!)
+  } catch (e: any) {
+    console.error('Doc upload error', e)
+    alert(e.response?.data?.error || 'Failed to upload documents')
+  } finally {
+    uploadingDocs.value = false
+    input.value = ''
+  }
+}
+
+// Run extraction
+async function runExtraction() {
+  if (!selectedReviewId.value) return
+  extracting.value = true
+  extractionMessage.value = 'Running AI extraction on pending documents...'
+  try {
+    await api.post(`/api/lease-review/reviews/${selectedReviewId.value}/extract`)
+    extractionMessage.value = 'Extraction complete.'
+    await loadReview(selectedReviewId.value!)
+  } catch (e: any) {
+    extractionMessage.value = e.response?.data?.error || 'Extraction failed'
+  } finally {
+    extracting.value = false
+  }
+}
+
+// Run validation
+async function runValidation() {
+  if (!selectedReviewId.value) return
+  validating.value = true
+  try {
+    await api.post(`/api/lease-review/reviews/${selectedReviewId.value}/validate`)
+    await loadReview(selectedReviewId.value!)
+  } catch (e: any) {
+    alert(e.response?.data?.error || 'Validation failed')
+  } finally {
+    validating.value = false
+  }
+}
+
+// Tenant approval
+async function setTenantApproval(tid: number, status: string) {
+  if (!selectedReviewId.value) return
+  try {
+    await api.put(`/api/lease-review/reviews/${selectedReviewId.value}/tenants/${tid}/approve`, { status })
+    // Update local state
+    const t = tenants.value.find(x => x.id === tid)
+    if (t) t.approval_status = status
+  } catch (e: any) {
+    alert(e.response?.data?.error || 'Failed to update approval')
+  }
+}
+
 // Computed
 const occupiedTenants = computed(() => tenants.value.filter(t => !t.is_vacant))
 const vacantSuites = computed(() => tenants.value.filter(t => t.is_vacant))
 const materialTenants = computed(() => occupiedTenants.value.filter(t => t.is_material))
 const cotenancyTenants = computed(() => occupiedTenants.value.filter(t => t.has_cotenancy))
 const extractedCount = computed(() => occupiedTenants.value.filter(t => t.extraction_status === 'extracted').length)
+const approvedCount = computed(() => occupiedTenants.value.filter(t => t.approval_status === 'approved').length)
+const flaggedCount = computed(() => occupiedTenants.value.filter(t => t.approval_status === 'flagged').length)
 
 const valSummary = computed(() => {
   const bySource: Record<string, { match: number; minor: number; mismatch: number; review: number; pending: number }> = {}
@@ -274,7 +437,7 @@ const expChartOption = computed(() => {
   }
 })
 
-// Risk chart (rent at risk by departing tenant)
+// Risk chart
 const riskChartOption = computed(() => {
   if (!cotenancy.value?.rent_at_risk) return null
   const entries = Object.entries(cotenancy.value.rent_at_risk)
@@ -406,18 +569,6 @@ function statusClass(s: string): string {
       <button class="btn-primary" style="margin-top: 1rem" @click="openNewReviewModal">+ New Review</button>
     </div>
 
-    <!-- Rent roll upload bar (when review exists but no tenants) -->
-    <div v-if="review && !loading && !tenants.length" class="upload-bar">
-      <div class="upload-prompt">
-        <strong>{{ review.property_name }}</strong> has no tenant data yet.
-        Upload a rent roll to populate tenants.
-      </div>
-      <label class="btn-upload">
-        {{ uploadingRentRoll ? 'Uploading...' : 'Upload Rent Roll' }}
-        <input type="file" accept=".xlsx,.xls,.csv,.pdf" @change="onRentRollUpload" :disabled="uploadingRentRoll" hidden />
-      </label>
-    </div>
-
     <template v-if="review && !loading">
       <!-- KPI Cards -->
       <div class="kpi-row">
@@ -434,168 +585,222 @@ function statusClass(s: string): string {
           <div class="kpi-value">{{ occupiedTenants.length }} <span class="kpi-sub">/ {{ vacantSuites.length }} vacant</span></div>
         </div>
         <div class="kpi-card">
-          <div class="kpi-label">Material Leases</div>
-          <div class="kpi-value">{{ materialTenants.length }}</div>
-        </div>
-        <div class="kpi-card">
-          <div class="kpi-label">Co-Tenancy Clauses</div>
-          <div class="kpi-value">{{ cotenancyTenants.length }}</div>
-        </div>
-        <div class="kpi-card">
           <div class="kpi-label">Extracted</div>
           <div class="kpi-value">{{ extractedCount }} / {{ occupiedTenants.length }}</div>
         </div>
-      </div>
-
-      <!-- Tabs -->
-      <div class="tabs">
-        <button :class="{ active: activeTab === 'overview' }" @click="activeTab = 'overview'">Overview</button>
-        <button :class="{ active: activeTab === 'expirations' }" @click="activeTab = 'expirations'">Lease Expirations</button>
-        <button :class="{ active: activeTab === 'validation' }" @click="activeTab = 'validation'">Validation</button>
-        <button :class="{ active: activeTab === 'cotenancy' }" @click="activeTab = 'cotenancy'">Co-Tenancy Risk</button>
-        <button :class="{ active: activeTab === 'scenarios' }" @click="activeTab = 'scenarios'">Scenario Analysis</button>
-      </div>
-
-      <!-- TAB: Overview (Tenant Roster) -->
-      <div v-if="activeTab === 'overview'" class="tab-content">
-        <div class="section-header-row">
-          <h2>Tenant Roster</h2>
-          <div class="section-actions">
-            <span v-if="uploadMessage" class="upload-msg">{{ uploadMessage }}</span>
-            <label class="btn-upload-sm">
-              {{ uploadingRentRoll ? 'Uploading...' : 'Upload Rent Roll' }}
-              <input type="file" accept=".xlsx,.xls,.csv,.pdf" @change="onRentRollUpload" :disabled="uploadingRentRoll" hidden />
-            </label>
+        <div class="kpi-card">
+          <div class="kpi-label">Approved</div>
+          <div class="kpi-value">
+            {{ approvedCount }} / {{ occupiedTenants.length }}
+            <span v-if="flaggedCount" class="kpi-sub kpi-flagged">{{ flaggedCount }} flagged</span>
           </div>
         </div>
-        <div class="table-scroll">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>Tenant</th>
-                <th>Suite</th>
-                <th class="r">SF</th>
-                <th>Start</th>
-                <th>End</th>
-                <th class="r">Annual Rent</th>
-                <th class="r">$/SF</th>
-                <th class="c">Material</th>
-                <th class="c">Co-Ten</th>
-                <th class="c">Status</th>
-                <th class="c">Docs</th>
-              </tr>
-            </thead>
-            <tbody>
-              <template v-for="t in occupiedTenants" :key="t.id">
-                <tr :class="{ 'row-material': t.is_material, 'row-cotenancy': t.has_cotenancy }" @click="toggleTenantDocs(t.id)" style="cursor:pointer">
+      </div>
+
+      <!-- Workflow Stepper -->
+      <div class="stepper">
+        <div
+          v-for="step in STEPS"
+          :key="step.key"
+          class="step"
+          :class="{
+            active: activeStep === step.key,
+            completed: stepIndex(step.key) < stepIndex(activeStep),
+            locked: !isStepUnlocked(step.key),
+          }"
+          @click="goToStep(step.key)"
+        >
+          <div class="step-number">
+            <span v-if="stepIndex(step.key) < stepIndex(activeStep)" class="step-check">&#10003;</span>
+            <span v-else>{{ step.num }}</span>
+          </div>
+          <div class="step-label">{{ step.label }}</div>
+        </div>
+      </div>
+
+      <!-- STEP 1: Setup -->
+      <div v-if="activeStep === 'setup'" class="step-content">
+        <h2>Deal Setup</h2>
+        <p class="subtitle">Review created: <strong>{{ review.property_name }}</strong> — {{ review.property_address || 'No address' }}</p>
+        <div class="setup-info">
+          <div><strong>Created by:</strong> {{ review.created_by }}</div>
+          <div><strong>Status:</strong> {{ review.status }}</div>
+          <div><strong>Total GLA:</strong> {{ fmtSF(review.total_gla) }} SF</div>
+        </div>
+        <button class="btn-primary" style="margin-top: 1rem" @click="goToStep('rent_roll')">
+          Continue to Import Rent Roll &rarr;
+        </button>
+      </div>
+
+      <!-- STEP 2: Import Rent Roll -->
+      <div v-if="activeStep === 'rent_roll'" class="step-content">
+        <h2>Import Seller's Rent Roll</h2>
+        <p class="subtitle">Upload the rent roll received from the operating partner. Use <strong>Import (Merge)</strong> to safely update existing data, or <strong>Replace All</strong> to start fresh.</p>
+
+        <div class="upload-actions">
+          <label class="btn-primary btn-upload-label">
+            {{ mergingRentRoll ? 'Merging...' : 'Import Rent Roll (Merge)' }}
+            <input type="file" accept=".xlsx,.xls,.csv,.pdf" @change="onRentRollMerge" :disabled="mergingRentRoll" hidden />
+          </label>
+
+          <label class="btn-secondary btn-upload-label">
+            {{ uploadingRentRoll ? 'Replacing...' : 'Replace All (Destructive)' }}
+            <input type="file" accept=".xlsx,.xls,.csv,.pdf" @change="onRentRollUpload" :disabled="uploadingRentRoll" hidden />
+          </label>
+        </div>
+
+        <div v-if="uploadMessage" class="upload-msg">{{ uploadMessage }}</div>
+
+        <!-- Merge report -->
+        <div v-if="mergeReport" class="merge-report">
+          <h3>Merge Results</h3>
+          <div class="merge-stats">
+            <span class="badge badge-extracted">{{ mergeReport.matched }} updated</span>
+            <span class="badge badge-match">{{ mergeReport.added }} added</span>
+            <span v-if="mergeReport.not_in_upload" class="badge badge-minor">{{ mergeReport.not_in_upload }} not in upload</span>
+          </div>
+          <div v-if="mergeReport.not_in_upload_tenants?.length" class="merge-missing">
+            <strong>Tenants not in uploaded rent roll:</strong>
+            <ul>
+              <li v-for="t in mergeReport.not_in_upload_tenants" :key="t.suite">
+                {{ t.tenant }} ({{ t.suite }})
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- Tenant roster preview -->
+        <div v-if="tenants.length" style="margin-top: 1.5rem">
+          <h3>Current Tenant Roster ({{ occupiedTenants.length }} tenants)</h3>
+          <div class="table-scroll">
+            <table class="data-table compact">
+              <thead>
+                <tr>
+                  <th>Tenant</th><th>Suite</th><th class="r">SF</th>
+                  <th class="r">Annual Rent</th><th>Source</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="t in occupiedTenants" :key="t.id">
                   <td class="tenant-name">{{ t.tenant_name }}</td>
                   <td>{{ t.suite }}</td>
                   <td class="r">{{ fmtSF(t.square_feet) }}</td>
-                  <td>{{ fmtDate(t.lease_start) }}</td>
-                  <td>{{ fmtDate(t.lease_end) }}</td>
                   <td class="r">{{ fmtCurrency(t.annual_rent) }}</td>
-                  <td class="r">{{ t.rent_per_sf?.toFixed(2) ?? '\u2014' }}</td>
-                  <td class="c">{{ t.is_material ? 'Yes' : '' }}</td>
-                  <td class="c">{{ t.has_cotenancy ? 'Yes' : '' }}</td>
-                  <td class="c"><span :class="'badge badge-' + t.extraction_status">{{ t.extraction_status }}</span></td>
-                  <td class="c">{{ t.documents.extracted }}/{{ t.documents.total }}</td>
-                </tr>
-                <!-- Expanded docs row -->
-                <tr v-if="expandedTenant === t.id" class="doc-row">
-                  <td colspan="11">
-                    <div class="doc-list">
-                      <div v-for="d in tenantDocs" :key="d.id" class="doc-item">
-                        <span class="doc-type">{{ d.doc_type }}</span>
-                        <span class="doc-name">{{ d.filename }}</span>
-                        <span class="doc-pages">{{ d.page_count ? d.page_count + ' pg' : '' }}</span>
-                        <span :class="'badge badge-' + d.extraction_status">{{ d.extraction_status }}</span>
-                      </div>
-                      <div v-if="!tenantDocs.length" class="doc-empty">No documents cataloged</div>
-                    </div>
-                  </td>
-                </tr>
-              </template>
-            </tbody>
-          </table>
-        </div>
-
-        <div v-if="vacantSuites.length" style="margin-top:1.5rem">
-          <h3>Vacant Suites ({{ vacantSuites.length }})</h3>
-          <div class="table-scroll">
-            <table class="data-table compact">
-              <thead><tr><th>Suite</th><th class="r">SF</th></tr></thead>
-              <tbody>
-                <tr v-for="v in vacantSuites" :key="v.id">
-                  <td>{{ v.suite }}</td><td class="r">{{ fmtSF(v.square_feet) }}</td>
+                  <td><span class="badge badge-pending">{{ t.rent_roll_source || 'original' }}</span></td>
                 </tr>
               </tbody>
             </table>
           </div>
         </div>
+
+        <button class="btn-primary" style="margin-top: 1rem" @click="goToStep('documents')" :disabled="!tenants.length">
+          Continue to Upload Documents &rarr;
+        </button>
       </div>
 
-      <!-- TAB: Lease Expirations -->
-      <div v-if="activeTab === 'expirations'" class="tab-content">
-        <h2>Lease Expiration Schedule</h2>
-        <div v-if="expChartOption" class="chart-container">
-          <v-chart :option="expChartOption" style="height:350px" autoresize />
+      <!-- STEP 3: Upload Documents -->
+      <div v-if="activeStep === 'documents'" class="step-content">
+        <h2>Upload Lease Documents</h2>
+        <p class="subtitle">Upload lease PDFs (Original Lease, Amendments, etc.). Documents are auto-classified and matched to tenants by filename. Duplicates are automatically skipped.</p>
+
+        <div class="upload-actions">
+          <label class="btn-primary btn-upload-label">
+            {{ uploadingDocs ? 'Uploading...' : 'Upload Lease PDFs' }}
+            <input type="file" accept=".pdf" multiple @change="onDocumentUpload" :disabled="uploadingDocs" hidden />
+          </label>
         </div>
 
-        <div v-if="expirations?.yearly_data" class="table-scroll" style="margin-top:1rem">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>Year</th><th class="r">Expiring SF</th><th class="r">Expiring Rent</th>
-                <th class="r">% of Total</th><th class="r">Avg $/SF</th><th class="r">Tenants</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="y in expirations.yearly_data.filter((y: any) => y.tenant_count > 0 || y.year <= 2036)" :key="y.year"
-                  :class="{ 'row-heavy': y.pct_of_total_rent > 15 }">
-                <td>{{ y.year }}</td>
-                <td class="r">{{ fmtSF(y.expiring_sf) }}</td>
-                <td class="r">{{ fmtCurrency(y.expiring_rent) }}</td>
-                <td class="r">{{ fmtPct(y.pct_of_total_rent) }}</td>
-                <td class="r">{{ y.avg_rent_per_sf > 0 ? '$' + y.avg_rent_per_sf.toFixed(2) : '\u2014' }}</td>
-                <td class="r">{{ y.tenant_count }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        <!-- Material Leases by Year -->
-        <div v-if="expirations?.material_leases" style="margin-top:2rem">
-          <h2>Material Leases Maturing by Year</h2>
-          <div v-for="(leases, year) in expirations.material_leases" :key="year" style="margin-bottom:1rem">
-            <h3>{{ year }}</h3>
-            <div class="table-scroll">
-              <table class="data-table compact">
-                <thead>
-                  <tr><th>Tenant</th><th>Suite</th><th class="r">SF</th><th class="r">Annual Rent</th><th class="r">$/SF</th><th>Co-Tenancy</th></tr>
-                </thead>
-                <tbody>
-                  <tr v-for="l in leases" :key="l.tenant_name" :class="{ 'row-cotenancy': l.has_cotenancy }">
-                    <td>{{ l.tenant_name }}</td>
-                    <td>{{ l.suite }}</td>
-                    <td class="r">{{ fmtSF(l.square_feet) }}</td>
-                    <td class="r">{{ fmtCurrency(l.annual_rent) }}</td>
-                    <td class="r">${{ l.rent_per_sf?.toFixed(2) }}</td>
-                    <td>{{ l.cotenancy_implication || '\u2014' }}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
+        <!-- Upload report -->
+        <div v-if="docUploadReport" class="merge-report">
+          <h3>Upload Results</h3>
+          <div class="merge-stats">
+            <span class="badge badge-extracted">{{ docUploadReport.added }} added</span>
+            <span v-if="docUploadReport.skipped_duplicate" class="badge badge-pending">{{ docUploadReport.skipped_duplicate }} duplicates skipped</span>
+            <span v-if="docUploadReport.unmatched" class="badge badge-minor">{{ docUploadReport.unmatched }} unmatched</span>
+          </div>
+          <div v-if="docUploadReport.details?.filter((d: any) => d.action === 'unmatched').length" class="merge-missing">
+            <strong>Unmatched documents (need manual assignment):</strong>
+            <ul>
+              <li v-for="d in docUploadReport.details.filter((d: any) => d.action === 'unmatched')" :key="d.filename">
+                {{ d.filename }} ({{ d.doc_type }})
+              </li>
+            </ul>
           </div>
         </div>
+
+        <!-- Document summary by tenant -->
+        <div v-if="tenants.length" style="margin-top: 1.5rem">
+          <h3>Documents by Tenant</h3>
+          <div class="table-scroll">
+            <table class="data-table compact">
+              <thead>
+                <tr><th>Tenant</th><th>Suite</th><th class="c">Documents</th><th class="c">Extracted</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="t in occupiedTenants" :key="t.id" @click="toggleTenantDocs(t.id)" style="cursor:pointer">
+                  <td class="tenant-name">{{ t.tenant_name }}</td>
+                  <td>{{ t.suite }}</td>
+                  <td class="c">{{ t.documents.total }}</td>
+                  <td class="c">{{ t.documents.extracted }}</td>
+                </tr>
+                <template v-if="expandedTenant">
+                  <tr v-if="tenantDocs.length || expandedTenant" class="doc-row">
+                    <td colspan="4">
+                      <div class="doc-list">
+                        <div v-for="d in tenantDocs" :key="d.id" class="doc-item">
+                          <span class="doc-type">{{ d.doc_type }}</span>
+                          <span class="doc-name">{{ d.filename }}</span>
+                          <span class="doc-pages">{{ d.page_count ? d.page_count + ' pg' : '' }}</span>
+                          <span :class="'badge badge-' + d.extraction_status">{{ d.extraction_status }}</span>
+                        </div>
+                        <div v-if="!tenantDocs.length" class="doc-empty">No documents</div>
+                      </div>
+                    </td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <button class="btn-primary" style="margin-top: 1rem" @click="goToStep('extraction')">
+          Continue to AI Extraction &rarr;
+        </button>
       </div>
 
-      <!-- TAB: Validation -->
-      <div v-if="activeTab === 'validation'" class="tab-content">
-        <h2>Seller Document Validation vs Lease Terms</h2>
-        <p class="subtitle">Lease PDFs are the authoritative source. Rent Roll and Argus are seller representations validated against actual lease terms.</p>
+      <!-- STEP 4: AI Extraction -->
+      <div v-if="activeStep === 'extraction'" class="step-content">
+        <h2>AI Extraction</h2>
+        <p class="subtitle">Run Claude extraction on pending documents to pull rent steps, cotenancy clauses, exclusive use, and renewal options.</p>
+
+        <div class="extraction-status">
+          <div v-if="progress">
+            <strong>{{ progress.docs_extracted }}</strong> of <strong>{{ progress.docs_uploaded }}</strong> documents extracted
+            <span v-if="progress.docs_pending"> ({{ progress.docs_pending }} pending)</span>
+          </div>
+        </div>
+
+        <button class="btn-primary" @click="runExtraction" :disabled="extracting || !progress?.docs_pending">
+          {{ extracting ? 'Extracting...' : 'Run Extraction' }}
+        </button>
+        <div v-if="extractionMessage" class="upload-msg" style="margin-top: 0.5rem">{{ extractionMessage }}</div>
+
+        <button class="btn-primary" style="margin-top: 1rem" @click="goToStep('validation')">
+          Continue to Validation &rarr;
+        </button>
+      </div>
+
+      <!-- STEP 5: Validation -->
+      <div v-if="activeStep === 'validation'" class="step-content">
+        <h2>Three-Way Validation</h2>
+        <p class="subtitle">Compare seller rent roll vs AI-extracted lease terms vs Argus (if provided). Flags matches and mismatches.</p>
+
+        <button class="btn-primary" @click="runValidation" :disabled="validating" style="margin-bottom: 1rem">
+          {{ validating ? 'Validating...' : 'Run Validation' }}
+        </button>
 
         <!-- Validation summary cards -->
-        <div class="val-summary">
+        <div v-if="Object.keys(valSummary).length" class="val-summary">
           <div v-for="(stats, source) in valSummary" :key="source" class="val-card">
             <div class="val-card-title">{{ source === 'rent_roll' ? 'Rent Roll' : source === 'argus' ? 'Argus' : 'Co-Tenancy Schedule' }}</div>
             <div class="val-stats">
@@ -607,59 +812,133 @@ function statusClass(s: string): string {
           </div>
         </div>
 
-        <!-- Annual rent comparison table -->
-        <h3 style="margin-top:1.5rem">Annual Rent: Rent Roll vs Lease</h3>
-        <div class="table-scroll">
-          <table class="data-table">
-            <thead>
-              <tr><th>Tenant</th><th>Suite</th><th class="r">Rent Roll</th><th class="r">Lease</th><th class="c">Status</th><th>Notes</th></tr>
-            </thead>
-            <tbody>
-              <tr v-for="v in annualRentValidation" :key="v.tenant + v.suite" :class="statusClass(v.status)">
-                <td>{{ v.tenant }}</td>
-                <td>{{ v.suite }}</td>
-                <td class="r">{{ v.seller_value ? fmtCurrency(parseFloat(v.seller_value)) : '\u2014' }}</td>
-                <td class="r">{{ v.lease_value ? fmtCurrency(parseFloat(v.lease_value)) : '\u2014' }}</td>
-                <td class="c"><span :class="'badge badge-' + v.status">{{ v.status }}</span></td>
-                <td class="notes">{{ v.notes || '' }}</td>
-              </tr>
-            </tbody>
-          </table>
+        <!-- Annual rent comparison -->
+        <div v-if="annualRentValidation.length">
+          <h3 style="margin-top:1.5rem">Annual Rent: Rent Roll vs Lease</h3>
+          <div class="table-scroll">
+            <table class="data-table">
+              <thead>
+                <tr><th>Tenant</th><th>Suite</th><th class="r">Rent Roll</th><th class="r">Lease</th><th class="c">Status</th><th>Notes</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="v in annualRentValidation" :key="v.tenant + v.suite" :class="statusClass(v.status)">
+                  <td>{{ v.tenant }}</td>
+                  <td>{{ v.suite }}</td>
+                  <td class="r">{{ v.seller_value ? fmtCurrency(parseFloat(v.seller_value)) : '\u2014' }}</td>
+                  <td class="r">{{ v.lease_value ? fmtCurrency(parseFloat(v.lease_value)) : '\u2014' }}</td>
+                  <td class="c"><span :class="'badge badge-' + v.status">{{ v.status }}</span></td>
+                  <td class="notes">{{ v.notes || '' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
 
         <!-- Full validation detail -->
-        <h3 style="margin-top:1.5rem">All Validation Comparisons ({{ validation.length }})</h3>
-        <div class="table-scroll">
-          <table class="data-table compact">
+        <div v-if="validation.length">
+          <h3 style="margin-top:1.5rem">All Validation Comparisons ({{ validation.length }})</h3>
+          <div class="table-scroll">
+            <table class="data-table compact">
+              <thead>
+                <tr><th>Tenant</th><th>Suite</th><th>Source</th><th>Field</th><th class="r">Seller</th><th class="r">Lease</th><th class="c">Status</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="(v, i) in validation" :key="i" :class="statusClass(v.status)">
+                  <td>{{ v.tenant }}</td>
+                  <td>{{ v.suite }}</td>
+                  <td>{{ v.source_type }}</td>
+                  <td>{{ v.field }}</td>
+                  <td class="r">{{ v.seller_value ?? '\u2014' }}</td>
+                  <td class="r">{{ v.lease_value ?? '\u2014' }}</td>
+                  <td class="c"><span :class="'badge badge-' + v.status">{{ v.status }}</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <button class="btn-primary" style="margin-top: 1rem" @click="goToStep('review')">
+          Continue to Analyst Review &rarr;
+        </button>
+      </div>
+
+      <!-- STEP 6: Analyst Review -->
+      <div v-if="activeStep === 'review'" class="step-content">
+        <h2>Analyst Review &amp; Approval</h2>
+        <p class="subtitle">Review each tenant. Approve or flag tenants based on validation results. All non-vacant tenants must be approved to complete the review.</p>
+
+        <div class="approval-summary">
+          <span class="badge badge-extracted">{{ approvedCount }} approved</span>
+          <span v-if="flaggedCount" class="badge badge-mismatch">{{ flaggedCount }} flagged</span>
+          <span class="badge badge-pending">{{ occupiedTenants.length - approvedCount - flaggedCount }} pending</span>
+        </div>
+
+        <div class="table-scroll" style="margin-top: 1rem">
+          <table class="data-table">
             <thead>
-              <tr><th>Tenant</th><th>Suite</th><th>Source</th><th>Field</th><th class="r">Seller</th><th class="r">Lease</th><th class="c">Status</th></tr>
+              <tr>
+                <th>Tenant</th><th>Suite</th><th class="r">SF</th>
+                <th class="r">Annual Rent</th><th class="c">Extraction</th>
+                <th class="c">Approval</th><th>Actions</th>
+              </tr>
             </thead>
             <tbody>
-              <tr v-for="(v, i) in validation" :key="i" :class="statusClass(v.status)">
-                <td>{{ v.tenant }}</td>
-                <td>{{ v.suite }}</td>
-                <td>{{ v.source_type }}</td>
-                <td>{{ v.field }}</td>
-                <td class="r">{{ v.seller_value ?? '\u2014' }}</td>
-                <td class="r">{{ v.lease_value ?? '\u2014' }}</td>
-                <td class="c"><span :class="'badge badge-' + v.status">{{ v.status }}</span></td>
+              <tr v-for="t in occupiedTenants" :key="t.id"
+                  :class="{ 'row-approved': t.approval_status === 'approved', 'row-flagged': t.approval_status === 'flagged' }">
+                <td class="tenant-name">{{ t.tenant_name }}</td>
+                <td>{{ t.suite }}</td>
+                <td class="r">{{ fmtSF(t.square_feet) }}</td>
+                <td class="r">{{ fmtCurrency(t.annual_rent) }}</td>
+                <td class="c"><span :class="'badge badge-' + t.extraction_status">{{ t.extraction_status }}</span></td>
+                <td class="c">
+                  <span :class="'badge badge-' + (t.approval_status === 'approved' ? 'extracted' : t.approval_status === 'flagged' ? 'mismatch' : 'pending')">
+                    {{ t.approval_status || 'pending' }}
+                  </span>
+                </td>
+                <td>
+                  <button v-if="t.approval_status !== 'approved'" class="btn-sm btn-approve" @click="setTenantApproval(t.id, 'approved')">Approve</button>
+                  <button v-if="t.approval_status !== 'flagged'" class="btn-sm btn-flag" @click="setTenantApproval(t.id, 'flagged')">Flag</button>
+                  <button v-if="t.approval_status !== 'pending'" class="btn-sm btn-reset" @click="setTenantApproval(t.id, 'pending')">Reset</button>
+                </td>
               </tr>
             </tbody>
           </table>
         </div>
+
+        <button class="btn-primary" style="margin-top: 1rem" @click="goToStep('complete')"
+                :disabled="approvedCount < occupiedTenants.length">
+          {{ approvedCount >= occupiedTenants.length ? 'Complete Review \u2192' : `Approve all tenants to continue (${approvedCount}/${occupiedTenants.length})` }}
+        </button>
       </div>
 
-      <!-- TAB: Co-Tenancy Risk -->
-      <div v-if="activeTab === 'cotenancy'" class="tab-content">
-        <h2>Co-Tenancy Risk Analysis</h2>
+      <!-- STEP 7: Complete / Deliverables -->
+      <div v-if="activeStep === 'complete'" class="step-content">
+        <h2>Review Complete</h2>
+        <p class="subtitle">Due diligence review is complete. Download the comprehensive workbook or review analysis below.</p>
 
-        <div v-if="riskChartOption" class="chart-container">
-          <v-chart :option="riskChartOption" style="height:300px" autoresize />
+        <button class="btn-primary" @click="downloadExcel" style="margin-bottom: 1.5rem">
+          Download DD Workbook (Excel)
+        </button>
+
+        <!-- Lease Expirations -->
+        <div v-if="expChartOption" style="margin-bottom: 2rem">
+          <h3>Lease Expiration Schedule</h3>
+          <div class="chart-container">
+            <v-chart :option="expChartOption" style="height:350px" autoresize />
+          </div>
+        </div>
+
+        <!-- Co-Tenancy Risk -->
+        <div v-if="riskChartOption" style="margin-bottom: 2rem">
+          <h3>Co-Tenancy Risk</h3>
+          <div class="chart-container">
+            <v-chart :option="riskChartOption" style="height:300px" autoresize />
+          </div>
         </div>
 
         <!-- Co-tenancy clause details -->
-        <div v-if="cotenancy?.clauses?.length" style="margin-top:1.5rem">
-          <h3>Clause Details</h3>
+        <div v-if="cotenancy?.clauses?.length" style="margin-bottom: 2rem">
+          <h3>Co-Tenancy Clause Details</h3>
           <div class="table-scroll">
             <table class="data-table">
               <thead>
@@ -687,61 +966,38 @@ function statusClass(s: string): string {
           </div>
         </div>
 
-        <!-- Departing tenant risk detail -->
-        <div v-if="cotenancy?.rent_at_risk" style="margin-top:1.5rem">
-          <h3>Departing Tenant Impact</h3>
-          <div class="table-scroll">
-            <table class="data-table">
-              <thead>
-                <tr><th>Departing Tenant</th><th class="r">Affected</th><th class="r">Rent at Risk</th><th class="r">Can Terminate</th></tr>
-              </thead>
-              <tbody>
-                <tr v-for="(risk, name) in cotenancy.rent_at_risk" :key="name">
-                  <td class="tenant-name">{{ name }}</td>
-                  <td class="r">{{ risk.dependent_count }}</td>
-                  <td class="r">{{ fmtCurrency(risk.total_dependent_rent) }}</td>
-                  <td class="r">{{ risk.termination_eligible_count }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-
-      <!-- TAB: Scenario Analysis -->
-      <div v-if="activeTab === 'scenarios'" class="tab-content">
-        <h2>Cascading Scenario Analysis</h2>
-        <p class="subtitle">Models the impact of each anchor tenant departing on co-tenancy clauses across the property.</p>
-
-        <div v-for="s in scenarios" :key="s.departing_tenant" class="scenario-card">
-          <div class="scenario-header" @click="expandedScenario = expandedScenario === s.departing_tenant ? null : s.departing_tenant">
-            <div class="scenario-title">
-              <span class="scenario-icon">{{ expandedScenario === s.departing_tenant ? '\u25BC' : '\u25B6' }}</span>
-              If <strong>{{ s.departing_tenant }}</strong> departs
+        <!-- Scenario Analysis -->
+        <div v-if="scenarios.length" style="margin-bottom: 2rem">
+          <h3>Cascading Scenario Analysis</h3>
+          <div v-for="s in scenarios" :key="s.departing_tenant" class="scenario-card">
+            <div class="scenario-header" @click="expandedScenario = expandedScenario === s.departing_tenant ? null : s.departing_tenant">
+              <div class="scenario-title">
+                <span class="scenario-icon">{{ expandedScenario === s.departing_tenant ? '\u25BC' : '\u25B6' }}</span>
+                If <strong>{{ s.departing_tenant }}</strong> departs
+              </div>
+              <div class="scenario-summary">
+                <span class="scenario-metric">{{ fmtCurrency(s.total_dependent_rent) }} at risk</span>
+                <span class="scenario-metric">{{ s.termination_eligible }} can terminate</span>
+              </div>
             </div>
-            <div class="scenario-summary">
-              <span class="scenario-metric">{{ fmtCurrency(s.total_dependent_rent) }} at risk</span>
-              <span class="scenario-metric">{{ s.termination_eligible }} can terminate</span>
+            <div v-if="expandedScenario === s.departing_tenant" class="scenario-detail">
+              <table class="data-table compact">
+                <thead>
+                  <tr><th>Tenant</th><th class="r">Annual Rent</th><th>Alt Rent Formula</th><th>Cure</th><th>Termination</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="imp in s.impacts" :key="imp.tenant" :class="{ 'row-uncurable': !imp.is_curable }">
+                    <td>{{ imp.tenant }}</td>
+                    <td class="r">{{ fmtCurrency(imp.annual_rent) }}</td>
+                    <td>{{ imp.alt_rent_formula || '\u2014' }}</td>
+                    <td>{{ !imp.is_curable ? 'UNCURABLE' : (imp.cure_days ? imp.cure_days + 'd' : '\u2014') }}</td>
+                    <td>{{ imp.can_terminate ? 'CAN TERMINATE' : 'No' }}</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           </div>
-          <div v-if="expandedScenario === s.departing_tenant" class="scenario-detail">
-            <table class="data-table compact">
-              <thead>
-                <tr><th>Tenant</th><th class="r">Annual Rent</th><th>Alt Rent Formula</th><th>Cure</th><th>Termination</th></tr>
-              </thead>
-              <tbody>
-                <tr v-for="imp in s.impacts" :key="imp.tenant" :class="{ 'row-uncurable': !imp.is_curable }">
-                  <td>{{ imp.tenant }}</td>
-                  <td class="r">{{ fmtCurrency(imp.annual_rent) }}</td>
-                  <td>{{ imp.alt_rent_formula || '\u2014' }}</td>
-                  <td>{{ !imp.is_curable ? 'UNCURABLE' : (imp.cure_days ? imp.cure_days + 'd' : '\u2014') }}</td>
-                  <td>{{ imp.can_terminate ? 'CAN TERMINATE' : 'No' }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
         </div>
-        <div v-if="!scenarios.length" class="empty">No scenario data available.</div>
       </div>
     </template>
   </div>
@@ -798,22 +1054,113 @@ function statusClass(s: string): string {
 .kpi-label { font-size: 0.75rem; color: #666; text-transform: uppercase; letter-spacing: 0.5px; }
 .kpi-value { font-size: 1.25rem; font-weight: 600; color: #1F4E79; margin-top: 0.25rem; }
 .kpi-sub { font-size: 0.8rem; color: #888; font-weight: 400; }
+.kpi-flagged { color: #C00000; }
 
-/* Tabs */
-.tabs {
-  display: flex; gap: 0; border-bottom: 2px solid #e0e0e0; margin-bottom: 1.5rem;
+/* Workflow Stepper */
+.stepper {
+  display: flex;
+  margin-bottom: 1.5rem;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #f8f9fa;
 }
-.tabs button {
-  padding: 0.6rem 1.2rem; border: none; background: none; cursor: pointer;
-  font-size: 0.85rem; color: #666; border-bottom: 2px solid transparent;
-  margin-bottom: -2px; transition: all 0.15s;
+.step {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  cursor: pointer;
+  transition: all 0.15s;
+  border-right: 1px solid #e0e0e0;
+  font-size: 0.82rem;
 }
-.tabs button:hover { color: #1F4E79; }
-.tabs button.active { color: #1F4E79; border-bottom-color: #1F4E79; font-weight: 600; }
+.step:last-child { border-right: none; }
+.step:hover:not(.locked) { background: #e8f0f8; }
+.step.active {
+  background: #1F4E79;
+  color: #fff;
+}
+.step.completed {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+.step.locked {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.step-number {
+  width: 24px; height: 24px;
+  border-radius: 50%;
+  background: #ccc;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.75rem; font-weight: 600;
+  color: #fff;
+  flex-shrink: 0;
+}
+.step.active .step-number { background: #fff; color: #1F4E79; }
+.step.completed .step-number { background: #2e7d32; color: #fff; }
+.step-check { font-size: 0.7rem; }
+.step-label { font-weight: 500; white-space: nowrap; }
 
-.tab-content h2 { margin: 0 0 0.75rem; font-size: 1.15rem; color: #1F4E79; }
-.tab-content h3 { margin: 0 0 0.5rem; font-size: 0.95rem; color: #333; }
-.subtitle { color: #666; font-size: 0.85rem; margin: -0.5rem 0 1rem; }
+/* Step content */
+.step-content { margin-bottom: 2rem; }
+.step-content h2 { margin: 0 0 0.5rem; font-size: 1.15rem; color: #1F4E79; }
+.step-content h3 { margin: 0 0 0.5rem; font-size: 0.95rem; color: #333; }
+.subtitle { color: #666; font-size: 0.85rem; margin: 0 0 1rem; }
+
+/* Setup info */
+.setup-info {
+  display: flex; gap: 2rem; font-size: 0.9rem; color: #555;
+  padding: 0.75rem 1rem; background: #f8f9fa; border-radius: 6px;
+}
+
+/* Upload actions */
+.upload-actions {
+  display: flex; gap: 0.75rem; margin-bottom: 1rem; flex-wrap: wrap;
+}
+.btn-upload-label {
+  display: inline-block; padding: 0.5rem 1rem;
+  border-radius: 4px; cursor: pointer; font-size: 0.85rem;
+}
+.btn-primary { padding: 0.5rem 1rem; background: #1F4E79; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
+.btn-primary:hover { background: #163a5c; }
+.btn-primary:disabled { opacity: 0.5; cursor: default; }
+.btn-secondary { padding: 0.5rem 1rem; background: #e0e0e0; color: #333; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
+.btn-secondary:hover { background: #d0d0d0; }
+.btn-cancel { padding: 0.5rem 1rem; background: #e0e0e0; color: #333; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
+.upload-msg { font-size: 0.85rem; color: #548235; margin-top: 0.5rem; }
+
+/* Merge report */
+.merge-report {
+  padding: 0.75rem 1rem; background: #f0f8ff; border: 1px solid #b4d4f0;
+  border-radius: 6px; margin-top: 0.75rem;
+}
+.merge-stats { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
+.merge-missing { margin-top: 0.5rem; font-size: 0.82rem; color: #666; }
+.merge-missing ul { margin: 0.25rem 0 0 1.5rem; padding: 0; }
+
+/* Extraction status */
+.extraction-status {
+  padding: 0.75rem 1rem; background: #f8f9fa; border: 1px solid #e0e0e0;
+  border-radius: 6px; margin-bottom: 1rem; font-size: 0.9rem;
+}
+
+/* Approval */
+.approval-summary { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; }
+.row-approved { background: #f0fff0; }
+.row-flagged { background: #fff5f5; }
+.btn-sm {
+  padding: 0.2rem 0.5rem; font-size: 0.75rem; border: none;
+  border-radius: 3px; cursor: pointer; margin-right: 0.25rem;
+}
+.btn-approve { background: #c6efce; color: #006100; }
+.btn-approve:hover { background: #a8e4b0; }
+.btn-flag { background: #ffc7ce; color: #9c0006; }
+.btn-flag:hover { background: #ffb0b8; }
+.btn-reset { background: #e0e0e0; color: #333; }
+.btn-reset:hover { background: #d0d0d0; }
 
 /* Tables */
 .table-scroll { overflow-x: auto; }
@@ -910,16 +1257,6 @@ function statusClass(s: string): string {
   border-radius: 4px; cursor: pointer; font-size: 0.85rem; margin-right: 0.5rem;
 }
 .btn-new:hover { background: #3d6127; }
-.btn-primary {
-  padding: 0.5rem 1rem; background: #1F4E79; color: #fff; border: none;
-  border-radius: 4px; cursor: pointer; font-size: 0.85rem;
-}
-.btn-primary:hover { background: #163a5c; }
-.btn-primary:disabled { opacity: 0.5; cursor: default; }
-.btn-cancel {
-  padding: 0.5rem 1rem; background: #e0e0e0; color: #333; border: none;
-  border-radius: 4px; cursor: pointer; font-size: 0.85rem;
-}
 
 /* Modal */
 .modal-overlay {
@@ -933,32 +1270,9 @@ function statusClass(s: string): string {
 .modal-box h3 { margin: 0 0 1rem; color: #1F4E79; font-size: 1.1rem; }
 .form-field { margin-bottom: 0.75rem; }
 .form-field label { display: block; font-size: 0.8rem; color: #555; margin-bottom: 0.25rem; }
-.form-field input {
+.form-field input, .form-field select {
   width: 100%; padding: 0.5rem; border: 1px solid #ccc; border-radius: 4px;
   font-size: 0.9rem; box-sizing: border-box;
 }
 .modal-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; }
-
-/* Upload bar */
-.upload-bar {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 1rem 1.25rem; background: #f0f6ff; border: 1px solid #b4d4f0;
-  border-radius: 6px; margin-bottom: 1.5rem;
-}
-.upload-prompt { font-size: 0.9rem; color: #333; }
-.btn-upload, .btn-upload-sm {
-  display: inline-block; padding: 0.5rem 1rem; background: #1F4E79; color: #fff;
-  border-radius: 4px; cursor: pointer; font-size: 0.85rem;
-}
-.btn-upload:hover, .btn-upload-sm:hover { background: #163a5c; }
-.btn-upload-sm { padding: 0.35rem 0.75rem; font-size: 0.8rem; }
-
-/* Section header row */
-.section-header-row {
-  display: flex; justify-content: space-between; align-items: center;
-  margin-bottom: 0.75rem;
-}
-.section-header-row h2 { margin: 0; }
-.section-actions { display: flex; align-items: center; gap: 0.75rem; }
-.upload-msg { font-size: 0.8rem; color: #548235; }
 </style>

@@ -6,6 +6,7 @@ Supports multi-property portfolio reviews. Data stored in PostgreSQL/SQLite
 via the standard database layer.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -230,6 +231,26 @@ LEASE_DDL_SQLITE = [
 ]
 
 
+def _migrate_add_column(engine, table: str, column: str, col_type: str):
+    """Add a column to a table if it doesn't exist. Works on both PG and SQLite."""
+    from sqlalchemy import text
+    with engine.begin() as conn:
+        if engine.dialect.name == 'postgresql':
+            row = conn.execute(text("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = :tbl AND column_name = :col
+            """), {'tbl': table, 'col': column}).fetchone()
+            if row is None:
+                conn.execute(text(
+                    f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
+        else:
+            cols = [r[1] for r in conn.execute(
+                text(f"PRAGMA table_info({table})")).fetchall()]
+            if column not in cols:
+                conn.execute(text(
+                    f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
+
+
 def ensure_lease_tables(engine):
     """Create lease review tables and migrate missing columns."""
     from sqlalchemy import text, inspect
@@ -265,6 +286,26 @@ def ensure_lease_tables(engine):
             if 'rent_roll_date' not in cols:
                 conn.execute(text(
                     "ALTER TABLE lease_reviews ADD COLUMN rent_roll_date TEXT"))
+
+    # Phase 1D: workflow_step + step_data on lease_reviews
+    _migrate_add_column(engine, 'lease_reviews', 'workflow_step', "TEXT DEFAULT 'setup'")
+    _migrate_add_column(engine, 'lease_reviews', 'step_data', 'TEXT')
+
+    # Phase 1A: rent_roll_source on lease_tenants
+    _migrate_add_column(engine, 'lease_tenants', 'rent_roll_source', 'TEXT')
+
+    # Phase 1E: per-tenant approval columns on lease_tenants
+    _migrate_add_column(engine, 'lease_tenants', 'approval_status', "TEXT DEFAULT 'pending'")
+    _migrate_add_column(engine, 'lease_tenants', 'approved_by', 'TEXT')
+    _migrate_add_column(engine, 'lease_tenants', 'approved_at', 'TIMESTAMP')
+    _migrate_add_column(engine, 'lease_tenants', 'analyst_notes', 'TEXT')
+
+    # Phase 1B: file_hash + uploaded_by on lease_documents; file_data for PDF storage
+    _migrate_add_column(engine, 'lease_documents', 'file_hash', 'TEXT')
+    _migrate_add_column(engine, 'lease_documents', 'uploaded_by', 'TEXT')
+    _migrate_add_column(engine, 'lease_documents', 'file_data',
+                        'BYTEA' if engine.dialect.name == 'postgresql' else 'BLOB')
+
     logger.info("Lease review tables ensured")
 
 
@@ -828,6 +869,471 @@ def import_rent_roll_to_review(engine, review_id: int, rr_df: pd.DataFrame) -> i
     return count
 
 
+# ---------------------------------------------------------------------------
+# Phase 1A: Non-destructive rent roll merge
+# ---------------------------------------------------------------------------
+
+def _fuzzy_match_tenant(suite_a: str, name_a: str, suite_b: str, name_b: str) -> bool:
+    """Check if two tenant identifiers refer to the same tenant.
+
+    Match by (suite exact) OR (name fuzzy containment when both non-empty).
+    """
+    sa = str(suite_a or '').strip().lower()
+    sb = str(suite_b or '').strip().lower()
+    na = str(name_a or '').strip().lower()
+    nb = str(name_b or '').strip().lower()
+
+    # Exact suite match (when suites are non-empty)
+    if sa and sb and sa == sb:
+        return True
+
+    # Name containment match
+    if na and nb and (na in nb or nb in na):
+        return True
+
+    return False
+
+
+def merge_rent_roll_to_review(
+    engine,
+    review_id: int,
+    rr_df: pd.DataFrame,
+    source_label: str = 'seller_rent_roll',
+) -> Dict[str, Any]:
+    """Merge rent roll data into an existing review without destroying extraction data.
+
+    Fuzzy-matches uploaded rows to existing tenants by (suite, tenant_name).
+    - Matched tenants: Update tenant-level fields only; extraction data preserved.
+    - New tenants: Insert new lease_tenants rows.
+    - Missing tenants: Flag existing tenants not found in the upload (not deleted).
+
+    Returns merge report: {matched, added, not_in_upload, details}.
+    """
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        rev = conn.execute(text(
+            "SELECT id FROM lease_reviews WHERE id = :rid"
+        ), {'rid': review_id}).fetchone()
+        if not rev:
+            raise ValueError(f"Review {review_id} not found")
+
+        # Load existing tenants
+        existing = conn.execute(text("""
+            SELECT id, tenant_name, suite FROM lease_tenants
+            WHERE review_id = :rid
+        """), {'rid': review_id}).fetchall()
+
+        existing_list = [{'id': r[0], 'name': r[1], 'suite': r[2]} for r in existing]
+
+        matched_ids = set()
+        matched_count = 0
+        added_count = 0
+        details = []
+
+        for _, row in rr_df.iterrows():
+            rr_name = str(row.get('tenant_name', '')).strip()
+            rr_suite = str(row.get('suite', '')).strip()
+            if not rr_name:
+                continue
+
+            # Try to match to an existing tenant
+            match = None
+            for ex in existing_list:
+                if ex['id'] in matched_ids:
+                    continue
+                if _fuzzy_match_tenant(rr_suite, rr_name, ex['suite'], ex['name']):
+                    match = ex
+                    break
+
+            sf = float(row.get('square_feet', 0) or 0)
+            ann_rent = float(row.get('annual_rent', 0) or 0)
+            mon_rent = float(row.get('monthly_rent', 0) or 0)
+            rpsf = float(row.get('rent_per_sf_year', 0) or 0)
+            is_material = (sf >= MATERIAL_LEASE_SF_THRESHOLD or
+                           ann_rent >= MATERIAL_LEASE_RENT_THRESHOLD)
+
+            if match:
+                # Update tenant-level fields; DO NOT touch extraction data
+                matched_ids.add(match['id'])
+                conn.execute(text("""
+                    UPDATE lease_tenants
+                    SET tenant_name = :tn, suite = :su, square_feet = :sf,
+                        lease_type = :lt, lease_start = :ls, lease_end = :le,
+                        monthly_rent = :mr, annual_rent = :ar, rent_per_sf = :rpsf,
+                        security_deposit = :sd, is_vacant = :iv, is_material = :im,
+                        rent_roll_source = :src, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = :tid
+                """), {
+                    'tn': rr_name, 'su': rr_suite, 'sf': sf,
+                    'lt': row.get('lease_type', 'Retail'),
+                    'ls': row.get('lease_start'), 'le': row.get('lease_end'),
+                    'mr': mon_rent, 'ar': ann_rent, 'rpsf': rpsf,
+                    'sd': float(row.get('security_deposit', 0) or 0),
+                    'iv': bool(row.get('is_vacant', False)),
+                    'im': is_material, 'src': source_label,
+                    'tid': match['id'],
+                })
+                matched_count += 1
+                details.append({'action': 'updated', 'tenant': rr_name, 'suite': rr_suite})
+            else:
+                # Insert new tenant
+                conn.execute(text("""
+                    INSERT INTO lease_tenants
+                        (review_id, tenant_name, suite, square_feet, lease_type,
+                         lease_start, lease_end, term_months, monthly_rent,
+                         annual_rent, rent_per_sf, security_deposit,
+                         is_vacant, is_material, has_cotenancy, has_exclusive_use,
+                         rent_roll_source)
+                    VALUES (:rid, :tn, :su, :sf, :lt,
+                            :ls, :le, :tm, :mr,
+                            :ar, :rpsf, :sd,
+                            :iv, :im, FALSE, FALSE, :src)
+                """), {
+                    'rid': review_id, 'tn': rr_name, 'su': rr_suite, 'sf': sf,
+                    'lt': row.get('lease_type', 'Retail'),
+                    'ls': row.get('lease_start'), 'le': row.get('lease_end'),
+                    'tm': int(row.get('term_months', 0) or 0),
+                    'mr': mon_rent, 'ar': ann_rent, 'rpsf': rpsf,
+                    'sd': float(row.get('security_deposit', 0) or 0),
+                    'iv': bool(row.get('is_vacant', False)),
+                    'im': is_material, 'src': source_label,
+                })
+                added_count += 1
+                details.append({'action': 'added', 'tenant': rr_name, 'suite': rr_suite})
+
+        # Flag tenants not in the upload
+        not_in_upload = []
+        for ex in existing_list:
+            if ex['id'] not in matched_ids:
+                not_in_upload.append({'tenant': ex['name'], 'suite': ex['suite']})
+
+        # Update review totals from current state
+        totals = conn.execute(text("""
+            SELECT COALESCE(SUM(square_feet), 0),
+                   COALESCE(SUM(annual_rent), 0),
+                   COUNT(*)
+            FROM lease_tenants WHERE review_id = :rid
+        """), {'rid': review_id}).fetchone()
+
+        conn.execute(text("""
+            UPDATE lease_reviews
+            SET total_gla = :gla, total_annual_rent = :rent,
+                total_tenants = :cnt, updated_at = CURRENT_TIMESTAMP
+            WHERE id = :rid
+        """), {'gla': totals[0], 'rent': totals[1], 'cnt': totals[2], 'rid': review_id})
+
+        conn.commit()
+
+    report = {
+        'matched': matched_count,
+        'added': added_count,
+        'not_in_upload': len(not_in_upload),
+        'not_in_upload_tenants': not_in_upload,
+        'details': details,
+    }
+    logger.info(f"Merge rent roll review {review_id}: {report['matched']} matched, "
+                f"{report['added']} added, {report['not_in_upload']} not in upload")
+    return report
+
+
+# ---------------------------------------------------------------------------
+# Phase 1B: Incremental document upload
+# ---------------------------------------------------------------------------
+
+def upload_documents_to_review(
+    engine,
+    review_id: int,
+    files: List[Tuple[str, bytes]],
+    uploaded_by: str = 'system',
+) -> Dict[str, Any]:
+    """Upload multiple PDF documents to a review with dedup and auto-matching.
+
+    Args:
+        files: List of (filename, file_bytes) tuples.
+
+    Returns dict with counts: {added, skipped_duplicate, unmatched, details}.
+    """
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        rev = conn.execute(text(
+            "SELECT id FROM lease_reviews WHERE id = :rid"
+        ), {'rid': review_id}).fetchone()
+        if not rev:
+            raise ValueError(f"Review {review_id} not found")
+
+        # Load existing document hashes for dedup
+        existing_hashes = set()
+        rows = conn.execute(text("""
+            SELECT file_hash FROM lease_documents
+            WHERE review_id = :rid AND file_hash IS NOT NULL
+        """), {'rid': review_id}).fetchall()
+        for r in rows:
+            existing_hashes.add(r[0])
+
+        # Load tenants for auto-matching
+        tenants = conn.execute(text("""
+            SELECT id, tenant_name, suite FROM lease_tenants
+            WHERE review_id = :rid AND is_vacant = false
+        """), {'rid': review_id}).fetchall()
+
+        added = 0
+        skipped = 0
+        unmatched = 0
+        details = []
+
+        for filename, file_bytes in files:
+            file_hash = hashlib.sha256(file_bytes).hexdigest()
+
+            # Dedup check
+            if file_hash in existing_hashes:
+                skipped += 1
+                details.append({'filename': filename, 'action': 'skipped_duplicate'})
+                continue
+
+            # Classify document type
+            doc_type = classify_document(filename)
+            doc_date = parse_doc_date(filename)
+
+            # Fuzzy-match to tenant by filename
+            tenant_id = _match_file_to_tenant(filename, tenants)
+
+            if tenant_id is None:
+                unmatched += 1
+                # Still insert with tenant_id pointing to a placeholder
+                # Use the first tenant as a fallback (unmatched docs need manual assignment)
+                # Actually, store with tenant_id=0 temporarily — but FK constraint prevents this.
+                # Instead, we'll need to create an "Unassigned" approach.
+                # For now, skip unmatched docs and report them.
+                details.append({
+                    'filename': filename, 'action': 'unmatched',
+                    'doc_type': doc_type,
+                })
+                continue
+
+            conn.execute(text("""
+                INSERT INTO lease_documents
+                    (tenant_id, review_id, filename, doc_type, doc_date,
+                     extraction_status, file_hash, uploaded_by, file_data)
+                VALUES (:tid, :rid, :fn, :dt, :dd,
+                        'pending', :fh, :ub, :fd)
+            """), {
+                'tid': tenant_id, 'rid': review_id,
+                'fn': filename, 'dt': doc_type, 'dd': doc_date,
+                'fh': file_hash, 'ub': uploaded_by, 'fd': file_bytes,
+            })
+            existing_hashes.add(file_hash)
+            added += 1
+            details.append({
+                'filename': filename, 'action': 'added',
+                'doc_type': doc_type, 'tenant_id': tenant_id,
+            })
+
+        conn.commit()
+
+    report = {
+        'added': added,
+        'skipped_duplicate': skipped,
+        'unmatched': unmatched,
+        'details': details,
+    }
+    logger.info(f"Uploaded docs to review {review_id}: {added} added, "
+                f"{skipped} deduped, {unmatched} unmatched")
+    return report
+
+
+def _match_file_to_tenant(
+    filename: str,
+    tenants: list,
+) -> Optional[int]:
+    """Match a PDF filename to a tenant by name containment.
+
+    Returns tenant_id or None.
+    """
+    fname_lower = filename.lower().replace('.pdf', '').replace('_', ' ').replace('-', ' ')
+    # Remove common prefixes/suffixes like date stamps
+    fname_clean = re.sub(r'^\d{4}[.\-]\d{2}[.\-]\d{2}[_\s]*', '', fname_lower).strip()
+
+    best_match = None
+    best_len = 0
+
+    for t in tenants:
+        tname = str(t[1]).strip().lower()
+        if not tname:
+            continue
+        # Check if tenant name appears in filename or vice versa
+        if tname in fname_clean or fname_clean in tname:
+            if len(tname) > best_len:
+                best_match = t[0]  # tenant_id
+                best_len = len(tname)
+        # Try first word match for multi-word names
+        first_word = tname.split()[0] if tname.split() else ''
+        if first_word and len(first_word) > 3 and first_word in fname_clean:
+            if len(tname) > best_len:
+                best_match = t[0]
+                best_len = len(tname)
+
+    return best_match
+
+
+def assign_document_to_tenant(
+    engine,
+    review_id: int,
+    doc_id: int,
+    tenant_id: int,
+) -> None:
+    """Assign an unmatched document to a specific tenant."""
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        conn.execute(text("""
+            UPDATE lease_documents
+            SET tenant_id = :tid
+            WHERE id = :did AND review_id = :rid
+        """), {'tid': tenant_id, 'did': doc_id, 'rid': review_id})
+
+
+# ---------------------------------------------------------------------------
+# Phase 1E: Per-tenant approval
+# ---------------------------------------------------------------------------
+
+def approve_tenant(
+    engine,
+    review_id: int,
+    tenant_id: int,
+    status: str,
+    approved_by: str,
+    notes: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Set approval status for a tenant.
+
+    Args:
+        status: 'approved', 'flagged', or 'pending'
+    """
+    from sqlalchemy import text
+
+    if status not in ('approved', 'flagged', 'pending'):
+        raise ValueError(f"Invalid approval status: {status}")
+
+    with engine.connect() as conn:
+        # Verify tenant belongs to this review
+        t = conn.execute(text("""
+            SELECT id FROM lease_tenants
+            WHERE id = :tid AND review_id = :rid
+        """), {'tid': tenant_id, 'rid': review_id}).fetchone()
+        if not t:
+            raise ValueError(f"Tenant {tenant_id} not found in review {review_id}")
+
+        update_params = {
+            'status': status,
+            'by': approved_by if status == 'approved' else None,
+            'at': datetime.utcnow().isoformat() if status == 'approved' else None,
+            'tid': tenant_id,
+        }
+        if notes is not None:
+            conn.execute(text("""
+                UPDATE lease_tenants
+                SET approval_status = :status, approved_by = :by,
+                    approved_at = :at, analyst_notes = :notes,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = :tid
+            """), {**update_params, 'notes': notes})
+        else:
+            conn.execute(text("""
+                UPDATE lease_tenants
+                SET approval_status = :status, approved_by = :by,
+                    approved_at = :at, updated_at = CURRENT_TIMESTAMP
+                WHERE id = :tid
+            """), update_params)
+
+        conn.commit()
+
+    return {'tenant_id': tenant_id, 'status': status}
+
+
+# ---------------------------------------------------------------------------
+# Phase 1D: Workflow progress
+# ---------------------------------------------------------------------------
+
+def get_workflow_progress(engine, review_id: int) -> Dict[str, Any]:
+    """Get workflow step progress metrics for a review."""
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        rev = conn.execute(text("""
+            SELECT workflow_step, step_data, total_tenants
+            FROM lease_reviews WHERE id = :rid
+        """), {'rid': review_id}).fetchone()
+        if not rev:
+            raise ValueError(f"Review {review_id} not found")
+
+        workflow_step = rev[0] or 'setup'
+        step_data = json.loads(rev[1]) if rev[1] else {}
+        total_tenants = rev[2] or 0
+
+        # Count metrics
+        tenant_counts = conn.execute(text("""
+            SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN is_vacant = false THEN 1 ELSE 0 END) as occupied,
+                SUM(CASE WHEN approval_status = 'approved' THEN 1 ELSE 0 END) as approved,
+                SUM(CASE WHEN approval_status = 'flagged' THEN 1 ELSE 0 END) as flagged
+            FROM lease_tenants WHERE review_id = :rid
+        """), {'rid': review_id}).fetchone()
+
+        doc_counts = conn.execute(text("""
+            SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN extraction_status = 'extracted' THEN 1 ELSE 0 END) as extracted,
+                SUM(CASE WHEN extraction_status = 'pending' THEN 1 ELSE 0 END) as pending
+            FROM lease_documents WHERE review_id = :rid
+        """), {'rid': review_id}).fetchone()
+
+        val_count = conn.execute(text("""
+            SELECT COUNT(*) FROM lease_validation
+            WHERE tenant_id IN (SELECT id FROM lease_tenants WHERE review_id = :rid)
+        """), {'rid': review_id}).fetchone()
+
+    return {
+        'current_step': workflow_step,
+        'step_data': step_data,
+        'tenants_imported': tenant_counts[0] or 0,
+        'tenants_occupied': tenant_counts[1] or 0,
+        'tenants_approved': tenant_counts[2] or 0,
+        'tenants_flagged': tenant_counts[3] or 0,
+        'docs_uploaded': doc_counts[0] or 0,
+        'docs_extracted': doc_counts[1] or 0,
+        'docs_pending': doc_counts[2] or 0,
+        'validations_run': val_count[0] or 0,
+    }
+
+
+def update_workflow_step(engine, review_id: int, step: str) -> None:
+    """Update the current workflow step for a review."""
+    from sqlalchemy import text
+
+    valid_steps = ['setup', 'rent_roll', 'documents', 'extraction',
+                   'validation', 'review', 'complete']
+    if step not in valid_steps:
+        raise ValueError(f"Invalid step: {step}. Must be one of {valid_steps}")
+
+    with engine.begin() as conn:
+        # Load current step_data and add timestamp
+        rev = conn.execute(text(
+            "SELECT step_data FROM lease_reviews WHERE id = :rid"
+        ), {'rid': review_id}).fetchone()
+        step_data = json.loads(rev[0]) if rev and rev[0] else {}
+        step_data[step] = datetime.utcnow().isoformat()
+
+        conn.execute(text("""
+            UPDATE lease_reviews
+            SET workflow_step = :step, step_data = :sd,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = :rid
+        """), {'step': step, 'sd': json.dumps(step_data), 'rid': review_id})
+
+
 def create_review_manual(engine, property_name: str, property_address: str = '',
                          total_gla: float = 0, created_by: str = 'system',
                          prospect_property_id: int = None) -> int:
@@ -1371,9 +1877,20 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None)
                             WHERE id = :tid
                         """), {'tid': tenant_id})
 
-                        # Store rent steps
+                        # Store rent steps (with dedup)
                         if terms.get('rent_steps'):
                             for step in terms['rent_steps']:
+                                # Dedup: skip if (tenant_id, effective_date) already exists
+                                dup = conn.execute(sql_text("""
+                                    SELECT id FROM lease_rent_steps
+                                    WHERE tenant_id = :tid AND effective_date = :ed
+                                    LIMIT 1
+                                """), {
+                                    'tid': tenant_id,
+                                    'ed': step.get('effective_date'),
+                                }).fetchone()
+                                if dup:
+                                    continue
                                 conn.execute(sql_text("""
                                     INSERT INTO lease_rent_steps
                                         (tenant_id, effective_date,
@@ -1389,9 +1906,12 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None)
                                     'sd': doc[2],  # filename
                                 })
 
-                        # Store cotenancy from extraction
+                        # Store cotenancy from extraction (with dedup by source_doc)
                         cot = terms.get('cotenancy', {})
-                        if cot and cot.get('has_clause'):
+                        if cot and cot.get('has_clause') and not conn.execute(sql_text("""
+                            SELECT id FROM lease_cotenancy
+                            WHERE tenant_id = :tid AND source_doc = :sd LIMIT 1
+                        """), {'tid': tenant_id, 'sd': doc[2]}).fetchone():
                             cot_result = conn.execute(sql_text("""
                                 INSERT INTO lease_cotenancy
                                     (tenant_id, review_id,
@@ -1432,8 +1952,19 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None)
                                     'rtn': ref_name,
                                 })
 
-                        # Store renewal options
+                        # Store renewal options (with dedup by source_doc + option_number)
                         for opt in (terms.get('renewal_options') or []):
+                            opt_dup = conn.execute(sql_text("""
+                                SELECT id FROM lease_options
+                                WHERE tenant_id = :tid AND source_doc = :sd
+                                  AND option_number = :on
+                                LIMIT 1
+                            """), {
+                                'tid': tenant_id, 'sd': doc[2],
+                                'on': opt.get('option_number'),
+                            }).fetchone()
+                            if opt_dup:
+                                continue
                             conn.execute(sql_text("""
                                 INSERT INTO lease_options
                                     (tenant_id, option_type, option_number,

@@ -19,6 +19,12 @@ from flask_app.services.lease_review_service import (
     parse_rent_roll_flexible,
     import_rent_roll_to_review,
     create_review_manual,
+    merge_rent_roll_to_review,
+    upload_documents_to_review,
+    assign_document_to_tenant,
+    approve_tenant,
+    get_workflow_progress,
+    update_workflow_step,
 )
 from io import BytesIO
 import logging
@@ -190,7 +196,7 @@ def get_review(review_id):
         review = conn.execute(text("""
             SELECT id, property_name, property_address, total_gla,
                    total_annual_rent, total_tenants, status,
-                   created_by, created_at
+                   created_by, created_at, workflow_step
             FROM lease_reviews WHERE id = :rid
         """), {'rid': review_id}).fetchone()
 
@@ -202,7 +208,8 @@ def get_review(review_id):
                    lease_start, lease_end, term_months, monthly_rent,
                    annual_rent, rent_per_sf, security_deposit,
                    is_vacant, is_material, has_cotenancy, has_exclusive_use,
-                   extraction_status
+                   extraction_status, approval_status, analyst_notes,
+                   rent_roll_source
             FROM lease_tenants
             WHERE review_id = :rid
             ORDER BY suite
@@ -225,6 +232,7 @@ def get_review(review_id):
             'total_annual_rent': review[4], 'total_tenants': review[5],
             'status': review[6], 'created_by': review[7],
             'created_at': str(review[8]),
+            'workflow_step': review[9] or 'setup',
         },
         'tenants': [{
             'id': t[0], 'tenant_name': t[1], 'suite': t[2],
@@ -236,6 +244,9 @@ def get_review(review_id):
             'is_material': bool(t[13]), 'has_cotenancy': bool(t[14]),
             'has_exclusive_use': bool(t[15]),
             'extraction_status': t[16],
+            'approval_status': t[17] or 'pending',
+            'analyst_notes': t[18],
+            'rent_roll_source': t[19],
             'documents': doc_map.get(t[0], {'total': 0, 'extracted': 0}),
         } for t in tenants],
     })
@@ -407,6 +418,166 @@ def get_tenant_documents(review_id, tenant_id):
         'doc_date': d[3], 'page_count': d[4],
         'extraction_status': d[5],
     } for d in docs])
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/merge-rent-roll', methods=['POST'])
+@login_required
+@role_required('admin', 'analyst')
+def merge_rent_roll(review_id):
+    """Non-destructive rent roll import — merges into existing tenants.
+
+    Fuzzy-matches by (suite, tenant_name). Updates matched tenants without
+    touching extraction data. Adds new tenants. Flags missing tenants.
+    """
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file provided'}), 400
+
+    file = request.files['file']
+    if not file.filename:
+        return jsonify({'error': 'Empty filename'}), 400
+
+    engine = get_engine()
+    ensure_lease_tables(engine)
+
+    try:
+        file_bytes = file.read()
+        rr_df = parse_rent_roll_flexible(file_bytes, file.filename)
+        report = merge_rent_roll_to_review(
+            engine, review_id, rr_df,
+            source_label=request.form.get('source_label', 'seller_rent_roll'),
+        )
+        return jsonify({'status': 'merged', **report})
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"Rent roll merge error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/upload-documents', methods=['POST'])
+@login_required
+@role_required('admin', 'analyst')
+def upload_documents(review_id):
+    """Upload multiple PDF documents with dedup and auto-tenant matching.
+
+    Accepts multipart/form-data with one or more 'files' fields.
+    """
+    if not request.files:
+        return jsonify({'error': 'No files provided'}), 400
+
+    files_list = request.files.getlist('files')
+    if not files_list:
+        return jsonify({'error': 'No files provided'}), 400
+
+    engine = get_engine()
+    ensure_lease_tables(engine)
+
+    try:
+        file_tuples = []
+        for f in files_list:
+            if f.filename:
+                file_tuples.append((f.filename, f.read()))
+
+        if not file_tuples:
+            return jsonify({'error': 'No valid files'}), 400
+
+        report = upload_documents_to_review(
+            engine, review_id, file_tuples,
+            uploaded_by=g.current_user.get('username', 'unknown'),
+        )
+        return jsonify({'status': 'uploaded', **report})
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"Document upload error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/documents/<int:doc_id>/assign-tenant', methods=['POST'])
+@login_required
+@role_required('admin', 'analyst')
+def assign_doc_tenant(review_id, doc_id):
+    """Assign an unmatched document to a specific tenant.
+
+    Body: { "tenant_id": 123 }
+    """
+    data = request.json
+    if not data or not data.get('tenant_id'):
+        return jsonify({'error': 'tenant_id required'}), 400
+
+    engine = get_engine()
+    try:
+        assign_document_to_tenant(engine, review_id, doc_id, data['tenant_id'])
+        return jsonify({'status': 'assigned'})
+    except Exception as e:
+        logger.error(f"Document assignment error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/tenants/<int:tenant_id>/approve', methods=['PUT'])
+@login_required
+@role_required('admin', 'analyst')
+def approve_tenant_endpoint(review_id, tenant_id):
+    """Set approval status for a tenant.
+
+    Body: { "status": "approved|flagged|pending", "notes": "..." }
+    """
+    data = request.json or {}
+    status = data.get('status', 'approved')
+    notes = data.get('notes')
+
+    engine = get_engine()
+    try:
+        result = approve_tenant(
+            engine, review_id, tenant_id, status,
+            approved_by=g.current_user.get('username', 'unknown'),
+            notes=notes,
+        )
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"Tenant approval error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/progress', methods=['GET'])
+@login_required
+def get_progress(review_id):
+    """Get workflow step progress metrics."""
+    engine = get_engine()
+    try:
+        progress = get_workflow_progress(engine, review_id)
+        return jsonify(progress)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        logger.error(f"Progress error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/workflow-step', methods=['PUT'])
+@login_required
+@role_required('admin', 'analyst')
+def set_workflow_step(review_id):
+    """Update the current workflow step.
+
+    Body: { "step": "setup|rent_roll|documents|extraction|validation|review|complete" }
+    """
+    data = request.json or {}
+    step = data.get('step')
+    if not step:
+        return jsonify({'error': 'step required'}), 400
+
+    engine = get_engine()
+    try:
+        update_workflow_step(engine, review_id, step)
+        return jsonify({'status': 'updated', 'step': step})
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"Workflow step error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
 
 
 @lease_review_bp.route('/seed', methods=['POST'])
