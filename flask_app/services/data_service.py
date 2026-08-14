@@ -56,7 +56,7 @@ def _enrich_acquisition_dates(inv: pd.DataFrame, acct: pd.DataFrame) -> None:
     acct_dates["_dt"] = pd.to_datetime(acct_dates["EffectiveDate"], errors="coerce")
     earliest = acct_dates.dropna(subset=["_dt"]).groupby("InvestmentID")["_dt"].min()
     inv["Acquisition_Date"] = (
-        inv["InvestmentID"].astype(str).str.strip()
+        inv["InvestmentID"].astype(str).str.strip().str.upper()
         .map(earliest).fillna(inv.get("Acquisition_Date"))
     )
 
@@ -419,11 +419,20 @@ def load_all(db_path: str, pro_yr_base: int = 2025) -> dict:
     if "vcode" not in inv.columns and "vCode" in inv.columns:
         inv = inv.rename(columns={"vCode": "vcode"})
     inv["vcode"] = inv["vcode"].astype(str)
+    if "InvestmentID" in inv.columns:
+        inv["InvestmentID"] = inv["InvestmentID"].astype(str).str.strip().str.upper()
 
     _enrich_acquisition_dates(inv, acct)
 
     # Normalize accounting once (avoids repeated normalize_accounting_feed() per deal)
     acct = _normalize_accounting(acct)
+
+    # Normalize entity IDs in relationships to uppercase
+    if not relationships_raw.empty:
+        if "InvestmentID" in relationships_raw.columns:
+            relationships_raw["InvestmentID"] = relationships_raw["InvestmentID"].astype(str).str.strip().str.upper()
+        if "InvestorID" in relationships_raw.columns:
+            relationships_raw["InvestorID"] = relationships_raw["InvestorID"].astype(str).str.strip().str.upper()
 
     # Replace empty DataFrames from optional reads with None where appropriate
     if relationships_raw.empty:
@@ -530,7 +539,14 @@ def refresh_table(table_name: str):
                 if "vcode" not in fresh.columns and "vCode" in fresh.columns:
                     fresh = fresh.rename(columns={"vCode": "vcode"})
                 fresh["vcode"] = fresh["vcode"].astype(str)
+                if "InvestmentID" in fresh.columns:
+                    fresh["InvestmentID"] = fresh["InvestmentID"].astype(str).str.strip().str.upper()
                 _enrich_acquisition_dates(fresh, data.get("acct"))
+            elif table_name == "relationships":
+                if "InvestmentID" in fresh.columns:
+                    fresh["InvestmentID"] = fresh["InvestmentID"].astype(str).str.strip().str.upper()
+                if "InvestorID" in fresh.columns:
+                    fresh["InvestorID"] = fresh["InvestorID"].astype(str).str.strip().str.upper()
             elif table_name == "waterfalls":
                 fresh = _normalize_waterfall_df(fresh)
             if table_name == "accounting":

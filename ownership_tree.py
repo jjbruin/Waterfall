@@ -55,8 +55,8 @@ def load_relationships(df: pd.DataFrame) -> pd.DataFrame:
     if missing:
         raise ValueError(f"MRI_IA_Relationship.csv missing columns: {missing}")
     
-    rel["InvestmentID"] = rel["InvestmentID"].astype(str).str.strip()
-    rel["InvestorID"] = rel["InvestorID"].astype(str).str.strip()
+    rel["InvestmentID"] = rel["InvestmentID"].astype(str).str.strip().str.upper()
+    rel["InvestorID"] = rel["InvestorID"].astype(str).str.strip().str.upper()
     rel["OwnershipPct"] = pd.to_numeric(rel["OwnershipPct"], errors="coerce").fillna(0.0)
     
     # Normalize percentages

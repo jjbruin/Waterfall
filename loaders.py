@@ -240,8 +240,8 @@ def normalize_accounting_feed(acct: pd.DataFrame = None) -> pd.DataFrame:
     if missing:
         raise ValueError(f"accounting table missing columns: {missing}")
 
-    a["InvestmentID"] = a["InvestmentID"].astype(str).str.strip()
-    a["InvestorID"] = a["InvestorID"].astype(str).str.strip()
+    a["InvestmentID"] = a["InvestmentID"].astype(str).str.strip().str.upper()
+    a["InvestorID"] = a["InvestorID"].astype(str).str.strip().str.upper()
     a["EffectiveDate"] = pd.to_datetime(a["EffectiveDate"], errors="coerce").dt.date
 
     a["MajorType"] = a["MajorType"].fillna("").astype(str).str.strip()
@@ -310,7 +310,7 @@ def build_investmentid_to_vcode(inv_map: pd.DataFrame = None) -> dict:
     if "vcode" not in inv.columns:
         raise ValueError("deals table must include vcode")
 
-    inv["InvestmentID"] = inv["InvestmentID"].astype(str).str.strip()
+    inv["InvestmentID"] = inv["InvestmentID"].astype(str).str.strip().str.upper()
     inv["vcode"] = inv["vcode"].astype(str).str.strip()
 
     return dict(zip(inv["InvestmentID"], inv["vcode"]))
@@ -378,7 +378,7 @@ def load_investor_waterfalls(df: pd.DataFrame = None) -> pd.DataFrame:
         return pd.DataFrame()
     
     iw["FundID"] = iw["FundID"].astype(str).str.strip()
-    iw["InvestorID"] = iw["InvestorID"].astype(str).str.strip()
+    iw["InvestorID"] = iw["InvestorID"].astype(str).str.strip().str.upper()
     iw["vState"] = iw["vState"].astype(str).str.strip()
     iw["iOrder"] = pd.to_numeric(iw["iOrder"], errors="coerce").fillna(9999).astype(int)
     
@@ -417,7 +417,7 @@ def load_investor_accounting(df: pd.DataFrame = None) -> pd.DataFrame:
         return pd.DataFrame()
     
     ia["FundID"] = ia["FundID"].astype(str).str.strip()
-    ia["InvestorID"] = ia["InvestorID"].astype(str).str.strip()
+    ia["InvestorID"] = ia["InvestorID"].astype(str).str.strip().str.upper()
     ia["EffectiveDate"] = pd.to_datetime(ia["EffectiveDate"], errors="coerce").dt.date
     ia["TransType"] = ia["TransType"].astype(str).str.strip().str.lower()
     ia["Amount"] = pd.to_numeric(ia["Amount"], errors="coerce").fillna(0.0)
