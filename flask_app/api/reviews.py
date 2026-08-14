@@ -5,8 +5,9 @@ from flask import Blueprint, request, jsonify, g
 from flask_app.auth.routes import login_required, role_required
 from flask_app.services.review_service import (
     get_submission, submit_for_review, approve, return_to_draft,
-    add_note, get_tracking_data, get_investor_list, get_user_review_roles,
-    list_review_role_assignments, assign_review_role, remove_review_role,
+    add_note, acknowledge_note, get_tracking_data, get_investor_list,
+    get_user_review_roles, list_review_role_assignments,
+    assign_review_role, remove_review_role,
     get_snapshot, REVIEW_STEPS, REVIEW_ROLE_NAMES,
 )
 
@@ -112,6 +113,23 @@ def post_note(vcode, quarter):
         )
         result["is_editable"] = result["status"] != "approved" or result.get("id") is None
         return jsonify(result)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@reviews_bp.route("/<vcode>/<quarter>/notes/<int:note_id>/acknowledge", methods=["POST"])
+@login_required
+def acknowledge_review_note(vcode, quarter, note_id):
+    """Toggle a review note as addressed/unaddressed (asset manager only)."""
+    try:
+        result = acknowledge_note(
+            note_id,
+            g.current_user["id"], g.current_user["username"],
+        )
+        result["is_editable"] = result["status"] != "approved" or result.get("id") is None
+        return jsonify(result)
+    except PermissionError as e:
+        return jsonify({"error": str(e)}), 403
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 

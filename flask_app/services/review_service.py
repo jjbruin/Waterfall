@@ -59,9 +59,27 @@ def _ensure_tables():
                 review_role TEXT,
                 action TEXT NOT NULL,
                 note_text TEXT,
+                addressed INTEGER NOT NULL DEFAULT 0,
+                addressed_by TEXT,
+                addressed_at TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
+        # Migration: add addressed columns if missing (existing tables)
+        try:
+            conn.execute(text(
+                "SELECT addressed FROM review_notes LIMIT 1"
+            ))
+        except Exception:
+            conn.execute(text(
+                "ALTER TABLE review_notes ADD COLUMN addressed INTEGER NOT NULL DEFAULT 0"
+            ))
+            conn.execute(text(
+                "ALTER TABLE review_notes ADD COLUMN addressed_by TEXT"
+            ))
+            conn.execute(text(
+                "ALTER TABLE review_notes ADD COLUMN addressed_at TIMESTAMP"
+            ))
         conn.execute(text(f"""
             CREATE TABLE IF NOT EXISTS one_pager_snapshots (
                 id {pk},
@@ -194,7 +212,8 @@ def _get_notes(vcode: str, quarter: str) -> list[dict]:
     with engine.connect() as conn:
         rows = conn.execute(
             text("""
-                SELECT id, user_id, username, review_role, action, note_text, created_at
+                SELECT id, user_id, username, review_role, action, note_text,
+                       addressed, addressed_by, addressed_at, created_at
                 FROM review_notes
                 WHERE vcode = :v AND quarter = :q
                 ORDER BY created_at DESC
@@ -341,6 +360,41 @@ def add_note(vcode: str, quarter: str, user_id: int, username: str,
     role = user_roles[0] if user_roles else None
     _add_note(vcode, quarter, user_id, username, role, "note", note_text)
     return get_submission(vcode, quarter)
+
+
+def acknowledge_note(note_id: int, user_id: int, username: str) -> dict:
+    """Mark a reviewer's note as addressed. Only asset managers can do this."""
+    user_roles = get_user_review_roles(user_id)
+    if "asset_manager" not in user_roles:
+        raise PermissionError("Only asset managers can mark notes as addressed")
+
+    engine = get_engine()
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT id, vcode, quarter, review_role, action, addressed FROM review_notes WHERE id = :id"),
+            {"id": note_id},
+        ).mappings().fetchone()
+
+    if not row:
+        raise ValueError("Note not found")
+
+    # Only reviewer notes (return/approve/note from non-asset_manager roles) can be addressed
+    if row["review_role"] == "asset_manager" and row["action"] not in ("return",):
+        raise ValueError("Cannot acknowledge your own notes")
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                UPDATE review_notes
+                SET addressed = :val, addressed_by = :by, addressed_at = CURRENT_TIMESTAMP
+                WHERE id = :id
+            """),
+            {"val": 1 if not row["addressed"] else 0,
+             "by": username if not row["addressed"] else None,
+             "id": note_id},
+        )
+
+    return get_submission(row["vcode"], row["quarter"])
 
 
 def is_editable(vcode: str, quarter: str) -> bool:

@@ -233,6 +233,20 @@ async function handleReviewNote(note: string) {
   }
 }
 
+async function handleAcknowledgeNote(noteId: number) {
+  reviewLoading.value = true
+  try {
+    const res = await api.post(
+      `/api/reviews/${deals.currentVcode}/${selectedQuarter.value}/notes/${noteId}/acknowledge`
+    )
+    reviewStatus.value = res.data
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
+  } finally {
+    reviewLoading.value = false
+  }
+}
+
 // ============================================================
 // Batch mode
 // ============================================================
@@ -642,6 +656,7 @@ function printOnePager() {
       @approve="handleReviewApprove"
       @return="handleReviewReturn"
       @add-note="handleReviewNote"
+      @acknowledge-note="handleAcknowledgeNote"
     />
 
     <!-- ==================== SINGLE DEAL MODE ==================== -->

@@ -8,6 +8,9 @@ interface ReviewNote {
   review_role: string | null
   action: string
   note_text: string | null
+  addressed: number
+  addressed_by: string | null
+  addressed_at: string | null
   created_at: string
 }
 
@@ -40,6 +43,7 @@ const emit = defineEmits<{
   approve: [note: string]
   return: [note: string]
   addNote: [note: string]
+  acknowledgeNote: [noteId: number]
 }>()
 
 const noteText = ref('')
@@ -47,6 +51,23 @@ const returnNote = ref('')
 const approveNote = ref('')
 const showNotes = ref(true)
 const showReturnForm = ref(false)
+
+const isAssetManager = computed(() =>
+  props.review?.user_review_roles?.includes('asset_manager') ?? false
+)
+
+/** Notes from reviewers that can be marked as addressed by the AM */
+function isAddressable(note: ReviewNote): boolean {
+  // Only return notes or notes from non-AM reviewers are addressable
+  return note.action === 'return' ||
+    (note.action === 'note' && note.review_role !== 'asset_manager' && !!note.review_role)
+}
+
+/** Count of unaddressed reviewer notes */
+const unaddressedCount = computed(() => {
+  if (!props.review) return 0
+  return props.review.notes.filter(n => isAddressable(n) && !n.addressed).length
+})
 
 const statusColor = computed(() => {
   if (!props.review) return '#999'
@@ -189,6 +210,7 @@ function handleAddNote() {
     <div class="review-notes-section">
       <button class="notes-toggle" @click="showNotes = !showNotes">
         {{ showNotes ? '&#x25BE;' : '&#x25B8;' }} Review Notes ({{ review.notes.length }})
+        <span v-if="unaddressedCount > 0" class="unaddressed-count">{{ unaddressedCount }} unaddressed</span>
       </button>
 
       <div v-if="showNotes" class="notes-list">
@@ -196,13 +218,30 @@ function handleAddNote() {
           v-for="n in review.notes"
           :key="n.id"
           class="note-item"
-          :class="actionClass(n.action)"
+          :class="[actionClass(n.action), { 'note-addressed': n.addressed && isAddressable(n) }]"
         >
           <div class="note-header">
             <span class="note-date">{{ formatDate(n.created_at) }}</span>
             <span class="note-user">{{ n.username }}</span>
             <span v-if="n.review_role" class="note-role">({{ formatRole(n.review_role) }})</span>
             <span class="note-action" :class="actionClass(n.action)">— {{ formatAction(n.action) }}</span>
+            <!-- Addressed badge (visible to everyone) -->
+            <span v-if="n.addressed && isAddressable(n)" class="addressed-badge" :title="'Addressed by ' + n.addressed_by + ' on ' + formatDate(n.addressed_at)">
+              Addressed
+            </span>
+            <span v-if="!n.addressed && isAddressable(n) && !isAssetManager" class="unaddressed-badge">
+              Pending
+            </span>
+            <!-- Toggle button (AM only) -->
+            <button
+              v-if="isAddressable(n) && isAssetManager && review?.status !== 'approved'"
+              class="btn-acknowledge"
+              :class="{ 'acknowledged': n.addressed }"
+              @click="emit('acknowledgeNote', n.id)"
+              :disabled="loading"
+            >
+              {{ n.addressed ? 'Undo' : 'Mark Addressed' }}
+            </button>
           </div>
           <div v-if="n.note_text" class="note-body">{{ n.note_text }}</div>
         </div>
@@ -386,4 +425,55 @@ function handleAddNote() {
   border-radius: 4px;
   font-size: 12px;
 }
+
+/* Addressed / acknowledge */
+.note-addressed {
+  background: #f0f8f0;
+}
+
+.addressed-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: #2e7d32;
+  background: #e8f5e9;
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin-left: auto;
+}
+
+.unaddressed-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: #e65100;
+  background: #fff3e0;
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin-left: auto;
+}
+
+.unaddressed-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: #e65100;
+  margin-left: 6px;
+}
+
+.btn-acknowledge {
+  font-size: 10px;
+  padding: 1px 8px;
+  border: 1px solid #999;
+  border-radius: 3px;
+  cursor: pointer;
+  background: #fff;
+  color: #333;
+  margin-left: 4px;
+}
+.btn-acknowledge:hover { background: #e8f5e9; border-color: #2e7d32; }
+.btn-acknowledge.acknowledged {
+  background: #e8f5e9;
+  color: #2e7d32;
+  border-color: #a5d6a7;
+}
+.btn-acknowledge.acknowledged:hover { background: #fff; color: #666; border-color: #999; }
+.btn-acknowledge:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>

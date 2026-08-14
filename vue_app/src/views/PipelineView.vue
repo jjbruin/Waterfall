@@ -143,8 +143,38 @@ const saving = ref(false)
 const selectedDealId = ref<number | null>(null)
 const dealDetail = ref<any>(null)
 const detailLoading = ref(false)
-const detailTab = ref<'properties' | 'entities' | 'activity'>('properties')
+const detailTab = ref<'properties' | 'entities' | 'activity' | 'analysis'>('properties')
 const activity = ref<Activity[]>([])
+
+// Analysis state
+const analysisLoading = ref(false)
+const analysisResult = ref<any>(null)
+const analysisError = ref('')
+const assumptionVersions = ref<any[]>([])
+const selectedAssumptionId = ref<number | null>(null)
+const assumptionForm = ref({
+  version_label: 'Base Case',
+  debt_amount: null as number | null,
+  debt_rate: 0.05,
+  debt_term_months: 84,
+  io_months: 60,
+  amort_months: 360,
+  psc_equity_pct: 0.90,
+  pref_rate: 0.08,
+  promote_pct: 0.20,
+  exit_cap_rate: 0.06,
+  selling_cost_pct: 0.02,
+  hold_years: 7,
+  capex_reserve_psf: 0.80,
+  noi_year1: null as number | null,
+  noi_growth_rate: 0.02,
+})
+const savingAssumptions = ref(false)
+const acqForm = ref({
+  purchase_price: null as number | null,
+  closing_cost_pct: 0.02,
+  capex_at_close: 0,
+})
 
 // Property form
 const showPropertyForm = ref(false)
@@ -542,6 +572,101 @@ function actionIcon(action: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Analysis functions
+// ---------------------------------------------------------------------------
+
+async function loadAssumptions() {
+  if (!selectedDealId.value) return
+  try {
+    const res = await api.get(`/api/prospects/${selectedDealId.value}/assumptions`)
+    assumptionVersions.value = res.data
+    if (res.data.length > 0 && !selectedAssumptionId.value) {
+      selectAssumption(res.data[0])
+    }
+  } catch (e: any) {
+    console.error('Failed to load assumptions', e)
+  }
+}
+
+function selectAssumption(a: any) {
+  selectedAssumptionId.value = a.id
+  const fields = [
+    'version_label', 'debt_amount', 'debt_rate', 'debt_term_months',
+    'io_months', 'amort_months', 'psc_equity_pct', 'pref_rate',
+    'promote_pct', 'exit_cap_rate', 'selling_cost_pct', 'hold_years',
+    'capex_reserve_psf', 'noi_year1', 'noi_growth_rate',
+  ]
+  for (const f of fields) {
+    if (a[f] != null) (assumptionForm.value as any)[f] = a[f]
+  }
+}
+
+async function saveAssumptions() {
+  if (!selectedDealId.value) return
+  savingAssumptions.value = true
+  try {
+    const payload = { ...assumptionForm.value, id: selectedAssumptionId.value }
+    const res = await api.post(`/api/prospects/${selectedDealId.value}/assumptions`, payload)
+    selectedAssumptionId.value = res.data.id
+    await loadAssumptions()
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
+  } finally {
+    savingAssumptions.value = false
+  }
+}
+
+async function runAnalysis() {
+  if (!selectedDealId.value) return
+  analysisLoading.value = true
+  analysisError.value = ''
+  analysisResult.value = null
+  try {
+    const payload = {
+      ...assumptionForm.value,
+      assumption_id: selectedAssumptionId.value,
+      // Acquisition overrides (passed to deal dict in backend)
+      purchase_price_override: acqForm.value.purchase_price,
+      closing_cost_pct_override: acqForm.value.closing_cost_pct,
+      capex_at_close_override: acqForm.value.capex_at_close,
+    }
+    const res = await api.post(`/api/prospects/${selectedDealId.value}/analyze`, payload)
+    analysisResult.value = res.data
+  } catch (e: any) {
+    analysisError.value = e.response?.data?.error || e.message
+  } finally {
+    analysisLoading.value = false
+  }
+}
+
+function fmtWhole(v: number | null | undefined): string {
+  if (v == null || isNaN(v)) return '—'
+  return '$' + Math.round(v).toLocaleString()
+}
+
+function fmtPctDisplay(v: number | null | undefined): string {
+  if (v == null || isNaN(v)) return '—'
+  return (v * 100).toFixed(2) + '%'
+}
+
+function fmtMultiple(v: number | null | undefined): string {
+  if (v == null || isNaN(v)) return '—'
+  return v.toFixed(2) + 'x'
+}
+
+watch(detailTab, (tab) => {
+  if (tab === 'analysis') {
+    // Seed acquisition form from deal data
+    if (deal.value) {
+      acqForm.value.purchase_price = deal.value.purchase_price
+      acqForm.value.closing_cost_pct = deal.value.closing_cost_pct ?? 0.02
+      acqForm.value.capex_at_close = deal.value.capex_at_close ?? 0
+    }
+    loadAssumptions()
+  }
+})
+
+// ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
 
@@ -813,6 +938,7 @@ onMounted(() => {
               v-for="tab in [
                 { key: 'properties', label: `Properties (${properties.length})` },
                 { key: 'entities', label: `Entities (${entities.length})` },
+                { key: 'analysis', label: 'Analysis' },
                 { key: 'activity', label: 'Activity' },
               ]"
               :key="tab.key"
@@ -915,6 +1041,241 @@ onMounted(() => {
                 </table>
               </div>
               <div v-else class="entity-empty">No investors. Click + to add.</div>
+            </div>
+          </div>
+
+          <!-- Analysis tab -->
+          <div v-if="detailTab === 'analysis'" class="tab-content analysis-tab">
+            <!-- Saved versions selector -->
+            <div v-if="assumptionVersions.length" class="version-bar">
+              <label>Scenario:</label>
+              <select @change="selectAssumption(assumptionVersions.find((a: any) => a.id === Number(($event.target as HTMLSelectElement).value)))">
+                <option v-for="v in assumptionVersions" :key="v.id" :value="v.id" :selected="v.id === selectedAssumptionId">
+                  {{ v.version_label }} (v{{ v.version }})
+                </option>
+              </select>
+            </div>
+
+            <!-- Assumptions form -->
+            <div class="assumptions-form">
+              <h4>Acquisition</h4>
+              <div class="form-grid-3">
+                <div class="form-group">
+                  <label>Purchase Price ($)</label>
+                  <input type="number" v-model.number="acqForm.purchase_price" step="10000" />
+                </div>
+                <div class="form-group">
+                  <label>Closing Cost %</label>
+                  <input type="number" v-model.number="acqForm.closing_cost_pct" step="0.005" />
+                </div>
+                <div class="form-group">
+                  <label>Reserves / CapEx / Other ($)</label>
+                  <input type="number" v-model.number="acqForm.capex_at_close" step="10000" placeholder="Escrows, working capital, renovation..." />
+                </div>
+              </div>
+
+              <h4>Operating &amp; Exit Assumptions</h4>
+              <div class="form-grid-3">
+                <div class="form-group">
+                  <label>Scenario Label</label>
+                  <input v-model="assumptionForm.version_label" />
+                </div>
+                <div class="form-group">
+                  <label>Year 1 NOI ($)</label>
+                  <input type="number" v-model.number="assumptionForm.noi_year1" step="1000" />
+                </div>
+                <div class="form-group">
+                  <label>NOI Growth Rate</label>
+                  <input type="number" v-model.number="assumptionForm.noi_growth_rate" step="0.005" />
+                </div>
+
+                <div class="form-group">
+                  <label>Debt Amount ($)</label>
+                  <input type="number" v-model.number="assumptionForm.debt_amount" step="10000" />
+                </div>
+                <div class="form-group">
+                  <label>Interest Rate</label>
+                  <input type="number" v-model.number="assumptionForm.debt_rate" step="0.0025" />
+                </div>
+                <div class="form-group">
+                  <label>Loan Term (months)</label>
+                  <input type="number" v-model.number="assumptionForm.debt_term_months" />
+                </div>
+
+                <div class="form-group">
+                  <label>IO Period (months)</label>
+                  <input type="number" v-model.number="assumptionForm.io_months" />
+                </div>
+                <div class="form-group">
+                  <label>Amort Period (months)</label>
+                  <input type="number" v-model.number="assumptionForm.amort_months" />
+                </div>
+                <div class="form-group">
+                  <label>PSC Equity %</label>
+                  <input type="number" v-model.number="assumptionForm.psc_equity_pct" step="0.05" />
+                </div>
+
+                <div class="form-group">
+                  <label>Pref Rate</label>
+                  <input type="number" v-model.number="assumptionForm.pref_rate" step="0.005" />
+                </div>
+                <div class="form-group">
+                  <label>Promote %</label>
+                  <input type="number" v-model.number="assumptionForm.promote_pct" step="0.05" />
+                </div>
+                <div class="form-group">
+                  <label>Hold Period (years)</label>
+                  <input type="number" v-model.number="assumptionForm.hold_years" />
+                </div>
+
+                <div class="form-group">
+                  <label>Exit Cap Rate</label>
+                  <input type="number" v-model.number="assumptionForm.exit_cap_rate" step="0.0025" />
+                </div>
+                <div class="form-group">
+                  <label>Selling Cost %</label>
+                  <input type="number" v-model.number="assumptionForm.selling_cost_pct" step="0.005" />
+                </div>
+                <div class="form-group">
+                  <label>CapEx Reserve ($/SF)</label>
+                  <input type="number" v-model.number="assumptionForm.capex_reserve_psf" step="0.10" />
+                </div>
+              </div>
+
+              <div class="form-actions">
+                <button class="btn-primary" @click="runAnalysis" :disabled="analysisLoading || !assumptionForm.noi_year1">
+                  {{ analysisLoading ? 'Computing...' : 'Compute Returns' }}
+                </button>
+                <button class="btn-secondary" @click="saveAssumptions" :disabled="savingAssumptions">
+                  {{ savingAssumptions ? 'Saving...' : 'Save Assumptions' }}
+                </button>
+              </div>
+            </div>
+
+            <!-- Analysis error -->
+            <div v-if="analysisError" class="error-msg">{{ analysisError }}</div>
+
+            <!-- Analysis results -->
+            <div v-if="analysisResult" class="analysis-results">
+              <!-- Sources & Uses summary -->
+              <div v-if="analysisResult.prospect_assumptions" class="sources-uses">
+                <h4>Sources &amp; Uses</h4>
+                <div class="su-grid">
+                  <div class="su-col">
+                    <div class="su-header">Uses</div>
+                    <div class="su-row"><span>Purchase Price</span><span>{{ fmtWhole(analysisResult.prospect_assumptions.purchase_price) }}</span></div>
+                    <div class="su-row"><span>Closing Costs</span><span>{{ fmtWhole(analysisResult.prospect_assumptions.closing_costs) }}</span></div>
+                    <div class="su-row"><span>Reserves / CapEx / Other</span><span>{{ fmtWhole(analysisResult.prospect_assumptions.capex_at_close) }}</span></div>
+                    <div class="su-row su-total"><span>Total Cost</span><span>{{ fmtWhole(analysisResult.prospect_assumptions.total_cost) }}</span></div>
+                  </div>
+                  <div class="su-col">
+                    <div class="su-header">Sources</div>
+                    <div class="su-row"><span>Debt ({{ fmtPctDisplay(analysisResult.prospect_assumptions.ltv) }} LTV)</span><span>{{ fmtWhole(analysisResult.prospect_assumptions.debt_amount) }}</span></div>
+                    <div class="su-row"><span>PE Equity</span><span>{{ fmtWhole(analysisResult.prospect_assumptions.pe_equity) }}</span></div>
+                    <div class="su-row"><span>OP Equity</span><span>{{ fmtWhole(analysisResult.prospect_assumptions.op_equity) }}</span></div>
+                    <div class="su-row su-total"><span>Total Sources</span><span>{{ fmtWhole(analysisResult.prospect_assumptions.total_cost) }}</span></div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Partner Returns -->
+              <div v-if="analysisResult.partner_results?.length" class="partner-returns">
+                <h4>Partner Returns</h4>
+                <table class="results-table">
+                  <thead>
+                    <tr>
+                      <th>Partner</th>
+                      <th class="r">Contributions</th>
+                      <th class="r">CF Distributions</th>
+                      <th class="r">Capital Distributions</th>
+                      <th class="r">Total Distributions</th>
+                      <th class="r">IRR</th>
+                      <th class="r">ROE</th>
+                      <th class="r">MOIC</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="p in analysisResult.partner_results" :key="p.partner"
+                        :class="{ 'pe-row': p.is_pref_equity }">
+                      <td class="deal-name">{{ p.partner }}</td>
+                      <td class="r">{{ fmtWhole(p.contributions) }}</td>
+                      <td class="r">{{ fmtWhole(p.cf_distributions) }}</td>
+                      <td class="r">{{ fmtWhole(p.cap_distributions) }}</td>
+                      <td class="r">{{ fmtWhole(p.total_distributions) }}</td>
+                      <td class="r">{{ fmtPctDisplay(p.irr) }}</td>
+                      <td class="r">{{ fmtPctDisplay(p.roe) }}</td>
+                      <td class="r">{{ fmtMultiple(p.moic) }}</td>
+                    </tr>
+                  </tbody>
+                  <tfoot v-if="analysisResult.deal_summary">
+                    <tr class="deal-total-row">
+                      <td><strong>Deal Total</strong></td>
+                      <td class="r"><strong>{{ fmtWhole(analysisResult.deal_summary.total_contributions) }}</strong></td>
+                      <td class="r"><strong>{{ fmtWhole(analysisResult.deal_summary.total_cf_distributions) }}</strong></td>
+                      <td class="r"><strong>{{ fmtWhole(analysisResult.deal_summary.total_cap_distributions) }}</strong></td>
+                      <td class="r"><strong>{{ fmtWhole(analysisResult.deal_summary.total_distributions) }}</strong></td>
+                      <td class="r"><strong>{{ fmtPctDisplay(analysisResult.deal_summary.deal_irr) }}</strong></td>
+                      <td class="r"><strong>{{ fmtPctDisplay(analysisResult.deal_summary.deal_roe) }}</strong></td>
+                      <td class="r"><strong>{{ fmtMultiple(analysisResult.deal_summary.deal_moic) }}</strong></td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+
+              <!-- Annual Forecast -->
+              <div v-if="analysisResult.annual_forecast" class="annual-forecast">
+                <h4>Annual Forecast</h4>
+                <div class="table-scroll">
+                  <table class="results-table forecast-table">
+                    <thead>
+                      <tr>
+                        <th>Year</th>
+                        <th class="r" v-for="col in analysisResult.annual_forecast.years" :key="col">{{ col }}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="row in analysisResult.annual_forecast.rows" :key="row.label"
+                          :class="{ 'section-header': row.is_header, 'underline-row': row.underline, 'topline-row': row.topline }">
+                        <td>{{ row.label }}</td>
+                        <td class="r" v-for="col in analysisResult.annual_forecast.years" :key="col">
+                          {{ row.values?.[col] != null ? (row.is_pct ? (row.values[col] * 100).toFixed(2) + '%' : fmtWhole(row.values[col])) : '' }}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <!-- Debt Service -->
+              <div v-if="analysisResult.debt_service?.length" class="debt-service">
+                <h4>Debt Service</h4>
+                <table class="results-table">
+                  <thead>
+                    <tr>
+                      <th>Year</th>
+                      <th class="r">Interest</th>
+                      <th class="r">Principal</th>
+                      <th class="r">Total DS</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="ds in analysisResult.debt_service" :key="ds.Year">
+                      <td>{{ ds.Year }}</td>
+                      <td class="r">{{ fmtWhole(ds.interest) }}</td>
+                      <td class="r">{{ fmtWhole(ds.principal) }}</td>
+                      <td class="r">{{ fmtWhole(ds.total) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <!-- Debug messages -->
+              <details v-if="analysisResult.debug_msgs?.length" class="debug-section">
+                <summary>Diagnostics ({{ analysisResult.debug_msgs.length }})</summary>
+                <ul class="debug-list">
+                  <li v-for="(msg, i) in analysisResult.debug_msgs" :key="i">{{ msg }}</li>
+                </ul>
+              </details>
             </div>
           </div>
 
@@ -1735,4 +2096,70 @@ onMounted(() => {
   padding: 0;
 }
 .btn-danger-text:hover { text-decoration: underline; }
+
+/* ===== ANALYSIS TAB ===== */
+.analysis-tab { overflow-y: auto; }
+
+.version-bar {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 12px; padding: 8px 12px;
+  background: #f5f5f5; border-radius: 6px;
+}
+.version-bar label { font-weight: 600; font-size: 13px; }
+.version-bar select { flex: 1; padding: 4px 8px; border: 1px solid #ccc; border-radius: 4px; }
+
+.assumptions-form { margin-bottom: 16px; }
+.assumptions-form h4 { margin: 0 0 8px; font-size: 14px; color: #333; }
+.form-grid-3 {
+  display: grid; grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px 12px;
+}
+.form-grid-3 .form-group label {
+  display: block; font-size: 11px; color: #666;
+  margin-bottom: 2px; font-weight: 500;
+}
+.form-grid-3 .form-group input {
+  width: 100%; padding: 5px 8px; font-size: 13px;
+  border: 1px solid #ccc; border-radius: 4px;
+  box-sizing: border-box;
+}
+.form-actions {
+  margin-top: 12px; display: flex; gap: 8px;
+}
+
+.error-msg {
+  color: #c62828; background: #ffebee;
+  padding: 8px 12px; border-radius: 4px; margin: 8px 0;
+}
+
+/* Sources & Uses */
+.sources-uses { margin-bottom: 16px; }
+.sources-uses h4 { margin: 0 0 8px; font-size: 14px; }
+.su-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.su-col { background: #fafafa; border-radius: 6px; padding: 10px 14px; }
+.su-header { font-weight: 700; font-size: 13px; margin-bottom: 6px; color: #1a237e; border-bottom: 1px solid #e0e0e0; padding-bottom: 4px; }
+.su-row { display: flex; justify-content: space-between; font-size: 13px; padding: 2px 0; }
+.su-total { font-weight: 700; border-top: 1px solid #bdbdbd; margin-top: 4px; padding-top: 4px; }
+
+/* Results tables */
+.analysis-results h4 { margin: 16px 0 8px; font-size: 14px; }
+.results-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.results-table th { background: #f5f5f5; padding: 6px 10px; text-align: left; font-weight: 600; border-bottom: 2px solid #ddd; white-space: nowrap; }
+.results-table td { padding: 5px 10px; border-bottom: 1px solid #eee; }
+.results-table .r { text-align: right; font-variant-numeric: tabular-nums; }
+.results-table .pe-row { background: #e8eaf6; font-weight: 600; }
+.results-table .deal-total-row { background: #e8eaf6; }
+.results-table .deal-total-row td { border-top: 2px solid #333; }
+
+.table-scroll { overflow-x: auto; }
+.forecast-table th, .forecast-table td { white-space: nowrap; min-width: 90px; }
+.section-header td { font-weight: 700; background: #f5f5f5; }
+.underline-row td { border-bottom: 2px solid #333; }
+.topline-row td { border-top: 2px solid #333; }
+
+/* Debug */
+.debug-section { margin-top: 16px; }
+.debug-section summary { cursor: pointer; font-size: 12px; color: #666; }
+.debug-list { font-size: 11px; color: #666; padding-left: 20px; }
+.debug-list li { margin-bottom: 2px; }
 </style>

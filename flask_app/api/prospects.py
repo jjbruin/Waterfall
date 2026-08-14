@@ -14,6 +14,7 @@ from flask_app.services.prospect_service import (
     create_investor, update_investor, delete_investor,
     get_activity, add_activity_note,
     create_lease_review_for_property,
+    list_assumptions, get_assumption, save_assumptions, delete_assumptions,
 )
 import logging
 
@@ -274,3 +275,171 @@ def get_deal_lease_reviews(deal_id):
         'created_at': str(r[6]) if r[6] else None,
         'property_id': r[7], 'prospect_property_name': r[8],
     } for r in rows])
+
+
+# ---------------------------------------------------------------------------
+# Assumptions CRUD
+# ---------------------------------------------------------------------------
+
+@prospects_bp.route('/<int:deal_id>/assumptions', methods=['GET'])
+@login_required
+def get_deal_assumptions(deal_id):
+    """List assumption versions for a deal."""
+    versions = list_assumptions(get_engine(), deal_id)
+    return jsonify(versions)
+
+
+@prospects_bp.route('/<int:deal_id>/assumptions', methods=['POST'])
+@login_required
+@role_required('admin', 'analyst')
+def save_deal_assumptions(deal_id):
+    """Create or update an assumption version."""
+    data = request.json or {}
+    result = save_assumptions(get_engine(), deal_id, data)
+    return jsonify(result), 201
+
+
+@prospects_bp.route('/<int:deal_id>/assumptions/<int:assumption_id>', methods=['GET'])
+@login_required
+def get_deal_assumption(deal_id, assumption_id):
+    """Get a single assumption version."""
+    result = get_assumption(get_engine(), assumption_id)
+    if not result or result.get('prospect_id') != deal_id:
+        return jsonify({'error': 'Assumption not found'}), 404
+    return jsonify(result)
+
+
+@prospects_bp.route('/<int:deal_id>/assumptions/<int:assumption_id>', methods=['DELETE'])
+@login_required
+@role_required('admin', 'analyst')
+def delete_deal_assumption(deal_id, assumption_id):
+    """Delete an assumption version."""
+    if not delete_assumptions(get_engine(), assumption_id):
+        return jsonify({'error': 'Assumption not found'}), 404
+    return jsonify({'status': 'deleted'})
+
+
+# ---------------------------------------------------------------------------
+# Deal Analysis (compute returns from assumptions)
+# ---------------------------------------------------------------------------
+
+@prospects_bp.route('/<int:deal_id>/analyze', methods=['POST'])
+@login_required
+@role_required('admin', 'analyst')
+def analyze_deal(deal_id):
+    """Run deal analysis using assumptions and the shared compute engine.
+
+    Accepts optional assumption overrides in request body.
+    If 'assumption_id' is provided, loads saved assumptions as base.
+    """
+    from flask_app.serializers import safe_json
+    from prospect_analysis import build_prospect_analysis
+
+    deal_data = get_deal(get_engine(), deal_id)
+    if not deal_data:
+        return jsonify({'error': 'Deal not found'}), 404
+
+    body = request.json or {}
+
+    # Load saved assumptions or use request body
+    assumption_id = body.get('assumption_id')
+    if assumption_id:
+        assumptions = get_assumption(get_engine(), int(assumption_id))
+        if not assumptions:
+            return jsonify({'error': 'Assumption version not found'}), 404
+        # Allow body to override individual fields
+        for k, v in body.items():
+            if k in assumptions and v is not None:
+                assumptions[k] = v
+    else:
+        assumptions = body
+
+    # Apply acquisition overrides from request body
+    for field in ['purchase_price', 'closing_cost_pct', 'capex_at_close']:
+        override = body.get(f'{field}_override')
+        if override is not None:
+            deal_data['deal'][field] = override
+
+    try:
+        result = build_prospect_analysis(
+            deal=deal_data['deal'],
+            properties=deal_data['properties'],
+            entities=deal_data['entities'],
+            assumptions=assumptions,
+        )
+    except Exception as e:
+        logger.exception("Prospect analysis failed for deal %d", deal_id)
+        return jsonify({'error': str(e)}), 500
+
+    if 'error' in result and 'partner_results' not in result:
+        return jsonify({'error': result['error']}), 400
+
+    # Build annual forecast table for display
+    annual_forecast = None
+    try:
+        from reporting import annual_aggregation_table
+        fc_display = result.get('fc_deal_display') or result.get('fc_deal_modeled')
+        if fc_display is not None and not fc_display.empty:
+            hold_years = assumptions.get('hold_years', 7)
+            start_year = result.get('model_start')
+            if start_year and hasattr(start_year, 'year'):
+                start_year = start_year.year
+            else:
+                start_year = 2026
+            aat = annual_aggregation_table(
+                fc_display, start_year, hold_years,
+                cf_alloc=result.get('cf_alloc'),
+                cap_alloc=result.get('cap_alloc'),
+                cash_schedule=result.get('cash_schedule'),
+            )
+            if aat is not None and not aat.empty:
+                years = [int(y) for y in aat.index.tolist()]
+                rows = []
+                pct_rows = {'Debt Service Coverage Ratio'}
+                underline_rows = {'Expenses', 'Capital Expenditures', 'Other Below-the-Line'}
+                topline_rows = set()
+                for col in aat.columns:
+                    vals = {}
+                    for yr in years:
+                        v = aat.loc[yr, col] if yr in aat.index else None
+                        if v is not None and not (isinstance(v, float) and (v != v)):
+                            vals[yr] = v
+                    rows.append({
+                        'label': col,
+                        'values': safe_json(vals),
+                        'is_pct': col in pct_rows,
+                        'is_header': col.endswith(':') or col == '',
+                        'underline': col in underline_rows,
+                        'topline': col in topline_rows,
+                    })
+                annual_forecast = {'years': years, 'rows': rows}
+    except Exception as e:
+        logger.warning("Annual forecast build failed: %s", e)
+
+    # Build debt service summary
+    debt_service = None
+    loan_sched = result.get('loan_sched')
+    if loan_sched is not None and not loan_sched.empty:
+        try:
+            ls = loan_sched.copy()
+            ls['Year'] = ls['event_date'].apply(lambda d: d.year if hasattr(d, 'year') else d)
+            annual_ds = ls.groupby('Year').agg(
+                interest=('interest', 'sum'),
+                principal=('principal', 'sum'),
+            ).reset_index()
+            annual_ds['total'] = annual_ds['interest'] + annual_ds['principal']
+            debt_service = safe_json(annual_ds.to_dict('records'))
+        except Exception:
+            pass
+
+    return jsonify(safe_json({
+        'vcode': result.get('prospect_assumptions', {}).get('close_date', ''),
+        'partner_results': result.get('partner_results', []),
+        'deal_summary': result.get('deal_summary', {}),
+        'debug_msgs': result.get('debug_msgs', []),
+        'prospect_assumptions': result.get('prospect_assumptions', {}),
+        'annual_forecast': annual_forecast,
+        'debt_service': debt_service,
+        'sale_dbg': result.get('sale_dbg'),
+        'cap_data': result.get('cap_data', {}),
+    }))

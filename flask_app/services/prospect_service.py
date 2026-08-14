@@ -846,3 +846,133 @@ def create_lease_review_for_property(engine, deal_id: int, property_id: int,
 
         conn.commit()
     return review_id
+
+
+# ---------------------------------------------------------------------------
+# Assumptions CRUD
+# ---------------------------------------------------------------------------
+
+ASSUMPTION_FIELDS = [
+    'debt_amount', 'debt_rate', 'debt_term_months', 'io_months',
+    'amort_months', 'origination_fee', 'psc_equity_pct', 'pref_rate',
+    'promote_pct', 'am_fee_pct', 'annual_expenses', 'exit_cap_rate',
+    'selling_cost_pct', 'hold_years', 'capex_reserve_psf',
+    'noi_year1', 'noi_growth_rate', 'crossed_vcodes',
+]
+
+
+def list_assumptions(engine, deal_id: int) -> List[Dict]:
+    """List assumption versions for a prospect deal."""
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT id, version, version_label, debt_amount, debt_rate,
+                   debt_term_months, io_months, amort_months, origination_fee,
+                   psc_equity_pct, pref_rate, promote_pct, am_fee_pct,
+                   annual_expenses, exit_cap_rate, selling_cost_pct,
+                   hold_years, capex_reserve_psf, noi_year1, noi_growth_rate,
+                   crossed_vcodes, created_at, updated_at
+            FROM prospect_assumptions
+            WHERE prospect_id = :pid
+            ORDER BY version
+        """), {'pid': deal_id}).fetchall()
+
+    return [{
+        'id': r[0], 'version': r[1], 'version_label': r[2],
+        'debt_amount': r[3], 'debt_rate': r[4],
+        'debt_term_months': r[5], 'io_months': r[6],
+        'amort_months': r[7], 'origination_fee': r[8],
+        'psc_equity_pct': r[9], 'pref_rate': r[10],
+        'promote_pct': r[11], 'am_fee_pct': r[12],
+        'annual_expenses': r[13], 'exit_cap_rate': r[14],
+        'selling_cost_pct': r[15], 'hold_years': r[16],
+        'capex_reserve_psf': r[17], 'noi_year1': r[18],
+        'noi_growth_rate': r[19], 'crossed_vcodes': r[20],
+        'created_at': str(r[21]) if r[21] else None,
+        'updated_at': str(r[22]) if r[22] else None,
+    } for r in rows]
+
+
+def get_assumption(engine, assumption_id: int) -> Optional[Dict]:
+    """Get a single assumption version."""
+    with engine.connect() as conn:
+        r = conn.execute(text("""
+            SELECT id, prospect_id, version, version_label, debt_amount, debt_rate,
+                   debt_term_months, io_months, amort_months, origination_fee,
+                   psc_equity_pct, pref_rate, promote_pct, am_fee_pct,
+                   annual_expenses, exit_cap_rate, selling_cost_pct,
+                   hold_years, capex_reserve_psf, noi_year1, noi_growth_rate,
+                   crossed_vcodes, created_at, updated_at
+            FROM prospect_assumptions
+            WHERE id = :aid
+        """), {'aid': assumption_id}).fetchone()
+    if not r:
+        return None
+    return {
+        'id': r[0], 'prospect_id': r[1], 'version': r[2], 'version_label': r[3],
+        'debt_amount': r[4], 'debt_rate': r[5],
+        'debt_term_months': r[6], 'io_months': r[7],
+        'amort_months': r[8], 'origination_fee': r[9],
+        'psc_equity_pct': r[10], 'pref_rate': r[11],
+        'promote_pct': r[12], 'am_fee_pct': r[13],
+        'annual_expenses': r[14], 'exit_cap_rate': r[15],
+        'selling_cost_pct': r[16], 'hold_years': r[17],
+        'capex_reserve_psf': r[18], 'noi_year1': r[19],
+        'noi_growth_rate': r[20], 'crossed_vcodes': r[21],
+        'created_at': str(r[22]) if r[22] else None,
+        'updated_at': str(r[23]) if r[23] else None,
+    }
+
+
+def save_assumptions(engine, deal_id: int, data: Dict) -> Dict:
+    """Create or update assumption version. Returns {'id': ..., 'version': ...}."""
+    assumption_id = data.get('id')
+    with engine.connect() as conn:
+        if assumption_id:
+            # Update existing
+            sets = ', '.join(f"{f} = :{f}" for f in ASSUMPTION_FIELDS)
+            conn.execute(text(f"""
+                UPDATE prospect_assumptions SET
+                    version_label = :version_label,
+                    {sets},
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = :aid
+            """), {
+                'aid': assumption_id,
+                'version_label': data.get('version_label', 'Base Case'),
+                **{f: data.get(f) for f in ASSUMPTION_FIELDS},
+            })
+            version = data.get('version', 1)
+        else:
+            # Get next version number
+            row = conn.execute(text(
+                "SELECT COALESCE(MAX(version), 0) FROM prospect_assumptions WHERE prospect_id = :pid"
+            ), {'pid': deal_id}).fetchone()
+            version = (row[0] or 0) + 1
+
+            fields_sql = ', '.join(ASSUMPTION_FIELDS)
+            placeholders = ', '.join(f':{f}' for f in ASSUMPTION_FIELDS)
+            result = conn.execute(text(f"""
+                INSERT INTO prospect_assumptions
+                    (prospect_id, version, version_label, {fields_sql})
+                VALUES (:pid, :version, :version_label, {placeholders})
+                RETURNING id
+            """), {
+                'pid': deal_id,
+                'version': version,
+                'version_label': data.get('version_label', 'Base Case'),
+                **{f: data.get(f) for f in ASSUMPTION_FIELDS},
+            })
+            assumption_id = result.fetchone()[0]
+
+        conn.commit()
+    return {'id': assumption_id, 'version': version}
+
+
+def delete_assumptions(engine, assumption_id: int) -> bool:
+    """Delete an assumption version."""
+    with engine.connect() as conn:
+        result = conn.execute(text(
+            "DELETE FROM prospect_assumptions WHERE id = :aid"
+        ), {'aid': assumption_id})
+        conn.commit()
+    return result.rowcount > 0
