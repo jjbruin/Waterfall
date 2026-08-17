@@ -1185,6 +1185,31 @@ def get_property_performance(
             uw_dec = uw_data[uw_data['dtEntry_parsed'] == dec_date]
             uw_ds = abs(uw_dec[uw_dec['vAccount'].isin(IS_ACCOUNTS['UW_DEBT_SERVICE'])]['mAmount'].sum())
             if uw_ds > 0:
+                # Detect partial-year debt service.  When the original U/W
+                # exit date falls before year-end, account 7010's YTD
+                # cumulative only covers months through the projected exit.
+                # Dividing 12 months of NOI by < 12 months of DS inflates
+                # the ratio (e.g. Ascent: 12 mo NOI / 3 mo DS → 10.69X
+                # instead of ~2X).  Fix: find the last month the cumulative
+                # was still growing and annualise.
+                uw_7010 = uw_data[
+                    (uw_data['vAccount'].isin(IS_ACCOUNTS['UW_DEBT_SERVICE']))
+                    & (uw_data['dtEntry_parsed'].dt.year == year)
+                ]
+                if not uw_7010.empty:
+                    monthly_cum = (
+                        uw_7010.groupby(uw_7010['dtEntry_parsed'].dt.month)['mAmount']
+                        .sum().abs().sort_index()
+                    )
+                    if len(monthly_cum) >= 2:
+                        vals = list(monthly_cum.items())
+                        months_active = vals[0][0]  # at least the first month
+                        for i in range(len(vals) - 1, 0, -1):
+                            if abs(vals[i][1] - vals[i - 1][1]) > 1.0:
+                                months_active = vals[i][0]
+                                break
+                        if months_active < 12:
+                            uw_ds = uw_ds * (12 / months_active)
                 perf['dscr']['uw_ye'] = noi / uw_ds
 
             # U/W YE Economic Occupancy from Projected IS: 1 - (vacancy / rental income)
@@ -1852,6 +1877,56 @@ def get_pe_performance(
                             cf_distributions.append((evt_date, amt))
                         # else: acquisition fee — excluded from both capital_events
                         # and cf_distributions (no effect on ROE)
+
+                # Include grace-period pref distributions in ROE.
+                # Pref payments are contractually due within 30 days of
+                # quarter close; a 45-day window captures timely payments
+                # that arrived after quarter_end.  They are assigned to
+                # quarter_end so annualisation uses the quarter boundary,
+                # not the payment date.
+                from datetime import timedelta
+                grace_end = quarter_end + timedelta(days=45)
+                grace_acct = acct_norm[
+                    (acct_norm["InvestmentID"].isin(deal_investment_ids)) &
+                    (acct_norm["EffectiveDate"].dt.date > quarter_end) &
+                    (acct_norm["EffectiveDate"].dt.date <= grace_end)
+                ].copy()
+                if not grace_acct.empty:
+                    grace_acct["MajorType"] = grace_acct["MajorType"].fillna("").astype(str).str.strip()
+                    grace_acct["Amt"] = pd.to_numeric(grace_acct["Amt"], errors="coerce").fillna(0.0)
+                    if "TypeName" not in grace_acct.columns and "Typename" in grace_acct.columns:
+                        grace_acct["TypeName"] = grace_acct["Typename"]
+                    elif "TypeName" not in grace_acct.columns:
+                        grace_acct["TypeName"] = ""
+                    grace_acct["TypeName"] = grace_acct["TypeName"].fillna("").astype(str).str.strip()
+                    grace_acct["InvestorID"] = grace_acct["InvestorID"].astype(str).str.strip()
+                    if "TypeID" in grace_acct.columns:
+                        grace_acct["_tid"] = pd.to_numeric(grace_acct["TypeID"], errors="coerce").fillna(0)
+                    else:
+                        grace_acct["_tid"] = 0
+
+                    for _, grow in grace_acct.iterrows():
+                        if grow["InvestorID"].upper().startswith("OP"):
+                            continue
+                        if grow.get("is_commitment", False):
+                            continue
+                        g_major = grow["MajorType"].lower()
+                        g_tname = grow["TypeName"].lower()
+                        g_amt = float(grow["Amt"])
+                        g_tid = float(grow["_tid"])
+                        if "distri" not in g_major:
+                            continue
+                        is_pref = (
+                            g_tid == 1019.0
+                            or "preferred return" in g_tname
+                            or "pref return" in g_tname
+                        )
+                        if is_pref:
+                            # Assign to quarter_end — the payment services
+                            # this quarter, it just landed late.
+                            if g_amt >= 0:
+                                capital_events.append((quarter_end, g_amt))
+                            cf_distributions.append((quarter_end, g_amt))
 
                 # Compute ROE to Date from actual accounting through quarter end
                 if capital_events:
