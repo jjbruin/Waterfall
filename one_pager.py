@@ -1523,10 +1523,13 @@ def _get_uw_pe_periodic(
             year = period_ts.year
             if year in prev_by_year:
                 periodic = cumulative - prev_by_year[year]
-            elif period_ts.month == 1:
-                periodic = cumulative
             else:
-                periodic = cumulative / period_ts.month
+                # First entry for this year — the cumulative IS the
+                # periodic total so far, whether this is January or a
+                # mid-year first appearance (e.g. a one-time ROC event
+                # in November).  Dividing by month number incorrectly
+                # assumed the cumulative was evenly spread across months.
+                periodic = cumulative
 
             prev_by_year[year] = cumulative
 
@@ -1613,10 +1616,12 @@ def _get_uw_7073_signed(
             year = period_ts.year
             if year in prev_by_year:
                 periodic = cumulative - prev_by_year[year]
-            elif period_ts.month == 1:
-                periodic = cumulative
             else:
-                periodic = cumulative / period_ts.month
+                # First entry for this year — the cumulative IS the
+                # periodic total so far.  The old logic divided by
+                # month number, which incorrectly annualised one-time
+                # events (e.g. $5.77M ROC at Nov → $524K).
+                periodic = cumulative
 
             prev_by_year[year] = cumulative
 
