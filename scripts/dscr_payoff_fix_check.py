@@ -224,6 +224,68 @@ def report(before_path, after_path):
     return 1 if failures else 0
 
 
+def selftest(vcode="P0000030", quarter="2026-Q1", payoff_month="2026-02-28"):
+    """Prove the correction fires when a payoff IS labelled.
+
+    A snapshot with no vDateType='Paid Off' rows makes `report` return zero
+    changes no matter what the code does — including if the guard were removed
+    again.  This injects the payoff into Interim BS and the label into
+    MRI_Loans, then asserts three things: the payoff wrecks DSCR while
+    unlabelled, the label restores it, and the restored value equals the
+    pre-payoff baseline.  Nothing is written back.
+    """
+    from one_pager import get_property_performance
+
+    isbs = _load_isbs()
+    loans = pd.read_csv(os.path.join(CSV_DIR, "MRI_Loans.csv"), dtype=object)
+    debt_accts = ["2150", "2152", "2210"]
+
+    def dscr(df, ln):
+        perf = get_property_performance(vcode, quarter, df, None, None,
+                                        mri_loans_all_df=ln)
+        return perf["dscr"]["ytd_actual"], perf["dscr"]["actual_ye"]
+
+    base_ytd, base_ye = dscr(isbs, loans)
+
+    paid = isbs.copy()
+    hit = (
+        (paid["vcode"] == vcode.lower())
+        & (paid["vSource"] == "Interim BS")
+        & (paid["vAccount"].isin(debt_accts))
+        & (paid["dtEntry_parsed"] >= pd.Timestamp(payoff_month))
+    )
+    if not hit.any():
+        print(f"SKIP: no Interim BS debt rows for {vcode} at/after {payoff_month}")
+        return 0
+    paid.loc[hit, "mAmount"] = 0.0
+
+    unlabelled_ytd, _ = dscr(paid, loans)
+
+    labelled = loans.copy()
+    row = labelled[labelled["vCode"] == vcode].iloc[0].copy()
+    row["vDateType"] = "Paid Off"
+    row["dtEvent"] = pd.Timestamp(payoff_month).strftime("%m/%d/%Y") + " 0:00"
+    labelled = pd.concat([labelled, pd.DataFrame([row])], ignore_index=True)
+
+    fixed_ytd, fixed_ye = dscr(paid, labelled)
+
+    print(f"selftest {vcode} @ {quarter}, payoff injected {payoff_month}")
+    print(f"   baseline (no payoff)      YTD {base_ytd:.6f}  ProjYE {base_ye:.6f}")
+    print(f"   payoff, unlabelled        YTD {unlabelled_ytd:.6f}")
+    print(f"   payoff, 'Paid Off' label  YTD {fixed_ytd:.6f}  ProjYE {fixed_ye:.6f}")
+
+    failures = []
+    if not unlabelled_ytd < base_ytd * 0.5:
+        failures.append("injected payoff did not depress DSCR — injection ineffective")
+    if not abs(fixed_ytd - base_ytd) <= 1e-6 * max(1.0, abs(base_ytd)):
+        failures.append("label did not restore YTD Actual to baseline")
+    if not abs(fixed_ye - base_ye) <= 1e-6 * max(1.0, abs(base_ye)):
+        failures.append("label did not restore Projected YE to baseline")
+
+    print("\n" + ("FAILURES: " + "; ".join(failures) if failures else "PASS"))
+    return 1 if failures else 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -234,12 +296,18 @@ def main():
     rep = sub.add_parser("report")
     rep.add_argument("before")
     rep.add_argument("after")
+    st = sub.add_parser("selftest")
+    st.add_argument("--vcode", default="P0000030")
+    st.add_argument("--quarter", default="2026-Q1")
+    st.add_argument("--payoff-month", default="2026-02-28")
     args = ap.parse_args()
 
     if args.cmd == "capture":
         qtrs = [q.strip() for q in args.quarters.split(",")] if args.quarters else None
         capture(args.out, qtrs)
         return 0
+    if args.cmd == "selftest":
+        return selftest(args.vcode, args.quarter, args.payoff_month)
     return report(args.before, args.after)
 
 

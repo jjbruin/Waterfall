@@ -808,22 +808,6 @@ IS_ACCOUNTS = {
     'UW_DEBT_SERVICE': ['7010'],
 }
 
-# A loan payoff or refi curtailment shows up in Interim BS as one large monthly
-# balance drop.  That drop is not amortization, so counting it as YTD principal
-# collapses DSCR (Nottingham's $38.85M payoff reads as 0.01X).  A month's drop is
-# treated as such an event when it clears BOTH gates below, or when MRI_Loans
-# flags a 'Paid Off' loan in that month (see _refi_months).
-#
-# Thresholds derived from the Apr-2026 ISBS snapshot — 1,040 positive monthly
-# paydowns across 44 amortizing deals: 85% sit within 1.2x of the deal's own
-# median monthly paydown and p95 is 3.92x, so 5x is clear of normal variation.
-# Only 6 material drops fall in the 2x-5x band and all are modest year-end
-# true-ups on regularly-amortizing loans, so the band is deliberately left alone
-# — under-correcting leaves a visibly wrong DSCR, over-correcting silently
-# invents a principal figure on a clean deal.
-ANOMALOUS_DROP_MULTIPLE = 5.0      # x the deal's median monthly paydown
-ANOMALOUS_DROP_FLOOR = 250_000.0   # materiality gate, in dollars
-
 
 def get_property_performance(
     vcode: str,
@@ -954,16 +938,23 @@ def get_property_performance(
         Principal paid = abs(balance at prior Dec 31) - abs(balance at ytd_date).
         This is the authoritative source for actual principal payments.
 
-        A payoff or refi curtailment inside that window is not amortization.  The
-        subtraction spans every month from prior Dec 31 forward, so one such month
+        A loan payoff inside that window is not amortization.  The subtraction
+        spans every month from prior Dec 31 forward, so one payoff month
         contaminates the figure for the rest of the year — and the reported month
-        moving past it does not clear it.  Any month whose drop is flagged by
-        MRI_Loans as a payoff (_refi_months) or is an outlier against this deal's
-        own typical monthly paydown therefore has its delta replaced by the
-        nearest preceding normal month's balance activity.
+        moving past it does not clear it.  A month MRI_Loans flags as a payoff
+        (vDateType='Paid Off', collected into _refi_months) therefore has its
+        delta replaced by the nearest preceding non-payoff month's balance
+        activity.
 
-        Deals with no such month return the plain subtraction unchanged, so this
-        is a no-op on every cleanly-amortizing deal.
+        Detection is by label only.  Sizing a drop against the deal's own
+        amortization run rate would also catch the refis and curtailments MRI
+        never labels (The Gallery, Pontchartrain, PMAT), but those are being
+        corrected in MRI at the data layer instead — so this stays deliberately
+        narrow rather than second-guessing a balance the source system reports as
+        correct.
+
+        Deals with no flagged month return the plain subtraction unchanged, so
+        this is a no-op wherever MRI reports no payoff.
         """
         if bs_df.empty:
             return 0
@@ -1009,35 +1000,28 @@ def get_property_performance(
         def _drop_at(idx):
             return float(bal.iloc[idx - 1] - bal.iloc[idx])
 
-        def _is_event(idx):
-            """True when month `idx`'s balance drop is a payoff/refi, not amortization."""
-            drop = _drop_at(idx)
-            if drop <= 0:
-                return False
+        def _is_payoff_month(idx):
+            """True when MRI_Loans flags a loan Paid Off in month `idx`."""
+            if _drop_at(idx) <= 0:
+                return False   # balance rose or held — nothing to exclude
             ts = pd.Timestamp(bs_periods[idx])
-            if (ts.year, ts.month) in _refi_months:
-                return True   # MRI_Loans flagged a loan Paid Off in this month
-            if drop < ANOMALOUS_DROP_FLOOR:
-                return False  # immaterial — never synthesize a substitute
-            if median_paydown <= 0:
-                return True   # interest-only deal: any material drop is an event
-            return drop >= ANOMALOUS_DROP_MULTIPLE * median_paydown
+            return (ts.year, ts.month) in _refi_months
 
         start_i, end_i = bs_periods.index(start_p), bs_periods.index(end_p)
-        event_idx = [i for i in range(start_i + 1, end_i + 1) if _is_event(i)]
-        if not event_idx:
+        payoff_idx = [i for i in range(start_i + 1, end_i + 1) if _is_payoff_month(i)]
+        if not payoff_idx:
             return base
 
         adjusted = base
-        for i in event_idx:
-            # Substitute the nearest preceding non-event month's activity; fall
-            # back to the deal's median when no clean month precedes the event.
+        for i in payoff_idx:
+            # Substitute the nearest preceding non-payoff month's activity; fall
+            # back to the deal's median when no clean month precedes the payoff.
             substitute = None
             for j in range(i - 1, 0, -1):
-                # Re-test rather than checking window membership: an event in the
+                # Re-test rather than checking window membership: a payoff in the
                 # month before the window (a December payoff, say) is outside
-                # event_idx but is just as unusable as a substitute.
-                if _is_event(j):
+                # payoff_idx but is just as unusable as a substitute.
+                if _is_payoff_month(j):
                     continue
                 substitute = max(0.0, _drop_at(j))
                 break
