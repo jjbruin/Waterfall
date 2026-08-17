@@ -808,6 +808,22 @@ IS_ACCOUNTS = {
     'UW_DEBT_SERVICE': ['7010'],
 }
 
+# A loan payoff or refi curtailment shows up in Interim BS as one large monthly
+# balance drop.  That drop is not amortization, so counting it as YTD principal
+# collapses DSCR (Nottingham's $38.85M payoff reads as 0.01X).  A month's drop is
+# treated as such an event when it clears BOTH gates below, or when MRI_Loans
+# flags a 'Paid Off' loan in that month (see _refi_months).
+#
+# Thresholds derived from the Apr-2026 ISBS snapshot — 1,040 positive monthly
+# paydowns across 44 amortizing deals: 85% sit within 1.2x of the deal's own
+# median monthly paydown and p95 is 3.92x, so 5x is clear of normal variation.
+# Only 6 material drops fall in the 2x-5x band and all are modest year-end
+# true-ups on regularly-amortizing loans, so the band is deliberately left alone
+# — under-correcting leaves a visibly wrong DSCR, over-correcting silently
+# invents a principal figure on a clean deal.
+ANOMALOUS_DROP_MULTIPLE = 5.0      # x the deal's median monthly paydown
+ANOMALOUS_DROP_FLOOR = 250_000.0   # materiality gate, in dollars
+
 
 def get_property_performance(
     vcode: str,
@@ -937,6 +953,17 @@ def get_property_performance(
 
         Principal paid = abs(balance at prior Dec 31) - abs(balance at ytd_date).
         This is the authoritative source for actual principal payments.
+
+        A payoff or refi curtailment inside that window is not amortization.  The
+        subtraction spans every month from prior Dec 31 forward, so one such month
+        contaminates the figure for the rest of the year — and the reported month
+        moving past it does not clear it.  Any month whose drop is flagged by
+        MRI_Loans as a payoff (_refi_months) or is an outlier against this deal's
+        own typical monthly paydown therefore has its delta replaced by the
+        nearest preceding normal month's balance activity.
+
+        Deals with no such month return the plain subtraction unchanged, so this
+        is a no-op on every cleanly-amortizing deal.
         """
         if bs_df.empty:
             return 0
@@ -946,30 +973,84 @@ def get_property_performance(
             return 0
 
         year = int(quarter_str.split('-')[0])
-        bs_periods = sorted(debt_bs['dtEntry_parsed'].dropna().unique())
 
-        def _balance_at(target_ts, direction='le'):
-            candidates = [(pd.Timestamp(p), p) for p in bs_periods
+        # Monthly balance series, oldest first — indexable so month-over-month
+        # activity around an event month can be inspected.
+        bal = debt_bs.groupby('dtEntry_parsed')['mAmount'].sum().abs().sort_index()
+        if bal.empty:
+            return 0
+        bs_periods = list(bal.index)
+
+        def _period_at(target_ts, direction='le'):
+            candidates = [p for p in bs_periods
                           if (direction == 'le' and pd.Timestamp(p) <= target_ts)
                           or (direction == 'ge' and pd.Timestamp(p) >= target_ts)]
             if not candidates:
                 return None
-            best = candidates[-1] if direction == 'le' else candidates[0]
-            return abs(debt_bs[debt_bs['dtEntry_parsed'] == best[1]]['mAmount'].sum())
+            return candidates[-1] if direction == 'le' else candidates[0]
 
         # Start balance: prior Dec 31 (or closest available before Jan 1)
         prior_dec = pd.Timestamp(f"{year - 1}-12-31")
-        start_bal = _balance_at(prior_dec, 'le')
+        start_p = _period_at(prior_dec, 'le')
 
         # End balance: at or before the YTD date
-        end_bal = _balance_at(pd.Timestamp(ytd_date), 'le')
+        end_p = _period_at(pd.Timestamp(ytd_date), 'le')
 
-        if start_bal is None or end_bal is None:
+        if start_p is None or end_p is None:
             return 0
-        return max(0, start_bal - end_bal)
 
-    # Helper: estimate YTD principal from Interim BS balance changes (fallback)
-    # Used when direct BS balance change is unavailable.
+        base = max(0, bal[start_p] - bal[end_p])
+
+        # This deal's own amortization run rate, over its whole reported history.
+        all_deltas = (bal.shift(1) - bal).dropna()
+        paydowns = all_deltas[all_deltas > 0]
+        median_paydown = float(paydowns.median()) if len(paydowns) else 0.0
+
+        def _drop_at(idx):
+            return float(bal.iloc[idx - 1] - bal.iloc[idx])
+
+        def _is_event(idx):
+            """True when month `idx`'s balance drop is a payoff/refi, not amortization."""
+            drop = _drop_at(idx)
+            if drop <= 0:
+                return False
+            ts = pd.Timestamp(bs_periods[idx])
+            if (ts.year, ts.month) in _refi_months:
+                return True   # MRI_Loans flagged a loan Paid Off in this month
+            if drop < ANOMALOUS_DROP_FLOOR:
+                return False  # immaterial — never synthesize a substitute
+            if median_paydown <= 0:
+                return True   # interest-only deal: any material drop is an event
+            return drop >= ANOMALOUS_DROP_MULTIPLE * median_paydown
+
+        start_i, end_i = bs_periods.index(start_p), bs_periods.index(end_p)
+        event_idx = [i for i in range(start_i + 1, end_i + 1) if _is_event(i)]
+        if not event_idx:
+            return base
+
+        adjusted = base
+        for i in event_idx:
+            # Substitute the nearest preceding non-event month's activity; fall
+            # back to the deal's median when no clean month precedes the event.
+            substitute = None
+            for j in range(i - 1, 0, -1):
+                # Re-test rather than checking window membership: an event in the
+                # month before the window (a December payoff, say) is outside
+                # event_idx but is just as unusable as a substitute.
+                if _is_event(j):
+                    continue
+                substitute = max(0.0, _drop_at(j))
+                break
+            if substitute is None:
+                substitute = max(0.0, median_paydown)
+            adjusted = adjusted - _drop_at(i) + substitute
+
+        return max(0, adjusted)
+
+    # NOTE: unreachable since b2b0a40 (2026-08-14) replaced both call sites with
+    # _get_bs_principal_change().  Retained for reference only — the payoff guard
+    # it carries (c1f6230) now lives in _get_bs_principal_change() above.  Do not
+    # assume _refi_months is honoured here; it is not on any live path.
     def _estimate_principal_from_bs(bs_df, qtr_end_ts, months_elapsed):
         """Estimate YTD principal from BS debt account balance changes.
 
