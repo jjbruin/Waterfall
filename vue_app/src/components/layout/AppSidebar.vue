@@ -23,7 +23,7 @@ function toggleSection(key: string) {
 
 // Auto-expand section containing current route
 const amRoutes = ['/deal-analysis', '/property-financials', '/surveillance', '/one-pager', '/review-tracking', '/ownership', '/waterfall-setup', '/reports']
-const nbRoutes = ['/pipeline', '/lease-review', '/lease-risk-analysis']
+const nbRoutes = ['/pipeline', '/lease-review', '/lease-risk-analysis', '/lease-abstract']
 const dmRoutes = ['/data-explorer', '/settings']
 
 watch(() => route.path, (path) => {

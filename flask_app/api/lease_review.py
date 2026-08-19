@@ -29,6 +29,9 @@ from flask_app.services.lease_review_service import (
     resolve_field,
     clear_resolution,
     get_risk_analysis_data,
+    get_tenant_abstract,
+    save_abstract_sections,
+    get_review_abstracts_list,
     RESOLVABLE_FIELDS,
 )
 from io import BytesIO
@@ -924,4 +927,59 @@ def seed_review():
         }), 201
     except Exception as e:
         logger.error(f"Seed error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Lease Abstract endpoints
+# ---------------------------------------------------------------------------
+
+@lease_review_bp.route('/reviews/<int:review_id>/abstracts', methods=['GET'])
+@login_required
+def list_abstracts(review_id):
+    """List tenants with abstract status for a review."""
+    engine = get_engine()
+    try:
+        result = get_review_abstracts_list(engine, review_id)
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"List abstracts error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route(
+    '/reviews/<int:review_id>/tenants/<int:tenant_id>/abstract',
+    methods=['GET'],
+)
+@login_required
+def get_abstract(review_id, tenant_id):
+    """Get the full abstract for a tenant."""
+    engine = get_engine()
+    try:
+        result = get_tenant_abstract(engine, review_id, tenant_id)
+        if result.get('error'):
+            return jsonify({'error': result['error']}), 404
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Get abstract error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route(
+    '/reviews/<int:review_id>/tenants/<int:tenant_id>/abstract',
+    methods=['PUT'],
+)
+@login_required
+@role_required('admin', 'analyst')
+def save_abstract(review_id, tenant_id):
+    """Save abstract sections for a tenant."""
+    engine = get_engine()
+    try:
+        body = request.get_json(force=True) or {}
+        sections = body.get('sections', [])
+        username = getattr(g, 'username', '')
+        save_abstract_sections(engine, tenant_id, sections, username)
+        return jsonify({'status': 'ok', 'tenant_id': tenant_id})
+    except Exception as e:
+        logger.error(f"Save abstract error: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500

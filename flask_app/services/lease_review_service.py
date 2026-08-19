@@ -219,6 +219,20 @@ LEASE_DDL_PG = [
         created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS lease_abstract_sections (
+        id              SERIAL PRIMARY KEY,
+        tenant_id       INTEGER NOT NULL REFERENCES lease_tenants(id),
+        section_key     TEXT NOT NULL,
+        section_title   TEXT NOT NULL,
+        content         TEXT,
+        lease_ref       TEXT,
+        sort_order      INTEGER DEFAULT 0,
+        updated_by      TEXT,
+        updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(tenant_id, section_key)
+    )
+    """,
 ]
 
 # SQLite variants (no SERIAL, use INTEGER PRIMARY KEY AUTOINCREMENT)
@@ -3601,3 +3615,619 @@ def get_risk_analysis_data(engine, review_id: int) -> Dict[str, Any]:
         'exclusive_use': exclusive_use,
         'options': options,
     }
+
+
+# ---------------------------------------------------------------------------
+# Lease Abstract — assemble & persist per-tenant abstracts
+# ---------------------------------------------------------------------------
+
+# Standard abstract sections in display order (matches Word template)
+ABSTRACT_SECTIONS = [
+    ('tenant', 'Tenant', 1),
+    ('documents_reviewed', 'Documents Reviewed', 2),
+    ('unit_address', 'Unit/Address', 3),
+    ('square_feet', 'Square Feet', 4),
+    ('prs', 'PRS (Proportionate Share)', 5),
+    ('term', 'Term', 6),
+    ('percentage_rent', 'Percentage Rent', 7),
+    ('renewal_options', 'Renewal Options', 8),
+    ('termination_options', 'Termination Options', 9),
+    ('use', 'Use', 10),
+    ('exclusive_use', 'Exclusive Use', 11),
+    ('cam', 'CAM', 12),
+    ('insurance', 'Insurance', 13),
+    ('real_estate_taxes', 'Real Estate Taxes', 14),
+    ('parking', 'Parking', 15),
+    ('roof', 'Roof', 16),
+    ('structural', 'Structural', 17),
+    ('signage', 'Signage', 18),
+    ('utilities', 'Utilities', 19),
+    ('hvac', 'HVAC', 20),
+    ('sales_reporting', 'Sales Reporting', 21),
+    ('estoppel', 'Estoppel', 22),
+    ('security_deposit', 'Security Deposit', 23),
+    ('operating_covenants', 'Operating Covenants', 24),
+    ('go_dark_termination', 'Go-Dark Termination', 25),
+    ('business_termination', 'Landlord/Tenant Business Termination Rights', 26),
+    ('casualty_termination', 'Landlord/Tenant Casualty/Default/Eminent Domain Termination Rights', 27),
+    ('relocation_rights', 'Landlord/Tenant Relocation Rights', 28),
+    ('rofr_rofo', 'ROFR/ROFO Options', 29),
+    ('cotenancy', 'Co-Tenancy Provisions', 30),
+    ('radius_restriction', 'Radius Restriction', 31),
+    ('ti_allowance', 'Tenant Improvement Allowance', 32),
+    ('lease_inducements', 'Lease Inducements', 33),
+    ('assignment', 'Assignment and Subletting', 34),
+    ('merchants_association', "Merchants' Association", 35),
+    ('redevelopment', 'Redevelopment', 36),
+    ('guarantor', 'Guarantor(s)', 37),
+    ('notes', 'Notes', 38),
+    ('date_of_review', 'Date of Review', 39),
+]
+
+
+def _fmt_money(val) -> str:
+    """Format a number as currency."""
+    if val is None:
+        return ''
+    try:
+        v = float(val)
+        if v == int(v):
+            return f"${int(v):,}"
+        return f"${v:,.2f}"
+    except (ValueError, TypeError):
+        return str(val)
+
+
+def _fmt_date(val) -> str:
+    """Format YYYY-MM-DD to M/D/YYYY."""
+    if not val:
+        return ''
+    try:
+        m = re.match(r'(\d{4})-(\d{2})-(\d{2})', str(val))
+        if m:
+            return f"{int(m.group(2))}/{int(m.group(3))}/{m.group(1)}"
+    except Exception:
+        pass
+    return str(val)
+
+
+def _assemble_abstract_from_data(
+    engine, tenant_id: int, review_id: int
+) -> Dict[str, Dict[str, str]]:
+    """Build abstract section content from existing extracted data.
+
+    Returns {section_key: {'content': str, 'lease_ref': str}}.
+    Sections with no data return empty content (user can fill in manually).
+    """
+    from sqlalchemy import text
+
+    sections: Dict[str, Dict[str, str]] = {}
+
+    with engine.connect() as conn:
+        # Tenant info
+        t = conn.execute(text("""
+            SELECT tenant_name, suite, square_feet, lease_type,
+                   lease_start, lease_end, term_months,
+                   monthly_rent, annual_rent, rent_per_sf,
+                   security_deposit, extraction_json
+            FROM lease_tenants WHERE id = :tid
+        """), {'tid': tenant_id}).fetchone()
+        if not t:
+            return sections
+
+        tenant_name = t[0] or ''
+        suite = t[1] or ''
+        sq_ft = t[2]
+        lease_start = t[4]
+        lease_end = t[5]
+        term_months = t[6]
+        monthly_rent = t[7]
+        annual_rent = t[8]
+        rent_per_sf = t[9]
+        security_deposit = t[10]
+        extraction_raw = t[11]
+
+        # Parse extraction JSON (may be a list of extractions from multiple docs)
+        ext = {}
+        if extraction_raw:
+            try:
+                parsed = json.loads(extraction_raw)
+                if isinstance(parsed, list) and parsed:
+                    ext = parsed[0] if isinstance(parsed[0], dict) else {}
+                elif isinstance(parsed, dict):
+                    ext = parsed
+            except (json.JSONDecodeError, IndexError):
+                pass
+
+        # Documents reviewed
+        docs = conn.execute(text("""
+            SELECT filename, doc_type, doc_date
+            FROM lease_documents
+            WHERE tenant_id = :tid
+            ORDER BY doc_date, filename
+        """), {'tid': tenant_id}).fetchall()
+
+        doc_lines = []
+        for d in docs:
+            line = d[1] or d[0]
+            if d[2]:
+                line += f" (dated {_fmt_date(d[2])})"
+            elif d[0] != d[1]:
+                line += f" — {d[0]}"
+            doc_lines.append(line)
+
+        # Rent steps
+        rent_steps = conn.execute(text("""
+            SELECT effective_date, monthly_rent, annual_rent, rent_per_sf
+            FROM lease_rent_steps WHERE tenant_id = :tid
+            ORDER BY effective_date
+        """), {'tid': tenant_id}).fetchall()
+
+        # Renewal options
+        renewals = conn.execute(text("""
+            SELECT option_number, total_options, term_years,
+                   notice_days, notice_deadline, rent_terms,
+                   auto_renewal, exercised, option_start, option_end
+            FROM lease_options
+            WHERE tenant_id = :tid AND option_type = 'renewal'
+            ORDER BY option_number
+        """), {'tid': tenant_id}).fetchall()
+
+        # Termination options
+        terminations = conn.execute(text("""
+            SELECT option_number, total_options, term_years,
+                   notice_days, notice_deadline, rent_terms,
+                   exercised, option_start, option_end
+            FROM lease_options
+            WHERE tenant_id = :tid AND option_type = 'termination'
+            ORDER BY option_number
+        """), {'tid': tenant_id}).fetchall()
+
+        # Cotenancy
+        cot_rows = conn.execute(text("""
+            SELECT c.trigger_description, c.trigger_threshold,
+                   c.cure_period_days, c.alt_rent_formula,
+                   c.termination_right, c.termination_notice_days,
+                   c.sunset_provision
+            FROM lease_cotenancy c
+            WHERE c.tenant_id = :tid
+        """), {'tid': tenant_id}).fetchall()
+
+        cot_refs = conn.execute(text("""
+            SELECT cr.referenced_tenant_name
+            FROM lease_cotenancy_refs cr
+            JOIN lease_cotenancy c ON c.id = cr.cotenancy_id
+            WHERE c.tenant_id = :tid
+        """), {'tid': tenant_id}).fetchall()
+
+        # Exclusive use
+        exc_rows = conn.execute(text("""
+            SELECT restriction_text, restricted_use
+            FROM lease_exclusive_use WHERE tenant_id = :tid
+        """), {'tid': tenant_id}).fetchall()
+
+    # -- Build section content --
+
+    # Tenant
+    sections['tenant'] = {
+        'content': ext.get('tenant_legal_name') or tenant_name,
+        'lease_ref': '',
+    }
+
+    # Documents Reviewed
+    sections['documents_reviewed'] = {
+        'content': '\n'.join(doc_lines) if doc_lines else '',
+        'lease_ref': '',
+    }
+
+    # Unit/Address
+    sections['unit_address'] = {
+        'content': suite,
+        'lease_ref': '',
+    }
+
+    # Square Feet
+    sections['square_feet'] = {
+        'content': f"{int(sq_ft):,} Square Feet" if sq_ft else '',
+        'lease_ref': '',
+    }
+
+    # PRS
+    sections['prs'] = {'content': '', 'lease_ref': ''}
+
+    # Term
+    term_parts = []
+    if term_months:
+        years = term_months // 12
+        months = term_months % 12
+        if years and months:
+            term_parts.append(f"{years} year(s), {months} month(s)")
+        elif years:
+            term_parts.append(f"{years} year(s)")
+        else:
+            term_parts.append(f"{months} month(s)")
+    if lease_start:
+        term_parts.append(f"Commencing {_fmt_date(lease_start)}")
+    if lease_end:
+        term_parts.append(f"Expiring {_fmt_date(lease_end)}")
+    # Rent schedule
+    if rent_steps:
+        term_parts.append('')
+        term_parts.append('Rent Schedule:')
+        for rs in rent_steps:
+            line = f"  {_fmt_date(rs[0])}: {_fmt_money(rs[1])}/mo"
+            if rs[2]:
+                line += f" ({_fmt_money(rs[2])}/yr)"
+            if rs[3]:
+                line += f" — {_fmt_money(rs[3])}/SF"
+            term_parts.append(line)
+    elif monthly_rent or annual_rent:
+        term_parts.append(
+            f"Base Rent: {_fmt_money(monthly_rent)}/mo "
+            f"({_fmt_money(annual_rent)}/yr)"
+        )
+        if rent_per_sf:
+            term_parts.append(f"Rent/SF: {_fmt_money(rent_per_sf)}")
+
+    sections['term'] = {
+        'content': '\n'.join(term_parts),
+        'lease_ref': '',
+    }
+
+    # Percentage Rent
+    pct = ext.get('percentage_rent', {})
+    if pct and pct.get('has_clause'):
+        pct_text = f"Rate: {pct.get('rate_pct')}%"
+        if pct.get('breakpoint'):
+            pct_text += f", Breakpoint: {_fmt_money(pct['breakpoint'])}"
+        sections['percentage_rent'] = {'content': pct_text, 'lease_ref': ''}
+    else:
+        sections['percentage_rent'] = {
+            'content': 'No language noted.' if ext else '',
+            'lease_ref': '',
+        }
+
+    # Renewal Options
+    if renewals:
+        lines = []
+        for r in renewals:
+            line = f"Option {r[0]} of {r[1]}: {r[2]} year(s)"
+            if r[3]:
+                line += f", {r[3]} days notice"
+            if r[5]:
+                line += f" at {r[5]}"
+            if r[6]:
+                line += ' (auto-renewal)'
+            if r[7]:
+                line += ' [EXERCISED]'
+            if r[8] or r[9]:
+                line += f" ({_fmt_date(r[8])} — {_fmt_date(r[9])})"
+            lines.append(line)
+        sections['renewal_options'] = {
+            'content': '\n'.join(lines), 'lease_ref': '',
+        }
+    else:
+        sections['renewal_options'] = {
+            'content': 'No language noted.' if ext else '',
+            'lease_ref': '',
+        }
+
+    # Termination Options
+    if terminations:
+        lines = []
+        for r in terminations:
+            line = f"Option {r[0]} of {r[1]}"
+            if r[3]:
+                line += f", {r[3]} days notice"
+            if r[5]:
+                line += f" — {r[5]}"
+            if r[6]:
+                line += ' [EXERCISED]'
+            if r[7]:
+                line += f", earliest: {_fmt_date(r[7])}"
+            lines.append(line)
+        sections['termination_options'] = {
+            'content': '\n'.join(lines), 'lease_ref': '',
+        }
+    else:
+        sections['termination_options'] = {
+            'content': 'No language noted.' if ext else '',
+            'lease_ref': '',
+        }
+
+    # Use
+    sections['use'] = {
+        'content': ext.get('permitted_use') or '',
+        'lease_ref': '',
+    }
+
+    # Exclusive Use
+    if exc_rows:
+        lines = [f"{r[1]}: {r[0]}" if r[1] else r[0] for r in exc_rows]
+        sections['exclusive_use'] = {
+            'content': '\n'.join(lines), 'lease_ref': '',
+        }
+    else:
+        sections['exclusive_use'] = {
+            'content': 'No language noted.' if ext else '',
+            'lease_ref': '',
+        }
+
+    # CAM
+    cam_parts = []
+    if ext.get('cam_structure'):
+        cam_parts.append(f"Structure: {ext['cam_structure']}")
+    if ext.get('cam_cap_pct'):
+        cam_parts.append(f"Cap: {ext['cam_cap_pct']}%")
+    if ext.get('admin_fee_pct'):
+        cam_parts.append(f"Admin Fee: {ext['admin_fee_pct']}%")
+    sections['cam'] = {
+        'content': ', '.join(cam_parts) if cam_parts else (
+            'No language noted.' if ext else ''
+        ),
+        'lease_ref': '',
+    }
+
+    # Insurance
+    ins_parts = []
+    if ext.get('insurance_pass_through') is True:
+        ins_parts.append('Insurance pass-through to tenant.')
+    elif ext.get('insurance_pass_through') is False:
+        ins_parts.append('No insurance pass-through.')
+    sections['insurance'] = {
+        'content': ' '.join(ins_parts) if ins_parts else (
+            'No language noted.' if ext else ''
+        ),
+        'lease_ref': '',
+    }
+
+    # Real Estate Taxes
+    tax_parts = []
+    if ext.get('tax_pass_through') is True:
+        tax_parts.append('Real estate tax pass-through to tenant.')
+    elif ext.get('tax_pass_through') is False:
+        tax_parts.append('No real estate tax pass-through.')
+    sections['real_estate_taxes'] = {
+        'content': ' '.join(tax_parts) if tax_parts else (
+            'No language noted.' if ext else ''
+        ),
+        'lease_ref': '',
+    }
+
+    # Sections that are typically blank until manually populated
+    for key in [
+        'parking', 'roof', 'structural', 'signage', 'utilities',
+        'hvac', 'sales_reporting', 'estoppel', 'operating_covenants',
+        'business_termination', 'casualty_termination',
+        'relocation_rights', 'rofr_rofo', 'radius_restriction',
+        'lease_inducements', 'merchants_association', 'redevelopment',
+        'guarantor', 'notes',
+    ]:
+        sections[key] = {'content': '', 'lease_ref': ''}
+
+    # Security Deposit
+    sections['security_deposit'] = {
+        'content': _fmt_money(security_deposit) if security_deposit else (
+            'No language noted.' if ext else ''
+        ),
+        'lease_ref': '',
+    }
+
+    # Go-Dark Termination
+    sections['go_dark_termination'] = {
+        'content': ext.get('go_dark_provision') or (
+            'No language noted.' if ext else ''
+        ),
+        'lease_ref': '',
+    }
+
+    # Co-Tenancy
+    if cot_rows:
+        lines = []
+        ref_names = [r[0] for r in cot_refs]
+        if ref_names:
+            lines.append(f"Named Co-Tenants: {', '.join(ref_names)}")
+        for c in cot_rows:
+            if c[0]:
+                lines.append(f"Trigger: {c[0]}")
+            if c[2]:
+                lines.append(f"Cure Period: {c[2]} days")
+            if c[3]:
+                lines.append(f"Alt Rent: {c[3]}")
+            if c[4]:
+                lines.append(
+                    f"Termination Right: Yes"
+                    + (f" ({c[5]} days notice)" if c[5] else '')
+                )
+            if c[6]:
+                lines.append(f"Sunset: {c[6]}")
+        sections['cotenancy'] = {
+            'content': '\n'.join(lines), 'lease_ref': '',
+        }
+    else:
+        sections['cotenancy'] = {
+            'content': 'No language noted.' if ext else '',
+            'lease_ref': '',
+        }
+
+    # TI Allowance
+    sections['ti_allowance'] = {
+        'content': _fmt_money(ext.get('ti_allowance')) if ext.get('ti_allowance') else (
+            'No language noted.' if ext else ''
+        ),
+        'lease_ref': '',
+    }
+
+    # Assignment
+    asgn = ext.get('assignment', {})
+    if asgn:
+        parts = []
+        if asgn.get('consent_required') is True:
+            parts.append('Landlord consent required.')
+        elif asgn.get('consent_required') is False:
+            parts.append('No landlord consent required.')
+        if asgn.get('tenant_released') is True:
+            parts.append('Tenant released upon assignment.')
+        elif asgn.get('tenant_released') is False:
+            parts.append('Tenant NOT released upon assignment.')
+        sections['assignment'] = {
+            'content': ' '.join(parts) if parts else 'No language noted.',
+            'lease_ref': '',
+        }
+    else:
+        sections['assignment'] = {
+            'content': 'No language noted.' if ext else '',
+            'lease_ref': '',
+        }
+
+    # Date of Review
+    sections['date_of_review'] = {
+        'content': datetime.now().strftime('%m/%d/%Y'),
+        'lease_ref': '',
+    }
+
+    return sections
+
+
+def get_tenant_abstract(
+    engine, review_id: int, tenant_id: int
+) -> Dict[str, Any]:
+    """Get the abstract for a tenant, assembling from data if needed.
+
+    Returns {tenant_name, suite, review_name, property_name, sections: [...]}.
+    """
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        # Tenant + review info
+        info = conn.execute(text("""
+            SELECT t.tenant_name, t.suite, r.property_name,
+                   t.review_id
+            FROM lease_tenants t
+            JOIN lease_reviews r ON r.id = t.review_id
+            WHERE t.id = :tid AND t.review_id = :rid
+        """), {'tid': tenant_id, 'rid': review_id}).fetchone()
+        if not info:
+            return {'error': 'Tenant not found'}
+
+        tenant_name = info[0]
+        suite = info[1]
+        property_name = info[2]
+
+        # Check for saved abstract sections
+        saved = conn.execute(text("""
+            SELECT section_key, section_title, content, lease_ref, sort_order
+            FROM lease_abstract_sections
+            WHERE tenant_id = :tid
+            ORDER BY sort_order
+        """), {'tid': tenant_id}).fetchall()
+
+    # If we have saved sections, use them (merging with template for any missing)
+    saved_map = {r[0]: {
+        'section_key': r[0], 'section_title': r[1],
+        'content': r[2] or '', 'lease_ref': r[3] or '',
+        'sort_order': r[4],
+    } for r in saved}
+
+    # Assemble from data for any section not yet saved
+    if not saved_map:
+        assembled = _assemble_abstract_from_data(engine, tenant_id, review_id)
+    else:
+        assembled = {}
+
+    # Build final section list in template order
+    result_sections = []
+    for key, title, order in ABSTRACT_SECTIONS:
+        if key in saved_map:
+            result_sections.append(saved_map[key])
+        elif key in assembled:
+            result_sections.append({
+                'section_key': key,
+                'section_title': title,
+                'content': assembled[key].get('content', ''),
+                'lease_ref': assembled[key].get('lease_ref', ''),
+                'sort_order': order,
+            })
+        else:
+            result_sections.append({
+                'section_key': key,
+                'section_title': title,
+                'content': '',
+                'lease_ref': '',
+                'sort_order': order,
+            })
+
+    return {
+        'tenant_name': tenant_name,
+        'suite': suite,
+        'property_name': property_name,
+        'tenant_id': tenant_id,
+        'review_id': review_id,
+        'sections': result_sections,
+    }
+
+
+def save_abstract_sections(
+    engine, tenant_id: int, sections: List[Dict], username: str = ''
+) -> None:
+    """Save (upsert) abstract sections for a tenant."""
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        for s in sections:
+            key = s.get('section_key')
+            if not key:
+                continue
+            title = s.get('section_title', key)
+            content = s.get('content', '')
+            lease_ref = s.get('lease_ref', '')
+            sort_order = s.get('sort_order', 0)
+
+            if engine.dialect.name == 'postgresql':
+                conn.execute(text("""
+                    INSERT INTO lease_abstract_sections
+                        (tenant_id, section_key, section_title, content,
+                         lease_ref, sort_order, updated_by, updated_at)
+                    VALUES (:tid, :sk, :st, :c, :lr, :so, :ub, CURRENT_TIMESTAMP)
+                    ON CONFLICT (tenant_id, section_key)
+                    DO UPDATE SET section_title = :st, content = :c,
+                        lease_ref = :lr, sort_order = :so,
+                        updated_by = :ub, updated_at = CURRENT_TIMESTAMP
+                """), {
+                    'tid': tenant_id, 'sk': key, 'st': title,
+                    'c': content, 'lr': lease_ref, 'so': sort_order,
+                    'ub': username,
+                })
+            else:
+                conn.execute(text("""
+                    INSERT OR REPLACE INTO lease_abstract_sections
+                        (tenant_id, section_key, section_title, content,
+                         lease_ref, sort_order, updated_by, updated_at)
+                    VALUES (:tid, :sk, :st, :c, :lr, :so, :ub, CURRENT_TIMESTAMP)
+                """), {
+                    'tid': tenant_id, 'sk': key, 'st': title,
+                    'c': content, 'lr': lease_ref, 'so': sort_order,
+                    'ub': username,
+                })
+
+
+def get_review_abstracts_list(engine, review_id: int) -> List[Dict]:
+    """Get a list of tenants and whether they have abstract data."""
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT t.id, t.tenant_name, t.suite, t.is_vacant,
+                   (SELECT COUNT(*) FROM lease_abstract_sections a
+                    WHERE a.tenant_id = t.id) as section_count
+            FROM lease_tenants t
+            WHERE t.review_id = :rid
+            ORDER BY t.tenant_name
+        """), {'rid': review_id}).fetchall()
+
+    return [{
+        'tenant_id': r[0], 'tenant_name': r[1], 'suite': r[2],
+        'is_vacant': bool(r[3]),
+        'has_abstract': r[4] > 0,
+        'section_count': r[4],
+    } for r in rows]

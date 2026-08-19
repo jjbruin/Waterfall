@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import api from '../api/client'
+
+const router = useRouter()
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -381,6 +384,7 @@ onMounted(() => {
                 <th>Lease End</th>
                 <th>Approval</th>
                 <th>Resolutions</th>
+                <th>Abstract</th>
               </tr>
             </thead>
             <tbody>
@@ -434,6 +438,12 @@ onMounted(() => {
                   <span class="status-badge" :class="t.approval_status">{{ t.approval_status }}</span>
                 </td>
                 <td class="num-cell">{{ Object.keys(t.resolutions || {}).length || '-' }}</td>
+                <td>
+                  <button
+                    class="btn-xs btn-abstract"
+                    @click.stop="router.push({ path: '/lease-abstract', query: { review: String(selectedReviewId), tenant: String(t.id) } })"
+                  >View</button>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -950,4 +960,6 @@ h3 { color: #1F4E79; margin: 20px 0 12px; font-size: 1.1rem; }
   padding: 2px 10px; cursor: pointer;
 }
 .btn-not-exercised:hover { background: #dee2e6; }
+.btn-abstract { background: #1F4E79; color: #fff; font-weight: 600; }
+.btn-abstract:hover { background: #16395a; }
 </style>
