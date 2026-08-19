@@ -22,6 +22,7 @@ from flask_app.services.lease_review_service import (
     merge_rent_roll_to_review,
     upload_documents_to_review,
     assign_document_to_tenant,
+    get_unmatched_documents,
     approve_tenant,
     get_workflow_progress,
     update_workflow_step,
@@ -539,13 +540,6 @@ def upload_documents(review_id):
 
     try:
         import json as _json
-        file_tuples = []
-        for f in files_list:
-            if f.filename:
-                file_tuples.append((f.filename, f.read()))
-
-        if not file_tuples:
-            return jsonify({'error': 'No valid files'}), 400
 
         # Parse folder hints sent from the frontend (subfolder names for matching)
         folder_hints_raw = request.form.get('folder_hints')
@@ -555,6 +549,15 @@ def upload_documents(review_id):
                 folder_hints = _json.loads(folder_hints_raw)
             except Exception:
                 pass
+
+        # Process files one at a time to limit memory usage
+        file_tuples = []
+        for f in files_list:
+            if f.filename:
+                file_tuples.append((f.filename, f.read()))
+
+        if not file_tuples:
+            return jsonify({'error': 'No valid files'}), 400
 
         report = upload_documents_to_review(
             engine, review_id, file_tuples,
@@ -640,6 +643,17 @@ def edit_tenant_sales(review_id, tenant_id):
     except Exception as e:
         logger.error(f"Edit tenant sales error: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/unmatched-documents', methods=['GET'])
+@login_required
+@role_required('admin', 'analyst')
+def list_unmatched_documents(review_id):
+    """List documents with no tenant assignment."""
+    engine = get_engine()
+    ensure_lease_tables(engine)
+    docs = get_unmatched_documents(engine, review_id)
+    return jsonify({'documents': docs})
 
 
 @lease_review_bp.route('/reviews/<int:review_id>/documents/<int:doc_id>/assign-tenant', methods=['POST'])

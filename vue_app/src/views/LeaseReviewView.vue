@@ -74,6 +74,10 @@ const editingSalesValue = ref('')
 const uploadingDocs = ref(false)
 const docUploadReport = ref<any>(null)
 
+// Unmatched document assignment
+const unmatchedDocs = ref<any[]>([])
+const unmatchedAssignments = ref<Record<number, number>>({})  // doc_id -> tenant_id
+
 // Extraction
 const extracting = ref(false)
 const extractionMessage = ref('')
@@ -191,6 +195,8 @@ async function goToStep(key: string) {
       console.warn('Failed to persist step', e)
     }
   }
+  // Load unmatched docs when entering documents step
+  if (key === 'documents') loadUnmatchedDocs()
 }
 
 // Tenant docs
@@ -408,9 +414,41 @@ function cancelSalesEdit() {
   editingSalesTenantId.value = null
 }
 
-// Document upload — batched to avoid OOM on large folders
+// Document upload — one file at a time for reliability, with retry
 const docUploadProgress = ref('')
-const UPLOAD_BATCH_SIZE = 20
+const docUploadFailed = ref<string[]>([])
+const uploadCancelled = ref(false)
+
+async function cancelUpload() {
+  uploadCancelled.value = true
+}
+
+async function uploadOneFile(
+  reviewId: number,
+  item: { file: File; hint: string },
+  retries = 2
+): Promise<any> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const formData = new FormData()
+      formData.append('files', item.file)
+      formData.append('folder_hints', JSON.stringify([item.hint]))
+      const res = await api.post(
+        `/api/lease-review/reviews/${reviewId}/upload-documents`,
+        formData,
+        { headers: { 'Content-Type': 'multipart/form-data' } }
+      )
+      return res.data
+    } catch (e: any) {
+      if (attempt < retries) {
+        // Wait before retry (1s, then 3s)
+        await new Promise(r => setTimeout(r, (attempt + 1) * 2000))
+        continue
+      }
+      throw e
+    }
+  }
+}
 
 async function onDocumentUpload(event: Event) {
   const input = event.target as HTMLInputElement
@@ -431,55 +469,87 @@ async function onDocumentUpload(event: Event) {
   }
 
   uploadingDocs.value = true
+  uploadCancelled.value = false
   docUploadReport.value = null
   docUploadProgress.value = ''
+  docUploadFailed.value = []
 
-  // Aggregate results across batches
   const totals = { added: 0, skipped_duplicate: 0, unmatched: 0, details: [] as any[] }
+  const totalFiles = pdfFiles.length
+  const reviewId = selectedReviewId.value!
 
-  try {
-    const totalFiles = pdfFiles.length
-    for (let i = 0; i < totalFiles; i += UPLOAD_BATCH_SIZE) {
-      const batch = pdfFiles.slice(i, i + UPLOAD_BATCH_SIZE)
-      const batchEnd = Math.min(i + UPLOAD_BATCH_SIZE, totalFiles)
-      docUploadProgress.value = `Uploading ${batchEnd} of ${totalFiles} files...`
+  for (let i = 0; i < totalFiles; i++) {
+    if (uploadCancelled.value) {
+      docUploadProgress.value = `Cancelled after ${i} of ${totalFiles} files.`
+      break
+    }
+    const item = pdfFiles[i]
+    const sizeMB = (item.file.size / (1024 * 1024)).toFixed(1)
+    const parts: string[] = []
+    if (totals.added) parts.push(`${totals.added} added`)
+    if (totals.unmatched) parts.push(`${totals.unmatched} unmatched`)
+    if (totals.skipped_duplicate) parts.push(`${totals.skipped_duplicate} skipped`)
+    if (docUploadFailed.value.length) parts.push(`${docUploadFailed.value.length} failed`)
+    const stats = parts.length ? ` [${parts.join(', ')}]` : ''
+    docUploadProgress.value = `Uploading ${i + 1} of ${totalFiles}: ${item.file.name} (${sizeMB} MB)${stats}...`
 
-      const formData = new FormData()
-      const folderHints: string[] = []
-      for (const item of batch) {
-        formData.append('files', item.file)
-        folderHints.push(item.hint)
-      }
-      formData.append('folder_hints', JSON.stringify(folderHints))
-
-      const res = await api.post(
-        `/api/lease-review/reviews/${selectedReviewId.value}/upload-documents`,
-        formData,
-        { headers: { 'Content-Type': 'multipart/form-data' } }
-      )
-      const d = res.data
+    try {
+      const d = await uploadOneFile(reviewId, item)
       totals.added += d.added || 0
       totals.skipped_duplicate += d.skipped_duplicate || 0
       totals.unmatched += d.unmatched || 0
       if (d.details) totals.details.push(...d.details)
+    } catch (e: any) {
+      console.error(`Failed: ${item.file.name}`, e)
+      docUploadFailed.value.push(item.file.name)
     }
-    docUploadReport.value = totals
+    if (i < totalFiles - 1) await new Promise(r => setTimeout(r, 200))
+  }
+
+  docUploadReport.value = totals
+  if (docUploadFailed.value.length > 0 && !uploadCancelled.value) {
+    alert(`Upload complete. ${totals.added} added, ${docUploadFailed.value.length} failed:\n${docUploadFailed.value.slice(0, 10).join('\n')}${docUploadFailed.value.length > 10 ? `\n...and ${docUploadFailed.value.length - 10} more` : ''}`)
+  }
+  await loadReview(reviewId)
+  await loadUnmatchedDocs()
+  uploadingDocs.value = false
+  input.value = ''
+}
+
+// Unmatched document management
+async function loadUnmatchedDocs() {
+  if (!selectedReviewId.value) return
+  try {
+    const res = await api.get(`/api/lease-review/reviews/${selectedReviewId.value}/unmatched-documents`)
+    unmatchedDocs.value = res.data.documents || []
+    unmatchedAssignments.value = {}
+  } catch { unmatchedDocs.value = [] }
+}
+
+async function assignDoc(docId: number) {
+  const tenantId = unmatchedAssignments.value[docId]
+  if (!tenantId || !selectedReviewId.value) return
+  try {
+    await api.post(`/api/lease-review/reviews/${selectedReviewId.value}/documents/${docId}/assign-tenant`, { tenant_id: tenantId })
+    unmatchedDocs.value = unmatchedDocs.value.filter(d => d.id !== docId)
+    delete unmatchedAssignments.value[docId]
     await loadReview(selectedReviewId.value!)
   } catch (e: any) {
-    console.error('Doc upload error', e)
-    // Show partial results if some batches succeeded
-    if (totals.added > 0) {
-      docUploadReport.value = totals
-      alert(`Upload failed after ${totals.added} files. Error: ${e.response?.data?.error || e.message}`)
-      await loadReview(selectedReviewId.value!)
-    } else {
-      alert(e.response?.data?.error || 'Failed to upload documents')
-    }
-  } finally {
-    uploadingDocs.value = false
-    docUploadProgress.value = ''
-    input.value = ''
+    alert('Failed to assign: ' + (e.response?.data?.error || e.message))
   }
+}
+
+async function assignAllDocs() {
+  if (!selectedReviewId.value) return
+  const entries = Object.entries(unmatchedAssignments.value).filter(([, tid]) => tid)
+  for (const [docId, tenantId] of entries) {
+    try {
+      await api.post(`/api/lease-review/reviews/${selectedReviewId.value}/documents/${Number(docId)}/assign-tenant`, { tenant_id: tenantId })
+      unmatchedDocs.value = unmatchedDocs.value.filter(d => d.id !== Number(docId))
+      delete unmatchedAssignments.value[Number(docId)]
+    } catch { /* skip failures */ }
+  }
+  await loadReview(selectedReviewId.value!)
 }
 
 // Run extraction
@@ -921,6 +991,7 @@ function statusClass(s: string): string {
             <input type="file" webkitdirectory @change="onDocumentUpload" :disabled="uploadingDocs" hidden />
           </label>
           <span v-if="docUploadProgress" class="upload-progress-text">{{ docUploadProgress }}</span>
+          <button v-if="uploadingDocs && !uploadCancelled" class="btn-cancel" @click="cancelUpload">Cancel</button>
         </div>
 
         <!-- Upload report -->
@@ -939,6 +1010,39 @@ function statusClass(s: string): string {
               </li>
             </ul>
           </div>
+        </div>
+
+        <!-- Unmatched documents — manual tenant assignment -->
+        <div v-if="unmatchedDocs.length" style="margin-top: 1.5rem">
+          <h3 style="color: #C00000">Unmatched Documents ({{ unmatchedDocs.length }})</h3>
+          <p class="subtitle">These documents could not be auto-matched to a tenant. Select the correct tenant for each.</p>
+          <div class="table-scroll">
+            <table class="data-table compact">
+              <thead>
+                <tr><th>Filename</th><th>Type</th><th>Assign to Tenant</th><th class="c">Action</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="d in unmatchedDocs" :key="d.id">
+                  <td style="font-size: 0.85rem">{{ d.filename }}</td>
+                  <td>{{ d.doc_type }}</td>
+                  <td>
+                    <select v-model="unmatchedAssignments[d.id]" style="width: 100%; padding: 0.3rem">
+                      <option :value="undefined">-- Select tenant --</option>
+                      <option v-for="t in occupiedTenants" :key="t.id" :value="t.id">
+                        {{ t.suite ? t.suite + ' — ' : '' }}{{ t.tenant_name }}
+                      </option>
+                    </select>
+                  </td>
+                  <td class="c">
+                    <button class="btn-primary" style="padding: 0.2rem 0.6rem; font-size: 0.8rem" @click="assignDoc(d.id)" :disabled="!unmatchedAssignments[d.id]">Assign</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <button class="btn-primary" style="margin-top: 0.5rem" @click="assignAllDocs" :disabled="!Object.values(unmatchedAssignments).some(v => v)">
+            Assign All Selected
+          </button>
         </div>
 
         <!-- Document summary by tenant -->
@@ -1349,6 +1453,8 @@ function statusClass(s: string): string {
 .btn-primary { padding: 0.5rem 1rem; background: #1F4E79; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
 .btn-primary:hover { background: #163a5c; }
 .btn-primary:disabled { opacity: 0.5; cursor: default; }
+.btn-cancel { padding: 0.3rem 0.8rem; background: #C00000; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 0.8rem; margin-left: 0.5rem; }
+.btn-cancel:hover { background: #900; }
 .btn-secondary { padding: 0.5rem 1rem; background: #e0e0e0; color: #333; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
 .btn-secondary:hover { background: #d0d0d0; }
 .btn-danger { padding: 0.5rem 1rem; background: #C00000; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }

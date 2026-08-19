@@ -288,6 +288,19 @@ def _migrate_add_column(engine, table: str, column: str, col_type: str):
                     f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
 
 
+def _migrate_nullable(engine, table: str, column: str):
+    """Drop NOT NULL constraint on a column. PG only — SQLite ignores constraints."""
+    from sqlalchemy import text
+    if engine.dialect.name != 'postgresql':
+        return  # SQLite doesn't enforce NOT NULL on ALTER; no action needed
+    with engine.begin() as conn:
+        try:
+            conn.execute(text(
+                f"ALTER TABLE {table} ALTER COLUMN {column} DROP NOT NULL"))
+        except Exception:
+            pass  # Already nullable or column doesn't exist
+
+
 def ensure_lease_tables(engine):
     """Create lease review tables and migrate missing columns."""
     from sqlalchemy import text, inspect
@@ -353,6 +366,9 @@ def ensure_lease_tables(engine):
     _migrate_add_column(engine, 'lease_documents', 'uploaded_by', 'TEXT')
     _migrate_add_column(engine, 'lease_documents', 'file_data',
                         'BYTEA' if engine.dialect.name == 'postgresql' else 'BLOB')
+
+    # Phase 1B+: Allow NULL tenant_id for unmatched documents
+    _migrate_nullable(engine, 'lease_documents', 'tenant_id')
 
     logger.info("Lease review tables ensured")
 
@@ -1357,11 +1373,20 @@ def upload_documents_to_review(
 
             if tenant_id is None:
                 unmatched += 1
-                # Still insert with tenant_id pointing to a placeholder
-                # Use the first tenant as a fallback (unmatched docs need manual assignment)
-                # Actually, store with tenant_id=0 temporarily — but FK constraint prevents this.
-                # Instead, we'll need to create an "Unassigned" approach.
-                # For now, skip unmatched docs and report them.
+                # Store with NULL tenant_id — user can assign manually
+                conn.execute(text("""
+                    INSERT INTO lease_documents
+                        (tenant_id, review_id, filename, doc_type, doc_date,
+                         extraction_status, file_hash, uploaded_by, file_data)
+                    VALUES (NULL, :rid, :fn, :dt, :dd,
+                            'pending', :fh, :ub, :fd)
+                """), {
+                    'rid': review_id,
+                    'fn': filename, 'dt': doc_type, 'dd': doc_date,
+                    'fh': file_hash, 'ub': uploaded_by, 'fd': file_bytes,
+                })
+                existing_hashes.add(file_hash)
+                added += 1
                 details.append({
                     'filename': filename, 'action': 'unmatched',
                     'doc_type': doc_type,
@@ -1453,6 +1478,19 @@ def _match_file_to_tenant(
                 best_len = len(tname)
 
     return best_match
+
+
+def get_unmatched_documents(engine, review_id: int) -> List[Dict[str, Any]]:
+    """Return documents with no tenant assignment (tenant_id IS NULL)."""
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT id, filename, doc_type, doc_date, extraction_status, uploaded_by
+            FROM lease_documents
+            WHERE review_id = :rid AND tenant_id IS NULL
+            ORDER BY filename
+        """), {'rid': review_id}).fetchall()
+        return [dict(r._mapping) for r in rows]
 
 
 def assign_document_to_tenant(

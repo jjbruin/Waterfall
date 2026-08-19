@@ -31,6 +31,9 @@ class Config:
     QUERIES_DIR = os.environ.get("QUERIES_DIR", "")     # MRI SQL query files
     DOWNLOADS_DIR = os.environ.get("DOWNLOADS_DIR", "")  # MRI query result downloads
 
+    # Upload limits
+    MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50 MB max request body
+
     # Cache
     CACHE_TYPE = "SimpleCache"
     CACHE_DEFAULT_TIMEOUT = 300
