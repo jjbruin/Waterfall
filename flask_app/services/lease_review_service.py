@@ -102,8 +102,11 @@ LEASE_DDL_PG = [
         lease_end       TEXT,
         term_months     INTEGER,
         monthly_rent    DOUBLE PRECISION,
+        monthly_rent_per_sf DOUBLE PRECISION,
         annual_rent     DOUBLE PRECISION,
-        rent_per_sf     DOUBLE PRECISION,
+        annual_rent_per_sf DOUBLE PRECISION,
+        annual_recoveries_per_sf DOUBLE PRECISION,
+        annual_misc_per_sf DOUBLE PRECISION,
         security_deposit DOUBLE PRECISION,
         is_vacant       BOOLEAN DEFAULT FALSE,
         is_material     BOOLEAN DEFAULT FALSE,
@@ -316,6 +319,12 @@ def ensure_lease_tables(engine):
     _migrate_add_column(engine, 'lease_tenants', 'approved_at', 'TIMESTAMP')
     _migrate_add_column(engine, 'lease_tenants', 'analyst_notes', 'TEXT')
 
+    # Rent roll extended columns on lease_tenants
+    _migrate_add_column(engine, 'lease_tenants', 'monthly_rent_per_sf', 'DOUBLE PRECISION')
+    _migrate_add_column(engine, 'lease_tenants', 'annual_rent_per_sf', 'DOUBLE PRECISION')
+    _migrate_add_column(engine, 'lease_tenants', 'annual_recoveries_per_sf', 'DOUBLE PRECISION')
+    _migrate_add_column(engine, 'lease_tenants', 'annual_misc_per_sf', 'DOUBLE PRECISION')
+
     # Phase 2A: option_start / option_end on lease_options
     _migrate_add_column(engine, 'lease_options', 'option_start', 'TEXT')
     _migrate_add_column(engine, 'lease_options', 'option_end', 'TEXT')
@@ -433,7 +442,10 @@ def parse_rent_roll(file_path: str) -> pd.DataFrame:
 
     Returns columns: suite, tenant_name, lease_type, square_feet,
     lease_start, lease_end, term_months, monthly_rent, rent_per_sf_month,
-    annual_rent, rent_per_sf_year, security_deposit, is_vacant
+    annual_rent, rent_per_sf_year, annual_recoveries_per_sf,
+    annual_misc_per_sf, security_deposit, is_vacant.
+
+    Derives missing gross/per-SF values from what's provided.
     """
     import openpyxl
     wb = openpyxl.load_workbook(file_path, data_only=True)
@@ -480,20 +492,52 @@ def parse_rent_roll(file_path: str) -> pd.DataFrame:
                 return None
             return s
 
+        sf = to_float(ws.cell(r, 5).value)
+        monthly_rent = to_float(ws.cell(r, 9).value)
+        monthly_rent_per_sf = to_float(ws.cell(r, 10).value)
+        annual_rent = to_float(ws.cell(r, 11).value)
+        annual_rent_per_sf = to_float(ws.cell(r, 12).value)
+        annual_rec_per_sf = to_float(ws.cell(r, 13).value)
+        annual_misc_per_sf = to_float(ws.cell(r, 14).value)
+        security_deposit = to_float(ws.cell(r, 15).value)
+
+        # Derive missing gross/per-SF values from what's provided
+        if sf and sf > 0:
+            if annual_rent and not annual_rent_per_sf:
+                annual_rent_per_sf = annual_rent / sf
+            elif annual_rent_per_sf and not annual_rent:
+                annual_rent = annual_rent_per_sf * sf
+            if monthly_rent and not monthly_rent_per_sf:
+                monthly_rent_per_sf = monthly_rent / sf
+            elif monthly_rent_per_sf and not monthly_rent:
+                monthly_rent = monthly_rent_per_sf * sf
+        # Cross-derive monthly/annual when one is missing
+        if annual_rent and not monthly_rent:
+            monthly_rent = annual_rent / 12
+        elif monthly_rent and not annual_rent:
+            annual_rent = monthly_rent * 12
+        if sf and sf > 0:
+            if annual_rent and not annual_rent_per_sf:
+                annual_rent_per_sf = annual_rent / sf
+            if monthly_rent and not monthly_rent_per_sf:
+                monthly_rent_per_sf = monthly_rent / sf
+
         rows.append({
             'property_code': str(col1).strip(),
             'suite': str(col2).strip() if col2 else '',
             'tenant_name': tenant_name.strip(),
             'lease_type': str(ws.cell(r, 4).value or '').strip(),
-            'square_feet': to_float(ws.cell(r, 5).value),
+            'square_feet': sf,
             'lease_start': to_date_str(ws.cell(r, 6).value),
             'lease_end': to_date_str(ws.cell(r, 7).value),
             'term_months': int(to_float(ws.cell(r, 8).value)),
-            'monthly_rent': to_float(ws.cell(r, 9).value),
-            'rent_per_sf_month': to_float(ws.cell(r, 10).value),
-            'annual_rent': to_float(ws.cell(r, 11).value),
-            'rent_per_sf_year': to_float(ws.cell(r, 12).value),
-            'security_deposit': to_float(ws.cell(r, 13).value),
+            'monthly_rent': monthly_rent,
+            'rent_per_sf_month': monthly_rent_per_sf,
+            'annual_rent': annual_rent,
+            'rent_per_sf_year': annual_rent_per_sf,
+            'annual_recoveries_per_sf': annual_rec_per_sf,
+            'annual_misc_per_sf': annual_misc_per_sf,
+            'security_deposit': security_deposit,
             'is_vacant': is_vacant,
         })
 
@@ -720,6 +764,21 @@ def parse_rent_roll_flexible(file_obj, filename: str = '') -> pd.DataFrame:
                                                 'percentage', 'absorption'])
     col_map['monthly_rent'] = _find_col('monthly', 'month rent',
                                         exclude=['annual', 'per sf'])
+    col_map['annual_rent_per_sf'] = _find_col('annual rent per', 'annual base per',
+                                               'annual $/sf', 'rent per sf',
+                                               'rent/sf', 'per area',
+                                               exclude=['monthly', 'recover',
+                                                        'misc', 'expense'])
+    col_map['monthly_rent_per_sf'] = _find_col('monthly rent per', 'monthly $/sf',
+                                                'monthly base per',
+                                                exclude=['annual'])
+    col_map['annual_recoveries_per_sf'] = _find_col('recover', 'cam',
+                                                     'reimburse',
+                                                     exclude=['misc', 'annual rent',
+                                                              'base rent'])
+    col_map['annual_misc_per_sf'] = _find_col('misc', 'other per',
+                                               exclude=['recover', 'annual rent',
+                                                        'base rent'])
     col_map['security_deposit'] = _find_col('deposit', 'security')
 
     if not col_map.get('tenant_name'):
@@ -761,14 +820,30 @@ def parse_rent_roll_flexible(file_obj, filename: str = '') -> pd.DataFrame:
         sf = _safe_float(row.get(col_map.get('square_feet', ''), 0))
         ann_rent = _safe_float(row.get(col_map.get('annual_rent', ''), 0))
         mon_rent = _safe_float(row.get(col_map.get('monthly_rent', ''), 0))
+        ann_rent_psf = _safe_float(row.get(col_map.get('annual_rent_per_sf', ''), 0))
+        mon_rent_psf = _safe_float(row.get(col_map.get('monthly_rent_per_sf', ''), 0))
+        ann_rec_psf = _safe_float(row.get(col_map.get('annual_recoveries_per_sf', ''), 0))
+        ann_misc_psf = _safe_float(row.get(col_map.get('annual_misc_per_sf', ''), 0))
 
-        # Derive missing fields
+        # Derive missing gross/per-SF values
+        if sf > 0:
+            if ann_rent and not ann_rent_psf:
+                ann_rent_psf = ann_rent / sf
+            elif ann_rent_psf and not ann_rent:
+                ann_rent = ann_rent_psf * sf
+            if mon_rent and not mon_rent_psf:
+                mon_rent_psf = mon_rent / sf
+            elif mon_rent_psf and not mon_rent:
+                mon_rent = mon_rent_psf * sf
         if ann_rent > 0 and mon_rent == 0:
             mon_rent = ann_rent / 12
         elif mon_rent > 0 and ann_rent == 0:
             ann_rent = mon_rent * 12
-
-        rent_per_sf = ann_rent / sf if sf > 0 else 0
+        if sf > 0:
+            if ann_rent and not ann_rent_psf:
+                ann_rent_psf = ann_rent / sf
+            if mon_rent and not mon_rent_psf:
+                mon_rent_psf = mon_rent / sf
 
         result_rows.append({
             'tenant_name': tname,
@@ -783,8 +858,11 @@ def parse_rent_roll_flexible(file_obj, filename: str = '') -> pd.DataFrame:
                         if col_map.get('lease_end') else None,
             'term_months': 0,
             'monthly_rent': mon_rent,
+            'rent_per_sf_month': mon_rent_psf,
             'annual_rent': ann_rent,
-            'rent_per_sf_year': rent_per_sf,
+            'rent_per_sf_year': ann_rent_psf,
+            'annual_recoveries_per_sf': ann_rec_psf,
+            'annual_misc_per_sf': ann_misc_psf,
             'security_deposit': _safe_float(
                 row.get(col_map.get('security_deposit', ''), 0))
                 if col_map.get('security_deposit') else 0,
@@ -849,11 +927,15 @@ def import_rent_roll_to_review(engine, review_id: int, rr_df: pd.DataFrame) -> i
                 INSERT INTO lease_tenants
                     (review_id, tenant_name, suite, square_feet, lease_type,
                      lease_start, lease_end, term_months, monthly_rent,
-                     annual_rent, rent_per_sf, security_deposit,
+                     monthly_rent_per_sf, annual_rent, annual_rent_per_sf,
+                     rent_per_sf, annual_recoveries_per_sf, annual_misc_per_sf,
+                     security_deposit,
                      is_vacant, is_material, has_cotenancy, has_exclusive_use)
                 VALUES (:rid, :tn, :su, :sf, :lt,
                         :ls, :le, :tm, :mr,
-                        :ar, :rpsf, :sd,
+                        :mrpsf, :ar, :arpsf,
+                        :rpsf, :arecpsf, :amiscpsf,
+                        :sd,
                         :iv, :im, FALSE, FALSE)
             """), {
                 'rid': review_id,
@@ -865,8 +947,12 @@ def import_rent_roll_to_review(engine, review_id: int, rr_df: pd.DataFrame) -> i
                 'le': row.get('lease_end'),
                 'tm': int(row.get('term_months', 0) or 0),
                 'mr': float(row.get('monthly_rent', 0) or 0),
+                'mrpsf': float(row.get('rent_per_sf_month', 0) or 0),
                 'ar': ann_rent,
+                'arpsf': float(row.get('rent_per_sf_year', 0) or 0),
                 'rpsf': float(row.get('rent_per_sf_year', 0) or 0),
+                'arecpsf': float(row.get('annual_recoveries_per_sf', 0) or 0),
+                'amiscpsf': float(row.get('annual_misc_per_sf', 0) or 0),
                 'sd': float(row.get('security_deposit', 0) or 0),
                 'iv': bool(row.get('is_vacant', False)),
                 'im': is_material,
@@ -970,6 +1056,9 @@ def merge_rent_roll_to_review(
             ann_rent = float(row.get('annual_rent', 0) or 0)
             mon_rent = float(row.get('monthly_rent', 0) or 0)
             rpsf = float(row.get('rent_per_sf_year', 0) or 0)
+            mrpsf = float(row.get('rent_per_sf_month', 0) or 0)
+            arecpsf = float(row.get('annual_recoveries_per_sf', 0) or 0)
+            amiscpsf = float(row.get('annual_misc_per_sf', 0) or 0)
             is_material = (sf >= MATERIAL_LEASE_SF_THRESHOLD or
                            ann_rent >= MATERIAL_LEASE_RENT_THRESHOLD)
 
@@ -980,7 +1069,11 @@ def merge_rent_roll_to_review(
                     UPDATE lease_tenants
                     SET tenant_name = :tn, suite = :su, square_feet = :sf,
                         lease_type = :lt, lease_start = :ls, lease_end = :le,
-                        monthly_rent = :mr, annual_rent = :ar, rent_per_sf = :rpsf,
+                        monthly_rent = :mr, monthly_rent_per_sf = :mrpsf,
+                        annual_rent = :ar, annual_rent_per_sf = :arpsf,
+                        rent_per_sf = :rpsf,
+                        annual_recoveries_per_sf = :arecpsf,
+                        annual_misc_per_sf = :amiscpsf,
                         security_deposit = :sd, is_vacant = :iv, is_material = :im,
                         rent_roll_source = :src, updated_at = CURRENT_TIMESTAMP
                     WHERE id = :tid
@@ -988,7 +1081,9 @@ def merge_rent_roll_to_review(
                     'tn': rr_name, 'su': rr_suite, 'sf': sf,
                     'lt': row.get('lease_type', 'Retail'),
                     'ls': row.get('lease_start'), 'le': row.get('lease_end'),
-                    'mr': mon_rent, 'ar': ann_rent, 'rpsf': rpsf,
+                    'mr': mon_rent, 'mrpsf': mrpsf,
+                    'ar': ann_rent, 'arpsf': rpsf, 'rpsf': rpsf,
+                    'arecpsf': arecpsf, 'amiscpsf': amiscpsf,
                     'sd': float(row.get('security_deposit', 0) or 0),
                     'iv': bool(row.get('is_vacant', False)),
                     'im': is_material, 'src': source_label,
@@ -1002,19 +1097,25 @@ def merge_rent_roll_to_review(
                     INSERT INTO lease_tenants
                         (review_id, tenant_name, suite, square_feet, lease_type,
                          lease_start, lease_end, term_months, monthly_rent,
-                         annual_rent, rent_per_sf, security_deposit,
+                         monthly_rent_per_sf, annual_rent, annual_rent_per_sf,
+                         rent_per_sf, annual_recoveries_per_sf, annual_misc_per_sf,
+                         security_deposit,
                          is_vacant, is_material, has_cotenancy, has_exclusive_use,
                          rent_roll_source)
                     VALUES (:rid, :tn, :su, :sf, :lt,
                             :ls, :le, :tm, :mr,
-                            :ar, :rpsf, :sd,
+                            :mrpsf, :ar, :arpsf,
+                            :rpsf, :arecpsf, :amiscpsf,
+                            :sd,
                             :iv, :im, FALSE, FALSE, :src)
                 """), {
                     'rid': review_id, 'tn': rr_name, 'su': rr_suite, 'sf': sf,
                     'lt': row.get('lease_type', 'Retail'),
                     'ls': row.get('lease_start'), 'le': row.get('lease_end'),
                     'tm': int(row.get('term_months', 0) or 0),
-                    'mr': mon_rent, 'ar': ann_rent, 'rpsf': rpsf,
+                    'mr': mon_rent, 'mrpsf': mrpsf,
+                    'ar': ann_rent, 'arpsf': rpsf, 'rpsf': rpsf,
+                    'arecpsf': arecpsf, 'amiscpsf': amiscpsf,
                     'sd': float(row.get('security_deposit', 0) or 0),
                     'iv': bool(row.get('is_vacant', False)),
                     'im': is_material, 'src': source_label,

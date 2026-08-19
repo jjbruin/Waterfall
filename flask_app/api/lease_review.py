@@ -218,7 +218,9 @@ def get_review(review_id):
                    annual_rent, rent_per_sf, security_deposit,
                    is_vacant, is_material, has_cotenancy, has_exclusive_use,
                    extraction_status, approval_status, analyst_notes,
-                   rent_roll_source
+                   rent_roll_source,
+                   monthly_rent_per_sf, annual_rent_per_sf,
+                   annual_recoveries_per_sf, annual_misc_per_sf
             FROM lease_tenants
             WHERE review_id = :rid
             ORDER BY suite
@@ -256,6 +258,10 @@ def get_review(review_id):
             'approval_status': t[17] or 'pending',
             'analyst_notes': t[18],
             'rent_roll_source': t[19],
+            'monthly_rent_per_sf': t[20],
+            'annual_rent_per_sf': t[21],
+            'annual_recoveries_per_sf': t[22],
+            'annual_misc_per_sf': t[23],
             'documents': doc_map.get(t[0], {'total': 0, 'extracted': 0}),
         } for t in tenants],
     })

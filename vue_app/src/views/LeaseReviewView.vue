@@ -550,6 +550,10 @@ function fmtSF(val: number | null): string {
   if (val == null) return '\u2014'
   return val.toLocaleString('en-US', { maximumFractionDigits: 0 })
 }
+function fmtPerSF(val: number | null | undefined): string {
+  if (val == null || val === 0) return '\u2014'
+  return '$' + val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
 function fmtPct(val: number | null): string {
   if (val == null) return '\u2014'
   return val.toFixed(1) + '%'
@@ -741,7 +745,14 @@ function statusClass(s: string): string {
               <thead>
                 <tr>
                   <th>Tenant</th><th>Suite</th><th class="r">SF</th>
-                  <th class="r">Annual Rent</th><th>Source</th>
+                  <th>Lease Type</th><th>Lease Start</th><th>Lease End</th>
+                  <th class="r">Term</th>
+                  <th class="r">Monthly Rent</th><th class="r">Monthly $/SF</th>
+                  <th class="r">Annual Rent</th><th class="r">Annual $/SF</th>
+                  <th class="r">Recoveries $/SF</th><th class="r">Misc $/SF</th>
+                  <th class="r">Annual Sales</th><th class="r">Sales $/SF</th>
+                  <th class="r">Occ. Cost</th>
+                  <th>Source</th>
                 </tr>
               </thead>
               <tbody>
@@ -749,7 +760,19 @@ function statusClass(s: string): string {
                   <td class="tenant-name">{{ t.tenant_name }}</td>
                   <td>{{ t.suite }}</td>
                   <td class="r">{{ fmtSF(t.square_feet) }}</td>
+                  <td>{{ t.lease_type || '\u2014' }}</td>
+                  <td>{{ fmtDate(t.lease_start) }}</td>
+                  <td>{{ fmtDate(t.lease_end) }}</td>
+                  <td class="r">{{ t.term_months || '\u2014' }}</td>
+                  <td class="r">{{ fmtCurrency(t.monthly_rent) }}</td>
+                  <td class="r">{{ fmtPerSF(t.monthly_rent_per_sf) }}</td>
                   <td class="r">{{ fmtCurrency(t.annual_rent) }}</td>
+                  <td class="r">{{ fmtPerSF(t.annual_rent_per_sf || t.rent_per_sf) }}</td>
+                  <td class="r">{{ fmtPerSF(t.annual_recoveries_per_sf) }}</td>
+                  <td class="r">{{ fmtPerSF(t.annual_misc_per_sf) }}</td>
+                  <td class="r">&mdash;</td>
+                  <td class="r">&mdash;</td>
+                  <td class="r">&mdash;</td>
                   <td><span class="badge badge-pending">{{ t.rent_roll_source || 'original' }}</span></td>
                 </tr>
               </tbody>
