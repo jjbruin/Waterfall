@@ -242,10 +242,12 @@ function fmt$c(v: any) {
 }
 const DOLLAR_FIELDS = new Set(['annual_rent', 'monthly_rent', 'security_deposit'])
 const DOLLAR_CENTS_FIELDS = new Set(['rent_per_sf'])
+const NUMBER_FIELDS = new Set(['square_feet'])
 function fmtValidationVal(field: string, v: any) {
   if (v == null) return '-'
   if (DOLLAR_FIELDS.has(field)) return fmt$(v)
   if (DOLLAR_CENTS_FIELDS.has(field)) return fmt$c(v)
+  if (NUMBER_FIELDS.has(field) && !isNaN(v)) return Number(v).toLocaleString('en-US')
   return v
 }
 function fmtSf(v: any) {
