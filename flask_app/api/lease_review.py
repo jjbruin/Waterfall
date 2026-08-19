@@ -663,6 +663,32 @@ def clear_tenant_resolution(review_id, tenant_id, field_name):
         return jsonify({'error': str(e)}), 500
 
 
+@lease_review_bp.route(
+    '/reviews/<int:review_id>/options/<int:option_id>/exercised',
+    methods=['PUT'],
+)
+@login_required
+@role_required('admin', 'analyst')
+def toggle_option_exercised(review_id, option_id):
+    """Toggle the exercised status of a lease option."""
+    from sqlalchemy import text
+    try:
+        engine = get_engine()
+        body = request.get_json(force=True) or {}
+        exercised = bool(body.get('exercised', False))
+        with engine.begin() as conn:
+            conn.execute(text("""
+                UPDATE lease_options SET exercised = :ex
+                WHERE id = :oid AND tenant_id IN (
+                    SELECT id FROM lease_tenants WHERE review_id = :rid
+                )
+            """), {'ex': exercised, 'oid': option_id, 'rid': review_id})
+        return jsonify({'status': 'ok', 'option_id': option_id, 'exercised': exercised})
+    except Exception as e:
+        logger.error(f"Toggle option exercised error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
 @lease_review_bp.route('/seed', methods=['POST'])
 @login_required
 @role_required('admin')
@@ -826,9 +852,10 @@ def seed_review():
                     INSERT INTO lease_options
                         (tenant_id, option_type, option_number, total_options,
                          term_years, notice_days, notice_deadline, rent_terms,
-                         auto_renewal, exercised, source_doc)
+                         auto_renewal, exercised, option_start, option_end,
+                         source_doc)
                     VALUES (:tid, :ot, :on, :to_, :ty, :nd, :ndl, :rt,
-                            :ar, :ex, :sd)
+                            :ar, :ex, :os, :oe, :sd)
                 """), {
                     'tid': new_tid, 'ot': o.get('option_type', ''),
                     'on': o.get('option_number'), 'to_': o.get('total_options'),
@@ -836,6 +863,7 @@ def seed_review():
                     'ndl': o.get('notice_deadline'), 'rt': o.get('rent_terms'),
                     'ar': bool(o.get('auto_renewal')),
                     'ex': bool(o.get('exercised')),
+                    'os': o.get('option_start'), 'oe': o.get('option_end'),
                     'sd': o.get('source_doc'),
                 })
 

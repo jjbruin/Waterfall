@@ -199,6 +199,8 @@ LEASE_DDL_PG = [
         rent_terms      TEXT,
         auto_renewal    BOOLEAN DEFAULT FALSE,
         exercised       BOOLEAN DEFAULT FALSE,
+        option_start    TEXT,
+        option_end      TEXT,
         source_doc      TEXT,
         created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
@@ -299,6 +301,10 @@ def ensure_lease_tables(engine):
     _migrate_add_column(engine, 'lease_tenants', 'approved_by', 'TEXT')
     _migrate_add_column(engine, 'lease_tenants', 'approved_at', 'TIMESTAMP')
     _migrate_add_column(engine, 'lease_tenants', 'analyst_notes', 'TEXT')
+
+    # Phase 2A: option_start / option_end on lease_options
+    _migrate_add_column(engine, 'lease_options', 'option_start', 'TEXT')
+    _migrate_add_column(engine, 'lease_options', 'option_end', 'TEXT')
 
     # Phase 1B: file_hash + uploaded_by on lease_documents; file_data for PDF storage
     _migrate_add_column(engine, 'lease_documents', 'file_hash', 'TEXT')
@@ -1517,10 +1523,25 @@ Return a JSON object with these fields (use null for fields not found):
       "option_number": 1,
       "total_options": number,
       "term_years": number,
+      "option_start": "YYYY-MM-DD or null",
+      "option_end": "YYYY-MM-DD or null",
       "notice_days": number,
       "notice_deadline": "YYYY-MM-DD or null",
       "auto_renewal": true/false,
+      "exercised": true/false,
       "rent_terms": "fair market / fixed increase / CPI"
+    }}
+  ],
+  "termination_options": [
+    {{
+      "option_number": 1,
+      "total_options": number,
+      "earliest_termination_date": "YYYY-MM-DD or null",
+      "notice_days": number,
+      "notice_deadline": "YYYY-MM-DD or null",
+      "exercised": true/false,
+      "termination_fee": "description of fee or penalty if any",
+      "conditions": "description of conditions required to exercise"
     }}
   ],
   "assignment": {{
@@ -1546,6 +1567,8 @@ IMPORTANT:
 - Dates must be YYYY-MM-DD format
 - Dollar amounts should be numbers (no $ signs)
 - If this is an amendment, note which fields were modified
+- For renewal_options: option_start/option_end are the beginning and ending dates of each renewal period. If not explicitly stated, derive from the prior term's expiration + term_years. Mark exercised=true if an amendment or exercise notice confirms the option was exercised.
+- For termination_options: extract early termination rights, kick-out clauses, and similar provisions. earliest_termination_date is when the tenant can first terminate. Mark exercised=true if a termination notice was exercised.
 
 DOCUMENT TEXT:
 {text}"""
@@ -1986,6 +2009,7 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None)
                             opt_dup = conn.execute(sql_text("""
                                 SELECT id FROM lease_options
                                 WHERE tenant_id = :tid AND source_doc = :sd
+                                  AND option_type = 'renewal'
                                   AND option_number = :on
                                 LIMIT 1
                             """), {
@@ -1993,15 +2017,23 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None)
                                 'on': opt.get('option_number'),
                             }).fetchone()
                             if opt_dup:
+                                # Update exercised status if exercise notice confirms it
+                                if opt.get('exercised'):
+                                    conn.execute(sql_text("""
+                                        UPDATE lease_options SET exercised = TRUE
+                                        WHERE id = :id
+                                    """), {'id': opt_dup[0]})
                                 continue
                             conn.execute(sql_text("""
                                 INSERT INTO lease_options
                                     (tenant_id, option_type, option_number,
                                      total_options, term_years, notice_days,
                                      notice_deadline, rent_terms,
-                                     auto_renewal, source_doc)
+                                     auto_renewal, exercised,
+                                     option_start, option_end, source_doc)
                                 VALUES (:tid, 'renewal', :on, :to, :ty,
-                                        :nd, :ndl, :rt, :ar, :sd)
+                                        :nd, :ndl, :rt, :ar, :ex,
+                                        :os, :oe, :sd)
                             """), {
                                 'tid': tenant_id,
                                 'on': opt.get('option_number'),
@@ -2011,6 +2043,51 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None)
                                 'ndl': opt.get('notice_deadline'),
                                 'rt': opt.get('rent_terms'),
                                 'ar': opt.get('auto_renewal', False),
+                                'ex': opt.get('exercised', False),
+                                'os': opt.get('option_start'),
+                                'oe': opt.get('option_end'),
+                                'sd': doc[2],
+                            })
+
+                        # Store termination options (with dedup by source_doc + option_number)
+                        for opt in (terms.get('termination_options') or []):
+                            opt_dup = conn.execute(sql_text("""
+                                SELECT id FROM lease_options
+                                WHERE tenant_id = :tid AND source_doc = :sd
+                                  AND option_type = 'termination'
+                                  AND option_number = :on
+                                LIMIT 1
+                            """), {
+                                'tid': tenant_id, 'sd': doc[2],
+                                'on': opt.get('option_number'),
+                            }).fetchone()
+                            if opt_dup:
+                                if opt.get('exercised'):
+                                    conn.execute(sql_text("""
+                                        UPDATE lease_options SET exercised = TRUE
+                                        WHERE id = :id
+                                    """), {'id': opt_dup[0]})
+                                continue
+                            conn.execute(sql_text("""
+                                INSERT INTO lease_options
+                                    (tenant_id, option_type, option_number,
+                                     total_options, term_years, notice_days,
+                                     notice_deadline, rent_terms,
+                                     exercised, option_start, option_end,
+                                     source_doc)
+                                VALUES (:tid, 'termination', :on, :to, NULL,
+                                        :nd, :ndl, :rt,
+                                        :ex, :os, NULL,
+                                        :sd)
+                            """), {
+                                'tid': tenant_id,
+                                'on': opt.get('option_number'),
+                                'to': opt.get('total_options'),
+                                'nd': opt.get('notice_days'),
+                                'ndl': opt.get('notice_deadline'),
+                                'rt': opt.get('conditions') or opt.get('termination_fee') or '',
+                                'ex': opt.get('exercised', False),
+                                'os': opt.get('earliest_termination_date'),
                                 'sd': doc[2],
                             })
 
@@ -3022,18 +3099,20 @@ def generate_lease_review_excel(engine, review_id: int) -> bytes:
     with engine.connect() as conn:
         opt_rows = conn.execute(text("""
             SELECT t.tenant_name, t.suite, o.option_type,
-                   o.option_number, o.total_options, o.term_years,
+                   o.option_number, o.total_options,
+                   o.option_start, o.option_end, o.term_years,
                    o.notice_days, o.notice_deadline, o.rent_terms,
-                   o.auto_renewal, o.source_doc
+                   o.auto_renewal, o.exercised, o.source_doc
             FROM lease_options o
             JOIN lease_tenants t ON t.id = o.tenant_id
             WHERE t.review_id = :rid
-            ORDER BY t.tenant_name, o.option_number
+            ORDER BY t.tenant_name, o.option_type, o.option_number
         """), {'rid': review_id}).fetchall()
 
     opt_headers = ['Tenant', 'Suite', 'Type', 'Option #', 'Total Options',
-                   'Term (Yrs)', 'Notice (Days)', 'Notice Deadline',
-                   'Rent Terms', 'Auto-Renew', 'Source']
+                   'Start', 'End', 'Term (Yrs)',
+                   'Notice (Days)', 'Notice Deadline',
+                   'Rent Terms / Conditions', 'Auto-Renew', 'Exercised', 'Source']
     for c, h in enumerate(opt_headers, 1):
         cell = ws6.cell(3, c, h)
         cell.font = header_font_white
@@ -3042,10 +3121,10 @@ def generate_lease_review_excel(engine, review_id: int) -> bytes:
         row = 4 + i
         for c, val in enumerate(o, 1):
             cell = ws6.cell(row, c, val)
-            if c == 9:  # rent_terms
+            if c == 11:  # rent_terms
                 cell.alignment = Alignment(wrap_text=True)
 
-    opt_widths = [30, 12, 10, 10, 10, 10, 12, 16, 40, 10, 30]
+    opt_widths = [30, 12, 12, 10, 10, 14, 14, 10, 12, 16, 40, 10, 10, 30]
     for c, w in enumerate(opt_widths, 1):
         ws6.column_dimensions[get_column_letter(c)].width = w
 
@@ -3493,21 +3572,24 @@ def get_risk_analysis_data(engine, review_id: int) -> Dict[str, Any]:
     # Get options
     with engine.connect() as conn:
         opt_rows = conn.execute(text("""
-            SELECT t.tenant_name, t.suite, o.option_type,
-                   o.option_number, o.total_options, o.term_years,
+            SELECT o.id, t.tenant_name, t.suite, o.option_type,
+                   o.option_number, o.total_options,
+                   o.option_start, o.option_end, o.term_years,
                    o.notice_days, o.notice_deadline, o.rent_terms,
-                   o.auto_renewal, o.source_doc
+                   o.auto_renewal, o.exercised, o.source_doc
             FROM lease_options o
             JOIN lease_tenants t ON t.id = o.tenant_id
             WHERE t.review_id = :rid
-            ORDER BY t.tenant_name, o.option_number
+            ORDER BY t.tenant_name, o.option_type, o.option_number
         """), {'rid': review_id}).fetchall()
 
     options = [{
-        'tenant_name': r[0], 'suite': r[1], 'option_type': r[2],
-        'option_number': r[3], 'total_options': r[4], 'term_years': r[5],
-        'notice_days': r[6], 'notice_deadline': r[7], 'rent_terms': r[8],
-        'auto_renewal': bool(r[9]), 'source_doc': r[10],
+        'id': r[0], 'tenant_name': r[1], 'suite': r[2], 'option_type': r[3],
+        'option_number': r[4], 'total_options': r[5],
+        'option_start': r[6], 'option_end': r[7], 'term_years': r[8],
+        'notice_days': r[9], 'notice_deadline': r[10], 'rent_terms': r[11],
+        'auto_renewal': bool(r[12]), 'exercised': bool(r[13]),
+        'source_doc': r[14],
     } for r in opt_rows]
 
     return {

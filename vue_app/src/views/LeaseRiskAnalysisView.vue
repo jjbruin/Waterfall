@@ -122,6 +122,36 @@ async function clearResolution(tenantId: number, fieldName: string) {
   }
 }
 
+// Toggle exercised status on an option
+async function toggleExercised(optionId: number, current: boolean) {
+  try {
+    await api.put(`/api/lease-review/reviews/${selectedReviewId.value}/options/${optionId}/exercised`, {
+      exercised: !current,
+    })
+    await loadRiskData()
+  } catch (e: any) {
+    alert('Failed to update option: ' + (e.response?.data?.error || e.message))
+  }
+}
+
+// Group options by tenant for display
+const optionsByTenant = computed(() => {
+  const groups: Record<string, any[]> = {}
+  for (const o of options.value) {
+    const key = `${o.tenant_name} — ${o.suite || 'N/A'}`
+    if (!groups[key]) groups[key] = []
+    groups[key].push(o)
+  }
+  // Sort each group: renewal first, then termination, then by option_number
+  for (const key of Object.keys(groups)) {
+    groups[key].sort((a: any, b: any) => {
+      if (a.option_type !== b.option_type) return a.option_type === 'renewal' ? -1 : 1
+      return (a.option_number || 0) - (b.option_number || 0)
+    })
+  }
+  return groups
+})
+
 function startEdit(tenantId: number, field: string, currentValue: any) {
   editingTenantId.value = tenantId
   editingField.value = field
@@ -643,37 +673,46 @@ onMounted(() => {
       <div v-if="activeTab === 'options'" class="tab-content">
         <template v-if="options.length">
           <h3>Lease Options</h3>
-          <div class="table-wrapper">
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>Tenant</th>
-                  <th>Suite</th>
-                  <th>Type</th>
-                  <th>Option #</th>
-                  <th>Total Options</th>
-                  <th>Term (Years)</th>
-                  <th>Notice (Days)</th>
-                  <th>Notice Deadline</th>
-                  <th>Rent Terms</th>
-                  <th>Auto-Renewal</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="(o, i) in options" :key="i">
-                  <td>{{ o.tenant_name }}</td>
-                  <td>{{ o.suite }}</td>
-                  <td>{{ o.option_type }}</td>
-                  <td class="num-cell">{{ o.option_number }}</td>
-                  <td class="num-cell">{{ o.total_options }}</td>
-                  <td class="num-cell">{{ o.term_years ?? '-' }}</td>
-                  <td class="num-cell">{{ o.notice_days ?? '-' }}</td>
-                  <td>{{ fmtDate(o.notice_deadline) }}</td>
-                  <td class="wrap-cell">{{ o.rent_terms || '-' }}</td>
-                  <td>{{ o.auto_renewal ? 'Yes' : 'No' }}</td>
-                </tr>
-              </tbody>
-            </table>
+          <div v-for="(items, tenantKey) in optionsByTenant" :key="tenantKey" class="options-group">
+            <h4>{{ tenantKey }}</h4>
+            <div class="table-wrapper">
+              <table class="data-table compact">
+                <thead>
+                  <tr>
+                    <th>Type</th>
+                    <th>Option #</th>
+                    <th>Start</th>
+                    <th>End</th>
+                    <th>Term (Years)</th>
+                    <th>Notice (Days)</th>
+                    <th>Notice Deadline</th>
+                    <th>Rent Terms / Conditions</th>
+                    <th>Auto-Renewal</th>
+                    <th>Exercised</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(o, i) in items" :key="i"
+                      :class="{ 'row-exercised': o.exercised }">
+                    <td><span class="option-type-badge" :class="o.option_type">{{ o.option_type }}</span></td>
+                    <td class="num-cell">{{ o.option_number ?? '-' }}</td>
+                    <td>{{ fmtDate(o.option_start) }}</td>
+                    <td>{{ fmtDate(o.option_end) }}</td>
+                    <td class="num-cell">{{ o.term_years ?? '-' }}</td>
+                    <td class="num-cell">{{ o.notice_days ?? '-' }}</td>
+                    <td>{{ fmtDate(o.notice_deadline) }}</td>
+                    <td class="wrap-cell">{{ o.rent_terms || '-' }}</td>
+                    <td>{{ o.option_type === 'renewal' ? (o.auto_renewal ? 'Yes' : 'No') : '-' }}</td>
+                    <td>
+                      <button class="btn-xs" :class="o.exercised ? 'btn-exercised' : 'btn-not-exercised'"
+                              @click="toggleExercised(o.id, o.exercised)">
+                        {{ o.exercised ? 'Yes' : 'No' }}
+                      </button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </template>
         <div v-else class="empty-state">No lease options found.</div>
@@ -890,4 +929,25 @@ tr.highlight td { background: #fff3cd; }
 .validation-group h4 { color: #1F4E79; margin: 12px 0 8px; }
 
 h3 { color: #1F4E79; margin: 20px 0 12px; font-size: 1.1rem; }
+
+/* Options tab */
+.options-group { margin-bottom: 20px; }
+.options-group h4 { color: #1F4E79; margin: 12px 0 8px; }
+.option-type-badge {
+  display: inline-block; padding: 2px 8px; border-radius: 4px;
+  font-size: 0.8rem; font-weight: 600; text-transform: capitalize;
+}
+.option-type-badge.renewal { background: #E2EFDA; color: #375623; }
+.option-type-badge.termination { background: #FCE4EC; color: #C00000; }
+.row-exercised { background: #f0f7ff; }
+.btn-exercised {
+  background: #28a745; color: #fff; border: none; border-radius: 4px;
+  padding: 2px 10px; cursor: pointer; font-weight: 600;
+}
+.btn-exercised:hover { background: #218838; }
+.btn-not-exercised {
+  background: #e9ecef; color: #6c757d; border: none; border-radius: 4px;
+  padding: 2px 10px; cursor: pointer;
+}
+.btn-not-exercised:hover { background: #dee2e6; }
 </style>
