@@ -32,6 +32,7 @@ from flask_app.services.lease_review_service import (
     get_tenant_abstract,
     save_abstract_sections,
     get_review_abstracts_list,
+    reset_extraction_data,
     RESOLVABLE_FIELDS,
 )
 from io import BytesIO
@@ -299,6 +300,25 @@ def run_extraction(review_id):
         return jsonify({'status': 'complete'})
     except Exception as e:
         logger.error(f"Extraction error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/reset-extraction', methods=['POST'])
+@login_required
+@role_required('admin', 'analyst')
+def reset_extraction(review_id):
+    """Reset all AI-extracted data for re-extraction.
+
+    Clears rent_steps, cotenancy, options, exclusive_use, validation.
+    Preserves tenant roster, documents, field resolutions, abstracts.
+    Resets document status so extraction can re-run.
+    """
+    engine = get_engine()
+    try:
+        counts = reset_extraction_data(engine, review_id)
+        return jsonify({'status': 'reset', **counts})
+    except Exception as e:
+        logger.error(f"Reset extraction error: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 

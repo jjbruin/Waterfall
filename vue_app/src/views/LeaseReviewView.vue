@@ -69,6 +69,7 @@ const docUploadReport = ref<any>(null)
 // Extraction
 const extracting = ref(false)
 const extractionMessage = ref('')
+const resettingExtraction = ref(false)
 
 // Validation
 const validating = ref(false)
@@ -361,6 +362,24 @@ async function runExtraction() {
     extractionMessage.value = e.response?.data?.error || 'Extraction failed'
   } finally {
     extracting.value = false
+  }
+}
+
+// Reset extraction data for re-extraction
+async function resetExtraction() {
+  if (!selectedReviewId.value) return
+  if (!confirm('This will clear all AI-extracted data (rent steps, options, cotenancy, exclusive use, validation) and reset documents for re-extraction.\n\nTenant roster, uploaded documents, field resolutions, and abstracts are preserved.\n\nContinue?')) return
+  resettingExtraction.value = true
+  extractionMessage.value = 'Resetting extraction data...'
+  try {
+    const res = await api.post(`/api/lease-review/reviews/${selectedReviewId.value}/reset-extraction`)
+    const d = res.data
+    extractionMessage.value = `Reset complete: ${d.rent_steps} rent steps, ${d.options} options, ${d.cotenancy} cotenancy, ${d.exclusive_use} exclusive use, ${d.validation} validation cleared. ${d.documents_reset} documents ready for re-extraction.`
+    await loadReview(selectedReviewId.value!)
+  } catch (e: any) {
+    extractionMessage.value = e.response?.data?.error || 'Reset failed'
+  } finally {
+    resettingExtraction.value = false
   }
 }
 
@@ -798,9 +817,15 @@ function statusClass(s: string): string {
           </div>
         </div>
 
-        <button class="btn-primary" @click="runExtraction" :disabled="extracting || !progress?.docs_pending">
-          {{ extracting ? 'Extracting...' : 'Run Extraction' }}
-        </button>
+        <div class="extraction-actions">
+          <button class="btn-primary" @click="runExtraction" :disabled="extracting || resettingExtraction || !progress?.docs_pending">
+            {{ extracting ? 'Extracting...' : 'Run Extraction' }}
+          </button>
+          <button class="btn-danger" @click="resetExtraction" :disabled="extracting || resettingExtraction"
+                  title="Clear all extracted data and re-run with updated prompt">
+            {{ resettingExtraction ? 'Resetting...' : 'Reset & Re-extract' }}
+          </button>
+        </div>
         <div v-if="extractionMessage" class="upload-msg" style="margin-top: 0.5rem">{{ extractionMessage }}</div>
 
         <button class="btn-primary" style="margin-top: 1rem" @click="goToStep('validation')">
@@ -1147,6 +1172,10 @@ function statusClass(s: string): string {
 .btn-primary:disabled { opacity: 0.5; cursor: default; }
 .btn-secondary { padding: 0.5rem 1rem; background: #e0e0e0; color: #333; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
 .btn-secondary:hover { background: #d0d0d0; }
+.btn-danger { padding: 0.5rem 1rem; background: #C00000; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
+.btn-danger:hover { background: #a00; }
+.btn-danger:disabled { opacity: 0.5; cursor: default; }
+.extraction-actions { display: flex; gap: 12px; align-items: center; }
 .btn-cancel { padding: 0.5rem 1rem; background: #e0e0e0; color: #333; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
 .upload-msg { font-size: 0.85rem; color: #548235; margin-top: 0.5rem; }
 

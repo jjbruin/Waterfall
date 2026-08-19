@@ -1877,6 +1877,110 @@ def _match_folder_to_tenant(
 
 
 # ---------------------------------------------------------------------------
+# Reset extraction data for re-extraction
+# ---------------------------------------------------------------------------
+
+def reset_extraction_data(engine, review_id: int) -> Dict[str, int]:
+    """Clear all AI-extracted data for a review and reset documents to pending.
+
+    Preserves: tenant roster (from rent roll), uploaded documents (PDFs),
+    field resolutions, abstract sections.
+
+    Clears: rent_steps, cotenancy + refs, exclusive_use, options,
+    validation, tenant extraction_json/status, document extraction_status.
+    """
+    from sqlalchemy import text
+
+    counts: Dict[str, int] = {}
+
+    with engine.begin() as conn:
+        # Get tenant IDs for this review
+        tid_rows = conn.execute(text(
+            "SELECT id FROM lease_tenants WHERE review_id = :rid"
+        ), {'rid': review_id}).fetchall()
+        tenant_ids = [r[0] for r in tid_rows]
+
+        if not tenant_ids:
+            return {'tenants': 0}
+
+        # Build placeholder list for IN clause
+        placeholders = ','.join(f':t{i}' for i in range(len(tenant_ids)))
+        tid_params = {f't{i}': tid for i, tid in enumerate(tenant_ids)}
+        base_params = {'rid': review_id, **tid_params}
+
+        # Delete cotenancy refs (must go before cotenancy due to FK)
+        r = conn.execute(text(f"""
+            DELETE FROM lease_cotenancy_refs
+            WHERE cotenancy_id IN (
+                SELECT id FROM lease_cotenancy
+                WHERE tenant_id IN ({placeholders})
+            )
+        """), tid_params)
+        counts['cotenancy_refs'] = r.rowcount
+
+        # Delete cotenancy
+        r = conn.execute(text(f"""
+            DELETE FROM lease_cotenancy
+            WHERE tenant_id IN ({placeholders})
+        """), tid_params)
+        counts['cotenancy'] = r.rowcount
+
+        # Delete rent steps
+        r = conn.execute(text(f"""
+            DELETE FROM lease_rent_steps
+            WHERE tenant_id IN ({placeholders})
+        """), tid_params)
+        counts['rent_steps'] = r.rowcount
+
+        # Delete options
+        r = conn.execute(text(f"""
+            DELETE FROM lease_options
+            WHERE tenant_id IN ({placeholders})
+        """), tid_params)
+        counts['options'] = r.rowcount
+
+        # Delete exclusive use
+        r = conn.execute(text(f"""
+            DELETE FROM lease_exclusive_use
+            WHERE tenant_id IN ({placeholders})
+        """), tid_params)
+        counts['exclusive_use'] = r.rowcount
+
+        # Delete validation
+        r = conn.execute(text(f"""
+            DELETE FROM lease_validation
+            WHERE tenant_id IN ({placeholders})
+        """), tid_params)
+        counts['validation'] = r.rowcount
+
+        # Reset tenant extraction status and JSON
+        conn.execute(text(f"""
+            UPDATE lease_tenants
+            SET extraction_status = 'pending',
+                extraction_json = NULL,
+                has_cotenancy = FALSE,
+                has_exclusive_use = FALSE,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id IN ({placeholders})
+        """), tid_params)
+
+        # Reset document extraction status (keep extracted_text for re-use)
+        r = conn.execute(text("""
+            UPDATE lease_documents
+            SET extraction_status = CASE
+                WHEN extracted_text IS NOT NULL THEN 'text_extracted'
+                ELSE 'pending'
+            END
+            WHERE review_id = :rid
+        """), {'rid': review_id})
+        counts['documents_reset'] = r.rowcount
+        counts['tenants'] = len(tenant_ids)
+
+    logger.info(f"Reset extraction data for review {review_id}: {counts}")
+    return counts
+
+
+# ---------------------------------------------------------------------------
 # Extract lease terms via Claude API (batch)
 # ---------------------------------------------------------------------------
 
@@ -1888,15 +1992,16 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None)
     from sqlalchemy import text as sql_text
 
     with engine.connect() as conn:
-        # Get all documents for this review
+        # Get all documents for this review (pending or text_extracted)
         docs = conn.execute(sql_text("""
             SELECT d.id, d.tenant_id, d.filename, d.file_path,
                    d.doc_type, d.doc_date,
-                   t.tenant_name, t.suite
+                   t.tenant_name, t.suite,
+                   d.extraction_status, d.extracted_text
             FROM lease_documents d
             JOIN lease_tenants t ON t.id = d.tenant_id
             WHERE d.review_id = :rid
-            AND d.extraction_status = 'pending'
+            AND d.extraction_status IN ('pending', 'text_extracted')
             ORDER BY d.tenant_id, d.doc_date
         """), {'rid': review_id}).fetchall()
 
@@ -1909,17 +2014,22 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None)
             doc_type = doc[4]
             tenant_name = doc[6]
             suite = doc[7]
+            current_status = doc[8]
+            existing_text = doc[9]
 
             try:
-                # Step 1: Extract PDF text
-                pdf_text, page_count = extract_pdf_text(file_path)
+                # Step 1: Extract PDF text (skip if already extracted)
+                if current_status == 'text_extracted' and existing_text:
+                    pdf_text = existing_text
+                else:
+                    pdf_text, page_count = extract_pdf_text(file_path)
 
-                conn.execute(sql_text("""
-                    UPDATE lease_documents
-                    SET extracted_text = :txt, page_count = :pc,
-                        extraction_status = 'text_extracted'
-                    WHERE id = :did
-                """), {'txt': pdf_text, 'pc': page_count, 'did': doc_id})
+                    conn.execute(sql_text("""
+                        UPDATE lease_documents
+                        SET extracted_text = :txt, page_count = :pc,
+                            extraction_status = 'text_extracted'
+                        WHERE id = :did
+                    """), {'txt': pdf_text, 'pc': page_count, 'did': doc_id})
 
                 # Step 2: Run Claude extraction for leases and amendments
                 if doc_type in ('Original Lease', 'Amendment'):
@@ -3876,8 +3986,11 @@ def _assemble_abstract_from_data(
     if rent_steps:
         term_parts.append('')
         term_parts.append('Rent Schedule:')
-        for rs in rent_steps:
-            line = f"  {_fmt_date(rs[0])}: {_fmt_money(rs[1])}/mo"
+        for idx, rs in enumerate(rent_steps):
+            date_label = _fmt_date(rs[0])
+            if not date_label:
+                date_label = f"Step {idx + 1}"
+            line = f"  {date_label}: {_fmt_money(rs[1])}/mo"
             if rs[2]:
                 line += f" ({_fmt_money(rs[2])}/yr)"
             if rs[3]:
