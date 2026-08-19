@@ -820,6 +820,7 @@ def get_property_performance(
     at_close_noi_df: pd.DataFrame = None,
     deal_terms_df: pd.DataFrame = None,
     mri_loans_all_df: pd.DataFrame = None,
+    inv_map: pd.DataFrame = None,
 ) -> Dict[str, Any]:
     """
     Get property performance metrics for a quarter
@@ -1317,6 +1318,12 @@ def get_property_performance(
         if 'vcode' in dtf.columns:
             dtf['vcode'] = dtf['vcode'].astype(str).str.strip().str.lower()
             dt_row = dtf[dtf['vcode'] == vcode_str]
+            # Fallback: parent portfolio deal — try child vcodes
+            if dt_row.empty and inv_map is not None:
+                child_vcodes = _child_vcodes_for_parent(vcode_str, inv_map)
+                if child_vcodes:
+                    child_lower = {c.lower() for c in child_vcodes}
+                    dt_row = dtf[dtf['vcode'].isin(child_lower)]
             if not dt_row.empty:
                 eoc = pd.to_numeric(dt_row.iloc[0].get('econ_occ_at_close'), errors='coerce')
                 if pd.notna(eoc) and eoc > 0:
