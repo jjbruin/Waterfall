@@ -699,16 +699,18 @@ def parse_rent_roll_flexible(file_obj, filename: str = '') -> pd.DataFrame:
                     if any('tenant name' in cv for cv in cell_vals):
                         header_idx = i
                         break
-                    # Require "tenant" in one cell AND a data keyword in
-                    # a DIFFERENT cell
-                    has_tenant = any('tenant' in cv and len(cv) < 30
-                                     for cv in cell_vals)
+                    # Require "tenant" or "dba" in one cell AND a data keyword
+                    # in a DIFFERENT cell
+                    has_tenant = any(
+                        (('tenant' in cv or cv == 'dba') and len(cv) < 30)
+                        for cv in cell_vals)
                     if has_tenant:
                         other_cells = [cv for cv in cell_vals
-                                       if 'tenant' not in cv]
+                                       if 'tenant' not in cv and cv != 'dba']
                         if any(kw in cv for cv in other_cells
                                for kw in ['suite', 'unit', 'rent',
-                                          'sf', 'sqft', 'area']):
+                                          'sf', 'sqft', 'area',
+                                          'square', 'footage', 'charge']):
                             header_idx = i
                             break
                 if header_idx is not None:
@@ -737,6 +739,14 @@ def parse_rent_roll_flexible(file_obj, filename: str = '') -> pd.DataFrame:
                                             raw_headers[j] = p
                     headers = [str(c).strip() if c else f'col_{j}'
                                for j, c in enumerate(raw_headers)]
+                    # Deduplicate column names — append _2, _3 etc.
+                    seen: Dict[str, int] = {}
+                    for j, h in enumerate(headers):
+                        if h in seen:
+                            seen[h] += 1
+                            headers[j] = f'{h}_{seen[h]}'
+                        else:
+                            seen[h] = 1
                     rows = data[header_idx + 1:]
                     df_raw = pd.DataFrame(rows, columns=headers)
                     # If this sheet has enough rows, use it
@@ -753,9 +763,9 @@ def parse_rent_roll_flexible(file_obj, filename: str = '') -> pd.DataFrame:
     # Drop fully empty rows
     df_raw = df_raw.dropna(how='all').reset_index(drop=True)
 
-    # Fuzzy column matching
+    # Fuzzy column matching — normalise newlines in headers to spaces
     col_map = {}
-    cols_lower = {c: c.lower().strip() for c in df_raw.columns}
+    cols_lower = {c: c.replace('\n', ' ').lower().strip() for c in df_raw.columns}
 
     def _find_col(*keywords, exclude=None):
         for col, cl in cols_lower.items():
@@ -767,9 +777,10 @@ def parse_rent_roll_flexible(file_obj, filename: str = '') -> pd.DataFrame:
                 return col
         return None
 
-    col_map['tenant_name'] = _find_col('tenant', 'name', 'lessee', exclude=['group'])
+    col_map['tenant_name'] = _find_col('tenant', 'name', 'lessee', 'dba', exclude=['group'])
     col_map['suite'] = _find_col('suite', 'unit', 'space')
-    col_map['square_feet'] = _find_col('area', 'sqft', 'sq ft', 'square', 'sf', 'gla')
+    col_map['square_feet'] = _find_col('area', 'sqft', 'sq ft', 'square', 'sf', 'gla',
+                                       'footage')
     col_map['lease_type'] = _find_col('lease type', 'type', 'lease status', 'status')
     col_map['lease_start'] = _find_col('start date', 'lease start', 'commence', 'begin')
     if not col_map['lease_start']:
@@ -777,17 +788,21 @@ def parse_rent_roll_flexible(file_obj, filename: str = '') -> pd.DataFrame:
     col_map['lease_end'] = _find_col('end date', 'lease end', 'expir', 'termin',
                                      'maturity')
     col_map['annual_rent'] = _find_col('scheduled base', 'potential base',
-                                       'annual rent', 'annual', 'base rent',
-                                       exclude=['monthly', 'per sf', 'turnover',
-                                                'free', 'miscellaneous',
-                                                'percentage', 'absorption'])
-    col_map['monthly_rent'] = _find_col('monthly', 'month rent',
-                                        exclude=['annual', 'per sf'])
+                                       'annual rent', 'base rent',
+                                       exclude=['monthly', 'per sf', '/sf',
+                                                'turnover', 'free',
+                                                'miscellaneous', 'percentage',
+                                                'absorption', 'rate'])
+    col_map['monthly_rent'] = _find_col('monthly amount', 'monthly rent',
+                                        'month rent',
+                                        exclude=['per sf', '/sf', 'rate'])
     col_map['annual_rent_per_sf'] = _find_col('annual rent per', 'annual base per',
-                                               'annual $/sf', 'rent per sf',
+                                               'annual $/sf', 'annual rate/sf',
+                                               'annual rate', 'rent per sf',
                                                'rent/sf', 'per area',
                                                exclude=['monthly', 'recover',
-                                                        'misc', 'expense'])
+                                                        'misc', 'expense',
+                                                        'future'])
     col_map['monthly_rent_per_sf'] = _find_col('monthly rent per', 'monthly $/sf',
                                                 'monthly base per',
                                                 exclude=['annual'])
