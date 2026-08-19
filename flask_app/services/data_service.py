@@ -29,6 +29,16 @@ _ISBS_SPLIT = {
     'isbs_valuation_is': 'Valuation IS',
 }
 
+# Supplement tables: admin-uploaded rows that persist across MRI refreshes.
+# Maps supplement table name → default vSource (for ISBS supplements).
+_ISBS_SUPPLEMENTS = {
+    'isbs_uw_supplements': 'Projected IS',
+    'isbs_budget_is_supplements': 'Budget IS',
+    'isbs_interim_is_supplements': 'Interim IS',
+    'isbs_interim_bs_supplements': 'Interim BS',
+    'isbs_valuation_is_supplements': 'Valuation IS',
+}
+
 
 def _filter_paid_off_loans(df: pd.DataFrame) -> pd.DataFrame:
     """Exclude loans with vDateType = 'Paid Off' (case-insensitive)."""
@@ -280,28 +290,46 @@ def _normalize_isbs(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _append_uw_supplements(assembled: pd.DataFrame, config: dict) -> pd.DataFrame:
-    """Append supplemental ISBS Projected IS records (isbs_uw_supplements table).
+def _append_isbs_supplements(assembled: pd.DataFrame, config: dict) -> pd.DataFrame:
+    """Append all ISBS supplement tables to the assembled ISBS DataFrame.
 
-    These are admin-uploaded records (e.g. account 7073 capital contributions)
-    that persist across MRI refreshes. The CSV already has vSource='Projected IS'.
+    Each supplement table contains admin-uploaded records that persist across
+    MRI refreshes.  Missing tables or empty tables are silently skipped.
     """
-    try:
-        supp = get_adapter("isbs_uw_supplements").load(config)
-        if supp is not None and not supp.empty:
+    for table_name, default_vsource in _ISBS_SUPPLEMENTS.items():
+        try:
+            supp = get_adapter(table_name).load(config)
+            if supp is None or supp.empty:
+                continue
             supp = supp.copy()
-            # Normalize column names to match ISBS convention (lowercase vcode)
             col_map = {c: c.lower() for c in supp.columns if c.lower() == 'vcode' and c != 'vcode'}
             if col_map:
                 supp = supp.rename(columns=col_map)
             if 'vSource' not in supp.columns:
-                supp['vSource'] = 'Projected IS'
+                supp['vSource'] = default_vsource
             supp['_is_supplement'] = True
             assembled = pd.concat([assembled, supp], ignore_index=True)
-            logger.info(f"ISBS appended {len(supp):,} UW supplement rows")
-    except Exception as e:
-        logger.debug(f"No UW supplements table: {e}")
+            logger.info(f"ISBS appended {len(supp):,} rows from {table_name}")
+        except Exception:
+            pass  # table doesn't exist yet — not an error
     return assembled
+
+
+def _append_occupancy_supplements(occupancy: pd.DataFrame, config: dict) -> pd.DataFrame:
+    """Append occupancy_supplements table to occupancy data.
+
+    Missing table or empty table is silently skipped.
+    """
+    try:
+        supp = get_adapter("occupancy_supplements").load(config)
+        if supp is not None and not supp.empty:
+            supp = supp.copy()
+            supp['_is_supplement'] = True
+            occupancy = pd.concat([occupancy, supp], ignore_index=True)
+            logger.info(f"Occupancy appended {len(supp):,} supplement rows")
+    except Exception:
+        pass  # table doesn't exist yet — not an error
+    return occupancy
 
 
 def _assemble_isbs(config: dict) -> tuple:
@@ -340,14 +368,14 @@ def _assemble_isbs(config: dict) -> tuple:
                     assembled = pd.concat([assembled, legacy_supplement], ignore_index=True)
 
         logger.info(f"ISBS assembled from split tables: {len(assembled):,} rows")
-        assembled = _append_uw_supplements(assembled, config)
+        assembled = _append_isbs_supplements(assembled, config)
         return assembled, split_dict
 
     # Fallback: try legacy monolithic table
     legacy = get_adapter("isbs").load(config)
     if not legacy.empty:
         logger.info(f"ISBS fallback to legacy table: {len(legacy):,} rows")
-        legacy = _append_uw_supplements(legacy, config)
+        legacy = _append_isbs_supplements(legacy, config)
         return legacy, split_dict
 
     return pd.DataFrame(), split_dict
@@ -390,6 +418,7 @@ def load_all(db_path: str, pro_yr_base: int = 2025) -> dict:
     relationships_raw = get_adapter("relationships").load(config)
     capital_calls_raw = get_adapter("capital_calls").load(config)
     occupancy_raw = get_adapter("occupancy").load(config)
+    occupancy_raw = _append_occupancy_supplements(occupancy_raw, config)
     budget_econ_occ = get_adapter("budget_econ_occ").load(config)
     commitments_raw = get_adapter("commitments").load(config)
     tenants_raw = get_adapter("tenants").load(config)
@@ -523,8 +552,9 @@ def refresh_table(table_name: str):
     }
     cache_key_name = table_to_key.get(table_name, table_name)
 
-    # If an ISBS split table or UW supplements is refreshed, also reassemble isbs_raw
-    is_isbs_split = table_name in _ISBS_SPLIT or table_name == 'isbs_uw_supplements'
+    # If an ISBS split table or any supplement is refreshed, also reassemble isbs_raw
+    is_isbs_split = table_name in _ISBS_SPLIT or table_name in _ISBS_SUPPLEMENTS
+    is_occ_supplement = table_name == 'occupancy_supplements'
 
     for cache_key, data in _cache.items():
         db_path = cache_key.split("|")[0]
@@ -560,6 +590,13 @@ def refresh_table(table_name: str):
                 assembled, _ = _assemble_isbs(config)
                 assembled = _normalize_isbs(assembled)
                 data["isbs_raw"] = assembled if not assembled.empty else None
+
+            # Reassemble occupancy when occupancy supplement changes
+            if is_occ_supplement:
+                occ_base = get_adapter("occupancy").load(config)
+                if occ_base is None:
+                    occ_base = pd.DataFrame()
+                data["occ"] = _append_occupancy_supplements(occ_base, config)
 
             # Reassemble forecasts when forecasts table or ISBS sources change
             if table_name == "forecasts" or is_isbs_split or table_name == "isbs":

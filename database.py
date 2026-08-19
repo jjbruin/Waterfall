@@ -153,6 +153,31 @@ TABLE_DEFINITIONS = {
         'description': 'Supplemental ISBS Projected IS records (e.g. 7073 capital contributions) — persists across MRI refreshes',
         'key_columns': ['vcode', 'dtEntry', 'vAccount']
     },
+    'isbs_budget_is_supplements': {
+        'csv': 'ISBS_Budget_IS_Supplements.csv',
+        'description': 'Supplemental ISBS Budget IS records — persists across MRI refreshes',
+        'key_columns': ['vcode', 'dtEntry', 'vAccount']
+    },
+    'isbs_interim_is_supplements': {
+        'csv': 'ISBS_Interim_IS_Supplements.csv',
+        'description': 'Supplemental ISBS Interim IS records — persists across MRI refreshes',
+        'key_columns': ['vcode', 'dtEntry', 'vAccount']
+    },
+    'isbs_interim_bs_supplements': {
+        'csv': 'ISBS_Interim_BS_Supplements.csv',
+        'description': 'Supplemental ISBS Interim BS records — persists across MRI refreshes',
+        'key_columns': ['vcode', 'dtEntry', 'vAccount']
+    },
+    'isbs_valuation_is_supplements': {
+        'csv': 'ISBS_Valuation_IS_Supplements.csv',
+        'description': 'Supplemental ISBS Valuation IS records — persists across MRI refreshes',
+        'key_columns': ['vcode', 'dtEntry', 'vAccount']
+    },
+    'occupancy_supplements': {
+        'csv': 'MRI_Occupancy_Supplements.csv',
+        'description': 'Supplemental occupancy records — persists across MRI refreshes',
+        'key_columns': ['vCode', 'dtReported']
+    },
     'one_pager_comments': {
         'csv': 'OnePager_Comments.csv',
         'description': 'One Pager report comments by deal and period',
