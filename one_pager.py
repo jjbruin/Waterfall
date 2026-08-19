@@ -757,10 +757,10 @@ def get_capitalization_stack(
         cap['debt_pct'] = cap['debt'] / cap['total_cap']
         cap['pref_equity_pct'] = cap['pref_equity'] / cap['total_cap']
         cap['partner_equity_pct'] = cap['partner_equity'] / cap['total_cap']
-        cap['pe_exposure_on_cap'] = (cap['debt'] + cap['pref_equity']) / cap['total_cap']
+        cap['pe_exposure_on_cap'] = (cap['debt'] + cap['pref_equity']) / cap['total_cap'] * 100
 
     if cap['current_valuation'] > 0:
-        cap['pe_exposure_on_value'] = (cap['debt'] + cap['pref_equity']) / cap['current_valuation']
+        cap['pe_exposure_on_value'] = (cap['debt'] + cap['pref_equity']) / cap['current_valuation'] * 100
 
     return cap
 
@@ -911,6 +911,18 @@ def get_property_performance(
     bs_data = isbs[isbs['vSource'] == 'Interim BS']
     budget_data = isbs[isbs['vSource'] == 'Budget IS']
     uw_data = isbs[isbs['vSource'] == 'Projected IS']
+
+    # Budget fallback: when no budget rows exist for the report year, reuse
+    # the prior year's budget (per LLC agreement).  Shift dates forward by
+    # 12 months so downstream date-range filters work unchanged.
+    _report_year = int(quarter_str.split('-')[0])
+    if not budget_data.empty:
+        has_report_year_budget = (budget_data['dtEntry_parsed'].dt.year == _report_year).any()
+        if not has_report_year_budget:
+            prior = budget_data[budget_data['dtEntry_parsed'].dt.year == _report_year - 1].copy()
+            if not prior.empty:
+                prior['dtEntry_parsed'] = prior['dtEntry_parsed'] + pd.DateOffset(years=1)
+                budget_data = prior
 
     # Detect refi / payoff events from MRI_Loans for this deal.
     # When a loan has vDateType='Paid Off', the BS balance change in that month
@@ -1099,14 +1111,16 @@ def get_property_performance(
     qtr_num = int(quarter_str.split('-Q')[1]) if '-Q' in quarter_str else 1
     months_elapsed = qtr_num * 3  # Q1=3, Q2=6, Q3=9, Q4=12
 
-    # Find the as-of date for YTD actual (last date in quarter or closest available)
+    # Find the as-of date for YTD actual (last date in quarter's year, on or before quarter end)
     ytd_date = None
+    report_year = int(quarter_str.split('-')[0])
     if not actual_data.empty:
         actual_periods = sorted(actual_data['dtEntry_parsed'].dropna().unique())
-        # Find period closest to or before quarter end
+        # Find period closest to or before quarter end, but within the same year
         for p in reversed(actual_periods):
-            if pd.Timestamp(p).date() <= quarter_end:
-                ytd_date = pd.Timestamp(p)
+            pts = pd.Timestamp(p)
+            if pts.year == report_year and pts.date() <= quarter_end:
+                ytd_date = pts
                 break
 
         if ytd_date:
@@ -1136,19 +1150,19 @@ def get_property_performance(
             perf['dscr']['ytd_budget'] = noi / abs(ds)
 
     # Projected YE = YTD Actual + remainder-of-year Budget
+    # When no current-year actuals exist (ytd_date is None), use full-year budget.
     year = int(quarter_str.split('-')[0])
-    if not actual_data.empty and not budget_data.empty:
+    has_current_year_actuals = ytd_date is not None
+    if has_current_year_actuals and not budget_data.empty:
         ytd_rev = perf['revenue']['ytd_actual']
         ytd_exp = perf['expenses']['ytd_actual']
         ytd_noi = perf['noi']['ytd_actual']
 
         # YTD actual debt service (interest + principal from BS balance change)
-        ytd_ds = 0
-        if ytd_date is not None:
-            ytd_is = actual_data[actual_data['dtEntry_parsed'] == ytd_date]
-            ytd_interest = abs(ytd_is[ytd_is['vAccount'] == '5190']['mAmount'].sum())
-            ytd_principal = _get_bs_principal_change(bs_data, quarter_str, ytd_date)
-            ytd_ds = ytd_interest + ytd_principal
+        ytd_is = actual_data[actual_data['dtEntry_parsed'] == ytd_date]
+        ytd_interest = abs(ytd_is[ytd_is['vAccount'] == '5190']['mAmount'].sum())
+        ytd_principal = _get_bs_principal_change(bs_data, quarter_str, ytd_date)
+        ytd_ds = ytd_interest + ytd_principal
 
         # Remainder Budget: months after quarter end through Dec 31 (5190+7060)
         remainder_start = pd.Timestamp(quarter_end)
@@ -1161,12 +1175,22 @@ def get_property_performance(
         total_ds = abs(ytd_ds) + abs(rem_ds)
         if total_ds > 0:
             perf['dscr']['actual_ye'] = (ytd_noi + rem_noi) / total_ds
-    elif not actual_data.empty:
+    elif has_current_year_actuals:
         # No budget data — use YTD actual only
         perf['revenue']['actual_ye'] = perf['revenue']['ytd_actual']
         perf['expenses']['actual_ye'] = perf['expenses']['ytd_actual']
         perf['noi']['actual_ye'] = perf['noi']['ytd_actual']
         perf['dscr']['actual_ye'] = perf['dscr']['ytd_actual']
+    elif not budget_data.empty:
+        # No current-year actuals — Projected YE = full-year budget
+        jan1 = pd.Timestamp(f"{year}-01-01") - pd.DateOffset(days=1)
+        dec31 = pd.Timestamp(f"{year}-12-31")
+        rev, exp, noi, ds = calc_amounts(budget_data, sum_range=(jan1, dec31))
+        perf['revenue']['actual_ye'] = rev
+        perf['expenses']['actual_ye'] = exp
+        perf['noi']['actual_ye'] = noi
+        if abs(ds) > 0:
+            perf['dscr']['actual_ye'] = noi / abs(ds)
 
     # Get U/W YE (full year projected)
     # Underwriting (Projected IS) is YTD cumulative — use December snapshot

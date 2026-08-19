@@ -383,7 +383,7 @@ async function downloadExcel(section: string) {
       <select :value="deals.currentVcode" @change="onDealSelect">
         <option value="">-- Choose a deal --</option>
         <option v-for="d in data.deals" :key="d.vcode" :value="d.vcode">
-          {{ d.Investment_Name || d.vcode }}
+          {{ d.Investment_Name || d.vcode }}{{ d.Sale_Status?.toUpperCase() === 'SOLD' ? ' (Sold)' : '' }}
         </option>
       </select>
     </div>

@@ -507,6 +507,7 @@ def get_tracking_data(quarter_filter: str | None = None,
         SELECT
             d.vcode,
             d."Investment_Name" as deal_name,
+            COALESCE(d."Sale_Status", '') as sale_status,
             COALESCE(rs.quarter, :default_quarter) as quarter,
             COALESCE(rs.status, 'draft') as status,
             COALESCE(rs.current_step, 0) as current_step,
@@ -558,9 +559,7 @@ def get_tracking_data(quarter_filter: str | None = None,
         """)
         params["inv"] = investor_filter
 
-    # Exclude sold deals and child properties (but keep parent portfolio deals)
-    conditions.append("""COALESCE(d."Sale_Status", '') != 'SOLD'""")
-    conditions.append("""COALESCE(d."Lifecycle", '') != 'Sold'""")
+    # Exclude child properties (but keep parent portfolio deals and sold deals)
     conditions.append("""d.vcode NOT IN (
         SELECT d2.vcode FROM deals d2
         JOIN relationships r ON TRIM(r."InvestmentID") = TRIM(d2."InvestmentID")
@@ -601,8 +600,6 @@ def get_investor_list() -> list[str]:
             FROM relationships r
             JOIN deals d ON TRIM(d."InvestmentID") = TRIM(r."InvestmentID")
             WHERE (COALESCE(CAST(r."EndDate" AS TEXT), '') = '')
-              AND COALESCE(d."Sale_Status", '') != 'SOLD'
-              AND COALESCE(d."Lifecycle", '') != 'Sold'
               AND d.vcode NOT IN (
                   SELECT d2.vcode FROM deals d2
                   JOIN relationships r2 ON TRIM(r2."InvestmentID") = TRIM(d2."InvestmentID")

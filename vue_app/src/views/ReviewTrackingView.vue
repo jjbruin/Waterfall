@@ -8,6 +8,7 @@ const router = useRouter()
 interface TrackingItem {
   vcode: string
   deal_name: string
+  sale_status: string
   quarter: string
   status: string
   current_step: number
@@ -193,7 +194,7 @@ function filterByStatus(status: string) {
             class="clickable-row"
             @click="navigateToOnePager(item)"
           >
-            <td class="deal-name">{{ item.deal_name || item.vcode }}</td>
+            <td class="deal-name">{{ item.deal_name || item.vcode }}{{ item.sale_status?.toUpperCase() === 'SOLD' ? ' (Sold)' : '' }}</td>
             <td>{{ item.quarter || '—' }}</td>
             <td>
               <span class="status-badge" :class="statusClass(item.status)">

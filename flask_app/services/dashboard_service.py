@@ -54,7 +54,7 @@ def get_cached_caps_and_occ(on_progress=None):
     from flask_app.services import data_service
 
     data = data_service.get_data()
-    inv_disp = data_service.get_inv_display(data["inv"])
+    inv_disp = data_service.exclude_sold(data_service.get_inv_display(data["inv"]))
 
     # Exclude child properties — their data rolls up into parent deals
     child_vcodes = get_child_vcodes(data["inv"])

@@ -601,7 +601,7 @@ function printOnePager() {
           <select :value="deals.currentVcode" @change="onDealSelect">
             <option value="">-- Choose a deal --</option>
             <option v-for="d in data.deals" :key="d.vcode" :value="d.vcode">
-              {{ d.Investment_Name || d.vcode }}
+              {{ d.Investment_Name || d.vcode }}{{ d.Sale_Status?.toUpperCase() === 'SOLD' ? ' (Sold)' : '' }}
             </option>
           </select>
         </div>
@@ -737,7 +737,7 @@ function printOnePager() {
             </tr>
             <tr>
               <td class="lbl">Pref Equity capitalization:</td><td class="val"><textarea v-model="peCapComment" class="inline-comment" rows="1" placeholder="" spellcheck="true" lang="en" :readonly="commentsLocked"></textarea></td>
-              <td class="lbl">P.E. Expos. on {{ cap.valuation_year ? cap.valuation_year.slice(-2) + '/' + selectedQuarter.split('-')[1] : '' }} Value:</td>
+              <td class="lbl">P.E. Expos. on {{ cap.valuation_year ? cap.valuation_year.slice(-2) : '' }} Value:</td>
               <td></td><td class="val right">{{ fmtPct(cap.pe_exposure_on_value) }}</td>
             </tr>
           </tbody>
@@ -906,7 +906,7 @@ function printOnePager() {
               </tr>
               <tr>
                 <td class="lbl">Pref Equity capitalization:</td><td class="val">{{ pg.data.comments?.pe_cap_comment || '' }}</td>
-                <td class="lbl">P.E. Expos. on {{ pg.data.cap_stack?.valuation_year ? pg.data.cap_stack.valuation_year.slice(-2) + '/' + (batchQuarter ? batchQuarter.split('-')[1] : '') : '' }} Value:</td>
+                <td class="lbl">P.E. Expos. on {{ pg.data.cap_stack?.valuation_year ? pg.data.cap_stack.valuation_year.slice(-2) : '' }} Value:</td>
                 <td></td><td class="val right">{{ fmtPct(pg.data.cap_stack?.pe_exposure_on_value) }}</td>
               </tr>
             </tbody>

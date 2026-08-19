@@ -61,7 +61,7 @@ def init_stream():
     Final event:         data: {"done":true,"total":84}
     """
     data = _get_data()
-    inv_disp = data_service.get_inv_display(data["inv"])
+    inv_disp = data_service.exclude_sold(data_service.get_inv_display(data["inv"]))
 
     # Exclude child properties — their data rolls up into parent deals
     child_vcodes = get_child_vcodes(data["inv"])
@@ -162,7 +162,7 @@ def noi_trend():
         return jsonify(safe_json(_noi_cache[noi_key]))
 
     data = _get_data()
-    inv_disp = data_service.get_inv_display(data["inv"])
+    inv_disp = data_service.exclude_sold(data_service.get_inv_display(data["inv"]))
     # Exclude child properties — NOI data rolls up via ISBS vcode matching
     child_vcodes = get_child_vcodes(data["inv"])
     inv_disp = inv_disp[~inv_disp["vcode"].astype(str).isin(child_vcodes)]
@@ -210,7 +210,7 @@ def loan_maturities():
 def computed_returns():
     """Compute returns for all active deals. Button-gated in UI."""
     data = _get_data()
-    inv_disp = data_service.get_inv_display(data["inv"])
+    inv_disp = data_service.exclude_sold(data_service.get_inv_display(data["inv"]))
     # Exclude child properties — returns are computed at parent level
     child_vcodes = get_child_vcodes(data["inv"])
     inv_disp = inv_disp[~inv_disp["vcode"].astype(str).isin(child_vcodes)]

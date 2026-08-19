@@ -582,19 +582,23 @@ def get_data() -> dict:
     return load_all(db_path, pro_yr_base)
 
 
+def exclude_sold(inv: pd.DataFrame) -> pd.DataFrame:
+    """Remove deals with Sale_Status=SOLD or Lifecycle=Sold."""
+    if inv is None or inv.empty:
+        return inv
+    mask = inv["Sale_Status"].fillna("").str.upper() != "SOLD" if "Sale_Status" in inv.columns else pd.Series(True, index=inv.index)
+    if "Lifecycle" in inv.columns:
+        mask = mask & (inv["Lifecycle"].fillna("").str.strip().str.upper() != "SOLD")
+    return inv[mask].copy()
+
+
 def get_inv_display(inv: pd.DataFrame) -> pd.DataFrame:
-    """Filter out sold/inactive deals and child properties, sorted alphabetically."""
+    """Filter out child properties, sorted alphabetically.  Sold deals are
+    kept so they remain reportable for quarters when ownership existed."""
     if inv is None or inv.empty:
         return pd.DataFrame()
 
-    # Exclude Sale_Status = SOLD
-    mask = inv["Sale_Status"].fillna("").str.upper() != "SOLD" if "Sale_Status" in inv.columns else pd.Series(True, index=inv.index)
-
-    # Exclude Lifecycle = Sold
-    if "Lifecycle" in inv.columns:
-        mask = mask & (inv["Lifecycle"].fillna("").str.strip().str.upper() != "SOLD")
-
-    result = inv[mask].copy()
+    result = inv.copy()
 
     # Exclude child properties (same logic as reports_service / review_service)
     if "Portfolio_Name" in result.columns and "Investment_Name" in result.columns:
