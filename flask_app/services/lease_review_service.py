@@ -500,14 +500,14 @@ def parse_rent_roll(file_path: str) -> pd.DataFrame:
                 return 0.0
 
         def to_date_str(v):
-            if v is None:
+            if v is None or pd.isna(v):
                 return None
             if isinstance(v, datetime):
                 return v.strftime('%Y-%m-%d')
             if isinstance(v, date):
                 return v.isoformat()
             s = str(v).strip()
-            if s in ('None', 'TBD', ''):
+            if s in ('None', 'TBD', '', 'NaT'):
                 return None
             return s
 
@@ -693,20 +693,32 @@ def parse_rent_roll_flexible(file_obj, filename: str = '') -> pd.DataFrame:
                         continue
                     # Check individual cells (not concatenated row string)
                     # to avoid matching "Tenant Rent Roll" as both tenant+rent
-                    cell_vals = [str(c).lower().strip()
+                    # Normalise newlines/carriage returns to spaces (Presentation
+                    # format cells like "DBA\nTenant Name")
+                    cell_vals = [str(c).replace('\n', ' ').replace('\r', ' ')
+                                 .lower().strip()
                                  for c in row if c is not None]
+                    logger.info("parse_rent_roll_flexible: sheet=%s row=%d cells=%s",
+                                sheet_name, i, cell_vals[:8])
                     # Best: a cell that is exactly or contains "tenant name"
                     if any('tenant name' in cv for cv in cell_vals):
                         header_idx = i
                         break
-                    # Require "tenant" or "dba" in one cell AND a data keyword
-                    # in a DIFFERENT cell
-                    has_tenant = any(
-                        (('tenant' in cv or cv == 'dba') and len(cv) < 30)
-                        for cv in cell_vals)
+                    # Require a tenant-like keyword in one cell AND a data
+                    # keyword in a DIFFERENT cell.
+                    # Recognised tenant keywords: "tenant", "dba",
+                    # or exactly "lease" (but NOT "lease from/to/type")
+                    def _is_tenant_cell(cv: str) -> bool:
+                        if 'tenant' in cv or 'dba' in cv:
+                            return len(cv) < 30
+                        if cv == 'lease':
+                            return True
+                        return False
+
+                    has_tenant = any(_is_tenant_cell(cv) for cv in cell_vals)
                     if has_tenant:
                         other_cells = [cv for cv in cell_vals
-                                       if 'tenant' not in cv and cv != 'dba']
+                                       if not _is_tenant_cell(cv)]
                         if any(kw in cv for cv in other_cells
                                for kw in ['suite', 'unit', 'rent',
                                           'sf', 'sqft', 'area',
@@ -720,6 +732,7 @@ def parse_rent_roll_flexible(file_obj, filename: str = '') -> pd.DataFrame:
                     # Start Date, etc.). Concatenate them to get full names
                     # like "Potential Base Rent", "Scheduled Base Rent".
                     raw_headers = list(data[header_idx])
+                    # --- Merge PRIOR row (Argus two-row: prefixes above) ---
                     if header_idx > 0:
                         prior = data[header_idx - 1]
                         if prior:
@@ -737,6 +750,41 @@ def parse_rent_roll_flexible(file_obj, filename: str = '') -> pd.DataFrame:
                                                 p + ' ' + str(raw_headers[j]).strip())
                                         else:
                                             raw_headers[j] = p
+                    # --- Merge SUBSEQUENT rows (MRI multi-row: sub-headers below) ---
+                    # MRI rent rolls have the main header in row N but rent/rec
+                    # sub-headers in rows N+1, N+2 that fill empty columns.
+                    data_start = header_idx + 1
+                    sub_kws = ['rent', 'rec', 'misc', 'deposit', 'guarantee',
+                               'per area', 'per sf', 'monthly', 'annual']
+                    for offset in range(1, 3):
+                        sub_idx = header_idx + offset
+                        if sub_idx >= len(data):
+                            break
+                        sub_row = data[sub_idx]
+                        if sub_row is None:
+                            break
+                        sub_str = ' '.join(
+                            str(c).lower() for c in sub_row if c)
+                        if not any(kw in sub_str for kw in sub_kws):
+                            break
+                        # This row is a sub-header — merge into raw_headers
+                        for j, c in enumerate(sub_row):
+                            if c is None:
+                                continue
+                            s = str(c).strip()
+                            if j < len(raw_headers) and raw_headers[j]:
+                                raw_headers[j] = (
+                                    str(raw_headers[j]).strip() + ' ' + s)
+                            elif j < len(raw_headers):
+                                raw_headers[j] = s
+                            else:
+                                # Extend headers for extra columns
+                                while len(raw_headers) < j:
+                                    raw_headers.append(None)
+                                raw_headers.append(s)
+                        data_start = sub_idx + 1
+                    logger.info("parse_rent_roll_flexible: merged headers=%s",
+                                [h for h in raw_headers if h])
                     headers = [str(c).strip() if c else f'col_{j}'
                                for j, c in enumerate(raw_headers)]
                     # Deduplicate column names — append _2, _3 etc.
@@ -747,7 +795,7 @@ def parse_rent_roll_flexible(file_obj, filename: str = '') -> pd.DataFrame:
                             headers[j] = f'{h}_{seen[h]}'
                         else:
                             seen[h] = 1
-                    rows = data[header_idx + 1:]
+                    rows = data[data_start:]
                     df_raw = pd.DataFrame(rows, columns=headers)
                     # If this sheet has enough rows, use it
                     if len(df_raw.dropna(how='all')) >= 2:
@@ -778,42 +826,77 @@ def parse_rent_roll_flexible(file_obj, filename: str = '') -> pd.DataFrame:
         return None
 
     col_map['tenant_name'] = _find_col('tenant', 'name', 'lessee', 'dba', exclude=['group'])
+    # Argus rent roll uses bare "lease" as the tenant name column
+    if not col_map['tenant_name']:
+        for col, cl in cols_lower.items():
+            if cl == 'lease':
+                col_map['tenant_name'] = col
+                break
     col_map['suite'] = _find_col('suite', 'unit', 'space')
     col_map['square_feet'] = _find_col('area', 'sqft', 'sq ft', 'square', 'sf', 'gla',
                                        'footage')
     col_map['lease_type'] = _find_col('lease type', 'type', 'lease status', 'status')
-    col_map['lease_start'] = _find_col('start date', 'lease start', 'commence', 'begin')
+    col_map['lease_start'] = _find_col('start date', 'lease start', 'commence',
+                                       'begin', 'lease from')
     if not col_map['lease_start']:
         col_map['lease_start'] = _find_col('start', exclude=['date'])
     col_map['lease_end'] = _find_col('end date', 'lease end', 'expir', 'termin',
-                                     'maturity')
+                                     'maturity', 'lease to')
     col_map['annual_rent'] = _find_col('scheduled base', 'potential base',
                                        'annual rent', 'base rent',
                                        exclude=['monthly', 'per sf', '/sf',
                                                 'turnover', 'free',
                                                 'miscellaneous', 'percentage',
-                                                'absorption', 'rate'])
+                                                'absorption', 'rate',
+                                                'per area'])
     col_map['monthly_rent'] = _find_col('monthly amount', 'monthly rent',
                                         'month rent',
-                                        exclude=['per sf', '/sf', 'rate'])
+                                        exclude=['per sf', '/sf', 'rate',
+                                                 'per area'])
+    # MRI rent roll: first "rent" column (no qualifier) is monthly rent
+    if not col_map['monthly_rent']:
+        for col, cl in cols_lower.items():
+            if col in col_map.values():
+                continue
+            if cl == 'rent':
+                col_map['monthly_rent'] = col
+                break
+    # MRI rent roll: second "rent" column (rent_2) is annual rent
+    if not col_map['annual_rent']:
+        for col, cl in cols_lower.items():
+            if col in col_map.values():
+                continue
+            if cl.startswith('rent') and 'per' not in cl and 'rec' not in cl:
+                col_map['annual_rent'] = col
+                break
     col_map['annual_rent_per_sf'] = _find_col('annual rent per', 'annual base per',
                                                'annual $/sf', 'annual rate/sf',
                                                'annual rate', 'rent per sf',
-                                               'rent/sf', 'per area',
+                                               'rent/sf',
                                                exclude=['monthly', 'recover',
                                                         'misc', 'expense',
                                                         'future'])
+    # MRI: "rent per area" columns — first is monthly, second is annual
     col_map['monthly_rent_per_sf'] = _find_col('monthly rent per', 'monthly $/sf',
                                                 'monthly base per',
                                                 exclude=['annual'])
+    if not col_map['monthly_rent_per_sf']:
+        col_map['monthly_rent_per_sf'] = _find_col('rent per area',
+                                                     exclude=['recover', 'misc'])
+    if not col_map['annual_rent_per_sf']:
+        col_map['annual_rent_per_sf'] = _find_col('rent per area', 'per area',
+                                                    exclude=['recover', 'misc'])
     col_map['annual_recoveries_per_sf'] = _find_col('recover', 'cam',
-                                                     'reimburse',
+                                                     'reimburse', 'rec.',
                                                      exclude=['misc', 'annual rent',
                                                               'base rent'])
     col_map['annual_misc_per_sf'] = _find_col('misc', 'other per',
                                                exclude=['recover', 'annual rent',
                                                         'base rent'])
     col_map['security_deposit'] = _find_col('deposit', 'security')
+
+    logger.info("parse_rent_roll_flexible: col_map=%s",
+                {k: v for k, v in col_map.items() if v})
 
     if not col_map.get('tenant_name'):
         raise ValueError(
@@ -828,10 +911,10 @@ def parse_rent_roll_flexible(file_obj, filename: str = '') -> pd.DataFrame:
             return 0.0
 
     def _safe_date(val):
-        if val is None or (isinstance(val, float) and pd.isna(val)):
+        if val is None or pd.isna(val):
             return None
         if isinstance(val, (datetime, date)):
-            return val.strftime('%Y-%m-%d') if hasattr(val, 'strftime') else str(val)
+            return val.strftime('%Y-%m-%d')
         s = str(val).strip()
         if not s or s.lower() in ('none', 'nan', 'nat', 'tbd', ''):
             return None
@@ -846,9 +929,20 @@ def parse_rent_roll_flexible(file_obj, filename: str = '') -> pd.DataFrame:
         if tname is None or (isinstance(tname, float) and pd.isna(tname)):
             continue
         tname = str(tname).strip()
-        if not tname or tname.lower() in ('total', 'totals', 'subtotal', 'grand total',
-                                           'future', '', 'nan'):
+        tname_lower = tname.lower()
+        if not tname or tname_lower in ('total', 'totals', 'subtotal', 'grand total',
+                                         'future', '', 'nan'):
             continue
+        # Skip summary/total rows (e.g. "Total Area", "Current Leases")
+        if any(kw in tname_lower for kw in ['total area', 'total unit',
+               'current leases', 'future leases', 'month-to-month']):
+            continue
+        # Skip rows where tenant name is purely numeric (summary data)
+        try:
+            float(tname.replace(',', ''))
+            continue  # purely numeric — not a tenant name
+        except ValueError:
+            pass
 
         is_vacant = 'VACANT' in tname.upper()
         sf = _safe_float(row.get(col_map.get('square_feet', ''), 0))

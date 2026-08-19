@@ -117,7 +117,7 @@ All deploys use Azure CLI (GitHub Actions secrets are not configured):
 az acr build --registry acrwaterfalldev -g rg-waterfall-dev --image waterfall-xirr:latest --no-logs .
 
 # 2. Deploy to Container Apps (use incrementing suffix to force new revision)
-az containerapp update -g rg-waterfall-dev -n app-waterfall-dev-v2 --image acrwaterfalldev.azurecr.io/waterfall-xirr:latest --revision-suffix v279
+az containerapp update -g rg-waterfall-dev -n app-waterfall-dev-v2 --image acrwaterfalldev.azurecr.io/waterfall-xirr:latest --revision-suffix v286
 ```
 **Note**: ACR build agent has transient failures (5-second runs) — retry if it fails. Use `--no-logs` to avoid Azure CLI unicode crash (`✓` character).
 

@@ -293,7 +293,8 @@ def get_general_information(inv_map: pd.DataFrame, vcode: str,
             if col in row.index and pd.notna(row[col]):
                 val = row[col]
                 if key in ['units', 'sqft']:
-                    info[key] = int(float(val)) if pd.notna(val) else 0
+                    clean = str(val).replace(',', '').strip()
+                    info[key] = int(float(clean)) if pd.notna(val) else 0
                 elif key in ['date_closed']:
                     try:
                         info[key] = pd.to_datetime(val).date()
