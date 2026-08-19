@@ -428,6 +428,33 @@ def get_tenant_documents(review_id, tenant_id):
     } for d in docs])
 
 
+@lease_review_bp.route(
+    '/reviews/<int:review_id>/documents/<int:doc_id>/view',
+    methods=['GET'],
+)
+@login_required
+def view_document(review_id, doc_id):
+    """Download/view a lease document PDF."""
+    from sqlalchemy import text
+    engine = get_engine()
+
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT filename, file_data
+            FROM lease_documents
+            WHERE id = :did AND review_id = :rid
+        """), {'did': doc_id, 'rid': review_id}).fetchone()
+
+    if not row or not row[1]:
+        return jsonify({'error': 'Document not found or no file data'}), 404
+
+    return send_file(
+        BytesIO(row[1]),
+        mimetype='application/pdf',
+        download_name=row[0],
+    )
+
+
 @lease_review_bp.route('/reviews/<int:review_id>/merge-rent-roll', methods=['POST'])
 @login_required
 @role_required('admin', 'analyst')

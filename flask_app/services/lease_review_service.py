@@ -3606,6 +3606,27 @@ def get_risk_analysis_data(engine, review_id: int) -> Dict[str, Any]:
         'source_doc': r[14],
     } for r in opt_rows]
 
+    # Get documents grouped by tenant_id for linking
+    with engine.connect() as conn:
+        doc_rows = conn.execute(text("""
+            SELECT d.id, d.tenant_id, d.filename, d.doc_type, d.doc_date,
+                   CASE WHEN d.file_data IS NOT NULL THEN 1 ELSE 0 END as has_file
+            FROM lease_documents d
+            JOIN lease_tenants t ON t.id = d.tenant_id
+            WHERE t.review_id = :rid
+            ORDER BY d.tenant_id, d.doc_type, d.doc_date
+        """), {'rid': review_id}).fetchall()
+
+    documents = {}
+    for r in doc_rows:
+        tid = r[1]
+        if tid not in documents:
+            documents[tid] = []
+        documents[tid].append({
+            'id': r[0], 'filename': r[2], 'doc_type': r[3],
+            'doc_date': r[4], 'has_file': bool(r[5]),
+        })
+
     return {
         'tenants': resolved,
         'validation': validation,
@@ -3614,6 +3635,7 @@ def get_risk_analysis_data(engine, review_id: int) -> Dict[str, Any]:
         'scenarios': scenarios,
         'exclusive_use': exclusive_use,
         'options': options,
+        'documents': documents,
     }
 
 

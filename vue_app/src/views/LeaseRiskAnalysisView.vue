@@ -37,6 +37,7 @@ const cotenancy = ref<any>(null)
 const scenarios = ref<any[]>([])
 const exclusiveUse = ref<any[]>([])
 const options = ref<any[]>([])
+const documents = ref<Record<number, any[]>>({})
 
 // Edit state for field resolution
 const editingTenantId = ref<number | null>(null)
@@ -86,6 +87,7 @@ async function loadRiskData() {
     scenarios.value = res.data.scenarios || []
     exclusiveUse.value = res.data.exclusive_use || []
     options.value = res.data.options || []
+    documents.value = res.data.documents || {}
   } catch (e: any) {
     console.error('Failed to load risk analysis:', e)
   } finally {
@@ -154,6 +156,24 @@ const optionsByTenant = computed(() => {
   }
   return groups
 })
+
+function tenantDocsForGroup(items: any[]): any[] {
+  if (!items.length) return []
+  const tid = items[0].tenant_id
+  return documents.value[tid] || []
+}
+
+function viewDocument(docId: number) {
+  const url = `/api/lease-review/reviews/${selectedReviewId.value}/documents/${docId}/view`
+  window.open(url, '_blank')
+}
+
+function openAbstract(tenantId: number) {
+  router.push({
+    path: '/lease-abstract',
+    query: { review: String(selectedReviewId.value), tenant: String(tenantId) },
+  })
+}
 
 function startEdit(tenantId: number, field: string, currentValue: any) {
   editingTenantId.value = tenantId
@@ -526,7 +546,20 @@ onMounted(() => {
 
           <h3>Validation Details by Tenant</h3>
           <div v-for="(items, tenantKey) in validationByTenant" :key="tenantKey" class="validation-group">
-            <h4>{{ tenantKey }}</h4>
+            <div class="validation-group-header">
+              <h4>{{ tenantKey }}</h4>
+              <div class="validation-group-links">
+                <button class="btn-xs btn-abstract" @click="openAbstract(items[0].tenant_id)" title="View lease abstract">Abstract</button>
+                <template v-for="doc in tenantDocsForGroup(items)" :key="doc.id">
+                  <button
+                    v-if="doc.has_file"
+                    class="btn-xs btn-doc"
+                    @click="viewDocument(doc.id)"
+                    :title="doc.filename"
+                  >{{ doc.doc_type || 'PDF' }}</button>
+                </template>
+              </div>
+            </div>
             <div class="table-wrapper">
               <table class="data-table compact">
                 <thead>
@@ -936,7 +969,31 @@ tr.highlight td { background: #fff3cd; }
 .implication-note { font-size: 0.82rem; color: #856404; background: #fff3cd; padding: 6px 12px; border-radius: 4px; margin: 4px 0; }
 .section-desc { color: #666; font-size: 0.85rem; margin-bottom: 16px; }
 .validation-group { margin-bottom: 20px; }
-.validation-group h4 { color: #1F4E79; margin: 12px 0 8px; }
+.validation-group h4 { color: #1F4E79; margin: 0; }
+.validation-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 12px 0 8px;
+  gap: 8px;
+}
+.validation-group-links {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.btn-doc {
+  background: #f0f4f8;
+  color: #1F4E79;
+  border: 1px solid #ccc;
+  font-weight: 500;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.btn-doc:hover { background: #e3eef8; border-color: #1F4E79; }
 
 h3 { color: #1F4E79; margin: 20px 0 12px; font-size: 1.1rem; }
 
