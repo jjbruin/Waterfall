@@ -306,45 +306,76 @@ async function onRentRollMerge(event: Event) {
   }
 }
 
-// Document upload
+// Document upload — batched to avoid OOM on large folders
+const docUploadProgress = ref('')
+const UPLOAD_BATCH_SIZE = 20
+
 async function onDocumentUpload(event: Event) {
   const input = event.target as HTMLInputElement
   if (!input.files?.length || !selectedReviewId.value) return
 
-  const formData = new FormData()
-  const folderHints: string[] = []
+  // Collect PDF files and their folder hints
+  const pdfFiles: { file: File; hint: string }[] = []
   for (const f of input.files) {
     if (!f.name.toLowerCase().endsWith('.pdf')) continue
-    formData.append('files', f)
-    // webkitRelativePath gives "FolderName/SubFolder/file.pdf"
-    // Extract the parent folder name as a tenant matching hint
     const relPath = (f as any).webkitRelativePath || ''
     const parts = relPath.split('/')
-    // Use the immediate parent folder (not the root folder selected)
     const hint = parts.length > 2 ? parts[parts.length - 2] : (parts.length === 2 ? parts[0] : '')
-    folderHints.push(hint)
+    pdfFiles.push({ file: f, hint })
   }
-  if (!formData.has('files')) {
+  if (!pdfFiles.length) {
     alert('No PDF files found in the selection.')
     return
   }
-  formData.append('folder_hints', JSON.stringify(folderHints))
 
   uploadingDocs.value = true
   docUploadReport.value = null
+  docUploadProgress.value = ''
+
+  // Aggregate results across batches
+  const totals = { added: 0, skipped_duplicate: 0, unmatched: 0, details: [] as any[] }
+
   try {
-    const res = await api.post(
-      `/api/lease-review/reviews/${selectedReviewId.value}/upload-documents`,
-      formData,
-      { headers: { 'Content-Type': 'multipart/form-data' } }
-    )
-    docUploadReport.value = res.data
+    const totalFiles = pdfFiles.length
+    for (let i = 0; i < totalFiles; i += UPLOAD_BATCH_SIZE) {
+      const batch = pdfFiles.slice(i, i + UPLOAD_BATCH_SIZE)
+      const batchEnd = Math.min(i + UPLOAD_BATCH_SIZE, totalFiles)
+      docUploadProgress.value = `Uploading ${batchEnd} of ${totalFiles} files...`
+
+      const formData = new FormData()
+      const folderHints: string[] = []
+      for (const item of batch) {
+        formData.append('files', item.file)
+        folderHints.push(item.hint)
+      }
+      formData.append('folder_hints', JSON.stringify(folderHints))
+
+      const res = await api.post(
+        `/api/lease-review/reviews/${selectedReviewId.value}/upload-documents`,
+        formData,
+        { headers: { 'Content-Type': 'multipart/form-data' } }
+      )
+      const d = res.data
+      totals.added += d.added || 0
+      totals.skipped_duplicate += d.skipped_duplicate || 0
+      totals.unmatched += d.unmatched || 0
+      if (d.details) totals.details.push(...d.details)
+    }
+    docUploadReport.value = totals
     await loadReview(selectedReviewId.value!)
   } catch (e: any) {
     console.error('Doc upload error', e)
-    alert(e.response?.data?.error || 'Failed to upload documents')
+    // Show partial results if some batches succeeded
+    if (totals.added > 0) {
+      docUploadReport.value = totals
+      alert(`Upload failed after ${totals.added} files. Error: ${e.response?.data?.error || e.message}`)
+      await loadReview(selectedReviewId.value!)
+    } else {
+      alert(e.response?.data?.error || 'Failed to upload documents')
+    }
   } finally {
     uploadingDocs.value = false
+    docUploadProgress.value = ''
     input.value = ''
   }
 }
@@ -745,6 +776,7 @@ function statusClass(s: string): string {
             {{ uploadingDocs ? 'Uploading...' : 'Select Folder' }}
             <input type="file" webkitdirectory @change="onDocumentUpload" :disabled="uploadingDocs" hidden />
           </label>
+          <span v-if="docUploadProgress" class="upload-progress-text">{{ docUploadProgress }}</span>
         </div>
 
         <!-- Upload report -->
@@ -1161,7 +1193,10 @@ function statusClass(s: string): string {
 
 /* Upload actions */
 .upload-actions {
-  display: flex; gap: 0.75rem; margin-bottom: 1rem; flex-wrap: wrap;
+  display: flex; gap: 0.75rem; margin-bottom: 1rem; flex-wrap: wrap; align-items: center;
+}
+.upload-progress-text {
+  font-size: 0.85rem; color: #666; font-style: italic;
 }
 .btn-upload-label {
   display: inline-block; padding: 0.5rem 1rem;
