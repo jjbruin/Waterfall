@@ -33,6 +33,10 @@ from flask_app.services.lease_review_service import (
     save_abstract_sections,
     get_review_abstracts_list,
     reset_extraction_data,
+    extract_sales_from_pdf,
+    import_sales_to_review,
+    get_tenant_sales,
+    update_tenant_sales_override,
     RESOLVABLE_FIELDS,
 )
 from io import BytesIO
@@ -562,6 +566,79 @@ def upload_documents(review_id):
         return jsonify({'error': str(e)}), 400
     except Exception as e:
         logger.error(f"Document upload error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/upload-sales', methods=['POST'])
+@login_required
+@role_required('admin', 'analyst')
+def upload_sales(review_id):
+    """Upload a tenant sales report (PDF/Excel/CSV) for AI extraction.
+
+    Returns extraction results with tenant match report.
+    """
+    engine = get_engine()
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file provided'}), 400
+
+    file = request.files['file']
+    if not file.filename:
+        return jsonify({'error': 'Empty filename'}), 400
+
+    try:
+        file_bytes = file.read()
+        # Extract sales data via AI
+        sales_entries = extract_sales_from_pdf(file_bytes)
+        # Import into database with tenant matching
+        report = import_sales_to_review(engine, review_id, sales_entries)
+        # Return updated TTM data
+        sales_data = get_tenant_sales(engine, review_id)
+        return jsonify({
+            'status': 'imported',
+            'extraction': report,
+            'sales': sales_data,
+        })
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"Sales upload error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/sales', methods=['GET'])
+@login_required
+def get_sales(review_id):
+    """Get tenant sales data with TTM computation."""
+    engine = get_engine()
+    try:
+        return jsonify(get_tenant_sales(engine, review_id))
+    except Exception as e:
+        logger.error(f"Get sales error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route(
+    '/reviews/<int:review_id>/tenants/<int:tenant_id>/sales',
+    methods=['PUT'],
+)
+@login_required
+@role_required('admin', 'analyst')
+def edit_tenant_sales(review_id, tenant_id):
+    """Set or clear the annual sales override for a tenant.
+
+    Body: { "annual_sales": 1234567.89 } or { "annual_sales": null }
+    """
+    engine = get_engine()
+    data = request.json or {}
+    annual_sales = data.get('annual_sales')
+    try:
+        update_tenant_sales_override(engine, review_id, tenant_id, annual_sales)
+        sales_data = get_tenant_sales(engine, review_id)
+        return jsonify({'status': 'ok', 'sales': sales_data})
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"Edit tenant sales error: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 

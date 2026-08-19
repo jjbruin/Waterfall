@@ -107,6 +107,7 @@ LEASE_DDL_PG = [
         annual_rent_per_sf DOUBLE PRECISION,
         annual_recoveries_per_sf DOUBLE PRECISION,
         annual_misc_per_sf DOUBLE PRECISION,
+        annual_sales_override DOUBLE PRECISION,
         security_deposit DOUBLE PRECISION,
         is_vacant       BOOLEAN DEFAULT FALSE,
         is_material     BOOLEAN DEFAULT FALSE,
@@ -236,6 +237,23 @@ LEASE_DDL_PG = [
         UNIQUE(tenant_id, section_key)
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS lease_tenant_sales (
+        id              SERIAL PRIMARY KEY,
+        tenant_id       INTEGER NOT NULL REFERENCES lease_tenants(id),
+        review_id       INTEGER NOT NULL REFERENCES lease_reviews(id),
+        year            INTEGER NOT NULL,
+        sales_amount    DOUBLE PRECISION NOT NULL DEFAULT 0,
+        month_start     INTEGER NOT NULL DEFAULT 1,
+        month_end       INTEGER NOT NULL DEFAULT 12,
+        months_covered  INTEGER NOT NULL DEFAULT 12,
+        comment         TEXT,
+        source          TEXT DEFAULT 'ai_extract',
+        created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(tenant_id, year)
+    )
+    """,
 ]
 
 # SQLite variants (no SERIAL, use INTEGER PRIMARY KEY AUTOINCREMENT)
@@ -324,6 +342,7 @@ def ensure_lease_tables(engine):
     _migrate_add_column(engine, 'lease_tenants', 'annual_rent_per_sf', 'DOUBLE PRECISION')
     _migrate_add_column(engine, 'lease_tenants', 'annual_recoveries_per_sf', 'DOUBLE PRECISION')
     _migrate_add_column(engine, 'lease_tenants', 'annual_misc_per_sf', 'DOUBLE PRECISION')
+    _migrate_add_column(engine, 'lease_tenants', 'annual_sales_override', 'DOUBLE PRECISION')
 
     # Phase 2A: option_start / option_end on lease_options
     _migrate_add_column(engine, 'lease_options', 'option_start', 'TEXT')
@@ -4467,3 +4486,389 @@ def get_review_abstracts_list(engine, review_id: int) -> List[Dict]:
         'has_abstract': r[4] > 0,
         'section_count': r[4],
     } for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Tenant Sales — AI extraction, import, TTM computation
+# ---------------------------------------------------------------------------
+
+_MONTH_MAP = {
+    'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'apri': 4, 'april': 4,
+    'may': 5, 'jun': 6, 'june': 6, 'jul': 7, 'july': 7,
+    'aug': 8, 'august': 8, 'sep': 9, 'sept': 9, 'oct': 10,
+    'nov': 11, 'dec': 12, 'december': 12,
+    'january': 1, 'february': 2, 'march': 3,
+    'september': 9, 'october': 10, 'november': 11,
+}
+
+
+def _parse_month_range(comment: str) -> Tuple[int, int, int]:
+    """Parse a month range from a sales comment string.
+
+    Returns (month_start, month_end, months_covered).
+    Examples:
+        "Jan - May" → (1, 5, 5)
+        "Apr - Dec" → (4, 12, 9)
+        "Jan" → (1, 1, 1)
+        "" or None → (1, 12, 12)  (full year)
+        "REQ 8/7" → (0, 0, 0)  (no data)
+    """
+    if not comment:
+        return (1, 12, 12)
+
+    # Strip "REQ" follow-up dates and other non-month text
+    cleaned = re.sub(r'\*.*$', '', comment).strip()
+    cleaned = re.sub(r'REQ\s+[\d/\s]+', '', cleaned).strip()
+    if cleaned.startswith('REQ') or not cleaned:
+        # Only a request note, no actual month data
+        if 'REQ' in comment and not any(
+                m in comment.lower().split('req')[0].lower()
+                for m in _MONTH_MAP):
+            return (0, 0, 0)
+
+    # Find month names in the comment
+    months_found = []
+    for word in re.split(r'[\s\-–—,]+', cleaned):
+        w = word.strip().lower().rstrip('.')
+        if w in _MONTH_MAP:
+            months_found.append(_MONTH_MAP[w])
+
+    if len(months_found) == 0:
+        # No months found — check if pure "REQ" note
+        if 'REQ' in comment.upper():
+            return (0, 0, 0)
+        return (1, 12, 12)
+    elif len(months_found) == 1:
+        return (months_found[0], months_found[0], 1)
+    else:
+        ms, me = months_found[0], months_found[-1]
+        if me >= ms:
+            return (ms, me, me - ms + 1)
+        else:
+            # Wrap around (unlikely but handle)
+            return (ms, me, (12 - ms + 1) + me)
+
+
+def extract_sales_from_pdf(
+    file_obj,
+    api_key: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Extract tenant sales data from a PDF using Claude AI.
+
+    Returns a list of dicts:
+        [{tenant_name, area, year, sales_amount, month_start, month_end,
+          months_covered, comment}, ...]
+    """
+    import anthropic
+    import pdfplumber
+    import io
+
+    key = api_key or os.environ.get('ANTHROPIC_API_KEY')
+    if not key:
+        raise ValueError("ANTHROPIC_API_KEY not set")
+
+    # Extract text from PDF
+    if isinstance(file_obj, bytes):
+        file_obj = io.BytesIO(file_obj)
+    text = ''
+    with pdfplumber.open(file_obj) as pdf:
+        for page in pdf.pages:
+            text += (page.extract_text() or '') + '\n'
+
+    if not text.strip():
+        raise ValueError("No text extracted from PDF")
+
+    client = anthropic.Anthropic(api_key=key)
+
+    prompt = f"""Extract all tenant sales data from this property sales report.
+Return a JSON array where each element has:
+- "tenant_name": string (the tenant/business name)
+- "area": number (square feet)
+- "year": number (the reporting year)
+- "sales_amount": number (dollar amount, 0 if shown as "-" or blank)
+- "comment": string (the comment field, e.g. "Jan - May", "REQ 8/7", etc.)
+
+Important:
+- Include every row from every tenant, even if sales_amount is 0
+- Keep tenant names exactly as shown in the report
+- Parse dollar amounts removing $ and commas
+- If the amount is shown as "-" or is blank, set sales_amount to 0
+- Include the full comment text as-is
+
+Return ONLY the JSON array, no other text.
+
+REPORT TEXT:
+{text}"""
+
+    message = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=8192,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    response_text = message.content[0].text
+
+    # Parse JSON from response
+    try:
+        json_match = re.search(r'\[[\s\S]*\]', response_text)
+        if json_match:
+            raw_entries = json.loads(json_match.group())
+        else:
+            raise ValueError("No JSON array found in AI response")
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse sales JSON: {e}")
+        raise ValueError(f"AI extraction returned invalid JSON: {e}")
+
+    # Enrich with parsed month ranges
+    results = []
+    for entry in raw_entries:
+        comment = str(entry.get('comment', '') or '')
+        ms, me, mc = _parse_month_range(comment)
+        results.append({
+            'tenant_name': str(entry.get('tenant_name', '')).strip(),
+            'area': float(entry.get('area', 0) or 0),
+            'year': int(entry.get('year', 0)),
+            'sales_amount': float(entry.get('sales_amount', 0) or 0),
+            'month_start': ms,
+            'month_end': me,
+            'months_covered': mc,
+            'comment': comment,
+        })
+
+    logger.info(f"Extracted {len(results)} sales entries from PDF")
+    return results
+
+
+def import_sales_to_review(
+    engine,
+    review_id: int,
+    sales_entries: List[Dict[str, Any]],
+    source: str = 'ai_extract',
+) -> Dict[str, Any]:
+    """Import extracted sales data into lease_tenant_sales.
+
+    Fuzzy-matches tenant names from the sales report to existing tenants.
+    Uses UPSERT on (tenant_id, year) — newer imports overwrite older ones.
+
+    Returns {matched, unmatched, total, unmatched_tenants}.
+    """
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        # Load existing tenants
+        tenants = conn.execute(text("""
+            SELECT id, tenant_name, suite, square_feet
+            FROM lease_tenants
+            WHERE review_id = :rid AND is_vacant = false
+        """), {'rid': review_id}).fetchall()
+
+        tenant_list = [{'id': r[0], 'name': r[1], 'suite': r[2],
+                         'sf': r[3]} for r in tenants]
+
+        # Group sales entries by tenant name
+        by_tenant: Dict[str, List[Dict]] = {}
+        for entry in sales_entries:
+            tn = entry['tenant_name']
+            by_tenant.setdefault(tn, []).append(entry)
+
+        matched = 0
+        unmatched = 0
+        unmatched_names = []
+
+        for sales_name, entries in by_tenant.items():
+            # Find matching tenant by fuzzy name match
+            match = None
+            for t in tenant_list:
+                if _fuzzy_match_tenant('', sales_name, '', t['name']):
+                    match = t
+                    break
+
+            if not match:
+                unmatched += 1
+                unmatched_names.append(sales_name)
+                logger.warning(f"Sales import: no match for '{sales_name}'")
+                continue
+
+            matched += 1
+            for entry in entries:
+                if entry['year'] == 0:
+                    continue
+                if engine.dialect.name == 'postgresql':
+                    conn.execute(text("""
+                        INSERT INTO lease_tenant_sales
+                            (tenant_id, review_id, year, sales_amount,
+                             month_start, month_end, months_covered,
+                             comment, source, updated_at)
+                        VALUES (:tid, :rid, :yr, :amt,
+                                :ms, :me, :mc,
+                                :cmt, :src, CURRENT_TIMESTAMP)
+                        ON CONFLICT (tenant_id, year)
+                        DO UPDATE SET sales_amount = :amt,
+                                      month_start = :ms, month_end = :me,
+                                      months_covered = :mc,
+                                      comment = :cmt, source = :src,
+                                      updated_at = CURRENT_TIMESTAMP
+                    """), {
+                        'tid': match['id'], 'rid': review_id,
+                        'yr': entry['year'], 'amt': entry['sales_amount'],
+                        'ms': entry['month_start'], 'me': entry['month_end'],
+                        'mc': entry['months_covered'],
+                        'cmt': entry.get('comment', ''), 'src': source,
+                    })
+                else:
+                    conn.execute(text("""
+                        INSERT OR REPLACE INTO lease_tenant_sales
+                            (tenant_id, review_id, year, sales_amount,
+                             month_start, month_end, months_covered,
+                             comment, source, updated_at)
+                        VALUES (:tid, :rid, :yr, :amt,
+                                :ms, :me, :mc,
+                                :cmt, :src, CURRENT_TIMESTAMP)
+                    """), {
+                        'tid': match['id'], 'rid': review_id,
+                        'yr': entry['year'], 'amt': entry['sales_amount'],
+                        'ms': entry['month_start'], 'me': entry['month_end'],
+                        'mc': entry['months_covered'],
+                        'cmt': entry.get('comment', ''), 'src': source,
+                    })
+
+        conn.commit()
+
+    report = {
+        'matched': matched,
+        'unmatched': unmatched,
+        'total': len(by_tenant),
+        'unmatched_tenants': unmatched_names,
+    }
+    logger.info(f"Sales import review {review_id}: {matched} matched, "
+                f"{unmatched} unmatched of {len(by_tenant)} tenants")
+    return report
+
+
+def compute_tenant_ttm_sales(
+    engine,
+    review_id: int,
+) -> Dict[int, Dict[str, Any]]:
+    """Compute trailing 12-month (TTM) sales per tenant.
+
+    Logic:
+    - Find the most recent year with data for each tenant
+    - If full year (12 months), use it directly
+    - If partial year (e.g. Jan-May = 5 months), impute remaining months
+      from the prior year: prior_annual / 12 * (12 - current_months) + current_amount
+    - Also returns raw sales history for display
+
+    Returns {tenant_id: {ttm_sales, sales_per_sf, history: [{year, amount, months, comment}]}}.
+    """
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT s.tenant_id, s.year, s.sales_amount,
+                   s.month_start, s.month_end, s.months_covered,
+                   s.comment, t.square_feet, t.annual_sales_override
+            FROM lease_tenant_sales s
+            JOIN lease_tenants t ON t.id = s.tenant_id
+            WHERE s.review_id = :rid
+            ORDER BY s.tenant_id, s.year DESC
+        """), {'rid': review_id}).fetchall()
+
+    # Group by tenant
+    by_tenant: Dict[int, List] = {}
+    tenant_sf: Dict[int, float] = {}
+    tenant_override: Dict[int, Optional[float]] = {}
+    for r in rows:
+        tid = r[0]
+        by_tenant.setdefault(tid, []).append({
+            'year': r[1], 'amount': r[2],
+            'month_start': r[3], 'month_end': r[4],
+            'months': r[5], 'comment': r[6],
+        })
+        tenant_sf[tid] = r[7] or 0
+        tenant_override[tid] = r[8]
+
+    result = {}
+    for tid, entries in by_tenant.items():
+        # entries are sorted by year DESC
+        history = sorted(entries, key=lambda e: e['year'])
+
+        override = tenant_override.get(tid)
+        if override is not None and override > 0:
+            ttm = override
+        else:
+            # Find the most recent entry
+            latest = entries[0]  # already sorted DESC
+            if latest['months'] >= 12:
+                ttm = latest['amount']
+            elif latest['months'] > 0 and len(entries) > 1:
+                # Partial current year — impute from prior year
+                prior = entries[1]
+                if prior['months'] >= 12 and prior['amount'] > 0:
+                    # prior_annual / 12 * remaining_months + current_partial
+                    remaining = 12 - latest['months']
+                    ttm = (prior['amount'] / 12 * remaining) + latest['amount']
+                elif prior['months'] > 0 and prior['amount'] > 0:
+                    # Prior year also partial — annualize it then impute
+                    prior_annualized = prior['amount'] / prior['months'] * 12
+                    remaining = 12 - latest['months']
+                    ttm = (prior_annualized / 12 * remaining) + latest['amount']
+                else:
+                    # No usable prior year — annualize current
+                    ttm = latest['amount'] / latest['months'] * 12 if latest['months'] > 0 else 0
+            elif latest['months'] > 0:
+                # Only one entry — annualize it
+                ttm = latest['amount'] / latest['months'] * 12
+            else:
+                ttm = 0
+
+        sf = tenant_sf.get(tid, 0)
+        result[tid] = {
+            'ttm_sales': round(ttm, 2),
+            'sales_per_sf': round(ttm / sf, 2) if sf > 0 else 0,
+            'has_override': override is not None and override > 0,
+            'history': [{
+                'year': e['year'],
+                'amount': e['amount'],
+                'months': e['months'],
+                'comment': e['comment'],
+            } for e in history],
+        }
+
+    return result
+
+
+def update_tenant_sales_override(
+    engine,
+    review_id: int,
+    tenant_id: int,
+    annual_sales: Optional[float],
+) -> None:
+    """Set or clear the annual sales override for a tenant."""
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        # Verify tenant belongs to this review
+        t = conn.execute(text("""
+            SELECT id FROM lease_tenants
+            WHERE id = :tid AND review_id = :rid
+        """), {'tid': tenant_id, 'rid': review_id}).fetchone()
+        if not t:
+            raise ValueError(f"Tenant {tenant_id} not found in review {review_id}")
+
+        conn.execute(text("""
+            UPDATE lease_tenants
+            SET annual_sales_override = :val, updated_at = CURRENT_TIMESTAMP
+            WHERE id = :tid
+        """), {'val': annual_sales, 'tid': tenant_id})
+
+
+def get_tenant_sales(engine, review_id: int) -> Dict[str, Any]:
+    """Get all sales data for a review including TTM computation.
+
+    Returns {tenants: {tid: {ttm_sales, sales_per_sf, history}}, has_sales: bool}.
+    """
+    ttm = compute_tenant_ttm_sales(engine, review_id)
+    return {
+        'tenants': {str(k): v for k, v in ttm.items()},
+        'has_sales': len(ttm) > 0,
+    }

@@ -62,6 +62,14 @@ const mergingRentRoll = ref(false)
 const uploadMessage = ref('')
 const mergeReport = ref<any>(null)
 
+// Sales import
+const uploadingSales = ref(false)
+const salesUploadMessage = ref('')
+const salesData = ref<Record<string, any>>({})
+const hasSales = ref(false)
+const editingSalesTenantId = ref<number | null>(null)
+const editingSalesValue = ref('')
+
 // Document upload
 const uploadingDocs = ref(false)
 const docUploadReport = ref<any>(null)
@@ -139,6 +147,15 @@ async function loadReview(id: number) {
       cotenancy.value = null
       scenarios.value = []
       validation.value = []
+    }
+
+    // Load sales data
+    if (tenants.value.length) {
+      try {
+        const salesRes = await api.get(`/api/lease-review/reviews/${id}/sales`)
+        salesData.value = salesRes.data.tenants || {}
+        hasSales.value = salesRes.data.has_sales || false
+      } catch { salesData.value = {}; hasSales.value = false }
     }
   } catch (e: any) {
     console.error('Load error', e)
@@ -304,6 +321,91 @@ async function onRentRollMerge(event: Event) {
     mergingRentRoll.value = false
     input.value = ''
   }
+}
+
+// Sales import
+async function onSalesUpload(event: Event) {
+  const input = event.target as HTMLInputElement
+  if (!input.files?.length || !selectedReviewId.value) return
+
+  const file = input.files[0]
+  const formData = new FormData()
+  formData.append('file', file)
+
+  uploadingSales.value = true
+  salesUploadMessage.value = 'Extracting sales data with AI...'
+  try {
+    const res = await api.post(
+      `/api/lease-review/reviews/${selectedReviewId.value}/upload-sales`,
+      formData,
+      { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 120000 }
+    )
+    const ext = res.data.extraction
+    salesUploadMessage.value = `Imported: ${ext.matched} tenants matched, ${ext.unmatched} unmatched of ${ext.total}`
+    salesData.value = res.data.sales?.tenants || {}
+    hasSales.value = res.data.sales?.has_sales || false
+  } catch (e: any) {
+    console.error('Sales upload error', e)
+    salesUploadMessage.value = ''
+    alert(e.response?.data?.error || 'Failed to import sales data')
+  } finally {
+    uploadingSales.value = false
+    input.value = ''
+  }
+}
+
+function getTenantSales(tenantId: number) {
+  return salesData.value[String(tenantId)] || null
+}
+
+function tenantTTMSales(t: any): number | null {
+  const sd = getTenantSales(t.id)
+  if (sd) return sd.ttm_sales || null
+  return null
+}
+
+function tenantSalesPerSF(t: any): number | null {
+  const sd = getTenantSales(t.id)
+  if (sd && sd.sales_per_sf) return sd.sales_per_sf
+  return null
+}
+
+function tenantOccCost(t: any): string {
+  const rentPSF = t.annual_rent_per_sf || t.rent_per_sf || 0
+  const recPSF = t.annual_recoveries_per_sf || 0
+  const salesPSF = tenantSalesPerSF(t)
+  if (!salesPSF || salesPSF <= 0) return '\u2014'
+  const cost = (rentPSF + recPSF) / salesPSF
+  return (cost * 100).toFixed(1) + '%'
+}
+
+function startEditSales(tenantId: number) {
+  editingSalesTenantId.value = tenantId
+  const sd = getTenantSales(tenantId)
+  editingSalesValue.value = sd?.ttm_sales ? String(Math.round(sd.ttm_sales)) : ''
+}
+
+async function saveSalesEdit(tenantId: number) {
+  if (!selectedReviewId.value) return
+  const val = editingSalesValue.value.replace(/[,$]/g, '').trim()
+  const numVal = val ? parseFloat(val) : null
+
+  try {
+    const res = await api.put(
+      `/api/lease-review/reviews/${selectedReviewId.value}/tenants/${tenantId}/sales`,
+      { annual_sales: numVal }
+    )
+    salesData.value = res.data.sales?.tenants || salesData.value
+    hasSales.value = Object.keys(salesData.value).length > 0
+  } catch (e: any) {
+    alert(e.response?.data?.error || 'Failed to save')
+  } finally {
+    editingSalesTenantId.value = null
+  }
+}
+
+function cancelSalesEdit() {
+  editingSalesTenantId.value = null
 }
 
 // Document upload — batched to avoid OOM on large folders
@@ -717,6 +819,14 @@ function statusClass(s: string): string {
           </label>
         </div>
 
+        <div style="margin-top: 0.75rem">
+          <label class="btn-secondary btn-upload-label" style="background: #e8f0fe; color: #1a73e8; border-color: #1a73e8">
+            {{ uploadingSales ? 'Extracting...' : 'Import Tenant Sales (AI)' }}
+            <input type="file" accept=".pdf" @change="onSalesUpload" :disabled="uploadingSales || !tenants.length" hidden />
+          </label>
+          <span v-if="salesUploadMessage" class="upload-msg" style="margin-left: 0.75rem">{{ salesUploadMessage }}</span>
+        </div>
+
         <div v-if="uploadMessage" class="upload-msg">{{ uploadMessage }}</div>
 
         <!-- Merge report -->
@@ -770,9 +880,20 @@ function statusClass(s: string): string {
                   <td class="r">{{ fmtPerSF(t.annual_rent_per_sf || t.rent_per_sf) }}</td>
                   <td class="r">{{ fmtPerSF(t.annual_recoveries_per_sf) }}</td>
                   <td class="r">{{ fmtPerSF(t.annual_misc_per_sf) }}</td>
-                  <td class="r">&mdash;</td>
-                  <td class="r">&mdash;</td>
-                  <td class="r">&mdash;</td>
+                  <td class="r editable-cell" @dblclick="startEditSales(t.id)">
+                    <template v-if="editingSalesTenantId === t.id">
+                      <input type="text" class="inline-edit" v-model="editingSalesValue"
+                        @keyup.enter="saveSalesEdit(t.id)" @keyup.escape="cancelSalesEdit()"
+                        @blur="saveSalesEdit(t.id)" ref="salesEditInput" />
+                    </template>
+                    <template v-else>
+                      <span :class="{'override-val': getTenantSales(t.id)?.has_override}">
+                        {{ tenantTTMSales(t) != null ? fmtCurrency(tenantTTMSales(t)) : '\u2014' }}
+                      </span>
+                    </template>
+                  </td>
+                  <td class="r">{{ tenantSalesPerSF(t) != null ? fmtPerSF(tenantSalesPerSF(t)) : '\u2014' }}</td>
+                  <td class="r">{{ tenantOccCost(t) }}</td>
                   <td><span class="badge badge-pending">{{ t.rent_roll_source || 'original' }}</span></td>
                 </tr>
               </tbody>
@@ -1286,6 +1407,13 @@ function statusClass(s: string): string {
 .c { text-align: center; }
 .wrap { max-width: 220px; white-space: normal; word-break: break-word; }
 .tenant-name { font-weight: 500; }
+.editable-cell { cursor: pointer; }
+.editable-cell:hover { background: #e8f0fe; }
+.inline-edit {
+  width: 90px; padding: 2px 4px; font-size: 0.82rem;
+  text-align: right; border: 1px solid #1a73e8; border-radius: 3px;
+}
+.override-val { color: #1a73e8; font-weight: 500; }
 .notes { font-size: 0.78rem; color: #666; max-width: 250px; white-space: normal; }
 
 .row-material { background: #fafafa; }
