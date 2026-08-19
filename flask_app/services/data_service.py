@@ -275,6 +275,9 @@ def _normalize_isbs(df: pd.DataFrame) -> pd.DataFrame:
     if 'vAccount' in df.columns:
         df['vAccount'] = df['vAccount'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
     if 'mAmount' in df.columns:
+        # Strip commas and dollar signs before converting (CSV supplements may
+        # have formatted numbers like "-824,880.00" or "$1,234.56")
+        df['mAmount'] = df['mAmount'].astype(str).str.replace(',', '', regex=False).str.replace('$', '', regex=False)
         df['mAmount'] = pd.to_numeric(df['mAmount'], errors='coerce').fillna(0)
     if 'dtEntry' in df.columns:
         df['dtEntry_parsed'] = pd.to_datetime(
@@ -296,20 +299,31 @@ def _append_isbs_supplements(assembled: pd.DataFrame, config: dict) -> pd.DataFr
     Each supplement table contains admin-uploaded records that persist across
     MRI refreshes.  Missing tables or empty tables are silently skipped.
     """
+    # Canonical column names that _normalize_isbs and consumers expect
+    _CANONICAL = {'vcode', 'dtEntry', 'vSource', 'vAccount', 'mAmount', 'vInput', 'statement_id'}
+
     for table_name, default_vsource in _ISBS_SUPPLEMENTS.items():
         try:
             supp = get_adapter(table_name).load(config)
             if supp is None or supp.empty:
                 continue
             supp = supp.copy()
-            col_map = {c: c.lower() for c in supp.columns if c.lower() == 'vcode' and c != 'vcode'}
+            # Map any case variation of known columns to canonical names
+            # e.g. VCode→vcode, DtEntry→dtEntry, MAmount→mAmount
+            col_map = {}
+            lower_to_canonical = {c.lower(): c for c in _CANONICAL}
+            for c in supp.columns:
+                canonical = lower_to_canonical.get(c.lower())
+                if canonical and c != canonical:
+                    col_map[c] = canonical
             if col_map:
                 supp = supp.rename(columns=col_map)
+                logger.info(f"ISBS supplement {table_name}: renamed columns {col_map}")
             if 'vSource' not in supp.columns:
                 supp['vSource'] = default_vsource
             supp['_is_supplement'] = True
             assembled = pd.concat([assembled, supp], ignore_index=True)
-            logger.info(f"ISBS appended {len(supp):,} rows from {table_name}")
+            logger.info(f"ISBS appended {len(supp):,} rows from {table_name} (cols: {list(supp.columns)})")
         except Exception:
             pass  # table doesn't exist yet — not an error
     return assembled

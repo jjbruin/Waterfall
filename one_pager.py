@@ -1168,7 +1168,6 @@ def get_property_performance(
         remainder_start = pd.Timestamp(quarter_end)
         dec31 = pd.Timestamp(f"{year}-12-31")
         rem_rev, rem_exp, rem_noi, rem_ds = calc_amounts(budget_data, sum_range=(remainder_start, dec31))
-
         perf['revenue']['actual_ye'] = ytd_rev + rem_rev
         perf['expenses']['actual_ye'] = ytd_exp + rem_exp
         perf['noi']['actual_ye'] = ytd_noi + rem_noi
