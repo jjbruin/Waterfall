@@ -509,6 +509,7 @@ def get_tracking_data(quarter_filter: str | None = None,
             d."Investment_Name" as deal_name,
             COALESCE(d."Sale_Status", '') as sale_status,
             COALESCE(d."Sale_Date", '') as sale_date,
+            COALESCE(d."Lifecycle", '') as lifecycle,
             COALESCE(rs.quarter, :default_quarter) as quarter,
             COALESCE(rs.status, 'draft') as status,
             COALESCE(rs.current_step, 0) as current_step,
@@ -583,7 +584,9 @@ def get_tracking_data(quarter_filter: str | None = None,
     results = []
     for r in rows:
         row_dict = dict(r)
-        if row_dict.get("sale_status", "").upper() == "SOLD":
+        is_sold = (row_dict.get("sale_status", "").upper() == "SOLD" or
+                   row_dict.get("lifecycle", "").strip().upper() == "SOLD")
+        if is_sold:
             sale_dt = pd.to_datetime(row_dict.get("sale_date", ""), errors="coerce")
             if pd.isna(sale_dt) or sale_dt.year < current_year:
                 continue

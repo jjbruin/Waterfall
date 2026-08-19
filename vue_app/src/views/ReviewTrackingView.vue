@@ -194,7 +194,7 @@ function filterByStatus(status: string) {
             class="clickable-row"
             @click="navigateToOnePager(item)"
           >
-            <td class="deal-name">{{ item.deal_name || item.vcode }}{{ item.sale_status?.toUpperCase() === 'SOLD' ? ' (Sold)' : '' }}</td>
+            <td class="deal-name">{{ item.deal_name || item.vcode }}{{ (item.sale_status?.toUpperCase() === 'SOLD' || item.lifecycle?.trim().toUpperCase() === 'SOLD') ? ' (Sold)' : '' }}</td>
             <td>{{ item.quarter || '—' }}</td>
             <td>
               <span class="status-badge" :class="statusClass(item.status)">

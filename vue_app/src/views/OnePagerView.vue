@@ -76,7 +76,9 @@ const filteredDeals = computed(() => {
   const quarterStart = new Date(qYear, qStartMonth, 1)
 
   return data.deals.filter((d: any) => {
-    if (d.Sale_Status?.toUpperCase() !== 'SOLD') return true
+    const isSold = d.Sale_Status?.toUpperCase() === 'SOLD' ||
+                   d.Lifecycle?.trim().toUpperCase() === 'SOLD'
+    if (!isSold) return true
     if (!d.Sale_Date) return false
     // Parse sale date — handle both ISO and US formats
     const sd = new Date(d.Sale_Date)
@@ -625,7 +627,7 @@ function printOnePager() {
           <select :value="deals.currentVcode" @change="onDealSelect">
             <option value="">-- Choose a deal --</option>
             <option v-for="d in filteredDeals" :key="d.vcode" :value="d.vcode">
-              {{ d.Investment_Name || d.vcode }}{{ d.Sale_Status?.toUpperCase() === 'SOLD' ? ' (Sold)' : '' }}
+              {{ d.Investment_Name || d.vcode }}{{ (d.Sale_Status?.toUpperCase() === 'SOLD' || d.Lifecycle?.trim().toUpperCase() === 'SOLD') ? ' (Sold)' : '' }}
             </option>
           </select>
         </div>
