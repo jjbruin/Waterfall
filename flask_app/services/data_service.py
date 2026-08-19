@@ -593,12 +593,30 @@ def exclude_sold(inv: pd.DataFrame) -> pd.DataFrame:
 
 
 def get_inv_display(inv: pd.DataFrame) -> pd.DataFrame:
-    """Filter out child properties, sorted alphabetically.  Sold deals are
-    kept so they remain reportable for quarters when ownership existed."""
+    """Filter out child properties and deals sold before the current year.
+
+    Sold deals are kept when they were owned during any part of the current
+    calendar year (Sale_Date in current year), so they remain reportable.
+    Deals sold in prior years are excluded — those belong in Sold Portfolio.
+    """
     if inv is None or inv.empty:
         return pd.DataFrame()
 
     result = inv.copy()
+
+    # Exclude deals sold before the current year
+    if "Sale_Status" in result.columns and "Sale_Date" in result.columns:
+        import datetime as _dt
+        current_year = _dt.date.today().year
+        is_sold = result["Sale_Status"].fillna("").str.upper() == "SOLD"
+        if "Lifecycle" in result.columns:
+            is_sold = is_sold | (result["Lifecycle"].fillna("").str.strip().str.upper() == "SOLD")
+        sale_dt = pd.to_datetime(result["Sale_Date"], errors="coerce")
+        sold_before_current_year = is_sold & (sale_dt.dt.year < current_year)
+        # Also exclude sold deals with no Sale_Date — no way to confirm they
+        # were active this year
+        sold_no_date = is_sold & sale_dt.isna()
+        result = result[~(sold_before_current_year | sold_no_date)].copy()
 
     # Exclude child properties (same logic as reports_service / review_service)
     if "Portfolio_Name" in result.columns and "Investment_Name" in result.columns:

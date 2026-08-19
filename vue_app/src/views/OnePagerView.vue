@@ -61,6 +61,30 @@ const opData = ref<Record<string, any> | null>(null)
 const chartResult = ref<Record<string, any> | null>(null)
 const selectedQuarter = ref('')
 const loading = ref(false)
+
+// Filter deals for the One Pager dropdown: when a quarter is selected,
+// only show deals that were owned during that quarter (sale date >= quarter start).
+const filteredDeals = computed(() => {
+  if (!selectedQuarter.value) return data.deals
+  // Parse quarter start from "YYYY-QN" format
+  const parts = selectedQuarter.value.split('-Q')
+  if (parts.length !== 2) return data.deals
+  const qYear = parseInt(parts[0])
+  const qNum = parseInt(parts[1])
+  if (isNaN(qYear) || isNaN(qNum)) return data.deals
+  const qStartMonth = (qNum - 1) * 3  // 0-based: Q1=0, Q2=3, Q3=6, Q4=9
+  const quarterStart = new Date(qYear, qStartMonth, 1)
+
+  return data.deals.filter((d: any) => {
+    if (d.Sale_Status?.toUpperCase() !== 'SOLD') return true
+    if (!d.Sale_Date) return false
+    // Parse sale date — handle both ISO and US formats
+    const sd = new Date(d.Sale_Date)
+    if (isNaN(sd.getTime())) return false
+    // Keep if sale date >= quarter start (owned during some part of quarter)
+    return sd >= quarterStart
+  })
+})
 const saving = ref(false)
 
 // Editable comments
@@ -600,7 +624,7 @@ function printOnePager() {
           <label>Deal:</label>
           <select :value="deals.currentVcode" @change="onDealSelect">
             <option value="">-- Choose a deal --</option>
-            <option v-for="d in data.deals" :key="d.vcode" :value="d.vcode">
+            <option v-for="d in filteredDeals" :key="d.vcode" :value="d.vcode">
               {{ d.Investment_Name || d.vcode }}{{ d.Sale_Status?.toUpperCase() === 'SOLD' ? ' (Sold)' : '' }}
             </option>
           </select>

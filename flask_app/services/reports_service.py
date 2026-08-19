@@ -61,7 +61,8 @@ def build_deal_lookup(inv: pd.DataFrame, wf: pd.DataFrame) -> dict:
       - eligible: list of {vcode, name, label} for deals with waterfall definitions
       - vcode_to_label: dict mapping vcode -> display label
     """
-    inv_disp = inv.copy()
+    from flask_app.services.data_service import get_inv_display
+    inv_disp = get_inv_display(inv)
 
     inv_disp["Investment_Name"] = inv_disp["Investment_Name"].fillna("").astype(str)
     inv_disp["vcode"] = inv_disp["vcode"].astype(str)

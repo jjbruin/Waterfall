@@ -508,6 +508,7 @@ def get_tracking_data(quarter_filter: str | None = None,
             d.vcode,
             d."Investment_Name" as deal_name,
             COALESCE(d."Sale_Status", '') as sale_status,
+            COALESCE(d."Sale_Date", '') as sale_date,
             COALESCE(rs.quarter, :default_quarter) as quarter,
             COALESCE(rs.status, 'draft') as status,
             COALESCE(rs.current_step, 0) as current_step,
@@ -576,9 +577,16 @@ def get_tracking_data(quarter_filter: str | None = None,
     with engine.connect() as conn:
         rows = conn.execute(text(sql), params).mappings().fetchall()
 
+    # Exclude deals sold before the current year (keep current-year sales)
+    import datetime as _dt
+    current_year = _dt.date.today().year
     results = []
     for r in rows:
         row_dict = dict(r)
+        if row_dict.get("sale_status", "").upper() == "SOLD":
+            sale_dt = pd.to_datetime(row_dict.get("sale_date", ""), errors="coerce")
+            if pd.isna(sale_dt) or sale_dt.year < current_year:
+                continue
         step_info = _step_for(row_dict["current_step"])
         row_dict["step_label"] = step_info["label"]
         results.append(row_dict)
