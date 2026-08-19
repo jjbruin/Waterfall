@@ -236,6 +236,18 @@ function fmt$(v: any) {
   if (v == null || isNaN(v)) return '-'
   return '$' + Number(v).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })
 }
+function fmt$c(v: any) {
+  if (v == null || isNaN(v)) return '-'
+  return '$' + Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+const DOLLAR_FIELDS = new Set(['annual_rent', 'monthly_rent', 'security_deposit'])
+const DOLLAR_CENTS_FIELDS = new Set(['rent_per_sf'])
+function fmtValidationVal(field: string, v: any) {
+  if (v == null) return '-'
+  if (DOLLAR_FIELDS.has(field)) return fmt$(v)
+  if (DOLLAR_CENTS_FIELDS.has(field)) return fmt$c(v)
+  return v
+}
 function fmtSf(v: any) {
   if (v == null || isNaN(v)) return '-'
   return Number(v).toLocaleString('en-US') + ' SF'
@@ -490,8 +502,8 @@ onMounted(() => {
                       :class="{ 'row-mismatch': v.status === 'mismatch', 'row-match': v.status === 'match' }">
                     <td>{{ v.field }}</td>
                     <td>{{ v.source_type }}</td>
-                    <td>{{ v.seller_value ?? '-' }}</td>
-                    <td>{{ v.lease_value ?? '-' }}</td>
+                    <td>{{ fmtValidationVal(v.field, v.seller_value) }}</td>
+                    <td>{{ fmtValidationVal(v.field, v.lease_value) }}</td>
                     <td><span class="status-badge" :class="v.status">{{ v.status }}</span></td>
                     <td>
                       <template v-if="v.status === 'mismatch' && RESOLVABLE_FIELDS.includes(v.field)">
