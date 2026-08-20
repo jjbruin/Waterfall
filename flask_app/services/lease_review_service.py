@@ -255,6 +255,63 @@ LEASE_DDL_PG = [
         UNIQUE(tenant_id, year)
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS lease_space_events (
+        id              SERIAL PRIMARY KEY,
+        review_id       INTEGER NOT NULL REFERENCES lease_reviews(id),
+        event_type      TEXT NOT NULL,
+        effective_date  TEXT NOT NULL,
+        source_tenant_ids TEXT NOT NULL,
+        description     TEXT,
+        status          TEXT DEFAULT 'planned',
+        created_by      TEXT,
+        created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS lease_space_event_results (
+        id              SERIAL PRIMARY KEY,
+        event_id        INTEGER NOT NULL REFERENCES lease_space_events(id),
+        result_tenant_id INTEGER,
+        tenant_name     TEXT,
+        suite           TEXT,
+        square_feet     DOUBLE PRECISION,
+        monthly_rent    DOUBLE PRECISION,
+        annual_rent     DOUBLE PRECISION,
+        rent_per_sf     DOUBLE PRECISION,
+        lease_start     TEXT,
+        lease_end       TEXT,
+        is_vacant       BOOLEAN DEFAULT FALSE,
+        notes           TEXT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS lease_market_assumptions (
+        id                    SERIAL PRIMARY KEY,
+        review_id             INTEGER NOT NULL REFERENCES lease_reviews(id),
+        lease_type            TEXT NOT NULL,
+        market_rent_psf       DOUBLE PRECISION,
+        annual_rent_growth    DOUBLE PRECISION,
+        renewal_probability   DOUBLE PRECISION,
+        renewal_downtime_months INTEGER DEFAULT 0,
+        renewal_ti_psf        DOUBLE PRECISION,
+        renewal_lc_pct        DOUBLE PRECISION,
+        renewal_rent_spread   DOUBLE PRECISION,
+        renewal_term_years    INTEGER DEFAULT 5,
+        new_downtime_months   INTEGER DEFAULT 6,
+        new_ti_psf            DOUBLE PRECISION,
+        new_lc_pct            DOUBLE PRECISION,
+        new_rent_spread       DOUBLE PRECISION,
+        new_term_years        INTEGER DEFAULT 10,
+        free_rent_months      INTEGER DEFAULT 0,
+        annual_expense_growth DOUBLE PRECISION,
+        created_by            TEXT,
+        created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(review_id, lease_type)
+    )
+    """,
 ]
 
 # SQLite variants (no SERIAL, use INTEGER PRIMARY KEY AUTOINCREMENT)
@@ -373,6 +430,11 @@ def ensure_lease_tables(engine):
 
     # Per-document extraction JSON for consolidation
     _migrate_add_column(engine, 'lease_documents', 'extraction_json', 'TEXT')
+
+    # Phase: Space planning — new columns on lease_tenants
+    _migrate_add_column(engine, 'lease_tenants', 'tenant_status', "TEXT DEFAULT 'active'")
+    _migrate_add_column(engine, 'lease_tenants', 'replaced_by_event_id', 'INTEGER')
+    _migrate_add_column(engine, 'lease_tenants', 'successor_tenant_id', 'INTEGER')
 
     logger.info("Lease review tables ensured")
 
@@ -3845,7 +3907,9 @@ def clear_resolution(engine, tenant_id: int, field_name: str) -> None:
         """), {'tid': tenant_id, 'fn': field_name})
 
 
-def get_resolved_tenants(engine, review_id: int) -> List[Dict[str, Any]]:
+def get_resolved_tenants(
+    engine, review_id: int, include_replaced: bool = False,
+) -> List[Dict[str, Any]]:
     """Get all tenants for a review with analyst resolutions applied.
 
     For each field, returns:
@@ -3854,19 +3918,27 @@ def get_resolved_tenants(engine, review_id: int) -> List[Dict[str, Any]]:
 
     Each tenant dict includes a 'resolutions' sub-dict showing
     which fields have analyst overrides.
+
+    By default filters to active tenants only. Set include_replaced=True
+    to include replaced/deleted tenants.
     """
     from sqlalchemy import text
     ensure_resolution_table(engine)
 
+    status_filter = ""
+    if not include_replaced:
+        status_filter = "AND (tenant_status IS NULL OR tenant_status = 'active')"
+
     with engine.connect() as conn:
-        tenants = conn.execute(text("""
+        tenants = conn.execute(text(f"""
             SELECT id, tenant_name, suite, square_feet, lease_type,
                    lease_start, lease_end, term_months, monthly_rent,
                    annual_rent, rent_per_sf, security_deposit,
                    is_vacant, is_material, has_cotenancy, has_exclusive_use,
-                   extraction_status, approval_status
+                   extraction_status, approval_status, tenant_status,
+                   successor_tenant_id, replaced_by_event_id
             FROM lease_tenants
-            WHERE review_id = :rid
+            WHERE review_id = :rid {status_filter}
             ORDER BY suite
         """), {'rid': review_id}).fetchall()
 
@@ -3927,6 +3999,9 @@ def get_resolved_tenants(engine, review_id: int) -> List[Dict[str, Any]]:
             'has_exclusive_use': bool(t[15]),
             'extraction_status': t[16],
             'approval_status': t[17] or 'pending',
+            'tenant_status': t[18] or 'active',
+            'successor_tenant_id': t[19],
+            'replaced_by_event_id': t[20],
             'resolutions': {
                 fn: {'value': info['value'], 'source': info['source']}
                 for fn, info in tenant_res.items()
@@ -5269,4 +5344,1280 @@ def get_tenant_sales(engine, review_id: int) -> Dict[str, Any]:
     return {
         'tenants': {str(k): v for k, v in ttm.items()},
         'has_sales': len(ttm) > 0,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: Tenant CRUD + Editable Rent Roll
+# ---------------------------------------------------------------------------
+
+def _verify_tenant_in_review(conn, review_id: int, tenant_id: int):
+    """Verify tenant belongs to review, raise ValueError if not."""
+    from sqlalchemy import text
+    row = conn.execute(text(
+        "SELECT id FROM lease_tenants WHERE id = :tid AND review_id = :rid"
+    ), {'tid': tenant_id, 'rid': review_id}).fetchone()
+    if not row:
+        raise ValueError(f"Tenant {tenant_id} not found in review {review_id}")
+
+
+def add_tenant(engine, review_id: int, data: Dict[str, Any]) -> Dict[str, Any]:
+    """Add a new tenant to a review."""
+    from sqlalchemy import text
+    with engine.begin() as conn:
+        # Verify review exists
+        r = conn.execute(text(
+            "SELECT id FROM lease_reviews WHERE id = :rid"
+        ), {'rid': review_id}).fetchone()
+        if not r:
+            raise ValueError(f"Review {review_id} not found")
+
+        result = conn.execute(text("""
+            INSERT INTO lease_tenants (
+                review_id, tenant_name, suite, square_feet, lease_type,
+                lease_start, lease_end, monthly_rent, annual_rent, rent_per_sf,
+                security_deposit, is_vacant, tenant_status
+            ) VALUES (
+                :rid, :name, :suite, :sf, :lt,
+                :ls, :le, :mr, :ar, :rpsf,
+                :sd, :vac, 'active'
+            )
+            RETURNING id
+        """) if engine.dialect.name == 'postgresql' else text("""
+            INSERT INTO lease_tenants (
+                review_id, tenant_name, suite, square_feet, lease_type,
+                lease_start, lease_end, monthly_rent, annual_rent, rent_per_sf,
+                security_deposit, is_vacant, tenant_status
+            ) VALUES (
+                :rid, :name, :suite, :sf, :lt,
+                :ls, :le, :mr, :ar, :rpsf,
+                :sd, :vac, 'active'
+            )
+        """), {
+            'rid': review_id,
+            'name': data.get('tenant_name', 'New Tenant'),
+            'suite': data.get('suite', ''),
+            'sf': data.get('square_feet'),
+            'lt': data.get('lease_type', ''),
+            'ls': data.get('lease_start'),
+            'le': data.get('lease_end'),
+            'mr': data.get('monthly_rent'),
+            'ar': data.get('annual_rent'),
+            'rpsf': data.get('rent_per_sf'),
+            'sd': data.get('security_deposit'),
+            'vac': data.get('is_vacant', False),
+        })
+
+        if engine.dialect.name == 'postgresql':
+            new_id = result.fetchone()[0]
+        else:
+            new_id = result.lastrowid
+
+    return {'id': new_id, 'status': 'created'}
+
+
+def update_tenant_fields(
+    engine, review_id: int, tenant_id: int, fields: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Update tenant fields directly (lighter than field resolution)."""
+    from sqlalchemy import text
+    ALLOWED_FIELDS = {
+        'tenant_name', 'suite', 'square_feet', 'lease_type',
+        'lease_start', 'lease_end', 'monthly_rent', 'annual_rent',
+        'rent_per_sf', 'security_deposit', 'is_vacant', 'is_material',
+        'has_cotenancy', 'has_exclusive_use', 'term_months',
+    }
+    update_fields = {k: v for k, v in fields.items() if k in ALLOWED_FIELDS}
+    if not update_fields:
+        return {'status': 'no_changes'}
+
+    with engine.begin() as conn:
+        _verify_tenant_in_review(conn, review_id, tenant_id)
+        set_clause = ', '.join(f"{k} = :{k}" for k in update_fields)
+        update_fields['tid'] = tenant_id
+        conn.execute(text(
+            f"UPDATE lease_tenants SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE id = :tid"
+        ), update_fields)
+
+    return {'status': 'updated', 'fields': list(update_fields.keys())}
+
+
+def delete_tenant(engine, review_id: int, tenant_id: int) -> Dict[str, Any]:
+    """Soft-delete a tenant (set tenant_status='deleted')."""
+    from sqlalchemy import text
+    with engine.begin() as conn:
+        _verify_tenant_in_review(conn, review_id, tenant_id)
+        conn.execute(text("""
+            UPDATE lease_tenants
+            SET tenant_status = 'deleted', updated_at = CURRENT_TIMESTAMP
+            WHERE id = :tid
+        """), {'tid': tenant_id})
+    return {'status': 'deleted', 'tenant_id': tenant_id}
+
+
+def mark_tenant_vacant(
+    engine, review_id: int, tenant_id: int, vacant: bool = True,
+) -> Dict[str, Any]:
+    """Mark a tenant as vacant/occupied, optionally zeroing rent."""
+    from sqlalchemy import text
+    with engine.begin() as conn:
+        _verify_tenant_in_review(conn, review_id, tenant_id)
+        if vacant:
+            conn.execute(text("""
+                UPDATE lease_tenants
+                SET is_vacant = :vac, monthly_rent = 0, annual_rent = 0,
+                    rent_per_sf = 0, updated_at = CURRENT_TIMESTAMP
+                WHERE id = :tid
+            """), {'vac': True, 'tid': tenant_id})
+        else:
+            conn.execute(text("""
+                UPDATE lease_tenants
+                SET is_vacant = :vac, updated_at = CURRENT_TIMESTAMP
+                WHERE id = :tid
+            """), {'vac': False, 'tid': tenant_id})
+    return {'status': 'updated', 'is_vacant': vacant}
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Space Mutations (merge, split, resize)
+# ---------------------------------------------------------------------------
+
+def _create_space_event(
+    conn, engine, review_id: int, event_type: str, effective_date: str,
+    source_tenant_ids: List[int], description: str = '',
+    status: str = 'applied', created_by: str = '',
+) -> int:
+    """Insert a lease_space_events row, return new id."""
+    from sqlalchemy import text
+    ids_str = ','.join(str(i) for i in source_tenant_ids)
+    if engine.dialect.name == 'postgresql':
+        row = conn.execute(text("""
+            INSERT INTO lease_space_events
+                (review_id, event_type, effective_date, source_tenant_ids,
+                 description, status, created_by)
+            VALUES (:rid, :et, :ed, :sti, :desc, :st, :cb)
+            RETURNING id
+        """), {
+            'rid': review_id, 'et': event_type, 'ed': effective_date,
+            'sti': ids_str, 'desc': description, 'st': status, 'cb': created_by,
+        }).fetchone()
+        return row[0]
+    else:
+        result = conn.execute(text("""
+            INSERT INTO lease_space_events
+                (review_id, event_type, effective_date, source_tenant_ids,
+                 description, status, created_by)
+            VALUES (:rid, :et, :ed, :sti, :desc, :st, :cb)
+        """), {
+            'rid': review_id, 'et': event_type, 'ed': effective_date,
+            'sti': ids_str, 'desc': description, 'st': status, 'cb': created_by,
+        })
+        return result.lastrowid
+
+
+def _insert_event_result(conn, engine, event_id: int, data: Dict) -> int:
+    """Insert a lease_space_event_results row, return new id."""
+    from sqlalchemy import text
+    if engine.dialect.name == 'postgresql':
+        row = conn.execute(text("""
+            INSERT INTO lease_space_event_results
+                (event_id, result_tenant_id, tenant_name, suite, square_feet,
+                 monthly_rent, annual_rent, rent_per_sf, lease_start, lease_end,
+                 is_vacant, notes)
+            VALUES (:eid, :rtid, :tn, :s, :sf, :mr, :ar, :rpsf, :ls, :le, :iv, :n)
+            RETURNING id
+        """), {
+            'eid': event_id, 'rtid': data.get('result_tenant_id'),
+            'tn': data.get('tenant_name', ''), 's': data.get('suite', ''),
+            'sf': data.get('square_feet'), 'mr': data.get('monthly_rent'),
+            'ar': data.get('annual_rent'), 'rpsf': data.get('rent_per_sf'),
+            'ls': data.get('lease_start'), 'le': data.get('lease_end'),
+            'iv': data.get('is_vacant', False), 'n': data.get('notes'),
+        }).fetchone()
+        return row[0]
+    else:
+        result = conn.execute(text("""
+            INSERT INTO lease_space_event_results
+                (event_id, result_tenant_id, tenant_name, suite, square_feet,
+                 monthly_rent, annual_rent, rent_per_sf, lease_start, lease_end,
+                 is_vacant, notes)
+            VALUES (:eid, :rtid, :tn, :s, :sf, :mr, :ar, :rpsf, :ls, :le, :iv, :n)
+        """), {
+            'eid': event_id, 'rtid': data.get('result_tenant_id'),
+            'tn': data.get('tenant_name', ''), 's': data.get('suite', ''),
+            'sf': data.get('square_feet'), 'mr': data.get('monthly_rent'),
+            'ar': data.get('annual_rent'), 'rpsf': data.get('rent_per_sf'),
+            'ls': data.get('lease_start'), 'le': data.get('lease_end'),
+            'iv': data.get('is_vacant', False), 'n': data.get('notes'),
+        })
+        return result.lastrowid
+
+
+def merge_suites(
+    engine, review_id: int, source_ids: List[int],
+    merged_suite: str, merged_name: str,
+    effective_date: str = '', created_by: str = '',
+) -> Dict[str, Any]:
+    """Merge 2+ tenants into one. Sources marked replaced, new tenant created."""
+    from sqlalchemy import text
+    if len(source_ids) < 2:
+        raise ValueError("Merge requires at least 2 source tenants")
+
+    with engine.begin() as conn:
+        # Load source tenants
+        placeholders = ', '.join(f':t{i}' for i in range(len(source_ids)))
+        params = {f't{i}': tid for i, tid in enumerate(source_ids)}
+        params['rid'] = review_id
+        sources = conn.execute(text(f"""
+            SELECT id, tenant_name, suite, square_feet, monthly_rent,
+                   annual_rent, lease_start, lease_end
+            FROM lease_tenants
+            WHERE id IN ({placeholders}) AND review_id = :rid
+        """), params).fetchall()
+        if len(sources) != len(source_ids):
+            raise ValueError("Some source tenants not found in this review")
+
+        # Aggregate
+        total_sf = sum(s[3] or 0 for s in sources)
+        total_monthly = sum(s[4] or 0 for s in sources)
+        total_annual = sum(s[5] or 0 for s in sources)
+        rpsf = total_annual / total_sf if total_sf > 0 else 0
+        # Use latest lease_end, earliest lease_start
+        starts = [s[6] for s in sources if s[6]]
+        ends = [s[7] for s in sources if s[7]]
+        ls = min(starts) if starts else None
+        le = max(ends) if ends else None
+
+        if not effective_date:
+            effective_date = datetime.now().strftime('%Y-%m-%d')
+
+        # Create the event
+        event_id = _create_space_event(
+            conn, engine, review_id, 'merge', effective_date,
+            source_ids, f"Merged {len(source_ids)} tenants into {merged_name}",
+            'applied', created_by,
+        )
+
+        # Create merged tenant
+        merged_data = {
+            'rid': review_id, 'name': merged_name, 'suite': merged_suite,
+            'sf': total_sf, 'mr': total_monthly, 'ar': total_annual,
+            'rpsf': rpsf, 'ls': ls, 'le': le,
+        }
+        if engine.dialect.name == 'postgresql':
+            new_row = conn.execute(text("""
+                INSERT INTO lease_tenants
+                    (review_id, tenant_name, suite, square_feet, monthly_rent,
+                     annual_rent, rent_per_sf, lease_start, lease_end, tenant_status)
+                VALUES (:rid, :name, :suite, :sf, :mr, :ar, :rpsf, :ls, :le, 'active')
+                RETURNING id
+            """), merged_data).fetchone()
+            new_id = new_row[0]
+        else:
+            result = conn.execute(text("""
+                INSERT INTO lease_tenants
+                    (review_id, tenant_name, suite, square_feet, monthly_rent,
+                     annual_rent, rent_per_sf, lease_start, lease_end, tenant_status)
+                VALUES (:rid, :name, :suite, :sf, :mr, :ar, :rpsf, :ls, :le, 'active')
+            """), merged_data)
+            new_id = result.lastrowid
+
+        # Record event result
+        _insert_event_result(conn, engine, event_id, {
+            'result_tenant_id': new_id, 'tenant_name': merged_name,
+            'suite': merged_suite, 'square_feet': total_sf,
+            'monthly_rent': total_monthly, 'annual_rent': total_annual,
+            'rent_per_sf': rpsf, 'lease_start': ls, 'lease_end': le,
+        })
+
+        # Mark sources as replaced
+        for sid in source_ids:
+            conn.execute(text("""
+                UPDATE lease_tenants
+                SET tenant_status = 'replaced', replaced_by_event_id = :eid,
+                    successor_tenant_id = :nid, updated_at = CURRENT_TIMESTAMP
+                WHERE id = :tid
+            """), {'eid': event_id, 'nid': new_id, 'tid': sid})
+
+    return {'event_id': event_id, 'new_tenant_id': new_id, 'status': 'merged'}
+
+
+def split_suite(
+    engine, review_id: int, source_id: int,
+    splits: List[Dict[str, Any]],
+    effective_date: str = '', created_by: str = '',
+) -> Dict[str, Any]:
+    """Split 1 tenant into N new tenants. Validates SF sum within tolerance."""
+    from sqlalchemy import text
+    if len(splits) < 2:
+        raise ValueError("Split requires at least 2 result tenants")
+
+    with engine.begin() as conn:
+        _verify_tenant_in_review(conn, review_id, source_id)
+        source = conn.execute(text(
+            "SELECT square_feet, tenant_name FROM lease_tenants WHERE id = :tid"
+        ), {'tid': source_id}).fetchone()
+        source_sf = source[0] or 0
+        source_name = source[1]
+
+        # Validate SF sum
+        split_sf = sum(s.get('square_feet', 0) or 0 for s in splits)
+        if source_sf > 0 and abs(split_sf - source_sf) > 1:
+            raise ValueError(
+                f"Split SF total ({split_sf:,.0f}) must match source "
+                f"({source_sf:,.0f}) within 1 SF"
+            )
+
+        if not effective_date:
+            effective_date = datetime.now().strftime('%Y-%m-%d')
+
+        event_id = _create_space_event(
+            conn, engine, review_id, 'split', effective_date,
+            [source_id], f"Split {source_name} into {len(splits)} units",
+            'applied', created_by,
+        )
+
+        new_ids = []
+        for s in splits:
+            data = {
+                'rid': review_id, 'name': s.get('tenant_name', 'TBD'),
+                'suite': s.get('suite', ''), 'sf': s.get('square_feet'),
+                'mr': s.get('monthly_rent'), 'ar': s.get('annual_rent'),
+                'rpsf': s.get('rent_per_sf'),
+                'ls': s.get('lease_start'), 'le': s.get('lease_end'),
+                'vac': s.get('is_vacant', False),
+            }
+            if engine.dialect.name == 'postgresql':
+                row = conn.execute(text("""
+                    INSERT INTO lease_tenants
+                        (review_id, tenant_name, suite, square_feet, monthly_rent,
+                         annual_rent, rent_per_sf, lease_start, lease_end,
+                         is_vacant, tenant_status)
+                    VALUES (:rid, :name, :suite, :sf, :mr, :ar, :rpsf,
+                            :ls, :le, :vac, 'active')
+                    RETURNING id
+                """), data).fetchone()
+                nid = row[0]
+            else:
+                result = conn.execute(text("""
+                    INSERT INTO lease_tenants
+                        (review_id, tenant_name, suite, square_feet, monthly_rent,
+                         annual_rent, rent_per_sf, lease_start, lease_end,
+                         is_vacant, tenant_status)
+                    VALUES (:rid, :name, :suite, :sf, :mr, :ar, :rpsf,
+                            :ls, :le, :vac, 'active')
+                """), data)
+                nid = result.lastrowid
+
+            new_ids.append(nid)
+            _insert_event_result(conn, engine, event_id, {
+                'result_tenant_id': nid, **s,
+            })
+
+        # Mark source as replaced
+        conn.execute(text("""
+            UPDATE lease_tenants
+            SET tenant_status = 'replaced', replaced_by_event_id = :eid,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = :tid
+        """), {'eid': event_id, 'tid': source_id})
+
+    return {'event_id': event_id, 'new_tenant_ids': new_ids, 'status': 'split'}
+
+
+def resize_tenant(
+    engine, review_id: int, tenant_id: int,
+    new_sf: float, new_rent: Optional[float] = None,
+    effective_date: str = '', created_by: str = '',
+) -> Dict[str, Any]:
+    """Resize a tenant in-place with audit trail."""
+    from sqlalchemy import text
+    with engine.begin() as conn:
+        _verify_tenant_in_review(conn, review_id, tenant_id)
+        old = conn.execute(text(
+            "SELECT square_feet, annual_rent, tenant_name FROM lease_tenants WHERE id = :tid"
+        ), {'tid': tenant_id}).fetchone()
+
+        if not effective_date:
+            effective_date = datetime.now().strftime('%Y-%m-%d')
+
+        event_id = _create_space_event(
+            conn, engine, review_id, 'resize', effective_date,
+            [tenant_id],
+            f"Resize {old[2]}: {old[0]:,.0f}→{new_sf:,.0f} SF",
+            'applied', created_by,
+        )
+
+        update_params = {'tid': tenant_id, 'sf': new_sf}
+        set_parts = ['square_feet = :sf']
+        if new_rent is not None:
+            update_params['ar'] = new_rent
+            update_params['rpsf'] = new_rent / new_sf if new_sf > 0 else 0
+            update_params['mr'] = new_rent / 12
+            set_parts.extend([
+                'annual_rent = :ar', 'rent_per_sf = :rpsf', 'monthly_rent = :mr',
+            ])
+        conn.execute(text(
+            f"UPDATE lease_tenants SET {', '.join(set_parts)}, "
+            f"updated_at = CURRENT_TIMESTAMP WHERE id = :tid"
+        ), update_params)
+
+        _insert_event_result(conn, engine, event_id, {
+            'result_tenant_id': tenant_id, 'tenant_name': old[2],
+            'square_feet': new_sf, 'annual_rent': new_rent,
+            'notes': f"Resized from {old[0]:,.0f} SF",
+        })
+
+    return {'event_id': event_id, 'status': 'resized'}
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Future Space Plans (events system)
+# ---------------------------------------------------------------------------
+
+def create_space_event(
+    engine, review_id: int, event_data: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Create a planned future space event with result templates."""
+    from sqlalchemy import text
+    with engine.begin() as conn:
+        event_id = _create_space_event(
+            conn, engine, review_id,
+            event_data['event_type'],
+            event_data['effective_date'],
+            event_data.get('source_tenant_ids', []),
+            event_data.get('description', ''),
+            'planned',
+            event_data.get('created_by', ''),
+        )
+        for r in event_data.get('results', []):
+            _insert_event_result(conn, engine, event_id, r)
+
+    return {'event_id': event_id, 'status': 'planned'}
+
+
+def update_space_event(
+    engine, event_id: int, data: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Update a planned space event."""
+    from sqlalchemy import text
+    with engine.begin() as conn:
+        row = conn.execute(text(
+            "SELECT status FROM lease_space_events WHERE id = :eid"
+        ), {'eid': event_id}).fetchone()
+        if not row:
+            raise ValueError(f"Event {event_id} not found")
+        if row[0] != 'planned':
+            raise ValueError("Only planned events can be edited")
+
+        updates = {}
+        for field in ('event_type', 'effective_date', 'description'):
+            if field in data:
+                updates[field] = data[field]
+        if 'source_tenant_ids' in data:
+            updates['source_tenant_ids'] = ','.join(
+                str(i) for i in data['source_tenant_ids']
+            )
+
+        if updates:
+            set_clause = ', '.join(f"{k} = :{k}" for k in updates)
+            updates['eid'] = event_id
+            conn.execute(text(
+                f"UPDATE lease_space_events SET {set_clause}, "
+                f"updated_at = CURRENT_TIMESTAMP WHERE id = :eid"
+            ), updates)
+
+        # Replace results if provided
+        if 'results' in data:
+            conn.execute(text(
+                "DELETE FROM lease_space_event_results WHERE event_id = :eid"
+            ), {'eid': event_id})
+            for r in data['results']:
+                _insert_event_result(conn, engine, event_id, r)
+
+    return {'status': 'updated'}
+
+
+def cancel_space_event(engine, event_id: int) -> Dict[str, Any]:
+    """Cancel a planned event. If it was applied, revert tenant changes."""
+    from sqlalchemy import text
+    with engine.begin() as conn:
+        row = conn.execute(text(
+            "SELECT status, review_id FROM lease_space_events WHERE id = :eid"
+        ), {'eid': event_id}).fetchone()
+        if not row:
+            raise ValueError(f"Event {event_id} not found")
+
+        if row[0] == 'applied':
+            # Revert: un-replace source tenants, delete result tenants
+            conn.execute(text("""
+                UPDATE lease_tenants
+                SET tenant_status = 'active', replaced_by_event_id = NULL,
+                    successor_tenant_id = NULL, updated_at = CURRENT_TIMESTAMP
+                WHERE replaced_by_event_id = :eid
+            """), {'eid': event_id})
+            # Delete tenants that were created by this event
+            result_ids = conn.execute(text(
+                "SELECT result_tenant_id FROM lease_space_event_results "
+                "WHERE event_id = :eid AND result_tenant_id IS NOT NULL"
+            ), {'eid': event_id}).fetchall()
+            for r in result_ids:
+                # Only delete if the tenant was created by this event
+                # (result_tenant_id != source_tenant_id)
+                sources = conn.execute(text(
+                    "SELECT source_tenant_ids FROM lease_space_events WHERE id = :eid"
+                ), {'eid': event_id}).fetchone()
+                source_ids = [int(x) for x in sources[0].split(',') if x.strip()]
+                if r[0] not in source_ids:
+                    conn.execute(text(
+                        "UPDATE lease_tenants SET tenant_status = 'deleted' WHERE id = :tid"
+                    ), {'tid': r[0]})
+
+        conn.execute(text("""
+            UPDATE lease_space_events
+            SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
+            WHERE id = :eid
+        """), {'eid': event_id})
+
+    return {'status': 'cancelled'}
+
+
+def apply_space_event(engine, event_id: int) -> Dict[str, Any]:
+    """Materialize a planned event into the tenant roster."""
+    from sqlalchemy import text
+    with engine.begin() as conn:
+        evt = conn.execute(text("""
+            SELECT id, review_id, event_type, source_tenant_ids, status
+            FROM lease_space_events WHERE id = :eid
+        """), {'eid': event_id}).fetchone()
+        if not evt:
+            raise ValueError(f"Event {event_id} not found")
+        if evt[4] != 'planned':
+            raise ValueError("Only planned events can be applied")
+
+        review_id = evt[1]
+        event_type = evt[2]
+        source_ids = [int(x) for x in evt[3].split(',') if x.strip()]
+
+        # Get event results (templates for new tenants)
+        results = conn.execute(text("""
+            SELECT id, tenant_name, suite, square_feet, monthly_rent,
+                   annual_rent, rent_per_sf, lease_start, lease_end, is_vacant, notes
+            FROM lease_space_event_results WHERE event_id = :eid
+        """), {'eid': event_id}).fetchall()
+
+        new_ids = []
+        for r in results:
+            data = {
+                'rid': review_id, 'name': r[1] or 'TBD', 'suite': r[2] or '',
+                'sf': r[3], 'mr': r[4], 'ar': r[5], 'rpsf': r[6],
+                'ls': r[7], 'le': r[8], 'vac': bool(r[9]),
+            }
+            if engine.dialect.name == 'postgresql':
+                row = conn.execute(text("""
+                    INSERT INTO lease_tenants
+                        (review_id, tenant_name, suite, square_feet, monthly_rent,
+                         annual_rent, rent_per_sf, lease_start, lease_end,
+                         is_vacant, tenant_status)
+                    VALUES (:rid, :name, :suite, :sf, :mr, :ar, :rpsf,
+                            :ls, :le, :vac, 'active')
+                    RETURNING id
+                """), data).fetchone()
+                nid = row[0]
+            else:
+                result = conn.execute(text("""
+                    INSERT INTO lease_tenants
+                        (review_id, tenant_name, suite, square_feet, monthly_rent,
+                         annual_rent, rent_per_sf, lease_start, lease_end,
+                         is_vacant, tenant_status)
+                    VALUES (:rid, :name, :suite, :sf, :mr, :ar, :rpsf,
+                            :ls, :le, :vac, 'active')
+                """), data)
+                nid = result.lastrowid
+
+            new_ids.append(nid)
+            # Update result row with actual tenant id
+            conn.execute(text(
+                "UPDATE lease_space_event_results "
+                "SET result_tenant_id = :nid WHERE id = :rid"
+            ), {'nid': nid, 'rid': r[0]})
+
+        # Mark source tenants as replaced (for non-vacate event types)
+        if event_type != 'vacate':
+            first_new = new_ids[0] if new_ids else None
+            for sid in source_ids:
+                conn.execute(text("""
+                    UPDATE lease_tenants
+                    SET tenant_status = 'replaced', replaced_by_event_id = :eid,
+                        successor_tenant_id = :nid, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = :tid
+                """), {'eid': event_id, 'nid': first_new, 'tid': sid})
+        else:
+            # Vacate: mark sources as vacant
+            for sid in source_ids:
+                conn.execute(text("""
+                    UPDATE lease_tenants
+                    SET is_vacant = 1, monthly_rent = 0, annual_rent = 0,
+                        rent_per_sf = 0, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = :tid
+                """), {'tid': sid})
+
+        conn.execute(text("""
+            UPDATE lease_space_events
+            SET status = 'applied', updated_at = CURRENT_TIMESTAMP
+            WHERE id = :eid
+        """), {'eid': event_id})
+
+    return {'status': 'applied', 'new_tenant_ids': new_ids}
+
+
+def get_space_events(engine, review_id: int) -> List[Dict[str, Any]]:
+    """Get all space events for a review with nested results."""
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        events = conn.execute(text("""
+            SELECT id, event_type, effective_date, source_tenant_ids,
+                   description, status, created_by, created_at
+            FROM lease_space_events
+            WHERE review_id = :rid
+            ORDER BY effective_date, created_at
+        """), {'rid': review_id}).fetchall()
+
+        result = []
+        for e in events:
+            eid = e[0]
+            results = conn.execute(text("""
+                SELECT id, result_tenant_id, tenant_name, suite, square_feet,
+                       monthly_rent, annual_rent, rent_per_sf, lease_start,
+                       lease_end, is_vacant, notes
+                FROM lease_space_event_results WHERE event_id = :eid
+            """), {'eid': eid}).fetchall()
+
+            # Get source tenant names
+            source_ids = [int(x) for x in e[3].split(',') if x.strip()]
+            source_names = []
+            if source_ids:
+                ph = ', '.join(f':s{i}' for i in range(len(source_ids)))
+                params = {f's{i}': sid for i, sid in enumerate(source_ids)}
+                names = conn.execute(text(f"""
+                    SELECT id, tenant_name, suite FROM lease_tenants
+                    WHERE id IN ({ph})
+                """), params).fetchall()
+                source_names = [
+                    {'id': n[0], 'name': n[1], 'suite': n[2]} for n in names
+                ]
+
+            result.append({
+                'id': eid, 'event_type': e[1], 'effective_date': e[2],
+                'source_tenant_ids': source_ids,
+                'source_tenants': source_names,
+                'description': e[4], 'status': e[5],
+                'created_by': e[6], 'created_at': str(e[7]),
+                'results': [{
+                    'id': r[0], 'result_tenant_id': r[1],
+                    'tenant_name': r[2], 'suite': r[3],
+                    'square_feet': r[4], 'monthly_rent': r[5],
+                    'annual_rent': r[6], 'rent_per_sf': r[7],
+                    'lease_start': r[8], 'lease_end': r[9],
+                    'is_vacant': bool(r[10]), 'notes': r[11],
+                } for r in results],
+            })
+
+    return result
+
+
+def get_space_timeline(engine, review_id: int) -> Dict[str, Any]:
+    """Project the tenant roster forward through planned events.
+
+    Returns the current roster plus a chronological list of future transitions.
+    """
+    from sqlalchemy import text
+    resolved = get_resolved_tenants(engine, review_id)
+    active = [t for t in resolved if t.get('tenant_status', 'active') != 'deleted']
+    events = get_space_events(engine, review_id)
+
+    # Separate applied/planned/cancelled
+    timeline = []
+    for e in events:
+        timeline.append({
+            'event': e,
+            'is_future': e['status'] == 'planned',
+        })
+
+    return {
+        'current_roster': active,
+        'timeline': timeline,
+        'total_events': len(events),
+        'planned_count': sum(1 for e in events if e['status'] == 'planned'),
+        'applied_count': sum(1 for e in events if e['status'] == 'applied'),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Tenant Succession
+# ---------------------------------------------------------------------------
+
+def create_succession(
+    engine, review_id: int, source_id: int,
+    new_tenant_data: Dict[str, Any], effective_date: str,
+    created_by: str = '',
+) -> Dict[str, Any]:
+    """Create a succession event: one tenant replaces another."""
+    from sqlalchemy import text
+    with engine.begin() as conn:
+        _verify_tenant_in_review(conn, review_id, source_id)
+        source = conn.execute(text(
+            "SELECT tenant_name, suite, square_feet FROM lease_tenants WHERE id = :tid"
+        ), {'tid': source_id}).fetchone()
+
+        # Default suite/SF from source if not specified
+        new_tenant_data.setdefault('suite', source[1])
+        new_tenant_data.setdefault('square_feet', source[2])
+
+        event_id = _create_space_event(
+            conn, engine, review_id, 'succession', effective_date,
+            [source_id],
+            f"{source[0]} → {new_tenant_data.get('tenant_name', 'TBD')}",
+            'applied', created_by,
+        )
+
+        # Create new tenant
+        data = {
+            'rid': review_id,
+            'name': new_tenant_data.get('tenant_name', 'TBD'),
+            'suite': new_tenant_data.get('suite', ''),
+            'sf': new_tenant_data.get('square_feet'),
+            'mr': new_tenant_data.get('monthly_rent'),
+            'ar': new_tenant_data.get('annual_rent'),
+            'rpsf': new_tenant_data.get('rent_per_sf'),
+            'ls': new_tenant_data.get('lease_start', effective_date),
+            'le': new_tenant_data.get('lease_end'),
+            'vac': new_tenant_data.get('is_vacant', False),
+        }
+        if engine.dialect.name == 'postgresql':
+            row = conn.execute(text("""
+                INSERT INTO lease_tenants
+                    (review_id, tenant_name, suite, square_feet, monthly_rent,
+                     annual_rent, rent_per_sf, lease_start, lease_end,
+                     is_vacant, tenant_status)
+                VALUES (:rid, :name, :suite, :sf, :mr, :ar, :rpsf,
+                        :ls, :le, :vac, 'active')
+                RETURNING id
+            """), data).fetchone()
+            new_id = row[0]
+        else:
+            result = conn.execute(text("""
+                INSERT INTO lease_tenants
+                    (review_id, tenant_name, suite, square_feet, monthly_rent,
+                     annual_rent, rent_per_sf, lease_start, lease_end,
+                     is_vacant, tenant_status)
+                VALUES (:rid, :name, :suite, :sf, :mr, :ar, :rpsf,
+                        :ls, :le, :vac, 'active')
+            """), data)
+            new_id = result.lastrowid
+
+        _insert_event_result(conn, engine, event_id, {
+            'result_tenant_id': new_id, **new_tenant_data,
+        })
+
+        # Mark source as replaced
+        conn.execute(text("""
+            UPDATE lease_tenants
+            SET tenant_status = 'replaced', replaced_by_event_id = :eid,
+                successor_tenant_id = :nid, updated_at = CURRENT_TIMESTAMP
+            WHERE id = :tid
+        """), {'eid': event_id, 'nid': new_id, 'tid': source_id})
+
+    return {'event_id': event_id, 'new_tenant_id': new_id, 'status': 'succession'}
+
+
+def get_succession_chain(engine, tenant_id: int) -> List[Dict[str, Any]]:
+    """Follow successor_tenant_id links to build a succession chain."""
+    from sqlalchemy import text
+    chain = []
+    visited = set()
+    current_id = tenant_id
+
+    with engine.connect() as conn:
+        # Walk backwards to find the original tenant
+        while current_id and current_id not in visited:
+            visited.add(current_id)
+            row = conn.execute(text("""
+                SELECT id, tenant_name, suite, square_feet, annual_rent,
+                       lease_start, lease_end, tenant_status, successor_tenant_id,
+                       replaced_by_event_id
+                FROM lease_tenants WHERE id = :tid
+            """), {'tid': current_id}).fetchone()
+            if not row:
+                break
+            chain.append({
+                'id': row[0], 'tenant_name': row[1], 'suite': row[2],
+                'square_feet': row[3], 'annual_rent': row[4],
+                'lease_start': row[5], 'lease_end': row[6],
+                'tenant_status': row[7] or 'active',
+                'successor_id': row[8], 'event_id': row[9],
+            })
+            # Follow successor forward
+            if row[8] and row[8] not in visited:
+                current_id = row[8]
+            else:
+                break
+
+        # Also walk backwards from the original tenant_id
+        # to find predecessors
+        current_id = tenant_id
+        visited_back = {tenant_id}
+        predecessors = []
+        while True:
+            row = conn.execute(text("""
+                SELECT id, tenant_name, suite, square_feet, annual_rent,
+                       lease_start, lease_end, tenant_status, successor_tenant_id
+                FROM lease_tenants WHERE successor_tenant_id = :tid
+            """), {'tid': current_id}).fetchone()
+            if not row or row[0] in visited_back:
+                break
+            visited_back.add(row[0])
+            predecessors.insert(0, {
+                'id': row[0], 'tenant_name': row[1], 'suite': row[2],
+                'square_feet': row[3], 'annual_rent': row[4],
+                'lease_start': row[5], 'lease_end': row[6],
+                'tenant_status': row[7] or 'active',
+                'successor_id': row[8],
+            })
+            current_id = row[0]
+
+    # Combine: predecessors + chain (avoiding duplicates)
+    seen = set()
+    full_chain = []
+    for item in predecessors + chain:
+        if item['id'] not in seen:
+            seen.add(item['id'])
+            full_chain.append(item)
+
+    return full_chain
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: Leasing Assumptions & Projected Cash Flow
+# ---------------------------------------------------------------------------
+
+def save_market_assumptions(
+    engine, review_id: int, assumptions_list: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Upsert market assumptions by (review_id, lease_type)."""
+    from sqlalchemy import text
+    saved = 0
+    with engine.begin() as conn:
+        for a in assumptions_list:
+            lt = a.get('lease_type', '')
+            if not lt:
+                continue
+            params = {
+                'rid': review_id, 'lt': lt,
+                'mrpsf': a.get('market_rent_psf'),
+                'arg': a.get('annual_rent_growth'),
+                'rp': a.get('renewal_probability'),
+                'rdm': a.get('renewal_downtime_months', 0),
+                'rtipsf': a.get('renewal_ti_psf'),
+                'rlcpct': a.get('renewal_lc_pct'),
+                'rrs': a.get('renewal_rent_spread'),
+                'rty': a.get('renewal_term_years', 5),
+                'ndm': a.get('new_downtime_months', 6),
+                'ntipsf': a.get('new_ti_psf'),
+                'nlcpct': a.get('new_lc_pct'),
+                'nrs': a.get('new_rent_spread'),
+                'nty': a.get('new_term_years', 10),
+                'frm': a.get('free_rent_months', 0),
+                'aeg': a.get('annual_expense_growth'),
+                'cb': a.get('created_by', ''),
+            }
+            if engine.dialect.name == 'postgresql':
+                conn.execute(text("""
+                    INSERT INTO lease_market_assumptions
+                        (review_id, lease_type, market_rent_psf, annual_rent_growth,
+                         renewal_probability, renewal_downtime_months, renewal_ti_psf,
+                         renewal_lc_pct, renewal_rent_spread, renewal_term_years,
+                         new_downtime_months, new_ti_psf, new_lc_pct,
+                         new_rent_spread, new_term_years, free_rent_months,
+                         annual_expense_growth, created_by)
+                    VALUES (:rid, :lt, :mrpsf, :arg, :rp, :rdm, :rtipsf, :rlcpct,
+                            :rrs, :rty, :ndm, :ntipsf, :nlcpct, :nrs, :nty,
+                            :frm, :aeg, :cb)
+                    ON CONFLICT (review_id, lease_type) DO UPDATE SET
+                        market_rent_psf = EXCLUDED.market_rent_psf,
+                        annual_rent_growth = EXCLUDED.annual_rent_growth,
+                        renewal_probability = EXCLUDED.renewal_probability,
+                        renewal_downtime_months = EXCLUDED.renewal_downtime_months,
+                        renewal_ti_psf = EXCLUDED.renewal_ti_psf,
+                        renewal_lc_pct = EXCLUDED.renewal_lc_pct,
+                        renewal_rent_spread = EXCLUDED.renewal_rent_spread,
+                        renewal_term_years = EXCLUDED.renewal_term_years,
+                        new_downtime_months = EXCLUDED.new_downtime_months,
+                        new_ti_psf = EXCLUDED.new_ti_psf,
+                        new_lc_pct = EXCLUDED.new_lc_pct,
+                        new_rent_spread = EXCLUDED.new_rent_spread,
+                        new_term_years = EXCLUDED.new_term_years,
+                        free_rent_months = EXCLUDED.free_rent_months,
+                        annual_expense_growth = EXCLUDED.annual_expense_growth,
+                        updated_at = CURRENT_TIMESTAMP
+                """), params)
+            else:
+                conn.execute(text("""
+                    INSERT OR REPLACE INTO lease_market_assumptions
+                        (review_id, lease_type, market_rent_psf, annual_rent_growth,
+                         renewal_probability, renewal_downtime_months, renewal_ti_psf,
+                         renewal_lc_pct, renewal_rent_spread, renewal_term_years,
+                         new_downtime_months, new_ti_psf, new_lc_pct,
+                         new_rent_spread, new_term_years, free_rent_months,
+                         annual_expense_growth, created_by)
+                    VALUES (:rid, :lt, :mrpsf, :arg, :rp, :rdm, :rtipsf, :rlcpct,
+                            :rrs, :rty, :ndm, :ntipsf, :nlcpct, :nrs, :nty,
+                            :frm, :aeg, :cb)
+                """), params)
+            saved += 1
+
+    return {'saved': saved}
+
+
+def get_market_assumptions(engine, review_id: int) -> List[Dict[str, Any]]:
+    """Get all market assumption sets for a review."""
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT id, lease_type, market_rent_psf, annual_rent_growth,
+                   renewal_probability, renewal_downtime_months, renewal_ti_psf,
+                   renewal_lc_pct, renewal_rent_spread, renewal_term_years,
+                   new_downtime_months, new_ti_psf, new_lc_pct,
+                   new_rent_spread, new_term_years, free_rent_months,
+                   annual_expense_growth
+            FROM lease_market_assumptions
+            WHERE review_id = :rid
+            ORDER BY lease_type
+        """), {'rid': review_id}).fetchall()
+
+    return [{
+        'id': r[0], 'lease_type': r[1], 'market_rent_psf': r[2],
+        'annual_rent_growth': r[3], 'renewal_probability': r[4],
+        'renewal_downtime_months': r[5], 'renewal_ti_psf': r[6],
+        'renewal_lc_pct': r[7], 'renewal_rent_spread': r[8],
+        'renewal_term_years': r[9], 'new_downtime_months': r[10],
+        'new_ti_psf': r[11], 'new_lc_pct': r[12],
+        'new_rent_spread': r[13], 'new_term_years': r[14],
+        'free_rent_months': r[15], 'annual_expense_growth': r[16],
+    } for r in rows]
+
+
+def generate_projected_cash_flow(
+    engine, review_id: int, start_date: str, end_date: str,
+) -> Dict[str, Any]:
+    """Generate Argus-style projected cash flow for all suites.
+
+    Walks each suite through time: in-place lease -> expiry ->
+    renewal/new tenant decision -> next term. Returns monthly projections
+    for three scenarios: renewal, new_tenant, and probability_weighted.
+    """
+    from sqlalchemy import text
+    from dateutil.relativedelta import relativedelta
+
+    resolved = get_resolved_tenants(engine, review_id)
+    active = [t for t in resolved
+              if t.get('tenant_status', 'active') in ('active', None)]
+    assumptions = {a['lease_type']: a
+                   for a in get_market_assumptions(engine, review_id)}
+
+    # Get rent steps keyed by tenant_id
+    with engine.connect() as conn:
+        step_rows = conn.execute(text("""
+            SELECT tenant_id, effective_date, monthly_rent, annual_rent, rent_per_sf
+            FROM lease_rent_steps
+            WHERE tenant_id IN (
+                SELECT id FROM lease_tenants WHERE review_id = :rid
+            )
+            ORDER BY tenant_id, effective_date
+        """), {'rid': review_id}).fetchall()
+
+    rent_steps = {}
+    for r in step_rows:
+        rent_steps.setdefault(r[0], []).append({
+            'effective_date': r[1], 'monthly_rent': r[2],
+            'annual_rent': r[3], 'rent_per_sf': r[4],
+        })
+
+    start_dt = pd.to_datetime(start_date)
+    end_dt = pd.to_datetime(end_date)
+
+    # Generate month list
+    months = []
+    cur = start_dt.replace(day=1)
+    while cur <= end_dt:
+        months.append(cur)
+        cur += relativedelta(months=1)
+
+    # Default assumption for types without explicit assumptions
+    default_assum = {
+        'market_rent_psf': 0, 'annual_rent_growth': 0.03,
+        'renewal_probability': 0.70, 'renewal_downtime_months': 0,
+        'renewal_ti_psf': 5, 'renewal_lc_pct': 0.04,
+        'renewal_rent_spread': 0, 'renewal_term_years': 5,
+        'new_downtime_months': 6, 'new_ti_psf': 15,
+        'new_lc_pct': 0.06, 'new_rent_spread': 0,
+        'new_term_years': 10, 'free_rent_months': 0,
+    }
+
+    suite_projections = {}
+
+    for tenant in active:
+        tid = tenant['id']
+        suite = tenant.get('suite', f'T{tid}')
+        sf = tenant.get('square_feet', 0) or 0
+        lt = tenant.get('lease_type', '') or ''
+        assum = assumptions.get(lt, default_assum)
+
+        # Get market rent — default to current rent/SF if not specified
+        base_market_rent = assum.get('market_rent_psf') or 0
+        if base_market_rent == 0 and sf > 0:
+            base_market_rent = (tenant.get('annual_rent', 0) or 0) / sf
+
+        growth = assum.get('annual_rent_growth', 0.03) or 0.03
+        renewal_prob = assum.get('renewal_probability', 0.70) or 0.70
+
+        lease_end_str = tenant.get('lease_end')
+        lease_start_str = tenant.get('lease_start')
+        current_monthly = tenant.get('monthly_rent', 0) or 0
+
+        try:
+            lease_end_dt = pd.to_datetime(lease_end_str) if lease_end_str else None
+        except Exception:
+            lease_end_dt = None
+        try:
+            lease_start_dt = pd.to_datetime(lease_start_str) if lease_start_str else start_dt
+        except Exception:
+            lease_start_dt = start_dt
+
+        # Get rent steps for escalation during in-place period
+        steps = rent_steps.get(tid, [])
+        step_schedule = []
+        for s in steps:
+            try:
+                sd = pd.to_datetime(s['effective_date'])
+                step_schedule.append((sd, s.get('monthly_rent') or 0))
+            except Exception:
+                pass
+        step_schedule.sort()
+
+        def get_contracted_rent(dt):
+            """Get contracted monthly rent at a given date from rent steps."""
+            rent = current_monthly
+            for sd, mr in step_schedule:
+                if dt >= sd:
+                    rent = mr
+                else:
+                    break
+            return rent
+
+        def escalated_market_rent(target_dt):
+            """Escalate market rent to target date."""
+            years = max(0, (target_dt - start_dt).days / 365.25)
+            return base_market_rent * (1 + growth) ** years
+
+        # Build monthly schedule for three scenarios
+        renewal_months = []
+        new_tenant_months = []
+        weighted_months = []
+
+        for m in months:
+            m_end = m + relativedelta(months=1) - relativedelta(days=1)
+
+            # During in-place period (before lease end)
+            if lease_end_dt is None or m <= lease_end_dt:
+                contracted = get_contracted_rent(m)
+                entry = {
+                    'month': m.strftime('%Y-%m'),
+                    'suite': suite, 'tenant': tenant['tenant_name'],
+                    'sf': sf, 'base_rent': contracted,
+                    'effective_rent': contracted,
+                    'vacancy_loss': 0, 'ti_cost': 0, 'lc_cost': 0,
+                    'net_effective_rent': contracted,
+                    'phase': 'in_place',
+                }
+                renewal_months.append(entry.copy())
+                new_tenant_months.append(entry.copy())
+                weighted_months.append(entry.copy())
+                continue
+
+            # Post-expiry: calculate months since lease end
+            months_since_expiry = (
+                (m.year - lease_end_dt.year) * 12 +
+                (m.month - lease_end_dt.month)
+            )
+
+            # --- Renewal scenario ---
+            r_downtime = assum.get('renewal_downtime_months', 0) or 0
+            r_term = (assum.get('renewal_term_years', 5) or 5) * 12
+            r_spread = assum.get('renewal_rent_spread', 0) or 0
+
+            cycle_month = months_since_expiry % (r_downtime + r_term)
+            if cycle_month < r_downtime:
+                # Downtime
+                renewal_months.append({
+                    'month': m.strftime('%Y-%m'), 'suite': suite,
+                    'tenant': 'Vacant (renewal turnover)', 'sf': sf,
+                    'base_rent': 0, 'effective_rent': 0,
+                    'vacancy_loss': escalated_market_rent(m) * sf / 12,
+                    'ti_cost': 0, 'lc_cost': 0, 'net_effective_rent': 0,
+                    'phase': 'vacancy',
+                })
+            else:
+                mkt = escalated_market_rent(m)
+                renewal_rent = (mkt + r_spread) * sf / 12
+                ti = lc = 0
+                if cycle_month == r_downtime:  # First month of new lease
+                    ti = (assum.get('renewal_ti_psf', 0) or 0) * sf
+                    lease_val = renewal_rent * 12 * (assum.get('renewal_term_years', 5) or 5)
+                    lc = (assum.get('renewal_lc_pct', 0) or 0) * lease_val
+                renewal_months.append({
+                    'month': m.strftime('%Y-%m'), 'suite': suite,
+                    'tenant': tenant['tenant_name'] + ' (renewed)', 'sf': sf,
+                    'base_rent': renewal_rent, 'effective_rent': renewal_rent,
+                    'vacancy_loss': 0, 'ti_cost': ti, 'lc_cost': lc,
+                    'net_effective_rent': renewal_rent - ti - lc,
+                    'phase': 'renewal',
+                })
+
+            # --- New tenant scenario ---
+            n_downtime = assum.get('new_downtime_months', 6) or 6
+            n_free = assum.get('free_rent_months', 0) or 0
+            n_term = (assum.get('new_term_years', 10) or 10) * 12
+            n_spread = assum.get('new_rent_spread', 0) or 0
+
+            n_cycle = months_since_expiry % (n_downtime + n_free + n_term)
+            if n_cycle < n_downtime:
+                new_tenant_months.append({
+                    'month': m.strftime('%Y-%m'), 'suite': suite,
+                    'tenant': 'Vacant (new tenant turnover)', 'sf': sf,
+                    'base_rent': 0, 'effective_rent': 0,
+                    'vacancy_loss': escalated_market_rent(m) * sf / 12,
+                    'ti_cost': 0, 'lc_cost': 0, 'net_effective_rent': 0,
+                    'phase': 'vacancy',
+                })
+            elif n_cycle < n_downtime + n_free:
+                # Free rent period
+                mkt = escalated_market_rent(m)
+                base = (mkt + n_spread) * sf / 12
+                new_tenant_months.append({
+                    'month': m.strftime('%Y-%m'), 'suite': suite,
+                    'tenant': 'New Tenant (free rent)', 'sf': sf,
+                    'base_rent': base, 'effective_rent': 0,
+                    'vacancy_loss': base, 'ti_cost': 0, 'lc_cost': 0,
+                    'net_effective_rent': 0, 'phase': 'free_rent',
+                })
+            else:
+                mkt = escalated_market_rent(m)
+                new_rent = (mkt + n_spread) * sf / 12
+                ti = lc = 0
+                if n_cycle == n_downtime + n_free:
+                    ti = (assum.get('new_ti_psf', 0) or 0) * sf
+                    lease_val = new_rent * 12 * (assum.get('new_term_years', 10) or 10)
+                    lc = (assum.get('new_lc_pct', 0) or 0) * lease_val
+                new_tenant_months.append({
+                    'month': m.strftime('%Y-%m'), 'suite': suite,
+                    'tenant': 'New Tenant', 'sf': sf,
+                    'base_rent': new_rent, 'effective_rent': new_rent,
+                    'vacancy_loss': 0, 'ti_cost': ti, 'lc_cost': lc,
+                    'net_effective_rent': new_rent - ti - lc,
+                    'phase': 'new_tenant',
+                })
+
+            # --- Weighted scenario ---
+            r_entry = renewal_months[-1]
+            n_entry = new_tenant_months[-1]
+            w_eff = r_entry['effective_rent'] * renewal_prob + \
+                    n_entry['effective_rent'] * (1 - renewal_prob)
+            w_vac = r_entry['vacancy_loss'] * renewal_prob + \
+                    n_entry['vacancy_loss'] * (1 - renewal_prob)
+            w_ti = r_entry['ti_cost'] * renewal_prob + \
+                   n_entry['ti_cost'] * (1 - renewal_prob)
+            w_lc = r_entry['lc_cost'] * renewal_prob + \
+                   n_entry['lc_cost'] * (1 - renewal_prob)
+            weighted_months.append({
+                'month': m.strftime('%Y-%m'), 'suite': suite,
+                'tenant': r_entry['tenant'] if r_entry['effective_rent'] > 0
+                          else n_entry['tenant'],
+                'sf': sf,
+                'base_rent': r_entry['base_rent'] * renewal_prob +
+                             n_entry['base_rent'] * (1 - renewal_prob),
+                'effective_rent': w_eff,
+                'vacancy_loss': w_vac, 'ti_cost': w_ti, 'lc_cost': w_lc,
+                'net_effective_rent': w_eff - w_ti - w_lc,
+                'phase': r_entry['phase'] if renewal_prob >= 0.5
+                         else n_entry['phase'],
+            })
+
+        suite_projections[suite] = {
+            'tenant_id': tid, 'tenant_name': tenant['tenant_name'],
+            'suite': suite, 'sf': sf, 'lease_type': lt,
+            'lease_end': lease_end_str,
+            'renewal': renewal_months,
+            'new_tenant': new_tenant_months,
+            'weighted': weighted_months,
+        }
+
+    return {
+        'start_date': start_date,
+        'end_date': end_date,
+        'suites': suite_projections,
+        'months': [m.strftime('%Y-%m') for m in months],
+    }
+
+
+def summarize_projected_revenue(
+    engine, review_id: int, start_date: str, end_date: str,
+) -> Dict[str, Any]:
+    """Aggregate projected cash flow into annual totals for each scenario."""
+    projection = generate_projected_cash_flow(engine, review_id, start_date, end_date)
+
+    summaries = {}
+    for scenario in ('renewal', 'new_tenant', 'weighted'):
+        annual = {}
+        total_sf = 0
+        for suite_key, suite_data in projection['suites'].items():
+            total_sf += suite_data.get('sf', 0)
+            for entry in suite_data.get(scenario, []):
+                year = entry['month'][:4]
+                if year not in annual:
+                    annual[year] = {
+                        'year': int(year), 'gross_rent': 0,
+                        'effective_rent': 0, 'vacancy_loss': 0,
+                        'ti_costs': 0, 'lc_costs': 0, 'net_effective': 0,
+                        'occupied_months': 0, 'total_months': 0,
+                    }
+                a = annual[year]
+                a['gross_rent'] += entry.get('base_rent', 0)
+                a['effective_rent'] += entry.get('effective_rent', 0)
+                a['vacancy_loss'] += entry.get('vacancy_loss', 0)
+                a['ti_costs'] += entry.get('ti_cost', 0)
+                a['lc_costs'] += entry.get('lc_cost', 0)
+                a['net_effective'] += entry.get('net_effective_rent', 0)
+                a['total_months'] += 1
+                if entry.get('effective_rent', 0) > 0:
+                    a['occupied_months'] += 1
+
+        # Compute rates
+        for year_data in annual.values():
+            tm = year_data['total_months']
+            year_data['vacancy_rate'] = (
+                1 - year_data['occupied_months'] / tm if tm > 0 else 0
+            )
+            year_data['avg_effective_rent_psf'] = (
+                year_data['effective_rent'] / total_sf
+                if total_sf > 0 else 0
+            )
+
+        summaries[scenario] = sorted(annual.values(), key=lambda x: x['year'])
+
+    return {
+        'start_date': start_date,
+        'end_date': end_date,
+        'total_sf': total_sf,
+        'summaries': summaries,
     }

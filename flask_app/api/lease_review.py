@@ -39,6 +39,30 @@ from flask_app.services.lease_review_service import (
     get_tenant_sales,
     update_tenant_sales_override,
     RESOLVABLE_FIELDS,
+    # Phase 1: Tenant CRUD
+    add_tenant,
+    update_tenant_fields,
+    delete_tenant,
+    mark_tenant_vacant,
+    # Phase 2: Space mutations
+    merge_suites,
+    split_suite,
+    resize_tenant,
+    # Phase 3: Future space plans
+    create_space_event,
+    update_space_event,
+    cancel_space_event,
+    apply_space_event,
+    get_space_events,
+    get_space_timeline,
+    # Phase 4: Tenant succession
+    create_succession,
+    get_succession_chain,
+    # Phase 5: Leasing assumptions & projections
+    save_market_assumptions,
+    get_market_assumptions,
+    generate_projected_cash_flow,
+    summarize_projected_revenue,
 )
 from io import BytesIO
 import logging
@@ -1126,4 +1150,410 @@ def save_abstract(review_id, tenant_id):
         return jsonify({'status': 'ok', 'tenant_id': tenant_id})
     except Exception as e:
         logger.error(f"Save abstract error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: Tenant CRUD endpoints
+# ---------------------------------------------------------------------------
+
+@lease_review_bp.route('/reviews/<int:review_id>/tenants', methods=['POST'])
+@login_required
+@role_required('admin', 'analyst')
+def api_add_tenant(review_id):
+    """Add a new tenant to a review."""
+    engine = get_engine()
+    try:
+        body = request.get_json(force=True) or {}
+        result = add_tenant(engine, review_id, body)
+        return jsonify(result), 201
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        logger.error(f"Add tenant error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route(
+    '/reviews/<int:review_id>/tenants/<int:tenant_id>',
+    methods=['PUT'],
+)
+@login_required
+@role_required('admin', 'analyst')
+def api_update_tenant(review_id, tenant_id):
+    """Update tenant fields directly."""
+    engine = get_engine()
+    try:
+        body = request.get_json(force=True) or {}
+        result = update_tenant_fields(engine, review_id, tenant_id, body)
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        logger.error(f"Update tenant error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route(
+    '/reviews/<int:review_id>/tenants/<int:tenant_id>',
+    methods=['DELETE'],
+)
+@login_required
+@role_required('admin', 'analyst')
+def api_delete_tenant(review_id, tenant_id):
+    """Soft-delete a tenant."""
+    engine = get_engine()
+    try:
+        result = delete_tenant(engine, review_id, tenant_id)
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        logger.error(f"Delete tenant error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route(
+    '/reviews/<int:review_id>/tenants/<int:tenant_id>/vacant',
+    methods=['PUT'],
+)
+@login_required
+@role_required('admin', 'analyst')
+def api_toggle_vacant(review_id, tenant_id):
+    """Toggle tenant vacant status."""
+    engine = get_engine()
+    try:
+        body = request.get_json(force=True) or {}
+        vacant = body.get('vacant', True)
+        result = mark_tenant_vacant(engine, review_id, tenant_id, vacant)
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        logger.error(f"Toggle vacant error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Space mutation endpoints
+# ---------------------------------------------------------------------------
+
+@lease_review_bp.route('/reviews/<int:review_id>/space/merge', methods=['POST'])
+@login_required
+@role_required('admin', 'analyst')
+def api_merge_suites(review_id):
+    """Merge 2+ tenants into one."""
+    engine = get_engine()
+    try:
+        body = request.get_json(force=True) or {}
+        result = merge_suites(
+            engine, review_id,
+            source_ids=body.get('source_ids', []),
+            merged_suite=body.get('merged_suite', ''),
+            merged_name=body.get('merged_name', ''),
+            effective_date=body.get('effective_date', ''),
+            created_by=getattr(g, 'username', ''),
+        )
+        return jsonify(result), 201
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"Merge error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/space/split', methods=['POST'])
+@login_required
+@role_required('admin', 'analyst')
+def api_split_suite(review_id):
+    """Split one tenant into N new tenants."""
+    engine = get_engine()
+    try:
+        body = request.get_json(force=True) or {}
+        result = split_suite(
+            engine, review_id,
+            source_id=body.get('source_id'),
+            splits=body.get('splits', []),
+            effective_date=body.get('effective_date', ''),
+            created_by=getattr(g, 'username', ''),
+        )
+        return jsonify(result), 201
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"Split error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route(
+    '/reviews/<int:review_id>/space/resize/<int:tenant_id>',
+    methods=['PUT'],
+)
+@login_required
+@role_required('admin', 'analyst')
+def api_resize_tenant(review_id, tenant_id):
+    """Resize a tenant in-place."""
+    engine = get_engine()
+    try:
+        body = request.get_json(force=True) or {}
+        result = resize_tenant(
+            engine, review_id, tenant_id,
+            new_sf=body.get('new_sf', 0),
+            new_rent=body.get('new_rent'),
+            effective_date=body.get('effective_date', ''),
+            created_by=getattr(g, 'username', ''),
+        )
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"Resize error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Space events endpoints
+# ---------------------------------------------------------------------------
+
+@lease_review_bp.route('/reviews/<int:review_id>/space-events', methods=['GET'])
+@login_required
+def api_get_space_events(review_id):
+    """List all space events for a review."""
+    engine = get_engine()
+    try:
+        return jsonify(get_space_events(engine, review_id))
+    except Exception as e:
+        logger.error(f"Get space events error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/space-events', methods=['POST'])
+@login_required
+@role_required('admin', 'analyst')
+def api_create_space_event(review_id):
+    """Create a planned future space event."""
+    engine = get_engine()
+    try:
+        body = request.get_json(force=True) or {}
+        body['created_by'] = getattr(g, 'username', '')
+        result = create_space_event(engine, review_id, body)
+        return jsonify(result), 201
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"Create space event error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route(
+    '/reviews/<int:review_id>/space-events/<int:event_id>',
+    methods=['PUT'],
+)
+@login_required
+@role_required('admin', 'analyst')
+def api_update_space_event(review_id, event_id):
+    """Update a planned space event."""
+    engine = get_engine()
+    try:
+        body = request.get_json(force=True) or {}
+        result = update_space_event(engine, event_id, body)
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"Update space event error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route(
+    '/reviews/<int:review_id>/space-events/<int:event_id>',
+    methods=['DELETE'],
+)
+@login_required
+@role_required('admin', 'analyst')
+def api_cancel_space_event(review_id, event_id):
+    """Cancel a space event (revert if applied)."""
+    engine = get_engine()
+    try:
+        result = cancel_space_event(engine, event_id)
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"Cancel space event error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route(
+    '/reviews/<int:review_id>/space-events/<int:event_id>/apply',
+    methods=['POST'],
+)
+@login_required
+@role_required('admin', 'analyst')
+def api_apply_space_event(review_id, event_id):
+    """Apply a planned space event to the tenant roster."""
+    engine = get_engine()
+    try:
+        result = apply_space_event(engine, event_id)
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"Apply space event error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/space-timeline', methods=['GET'])
+@login_required
+def api_get_space_timeline(review_id):
+    """Get projected tenant roster with timeline of events."""
+    engine = get_engine()
+    try:
+        return jsonify(get_space_timeline(engine, review_id))
+    except Exception as e:
+        logger.error(f"Get timeline error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Tenant succession endpoints
+# ---------------------------------------------------------------------------
+
+@lease_review_bp.route(
+    '/reviews/<int:review_id>/tenants/<int:tenant_id>/succession',
+    methods=['POST'],
+)
+@login_required
+@role_required('admin', 'analyst')
+def api_create_succession(review_id, tenant_id):
+    """Create a tenant succession."""
+    engine = get_engine()
+    try:
+        body = request.get_json(force=True) or {}
+        result = create_succession(
+            engine, review_id, tenant_id,
+            new_tenant_data=body.get('new_tenant', {}),
+            effective_date=body.get('effective_date', ''),
+            created_by=getattr(g, 'username', ''),
+        )
+        return jsonify(result), 201
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"Create succession error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route(
+    '/reviews/<int:review_id>/tenants/<int:tenant_id>/succession-chain',
+    methods=['GET'],
+)
+@login_required
+def api_get_succession_chain(review_id, tenant_id):
+    """Get the full succession chain for a tenant."""
+    engine = get_engine()
+    try:
+        return jsonify(get_succession_chain(engine, tenant_id))
+    except Exception as e:
+        logger.error(f"Get succession chain error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: Leasing assumptions & projections endpoints
+# ---------------------------------------------------------------------------
+
+@lease_review_bp.route(
+    '/reviews/<int:review_id>/market-assumptions',
+    methods=['GET'],
+)
+@login_required
+def api_get_market_assumptions(review_id):
+    """Get market assumptions for a review."""
+    engine = get_engine()
+    try:
+        return jsonify(get_market_assumptions(engine, review_id))
+    except Exception as e:
+        logger.error(f"Get assumptions error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route(
+    '/reviews/<int:review_id>/market-assumptions',
+    methods=['POST'],
+)
+@login_required
+@role_required('admin', 'analyst')
+def api_save_market_assumptions(review_id):
+    """Save market assumptions for a review."""
+    engine = get_engine()
+    try:
+        body = request.get_json(force=True) or {}
+        assumptions = body if isinstance(body, list) else body.get('assumptions', [body])
+        for a in assumptions:
+            a['created_by'] = getattr(g, 'username', '')
+        result = save_market_assumptions(engine, review_id, assumptions)
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Save assumptions error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route(
+    '/reviews/<int:review_id>/market-assumptions/<lease_type>',
+    methods=['PUT'],
+)
+@login_required
+@role_required('admin', 'analyst')
+def api_update_market_assumption(review_id, lease_type):
+    """Update a single lease type assumption."""
+    engine = get_engine()
+    try:
+        body = request.get_json(force=True) or {}
+        body['lease_type'] = lease_type
+        body['created_by'] = getattr(g, 'username', '')
+        result = save_market_assumptions(engine, review_id, [body])
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Update assumption error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route(
+    '/reviews/<int:review_id>/projected-cash-flow',
+    methods=['GET'],
+)
+@login_required
+def api_get_projected_cash_flow(review_id):
+    """Generate projected cash flow for a review."""
+    engine = get_engine()
+    try:
+        start = request.args.get('start', '')
+        end = request.args.get('end', '')
+        if not start or not end:
+            return jsonify({'error': 'start and end query params required'}), 400
+        result = generate_projected_cash_flow(engine, review_id, start, end)
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Projected cash flow error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route(
+    '/reviews/<int:review_id>/projected-revenue-summary',
+    methods=['GET'],
+)
+@login_required
+def api_get_projected_revenue_summary(review_id):
+    """Get projected revenue summary by year."""
+    engine = get_engine()
+    try:
+        start = request.args.get('start', '')
+        end = request.args.get('end', '')
+        if not start or not end:
+            return jsonify({'error': 'start and end query params required'}), 400
+        result = summarize_projected_revenue(engine, review_id, start, end)
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Revenue summary error: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500

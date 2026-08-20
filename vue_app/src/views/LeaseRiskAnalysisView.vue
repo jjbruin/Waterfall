@@ -7,13 +7,13 @@ const router = useRouter()
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
-import { BarChart, PieChart } from 'echarts/charts'
+import { BarChart, PieChart, LineChart } from 'echarts/charts'
 import {
   GridComponent, TooltipComponent, LegendComponent,
   MarkLineComponent,
 } from 'echarts/components'
 
-use([CanvasRenderer, BarChart, PieChart, GridComponent, TooltipComponent, LegendComponent, MarkLineComponent])
+use([CanvasRenderer, BarChart, PieChart, LineChart, GridComponent, TooltipComponent, LegendComponent, MarkLineComponent])
 
 const CLR_DARK = '#1F4E79'
 const CLR_ACCENT = '#ED7D31'
@@ -45,6 +45,36 @@ const editingField = ref<string | null>(null)
 const editValue = ref('')
 const editSource = ref('analyst')
 
+// Space planning state
+const selectedTenantIds = ref<Set<number>>(new Set())
+const showAddTenant = ref(false)
+const newTenant = ref<any>({})
+const showMergeModal = ref(false)
+const showSplitModal = ref(false)
+const mergeForm = ref({ merged_name: '', merged_suite: '' })
+const splitForm = ref<{ splits: any[] }>({ splits: [{ tenant_name: '', suite: '', square_feet: 0 }, { tenant_name: '', suite: '', square_feet: 0 }] })
+const splitSourceTenant = ref<any>(null)
+const showSuccessionModal = ref(false)
+const successionSourceId = ref<number | null>(null)
+const successionForm = ref<any>({})
+const successionChain = ref<any[]>([])
+const showChainFor = ref<number | null>(null)
+const showReplacedTenants = ref(false)
+const spaceEvents = ref<any[]>([])
+const overviewMode = ref<'current' | 'timeline'>('current')
+const showPlanEventModal = ref(false)
+const planEventForm = ref<any>({ event_type: 'vacate', effective_date: '', source_tenant_ids: [], results: [{ tenant_name: '', suite: '', square_feet: 0 }] })
+const confirmDeleteId = ref<number | null>(null)
+
+// Projections state
+const marketAssumptions = ref<any[]>([])
+const projectionData = ref<any>(null)
+const projectionScenario = ref<'weighted' | 'renewal' | 'new_tenant'>('weighted')
+const projectionLoading = ref(false)
+const projStartDate = ref('')
+const projEndDate = ref('')
+const revenueSummary = ref<any>(null)
+
 const TABS = [
   { key: 'overview', label: 'Overview' },
   { key: 'expirations', label: 'Lease Expirations' },
@@ -53,6 +83,7 @@ const TABS = [
   { key: 'scenarios', label: 'Scenario Analysis' },
   { key: 'exclusive', label: 'Exclusive Use' },
   { key: 'options', label: 'Options' },
+  { key: 'projections', label: 'Projections' },
 ]
 
 const RESOLVABLE_FIELDS = [
@@ -191,6 +222,263 @@ function submitEdit(tenantId: number, field: string) {
   resolveField(tenantId, field, editValue.value, editSource.value)
 }
 
+// --- Tenant CRUD ---
+async function addTenantSubmit() {
+  if (!selectedReviewId.value) return
+  try {
+    await api.post(`/api/lease-review/reviews/${selectedReviewId.value}/tenants`, newTenant.value)
+    showAddTenant.value = false
+    newTenant.value = {}
+    await loadRiskData()
+  } catch (e: any) {
+    alert('Failed to add tenant: ' + (e.response?.data?.error || e.message))
+  }
+}
+
+async function deleteTenantConfirm(tenantId: number) {
+  if (!selectedReviewId.value) return
+  try {
+    await api.delete(`/api/lease-review/reviews/${selectedReviewId.value}/tenants/${tenantId}`)
+    confirmDeleteId.value = null
+    await loadRiskData()
+  } catch (e: any) {
+    alert('Failed to delete tenant: ' + (e.response?.data?.error || e.message))
+  }
+}
+
+async function toggleVacant(tenantId: number, currentVacant: boolean) {
+  if (!selectedReviewId.value) return
+  try {
+    await api.put(`/api/lease-review/reviews/${selectedReviewId.value}/tenants/${tenantId}/vacant`, { vacant: !currentVacant })
+    await loadRiskData()
+  } catch (e: any) {
+    alert('Failed to toggle vacant: ' + (e.response?.data?.error || e.message))
+  }
+}
+
+function toggleSelection(id: number) {
+  const s = new Set(selectedTenantIds.value)
+  if (s.has(id)) s.delete(id); else s.add(id)
+  selectedTenantIds.value = s
+}
+
+// --- Space Mutations ---
+async function submitMerge() {
+  if (!selectedReviewId.value) return
+  try {
+    await api.post(`/api/lease-review/reviews/${selectedReviewId.value}/space/merge`, {
+      source_ids: Array.from(selectedTenantIds.value),
+      merged_name: mergeForm.value.merged_name,
+      merged_suite: mergeForm.value.merged_suite,
+    })
+    showMergeModal.value = false
+    selectedTenantIds.value = new Set()
+    mergeForm.value = { merged_name: '', merged_suite: '' }
+    await loadRiskData()
+    await loadSpaceEvents()
+  } catch (e: any) {
+    alert('Merge failed: ' + (e.response?.data?.error || e.message))
+  }
+}
+
+function openSplitModal() {
+  const sel = Array.from(selectedTenantIds.value)
+  if (sel.length !== 1) return
+  const t = tenants.value.find((x: any) => x.id === sel[0])
+  splitSourceTenant.value = t
+  splitForm.value = { splits: [
+    { tenant_name: '', suite: '', square_feet: 0 },
+    { tenant_name: '', suite: '', square_feet: 0 },
+  ] }
+  showSplitModal.value = true
+}
+
+function addSplitRow() {
+  splitForm.value.splits.push({ tenant_name: '', suite: '', square_feet: 0 })
+}
+
+function removeSplitRow(i: number) {
+  if (splitForm.value.splits.length > 2) splitForm.value.splits.splice(i, 1)
+}
+
+const splitSfTotal = computed(() => splitForm.value.splits.reduce((s: number, r: any) => s + (Number(r.square_feet) || 0), 0))
+const splitSfValid = computed(() => {
+  if (!splitSourceTenant.value?.square_feet) return true
+  return Math.abs(splitSfTotal.value - splitSourceTenant.value.square_feet) <= 1
+})
+
+async function submitSplit() {
+  if (!selectedReviewId.value || !splitSourceTenant.value) return
+  try {
+    await api.post(`/api/lease-review/reviews/${selectedReviewId.value}/space/split`, {
+      source_id: splitSourceTenant.value.id,
+      splits: splitForm.value.splits,
+    })
+    showSplitModal.value = false
+    selectedTenantIds.value = new Set()
+    await loadRiskData()
+    await loadSpaceEvents()
+  } catch (e: any) {
+    alert('Split failed: ' + (e.response?.data?.error || e.message))
+  }
+}
+
+// --- Succession ---
+function openSuccessionModal(tenantId: number) {
+  successionSourceId.value = tenantId
+  const t = tenants.value.find((x: any) => x.id === tenantId)
+  successionForm.value = { tenant_name: '', suite: t?.suite || '', square_feet: t?.square_feet || 0, effective_date: '' }
+  showSuccessionModal.value = true
+}
+
+async function submitSuccession() {
+  if (!selectedReviewId.value || !successionSourceId.value) return
+  try {
+    await api.post(`/api/lease-review/reviews/${selectedReviewId.value}/tenants/${successionSourceId.value}/succession`, {
+      new_tenant: successionForm.value,
+      effective_date: successionForm.value.effective_date,
+    })
+    showSuccessionModal.value = false
+    await loadRiskData()
+    await loadSpaceEvents()
+  } catch (e: any) {
+    alert('Succession failed: ' + (e.response?.data?.error || e.message))
+  }
+}
+
+async function loadSuccessionChain(tenantId: number) {
+  if (showChainFor.value === tenantId) { showChainFor.value = null; return }
+  try {
+    const res = await api.get(`/api/lease-review/reviews/${selectedReviewId.value}/tenants/${tenantId}/succession-chain`)
+    successionChain.value = res.data
+    showChainFor.value = tenantId
+  } catch (e: any) {
+    console.error('Chain load error:', e)
+  }
+}
+
+// --- Space Events & Timeline ---
+async function loadSpaceEvents() {
+  if (!selectedReviewId.value) return
+  try {
+    const res = await api.get(`/api/lease-review/reviews/${selectedReviewId.value}/space-events`)
+    spaceEvents.value = res.data
+  } catch (e: any) {
+    console.error('Space events load error:', e)
+  }
+}
+
+async function submitPlanEvent() {
+  if (!selectedReviewId.value) return
+  try {
+    await api.post(`/api/lease-review/reviews/${selectedReviewId.value}/space-events`, planEventForm.value)
+    showPlanEventModal.value = false
+    planEventForm.value = { event_type: 'vacate', effective_date: '', source_tenant_ids: [], results: [{ tenant_name: '', suite: '', square_feet: 0 }] }
+    await loadSpaceEvents()
+  } catch (e: any) {
+    alert('Plan event failed: ' + (e.response?.data?.error || e.message))
+  }
+}
+
+async function applyEvent(eventId: number) {
+  if (!selectedReviewId.value) return
+  try {
+    await api.post(`/api/lease-review/reviews/${selectedReviewId.value}/space-events/${eventId}/apply`)
+    await loadRiskData()
+    await loadSpaceEvents()
+  } catch (e: any) {
+    alert('Apply failed: ' + (e.response?.data?.error || e.message))
+  }
+}
+
+async function cancelEvent(eventId: number) {
+  if (!selectedReviewId.value) return
+  try {
+    await api.delete(`/api/lease-review/reviews/${selectedReviewId.value}/space-events/${eventId}`)
+    await loadRiskData()
+    await loadSpaceEvents()
+  } catch (e: any) {
+    alert('Cancel failed: ' + (e.response?.data?.error || e.message))
+  }
+}
+
+// --- Projections ---
+async function loadAssumptions() {
+  if (!selectedReviewId.value) return
+  try {
+    const res = await api.get(`/api/lease-review/reviews/${selectedReviewId.value}/market-assumptions`)
+    marketAssumptions.value = res.data
+  } catch (e: any) {
+    console.error('Assumptions load error:', e)
+  }
+}
+
+async function saveAssumptions() {
+  if (!selectedReviewId.value) return
+  try {
+    await api.post(`/api/lease-review/reviews/${selectedReviewId.value}/market-assumptions`, { assumptions: marketAssumptions.value })
+    alert('Assumptions saved')
+  } catch (e: any) {
+    alert('Save failed: ' + (e.response?.data?.error || e.message))
+  }
+}
+
+function addAssumptionRow() {
+  marketAssumptions.value.push({
+    lease_type: '', market_rent_psf: 0, annual_rent_growth: 0.03,
+    renewal_probability: 0.70, renewal_downtime_months: 0,
+    renewal_ti_psf: 5, renewal_lc_pct: 0.04, renewal_rent_spread: 0,
+    renewal_term_years: 5, new_downtime_months: 6, new_ti_psf: 15,
+    new_lc_pct: 0.06, new_rent_spread: 0, new_term_years: 10,
+    free_rent_months: 0, annual_expense_growth: 0.02,
+  })
+}
+
+async function computeProjections() {
+  if (!selectedReviewId.value || !projStartDate.value || !projEndDate.value) return
+  projectionLoading.value = true
+  try {
+    const [cfRes, sumRes] = await Promise.all([
+      api.get(`/api/lease-review/reviews/${selectedReviewId.value}/projected-cash-flow?start=${projStartDate.value}&end=${projEndDate.value}`),
+      api.get(`/api/lease-review/reviews/${selectedReviewId.value}/projected-revenue-summary?start=${projStartDate.value}&end=${projEndDate.value}`),
+    ])
+    projectionData.value = cfRes.data
+    revenueSummary.value = sumRes.data
+  } catch (e: any) {
+    alert('Projection failed: ' + (e.response?.data?.error || e.message))
+  } finally {
+    projectionLoading.value = false
+  }
+}
+
+const revenueChartOpts = computed(() => {
+  if (!revenueSummary.value?.summaries) return null
+  const data = revenueSummary.value.summaries[projectionScenario.value] || []
+  if (!data.length) return null
+  return {
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['Gross Rent', 'Vacancy Loss', 'TI/LC Costs', 'Net Effective'] },
+    grid: { left: 80, right: 40, bottom: 30 },
+    xAxis: { type: 'category', data: data.map((d: any) => d.year) },
+    yAxis: { type: 'value', name: '$' },
+    series: [
+      { name: 'Gross Rent', type: 'bar', stack: 'rev', data: data.map((d: any) => Math.round(d.gross_rent)), itemStyle: { color: CLR_DARK } },
+      { name: 'Vacancy Loss', type: 'bar', stack: 'rev', data: data.map((d: any) => -Math.round(d.vacancy_loss)), itemStyle: { color: CLR_RED } },
+      { name: 'TI/LC Costs', type: 'bar', stack: 'rev', data: data.map((d: any) => -Math.round(d.ti_costs + d.lc_costs)), itemStyle: { color: CLR_ACCENT } },
+      { name: 'Net Effective', type: 'line', data: data.map((d: any) => Math.round(d.net_effective)), itemStyle: { color: CLR_GREEN }, lineStyle: { width: 2 } },
+    ],
+  }
+})
+
+// Distinct lease types from current tenants
+const leaseTypes = computed(() => {
+  const types = new Set<string>()
+  for (const t of tenants.value) {
+    if (t.lease_type) types.add(t.lease_type)
+  }
+  return Array.from(types).sort()
+})
+
 // Summary stats
 const summaryStats = computed(() => {
   if (!tenants.value.length) return null
@@ -320,9 +608,36 @@ function fmtDate(v: any) {
   } catch { return String(v) }
 }
 
+// Projection helpers
+const projectionYears = computed(() => {
+  if (!projectionData.value?.months?.length) return []
+  const years = new Set<string>()
+  for (const m of projectionData.value.months) years.add(m.substring(0, 4))
+  return Array.from(years).sort()
+})
+
+function projAnnualRent(suite: any, year: string): number {
+  const entries = (suite[projectionScenario.value] || []).filter((e: any) => e.month.startsWith(year))
+  return entries.reduce((s: number, e: any) => s + (e.effective_rent || 0), 0)
+}
+
+function projCellClass(suite: any, year: string): string {
+  const entries = (suite[projectionScenario.value] || []).filter((e: any) => e.month.startsWith(year))
+  if (!entries.length) return ''
+  const phases = new Set(entries.map((e: any) => e.phase))
+  if (phases.has('vacancy')) return 'proj-vacancy'
+  if (phases.has('new_tenant')) return 'proj-new'
+  if (phases.has('renewal')) return 'proj-renewal'
+  return 'proj-inplace'
+}
+
 const expandedScenario = ref<string | null>(null)
 
-watch(selectedReviewId, () => { loadRiskData() })
+watch(selectedReviewId, () => {
+  loadRiskData()
+  loadSpaceEvents()
+  loadAssumptions()
+})
 
 onMounted(() => {
   loadReviews()
@@ -389,85 +704,192 @@ onMounted(() => {
           </div>
         </div>
 
-        <!-- Tenant Roster with Field Resolution -->
-        <h3>Tenant Roster (Resolved Data)</h3>
-        <div class="table-wrapper">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>Tenant</th>
-                <th>Suite</th>
-                <th>SF</th>
-                <th>Annual Rent</th>
-                <th>Rent/SF</th>
-                <th>Lease Start</th>
-                <th>Lease End</th>
-                <th>Approval</th>
-                <th>Resolutions</th>
-                <th>Abstract</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="t in tenants" :key="t.id"
-                  :class="{ vacant: t.is_vacant, resolved: Object.keys(t.resolutions || {}).length > 0 }">
-                <td>{{ t.tenant_name }}</td>
-                <td>{{ t.suite }}</td>
-                <td class="num-cell" :class="{ 'has-resolution': t.resolutions?.square_feet }">
-                  <template v-if="editingTenantId === t.id && editingField === 'square_feet'">
-                    <input v-model="editValue" class="inline-edit" type="number" @keyup.enter="submitEdit(t.id, 'square_feet')" @keyup.escape="cancelEdit" />
-                    <button class="btn-xs btn-save" @click="submitEdit(t.id, 'square_feet')">Save</button>
-                    <button class="btn-xs btn-cancel" @click="cancelEdit">X</button>
-                  </template>
-                  <template v-else>
-                    <span @dblclick="startEdit(t.id, 'square_feet', t.square_feet)" :title="t.resolutions?.square_feet ? 'Resolved by analyst' : 'Double-click to override'">
-                      {{ t.square_feet?.toLocaleString() || '-' }}
-                    </span>
-                    <span v-if="t.resolutions?.square_feet" class="resolution-badge" title="Analyst resolved">R</span>
-                    <button v-if="t.resolutions?.square_feet" class="btn-xs btn-clear" @click="clearResolution(t.id, 'square_feet')" title="Revert to original">&#x21A9;</button>
-                  </template>
-                </td>
-                <td class="num-cell" :class="{ 'has-resolution': t.resolutions?.annual_rent }">
-                  <template v-if="editingTenantId === t.id && editingField === 'annual_rent'">
-                    <input v-model="editValue" class="inline-edit" type="number" @keyup.enter="submitEdit(t.id, 'annual_rent')" @keyup.escape="cancelEdit" />
-                    <button class="btn-xs btn-save" @click="submitEdit(t.id, 'annual_rent')">Save</button>
-                    <button class="btn-xs btn-cancel" @click="cancelEdit">X</button>
-                  </template>
-                  <template v-else>
-                    <span @dblclick="startEdit(t.id, 'annual_rent', t.annual_rent)" :title="t.resolutions?.annual_rent ? 'Resolved by analyst' : 'Double-click to override'">
-                      {{ fmt$(t.annual_rent) }}
-                    </span>
-                    <span v-if="t.resolutions?.annual_rent" class="resolution-badge" title="Analyst resolved">R</span>
-                    <button v-if="t.resolutions?.annual_rent" class="btn-xs btn-clear" @click="clearResolution(t.id, 'annual_rent')" title="Revert to original">&#x21A9;</button>
-                  </template>
-                </td>
-                <td class="num-cell" :class="{ 'has-resolution': t.resolutions?.rent_per_sf }">
-                  <span @dblclick="startEdit(t.id, 'rent_per_sf', t.rent_per_sf)" :title="'Double-click to override'">
-                    {{ t.rent_per_sf ? '$' + Number(t.rent_per_sf).toFixed(2) : '-' }}
-                  </span>
-                  <span v-if="t.resolutions?.rent_per_sf" class="resolution-badge">R</span>
-                </td>
-                <td :class="{ 'has-resolution': t.resolutions?.lease_start }">
-                  <span @dblclick="startEdit(t.id, 'lease_start', t.lease_start)">{{ fmtDate(t.lease_start) }}</span>
-                  <span v-if="t.resolutions?.lease_start" class="resolution-badge">R</span>
-                </td>
-                <td :class="{ 'has-resolution': t.resolutions?.lease_end }">
-                  <span @dblclick="startEdit(t.id, 'lease_end', t.lease_end)">{{ fmtDate(t.lease_end) }}</span>
-                  <span v-if="t.resolutions?.lease_end" class="resolution-badge">R</span>
-                </td>
-                <td>
-                  <span class="status-badge" :class="t.approval_status">{{ t.approval_status }}</span>
-                </td>
-                <td class="num-cell">{{ Object.keys(t.resolutions || {}).length || '-' }}</td>
-                <td>
-                  <button
-                    class="btn-xs btn-abstract"
-                    @click.stop="router.push({ path: '/lease-abstract', query: { review: String(selectedReviewId), tenant: String(t.id) } })"
-                  >View</button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+        <!-- View Toggle + Action Buttons -->
+        <div class="toolbar">
+          <div class="toolbar-left">
+            <button class="btn-sm" :class="{ active: overviewMode === 'current' }" @click="overviewMode = 'current'">Current</button>
+            <button class="btn-sm" :class="{ active: overviewMode === 'timeline' }" @click="overviewMode = 'timeline'">Timeline</button>
+          </div>
+          <div class="toolbar-right">
+            <button class="btn-sm btn-primary" @click="showAddTenant = true">+ Add Tenant</button>
+            <button class="btn-sm btn-primary" :disabled="selectedTenantIds.size < 2" @click="showMergeModal = true">Merge</button>
+            <button class="btn-sm btn-primary" :disabled="selectedTenantIds.size !== 1" @click="openSplitModal()">Split</button>
+            <button class="btn-sm btn-secondary" @click="showPlanEventModal = true">Plan Event</button>
+          </div>
         </div>
+
+        <!-- Add Tenant Inline Form -->
+        <div v-if="showAddTenant" class="inline-form">
+          <h4>Add New Tenant</h4>
+          <div class="form-row">
+            <input v-model="newTenant.tenant_name" placeholder="Tenant Name" class="form-input" />
+            <input v-model="newTenant.suite" placeholder="Suite" class="form-input sm" />
+            <input v-model.number="newTenant.square_feet" placeholder="SF" type="number" class="form-input sm" />
+            <input v-model.number="newTenant.annual_rent" placeholder="Annual Rent" type="number" class="form-input sm" />
+            <input v-model="newTenant.lease_start" placeholder="Lease Start" type="date" class="form-input sm" />
+            <input v-model="newTenant.lease_end" placeholder="Lease End" type="date" class="form-input sm" />
+            <label class="form-check"><input type="checkbox" v-model="newTenant.is_vacant" /> Vacant</label>
+            <button class="btn-sm btn-save" @click="addTenantSubmit">Save</button>
+            <button class="btn-sm btn-cancel" @click="showAddTenant = false">Cancel</button>
+          </div>
+        </div>
+
+        <!-- ═══ CURRENT VIEW ═══ -->
+        <template v-if="overviewMode === 'current'">
+          <h3>Tenant Roster (Resolved Data)</h3>
+          <div class="table-wrapper">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th class="chk-col"><input type="checkbox" @change="(e: any) => { if (e.target.checked) tenants.forEach((t: any) => selectedTenantIds.add(t.id)); else selectedTenantIds = new Set() }" /></th>
+                  <th>Tenant</th>
+                  <th>Suite</th>
+                  <th>SF</th>
+                  <th>Annual Rent</th>
+                  <th>Rent/SF</th>
+                  <th>Lease Start</th>
+                  <th>Lease End</th>
+                  <th>Vacant</th>
+                  <th>Approval</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="t in tenants" :key="t.id"
+                    :class="{ vacant: t.is_vacant, resolved: Object.keys(t.resolutions || {}).length > 0 }">
+                  <td class="chk-col"><input type="checkbox" :checked="selectedTenantIds.has(t.id)" @change="toggleSelection(t.id)" /></td>
+                  <td>
+                    {{ t.tenant_name }}
+                    <span v-if="t.successor_tenant_id" class="chain-link" @click="loadSuccessionChain(t.id)" title="View succession chain">&#x1F517;</span>
+                  </td>
+                  <td>{{ t.suite }}</td>
+                  <td class="num-cell" :class="{ 'has-resolution': t.resolutions?.square_feet }">
+                    <template v-if="editingTenantId === t.id && editingField === 'square_feet'">
+                      <input v-model="editValue" class="inline-edit" type="number" @keyup.enter="submitEdit(t.id, 'square_feet')" @keyup.escape="cancelEdit" />
+                      <button class="btn-xs btn-save" @click="submitEdit(t.id, 'square_feet')">Save</button>
+                      <button class="btn-xs btn-cancel" @click="cancelEdit">X</button>
+                    </template>
+                    <template v-else>
+                      <span @dblclick="startEdit(t.id, 'square_feet', t.square_feet)" :title="t.resolutions?.square_feet ? 'Resolved by analyst' : 'Double-click to override'">
+                        {{ t.square_feet?.toLocaleString() || '-' }}
+                      </span>
+                      <span v-if="t.resolutions?.square_feet" class="resolution-badge" title="Analyst resolved">R</span>
+                      <button v-if="t.resolutions?.square_feet" class="btn-xs btn-clear" @click="clearResolution(t.id, 'square_feet')" title="Revert to original">&#x21A9;</button>
+                    </template>
+                  </td>
+                  <td class="num-cell" :class="{ 'has-resolution': t.resolutions?.annual_rent }">
+                    <template v-if="editingTenantId === t.id && editingField === 'annual_rent'">
+                      <input v-model="editValue" class="inline-edit" type="number" @keyup.enter="submitEdit(t.id, 'annual_rent')" @keyup.escape="cancelEdit" />
+                      <button class="btn-xs btn-save" @click="submitEdit(t.id, 'annual_rent')">Save</button>
+                      <button class="btn-xs btn-cancel" @click="cancelEdit">X</button>
+                    </template>
+                    <template v-else>
+                      <span @dblclick="startEdit(t.id, 'annual_rent', t.annual_rent)" :title="t.resolutions?.annual_rent ? 'Resolved by analyst' : 'Double-click to override'">
+                        {{ fmt$(t.annual_rent) }}
+                      </span>
+                      <span v-if="t.resolutions?.annual_rent" class="resolution-badge" title="Analyst resolved">R</span>
+                      <button v-if="t.resolutions?.annual_rent" class="btn-xs btn-clear" @click="clearResolution(t.id, 'annual_rent')" title="Revert to original">&#x21A9;</button>
+                    </template>
+                  </td>
+                  <td class="num-cell" :class="{ 'has-resolution': t.resolutions?.rent_per_sf }">
+                    <span @dblclick="startEdit(t.id, 'rent_per_sf', t.rent_per_sf)" :title="'Double-click to override'">
+                      {{ t.rent_per_sf ? '$' + Number(t.rent_per_sf).toFixed(2) : '-' }}
+                    </span>
+                    <span v-if="t.resolutions?.rent_per_sf" class="resolution-badge">R</span>
+                  </td>
+                  <td :class="{ 'has-resolution': t.resolutions?.lease_start }">
+                    <span @dblclick="startEdit(t.id, 'lease_start', t.lease_start)">{{ fmtDate(t.lease_start) }}</span>
+                    <span v-if="t.resolutions?.lease_start" class="resolution-badge">R</span>
+                  </td>
+                  <td :class="{ 'has-resolution': t.resolutions?.lease_end }">
+                    <span @dblclick="startEdit(t.id, 'lease_end', t.lease_end)">{{ fmtDate(t.lease_end) }}</span>
+                    <span v-if="t.resolutions?.lease_end" class="resolution-badge">R</span>
+                  </td>
+                  <td>
+                    <button class="btn-xs" :class="t.is_vacant ? 'btn-exercised' : 'btn-not-exercised'" @click="toggleVacant(t.id, t.is_vacant)">
+                      {{ t.is_vacant ? 'Yes' : 'No' }}
+                    </button>
+                  </td>
+                  <td>
+                    <span class="status-badge" :class="t.approval_status">{{ t.approval_status }}</span>
+                  </td>
+                  <td class="actions-cell">
+                    <button class="btn-xs btn-abstract" @click.stop="router.push({ path: '/lease-abstract', query: { review: String(selectedReviewId), tenant: String(t.id) } })">Abstract</button>
+                    <button class="btn-xs btn-succession" @click="openSuccessionModal(t.id)" title="Replace with successor">&#x27A1;</button>
+                    <button v-if="confirmDeleteId !== t.id" class="btn-xs btn-delete" @click="confirmDeleteId = t.id" title="Delete tenant">&#x1F5D1;</button>
+                    <template v-else>
+                      <button class="btn-xs btn-delete-confirm" @click="deleteTenantConfirm(t.id)">Confirm</button>
+                      <button class="btn-xs btn-cancel" @click="confirmDeleteId = null">X</button>
+                    </template>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Succession Chain Display -->
+          <div v-if="showChainFor && successionChain.length" class="succession-chain">
+            <h4>Succession Chain</h4>
+            <div class="chain-items">
+              <div v-for="(c, i) in successionChain" :key="c.id" class="chain-item" :class="{ replaced: c.tenant_status === 'replaced', current: c.id === showChainFor }">
+                <div class="chain-name">{{ c.tenant_name }}</div>
+                <div class="chain-detail">{{ c.suite }} &middot; {{ c.square_feet?.toLocaleString() }} SF &middot; {{ fmt$(c.annual_rent) }}</div>
+                <div class="chain-dates">{{ fmtDate(c.lease_start) }} - {{ fmtDate(c.lease_end) }}</div>
+                <span v-if="i < successionChain.length - 1" class="chain-arrow">&#x2192;</span>
+              </div>
+            </div>
+            <button class="btn-xs btn-cancel" @click="showChainFor = null">Close</button>
+          </div>
+
+          <!-- Show replaced tenants toggle -->
+          <div class="replaced-toggle">
+            <label><input type="checkbox" v-model="showReplacedTenants" /> Show replaced/deleted tenants</label>
+          </div>
+
+          <!-- Space Changes History -->
+          <div v-if="spaceEvents.length" class="space-history">
+            <h3>Space Changes History</h3>
+            <div v-for="e in spaceEvents" :key="e.id" class="event-row" :class="e.status">
+              <span class="event-badge" :class="e.event_type">{{ e.event_type }}</span>
+              <span class="event-date">{{ fmtDate(e.effective_date) }}</span>
+              <span class="event-desc">{{ e.description }}</span>
+              <span class="event-status status-badge" :class="e.status">{{ e.status }}</span>
+              <button v-if="e.status === 'planned'" class="btn-xs btn-save" @click="applyEvent(e.id)">Apply</button>
+              <button v-if="e.status !== 'cancelled'" class="btn-xs btn-delete" @click="cancelEvent(e.id)">Cancel</button>
+            </div>
+          </div>
+        </template>
+
+        <!-- ═══ TIMELINE VIEW ═══ -->
+        <template v-if="overviewMode === 'timeline'">
+          <h3>Space Planning Timeline</h3>
+          <div v-if="!spaceEvents.length" class="empty-state">No space events planned. Use the toolbar buttons to merge, split, or plan future events.</div>
+          <div v-else class="timeline-list">
+            <div v-for="e in spaceEvents" :key="e.id" class="timeline-event" :class="{ future: e.status === 'planned', cancelled: e.status === 'cancelled' }">
+              <div class="timeline-marker" :class="e.status"></div>
+              <div class="timeline-content">
+                <div class="timeline-header">
+                  <span class="event-badge" :class="e.event_type">{{ e.event_type }}</span>
+                  <span class="event-date">{{ fmtDate(e.effective_date) }}</span>
+                  <span class="event-status status-badge" :class="e.status">{{ e.status }}</span>
+                </div>
+                <div class="timeline-desc">{{ e.description }}</div>
+                <div v-if="e.source_tenants?.length" class="timeline-sources">
+                  Source: {{ e.source_tenants.map((s: any) => `${s.name} (${s.suite})`).join(', ') }}
+                </div>
+                <div v-if="e.results?.length" class="timeline-results">
+                  <span v-for="r in e.results" :key="r.id" class="result-chip">
+                    {{ r.tenant_name }} &middot; {{ r.suite }} &middot; {{ r.square_feet?.toLocaleString() }} SF
+                  </span>
+                </div>
+                <div v-if="e.status === 'planned'" class="timeline-actions">
+                  <button class="btn-xs btn-save" @click="applyEvent(e.id)">Apply</button>
+                  <button class="btn-xs btn-delete" @click="cancelEvent(e.id)">Cancel</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </template>
       </div>
 
       <!-- ═══ LEASE EXPIRATIONS TAB ═══ -->
@@ -760,6 +1182,237 @@ onMounted(() => {
         </template>
         <div v-else class="empty-state">No lease options found.</div>
       </div>
+
+      <!-- ═══ PROJECTIONS TAB ═══ -->
+      <div v-if="activeTab === 'projections'" class="tab-content">
+        <!-- Market Assumptions -->
+        <h3>Leasing Assumptions by Type</h3>
+        <div class="table-wrapper">
+          <table class="data-table compact">
+            <thead>
+              <tr>
+                <th>Lease Type</th>
+                <th>Market Rent/SF</th>
+                <th>Annual Growth</th>
+                <th>Renewal Prob.</th>
+                <th>Renewal Down (mo)</th>
+                <th>Renewal TI/SF</th>
+                <th>Renewal LC %</th>
+                <th>Renewal Term (yr)</th>
+                <th>New Down (mo)</th>
+                <th>New TI/SF</th>
+                <th>New LC %</th>
+                <th>New Term (yr)</th>
+                <th>Free Rent (mo)</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(a, i) in marketAssumptions" :key="i">
+                <td><input v-model="a.lease_type" class="form-input xs" :list="'lt-list'" /></td>
+                <td><input v-model.number="a.market_rent_psf" type="number" step="0.01" class="form-input xs" /></td>
+                <td><input v-model.number="a.annual_rent_growth" type="number" step="0.01" class="form-input xs" /></td>
+                <td><input v-model.number="a.renewal_probability" type="number" step="0.05" min="0" max="1" class="form-input xs" /></td>
+                <td><input v-model.number="a.renewal_downtime_months" type="number" class="form-input xs" /></td>
+                <td><input v-model.number="a.renewal_ti_psf" type="number" step="0.5" class="form-input xs" /></td>
+                <td><input v-model.number="a.renewal_lc_pct" type="number" step="0.01" class="form-input xs" /></td>
+                <td><input v-model.number="a.renewal_term_years" type="number" class="form-input xs" /></td>
+                <td><input v-model.number="a.new_downtime_months" type="number" class="form-input xs" /></td>
+                <td><input v-model.number="a.new_ti_psf" type="number" step="0.5" class="form-input xs" /></td>
+                <td><input v-model.number="a.new_lc_pct" type="number" step="0.01" class="form-input xs" /></td>
+                <td><input v-model.number="a.new_term_years" type="number" class="form-input xs" /></td>
+                <td><input v-model.number="a.free_rent_months" type="number" class="form-input xs" /></td>
+              </tr>
+            </tbody>
+          </table>
+          <datalist id="lt-list">
+            <option v-for="lt in leaseTypes" :key="lt" :value="lt" />
+          </datalist>
+        </div>
+        <div class="form-row" style="margin-bottom:16px">
+          <button class="btn-sm btn-secondary" @click="addAssumptionRow">+ Add Type</button>
+          <button class="btn-sm btn-save" @click="saveAssumptions">Save Assumptions</button>
+        </div>
+
+        <!-- Projection Controls -->
+        <h3>Generate Projections</h3>
+        <div class="form-row">
+          <label>Start: <input v-model="projStartDate" type="month" class="form-input sm" /></label>
+          <label>End: <input v-model="projEndDate" type="month" class="form-input sm" /></label>
+          <button class="btn-sm btn-primary" @click="computeProjections" :disabled="projectionLoading || !projStartDate || !projEndDate">
+            {{ projectionLoading ? 'Computing...' : 'Compute' }}
+          </button>
+        </div>
+
+        <template v-if="revenueSummary">
+          <!-- Scenario Toggle -->
+          <div class="scenario-toggle">
+            <button class="btn-sm" :class="{ active: projectionScenario === 'renewal' }" @click="projectionScenario = 'renewal'">Renewal Case</button>
+            <button class="btn-sm" :class="{ active: projectionScenario === 'new_tenant' }" @click="projectionScenario = 'new_tenant'">New Tenant Case</button>
+            <button class="btn-sm" :class="{ active: projectionScenario === 'weighted' }" @click="projectionScenario = 'weighted'">Probability-Weighted</button>
+          </div>
+
+          <!-- Revenue Chart -->
+          <div v-if="revenueChartOpts" class="chart-container">
+            <v-chart :option="revenueChartOpts" style="height:350px" autoresize />
+          </div>
+
+          <!-- Revenue Summary Table -->
+          <h3>Annual Revenue Summary ({{ projectionScenario.replace('_', ' ') }})</h3>
+          <div class="table-wrapper">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Year</th>
+                  <th>Gross Rent</th>
+                  <th>Vacancy Loss</th>
+                  <th>TI Costs</th>
+                  <th>LC Costs</th>
+                  <th>Net Effective</th>
+                  <th>Vacancy Rate</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="d in (revenueSummary.summaries[projectionScenario] || [])" :key="d.year">
+                  <td>{{ d.year }}</td>
+                  <td class="num-cell">{{ fmt$(d.gross_rent) }}</td>
+                  <td class="num-cell danger">{{ fmt$(d.vacancy_loss) }}</td>
+                  <td class="num-cell">{{ fmt$(d.ti_costs) }}</td>
+                  <td class="num-cell">{{ fmt$(d.lc_costs) }}</td>
+                  <td class="num-cell" style="font-weight:600">{{ fmt$(d.net_effective) }}</td>
+                  <td class="num-cell">{{ fmtPct(d.vacancy_rate * 100) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </template>
+
+        <!-- Projected Rent Roll (suite-level) -->
+        <template v-if="projectionData?.suites">
+          <h3>Projected Rent Roll by Suite ({{ projectionScenario.replace('_', ' ') }})</h3>
+          <div class="table-wrapper" style="max-height:500px;overflow:auto">
+            <table class="data-table compact">
+              <thead>
+                <tr>
+                  <th>Suite</th>
+                  <th>Tenant</th>
+                  <th>SF</th>
+                  <th>Lease End</th>
+                  <th v-for="yr in projectionYears" :key="yr">{{ yr }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(suite, key) in projectionData.suites" :key="key">
+                  <td>{{ suite.suite }}</td>
+                  <td>{{ suite.tenant_name }}</td>
+                  <td class="num-cell">{{ suite.sf?.toLocaleString() }}</td>
+                  <td>{{ fmtDate(suite.lease_end) }}</td>
+                  <td v-for="yr in projectionYears" :key="yr" class="num-cell"
+                      :class="projCellClass(suite, yr)">
+                    {{ fmt$(projAnnualRent(suite, yr)) }}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </template>
+      </div>
+
+      <!-- Modals -->
+      <!-- Merge Modal -->
+      <div v-if="showMergeModal" class="modal-overlay" @click.self="showMergeModal = false">
+        <div class="modal-box">
+          <h3>Merge {{ selectedTenantIds.size }} Tenants</h3>
+          <div class="form-row"><label>Merged Name: <input v-model="mergeForm.merged_name" class="form-input" /></label></div>
+          <div class="form-row"><label>Merged Suite: <input v-model="mergeForm.merged_suite" class="form-input sm" /></label></div>
+          <div class="form-row">
+            <button class="btn-sm btn-save" @click="submitMerge">Merge</button>
+            <button class="btn-sm btn-cancel" @click="showMergeModal = false">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Split Modal -->
+      <div v-if="showSplitModal" class="modal-overlay" @click.self="showSplitModal = false">
+        <div class="modal-box wide">
+          <h3>Split {{ splitSourceTenant?.tenant_name }} ({{ splitSourceTenant?.square_feet?.toLocaleString() }} SF)</h3>
+          <table class="data-table compact">
+            <thead><tr><th>Tenant Name</th><th>Suite</th><th>SF</th><th></th></tr></thead>
+            <tbody>
+              <tr v-for="(s, i) in splitForm.splits" :key="i">
+                <td><input v-model="s.tenant_name" class="form-input" /></td>
+                <td><input v-model="s.suite" class="form-input sm" /></td>
+                <td><input v-model.number="s.square_feet" type="number" class="form-input sm" /></td>
+                <td><button v-if="splitForm.splits.length > 2" class="btn-xs btn-delete" @click="removeSplitRow(i)">X</button></td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="split-validation">
+            Total SF: {{ splitSfTotal.toLocaleString() }}
+            <span v-if="!splitSfValid" class="danger"> (must match source {{ splitSourceTenant?.square_feet?.toLocaleString() }} SF)</span>
+            <span v-else class="match-ok"> &#x2713;</span>
+          </div>
+          <div class="form-row">
+            <button class="btn-sm btn-secondary" @click="addSplitRow">+ Row</button>
+            <button class="btn-sm btn-save" :disabled="!splitSfValid" @click="submitSplit">Split</button>
+            <button class="btn-sm btn-cancel" @click="showSplitModal = false">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Succession Modal -->
+      <div v-if="showSuccessionModal" class="modal-overlay" @click.self="showSuccessionModal = false">
+        <div class="modal-box">
+          <h3>Replace Tenant with Successor</h3>
+          <div class="form-row"><label>New Tenant Name: <input v-model="successionForm.tenant_name" class="form-input" /></label></div>
+          <div class="form-row"><label>Suite: <input v-model="successionForm.suite" class="form-input sm" /></label></div>
+          <div class="form-row"><label>SF: <input v-model.number="successionForm.square_feet" type="number" class="form-input sm" /></label></div>
+          <div class="form-row"><label>Annual Rent: <input v-model.number="successionForm.annual_rent" type="number" class="form-input sm" /></label></div>
+          <div class="form-row"><label>Effective Date: <input v-model="successionForm.effective_date" type="date" class="form-input sm" /></label></div>
+          <div class="form-row"><label>Lease Start: <input v-model="successionForm.lease_start" type="date" class="form-input sm" /></label></div>
+          <div class="form-row"><label>Lease End: <input v-model="successionForm.lease_end" type="date" class="form-input sm" /></label></div>
+          <div class="form-row">
+            <button class="btn-sm btn-save" @click="submitSuccession">Create Succession</button>
+            <button class="btn-sm btn-cancel" @click="showSuccessionModal = false">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Plan Event Modal -->
+      <div v-if="showPlanEventModal" class="modal-overlay" @click.self="showPlanEventModal = false">
+        <div class="modal-box">
+          <h3>Plan Future Space Event</h3>
+          <div class="form-row">
+            <label>Type:
+              <select v-model="planEventForm.event_type" class="form-input sm">
+                <option value="vacate">Vacate</option>
+                <option value="renew">Renew</option>
+                <option value="new_tenant">New Tenant</option>
+                <option value="succession">Succession</option>
+                <option value="resize">Resize</option>
+              </select>
+            </label>
+          </div>
+          <div class="form-row"><label>Effective Date: <input v-model="planEventForm.effective_date" type="date" class="form-input sm" /></label></div>
+          <div class="form-row">
+            <label>Source Tenants:
+              <select v-model="planEventForm.source_tenant_ids" multiple class="form-input" style="height:80px">
+                <option v-for="t in tenants" :key="t.id" :value="t.id">{{ t.tenant_name }} ({{ t.suite }})</option>
+              </select>
+            </label>
+          </div>
+          <div class="form-row"><label>Description: <input v-model="planEventForm.description" class="form-input" /></label></div>
+          <h4>Result Tenant(s)</h4>
+          <div v-for="(r, i) in planEventForm.results" :key="i" class="form-row">
+            <input v-model="r.tenant_name" placeholder="Name" class="form-input sm" />
+            <input v-model="r.suite" placeholder="Suite" class="form-input xs" />
+            <input v-model.number="r.square_feet" placeholder="SF" type="number" class="form-input xs" />
+          </div>
+          <div class="form-row">
+            <button class="btn-sm btn-save" @click="submitPlanEvent">Save Event</button>
+            <button class="btn-sm btn-cancel" @click="showPlanEventModal = false">Cancel</button>
+          </div>
+        </div>
+      </div>
     </template>
   </div>
 </template>
@@ -1019,4 +1672,125 @@ h3 { color: #1F4E79; margin: 20px 0 12px; font-size: 1.1rem; }
 .btn-not-exercised:hover { background: #dee2e6; }
 .btn-abstract { background: #1F4E79; color: #fff; font-weight: 600; }
 .btn-abstract:hover { background: #16395a; }
+
+/* Toolbar */
+.toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; gap: 8px; flex-wrap: wrap; }
+.toolbar-left, .toolbar-right { display: flex; gap: 6px; }
+.btn-sm {
+  padding: 5px 12px; font-size: 0.82rem; border: 1px solid #ccc;
+  border-radius: 4px; cursor: pointer; background: #f0f0f0;
+}
+.btn-sm.active { background: #1F4E79; color: #fff; border-color: #1F4E79; }
+.btn-sm.btn-primary { background: #1F4E79; color: #fff; border-color: #1F4E79; }
+.btn-sm.btn-primary:hover { background: #16395a; }
+.btn-sm.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-sm.btn-secondary { background: #f8f9fa; color: #333; }
+.btn-sm.btn-secondary:hover { background: #e9ecef; }
+.btn-sm.btn-save { background: #548235; color: #fff; border-color: #548235; }
+.btn-sm.btn-cancel { background: #999; color: #fff; border-color: #999; }
+.chk-col { width: 30px; text-align: center; }
+.actions-cell { white-space: nowrap; }
+
+/* Inline form */
+.inline-form {
+  background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 6px;
+  padding: 12px 16px; margin-bottom: 16px;
+}
+.inline-form h4 { margin: 0 0 8px; color: #1F4E79; font-size: 0.9rem; }
+.form-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.form-input { padding: 4px 8px; border: 1px solid #ccc; border-radius: 3px; font-size: 0.82rem; }
+.form-input.sm { width: 120px; }
+.form-input.xs { width: 80px; }
+.form-check { font-size: 0.82rem; display: flex; align-items: center; gap: 4px; }
+
+/* Delete / succession buttons */
+.btn-delete { background: transparent; color: #C00000; font-size: 0.8rem; }
+.btn-delete:hover { background: #fde8e8; }
+.btn-delete-confirm { background: #C00000; color: #fff; }
+.btn-succession { background: #f0f4f8; color: #1F4E79; border: 1px solid #ccc; }
+.btn-succession:hover { background: #e3eef8; }
+
+/* Succession chain */
+.succession-chain { background: #f0f4f8; border: 1px solid #cce; border-radius: 6px; padding: 12px; margin: 12px 0; }
+.chain-items { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.chain-item {
+  background: #fff; border: 1px solid #dee2e6; border-radius: 4px; padding: 8px 12px;
+  min-width: 140px; position: relative;
+}
+.chain-item.replaced { opacity: 0.6; border-style: dashed; }
+.chain-item.current { border-color: #1F4E79; border-width: 2px; }
+.chain-name { font-weight: 600; font-size: 0.85rem; }
+.chain-detail, .chain-dates { font-size: 0.75rem; color: #666; }
+.chain-arrow { font-size: 1.2rem; color: #1F4E79; }
+.chain-link { cursor: pointer; font-size: 0.7rem; }
+
+/* Replaced toggle */
+.replaced-toggle { margin: 12px 0; font-size: 0.82rem; color: #666; }
+
+/* Space history */
+.space-history { margin-top: 20px; }
+.event-row { display: flex; gap: 10px; align-items: center; padding: 6px 0; border-bottom: 1px solid #eee; }
+.event-row.cancelled { opacity: 0.5; }
+.event-badge {
+  display: inline-block; padding: 2px 8px; border-radius: 4px;
+  font-size: 0.72rem; font-weight: 600; text-transform: capitalize;
+  background: #e9ecef; color: #333;
+}
+.event-badge.merge { background: #E2EFDA; color: #375623; }
+.event-badge.split { background: #DEEBF7; color: #1F4E79; }
+.event-badge.succession { background: #FFF2CC; color: #856404; }
+.event-badge.resize { background: #F2F2F2; color: #333; }
+.event-badge.vacate { background: #FCE4EC; color: #C00000; }
+.event-badge.new_tenant { background: #E8F5E9; color: #2E7D32; }
+.event-badge.renew { background: #E2EFDA; color: #375623; }
+.event-date { font-size: 0.82rem; color: #555; }
+.event-desc { flex: 1; font-size: 0.82rem; }
+
+/* Timeline */
+.timeline-list { position: relative; padding-left: 24px; }
+.timeline-event { position: relative; margin-bottom: 16px; padding: 10px 16px; background: #fff; border: 1px solid #dee2e6; border-radius: 6px; }
+.timeline-event.future { border-style: dashed; border-color: #1F4E79; }
+.timeline-event.cancelled { opacity: 0.4; }
+.timeline-marker {
+  position: absolute; left: -32px; top: 14px; width: 12px; height: 12px;
+  border-radius: 50%; border: 2px solid #1F4E79; background: #fff;
+}
+.timeline-marker.applied { background: #548235; }
+.timeline-marker.planned { background: #fff; }
+.timeline-marker.cancelled { background: #C00000; }
+.timeline-header { display: flex; gap: 10px; align-items: center; margin-bottom: 4px; }
+.timeline-desc { font-size: 0.85rem; color: #333; }
+.timeline-sources, .timeline-results { font-size: 0.78rem; color: #666; margin-top: 4px; }
+.timeline-actions { margin-top: 6px; display: flex; gap: 6px; }
+.result-chip {
+  display: inline-block; padding: 2px 8px; background: #f0f4f8;
+  border-radius: 3px; font-size: 0.75rem; margin: 2px;
+}
+
+/* Modals */
+.modal-overlay {
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.4); display: flex; align-items: center;
+  justify-content: center; z-index: 1000;
+}
+.modal-box {
+  background: #fff; border-radius: 8px; padding: 24px; min-width: 400px;
+  max-width: 600px; max-height: 80vh; overflow-y: auto; box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+}
+.modal-box.wide { min-width: 600px; max-width: 800px; }
+.modal-box h3 { margin: 0 0 16px; color: #1F4E79; }
+.modal-box h4 { margin: 12px 0 8px; color: #333; font-size: 0.9rem; }
+
+/* Split validation */
+.split-validation { font-size: 0.85rem; margin: 8px 0 12px; }
+.match-ok { color: #548235; font-weight: 600; }
+
+/* Projection colors */
+.proj-inplace { background: #DEEBF7; }
+.proj-renewal { background: #E2EFDA; }
+.proj-new { background: #FFF2CC; }
+.proj-vacancy { background: #FCE4EC; }
+
+/* Scenario toggle */
+.scenario-toggle { display: flex; gap: 4px; margin: 16px 0; }
 </style>
