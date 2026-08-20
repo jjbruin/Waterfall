@@ -464,7 +464,7 @@ def create_alias():
     engine = get_engine()
     try:
         result = save_tenant_alias(engine, alias_name, canonical_name,
-                                   created_by=g.user.get('username'))
+                                   created_by=g.current_user.get('username'))
         return jsonify(result)
     except Exception as e:
         logger.error(f"Alias save error: {e}")
@@ -909,7 +909,7 @@ def resolve_tenant_field(review_id, tenant_id):
         ensure_resolution_table(engine)
         resolve_field(
             engine, tenant_id, field_name, value, source,
-            resolved_by=g.user.get('username', 'unknown'),
+            resolved_by=g.current_user.get('username', 'unknown'),
         )
         return jsonify({'status': 'ok', 'field': field_name, 'value': value})
     except Exception as e:
