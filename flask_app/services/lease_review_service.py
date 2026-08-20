@@ -1830,10 +1830,28 @@ Return a JSON object with these fields (use null for fields not found):
     "tenant_released": true/false
   }},
   "ti_allowance": number or null,
-  "percentage_rent": {{
-    "has_clause": true/false,
-    "breakpoint": number or null,
-    "rate_pct": number or null
+  "sales_provisions": {{
+    "sales_reporting_required": true/false,
+    "reporting_frequency": "monthly / quarterly / annually / null",
+    "reporting_deadline": "e.g. 30 days after period end / null",
+    "audit_right": true/false,
+    "percentage_rent": {{
+      "has_clause": true/false,
+      "breakpoint": number or null,
+      "rate_pct": number or null
+    }},
+    "sales_performance_clauses": [
+      {{
+        "clause_type": "kick-out / reduced rent / recapture / radius restriction / other",
+        "trigger": "description of sales threshold or condition that activates the clause",
+        "threshold_amount": number or null,
+        "threshold_period": "trailing 12 months / lease year / other",
+        "consequence": "description of what happens — e.g. reduced rent to X, right to terminate, landlord recapture right",
+        "beneficiary": "tenant / landlord",
+        "notice_days": number or null,
+        "cure_period_days": number or null
+      }}
+    ]
   }},
   "go_dark_provision": "...",
   "key_dates": {{
@@ -1850,6 +1868,7 @@ IMPORTANT:
 - If this is an amendment, note which fields were modified
 - For renewal_options: option_start/option_end are the beginning and ending dates of each renewal period. If not explicitly stated, derive from the prior term's expiration + term_years. Mark exercised=true if an amendment or exercise notice confirms the option was exercised.
 - For termination_options: extract early termination rights, kick-out clauses, and similar provisions. earliest_termination_date is when the tenant can first terminate. Mark exercised=true if a termination notice was exercised.
+- For sales_provisions: Look for any requirement to report gross sales, certified sales statements, or sales audits. Extract percentage rent (overage rent) breakpoints and rates. For sales_performance_clauses, capture any provision where tenant sales performance triggers a consequence — including tenant kick-out rights (right to terminate if sales fall below a threshold), landlord recapture rights, reduced/alternative rent tied to sales levels, and radius restrictions limiting competing stores. Each clause should specify who benefits (tenant or landlord) and the exact consequence.
 
 DOCUMENT TEXT:
 {text}"""
@@ -4276,8 +4295,10 @@ def _assemble_abstract_from_data(
         'lease_ref': '',
     }
 
-    # Percentage Rent
-    pct = ext.get('percentage_rent', {})
+    # Sales Provisions (percentage rent, reporting, performance clauses)
+    sales = ext.get('sales_provisions', {})
+    # Backwards compat: fall back to top-level percentage_rent from older extractions
+    pct = sales.get('percentage_rent', ext.get('percentage_rent', {})) if sales else ext.get('percentage_rent', {})
     if pct and pct.get('has_clause'):
         pct_text = f"Rate: {pct.get('rate_pct')}%"
         if pct.get('breakpoint'):
@@ -4288,6 +4309,35 @@ def _assemble_abstract_from_data(
             'content': 'No language noted.' if ext else '',
             'lease_ref': '',
         }
+
+    # Sales Reporting
+    if sales and sales.get('sales_reporting_required'):
+        rpt_parts = ['Sales reporting required.']
+        if sales.get('reporting_frequency'):
+            rpt_parts.append(f"Frequency: {sales['reporting_frequency']}.")
+        if sales.get('reporting_deadline'):
+            rpt_parts.append(f"Deadline: {sales['reporting_deadline']}.")
+        if sales.get('audit_right'):
+            rpt_parts.append('Landlord has audit right.')
+        perf_clauses = sales.get('sales_performance_clauses', [])
+        for pc in perf_clauses:
+            clause_desc = pc.get('clause_type', 'clause').title()
+            trigger = pc.get('trigger', '')
+            consequence = pc.get('consequence', '')
+            beneficiary = pc.get('beneficiary', '')
+            parts = [f"{clause_desc}:"]
+            if trigger:
+                parts.append(f"Trigger — {trigger}.")
+            if consequence:
+                parts.append(f"Consequence — {consequence}.")
+            if beneficiary:
+                parts.append(f"({beneficiary.title()} right)")
+            rpt_parts.append(' '.join(parts))
+        sections['sales_reporting'] = {'content': ' '.join(rpt_parts), 'lease_ref': ''}
+    elif sales and sales.get('sales_reporting_required') is False:
+        sections['sales_reporting'] = {'content': 'No sales reporting required.', 'lease_ref': ''}
+    else:
+        sections['sales_reporting'] = {'content': '', 'lease_ref': ''}
 
     # Renewal Options
     if renewals:
@@ -4399,7 +4449,7 @@ def _assemble_abstract_from_data(
     # Sections that are typically blank until manually populated
     for key in [
         'parking', 'roof', 'structural', 'signage', 'utilities',
-        'hvac', 'sales_reporting', 'estoppel', 'operating_covenants',
+        'hvac', 'estoppel', 'operating_covenants',
         'business_termination', 'casualty_termination',
         'relocation_rights', 'rofr_rofo', 'radius_restriction',
         'lease_inducements', 'merchants_association', 'redevelopment',
