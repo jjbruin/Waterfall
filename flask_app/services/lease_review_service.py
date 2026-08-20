@@ -6,6 +6,7 @@ Supports multi-property portfolio reviews. Data stored in PostgreSQL/SQLite
 via the standard database layer.
 """
 
+import copy
 import hashlib
 import json
 import logging
@@ -369,6 +370,9 @@ def ensure_lease_tables(engine):
 
     # Phase 1B+: Allow NULL tenant_id for unmatched documents
     _migrate_nullable(engine, 'lease_documents', 'tenant_id')
+
+    # Per-document extraction JSON for consolidation
+    _migrate_add_column(engine, 'lease_documents', 'extraction_json', 'TEXT')
 
     logger.info("Lease review tables ensured")
 
@@ -2344,17 +2348,18 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None)
                     )
 
                     if not terms.get('_parse_error'):
+                        # Store per-document extraction JSON + mark extracted
                         conn.execute(sql_text("""
                             UPDATE lease_documents
-                            SET extraction_status = 'extracted'
+                            SET extraction_status = 'extracted',
+                                extraction_json = :ej
                             WHERE id = :did
-                        """), {'did': doc_id})
+                        """), {'did': doc_id, 'ej': json.dumps(terms)})
 
-                        # Store extraction JSON on tenant
+                        # Mark tenant as having extraction data
                         conn.execute(sql_text("""
                             UPDATE lease_tenants
-                            SET extraction_json = COALESCE(extraction_json, '[]'),
-                                extraction_status = 'extracted',
+                            SET extraction_status = 'extracted',
                                 updated_at = CURRENT_TIMESTAMP
                             WHERE id = :tid
                         """), {'tid': tenant_id})
@@ -2532,6 +2537,182 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None)
                     WHERE id = :did
                 """), {'did': doc_id})
                 conn.commit()
+
+    # After all documents extracted, consolidate per-tenant
+    consolidate_review_extractions(engine, review_id)
+
+
+# ---------------------------------------------------------------------------
+# Consolidation — merge base lease + amendments into current terms
+# ---------------------------------------------------------------------------
+
+def _merge_extraction_terms(base: Dict, amendment: Dict) -> Dict:
+    """Layer an amendment's extracted terms onto the base/running state.
+
+    Rules:
+    - Scalar fields: amendment value replaces base if not None
+    - rent_steps: union by effective_date (amendment overwrites same date)
+    - renewal_options / termination_options: merge by option_number;
+      amendment can update exercised status or add new options
+    - cotenancy / exclusive_use / sales_provisions / assignment /
+      percentage_rent: amendment replaces entirely if present
+    - key_dates: amendment replaces if present
+    """
+    merged = copy.deepcopy(base)
+
+    # Scalar fields — amendment non-null wins
+    scalar_keys = [
+        'tenant_legal_name', 'suite', 'square_feet', 'permitted_use',
+        'lease_commencement', 'rent_commencement', 'lease_expiration',
+        'holdover_rate', 'escalation_structure', 'security_deposit',
+        'cam_structure', 'cam_cap_pct', 'admin_fee_pct',
+        'tax_pass_through', 'insurance_pass_through',
+        'ti_allowance', 'go_dark_provision',
+    ]
+    for key in scalar_keys:
+        val = amendment.get(key)
+        if val is not None:
+            merged[key] = val
+
+    # Rent steps — merge by effective_date
+    if amendment.get('rent_steps'):
+        existing_by_date = {}
+        for step in (merged.get('rent_steps') or []):
+            ed = step.get('effective_date')
+            if ed:
+                existing_by_date[ed] = step
+        for step in amendment['rent_steps']:
+            ed = step.get('effective_date')
+            if ed:
+                existing_by_date[ed] = step  # amendment overwrites same date
+            else:
+                existing_by_date[id(step)] = step  # undated step, just append
+        merged['rent_steps'] = sorted(
+            existing_by_date.values(),
+            key=lambda s: s.get('effective_date') or '',
+        )
+
+    # Options — merge by (option_type_key, option_number)
+    for opt_key in ('renewal_options', 'termination_options'):
+        amend_opts = amendment.get(opt_key)
+        if amend_opts:
+            existing_by_num = {}
+            for opt in (merged.get(opt_key) or []):
+                existing_by_num[opt.get('option_number')] = opt
+            for opt in amend_opts:
+                num = opt.get('option_number')
+                if num in existing_by_num:
+                    # Update existing: amendment non-null fields win
+                    for k, v in opt.items():
+                        if v is not None:
+                            existing_by_num[num][k] = v
+                else:
+                    existing_by_num[num] = opt
+            merged[opt_key] = sorted(
+                existing_by_num.values(),
+                key=lambda o: o.get('option_number') or 0,
+            )
+
+    # Object fields — amendment replaces entirely if present and non-empty
+    object_keys = [
+        'cotenancy', 'exclusive_use', 'sales_provisions',
+        'percentage_rent', 'assignment', 'key_dates',
+    ]
+    for key in object_keys:
+        val = amendment.get(key)
+        if val and isinstance(val, dict) and any(v is not None for v in val.values()):
+            merged[key] = val
+
+    return merged
+
+
+def consolidate_tenant_extractions(
+    engine, tenant_id: int
+) -> Optional[Dict]:
+    """Consolidate per-document extractions into current effective terms.
+
+    Loads all extracted documents for a tenant, ordered: Original Lease first,
+    then amendments by date. Layers them to produce merged current terms.
+    Stores result as tenant's extraction_json.
+
+    Returns the consolidated terms dict, or None if no extractions.
+    """
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        docs = conn.execute(text("""
+            SELECT id, doc_type, doc_date, extraction_json
+            FROM lease_documents
+            WHERE tenant_id = :tid
+              AND extraction_status = 'extracted'
+              AND extraction_json IS NOT NULL
+            ORDER BY
+                CASE WHEN doc_type = 'Original Lease' THEN 0 ELSE 1 END,
+                doc_date ASC NULLS LAST
+        """), {'tid': tenant_id}).fetchall()
+
+        if not docs:
+            return None
+
+        # Start with first document (should be Original Lease)
+        consolidated = {}
+        for doc in docs:
+            try:
+                terms = json.loads(doc[3])
+                if isinstance(terms, dict):
+                    if not consolidated:
+                        consolidated = copy.deepcopy(terms)
+                    else:
+                        consolidated = _merge_extraction_terms(consolidated, terms)
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+        if not consolidated:
+            return None
+
+        # Store consolidated terms on tenant
+        conn.execute(text("""
+            UPDATE lease_tenants
+            SET extraction_json = :ej,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = :tid
+        """), {'tid': tenant_id, 'ej': json.dumps(consolidated)})
+        conn.commit()
+
+        logger.info(f"Consolidated {len(docs)} extractions for tenant {tenant_id}")
+        return consolidated
+
+
+def consolidate_review_extractions(
+    engine, review_id: int
+) -> int:
+    """Consolidate extractions for all tenants in a review.
+
+    Returns count of tenants consolidated.
+    """
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        tenants = conn.execute(text("""
+            SELECT DISTINCT t.id
+            FROM lease_tenants t
+            JOIN lease_documents d ON d.tenant_id = t.id
+            WHERE t.review_id = :rid
+              AND d.extraction_status = 'extracted'
+              AND d.extraction_json IS NOT NULL
+        """), {'rid': review_id}).fetchall()
+
+    count = 0
+    for (tid,) in tenants:
+        result = consolidate_tenant_extractions(engine, tid)
+        if result:
+            count += 1
+
+    logger.info(
+        f"Consolidated extractions for {count}/{len(tenants)} tenants "
+        f"in review {review_id}"
+    )
+    return count
 
 
 # ---------------------------------------------------------------------------
