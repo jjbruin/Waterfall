@@ -66,6 +66,13 @@ const showPlanEventModal = ref(false)
 const planEventForm = ref<any>({ event_type: 'vacate', effective_date: '', source_tenant_ids: [], results: [{ tenant_name: '', suite: '', square_feet: 0 }] })
 const confirmDeleteId = ref<number | null>(null)
 
+// Alias state
+const aliases = ref<any[]>([])
+const aliasSuggestions = ref<any[]>([])
+const showAliasModal = ref(false)
+const aliasForm = ref({ alias_name: '', canonical_name: '' })
+const aliasLoading = ref(false)
+
 // Projections state
 const marketAssumptions = ref<any[]>([])
 const projectionData = ref<any>(null)
@@ -119,10 +126,75 @@ async function loadRiskData() {
     exclusiveUse.value = res.data.exclusive_use || []
     options.value = res.data.options || []
     documents.value = res.data.documents || {}
+    loadAliases()
   } catch (e: any) {
     console.error('Failed to load risk analysis:', e)
   } finally {
     loading.value = false
+  }
+}
+
+// ── Tenant Alias Management ──
+async function loadAliases() {
+  if (!selectedReviewId.value) return
+  try {
+    const [a, s] = await Promise.all([
+      api.get('/api/lease-review/tenant-aliases'),
+      api.get(`/api/lease-review/reviews/${selectedReviewId.value}/tenant-aliases/suggestions`),
+    ])
+    aliases.value = a.data
+    aliasSuggestions.value = s.data
+  } catch { /* ignore */ }
+}
+
+function openAliasModal(aliasName: string = '', canonicalName: string = '') {
+  aliasForm.value = { alias_name: aliasName, canonical_name: canonicalName }
+  showAliasModal.value = true
+}
+
+async function saveAlias() {
+  if (!selectedReviewId.value || !aliasForm.value.alias_name || !aliasForm.value.canonical_name) return
+  aliasLoading.value = true
+  try {
+    await api.post('/api/lease-review/tenant-aliases', aliasForm.value)
+    showAliasModal.value = false
+    await Promise.all([loadRiskData(), loadAliases()])
+  } catch (e: any) {
+    console.error('Failed to save alias:', e)
+  } finally {
+    aliasLoading.value = false
+  }
+}
+
+async function removeAlias(aliasId: number) {
+  if (!selectedReviewId.value) return
+  try {
+    await api.delete(`/api/lease-review/tenant-aliases/${aliasId}`)
+    await Promise.all([loadRiskData(), loadAliases()])
+  } catch (e: any) {
+    console.error('Failed to delete alias:', e)
+  }
+}
+
+async function applyAllSuggestions() {
+  if (!selectedReviewId.value) return
+  aliasLoading.value = true
+  try {
+    for (const s of aliasSuggestions.value) {
+      const canon = s.suggested_canonical
+      for (const v of s.variants) {
+        if (v !== canon) {
+          await api.post('/api/lease-review/tenant-aliases', {
+            alias_name: v, canonical_name: canon,
+          })
+        }
+      }
+    }
+    await Promise.all([loadRiskData(), loadAliases()])
+  } catch (e: any) {
+    console.error('Failed to apply suggestions:', e)
+  } finally {
+    aliasLoading.value = false
   }
 }
 
@@ -1058,18 +1130,74 @@ onMounted(() => {
           </div>
 
           <h3>Rent at Risk by Named Co-Tenant</h3>
+
+          <!-- Alias suggestions banner -->
+          <div v-if="aliasSuggestions.length" class="alias-suggestions">
+            <strong>Possible duplicates detected:</strong>
+            <span v-for="(s, i) in aliasSuggestions" :key="i" class="alias-suggestion-item">
+              {{ s.variants.join(' / ') }} → <em>{{ s.suggested_canonical }}</em>
+            </span>
+            <button class="btn-sm btn-primary" @click="applyAllSuggestions" :disabled="aliasLoading" style="margin-left: 0.5rem">
+              {{ aliasLoading ? 'Applying...' : 'Apply All Suggestions' }}
+            </button>
+          </div>
+
           <div class="table-wrapper">
             <table class="data-table">
-              <thead><tr><th>Co-Tenant</th><th>Dependent Tenants</th><th>Dependent Rent</th><th>Termination Eligible</th></tr></thead>
+              <thead><tr><th>Co-Tenant</th><th>Dependent Tenants</th><th>Dependent Rent</th><th>Termination Eligible</th><th style="width:40px"></th></tr></thead>
               <tbody>
                 <tr v-for="(risk, name) in (cotenancy.rent_at_risk || {})" :key="name as string">
                   <td>{{ name }}</td>
                   <td class="num-cell">{{ risk.dependent_count }}</td>
                   <td class="num-cell">{{ fmt$(risk.total_dependent_rent) }}</td>
                   <td class="num-cell" :class="{ danger: risk.termination_eligible_count > 0 }">{{ risk.termination_eligible_count }}</td>
+                  <td><button class="btn-xs" title="Create alias for this name" @click="openAliasModal(name as string)">Map</button></td>
                 </tr>
               </tbody>
             </table>
+          </div>
+
+          <!-- Active aliases -->
+          <div v-if="aliases.length" style="margin-top: 1.5rem">
+            <h4>Active Tenant Aliases <span class="badge badge-info">Global</span></h4>
+            <div class="table-wrapper">
+              <table class="data-table compact">
+                <thead><tr><th>Alias (Extracted Name)</th><th>Canonical Name</th><th>Created By</th><th style="width:40px"></th></tr></thead>
+                <tbody>
+                  <tr v-for="a in aliases" :key="a.id">
+                    <td>{{ a.alias_name }}</td>
+                    <td><strong>{{ a.canonical_name }}</strong></td>
+                    <td>{{ a.created_by || '-' }}</td>
+                    <td><button class="btn-xs btn-danger" @click="removeAlias(a.id)" title="Remove alias">×</button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Alias modal -->
+          <div v-if="showAliasModal" class="modal-overlay" @click.self="showAliasModal = false">
+            <div class="modal-content" style="max-width: 500px">
+              <h3>Map Tenant Name</h3>
+              <p class="section-desc">Map an extracted name to its canonical tenant name. This alias applies across all properties.</p>
+              <div class="form-row">
+                <label>Extracted Name (Alias)</label>
+                <input v-model="aliasForm.alias_name" />
+              </div>
+              <div class="form-row">
+                <label>Canonical Name</label>
+                <input v-model="aliasForm.canonical_name" list="tenant-names-list" />
+                <datalist id="tenant-names-list">
+                  <option v-for="t in tenants" :key="t.id" :value="t.tenant_name" />
+                </datalist>
+              </div>
+              <div class="modal-actions">
+                <button class="btn-primary" @click="saveAlias" :disabled="aliasLoading || !aliasForm.alias_name || !aliasForm.canonical_name">
+                  {{ aliasLoading ? 'Saving...' : 'Save Alias' }}
+                </button>
+                <button class="btn-secondary" @click="showAliasModal = false">Cancel</button>
+              </div>
+            </div>
           </div>
         </template>
         <div v-else class="empty-state">No co-tenancy clauses found for this review.</div>
@@ -1793,4 +1921,18 @@ h3 { color: #1F4E79; margin: 20px 0 12px; font-size: 1.1rem; }
 
 /* Scenario toggle */
 .scenario-toggle { display: flex; gap: 4px; margin: 16px 0; }
+
+/* Alias suggestions */
+.alias-suggestions {
+  background: #FFF8E1; border: 1px solid #FFD54F; border-radius: 6px;
+  padding: 10px 14px; margin-bottom: 12px; font-size: 0.85rem;
+}
+.alias-suggestion-item {
+  display: inline-block; margin: 2px 8px; padding: 2px 8px;
+  background: #FFF3E0; border-radius: 4px; font-size: 0.82rem;
+}
+.badge-info {
+  background: #1F4E79; color: #fff; font-size: 0.7rem; padding: 1px 6px;
+  border-radius: 3px; margin-left: 4px; vertical-align: middle;
+}
 </style>

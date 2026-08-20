@@ -63,6 +63,11 @@ from flask_app.services.lease_review_service import (
     get_market_assumptions,
     generate_projected_cash_flow,
     summarize_projected_revenue,
+    # Tenant aliases
+    get_tenant_aliases,
+    save_tenant_alias,
+    delete_tenant_alias,
+    suggest_alias_matches,
 )
 from io import BytesIO
 import logging
@@ -430,6 +435,66 @@ def get_cotenancy(review_id):
         return jsonify(data)
     except Exception as e:
         logger.error(f"Cotenancy matrix error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route('/tenant-aliases', methods=['GET'])
+@login_required
+def list_aliases():
+    """List all global tenant alias mappings."""
+    engine = get_engine()
+    try:
+        result = get_tenant_aliases(engine)
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Alias list error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route('/tenant-aliases', methods=['POST'])
+@login_required
+@role_required('admin', 'analyst')
+def create_alias():
+    """Create or update a global tenant alias mapping."""
+    data = request.json or {}
+    alias_name = data.get('alias_name', '').strip()
+    canonical_name = data.get('canonical_name', '').strip()
+    if not alias_name or not canonical_name:
+        return jsonify({'error': 'alias_name and canonical_name required'}), 400
+    engine = get_engine()
+    try:
+        result = save_tenant_alias(engine, alias_name, canonical_name,
+                                   created_by=g.user.get('username'))
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Alias save error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route('/tenant-aliases/<int:alias_id>', methods=['DELETE'])
+@login_required
+@role_required('admin', 'analyst')
+def remove_alias(alias_id):
+    """Delete a global tenant alias mapping."""
+    engine = get_engine()
+    try:
+        delete_tenant_alias(engine, alias_id)
+        return jsonify({'status': 'deleted'})
+    except Exception as e:
+        logger.error(f"Alias delete error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/tenant-aliases/suggestions', methods=['GET'])
+@login_required
+def alias_suggestions(review_id):
+    """Auto-detect likely alias groups from co-tenancy refs for a review."""
+    engine = get_engine()
+    try:
+        suggestions = suggest_alias_matches(engine, review_id)
+        return jsonify(suggestions)
+    except Exception as e:
+        logger.error(f"Alias suggestion error: {e}")
         return jsonify({'error': str(e)}), 500
 
 

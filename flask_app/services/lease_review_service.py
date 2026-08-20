@@ -256,6 +256,15 @@ LEASE_DDL_PG = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS lease_tenant_aliases (
+        id              SERIAL PRIMARY KEY,
+        alias_name      TEXT NOT NULL UNIQUE,
+        canonical_name  TEXT NOT NULL,
+        created_by      TEXT,
+        created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS lease_space_events (
         id              SERIAL PRIMARY KEY,
         review_id       INTEGER NOT NULL REFERENCES lease_reviews(id),
@@ -3341,6 +3350,13 @@ def get_cotenancy_matrix(engine, review_id: int) -> Dict[str, Any]:
             WHERE c.review_id = :rid
         """), {'rid': review_id}).fetchall()
 
+        # Load global alias mappings: alias_name -> canonical_name
+        alias_rows = conn.execute(text(
+            "SELECT alias_name, canonical_name FROM lease_tenant_aliases"
+        )).fetchall()
+
+    alias_map = {r[0]: r[1] for r in alias_rows}
+
     # Build forward map: tenant -> list of named cotenants
     forward = {}
     cot_details = {}
@@ -3359,11 +3375,11 @@ def get_cotenancy_matrix(engine, review_id: int) -> Dict[str, Any]:
             'is_curable': c[11],
         }
 
-    # Map refs
+    # Map refs — apply alias normalization
     cot_id_to_tenant = {c[0]: c[2] for c in cotenancy}
     for ref in refs:
         cot_id = ref[0]
-        ref_name = ref[1]
+        ref_name = alias_map.get(ref[1], ref[1])  # resolve alias
         tenant_name = cot_id_to_tenant.get(cot_id)
         if tenant_name:
             forward[tenant_name].append(ref_name)
@@ -3400,6 +3416,134 @@ def get_cotenancy_matrix(engine, review_id: int) -> Dict[str, Any]:
         'rent_at_risk': rent_at_risk,
         'details': cot_details,
     }
+
+
+# ---------------------------------------------------------------------------
+# Tenant Alias Management
+# ---------------------------------------------------------------------------
+
+def get_tenant_aliases(engine) -> List[Dict]:
+    """Get all global tenant alias mappings."""
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT id, alias_name, canonical_name, created_by, created_at
+            FROM lease_tenant_aliases
+            ORDER BY canonical_name, alias_name
+        """)).fetchall()
+    return [{'id': r[0], 'alias_name': r[1], 'canonical_name': r[2],
+             'created_by': r[3], 'created_at': str(r[4]) if r[4] else None}
+            for r in rows]
+
+
+def get_alias_map(engine) -> Dict[str, str]:
+    """Load alias_name -> canonical_name lookup dict (cached helper)."""
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT alias_name, canonical_name FROM lease_tenant_aliases"
+        )).fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
+def save_tenant_alias(engine, alias_name: str,
+                      canonical_name: str, created_by: str = None) -> Dict:
+    """Create or update a global alias mapping."""
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        try:
+            conn.execute(text("""
+                INSERT INTO lease_tenant_aliases
+                    (alias_name, canonical_name, created_by)
+                VALUES (:alias, :canon, :by)
+                ON CONFLICT (alias_name)
+                DO UPDATE SET canonical_name = :canon, created_by = :by
+            """), {'alias': alias_name, 'canon': canonical_name, 'by': created_by})
+        except Exception:
+            conn.execute(text("""
+                INSERT OR REPLACE INTO lease_tenant_aliases
+                    (alias_name, canonical_name, created_by)
+                VALUES (:alias, :canon, :by)
+            """), {'alias': alias_name, 'canon': canonical_name, 'by': created_by})
+        conn.commit()
+    return {'alias_name': alias_name, 'canonical_name': canonical_name}
+
+
+def delete_tenant_alias(engine, alias_id: int):
+    """Delete a global alias mapping."""
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        conn.execute(text(
+            "DELETE FROM lease_tenant_aliases WHERE id = :id"
+        ), {'id': alias_id})
+        conn.commit()
+
+
+def suggest_alias_matches(engine, review_id: int) -> List[Dict]:
+    """Auto-detect likely alias groups from co-tenancy refs for a review.
+
+    Uses normalization (strip parentheticals, punctuation) to find
+    ref names that likely refer to the same entity.
+    """
+    from sqlalchemy import text
+    import re
+
+    with engine.connect() as conn:
+        refs = conn.execute(text("""
+            SELECT DISTINCT cr.referenced_tenant_name
+            FROM lease_cotenancy_refs cr
+            JOIN lease_cotenancy c ON c.id = cr.cotenancy_id
+            WHERE c.review_id = :rid
+            ORDER BY cr.referenced_tenant_name
+        """), {'rid': review_id}).fetchall()
+
+        tenants = conn.execute(text("""
+            SELECT id, tenant_name FROM lease_tenants
+            WHERE review_id = :rid AND tenant_status = 'active'
+        """), {'rid': review_id}).fetchall()
+
+        existing = conn.execute(text(
+            "SELECT alias_name FROM lease_tenant_aliases"
+        )).fetchall()
+
+    ref_names = [r[0] for r in refs]
+    tenant_names = {t[1]: t[0] for t in tenants}
+    already_aliased = {r[0] for r in existing}
+
+    def _normalize(name):
+        """Strip parentheticals, punctuation, and normalize whitespace."""
+        name = re.sub(r'\s*\(.*?\)\s*', '', name)
+        name = re.sub(r'[\'\".,]', '', name)
+        name = re.sub(r'\s+', ' ', name).strip()
+        return name.lower()
+
+    # Group by normalized name
+    groups: Dict[str, list] = {}
+    for name in ref_names:
+        if name in already_aliased:
+            continue
+        norm = _normalize(name)
+        if norm not in groups:
+            groups[norm] = []
+        groups[norm].append(name)
+
+    suggestions = []
+    for norm, variants in groups.items():
+        if len(variants) < 2:
+            continue
+        # Find best matching roster tenant
+        best_match = None
+        for tname in tenant_names:
+            if _normalize(tname) == norm:
+                best_match = tname
+                break
+        suggestions.append({
+            'variants': variants,
+            'suggested_canonical': best_match or variants[0],
+            'roster_match': best_match,
+        })
+
+    return suggestions
 
 
 def get_scenario_analysis(engine, review_id: int) -> List[Dict]:
