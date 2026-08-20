@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '../api/client'
 import VChart from 'vue-echarts'
@@ -100,6 +100,22 @@ onMounted(async () => {
     selectedReviewId.value = reviews.value[0].id
     await loadReview(reviews.value[0].id)
   }
+
+  // Resume polling if extraction is already running (e.g. page reload)
+  if (selectedReviewId.value) {
+    try {
+      const st = await api.get(`/api/lease-review/reviews/${selectedReviewId.value}/extract-status`)
+      if (st.data.status === 'running') {
+        extracting.value = true
+        extractionMessage.value = `Extracting ${st.data.extracted} of ${st.data.total}...`
+        pollExtractionStatus()
+      }
+    } catch { /* ignore */ }
+  }
+})
+
+onUnmounted(() => {
+  if (extractionPollTimer) { clearInterval(extractionPollTimer); extractionPollTimer = null }
 })
 
 async function loadReview(id: number) {
@@ -553,19 +569,50 @@ async function assignAllDocs() {
 }
 
 // Run extraction
+let extractionPollTimer: ReturnType<typeof setInterval> | null = null
+
 async function runExtraction() {
   if (!selectedReviewId.value) return
   extracting.value = true
-  extractionMessage.value = 'Running AI extraction on pending documents...'
+  extractionMessage.value = 'Starting AI extraction...'
   try {
-    await api.post(`/api/lease-review/reviews/${selectedReviewId.value}/extract`)
-    extractionMessage.value = 'Extraction complete.'
-    await loadReview(selectedReviewId.value!)
+    const res = await api.post(`/api/lease-review/reviews/${selectedReviewId.value}/extract`)
+    if (res.data.status === 'already_running') {
+      extractionMessage.value = 'Extraction already in progress...'
+    }
+    // Start polling for progress
+    pollExtractionStatus()
   } catch (e: any) {
-    extractionMessage.value = e.response?.data?.error || 'Extraction failed'
-  } finally {
+    extractionMessage.value = e.response?.data?.error || 'Extraction failed to start'
     extracting.value = false
   }
+}
+
+function pollExtractionStatus() {
+  if (extractionPollTimer) clearInterval(extractionPollTimer)
+  extractionPollTimer = setInterval(async () => {
+    if (!selectedReviewId.value) return
+    try {
+      const res = await api.get(`/api/lease-review/reviews/${selectedReviewId.value}/extract-status`)
+      const job = res.data
+      if (job.status === 'running') {
+        extractionMessage.value = `Extracting ${job.extracted} of ${job.total}... ${job.current_file || ''}`
+      } else if (job.status === 'complete') {
+        clearInterval(extractionPollTimer!)
+        extractionPollTimer = null
+        extractionMessage.value = `Extraction complete. ${job.extracted} of ${job.total} documents processed.`
+        extracting.value = false
+        await loadReview(selectedReviewId.value!)
+      } else if (job.status === 'failed') {
+        clearInterval(extractionPollTimer!)
+        extractionPollTimer = null
+        extractionMessage.value = `Extraction failed: ${job.error || 'unknown error'}`
+        extracting.value = false
+      }
+    } catch {
+      // Network error during poll — keep trying
+    }
+  }, 3000)
 }
 
 // Reset extraction data for re-extraction

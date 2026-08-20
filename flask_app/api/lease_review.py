@@ -66,10 +66,15 @@ from flask_app.services.lease_review_service import (
 )
 from io import BytesIO
 import logging
+import threading
 
 logger = logging.getLogger(__name__)
 
 lease_review_bp = Blueprint('lease_review', __name__, url_prefix='/api/lease-review')
+
+# ── Background extraction state ────────────────────────────────────────
+# Keyed by review_id: {status, extracted, total, error, current_file}
+_extraction_jobs: dict[int, dict] = {}
 
 
 @lease_review_bp.route('/prospect-properties', methods=['GET'])
@@ -328,14 +333,45 @@ def scan_folder(review_id):
 @login_required
 @role_required('admin', 'analyst')
 def run_extraction(review_id):
-    """Run Claude API extraction on all pending documents."""
+    """Start background extraction on all pending documents."""
+    # Reject if already running
+    job = _extraction_jobs.get(review_id)
+    if job and job['status'] == 'running':
+        return jsonify({'status': 'already_running', **job}), 409
+
     engine = get_engine()
-    try:
-        extract_all_documents(engine, review_id)
-        return jsonify({'status': 'complete'})
-    except Exception as e:
-        logger.error(f"Extraction error: {e}")
-        return jsonify({'error': str(e)}), 500
+
+    def _progress(extracted, total, current_file):
+        _extraction_jobs[review_id].update(
+            extracted=extracted, total=total, current_file=current_file
+        )
+
+    def _run():
+        try:
+            _extraction_jobs[review_id] = {
+                'status': 'running', 'extracted': 0, 'total': 0,
+                'current_file': '', 'error': None,
+            }
+            extract_all_documents(engine, review_id, progress_callback=_progress)
+            _extraction_jobs[review_id]['status'] = 'complete'
+        except Exception as e:
+            logger.error(f"Background extraction error: {e}", exc_info=True)
+            _extraction_jobs[review_id]['status'] = 'failed'
+            _extraction_jobs[review_id]['error'] = str(e)
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return jsonify({'status': 'started'})
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/extract-status', methods=['GET'])
+@login_required
+def extraction_status(review_id):
+    """Poll extraction progress."""
+    job = _extraction_jobs.get(review_id)
+    if not job:
+        return jsonify({'status': 'idle'})
+    return jsonify(job)
 
 
 @lease_review_bp.route('/reviews/<int:review_id>/reset-extraction', methods=['POST'])

@@ -2343,10 +2343,12 @@ def reset_extraction_data(engine, review_id: int) -> Dict[str, int]:
 # Extract lease terms via Claude API (batch)
 # ---------------------------------------------------------------------------
 
-def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None):
+def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None,
+                          progress_callback=None):
     """Extract text from all PDFs and run Claude extraction for key documents.
 
     Prioritizes Original Lease and Amendment documents.
+    progress_callback: optional callable(extracted_count, total, current_file)
     """
     from sqlalchemy import text as sql_text
 
@@ -2367,7 +2369,8 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None)
 
         logger.info(f"Extracting {len(docs)} documents for review {review_id}")
 
-        for doc in docs:
+        total_docs = len(docs)
+        for doc_idx, doc in enumerate(docs):
             doc_id = doc[0]
             tenant_id = doc[1]
             file_path = doc[3]
@@ -2599,6 +2602,10 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None)
                     WHERE id = :did
                 """), {'did': doc_id})
                 conn.commit()
+
+            # Report progress after each doc (success or error)
+            if progress_callback:
+                progress_callback(doc_idx + 1, total_docs, doc[2])
 
     # After all documents extracted, consolidate per-tenant
     consolidate_review_extractions(engine, review_id)
