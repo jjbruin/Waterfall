@@ -2923,7 +2923,7 @@ def validate_rent_roll(
                     FROM lease_rent_steps
                     WHERE tenant_id = :tid
                     AND effective_date <= :rrd
-                    AND effective_date GLOB '[0-9][0-9][0-9][0-9]-*'
+                    AND effective_date LIKE '____-%'
                     ORDER BY effective_date DESC
                     LIMIT 1
                 """), {'tid': tenant_id, 'rrd': rr_date}).fetchone()
