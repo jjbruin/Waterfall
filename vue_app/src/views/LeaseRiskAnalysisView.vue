@@ -266,9 +266,18 @@ function tenantDocsForGroup(items: any[]): any[] {
   return documents.value[tid] || []
 }
 
-function viewDocument(docId: number) {
-  const url = `/api/lease-review/reviews/${selectedReviewId.value}/documents/${docId}/view`
-  window.open(url, '_blank')
+async function viewDocument(docId: number) {
+  try {
+    const res = await api.get(
+      `/api/lease-review/reviews/${selectedReviewId.value}/documents/${docId}/view`,
+      { responseType: 'blob' }
+    )
+    const blob = new Blob([res.data], { type: res.headers['content-type'] || 'application/pdf' })
+    const url = URL.createObjectURL(blob)
+    window.open(url, '_blank')
+  } catch (e: any) {
+    console.error('Failed to open document:', e)
+  }
 }
 
 function openAbstract(tenantId: number) {
