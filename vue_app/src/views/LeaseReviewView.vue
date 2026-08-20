@@ -1103,7 +1103,7 @@ function statusClass(s: string): string {
           </button>
           <button class="btn-danger" @click="resetExtraction" :disabled="extracting || resettingExtraction"
                   title="Clear all extracted data and re-run with updated prompt">
-            {{ resettingExtraction ? 'Resetting...' : 'Reset & Re-extract' }}
+            {{ resettingExtraction ? 'Resetting...' : 'Reset Extraction' }}
           </button>
         </div>
         <div v-if="extractionMessage" class="upload-msg" style="margin-top: 0.5rem">{{ extractionMessage }}</div>
