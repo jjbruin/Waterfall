@@ -1736,15 +1736,22 @@ def parse_cotenancy_spreadsheet(file_path: str) -> Tuple[List[Dict], List[Dict]]
 # PDF text extraction
 # ---------------------------------------------------------------------------
 
-def extract_pdf_text(file_path: str) -> Tuple[str, int]:
-    """Extract text from a PDF using PyMuPDF. Returns (text, page_count)."""
+def extract_pdf_text(source) -> Tuple[str, int]:
+    """Extract text from a PDF using PyMuPDF. Returns (text, page_count).
+
+    Args:
+        source: Either a file path (str) or raw PDF bytes.
+    """
     try:
         import pymupdf
     except ImportError:
         import fitz as pymupdf
 
     text_parts = []
-    doc = pymupdf.open(file_path)
+    if isinstance(source, (bytes, bytearray, memoryview)):
+        doc = pymupdf.open(stream=bytes(source), filetype="pdf")
+    else:
+        doc = pymupdf.open(source)
     page_count = len(doc)
     for page in doc:
         text_parts.append(page.get_text())
@@ -2279,6 +2286,7 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None)
 
     with engine.connect() as conn:
         # Get all documents for this review (pending or text_extracted)
+        # Note: file_data excluded from bulk query to avoid OOM — fetched per-doc
         docs = conn.execute(sql_text("""
             SELECT d.id, d.tenant_id, d.filename, d.file_path,
                    d.doc_type, d.doc_date,
@@ -2308,7 +2316,19 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None)
                 if current_status == 'text_extracted' and existing_text:
                     pdf_text = existing_text
                 else:
-                    pdf_text, page_count = extract_pdf_text(file_path)
+                    # Use file_path if available, otherwise fetch file_data from DB
+                    source = file_path
+                    if not source or not os.path.exists(source):
+                        row = conn.execute(sql_text(
+                            "SELECT file_data FROM lease_documents WHERE id = :did"
+                        ), {'did': doc_id}).fetchone()
+                        if row and row[0]:
+                            source = row[0]
+                        else:
+                            raise FileNotFoundError(
+                                f"No file_path or file_data for doc {doc_id}"
+                            )
+                    pdf_text, page_count = extract_pdf_text(source)
 
                     conn.execute(sql_text("""
                         UPDATE lease_documents
