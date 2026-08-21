@@ -1,0 +1,708 @@
+"""Portfolio Snapshot — foundation service (Step 1).
+
+Deliberately isolated: this module creates no side effects, writes nothing, and
+imports from the rest of the app in exactly one read-only place
+(``one_pager.quarter_to_date_range``). Nothing else in the app imports this
+module, so a fault here cannot propagate.
+
+Data comes in as DataFrames, the way every other service in this codebase takes
+it (cf. ``reports_service.get_upstream_investor_deals``,
+``portfolio_analysis_service.find_entity_deals``). That means there is no HTTP
+and therefore no pagination inside the service at all — the OFFSET duplication
+trap on ``/api/data/tables/<t>/rows`` simply cannot apply here. The self-test at
+the bottom runs out-of-process, so *it* fetches over the REST API and there it
+does use narrow per-entity filters (one page each, exact-match post-filtered,
+because ``filter__`` is case-insensitive *contains* and ``TGAM`` would otherwise
+also match ``TGAM2``/``TGAM3``).
+
+What Step 1 establishes:
+  resolve_investor_deals()  investor + quarter -> deals grouped by fund
+  lookthrough_pct()         product of normalised ownership % along the chain
+  get_investor_name()       display name for an investor code
+
+Verified against live on 2026-08-21 (build 01556edbd5d0): TIAA/TGAM + 2026-Q2
+returns 34 parent deals in 6 groups, Nottingham at 41.2124%, City West and East
+Manchester excluded as sold, 45th & Main flagged (ownership unavailable), and 18
+child properties rolled into 3 parents.
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import date
+from typing import Optional
+
+import pandas as pd
+
+log = logging.getLogger(__name__)
+
+# ── Configuration ─────────────────────────────────────────────────────────
+
+INDIVIDUAL_GROUP = "Individual Investments"
+
+#: An intermediate entity one hop below the investor is treated as a *fund*
+#: (a pooled vintage vehicle) rather than a single-deal SPV once it reaches at
+#: least this many deals *still held at the report quarter*. Derived from the
+#: traversal, never a hardcoded fund list, so a new fund such as TGA6 groups
+#: correctly the moment MRI carries it.
+#:
+#: Counted after the sold exclusion on purpose. TGAM2 reaches two deals all-time
+#: (Giant 7 via PPI24, plus one long-since disposed via PPI20); counting
+#: all-time would promote it to a fund and pull Giant 7 out of Individual
+#: Investments. For a quarter's report what matters is what is still held.
+FUND_MIN_DEALS = 2
+
+#: Escape hatches the count rule cannot see on its own:
+#:   - a genuinely new fund with only one deal onboarded so far
+#:   - a real fund whose deals have nearly all been sold
+#: Add the entity code to force fund treatment.
+FORCE_FUND: set[str] = set()
+
+#: When a deal is reachable by several routes that disagree on the group, the
+#: default rule is PREFER_INDIVIDUAL_ON_MIXED (below). This map overrides the
+#: outcome for named deals (keyed on **vcode**, which is unique — InvestmentID
+#: is not). Kept separate from the rule so an exception never becomes the rule.
+GROUP_OVERRIDES: dict[str, str] = {}
+
+#: Mixed-route default. A route that reaches the deal through a single-deal SPV
+#: means the investor holds a direct position in that specific asset, which the
+#: investor report presents as an Individual Investment even when a fund also
+#: holds a slice. This is what puts Pegasus Life Storage (TGA22 69.18% +
+#: PPILFS 23.45%) in Individual Investments, matching the reference PDF, without
+#: hardcoding that deal. Every mixed-route deal is flagged either way.
+PREFER_INDIVIDUAL_ON_MIXED = True
+
+#: Display names that exist nowhere in the data. TGAM resolves only to its
+#: vehicle name ("TGA Peaceable Investor Member LLC") in MRI; the institution
+#: behind it is not recorded, so the alias is asserted here.
+INVESTOR_NAME_ALIASES: dict[str, str] = {
+    "TGAM": "TIAA",
+}
+
+_MAX_DEPTH = 8
+
+
+# ── Investor names ────────────────────────────────────────────────────────
+
+def get_investor_name(code: str,
+                      investor_names: Optional[dict] = None) -> str:
+    """Display name for an investor code.
+
+    Resolution order:
+      1. ``INVESTOR_NAME_ALIASES`` — names not present in any source.
+      2. ``investor_names`` — the future MRI ``MRI_IA_Investor`` lookup
+         (``InvestorID`` -> ``Name``). That table lives on the MRI **IM** server
+         and is **not** in the app database yet; extracting it needs a new
+         ``QUERY_REGISTRY`` entry and VPN access. Verified 2026-08-21 that it
+         resolves 266 of 275 investor codes and names KOCINV
+         ("Knights of Columbus - REIT Investor"), DCXVIA/DCXVIB
+         ("Declaration Capital PE SPV XVIA/XVIB LLC") and PSC1/2/3. Pass it in
+         once it exists; until then this argument is simply omitted.
+      3. The raw code, so a missing name never blanks the report.
+    """
+    key = str(code or "").strip()
+    if not key:
+        return ""
+    if key.upper() in INVESTOR_NAME_ALIASES:
+        return INVESTOR_NAME_ALIASES[key.upper()]
+    if investor_names:
+        hit = investor_names.get(key) or investor_names.get(key.upper())
+        if hit and str(hit).strip():
+            return str(hit).strip()
+    return key
+
+
+# ── Ownership graph ───────────────────────────────────────────────────────
+
+def _is_open(value) -> bool:
+    """True when an EndDate means 'still current'."""
+    if value is None:
+        return True
+    if isinstance(value, float) and pd.isna(value):
+        return True
+    return str(value).strip() in ("", "nan", "None", "NaT", "NaN")
+
+
+class _Graph:
+    """Ownership edges from the relationships feed, ended rows dropped.
+
+    Two indexes are held because the maths needs both directions: children to
+    walk downward, and *all* owners of a node to normalise a hop.
+    """
+
+    def __init__(self, relationships: pd.DataFrame):
+        self.children: dict[str, list[tuple[str, float]]] = {}
+        self.owners: dict[str, list[tuple[str, float]]] = {}
+        if relationships is None or getattr(relationships, "empty", True):
+            return
+
+        rel = relationships
+        cols = {c.lower(): c for c in rel.columns}
+        c_inv = cols.get("investmentid")
+        c_own = cols.get("investorid")
+        c_pct = cols.get("ownershippct")
+        c_end = cols.get("enddate")
+        if not (c_inv and c_own and c_pct):
+            log.warning("portfolio_snapshot: relationships missing required "
+                        "columns; ownership graph is empty")
+            return
+
+        for row in rel.itertuples(index=False):
+            d = row._asdict() if hasattr(row, "_asdict") else None
+            if d is None:
+                continue
+            if c_end and not _is_open(d.get(c_end)):
+                continue
+            investee = str(d.get(c_inv) or "").strip().upper()
+            investor = str(d.get(c_own) or "").strip().upper()
+            if not investee or not investor:
+                continue
+            pct = pd.to_numeric(d.get(c_pct), errors="coerce")
+            pct = 0.0 if pd.isna(pct) else float(pct)
+            self.children.setdefault(investor, []).append((investee, pct))
+            self.owners.setdefault(investee, []).append((investor, pct))
+
+    def hop_share(self, investee: str, investor: str) -> Optional[float]:
+        """`investor`'s normalised share of `investee`.
+
+        Normalised against the sum of *all* owners of ``investee``. Entities
+        holding 0% (PSCMAN, PCBLE and other carried-interest members) add
+        nothing to that sum, so they are excluded from the denominator by
+        construction and can never dilute a real holder.
+
+        Returns ``None`` when the hop cannot be normalised because every owner
+        holds 0% — a broken chain, not a zero share. 45th & Main is exactly
+        this case (PPI45M 0.0 and OPEVGR 0.0 in PMX, against 100.0 in MRI's IM
+        copy), and it must be flagged rather than fabricated.
+        """
+        owners = self.owners.get(investee.upper())
+        if not owners:
+            return None
+        total = sum(p for _, p in owners)
+        if total <= 0:
+            return None
+        mine = sum(p for who, p in owners if who == investor.upper())
+        return mine / total
+
+
+# ── Look-through ownership ────────────────────────────────────────────────
+
+def lookthrough_pct(deal_iid: str, investor_code: str,
+                    relationships: pd.DataFrame = None,
+                    graph: "_Graph" = None) -> dict:
+    """Look-through ownership of one deal by one investor.
+
+    The product of the normalised ownership % at every hop, summed over every
+    distinct route (a deal can be held through more than one vehicle).
+
+    Returns ``{"pct": float|None, "routes": [...], "broken": [...]}``.
+    ``pct`` is ``None`` when no route resolves — the caller must flag the deal,
+    never substitute a number.
+    """
+    g = graph if graph is not None else _Graph(relationships)
+    target = str(deal_iid or "").strip().upper()
+    investor = str(investor_code or "").strip().upper()
+    routes: list[dict] = []
+    broken: list[dict] = []
+
+    def walk(node: str, acc: float, trail: list, seen: frozenset, depth: int):
+        if depth > _MAX_DEPTH:
+            return
+        for child, pct in g.children.get(node, []):
+            if child in seen:          # cycle guard
+                continue
+            share = g.hop_share(child, node)
+            if share is None:
+                if child == target:
+                    broken.append({
+                        "entity": child, "via": node,
+                        "reason": "every owner of this entity holds 0% — "
+                                  "ownership cannot be normalised",
+                        "partial_chain": list(trail),
+                    })
+                continue
+            if pct == 0:
+                # A 0% holder contributes nothing; walking on would only ever
+                # yield a 0 product.
+                continue
+            hop = {"entity": child, "share": share, "stated_pct": pct}
+            if child == target:
+                routes.append({"pct": acc * share,
+                               "chain": trail + [hop],
+                               "first_hop": (trail[0]["entity"] if trail
+                                             else child)})
+                continue
+            walk(child, acc * share, trail + [hop], seen | {child}, depth + 1)
+
+    walk(investor, 1.0, [], frozenset({investor}), 0)
+    total = sum(r["pct"] for r in routes) if routes else None
+    return {"pct": total, "routes": routes, "broken": broken}
+
+
+# ── Grouping ──────────────────────────────────────────────────────────────
+
+def _classify_entities(routes_by_deal: dict) -> dict:
+    """Decide which first-hop entities are funds, from the traversal itself.
+
+    An entity is a fund when it reaches ``FUND_MIN_DEALS`` or more of the deals
+    still held at the report quarter, which separates the pooled vintage
+    vehicles (TGA22-25, TGA6) from the single-deal SPVs (TGANOT, TGAM2, PPI32,
+    PPIEVG, PPILFS ...) without naming any of them.
+
+    Must be called on the population *after* the sold exclusion — see the note
+    on ``FUND_MIN_DEALS``. ``FORCE_FUND`` covers the boundary cases.
+    """
+    reach: dict[str, set] = {}
+    for iid, routes in routes_by_deal.items():
+        for r in routes:
+            reach.setdefault(r["first_hop"], set()).add(iid)
+    return {ent: (len(deals) >= FUND_MIN_DEALS or ent in FORCE_FUND)
+            for ent, deals in reach.items()}
+
+
+def _children_of(parent_vcode: str, deals: dict) -> list[dict]:
+    """Child property rows that roll up into ``parent_vcode``.
+
+    Enumerated from the deals frame rather than the ownership graph, because the
+    graph is not a reliable source for children: Brainerd's and Town Fair's
+    children sit on 0% edges while Burton's have no relationship rows at all.
+    Matches a child's ``Portfolio_Name`` against either the parent's
+    ``Investment_Name`` or the parent's own ``Portfolio_Name`` — the same
+    pairing ``one_pager._child_vcodes_for_parent`` uses, which covers Burton
+    naming its group differently from the parent deal.
+    """
+    parent = deals.get(parent_vcode)
+    if not parent or parent["property_count"] < 1:
+        return []
+    keys = {parent["name"].strip().lower()}
+    if parent["portfolio_name"]:
+        keys.add(parent["portfolio_name"].strip().lower())
+    keys.discard("")
+    out = []
+    for vc, m in deals.items():
+        if vc == parent_vcode or m["property_count"] != 0:
+            continue
+        if m["portfolio_name"].strip().lower() in keys:
+            out.append(m)
+    return out
+
+
+def _group_for(iid: str, routes: list, is_fund: dict) -> tuple[str, bool]:
+    """(group name, mixed_routes flag) for one deal."""
+    if iid in GROUP_OVERRIDES:
+        return GROUP_OVERRIDES[iid], len({
+            (r["first_hop"] if is_fund.get(r["first_hop"]) else INDIVIDUAL_GROUP)
+            for r in routes}) > 1
+
+    groups = {(r["first_hop"] if is_fund.get(r["first_hop"])
+               else INDIVIDUAL_GROUP) for r in routes}
+    if len(groups) == 1:
+        return next(iter(groups)), False
+
+    # Mixed routes. Preferring Individual reflects that a direct SPV position
+    # in a named asset is reported as an individual investment even when a fund
+    # also holds part of it.
+    if PREFER_INDIVIDUAL_ON_MIXED and INDIVIDUAL_GROUP in groups:
+        return INDIVIDUAL_GROUP, True
+    # Otherwise the dominant route wins, by share of the look-through.
+    weight: dict[str, float] = {}
+    for r in routes:
+        gname = (r["first_hop"] if is_fund.get(r["first_hop"])
+                 else INDIVIDUAL_GROUP)
+        weight[gname] = weight.get(gname, 0.0) + r["pct"]
+    return max(weight.items(), key=lambda kv: kv[1])[0], True
+
+
+# ── Deal metadata ─────────────────────────────────────────────────────────
+
+def _s(value) -> str:
+    """Trimmed string, with NaN treated as empty.
+
+    ``str(value or "")`` is not safe here: ``float('nan')`` is truthy, so a
+    missing Portfolio_Name would become the literal ``"nan"`` and every parent
+    lacking one would then 'match' every child lacking one.
+    """
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(value).strip()
+
+
+def _deal_index(inv: pd.DataFrame) -> dict:
+    """vcode -> deal metadata, from the deals frame.
+
+    Keyed on ``vcode``, not ``InvestmentID``: InvestmentID is **not unique**.
+    Live on 2026-08-21 two IDs were shared by two deals each — ``ASTONC``
+    (P0000045 Aston Center, a Giant 7 child, and PASTONC Jefferson Centura) and
+    ``MCCORD`` (P0000049 Donald Lynch and P0000073 870 DLB). Keying on
+    InvestmentID silently discards one deal of each pair, and depending on row
+    order that can be the *parent*, dropping it from the report entirely.
+    """
+    out: dict[str, dict] = {}
+    if inv is None or getattr(inv, "empty", True):
+        return out
+    cols = {c.lower(): c for c in inv.columns}
+    c_vc, c_iid = cols.get("vcode"), cols.get("investmentid")
+    if not (c_vc and c_iid):
+        return out
+    for row in inv.itertuples(index=False):
+        d = row._asdict() if hasattr(row, "_asdict") else None
+        if d is None:
+            continue
+        iid = _s(d.get(c_iid)).upper()
+        vc = _s(d.get(c_vc))
+        if not iid or not vc:
+            continue
+        pc = pd.to_numeric(d.get(cols.get("property_count")), errors="coerce")
+        out[vc] = {
+            "vcode": vc,
+            "name": _s(d.get(cols.get("investment_name"))) or vc,
+            "iid": iid,
+            # Property_Count is the parent/child discriminator: every genuine
+            # child property carries 0, every parent >= 1. Same rule the Burton
+            # child-loan fix uses.
+            "property_count": 0 if pd.isna(pc) else int(pc),
+            "portfolio_name": _s(d.get(cols.get("portfolio_name"))),
+            "sale_status": _s(d.get(cols.get("sale_status"))),
+            "sale_date": pd.to_datetime(d.get(cols.get("sale_date")),
+                                        errors="coerce"),
+            "asset_type": _s(d.get(cols.get("asset_type"))),
+            "strategy": (_s(d.get(cols.get("investment_strategy")))
+                         or _s(d.get(cols.get("lifecycle")))),
+        }
+    return out
+
+
+def _quarter_end(quarter: str) -> date:
+    """Quarter end for 'YYYY-QN', reusing the One Pager helper read-only."""
+    from one_pager import quarter_to_date_range      # read-only reuse
+    _, q_end = quarter_to_date_range(quarter)
+    return q_end
+
+
+def is_sold_as_of(meta: dict, quarter_end: date) -> bool:
+    """Quarter-aware sold test.
+
+    ``Sale_Status == 'SOLD'`` **and** ``Sale_Date <= quarter_end``. Deliberately
+    not ``data_service.get_inv_display`` / ``exclude_sold``: those key off
+    ``date.today().year``, so the same historical quarter changes population
+    depending on when it is run. A deal sold after the quarter end was still
+    held during the quarter and stays in (Clima Secur, sold 2026-07-01, is in
+    for 2026-Q2); one sold inside the quarter drops out (East Manchester,
+    2026-06-25).
+    """
+    if str(meta.get("sale_status", "")).strip().upper() != "SOLD":
+        return False
+    sd = meta.get("sale_date")
+    if sd is None or pd.isna(sd):
+        # Sold with no date: cannot place it against the quarter. Treat as sold
+        # so a disposed deal is never reported as live.
+        return True
+    return pd.Timestamp(sd).date() <= quarter_end
+
+
+# ── Entry point ───────────────────────────────────────────────────────────
+
+def resolve_investor_deals(investor_code: str, quarter: str,
+                           relationships: pd.DataFrame,
+                           inv: pd.DataFrame,
+                           investor_names: Optional[dict] = None) -> dict:
+    """Deals held by ``investor_code`` as of ``quarter``, grouped by fund.
+
+    Walks the relationships chain downward (investor -> funds -> deals). It does
+    **not** use the waterfall-based finder (``find_entity_deals``), which gates
+    on a deal's waterfall PropCode and so drops deals that have no waterfall
+    yet — verified live: that route returned 2 of TGA25's deals against the
+    5 the relationships chain finds.
+
+    Returns a dict with ``groups`` (group name -> list of deals), plus
+    ``flagged``, ``excluded_sold`` and ``excluded_children`` so nothing is ever
+    dropped silently.
+    """
+    q_end = _quarter_end(quarter)
+    graph = _Graph(relationships)
+    deals = _deal_index(inv)
+    investor = str(investor_code or "").strip().upper()
+
+    # 1. every route from the investor to every reachable deal, keyed on vcode
+    routes_by_deal: dict[str, list] = {}
+    broken_raw: list[dict] = []
+    for vc, m in deals.items():
+        res = lookthrough_pct(m["iid"], investor, graph=graph)
+        if res["routes"]:
+            routes_by_deal[vc] = res["routes"]
+        elif res["broken"]:
+            broken_raw.append({"vcode": vc, "detail": res["broken"][0]})
+
+    # 2. child properties out first, explicitly on Property_Count == 0. Not left
+    #    to the accident that child edges happen to be 0% (Brainerd, Town Fair)
+    #    or absent entirely (Burton) — if MRI ever populates a real % on a child
+    #    edge, the 9 Brainerd buildings would otherwise become report lines.
+    excluded_children, excluded_sold, flagged = [], [], []
+    dropped_children: set[str] = set()
+
+    def _child(vc: str) -> bool:
+        return deals[vc]["property_count"] == 0
+
+    for vc in list(routes_by_deal):
+        if _child(vc):
+            dropped_children.add(vc)
+            routes_by_deal.pop(vc)
+    for b in list(broken_raw):
+        if _child(b["vcode"]):
+            dropped_children.add(b["vcode"])
+            broken_raw.remove(b)
+
+    # 3. sold exclusion, before classification. A disposed deal must not count
+    #    toward an entity's deal tally or it can promote an SPV to a fund.
+    for vc in list(routes_by_deal):
+        m = deals[vc]
+        if is_sold_as_of(m, q_end):
+            excluded_sold.append({
+                "vcode": m["vcode"], "name": m["name"],
+                "sale_date": (m["sale_date"].date()
+                              if pd.notna(m["sale_date"]) else None),
+                "reason": f"Sale_Status=SOLD and Sale_Date <= {q_end}"})
+            routes_by_deal.pop(vc)
+
+    # 4. groups, derived from what is still held
+    is_fund = _classify_entities(routes_by_deal)
+
+    groups: dict[str, list] = {}
+    for vc, routes in routes_by_deal.items():
+        m = deals[vc]
+        group, mixed = _group_for(vc, routes, is_fund)
+        pct = sum(r["pct"] for r in routes)
+        entry = {
+            "vcode": m["vcode"], "name": m["name"], "iid": m["iid"],
+            "group": group,
+            "lookthrough_pct": pct,
+            "pct_display": round(pct * 100, 4),
+            "n_routes": len(routes),
+            "chains": [" -> ".join([investor] + [h["entity"] for h in r["chain"]])
+                       for r in routes],
+            "asset_type": m["asset_type"], "strategy": m["strategy"],
+            "sale_status": m["sale_status"],
+            "sold_after_quarter": (m["sale_status"].upper() == "SOLD"
+                                   and not is_sold_as_of(m, q_end)),
+            "flags": [],
+        }
+        if mixed:
+            entry["flags"].append(
+                f"multi-route: reachable {len(routes)} ways; grouped to "
+                f"{group} (see PREFER_INDIVIDUAL_ON_MIXED)")
+        if entry["sold_after_quarter"]:
+            entry["flags"].append("sold after quarter end — held during quarter")
+        groups.setdefault(group, []).append(entry)
+
+    # 5. child roll-up, reported. Every parent that made the report lists the
+    #    children folded into its single line, so the roll-up is auditable
+    #    rather than implicit.
+    included = {e["vcode"] for items in groups.values() for e in items}
+    for vc in sorted(included):
+        for kid in _children_of(vc, deals):
+            excluded_children.append({
+                "vcode": kid["vcode"], "name": kid["name"],
+                "rolls_up_to": deals[vc]["name"],
+                "parent_vcode": vc,
+                "reason": "child property (Property_Count == 0)"})
+    # Children the traversal itself reached (0% edges) but whose parent is not
+    # in this investor's set — recorded so the drop is never silent.
+    accounted = {c["vcode"] for c in excluded_children}
+    for vc in sorted(dropped_children):
+        m = deals[vc]
+        if m["vcode"] not in accounted:
+            excluded_children.append({
+                "vcode": m["vcode"], "name": m["name"],
+                "rolls_up_to": m["portfolio_name"], "parent_vcode": None,
+                "reason": "child property (Property_Count == 0); parent not in "
+                          "this investor's set"})
+
+    # 6. broken chains: reachable but no resolvable ownership. Flagged with the
+    #    look-through withheld, never a fabricated number.
+    for b in broken_raw:
+        m = deals[b["vcode"]]
+        if is_sold_as_of(m, q_end):
+            continue
+        flagged.append({
+            "vcode": m["vcode"], "name": m["name"], "iid": m["iid"],
+            "lookthrough_pct": None,
+            "reason": "ownership % unavailable",
+            "detail": b["detail"]["reason"],
+            "via": b["detail"]["via"],
+        })
+
+    for g in groups:
+        groups[g].sort(key=lambda e: e["name"].lower())
+    ordered = {}
+    if INDIVIDUAL_GROUP in groups:
+        ordered[INDIVIDUAL_GROUP] = groups.pop(INDIVIDUAL_GROUP)
+    for g in sorted(groups):
+        ordered[g] = groups[g]
+
+    return {
+        "investor_code": investor,
+        "investor_name": get_investor_name(investor, investor_names),
+        "quarter": quarter,
+        "quarter_end": q_end,
+        "groups": ordered,
+        "flagged": sorted(flagged, key=lambda f: f["name"].lower()),
+        "excluded_sold": sorted(excluded_sold,
+                                key=lambda e: str(e["sale_date"] or "")),
+        "excluded_children": sorted(excluded_children,
+                                    key=lambda e: e["vcode"]),
+        "diagnostics": {
+            "deal_count": sum(len(v) for v in ordered.values()),
+            "group_count": len(ordered),
+            "fund_entities": sorted(e for e, f in is_fund.items() if f),
+            "spv_entities": sorted(e for e, f in is_fund.items() if not f),
+        },
+    }
+
+
+# ── Self-test ─────────────────────────────────────────────────────────────
+
+def _selftest():                                    # pragma: no cover
+    """Reproduce the verified Step 1 result for TIAA + 2026-Q2.
+
+    Runs out-of-process, so it pulls the two frames over the REST API using
+    narrow per-entity filters — one page per request, OFFSET never used, and
+    every result post-filtered to exact matches because ``filter__`` is
+    case-insensitive *contains*.
+    """
+    import os
+    import sys
+    # Running as a script, so put the repo root and scripts/ on the path. Inside
+    # Flask the root is already importable and this block never executes.
+    root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    for p in (root, os.path.join(root, "scripts")):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    import live_api as api
+
+    print(f"token={api.token_info()['username']}  "
+          f"build={api.get('/api/data/version').get('version')}  "
+          f"actuals_through={api.get('/api/data/config').get('actuals_through')}")
+
+    inv = pd.DataFrame(api.get("/api/data/deals/all").get("deals") or [])
+    print(f"deals: {len(inv)}")
+
+    # Walk the graph outward from the investor, one narrow request per entity.
+    seen, frontier, rows = set(), ["TGAM"], []
+
+    def fetch(col, val):
+        d = api.get("/api/data/tables/relationships/rows",
+                    params={"page": 1, "page_size": 500, f"filter__{col}": val})
+        if (d.get("total") or 0) > 500:
+            print(f"  !! {col}={val}: {d['total']} rows exceeds one page")
+        return [r for r in (d.get("rows") or [])
+                if str(r.get(col) or "").strip().upper() == val.upper()]
+
+    while frontier:
+        node = frontier.pop().upper()
+        if node in seen:
+            continue
+        seen.add(node)
+        kids = fetch("InvestorID", node)
+        rows.extend(kids)
+        for r in kids:
+            child = str(r.get("InvestmentID") or "").strip().upper()
+            if not child:
+                continue
+            rows.extend(fetch("InvestmentID", child))   # all owners, to normalise
+            if child not in seen:
+                frontier.append(child)
+
+    rel = pd.DataFrame(rows).drop_duplicates()
+    print(f"relationships pulled: {len(rel)} unique rows over {len(seen)} entities\n")
+
+    res = resolve_investor_deals("TGAM", "2026-Q2", rel, inv)
+
+    print("=" * 92)
+    print(f"{res['investor_name']} ({res['investor_code']})  {res['quarter']}  "
+          f"quarter end {res['quarter_end']}")
+    print("=" * 92)
+    for g, items in res["groups"].items():
+        print(f"\n  {g}  ({len(items)} deals)")
+        for e in items:
+            fl = ("   <- " + "; ".join(e["flags"])) if e["flags"] else ""
+            print(f"    {e['vcode']:<9} {e['name'][:36]:<38}"
+                  f"{e['pct_display']:>9.4f}%{fl}")
+    if res["flagged"]:
+        print(f"\n  FLAGGED — ownership unavailable ({len(res['flagged'])})")
+        for f in res["flagged"]:
+            print(f"    {f['vcode']:<9} {f['name'][:36]:<38}     n/a   "
+                  f"({f['detail']}, via {f['via']})")
+    print(f"\n  EXCLUDED as sold ({len(res['excluded_sold'])})")
+    for e in res["excluded_sold"]:
+        print(f"    {e['vcode']:<9} {e['name'][:36]:<38} sold {e['sale_date']}")
+    print(f"\n  CHILD PROPERTIES rolled up ({len(res['excluded_children'])})")
+    roll: dict[str, list] = {}
+    for c in res["excluded_children"]:
+        roll.setdefault(c["rolls_up_to"] or "(unknown parent)", []).append(c["vcode"])
+    for parent, kids in sorted(roll.items()):
+        print(f"    {parent:<38} <- {len(kids)}: {', '.join(kids)}")
+    d = res["diagnostics"]
+    print(f"\n  deals={d['deal_count']}  groups={d['group_count']}")
+    print(f"  funds detected : {d['fund_entities']}")
+
+    # ---- assertions against the verified pass ----
+    print("\n" + "=" * 92)
+    print("CHECKS vs the verified Step 1 pass")
+    flat = {e["vcode"]: e for items in res["groups"].values() for e in items}
+    checks = [
+        ("Nottingham = 41.2124%",
+         abs(flat.get("P0000030", {}).get("pct_display", 0) - 41.2124) < 0.001),
+        ("Nottingham in Individual Investments",
+         flat.get("P0000030", {}).get("group") == INDIVIDUAL_GROUP),
+        ("45th & Main flagged, not grouped",
+         any(f["vcode"] == "P0000089" for f in res["flagged"])
+         and "P0000089" not in flat),
+        ("Pegasus in Individual Investments",
+         flat.get("P0000066", {}).get("group") == INDIVIDUAL_GROUP),
+        ("Pegasus = 83.367% across both routes",
+         abs(flat.get("P0000066", {}).get("pct_display", 0) - 83.367) < 0.01),
+        ("City West excluded as sold",
+         any(e["vcode"] == "PCITWES" for e in res["excluded_sold"])),
+        ("East Manchester excluded (sold inside Q2)",
+         any(e["vcode"] == "P0000017" for e in res["excluded_sold"])),
+        ("TGA6 grouped as a fund, not Individual",
+         "TGA6" in res["groups"] and
+         flat.get("P0000117", {}).get("group") == "TGA6"),
+        ("Trolley Square = 90%",
+         abs(flat.get("P0000110", {}).get("pct_display", 0) - 90.0) < 0.001),
+        ("Individual Investments holds the 5 originals + Pegasus",
+         {"P0000018", "P0000019", "P0000021", "P0000030", "P0000065",
+          "P0000066"}.issubset(
+             {e["vcode"] for e in res["groups"].get(INDIVIDUAL_GROUP, [])})),
+        # 25, not the 18 the verification pass saw. That pass could only count
+        # children the ownership graph happened to reach (Brainerd 9, Town Fair
+        # 6, Burton 3); Giant 7's 7 children carry no relationship rows at all,
+        # so enumerating from the deals frame finds them too. 9+6+3+7 = 25.
+        ("25 children rolled up into 4 parents",
+         len(res["excluded_children"]) == 25),
+        ("Aston Center rolls up (the ASTONC InvestmentID collision)",
+         any(c["vcode"] == "P0000045" for c in res["excluded_children"])),
+        ("Donald Lynch survives the MCCORD collision as a parent",
+         "P0000049" in flat or any(f["vcode"] == "P0000049"
+                                   for f in res["flagged"])
+         or not any(e["vcode"] == "P0000049" for e in res["excluded_sold"])),
+        ("no child appears as a deal line",
+         not any(v in flat for v in
+                 ["P0000090", "P0000101", "P0000111"])),
+    ]
+    ok = True
+    for label, passed in checks:
+        print(f"    [{'PASS' if passed else 'FAIL'}] {label}")
+        ok &= bool(passed)
+    print(f"\n  {'ALL CHECKS PASS' if ok else 'SOME CHECKS FAILED'}")
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":                          # pragma: no cover
+    raise SystemExit(_selftest())
