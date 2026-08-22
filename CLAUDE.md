@@ -44,6 +44,7 @@ waterfall-xirr/
 ├── ownership_tree.py         # Investor ownership structures
 ├── utils.py                  # Helper utilities
 ├── argus_parser.py           # Stateless Argus Enterprise Excel parser (COA mapping, forecast conversion)
+├── cashflow_parser.py        # Generic Excel/CSV parser for partner cash flow models (auto-detect columns, annual→monthly)
 ├── Dockerfile                # Multi-stage Docker build (Vue + Flask + Gunicorn)
 ├── launch_app.bat            # Desktop launcher (opens Azure app in browser)
 ├── waterfall_xirr.ico        # Custom app icon for desktop shortcut
@@ -605,17 +606,51 @@ Analysis view using analyst-resolved data. Defaults to base data when no resolut
   - **Options** — Renewal/termination options table (type, term, notice period, deadline, rent terms, auto-renewal).
 - **API Endpoints**: `GET /api/lease-review/reviews/<id>/risk-analysis` (complete data bundle), `PUT /api/lease-review/reviews/<id>/tenants/<tid>/resolve` (resolve field), `DELETE /api/lease-review/reviews/<id>/tenants/<tid>/resolve/<field>` (clear resolution).
 
-### 11d. Argus Enterprise Loader
-Import Argus Enterprise Excel exports to create projection scenarios for Deal Analysis and Pipeline evaluation.
+### 11d. Cash Flow Imports (Argus + Generic Excel)
+Property-level cash flow import hub supporting two sources: Argus Enterprise Excel exports and generic partner Excel/CSV models. Both roll up to deal-level for waterfall analysis.
 
-- **Parser** (`argus_parser.py`): Stateless, no DB/Flask deps. 56 keyword-to-COA mappings. Three parsers: `parse_monthly_cashflow()`, `parse_rent_roll_summary()`, `parse_revenue_assumptions()`. `cashflow_to_forecast_df()` converts to same DataFrame schema as `compute_deal_analysis()`.
-- **COA Mapping**: Keyword matching (not exact string). Revenue → 4010/4030/4040/4043/4075/4090-92, Expense → 5020/5040/5060/5090/5110, CapEx → 7050. Unmapped items shown in UI for manual assignment via `update_coa_mapping()`.
-- **Service** (`flask_app/services/argus_service.py`): Import with SHA-256 dedup, projection CRUD, forecast generation, COA override, NB→AM migration.
-- **Projection Toggle**: Dropdown on Deal Analysis switches between Default (Valuation/U/W) and Argus projections. `projection_id` included in compute cache key. `get_cached_deal_result()` substitutes `fc` DataFrame from `argus_service.get_forecast_df_by_id()`.
-- **Vue**: `ArgusImport.vue` shared component (file upload, COA mapping, tenant preview). Used in Deal Analysis modal and Pipeline Analysis tab.
-- **Database Tables** (5, all in `PROTECTED_TABLES`): `argus_imports` (session metadata, file hash dedup, active flag), `argus_cashflows` (monthly line items with COA + normalized amounts), `argus_tenants` (full lease detail, optional FK to `lease_tenants`), `argus_rent_steps` (escalation schedule), `argus_market_profiles` (market leasing profiles).
-- **NB→AM Migration**: `migrate_projection_to_forecast()` re-keys vcode (N→P series), inserts into `forecasts` table, copies tenants.
-- **API Endpoints** (`/api/argus`): `POST /<vcode>/import/cashflow`, `POST /<vcode>/import/rent-roll`, `POST /<vcode>/import/revenue-assumptions`, `GET /<vcode>/projections`, `PUT /<vcode>/projections/<id>/activate`, `DELETE /<vcode>/projections/<id>`, `GET /<vcode>/projections/<id>/forecast`, `GET /<vcode>/projections/<id>/tenants`, `GET/PUT /<vcode>/projections/<id>/mapping`, `POST /<vcode>/projections/<id>/migrate`.
+#### Pipeline Workflow
+1. Deal comes in → analyst creates deal + adds properties
+2. Per property → load cash flows via property card buttons:
+   - **"Import Argus"** → Argus Excel export → `argus_cashflows` (vcode = `NP{property_id:06d}`)
+   - **"Upload Cash Flows"** → partner Excel/CSV → `prospect_cashflows` (with `property_id` FK)
+3. Deal Analysis tab → "Run Analysis" with cascade: Argus > Excel cashflows > NOI growth assumptions
+4. Test waterfall structures → iterate → quote term sheet
+5. Term sheet accepted → move to DD/verification
+
+#### Argus Parser (`argus_parser.py`)
+- Stateless, no DB/Flask deps. 56 keyword-to-COA mappings
+- Three parsers: `parse_monthly_cashflow()`, `parse_rent_roll_summary()`, `parse_revenue_assumptions()`
+- `cashflow_to_forecast_df()` converts to compute-compatible DataFrame
+- COA keyword matching: Revenue → 4010/4030/4075/4090-92, Expense → 5020/5040/5060/5090/5110, CapEx → 7050
+- Unmapped items shown in UI for manual assignment
+
+#### Generic Parser (`cashflow_parser.py`)
+- Stateless, no DB/Flask deps. Auto-detects columns via regex patterns
+- Handles annual and monthly data (annual auto-spread to 12 monthly rows)
+- Normalizes signs, derives missing columns (NOI from rev-exp, or rev/exp from NOI)
+- Handles dollar signs, commas, parenthetical negatives, messy header rows
+
+#### Service Layer
+- **`argus_service.py`**: Import with SHA-256 dedup, projection CRUD, forecast generation, COA override, NB→AM migration. `get_property_rollup_forecast_df()` aggregates active Argus forecasts from multiple properties into one deal-level forecast.
+- **`prospect_service.py`**: `import_property_cashflows()`, `get_property_cashflows()`, `delete_property_cashflows()`, `get_deal_cashflows_by_property()`.
+
+#### Projection Toggle (Asset Management)
+- Dropdown on Deal Analysis switches between Default and Argus projections
+- `projection_id` in compute cache key; `get_cached_deal_result()` substitutes `fc` DataFrame
+
+#### Vue Components
+- `ArgusImport.vue` — shared upload component (file zones, COA mapping, tenant preview). Used in Deal Analysis modal and Pipeline property cards.
+- Pipeline property cards — "Import Argus" and "Upload Cash Flows" buttons per property. Green "CF" badge when data loaded.
+
+#### Database Tables
+- 5 Argus tables (all in `PROTECTED_TABLES`): `argus_imports`, `argus_cashflows`, `argus_tenants`, `argus_rent_steps`, `argus_market_profiles`
+- `prospect_cashflows` (existing) — now used for property-level Excel imports with `property_id` FK and `source` column
+
+#### API Endpoints
+- **Argus** (`/api/argus`): 11 endpoints for upload, CRUD, forecast preview, COA mapping, migration
+- **Cashflows** (`/api/prospects`): `POST /<deal_id>/properties/<prop_id>/cashflows/upload`, `GET .../cashflows`, `DELETE .../cashflows`
+- **Analysis cascade** in `POST /<deal_id>/analyze`: checks Argus property rollup → prospect_cashflows → NOI growth assumptions
 
 ## AI Assistant
 
@@ -728,14 +763,18 @@ Embedded Claude-powered chat panel for natural-language queries against the port
 - `_append_uw_supplements()` - Append isbs_uw_supplements rows to assembled ISBS; defaults vSource='Projected IS' (data_service.py)
 - `_assemble_forecasts()` - Merge forecast_feed CSV > ISBS Valuation IS > ISBS Projected IS with per-deal priority (data_service.py)
 
-### Argus Enterprise
+### Cash Flow Imports (Argus + Generic)
 - `parse_monthly_cashflow()` - Parse Argus cash flow Excel, auto-detect periods, map line items to COA (argus_parser.py)
 - `parse_rent_roll_summary()` - Parse tenant lease detail from Argus rent roll export (argus_parser.py)
 - `cashflow_to_forecast_df()` - Convert parsed Argus data to forecast DataFrame (same schema as load_forecast) (argus_parser.py)
 - `map_to_coa()` - Keyword-based line item → COA account mapping (argus_parser.py)
+- `parse_cashflow_excel()` - Generic Excel/CSV parser, auto-detect columns, annual→monthly conversion (cashflow_parser.py)
 - `import_argus_cashflow()` - Import with SHA-256 dedup, parse + store cashflows (argus_service.py)
 - `get_active_forecast_df()` / `get_forecast_df_by_id()` - Forecast DataFrame from Argus projection (argus_service.py)
+- `get_property_rollup_forecast_df()` - Aggregate Argus forecasts from multiple properties into deal-level forecast (argus_service.py)
 - `migrate_projection_to_forecast()` - Re-key vcode + insert into forecasts table for AM onboarding (argus_service.py)
+- `import_property_cashflows()` - Store Excel-parsed cash flows by property+version (prospect_service.py)
+- `get_deal_cashflows_by_property()` - All cashflows grouped by property_id for deal-level rollup (prospect_service.py)
 
 ### Flask Services
 - `get_cached_deal_result()` - Shared multi-deal cache wrapper (compute_service.py)
