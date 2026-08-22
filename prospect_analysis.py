@@ -29,6 +29,7 @@ def build_prospect_analysis(
     assumptions: dict,
     cashflows: Optional[list] = None,
     argus_forecast_df: Optional[pd.DataFrame] = None,
+    waterfall_df: Optional[pd.DataFrame] = None,
 ) -> dict:
     """Build synthetic DataFrames and run compute_deal_analysis().
 
@@ -99,8 +100,11 @@ def build_prospect_analysis(
     # --- Build synthetic DataFrames ---
 
     inv = _build_inv(vcode, deal_name, deal, close_date, properties)
-    wf = _build_waterfall(vcode, pe_investor_id, op_investor_id,
-                          psc_equity_pct, pref_rate, promote_pct)
+    if waterfall_df is not None and not waterfall_df.empty:
+        wf = waterfall_df
+    else:
+        wf = _build_waterfall(vcode, pe_investor_id, op_investor_id,
+                              psc_equity_pct, pref_rate, promote_pct)
     acct = _build_accounting(vcode, deal_name, pe_investor_id, op_investor_id,
                              pe_equity, op_equity, seed_date)
     if argus_forecast_df is not None and not argus_forecast_df.empty:

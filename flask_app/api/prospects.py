@@ -400,6 +400,24 @@ def analyze_deal(deal_id):
             except Exception as e:
                 logger.debug("Property cashflows check: %s", e)
 
+    # Check for a real waterfall in the DB for this prospect's vcode
+    waterfall_df = None
+    try:
+        from loaders import load_waterfalls
+        from sqlalchemy import text as sa_text
+        wf_vcode = deal_data['deal'].get('vcode') or f"N{deal_id:07d}"
+        with get_engine().connect() as conn:
+            wf_rows = conn.execute(sa_text(
+                "SELECT * FROM waterfalls WHERE vcode = :v"
+            ), {"v": wf_vcode}).fetchall()
+        if wf_rows:
+            import pandas as pd
+            cols = [c for c in wf_rows[0]._mapping.keys()]
+            wf_raw = pd.DataFrame([dict(r._mapping) for r in wf_rows], columns=cols)
+            waterfall_df = load_waterfalls(wf_raw)
+    except Exception as e:
+        logger.debug("Waterfall DB check for prospect: %s", e)
+
     try:
         result = build_prospect_analysis(
             deal=deal_data['deal'],
@@ -408,6 +426,7 @@ def analyze_deal(deal_id):
             assumptions=assumptions,
             cashflows=property_cashflows,
             argus_forecast_df=argus_forecast_df,
+            waterfall_df=waterfall_df,
         )
     except Exception as e:
         logger.exception("Prospect analysis failed for deal %d", deal_id)
@@ -562,3 +581,174 @@ def clear_cashflows(deal_id, property_id):
     version = request.args.get('version', 1, type=int)
     deleted = delete_property_cashflows(get_engine(), deal_id, property_id, version)
     return jsonify({'status': 'deleted' if deleted else 'nothing_to_delete'})
+
+
+# ---------------------------------------------------------------------------
+# Waterfall Builder (streamlined structure creation)
+# ---------------------------------------------------------------------------
+
+@prospects_bp.route('/<int:deal_id>/waterfall', methods=['GET'])
+@login_required
+def get_deal_waterfall(deal_id):
+    """Get waterfall steps for a prospect deal."""
+    deal_data = get_deal(get_engine(), deal_id)
+    if not deal_data:
+        return jsonify({'error': 'Deal not found'}), 404
+
+    vcode = deal_data['deal'].get('vcode') or f"N{deal_id:07d}"
+
+    from sqlalchemy import text as sa_text
+    with get_engine().connect() as conn:
+        rows = conn.execute(sa_text(
+            "SELECT vcode, vmisc, \"iOrder\", \"PropCode\", \"vState\", "
+            "\"FXRate\", \"nPercent\", \"mAmount\", vtranstype, \"vAmtType\", "
+            "\"vNotes\" FROM waterfalls WHERE vcode = :v ORDER BY vmisc, \"iOrder\""
+        ), {"v": vcode}).fetchall()
+
+    steps = []
+    for r in rows:
+        steps.append({
+            'vcode': r[0], 'vmisc': r[1], 'iOrder': r[2],
+            'PropCode': r[3], 'vState': r[4], 'FXRate': r[5],
+            'nPercent': r[6], 'mAmount': r[7], 'vtranstype': r[8],
+            'vAmtType': r[9], 'vNotes': r[10],
+        })
+
+    return jsonify({
+        'vcode': vcode,
+        'steps': steps,
+        'has_cf': any(s['vmisc'] == 'CF_WF' for s in steps),
+        'has_cap': any(s['vmisc'] == 'Cap_WF' for s in steps),
+    })
+
+
+@prospects_bp.route('/<int:deal_id>/waterfall/build', methods=['POST'])
+@login_required
+@role_required('admin', 'analyst')
+def build_deal_waterfall(deal_id):
+    """Generate and save waterfall from streamlined inputs.
+
+    Body: {
+        investors: [
+            {id: "PSC_PE", name: "PSC Pref Equity", pref_rate: 0.08, share_pct: 0.90, is_pe: true},
+            {id: "OP_PARTNER", name: "Partner", pref_rate: 0, share_pct: 0.10, is_pe: false},
+        ],
+        promote: {enabled: false, pct: 0.20, after_pref: true},
+    }
+    """
+    from database import save_waterfall_steps
+    from flask_app.services.data_service import get_data_service
+
+    deal_data = get_deal(get_engine(), deal_id)
+    if not deal_data:
+        return jsonify({'error': 'Deal not found'}), 404
+
+    vcode = deal_data['deal'].get('vcode') or f"N{deal_id:07d}"
+    body = request.json or {}
+    investors = body.get('investors', [])
+    promote = body.get('promote', {})
+
+    if not investors:
+        return jsonify({'error': 'At least one investor required'}), 400
+
+    import pandas as pd
+    from datetime import date as dt_date
+
+    steps = []
+    order = 10
+
+    for wf_name in ['CF_WF', 'Cap_WF']:
+        order = 10
+
+        # 1. Pref steps — each PE investor gets their own iOrder
+        for inv in investors:
+            pref = float(inv.get('pref_rate') or 0)
+            if pref > 0:
+                steps.append({
+                    'vcode': vcode, 'vmisc': wf_name, 'iOrder': order,
+                    'PropCode': inv['id'], 'vState': 'Pref',
+                    'FXRate': 1.0, 'nPercent': pref * 100,
+                    'mAmount': 0, 'vtranstype': 'Preferred Return',
+                    'vAmtType': '', 'vNotes': '',
+                    'dteffective': dt_date(2020, 1, 1), 'nmisc': 0,
+                })
+                order += 10
+
+        # 2. Capital return (Cap_WF only)
+        if wf_name == 'Cap_WF':
+            for inv in investors:
+                steps.append({
+                    'vcode': vcode, 'vmisc': wf_name, 'iOrder': order,
+                    'PropCode': inv['id'], 'vState': 'Initial',
+                    'FXRate': 1.0, 'nPercent': 0, 'mAmount': 0,
+                    'vtranstype': 'Return of Capital',
+                    'vAmtType': '', 'vNotes': '',
+                    'dteffective': dt_date(2020, 1, 1), 'nmisc': 0,
+                })
+                order += 10
+
+        # 3. Residual split — lead (Share) + followers (Tag)
+        # First investor with share > 0 is the lead
+        lead_found = False
+        for inv in investors:
+            share = float(inv.get('share_pct') or 0)
+            if share <= 0:
+                continue
+            if not lead_found:
+                state = 'Share'
+                lead_found = True
+            else:
+                state = 'Tag'
+            steps.append({
+                'vcode': vcode, 'vmisc': wf_name, 'iOrder': order,
+                'PropCode': inv['id'], 'vState': state,
+                'FXRate': share, 'nPercent': 0, 'mAmount': 0,
+                'vtranstype': 'Excess Cash Flow',
+                'vAmtType': '', 'vNotes': '',
+                'dteffective': dt_date(2020, 1, 1), 'nmisc': 0,
+            })
+        order += 10
+
+    # Save to database
+    df = pd.DataFrame(steps)
+    try:
+        save_waterfall_steps(vcode, df)
+        # Invalidate cache
+        try:
+            ds = get_data_service()
+            if ds:
+                ds.refresh_table('waterfalls')
+                ds.clear_cache()
+        except Exception:
+            pass
+    except Exception as e:
+        logger.exception("Failed to save waterfall for %s", vcode)
+        return jsonify({'error': str(e)}), 500
+
+    return jsonify({
+        'status': 'saved',
+        'vcode': vcode,
+        'step_count': len(steps),
+        'steps': steps,
+    })
+
+
+@prospects_bp.route('/<int:deal_id>/waterfall', methods=['DELETE'])
+@login_required
+@role_required('admin', 'analyst')
+def delete_deal_waterfall(deal_id):
+    """Delete waterfall steps for a prospect deal."""
+    deal_data = get_deal(get_engine(), deal_id)
+    if not deal_data:
+        return jsonify({'error': 'Deal not found'}), 404
+
+    vcode = deal_data['deal'].get('vcode') or f"N{deal_id:07d}"
+
+    from sqlalchemy import text as sa_text
+    with get_engine().connect() as conn:
+        result = conn.execute(sa_text(
+            "DELETE FROM waterfalls WHERE vcode = :v"
+        ), {"v": vcode})
+        conn.commit()
+
+    return jsonify({'status': 'deleted', 'rows': result.rowcount})

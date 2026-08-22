@@ -95,6 +95,11 @@ const routes = [
     component: () => import('../views/PipelineView.vue'),
   },
   {
+    path: '/prospect-analysis',
+    name: 'Prospect Analysis',
+    component: () => import('../views/ProspectAnalysisView.vue'),
+  },
+  {
     path: '/lease-review',
     name: 'Lease Review',
     component: () => import('../views/LeaseReviewView.vue'),

@@ -23,7 +23,7 @@ function toggleSection(key: string) {
 
 // Auto-expand section containing current route
 const amRoutes = ['/deal-analysis', '/property-financials', '/surveillance', '/one-pager', '/review-tracking', '/ownership', '/waterfall-setup', '/reports']
-const nbRoutes = ['/pipeline', '/lease-review', '/lease-risk-analysis', '/lease-abstract']
+const nbRoutes = ['/pipeline', '/prospect-analysis', '/lease-review', '/lease-risk-analysis', '/lease-abstract']
 const dmRoutes = ['/data-explorer', '/settings']
 
 watch(() => route.path, (path) => {
@@ -497,6 +497,7 @@ function toggleCollapsed() {
         </button>
         <div v-show="expandedSections.nb" class="nav-section-body">
           <router-link to="/pipeline" class="nav-item" :class="{ active: route.path === '/pipeline' }">Pipeline</router-link>
+          <router-link to="/prospect-analysis" class="nav-item" :class="{ active: route.path === '/prospect-analysis' }">Deal Analysis</router-link>
           <router-link to="/lease-review" class="nav-item" :class="{ active: route.path === '/lease-review' }">Lease Review</router-link>
           <router-link to="/lease-risk-analysis" class="nav-item" :class="{ active: route.path === '/lease-risk-analysis' }">Lease Risk Analysis</router-link>
         </div>
