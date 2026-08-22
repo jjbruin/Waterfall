@@ -89,6 +89,7 @@ def compute_deal():
     selling_cost_override = body.get("selling_cost_override")
     selling_cost_type = body.get("selling_cost_type")
     sale_date_override = body.get("sale_date_override")
+    projection_id = body.get("projection_id")
 
     # Load saved overrides if not provided in request
     if contract_sale_price is None and selling_cost_override is None and sale_date_override is None:
@@ -108,6 +109,7 @@ def compute_deal():
             selling_cost_override=selling_cost_override,
             selling_cost_type=selling_cost_type,
             sale_date_override=sale_date_override,
+            projection_id=projection_id,
         )
     except Exception as e:
         return jsonify({"error": str(e)}), 500

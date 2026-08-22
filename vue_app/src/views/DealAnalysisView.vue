@@ -2,12 +2,19 @@
 import { onMounted, computed, ref, watch } from 'vue'
 import { useDataStore } from '../stores/data'
 import { useDealsStore, type ProspectiveLoan, type SizingResult } from '../stores/deals'
+import api from '../api/client'
 import KpiCard from '../components/common/KpiCard.vue'
 import DataTable from '../components/common/DataTable.vue'
 import ProgressOverlay from '../components/common/ProgressOverlay.vue'
+import ArgusImport from '../components/common/ArgusImport.vue'
 
 const data = useDataStore()
 const deals = useDealsStore()
+
+// Argus projection state
+const projections = ref<any[]>([])
+const selectedProjectionId = ref<number | null>(null)
+const showArgusModal = ref(false)
 
 onMounted(async () => {
   if (data.deals.length === 0) await data.loadDeals()
@@ -18,6 +25,30 @@ async function onDealSelect(event: Event) {
   if (vcode) {
     await deals.computeDeal(vcode)
     deals.loadProspectiveLoans(vcode)
+    loadProjections(vcode)
+  }
+}
+
+async function loadProjections(vcode: string) {
+  try {
+    const res = await api.get(`/api/argus/${vcode}/projections`)
+    projections.value = res.data || []
+    selectedProjectionId.value = null
+  } catch {
+    projections.value = []
+  }
+}
+
+async function onProjectionChange() {
+  const vcode = deals.currentVcode
+  if (!vcode) return
+  await deals.computeDeal(vcode, { projection_id: selectedProjectionId.value })
+}
+
+function onArgusImportComplete(importId: number) {
+  showArgusModal.value = false
+  if (deals.currentVcode) {
+    loadProjections(deals.currentVcode)
   }
 }
 
@@ -45,7 +76,12 @@ function toggle(section: string) {
 watch(() => deals.currentVcode, (vc) => {
   expanded.value = {}
   selectedSizingLoanId.value = null
-  if (vc) deals.loadProspectiveLoans(vc)
+  selectedProjectionId.value = null
+  projections.value = []
+  if (vc) {
+    deals.loadProspectiveLoans(vc)
+    loadProjections(vc)
+  }
 })
 
 // ============================================================
@@ -572,6 +608,37 @@ watch(() => deals.currentVcode, (vc) => {
           {{ d.Investment_Name || d.vcode }} ({{ d.vcode }}){{ (d.Sale_Status?.toUpperCase() === 'SOLD' || d.Lifecycle?.trim().toUpperCase() === 'SOLD') ? ' — Sold' : '' }}
         </option>
       </select>
+
+      <!-- Argus Projection Toggle -->
+      <template v-if="projections.length > 0">
+        <label style="margin-left: 16px;">Projection:</label>
+        <select v-model="selectedProjectionId" @change="onProjectionChange" style="max-width: 220px;">
+          <option :value="null">Default (Valuation / U/W)</option>
+          <option v-for="p in projections" :key="p.id" :value="p.id">
+            {{ p.import_label }} ({{ p.original_filename }})
+          </option>
+        </select>
+      </template>
+
+      <button v-if="deals.currentVcode" class="btn-argus-import" @click="showArgusModal = true"
+              title="Import Argus Enterprise Excel export">
+        Import Argus
+      </button>
+    </div>
+
+    <!-- Argus Import Modal -->
+    <div v-if="showArgusModal" class="modal-overlay" @click.self="showArgusModal = false">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>Import Argus Enterprise</h3>
+          <button class="modal-close" @click="showArgusModal = false">&times;</button>
+        </div>
+        <ArgusImport
+          :vcode="deals.currentVcode!"
+          import-type="asset_management"
+          :on-import-complete="onArgusImportComplete"
+        />
+      </div>
     </div>
 
     <p v-if="deals.error" class="error">{{ deals.error }}</p>
@@ -1408,6 +1475,60 @@ watch(() => deals.currentVcode, (vc) => {
   border-radius: 6px;
   font-size: 14px;
   min-width: 350px;
+}
+
+.btn-argus-import {
+  margin-left: auto;
+  padding: 6px 14px;
+  border: 1px solid #6c757d;
+  border-radius: 4px;
+  background: #fff;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn-argus-import:hover {
+  background: #f8f9fa;
+  border-color: #0d6efd;
+  color: #0d6efd;
+}
+
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.modal-content {
+  background: #fff;
+  border-radius: 8px;
+  padding: 20px;
+  width: 600px;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+.modal-header h3 {
+  margin: 0;
+  font-size: 16px;
+}
+.modal-close {
+  background: none;
+  border: none;
+  font-size: 22px;
+  cursor: pointer;
+  color: #6c757d;
 }
 
 .error {

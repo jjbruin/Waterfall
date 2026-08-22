@@ -272,7 +272,11 @@ export const useDealsStore = defineStore('deals', () => {
     saleOverrideSaved.value[vcode] = false
   }
 
-  async function computeDeal(vcode: string, force = false) {
+  async function computeDeal(vcode: string, opts: { force?: boolean; projection_id?: number | null } | boolean = false) {
+    // Support both old signature (vcode, force) and new (vcode, { force, projection_id })
+    const force = typeof opts === 'boolean' ? opts : (opts.force ?? false)
+    const projectionId = typeof opts === 'object' && opts !== null ? opts.projection_id : undefined
+
     computing.value = true
     error.value = null
     currentVcode.value = vcode
@@ -284,6 +288,7 @@ export const useDealsStore = defineStore('deals', () => {
 
       // Build compute payload with optional sale overrides
       const payload: Record<string, any> = { vcode, force }
+      if (projectionId != null) payload.projection_id = projectionId
       if (contractSalePrice.value[vcode] != null) payload.contract_sale_price = contractSalePrice.value[vcode]
       if (sellingCostOverride.value[vcode] != null) {
         payload.selling_cost_override = sellingCostOverride.value[vcode]

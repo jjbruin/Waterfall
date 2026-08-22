@@ -30,6 +30,7 @@ def get_cached_deal_result(
     selling_cost_override=None,
     selling_cost_type=None,
     sale_date_override=None,
+    projection_id=None,
 ) -> dict:
     """Compute or retrieve cached deal result.
 
@@ -45,12 +46,14 @@ def get_cached_deal_result(
         selling_cost_override: Override selling cost value (None = default 2%).
         selling_cost_type: 'pct' or 'fixed' for selling cost interpretation.
         sale_date_override: Override sale date string (None = use investment_map).
+        projection_id: Argus projection ID to use instead of default forecast.
 
     Returns:
         Full result dict from compute_deal_analysis().
     """
     at_str = str(actuals_through) if actuals_through else "none"
-    cache_key = f"{vcode}|{start_year}|{horizon_years}|{pro_yr_base}|{at_str}"
+    proj_str = str(projection_id) if projection_id else "default"
+    cache_key = f"{vcode}|{start_year}|{horizon_years}|{pro_yr_base}|{at_str}|{proj_str}"
     # Sale overrides change the result but don't affect the cache key —
     # force=True overwrites the entry, and GET endpoints reuse it.
     has_sale_overrides = contract_sale_price is not None or selling_cost_override is not None or sale_date_override is not None
@@ -63,6 +66,20 @@ def get_cached_deal_result(
     wf = data["wf"]
     acct = data["acct"]
     fc = data["fc"]
+
+    # Substitute forecast from Argus projection if specified
+    if projection_id is not None:
+        try:
+            from flask_app.db import get_engine
+            from flask_app.services import argus_service
+            engine = get_engine()
+            argus_fc = argus_service.get_forecast_df_by_id(
+                engine, vcode, int(projection_id), pro_yr_base,
+            )
+            if argus_fc is not None and not argus_fc.empty:
+                fc = argus_fc
+        except Exception:
+            pass  # Fall through to default forecast
     coa = data["coa"]
     mri_loans_raw = data["mri_loans_raw"]
     mri_supp = data["mri_supp"]

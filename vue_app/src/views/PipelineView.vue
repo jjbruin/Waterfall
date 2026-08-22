@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import api from '../api/client'
+import ArgusImport from '../components/common/ArgusImport.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -1046,6 +1047,15 @@ onMounted(() => {
 
           <!-- Analysis tab -->
           <div v-if="detailTab === 'analysis'" class="tab-content analysis-tab">
+            <!-- Argus Import -->
+            <details class="argus-section" v-if="deal">
+              <summary>Import Argus Enterprise Projection</summary>
+              <ArgusImport
+                :vcode="deal.vcode || `N${String(deal.id).padStart(7, '0')}`"
+                import-type="new_business"
+              />
+            </details>
+
             <!-- Saved versions selector -->
             <div v-if="assumptionVersions.length" class="version-bar">
               <label>Scenario:</label>
@@ -2099,6 +2109,19 @@ onMounted(() => {
 
 /* ===== ANALYSIS TAB ===== */
 .analysis-tab { overflow-y: auto; }
+
+.argus-section {
+  margin-bottom: 12px;
+  border: 1px solid #dee2e6;
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+.argus-section summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: #495057;
+}
 
 .version-bar {
   display: flex; align-items: center; gap: 8px;
