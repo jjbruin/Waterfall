@@ -14,6 +14,7 @@
 - [ai_assistant_roadmap.md](ai_assistant_roadmap.md) — AI assistant enhancement plan (15 items, prioritized)
 - [vpn_tunnel_handoff.md](vpn_tunnel_handoff.md) — VPN tunnel to MRI: P1 DH21 negotiation issue, call scheduled Jun 23
 - [new_business_pipeline.md](new_business_pipeline.md) — New Business pipeline: prospect deals, properties, entities, lease review integration
+- [session_handoff_aug22.md](session_handoff_aug22.md) — Session handoff: Argus Enterprise loader (parser, service, API, projection toggle, Vue UI)
 
 ## Project Overview
 - Flask + Vue application for real estate investment waterfall calculations
@@ -38,7 +39,7 @@
 - `prepare_cap_lookups()` — batch pre-computation for dashboard capitalization loop (3.7x faster)
 - `get_cached_caps_and_occ()` — shared caps/occ cache in `dashboard_service.py`, used by both Dashboard and Surveillance for identical KPIs (debt, occupancy). Eliminates redundant computation and double-counting of child property debt.
 - `run_interleaved_waterfalls()` — merges CF/Cap timelines chronologically with shared InvestorState
-- `PROTECTED_TABLES` = waterfalls, one_pager_comments, waterfall_audit, review_roles, review_submissions, review_notes, prospective_loans, prospective_loans_audit, planned_loans, sale_overrides, user_requests, user_request_messages, surveillance_comments, lease_reviews, lease_tenants, lease_documents, lease_rent_steps, lease_cotenancy, lease_cotenancy_refs, lease_exclusive_use, lease_options, lease_validation, prospect_deals, prospect_properties, prospect_entities, prospect_investors, prospect_assumptions, prospect_cashflows, prospect_activity
+- `PROTECTED_TABLES` = waterfalls, one_pager_comments, waterfall_audit, review_roles, review_submissions, review_notes, prospective_loans, prospective_loans_audit, planned_loans, sale_overrides, user_requests, user_request_messages, surveillance_comments, lease_reviews, lease_tenants, lease_documents, lease_rent_steps, lease_cotenancy, lease_cotenancy_refs, lease_exclusive_use, lease_options, lease_validation, prospect_deals, prospect_properties, prospect_entities, prospect_investors, prospect_assumptions, prospect_cashflows, prospect_activity, argus_imports, argus_cashflows, argus_tenants, argus_rent_steps, argus_market_profiles
 
 ## MRI Data Refresh (May 2026)
 - **MRI Query Service**: `mri_service.py` + 7 API endpoints + Vue sidebar UI

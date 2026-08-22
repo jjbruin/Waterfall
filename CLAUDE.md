@@ -43,6 +43,7 @@ waterfall-xirr/
 ├── reporting.py              # Annual aggregation tables, formatting utilities
 ├── ownership_tree.py         # Investor ownership structures
 ├── utils.py                  # Helper utilities
+├── argus_parser.py           # Stateless Argus Enterprise Excel parser (COA mapping, forecast conversion)
 ├── Dockerfile                # Multi-stage Docker build (Vue + Flask + Gunicorn)
 ├── launch_app.bat            # Desktop launcher (opens Azure app in browser)
 ├── waterfall_xirr.ico        # Custom app icon for desktop shortcut
@@ -68,6 +69,7 @@ waterfall-xirr/
 │   │   ├── feedback.py       # Feedback & request tracking endpoints (submit, list, messages, email, webhook)
 │   │   ├── lease_review.py   # Lease review & risk analysis endpoints (DD workflow, document upload, field resolution)
 │   │   ├── prospects.py      # Pipeline prospect CRUD (deals, properties, entities, investors, assumptions)
+│   │   ├── argus.py          # Argus Enterprise import, projection management, COA mapping, forecast preview
 │   │   └── ...               # Additional route blueprints
 │   └── services/             # Business logic (reuses compute.py, database.py, etc.)
 │       ├── dashboard_service.py  # KPI calculations, NOI pipeline, chart data
@@ -80,6 +82,7 @@ waterfall-xirr/
 │       ├── reports_service.py    # Report builders (projected returns, ROE summary, pref balance detail)
 │       ├── lease_review_service.py  # Lease review DD workflow, document upload, extraction, field resolution
 │       ├── prospect_service.py      # Pipeline prospect CRUD, lease review creation, deal evaluation
+│       ├── argus_service.py         # Argus Enterprise import, projection CRUD, forecast generation, NB→AM migration
 │       └── ...
 │
 ├── scripts/                  # Azure migration and setup scripts
@@ -602,6 +605,18 @@ Analysis view using analyst-resolved data. Defaults to base data when no resolut
   - **Options** — Renewal/termination options table (type, term, notice period, deadline, rent terms, auto-renewal).
 - **API Endpoints**: `GET /api/lease-review/reviews/<id>/risk-analysis` (complete data bundle), `PUT /api/lease-review/reviews/<id>/tenants/<tid>/resolve` (resolve field), `DELETE /api/lease-review/reviews/<id>/tenants/<tid>/resolve/<field>` (clear resolution).
 
+### 11d. Argus Enterprise Loader
+Import Argus Enterprise Excel exports to create projection scenarios for Deal Analysis and Pipeline evaluation.
+
+- **Parser** (`argus_parser.py`): Stateless, no DB/Flask deps. 56 keyword-to-COA mappings. Three parsers: `parse_monthly_cashflow()`, `parse_rent_roll_summary()`, `parse_revenue_assumptions()`. `cashflow_to_forecast_df()` converts to same DataFrame schema as `compute_deal_analysis()`.
+- **COA Mapping**: Keyword matching (not exact string). Revenue → 4010/4030/4040/4043/4075/4090-92, Expense → 5020/5040/5060/5090/5110, CapEx → 7050. Unmapped items shown in UI for manual assignment via `update_coa_mapping()`.
+- **Service** (`flask_app/services/argus_service.py`): Import with SHA-256 dedup, projection CRUD, forecast generation, COA override, NB→AM migration.
+- **Projection Toggle**: Dropdown on Deal Analysis switches between Default (Valuation/U/W) and Argus projections. `projection_id` included in compute cache key. `get_cached_deal_result()` substitutes `fc` DataFrame from `argus_service.get_forecast_df_by_id()`.
+- **Vue**: `ArgusImport.vue` shared component (file upload, COA mapping, tenant preview). Used in Deal Analysis modal and Pipeline Analysis tab.
+- **Database Tables** (5, all in `PROTECTED_TABLES`): `argus_imports` (session metadata, file hash dedup, active flag), `argus_cashflows` (monthly line items with COA + normalized amounts), `argus_tenants` (full lease detail, optional FK to `lease_tenants`), `argus_rent_steps` (escalation schedule), `argus_market_profiles` (market leasing profiles).
+- **NB→AM Migration**: `migrate_projection_to_forecast()` re-keys vcode (N→P series), inserts into `forecasts` table, copies tenants.
+- **API Endpoints** (`/api/argus`): `POST /<vcode>/import/cashflow`, `POST /<vcode>/import/rent-roll`, `POST /<vcode>/import/revenue-assumptions`, `GET /<vcode>/projections`, `PUT /<vcode>/projections/<id>/activate`, `DELETE /<vcode>/projections/<id>`, `GET /<vcode>/projections/<id>/forecast`, `GET /<vcode>/projections/<id>/tenants`, `GET/PUT /<vcode>/projections/<id>/mapping`, `POST /<vcode>/projections/<id>/migrate`.
+
 ## AI Assistant
 
 Embedded Claude-powered chat panel for natural-language queries against the portfolio database.
@@ -712,6 +727,15 @@ Embedded Claude-powered chat panel for natural-language queries against the port
 - `_assemble_isbs()` - Load split ISBS tables, restore vSource column, concatenate; fallback to legacy (data_service.py)
 - `_append_uw_supplements()` - Append isbs_uw_supplements rows to assembled ISBS; defaults vSource='Projected IS' (data_service.py)
 - `_assemble_forecasts()` - Merge forecast_feed CSV > ISBS Valuation IS > ISBS Projected IS with per-deal priority (data_service.py)
+
+### Argus Enterprise
+- `parse_monthly_cashflow()` - Parse Argus cash flow Excel, auto-detect periods, map line items to COA (argus_parser.py)
+- `parse_rent_roll_summary()` - Parse tenant lease detail from Argus rent roll export (argus_parser.py)
+- `cashflow_to_forecast_df()` - Convert parsed Argus data to forecast DataFrame (same schema as load_forecast) (argus_parser.py)
+- `map_to_coa()` - Keyword-based line item → COA account mapping (argus_parser.py)
+- `import_argus_cashflow()` - Import with SHA-256 dedup, parse + store cashflows (argus_service.py)
+- `get_active_forecast_df()` / `get_forecast_df_by_id()` - Forecast DataFrame from Argus projection (argus_service.py)
+- `migrate_projection_to_forecast()` - Re-key vcode + insert into forecasts table for AM onboarding (argus_service.py)
 
 ### Flask Services
 - `get_cached_deal_result()` - Shared multi-deal cache wrapper (compute_service.py)
