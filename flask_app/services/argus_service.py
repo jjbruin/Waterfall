@@ -448,6 +448,34 @@ def get_forecast_df_by_id(engine, vcode: str, import_id: int, pro_yr_base: int) 
     return pd.DataFrame(fc_rows)
 
 
+def get_property_rollup_forecast_df(
+    engine,
+    deal_vcode: str,
+    property_ids: List[int],
+    pro_yr_base: int,
+) -> Optional[pd.DataFrame]:
+    """Aggregate active Argus forecasts from multiple properties into one deal-level forecast.
+
+    Each property stores Argus imports under vcode = NP{property_id:06d}.
+    This function loads the active projection for each property, re-keys all rows
+    to the deal vcode, and concatenates them into a single DataFrame.
+    """
+    all_frames = []
+
+    for pid in property_ids:
+        prop_vcode = f"NP{pid:06d}"
+        df = get_active_forecast_df(engine, prop_vcode, pro_yr_base)
+        if df is not None and not df.empty:
+            df = df.copy()
+            df["vcode"] = deal_vcode
+            all_frames.append(df)
+
+    if not all_frames:
+        return None
+
+    return pd.concat(all_frames, ignore_index=True)
+
+
 # ============================================================
 # TENANT DETAIL
 # ============================================================

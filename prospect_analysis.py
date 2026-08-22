@@ -28,6 +28,7 @@ def build_prospect_analysis(
     entities: list,
     assumptions: dict,
     cashflows: Optional[list] = None,
+    argus_forecast_df: Optional[pd.DataFrame] = None,
 ) -> dict:
     """Build synthetic DataFrames and run compute_deal_analysis().
 
@@ -102,9 +103,12 @@ def build_prospect_analysis(
                           psc_equity_pct, pref_rate, promote_pct)
     acct = _build_accounting(vcode, deal_name, pe_investor_id, op_investor_id,
                              pe_equity, op_equity, seed_date)
-    fc = _build_forecast(vcode, start_year, hold_years, noi_year1,
-                         noi_growth_rate, capex_reserve_psf, properties,
-                         cashflows, pro_yr_base)
+    if argus_forecast_df is not None and not argus_forecast_df.empty:
+        fc = argus_forecast_df
+    else:
+        fc = _build_forecast(vcode, start_year, hold_years, noi_year1,
+                             noi_growth_rate, capex_reserve_psf, properties,
+                             cashflows, pro_yr_base)
     coa = _build_coa()
     mri_loans_raw = _build_loans(vcode, debt_amount, debt_rate,
                                  debt_term_months, io_months, amort_months,

@@ -976,3 +976,107 @@ def delete_assumptions(engine, assumption_id: int) -> bool:
         ), {'aid': assumption_id})
         conn.commit()
     return result.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# Property Cashflows CRUD
+# ---------------------------------------------------------------------------
+
+def import_property_cashflows(
+    engine, deal_id: int, property_id: int,
+    cashflows: List[Dict], source: str = 'excel',
+    version: int = 1,
+) -> Dict:
+    """Import cash flow rows for a property, replacing existing rows for that version.
+
+    cashflows: list of {'period_date', 'revenue', 'expenses', 'capex', 'noi'}
+    """
+    with engine.connect() as conn:
+        # Verify property belongs to deal
+        prop = conn.execute(text(
+            "SELECT id FROM prospect_properties WHERE id = :pid AND prospect_id = :did"
+        ), {'pid': property_id, 'did': deal_id}).fetchone()
+        if not prop:
+            raise ValueError(f"Property {property_id} not found in deal {deal_id}")
+
+        # Delete existing cashflows for this property + version
+        conn.execute(text("""
+            DELETE FROM prospect_cashflows
+            WHERE prospect_id = :did AND property_id = :pid AND version = :v
+        """), {'did': deal_id, 'pid': property_id, 'v': version})
+
+        # Insert new rows
+        count = 0
+        for cf in cashflows:
+            conn.execute(text("""
+                INSERT INTO prospect_cashflows
+                    (prospect_id, property_id, version, period_date,
+                     revenue, expenses, noi, capex, source)
+                VALUES (:did, :pid, :v, :period_date,
+                        :revenue, :expenses, :noi, :capex, :source)
+            """), {
+                'did': deal_id, 'pid': property_id, 'v': version,
+                'period_date': cf.get('period_date'),
+                'revenue': cf.get('revenue'),
+                'expenses': cf.get('expenses'),
+                'noi': cf.get('noi'),
+                'capex': cf.get('capex'),
+                'source': source,
+            })
+            count += 1
+
+        conn.commit()
+    return {'rows_imported': count, 'property_id': property_id, 'version': version}
+
+
+def get_property_cashflows(engine, deal_id: int, property_id: int,
+                           version: int = 1) -> List[Dict]:
+    """Get cash flow rows for a property."""
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT id, period_date, revenue, expenses, noi, capex, other, source
+            FROM prospect_cashflows
+            WHERE prospect_id = :did AND property_id = :pid AND version = :v
+            ORDER BY period_date
+        """), {'did': deal_id, 'pid': property_id, 'v': version}).fetchall()
+
+    return [{
+        'id': r[0], 'period_date': r[1],
+        'revenue': r[2], 'expenses': r[3], 'noi': r[4],
+        'capex': r[5], 'other': r[6], 'source': r[7],
+    } for r in rows]
+
+
+def delete_property_cashflows(engine, deal_id: int, property_id: int,
+                              version: int = 1) -> bool:
+    """Delete cash flow rows for a property."""
+    with engine.connect() as conn:
+        result = conn.execute(text("""
+            DELETE FROM prospect_cashflows
+            WHERE prospect_id = :did AND property_id = :pid AND version = :v
+        """), {'did': deal_id, 'pid': property_id, 'v': version})
+        conn.commit()
+    return result.rowcount > 0
+
+
+def get_deal_cashflows_by_property(engine, deal_id: int,
+                                   version: int = 1) -> Dict[int, List[Dict]]:
+    """Get all cashflows for a deal grouped by property_id."""
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT property_id, period_date, revenue, expenses, noi, capex, source
+            FROM prospect_cashflows
+            WHERE prospect_id = :did AND version = :v AND property_id IS NOT NULL
+            ORDER BY property_id, period_date
+        """), {'did': deal_id, 'v': version}).fetchall()
+
+    result: Dict[int, List[Dict]] = {}
+    for r in rows:
+        pid = r[0]
+        if pid not in result:
+            result[pid] = []
+        result[pid].append({
+            'period_date': r[1], 'revenue': r[2], 'expenses': r[3],
+            'noi': r[4], 'capex': r[5], 'source': r[6],
+        })
+    return result

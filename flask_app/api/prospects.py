@@ -15,6 +15,8 @@ from flask_app.services.prospect_service import (
     get_activity, add_activity_note,
     create_lease_review_for_property,
     list_assumptions, get_assumption, save_assumptions, delete_assumptions,
+    import_property_cashflows, get_property_cashflows, delete_property_cashflows,
+    get_deal_cashflows_by_property,
 )
 import logging
 
@@ -360,12 +362,52 @@ def analyze_deal(deal_id):
         if override is not None:
             deal_data['deal'][field] = override
 
+    # Check for property-level cash flows (Argus or Excel uploads)
+    # Priority: Argus imports > prospect_cashflows > NOI growth assumptions
+    argus_forecast_df = None
+    property_cashflows = None
+    property_ids = [p['id'] for p in deal_data.get('properties', [])]
+
+    if property_ids:
+        deal_vcode = deal_data['deal'].get('vcode') or f"N{deal_id:07d}"
+        target_close = deal_data['deal'].get('target_close')
+        try:
+            import pandas as pd
+            close_yr = pd.to_datetime(target_close).year if target_close else 2026
+        except Exception:
+            close_yr = 2026
+
+        # Try Argus first
+        try:
+            from flask_app.services.argus_service import get_property_rollup_forecast_df
+            argus_forecast_df = get_property_rollup_forecast_df(
+                get_engine(), deal_vcode, property_ids, close_yr - 1,
+            )
+        except Exception as e:
+            logger.debug("Argus property rollup check: %s", e)
+
+        # Fall back to prospect_cashflows if no Argus data
+        if argus_forecast_df is None:
+            try:
+                by_prop = get_deal_cashflows_by_property(get_engine(), deal_id)
+                if by_prop:
+                    # Flatten all property cashflows into one list
+                    all_cfs = []
+                    for pid, cfs in by_prop.items():
+                        all_cfs.extend(cfs)
+                    if all_cfs:
+                        property_cashflows = all_cfs
+            except Exception as e:
+                logger.debug("Property cashflows check: %s", e)
+
     try:
         result = build_prospect_analysis(
             deal=deal_data['deal'],
             properties=deal_data['properties'],
             entities=deal_data['entities'],
             assumptions=assumptions,
+            cashflows=property_cashflows,
+            argus_forecast_df=argus_forecast_df,
         )
     except Exception as e:
         logger.exception("Prospect analysis failed for deal %d", deal_id)
@@ -443,3 +485,80 @@ def analyze_deal(deal_id):
         'sale_dbg': result.get('sale_dbg'),
         'cap_data': result.get('cap_data', {}),
     }))
+
+
+# ---------------------------------------------------------------------------
+# Property Cashflows (Excel/CSV upload)
+# ---------------------------------------------------------------------------
+
+@prospects_bp.route('/<int:deal_id>/properties/<int:property_id>/cashflows/upload',
+                    methods=['POST'])
+@login_required
+@role_required('admin', 'analyst')
+def upload_property_cashflows(deal_id, property_id):
+    """Upload a partner Excel/CSV cash flow model for a property.
+
+    Parses the file, auto-detects columns, and stores monthly cash flows
+    in prospect_cashflows.
+    """
+    from cashflow_parser import parse_cashflow_excel
+
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file uploaded'}), 400
+
+    f = request.files['file']
+    if not f.filename:
+        return jsonify({'error': 'No file selected'}), 400
+
+    file_bytes = f.read()
+    filename = f.filename
+
+    parsed = parse_cashflow_excel(file_bytes, filename)
+    if 'error' in parsed:
+        return jsonify(parsed), 400
+
+    cashflows = parsed['cashflows']
+    if not cashflows:
+        return jsonify({'error': 'No cash flow rows parsed'}), 400
+
+    try:
+        result = import_property_cashflows(
+            get_engine(), deal_id, property_id,
+            cashflows, source='excel',
+        )
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        logger.exception("Cashflow import failed for property %d", property_id)
+        return jsonify({'error': str(e)}), 500
+
+    return jsonify({
+        'status': 'imported',
+        'rows_imported': result['rows_imported'],
+        'frequency': parsed['frequency'],
+        'periods': parsed['periods'],
+        'columns_detected': parsed['columns_detected'],
+        'metadata': parsed['metadata'],
+        'cashflows': cashflows,
+    })
+
+
+@prospects_bp.route('/<int:deal_id>/properties/<int:property_id>/cashflows',
+                    methods=['GET'])
+@login_required
+def get_cashflows(deal_id, property_id):
+    """Get stored cashflows for a property."""
+    version = request.args.get('version', 1, type=int)
+    rows = get_property_cashflows(get_engine(), deal_id, property_id, version)
+    return jsonify({'cashflows': rows, 'count': len(rows)})
+
+
+@prospects_bp.route('/<int:deal_id>/properties/<int:property_id>/cashflows',
+                    methods=['DELETE'])
+@login_required
+@role_required('admin', 'analyst')
+def clear_cashflows(deal_id, property_id):
+    """Delete stored cashflows for a property."""
+    version = request.args.get('version', 1, type=int)
+    deleted = delete_property_cashflows(get_engine(), deal_id, property_id, version)
+    return jsonify({'status': 'deleted' if deleted else 'nothing_to_delete'})
