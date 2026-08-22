@@ -335,7 +335,7 @@ The sidebar (`AppSidebar.vue`) is organized into major sections with expandable 
 | **Dashboard** | Standalone link | `/dashboard` |
 | **Asset Management** | Expandable | Deal Analysis, Property Financials, Surveillance, One Pager, Review Tracking, Ownership, Waterfall Setup, Report Settings (expandable config panel) |
 | **Accounting** | Future (dimmed) | — |
-| **New Business** | Expandable | Pipeline, Lease Review, Lease Risk Analysis |
+| **New Business** | Expandable | Pipeline, Deal Analysis, Lease Review, Lease Risk Analysis |
 | **Investment Management** | Future (dimmed) | — |
 | **Reports** | Standalone link | `/reports` (Projected Returns, ROE Summary, Pref Balance Detail, Sold Portfolio, PSCKOC, Portfolio Analysis) |
 | **Data Management** | Expandable | Data Explorer, MRI Data (expandable panel), Database Tools (expandable panel), Reload Data, Settings |
@@ -573,10 +573,26 @@ Vue: `PipelineView.vue`. Flask: `prospects.py` + `prospect_service.py`.
 - **Deal Detail** — Right panel with properties, entities, activity log, and analysis tabs. Delete deal button at bottom.
 - **Quick Deal Evaluator** — Assumptions form (acquisition, debt, equity structure, partnership terms, NOI, exit) → instant computed returns using existing engines. Results: PSC IRR/ROE/MOIC, Investor IRR/ROE/MOIC, property-level returns, annual summary table, capital stack visualization, sensitivity matrix.
 - **Scenarios** — Multiple saved assumption sets per deal (Base Case, Downside, different hold periods). Side-by-side comparison view.
-- **Engine reuse** — `build_prospect_analysis()` creates synthetic data structures from form inputs, then calls `compute_deal_analysis()` with the same waterfall/XIRR/ROE engines used by Deal Analysis.
+- **Engine reuse** — `build_prospect_analysis()` creates synthetic data structures from form inputs, then calls `compute_deal_analysis()` with the same waterfall/XIRR/ROE engines used by Deal Analysis. Accepts optional `waterfall_df` to use real DB waterfalls instead of synthetic `_build_waterfall()`.
 - **Onboard to Portfolio** — One-click wizard converts a closed prospect to a portfolio deal (creates inv, waterfalls, loans, forecast entries). No re-keying.
 - **Database tables** — `prospect_deals`, `prospect_properties`, `prospect_entities`, `prospect_investors`, `prospect_assumptions`, `prospect_cashflows`, `prospect_activity` (all in `PROTECTED_TABLES`).
 - **CRUD endpoints** — Full REST: `GET/POST/PUT/DELETE /api/prospects`, `/api/prospects/<id>/properties`, `/api/prospects/<id>/entities`, `/api/prospects/<id>/investors`, `/api/prospects/<id>/assumptions`.
+- **Waterfall endpoints** — `GET /<id>/waterfall` (retrieve steps), `POST /<id>/waterfall/build` (generate from investor inputs), `DELETE /<id>/waterfall` (clear).
+
+#### 11a-1. Prospect Deal Analysis
+Standalone route at `/prospect-analysis`. Vue: `ProspectAnalysisView.vue`. Flask: endpoints in `prospects.py`, engine in `prospect_analysis.py`.
+Full deal analysis view for New Business, mimicking the Asset Management Deal Analysis page with shared computation engines for consistent returns across the company.
+- **Layout** — Left setup panel (420px) + right results panel. Setup panel: deal info, acquisition form, operating assumptions, debt parameters, waterfall builder, action buttons.
+- **Waterfall Builder** — Two-tab interface:
+  - **Builder tab**: Investor rows (ID, Name, Pref Rate, Residual %, PE checkbox). Add/Remove investors. Share % validation (must sum to 100%). "Build & Save Waterfall" button.
+  - **Steps tab**: Preview of stored CF_WF and Cap_WF steps in compact tables.
+- **Waterfall Generation** — `POST /api/prospects/<id>/waterfall/build` accepts `{investors, promote}`. Generates:
+  - CF_WF: Pref steps (per investor with pref_rate > 0) → Share (lead) + Tag (followers) for residual split
+  - Cap_WF: Pref steps → Initial steps (capital return per investor) → Share + Tag for residual
+  - Saves to `waterfalls` table via `save_waterfall_steps()` with audit trail
+- **Analysis Flow** — Loads real waterfalls from DB before computation. Falls back to synthetic `_build_waterfall()` if none stored. Uses same `compute_deal_analysis()` engine as AM.
+- **Results** — Sources & Uses summary, deal-level KPI cards (IRR, ROE, MOIC, sale price), Partner Returns table (PE partners highlighted), expandable Annual Forecast and Debt Service tables, Diagnostics expander.
+- **Vcode convention** — Prospect deals use `N{deal_id:07d}` vcodes. Waterfalls stored with this vcode in the shared `waterfalls` table.
 
 #### 11b. Lease Review
 Standalone route at `/lease-review`. Vue: `LeaseReviewView.vue`. Flask: `lease_review.py` + `lease_review_service.py`.

@@ -75,6 +75,39 @@ Moved Argus import from deal-level to property-level. Added generic Excel/CSV pa
    - Green "CF" badge on properties with loaded cash flows
    - Cash flow status loads on deal open
 
+---
+
+### Session 3: Prospect Deal Analysis View + Waterfall Builder
+Added standalone Deal Analysis page for New Business, mimicking AM Deal Analysis with shared computation engines. Includes streamlined waterfall builder for modeling proposed partnership structures.
+
+**Commit**: `ce13fb7` — pushed to main, deployed as revision v306
+
+#### New Files
+1. **`vue_app/src/views/ProspectAnalysisView.vue`** (933 lines) — Full prospect deal analysis view:
+   - Left panel (420px): Deal selector, acquisition form (purchase price, closing costs), operating assumptions (NOI, growth, hold period), debt parameters (LTV, rate, amort, IO), waterfall builder, action buttons
+   - Right panel: Sources & Uses summary, deal KPI cards (IRR, ROE, MOIC, sale price), Partner Returns table (PE partners highlighted), expandable Annual Forecast + Debt Service tables, Diagnostics expander
+   - Waterfall Builder with two tabs:
+     - **Builder tab**: Investor rows (ID, Name, Pref Rate, Residual %, PE checkbox), add/remove, share % validation (must sum to 100%), "Build & Save Waterfall" button
+     - **Steps tab**: Preview of stored CF_WF and Cap_WF steps in compact tables
+   - Initializes investors from prospect entities or from stored waterfall steps
+   - Calls `POST /api/prospects/<id>/analyze` for computation
+   - Calls `POST /api/prospects/<id>/waterfall/build` for waterfall generation
+
+#### Modified Files
+2. **`flask_app/api/prospects.py`** — 3 new waterfall endpoints:
+   - `GET /<deal_id>/waterfall` — retrieve waterfall steps for prospect deal vcode
+   - `POST /<deal_id>/waterfall/build` — generate CF_WF + Cap_WF from investor inputs (pref_rate, share_pct, is_pe) + optional promote, save via `save_waterfall_steps()`
+   - `DELETE /<deal_id>/waterfall` — delete all waterfall steps for the vcode
+   - `analyze_deal()` modified to load real waterfalls from DB before falling back to synthetic `_build_waterfall()`
+
+3. **`prospect_analysis.py`** — Added `waterfall_df` parameter to `build_prospect_analysis()`:
+   - When `waterfall_df` is provided and non-empty, uses it directly instead of calling `_build_waterfall()`
+   - Enables real DB-stored waterfalls to flow through the computation engine
+
+4. **`vue_app/src/router/index.ts`** — Added `/prospect-analysis` route between Pipeline and Lease Review
+
+5. **`vue_app/src/components/layout/AppSidebar.vue`** — Added "Deal Analysis" link to New Business section between Pipeline and Lease Review
+
 ## Pipeline Workflow (As Designed)
 
 ```
@@ -82,23 +115,21 @@ Moved Argus import from deal-level to property-level. Added generic Excel/CSV pa
 2. Per property → analyst loads cash flows via:
    ├─ "Import Argus" (Argus Excel → argus_cashflows, vcode = NP{property_id})
    └─ "Upload Cash Flows" (partner Excel/CSV → prospect_cashflows with property_id)
-3. Deal Analysis tab → "Run Analysis"
-   ├─ Priority 1: Argus property-level data (aggregated to deal)
-   ├─ Priority 2: Excel property-level data (aggregated to deal)
-   └─ Priority 3: NOI growth assumptions (deal-level fallback)
-4. Test waterfall structures → iterate assumptions → quote term sheet
-5. Term sheet accepted → move to DD/verification stage
+3. Deal Analysis page (/prospect-analysis) → select deal → configure assumptions
+4. Build waterfall: add investors with pref rates + residual splits → "Build & Save"
+   └─ Generates CF_WF + Cap_WF steps, saves to waterfalls table
+5. Run Analysis → returns computed with same engine as AM Deal Analysis
+6. Iterate assumptions/waterfall → determine viable deal structure → quote term sheet
+7. Term sheet accepted → move to DD/verification stage
 ```
 
 ## Next Steps
 
-### Argus Testing
+### Testing
 - **Real Argus Monthly Cash Flow Excel export** needed from an analyst
 - Parser tested with synthetic data only; needs real file validation
-
-### Generic Parser Testing
-- Test with actual partner Excel models (various formats)
-- May need additional column detection patterns for edge cases
+- Test generic Excel parser with actual partner Excel models
+- Test waterfall builder → analysis flow end-to-end with real prospect data
 
 ### Database Tables
 | Table | Description |
@@ -109,14 +140,18 @@ Moved Argus import from deal-level to property-level. Added generic Excel/CSV pa
 | `argus_rent_steps` | Escalation schedule per tenant |
 | `argus_market_profiles` | Revenue assumptions / market leasing profiles |
 | `prospect_cashflows` | Property-level cash flows from any source (existing table, now used) |
+| `waterfalls` | Prospect deal waterfalls stored with N-series vcodes (shared table) |
 
 ### Architecture Notes
 - Argus parser is stateless (`argus_parser.py`) — no DB/Flask deps
 - Cashflow parser is stateless (`cashflow_parser.py`) — no DB/Flask deps
 - Property vcodes: `NP{property_id:06d}` for Argus imports
+- Prospect deal vcodes: `N{deal_id:07d}` — used for waterfalls stored in shared `waterfalls` table
 - Forecast substitution in `compute_service.py` for AM; in `prospects.py:analyze_deal` for NB
 - `prospect_cashflows.source` column tracks origin: 'excel', 'manual', 'argus'
+- `build_prospect_analysis()` accepts `waterfall_df` and `argus_forecast_df` for real data override
+- Waterfall builder: `POST /<id>/waterfall/build` takes `{investors: [{id, name, pref_rate, share_pct, is_pe}], promote: {enabled, pct}}` → generates Pref + Initial + Share/Tag steps
 
 ## Deployed State
-- **Revision**: v305
-- **Commits**: `4af6b34` (Argus loader) + `fe54e06` (property-level + generic parser)
+- **Revision**: v306
+- **Commits**: `4af6b34` (Argus loader) + `fe54e06` (property-level + generic parser) + `ce13fb7` (Prospect Deal Analysis + waterfall builder)
