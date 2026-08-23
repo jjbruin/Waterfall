@@ -183,7 +183,7 @@ const cashflowProperty = ref<Property | null>(null)
 const cashflowUploading = ref(false)
 const cashflowResult = ref<any>(null)
 const cashflowError = ref('')
-const propertyCashflowStatus = ref<Record<number, string>>({})  // property_id -> source
+const propertyCashflowStatus = ref<Record<number, { excel?: { source: string; loaded_at: string | null; rows: number }; argus?: { label: string; filename: string; loaded_at: string | null } }>>({})  // property_id -> status
 
 // Property form
 const showPropertyForm = ref(false)
@@ -464,7 +464,13 @@ async function uploadCashflows(event: Event) {
       { headers: { 'Content-Type': 'multipart/form-data' } },
     )
     cashflowResult.value = res.data
-    propertyCashflowStatus.value[cashflowProperty.value.id] = 'excel'
+    const pid = cashflowProperty.value.id
+    if (!propertyCashflowStatus.value[pid]) propertyCashflowStatus.value[pid] = {}
+    propertyCashflowStatus.value[pid].excel = {
+      source: 'excel',
+      loaded_at: new Date().toISOString(),
+      rows: res.data.rows_imported || 0,
+    }
   } catch (e: any) {
     cashflowError.value = e.response?.data?.error || e.message
   } finally {
@@ -477,25 +483,29 @@ async function clearCashflows(propId: number) {
   if (!selectedDealId.value) return
   try {
     await api.delete(`/api/prospects/${selectedDealId.value}/properties/${propId}/cashflows`)
-    delete propertyCashflowStatus.value[propId]
+    if (propertyCashflowStatus.value[propId]) {
+      delete propertyCashflowStatus.value[propId].excel
+      if (!Object.keys(propertyCashflowStatus.value[propId]).length) {
+        delete propertyCashflowStatus.value[propId]
+      }
+    }
     cashflowResult.value = null
   } catch (e: any) {
     error.value = e.response?.data?.error || e.message
   }
 }
 
+function closeArgusModal() {
+  argusProperty.value = null
+  loadPropertyCashflowStatus()  // refresh to pick up new Argus imports
+}
+
 async function loadPropertyCashflowStatus() {
   if (!selectedDealId.value) return
-  for (const p of properties.value) {
-    try {
-      const res = await api.get(
-        `/api/prospects/${selectedDealId.value}/properties/${p.id}/cashflows`,
-      )
-      if (res.data.count > 0) {
-        propertyCashflowStatus.value[p.id] = res.data.cashflows[0]?.source || 'excel'
-      }
-    } catch { /* ignore */ }
-  }
+  try {
+    const res = await api.get(`/api/prospects/${selectedDealId.value}/cashflow-status`)
+    propertyCashflowStatus.value = res.data || {}
+  } catch { /* ignore */ }
 }
 
 // Entities
@@ -620,6 +630,13 @@ function fmtDate(dt: string | null): string {
   const d = new Date(dt)
   if (isNaN(d.getTime())) return dt
   return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`
+}
+
+function fmtDateTime(dt: string | null): string {
+  if (!dt) return ''
+  const d = new Date(dt)
+  if (isNaN(d.getTime())) return dt
+  return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()} ${d.getHours() % 12 || 12}:${String(d.getMinutes()).padStart(2, '0')} ${d.getHours() >= 12 ? 'PM' : 'AM'}`
 }
 
 function fmtNum(v: number | null): string {
@@ -1056,7 +1073,12 @@ onMounted(() => {
                     <button class="btn-link" @click="argusProperty = p">Import Argus</button>
                     <button class="btn-link" @click="cashflowProperty = p; cashflowResult = null; cashflowError = ''">Upload Cash Flows</button>
                   </span>
-                  <span v-if="propertyCashflowStatus[p.id]" class="cf-badge" :title="'Cash flows loaded (' + propertyCashflowStatus[p.id] + ')'">CF</span>
+                  <span v-if="propertyCashflowStatus[p.id]?.argus" class="cf-badge cf-badge-argus" :title="'Argus: ' + (propertyCashflowStatus[p.id].argus!.filename || '') + '\nLoaded: ' + fmtDateTime(propertyCashflowStatus[p.id].argus!.loaded_at)">
+                    Argus <span class="cf-ts">{{ fmtDateTime(propertyCashflowStatus[p.id].argus!.loaded_at) }}</span>
+                  </span>
+                  <span v-if="propertyCashflowStatus[p.id]?.excel" class="cf-badge cf-badge-excel" :title="'Excel cash flows (' + propertyCashflowStatus[p.id].excel!.rows + ' rows)\nLoaded: ' + fmtDateTime(propertyCashflowStatus[p.id].excel!.loaded_at)">
+                    CF <span class="cf-ts">{{ fmtDateTime(propertyCashflowStatus[p.id].excel!.loaded_at) }}</span>
+                  </span>
                 </div>
               </div>
             </div>
@@ -1457,11 +1479,11 @@ onMounted(() => {
     </div>
 
     <!-- ============ ARGUS IMPORT MODAL (property-level) ============ -->
-    <div v-if="argusProperty" class="modal-overlay" @click.self="argusProperty = null">
+    <div v-if="argusProperty" class="modal-overlay" @click.self="closeArgusModal()">
       <div class="modal-content">
         <div class="modal-header">
           <h3>Import Argus — {{ argusProperty.property_name }}</h3>
-          <button class="modal-close" @click="argusProperty = null">&times;</button>
+          <button class="modal-close" @click="closeArgusModal()">&times;</button>
         </div>
         <div class="modal-body">
           <ArgusImport
@@ -1480,65 +1502,79 @@ onMounted(() => {
           <button class="modal-close" @click="cashflowProperty = null">&times;</button>
         </div>
         <div class="modal-body">
-          <p class="cf-help">
-            Upload the partner's Excel or CSV cash flow model. The parser auto-detects
-            columns for date, revenue, expenses, NOI, and CapEx. Annual data is
-            automatically spread to monthly.
-          </p>
-
-          <div class="cf-upload-zone">
-            <input type="file" ref="cfFileInput" accept=".xlsx,.xls,.csv"
-                   @change="uploadCashflows" style="display:none" />
-            <button class="btn-primary" @click="($refs.cfFileInput as HTMLInputElement)?.click()"
-                    :disabled="cashflowUploading">
-              {{ cashflowUploading ? 'Uploading...' : 'Select Excel / CSV File' }}
-            </button>
-          </div>
-
-          <div v-if="cashflowError" class="cf-error">{{ cashflowError }}</div>
-
-          <div v-if="cashflowResult" class="cf-result">
-            <div class="cf-result-header">
-              <span class="cf-success">Imported {{ cashflowResult.rows_imported }} monthly rows</span>
-              <span class="cf-meta">{{ cashflowResult.frequency }} data, {{ cashflowResult.periods }} periods</span>
-            </div>
-            <div v-if="cashflowResult.columns_detected" class="cf-columns">
-              <strong>Columns detected:</strong>
-              <span v-for="(col, key) in cashflowResult.columns_detected" :key="key" class="cf-col-tag">
-                {{ key }}: {{ col || '—' }}
-              </span>
-            </div>
-            <div class="cf-preview">
-              <table class="cf-table">
-                <thead>
-                  <tr>
-                    <th>Period</th>
-                    <th class="r">Revenue</th>
-                    <th class="r">Expenses</th>
-                    <th class="r">NOI</th>
-                    <th class="r">CapEx</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="(row, i) in (cashflowResult.cashflows || []).slice(0, 24)" :key="i">
-                    <td>{{ row.period_date }}</td>
-                    <td class="r">{{ fmtCurrency(row.revenue) }}</td>
-                    <td class="r">{{ fmtCurrency(row.expenses) }}</td>
-                    <td class="r">{{ fmtCurrency(row.noi) }}</td>
-                    <td class="r">{{ fmtCurrency(row.capex) }}</td>
-                  </tr>
-                </tbody>
-              </table>
-              <div v-if="(cashflowResult.cashflows || []).length > 24" class="cf-truncated">
-                ... and {{ cashflowResult.cashflows.length - 24 }} more rows
+          <!-- Success state: show result + Done button -->
+          <template v-if="cashflowResult">
+            <div class="cf-result">
+              <div class="cf-result-header">
+                <span class="cf-success">Imported {{ cashflowResult.rows_imported }} monthly rows</span>
+                <span class="cf-meta">
+                  {{ cashflowResult.frequency }} data, {{ cashflowResult.periods }} periods
+                  <template v-if="cashflowResult.layout === 'horizontal'"> (horizontal layout)</template>
+                </span>
+              </div>
+              <div v-if="cashflowResult.columns_detected" class="cf-columns">
+                <strong>Detected:</strong>
+                <span v-for="(col, key) in cashflowResult.columns_detected" :key="key" class="cf-col-tag">
+                  {{ key }}: {{ col || '—' }}
+                </span>
+              </div>
+              <div class="cf-preview">
+                <table class="cf-table">
+                  <thead>
+                    <tr>
+                      <th>Period</th>
+                      <th class="r">Revenue</th>
+                      <th class="r">Expenses</th>
+                      <th class="r">NOI</th>
+                      <th class="r">CapEx</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(row, i) in (cashflowResult.cashflows || []).slice(0, 24)" :key="i">
+                      <td>{{ row.period_date }}</td>
+                      <td class="r">{{ fmtCurrency(row.revenue) }}</td>
+                      <td class="r">{{ fmtCurrency(row.expenses) }}</td>
+                      <td class="r">{{ fmtCurrency(row.noi) }}</td>
+                      <td class="r">{{ fmtCurrency(row.capex) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div v-if="(cashflowResult.cashflows || []).length > 24" class="cf-truncated">
+                  ... and {{ cashflowResult.cashflows.length - 24 }} more rows
+                </div>
               </div>
             </div>
-          </div>
 
-          <div v-if="propertyCashflowStatus[cashflowProperty.id]" class="cf-existing">
-            <span>Cash flows currently loaded ({{ propertyCashflowStatus[cashflowProperty.id] }})</span>
-            <button class="btn-danger-text" @click="clearCashflows(cashflowProperty!.id)">Clear</button>
-          </div>
+            <div class="cf-action-bar">
+              <button class="btn-primary" @click="cashflowProperty = null">Done</button>
+              <button class="btn-secondary" @click="cashflowResult = null">Replace File</button>
+            </div>
+          </template>
+
+          <!-- Upload state: file picker -->
+          <template v-else>
+            <p class="cf-help">
+              Upload the partner's Excel or CSV cash flow model. The parser auto-detects
+              revenue, expenses, NOI, and CapEx — both vertical and horizontal layouts
+              (dates across columns) are supported.
+            </p>
+
+            <div class="cf-upload-zone">
+              <input type="file" ref="cfFileInput" accept=".xlsx,.xls,.csv"
+                     @change="uploadCashflows" style="display:none" />
+              <button class="btn-primary" @click="($refs.cfFileInput as HTMLInputElement)?.click()"
+                      :disabled="cashflowUploading">
+                {{ cashflowUploading ? 'Uploading...' : 'Select Excel / CSV File' }}
+              </button>
+            </div>
+
+            <div v-if="cashflowError" class="cf-error">{{ cashflowError }}</div>
+
+            <div v-if="propertyCashflowStatus[cashflowProperty.id]?.excel" class="cf-existing">
+              <span>Cash flows loaded {{ fmtDateTime(propertyCashflowStatus[cashflowProperty.id].excel!.loaded_at) }}</span>
+              <button class="btn-danger-text" @click="clearCashflows(cashflowProperty!.id)">Clear</button>
+            </div>
+          </template>
         </div>
       </div>
     </div>
@@ -2130,11 +2166,19 @@ onMounted(() => {
 .prop-footer { margin-top: 6px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
 .cf-actions { display: inline-flex; gap: 8px; }
 .cf-badge {
-  display: inline-block;
-  background: #e8f5e9; color: #2e7d32;
+  display: inline-flex; align-items: center; gap: 4px;
   font-size: 10px; font-weight: 600;
   padding: 1px 5px; border-radius: 3px;
-  margin-left: 4px;
+  margin-left: 4px; white-space: nowrap;
+}
+.cf-badge-excel {
+  background: #e8f5e9; color: #2e7d32;
+}
+.cf-badge-argus {
+  background: #e3f2fd; color: #1565c0;
+}
+.cf-ts {
+  font-weight: 400; opacity: 0.8;
 }
 .btn-link {
   background: none;

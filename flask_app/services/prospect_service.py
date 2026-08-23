@@ -169,7 +169,8 @@ PROSPECT_DDL_PG = [
         noi             DOUBLE PRECISION,
         capex           DOUBLE PRECISION,
         other           DOUBLE PRECISION,
-        source          TEXT DEFAULT 'manual'
+        source          TEXT DEFAULT 'manual',
+        created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """,
     """
@@ -236,6 +237,7 @@ def ensure_prospect_tables(engine):
             ('prospect_deals', 'vcode', 'TEXT'),
             ('prospect_deals', 'deal_structure', "TEXT DEFAULT 'single_property'"),
             ('prospect_properties', 'vcode', 'TEXT'),
+            ('prospect_cashflows', 'created_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP'),
         ]
         for table, col, col_type in _migrate_columns:
             try:
@@ -1034,7 +1036,7 @@ def get_property_cashflows(engine, deal_id: int, property_id: int,
     """Get cash flow rows for a property."""
     with engine.connect() as conn:
         rows = conn.execute(text("""
-            SELECT id, period_date, revenue, expenses, noi, capex, other, source
+            SELECT id, period_date, revenue, expenses, noi, capex, other, source, created_at
             FROM prospect_cashflows
             WHERE prospect_id = :did AND property_id = :pid AND version = :v
             ORDER BY period_date
@@ -1044,6 +1046,7 @@ def get_property_cashflows(engine, deal_id: int, property_id: int,
         'id': r[0], 'period_date': r[1],
         'revenue': r[2], 'expenses': r[3], 'noi': r[4],
         'capex': r[5], 'other': r[6], 'source': r[7],
+        'created_at': str(r[8]) if r[8] else None,
     } for r in rows]
 
 
@@ -1080,3 +1083,62 @@ def get_deal_cashflows_by_property(engine, deal_id: int,
             'noi': r[4], 'capex': r[5], 'source': r[6],
         })
     return result
+
+
+def get_property_cashflow_status(engine, deal_id: int,
+                                 property_ids: List[int]) -> Dict[int, Dict]:
+    """Get cashflow load status for each property: source type and timestamp.
+
+    Checks both prospect_cashflows (Excel uploads) and argus_imports (Argus).
+    Returns {property_id: {excel: {loaded_at}, argus: {loaded_at, filename}}}.
+    """
+    status: Dict[int, Dict] = {}
+    if not property_ids:
+        return status
+
+    with engine.connect() as conn:
+        # Excel cashflows — get most recent created_at per property
+        placeholders = ', '.join(f':pid{i}' for i in range(len(property_ids)))
+        params: Dict = {'did': deal_id}
+        params.update({f'pid{i}': pid for i, pid in enumerate(property_ids)})
+
+        excel_rows = conn.execute(text(f"""
+            SELECT property_id, source, MAX(created_at) as loaded_at, COUNT(*) as row_count
+            FROM prospect_cashflows
+            WHERE prospect_id = :did AND property_id IN ({placeholders})
+            GROUP BY property_id, source
+        """), params).fetchall()
+
+        for r in excel_rows:
+            pid = r[0]
+            if pid not in status:
+                status[pid] = {}
+            status[pid]['excel'] = {
+                'source': r[1] or 'excel',
+                'loaded_at': str(r[2]) if r[2] else None,
+                'rows': r[3],
+            }
+
+        # Argus imports — check argus_imports table per property vcode
+        for pid in property_ids:
+            prop_vcode = f"NP{pid:06d}"
+            argus_row = conn.execute(text("""
+                SELECT id, import_label, original_filename, is_active, created_at
+                FROM argus_imports
+                WHERE vcode = :v
+                ORDER BY created_at DESC
+                LIMIT 1
+            """), {'v': prop_vcode}).fetchone()
+
+            if argus_row:
+                if pid not in status:
+                    status[pid] = {}
+                status[pid]['argus'] = {
+                    'import_id': argus_row[0],
+                    'label': argus_row[1],
+                    'filename': argus_row[2],
+                    'is_active': bool(argus_row[3]),
+                    'loaded_at': str(argus_row[4]) if argus_row[4] else None,
+                }
+
+    return status

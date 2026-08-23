@@ -16,7 +16,7 @@ from flask_app.services.prospect_service import (
     create_lease_review_for_property,
     list_assumptions, get_assumption, save_assumptions, delete_assumptions,
     import_property_cashflows, get_property_cashflows, delete_property_cashflows,
-    get_deal_cashflows_by_property,
+    get_deal_cashflows_by_property, get_property_cashflow_status,
 )
 import logging
 
@@ -362,6 +362,14 @@ def analyze_deal(deal_id):
         if override is not None:
             deal_data['deal'][field] = override
 
+    # Apply property-level price overrides from capital budget
+    prop_prices = body.get('property_prices')
+    if prop_prices and isinstance(prop_prices, dict):
+        for prop in deal_data.get('properties', []):
+            pid = str(prop['id'])
+            if pid in prop_prices and prop_prices[pid] is not None:
+                prop['property_price'] = prop_prices[pid]
+
     # Check for property-level cash flows (Argus or Excel uploads)
     # Priority: Argus imports > prospect_cashflows > NOI growth assumptions
     argus_forecast_df = None
@@ -581,6 +589,17 @@ def clear_cashflows(deal_id, property_id):
     version = request.args.get('version', 1, type=int)
     deleted = delete_property_cashflows(get_engine(), deal_id, property_id, version)
     return jsonify({'status': 'deleted' if deleted else 'nothing_to_delete'})
+
+
+@prospects_bp.route('/<int:deal_id>/cashflow-status', methods=['GET'])
+@login_required
+def cashflow_status(deal_id):
+    """Get cashflow load status (source + timestamp) for all properties in a deal."""
+    engine = get_engine()
+    props = list_properties(engine, deal_id)
+    property_ids = [p['id'] for p in props]
+    status = get_property_cashflow_status(engine, deal_id, property_ids)
+    return jsonify(status)
 
 
 # ---------------------------------------------------------------------------

@@ -88,6 +88,255 @@ def _detect_date_column(df: pd.DataFrame) -> Optional[str]:
     return None
 
 
+# ============================================================
+# LINE-ITEM ROW MATCHING (for horizontal/transposed layouts)
+# ============================================================
+
+_ROW_REVENUE_PATTERNS = [
+    r'effective.?gross.?revenue', r'total.?tenant.?revenue',
+    r'potential.?gross.?revenue', r'total.?revenue',
+    r'gross.?revenue', r'total.?income', r'gross.?income',
+    r'effective.?gross.?income',
+]
+
+_ROW_EXPENSE_PATTERNS = [
+    r'total.?operating.?expense', r'operating.?expense',
+]
+
+_ROW_NOI_PATTERNS = [
+    r'net.?operating.?income', r'\bnoi\b',
+    r'cash.?flow.?before.?debt',
+]
+
+_ROW_CAPEX_PATTERNS = [
+    r'total.?leasing.*capital', r'total.?capital.?exp',
+    r'capital.?expenditure',
+]
+
+_ROW_VACANCY_PATTERNS = [
+    r'total.?vacancy', r'vacancy.*credit.*loss',
+]
+
+# Labels to skip — these look like expenses but are revenue sub-items
+_ROW_SKIP_PATTERNS = [
+    r'recover', r'reimburs',
+]
+
+
+def _match_row_label(label: str, patterns: list) -> bool:
+    """Check if a row label matches patterns."""
+    label_lower = str(label).lower().strip()
+    return any(re.search(p, label_lower) for p in patterns)
+
+
+def _should_skip_row(label: str) -> bool:
+    """Check if a row should be skipped (false positives)."""
+    return _match_row_label(label, _ROW_SKIP_PATTERNS)
+
+
+def _detect_horizontal_dates(wb_bytes: bytes) -> Optional[dict]:
+    """Detect horizontal layout by scanning rows for date-like values.
+
+    Returns {sheet_name, date_row_idx (0-based), label_col_idx, dates: list,
+             raw_df: full DataFrame read with no header} or None.
+    """
+    import openpyxl
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(wb_bytes), data_only=True, read_only=True)
+    except Exception:
+        return None
+
+    ws = wb[wb.sheetnames[0]]
+    sheet_name = ws.title
+
+    # Scan rows 0-15 for a row where most cells parse as dates
+    all_rows = []
+    for row in ws.iter_rows(max_row=20, values_only=True):
+        all_rows.append(list(row))
+    wb.close()
+
+    for row_idx, row_vals in enumerate(all_rows):
+        if len(row_vals) < 5:
+            continue
+        # Skip the first cell (usually a label like "For the Months")
+        data_cells = row_vals[1:]
+        non_empty = [v for v in data_cells if v is not None and str(v).strip()]
+        if len(non_empty) < 4:
+            continue
+
+        # Try parsing as dates
+        parsed_count = 0
+        parsed_dates = []
+        for v in data_cells:
+            if v is None:
+                parsed_dates.append(None)
+                continue
+            try:
+                dt = pd.to_datetime(v, format='mixed', dayfirst=False)
+                if pd.notna(dt) and 2000 <= dt.year <= 2060:
+                    parsed_count += 1
+                    parsed_dates.append(dt)
+                else:
+                    parsed_dates.append(None)
+            except Exception:
+                # Try "Mon-YYYY" format (e.g. "Oct-2026")
+                try:
+                    dt = pd.to_datetime(str(v), format='%b-%Y')
+                    parsed_count += 1
+                    parsed_dates.append(dt)
+                except Exception:
+                    parsed_dates.append(None)
+
+        # Need at least 60% of non-empty cells to be dates
+        if len(non_empty) > 0 and parsed_count / len(non_empty) >= 0.6:
+            return {
+                'sheet_name': sheet_name,
+                'date_row_idx': row_idx,
+                'label_col_idx': 0,
+                'dates': parsed_dates,
+                'header_rows': all_rows[:row_idx],
+            }
+
+    return None
+
+
+def _parse_horizontal_cashflow(
+    file_bytes: bytes,
+    filename: str,
+    horiz_info: dict,
+) -> Dict[str, Any]:
+    """Parse a horizontal/transposed cash flow (dates across columns, items down rows).
+
+    Scans row labels against revenue/expense/NOI/capex patterns, extracts the
+    matching rows, and transposes into the standard vertical output format.
+    """
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
+    ws = wb[horiz_info['sheet_name']]
+
+    # Read all data rows (after the date header row)
+    date_row_idx = horiz_info['date_row_idx']
+    dates = horiz_info['dates']
+    num_data_cols = len(dates)
+
+    # Collect all rows with their labels
+    labeled_rows = []
+    for row_num, row in enumerate(ws.iter_rows(values_only=True)):
+        if row_num <= date_row_idx:
+            continue
+        if not row or row[0] is None:
+            continue
+        label = str(row[0]).strip()
+        if not label:
+            continue
+        # Extract numeric values from data columns
+        values = []
+        for col_idx in range(1, min(num_data_cols + 1, len(row))):
+            v = row[col_idx]
+            if v is None:
+                values.append(0.0)
+            elif isinstance(v, (int, float)):
+                values.append(float(v))
+            else:
+                try:
+                    cleaned = str(v).replace(',', '').replace('$', '')
+                    cleaned = cleaned.replace('(', '-').replace(')', '')
+                    values.append(float(cleaned))
+                except (ValueError, TypeError):
+                    values.append(0.0)
+        labeled_rows.append((label, values))
+
+    wb.close()
+
+    # Match rows to categories — prefer summary rows (Total/Net lines)
+    rev_row = None
+    exp_row = None
+    noi_row = None
+    capex_row = None
+    vacancy_row = None
+
+    def _has_data(values: list) -> bool:
+        """Check if a row has any non-zero numeric values."""
+        return any(v != 0.0 for v in values[:20])
+
+    for label, values in labeled_rows:
+        if _should_skip_row(label):
+            continue
+        if not _has_data(values):
+            continue  # Skip section headers with no data
+        if _match_row_label(label, _ROW_NOI_PATTERNS) and noi_row is None:
+            noi_row = (label, values)
+        elif _match_row_label(label, _ROW_REVENUE_PATTERNS) and rev_row is None:
+            rev_row = (label, values)
+        elif _match_row_label(label, _ROW_EXPENSE_PATTERNS) and exp_row is None:
+            exp_row = (label, values)
+        elif _match_row_label(label, _ROW_CAPEX_PATTERNS) and capex_row is None:
+            capex_row = (label, values)
+        elif _match_row_label(label, _ROW_VACANCY_PATTERNS) and vacancy_row is None:
+            vacancy_row = (label, values)
+
+    columns_detected = {
+        'revenue': rev_row[0] if rev_row else None,
+        'expenses': exp_row[0] if exp_row else None,
+        'noi': noi_row[0] if noi_row else None,
+        'capex': capex_row[0] if capex_row else None,
+        'vacancy': vacancy_row[0] if vacancy_row else None,
+    }
+
+    if not rev_row and not noi_row:
+        # Return available row labels so the UI can offer mapping
+        available = [label for label, _ in labeled_rows]
+        return {
+            'error': 'Could not detect revenue or NOI rows in horizontal layout',
+            'columns_detected': columns_detected,
+            'available_columns': available,
+            'layout': 'horizontal',
+        }
+
+    # Build monthly cashflows
+    cashflows = []
+    for i, dt in enumerate(dates):
+        if dt is None:
+            continue
+        period_date = month_end(date(dt.year, dt.month, 1))
+
+        rev = abs(rev_row[1][i]) if rev_row and i < len(rev_row[1]) else 0.0
+        exp = abs(exp_row[1][i]) if exp_row and i < len(exp_row[1]) else 0.0
+        noi_val = noi_row[1][i] if noi_row and i < len(noi_row[1]) else 0.0
+        capex_val = abs(capex_row[1][i]) if capex_row and i < len(capex_row[1]) else 0.0
+
+        # Derive missing
+        if rev and exp and not noi_row:
+            noi_val = rev - exp
+        elif noi_val and not rev_row and not exp_row:
+            rev = abs(noi_val) / 0.60
+            exp = rev - abs(noi_val)
+
+        cashflows.append({
+            'period_date': str(period_date),
+            'revenue': round(rev, 2),
+            'expenses': round(exp, 2),
+            'capex': round(capex_val, 2),
+            'noi': round(noi_val, 2),
+        })
+
+    if not cashflows:
+        return {'error': 'No valid date periods found in horizontal layout'}
+
+    return {
+        'periods': len(cashflows),
+        'frequency': 'monthly',
+        'cashflows': cashflows,
+        'columns_detected': columns_detected,
+        'layout': 'horizontal',
+        'metadata': {
+            'filename': filename,
+            'rows_parsed': len(cashflows),
+            'monthly_rows': len(cashflows),
+        },
+    }
+
+
 def _is_annual(dates: pd.Series) -> bool:
     """Detect if dates represent annual periods (gaps > 300 days between consecutive)."""
     sorted_dates = dates.dropna().sort_values()
@@ -192,6 +441,12 @@ def parse_cashflow_excel(
     }
 
     if not date_col:
+        # Try horizontal/transposed layout (dates across columns, items down rows)
+        if not fname_lower.endswith('.csv'):
+            horiz = _detect_horizontal_dates(file_bytes)
+            if horiz is not None:
+                return _parse_horizontal_cashflow(file_bytes, filename, horiz)
+
         return {
             'error': 'Could not detect a date/period column',
             'columns_detected': columns_detected,
