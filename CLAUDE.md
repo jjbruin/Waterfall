@@ -582,10 +582,15 @@ Vue: `PipelineView.vue`. Flask: `prospects.py` + `prospect_service.py`.
 #### 11a-1. Prospect Deal Analysis
 Standalone route at `/prospect-analysis`. Vue: `ProspectAnalysisView.vue`. Flask: endpoints in `prospects.py`, engine in `prospect_analysis.py`.
 Full deal analysis view for New Business, mimicking the Asset Management Deal Analysis page with shared computation engines for consistent returns across the company.
-- **Layout** — Left setup panel (420px) + right results panel. Setup panel: deal info, acquisition form, operating assumptions, debt parameters, waterfall builder, action buttons.
+- **Layout** — Left setup panel (420px) + right results panel. Setup panel: deal info, capital budget, operating assumptions, debt parameters, waterfall builder, action buttons.
+- **Capital Budget** — Sources & Uses builder:
+  - **Uses**: 13 default line items (Purchase Price, Sponsor Acq Fee, Loan Fees, Lender Orig Fee, Debt Broker Fee, Sponsor DD/Legal, Title, Sponsor Misc, Cap Ex Reserve, Prepaid Expenses, PSC Orig Fee, PSC DD Costs, Working Capital). Items support fixed $ or % of purchase_price / total_debt basis. Add/remove custom items. PSC Origination Fee auto-calculated (read-only).
+  - **Sources**: Debt sources (First Mortgage, Future Fundings, Second Mortgage, Future 2nd Fundings) + computed equity gap split by PE/OP percentage (default 90/10).
+  - **Persistence**: Serialized as JSON in `prospect_assumptions` table (`capital_uses_json`, `capital_sources_json`). Restored on deal load by merging saved amounts into default structure (forward-compatible with new items).
+- **Assumption Fields** — 37 fields in `ASSUMPTION_FIELDS` list including loan terms (lender, rate_type, rate_index, rate_spread_bps, rate_cushion_bps), extension terms (count, months, conditions), prepay (type, schedule), sizing constraints (max_ltv, max_ltc, min_dscr, dscr_test_start, min_debt_yield, origination_fee_bps), and notes (earnout_notes, guarantor_notes). Dynamic SELECT/INSERT/UPDATE queries built from field list.
 - **Waterfall Builder** — Two-tab interface:
-  - **Builder tab**: Investor rows (ID, Name, Pref Rate, Residual %, PE checkbox). Add/Remove investors. Share % validation (must sum to 100%). "Build & Save Waterfall" button.
-  - **Steps tab**: Preview of stored CF_WF and Cap_WF steps in compact tables.
+  - **Builder tab**: Flexible step rows (Entity, Step Type, Rate/Amount). Step types: Preferred Return (rate %), Return of Capital, Cash Flow Split (share %), Fixed Amount ($/quarter). Add/remove steps + new entity. Share % validation warning when != 100%.
+  - **Steps tab**: Preview of stored CF_WF and Cap_WF in separate bordered cards with descriptions ("Operating distributions — does NOT reduce capital outstanding" / "Refi / sale proceeds — DOES reduce capital outstanding"). Colored step badges (Pref/Initial/Share/Tag). Explanation panel describing Share/Tag simultaneous split.
 - **Waterfall Generation** — `POST /api/prospects/<id>/waterfall/build` accepts `{investors, promote}`. Generates:
   - CF_WF: Pref steps (per investor with pref_rate > 0) → Share (lead) + Tag (followers) for residual split
   - Cap_WF: Pref steps → Initial steps (capital return per investor) → Share + Tag for residual
@@ -593,6 +598,7 @@ Full deal analysis view for New Business, mimicking the Asset Management Deal An
 - **Analysis Flow** — Loads real waterfalls from DB before computation. Falls back to synthetic `_build_waterfall()` if none stored. Uses same `compute_deal_analysis()` engine as AM.
 - **Results** — Sources & Uses summary, deal-level KPI cards (IRR, ROE, MOIC, sale price), Partner Returns table (PE partners highlighted), expandable Annual Forecast and Debt Service tables, Diagnostics expander.
 - **Vcode convention** — Prospect deals use `N{deal_id:07d}` vcodes. Waterfalls stored with this vcode in the shared `waterfalls` table.
+- **Cashflow Status API** — `GET /api/prospects/<id>/cashflow-status` returns per-property status with Argus/Excel badges and timestamps (batch endpoint, replaces per-property polling).
 
 #### 11b. Lease Review
 Standalone route at `/lease-review`. Vue: `LeaseReviewView.vue`. Flask: `lease_review.py` + `lease_review_service.py`.
@@ -643,6 +649,8 @@ Property-level cash flow import hub supporting two sources: Argus Enterprise Exc
 
 #### Generic Parser (`cashflow_parser.py`)
 - Stateless, no DB/Flask deps. Auto-detects columns via regex patterns
+- **Two layout modes**: Vertical (standard columns) and Horizontal (dates across columns, line items down rows)
+- Horizontal detection: `_detect_horizontal_dates()` scans first 20 rows for date-like values across columns (60%+ threshold). Row label matching via `_ROW_REVENUE_PATTERNS`, `_ROW_EXPENSE_PATTERNS`, `_ROW_NOI_PATTERNS`, `_ROW_CAPEX_PATTERNS`. Skip patterns exclude false positives (recovery/reimbursement rows).
 - Handles annual and monthly data (annual auto-spread to 12 monthly rows)
 - Normalizes signs, derives missing columns (NOI from rev-exp, or rev/exp from NOI)
 - Handles dollar signs, commas, parenthetical negatives, messy header rows
@@ -784,7 +792,9 @@ Embedded Claude-powered chat panel for natural-language queries against the port
 - `parse_rent_roll_summary()` - Parse tenant lease detail from Argus rent roll export (argus_parser.py)
 - `cashflow_to_forecast_df()` - Convert parsed Argus data to forecast DataFrame (same schema as load_forecast) (argus_parser.py)
 - `map_to_coa()` - Keyword-based line item → COA account mapping (argus_parser.py)
-- `parse_cashflow_excel()` - Generic Excel/CSV parser, auto-detect columns, annual→monthly conversion (cashflow_parser.py)
+- `parse_cashflow_excel()` - Generic Excel/CSV parser, auto-detect columns, annual→monthly conversion, horizontal layout support (cashflow_parser.py)
+- `_detect_horizontal_dates()` - Detect horizontal Excel layout (dates across columns) (cashflow_parser.py)
+- `_parse_horizontal_cashflow()` - Parse transposed cash flow (line items as rows, dates as columns) (cashflow_parser.py)
 - `import_argus_cashflow()` - Import with SHA-256 dedup, parse + store cashflows (argus_service.py)
 - `get_active_forecast_df()` / `get_forecast_df_by_id()` - Forecast DataFrame from Argus projection (argus_service.py)
 - `get_property_rollup_forecast_df()` - Aggregate Argus forecasts from multiple properties into deal-level forecast (argus_service.py)

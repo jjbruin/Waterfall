@@ -42,7 +42,7 @@ prospect_deals (deal/portfolio level)
 
 Mirrors AM: `prospect_deals` → parent `inv`, `prospect_properties` → child `inv` with `Portfolio_Name`
 
-## Current State (deployed v259)
+## Current State (deployed v310)
 - Pipeline view live at `/pipeline` under New Business sidebar section
 - Kanban drag-and-drop, table view, new deal modal, deal workspace with Properties/Entities/Activity tabs
 - Properties have "Start Lease Review" / "View Lease Review" links
@@ -58,40 +58,28 @@ Mirrors AM: `prospect_deals` → parent `inv`, `prospect_properties` → child `
   - Inline field editing: double-click to override, "R" badge, revert button
   - One-click "Use Seller" / "Use Lease" on validation mismatches
 
-## Next Priority: New Business Deal Analysis
+## Prospect Deal Analysis (IMPLEMENTED — v310)
 
-**User directive**: Duplicate the Asset Management Deal Analysis for New Business so both use the same engines and validated calculations. Format may differ but architecture/functionality must be common for seamless handoffs.
+Standalone route at `/prospect-analysis`. Full deal analysis with shared compute engines.
 
-### Implementation Plan
-1. **Shared Engine** — New Business Deal Analysis should call the same core functions:
-   - `compute_deal_analysis()` in `compute.py` — main orchestration
-   - `build_partner_results()` — partner metrics (IRR, ROE, MOIC)
-   - `run_interleaved_waterfalls()` — CF/Cap waterfall execution
-   - `annual_aggregation_table()` — forecast display
-   - `build_cash_flow_schedule_from_fad()` — cash management
-   - All XIRR/ROE/MOIC calculation via `metrics.py`
+### What's Built
+- **Capital Budget**: 13-item Uses table + 4 debt Sources + computed equity gap (PE/OP split)
+- **37 Assumption Fields**: Loan terms, extension, prepay, sizing constraints, earnout/guarantor notes
+- **Capital Budget Persistence**: `capital_uses_json` + `capital_sources_json` in prospect_assumptions
+- **Waterfall Builder**: Flexible step types (Pref, ROC, Residual, Fixed Amount) with entity selector
+- **Steps Preview**: CF_WF and Cap_WF shown in separate bordered cards with colored badges and descriptions
+- **Shared Engine**: `build_prospect_analysis()` → `compute_deal_analysis()` with same waterfall/XIRR/ROE
+- **Cashflow Status**: `GET /api/prospects/<id>/cashflow-status` batch endpoint with Argus/Excel badges + timestamps
+- **Horizontal Parser**: `cashflow_parser.py` detects and parses transposed Excel layouts (dates across columns)
 
-2. **Synthetic Data Layer** — `build_prospect_analysis()` wrapper that:
-   - Converts prospect_assumptions form inputs into synthetic DataFrames matching what `compute_deal_analysis()` expects (inv, forecast, loans, waterfalls, accounting, etc.)
-   - Maps prospect_properties → child inv rows
-   - Maps prospect_entities/investors → waterfall steps
-   - Maps deal assumptions (debt terms, NOI projections, exit cap) → forecast/loan structures
-
-3. **Vue Component** — New view (or embedded in PipelineView deal workspace) showing:
-   - Same sections as DealAnalysisView: Partner Returns, Annual Forecast, Debt Service, Cash Management, XIRR Cash Flows
-   - Input panel for assumptions (acquisition, debt, equity, operating, exit)
-   - Sensitivity matrix (varying cap rate × hold period, or any two variables)
-
-4. **Scenario Management** — Multiple saved assumption sets per deal, side-by-side comparison
-
-5. **Onboarding** — One-click conversion of closed prospect to portfolio deal
-
-### Key Architecture Constraint
-The engines in `compute.py`, `waterfall.py`, `metrics.py` expect specific DataFrame schemas. The mapping layer (`build_prospect_analysis()`) must produce conforming DataFrames from the simpler prospect input forms. This is a translation layer, NOT a new engine.
+### Key Architecture
+The engines in `compute.py`, `waterfall.py`, `metrics.py` expect specific DataFrame schemas. The mapping layer (`build_prospect_analysis()` in `prospect_analysis.py`) produces conforming DataFrames from prospect inputs. This is a translation layer, NOT a new engine.
 
 ## What's Further Out
-- Excel cash flow import (partner/Argus models)
+- Scenario side-by-side comparison view
+- Sensitivity matrix (varying cap rate × hold period)
 - IC memo generation
+- One-click onboarding (prospect → portfolio deal)
 - Cross-portfolio analysis
 - Term sheet generator
 
