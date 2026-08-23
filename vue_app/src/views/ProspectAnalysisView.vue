@@ -578,8 +578,47 @@ function selectAssumption(a: any) {
   if (a.psc_equity_pct != null) {
     peEquityPct.value = (a.psc_equity_pct > 1 ? a.psc_equity_pct : a.psc_equity_pct * 100)
   }
-  // Sync debt amount to first mortgage source
-  if (a.debt_amount != null) {
+  // Restore capital budget from saved JSON
+  if (a.capital_uses_json) {
+    try {
+      const saved = JSON.parse(a.capital_uses_json)
+      if (Array.isArray(saved) && saved.length) {
+        // Merge saved amounts into default structure (preserves any new fields added later)
+        const base = defaultUses()
+        const savedMap = new Map(saved.map((u: any) => [u.id, u]))
+        for (const item of base) {
+          const s = savedMap.get(item.id)
+          if (s) {
+            item.amount = s.amount
+            if (s.pct != null) item.pct = s.pct
+          }
+        }
+        capitalUses.value = base
+      }
+    } catch { /* ignore parse errors */ }
+  }
+  if (a.capital_sources_json) {
+    try {
+      const saved = JSON.parse(a.capital_sources_json)
+      if (saved.debt && Array.isArray(saved.debt)) {
+        // Merge saved debt amounts into default structure
+        const base = defaultDebtSources()
+        const savedMap = new Map(saved.debt.map((s: any) => [s.id, s]))
+        for (const item of base) {
+          const s = savedMap.get(item.id)
+          if (s) item.amount = s.amount
+        }
+        debtSources.value = base
+      }
+      if (saved.equity && Array.isArray(saved.equity)) {
+        additionalEquitySources.value = saved.equity
+      }
+      if (saved.pe_pct != null) {
+        peEquityPct.value = saved.pe_pct
+      }
+    } catch { /* ignore parse errors */ }
+  } else if (a.debt_amount != null) {
+    // Fallback: sync debt amount to first mortgage source (legacy)
     const fm = debtSources.value.find(s => s.id === 'first_mortgage')
     if (fm) fm.amount = a.debt_amount
   }
@@ -594,6 +633,12 @@ async function saveAssumptions() {
       ...assumptionForm.value,
       debt_amount: totalDebt.value,
       psc_equity_pct: peEquityPct.value / 100,
+      capital_uses_json: JSON.stringify(capitalUses.value),
+      capital_sources_json: JSON.stringify({
+        debt: debtSources.value,
+        equity: additionalEquitySources.value,
+        pe_pct: peEquityPct.value,
+      }),
     }
     const res = await api.post(`/api/prospects/${selectedDealId.value}/assumptions`, payload)
     const { data: versions } = await api.get(`/api/prospects/${selectedDealId.value}/assumptions`)

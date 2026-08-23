@@ -172,6 +172,8 @@ PROSPECT_DDL_PG = [
         origination_fee_bps DOUBLE PRECISION,
         earnout_notes   TEXT,
         guarantor_notes TEXT,
+        capital_uses_json TEXT,
+        capital_sources_json TEXT,
         created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
@@ -277,6 +279,8 @@ def ensure_prospect_tables(engine):
             ('prospect_assumptions', 'origination_fee_bps', 'DOUBLE PRECISION'),
             ('prospect_assumptions', 'earnout_notes', 'TEXT'),
             ('prospect_assumptions', 'guarantor_notes', 'TEXT'),
+            ('prospect_assumptions', 'capital_uses_json', 'TEXT'),
+            ('prospect_assumptions', 'capital_sources_json', 'TEXT'),
         ]
         for table, col, col_type in _migrate_columns:
             try:
@@ -905,6 +909,7 @@ ASSUMPTION_FIELDS = [
     'prepay_type', 'prepay_schedule',
     'max_ltv', 'max_ltc', 'min_dscr', 'dscr_test_start', 'min_debt_yield',
     'origination_fee_bps', 'earnout_notes', 'guarantor_notes',
+    'capital_uses_json', 'capital_sources_json',
 ]
 
 
