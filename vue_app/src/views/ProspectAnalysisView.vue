@@ -1425,29 +1425,52 @@ loadDeals()
             <!-- Steps tab (preview of stored waterfall) -->
             <div v-if="wfTab === 'steps' && wfSteps.length" class="wf-steps-view">
               <div v-for="wfType in ['CF_WF', 'Cap_WF']" :key="wfType" class="wf-type-section">
-                <h5>{{ wfType === 'CF_WF' ? 'Cash Flow Waterfall' : 'Capital Waterfall' }}</h5>
-                <table class="compact-table">
+                <div class="wf-type-header">
+                  <h5>{{ wfType === 'CF_WF' ? 'Cash Flow Waterfall (CF_WF)' : 'Capital Event Waterfall (Cap_WF)' }}</h5>
+                  <span class="wf-type-desc">{{
+                    wfType === 'CF_WF'
+                      ? 'Operating distributions — does NOT reduce capital outstanding'
+                      : 'Refi / sale proceeds — DOES reduce capital outstanding'
+                  }}</span>
+                </div>
+                <table class="compact-table" v-if="wfSteps.filter(x => x.vmisc === wfType).length">
                   <thead>
                     <tr>
                       <th>Order</th>
                       <th>Investor</th>
-                      <th>Type</th>
+                      <th>Step</th>
                       <th class="r">FXRate</th>
                       <th class="r">Rate</th>
-                      <th>Pool</th>
+                      <th>Description</th>
                     </tr>
                   </thead>
                   <tbody>
-                    <tr v-for="s in wfSteps.filter(x => x.vmisc === wfType)" :key="`${s.iOrder}-${s.PropCode}`">
+                    <tr v-for="s in wfSteps.filter(x => x.vmisc === wfType)" :key="`${s.iOrder}-${s.PropCode}`"
+                        :class="{ 'step-pref': s.vState === 'Pref', 'step-initial': s.vState === 'Initial', 'step-split': s.vState === 'Share' || s.vState === 'Tag' }">
                       <td>{{ s.iOrder }}</td>
                       <td>{{ s.PropCode }}</td>
-                      <td>{{ s.vState }}</td>
-                      <td class="r">{{ s.FXRate?.toFixed(2) }}</td>
+                      <td><span class="step-badge" :class="'step-' + s.vState.toLowerCase()">{{ s.vState }}</span></td>
+                      <td class="r">{{ s.FXRate ? s.FXRate.toFixed(2) : '—' }}</td>
                       <td class="r">{{ s.nPercent ? (s.nPercent > 1 ? s.nPercent.toFixed(1) + '%' : fmtPct(s.nPercent)) : '—' }}</td>
                       <td>{{ s.vtranstype || '—' }}</td>
                     </tr>
                   </tbody>
                 </table>
+                <div v-else class="muted" style="padding: 8px 0;">No steps</div>
+              </div>
+
+              <div class="wf-explanation">
+                <strong>How it works:</strong>
+                <span v-if="wfSteps.some(s => s.vState === 'Pref')">
+                  Pref steps pay the preferred return first.
+                </span>
+                <span v-if="wfSteps.some(s => s.vState === 'Initial')">
+                  Initial steps return capital (Cap_WF only).
+                </span>
+                <span v-if="wfSteps.some(s => s.vState === 'Share' || s.vState === 'Tag')">
+                  Share/Tag steps split remaining cash — Share (lead) and Tag (followers)
+                  receive their FXRate percentage of the pool simultaneously.
+                </span>
               </div>
             </div>
           </div>
@@ -1865,8 +1888,23 @@ loadDeals()
 }
 .wf-actions { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
 
-.wf-type-section { margin-bottom: 10px; }
-.wf-type-section h5 { font-size: 12px; margin: 0 0 4px; color: #555; }
+.wf-type-section { margin-bottom: 16px; border: 1px solid #e0e0e0; border-radius: 6px; padding: 10px; background: #fafafa; }
+.wf-type-header { margin-bottom: 6px; }
+.wf-type-header h5 { font-size: 13px; font-weight: 700; margin: 0; color: #333; }
+.wf-type-desc { font-size: 11px; color: #777; }
+.step-badge {
+  display: inline-block; font-size: 10px; font-weight: 600; padding: 1px 6px;
+  border-radius: 3px; text-transform: uppercase;
+}
+.step-pref { background: #e8f5e9; color: #2e7d32; }
+.step-initial { background: #e3f2fd; color: #1565c0; }
+.step-share { background: #fff3e0; color: #e65100; }
+.step-tag { background: #fce4ec; color: #c62828; }
+.wf-explanation {
+  font-size: 11px; color: #666; background: #f5f5f5; padding: 8px 10px;
+  border-radius: 4px; margin-top: 8px; line-height: 1.5;
+}
+.wf-explanation strong { color: #333; }
 
 .badge-saved {
   font-size: 10px; font-weight: 600; color: #2e7d32;
