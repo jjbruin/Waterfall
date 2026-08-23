@@ -153,6 +153,25 @@ PROSPECT_DDL_PG = [
         noi_year1       DOUBLE PRECISION,
         noi_growth_rate DOUBLE PRECISION DEFAULT 0.02,
         crossed_vcodes  TEXT,
+        lender          TEXT,
+        rate_type       TEXT DEFAULT 'fixed',
+        rate_index      TEXT,
+        rate_index_term TEXT,
+        rate_spread_bps DOUBLE PRECISION,
+        rate_cushion_bps DOUBLE PRECISION,
+        extension_count INTEGER,
+        extension_months INTEGER DEFAULT 12,
+        extension_conditions TEXT,
+        prepay_type     TEXT,
+        prepay_schedule TEXT,
+        max_ltv         DOUBLE PRECISION,
+        max_ltc         DOUBLE PRECISION,
+        min_dscr        DOUBLE PRECISION,
+        dscr_test_start TEXT,
+        min_debt_yield  DOUBLE PRECISION,
+        origination_fee_bps DOUBLE PRECISION,
+        earnout_notes   TEXT,
+        guarantor_notes TEXT,
         created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
@@ -238,6 +257,26 @@ def ensure_prospect_tables(engine):
             ('prospect_deals', 'deal_structure', "TEXT DEFAULT 'single_property'"),
             ('prospect_properties', 'vcode', 'TEXT'),
             ('prospect_cashflows', 'created_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP'),
+            # New assumption fields (Aug 2026)
+            ('prospect_assumptions', 'lender', 'TEXT'),
+            ('prospect_assumptions', 'rate_type', "TEXT DEFAULT 'fixed'"),
+            ('prospect_assumptions', 'rate_index', 'TEXT'),
+            ('prospect_assumptions', 'rate_index_term', 'TEXT'),
+            ('prospect_assumptions', 'rate_spread_bps', 'DOUBLE PRECISION'),
+            ('prospect_assumptions', 'rate_cushion_bps', 'DOUBLE PRECISION'),
+            ('prospect_assumptions', 'extension_count', 'INTEGER'),
+            ('prospect_assumptions', 'extension_months', 'INTEGER DEFAULT 12'),
+            ('prospect_assumptions', 'extension_conditions', 'TEXT'),
+            ('prospect_assumptions', 'prepay_type', 'TEXT'),
+            ('prospect_assumptions', 'prepay_schedule', 'TEXT'),
+            ('prospect_assumptions', 'max_ltv', 'DOUBLE PRECISION'),
+            ('prospect_assumptions', 'max_ltc', 'DOUBLE PRECISION'),
+            ('prospect_assumptions', 'min_dscr', 'DOUBLE PRECISION'),
+            ('prospect_assumptions', 'dscr_test_start', 'TEXT'),
+            ('prospect_assumptions', 'min_debt_yield', 'DOUBLE PRECISION'),
+            ('prospect_assumptions', 'origination_fee_bps', 'DOUBLE PRECISION'),
+            ('prospect_assumptions', 'earnout_notes', 'TEXT'),
+            ('prospect_assumptions', 'guarantor_notes', 'TEXT'),
         ]
         for table, col, col_type in _migrate_columns:
             try:
@@ -860,69 +899,55 @@ ASSUMPTION_FIELDS = [
     'promote_pct', 'am_fee_pct', 'annual_expenses', 'exit_cap_rate',
     'selling_cost_pct', 'hold_years', 'capex_reserve_psf',
     'noi_year1', 'noi_growth_rate', 'crossed_vcodes',
+    'lender', 'rate_type', 'rate_index', 'rate_index_term',
+    'rate_spread_bps', 'rate_cushion_bps',
+    'extension_count', 'extension_months', 'extension_conditions',
+    'prepay_type', 'prepay_schedule',
+    'max_ltv', 'max_ltc', 'min_dscr', 'dscr_test_start', 'min_debt_yield',
+    'origination_fee_bps', 'earnout_notes', 'guarantor_notes',
 ]
+
+
+def _assumption_row_to_dict(r, columns: list) -> Dict:
+    """Convert a row tuple to dict using column name list."""
+    d = {}
+    for i, col in enumerate(columns):
+        v = r[i]
+        if col in ('created_at', 'updated_at'):
+            d[col] = str(v) if v else None
+        else:
+            d[col] = v
+    return d
 
 
 def list_assumptions(engine, deal_id: int) -> List[Dict]:
     """List assumption versions for a prospect deal."""
+    fields_sql = ', '.join(ASSUMPTION_FIELDS)
+    cols = ['id', 'version', 'version_label'] + list(ASSUMPTION_FIELDS) + ['created_at', 'updated_at']
     with engine.connect() as conn:
-        rows = conn.execute(text("""
-            SELECT id, version, version_label, debt_amount, debt_rate,
-                   debt_term_months, io_months, amort_months, origination_fee,
-                   psc_equity_pct, pref_rate, promote_pct, am_fee_pct,
-                   annual_expenses, exit_cap_rate, selling_cost_pct,
-                   hold_years, capex_reserve_psf, noi_year1, noi_growth_rate,
-                   crossed_vcodes, created_at, updated_at
+        rows = conn.execute(text(f"""
+            SELECT id, version, version_label, {fields_sql}, created_at, updated_at
             FROM prospect_assumptions
             WHERE prospect_id = :pid
             ORDER BY version
         """), {'pid': deal_id}).fetchall()
 
-    return [{
-        'id': r[0], 'version': r[1], 'version_label': r[2],
-        'debt_amount': r[3], 'debt_rate': r[4],
-        'debt_term_months': r[5], 'io_months': r[6],
-        'amort_months': r[7], 'origination_fee': r[8],
-        'psc_equity_pct': r[9], 'pref_rate': r[10],
-        'promote_pct': r[11], 'am_fee_pct': r[12],
-        'annual_expenses': r[13], 'exit_cap_rate': r[14],
-        'selling_cost_pct': r[15], 'hold_years': r[16],
-        'capex_reserve_psf': r[17], 'noi_year1': r[18],
-        'noi_growth_rate': r[19], 'crossed_vcodes': r[20],
-        'created_at': str(r[21]) if r[21] else None,
-        'updated_at': str(r[22]) if r[22] else None,
-    } for r in rows]
+    return [_assumption_row_to_dict(r, cols) for r in rows]
 
 
 def get_assumption(engine, assumption_id: int) -> Optional[Dict]:
     """Get a single assumption version."""
+    fields_sql = ', '.join(ASSUMPTION_FIELDS)
+    cols = ['id', 'prospect_id', 'version', 'version_label'] + list(ASSUMPTION_FIELDS) + ['created_at', 'updated_at']
     with engine.connect() as conn:
-        r = conn.execute(text("""
-            SELECT id, prospect_id, version, version_label, debt_amount, debt_rate,
-                   debt_term_months, io_months, amort_months, origination_fee,
-                   psc_equity_pct, pref_rate, promote_pct, am_fee_pct,
-                   annual_expenses, exit_cap_rate, selling_cost_pct,
-                   hold_years, capex_reserve_psf, noi_year1, noi_growth_rate,
-                   crossed_vcodes, created_at, updated_at
+        r = conn.execute(text(f"""
+            SELECT id, prospect_id, version, version_label, {fields_sql}, created_at, updated_at
             FROM prospect_assumptions
             WHERE id = :aid
         """), {'aid': assumption_id}).fetchone()
     if not r:
         return None
-    return {
-        'id': r[0], 'prospect_id': r[1], 'version': r[2], 'version_label': r[3],
-        'debt_amount': r[4], 'debt_rate': r[5],
-        'debt_term_months': r[6], 'io_months': r[7],
-        'amort_months': r[8], 'origination_fee': r[9],
-        'psc_equity_pct': r[10], 'pref_rate': r[11],
-        'promote_pct': r[12], 'am_fee_pct': r[13],
-        'annual_expenses': r[14], 'exit_cap_rate': r[15],
-        'selling_cost_pct': r[16], 'hold_years': r[17],
-        'capex_reserve_psf': r[18], 'noi_year1': r[19],
-        'noi_growth_rate': r[20], 'crossed_vcodes': r[21],
-        'created_at': str(r[22]) if r[22] else None,
-        'updated_at': str(r[23]) if r[23] else None,
-    }
+    return _assumption_row_to_dict(r, cols)
 
 
 def save_assumptions(engine, deal_id: int, data: Dict) -> Dict:
