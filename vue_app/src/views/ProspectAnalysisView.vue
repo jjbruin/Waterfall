@@ -37,7 +37,7 @@ interface SourceItem {
 
 interface WfStepInput {
   entity_id: string
-  step_type: 'pref' | 'return_of_capital' | 'residual' | 'fixed_amount'
+  step_type: 'pref' | 'return_of_capital' | 'residual' | 'fixed_amount' | 'irr_lookback'
   rate: number | null
   amount: number | null
   wf_type?: 'CF_WF' | 'Cap_WF'  // used when sending to backend
@@ -62,6 +62,7 @@ const STEP_TYPES = [
   { value: 'return_of_capital', label: 'Return of Capital', inputLabel: null, inputType: null },
   { value: 'residual', label: 'Cash Flow Split', inputLabel: 'Share (%)', inputType: 'rate' },
   { value: 'fixed_amount', label: 'Fixed Amount', inputLabel: 'Per Quarter ($)', inputType: 'amount' },
+  { value: 'irr_lookback', label: 'IRR Lookback', inputLabel: 'Target IRR (%)', inputType: 'rate' },
 ] as const
 
 // ---------------------------------------------------------------------------
@@ -487,6 +488,8 @@ function _storedToInputs(steps: WfStep[]): WfStepInput[] {
       inputs.push({ entity_id: s.PropCode, step_type: 'residual', rate: s.FXRate * 100, amount: null })
     } else if (s.vState === 'Amt') {
       inputs.push({ entity_id: s.PropCode, step_type: 'fixed_amount', rate: null, amount: s.mAmount })
+    } else if (s.vState === 'IRR') {
+      inputs.push({ entity_id: s.PropCode, step_type: 'irr_lookback', rate: s.nPercent, amount: null })
     }
   }
   return inputs
@@ -1454,6 +1457,9 @@ loadDeals()
                         <template v-else-if="step.step_type === 'fixed_amount'">
                           <span class="rate-suffix">$</span><input type="number" v-model.number="step.amount" step="1000" class="rate-input" placeholder="0" />
                         </template>
+                        <template v-else-if="step.step_type === 'irr_lookback'">
+                          <input type="number" v-model.number="step.rate" step="0.5" class="rate-input" placeholder="9.0" /><span class="rate-suffix">%</span>
+                        </template>
                         <template v-else><span class="muted">—</span></template>
                       </td>
                       <td class="col-action">
@@ -1510,6 +1516,9 @@ loadDeals()
                         </template>
                         <template v-else-if="step.step_type === 'fixed_amount'">
                           <span class="rate-suffix">$</span><input type="number" v-model.number="step.amount" step="1000" class="rate-input" placeholder="0" />
+                        </template>
+                        <template v-else-if="step.step_type === 'irr_lookback'">
+                          <input type="number" v-model.number="step.rate" step="0.5" class="rate-input" placeholder="9.0" /><span class="rate-suffix">%</span>
                         </template>
                         <template v-else><span class="muted">—</span></template>
                       </td>

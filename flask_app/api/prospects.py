@@ -722,6 +722,17 @@ def build_deal_waterfall(deal_id):
                     'dteffective': dt_date(2020, 1, 1), 'nmisc': 0,
                 })
                 order += 10
+            elif stype == 'irr_lookback':
+                rate = float(s.get('rate') or 0)
+                rows.append({
+                    'vcode': vcode, 'vmisc': wf_name, 'iOrder': order,
+                    'PropCode': eid, 'vState': 'IRR',
+                    'FXRate': 0, 'nPercent': rate, 'mAmount': 0,
+                    'vtranstype': 'IRR Hurdle',
+                    'vAmtType': '', 'vNotes': '',
+                    'dteffective': dt_date(2020, 1, 1), 'nmisc': 0,
+                })
+                order += 10
         return rows
 
     cf_inputs = body.get('cf_steps', [])
