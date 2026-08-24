@@ -51,78 +51,7 @@ def _data_or_error():
         return None, (jsonify({"error": f"data unavailable: {exc}"}), 503)
 
 
-# ── providers ─────────────────────────────────────────────────────────────
-
-def _make_one_pager_provider(data: dict):
-    """(vcode, quarter) -> One Pager payload, memoised per request.
-
-    Memoised because the four assemblies each read the same deals: without the
-    cache a bundle call would hit the One Pager 4x per deal.
-    """
-    from flask_app.services.financials_service import get_one_pager_data
-
-    cache: dict = {}
-
-    def provider(vcode: str, quarter: str) -> dict:
-        key = (vcode, quarter)
-        if key not in cache:
-            cache[key] = get_one_pager_data(
-                vcode, quarter, data["inv"], data["isbs_raw"],
-                data["mri_loans_raw"], data["mri_val"],
-                data["wf"], data["acct"],
-                occupancy_raw=data["occupancy_raw"],
-                budget_econ_occ=data.get("budget_econ_occ"),
-                deal_terms=data.get("deal_terms_raw"),
-                at_close_noi=data.get("at_close_noi_raw"),
-                event_dates=data.get("event_dates_raw"),
-                relationships=data.get("relationships_raw"),
-                mri_loans_all=data.get("mri_loans_all"),
-                # full_data deliberately omitted — see module docstring
-            )
-        return cache[key]
-
-    return provider
-
-
-def _make_quarterly_noi_provider(data: dict):
-    """(vcode, quarter) -> that quarter's periodic NOI, or None.
-
-    The Loan subtab's Debt Yield is single-quarter NOI x 4. Reads the same
-    ``get_performance_chart_data`` pipeline Property Financials uses, so the
-    number cannot drift from the chart. A quarter missing any of its three
-    months comes back None and the subtab flags it rather than annualising a
-    stub.
-    """
-    from flask_app.services.financials_service import get_performance_chart_data
-
-    cache: dict = {}
-
-    def provider(vcode: str, quarter: str):
-        key = (vcode, quarter)
-        if key in cache:
-            return cache[key]
-        val = None
-        try:
-            year, qn = int(str(quarter).split("-Q")[0]), int(str(quarter).split("Q")[1])
-            q_end = (pd.Timestamp(year=year, month=qn * 3, day=1)
-                     + pd.offsets.MonthEnd(0))
-            chart = get_performance_chart_data(
-                data["isbs_raw"], data["occupancy_raw"], vcode,
-                freq="Quarterly", periods=12, period_end=str(q_end.date()),
-            ) or {}
-            label = f"Q{qn} {year}"
-            for lbl, actual in zip(chart.get("periods") or [],
-                                   chart.get("actual_noi") or []):
-                if lbl == label and actual is not None:
-                    val = float(actual)
-                    break
-        except Exception:
-            val = None
-        cache[key] = val
-        return val
-
-    return provider
-
+# ── request helpers ───────────────────────────────────────────────────────
 
 def _resolve(investor_code: str, quarter: str, data: dict) -> dict:
     from flask_app.services.portfolio_snapshot_service import resolve_investor_deals
@@ -242,29 +171,14 @@ def deals():
 
 def _build_subtab(name: str, investor: str, quarter: str, data: dict,
                   resolved: dict) -> dict:
-    op = _make_one_pager_provider(data)
+    """One subtab, for the per-subtab debug endpoint.
 
-    if name == "summary":
-        from flask_app.services.portfolio_snapshot_summary import assemble_summary
-        return assemble_summary(investor, quarter, resolved=resolved,
-                                one_pager_provider=op)
-    if name == "financial":
-        from flask_app.services.portfolio_snapshot_financial import assemble_financial
-        return assemble_financial(investor, quarter, resolved=resolved,
-                                  one_pager_provider=op)
-    if name == "operating":
-        from flask_app.services.portfolio_snapshot_operating import assemble_operating
-        return assemble_operating(investor, quarter, resolved=resolved,
-                                  one_pager_provider=op)
-    if name == "loan":
-        from flask_app.services.portfolio_snapshot_loan import assemble_loan
-        return assemble_loan(
-            investor, quarter, resolved=resolved, one_pager_provider=op,
-            loans=data.get("mri_loans_raw"), valuations=data.get("mri_val"),
-            inv=data["inv"],
-            quarterly_noi_provider=_make_quarterly_noi_provider(data),
-        )
-    raise ValueError(f"unknown subtab {name!r}")
+    Delegates to the freeze module, which owns the single assembly path shared
+    with /bundle and the freeze itself. Two implementations would let a frozen
+    payload differ from live even with unchanged data.
+    """
+    from flask_app.services.portfolio_snapshot_freeze import build_subtab
+    return build_subtab(name, investor, quarter, data, resolved)
 
 
 @portfolio_snapshot_bp.route("/<subtab>", methods=["GET"])
@@ -351,7 +265,8 @@ def bundle():
             resolved = _resolve(investor, quarter, data)
             out["guardrails"] = run_guardrails(
                 resolved, out["subtabs"],
-                pe_cap_comments=_pe_cap_comments(data, quarter),
+                pe_cap_comments=_pe_cap_comments(
+                    quarter, _scope_vcodes(resolved)),
             )
         except Exception as exc:
             out["guardrails"] = {"error": str(exc), "findings": [], "ok": None}
@@ -359,8 +274,12 @@ def bundle():
     return jsonify(safe_json(out))
 
 
-def _pe_cap_comments(data: dict, quarter: str) -> dict:
+def _pe_cap_comments(quarter: str, vcodes) -> dict:
     """vcode -> pe_cap_comment, for the pref-equity cross-check.
+
+    Scoped to the deals in this investor's report. It used to walk every row of
+    the deals table — 110 round-trips per /bundle on live — to serve a
+    cross-check that only ever looks at the ~32 deals in scope.
 
     Read-only reuse of the One Pager's own comment store. Failure is non-fatal:
     the cross-check reports that it could not run rather than passing silently.
@@ -370,13 +289,7 @@ def _pe_cap_comments(data: dict, quarter: str) -> dict:
     except Exception:
         return {}
     out: dict = {}
-    inv = data.get("inv")
-    if inv is None or getattr(inv, "empty", True):
-        return out
-    col = next((c for c in inv.columns if c.lower() == "vcode"), None)
-    if not col:
-        return out
-    for vcode in inv[col].dropna().astype(str).str.strip():
+    for vcode in (vcodes or ()):
         try:
             row = get_one_pager_comments(vcode, quarter) or {}
         except Exception:
@@ -384,6 +297,14 @@ def _pe_cap_comments(data: dict, quarter: str) -> dict:
         txt = row.get("pe_cap_comment")
         if txt:
             out[vcode] = txt
+    return out
+
+
+def _scope_vcodes(resolved: dict) -> list:
+    """Every deal in the report, grouped plus ownership-flagged."""
+    out = [e["vcode"] for items in (resolved.get("groups") or {}).values()
+           for e in items]
+    out += [f["vcode"] for f in (resolved.get("flagged") or [])]
     return out
 
 

@@ -161,9 +161,18 @@ def _quarterly_noi_provider(data: dict) -> Callable:
 
 
 def build_subtab(name: str, investor: str, quarter: str, data: dict,
-                 resolved: dict) -> dict:
-    """One subtab, by name. The only place an assembly is invoked."""
-    op = _one_pager_provider(data)
+                 resolved: dict,
+                 one_pager_provider: Optional[Callable] = None,
+                 quarterly_noi_provider: Optional[Callable] = None) -> dict:
+    """One subtab, by name. The only place an assembly is invoked.
+
+    PASS THE PROVIDERS IN when building more than one subtab. They memoise, and
+    a provider built here is scoped to this call — so four subtabs each getting
+    their own would compute every deal's One Pager four times. Measured on
+    TIAA/26Q1: 128 ``get_one_pager_data`` calls across 32 deals instead of 32.
+    ``assemble_full_report`` builds them once and threads them through.
+    """
+    op = one_pager_provider or _one_pager_provider(data)
 
     if name == "summary":
         from flask_app.services.portfolio_snapshot_summary import assemble_summary
@@ -183,7 +192,8 @@ def build_subtab(name: str, investor: str, quarter: str, data: dict,
             investor, quarter, resolved=resolved, one_pager_provider=op,
             loans=data.get("mri_loans_raw"), valuations=data.get("mri_val"),
             inv=data["inv"],
-            quarterly_noi_provider=_quarterly_noi_provider(data))
+            quarterly_noi_provider=(quarterly_noi_provider
+                                    or _quarterly_noi_provider(data)))
     raise ValueError(f"unknown subtab {name!r}")
 
 
@@ -207,11 +217,21 @@ def assemble_full_report(investor: str, quarter: str,
     resolved = resolve_investor_deals(
         investor, quarter, data.get("relationships_raw"), data["inv"])
 
+    # ONE provider pair for all four subtabs. They memoise per instance, so
+    # building them per subtab computed each deal's One Pager four times over
+    # (128 calls for 32 deals on TIAA/26Q1). Output is byte-identical either
+    # way — verified on all four subtabs — this is purely the cost.
+    one_pager = _one_pager_provider(data)
+    quarterly_noi = _quarterly_noi_provider(data)
+
     subtabs: dict = {}
     errors: dict = {}
     for name in SUBTABS:
         try:
-            subtabs[name] = build_subtab(name, investor, quarter, data, resolved)
+            subtabs[name] = build_subtab(
+                name, investor, quarter, data, resolved,
+                one_pager_provider=one_pager,
+                quarterly_noi_provider=quarterly_noi)
         except Exception as exc:
             log.exception("subtab %s failed for %s %s", name, investor, quarter)
             errors[name] = str(exc)
