@@ -176,6 +176,46 @@ based on a wrong premise. Settled against live build `09fe220ae0da`:
   Note the Waterfall Setup screen shows 0.00% for it, and `/investors` separately
   fabricates a 50/50 split (see below).
 
+### RESOLVED — Step 1 acquisition-date gate (ownership window)
+
+Step 1 gated the **sold** end of the ownership window but not the **acquired**
+end, so deals that had not closed yet still rendered rows. The Loan subtab
+carried their debt as if real: at 26Q1 **Presidential Arms alone contributed
+$98,980,000 of phantom debt** against zero equity (the One Pager's equity block
+is quarter-filtered; the debt line is not), plus Citizen Storage $4,600,000 and
+Fairview Heights $13,250,000 — **$116,830,000 total**.
+
+`is_acquired_as_of()` now mirrors `is_sold_as_of()`. Full test: **acquired on or
+before `quarter_end` AND not sold on or before it**, both applied before fund
+classification so a deal outside the window cannot inflate an entity's tally.
+
+**Missing `Acquisition_Date` fails OPEN (deal kept), deliberately asymmetric with
+the sold gate.** Including a disposed deal reports something no longer owned, so
+that gate excludes on a missing date; excluding here would silently drop a deal
+genuinely held and understate the portfolio, the worse failure. 34 of 110 deals
+carry no date — almost all child properties already removed on
+`Property_Count == 0` — and every kept case is listed in
+`diagnostics['acquisition_date_missing']` (0 in TIAA's set).
+
+26Q1 population **35 → 32** (31 grouped + 1 ownership-flagged), exactly the 3
+deals; all 3 reappear in 26Q2 and 26Q3. **Every PDF figure is byte-identical**,
+because all three had `pref_equity` 0 and `committed_pe` 0 at 26Q1: funded
+403.95M, committed 477.99M, all four asset types, all three deal types, the
+Summary↔Financial identity at 385,401,813, and the four Loan anchors.
+Self-tests after the change: Step 1 **25/25**, Summary 41/43, Loan 45/46,
+Financial 28/28, Operating 15/28 — all unchanged bar Step 1's new checks.
+
+Two grouping consequences, both correct:
+- **TGA6 disappears from 26Q1** (7 groups → 6). Its only two deals are Fairview
+  Heights and Presidential Arms, neither owned in Q1, so the fund held nothing.
+- **TGAM2 is a fund at 26Q1 and an SPV at 26Q2, moving Giant 7 in and out of
+  Individual Investments.** This is NOT caused by the gate — verified against the
+  pre-change Q1 result, where TGAM2 was already a fund. It is pre-existing
+  behaviour of `_classify_entities`, which calls an entity a fund on a deal-count
+  threshold: TGAM2 holds East Manchester + Giant 7 in Q1, but East Manchester
+  sells 2026-06-25, leaving one deal in Q2. **Worth a decision** — fund identity
+  currently shifts quarter to quarter with holdings.
+
 ### RESOLVED — Loan dev-display rules (this branch)
 
 - **Waters Creek LTV exception — TEMPORARY hardcode, verified.**
@@ -222,8 +262,33 @@ based on a wrong premise. Settled against live build `09fe220ae0da`:
 - **Nottingham LTV vintage.** Computed 79.12% (26Q1 debt 38,850,000) vs the PDF's
   ~75%, which equals the **26Q2** debt 37,000,000 / 49,100,000 = 75.36%. Formula is
   right; the PDF appears to carry a debt balance later than its own quarter.
-- **TGA6 zero-pref deals.** Fairview Heights and Presidential Arms have Total Pref
-  0, so Invested/Commitment are a real $0 rather than pending. Render `0` or `—`?
+- ~~**TGA6 zero-pref deals.**~~ **CLOSED** — Fairview Heights and Presidential Arms
+  read $0 at 26Q1 because they had not closed yet (2026-06-30 and 2026-05-13).
+  The acquisition-date gate now removes them from that quarter entirely, so there
+  is no zero to render. They carry real figures from 26Q2 on.
+- **East Manchester has no commitment row — fix at source.** Funded $3,600,000 but
+  no `Contribution`/"Commitment" row in accounting, so `committed_pe` is 0 and
+  un-funded computes to **−$2,723,400** (scaled). A deal cannot be funded above
+  its commitment; the pledge row is missing. Verified live 2026-08-24.
+- **Committed total runs +7.39% over the PDF** ($477.99M vs $445.1M). NOT the
+  `abs()` bug — `abs sum == |signed sum|` on all 32 deals with commitment rows,
+  each a single consistently-negative pledge dated at closing, and 22 of 32 have
+  committed == funded exactly. The un-funded is dominated by Development deals
+  mid-draw (JB Fair Park 19.4M, Jefferson Stephens 17.9M, Brainerd 8.4M, Trolley
+  2.3M) plus staged portfolio Burton 24.9M, all plausible. Leading hypothesis:
+  the PDF excludes un-funded commitment for assets **not yet acquired or built** —
+  dropping Burton + Brainerd gives 40.77M vs the PDF's implied 40.9M (0.33%), the
+  only subset within $1M of 129 one-to-three-deal combinations tested. Both are
+  phased/multi-property (Burton 3 properties; Brainerd two same-date tranches
+  across 9 buildings). A fit with a mechanism, not proof — needs confirmation.
+- **Asset allocation: Multifamily +0.97pp / Self-Storage −1.07pp, unexplained.**
+  They exactly offset: ~$4.35M sits in a different bucket in the PDF. Rounding
+  does not absorb it (Multifamily is 1.8M outside a ±0.5pp band, Self-Storage
+  2.4M). Arithmetically one ~$3.8M deal bucketed differently closes all four
+  types, and only Trolley Square (3.77M) and Nottingham Village (3.76M) are that
+  size — but neither is plausibly self-storage. **The earlier Citizen Storage lead
+  is dead:** its pref is legitimately $0 at 26Q1 and it is now gated out.
+  Resolving this needs the PDF's per-type dollars; only percentages are known.
 - **Hanestowne Waterstone** is `Lifecycle = Stable`, so it does not show "Dev".
   Expected as dev — check the MRI value. Since `Lifecycle` is now confirmed as the
   only strategy field there is, fixing this means correcting `vStatus` in MRI.

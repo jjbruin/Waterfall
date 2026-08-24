@@ -370,6 +370,11 @@ def _deal_index(inv: pd.DataFrame) -> dict:
             "sale_status": _s(d.get(cols.get("sale_status"))),
             "sale_date": pd.to_datetime(d.get(cols.get("sale_date")),
                                         errors="coerce"),
+            # Enriched at load time by data_service from the earliest accounting
+            # activity per deal (see CLAUDE.md "Acquisition Date"), so it is the
+            # true closing date rather than MRI's Acquisition_Date field.
+            "acquisition_date": pd.to_datetime(
+                d.get(cols.get("acquisition_date")), errors="coerce"),
             "asset_type": _s(d.get(cols.get("asset_type"))),
             # Display string: Investment_Strategy, falling back to Lifecycle —
             # the same precedence one_pager.get_general_information uses.
@@ -412,6 +417,34 @@ def is_sold_as_of(meta: dict, quarter_end: date) -> bool:
     return pd.Timestamp(sd).date() <= quarter_end
 
 
+def is_acquired_as_of(meta: dict, quarter_end: date) -> bool:
+    """Quarter-aware acquisition test — the mirror of ``is_sold_as_of``.
+
+    A deal belongs in a quarter only if it was owned during that quarter, which
+    needs gates at *both* ends: acquired on/before the quarter end AND not sold
+    on/before it. Without this one, a deal that had not closed yet still renders
+    a row, and its Loan-subtab debt is phantom: at 26Q1 Presidential Arms
+    (closed 2026-05-13) carried $98,980,000 of debt against zero equity, because
+    the One Pager's equity block is quarter-filtered while the debt line is not.
+    Citizen Storage (2026-05-20) and Fairview Heights (2026-06-30) were the same
+    shape.
+
+    **Missing date fails OPEN — the deal is kept.** This is deliberately NOT
+    symmetric with ``is_sold_as_of``, and the asymmetry is the point: there,
+    including a disposed deal reports something the investor no longer owns, so
+    the safe default is to exclude; here, excluding would silently drop a deal
+    the investor genuinely holds and understate the portfolio, which is the worse
+    failure. 34 of 110 deals live carry no ``Acquisition_Date`` — almost all of
+    them child properties already removed on ``Property_Count == 0`` — so the
+    fail-open population is small, and every case is counted in
+    ``diagnostics['acquisition_date_missing']`` rather than passing unnoticed.
+    """
+    ad = meta.get("acquisition_date")
+    if ad is None or pd.isna(ad):
+        return True
+    return pd.Timestamp(ad).date() <= quarter_end
+
+
 # ── Entry point ───────────────────────────────────────────────────────────
 
 def resolve_investor_deals(investor_code: str, quarter: str,
@@ -426,9 +459,14 @@ def resolve_investor_deals(investor_code: str, quarter: str,
     yet — verified live: that route returned 2 of TGA25's deals against the
     5 the relationships chain finds.
 
+    Deals are filtered to the quarter's **ownership window** — acquired on or
+    before ``quarter_end`` AND not sold on or before it (``is_acquired_as_of``
+    and ``is_sold_as_of``). Both gates run before fund classification, since a
+    deal outside the window must not count toward an entity's deal tally.
+
     Returns a dict with ``groups`` (group name -> list of deals), plus
-    ``flagged``, ``excluded_sold`` and ``excluded_children`` so nothing is ever
-    dropped silently.
+    ``flagged``, ``excluded_sold``, ``excluded_not_acquired`` and
+    ``excluded_children`` so nothing is ever dropped silently.
     """
     q_end = _quarter_end(quarter)
     graph = _Graph(relationships)
@@ -450,6 +488,8 @@ def resolve_investor_deals(investor_code: str, quarter: str,
     #    or absent entirely (Burton) — if MRI ever populates a real % on a child
     #    edge, the 9 Brainerd buildings would otherwise become report lines.
     excluded_children, excluded_sold, flagged = [], [], []
+    excluded_not_acquired: list[dict] = []
+    acquisition_date_missing: list[dict] = []
     dropped_children: set[str] = set()
 
     def _child(vc: str) -> bool:
@@ -464,10 +504,25 @@ def resolve_investor_deals(investor_code: str, quarter: str,
             dropped_children.add(b["vcode"])
             broken_raw.remove(b)
 
-    # 3. sold exclusion, before classification. A disposed deal must not count
-    #    toward an entity's deal tally or it can promote an SPV to a fund.
+    # 3. ownership window, before classification. Neither end may count toward
+    #    an entity's deal tally or it can promote an SPV to a fund. The full
+    #    test is: acquired on/before quarter_end AND not sold on/before it.
     for vc in list(routes_by_deal):
         m = deals[vc]
+        if pd.isna(m["acquisition_date"]):
+            # Kept (is_acquired_as_of fails open) but recorded, so a deal that
+            # dodged the gate for want of a date is visible rather than assumed.
+            acquisition_date_missing.append(
+                {"vcode": m["vcode"], "name": m["name"]})
+        if not is_acquired_as_of(m, q_end):
+            excluded_not_acquired.append({
+                "vcode": m["vcode"], "name": m["name"],
+                "acquisition_date": (m["acquisition_date"].date()
+                                     if pd.notna(m["acquisition_date"])
+                                     else None),
+                "reason": f"Acquisition_Date > {q_end} — not yet owned"})
+            routes_by_deal.pop(vc)
+            continue
         if is_sold_as_of(m, q_end):
             excluded_sold.append({
                 "vcode": m["vcode"], "name": m["name"],
@@ -534,7 +589,9 @@ def resolve_investor_deals(investor_code: str, quarter: str,
     #    look-through withheld, never a fabricated number.
     for b in broken_raw:
         m = deals[b["vcode"]]
-        if is_sold_as_of(m, q_end):
+        # Same ownership window as the resolvable deals above — a deal outside
+        # it must not surface as an ownership-flagged row either.
+        if is_sold_as_of(m, q_end) or not is_acquired_as_of(m, q_end):
             continue
         flagged.append({
             "vcode": m["vcode"], "name": m["name"], "iid": m["iid"],
@@ -563,11 +620,16 @@ def resolve_investor_deals(investor_code: str, quarter: str,
         "flagged": sorted(flagged, key=lambda f: f["name"].lower()),
         "excluded_sold": sorted(excluded_sold,
                                 key=lambda e: str(e["sale_date"] or "")),
+        "excluded_not_acquired": sorted(
+            excluded_not_acquired,
+            key=lambda e: str(e["acquisition_date"] or "")),
         "excluded_children": sorted(excluded_children,
                                     key=lambda e: e["vcode"]),
         "diagnostics": {
             "deal_count": sum(len(v) for v in ordered.values()),
             "group_count": len(ordered),
+            "excluded_not_acquired_count": len(excluded_not_acquired),
+            "acquisition_date_missing": acquisition_date_missing,
             "fund_entities": sorted(e for e, f in is_fund.items() if f),
             "spv_entities": sorted(e for e, f in is_fund.items() if not f),
         },
@@ -706,11 +768,85 @@ def _selftest():                                    # pragma: no cover
          not any(v in flat for v in
                  ["P0000090", "P0000101", "P0000111"])),
     ]
-    ok = True
     for label, passed in checks:
         print(f"    [{'PASS' if passed else 'FAIL'}] {label}")
+
+    # ---- acquisition-date gate: the ownership window across quarters ----
+    print("\n" + "=" * 92)
+    print("ACQUISITION-DATE GATE — a deal appears only in quarters it was owned")
+    print("=" * 92)
+    NOT_YET = {"P0000119": ("Presidential Arms", "2026-05-13"),
+               "P0000120": ("Citizen Storage Swartz Creek", "2026-05-20"),
+               "P0000117": ("Fairview Heights Retail Center", "2026-06-30")}
+    per_q = {}
+    for q in ("2026-Q1", "2026-Q2", "2026-Q3"):
+        r = resolve_investor_deals("TGAM", q, rel, inv)
+        present = {e["vcode"] for items in r["groups"].values() for e in items}
+        present |= {f["vcode"] for f in r["flagged"]}
+        per_q[q] = (r, present)
+        print(f"\n  {q}  (quarter end {r['quarter_end']})  "
+              f"deals={r['diagnostics']['deal_count']}  "
+              f"flagged={len(r['flagged'])}  "
+              f"not-yet-acquired={r['diagnostics']['excluded_not_acquired_count']}")
+        for e in r["excluded_not_acquired"]:
+            print(f"      DROPPED {e['vcode']} {e['name'][:34]:<36}"
+                  f"acquired {e['acquisition_date']}")
+        for vc, (nm, ad) in sorted(NOT_YET.items()):
+            print(f"      {vc} {nm[:32]:<34}acquired {ad}   "
+                  f"{'IN SET' if vc in present else 'absent'}")
+
+    q1, q1_present = per_q["2026-Q1"]
+    q2, q2_present = per_q["2026-Q2"]
+    q3, q3_present = per_q["2026-Q3"]
+
+    gate_checks = [
+        ("26Q1 drops exactly the 3 not-yet-acquired deals",
+         {e["vcode"] for e in q1["excluded_not_acquired"]} == set(NOT_YET)),
+        ("26Q1 excluded_not_acquired count is exactly 3",
+         q1["diagnostics"]["excluded_not_acquired_count"] == 3),
+        ("none of the 3 appears anywhere in the 26Q1 set",
+         not (set(NOT_YET) & q1_present)),
+        ("all 3 are back in 26Q2 (all closed by 6/30/2026)",
+         set(NOT_YET) <= q2_present),
+        ("all 3 are still present in 26Q3",
+         set(NOT_YET) <= q3_present),
+        ("26Q2 drops none for acquisition date",
+         q2["diagnostics"]["excluded_not_acquired_count"] == 0),
+        # Q1 is Q2's population minus the 3, plus East Manchester, which Q2
+        # excludes as sold on 2026-06-25 but Q1 still held. The gate must not
+        # disturb the sold gate at the other end of the window.
+        ("26Q1 == 26Q2 minus the 3, plus East Manchester (sold in Q2)",
+         q1_present == (q2_present - set(NOT_YET)) | {"P0000017"}),
+        ("East Manchester held in Q1, sold out of Q2",
+         "P0000017" in q1_present
+         and any(e["vcode"] == "P0000017" for e in q2["excluded_sold"])),
+        ("no deal is both excluded-as-sold and excluded-as-not-acquired",
+         not ({e["vcode"] for e in q1["excluded_sold"]}
+              & {e["vcode"] for e in q1["excluded_not_acquired"]})),
+        ("every deal in the 26Q1 set has Acquisition_Date <= quarter end",
+         all(pd.isna(_deal_index(inv)[vc]["acquisition_date"])
+             or _deal_index(inv)[vc]["acquisition_date"].date()
+             <= q1["quarter_end"] for vc in q1_present)),
+        ("fail-open cases are reported, not silent",
+         isinstance(q1["diagnostics"]["acquisition_date_missing"], list)),
+    ]
+    for label, passed in gate_checks:
+        print(f"    [{'PASS' if passed else 'FAIL'}] {label}")
+    checks.extend(gate_checks)
+
+    missing = q1["diagnostics"]["acquisition_date_missing"]
+    print(f"\n  kept despite no Acquisition_Date (fail-open): {len(missing)}")
+    for m in missing:
+        print(f"      {m['vcode']} {m['name']}")
+
+    ok = True
+    for label, passed in checks:
         ok &= bool(passed)
-    print(f"\n  {'ALL CHECKS PASS' if ok else 'SOME CHECKS FAILED'}")
+    print(f"\n  {sum(1 for _, p in checks if p)}/{len(checks)} checks passed")
+    for label, passed in checks:
+        if not passed:
+            print(f"    FAILED: {label}")
+    print(f"  {'ALL CHECKS PASS' if ok else 'SOME CHECKS FAILED'}")
     return 0 if ok else 1
 
 
