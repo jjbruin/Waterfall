@@ -645,15 +645,14 @@ def get_deal_waterfall(deal_id):
 @login_required
 @role_required('admin', 'analyst')
 def build_deal_waterfall(deal_id):
-    """Generate and save waterfall from streamlined inputs.
+    """Generate and save waterfall from independent CF and Cap step inputs.
 
     Body: {
-        investors: [
-            {id: "PSC_PE", name: "PSC Pref Equity", pref_rate: 0.08, share_pct: 0.90, is_pe: true},
-            {id: "OP_PARTNER", name: "Partner", pref_rate: 0, share_pct: 0.10, is_pe: false},
-        ],
-        promote: {enabled: false, pct: 0.20, after_pref: true},
+        cf_steps: [{entity_id, step_type, rate, amount}, ...],
+        cap_steps: [{entity_id, step_type, rate, amount}, ...],
     }
+
+    Also supports legacy format with 'investors' key for backward compat.
     """
     from database import save_waterfall_steps
     from flask_app.services.data_service import get_data_service
@@ -664,75 +663,79 @@ def build_deal_waterfall(deal_id):
 
     vcode = deal_data['deal'].get('vcode') or f"N{deal_id:07d}"
     body = request.json or {}
-    investors = body.get('investors', [])
-    promote = body.get('promote', {})
-
-    if not investors:
-        return jsonify({'error': 'At least one investor required'}), 400
 
     import pandas as pd
     from datetime import date as dt_date
 
-    steps = []
-    order = 10
-
-    for wf_name in ['CF_WF', 'Cap_WF']:
+    def _convert_step_inputs(step_inputs, wf_name):
+        """Convert UI step inputs to waterfall rows."""
+        rows = []
         order = 10
-
-        # 1. Pref steps — each PE investor gets their own iOrder
-        for inv in investors:
-            pref = float(inv.get('pref_rate') or 0)
-            if pref > 0:
-                steps.append({
+        lead_found = False
+        for s in step_inputs:
+            eid = s.get('entity_id', '')
+            stype = s.get('step_type', '')
+            if not eid:
+                continue
+            if stype == 'pref':
+                rate = float(s.get('rate') or 0)
+                rows.append({
                     'vcode': vcode, 'vmisc': wf_name, 'iOrder': order,
-                    'PropCode': inv['id'], 'vState': 'Pref',
-                    'FXRate': 1.0, 'nPercent': pref * 100,
+                    'PropCode': eid, 'vState': 'Pref',
+                    'FXRate': 1.0, 'nPercent': rate,
                     'mAmount': 0, 'vtranstype': 'Preferred Return',
                     'vAmtType': '', 'vNotes': '',
                     'dteffective': dt_date(2020, 1, 1), 'nmisc': 0,
                 })
                 order += 10
-
-        # 2. Capital return (Cap_WF only)
-        if wf_name == 'Cap_WF':
-            for inv in investors:
-                steps.append({
+            elif stype == 'return_of_capital':
+                rows.append({
                     'vcode': vcode, 'vmisc': wf_name, 'iOrder': order,
-                    'PropCode': inv['id'], 'vState': 'Initial',
+                    'PropCode': eid, 'vState': 'Initial',
                     'FXRate': 1.0, 'nPercent': 0, 'mAmount': 0,
                     'vtranstype': 'Return of Capital',
                     'vAmtType': '', 'vNotes': '',
                     'dteffective': dt_date(2020, 1, 1), 'nmisc': 0,
                 })
                 order += 10
-
-        # 3. Residual split — lead (Share) + followers (Tag)
-        # First investor with share > 0 is the lead
-        lead_found = False
-        for inv in investors:
-            share = float(inv.get('share_pct') or 0)
-            if share <= 0:
-                continue
-            if not lead_found:
-                state = 'Share'
+            elif stype == 'residual':
+                share = float(s.get('rate') or 0) / 100
+                state = 'Share' if not lead_found else 'Tag'
                 lead_found = True
-            else:
-                state = 'Tag'
-            steps.append({
-                'vcode': vcode, 'vmisc': wf_name, 'iOrder': order,
-                'PropCode': inv['id'], 'vState': state,
-                'FXRate': share, 'nPercent': 0, 'mAmount': 0,
-                'vtranstype': 'Excess Cash Flow',
-                'vAmtType': '', 'vNotes': '',
-                'dteffective': dt_date(2020, 1, 1), 'nmisc': 0,
-            })
-        order += 10
+                rows.append({
+                    'vcode': vcode, 'vmisc': wf_name, 'iOrder': order,
+                    'PropCode': eid, 'vState': state,
+                    'FXRate': share, 'nPercent': 0, 'mAmount': 0,
+                    'vtranstype': 'Excess Cash Flow',
+                    'vAmtType': '', 'vNotes': '',
+                    'dteffective': dt_date(2020, 1, 1), 'nmisc': 0,
+                })
+                order += 10
+            elif stype == 'fixed_amount':
+                amt = float(s.get('amount') or 0)
+                rows.append({
+                    'vcode': vcode, 'vmisc': wf_name, 'iOrder': order,
+                    'PropCode': eid, 'vState': 'Amt',
+                    'FXRate': 0, 'nPercent': 0, 'mAmount': amt,
+                    'vtranstype': 'Fixed Amount',
+                    'vAmtType': '', 'vNotes': '',
+                    'dteffective': dt_date(2020, 1, 1), 'nmisc': 0,
+                })
+                order += 10
+        return rows
+
+    cf_inputs = body.get('cf_steps', [])
+    cap_inputs = body.get('cap_steps', [])
+
+    if not cf_inputs and not cap_inputs:
+        return jsonify({'error': 'At least one waterfall step required'}), 400
+
+    steps = _convert_step_inputs(cf_inputs, 'CF_WF') + _convert_step_inputs(cap_inputs, 'Cap_WF')
 
     # Save to database
     df = pd.DataFrame(steps)
     try:
         save_waterfall_steps(vcode, df)
-        # Invalidate cache
         try:
             ds = get_data_service()
             if ds:

@@ -40,6 +40,7 @@ interface WfStepInput {
   step_type: 'pref' | 'return_of_capital' | 'residual' | 'fixed_amount'
   rate: number | null
   amount: number | null
+  wf_type?: 'CF_WF' | 'Cap_WF'  // used when sending to backend
 }
 
 interface WfStep {
@@ -137,8 +138,9 @@ const analysisLoading = ref(false)
 const analysisResult = ref<any>(null)
 const analysisError = ref('')
 
-// Waterfall builder
-const wfStepInputs = ref<WfStepInput[]>([])
+// Waterfall builder — independent CF and Cap step lists
+const cfStepInputs = ref<WfStepInput[]>([])
+const capStepInputs = ref<WfStepInput[]>([])
 const wfSteps = ref<WfStep[]>([])
 const wfHasStored = ref(false)
 const wfSaving = ref(false)
@@ -178,9 +180,19 @@ function defaultDebtSources(): SourceItem[] {
   ]
 }
 
-function defaultWfSteps(): WfStepInput[] {
+function defaultCfSteps(): WfStepInput[] {
   return [
     { entity_id: 'PSC_PE', step_type: 'pref', rate: 8.0, amount: null },
+    { entity_id: 'PSC_PE', step_type: 'residual', rate: 90, amount: null },
+    { entity_id: 'OP_PARTNER', step_type: 'residual', rate: 10, amount: null },
+  ]
+}
+
+function defaultCapSteps(): WfStepInput[] {
+  return [
+    { entity_id: 'PSC_PE', step_type: 'pref', rate: 8.0, amount: null },
+    { entity_id: 'PSC_PE', step_type: 'return_of_capital', rate: null, amount: null },
+    { entity_id: 'OP_PARTNER', step_type: 'return_of_capital', rate: null, amount: null },
     { entity_id: 'PSC_PE', step_type: 'residual', rate: 90, amount: null },
     { entity_id: 'OP_PARTNER', step_type: 'residual', rate: 10, amount: null },
   ]
@@ -325,7 +337,7 @@ const entityOptions = computed(() => {
     }
   }
   // Also include entities from existing waterfall steps
-  for (const s of wfStepInputs.value) {
+  for (const s of [...cfStepInputs.value, ...capStepInputs.value]) {
     if (s.entity_id && !seen.has(s.entity_id)) {
       opts.push({ value: s.entity_id, label: s.entity_id })
       seen.add(s.entity_id)
@@ -339,8 +351,14 @@ const entityOptions = computed(() => {
   return opts
 })
 
-const residualPctTotal = computed(() =>
-  wfStepInputs.value
+const cfResidualPct = computed(() =>
+  cfStepInputs.value
+    .filter(s => s.step_type === 'residual')
+    .reduce((sum, s) => sum + (s.rate || 0), 0)
+)
+
+const capResidualPct = computed(() =>
+  capStepInputs.value
     .filter(s => s.step_type === 'residual')
     .reduce((sum, s) => sum + (s.rate || 0), 0)
 )
@@ -424,38 +442,42 @@ function initCapitalBudget(data: any) {
 function initDefaultWfSteps() {
   const ents = entities.value
   if (ents.length) {
-    const steps: WfStepInput[] = []
+    const cfSteps: WfStepInput[] = []
+    const capSteps: WfStepInput[] = []
+    // Pref steps for PE entities
     for (const ent of ents) {
       const id = ent.planned_entity_id || ent.entity_name?.toUpperCase().replace(/\s+/g, '_') || `ENT_${ent.id}`
       const isPe = (ent.role || '').toLowerCase().includes('pe') ||
                    (ent.role || '').toLowerCase().includes('pref') ||
                    (ent.entity_type || '').toLowerCase().includes('pe')
       if (isPe) {
-        steps.push({ entity_id: id, step_type: 'pref', rate: 8.0, amount: null })
+        cfSteps.push({ entity_id: id, step_type: 'pref', rate: 8.0, amount: null })
+        capSteps.push({ entity_id: id, step_type: 'pref', rate: 8.0, amount: null })
       }
     }
+    // Cap_WF gets return of capital for all entities
+    for (const ent of ents) {
+      const id = ent.planned_entity_id || ent.entity_name?.toUpperCase().replace(/\s+/g, '_') || `ENT_${ent.id}`
+      capSteps.push({ entity_id: id, step_type: 'return_of_capital', rate: null, amount: null })
+    }
+    // Residual split for both
     for (const ent of ents) {
       const id = ent.planned_entity_id || ent.entity_name?.toUpperCase().replace(/\s+/g, '_') || `ENT_${ent.id}`
       const share = (ent.ownership_pct || 0) * 100
-      steps.push({ entity_id: id, step_type: 'residual', rate: share || 50, amount: null })
+      cfSteps.push({ entity_id: id, step_type: 'residual', rate: share || 50, amount: null })
+      capSteps.push({ entity_id: id, step_type: 'residual', rate: share || 50, amount: null })
     }
-    wfStepInputs.value = steps.length ? steps : defaultWfSteps()
+    cfStepInputs.value = cfSteps.length ? cfSteps : defaultCfSteps()
+    capStepInputs.value = capSteps.length ? capSteps : defaultCapSteps()
   } else {
-    wfStepInputs.value = defaultWfSteps()
+    cfStepInputs.value = defaultCfSteps()
+    capStepInputs.value = defaultCapSteps()
   }
 }
 
-function loadWfStepsFromStored() {
-  // Derive step inputs from stored waterfall steps
+function _storedToInputs(steps: WfStep[]): WfStepInput[] {
   const inputs: WfStepInput[] = []
-  const seen = new Set<string>()
-  // Only look at CF_WF for simplicity (Cap_WF mirrors it)
-  const cfSteps = wfSteps.value.filter(s => s.vmisc === 'CF_WF')
-  for (const s of cfSteps) {
-    const key = `${s.PropCode}-${s.vState}`
-    if (seen.has(key)) continue
-    seen.add(key)
-
+  for (const s of steps) {
     if (s.vState === 'Pref') {
       const rate = s.nPercent > 1 ? s.nPercent : s.nPercent * 100
       inputs.push({ entity_id: s.PropCode, step_type: 'pref', rate, amount: null })
@@ -467,16 +489,14 @@ function loadWfStepsFromStored() {
       inputs.push({ entity_id: s.PropCode, step_type: 'fixed_amount', rate: null, amount: s.mAmount })
     }
   }
-  // Also check Cap_WF for return_of_capital steps not in CF_WF
-  const capSteps = wfSteps.value.filter(s => s.vmisc === 'Cap_WF' && s.vState === 'Initial')
-  for (const s of capSteps) {
-    const key = `${s.PropCode}-return_of_capital`
-    if (!seen.has(key)) {
-      seen.add(key)
-      inputs.push({ entity_id: s.PropCode, step_type: 'return_of_capital', rate: null, amount: null })
-    }
-  }
-  wfStepInputs.value = inputs.length ? inputs : defaultWfSteps()
+  return inputs
+}
+
+function loadWfStepsFromStored() {
+  const cfStored = wfSteps.value.filter(s => s.vmisc === 'CF_WF')
+  const capStored = wfSteps.value.filter(s => s.vmisc === 'Cap_WF')
+  cfStepInputs.value = cfStored.length ? _storedToInputs(cfStored) : defaultCfSteps()
+  capStepInputs.value = capStored.length ? _storedToInputs(capStored) : defaultCapSteps()
 }
 
 // ---------------------------------------------------------------------------
@@ -538,8 +558,8 @@ function removeEquityLine(idx: number) {
 // Waterfall builder actions
 // ---------------------------------------------------------------------------
 
-function addWfStep() {
-  wfStepInputs.value.push({
+function addWfStep(list: typeof cfStepInputs) {
+  list.value.push({
     entity_id: entityOptions.value[0]?.value || '',
     step_type: 'residual',
     rate: null,
@@ -547,21 +567,40 @@ function addWfStep() {
   })
 }
 
-function removeWfStep(idx: number) {
-  wfStepInputs.value.splice(idx, 1)
+function removeWfStep(list: typeof cfStepInputs, idx: number) {
+  list.value.splice(idx, 1)
 }
 
 function addNewEntity() {
   const name = prompt('Enter Entity ID (e.g., NEWCO_PE):')
   if (!name) return
   const id = name.toUpperCase().replace(/\s+/g, '_')
-  // Add a residual step with this entity
-  wfStepInputs.value.push({
-    entity_id: id,
-    step_type: 'residual',
-    rate: null,
-    amount: null,
-  })
+  // Add a residual step to both waterfalls
+  cfStepInputs.value.push({ entity_id: id, step_type: 'residual', rate: null, amount: null })
+  capStepInputs.value.push({ entity_id: id, step_type: 'residual', rate: null, amount: null })
+}
+
+function copyCfToCap() {
+  // Copy CF steps to Cap, inserting Return of Capital for each entity before the residual split
+  const copied: WfStepInput[] = []
+  const entities = new Set<string>()
+  // First pass: copy prefs and collect entity IDs
+  for (const s of cfStepInputs.value) {
+    copied.push({ ...s })
+    if (s.entity_id) entities.add(s.entity_id)
+  }
+  // Insert Return of Capital steps before residual split
+  const residualIdx = copied.findIndex(s => s.step_type === 'residual')
+  if (residualIdx >= 0) {
+    const rocSteps: WfStepInput[] = []
+    for (const eid of entities) {
+      if (!copied.some(s => s.entity_id === eid && s.step_type === 'return_of_capital')) {
+        rocSteps.push({ entity_id: eid, step_type: 'return_of_capital', rate: null, amount: null })
+      }
+    }
+    copied.splice(residualIdx, 0, ...rocSteps)
+  }
+  capStepInputs.value = copied
 }
 
 // ---------------------------------------------------------------------------
@@ -656,34 +695,12 @@ async function saveAssumptions() {
 // ---------------------------------------------------------------------------
 
 async function buildAndSaveWaterfall() {
-  if (!selectedDealId.value || !wfStepInputs.value.length) return
+  if (!selectedDealId.value || (!cfStepInputs.value.length && !capStepInputs.value.length)) return
   wfSaving.value = true
   try {
-    // Convert step inputs to investor format for the existing backend endpoint
-    const investorMap = new Map<string, any>()
-    for (const step of wfStepInputs.value) {
-      if (!step.entity_id) continue
-      if (!investorMap.has(step.entity_id)) {
-        investorMap.set(step.entity_id, {
-          id: step.entity_id,
-          name: entityOptions.value.find(e => e.value === step.entity_id)?.label || step.entity_id,
-          pref_rate: 0,
-          share_pct: 0,
-          is_pe: false,
-        })
-      }
-      const inv = investorMap.get(step.entity_id)!
-      if (step.step_type === 'pref') {
-        inv.pref_rate = (step.rate || 0) / 100
-        inv.is_pe = true
-      } else if (step.step_type === 'residual') {
-        inv.share_pct = (step.rate || 0) / 100
-      }
-    }
-
     const res = await api.post(`/api/prospects/${selectedDealId.value}/waterfall/build`, {
-      investors: Array.from(investorMap.values()),
-      promote: { enabled: false, pct: 0.20 },
+      cf_steps: cfStepInputs.value.filter(s => s.entity_id),
+      cap_steps: capStepInputs.value.filter(s => s.entity_id),
     })
     wfSteps.value = res.data.steps || []
     wfHasStored.value = true
@@ -1392,73 +1409,127 @@ loadDeals()
 
             <!-- Builder tab -->
             <div v-if="wfTab === 'builder'" class="wf-builder">
-              <table class="budget-table wf-table">
-                <thead>
-                  <tr>
-                    <th class="col-num">#</th>
-                    <th>Entity</th>
-                    <th>Step Type</th>
-                    <th class="r col-rate">Rate / Amount</th>
-                    <th class="col-action"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="(step, i) in wfStepInputs" :key="i">
-                    <td class="col-num">{{ i + 1 }}</td>
-                    <td>
-                      <select v-model="step.entity_id" class="wf-select">
-                        <option value="">— Select —</option>
-                        <option v-for="e in entityOptions" :key="e.value" :value="e.value">
-                          {{ e.label }}
-                        </option>
-                      </select>
-                    </td>
-                    <td>
-                      <select v-model="step.step_type" class="wf-select">
-                        <option v-for="st in STEP_TYPES" :key="st.value" :value="st.value">
-                          {{ st.label }}
-                        </option>
-                      </select>
-                    </td>
-                    <td class="r col-rate">
-                      <template v-if="step.step_type === 'pref'">
-                        <input type="number" v-model.number="step.rate" step="0.25"
-                               class="rate-input" placeholder="8.0" />
-                        <span class="rate-suffix">%</span>
-                      </template>
-                      <template v-else-if="step.step_type === 'residual'">
-                        <input type="number" v-model.number="step.rate" step="1"
-                               class="rate-input" placeholder="90" />
-                        <span class="rate-suffix">%</span>
-                      </template>
-                      <template v-else-if="step.step_type === 'fixed_amount'">
-                        <span class="rate-suffix">$</span>
-                        <input type="number" v-model.number="step.amount" step="1000"
-                               class="rate-input" placeholder="0" />
-                      </template>
-                      <template v-else>
-                        <span class="muted">—</span>
-                      </template>
-                    </td>
-                    <td class="col-action">
-                      <button class="btn-icon btn-danger btn-xs" @click="removeWfStep(i)">&times;</button>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-
-              <div class="wf-add-row">
-                <button class="btn-sm btn-secondary" @click="addWfStep">+ Add Step</button>
-                <button class="btn-sm btn-secondary" @click="addNewEntity">+ New Entity</button>
+              <!-- CF Waterfall Builder -->
+              <div class="wf-builder-section">
+                <div class="wf-builder-header">
+                  <h5>Cash Flow Waterfall (CF_WF)</h5>
+                  <span class="wf-type-desc">Operating distributions — does NOT reduce capital outstanding</span>
+                </div>
+                <table class="budget-table wf-table">
+                  <thead>
+                    <tr>
+                      <th class="col-num">#</th>
+                      <th>Entity</th>
+                      <th>Step Type</th>
+                      <th class="r col-rate">Rate / Amount</th>
+                      <th class="col-action"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(step, i) in cfStepInputs" :key="'cf-'+i">
+                      <td class="col-num">{{ i + 1 }}</td>
+                      <td>
+                        <select v-model="step.entity_id" class="wf-select">
+                          <option value="">— Select —</option>
+                          <option v-for="e in entityOptions" :key="e.value" :value="e.value">{{ e.label }}</option>
+                        </select>
+                      </td>
+                      <td>
+                        <select v-model="step.step_type" class="wf-select">
+                          <option v-for="st in STEP_TYPES" :key="st.value" :value="st.value">{{ st.label }}</option>
+                        </select>
+                      </td>
+                      <td class="r col-rate">
+                        <template v-if="step.step_type === 'pref'">
+                          <input type="number" v-model.number="step.rate" step="0.25" class="rate-input" placeholder="8.0" /><span class="rate-suffix">%</span>
+                        </template>
+                        <template v-else-if="step.step_type === 'residual'">
+                          <input type="number" v-model.number="step.rate" step="1" class="rate-input" placeholder="90" /><span class="rate-suffix">%</span>
+                        </template>
+                        <template v-else-if="step.step_type === 'fixed_amount'">
+                          <span class="rate-suffix">$</span><input type="number" v-model.number="step.amount" step="1000" class="rate-input" placeholder="0" />
+                        </template>
+                        <template v-else><span class="muted">—</span></template>
+                      </td>
+                      <td class="col-action">
+                        <button class="btn-icon btn-danger btn-xs" @click="removeWfStep(cfStepInputs, i)">&times;</button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div class="wf-add-row">
+                  <button class="btn-sm btn-secondary" @click="addWfStep(cfStepInputs)">+ Add Step</button>
+                </div>
+                <div v-if="cfResidualPct > 0 && Math.abs(cfResidualPct - 100) > 0.5" class="wf-warning">
+                  CF split shares sum to {{ cfResidualPct.toFixed(1) }}% (should be 100%)
+                </div>
               </div>
 
-              <div v-if="residualPctTotal > 0 && Math.abs(residualPctTotal - 100) > 0.5" class="wf-warning">
-                Cash Flow Split shares sum to {{ residualPctTotal.toFixed(1) }}% (should be 100%)
+              <!-- Cap Waterfall Builder -->
+              <div class="wf-builder-section">
+                <div class="wf-builder-header">
+                  <h5>Capital Event Waterfall (Cap_WF)</h5>
+                  <span class="wf-type-desc">Refi / sale proceeds — DOES reduce capital outstanding</span>
+                  <button class="btn-xs btn-link" @click="copyCfToCap" title="Copy CF steps and add Return of Capital">Copy from CF</button>
+                </div>
+                <table class="budget-table wf-table">
+                  <thead>
+                    <tr>
+                      <th class="col-num">#</th>
+                      <th>Entity</th>
+                      <th>Step Type</th>
+                      <th class="r col-rate">Rate / Amount</th>
+                      <th class="col-action"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(step, i) in capStepInputs" :key="'cap-'+i">
+                      <td class="col-num">{{ i + 1 }}</td>
+                      <td>
+                        <select v-model="step.entity_id" class="wf-select">
+                          <option value="">— Select —</option>
+                          <option v-for="e in entityOptions" :key="e.value" :value="e.value">{{ e.label }}</option>
+                        </select>
+                      </td>
+                      <td>
+                        <select v-model="step.step_type" class="wf-select">
+                          <option v-for="st in STEP_TYPES" :key="st.value" :value="st.value">{{ st.label }}</option>
+                        </select>
+                      </td>
+                      <td class="r col-rate">
+                        <template v-if="step.step_type === 'pref'">
+                          <input type="number" v-model.number="step.rate" step="0.25" class="rate-input" placeholder="8.0" /><span class="rate-suffix">%</span>
+                        </template>
+                        <template v-else-if="step.step_type === 'residual'">
+                          <input type="number" v-model.number="step.rate" step="1" class="rate-input" placeholder="90" /><span class="rate-suffix">%</span>
+                        </template>
+                        <template v-else-if="step.step_type === 'fixed_amount'">
+                          <span class="rate-suffix">$</span><input type="number" v-model.number="step.amount" step="1000" class="rate-input" placeholder="0" />
+                        </template>
+                        <template v-else><span class="muted">—</span></template>
+                      </td>
+                      <td class="col-action">
+                        <button class="btn-icon btn-danger btn-xs" @click="removeWfStep(capStepInputs, i)">&times;</button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div class="wf-add-row">
+                  <button class="btn-sm btn-secondary" @click="addWfStep(capStepInputs)">+ Add Step</button>
+                </div>
+                <div v-if="capResidualPct > 0 && Math.abs(capResidualPct - 100) > 0.5" class="wf-warning">
+                  Cap split shares sum to {{ capResidualPct.toFixed(1) }}% (should be 100%)
+                </div>
+              </div>
+
+              <!-- Shared actions -->
+              <div class="wf-add-row" style="margin-top: 4px;">
+                <button class="btn-sm btn-secondary" @click="addNewEntity">+ New Entity (both)</button>
               </div>
 
               <div class="wf-actions">
                 <button class="btn-primary" @click="buildAndSaveWaterfall"
-                        :disabled="wfSaving || !wfStepInputs.length">
+                        :disabled="wfSaving || (!cfStepInputs.length && !capStepInputs.length)">
                   {{ wfSaving ? 'Saving...' : (wfHasStored ? 'Rebuild & Save' : 'Build & Save Waterfall') }}
                 </button>
                 <button v-if="wfHasStored" class="btn-danger-text" @click="deleteWaterfall">
@@ -1934,6 +2005,9 @@ loadDeals()
 .wf-actions { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
 
 .wf-type-section { margin-bottom: 16px; border: 1px solid #e0e0e0; border-radius: 6px; padding: 10px; background: #fafafa; }
+.wf-builder-section { margin-bottom: 14px; border: 1px solid #e0e0e0; border-radius: 6px; padding: 10px; background: #fafafa; }
+.wf-builder-header { margin-bottom: 6px; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.wf-builder-header h5 { font-size: 13px; font-weight: 700; margin: 0; color: #333; }
 .wf-type-header { margin-bottom: 6px; }
 .wf-type-header h5 { font-size: 13px; font-weight: 700; margin: 0; color: #333; }
 .wf-type-desc { font-size: 11px; color: #777; }
