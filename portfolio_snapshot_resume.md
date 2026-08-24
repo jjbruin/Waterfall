@@ -199,6 +199,101 @@ Step 2's existing save/approval path. Both load blank with
 
 ---
 
+## Step 8 (guardrails) — landed
+
+`flask_app/services/portfolio_snapshot_guardrails.py`, self-test **22/22**, all
+negative tests (each detector must fire on injected bad data). Wired into
+`GET /bundle` as an advisory `guardrails` block — a finding never blanks a metric
+or fails the page, so one bad deal cannot hide the whole report. Severities:
+`error` = a figure is wrong or a missing value renders as real; `warn` = needs a
+human; `info` = a count worth surfacing.
+
+**Live 26Q1 result: 0 errors, 0 warnings, 3 info.** The page is clean.
+
+### The one real leak found and FIXED
+
+`_rollup` in the Summary assembly initialised its accumulators at `0.0` and only
+ever added, so **a bucket where every deal was missing reported `0.0`, not
+`None`** — and `0.00` is indistinguishable from a genuine zero once formatted.
+Its own docstring claimed the opposite. Fixed by tracking whether any deal
+contributed, matching what Financial's `_subtotal` already did
+(`sum(vals) if vals else None`). `check_aggregate_integrity` now guards both.
+
+### The leak that is NOT ours to fix — detected instead
+
+**`one_pager.py` initialises every `cap_stack` money field to `0.0`, not `None`**
+(`debt`, `pref_equity`, `ptr_equity`, `total_cap`, `committed_pe`, …). A deal the
+One Pager has no data for therefore returns `0.0`, which formats to "0.00" and
+reads as a real figure. That contract is shared with other tabs, so
+`detect_empty_cap_stack` flags the condition rather than changing it: a *single*
+zero can be genuine (Citizen Storage really had $0 pref at 26Q1, pre-closing),
+but an **entire** Zone A of zeros means no data. Live 26Q1: no deal trips it.
+
+### Missing-data audit — the `zero` column is the dangerous one
+
+| subtab | field | real | zero | missing |
+|---|---|---|---|---|
+| financial | debt | 31 | **1** (Pegasus) | 0 |
+| financial | ptr_equity | 31 | **1** (Jefferson Stephens) | 0 |
+| financial | unfunded | 0 | **32** | 0 |
+| financial | total_pref / total_cap / invested / total_commitment | 32 | 0 | 0 |
+| loan | debt | 31 | 0 | 1 |
+| loan | valuation | 28 | 0 | 4 |
+| loan | ltv | 20 | 0 | 12 |
+| loan | ytd_dscr | 18 | 0 | 14 |
+| operating | expected / actual growth | 23 | 0 | 9 |
+
+**`unfunded` is 0 on all 32 deals** — a real number that means nothing. It is the
+direct consequence of `COMMITMENT_BASIS = "funded"`, which makes Total Commitment
+identically equal to Invested. It renders as "0.00" everywhere and a reader
+cannot tell it from a computed zero. **This is the one remaining place bad data
+can pass as real**, and it is a pending creator decision, not a bug.
+(`loan.debt_yield` shows missing on all 32 only because the self-test stubs the
+quarterly-NOI provider; in the app it is populated.)
+
+### 45th & Main is FIXED in MRI — and it moved the PDF tie
+
+Live build changed mid-build from `09fe220ae0da` to **`f7692533e77c`**. The PMX
+`IA_Relationship` row was corrected, so 45th & Main now resolves at **90.0% into
+TGA24** via `TGAM → TGA24 → PPI45M → 45MAIN`. **Zero deals are ownership-flagged.**
+That closes the long-standing blocker.
+
+Consequence: the Summary funded total is now **402.10M vs the PDF's 404.2M
+(−0.52%)**, where the assumed-100% variant used to give 403.95M (−0.06%). The
+1.855M gap is exactly 10% of the deal's 18,550,000 funded pref — **the PDF was
+built with 45th & Main at 100% while MRI now says 90%.** Which is right is a
+creator/data question. The self-test check is left **knowingly red** and
+self-explaining rather than having its tolerance widened, because widening it
+would hide a $2.1M discrepancy. Same precedent as the Nottingham LTV check.
+
+**Four self-tests had hardcoded 45th & Main as flagged and silently disarmed
+themselves when it resolved.** All four were rewritten to assert the *property*
+(a flagged deal is absent from `groups`; flagged deals withhold Zone B) rather
+than the *identity*, so they survive the data changing. The Step 8 self-test
+itself hit the same trap during the build and is now fully synthetic for exactly
+this reason.
+
+### Self-test status after Step 8
+
+| module | result | remaining failures |
+|---|---|---|
+| service (Step 1) | **ALL PASS** | — |
+| financial (5a) | **28/28** | — |
+| guardrails (8) | **22/22** | — |
+| loan (4a) | 45/46 | Nottingham LTV debt vintage (known) |
+| summary (6a) | 40/43 | 45th & Main 90-vs-100 (new, above) + Multifamily/Self-Storage ~1pp (known) |
+
+### Isolation re-verified after Step 7 wiring
+
+Shared files touched vs `main`: **4 files, 14 insertions, 2 deletions** —
+`database.py` (Step 2 `PROTECTED_TABLES`), `flask_app/__init__.py`,
+`vue_app/src/router/index.ts`, `AppSidebar.vue`. All additive. App starts, 244
+routes. A snapshot failure cannot take the app down: the guardrail block is
+wrapped, `run_guardrails` catches per-check exceptions and reports them as
+findings, and `_data_or_error()` turns a data-load failure into a clean 503.
+
+---
+
 ## Open creator / data items
 
 ### RESOLVED — the strategy field. `Lifecycle` IS the strategy field.

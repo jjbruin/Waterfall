@@ -329,7 +329,47 @@ def bundle():
         "excluded_children": resolved.get("excluded_children"),
     }
     out["review"] = _review_payload(investor, quarter)
+
+    # Step 8 guardrails. Advisory only — a finding never blanks a metric or
+    # fails the page, so a bad deal cannot hide the whole report.
+    try:
+        from flask_app.services.portfolio_snapshot_guardrails import run_guardrails
+        out["guardrails"] = run_guardrails(
+            resolved, out["subtabs"],
+            pe_cap_comments=_pe_cap_comments(data, quarter),
+        )
+    except Exception as exc:
+        out["guardrails"] = {"error": str(exc), "findings": [], "ok": None}
+
     return jsonify(safe_json(out))
+
+
+def _pe_cap_comments(data: dict, quarter: str) -> dict:
+    """vcode -> pe_cap_comment, for the pref-equity cross-check.
+
+    Read-only reuse of the One Pager's own comment store. Failure is non-fatal:
+    the cross-check reports that it could not run rather than passing silently.
+    """
+    try:
+        from one_pager import get_one_pager_comments
+    except Exception:
+        return {}
+    out: dict = {}
+    inv = data.get("inv")
+    if inv is None or getattr(inv, "empty", True):
+        return out
+    col = next((c for c in inv.columns if c.lower() == "vcode"), None)
+    if not col:
+        return out
+    for vcode in inv[col].dropna().astype(str).str.strip():
+        try:
+            row = get_one_pager_comments(vcode, quarter) or {}
+        except Exception:
+            continue
+        txt = row.get("pe_cap_comment")
+        if txt:
+            out[vcode] = txt
+    return out
 
 
 # ── editable elements ─────────────────────────────────────────────────────

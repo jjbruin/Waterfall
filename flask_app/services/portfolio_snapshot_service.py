@@ -732,9 +732,15 @@ def _selftest():                                    # pragma: no cover
          abs(flat.get("P0000030", {}).get("pct_display", 0) - 41.2124) < 0.001),
         ("Nottingham in Individual Investments",
          flat.get("P0000030", {}).get("group") == INDIVIDUAL_GROUP),
-        ("45th & Main flagged, not grouped",
-         any(f["vcode"] == "P0000089" for f in res["flagged"])
-         and "P0000089" not in flat),
+        # Property, not identity. 45th & Main was the only flagged deal until
+        # its PMX IA_Relationship row was fixed live (2026-08-24), after which
+        # it resolves at 90% into TGA24 and this check had nothing to assert.
+        # A flagged deal must be absent from `groups`; with none flagged the
+        # invariant holds trivially.
+        ("no flagged deal also appears as a grouped deal",
+         all(f["vcode"] not in flat for f in res["flagged"])),
+        ("flagged deals withhold their look-through %",
+         all(f.get("lookthrough_pct") is None for f in res["flagged"])),
         ("Pegasus in Individual Investments",
          flat.get("P0000066", {}).get("group") == INDIVIDUAL_GROUP),
         ("Pegasus = 83.367% across both routes",

@@ -728,8 +728,9 @@ def _selftest():                                    # pragma: no cover
     print("STRUCTURE CHECKS")
     chk("groups present", len(out["groups"]) >= 5)
     chk("no scaling on loan metrics", out["scaled"] is False)
-    chk("45th & Main still appears", any(
-        r["vcode"] == "P0000089" for r in out["ownership_flagged"]))
+    # Property, not identity — see the note in portfolio_snapshot_service.
+    chk("ownership-flagged deals still appear with deal-level figures",
+        len(out["ownership_flagged"]) == len(resolved["flagged"]))
     chk("Giant 7 loan comment attached",
         (flat.get("P0000019") or {}).get("loan_comment", "").startswith("Fixed"))
     chk("Camp Creek loan comment attached",

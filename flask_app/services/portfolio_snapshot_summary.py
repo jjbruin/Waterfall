@@ -240,6 +240,12 @@ def _rollup(contribs: list, key: str, order: Optional[tuple] = None) -> dict:
         b = buckets.setdefault(c[key], {
             "label": c[key], "funded": 0.0, "committed": 0.0,
             "deal_count": 0, "funded_missing": 0, "committed_missing": 0,
+            # Tracks whether ANY deal contributed a real number. Without it an
+            # all-missing bucket would report 0.0 — indistinguishable from a
+            # genuine zero once formatted — because the accumulator starts at
+            # 0.0 and only ever adds. Financial's `_subtotal` gets this right
+            # via `sum(vals) if vals else None`; this is the same rule.
+            "_funded_any": False, "_committed_any": False,
             "deals": [],
         })
         b["deal_count"] += 1
@@ -247,32 +253,47 @@ def _rollup(contribs: list, key: str, order: Optional[tuple] = None) -> dict:
             b["funded_missing"] += 1
         else:
             b["funded"] += c["funded"]
+            b["_funded_any"] = True
         if c["committed"] is None:
             b["committed_missing"] += 1
         else:
             b["committed"] += c["committed"]
+            b["_committed_any"] = True
         b["deals"].append({
             "vcode": c["vcode"], "name": c["name"],
             "funded": c["funded"], "committed": c["committed"],
             "lookthrough_pct": c.get("lookthrough_pct"),
         })
 
-    total_funded = sum(b["funded"] for b in buckets.values())
-    total_committed = sum(b["committed"] for b in buckets.values())
+    # Collapse an all-missing bucket to None before anything sums it.
+    for b in buckets.values():
+        if not b.pop("_funded_any"):
+            b["funded"] = None
+        if not b.pop("_committed_any"):
+            b["committed"] = None
+
+    f_vals = [b["funded"] for b in buckets.values() if b["funded"] is not None]
+    c_vals = [b["committed"] for b in buckets.values() if b["committed"] is not None]
+    total_funded = sum(f_vals) if f_vals else None
+    total_committed = sum(c_vals) if c_vals else None
 
     for b in buckets.values():
-        b["funded_pct"] = (b["funded"] / total_funded) if total_funded else None
+        b["funded_pct"] = ((b["funded"] / total_funded)
+                           if (b["funded"] is not None and total_funded) else None)
         b["committed_pct"] = ((b["committed"] / total_committed)
-                              if total_committed else None)
+                              if (b["committed"] is not None and total_committed)
+                              else None)
         b["deals"].sort(key=lambda d: -(d["funded"] or 0))
 
     if order:
         ranked = sorted(buckets.values(),
                         key=lambda b: (order.index(b["label"])
                                        if b["label"] in order else len(order),
-                                       -b["funded"]))
+                                       -(b["funded"] or 0)))
     else:
-        ranked = sorted(buckets.values(), key=lambda b: -b["funded"])
+        # `or 0` only for ordering — an all-missing bucket sorts last but keeps
+        # its None value; it must never be coerced to 0 in the payload.
+        ranked = sorted(buckets.values(), key=lambda b: -(b["funded"] or 0))
 
     return {
         "buckets": ranked,
@@ -603,9 +624,19 @@ def _selftest():                                    # pragma: no cover
 
     chk("look-through basis is far closer to the PDF than full deal-level",
         abs(lt_incl - _PDF["funded_total"]) < abs(fu - _PDF["funded_total"]))
-    chk("look-through funded (with the flagged deal at 100%) within 0.5% of "
-        "the PDF's $404.2M",
-        abs(lt_incl - _PDF["funded_total"]) / _PDF["funded_total"] < 0.005)
+    # The PDF tie. KNOWINGLY RED as of 2026-08-24, and the failure is the
+    # finding: MRI fixed 45th & Main's PMX ownership edges, so it now resolves
+    # at 90% into TGA24 instead of being ownership-flagged. That gives 402.10M
+    # vs the PDF's 404.2M (-0.52%). The 1.855M gap is exactly 10% of the deal's
+    # 18,550,000 funded pref, i.e. **the PDF was built with 45th & Main at 100%
+    # while MRI now says 90%.** Which is right is a data question for the
+    # creator — do not widen this tolerance to make it green, that would hide a
+    # $2.1M discrepancy. Same precedent as the Nottingham LTV check on the Loan
+    # subtab, which is red for an equivalent reason.
+    chk("look-through funded ties the PDF's $404.2M within 0.5% "
+        "[KNOWN RED: 45th & Main is 90% in MRI, 100% in the PDF, worth 1.855M]",
+        min(abs(lt - _PDF["funded_total"]),
+            abs(lt_incl - _PDF["funded_total"])) / _PDF["funded_total"] < 0.005)
     chk("full deal-level is >25% off the PDF (so it is not the basis)",
         abs(fu - _PDF["funded_total"]) / _PDF["funded_total"] > 0.25)
     chk("basis in use is 'lookthrough'", out["basis"] == "lookthrough")
@@ -756,8 +787,11 @@ def _selftest():                                    # pragma: no cover
             - out["deal_type_allocation"]["total_funded"]) < 1e-6)
     chk("ownership-flagged deal is reported, not silently dropped",
         len(out["ownership_flagged"]) == len(resolved["flagged"]))
-    chk("flagged deal is excluded from the look-through total",
-        abs(lt_incl - lt) > 1e6)
+    # Only meaningful while some deal is ownership-flagged; with none flagged
+    # the assumed-pct path is a no-op and the two totals are equal by
+    # definition. See the note in portfolio_snapshot_service.
+    chk("assuming a pct for flagged deals changes the total iff any are flagged",
+        (abs(lt_incl - lt) > 1e6) if resolved["flagged"] else (abs(lt_incl - lt) < 1e-6))
 
     # funded here must equal `invested` on the Financial subtab: same
     # cap_stack.pref_equity through the same look-through %.

@@ -519,8 +519,9 @@ def _selftest():                                    # pragma: no cover
         all(x["itd_display"] == PENDING for x in flat.values()))
     chk("manual columns are None underneath, not 0",
         all(x["net_roe"] is None and x["itd"] is None for x in flat.values()))
-    chk("45th & Main present, Zone B withheld",
-        any(x["vcode"] == "P0000089" and x["pct_of_pref"] is None
+    # Property, not identity — see the note in portfolio_snapshot_service.
+    chk("every ownership-flagged deal withholds Zone B",
+        all(x["pct_of_pref"] is None and x["invested"] is None
             for x in out["ownership_flagged"]))
     chk("2 footnotes carried, numbered 1..2",
         [f_["number"] for f_ in out["footnotes"]] == [1, 2])
