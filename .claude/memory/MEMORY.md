@@ -14,6 +14,7 @@
 - [ai_assistant_roadmap.md](ai_assistant_roadmap.md) — AI assistant enhancement plan (15 items, prioritized)
 - [vpn_tunnel_handoff.md](vpn_tunnel_handoff.md) — VPN tunnel to MRI: P1 DH21 negotiation issue, call scheduled Jun 23
 - [new_business_pipeline.md](new_business_pipeline.md) — New Business pipeline: prospect deals, properties, entities, lease review integration
+- [portfolio_snapshot_perf.md](portfolio_snapshot_perf.md) — Portfolio Snapshot performance: 3 optimizations pending Charlene's confirmation
 
 ## Project Overview
 - Flask + Vue application for real estate investment waterfall calculations
