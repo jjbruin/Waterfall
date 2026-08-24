@@ -577,6 +577,11 @@ def _review_payload(investor: str, quarter: str) -> dict:
                         and 1 <= step <= 4 and may(acting_role)),
         "can_return": (status not in ("draft", "returned", "approved")
                        and may(acting_role)),
+        # Only an approved page can be reopened, and only by a REOPEN_ROLES
+        # holder. Distinct from can_return, which applies mid-review.
+        "can_reopen": (status == "approved"
+                       and any(may(r) for r in P.REOPEN_ROLES)),
+        "reopen_roles": list(P.REOPEN_ROLES),
     })
     return doc
 
@@ -599,6 +604,12 @@ def _transition(action: str):
             P.approve(investor, quarter, user_id, username, roles)
         elif action == "return":
             P.reject(investor, quarter, user_id, username,
+                     note_text=(body.get("note") or ""), roles=roles)
+        elif action == "reopen":
+            # Unwinds a COMPLETED approval, which `return` cannot do — at the
+            # approved step the pipeline's role is None. Separate action because
+            # it carries different authority; see persistence.REOPEN_ROLES.
+            P.reopen(investor, quarter, user_id, username,
                      note_text=(body.get("note") or ""), roles=roles)
     except PermissionError as exc:
         return jsonify({"error": str(exc)}), 403
@@ -625,3 +636,15 @@ def approve():
 @login_required
 def return_to_draft():
     return _transition("return")
+
+
+@portfolio_snapshot_bp.route("/reopen", methods=["POST"])
+@login_required
+def reopen():
+    """Reopen an APPROVED page so it can be corrected.
+
+    Note required. The frozen payload is left in place — it stops being served
+    the moment the status is no longer 'approved', and the next approval
+    overwrites it.
+    """
+    return _transition("reopen")

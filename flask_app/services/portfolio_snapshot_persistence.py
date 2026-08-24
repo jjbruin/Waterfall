@@ -510,8 +510,23 @@ def reject(investor_code: str, quarter: str, user_id: int, username: str,
     return document_status(investor_code, quarter)
 
 
-#: Roles permitted to reopen an already-approved page. The CEO is the approver
-#: at the final step, so unwinding their own approval is theirs to do.
+#: Roles permitted to reopen an already-approved page.
+#:
+#: DERIVED FROM THE ONE PAGER'S RULE, not chosen. Checked 2026-08-24: the One
+#: Pager has **no reopen path at all** — no reopen/unwind/revert/unapprove
+#: function in ``review_service``, and no ``/reopen`` route in ``reviews.py``.
+#: Its ``REVIEW_STEPS[5]`` is ``{'role': None, 'status': 'approved'}``, exactly
+#: like ``SNAPSHOT_STEPS[5]``, so its ``return_to_draft`` hits the identical wall
+#: at step 5 and raises the same "You need the 'None' role" error. Once a One
+#: Pager is CEO-approved it is locked permanently.
+#:
+#: There is therefore no mechanism to copy. What the One Pager does supply is the
+#: *principle* its ``return_to_draft`` encodes: **the role at the step being
+#: reversed is the role that may reverse it.** The step being reversed here is
+#: the final approval, performed by the CEO moving step 4 -> 5. Hence ("ceo",).
+#:
+#: Change this only with a creator decision; it is the one authority rule in the
+#: pipeline that has no direct precedent in the One Pager.
 REOPEN_ROLES = ("ceo",)
 
 
@@ -525,10 +540,19 @@ def reopen(investor_code: str, quarter: str, user_id: int, username: str,
     no route back. Without this there is no way to correct an approved report,
     and therefore no way to reach the re-approval that replaces a frozen payload.
 
+    **The One Pager has this same hole and never filled it** — it has no reopen
+    path, so an approved One Pager is locked for good. This is deliberately a new
+    capability rather than a copied one; see ``REOPEN_ROLES`` for where its
+    authority rule comes from.
+
     Deliberately a separate function rather than a relaxation of ``reject()``:
     returning a page mid-review and unwinding a completed approval are different
     acts with different authority, and collapsing them would let any reviewer
     reverse a CEO sign-off.
+
+    The transition itself mirrors ``review_service.return_to_draft`` exactly —
+    status ``returned``, step 0, ``returned_to_step`` set to the step left behind,
+    note required.
 
     The frozen payload is left in place. It becomes unreachable the moment the
     status stops being ``approved`` (the read path keys on that), and the next

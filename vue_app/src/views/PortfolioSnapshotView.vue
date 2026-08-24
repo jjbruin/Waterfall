@@ -156,24 +156,50 @@ async function refreshReview() {
 
 const returnNote = ref('')
 const showReturn = ref(false)
+const reopenNote = ref('')
+const showReopen = ref(false)
 
-async function transition(action: 'submit' | 'approve' | 'return') {
+type Action = 'submit' | 'approve' | 'return' | 'reopen'
+
+const ACTION_LABEL: Record<Action, string> = {
+  submit: 'Submitted', approve: 'Approved',
+  return: 'Returned', reopen: 'Reopened',
+}
+
+async function transition(action: Action) {
   const body: any = { ...ctx() }
-  if (action === 'return') {
-    if (!returnNote.value.trim()) {
-      saveError.value = 'A note is required to return the snapshot.'
+  // Both backward actions require a note, matching the backend's own rule.
+  if (action === 'return' || action === 'reopen') {
+    const note = action === 'return' ? returnNote.value : reopenNote.value
+    if (!note.trim()) {
+      saveError.value = `A note is required to ${action} the snapshot.`
       return
     }
-    body.note = returnNote.value
+    body.note = note
   }
   await withSave(async () => {
     const res = await api.post(`${BASE}/${action}`, body)
     review.value = res.data.review || null
     showReturn.value = false
+    showReopen.value = false
     returnNote.value = ''
+    reopenNote.value = ''
+    // Reload: reopening an approved report switches the payload from frozen
+    // back to live, so the body must be refetched, not just the status.
     await load()
-  }, action === 'submit' ? 'Submitted' : action === 'approve' ? 'Approved' : 'Returned')
+  }, ACTION_LABEL[action])
 }
+
+// --- frozen vs live ---
+const isFrozen = computed(() => bundle.value?.source === 'frozen')
+const sourceNote = computed(() => bundle.value?.source_note || '')
+
+const approvedAsOf = computed(() => {
+  const raw = bundle.value?.approved_at
+  if (!raw) return ''
+  const m = String(raw).match(/^(\d{4})-(\d{2})-(\d{2})/)
+  return m ? `${parseInt(m[2])}/${parseInt(m[3])}/${m[1]}` : String(raw).slice(0, 10)
+})
 
 const statusColor = computed(() => {
   switch (review.value?.status) {
@@ -229,7 +255,11 @@ const statusColor = computed(() => {
       <button v-if="review.can_submit" class="btn-sm primary" @click="transition('submit')">Submit for review</button>
       <button v-if="review.can_approve" class="btn-sm primary" @click="transition('approve')">Approve</button>
       <button v-if="review.can_return" class="btn-sm" @click="showReturn = !showReturn">Return</button>
-      <span v-if="!review.can_submit && !review.can_approve && !review.can_return"
+      <button v-if="review.can_reopen" class="btn-sm warn" @click="showReopen = !showReopen"
+              :title="`Unwind the approval so the report can be corrected (${(review.reopen_roles || []).join(', ')})`">
+        Reopen
+      </button>
+      <span v-if="!review.can_submit && !review.can_approve && !review.can_return && !review.can_reopen"
             class="review-meta">no action available for your role</span>
     </div>
 
@@ -239,8 +269,30 @@ const statusColor = computed(() => {
       <button class="btn-sm" @click="showReturn = false">Cancel</button>
     </div>
 
+    <div v-if="showReopen" class="return-form">
+      <input v-model="reopenNote" placeholder="Reason for reopening this approved report (required)" />
+      <button class="btn-sm warn" @click="transition('reopen')">Confirm reopen</button>
+      <button class="btn-sm" @click="showReopen = false">Cancel</button>
+    </div>
+
     <p v-if="saveError" class="banner err">{{ saveError }}</p>
     <p v-if="loadError" class="banner err">{{ loadError }}</p>
+
+    <!-- Frozen vs live. An approved report serves the payload frozen at
+         approval, so the reader must never be left guessing which they have. -->
+    <div v-if="bundle && isFrozen" class="banner frozen">
+      <strong>Approved version{{ approvedAsOf ? ` — as of ${approvedAsOf}` : '' }}</strong>
+      <span>
+        Frozen at approval and not recomputed, so it cannot shift if MRI data
+        changes.
+        <template v-if="bundle.approved_by">Approved by {{ bundle.approved_by }}.</template>
+      </span>
+      <span v-if="bundle.data_version" class="banner-meta">{{ bundle.data_version }}</span>
+    </div>
+    <div v-else-if="bundle" class="banner live">
+      <strong>Live data</strong>
+      <span>{{ sourceNote || 'In progress — computed from current data and will change as data changes.' }}</span>
+    </div>
 
     <!-- Population diagnostics -->
     <details v-if="resolution" class="diag">
@@ -438,6 +490,38 @@ h2 { font-size: 20px; margin: 0 0 12px 0; }
   margin: 0 0 10px 0;
 }
 .banner.err { background: #fdecea; border: 1px solid #f5c6cb; color: #a12622; }
+
+/* Frozen / live indicator */
+.banner.frozen, .banner.live {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+.banner.frozen {
+  background: #e8f5e9;
+  border: 1px solid #a5d6a7;
+  color: #1b5e20;
+}
+.banner.live {
+  background: #f8f9fa;
+  border: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+}
+.banner-meta {
+  margin-left: auto;
+  font-size: 10px;
+  opacity: 0.75;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.btn-sm.warn {
+  background: #fff8e1;
+  border-color: #ffcc80;
+  color: #8a4b00;
+}
+.btn-sm.warn:hover { background: #ffecb3; }
 
 /* --- diagnostics --- */
 .diag {
