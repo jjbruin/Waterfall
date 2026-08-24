@@ -393,7 +393,7 @@ const equityWaterfallSummary = computed(() => {
 
   // Collect all cashflow details across partners
   const partners: string[] = []
-  const partnerCfs: Record<string, Array<{ date: string, amount: number, desc: string }>> = {}
+  const partnerCfs: Record<string, Array<{ date: string, amount: number, desc: string, source: string }>> = {}
   for (const p of pr) {
     const pid = p.partner || p.investor_id
     if (!pid) continue
@@ -402,6 +402,7 @@ const equityWaterfallSummary = computed(() => {
       date: typeof d.Date === 'string' ? d.Date : String(d.Date),
       amount: d.Amount || 0,
       desc: d.Description || '',
+      source: d.Source || '',
     }))
   }
   if (!partners.length) return null
@@ -425,9 +426,6 @@ const equityWaterfallSummary = computed(() => {
   // Column headers: Year 0, 1, 2, ... (relative to close year)
   const columns = allYears.map(yr => ({ year: yr, label: yr === closeYear ? 'Year 0' : `Year ${yr - closeYear}` }))
 
-  // Capital return descriptions — only these reduce equity balance
-  const CAP_RETURN_DESCS = ['Capital Distribution', 'Return of Capital', 'Cap WF']
-
   // Build rows per partner
   const rows: EwRow[] = []
   const dealContribs: Record<number, number> = {}
@@ -438,7 +436,7 @@ const equityWaterfallSummary = computed(() => {
   for (const pid of partners) {
     const cfs = partnerCfs[pid]
 
-    // Aggregate by year — split CF vs Capital distributions
+    // Aggregate by year — split CF vs Capital distributions using Source field
     const contribs: Record<number, number> = {}
     const cfDists: Record<number, number> = {}
     const capDists: Record<number, number> = {}
@@ -448,7 +446,7 @@ const equityWaterfallSummary = computed(() => {
       const yr = new Date(cf.date).getFullYear()
       if (cf.amount < 0) {
         contribs[yr] += cf.amount
-      } else if (CAP_RETURN_DESCS.some(d => cf.desc.includes(d))) {
+      } else if (cf.source === 'cap') {
         capDists[yr] += cf.amount
       } else {
         cfDists[yr] += cf.amount

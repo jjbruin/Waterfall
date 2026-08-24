@@ -1527,7 +1527,7 @@ def build_partner_results(cf_investors, cap_investors, seed_states, cf_alloc, ca
                 cashflow_details.append({
                     "Date": cf_date, "Description": desc,
                     "Partner": partner, "is_pref": is_pref_equity,
-                    "Amount": cf_amount,
+                    "Amount": cf_amount, "Source": "cf",
                 })
         if cap_state and len(cap_state.cashflows) > seed_len:
             cap_labels = cap_state.cashflow_labels if hasattr(cap_state, 'cashflow_labels') else []
@@ -1542,7 +1542,7 @@ def build_partner_results(cf_investors, cap_investors, seed_states, cf_alloc, ca
                 cashflow_details.append({
                     "Date": cf_date, "Description": desc,
                     "Partner": partner, "is_pref": is_pref_equity,
-                    "Amount": cf_amount,
+                    "Amount": cf_amount, "Source": "cap",
                 })
         if unrealized > 0 and sale_me:
             cashflow_details.append({
