@@ -102,11 +102,25 @@ def build_prospect_analysis(
     inv = _build_inv(vcode, deal_name, deal, close_date, properties)
     if waterfall_df is not None and not waterfall_df.empty:
         wf = waterfall_df
+        # Build accounting from waterfall investors so IDs match
+        wf_investors = _get_waterfall_investors(wf)
+        if wf_investors:
+            acct = _build_accounting_from_waterfall(
+                vcode, deal_name, wf_investors, equity_needed,
+                psc_equity_pct, seed_date)
+            # Set pe/op IDs for the investment map (first PE, first non-PE)
+            pe_ids = [iid for iid, is_pe in wf_investors if is_pe]
+            op_ids = [iid for iid, is_pe in wf_investors if not is_pe]
+            pe_investor_id = pe_ids[0] if pe_ids else pe_investor_id
+            op_investor_id = op_ids[0] if op_ids else op_investor_id
+        else:
+            acct = _build_accounting(vcode, deal_name, pe_investor_id,
+                                     op_investor_id, pe_equity, op_equity, seed_date)
     else:
         wf = _build_waterfall(vcode, pe_investor_id, op_investor_id,
                               psc_equity_pct, pref_rate, promote_pct)
-    acct = _build_accounting(vcode, deal_name, pe_investor_id, op_investor_id,
-                             pe_equity, op_equity, seed_date)
+        acct = _build_accounting(vcode, deal_name, pe_investor_id, op_investor_id,
+                                 pe_equity, op_equity, seed_date)
     if argus_forecast_df is not None and not argus_forecast_df.empty:
         fc = argus_forecast_df
     else:
@@ -172,6 +186,53 @@ def build_prospect_analysis(
 # ---------------------------------------------------------------------------
 # Synthetic DataFrame builders
 # ---------------------------------------------------------------------------
+
+def _resolve_investors_from_waterfall(wf, fallback_pe, fallback_op):
+    """Extract investor IDs from waterfall PropCode values.
+
+    Returns (pe_id, op_id) where pe_id is the first investor with a Pref
+    step and op_id is the first investor without one.  When more than two
+    investors exist, _build_accounting_from_waterfall should be used instead.
+    """
+    if wf is None or wf.empty:
+        return fallback_pe, fallback_op
+
+    pc_col = 'PropCode' if 'PropCode' in wf.columns else 'propcode'
+    st_col = 'vState' if 'vState' in wf.columns else 'vstate'
+    if pc_col not in wf.columns or st_col not in wf.columns:
+        return fallback_pe, fallback_op
+
+    all_ids = list(dict.fromkeys(wf[pc_col].dropna()))  # unique, preserving order
+    pref_ids = set(wf.loc[wf[st_col].str.lower() == 'pref', pc_col].dropna().unique())
+    non_pref_ids = [i for i in all_ids if i not in pref_ids]
+
+    pe_id = list(pref_ids)[0] if pref_ids else fallback_pe
+    op_id = non_pref_ids[0] if non_pref_ids else fallback_op
+
+    return pe_id, op_id
+
+
+def _get_waterfall_investors(wf):
+    """Get all unique investor IDs from waterfall PropCode, with PE flag."""
+    if wf is None or wf.empty:
+        return []
+    pc_col = 'PropCode' if 'PropCode' in wf.columns else 'propcode'
+    st_col = 'vState' if 'vState' in wf.columns else 'vstate'
+    if pc_col not in wf.columns:
+        return []
+
+    all_ids = list(dict.fromkeys(wf[pc_col].dropna()))
+    pref_ids = set()
+    if st_col in wf.columns:
+        pref_ids = set(wf.loc[wf[st_col].str.lower() == 'pref', pc_col].dropna().unique())
+
+    # Also treat IRR lookback investors as PE (they have capital at risk)
+    irr_ids = set()
+    if st_col in wf.columns:
+        irr_ids = set(wf.loc[wf[st_col].str.upper() == 'IRR', pc_col].dropna().unique())
+
+    return [(iid, iid in pref_ids or iid in irr_ids) for iid in all_ids]
+
 
 def _resolve_investors(entities: list, psc_equity_pct: float):
     """Extract PE and OP investor IDs from entity structure."""
@@ -295,6 +356,60 @@ def _build_waterfall(vcode, pe_id, op_id, pe_pct, pref_rate, promote_pct):
     df['FXRate'] = df['FXRate'].astype(float)
     df['mAmount'] = df['mAmount'].astype(float)
     return df
+
+
+def _build_accounting_from_waterfall(vcode, deal_name, wf_investors,
+                                     total_equity, psc_equity_pct, close_date):
+    """Build accounting feed with contributions for all waterfall investors.
+
+    Splits equity among investors using the Cap_WF Share/Tag FXRate
+    percentages when available, otherwise falls back to psc_equity_pct
+    for PE vs OP split.
+    """
+    rows = []
+    n_investors = len(wf_investors)
+    if n_investors == 0:
+        return pd.DataFrame(columns=[
+            'InvestmentID', 'InvestorID', 'EffectiveDate', 'MajorType',
+            'Amt', 'Capital', 'Typename', 'TypeID', 'Partner',
+        ])
+
+    if n_investors == 1:
+        iid, _ = wf_investors[0]
+        rows.append({
+            'InvestmentID': vcode, 'InvestorID': iid,
+            'EffectiveDate': close_date, 'MajorType': 'Contributions',
+            'Amt': -abs(total_equity), 'Capital': 'Y',
+            'Typename': 'Investments', 'TypeID': 1001, 'Partner': iid,
+        })
+    elif n_investors == 2:
+        # Two investors: use psc_equity_pct to split
+        pe_ids = [iid for iid, is_pe in wf_investors if is_pe]
+        for iid, is_pe in wf_investors:
+            if is_pe or (not pe_ids and iid == wf_investors[0][0]):
+                share = psc_equity_pct
+            else:
+                share = 1 - psc_equity_pct
+            amt = total_equity * share
+            if amt > 0:
+                rows.append({
+                    'InvestmentID': vcode, 'InvestorID': iid,
+                    'EffectiveDate': close_date, 'MajorType': 'Contributions',
+                    'Amt': -abs(amt), 'Capital': 'Y',
+                    'Typename': 'Investments', 'TypeID': 1001, 'Partner': iid,
+                })
+    else:
+        # N investors: split equally (user should refine via capital budget)
+        per_investor = total_equity / n_investors
+        for iid, _ in wf_investors:
+            rows.append({
+                'InvestmentID': vcode, 'InvestorID': iid,
+                'EffectiveDate': close_date, 'MajorType': 'Contributions',
+                'Amt': -abs(per_investor), 'Capital': 'Y',
+                'Typename': 'Investments', 'TypeID': 1001, 'Partner': iid,
+            })
+
+    return pd.DataFrame(rows)
 
 
 def _build_accounting(vcode, deal_name, pe_id, op_id, pe_equity, op_equity, close_date):
