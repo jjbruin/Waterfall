@@ -447,6 +447,7 @@ def analyze_deal(deal_id):
     annual_forecast = None
     try:
         from reporting import annual_aggregation_table
+        from config import IS_ACCOUNTS, REVENUE_ACCTS, EXPENSE_ACCTS
         fc_display = result.get('fc_deal_display') or result.get('fc_deal_modeled')
         if fc_display is not None and not fc_display.empty:
             hold_years = assumptions.get('hold_years', 7)
@@ -463,16 +464,84 @@ def analyze_deal(deal_id):
             )
             if aat is not None and not aat.empty:
                 years = [int(y) for y in aat.index.tolist()]
+
+                # Build reverse map: account number -> IS_ACCOUNTS label
+                acct_to_label = {}
+                for section in ('REVENUES', 'EXPENSES'):
+                    for label, accts in IS_ACCOUNTS.get(section, {}).items():
+                        for a in accts:
+                            acct_to_label[int(a)] = label
+
+                # Compute per-label annual sums from fc_display
+                import pandas as pd
+                fc = fc_display.copy()
+                fc['Year'] = pd.to_datetime(fc['event_date']).dt.year
+                fc = fc[fc['Year'].isin(years)]
+
+                def _line_item_rows(account_set, section_labels):
+                    """Build detail rows for accounts in account_set, grouped by IS_ACCOUNTS labels."""
+                    detail_rows = []
+                    seen_labels = set()
+                    for label, accts in section_labels.items():
+                        acct_ints = {int(a) for a in accts}
+                        mask = fc['vAccount'].isin(acct_ints & account_set)
+                        if not mask.any():
+                            continue
+                        sums = fc.loc[mask].groupby('Year')['mAmount_norm'].sum()
+                        vals = {}
+                        for yr in years:
+                            v = sums.get(yr)
+                            if v is not None and not (isinstance(v, float) and v != v) and abs(v) > 0.5:
+                                vals[yr] = v
+                        if vals:
+                            detail_rows.append({
+                                'label': f'  {label}',
+                                'values': safe_json(vals),
+                                'is_pct': False, 'is_header': False,
+                                'underline': False, 'topline': False,
+                            })
+                            seen_labels.add(label)
+                    return detail_rows
+
+                rev_details = _line_item_rows(REVENUE_ACCTS, IS_ACCOUNTS.get('REVENUES', {}))
+                exp_details = _line_item_rows(EXPENSE_ACCTS, IS_ACCOUNTS.get('EXPENSES', {}))
+
                 rows = []
                 pct_rows = {'Debt Service Coverage Ratio'}
-                underline_rows = {'Expenses', 'Capital Expenditures', 'Other Below-the-Line'}
+                underline_rows = {'Total Expenses', 'Capital Expenditures', 'Other Below-the-Line'}
                 topline_rows = set()
+
                 for col in aat.columns:
                     vals = {}
                     for yr in years:
                         v = aat.loc[yr, col] if yr in aat.index else None
                         if v is not None and not (isinstance(v, float) and (v != v)):
                             vals[yr] = v
+
+                    # Insert detail rows before summary totals
+                    if col == 'Revenues':
+                        if rev_details:
+                            rows.extend(rev_details)
+                        rows.append({
+                            'label': 'Total Revenues',
+                            'values': safe_json(vals),
+                            'is_pct': False, 'is_header': False,
+                            'underline': False, 'topline': False,
+                            'isBold': True,
+                        })
+                        continue
+                    elif col == 'Expenses':
+                        if exp_details:
+                            rows.extend(exp_details)
+                        rows.append({
+                            'label': 'Total Expenses',
+                            'values': safe_json(vals),
+                            'is_pct': False, 'is_header': False,
+                            'underline': True, 'topline': False,
+                            'isBold': True,
+                        })
+                        continue
+
                     rows.append({
                         'label': col,
                         'values': safe_json(vals),

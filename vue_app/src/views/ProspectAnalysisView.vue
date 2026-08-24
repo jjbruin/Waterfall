@@ -1921,14 +1921,14 @@ loadDeals()
             <!-- Annual Forecast -->
             <div class="section expandable" v-if="analysisResult.annual_forecast">
               <div class="section-header" @click="expanded.forecast = !expanded.forecast">
-                Annual Forecast
+                Annual Operating Forecast &amp; Waterfall Summary
                 <span class="chevron">{{ expanded.forecast ? '\u25BE' : '\u25B8' }}</span>
               </div>
               <div v-if="expanded.forecast" class="table-scroll">
                 <table class="forecast-table">
                   <thead>
                     <tr>
-                      <th class="row-label">Account</th>
+                      <th class="row-label">Line Item</th>
                       <th v-for="yr in analysisResult.annual_forecast.years" :key="yr" class="r">{{ yr }}</th>
                     </tr>
                   </thead>
@@ -1938,6 +1938,7 @@ loadDeals()
                           'section-header-row': row.is_header,
                           'underline-row': row.underline,
                           'topline-row': row.topline,
+                          'bold-row': row.isBold,
                         }">
                       <td class="row-label">{{ row.label }}</td>
                       <td v-for="yr in analysisResult.annual_forecast.years" :key="yr" class="r">
@@ -2287,6 +2288,7 @@ loadDeals()
 .section-header-row td { font-weight: 700; background: #f5f5f5; }
 .underline-row td { border-bottom: 2px solid #333; }
 .topline-row td { border-top: 2px solid #333; }
+.bold-row td { font-weight: 700; }
 
 .empty-results { padding: 40px; text-align: center; color: #bbb; font-size: 14px; }
 
