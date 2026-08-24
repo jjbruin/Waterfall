@@ -11,10 +11,16 @@
 
 export const DASH = '—' // em dash for "no value"
 
-/** $M with two decimals — the unit the reference PDF reports. */
+/** $M with one decimal — the unit the reference PDF reports. */
 export function fmtM(v: number | null | undefined): string {
   if (v == null) return DASH
-  return (v / 1e6).toFixed(2)
+  return (v / 1e6).toFixed(1)
+}
+
+/** $M with dollar sign prefix — for first data row and total row. */
+export function fmtM$(v: number | null | undefined): string {
+  if (v == null) return DASH
+  return '$' + (v / 1e6).toFixed(1)
 }
 
 /** Whole dollars with thousands separators. */
@@ -23,8 +29,8 @@ export function fmtCurr(v: number | null | undefined): string {
   return '$' + Math.round(v).toLocaleString()
 }
 
-/** A decimal rate as a percentage (0.5751 -> "57.51%"). */
-export function fmtPct(v: number | null | undefined, dp = 2): string {
+/** A decimal rate as a percentage (0.5751 -> "57.5%"). */
+export function fmtPct(v: number | null | undefined, dp = 1): string {
   if (v == null) return DASH
   return (v * 100).toFixed(dp) + '%'
 }
@@ -61,7 +67,7 @@ export function disp(v: unknown, kind: Kind = 'raw', dp?: number): string {
   const n = Number(v)
   if (!isFinite(n)) return DASH
   switch (kind) {
-    case 'pct': return fmtPct(n, dp ?? 2)
+    case 'pct': return fmtPct(n, dp ?? 1)
     case 'x': return fmtX(n, dp ?? 3)
     case 'currency': return fmtCurr(n)
     case 'm': return fmtM(n)

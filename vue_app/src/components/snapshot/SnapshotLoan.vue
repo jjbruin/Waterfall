@@ -288,4 +288,18 @@ tfoot .note {
   text-align: center;
   padding: 40px 0;
 }
+
+@media print {
+  .legend { display: none; }
+  .hint { display: none; }
+  .scroll { overflow: visible; border: 1px solid #ccc; }
+  .cmt textarea {
+    border: none;
+    padding: 0;
+    resize: none;
+    overflow: visible;
+    height: auto !important;
+  }
+  table.grid { font-size: 10px; }
+}
 </style>

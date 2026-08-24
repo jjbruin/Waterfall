@@ -11,7 +11,7 @@
  * Presentational: props in, save events out.
  */
 import { computed, ref, watch } from 'vue'
-import { fmtM, fmtPct, disp } from './format'
+import { fmtM, fmtM$, fmtPct, disp } from './format'
 
 const props = defineProps<{ data: any; editable: boolean }>()
 const emit = defineEmits<{
@@ -224,5 +224,19 @@ th.sticky-l { background: #fafafa; z-index: 3; }
   font-style: italic;
   text-align: center;
   padding: 40px 0;
+}
+
+@media print {
+  .legend { display: none; }
+  .hint { display: none; }
+  .scroll { overflow: visible; border: 1px solid #ccc; }
+  .cmt textarea {
+    border: none;
+    padding: 0;
+    resize: none;
+    overflow: visible;
+    height: auto !important;
+  }
+  table.grid { font-size: 10px; }
 }
 </style>

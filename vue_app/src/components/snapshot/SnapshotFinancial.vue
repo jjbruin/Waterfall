@@ -12,7 +12,7 @@
  * Presentational: props in, save events out.
  */
 import { computed, ref, watch } from 'vue'
-import { fmtM, fmtPct, disp } from './format'
+import { fmtM, fmtM$, fmtPct, disp } from './format'
 
 const props = defineProps<{ data: any; editable: boolean }>()
 const emit = defineEmits<{
@@ -160,14 +160,14 @@ function anchorLabel(a: string): string {
             </tr>
             <tr class="subtotal">
               <td class="sticky-l">Subtotal — {{ gname }} ({{ blk.subtotal?.deal_count }})</td>
-              <td class="r num">{{ fmtM(blk.subtotal?.debt) }}</td>
-              <td class="r num">{{ fmtM(blk.subtotal?.total_pref) }}</td>
-              <td class="r num">{{ fmtM(blk.subtotal?.ptr_equity) }}</td>
-              <td class="r num">{{ fmtM(blk.subtotal?.total_cap) }}</td>
+              <td class="r num">{{ fmtM$(blk.subtotal?.debt) }}</td>
+              <td class="r num">{{ fmtM$(blk.subtotal?.total_pref) }}</td>
+              <td class="r num">{{ fmtM$(blk.subtotal?.ptr_equity) }}</td>
+              <td class="r num">{{ fmtM$(blk.subtotal?.total_cap) }}</td>
               <td class="r num zone-b">{{ fmtPct(blk.subtotal?.pct_of_pref) }}</td>
-              <td class="r num zone-b">{{ fmtM(blk.subtotal?.invested) }}</td>
-              <td class="r num zone-b">{{ fmtM(blk.subtotal?.total_commitment) }}</td>
-              <td class="r num zone-b">{{ fmtM(blk.subtotal?.unfunded) }}</td>
+              <td class="r num zone-b">{{ fmtM$(blk.subtotal?.invested) }}</td>
+              <td class="r num zone-b">{{ fmtM$(blk.subtotal?.total_commitment) }}</td>
+              <td class="r num zone-b">{{ fmtM$(blk.subtotal?.unfunded) }}</td>
               <td class="r manual small">{{ blk.subtotal?.manual_entered?.net_roe ?? 0 }} entered</td>
               <td class="r manual small">{{ blk.subtotal?.manual_entered?.itd ?? 0 }} entered</td>
             </tr>
@@ -194,14 +194,14 @@ function anchorLabel(a: string): string {
         <tfoot v-if="total">
           <tr>
             <td class="sticky-l">{{ total.label }} ({{ total.deal_count }})</td>
-            <td class="r num">{{ fmtM(total.debt) }}</td>
-            <td class="r num">{{ fmtM(total.total_pref) }}</td>
-            <td class="r num">{{ fmtM(total.ptr_equity) }}</td>
-            <td class="r num">{{ fmtM(total.total_cap) }}</td>
+            <td class="r num">{{ fmtM$(total.debt) }}</td>
+            <td class="r num">{{ fmtM$(total.total_pref) }}</td>
+            <td class="r num">{{ fmtM$(total.ptr_equity) }}</td>
+            <td class="r num">{{ fmtM$(total.total_cap) }}</td>
             <td class="r num zone-b">{{ fmtPct(total.pct_of_pref) }}</td>
-            <td class="r num zone-b">{{ fmtM(total.invested) }}</td>
-            <td class="r num zone-b">{{ fmtM(total.total_commitment) }}</td>
-            <td class="r num zone-b">{{ fmtM(total.unfunded) }}</td>
+            <td class="r num zone-b">{{ fmtM$(total.invested) }}</td>
+            <td class="r num zone-b">{{ fmtM$(total.total_commitment) }}</td>
+            <td class="r num zone-b">{{ fmtM$(total.unfunded) }}</td>
             <td class="r manual small">{{ total.manual_entered?.net_roe ?? 0 }} entered</td>
             <td class="r manual small">{{ total.manual_entered?.itd ?? 0 }} entered</td>
           </tr>
@@ -386,5 +386,14 @@ tfoot td {
   font-style: italic;
   text-align: center;
   padding: 40px 0;
+}
+
+@media print {
+  .legend { display: none; }
+  .scroll { overflow: visible; border: 1px solid #ccc; }
+  .fnadd { display: none; }
+  .footnotes { break-inside: avoid; border: 1px solid #ccc; }
+  .numinput { border: none; background: transparent !important; padding: 0; }
+  table.grid { font-size: 10px; }
 }
 </style>

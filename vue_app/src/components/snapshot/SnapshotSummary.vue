@@ -8,7 +8,7 @@
  * no dependency to a build we cannot preview.
  */
 import { computed, ref, watch } from 'vue'
-import { fmtM, fmtPct } from './format'
+import { fmtM, fmtM$, fmtPct } from './format'
 
 const props = defineProps<{ data: any; editable: boolean }>()
 const emit = defineEmits<{
@@ -65,35 +65,35 @@ function barWidth(bucket: any, buckets: any[]): string {
             <tr>
               <th>Asset Type</th>
               <th class="r">Funded ($M)</th>
-              <th class="r">%</th>
+              <th class="c">%</th>
               <th class="r">Committed ($M)</th>
-              <th class="r">%</th>
-              <th class="r">Deals</th>
+              <th class="c">%</th>
+              <th class="c">Deals</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="b in (asset?.buckets || [])" :key="b.label">
+            <tr v-for="(b, idx) in (asset?.buckets || [])" :key="b.label">
               <td>
                 <div class="bar-label">{{ b.label }}</div>
                 <div class="bar-track">
                   <div class="bar-fill" :style="{ width: barWidth(b, asset.buckets) }"></div>
                 </div>
               </td>
-              <td class="r num">{{ fmtM(b.funded) }}</td>
-              <td class="r num">{{ fmtPct(b.funded_pct) }}</td>
-              <td class="r num">{{ fmtM(b.committed) }}</td>
-              <td class="r num">{{ fmtPct(b.committed_pct) }}</td>
-              <td class="r num">{{ b.deal_count }}</td>
+              <td class="r num">{{ idx === 0 ? fmtM$(b.funded) : fmtM(b.funded) }}</td>
+              <td class="c num">{{ fmtPct(b.funded_pct) }}</td>
+              <td class="r num">{{ idx === 0 ? fmtM$(b.committed) : fmtM(b.committed) }}</td>
+              <td class="c num">{{ fmtPct(b.committed_pct) }}</td>
+              <td class="c num">{{ b.deal_count }}</td>
             </tr>
           </tbody>
           <tfoot>
             <tr>
               <td>Total</td>
-              <td class="r num">{{ fmtM(asset?.total_funded) }}</td>
-              <td class="r num">100.00%</td>
-              <td class="r num">{{ fmtM(asset?.total_committed) }}</td>
-              <td class="r num">100.00%</td>
-              <td class="r num">{{ asset?.deal_count }}</td>
+              <td class="r num">{{ fmtM$(asset?.total_funded) }}</td>
+              <td class="c num">100.0%</td>
+              <td class="r num">{{ fmtM$(asset?.total_committed) }}</td>
+              <td class="c num">100.0%</td>
+              <td class="c num">{{ asset?.deal_count }}</td>
             </tr>
           </tfoot>
         </table>
@@ -110,29 +110,29 @@ function barWidth(bucket: any, buckets: any[]): string {
             <tr>
               <th>Deal Type</th>
               <th class="r">Funded ($M)</th>
-              <th class="r">%</th>
-              <th class="r">Deals</th>
+              <th class="c">%</th>
+              <th class="c">Deals</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="b in (dealType?.buckets || [])" :key="b.label">
+            <tr v-for="(b, idx) in (dealType?.buckets || [])" :key="b.label">
               <td>
                 <div class="bar-label">{{ b.label }}</div>
                 <div class="bar-track">
                   <div class="bar-fill alt" :style="{ width: barWidth(b, dealType.buckets) }"></div>
                 </div>
               </td>
-              <td class="r num">{{ fmtM(b.funded) }}</td>
-              <td class="r num">{{ fmtPct(b.funded_pct) }}</td>
-              <td class="r num">{{ b.deal_count }}</td>
+              <td class="r num">{{ idx === 0 ? fmtM$(b.funded) : fmtM(b.funded) }}</td>
+              <td class="c num">{{ fmtPct(b.funded_pct) }}</td>
+              <td class="c num">{{ b.deal_count }}</td>
             </tr>
           </tbody>
           <tfoot>
             <tr>
               <td>Total</td>
-              <td class="r num">{{ fmtM(dealType?.total_funded) }}</td>
-              <td class="r num">100.00%</td>
-              <td class="r num">{{ dealType?.deal_count }}</td>
+              <td class="r num">{{ fmtM$(dealType?.total_funded) }}</td>
+              <td class="c num">100.0%</td>
+              <td class="c num">{{ dealType?.deal_count }}</td>
             </tr>
           </tfoot>
         </table>
@@ -220,6 +220,7 @@ table.alloc tfoot td {
   font-weight: 700;
 }
 .r { text-align: right; }
+.c { text-align: center; }
 .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 .bar-label { font-weight: 600; margin-bottom: 3px; }
@@ -262,5 +263,19 @@ table.alloc tfoot td {
 
 @media (max-width: 1100px) {
   .alloc-grid, .narratives { grid-template-columns: 1fr; }
+}
+
+@media print {
+  .flagline { display: none; }
+  .card { border: 1px solid #ccc; break-inside: avoid; }
+  .card.warn { display: none; }
+  .narrative textarea {
+    border: none;
+    padding: 0;
+    resize: none;
+    overflow: visible;
+    height: auto !important;
+  }
+  .hint { display: none; }
 }
 </style>

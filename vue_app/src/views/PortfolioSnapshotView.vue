@@ -240,6 +240,12 @@ const statusColor = computed(() => {
       </div>
     </div>
 
+    <!-- Print-only header -->
+    <div class="print-header">
+      <h2>Portfolio Snapshot — {{ investors.find(i => i.code === selectedInvestor)?.name || selectedInvestor }}</h2>
+      <div class="print-meta">{{ selectedQuarter }} · {{ TABS.find(t => t.key === activeTab)?.label }}</div>
+    </div>
+
     <!-- Review status strip -->
     <div v-if="review && !review.error" class="review-strip">
       <span class="dot" :style="{ background: statusColor }"></span>
@@ -573,5 +579,22 @@ h2 { font-size: 20px; margin: 0 0 12px 0; }
   font-style: italic;
   text-align: center;
   padding: 40px 0;
+}
+
+.print-header { display: none; }
+
+@media print {
+  .snapshot { padding: 0; }
+  .snap-header { display: none; }
+  .print-header { display: block; margin-bottom: 8px; }
+  .print-header h2 { font-size: 16px; margin: 0 0 2px 0; }
+  .print-meta { font-size: 12px; color: #666; }
+  .review-strip { display: none; }
+  .return-form { display: none; }
+  .banner { display: none; }
+  .diag { display: none; }
+  .tabbar { display: none; }
+  .tabbody { padding: 0; }
+  @page { margin: 0.5in; }
 }
 </style>
