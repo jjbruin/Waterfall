@@ -212,8 +212,11 @@ table.alloc th {
   border-bottom: 1px solid var(--color-border);
   padding: 4px 6px;
   font-weight: 700;
+  white-space: nowrap;
 }
 table.alloc td { padding: 6px; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+table.alloc th.r, table.alloc td.r { text-align: right; min-width: 80px; }
+table.alloc th.c, table.alloc td.c { text-align: center; min-width: 50px; }
 table.alloc tfoot td {
   border-top: 2px solid var(--color-border);
   border-bottom: none;
