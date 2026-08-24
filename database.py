@@ -1155,7 +1155,10 @@ def delete_waterfall_steps(vcode: str, wf_type: str = None):
 PROTECTED_TABLES = {'waterfalls', 'one_pager_comments', 'waterfall_audit', 'review_roles', 'review_submissions', 'review_notes', 'one_pager_snapshots', 'prospective_loans', 'prospective_loans_audit', 'planned_loans', 'sale_overrides', 'user_requests', 'user_request_messages', 'surveillance_properties', 'insurance', 'surveillance_comments', 'lease_reviews', 'lease_tenants', 'lease_documents', 'lease_rent_steps', 'lease_cotenancy', 'lease_cotenancy_refs', 'lease_exclusive_use', 'lease_options', 'lease_validation', 'prospect_deals', 'prospect_properties', 'prospect_entities', 'prospect_investors', 'prospect_assumptions', 'prospect_cashflows', 'prospect_activity'} | {
     # Portfolio Snapshot editable elements — app-managed, never CSV-imported.
     'portfolio_snapshot_comments', 'portfolio_snapshot_footnotes',
-    'portfolio_snapshot_values'}
+    'portfolio_snapshot_values',
+    # Frozen approved reports. Protected above all: a CSV import overwriting
+    # this would rewrite what was already approved and signed off.
+    'portfolio_snapshot_frozen'}
 
 
 def _get_import_connection():

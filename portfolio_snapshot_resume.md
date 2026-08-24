@@ -294,6 +294,79 @@ findings, and `_data_or_error()` turns a data-load failure into a clean 503.
 
 ---
 
+## Snapshot freeze — landed
+
+`flask_app/services/portfolio_snapshot_freeze.py`, self-test **34/34**, fully
+synthetic (a scratch SQLite plus an injected assembler), so the drift test is
+deterministic. **This closes the gap that was the most consequential open item.**
+
+**The problem it removes.** An approved report used to re-render live on every
+view, so an approved 26Q1 report would silently change when MRI data moved — and
+it moved during this build: 45th & Main's look-through went 100% → 90% on
+2026-08-24. THE KEY TEST reproduces exactly that: approve a report, then move the
+underlying figure 1.00 → 0.90, and confirm the approved report still serves
+**1.00 / $18,550,000**, not the live 0.90 / $16,695,000.
+
+**Mirrors the One Pager** (`review_service._save_snapshot` / `get_snapshot`) on
+storage, trigger, upsert and failure containment:
+
+| | |
+|---|---|
+| storage | `portfolio_snapshot_frozen`, UNIQUE(investor_code, quarter), JSON payload + approved_by/at + `data_version`. **In `PROTECTED_TABLES` (35 → 36)** — a CSV import overwriting it would rewrite what was signed off. |
+| trigger | the FINAL transition into `approved` only, from `approve()` via a lazy import, so persistence stays free of the assemblies |
+| upsert | DELETE-then-INSERT in one transaction — cross-DB, and *is* the re-approval overwrite (asserted: exactly one row per investor+quarter) |
+| failure | wrapped by the caller — a freeze failure logs and **the approval still stands** (asserted by injecting a failure) |
+| unfreeze | free. `_set_status` already nulls `approved_at` on any non-approved transition, so the read path's `status == "approved"` test falls back to live by itself |
+
+**The one deliberate divergence, per creator decision:** the One Pager defaults to
+*live* with the frozen copy behind a manual "View Approved Version" toggle; the
+Portfolio Snapshot serves **frozen by default** when approved. Every payload
+carries `source: "frozen" | "live"` plus a `source_note` for the UI. Flagged in
+the module docstring — do not "align" the two tabs without reading it.
+
+**`assemble_full_report` is the single assembly path** used by both the freeze and
+the live read. If the freeze assembled differently, a frozen payload would differ
+from live even with unchanged data and every comparison would be noise.
+
+**Frozen content is the whole report:** all four subtabs' assembled payloads AND
+the approved editable content — comments, footnotes, and the manual Net ROE / ITD
+values — as they stood at approval.
+
+**Guardrails are skipped on a frozen payload** (`guardrails.skipped`): they audit
+a live computation, and re-auditing what was already approved would surface
+findings nobody can now act on.
+
+### A gap this exposed — `reopen()` had to be added
+
+**`reject()` cannot reopen an approved page.** At the approved step
+`_step_for(5)["role"]` is `None`, so its role check raises
+`PermissionError: You need the 'None' role to return at this step`. An approved
+report therefore had **no route back**, which also meant no way to reach the
+re-approval that replaces a frozen payload — the requirement described an
+impossible flow.
+
+New `portfolio_snapshot_persistence.reopen()` (additive): approved → returned,
+note required, gated on `REOPEN_ROLES = ("ceo",)` since the CEO is the approver at
+the final step. Deliberately **not** a relaxation of `reject()` — returning a page
+mid-review and unwinding a completed approval are different acts with different
+authority, and collapsing them would let any reviewer reverse a CEO sign-off.
+**The role gate is a guess and needs creator confirmation.** It is not yet exposed
+on any route; the blueprint has `/submit`, `/approve`, `/return` but no `/reopen`.
+
+The frozen row is left in place on reopen — it becomes unreachable while the
+status is not `approved`, and the next approval overwrites it. Deleting it would
+throw away the only record of what was approved while the correction is in flight.
+
+### Also verified
+
+Approved-but-unfrozen (approved before this existed, or a failed freeze) falls
+back to live **and says so** in `source_note` rather than showing an empty report.
+A corrupt payload returns `None` rather than raising. Isolation unchanged: the
+only shared app file touched is `database.py`, additively, for the one new table.
+App starts, 244 routes; persistence 35/35 and guardrails 22/22 still pass.
+
+---
+
 ## Open creator / data items
 
 ### RESOLVED — the strategy field. `Lifecycle` IS the strategy field.

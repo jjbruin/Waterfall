@@ -471,6 +471,22 @@ def approve(investor_code: str, quarter: str, user_id: int, username: str,
     nxt = SNAPSHOT_STEPS[step_num + 1]
     _set_status(investor_code, quarter, nxt["status"], nxt["step"],
                 approver=username if nxt["status"] == "approved" else None)
+
+    # Freeze on the FINAL transition into 'approved' only, mirroring
+    # review_service.approve -> _save_snapshot. Lazy import so this module stays
+    # free of any dependency on the four subtab assemblies. Wrapped because the
+    # approval is the user's action: losing it to a failed snapshot write would
+    # be worse than a missing snapshot, so a freeze failure is logged and the
+    # approval stands. The read path then falls back to live and says so.
+    if nxt["status"] == "approved":
+        try:
+            from flask_app.services.portfolio_snapshot_freeze import freeze
+            freeze(investor_code, quarter, username)
+        except Exception:
+            log.exception("Freezing the approved Portfolio Snapshot failed "
+                          "for %s %s — the approval itself stands",
+                          investor_code, quarter)
+
     return document_status(investor_code, quarter)
 
 
@@ -491,6 +507,52 @@ def reject(investor_code: str, quarter: str, user_id: int, username: str,
 
     _set_status(investor_code, quarter, RETURNED_STATUS, 0,
                 returned_to_step=step_num)
+    return document_status(investor_code, quarter)
+
+
+#: Roles permitted to reopen an already-approved page. The CEO is the approver
+#: at the final step, so unwinding their own approval is theirs to do.
+REOPEN_ROLES = ("ceo",)
+
+
+def reopen(investor_code: str, quarter: str, user_id: int, username: str,
+           note_text: str, roles: Optional[list] = None) -> dict:
+    """Move an APPROVED page back to draft so it can be corrected.
+
+    Added with the snapshot freeze because ``reject()`` cannot do this: at the
+    approved step ``_step_for(5)["role"]`` is ``None``, so its role check raises
+    ``PermissionError("You need the 'None' role ...")`` and an approved page had
+    no route back. Without this there is no way to correct an approved report,
+    and therefore no way to reach the re-approval that replaces a frozen payload.
+
+    Deliberately a separate function rather than a relaxation of ``reject()``:
+    returning a page mid-review and unwinding a completed approval are different
+    acts with different authority, and collapsing them would let any reviewer
+    reverse a CEO sign-off.
+
+    The frozen payload is left in place. It becomes unreachable the moment the
+    status stops being ``approved`` (the read path keys on that), and the next
+    approval overwrites it. Deleting it here would throw away the only record of
+    what was approved while the correction is still being made.
+    """
+    _ensure_tables()
+    if not note_text or not str(note_text).strip():
+        raise ValueError("A note is required when reopening an approved page")
+    doc = document_status(investor_code, quarter)
+    if doc["status"] != "approved":
+        raise ValueError(
+            f"Only an approved page can be reopened (status is "
+            f"'{doc['status']}') — use return/reject while it is in review")
+    held = _user_roles(user_id, roles)
+    if not any(r in held for r in REOPEN_ROLES):
+        raise PermissionError(
+            f"Reopening an approved page needs one of: "
+            f"{', '.join(REOPEN_ROLES)}")
+
+    _set_status(investor_code, quarter, RETURNED_STATUS, 0,
+                returned_to_step=doc["current_step"])
+    log.info("Reopened approved Portfolio Snapshot %s %s by %s: %s",
+             investor_code, quarter, username, note_text)
     return document_status(investor_code, quarter)
 
 

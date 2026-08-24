@@ -305,41 +305,56 @@ def bundle():
     if err:
         return err
 
+    review = _review_payload(investor, quarter)
+
+    # An APPROVED report serves its frozen payload, not a fresh computation:
+    # live MRI data moves (45th & Main went 100% -> 90% on 2026-08-24) and an
+    # approved report must not move with it. Anything not yet approved computes
+    # live so work in progress reflects current data. `source` says which.
+    #
+    # NOTE this is the deliberate divergence from the One Pager, which defaults
+    # to live and puts the frozen copy behind a manual toggle. See the module
+    # docstring in portfolio_snapshot_freeze.
     try:
-        resolved = _resolve(investor, quarter, data)
+        from flask_app.services.portfolio_snapshot_freeze import load_report
+        report = load_report(investor, quarter, status=review.get("status"))
     except Exception as exc:
-        return jsonify({"error": f"deal resolution failed: {exc}"}), 500
+        return jsonify({"error": f"report assembly failed: {exc}"}), 500
 
-    out: dict = {"investor_code": investor, "quarter": quarter,
-                 "subtabs": {}, "errors": {}}
-    for name in ("summary", "financial", "operating", "loan"):
-        try:
-            out["subtabs"][name] = _build_subtab(
-                name, investor, quarter, data, resolved)
-        except Exception as exc:
-            out["errors"][name] = str(exc)
-
-    out["resolution"] = {
-        "investor_name": resolved.get("investor_name"),
-        "quarter_end": resolved.get("quarter_end"),
-        "diagnostics": resolved.get("diagnostics"),
-        "flagged": resolved.get("flagged"),
-        "excluded_sold": resolved.get("excluded_sold"),
-        "excluded_not_acquired": resolved.get("excluded_not_acquired"),
-        "excluded_children": resolved.get("excluded_children"),
+    out: dict = {
+        "investor_code": investor, "quarter": quarter,
+        "subtabs": report.get("subtabs") or {},
+        "errors": report.get("errors") or {},
+        "resolution": report.get("resolution") or {},
+        "source": report.get("source"),
+        "source_note": report.get("source_note"),
+        "approved_by": report.get("approved_by"),
+        "approved_at": report.get("approved_at"),
+        "data_version": report.get("data_version"),
+        "frozen_elements": (report.get("elements")
+                            if report.get("source") == "frozen" else None),
+        "review": review,
     }
-    out["review"] = _review_payload(investor, quarter)
 
     # Step 8 guardrails. Advisory only — a finding never blanks a metric or
-    # fails the page, so a bad deal cannot hide the whole report.
-    try:
-        from flask_app.services.portfolio_snapshot_guardrails import run_guardrails
-        out["guardrails"] = run_guardrails(
-            resolved, out["subtabs"],
-            pe_cap_comments=_pe_cap_comments(data, quarter),
-        )
-    except Exception as exc:
-        out["guardrails"] = {"error": str(exc), "findings": [], "ok": None}
+    # fails the page, so a bad deal cannot hide the whole report. Skipped on a
+    # frozen payload: the guardrails audit a live computation, and re-auditing
+    # what was already approved would surface findings nobody can now act on.
+    if out["source"] == "frozen":
+        out["guardrails"] = {
+            "skipped": "frozen payload — audited when it was approved",
+            "findings": [], "counts": {"error": 0, "warn": 0, "info": 0},
+            "ok": None}
+    else:
+        try:
+            from flask_app.services.portfolio_snapshot_guardrails import run_guardrails
+            resolved = _resolve(investor, quarter, data)
+            out["guardrails"] = run_guardrails(
+                resolved, out["subtabs"],
+                pe_cap_comments=_pe_cap_comments(data, quarter),
+            )
+        except Exception as exc:
+            out["guardrails"] = {"error": str(exc), "findings": [], "ok": None}
 
     return jsonify(safe_json(out))
 
