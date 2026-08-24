@@ -1145,6 +1145,10 @@ loadDeals()
                 </div>
               </div>
 
+              <button class="btn-sm btn-primary mt-4" @click="saveAssumptions" :disabled="!selectedDealId">
+                Save Capital Budget
+              </button>
+
             </template>
           </div>
 
