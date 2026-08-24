@@ -16,6 +16,7 @@
 - [new_business_pipeline.md](new_business_pipeline.md) — New Business pipeline: prospect deals, properties, entities, lease review integration
 - [session_handoff_aug22.md](session_handoff_aug22.md) — Session handoff: Argus Enterprise loader (parser, service, API, projection toggle, Vue UI)
 - [session_handoff_aug23.md](session_handoff_aug23.md) — Session handoff: Capital budget persistence, assumption fields, waterfall steps UI, horizontal parser
+- [session_handoff_aug24.md](session_handoff_aug24.md) — Session handoff: Independent CF/Cap waterfall builders, IRR Lookback step, auto-save, Vue ref fix
 
 ## Project Overview
 - Flask + Vue application for real estate investment waterfall calculations
@@ -59,7 +60,7 @@
 - **PG credentials**: `wfadmin` / `Wf3d9097e0365c445456dcc52e!` on `waterfall_xirr` database
 - **PG firewall**: Must add current public IP (`az postgres flexible-server firewall-rule create`). IPs added: local-dev (50.251.58.254), local-dev-2 (73.112.240.56), local-dev-3 (71.59.67.132), local-dev-4 (73.112.240.56)
 - **Auth login endpoint**: `/auth/login` (not `/api/auth/login`), returns `token` key (not `access_token`)
-- **Current revision**: v310 (deployed Aug 23, 2026) — Prospect Deal Analysis capital budget, enhanced waterfall builder, horizontal cashflow parser, assumption persistence
+- **Current revision**: v314 (deployed Aug 24, 2026) — Independent CF/Capital waterfall builders, IRR Lookback step type, auto-save assumptions, Vue ref fix for step buttons
 - **Shared folders**: `DATA_DIR`, `QUERIES_DIR`, `DOWNLOADS_DIR` env vars (per-developer OneDrive paths)
 - **Shared memory**: `.claude/memory/` in repo (committed, shared via git). Auto-memory redirects here.
 - **Email**: SendGrid Web API v3 (replaces SMTP, blocked by O365 MFA). Env vars: `SENDGRID_API_KEY`, `SENDGRID_FROM`. Single Sender Verification on `jbruin@peaceablestreet.com`.
