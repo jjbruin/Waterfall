@@ -449,6 +449,9 @@ def analyze_deal(deal_id):
         from reporting import annual_aggregation_table
         from config import IS_ACCOUNTS, REVENUE_ACCTS, EXPENSE_ACCTS
         fc_display = result.get('fc_deal_display') or result.get('fc_deal_modeled')
+        logger.info("Prospect forecast: fc_deal_display=%s, fc_deal_modeled=%s",
+                     'None' if result.get('fc_deal_display') is None else f"{len(result['fc_deal_display'])} rows",
+                     'None' if result.get('fc_deal_modeled') is None else f"{len(result['fc_deal_modeled'])} rows")
         if fc_display is not None and not fc_display.empty:
             hold_years = assumptions.get('hold_years', 7)
             start_year = result.get('model_start')

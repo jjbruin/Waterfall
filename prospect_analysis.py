@@ -7,6 +7,7 @@ compute_deal_analysis() expects, then calls the shared engine.
 This is a TRANSLATION LAYER, not a new engine.
 """
 
+import logging
 import pandas as pd
 import numpy as np
 from datetime import date, timedelta
@@ -17,6 +18,8 @@ from config import (
     REVENUE_ACCTS, EXPENSE_ACCTS, CAPEX_ACCTS,
     DEFAULT_HORIZON_YEARS, DEFAULT_START_YEAR, PRO_YR_BASE_DEFAULT,
 )
+
+logger = logging.getLogger(__name__)
 from models import Loan
 from loans import build_loans_from_mri_loans, amortize_monthly_schedule
 from compute import compute_deal_analysis
@@ -90,10 +93,6 @@ def build_prospect_analysis(
     # (default cutoff = Dec 31 of start_year - 1)
     seed_date = date(start_year - 1, 12, 31)
 
-    # Compute exit sale price from terminal NOI / exit cap rate
-    terminal_noi = noi_year1 * ((1 + noi_growth_rate) ** (hold_years - 1))
-    contract_sale_price_val = terminal_noi / exit_cap_rate if exit_cap_rate > 0 and terminal_noi > 0 else None
-
     # Investor IDs from entities or defaults
     pe_investor_id, op_investor_id = _resolve_investors(entities, psc_equity_pct)
 
@@ -128,6 +127,31 @@ def build_prospect_analysis(
                              noi_growth_rate, capex_reserve_psf, properties,
                              cashflows, pro_yr_base)
     coa = _build_coa()
+
+    # Compute exit sale price from terminal NOI / exit cap rate
+    # When noi_year1 assumption is provided, use growth formula.
+    # Otherwise derive terminal NOI from the actual forecast (Argus/Excel).
+    terminal_noi = noi_year1 * ((1 + noi_growth_rate) ** (hold_years - 1)) if noi_year1 > 0 else 0
+    if terminal_noi <= 0 and fc is not None and not fc.empty:
+        # Compute NOI from the forecast's terminal year (sale year)
+        sale_year = sale_date.year
+        fc_copy = fc.copy()
+        fc_copy['_year'] = pd.to_datetime(fc_copy['event_date']).dt.year
+        rev_accts = REVENUE_ACCTS
+        exp_accts = EXPENSE_ACCTS
+        yr_fc = fc_copy[fc_copy['_year'] == sale_year]
+        if yr_fc.empty and sale_year > start_year:
+            # Try the last year that has data
+            available_years = fc_copy['_year'].unique()
+            if len(available_years):
+                sale_year = int(max(available_years))
+                yr_fc = fc_copy[fc_copy['_year'] == sale_year]
+        rev = yr_fc.loc[yr_fc['vAccount'].isin(rev_accts), 'mAmount_norm'].sum()
+        exp = yr_fc.loc[yr_fc['vAccount'].isin(exp_accts), 'mAmount_norm'].sum()
+        terminal_noi = rev + exp  # exp is negative
+    contract_sale_price_val = terminal_noi / exit_cap_rate if exit_cap_rate > 0 and terminal_noi > 0 else None
+    logger.info("prospect_analysis(%s): terminal_noi=%.0f exit_cap=%.4f sale_price=%s sale_date=%s",
+                vcode, terminal_noi, exit_cap_rate, contract_sale_price_val, sale_date)
     mri_loans_raw = _build_loans(vcode, debt_amount, debt_rate,
                                  debt_term_months, io_months, amort_months,
                                  close_date)
