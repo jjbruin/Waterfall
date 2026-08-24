@@ -1014,6 +1014,37 @@ onMounted(() => {
             </div>
           </div>
 
+          <!-- Editable Deal Fields -->
+          <div class="edit-fields">
+            <div class="edit-row">
+              <label>Partner</label>
+              <input v-model="deal.partner_name" @change="saveDealField('partner_name', deal.partner_name)" placeholder="Partner name" />
+            </div>
+            <div class="edit-row">
+              <label>Location</label>
+              <input v-model="deal.location" @change="saveDealField('location', deal.location)" placeholder="City, State" />
+            </div>
+            <div class="edit-row">
+              <label>Asset Type</label>
+              <select v-model="deal.asset_type" @change="saveDealField('asset_type', deal.asset_type)">
+                <option value="">—</option>
+                <option v-for="t in ASSET_TYPES" :key="t" :value="t">{{ t }}</option>
+              </select>
+            </div>
+            <div class="edit-row">
+              <label>Purchase Price</label>
+              <input type="number" v-model.number="deal.purchase_price" @change="saveDealField('purchase_price', deal.purchase_price)" />
+            </div>
+            <div class="edit-row">
+              <label>Source / Broker</label>
+              <input v-model="deal.source_broker" @change="saveDealField('source_broker', deal.source_broker)" placeholder="Broker name" />
+            </div>
+            <div class="edit-row">
+              <label>Target Close</label>
+              <input type="date" v-model="deal.target_close" @change="saveDealField('target_close', deal.target_close)" />
+            </div>
+          </div>
+
           <!-- Tab bar -->
           <div class="tab-bar">
             <button
@@ -2085,6 +2116,26 @@ onMounted(() => {
 }
 .info-label { display: block; font-size: 10px; color: #888; text-transform: uppercase; font-weight: 600; }
 .info-value { font-size: 15px; font-weight: 600; }
+
+/* Editable deal fields */
+.edit-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 6px 12px;
+  margin-bottom: 14px;
+  padding: 10px;
+  background: #f8f9fa;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+}
+.edit-row { display: flex; flex-direction: column; gap: 2px; }
+.edit-row label { font-size: 10px; color: #888; text-transform: uppercase; font-weight: 600; }
+.edit-row input, .edit-row select {
+  padding: 4px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font-size: 13px;
+}
 
 /* Tab bar */
 .tab-bar {
