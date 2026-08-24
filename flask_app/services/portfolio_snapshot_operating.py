@@ -32,9 +32,21 @@ from typing import Callable, Optional
 
 log = logging.getLogger(__name__)
 
-#: Investment_Strategy / Lifecycle values that mark a development deal. Such
-#: deals have no meaningful operating history, so the report shows "Dev".
-DEV_STRATEGIES = {"development", "new construction", "lease up", "redevelopment"}
+#: Values of **deals.Investment_Strategy** that mark a development deal.
+#:
+#: Creator decision 2026-08-24: dev detection reads Investment_Strategy ONLY --
+#: no fallback to Lifecycle, no "has numbers" hybrid. One field drives the "Dev"
+#: display (LTV / YTD DSCR / Debt Yield), the mOrigLoanAmt debt path, and the
+#: "Excluding Development Deals" subtotal, so those three can never disagree.
+#:
+#: MEASUREMENT NOTE (live build 09fe220ae0da, 2026-08-24): deals.Investment_Strategy
+#: is 0/110 populated. No MRI query selects it and it is absent from
+#: mri_service.MRI_COLUMNS, so nothing populates it on refresh. Until it is fed,
+#: this rule classifies every deal as operating. Lifecycle (97/110) carries the
+#: values that look like strategies -- Development 24, Value-Add 31, Income 22,
+#: Stable 16, New Construction 2, Redevelopment 1, Lease up 1 -- but is
+#: deliberately NOT consulted here.
+DEV_STRATEGIES = {"development", "new construction"}
 
 DEV_LABEL = "Dev"
 
@@ -168,7 +180,7 @@ def assemble_operating(investor_code: str, quarter: str, *,
         }
 
     for group, items in (resolved.get("groups") or {}).items():
-        rows = [build_row(e["vcode"], e["name"], e.get("strategy", ""))
+        rows = [build_row(e["vcode"], e["name"], e.get("investment_strategy", ""))
                 for e in items]
         groups[group] = rows
 
@@ -177,7 +189,7 @@ def assemble_operating(investor_code: str, quarter: str, *,
     # do not depend on ownership at all. They carry their Step 1 flag forward.
     flagged_rows = []
     for f in (resolved.get("flagged") or []):
-        row = build_row(f["vcode"], f["name"], f.get("strategy", ""),
+        row = build_row(f["vcode"], f["name"], f.get("investment_strategy", ""),
                         extra_flags=[f"ownership {f.get('reason', 'unavailable')}"])
         row["ownership_flagged"] = True
         flagged_rows.append(row)

@@ -371,8 +371,15 @@ def _deal_index(inv: pd.DataFrame) -> dict:
             "sale_date": pd.to_datetime(d.get(cols.get("sale_date")),
                                         errors="coerce"),
             "asset_type": _s(d.get(cols.get("asset_type"))),
+            # Display string: Investment_Strategy, falling back to Lifecycle —
+            # the same precedence one_pager.get_general_information uses.
             "strategy": (_s(d.get(cols.get("investment_strategy")))
                          or _s(d.get(cols.get("lifecycle")))),
+            # PURE Investment_Strategy, no fallback. This is the sole input to
+            # dev detection (creator decision 2026-08-24): the "Dev" display,
+            # the mOrigLoanAmt debt path and the future "Excluding Development
+            # Deals" subtotal all read this one field so they cannot diverge.
+            "investment_strategy": _s(d.get(cols.get("investment_strategy"))),
         }
     return out
 
@@ -486,6 +493,7 @@ def resolve_investor_deals(investor_code: str, quarter: str,
             "chains": [" -> ".join([investor] + [h["entity"] for h in r["chain"]])
                        for r in routes],
             "asset_type": m["asset_type"], "strategy": m["strategy"],
+            "investment_strategy": m["investment_strategy"],
             "sale_status": m["sale_status"],
             "sold_after_quarter": (m["sale_status"].upper() == "SOLD"
                                    and not is_sold_as_of(m, q_end)),
@@ -530,6 +538,8 @@ def resolve_investor_deals(investor_code: str, quarter: str,
             continue
         flagged.append({
             "vcode": m["vcode"], "name": m["name"], "iid": m["iid"],
+            "asset_type": m["asset_type"], "strategy": m["strategy"],
+            "investment_strategy": m["investment_strategy"],
             "lookthrough_pct": None,
             "reason": "ownership % unavailable",
             "detail": b["detail"]["reason"],
