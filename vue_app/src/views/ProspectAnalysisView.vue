@@ -697,6 +697,8 @@ async function saveAssumptions() {
 async function buildAndSaveWaterfall() {
   if (!selectedDealId.value || (!cfStepInputs.value.length && !capStepInputs.value.length)) return
   wfSaving.value = true
+  // Auto-save assumptions (persists capital budget alongside waterfall)
+  await saveAssumptions()
   try {
     const res = await api.post(`/api/prospects/${selectedDealId.value}/waterfall/build`, {
       cf_steps: cfStepInputs.value.filter(s => s.entity_id),
@@ -733,6 +735,9 @@ async function runAnalysis() {
   analysisLoading.value = true
   analysisError.value = ''
   analysisResult.value = null
+
+  // Auto-save assumptions (persists capital budget, debt params, etc.)
+  await saveAssumptions()
 
   try {
     // Compute effective closing_cost_pct so backend formula reproduces totalUses
