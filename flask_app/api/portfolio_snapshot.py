@@ -277,27 +277,31 @@ def bundle():
 def _pe_cap_comments(quarter: str, vcodes) -> dict:
     """vcode -> pe_cap_comment, for the pref-equity cross-check.
 
-    Scoped to the deals in this investor's report. It used to walk every row of
-    the deals table — 110 round-trips per /bundle on live — to serve a
-    cross-check that only ever looks at the ~32 deals in scope.
+    Scoped to the deals in this investor's report. Single batch query instead
+    of one DB round-trip per deal (was 32 queries for TIAA).
 
     Read-only reuse of the One Pager's own comment store. Failure is non-fatal:
     the cross-check reports that it could not run rather than passing silently.
+    Only non-empty comments are returned.
     """
+    if not vcodes:
+        return {}
     try:
-        from one_pager import get_one_pager_comments
+        from flask_app.db import get_engine
+        from sqlalchemy import text
+        engine = get_engine()
+        placeholders = ", ".join(f":v{i}" for i in range(len(vcodes)))
+        params = {f"v{i}": str(vc) for i, vc in enumerate(vcodes)}
+        params["q"] = str(quarter)
+        with engine.connect() as conn:
+            rows = conn.execute(text(
+                f"SELECT vcode, pe_cap_comment FROM one_pager_comments "
+                f"WHERE vcode IN ({placeholders}) AND reporting_period = :q"
+            ), params).mappings().fetchall()
+        return {r["vcode"]: r["pe_cap_comment"] for r in rows
+                if r.get("pe_cap_comment")}
     except Exception:
         return {}
-    out: dict = {}
-    for vcode in (vcodes or ()):
-        try:
-            row = get_one_pager_comments(vcode, quarter) or {}
-        except Exception:
-            continue
-        txt = row.get("pe_cap_comment")
-        if txt:
-            out[vcode] = txt
-    return out
 
 
 def _scope_vcodes(resolved: dict) -> list:

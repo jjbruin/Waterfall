@@ -93,29 +93,53 @@ def _ensure_table() -> None:
 def _one_pager_provider(data: dict) -> Callable:
     """(vcode, quarter) -> One Pager payload, memoised per call.
 
-    ``full_data`` is deliberately omitted: passing it runs a deal-analysis
-    waterfall per deal, 30+ per report. The snapshot reads only ``cap_stack``
-    and ``property_performance``, neither of which needs that enrichment.
-    """
-    from flask_app.services.financials_service import get_one_pager_data
+    Lean path: calls only ``get_capitalization_stack`` and
+    ``get_property_performance`` directly — the only two sections the
+    snapshot subtabs read. Skips ``pe_performance``, ``general``, and
+    ``comments`` (3 of the 5 sub-functions in ``get_one_pager_data``),
+    cutting per-deal cost by ~60%.
 
+    The shared ``get_one_pager_data`` is NOT modified — this is a parallel
+    path that returns the same ``cap_stack`` and ``property_performance``
+    keys with identical values.
+    """
+    from one_pager import (
+        get_capitalization_stack, get_property_performance,
+    )
+
+    deal_terms = data.get("deal_terms_raw")
     cache: dict = {}
 
     def provider(vcode: str, quarter: str) -> dict:
         key = (vcode, quarter)
         if key not in cache:
-            cache[key] = get_one_pager_data(
-                vcode, quarter, data["inv"], data["isbs_raw"],
-                data["mri_loans_raw"], data["mri_val"],
-                data["wf"], data["acct"],
-                occupancy_raw=data["occupancy_raw"],
-                budget_econ_occ=data.get("budget_econ_occ"),
-                deal_terms=data.get("deal_terms_raw"),
-                at_close_noi=data.get("at_close_noi_raw"),
-                event_dates=data.get("event_dates_raw"),
+            cap_stack = get_capitalization_stack(
+                vcode, data["mri_loans_raw"], data["mri_val"],
+                data["wf"], data["acct"], data["inv"],
+                isbs_raw=data["isbs_raw"], quarter_str=quarter,
                 relationships=data.get("relationships_raw"),
-                mri_loans_all=data.get("mri_loans_all"),
             )
+            prop_perf = get_property_performance(
+                vcode, quarter, data["isbs_raw"], data["mri_val"],
+                data["occupancy_raw"],
+                budget_econ_occ_df=data.get("budget_econ_occ"),
+                at_close_noi_df=data.get("at_close_noi_raw"),
+                deal_terms_df=deal_terms,
+                mri_loans_all_df=data.get("mri_loans_all"),
+                inv_map=data["inv"],
+            ) if quarter else {}
+
+            # Enrich cap_stack with deal_terms (same as get_one_pager_data)
+            if deal_terms is not None and not getattr(deal_terms, "empty", True):
+                from flask_app.services.financials_service import (
+                    _enrich_cap_stack_from_deal_terms,
+                )
+                _enrich_cap_stack_from_deal_terms(cap_stack, deal_terms, vcode)
+
+            cache[key] = {
+                "cap_stack": cap_stack,
+                "property_performance": prop_perf,
+            }
         return cache[key]
 
     return provider
