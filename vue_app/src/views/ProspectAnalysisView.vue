@@ -425,42 +425,43 @@ const equityWaterfallSummary = computed(() => {
   // Column headers: Year 0, 1, 2, ... (relative to close year)
   const columns = allYears.map(yr => ({ year: yr, label: yr === closeYear ? 'Year 0' : `Year ${yr - closeYear}` }))
 
+  // Capital return descriptions — only these reduce equity balance
+  const CAP_RETURN_DESCS = ['Capital Distribution', 'Return of Capital', 'Cap WF']
+
   // Build rows per partner
   const rows: EwRow[] = []
   const dealContribs: Record<number, number> = {}
-  const dealDists: Record<number, number> = {}
+  const dealCfDists: Record<number, number> = {}
+  const dealCapDists: Record<number, number> = {}
   const dealBal: Record<number, number> = {}
 
   for (const pid of partners) {
     const cfs = partnerCfs[pid]
 
-    // Aggregate by year
+    // Aggregate by year — split CF vs Capital distributions
     const contribs: Record<number, number> = {}
-    const dists: Record<number, number> = {}
-    for (const yr of allYears) { contribs[yr] = 0; dists[yr] = 0 }
+    const cfDists: Record<number, number> = {}
+    const capDists: Record<number, number> = {}
+    for (const yr of allYears) { contribs[yr] = 0; cfDists[yr] = 0; capDists[yr] = 0 }
     for (const cf of cfs) {
       if (cf.desc === 'Unrealized NAV') continue
       const yr = new Date(cf.date).getFullYear()
-      if (cf.amount < 0) contribs[yr] += cf.amount
-      else dists[yr] += cf.amount
+      if (cf.amount < 0) {
+        contribs[yr] += cf.amount
+      } else if (CAP_RETURN_DESCS.some(d => cf.desc.includes(d))) {
+        capDists[yr] += cf.amount
+      } else {
+        cfDists[yr] += cf.amount
+      }
     }
 
-    // Running balance: contributions reduce (negative), distributions don't reduce capital for CF, but cap distributions do
-    // Simple approach: balance = cumulative contributions + cumulative capital distributions (return of capital)
+    // Running balance: contributions increase capital, only capital distributions reduce it
     const balance: Record<number, number> = {}
     let runBal = 0
     for (const yr of allYears) {
-      runBal += contribs[yr]  // negative numbers (contributions increase invested capital)
-      // Capital distributions reduce balance
-      for (const cf of cfs) {
-        const cfYr = new Date(cf.date).getFullYear()
-        if (cfYr === yr && cf.amount > 0 && (
-          cf.desc.includes('Capital') || cf.desc.includes('Return') || cf.desc.includes('Initial')
-        )) {
-          runBal += cf.amount  // positive — reduces outstanding (which is negative)
-        }
-      }
-      balance[yr] = -runBal  // flip sign: display as positive outstanding
+      runBal += contribs[yr]       // negative — increases outstanding
+      runBal += capDists[yr]       // positive — reduces outstanding
+      balance[yr] = -runBal        // flip sign: display as positive outstanding
     }
 
     // Partner header
@@ -471,10 +472,15 @@ const equityWaterfallSummary = computed(() => {
     for (const yr of allYears) contribValues[yr] = contribs[yr] !== 0 ? -contribs[yr] : null  // show as positive
     rows.push({ label: '  Contributions', partner: pid, values: contribValues })
 
-    // Distributions row
-    const distValues: Record<number, number | null> = {}
-    for (const yr of allYears) distValues[yr] = dists[yr] !== 0 ? dists[yr] : null
-    rows.push({ label: '  Distributions', partner: pid, values: distValues })
+    // CF Distributions row
+    const cfDistValues: Record<number, number | null> = {}
+    for (const yr of allYears) cfDistValues[yr] = cfDists[yr] !== 0 ? cfDists[yr] : null
+    rows.push({ label: '  CF Distributions', partner: pid, values: cfDistValues })
+
+    // Capital Distributions row
+    const capDistValues: Record<number, number | null> = {}
+    for (const yr of allYears) capDistValues[yr] = capDists[yr] !== 0 ? capDists[yr] : null
+    rows.push({ label: '  Capital Distributions', partner: pid, values: capDistValues })
 
     // Balance row
     const balValues: Record<number, number | null> = {}
@@ -484,7 +490,8 @@ const equityWaterfallSummary = computed(() => {
     // Accumulate deal totals
     for (const yr of allYears) {
       dealContribs[yr] = (dealContribs[yr] || 0) + (contribs[yr] || 0)
-      dealDists[yr] = (dealDists[yr] || 0) + (dists[yr] || 0)
+      dealCfDists[yr] = (dealCfDists[yr] || 0) + (cfDists[yr] || 0)
+      dealCapDists[yr] = (dealCapDists[yr] || 0) + (capDists[yr] || 0)
       dealBal[yr] = (dealBal[yr] || 0) + (balance[yr] || 0)
     }
   }
@@ -492,15 +499,18 @@ const equityWaterfallSummary = computed(() => {
   // Deal total section
   rows.push({ label: 'Deal Total', isHeader: true, values: {} })
   const dtContrib: Record<number, number | null> = {}
-  const dtDist: Record<number, number | null> = {}
+  const dtCfDist: Record<number, number | null> = {}
+  const dtCapDist: Record<number, number | null> = {}
   const dtBal: Record<number, number | null> = {}
   for (const yr of allYears) {
     dtContrib[yr] = dealContribs[yr] !== 0 ? -dealContribs[yr] : null
-    dtDist[yr] = dealDists[yr] !== 0 ? dealDists[yr] : null
+    dtCfDist[yr] = dealCfDists[yr] !== 0 ? dealCfDists[yr] : null
+    dtCapDist[yr] = dealCapDists[yr] !== 0 ? dealCapDists[yr] : null
     dtBal[yr] = dealBal[yr] !== 0 ? dealBal[yr] : null
   }
   rows.push({ label: '  Contributions', isBold: true, values: dtContrib })
-  rows.push({ label: '  Distributions', isBold: true, values: dtDist })
+  rows.push({ label: '  CF Distributions', isBold: true, values: dtCfDist })
+  rows.push({ label: '  Capital Distributions', isBold: true, values: dtCapDist })
   rows.push({ label: '  Outstanding Balance', isBold: true, isUnderline: true, values: dtBal })
 
   return { columns, rows, years: allYears }

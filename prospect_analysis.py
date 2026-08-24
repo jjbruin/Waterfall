@@ -92,7 +92,7 @@ def build_prospect_analysis(
 
     # Compute exit sale price from terminal NOI / exit cap rate
     terminal_noi = noi_year1 * ((1 + noi_growth_rate) ** (hold_years - 1))
-    contract_sale_price_val = terminal_noi / exit_cap_rate if exit_cap_rate > 0 else 0
+    contract_sale_price_val = terminal_noi / exit_cap_rate if exit_cap_rate > 0 and terminal_noi > 0 else None
 
     # Investor IDs from entities or defaults
     pe_investor_id, op_investor_id = _resolve_investors(entities, psc_equity_pct)
