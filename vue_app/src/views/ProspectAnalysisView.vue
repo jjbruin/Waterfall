@@ -561,8 +561,8 @@ function removeEquityLine(idx: number) {
 // Waterfall builder actions
 // ---------------------------------------------------------------------------
 
-function addWfStep(list: typeof cfStepInputs) {
-  list.value.push({
+function addWfStep(list: WfStepInput[]) {
+  list.push({
     entity_id: entityOptions.value[0]?.value || '',
     step_type: 'residual',
     rate: null,
@@ -570,8 +570,8 @@ function addWfStep(list: typeof cfStepInputs) {
   })
 }
 
-function removeWfStep(list: typeof cfStepInputs, idx: number) {
-  list.value.splice(idx, 1)
+function removeWfStep(list: WfStepInput[], idx: number) {
+  list.splice(idx, 1)
 }
 
 function addNewEntity() {
