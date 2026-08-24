@@ -50,6 +50,40 @@ DEV_STRATEGIES = {"development", "new construction"}
 
 DEV_LABEL = "Dev"
 
+#: TEMPORARY (2026-08-24): consult Lifecycle when Investment_Strategy is empty.
+#:
+#: This relaxes the "Investment_Strategy ONLY" decision recorded above, for one
+#: reason: that field is 0/110 populated, so the rule classifies every deal as
+#: operating and the whole "Dev" display — including the Waters Creek LTV
+#: exception in the Loan subtab — is dead code that cannot be tested against the
+#: PDF. With the fallback on, 10 of TIAA's 35 deals classify as development
+#: (9 Lifecycle=Development + Pegasus Life Storage, Lifecycle=New Construction),
+#: which is the population the PDF renders as "Dev".
+#:
+#: Investment_Strategy still WINS wherever it is populated — this only fills the
+#: gap. Set to False to restore the strict Investment_Strategy-only rule; that is
+#: the correct end state once MRI feeds the field (which needs a
+#: Prop_Info_Core.sql + mri_service.MRI_COLUMNS change).
+DEV_STRATEGY_ALLOW_LIFECYCLE_FALLBACK = True
+
+
+def resolve_strategy(entry: dict) -> tuple[str, str]:
+    """(strategy value, which field it came from) for one Step 1 deal entry.
+
+    The single place the strategy field is chosen, so the "Dev" display, the
+    mOrigLoanAmt debt path and the "Excluding Development Deals" subtotal cannot
+    disagree about what a development deal is. The source is returned alongside
+    so a proxy-derived classification is never mistaken for the real field.
+    """
+    pure = str(entry.get("investment_strategy") or "").strip()
+    if pure:
+        return pure, "Investment_Strategy"
+    if DEV_STRATEGY_ALLOW_LIFECYCLE_FALLBACK:
+        fallback = str(entry.get("strategy") or "").strip()
+        if fallback:
+            return fallback, "Lifecycle (proxy)"
+    return "", "unavailable"
+
 
 def _num(v):
     """Float or None. Zero is preserved — it is data, not absence."""
@@ -180,7 +214,7 @@ def assemble_operating(investor_code: str, quarter: str, *,
         }
 
     for group, items in (resolved.get("groups") or {}).items():
-        rows = [build_row(e["vcode"], e["name"], e.get("investment_strategy", ""))
+        rows = [build_row(e["vcode"], e["name"], resolve_strategy(e)[0])
                 for e in items]
         groups[group] = rows
 
@@ -189,7 +223,7 @@ def assemble_operating(investor_code: str, quarter: str, *,
     # do not depend on ownership at all. They carry their Step 1 flag forward.
     flagged_rows = []
     for f in (resolved.get("flagged") or []):
-        row = build_row(f["vcode"], f["name"], f.get("investment_strategy", ""),
+        row = build_row(f["vcode"], f["name"], resolve_strategy(f)[0],
                         extra_flags=[f"ownership {f.get('reason', 'unavailable')}"])
         row["ownership_flagged"] = True
         flagged_rows.append(row)
