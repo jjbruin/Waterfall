@@ -468,46 +468,42 @@ def analyze_deal(deal_id):
             if aat is not None and not aat.empty:
                 years = [int(y) for y in aat.index.tolist()]
 
-                # Build reverse map: account number -> IS_ACCOUNTS label
-                acct_to_label = {}
-                for section in ('REVENUES', 'EXPENSES'):
-                    for label, accts in IS_ACCOUNTS.get(section, {}).items():
-                        for a in accts:
-                            acct_to_label[int(a)] = label
-
-                # Compute per-label annual sums from fc_display
+                # Build detail revenue/expense line items from fc_display
                 import pandas as pd
-                fc = fc_display.copy()
-                fc['Year'] = pd.to_datetime(fc['event_date']).dt.year
-                fc = fc[fc['Year'].isin(years)]
+                rev_details = []
+                exp_details = []
+                try:
+                    fc_det = fc_display.copy()
+                    fc_det['_yr'] = pd.to_datetime(fc_det['event_date']).dt.year
+                    fc_det = fc_det[fc_det['_yr'].isin(years)]
+                    fc_det['_acct'] = pd.to_numeric(fc_det['vAccount'], errors='coerce').astype('Int64')
 
-                def _line_item_rows(account_set, section_labels):
-                    """Build detail rows for accounts in account_set, grouped by IS_ACCOUNTS labels."""
-                    detail_rows = []
-                    seen_labels = set()
-                    for label, accts in section_labels.items():
-                        acct_ints = {int(a) for a in accts}
-                        mask = fc['vAccount'].isin(acct_ints & account_set)
-                        if not mask.any():
-                            continue
-                        sums = fc.loc[mask].groupby('Year')['mAmount_norm'].sum()
-                        vals = {}
-                        for yr in years:
-                            v = sums.get(yr)
-                            if v is not None and not (isinstance(v, float) and v != v) and abs(v) > 0.5:
-                                vals[yr] = v
-                        if vals:
-                            detail_rows.append({
-                                'label': f'  {label}',
-                                'values': safe_json(vals),
-                                'is_pct': False, 'is_header': False,
-                                'underline': False, 'topline': False,
-                            })
-                            seen_labels.add(label)
-                    return detail_rows
-
-                rev_details = _line_item_rows(REVENUE_ACCTS, IS_ACCOUNTS.get('REVENUES', {}))
-                exp_details = _line_item_rows(EXPENSE_ACCTS, IS_ACCOUNTS.get('EXPENSES', {}))
+                    for section, detail_list, acct_set in [
+                        ('REVENUES', rev_details, REVENUE_ACCTS),
+                        ('EXPENSES', exp_details, EXPENSE_ACCTS),
+                    ]:
+                        for label, accts in IS_ACCOUNTS.get(section, {}).items():
+                            target = {int(a) for a in accts} & acct_set
+                            if not target:
+                                continue
+                            subset = fc_det[fc_det['_acct'].isin(target)]
+                            if subset.empty:
+                                continue
+                            sums = subset.groupby('_yr')['mAmount_norm'].sum()
+                            vals = {}
+                            for yr in years:
+                                v = sums.get(yr)
+                                if v is not None and not (isinstance(v, float) and v != v) and abs(v) > 0.5:
+                                    vals[yr] = v
+                            if vals:
+                                detail_list.append({
+                                    'label': f'  {label}',
+                                    'values': safe_json(vals),
+                                    'is_pct': False, 'is_header': False,
+                                    'underline': False, 'topline': False,
+                                })
+                except Exception as detail_err:
+                    logger.warning("Detail line items failed: %s", detail_err)
 
                 rows = []
                 pct_rows = {'Debt Service Coverage Ratio'}
@@ -555,7 +551,7 @@ def analyze_deal(deal_id):
                     })
                 annual_forecast = {'years': years, 'rows': rows}
     except Exception as e:
-        logger.warning("Annual forecast build failed: %s", e)
+        logger.exception("Annual forecast build failed: %s", e)
 
     # Build debt service summary
     debt_service = None
