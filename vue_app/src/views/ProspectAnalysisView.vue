@@ -352,17 +352,159 @@ const entityOptions = computed(() => {
   return opts
 })
 
-const cfResidualPct = computed(() =>
-  cfStepInputs.value
-    .filter(s => s.step_type === 'residual')
-    .reduce((sum, s) => sum + (s.rate || 0), 0)
-)
+function splitTierTotals(steps: WfStepInput[]): number[] {
+  // Group residual steps by tier (split at IRR Lookback boundaries)
+  const tiers: number[] = []
+  let current = 0
+  for (const s of steps) {
+    if (s.step_type === 'irr_lookback' && current > 0) {
+      tiers.push(current)
+      current = 0
+    } else if (s.step_type === 'residual') {
+      current += (s.rate || 0)
+    }
+  }
+  if (current > 0) tiers.push(current)
+  return tiers
+}
 
-const capResidualPct = computed(() =>
-  capStepInputs.value
-    .filter(s => s.step_type === 'residual')
-    .reduce((sum, s) => sum + (s.rate || 0), 0)
-)
+const cfResidualTiers = computed(() => splitTierTotals(cfStepInputs.value))
+const capResidualTiers = computed(() => splitTierTotals(capStepInputs.value))
+
+const cfBadTiers = computed(() => cfResidualTiers.value.filter(t => Math.abs(t - 100) > 0.5))
+const capBadTiers = computed(() => capResidualTiers.value.filter(t => Math.abs(t - 100) > 0.5))
+
+// ---------------------------------------------------------------------------
+// Equity Waterfall Summary — per-partner contributions/distributions/balance by year
+// ---------------------------------------------------------------------------
+
+interface EwRow {
+  label: string
+  partner?: string
+  isBold?: boolean
+  isHeader?: boolean
+  isUnderline?: boolean
+  values: Record<string | number, number | null>
+}
+
+const equityWaterfallSummary = computed(() => {
+  const pr = analysisResult.value?.partner_results
+  if (!pr?.length) return null
+
+  // Collect all cashflow details across partners
+  const partners: string[] = []
+  const partnerCfs: Record<string, Array<{ date: string, amount: number, desc: string }>> = {}
+  for (const p of pr) {
+    const pid = p.partner || p.investor_id
+    if (!pid) continue
+    partners.push(pid)
+    partnerCfs[pid] = (p.cashflow_details || []).map((d: any) => ({
+      date: typeof d.Date === 'string' ? d.Date : String(d.Date),
+      amount: d.Amount || 0,
+      desc: d.Description || '',
+    }))
+  }
+  if (!partners.length) return null
+
+  // Determine year range: Year 0 = close year, then forecast years
+  const closeDate = analysisResult.value?.prospect_assumptions?.close_date
+  const closeYear = closeDate ? new Date(closeDate).getFullYear() : null
+  if (!closeYear) return null
+
+  // Collect all years from cashflows
+  const yearSet = new Set<number>()
+  for (const pid of partners) {
+    for (const cf of partnerCfs[pid]) {
+      const yr = new Date(cf.date).getFullYear()
+      yearSet.add(yr)
+    }
+  }
+  const allYears = Array.from(yearSet).sort()
+  if (!allYears.length) return null
+
+  // Column headers: Year 0, 1, 2, ... (relative to close year)
+  const columns = allYears.map(yr => ({ year: yr, label: yr === closeYear ? 'Year 0' : `Year ${yr - closeYear}` }))
+
+  // Build rows per partner
+  const rows: EwRow[] = []
+  const dealContribs: Record<number, number> = {}
+  const dealDists: Record<number, number> = {}
+  const dealBal: Record<number, number> = {}
+
+  for (const pid of partners) {
+    const cfs = partnerCfs[pid]
+
+    // Aggregate by year
+    const contribs: Record<number, number> = {}
+    const dists: Record<number, number> = {}
+    for (const yr of allYears) { contribs[yr] = 0; dists[yr] = 0 }
+    for (const cf of cfs) {
+      if (cf.desc === 'Unrealized NAV') continue
+      const yr = new Date(cf.date).getFullYear()
+      if (cf.amount < 0) contribs[yr] += cf.amount
+      else dists[yr] += cf.amount
+    }
+
+    // Running balance: contributions reduce (negative), distributions don't reduce capital for CF, but cap distributions do
+    // Simple approach: balance = cumulative contributions + cumulative capital distributions (return of capital)
+    const balance: Record<number, number> = {}
+    let runBal = 0
+    for (const yr of allYears) {
+      runBal += contribs[yr]  // negative numbers (contributions increase invested capital)
+      // Capital distributions reduce balance
+      for (const cf of cfs) {
+        const cfYr = new Date(cf.date).getFullYear()
+        if (cfYr === yr && cf.amount > 0 && (
+          cf.desc.includes('Capital') || cf.desc.includes('Return') || cf.desc.includes('Initial')
+        )) {
+          runBal += cf.amount  // positive — reduces outstanding (which is negative)
+        }
+      }
+      balance[yr] = -runBal  // flip sign: display as positive outstanding
+    }
+
+    // Partner header
+    rows.push({ label: pid, isHeader: true, values: {} })
+
+    // Contributions row
+    const contribValues: Record<number, number | null> = {}
+    for (const yr of allYears) contribValues[yr] = contribs[yr] !== 0 ? -contribs[yr] : null  // show as positive
+    rows.push({ label: '  Contributions', partner: pid, values: contribValues })
+
+    // Distributions row
+    const distValues: Record<number, number | null> = {}
+    for (const yr of allYears) distValues[yr] = dists[yr] !== 0 ? dists[yr] : null
+    rows.push({ label: '  Distributions', partner: pid, values: distValues })
+
+    // Balance row
+    const balValues: Record<number, number | null> = {}
+    for (const yr of allYears) balValues[yr] = balance[yr] !== 0 ? balance[yr] : null
+    rows.push({ label: '  Outstanding Balance', partner: pid, isBold: true, isUnderline: true, values: balValues })
+
+    // Accumulate deal totals
+    for (const yr of allYears) {
+      dealContribs[yr] = (dealContribs[yr] || 0) + (contribs[yr] || 0)
+      dealDists[yr] = (dealDists[yr] || 0) + (dists[yr] || 0)
+      dealBal[yr] = (dealBal[yr] || 0) + (balance[yr] || 0)
+    }
+  }
+
+  // Deal total section
+  rows.push({ label: 'Deal Total', isHeader: true, values: {} })
+  const dtContrib: Record<number, number | null> = {}
+  const dtDist: Record<number, number | null> = {}
+  const dtBal: Record<number, number | null> = {}
+  for (const yr of allYears) {
+    dtContrib[yr] = dealContribs[yr] !== 0 ? -dealContribs[yr] : null
+    dtDist[yr] = dealDists[yr] !== 0 ? dealDists[yr] : null
+    dtBal[yr] = dealBal[yr] !== 0 ? dealBal[yr] : null
+  }
+  rows.push({ label: '  Contributions', isBold: true, values: dtContrib })
+  rows.push({ label: '  Distributions', isBold: true, values: dtDist })
+  rows.push({ label: '  Outstanding Balance', isBold: true, isUnderline: true, values: dtBal })
+
+  return { columns, rows, years: allYears }
+})
 
 // ---------------------------------------------------------------------------
 // Data loading
@@ -1475,8 +1617,8 @@ loadDeals()
                 <div class="wf-add-row">
                   <button class="btn-sm btn-secondary" @click="addWfStep(cfStepInputs)">+ Add Step</button>
                 </div>
-                <div v-if="cfResidualPct > 0 && Math.abs(cfResidualPct - 100) > 0.5" class="wf-warning">
-                  CF split shares sum to {{ cfResidualPct.toFixed(1) }}% (should be 100%)
+                <div v-for="(t, i) in cfBadTiers" :key="'cft'+i" class="wf-warning">
+                  CF split tier {{ cfBadTiers.length > 1 ? i + 1 + ' ' : '' }}shares sum to {{ t.toFixed(1) }}% (should be 100%)
                 </div>
               </div>
 
@@ -1535,8 +1677,8 @@ loadDeals()
                 <div class="wf-add-row">
                   <button class="btn-sm btn-secondary" @click="addWfStep(capStepInputs)">+ Add Step</button>
                 </div>
-                <div v-if="capResidualPct > 0 && Math.abs(capResidualPct - 100) > 0.5" class="wf-warning">
-                  Cap split shares sum to {{ capResidualPct.toFixed(1) }}% (should be 100%)
+                <div v-for="(t, i) in capBadTiers" :key="'capt'+i" class="wf-warning">
+                  Cap split tier {{ capBadTiers.length > 1 ? i + 1 + ' ' : '' }}shares sum to {{ t.toFixed(1) }}% (should be 100%)
                 </div>
               </div>
 
@@ -1729,6 +1871,37 @@ loadDeals()
                       <td class="r"><strong>{{ analysisResult.deal_summary.deal_irr != null ? fmtPct(analysisResult.deal_summary.deal_irr) : '—' }}</strong></td>
                       <td class="r"><strong>{{ analysisResult.deal_summary.deal_roe != null ? fmtPct(analysisResult.deal_summary.deal_roe) : '—' }}</strong></td>
                       <td class="r"><strong>{{ analysisResult.deal_summary.deal_moic != null ? fmtDec(analysisResult.deal_summary.deal_moic, 2) + 'x' : '—' }}</strong></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Equity Waterfall Summary -->
+            <div class="section expandable" v-if="equityWaterfallSummary">
+              <div class="section-header" @click="expanded.equity = !expanded.equity">
+                Equity Waterfall Summary
+                <span class="chevron">{{ expanded.equity ? '\u25BE' : '\u25B8' }}</span>
+              </div>
+              <div v-if="expanded.equity" class="table-scroll">
+                <table class="forecast-table">
+                  <thead>
+                    <tr>
+                      <th class="row-label"></th>
+                      <th v-for="col in equityWaterfallSummary.columns" :key="col.year" class="r">{{ col.label }}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(row, i) in equityWaterfallSummary.rows" :key="i"
+                        :class="{
+                          'section-header-row': row.isHeader,
+                          'underline-row': row.isUnderline,
+                        }">
+                      <td class="row-label" :style="{ fontWeight: row.isBold || row.isHeader ? '600' : 'normal' }">{{ row.label }}</td>
+                      <td v-for="yr in equityWaterfallSummary.years" :key="yr" class="r"
+                          :style="{ fontWeight: row.isBold || row.isHeader ? '600' : 'normal' }">
+                        {{ row.values[yr] != null ? fmtCurrency(row.values[yr]) : '' }}
+                      </td>
                     </tr>
                   </tbody>
                 </table>
