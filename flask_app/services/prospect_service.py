@@ -153,6 +153,27 @@ PROSPECT_DDL_PG = [
         noi_year1       DOUBLE PRECISION,
         noi_growth_rate DOUBLE PRECISION DEFAULT 0.02,
         crossed_vcodes  TEXT,
+        lender          TEXT,
+        rate_type       TEXT DEFAULT 'fixed',
+        rate_index      TEXT,
+        rate_index_term TEXT,
+        rate_spread_bps DOUBLE PRECISION,
+        rate_cushion_bps DOUBLE PRECISION,
+        extension_count INTEGER,
+        extension_months INTEGER DEFAULT 12,
+        extension_conditions TEXT,
+        prepay_type     TEXT,
+        prepay_schedule TEXT,
+        max_ltv         DOUBLE PRECISION,
+        max_ltc         DOUBLE PRECISION,
+        min_dscr        DOUBLE PRECISION,
+        dscr_test_start TEXT,
+        min_debt_yield  DOUBLE PRECISION,
+        origination_fee_bps DOUBLE PRECISION,
+        earnout_notes   TEXT,
+        guarantor_notes TEXT,
+        capital_uses_json TEXT,
+        capital_sources_json TEXT,
         created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
@@ -169,7 +190,8 @@ PROSPECT_DDL_PG = [
         noi             DOUBLE PRECISION,
         capex           DOUBLE PRECISION,
         other           DOUBLE PRECISION,
-        source          TEXT DEFAULT 'manual'
+        source          TEXT DEFAULT 'manual',
+        created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """,
     """
@@ -236,6 +258,36 @@ def ensure_prospect_tables(engine):
             ('prospect_deals', 'vcode', 'TEXT'),
             ('prospect_deals', 'deal_structure', "TEXT DEFAULT 'single_property'"),
             ('prospect_properties', 'vcode', 'TEXT'),
+            ('prospect_cashflows', 'created_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP'),
+            # New assumption fields (Aug 2026)
+            ('prospect_assumptions', 'lender', 'TEXT'),
+            ('prospect_assumptions', 'rate_type', "TEXT DEFAULT 'fixed'"),
+            ('prospect_assumptions', 'rate_index', 'TEXT'),
+            ('prospect_assumptions', 'rate_index_term', 'TEXT'),
+            ('prospect_assumptions', 'rate_spread_bps', 'DOUBLE PRECISION'),
+            ('prospect_assumptions', 'rate_cushion_bps', 'DOUBLE PRECISION'),
+            ('prospect_assumptions', 'extension_count', 'INTEGER'),
+            ('prospect_assumptions', 'extension_months', 'INTEGER DEFAULT 12'),
+            ('prospect_assumptions', 'extension_conditions', 'TEXT'),
+            ('prospect_assumptions', 'prepay_type', 'TEXT'),
+            ('prospect_assumptions', 'prepay_schedule', 'TEXT'),
+            ('prospect_assumptions', 'max_ltv', 'DOUBLE PRECISION'),
+            ('prospect_assumptions', 'max_ltc', 'DOUBLE PRECISION'),
+            ('prospect_assumptions', 'min_dscr', 'DOUBLE PRECISION'),
+            ('prospect_assumptions', 'dscr_test_start', 'TEXT'),
+            ('prospect_assumptions', 'min_debt_yield', 'DOUBLE PRECISION'),
+            ('prospect_assumptions', 'origination_fee_bps', 'DOUBLE PRECISION'),
+            ('prospect_assumptions', 'earnout_notes', 'TEXT'),
+            ('prospect_assumptions', 'guarantor_notes', 'TEXT'),
+            ('prospect_assumptions', 'capital_uses_json', 'TEXT'),
+            ('prospect_assumptions', 'capital_sources_json', 'TEXT'),
+            # Operating override fields (Aug 2026)
+            ('prospect_assumptions', 'mgmt_fee_pct', 'DOUBLE PRECISION'),
+            ('prospect_assumptions', 'replacement_reserve_psf', 'DOUBLE PRECISION'),
+            # Line-item cashflow columns
+            ('prospect_cashflows', 'vaccount', 'INTEGER'),
+            ('prospect_cashflows', 'line_item', 'TEXT'),
+            ('prospect_cashflows', 'amount', 'DOUBLE PRECISION'),
         ]
         for table, col, col_type in _migrate_columns:
             try:
@@ -858,69 +910,57 @@ ASSUMPTION_FIELDS = [
     'promote_pct', 'am_fee_pct', 'annual_expenses', 'exit_cap_rate',
     'selling_cost_pct', 'hold_years', 'capex_reserve_psf',
     'noi_year1', 'noi_growth_rate', 'crossed_vcodes',
+    'lender', 'rate_type', 'rate_index', 'rate_index_term',
+    'rate_spread_bps', 'rate_cushion_bps',
+    'extension_count', 'extension_months', 'extension_conditions',
+    'prepay_type', 'prepay_schedule',
+    'max_ltv', 'max_ltc', 'min_dscr', 'dscr_test_start', 'min_debt_yield',
+    'origination_fee_bps', 'earnout_notes', 'guarantor_notes',
+    'capital_uses_json', 'capital_sources_json',
+    'mgmt_fee_pct', 'replacement_reserve_psf',
 ]
+
+
+def _assumption_row_to_dict(r, columns: list) -> Dict:
+    """Convert a row tuple to dict using column name list."""
+    d = {}
+    for i, col in enumerate(columns):
+        v = r[i]
+        if col in ('created_at', 'updated_at'):
+            d[col] = str(v) if v else None
+        else:
+            d[col] = v
+    return d
 
 
 def list_assumptions(engine, deal_id: int) -> List[Dict]:
     """List assumption versions for a prospect deal."""
+    fields_sql = ', '.join(ASSUMPTION_FIELDS)
+    cols = ['id', 'version', 'version_label'] + list(ASSUMPTION_FIELDS) + ['created_at', 'updated_at']
     with engine.connect() as conn:
-        rows = conn.execute(text("""
-            SELECT id, version, version_label, debt_amount, debt_rate,
-                   debt_term_months, io_months, amort_months, origination_fee,
-                   psc_equity_pct, pref_rate, promote_pct, am_fee_pct,
-                   annual_expenses, exit_cap_rate, selling_cost_pct,
-                   hold_years, capex_reserve_psf, noi_year1, noi_growth_rate,
-                   crossed_vcodes, created_at, updated_at
+        rows = conn.execute(text(f"""
+            SELECT id, version, version_label, {fields_sql}, created_at, updated_at
             FROM prospect_assumptions
             WHERE prospect_id = :pid
             ORDER BY version
         """), {'pid': deal_id}).fetchall()
 
-    return [{
-        'id': r[0], 'version': r[1], 'version_label': r[2],
-        'debt_amount': r[3], 'debt_rate': r[4],
-        'debt_term_months': r[5], 'io_months': r[6],
-        'amort_months': r[7], 'origination_fee': r[8],
-        'psc_equity_pct': r[9], 'pref_rate': r[10],
-        'promote_pct': r[11], 'am_fee_pct': r[12],
-        'annual_expenses': r[13], 'exit_cap_rate': r[14],
-        'selling_cost_pct': r[15], 'hold_years': r[16],
-        'capex_reserve_psf': r[17], 'noi_year1': r[18],
-        'noi_growth_rate': r[19], 'crossed_vcodes': r[20],
-        'created_at': str(r[21]) if r[21] else None,
-        'updated_at': str(r[22]) if r[22] else None,
-    } for r in rows]
+    return [_assumption_row_to_dict(r, cols) for r in rows]
 
 
 def get_assumption(engine, assumption_id: int) -> Optional[Dict]:
     """Get a single assumption version."""
+    fields_sql = ', '.join(ASSUMPTION_FIELDS)
+    cols = ['id', 'prospect_id', 'version', 'version_label'] + list(ASSUMPTION_FIELDS) + ['created_at', 'updated_at']
     with engine.connect() as conn:
-        r = conn.execute(text("""
-            SELECT id, prospect_id, version, version_label, debt_amount, debt_rate,
-                   debt_term_months, io_months, amort_months, origination_fee,
-                   psc_equity_pct, pref_rate, promote_pct, am_fee_pct,
-                   annual_expenses, exit_cap_rate, selling_cost_pct,
-                   hold_years, capex_reserve_psf, noi_year1, noi_growth_rate,
-                   crossed_vcodes, created_at, updated_at
+        r = conn.execute(text(f"""
+            SELECT id, prospect_id, version, version_label, {fields_sql}, created_at, updated_at
             FROM prospect_assumptions
             WHERE id = :aid
         """), {'aid': assumption_id}).fetchone()
     if not r:
         return None
-    return {
-        'id': r[0], 'prospect_id': r[1], 'version': r[2], 'version_label': r[3],
-        'debt_amount': r[4], 'debt_rate': r[5],
-        'debt_term_months': r[6], 'io_months': r[7],
-        'amort_months': r[8], 'origination_fee': r[9],
-        'psc_equity_pct': r[10], 'pref_rate': r[11],
-        'promote_pct': r[12], 'am_fee_pct': r[13],
-        'annual_expenses': r[14], 'exit_cap_rate': r[15],
-        'selling_cost_pct': r[16], 'hold_years': r[17],
-        'capex_reserve_psf': r[18], 'noi_year1': r[19],
-        'noi_growth_rate': r[20], 'crossed_vcodes': r[21],
-        'created_at': str(r[22]) if r[22] else None,
-        'updated_at': str(r[23]) if r[23] else None,
-    }
+    return _assumption_row_to_dict(r, cols)
 
 
 def save_assumptions(engine, deal_id: int, data: Dict) -> Dict:
@@ -976,3 +1016,295 @@ def delete_assumptions(engine, assumption_id: int) -> bool:
         ), {'aid': assumption_id})
         conn.commit()
     return result.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# Property Cashflows CRUD
+# ---------------------------------------------------------------------------
+
+def import_property_cashflows(
+    engine, deal_id: int, property_id: int,
+    cashflows: List[Dict], source: str = 'excel',
+    version: int = 1,
+) -> Dict:
+    """Import cash flow rows for a property, replacing existing rows for that version.
+
+    cashflows: list of {'period_date', 'revenue', 'expenses', 'capex', 'noi'}
+    """
+    with engine.connect() as conn:
+        # Verify property belongs to deal
+        prop = conn.execute(text(
+            "SELECT id FROM prospect_properties WHERE id = :pid AND prospect_id = :did"
+        ), {'pid': property_id, 'did': deal_id}).fetchone()
+        if not prop:
+            raise ValueError(f"Property {property_id} not found in deal {deal_id}")
+
+        # Delete existing cashflows for this property + version
+        conn.execute(text("""
+            DELETE FROM prospect_cashflows
+            WHERE prospect_id = :did AND property_id = :pid AND version = :v
+        """), {'did': deal_id, 'pid': property_id, 'v': version})
+
+        # Insert new rows
+        count = 0
+        for cf in cashflows:
+            conn.execute(text("""
+                INSERT INTO prospect_cashflows
+                    (prospect_id, property_id, version, period_date,
+                     revenue, expenses, noi, capex, source)
+                VALUES (:did, :pid, :v, :period_date,
+                        :revenue, :expenses, :noi, :capex, :source)
+            """), {
+                'did': deal_id, 'pid': property_id, 'v': version,
+                'period_date': cf.get('period_date'),
+                'revenue': cf.get('revenue'),
+                'expenses': cf.get('expenses'),
+                'noi': cf.get('noi'),
+                'capex': cf.get('capex'),
+                'source': source,
+            })
+            count += 1
+
+        conn.commit()
+    return {'rows_imported': count, 'property_id': property_id, 'version': version}
+
+
+def get_property_cashflows(engine, deal_id: int, property_id: int,
+                           version: int = 1) -> List[Dict]:
+    """Get cash flow rows for a property."""
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT id, period_date, revenue, expenses, noi, capex, other, source, created_at
+            FROM prospect_cashflows
+            WHERE prospect_id = :did AND property_id = :pid AND version = :v
+            ORDER BY period_date
+        """), {'did': deal_id, 'pid': property_id, 'v': version}).fetchall()
+
+    return [{
+        'id': r[0], 'period_date': r[1],
+        'revenue': r[2], 'expenses': r[3], 'noi': r[4],
+        'capex': r[5], 'other': r[6], 'source': r[7],
+        'created_at': str(r[8]) if r[8] else None,
+    } for r in rows]
+
+
+def delete_property_cashflows(engine, deal_id: int, property_id: int,
+                              version: int = 1) -> bool:
+    """Delete cash flow rows for a property."""
+    with engine.connect() as conn:
+        result = conn.execute(text("""
+            DELETE FROM prospect_cashflows
+            WHERE prospect_id = :did AND property_id = :pid AND version = :v
+        """), {'did': deal_id, 'pid': property_id, 'v': version})
+        conn.commit()
+    return result.rowcount > 0
+
+
+def import_property_line_items(engine, deal_id: int, property_id: int,
+                               line_items: List[Dict], source: str = 'excel',
+                               version: int = 1, frequency: str = 'monthly') -> Dict:
+    """Import line-item cash flows with COA account assignments.
+
+    Each line_item has: {label, vaccount, category, values: [{period_date, amount}]}
+    Stores one row per (period_date, vAccount) in prospect_cashflows.
+    Annual data is auto-spread to monthly.
+    """
+    from utils import month_end
+    from datetime import date as date_cls
+
+    with engine.connect() as conn:
+        # Verify property belongs to deal
+        prop = conn.execute(text(
+            "SELECT id FROM prospect_properties WHERE id = :pid AND prospect_id = :did"
+        ), {'pid': property_id, 'did': deal_id}).fetchone()
+        if not prop:
+            raise ValueError(f"Property {property_id} not found in deal {deal_id}")
+
+        # Delete existing line-item rows for this property + version
+        conn.execute(text("""
+            DELETE FROM prospect_cashflows
+            WHERE prospect_id = :did AND property_id = :pid AND version = :v
+        """), {'did': deal_id, 'pid': property_id, 'v': version})
+
+        count = 0
+        for item in line_items:
+            vaccount = item.get('vaccount')
+            label = item.get('label', '')
+            if not vaccount:
+                continue  # Skip unmapped items
+
+            for val in item.get('values', []):
+                period_date = val.get('period_date')
+                amount = val.get('amount', 0)
+                if not period_date:
+                    continue
+
+                if frequency == 'annual':
+                    # Spread annual to 12 monthly rows
+                    try:
+                        dt = pd.to_datetime(period_date)
+                        year = dt.year
+                    except Exception:
+                        continue
+                    monthly_amount = round(float(amount) / 12, 2)
+                    for m in range(1, 13):
+                        m_date = str(month_end(date_cls(year, m, 1)))
+                        conn.execute(text("""
+                            INSERT INTO prospect_cashflows
+                                (prospect_id, property_id, version, period_date,
+                                 vaccount, line_item, amount, source)
+                            VALUES (:did, :pid, :v, :period_date,
+                                    :vaccount, :line_item, :amount, :source)
+                        """), {
+                            'did': deal_id, 'pid': property_id, 'v': version,
+                            'period_date': m_date,
+                            'vaccount': int(vaccount),
+                            'line_item': label,
+                            'amount': monthly_amount,
+                            'source': source,
+                        })
+                        count += 1
+                else:
+                    conn.execute(text("""
+                        INSERT INTO prospect_cashflows
+                            (prospect_id, property_id, version, period_date,
+                             vaccount, line_item, amount, source)
+                        VALUES (:did, :pid, :v, :period_date,
+                                :vaccount, :line_item, :amount, :source)
+                    """), {
+                        'did': deal_id, 'pid': property_id, 'v': version,
+                        'period_date': period_date,
+                        'vaccount': int(vaccount),
+                        'line_item': label,
+                        'amount': float(amount),
+                        'source': source,
+                    })
+                    count += 1
+
+        conn.commit()
+    return {'rows_imported': count, 'property_id': property_id, 'version': version}
+
+
+def get_property_line_items(engine, deal_id: int, property_id: int,
+                            version: int = 1) -> List[Dict]:
+    """Get line-item cash flow rows for a property."""
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT id, period_date, vaccount, line_item, amount, source, created_at
+            FROM prospect_cashflows
+            WHERE prospect_id = :did AND property_id = :pid AND version = :v
+                AND vaccount IS NOT NULL
+            ORDER BY vaccount, period_date
+        """), {'did': deal_id, 'pid': property_id, 'v': version}).fetchall()
+
+    return [{
+        'id': r[0], 'period_date': r[1], 'vaccount': r[2],
+        'line_item': r[3], 'amount': r[4], 'source': r[5],
+        'created_at': str(r[6]) if r[6] else None,
+    } for r in rows]
+
+
+def get_deal_line_items_by_property(engine, deal_id: int,
+                                     version: int = 1) -> Dict[int, List[Dict]]:
+    """Get all line-item cashflows for a deal grouped by property_id."""
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT property_id, period_date, vaccount, line_item, amount, source
+            FROM prospect_cashflows
+            WHERE prospect_id = :did AND version = :v
+                AND property_id IS NOT NULL AND vaccount IS NOT NULL
+            ORDER BY property_id, period_date, vaccount
+        """), {'did': deal_id, 'v': version}).fetchall()
+
+    result: Dict[int, List[Dict]] = {}
+    for r in rows:
+        pid = r[0]
+        if pid not in result:
+            result[pid] = []
+        result[pid].append({
+            'period_date': r[1], 'vaccount': r[2], 'line_item': r[3],
+            'amount': r[4], 'source': r[5],
+        })
+    return result
+
+
+def get_deal_cashflows_by_property(engine, deal_id: int,
+                                   version: int = 1) -> Dict[int, List[Dict]]:
+    """Get all cashflows for a deal grouped by property_id."""
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT property_id, period_date, revenue, expenses, noi, capex, source
+            FROM prospect_cashflows
+            WHERE prospect_id = :did AND version = :v AND property_id IS NOT NULL
+            ORDER BY property_id, period_date
+        """), {'did': deal_id, 'v': version}).fetchall()
+
+    result: Dict[int, List[Dict]] = {}
+    for r in rows:
+        pid = r[0]
+        if pid not in result:
+            result[pid] = []
+        result[pid].append({
+            'period_date': r[1], 'revenue': r[2], 'expenses': r[3],
+            'noi': r[4], 'capex': r[5], 'source': r[6],
+        })
+    return result
+
+
+def get_property_cashflow_status(engine, deal_id: int,
+                                 property_ids: List[int]) -> Dict[int, Dict]:
+    """Get cashflow load status for each property: source type and timestamp.
+
+    Checks both prospect_cashflows (Excel uploads) and argus_imports (Argus).
+    Returns {property_id: {excel: {loaded_at}, argus: {loaded_at, filename}}}.
+    """
+    status: Dict[int, Dict] = {}
+    if not property_ids:
+        return status
+
+    with engine.connect() as conn:
+        # Excel cashflows — get most recent created_at per property
+        placeholders = ', '.join(f':pid{i}' for i in range(len(property_ids)))
+        params: Dict = {'did': deal_id}
+        params.update({f'pid{i}': pid for i, pid in enumerate(property_ids)})
+
+        excel_rows = conn.execute(text(f"""
+            SELECT property_id, source, MAX(created_at) as loaded_at, COUNT(*) as row_count
+            FROM prospect_cashflows
+            WHERE prospect_id = :did AND property_id IN ({placeholders})
+            GROUP BY property_id, source
+        """), params).fetchall()
+
+        for r in excel_rows:
+            pid = r[0]
+            if pid not in status:
+                status[pid] = {}
+            status[pid]['excel'] = {
+                'source': r[1] or 'excel',
+                'loaded_at': str(r[2]) if r[2] else None,
+                'rows': r[3],
+            }
+
+        # Argus imports — check argus_imports table per property vcode
+        for pid in property_ids:
+            prop_vcode = f"NP{pid:06d}"
+            argus_row = conn.execute(text("""
+                SELECT id, import_label, original_filename, is_active, created_at
+                FROM argus_imports
+                WHERE vcode = :v
+                ORDER BY created_at DESC
+                LIMIT 1
+            """), {'v': prop_vcode}).fetchone()
+
+            if argus_row:
+                if pid not in status:
+                    status[pid] = {}
+                status[pid]['argus'] = {
+                    'import_id': argus_row[0],
+                    'label': argus_row[1],
+                    'filename': argus_row[2],
+                    'is_active': bool(argus_row[3]),
+                    'loaded_at': str(argus_row[4]) if argus_row[4] else None,
+                }
+
+    return status

@@ -153,6 +153,31 @@ TABLE_DEFINITIONS = {
         'description': 'Supplemental ISBS Projected IS records (e.g. 7073 capital contributions) — persists across MRI refreshes',
         'key_columns': ['vcode', 'dtEntry', 'vAccount']
     },
+    'isbs_budget_is_supplements': {
+        'csv': 'ISBS_Budget_IS_Supplements.csv',
+        'description': 'Supplemental ISBS Budget IS records — persists across MRI refreshes',
+        'key_columns': ['vcode', 'dtEntry', 'vAccount']
+    },
+    'isbs_interim_is_supplements': {
+        'csv': 'ISBS_Interim_IS_Supplements.csv',
+        'description': 'Supplemental ISBS Interim IS records — persists across MRI refreshes',
+        'key_columns': ['vcode', 'dtEntry', 'vAccount']
+    },
+    'isbs_interim_bs_supplements': {
+        'csv': 'ISBS_Interim_BS_Supplements.csv',
+        'description': 'Supplemental ISBS Interim BS records — persists across MRI refreshes',
+        'key_columns': ['vcode', 'dtEntry', 'vAccount']
+    },
+    'isbs_valuation_is_supplements': {
+        'csv': 'ISBS_Valuation_IS_Supplements.csv',
+        'description': 'Supplemental ISBS Valuation IS records — persists across MRI refreshes',
+        'key_columns': ['vcode', 'dtEntry', 'vAccount']
+    },
+    'occupancy_supplements': {
+        'csv': 'MRI_Occupancy_Supplements.csv',
+        'description': 'Supplemental occupancy records — persists across MRI refreshes',
+        'key_columns': ['vCode', 'dtReported']
+    },
     'one_pager_comments': {
         'csv': 'OnePager_Comments.csv',
         'description': 'One Pager report comments by deal and period',
@@ -177,6 +202,31 @@ TABLE_DEFINITIONS = {
         'csv': 'MRI_Inspection.csv',
         'description': 'Construction draw inspection data for development deals',
         'key_columns': ['vCode', 'InspectionID', 'dtInspect']
+    },
+    'argus_imports': {
+        'csv': 'argus_imports.csv',
+        'description': 'Argus Enterprise import session metadata',
+        'key_columns': ['id', 'vcode']
+    },
+    'argus_cashflows': {
+        'csv': 'argus_cashflows.csv',
+        'description': 'Parsed monthly cash flow line items from Argus',
+        'key_columns': ['import_id', 'vcode', 'period_date']
+    },
+    'argus_tenants': {
+        'csv': 'argus_tenants.csv',
+        'description': 'Full lease detail from Argus rent roll',
+        'key_columns': ['import_id', 'vcode', 'tenant_name']
+    },
+    'argus_rent_steps': {
+        'csv': 'argus_rent_steps.csv',
+        'description': 'Rent escalation schedule per Argus tenant',
+        'key_columns': ['argus_tenant_id', 'effective_date']
+    },
+    'argus_market_profiles': {
+        'csv': 'argus_market_profiles.csv',
+        'description': 'Market leasing profiles from Argus revenue assumptions',
+        'key_columns': ['import_id', 'vcode', 'profile_name']
     },
 }
 
@@ -338,6 +388,97 @@ def ensure_pg_tables(engine):
             updated_by           TEXT
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS argus_imports (
+            id              SERIAL PRIMARY KEY,
+            vcode           TEXT NOT NULL,
+            import_label    TEXT,
+            import_type     TEXT,
+            original_filename TEXT,
+            file_hash       TEXT,
+            is_active       BOOLEAN DEFAULT TRUE,
+            imported_by     TEXT,
+            created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS argus_cashflows (
+            id              SERIAL PRIMARY KEY,
+            import_id       INTEGER NOT NULL,
+            vcode           TEXT NOT NULL,
+            period_date     TEXT,
+            line_item       TEXT,
+            coa_account     INTEGER,
+            amount          DOUBLE PRECISION,
+            amount_norm     DOUBLE PRECISION,
+            category        TEXT,
+            created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS argus_tenants (
+            id              SERIAL PRIMARY KEY,
+            import_id       INTEGER NOT NULL,
+            vcode           TEXT NOT NULL,
+            tenant_name     TEXT,
+            suite           TEXT,
+            square_feet     DOUBLE PRECISION,
+            lease_type      TEXT,
+            lease_start     TEXT,
+            lease_end       TEXT,
+            term_months     INTEGER,
+            base_rent_annual  DOUBLE PRECISION,
+            base_rent_psf    DOUBLE PRECISION,
+            recovery_type    TEXT,
+            ret_recovery_psf DOUBLE PRECISION,
+            ins_recovery_psf DOUBLE PRECISION,
+            cam_recovery_psf DOUBLE PRECISION,
+            ti_psf           DOUBLE PRECISION,
+            lc_psf           DOUBLE PRECISION,
+            renewal_probability DOUBLE PRECISION,
+            cpi_pct          DOUBLE PRECISION,
+            free_rent_months INTEGER,
+            pct_rent_breakpoint DOUBLE PRECISION,
+            pct_rent_rate    DOUBLE PRECISION,
+            security_deposit DOUBLE PRECISION,
+            is_vacant        BOOLEAN DEFAULT FALSE,
+            lease_tenant_id  INTEGER,
+            created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS argus_rent_steps (
+            id              SERIAL PRIMARY KEY,
+            argus_tenant_id INTEGER NOT NULL,
+            effective_date  TEXT,
+            annual_rent     DOUBLE PRECISION,
+            rent_psf        DOUBLE PRECISION,
+            step_type       TEXT,
+            step_pct        DOUBLE PRECISION,
+            created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS argus_market_profiles (
+            id              SERIAL PRIMARY KEY,
+            import_id       INTEGER NOT NULL,
+            vcode           TEXT NOT NULL,
+            profile_name    TEXT,
+            base_rent_psf   DOUBLE PRECISION,
+            term_months     INTEGER,
+            renewal_probability DOUBLE PRECISION,
+            vacancy_months  INTEGER,
+            ti_new_psf      DOUBLE PRECISION,
+            ti_renewal_psf  DOUBLE PRECISION,
+            lc_new_pct      DOUBLE PRECISION,
+            lc_renewal_pct  DOUBLE PRECISION,
+            fixed_step_pct  DOUBLE PRECISION,
+            cpi_pct         DOUBLE PRECISION,
+            recovery_type   TEXT,
+            created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
     ]
 
     with engine.connect() as conn:
@@ -366,6 +507,19 @@ def ensure_pg_tables(engine):
             conn.execute(text("ROLLBACK TO SAVEPOINT sp_pe_cap_col"))
             try:
                 conn.execute(text("ALTER TABLE one_pager_comments ADD COLUMN pe_cap_comment TEXT"))
+                conn.commit()
+            except Exception:
+                pass
+
+        # Add vnotes column to coa table if missing
+        try:
+            conn.execute(text("SAVEPOINT sp_coa_vnotes"))
+            conn.execute(text("SELECT vnotes FROM coa LIMIT 1"))
+            conn.execute(text("RELEASE SAVEPOINT sp_coa_vnotes"))
+        except Exception:
+            conn.execute(text("ROLLBACK TO SAVEPOINT sp_coa_vnotes"))
+            try:
+                conn.execute(text("ALTER TABLE coa ADD COLUMN vnotes TEXT"))
                 conn.commit()
             except Exception:
                 pass
@@ -569,6 +723,103 @@ def create_additional_tables(conn: sqlite3.Connection):
             all_fields  TEXT,
             changed_by  TEXT,
             changed_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Argus Enterprise import tables
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS argus_imports (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            vcode           TEXT NOT NULL,
+            import_label    TEXT,
+            import_type     TEXT,
+            original_filename TEXT,
+            file_hash       TEXT,
+            is_active       INTEGER DEFAULT 1,
+            imported_by     TEXT,
+            created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS argus_cashflows (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            import_id       INTEGER NOT NULL,
+            vcode           TEXT NOT NULL,
+            period_date     TEXT,
+            line_item       TEXT,
+            coa_account     INTEGER,
+            amount          REAL,
+            amount_norm     REAL,
+            category        TEXT,
+            created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS argus_tenants (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            import_id       INTEGER NOT NULL,
+            vcode           TEXT NOT NULL,
+            tenant_name     TEXT,
+            suite           TEXT,
+            square_feet     REAL,
+            lease_type      TEXT,
+            lease_start     TEXT,
+            lease_end       TEXT,
+            term_months     INTEGER,
+            base_rent_annual  REAL,
+            base_rent_psf    REAL,
+            recovery_type    TEXT,
+            ret_recovery_psf REAL,
+            ins_recovery_psf REAL,
+            cam_recovery_psf REAL,
+            ti_psf           REAL,
+            lc_psf           REAL,
+            renewal_probability REAL,
+            cpi_pct          REAL,
+            free_rent_months INTEGER,
+            pct_rent_breakpoint REAL,
+            pct_rent_rate    REAL,
+            security_deposit REAL,
+            is_vacant        INTEGER DEFAULT 0,
+            lease_tenant_id  INTEGER,
+            created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS argus_rent_steps (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            argus_tenant_id INTEGER NOT NULL,
+            effective_date  TEXT,
+            annual_rent     REAL,
+            rent_psf        REAL,
+            step_type       TEXT,
+            step_pct        REAL,
+            created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS argus_market_profiles (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            import_id       INTEGER NOT NULL,
+            vcode           TEXT NOT NULL,
+            profile_name    TEXT,
+            base_rent_psf   REAL,
+            term_months     INTEGER,
+            renewal_probability REAL,
+            vacancy_months  INTEGER,
+            ti_new_psf      REAL,
+            ti_renewal_psf  REAL,
+            lc_new_pct      REAL,
+            lc_renewal_pct  REAL,
+            fixed_step_pct  REAL,
+            cpi_pct         REAL,
+            recovery_type   TEXT,
+            created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
@@ -1152,13 +1403,7 @@ def delete_waterfall_steps(vcode: str, wf_type: str = None):
 
 
 # Tables managed exclusively via the app (never overwritten by CSV import)
-PROTECTED_TABLES = {'waterfalls', 'one_pager_comments', 'waterfall_audit', 'review_roles', 'review_submissions', 'review_notes', 'one_pager_snapshots', 'prospective_loans', 'prospective_loans_audit', 'planned_loans', 'sale_overrides', 'user_requests', 'user_request_messages', 'surveillance_properties', 'insurance', 'surveillance_comments', 'lease_reviews', 'lease_tenants', 'lease_documents', 'lease_rent_steps', 'lease_cotenancy', 'lease_cotenancy_refs', 'lease_exclusive_use', 'lease_options', 'lease_validation', 'prospect_deals', 'prospect_properties', 'prospect_entities', 'prospect_investors', 'prospect_assumptions', 'prospect_cashflows', 'prospect_activity'} | {
-    # Portfolio Snapshot editable elements — app-managed, never CSV-imported.
-    'portfolio_snapshot_comments', 'portfolio_snapshot_footnotes',
-    'portfolio_snapshot_values',
-    # Frozen approved reports. Protected above all: a CSV import overwriting
-    # this would rewrite what was already approved and signed off.
-    'portfolio_snapshot_frozen'}
+PROTECTED_TABLES = {'waterfalls', 'one_pager_comments', 'waterfall_audit', 'review_roles', 'review_submissions', 'review_notes', 'one_pager_snapshots', 'prospective_loans', 'prospective_loans_audit', 'planned_loans', 'sale_overrides', 'user_requests', 'user_request_messages', 'surveillance_properties', 'insurance', 'surveillance_comments', 'lease_reviews', 'lease_tenants', 'lease_documents', 'lease_rent_steps', 'lease_cotenancy', 'lease_cotenancy_refs', 'lease_exclusive_use', 'lease_options', 'lease_validation', 'prospect_deals', 'prospect_properties', 'prospect_entities', 'prospect_investors', 'prospect_assumptions', 'prospect_cashflows', 'prospect_activity', 'lease_abstract_sections', 'lease_field_resolutions', 'lease_tenant_sales', 'lease_space_events', 'lease_space_event_results', 'lease_market_assumptions', 'lease_tenant_aliases', 'argus_imports', 'argus_cashflows', 'argus_tenants', 'argus_rent_steps', 'argus_market_profiles'}
 
 
 def _get_import_connection():

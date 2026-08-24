@@ -983,6 +983,22 @@ def compute_deal_analysis(
     if can_compute_sale:
         try:
             noi_12_sale = twelve_month_noi_after_date(fc_deal_modeled, sale_me)
+            # Diagnostic: log each month in the 12-month NOI window
+            try:
+                from utils import add_months as _add_months
+                _start_me = month_end(sale_me)
+                _end_me = _add_months(_start_me, 12)
+                _f12 = fc_deal_modeled[(fc_deal_modeled["event_date"] >= _start_me) & (fc_deal_modeled["event_date"] < _end_me)].copy()
+                _rev_exp = REVENUE_ACCTS | EXPENSE_ACCTS
+                _noi_rows = _f12[_f12["vAccount"].isin(_rev_exp)].copy()
+                _noi_rows["_month"] = pd.to_datetime(_noi_rows["event_date"]).dt.strftime("%Y-%m")
+                _monthly = _noi_rows.groupby("_month")["mAmount_norm"].sum().sort_index()
+                log.info("Terminal NOI breakdown (sale_me=%s, window %s to %s):", sale_me, _start_me, _end_me)
+                for _m, _v in _monthly.items():
+                    log.info("  %s: %,.0f", _m, _v)
+                log.info("  TOTAL: %,.0f", _monthly.sum())
+            except Exception:
+                pass
             cap_rate_sale = projected_cap_rate_at_date(
                 mri_val, str(deal_vcode), sale_me
             ) if mri_val is not None and not mri_val.empty else 0.0
@@ -1527,7 +1543,7 @@ def build_partner_results(cf_investors, cap_investors, seed_states, cf_alloc, ca
                 cashflow_details.append({
                     "Date": cf_date, "Description": desc,
                     "Partner": partner, "is_pref": is_pref_equity,
-                    "Amount": cf_amount,
+                    "Amount": cf_amount, "Source": "cf",
                 })
         if cap_state and len(cap_state.cashflows) > seed_len:
             cap_labels = cap_state.cashflow_labels if hasattr(cap_state, 'cashflow_labels') else []
@@ -1542,7 +1558,7 @@ def build_partner_results(cf_investors, cap_investors, seed_states, cf_alloc, ca
                 cashflow_details.append({
                     "Date": cf_date, "Description": desc,
                     "Partner": partner, "is_pref": is_pref_equity,
-                    "Amount": cf_amount,
+                    "Amount": cf_amount, "Source": "cap",
                 })
         if unrealized > 0 and sale_me:
             cashflow_details.append({

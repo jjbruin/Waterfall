@@ -151,6 +151,9 @@ def create_app(config_name: str = None) -> Flask:
     from flask_app.api.prospects import prospects_bp
     app.register_blueprint(prospects_bp)
 
+    from flask_app.api.argus import argus_bp
+    app.register_blueprint(argus_bp, url_prefix="/api/argus")
+
     # Health check
     @app.route("/health")
     def health():

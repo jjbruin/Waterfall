@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import api from '../api/client'
+import ArgusImport from '../components/common/ArgusImport.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -176,6 +177,19 @@ const acqForm = ref({
   capex_at_close: 0,
 })
 
+// Property-level cash flow imports
+const argusProperty = ref<Property | null>(null)
+const cashflowProperty = ref<Property | null>(null)
+const cashflowUploading = ref(false)
+const cashflowResult = ref<any>(null)
+const cashflowError = ref('')
+// Two-step import: parsed line items awaiting COA review
+const parsedLineItems = ref<any[]>([])
+const parsedFrequency = ref('monthly')
+const parsedMetadata = ref<any>(null)
+const confirmingImport = ref(false)
+const propertyCashflowStatus = ref<Record<number, { excel?: { source: string; loaded_at: string | null; rows: number }; argus?: { label: string; filename: string; loaded_at: string | null } }>>({})  // property_id -> status
+
 // Property form
 const showPropertyForm = ref(false)
 const editingProperty = ref<Property | null>(null)
@@ -318,6 +332,8 @@ async function openDeal(id: number) {
     ])
     dealDetail.value = detailRes.data
     activity.value = actRes.data
+    // Check property cashflow status in background
+    loadPropertyCashflowStatus()
   } catch (e: any) {
     error.value = e.response?.data?.error || e.message
   } finally {
@@ -431,6 +447,110 @@ async function createLeaseReview(propId: number) {
   } catch (e: any) {
     error.value = e.response?.data?.error || e.message
   }
+}
+
+// Property cash flow upload — Step 1: Parse and show line items for COA review
+async function uploadCashflows(event: Event) {
+  const input = event.target as HTMLInputElement
+  if (!input.files?.length || !cashflowProperty.value || !selectedDealId.value) return
+
+  const file = input.files[0]
+  const formData = new FormData()
+  formData.append('file', file)
+
+  cashflowUploading.value = true
+  cashflowError.value = ''
+  cashflowResult.value = null
+  parsedLineItems.value = []
+
+  try {
+    const res = await api.post(
+      `/api/prospects/${selectedDealId.value}/properties/${cashflowProperty.value.id}/cashflows/parse`,
+      formData,
+      { headers: { 'Content-Type': 'multipart/form-data' } },
+    )
+    // Show parsed line items for COA mapping review
+    parsedLineItems.value = res.data.line_items || []
+    parsedFrequency.value = res.data.frequency || 'monthly'
+    parsedMetadata.value = res.data.metadata || {}
+  } catch (e: any) {
+    cashflowError.value = e.response?.data?.error || e.message
+  } finally {
+    cashflowUploading.value = false
+    input.value = ''
+  }
+}
+
+// Step 2: Confirm import with reviewed COA mappings
+async function confirmCashflowImport() {
+  if (!cashflowProperty.value || !selectedDealId.value) return
+
+  // Filter to items with assigned COA accounts
+  const itemsToImport = parsedLineItems.value
+    .filter((li: any) => li.suggested_coa && !li.is_summary)
+    .map((li: any) => ({
+      label: li.label,
+      vaccount: li.suggested_coa,
+      category: li.suggested_category,
+      values: li.values,
+    }))
+
+  if (!itemsToImport.length) {
+    cashflowError.value = 'No line items with COA accounts assigned'
+    return
+  }
+
+  confirmingImport.value = true
+  cashflowError.value = ''
+
+  try {
+    const res = await api.post(
+      `/api/prospects/${selectedDealId.value}/properties/${cashflowProperty.value.id}/cashflows/confirm`,
+      { line_items: itemsToImport, frequency: parsedFrequency.value },
+    )
+    cashflowResult.value = res.data
+    parsedLineItems.value = []
+    const pid = cashflowProperty.value.id
+    if (!propertyCashflowStatus.value[pid]) propertyCashflowStatus.value[pid] = {}
+    propertyCashflowStatus.value[pid].excel = {
+      source: 'excel',
+      loaded_at: new Date().toISOString(),
+      rows: res.data.rows_imported || 0,
+    }
+  } catch (e: any) {
+    cashflowError.value = e.response?.data?.error || e.message
+  } finally {
+    confirmingImport.value = false
+  }
+}
+
+async function clearCashflows(propId: number) {
+  if (!selectedDealId.value) return
+  try {
+    await api.delete(`/api/prospects/${selectedDealId.value}/properties/${propId}/cashflows`)
+    if (propertyCashflowStatus.value[propId]) {
+      delete propertyCashflowStatus.value[propId].excel
+      if (!Object.keys(propertyCashflowStatus.value[propId]).length) {
+        delete propertyCashflowStatus.value[propId]
+      }
+    }
+    cashflowResult.value = null
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
+  }
+}
+
+function closeArgusModal() {
+  argusProperty.value = null
+  loadPropertyCashflowStatus()  // refresh to pick up new Argus imports
+}
+
+async function loadPropertyCashflowStatus() {
+  if (!selectedDealId.value) return
+  try {
+    const res = await api.get(`/api/prospects/${selectedDealId.value}/cashflow-status`)
+    propertyCashflowStatus.value = res.data || {}
+  } catch { /* ignore */ }
 }
 
 // Entities
@@ -555,6 +675,13 @@ function fmtDate(dt: string | null): string {
   const d = new Date(dt)
   if (isNaN(d.getTime())) return dt
   return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`
+}
+
+function fmtDateTime(dt: string | null): string {
+  if (!dt) return ''
+  const d = new Date(dt)
+  if (isNaN(d.getTime())) return dt
+  return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()} ${d.getHours() % 12 || 12}:${String(d.getMinutes()).padStart(2, '0')} ${d.getHours() >= 12 ? 'PM' : 'AM'}`
 }
 
 function fmtNum(v: number | null): string {
@@ -932,6 +1059,37 @@ onMounted(() => {
             </div>
           </div>
 
+          <!-- Editable Deal Fields -->
+          <div class="edit-fields">
+            <div class="edit-row">
+              <label>Partner</label>
+              <input v-model="deal.partner_name" @change="saveDealField('partner_name', deal.partner_name)" placeholder="Partner name" />
+            </div>
+            <div class="edit-row">
+              <label>Location</label>
+              <input v-model="deal.location" @change="saveDealField('location', deal.location)" placeholder="City, State" />
+            </div>
+            <div class="edit-row">
+              <label>Asset Type</label>
+              <select v-model="deal.asset_type" @change="saveDealField('asset_type', deal.asset_type)">
+                <option value="">—</option>
+                <option v-for="t in ASSET_TYPES" :key="t" :value="t">{{ t }}</option>
+              </select>
+            </div>
+            <div class="edit-row">
+              <label>Purchase Price</label>
+              <input type="number" v-model.number="deal.purchase_price" @change="saveDealField('purchase_price', deal.purchase_price)" />
+            </div>
+            <div class="edit-row">
+              <label>Source / Broker</label>
+              <input v-model="deal.source_broker" @change="saveDealField('source_broker', deal.source_broker)" placeholder="Broker name" />
+            </div>
+            <div class="edit-row">
+              <label>Target Close</label>
+              <input type="date" v-model="deal.target_close" @change="saveDealField('target_close', deal.target_close)" />
+            </div>
+          </div>
+
           <!-- Tab bar -->
           <div class="tab-bar">
             <button
@@ -987,6 +1145,16 @@ onMounted(() => {
                     class="btn-link"
                     @click="createLeaseReview(p.id)"
                   >Start Lease Review</button>
+                  <span class="cf-actions">
+                    <button class="btn-link" @click="argusProperty = p">Import Argus</button>
+                    <button class="btn-link" @click="cashflowProperty = p; cashflowResult = null; cashflowError = ''">Upload Cash Flows</button>
+                  </span>
+                  <span v-if="propertyCashflowStatus[p.id]?.argus" class="cf-badge cf-badge-argus" :title="'Argus: ' + (propertyCashflowStatus[p.id].argus!.filename || '') + '\nLoaded: ' + fmtDateTime(propertyCashflowStatus[p.id].argus!.loaded_at)">
+                    Argus <span class="cf-ts">{{ fmtDateTime(propertyCashflowStatus[p.id].argus!.loaded_at) }}</span>
+                  </span>
+                  <span v-if="propertyCashflowStatus[p.id]?.excel" class="cf-badge cf-badge-excel" :title="'Excel cash flows (' + propertyCashflowStatus[p.id].excel!.rows + ' rows)\nLoaded: ' + fmtDateTime(propertyCashflowStatus[p.id].excel!.loaded_at)">
+                    CF <span class="cf-ts">{{ fmtDateTime(propertyCashflowStatus[p.id].excel!.loaded_at) }}</span>
+                  </span>
                 </div>
               </div>
             </div>
@@ -1382,6 +1550,130 @@ onMounted(() => {
           <button class="btn-primary" @click="saveProperty" :disabled="saving || !propertyForm.property_name.trim()">
             {{ saving ? 'Saving...' : (editingProperty ? 'Update' : 'Add Property') }}
           </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ ARGUS IMPORT MODAL (property-level) ============ -->
+    <div v-if="argusProperty" class="modal-overlay" @click.self="closeArgusModal()">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>Import Argus — {{ argusProperty.property_name }}</h3>
+          <button class="modal-close" @click="closeArgusModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+          <ArgusImport
+            :vcode="`NP${String(argusProperty.id).padStart(6, '0')}`"
+            import-type="new_business"
+          />
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ CASH FLOW UPLOAD MODAL (property-level) ============ -->
+    <div v-if="cashflowProperty" class="modal-overlay" @click.self="cashflowProperty = null">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>Upload Cash Flows — {{ cashflowProperty.property_name }}</h3>
+          <button class="modal-close" @click="cashflowProperty = null">&times;</button>
+        </div>
+        <div class="modal-body">
+          <!-- Success state: show result + Done button -->
+          <template v-if="cashflowResult">
+            <div class="cf-result">
+              <div class="cf-result-header">
+                <span class="cf-success">Imported {{ cashflowResult.rows_imported }} rows
+                  ({{ cashflowResult.line_items_count }} line items)</span>
+              </div>
+            </div>
+            <div class="cf-action-bar">
+              <button class="btn-primary" @click="cashflowProperty = null">Done</button>
+              <button class="btn-secondary" @click="cashflowResult = null; parsedLineItems = []">Replace File</button>
+            </div>
+          </template>
+
+          <!-- Step 2: COA mapping review -->
+          <template v-else-if="parsedLineItems.length">
+            <div class="cf-result-header" style="margin-bottom:8px">
+              <strong>{{ parsedMetadata?.line_items_found }} line items found</strong>
+              <span class="cf-meta"> — {{ parsedFrequency }} data, {{ parsedMetadata?.periods_found }} periods</span>
+            </div>
+            <p class="cf-help" style="margin:0 0 8px">
+              Review and edit COA account assignments below. Summary/total rows are excluded by default.
+              Items without a COA account will be skipped.
+            </p>
+            <div class="cf-preview" style="max-height: 400px; overflow-y: auto">
+              <table class="cf-table">
+                <thead>
+                  <tr>
+                    <th style="width:24px"></th>
+                    <th>Line Item</th>
+                    <th style="width:80px">Account</th>
+                    <th style="width:90px">Category</th>
+                    <th class="r" style="width:100px">Sample Amt</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(li, i) in parsedLineItems" :key="i"
+                      :class="{ 'summary-row': li.is_summary, 'unmapped': !li.suggested_coa }">
+                    <td>
+                      <input v-if="!li.is_summary" type="checkbox" :checked="!!li.suggested_coa"
+                             @change="(e: Event) => { if (!(e.target as HTMLInputElement).checked) li.suggested_coa = null; else li.suggested_coa = li.suggested_coa || 5020 }" />
+                      <span v-else style="color:#999;font-size:11px">Σ</span>
+                    </td>
+                    <td :style="li.is_summary ? 'font-weight:600;color:#666' : ''">{{ li.label }}</td>
+                    <td>
+                      <input v-if="!li.is_summary" type="number" v-model.number="li.suggested_coa"
+                             style="width:70px;padding:2px 4px;font-size:12px" />
+                    </td>
+                    <td>
+                      <select v-if="!li.is_summary && li.suggested_coa" v-model="li.suggested_category"
+                              style="padding:2px;font-size:12px">
+                        <option value="revenue">Revenue</option>
+                        <option value="expense">Expense</option>
+                        <option value="capex">CapEx</option>
+                        <option value="other">Other</option>
+                      </select>
+                    </td>
+                    <td class="r" style="font-size:12px">
+                      {{ li.values?.length ? fmtCurrency(li.values[0]?.amount) : '—' }}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="cf-action-bar" style="margin-top:8px">
+              <button class="btn-primary" @click="confirmCashflowImport()" :disabled="confirmingImport">
+                {{ confirmingImport ? 'Importing...' : 'Confirm Import' }}
+              </button>
+              <button class="btn-secondary" @click="parsedLineItems = []">Cancel</button>
+            </div>
+            <div v-if="cashflowError" class="cf-error">{{ cashflowError }}</div>
+          </template>
+
+          <!-- Step 1: Upload file picker -->
+          <template v-else>
+            <p class="cf-help">
+              Upload the partner's Excel or CSV cash flow model. Each line item will be
+              mapped to a COA account for review before importing.
+            </p>
+
+            <div class="cf-upload-zone">
+              <input type="file" ref="cfFileInput" accept=".xlsx,.xls,.csv"
+                     @change="uploadCashflows" style="display:none" />
+              <button class="btn-primary" @click="($refs.cfFileInput as HTMLInputElement)?.click()"
+                      :disabled="cashflowUploading">
+                {{ cashflowUploading ? 'Parsing...' : 'Select Excel / CSV File' }}
+              </button>
+            </div>
+
+            <div v-if="cashflowError" class="cf-error">{{ cashflowError }}</div>
+
+            <div v-if="propertyCashflowStatus[cashflowProperty.id]?.excel" class="cf-existing">
+              <span>Cash flows loaded {{ fmtDateTime(propertyCashflowStatus[cashflowProperty.id].excel!.loaded_at) }}</span>
+              <button class="btn-danger-text" @click="clearCashflows(cashflowProperty!.id)">Clear</button>
+            </div>
+          </template>
         </div>
       </div>
     </div>
@@ -1893,6 +2185,26 @@ onMounted(() => {
 .info-label { display: block; font-size: 10px; color: #888; text-transform: uppercase; font-weight: 600; }
 .info-value { font-size: 15px; font-weight: 600; }
 
+/* Editable deal fields */
+.edit-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 6px 12px;
+  margin-bottom: 14px;
+  padding: 10px;
+  background: #f8f9fa;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+}
+.edit-row { display: flex; flex-direction: column; gap: 2px; }
+.edit-row label { font-size: 10px; color: #888; text-transform: uppercase; font-weight: 600; }
+.edit-row input, .edit-row select {
+  padding: 4px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font-size: 13px;
+}
+
 /* Tab bar */
 .tab-bar {
   display: flex;
@@ -1970,7 +2282,23 @@ onMounted(() => {
   color: #555;
   margin-bottom: 6px;
 }
-.prop-footer { margin-top: 6px; }
+.prop-footer { margin-top: 6px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
+.cf-actions { display: inline-flex; gap: 8px; }
+.cf-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 10px; font-weight: 600;
+  padding: 1px 5px; border-radius: 3px;
+  margin-left: 4px; white-space: nowrap;
+}
+.cf-badge-excel {
+  background: #e8f5e9; color: #2e7d32;
+}
+.cf-badge-argus {
+  background: #e3f2fd; color: #1565c0;
+}
+.cf-ts {
+  font-weight: 400; opacity: 0.8;
+}
 .btn-link {
   background: none;
   border: none;
@@ -2162,4 +2490,23 @@ onMounted(() => {
 .debug-section summary { cursor: pointer; font-size: 12px; color: #666; }
 .debug-list { font-size: 11px; color: #666; padding-left: 20px; }
 .debug-list li { margin-bottom: 2px; }
+
+/* Cash Flow Upload Modal */
+.cf-help { font-size: 13px; color: #666; margin-bottom: 12px; }
+.cf-upload-zone { margin-bottom: 12px; }
+.cf-error { color: #d32f2f; font-size: 13px; margin: 8px 0; padding: 8px; background: #fbe9e7; border-radius: 4px; }
+.cf-result { margin-top: 12px; }
+.cf-result-header { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.cf-success { color: #2e7d32; font-weight: 600; font-size: 13px; }
+.cf-meta { color: #666; font-size: 12px; }
+.cf-columns { font-size: 12px; margin-bottom: 8px; }
+.cf-col-tag { display: inline-block; background: #f5f5f5; padding: 2px 6px; border-radius: 3px; margin: 2px 4px; font-size: 11px; }
+.cf-preview { max-height: 300px; overflow-y: auto; }
+.cf-table { width: 100%; font-size: 12px; border-collapse: collapse; }
+.cf-table th, .cf-table td { padding: 3px 8px; border-bottom: 1px solid #eee; }
+.cf-table th { background: #f5f5f5; font-weight: 600; position: sticky; top: 0; }
+.cf-truncated { font-size: 11px; color: #999; text-align: center; padding: 4px; }
+.cf-existing { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 8px; background: #f5f5f5; border-radius: 4px; font-size: 12px; }
+.summary-row { background: #f9f9f9; }
+.unmapped td { color: #999; }
 </style>
