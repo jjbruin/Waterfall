@@ -1,11 +1,16 @@
-# PORTFOLIO SNAPSHOT — RESUME NOTE
+# PORTFOLIO SNAPSHOT — FINAL STATE / DEPLOY HANDOFF
 
-Written 2026-08-24. Read `portfolio_snapshot_build_spec.md` (commit `010d1e9`) first
-for the full plan; this file is only "where we are and what's next".
+> **STATUS: COMPLETE AND HANDED TO JIM FOR DEPLOY.**
+> Deploy from **`wip/portfolio-snapshot-performance` @ `c4c2cbc`**.
+> `main` is untouched at `986881f`. Nothing pushed, nothing merged.
+> Steps 1–10 are all done. No Excel export and no further polish were required.
+> Read "Deploy handoff" below first; the rest is the build record.
+
+Written 2026-08-24, final revision at session close. Read
+`portfolio_snapshot_build_spec.md` (commit `010d1e9`) for the original plan; this
+file is the build record and the deploy handoff.
 
 **Nothing is merged, nothing is pushed, `main` is untouched at `986881f`.**
-No route, no blueprint registration, no Vue. **None of the five service modules is
-imported by anything** — the whole feature is inert until Step 7 wires it up.
 
 ---
 
@@ -24,9 +29,17 @@ main  986881f
                                                                 + Loan dev-display
                                                        1301b2a  Step 1 acquisition gate
                         └─ wip/portfolio-snapshot-step7  a462c01  UI shell + 4 Vue
-                                                                  components + wiring
-                                                                              ← you are here
+                           └─ wip/portfolio-snapshot-step8   36eb326  guardrails
+                              └─ wip/portfolio-snapshot-freeze  77bbafc  snapshot freeze
+                                                                0206edf  reopen + freeze UI
+                                 └─ wip/portfolio-snapshot-performance
+                                                                c4c2cbc  perf  ← DEPLOY THIS
 ```
+
+**One linear lineage, 15 commits off `main`, zero merges.** Verified: every one of
+the 11 `wip/portfolio-snapshot-*` branches is an ancestor of `c4c2cbc`, so the
+other ten names are just bookmarks into the same chain. Nothing needs
+consolidating — deploy `c4c2cbc` and you have everything.
 
 | Step | Commit | What landed | Self-test |
 |---|---|---|---|
@@ -38,7 +51,11 @@ main  986881f
 | 5a | `13ff99f7937848a9805dd0f87027ad84ddef401e` | `portfolio_snapshot_financial.py` — cap-stack zone, 4 scaled TIAA columns, manual Net ROE/ITD, footnotes | 28/28 |
 | 6a | `b771995a4e2cb2904417730623a860817bf10396` | `portfolio_snapshot_summary.py` — asset + deal-type allocations, 2 blank narratives; plus Loan dev-display refinements (Waters Creek LTV exception, Lifecycle dev detection, Pegasus debt-None n/a gate) | Summary 41/43, Loan 45/46 |
 | 1-fix | `1301b2aadbe044b8c19a542f0501438e0e6e919d` | acquisition-date gate in `portfolio_snapshot_service.py` — the ownership window's missing half | 25/25 |
-| **7** | `a462c01d935e75229ff8718ae2970f51c155c415` | **UI shell + 4 Vue components + blueprint + nav — the feature is now DEPLOYABLE** | app starts, 13 routes, 244 total; frontend unverified (see below) |
+| **7** | `a462c01d935e75229ff8718ae2970f51c155c415` | **UI shell + 4 Vue components + blueprint + nav — the feature is now DEPLOYABLE** | app starts, 13 routes; frontend unverified (see below) |
+| 8 | `36eb32674990d2239cb4c390fce466305f6a9c63` | `portfolio_snapshot_guardrails.py` — missing-data audit, aggregate integrity, pref-equity cross-check, ownership completeness, quarter window | 22/22 |
+| freeze | `77bbafc4eafe5392254fd7fb0dd2a2a8c04767fb` | `portfolio_snapshot_freeze.py` + `portfolio_snapshot_frozen` table — approved reports become immutable; `reopen()` added | 34/34 |
+| freeze UI | `0206edf449e25d3cfa3ec7b0976bc1b0f0557cce` | `/reopen` route, `can_reopen`, frozen-vs-live banner, reopen button | route verified |
+| **10** | `c4c2cbcc698ff0c5efd012e83a4bbc19e733b58f` | **performance — 128 → 32 One Pager computations per `/bundle` (4.0x), `_pe_cap_comments` scoped, 71 lines of duplicated assembly removed** | outputs byte-identical |
 
 **Step 7 is DONE and the feature is deployable.** All four subtab backends, the
 foundation, persistence, the API and the UI are in place. Nothing is deployed —
@@ -96,8 +113,15 @@ portfolio_snapshot_resume.md                            this file
 | `vue_app/src/router/index.ts` | 7 | one lazy route `/portfolio-snapshot` |
 | `vue_app/src/components/layout/AppSidebar.vue` | 7 | one `router-link` under Asset Management + the path in `amRoutes` |
 
-Step 7's share of that is **10 added lines and 1 modified line** (the `amRoutes`
-array). Nothing else outside the feature has ever been modified.
+**Final count across the whole feature: 17 files added** (15 code + 2 docs),
+**4 shared files modified by 17 lines total**, 8,854 insertions / 2 deletions.
+Both deletions are the two lines above that *grew* (the `PROTECTED_TABLES` set and
+the `amRoutes` array). Nothing was deleted and no existing behaviour was changed —
+every touch appends to a list, a set or a route table.
+
+Files added after this table was first written: `portfolio_snapshot_guardrails.py`
+(Step 8), `portfolio_snapshot_freeze.py` (freeze). Routes grew 13 → 14 with
+`/reopen`. `PROTECTED_TABLES` grew 35 → 36 with `portfolio_snapshot_frozen`.
 
 **Key API shapes** (the Vue components are written against these live field
 names, so renaming any of them breaks the UI silently):
@@ -109,48 +133,126 @@ verbatim so the UI never recomputes a backend decision.
 
 ---
 
-## What's next
+## Deploy handoff
 
-Everything is hardened **before** the first deploy (current decision).
+**Deploy `wip/portfolio-snapshot-performance` @ `c4c2cbcc698ff0c5efd012e83a4bbc19e733b58f`.**
 
-1. **Step 8 — guardrails + isolation re-verification.** Comprehensive
-   missing-data flagging across all four subtabs (nothing missing may ever render
-   as a real number), the pref-equity cross-check against `pe_cap_comment`,
-   incomplete-ownership handling generalised beyond 45th & Main, quarter-boundary
-   correctness for both gates together, and confirmation that a snapshot-service
-   failure cannot take down the rest of the app.
-2. **Snapshot freeze** — deliberately NOT copied in Step 2. The One Pager fires
-   `_save_snapshot()` on CEO approval; the equivalent needs the four subtabs,
-   which now exist. **Until it is built an approved page re-renders LIVE data
-   rather than what was approved** — the most consequential open gap.
-3. **Step 9 — polish manual-entry UX** (Net ROE / ITD typed from Excel).
-4. **Step 10 — performance pass.** The bundle fetch is in; still to do is
-   `get_cached_deal_result` where applicable and keeping `full_data` out of the
-   One Pager provider (already omitted in the Step 7 blueprint — do not add it
-   back without measuring, it costs a waterfall per deal).
-5. **Paired `/excel` endpoints per section** (Reports convention).
-6. **THEN deploy** — `az acr build --registry acrwaterfalldev ... --no-logs .`
-   then `az containerapp update ... --revision-suffix vNNN`. Merging alone ships
-   nothing.
+```
+az acr build --registry acrwaterfalldev -g rg-waterfall-dev     --image waterfall-xirr:latest --no-logs .
+az containerapp update -g rg-waterfall-dev -n app-waterfall-dev-v2     --image acrwaterfalldev.azurecr.io/waterfall-xirr:latest --revision-suffix vNNN
+```
 
-### Step 7 deploy-time known items
+Merging alone ships nothing. `main` stays untouched until someone decides to merge.
 
-1. **No local frontend build verification was possible.** `vue_app/node_modules`
-   is absent, so neither `vue-tsc --noEmit` nor `vite build` could run. Every
-   unused import and local was removed by hand, but **a TypeScript error would
-   surface only in Jim's Docker build** — that is the main risk in Step 7.
-2. **The investor dropdown depends on `review_service.get_investor_list()`**,
-   which returns bare ID strings, not dicts (corrected during the build). If it
-   throws, the code falls back to a relationships-derived list; if that is also
-   empty the dropdown is empty and nothing renders. **Verify it populates
-   immediately after deploy.**
+### What is being deployed
+
+- **17 files added** — 8 Python services, 1 API blueprint, 6 Vue files, 2 docs
+- **4 shared files modified, 17 lines, all additive** — `database.py` (+7/−1),
+  `flask_app/__init__.py` (+3), `router/index.ts` (+5), `AppSidebar.vue` (+2/−1)
+- **4 new tables**, all in `PROTECTED_TABLES` (35 → 36) and all self-creating on
+  first use — **no migration step**: `portfolio_snapshot_comments`,
+  `_footnotes`, `_values`, `_frozen`
+- **14 API routes** at `/api/portfolio-snapshot`: `bundle`, `<subtab>`, `deals`,
+  `investors`, `quarters`, `elements`, `comment`, `value`, `footnote`,
+  `footnote/<id>`, `submit`, `approve`, `return`, `reopen`
+- **1 nav entry** — "Portfolio Snapshot" under Asset Management, between One
+  Pager and Review Tracking
+- App starts clean: **245 routes**, all 8 service modules import without error
+
+### Deploy-time known items — only verifiable in Jim's build / on Azure
+
+1. **No local frontend build verification.** `vue_app/node_modules` is absent, so
+   neither `vue-tsc --noEmit` nor `vite build` has ever run against the 6 Vue
+   files. Unused imports and locals were removed by hand, but **a TypeScript
+   error would surface for the first time in the Docker build.** Biggest risk.
+2. **The investor dropdown depends on `review_service.get_investor_list()`**
+   (returns bare ID strings). If it throws there is a relationships-derived
+   fallback; if that is also empty the dropdown is empty and nothing renders.
+   **Check it populates first thing after deploy.**
 3. **Review actions are role-gated.** `can_submit` / `can_approve` /
-   `can_return` need a `review_roles` row or admin. With no roles assigned the
-   status strip reads "no action available for your role" — correct, not a fault.
-4. **No threaded review notes.** Step 2 has no notes table, so Return enforces
-   its required note but has nowhere to persist it. The inline status strip was
-   chosen over reusing `ReviewPanel.vue` precisely because that component's
-   17-field contract would render a permanently empty notes thread.
+   `can_return` / `can_reopen` need a `review_roles` row (or admin). With none
+   assigned the status strip reads "no action available for your role" —
+   correct, not a fault.
+4. **The 4x performance win is a call-count measurement, not wall-clock.**
+   128 → 32 `get_one_pager_data` calls per `/bundle` is exact and deterministic;
+   what that is worth in seconds could not be measured locally (empty SQLite,
+   unrepresentative REST latency). **Spot-check `/bundle` timing on Azure.**
+5. **No threaded review notes.** Step 2 has no notes table, so Return/Reopen
+   enforce their required note but have nowhere to persist it. The inline status
+   strip was chosen over `ReviewPanel.vue` for exactly this reason.
+
+### Validation caveat — only TIAA is PDF-verified
+
+Every number in this build was validated against the **26Q1 TIAA** PDF. TIAA
+works end to end partly because `INVESTOR_NAME_ALIASES` hardcodes
+`TGAM -> "TIAA"` — the literal string "TIAA" appears nowhere in MRI.
+
+**KOC and Declaration are NOT PDF-verified and their names will not resolve.**
+`MRI_IA_Investor` (MRI **IM** server, 374 rows) is what names `KOCINV`,
+`DCXVIA`/`DCXVIB` and `PSC1/2/3`, and it **is not in the app database** — it needs
+a new `QUERY_REGISTRY` entry plus VPN. Until then `get_investor_name()` falls
+through to the raw code, so those investors render as `KOCINV` etc., and none of
+their figures has been checked against a reference report. Expect to validate them
+separately.
+
+### Final self-test status
+
+| module | result | note |
+|---|---|---|
+| service (1) | **ALL PASS** | |
+| persistence (2) | **35/35** | |
+| financial (5a) | **28/28** | |
+| guardrails (8) | **22/22** | |
+| freeze | **34/34** | includes the key anti-drift test |
+| loan (4a) | 45/46 | Nottingham LTV debt vintage — known, documented |
+| summary (6a) | 40/43 | 45th & Main 90-vs-100 + Multifamily/Self-Storage ~1pp — known |
+| operating (3a) | **13/28** | see the correction below |
+
+### CORRECTION — Operating is 13/28, not the 15/28 reported earlier
+
+An earlier report and an earlier revision of this note said Operating was 15/28
+"unchanged". **That number was stale.** Operating was not in the loop re-run
+during Step 8, so a pre-45th-&-Main-fix figure was carried forward.
+
+Re-measured at deploy state: **13/28**. The two extra failures are
+`"45th & Main still appears (ownership-flagged)"` and
+`"45th & Main carries its ownership flag"` — the same **silently-disarmed
+assertion** class fixed in `service`, `financial`, `loan` and `summary` during
+Step 8, missed in `operating`.
+
+`portfolio_snapshot_operating.py` is **byte-unchanged** since that run, so this is
+pure live-data drift, **not a regression and not shipped behaviour** — self-test
+assertions only. **Non-blocking for deploy.** The fix is two lines: assert the
+property (a flagged deal withholds its figures) rather than the identity
+(45th & Main is flagged), exactly as the other four modules now do.
+
+---
+
+## Open items — all non-blocking, all post-deploy
+
+1. **TGAM2 fund-vs-SPV flip.** `_classify_entities` calls an entity a fund on a
+   deal-count threshold, so TGAM2 is a fund at 26Q1 (East Manchester + Giant 7)
+   and an SPV at 26Q2 (East Manchester sold 2026-06-25), moving Giant 7 in and out
+   of Individual Investments. **Only visible across a multi-quarter series.**
+   Pre-existing behaviour, not caused by the acquisition gate — verified against
+   the pre-change Q1 result.
+2. **Committed basis +7.39%** ($477.99M vs the PDF's $445.1M) and
+   **Self-Storage −1.07pp / Multifamily +0.97pp**. Both are *documented
+   differences*, not bugs: the committed figures are plausible real unfunded
+   commitments on development/staged deals (the `abs()` bug was ruled out —
+   `abs sum == |signed sum|` on all 32 deals), and the asset-type offset is ~$4.35M
+   sitting in a different bucket in the PDF with no located cause.
+3. **Net ROE / ITD are manual entry.** Typed from Excel; both carry
+   `"manual entry (formula TBD)"`. Automating them is a separate piece of work.
+4. **Admin review bypass.** `_review_payload` lets `role == "admin"` pass every
+   review gate. The One Pager has **no** such bypass. Kept because with no
+   `review_roles` rows on live the pipeline would otherwise be unusable —
+   **reconsider once real roles are assigned.**
+5. **`reopen()` is gated on `("ceo",)`.** Derived from the One Pager's own rule
+   ("the role at the step being reversed may reverse it"), not copied — the One
+   Pager has no reopen path at all. Confirm the authority is right.
+6. **East Manchester has no commitment row** (funded $3.6M, committed $0, un-funded
+   computes to −$2.7M). Source-data fix. Low priority — the deal sold this quarter.
 
 ---
 
@@ -251,12 +353,36 @@ can pass as real**, and it is a pending creator decision, not a bug.
 (`loan.debt_yield` shows missing on all 32 only because the self-test stubs the
 quarterly-NOI provider; in the app it is populated.)
 
-### 45th & Main is FIXED in MRI — and it moved the PDF tie
+### 45th & Main is FIXED in MRI — RESOLVED — and it moved the PDF tie
 
 Live build changed mid-build from `09fe220ae0da` to **`f7692533e77c`**. The PMX
 `IA_Relationship` row was corrected, so 45th & Main now resolves at **90.0% into
 TGA24** via `TGAM → TGA24 → PPI45M → 45MAIN`. **Zero deals are ownership-flagged.**
 That closes the long-standing blocker.
+
+**The 100% and the 90% are different hops — both are correct.** Traced live
+(`OwnershipPct` on `relationships`), and worth keeping because the two numbers
+look contradictory until you see the chain:
+
+| hop | edge | `OwnershipPct` | normalised |
+|---|---|---|---|
+| deal | **`PPI45M → 45MAIN`** — *the record that was corrected, 0% → 100%* | 100.0 | 100% |
+| | `OPEVGR → 45MAIN` (operating partner, carried) | 0.0 | 0% |
+| SPV | `TGA24 → PPI45M` | 100.0 | 100% |
+| fund | **`TGAM → TGA24`** | 90.0 | **90%** |
+| | `INV24 → TGA24` | 10.0 | 10% |
+
+Look-through = 0.90 × 1.00 × 1.00 = **90.0%**. The 100% is asset-level ownership;
+the 90% is TIAA's share of the *fund*, and **every TGA24 deal inherits that same
+90% hop** — Flats at Dorsett Ridge, Green Valley Ranch, ReNew Glenmoore and Town
+Fair Tire are all 90.0000%, and Seasons at Bel Air is 51.2676% × 90% = 46.1408%,
+which is the arithmetic proof.
+
+So 45th & Main at 90% is the *only* value consistent with its fund siblings, and
+the PDF's implied ~100% for it alone would be internally inconsistent. **That
+weakens the "45th & Main should be 100%" reading of the PDF gap** — the residual
+~$2.1M more likely sits elsewhere, possibly bound up with the unexplained ~$4.35M
+Multifamily/Self-Storage offset (45th & Main is Multifamily).
 
 Consequence: the Summary funded total is now **402.10M vs the PDF's 404.2M
 (−0.52%)**, where the assumed-100% variant used to give 403.95M (−0.06%). The
@@ -364,6 +490,74 @@ back to live **and says so** in `source_note` rather than showing an empty repor
 A corrupt payload returns `None` rather than raising. Isolation unchanged: the
 only shared app file touched is `database.py`, additively, for the one new table.
 App starts, 244 routes; persistence 35/35 and guardrails 22/22 still pass.
+
+---
+
+## SEPARATE APP-SIDE BUG — OREI accrued pref. NOT this feature. NOT a deploy blocker.
+
+Found while working on the snapshot but **entirely outside it**: this is Jim's
+app-side fix in `reports_service.py` / the ROE Summary path. **Nothing has been
+applied. No code changed. Pending decisions.** It does not block the snapshot
+deploy and no snapshot module touches it.
+
+### Symptoms
+
+- **OREI Portfolio, Apple Self Storage and Plaza Del Mar show $0 accrued pref.**
+- **Cocoplum accrues at the wrong rate.**
+
+### Two independent root causes
+
+**(a) The `deal_terms.pe_coupon` read fails silently on live PostgreSQL.**
+`reports_service.py:~1002` does
+`pd.read_sql("SELECT pe_coupon FROM deal_terms WHERE UPPER(vcode) = :vc", _sa_engine, params={"vc": ...})`
+— a raw string with a `:name` binding, which needs `sa.text()` on SQLAlchemy/PG —
+wrapped in a **bare `except Exception: pass`**. The query raises, the exception is
+swallowed, and `pref_rate` silently stays `0.0`. **Same class of bug as the
+`get_one_pager_comments` PG fix already recorded in MEMORY.md.**
+
+**(b) OREI's waterfall pref step is labelled `vState='Default'`, not `'Pref'`,**
+so the waterfall-based rate lookup finds nothing either. Both paths miss, so the
+rate is zero.
+
+### THE OPEN QUESTION — do not fix before answering it
+
+**The `'Default'` label may relate to a JV amendment that adjusted OREI's
+waterfall structure.** Before any fix, **the amended JV terms must confirm whether
+OREI *should* accrue 8.5% (making this a bug) or whether the current behaviour is
+intentional.** Fixing first and asking later risks manufacturing pref that the
+amendment deliberately removed.
+
+### The naive fix ships a REGRESSION
+
+Simply wrapping the query in `sa.text()` **breaks Pegasus / TGA22, moving them
+10% → 9%**, because `deal_terms` is **investor-blind** while Pegasus has
+**per-investor rates**. The correct order is:
+
+> **investor-aware waterfall match → `deal_terms` → any waterfall rate**
+
+**Cocoplum is genuinely two-tier (5% / 8.5%)** and needs a *business decision*, not
+a flat rate.
+
+### Wider data-completeness question
+
+**9 further deals (~$50.7M of capital) accrue no pref at all** — they have neither
+a `deal_terms` row nor a `Pref` waterfall step. Whether that is correct or a data
+gap is unresolved.
+
+### Artefacts
+
+Diagnostics are **untracked, read-only**, in `scripts/`:
+`orei_accrued_diag.py` … `orei_accrued_diag5.py`, `pref_fix_impact.py`,
+`pref_fix_impact_detail.py`. They are not committed (they follow the existing
+convention for per-developer diagnostic scripts) — **they will be lost if the
+working tree is cleaned.** Commit them first if they need to survive.
+
+### NEXT TASK when this is picked up
+
+**Confirm how the accrued balance is actually calculated** — walk
+`build_pref_balance_detail()` mechanics end to end — **before judging whether
+OREI's $0 is a bug or correct-per-amendment.** That determination gates
+everything else above.
 
 ---
 
