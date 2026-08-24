@@ -655,7 +655,7 @@ def build_deal_waterfall(deal_id):
     Also supports legacy format with 'investors' key for backward compat.
     """
     from database import save_waterfall_steps
-    from flask_app.services.data_service import get_data_service
+    from flask_app.services.data_service import refresh_table, reload
 
     deal_data = get_deal(get_engine(), deal_id)
     if not deal_data:
@@ -748,10 +748,7 @@ def build_deal_waterfall(deal_id):
     try:
         save_waterfall_steps(vcode, df)
         try:
-            ds = get_data_service()
-            if ds:
-                ds.refresh_table('waterfalls')
-                ds.clear_cache()
+            refresh_table('waterfalls')
         except Exception:
             pass
     except Exception as e:
