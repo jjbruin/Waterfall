@@ -19,9 +19,13 @@ main  986881f
          └─ wip/portfolio-snapshot-step3  0b7a809   Operating subtab assembly
             └─ wip/portfolio-snapshot-step4  a0fe820   Loan subtab assembly
                └─ wip/portfolio-snapshot-step5  13ff99f   Financial subtab assembly
-                  └─ (this note, a18881a)
-                     └─ wip/portfolio-snapshot-step6   Step 6a Summary
-                                                       + Loan dev-display   ← you are here
+                  └─ (resume note, a18881a)
+                     └─ wip/portfolio-snapshot-step6   b771995  Step 6a Summary
+                                                                + Loan dev-display
+                                                       1301b2a  Step 1 acquisition gate
+                        └─ wip/portfolio-snapshot-step7  a462c01  UI shell + 4 Vue
+                                                                  components + wiring
+                                                                              ← you are here
 ```
 
 | Step | Commit | What landed | Self-test |
@@ -32,12 +36,14 @@ main  986881f
 | 3a | `0b7a8097211a494e202caac16ad4c6b06f09607a` | `portfolio_snapshot_operating.py` — Econ Occ, NOI ×3, Expected/Actual Growth | 10/10 structure |
 | 4a | `a0fe820bac6154b0f1112689b3e96b9bcc9b1b87` | `portfolio_snapshot_loan.py` — Debt, LTV, YTD DSCR, Debt Yield, Rate/Maturity | 21/26 (see below) |
 | 5a | `13ff99f7937848a9805dd0f87027ad84ddef401e` | `portfolio_snapshot_financial.py` — cap-stack zone, 4 scaled TIAA columns, manual Net ROE/ITD, footnotes | 28/28 |
-| 6a | this branch | `portfolio_snapshot_summary.py` — asset + deal-type allocations, 2 blank narratives; plus Loan dev-display refinements | Summary 41/43, Loan 45/46 |
+| 6a | `b771995a4e2cb2904417730623a860817bf10396` | `portfolio_snapshot_summary.py` — asset + deal-type allocations, 2 blank narratives; plus Loan dev-display refinements (Waters Creek LTV exception, Lifecycle dev detection, Pegasus debt-None n/a gate) | Summary 41/43, Loan 45/46 |
+| 1-fix | `1301b2aadbe044b8c19a542f0501438e0e6e919d` | acquisition-date gate in `portfolio_snapshot_service.py` — the ownership window's missing half | 25/25 |
+| **7** | `a462c01d935e75229ff8718ae2970f51c155c415` | **UI shell + 4 Vue components + blueprint + nav — the feature is now DEPLOYABLE** | app starts, 13 routes, 244 total; frontend unverified (see below) |
 
-Existing files touched: `database.py` (additive, `PROTECTED_TABLES`), and in Step 6a
-`portfolio_snapshot_loan.py` + `portfolio_snapshot_operating.py` — both prior
-steps' own files, not app code. Nothing outside the feature has been modified, and
-no module is imported by any blueprint or route.
+**Step 7 is DONE and the feature is deployable.** All four subtab backends, the
+foundation, persistence, the API and the UI are in place. Nothing is deployed —
+`az acr build` + `az containerapp update` have not been run, and per the current
+decision everything is hardened *before* the first deploy.
 
 ---
 
@@ -58,23 +64,93 @@ outstanding:
 
 ---
 
+## File layout — what exists now
+
+**New files (the whole feature, except the three additive edits below):**
+
+```
+flask_app/services/portfolio_snapshot_service.py        Step 1  foundation
+flask_app/services/portfolio_snapshot_persistence.py    Step 2  elements + approval
+flask_app/services/portfolio_snapshot_operating.py      Step 3a Operating assembly
+                                                                + resolve_strategy()
+flask_app/services/portfolio_snapshot_loan.py           Step 4a Loan assembly
+flask_app/services/portfolio_snapshot_financial.py      Step 5a Financial assembly
+flask_app/services/portfolio_snapshot_summary.py        Step 6a Summary assembly
+flask_app/api/portfolio_snapshot.py                     Step 7  blueprint, 13 routes
+vue_app/src/views/PortfolioSnapshotView.vue             Step 7  shell
+vue_app/src/components/snapshot/SnapshotSummary.vue     Step 7
+vue_app/src/components/snapshot/SnapshotFinancial.vue   Step 7
+vue_app/src/components/snapshot/SnapshotOperating.vue   Step 7
+vue_app/src/components/snapshot/SnapshotLoan.vue        Step 7
+vue_app/src/components/snapshot/format.ts               Step 7  shared formatters
+portfolio_snapshot_build_spec.md                        the plan
+portfolio_snapshot_resume.md                            this file
+```
+
+**Shared files touched — four edits total, all additive:**
+
+| File | Step | Change |
+|---|---|---|
+| `database.py` | 2 | 3 tables added to `PROTECTED_TABLES` (32 → 35) |
+| `flask_app/__init__.py` | 7 | 2 lines: import + `register_blueprint(url_prefix="/api/portfolio-snapshot")` |
+| `vue_app/src/router/index.ts` | 7 | one lazy route `/portfolio-snapshot` |
+| `vue_app/src/components/layout/AppSidebar.vue` | 7 | one `router-link` under Asset Management + the path in `amRoutes` |
+
+Step 7's share of that is **10 added lines and 1 modified line** (the `amRoutes`
+array). Nothing else outside the feature has ever been modified.
+
+**Key API shapes** (the Vue components are written against these live field
+names, so renaming any of them breaks the UI silently):
+`GET /bundle` → `{subtabs: {summary, financial, operating, loan}, errors, resolution, review}`.
+Financial's `groups` are `{deals, subtotal}` per fund; Operating and Loan `groups`
+are plain arrays. `*_display` fields are polymorphic — number, `"Dev"`,
+`"pending entry"`, or null — and `disp()` in `format.ts` passes strings through
+verbatim so the UI never recomputes a backend decision.
+
+---
+
 ## What's next
 
-1. ~~**Step 6a — Summary subtab backend.**~~ **DONE on this branch** — see
-   "Step 6a (Summary) — landed" below. Backend is now complete for all four subtabs.
-2. **Step 7 — UI shell + Vue components.** Mirror `ReportsView.vue`:
-   `PortfolioSnapshotView.vue` (header controls + subtab bar + one bundle fetch)
-   plus `components/snapshot/Snapshot{Summary,Financial,Operating,Loan}.vue`,
-   presentational only. Then the route, the blueprint
-   (`/api/portfolio-snapshot`), the additive `AppSidebar.vue` nav entry under
-   Asset Management (+ path in `amRoutes`), and paired `/excel` endpoints.
-3. **Guardrails + isolation verification.**
-4. **Snapshot freeze** — deliberately NOT copied in Step 2. The One Pager fires
-   `_save_snapshot()` on CEO approval; the equivalent needs the four subtabs to
-   exist. Until it is built, an approved page re-renders live data rather than
-   what was approved.
-5. **Polish manual-entry UX**, then the **performance pass** (bundle fetch,
-   `get_cached_deal_result`, keep `full_data` out of the One Pager provider).
+Everything is hardened **before** the first deploy (current decision).
+
+1. **Step 8 — guardrails + isolation re-verification.** Comprehensive
+   missing-data flagging across all four subtabs (nothing missing may ever render
+   as a real number), the pref-equity cross-check against `pe_cap_comment`,
+   incomplete-ownership handling generalised beyond 45th & Main, quarter-boundary
+   correctness for both gates together, and confirmation that a snapshot-service
+   failure cannot take down the rest of the app.
+2. **Snapshot freeze** — deliberately NOT copied in Step 2. The One Pager fires
+   `_save_snapshot()` on CEO approval; the equivalent needs the four subtabs,
+   which now exist. **Until it is built an approved page re-renders LIVE data
+   rather than what was approved** — the most consequential open gap.
+3. **Step 9 — polish manual-entry UX** (Net ROE / ITD typed from Excel).
+4. **Step 10 — performance pass.** The bundle fetch is in; still to do is
+   `get_cached_deal_result` where applicable and keeping `full_data` out of the
+   One Pager provider (already omitted in the Step 7 blueprint — do not add it
+   back without measuring, it costs a waterfall per deal).
+5. **Paired `/excel` endpoints per section** (Reports convention).
+6. **THEN deploy** — `az acr build --registry acrwaterfalldev ... --no-logs .`
+   then `az containerapp update ... --revision-suffix vNNN`. Merging alone ships
+   nothing.
+
+### Step 7 deploy-time known items
+
+1. **No local frontend build verification was possible.** `vue_app/node_modules`
+   is absent, so neither `vue-tsc --noEmit` nor `vite build` could run. Every
+   unused import and local was removed by hand, but **a TypeScript error would
+   surface only in Jim's Docker build** — that is the main risk in Step 7.
+2. **The investor dropdown depends on `review_service.get_investor_list()`**,
+   which returns bare ID strings, not dicts (corrected during the build). If it
+   throws, the code falls back to a relationships-derived list; if that is also
+   empty the dropdown is empty and nothing renders. **Verify it populates
+   immediately after deploy.**
+3. **Review actions are role-gated.** `can_submit` / `can_approve` /
+   `can_return` need a `review_roles` row or admin. With no roles assigned the
+   status strip reads "no action available for your role" — correct, not a fault.
+4. **No threaded review notes.** Step 2 has no notes table, so Return enforces
+   its required note but has nowhere to persist it. The inline status strip was
+   chosen over reusing `ReviewPanel.vue` precisely because that component's
+   17-field contract would render a permanently empty notes thread.
 
 ---
 
