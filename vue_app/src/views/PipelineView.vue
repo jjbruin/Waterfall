@@ -183,6 +183,11 @@ const cashflowProperty = ref<Property | null>(null)
 const cashflowUploading = ref(false)
 const cashflowResult = ref<any>(null)
 const cashflowError = ref('')
+// Two-step import: parsed line items awaiting COA review
+const parsedLineItems = ref<any[]>([])
+const parsedFrequency = ref('monthly')
+const parsedMetadata = ref<any>(null)
+const confirmingImport = ref(false)
 const propertyCashflowStatus = ref<Record<number, { excel?: { source: string; loaded_at: string | null; rows: number }; argus?: { label: string; filename: string; loaded_at: string | null } }>>({})  // property_id -> status
 
 // Property form
@@ -444,7 +449,7 @@ async function createLeaseReview(propId: number) {
   }
 }
 
-// Property cash flow upload
+// Property cash flow upload — Step 1: Parse and show line items for COA review
 async function uploadCashflows(event: Event) {
   const input = event.target as HTMLInputElement
   if (!input.files?.length || !cashflowProperty.value || !selectedDealId.value) return
@@ -456,14 +461,55 @@ async function uploadCashflows(event: Event) {
   cashflowUploading.value = true
   cashflowError.value = ''
   cashflowResult.value = null
+  parsedLineItems.value = []
 
   try {
     const res = await api.post(
-      `/api/prospects/${selectedDealId.value}/properties/${cashflowProperty.value.id}/cashflows/upload`,
+      `/api/prospects/${selectedDealId.value}/properties/${cashflowProperty.value.id}/cashflows/parse`,
       formData,
       { headers: { 'Content-Type': 'multipart/form-data' } },
     )
+    // Show parsed line items for COA mapping review
+    parsedLineItems.value = res.data.line_items || []
+    parsedFrequency.value = res.data.frequency || 'monthly'
+    parsedMetadata.value = res.data.metadata || {}
+  } catch (e: any) {
+    cashflowError.value = e.response?.data?.error || e.message
+  } finally {
+    cashflowUploading.value = false
+    input.value = ''
+  }
+}
+
+// Step 2: Confirm import with reviewed COA mappings
+async function confirmCashflowImport() {
+  if (!cashflowProperty.value || !selectedDealId.value) return
+
+  // Filter to items with assigned COA accounts
+  const itemsToImport = parsedLineItems.value
+    .filter((li: any) => li.suggested_coa && !li.is_summary)
+    .map((li: any) => ({
+      label: li.label,
+      vaccount: li.suggested_coa,
+      category: li.suggested_category,
+      values: li.values,
+    }))
+
+  if (!itemsToImport.length) {
+    cashflowError.value = 'No line items with COA accounts assigned'
+    return
+  }
+
+  confirmingImport.value = true
+  cashflowError.value = ''
+
+  try {
+    const res = await api.post(
+      `/api/prospects/${selectedDealId.value}/properties/${cashflowProperty.value.id}/cashflows/confirm`,
+      { line_items: itemsToImport, frequency: parsedFrequency.value },
+    )
     cashflowResult.value = res.data
+    parsedLineItems.value = []
     const pid = cashflowProperty.value.id
     if (!propertyCashflowStatus.value[pid]) propertyCashflowStatus.value[pid] = {}
     propertyCashflowStatus.value[pid].excel = {
@@ -474,8 +520,7 @@ async function uploadCashflows(event: Event) {
   } catch (e: any) {
     cashflowError.value = e.response?.data?.error || e.message
   } finally {
-    cashflowUploading.value = false
-    input.value = ''
+    confirmingImport.value = false
   }
 }
 
@@ -1537,57 +1582,80 @@ onMounted(() => {
           <template v-if="cashflowResult">
             <div class="cf-result">
               <div class="cf-result-header">
-                <span class="cf-success">Imported {{ cashflowResult.rows_imported }} monthly rows</span>
-                <span class="cf-meta">
-                  {{ cashflowResult.frequency }} data, {{ cashflowResult.periods }} periods
-                  <template v-if="cashflowResult.layout === 'horizontal'"> (horizontal layout)</template>
-                </span>
-              </div>
-              <div v-if="cashflowResult.columns_detected" class="cf-columns">
-                <strong>Detected:</strong>
-                <span v-for="(col, key) in cashflowResult.columns_detected" :key="key" class="cf-col-tag">
-                  {{ key }}: {{ col || '—' }}
-                </span>
-              </div>
-              <div class="cf-preview">
-                <table class="cf-table">
-                  <thead>
-                    <tr>
-                      <th>Period</th>
-                      <th class="r">Revenue</th>
-                      <th class="r">Expenses</th>
-                      <th class="r">NOI</th>
-                      <th class="r">CapEx</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="(row, i) in (cashflowResult.cashflows || []).slice(0, 24)" :key="i">
-                      <td>{{ row.period_date }}</td>
-                      <td class="r">{{ fmtCurrency(row.revenue) }}</td>
-                      <td class="r">{{ fmtCurrency(row.expenses) }}</td>
-                      <td class="r">{{ fmtCurrency(row.noi) }}</td>
-                      <td class="r">{{ fmtCurrency(row.capex) }}</td>
-                    </tr>
-                  </tbody>
-                </table>
-                <div v-if="(cashflowResult.cashflows || []).length > 24" class="cf-truncated">
-                  ... and {{ cashflowResult.cashflows.length - 24 }} more rows
-                </div>
+                <span class="cf-success">Imported {{ cashflowResult.rows_imported }} rows
+                  ({{ cashflowResult.line_items_count }} line items)</span>
               </div>
             </div>
-
             <div class="cf-action-bar">
               <button class="btn-primary" @click="cashflowProperty = null">Done</button>
-              <button class="btn-secondary" @click="cashflowResult = null">Replace File</button>
+              <button class="btn-secondary" @click="cashflowResult = null; parsedLineItems = []">Replace File</button>
             </div>
           </template>
 
-          <!-- Upload state: file picker -->
+          <!-- Step 2: COA mapping review -->
+          <template v-else-if="parsedLineItems.length">
+            <div class="cf-result-header" style="margin-bottom:8px">
+              <strong>{{ parsedMetadata?.line_items_found }} line items found</strong>
+              <span class="cf-meta"> — {{ parsedFrequency }} data, {{ parsedMetadata?.periods_found }} periods</span>
+            </div>
+            <p class="cf-help" style="margin:0 0 8px">
+              Review and edit COA account assignments below. Summary/total rows are excluded by default.
+              Items without a COA account will be skipped.
+            </p>
+            <div class="cf-preview" style="max-height: 400px; overflow-y: auto">
+              <table class="cf-table">
+                <thead>
+                  <tr>
+                    <th style="width:24px"></th>
+                    <th>Line Item</th>
+                    <th style="width:80px">Account</th>
+                    <th style="width:90px">Category</th>
+                    <th class="r" style="width:100px">Sample Amt</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(li, i) in parsedLineItems" :key="i"
+                      :class="{ 'summary-row': li.is_summary, 'unmapped': !li.suggested_coa }">
+                    <td>
+                      <input v-if="!li.is_summary" type="checkbox" :checked="!!li.suggested_coa"
+                             @change="(e: Event) => { if (!(e.target as HTMLInputElement).checked) li.suggested_coa = null; else li.suggested_coa = li.suggested_coa || 5020 }" />
+                      <span v-else style="color:#999;font-size:11px">Σ</span>
+                    </td>
+                    <td :style="li.is_summary ? 'font-weight:600;color:#666' : ''">{{ li.label }}</td>
+                    <td>
+                      <input v-if="!li.is_summary" type="number" v-model.number="li.suggested_coa"
+                             style="width:70px;padding:2px 4px;font-size:12px" />
+                    </td>
+                    <td>
+                      <select v-if="!li.is_summary && li.suggested_coa" v-model="li.suggested_category"
+                              style="padding:2px;font-size:12px">
+                        <option value="revenue">Revenue</option>
+                        <option value="expense">Expense</option>
+                        <option value="capex">CapEx</option>
+                        <option value="other">Other</option>
+                      </select>
+                    </td>
+                    <td class="r" style="font-size:12px">
+                      {{ li.values?.length ? fmtCurrency(li.values[0]?.amount) : '—' }}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="cf-action-bar" style="margin-top:8px">
+              <button class="btn-primary" @click="confirmCashflowImport()" :disabled="confirmingImport">
+                {{ confirmingImport ? 'Importing...' : 'Confirm Import' }}
+              </button>
+              <button class="btn-secondary" @click="parsedLineItems = []">Cancel</button>
+            </div>
+            <div v-if="cashflowError" class="cf-error">{{ cashflowError }}</div>
+          </template>
+
+          <!-- Step 1: Upload file picker -->
           <template v-else>
             <p class="cf-help">
-              Upload the partner's Excel or CSV cash flow model. The parser auto-detects
-              revenue, expenses, NOI, and CapEx — both vertical and horizontal layouts
-              (dates across columns) are supported.
+              Upload the partner's Excel or CSV cash flow model. Each line item will be
+              mapped to a COA account for review before importing.
             </p>
 
             <div class="cf-upload-zone">
@@ -1595,7 +1663,7 @@ onMounted(() => {
                      @change="uploadCashflows" style="display:none" />
               <button class="btn-primary" @click="($refs.cfFileInput as HTMLInputElement)?.click()"
                       :disabled="cashflowUploading">
-                {{ cashflowUploading ? 'Uploading...' : 'Select Excel / CSV File' }}
+                {{ cashflowUploading ? 'Parsing...' : 'Select Excel / CSV File' }}
               </button>
             </div>
 
@@ -2439,4 +2507,6 @@ onMounted(() => {
 .cf-table th { background: #f5f5f5; font-weight: 600; position: sticky; top: 0; }
 .cf-truncated { font-size: 11px; color: #999; text-align: center; padding: 4px; }
 .cf-existing { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 8px; background: #f5f5f5; border-radius: 4px; font-size: 12px; }
+.summary-row { background: #f9f9f9; }
+.unmapped td { color: #999; }
 </style>

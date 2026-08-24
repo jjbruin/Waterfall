@@ -22,8 +22,8 @@ function toggleSection(key: string) {
 }
 
 // Auto-expand section containing current route
-const amRoutes = ['/deal-analysis', '/property-financials', '/surveillance', '/one-pager', '/review-tracking', '/ownership', '/waterfall-setup', '/reports']
-const nbRoutes = ['/pipeline', '/prospect-analysis', '/lease-review', '/lease-risk-analysis', '/lease-abstract']
+const amRoutes = ['/deal-analysis', '/property-financials', '/surveillance', '/one-pager', '/portfolio-snapshot', '/review-tracking', '/ownership', '/waterfall-setup', '/reports']
+const nbRoutes = ['/pipeline', '/prospect-analysis', '/lease-review', '/lease-risk-analysis']
 const dmRoutes = ['/data-explorer', '/settings']
 
 watch(() => route.path, (path) => {
@@ -431,6 +431,7 @@ function toggleCollapsed() {
           <router-link to="/property-financials" class="nav-item" :class="{ active: route.path === '/property-financials' }">Property Financials</router-link>
           <router-link to="/surveillance" class="nav-item" :class="{ active: route.path === '/surveillance' }">Surveillance</router-link>
           <router-link to="/one-pager" class="nav-item" :class="{ active: route.path === '/one-pager' }">One Pager</router-link>
+          <router-link to="/portfolio-snapshot" class="nav-item" :class="{ active: route.path === '/portfolio-snapshot' }">Portfolio Snapshot</router-link>
           <router-link to="/review-tracking" class="nav-item" :class="{ active: route.path === '/review-tracking' }">Review Tracking</router-link>
           <router-link to="/ownership" class="nav-item" :class="{ active: route.path === '/ownership' }">Ownership</router-link>
           <router-link to="/waterfall-setup" class="nav-item" :class="{ active: route.path === '/waterfall-setup' }">Waterfall Setup</router-link>

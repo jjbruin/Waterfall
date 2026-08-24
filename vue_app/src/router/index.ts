@@ -45,6 +45,11 @@ const routes = [
     component: () => import('../views/OnePagerView.vue'),
   },
   {
+    path: '/portfolio-snapshot',
+    name: 'Portfolio Snapshot',
+    component: () => import('../views/PortfolioSnapshotView.vue'),
+  },
+  {
     path: '/review-tracking',
     name: 'Review Tracking',
     component: () => import('../views/ReviewTrackingView.vue'),

@@ -281,6 +281,13 @@ def ensure_prospect_tables(engine):
             ('prospect_assumptions', 'guarantor_notes', 'TEXT'),
             ('prospect_assumptions', 'capital_uses_json', 'TEXT'),
             ('prospect_assumptions', 'capital_sources_json', 'TEXT'),
+            # Operating override fields (Aug 2026)
+            ('prospect_assumptions', 'mgmt_fee_pct', 'DOUBLE PRECISION'),
+            ('prospect_assumptions', 'replacement_reserve_psf', 'DOUBLE PRECISION'),
+            # Line-item cashflow columns
+            ('prospect_cashflows', 'vaccount', 'INTEGER'),
+            ('prospect_cashflows', 'line_item', 'TEXT'),
+            ('prospect_cashflows', 'amount', 'DOUBLE PRECISION'),
         ]
         for table, col, col_type in _migrate_columns:
             try:
@@ -910,6 +917,7 @@ ASSUMPTION_FIELDS = [
     'max_ltv', 'max_ltc', 'min_dscr', 'dscr_test_start', 'min_debt_yield',
     'origination_fee_bps', 'earnout_notes', 'guarantor_notes',
     'capital_uses_json', 'capital_sources_json',
+    'mgmt_fee_pct', 'replacement_reserve_psf',
 ]
 
 
@@ -1090,6 +1098,134 @@ def delete_property_cashflows(engine, deal_id: int, property_id: int,
         """), {'did': deal_id, 'pid': property_id, 'v': version})
         conn.commit()
     return result.rowcount > 0
+
+
+def import_property_line_items(engine, deal_id: int, property_id: int,
+                               line_items: List[Dict], source: str = 'excel',
+                               version: int = 1, frequency: str = 'monthly') -> Dict:
+    """Import line-item cash flows with COA account assignments.
+
+    Each line_item has: {label, vaccount, category, values: [{period_date, amount}]}
+    Stores one row per (period_date, vAccount) in prospect_cashflows.
+    Annual data is auto-spread to monthly.
+    """
+    from utils import month_end
+    from datetime import date as date_cls
+
+    with engine.connect() as conn:
+        # Verify property belongs to deal
+        prop = conn.execute(text(
+            "SELECT id FROM prospect_properties WHERE id = :pid AND prospect_id = :did"
+        ), {'pid': property_id, 'did': deal_id}).fetchone()
+        if not prop:
+            raise ValueError(f"Property {property_id} not found in deal {deal_id}")
+
+        # Delete existing line-item rows for this property + version
+        conn.execute(text("""
+            DELETE FROM prospect_cashflows
+            WHERE prospect_id = :did AND property_id = :pid AND version = :v
+        """), {'did': deal_id, 'pid': property_id, 'v': version})
+
+        count = 0
+        for item in line_items:
+            vaccount = item.get('vaccount')
+            label = item.get('label', '')
+            if not vaccount:
+                continue  # Skip unmapped items
+
+            for val in item.get('values', []):
+                period_date = val.get('period_date')
+                amount = val.get('amount', 0)
+                if not period_date:
+                    continue
+
+                if frequency == 'annual':
+                    # Spread annual to 12 monthly rows
+                    try:
+                        dt = pd.to_datetime(period_date)
+                        year = dt.year
+                    except Exception:
+                        continue
+                    monthly_amount = round(float(amount) / 12, 2)
+                    for m in range(1, 13):
+                        m_date = str(month_end(date_cls(year, m, 1)))
+                        conn.execute(text("""
+                            INSERT INTO prospect_cashflows
+                                (prospect_id, property_id, version, period_date,
+                                 vaccount, line_item, amount, source)
+                            VALUES (:did, :pid, :v, :period_date,
+                                    :vaccount, :line_item, :amount, :source)
+                        """), {
+                            'did': deal_id, 'pid': property_id, 'v': version,
+                            'period_date': m_date,
+                            'vaccount': int(vaccount),
+                            'line_item': label,
+                            'amount': monthly_amount,
+                            'source': source,
+                        })
+                        count += 1
+                else:
+                    conn.execute(text("""
+                        INSERT INTO prospect_cashflows
+                            (prospect_id, property_id, version, period_date,
+                             vaccount, line_item, amount, source)
+                        VALUES (:did, :pid, :v, :period_date,
+                                :vaccount, :line_item, :amount, :source)
+                    """), {
+                        'did': deal_id, 'pid': property_id, 'v': version,
+                        'period_date': period_date,
+                        'vaccount': int(vaccount),
+                        'line_item': label,
+                        'amount': float(amount),
+                        'source': source,
+                    })
+                    count += 1
+
+        conn.commit()
+    return {'rows_imported': count, 'property_id': property_id, 'version': version}
+
+
+def get_property_line_items(engine, deal_id: int, property_id: int,
+                            version: int = 1) -> List[Dict]:
+    """Get line-item cash flow rows for a property."""
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT id, period_date, vaccount, line_item, amount, source, created_at
+            FROM prospect_cashflows
+            WHERE prospect_id = :did AND property_id = :pid AND version = :v
+                AND vaccount IS NOT NULL
+            ORDER BY vaccount, period_date
+        """), {'did': deal_id, 'pid': property_id, 'v': version}).fetchall()
+
+    return [{
+        'id': r[0], 'period_date': r[1], 'vaccount': r[2],
+        'line_item': r[3], 'amount': r[4], 'source': r[5],
+        'created_at': str(r[6]) if r[6] else None,
+    } for r in rows]
+
+
+def get_deal_line_items_by_property(engine, deal_id: int,
+                                     version: int = 1) -> Dict[int, List[Dict]]:
+    """Get all line-item cashflows for a deal grouped by property_id."""
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT property_id, period_date, vaccount, line_item, amount, source
+            FROM prospect_cashflows
+            WHERE prospect_id = :did AND version = :v
+                AND property_id IS NOT NULL AND vaccount IS NOT NULL
+            ORDER BY property_id, period_date, vaccount
+        """), {'did': deal_id, 'v': version}).fetchall()
+
+    result: Dict[int, List[Dict]] = {}
+    for r in rows:
+        pid = r[0]
+        if pid not in result:
+            result[pid] = []
+        result[pid].append({
+            'period_date': r[1], 'vaccount': r[2], 'line_item': r[3],
+            'amount': r[4], 'source': r[5],
+        })
+    return result
 
 
 def get_deal_cashflows_by_property(engine, deal_id: int,

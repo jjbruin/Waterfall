@@ -133,6 +133,9 @@ def create_app(config_name: str = None) -> Flask:
     from flask_app.api.portfolio_analysis import portfolio_analysis_bp
     app.register_blueprint(portfolio_analysis_bp, url_prefix="/api/portfolio-analysis")
 
+    from flask_app.api.portfolio_snapshot import portfolio_snapshot_bp
+    app.register_blueprint(portfolio_snapshot_bp, url_prefix="/api/portfolio-snapshot")
+
     from flask_app.api.assistant import assistant_bp
     app.register_blueprint(assistant_bp, url_prefix="/api/assistant")
 

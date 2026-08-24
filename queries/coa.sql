@@ -1,3 +1,12 @@
-select vaccount as vcode, vAccountType
-from vCOA
-where ISNUMERIC(vaccount)=1
+-- Chart of Accounts from IM vCOA view
+-- Maps to: coa table (vAccount, vAccountType)
+select Distinct
+vcode,
+vDescription,
+vNotes,
+vType,
+VMisc,
+vAccountType
+from COA
+where vcode <> 'M%'
+order by vcode

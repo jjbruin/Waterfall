@@ -10,6 +10,7 @@ No DB or Flask dependencies. Takes file bytes, returns structured dicts.
 """
 
 import io
+import logging
 import re
 from datetime import date
 from typing import Dict, Any, List, Optional, Tuple
@@ -18,6 +19,8 @@ import pandas as pd
 import numpy as np
 
 from utils import month_end
+
+log = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -189,6 +192,11 @@ def _detect_horizontal_dates(wb_bytes: bytes) -> Optional[dict]:
 
         # Need at least 60% of non-empty cells to be dates
         if len(non_empty) > 0 and parsed_count / len(non_empty) >= 0.6:
+            valid = [d for d in parsed_dates if d is not None]
+            log.info("Horizontal dates detected: row=%d, %d dates parsed (%d total cells), "
+                     "first=%s, last=%s",
+                     row_idx, len(valid), len(parsed_dates),
+                     valid[0] if valid else None, valid[-1] if valid else None)
             return {
                 'sheet_name': sheet_name,
                 'date_row_idx': row_idx,
@@ -211,7 +219,8 @@ def _parse_horizontal_cashflow(
     matching rows, and transposes into the standard vertical output format.
     """
     import openpyxl
-    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
+    # Use read_only=False to get consistent row widths (read_only can trim trailing cells)
+    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
     ws = wb[horiz_info['sheet_name']]
 
     # Read all data rows (after the date header row)
@@ -229,9 +238,10 @@ def _parse_horizontal_cashflow(
         label = str(row[0]).strip()
         if not label:
             continue
-        # Extract numeric values from data columns
+        # Extract numeric values from data columns — pad row for safety
+        row = list(row) + [None] * max(0, num_data_cols + 1 - len(row))
         values = []
-        for col_idx in range(1, min(num_data_cols + 1, len(row))):
+        for col_idx in range(1, num_data_cols + 1):
             v = row[col_idx]
             if v is None:
                 values.append(0.0)
@@ -364,6 +374,321 @@ def _annual_to_monthly(rows: List[Dict], year: int) -> List[Dict]:
             'noi': round(noi / 12, 2),
         })
     return monthly
+
+
+def _suggest_coa(label: str, coa_rows: Optional[List[Dict]] = None) -> Tuple[Optional[int], Optional[str]]:
+    """Suggest a COA account for a line item label.
+
+    Uses ARGUS_COA_MAP keyword matching first, then falls back to fuzzy matching
+    against COA table descriptions if provided.
+    """
+    from argus_parser import map_to_coa
+    account, category = map_to_coa(label)
+    if account is not None:
+        return account, category
+
+    if not coa_rows:
+        return None, None
+
+    # Fuzzy match against COA vdescription and vMisc
+    label_lower = label.strip().lower()
+    label_words = set(re.split(r'\W+', label_lower)) - {'', 'total', 'net', 'gross'}
+    best_score = 0
+    best_account = None
+    best_category = None
+
+    for row in coa_rows:
+        vcode = row.get('vcode')
+        desc = str(row.get('vdescription') or '').lower()
+        misc = str(row.get('vmisc') or row.get('vMisc') or '').lower()
+        acct_type = str(row.get('vaccounttype') or row.get('vAccountType') or '')
+
+        desc_words = set(re.split(r'\W+', desc)) - {'', 'total', 'net', 'gross'}
+        misc_words = set(re.split(r'\W+', misc)) - {'', 'total', 'net', 'gross'}
+
+        overlap = len(label_words & (desc_words | misc_words))
+        if overlap > best_score and overlap >= 2:
+            best_score = overlap
+            try:
+                best_account = int(vcode)
+            except (ValueError, TypeError):
+                continue
+            if acct_type.lower().startswith('revenue'):
+                best_category = 'revenue'
+            elif acct_type.lower().startswith('expense'):
+                best_category = 'expense'
+            else:
+                best_category = 'other'
+
+    return best_account, best_category
+
+
+# Summary-line patterns for identifying total/subtotal rows
+_SUMMARY_PATTERNS = [
+    r'^total\b', r'^net\b', r'^subtotal', r'^effective\s+gross',
+    r'^gross\s+potential', r'^gross\s+revenue', r'^gross\s+income',
+    r'net\s+operating\s+income', r'\bnoi\b',
+]
+
+
+def _is_summary_row(label: str) -> bool:
+    """Check if a row label looks like a summary/total row."""
+    label_lower = label.strip().lower()
+    return any(re.search(p, label_lower) for p in _SUMMARY_PATTERNS)
+
+
+def parse_cashflow_line_items(
+    file_bytes: bytes,
+    filename: str,
+    coa_rows: Optional[List[Dict]] = None,
+) -> Dict[str, Any]:
+    """Parse an Excel/CSV cash flow model and extract ALL individual line items.
+
+    Returns each line item with its original label, suggested COA account mapping,
+    and monthly values. Used for the two-step import flow where analysts review
+    and edit COA assignments before importing.
+
+    Returns:
+        {
+            'line_items': [
+                {
+                    'label': str,           # Original row label from Excel
+                    'suggested_coa': int,   # Suggested vAccount number (or null)
+                    'suggested_category': str, # 'revenue'|'expense'|'capex'|'other'|null
+                    'is_summary': bool,     # True if this looks like a total/subtotal row
+                    'values': [{'period_date': str, 'amount': float}, ...]
+                },
+                ...
+            ],
+            'periods': [str, ...],   # List of period dates
+            'frequency': 'monthly' | 'annual',
+            'layout': 'horizontal' | 'vertical',
+            'metadata': {...},
+        }
+    """
+    fname_lower = filename.lower()
+
+    # Try horizontal layout first (most common for partner models)
+    if not fname_lower.endswith('.csv'):
+        horiz = _detect_horizontal_dates(file_bytes)
+        if horiz is not None:
+            return _parse_horizontal_line_items(file_bytes, filename, horiz, coa_rows)
+
+    # Fall back to vertical layout — try to extract individual columns
+    return _parse_vertical_line_items(file_bytes, filename, coa_rows)
+
+
+def _parse_horizontal_line_items(
+    file_bytes: bytes,
+    filename: str,
+    horiz_info: dict,
+    coa_rows: Optional[List[Dict]] = None,
+) -> Dict[str, Any]:
+    """Extract all line items from a horizontal/transposed Excel layout."""
+    import openpyxl
+    # Use read_only=False to get consistent row widths (read_only can trim trailing cells)
+    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+    ws = wb[horiz_info['sheet_name']]
+
+    date_row_idx = horiz_info['date_row_idx']
+    dates = horiz_info['dates']
+    num_data_cols = len(dates)
+
+    # Build period date list
+    periods = []
+    for dt in dates:
+        if dt is not None:
+            periods.append(str(month_end(date(dt.year, dt.month, 1))))
+        else:
+            periods.append(None)
+
+    # Collect all rows with their labels and values
+    line_items = []
+    for row_num, row in enumerate(ws.iter_rows(values_only=True)):
+        if row_num <= date_row_idx:
+            continue
+        if not row or row[0] is None:
+            continue
+        label = str(row[0]).strip()
+        if not label:
+            continue
+
+        # Extract numeric values — pad row to ensure we cover all date columns
+        row = list(row) + [None] * max(0, num_data_cols + 1 - len(row))
+        values = []
+        has_data = False
+        for col_idx in range(1, num_data_cols + 1):
+            v = row[col_idx]
+            if v is None:
+                values.append(0.0)
+            elif isinstance(v, (int, float)):
+                values.append(float(v))
+                if float(v) != 0.0:
+                    has_data = True
+            else:
+                try:
+                    cleaned = str(v).replace(',', '').replace('$', '')
+                    cleaned = cleaned.replace('(', '-').replace(')', '')
+                    val = float(cleaned)
+                    values.append(val)
+                    if val != 0.0:
+                        has_data = True
+                except (ValueError, TypeError):
+                    values.append(0.0)
+
+        if not has_data:
+            continue  # Skip section headers with no data
+
+        # Suggest COA mapping
+        suggested_coa, suggested_category = _suggest_coa(label, coa_rows)
+        is_summary = _is_summary_row(label)
+
+        # Build per-period values
+        period_values = []
+        for i, period_date in enumerate(periods):
+            if period_date is None:
+                continue
+            amount = values[i] if i < len(values) else 0.0
+            period_values.append({
+                'period_date': period_date,
+                'amount': round(amount, 2),
+            })
+
+        line_items.append({
+            'label': label,
+            'suggested_coa': suggested_coa,
+            'suggested_category': suggested_category,
+            'is_summary': is_summary,
+            'values': period_values,
+        })
+
+    wb.close()
+
+    valid_periods = [p for p in periods if p is not None]
+    log.info("Parsed %d line items with %d valid periods: %s .. %s",
+             len(line_items), len(valid_periods),
+             valid_periods[0] if valid_periods else None,
+             valid_periods[-1] if valid_periods else None)
+    if line_items:
+        first = line_items[0]
+        log.info("  First item '%s': %d values, sum=%.2f",
+                 first['label'], len(first['values']),
+                 sum(v['amount'] for v in first['values']))
+
+    is_annual = len(valid_periods) >= 2 and (
+        pd.to_datetime(valid_periods[-1]) - pd.to_datetime(valid_periods[0])
+    ).days / max(len(valid_periods) - 1, 1) > 300
+
+    return {
+        'line_items': line_items,
+        'periods': valid_periods,
+        'frequency': 'annual' if is_annual else 'monthly',
+        'layout': 'horizontal',
+        'metadata': {
+            'filename': filename,
+            'line_items_found': len(line_items),
+            'periods_found': len(valid_periods),
+        },
+    }
+
+
+def _parse_vertical_line_items(
+    file_bytes: bytes,
+    filename: str,
+    coa_rows: Optional[List[Dict]] = None,
+) -> Dict[str, Any]:
+    """Extract line items from a vertical layout (columns = categories).
+
+    In vertical layouts, each numeric column is treated as a line item.
+    """
+    fname_lower = filename.lower()
+    try:
+        if fname_lower.endswith('.csv'):
+            df = pd.read_csv(io.BytesIO(file_bytes))
+        else:
+            xls = pd.ExcelFile(io.BytesIO(file_bytes))
+            df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=xls.sheet_names[0])
+    except Exception as e:
+        return {'error': f'Failed to read file: {e}'}
+
+    if df.empty:
+        return {'error': 'File is empty'}
+
+    df = df.dropna(how='all').dropna(axis=1, how='all')
+
+    date_col = _detect_date_column(df)
+    if not date_col:
+        return {'error': 'Could not detect a date/period column'}
+
+    try:
+        dates = pd.to_datetime(df[date_col], format='mixed', dayfirst=False)
+    except Exception:
+        try:
+            years = pd.to_numeric(df[date_col], errors='coerce')
+            dates = years.apply(
+                lambda y: pd.Timestamp(year=int(y), month=12, day=31)
+                if pd.notna(y) and 1990 <= y <= 2060 else pd.NaT
+            )
+        except Exception:
+            return {'error': f'Could not parse dates from column "{date_col}"'}
+
+    valid_mask = dates.notna()
+    df = df[valid_mask].copy()
+    dates = dates[valid_mask]
+
+    if df.empty:
+        return {'error': 'No valid date rows found'}
+
+    # Each numeric column becomes a line item
+    line_items = []
+    periods = [str(month_end(date(dt.year, dt.month, 1))) for dt in dates]
+
+    for col in df.columns:
+        if col == date_col:
+            continue
+        # Try parsing as numeric
+        s = df[col].astype(str).str.replace(',', '').str.replace('$', '')
+        s = s.str.replace('(', '-', regex=False).str.replace(')', '', regex=False)
+        numeric = pd.to_numeric(s, errors='coerce')
+        if numeric.notna().sum() < len(numeric) * 0.5:
+            continue  # Not a numeric column
+
+        has_data = (numeric.fillna(0).abs() > 0).any()
+        if not has_data:
+            continue
+
+        suggested_coa, suggested_category = _suggest_coa(str(col), coa_rows)
+        is_summary = _is_summary_row(str(col))
+
+        period_values = []
+        for i, period_date in enumerate(periods):
+            amount = float(numeric.iloc[i]) if pd.notna(numeric.iloc[i]) else 0.0
+            period_values.append({
+                'period_date': period_date,
+                'amount': round(amount, 2),
+            })
+
+        line_items.append({
+            'label': str(col),
+            'suggested_coa': suggested_coa,
+            'suggested_category': suggested_category,
+            'is_summary': is_summary,
+            'values': period_values,
+        })
+
+    is_annual = _is_annual(dates)
+
+    return {
+        'line_items': line_items,
+        'periods': periods,
+        'frequency': 'annual' if is_annual else 'monthly',
+        'layout': 'vertical',
+        'metadata': {
+            'filename': filename,
+            'line_items_found': len(line_items),
+            'periods_found': len(periods),
+        },
+    }
 
 
 def parse_cashflow_excel(

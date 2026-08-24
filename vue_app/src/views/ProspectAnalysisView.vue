@@ -98,6 +98,8 @@ const assumptionForm = ref({
   exit_cap_rate: 0.06,
   selling_cost_pct: 0.02,
   capex_reserve_psf: 0.80,
+  mgmt_fee_pct: null as number | null,
+  replacement_reserve_psf: null as number | null,
   // Loan terms (for first mortgage)
   lender: '' as string,
   debt_rate: 0.063,
@@ -515,6 +517,12 @@ const equityWaterfallSummary = computed(() => {
 })
 
 // ---------------------------------------------------------------------------
+const cashMgmtColumns = computed(() => {
+  const sched = analysisResult.value?.cash_management?.schedule
+  if (!sched?.length) return []
+  return Object.keys(sched[0])
+})
+
 // Data loading
 // ---------------------------------------------------------------------------
 
@@ -892,6 +900,22 @@ async function runAnalysis() {
   // Auto-save assumptions (persists capital budget, debt params, etc.)
   await saveAssumptions()
 
+  // Auto-build waterfall if step inputs exist (saves user from manual Build step)
+  const hasStepInputs = cfStepInputs.value.some(s => s.entity_id) || capStepInputs.value.some(s => s.entity_id)
+  if (hasStepInputs) {
+    try {
+      const wfRes = await api.post(`/api/prospects/${selectedDealId.value}/waterfall/build`, {
+        cf_steps: cfStepInputs.value.filter(s => s.entity_id),
+        cap_steps: capStepInputs.value.filter(s => s.entity_id),
+      })
+      wfSteps.value = wfRes.data.steps || []
+      wfHasStored.value = true
+    } catch (e: any) {
+      // Non-fatal: analysis can still run with synthetic waterfall
+      console.warn('Auto-build waterfall failed:', e.message)
+    }
+  }
+
   try {
     // Compute effective closing_cost_pct so backend formula reproduces totalUses
     // total_cost = PP + PP * closing_cost_pct + capex_at_close = totalUses
@@ -907,6 +931,8 @@ async function runAnalysis() {
       capex_at_close_override: capex,
       debt_amount: totalDebt.value,
       psc_equity_pct: peEquityPct.value / 100,
+      pe_equity_amount: peAmount.value,
+      op_equity_amount: partnerEquity.value,
     }
     if (selectedAssumptionId.value) {
       payload.assumption_id = selectedAssumptionId.value
@@ -1462,20 +1488,31 @@ loadDeals()
             <div class="section-header clickable" @click="showOperatingAssumptions = !showOperatingAssumptions">
               Operating Assumptions
               <span class="chevron">{{ showOperatingAssumptions ? '\u25BE' : '\u25B8' }}</span>
-              <span class="section-hint">(used when no imported cash flows)</span>
             </div>
             <div v-if="showOperatingAssumptions" class="form-grid-3">
               <div class="form-group">
-                <label>Year 1 NOI ($)</label>
-                <input type="number" v-model.number="assumptionForm.noi_year1" step="1000" />
+                <label>Management Fee (%)</label>
+                <input type="number" v-model.number="assumptionForm.mgmt_fee_pct" step="0.005" placeholder="e.g. 0.03" />
+                <span class="field-hint">Overrides imported mgmt fee; applied to gross revenues</span>
               </div>
               <div class="form-group">
-                <label>NOI Growth Rate</label>
-                <input type="number" v-model.number="assumptionForm.noi_growth_rate" step="0.005" />
+                <label>Replacement Reserve ($/SF)</label>
+                <input type="number" v-model.number="assumptionForm.replacement_reserve_psf" step="0.05" placeholder="e.g. 0.25" />
+                <span class="field-hint">Annual $/SF allocated monthly as expense before NOI</span>
               </div>
               <div class="form-group">
                 <label>CapEx Reserve ($/SF)</label>
                 <input type="number" v-model.number="assumptionForm.capex_reserve_psf" step="0.10" />
+              </div>
+              <hr style="grid-column: 1 / -1; border: none; border-top: 1px solid #ddd; margin: 4px 0;" />
+              <div class="form-group">
+                <label>Year 1 NOI ($)</label>
+                <input type="number" v-model.number="assumptionForm.noi_year1" step="1000" />
+                <span class="field-hint">Used when no imported cash flows</span>
+              </div>
+              <div class="form-group">
+                <label>NOI Growth Rate</label>
+                <input type="number" v-model.number="assumptionForm.noi_growth_rate" step="0.005" />
               </div>
             </div>
           </div>
@@ -1529,24 +1566,6 @@ loadDeals()
                   </tr>
                 </tbody>
               </table>
-
-              <!-- Per-partner capital distributions from waterfall -->
-              <div v-if="analysisResult.partner_results?.length" class="partner-proceeds">
-                <h5 class="budget-title" style="margin-top: 8px;">Capital Distributions to Partners</h5>
-                <table class="proceeds-table">
-                  <tbody>
-                    <tr v-for="p in analysisResult.partner_results" :key="p.partner || p.investor_id"
-                        :class="{ 'pe-row-light': p.is_pref_equity || p.is_pe }">
-                      <td>{{ p.partner || p.investor_id }}</td>
-                      <td class="r">{{ fmtCurrency(p.capital_distributions) }}</td>
-                    </tr>
-                    <tr v-if="analysisResult.deal_summary" class="subtotal-row">
-                      <td><strong>Total</strong></td>
-                      <td class="r"><strong>{{ fmtCurrency(analysisResult.deal_summary.total_capital_distributions || analysisResult.deal_summary.cap_distributions) }}</strong></td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
 
               <div class="sale-meta">
                 Sale Date: {{ analysisResult.sale_dbg.Sale_Date }}
@@ -1885,6 +1904,46 @@ loadDeals()
               </div>
             </div>
 
+            <!-- Annual Operating Forecast & Waterfall Summary -->
+            <div class="section expandable" v-if="analysisResult.annual_forecast">
+              <div class="section-header" @click="expanded.forecast = !expanded.forecast">
+                Annual Operating Forecast &amp; Waterfall Summary
+                <span class="chevron">{{ expanded.forecast ? '\u25BE' : '\u25B8' }}</span>
+              </div>
+              <div v-if="expanded.forecast" class="table-scroll">
+                <table class="forecast-table">
+                  <thead>
+                    <tr>
+                      <th class="row-label">Line Item</th>
+                      <th v-for="col in analysisResult.annual_forecast.columns" :key="col.year" class="r">
+                        {{ col.label }}
+                      </th>
+                    </tr>
+                    <tr class="sublabel-row">
+                      <th class="row-label"></th>
+                      <th v-for="col in analysisResult.annual_forecast.columns" :key="'sub-' + col.year" class="r sublabel">
+                        {{ col.sublabel }}
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(row, i) in analysisResult.annual_forecast.rows" :key="i"
+                        :class="{
+                          'section-header-row': row.is_header,
+                          'underline-row': row.underline,
+                          'topline-row': row.topline,
+                          'bold-row': row.isBold,
+                        }">
+                      <td class="row-label">{{ row.label }}</td>
+                      <td v-for="col in analysisResult.annual_forecast.columns" :key="col.year" class="r">
+                        {{ fmtVal(row.values?.[col.year], row.is_pct) }}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
             <!-- Equity Waterfall Summary -->
             <div class="section expandable" v-if="equityWaterfallSummary">
               <div class="section-header" @click="expanded.equity = !expanded.equity">
@@ -1909,38 +1968,6 @@ loadDeals()
                       <td v-for="yr in equityWaterfallSummary.years" :key="yr" class="r"
                           :style="{ fontWeight: row.isBold || row.isHeader ? '600' : 'normal' }">
                         {{ row.values[yr] != null ? fmtCurrency(row.values[yr]) : '' }}
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            <!-- Annual Forecast -->
-            <div class="section expandable" v-if="analysisResult.annual_forecast">
-              <div class="section-header" @click="expanded.forecast = !expanded.forecast">
-                Annual Operating Forecast &amp; Waterfall Summary
-                <span class="chevron">{{ expanded.forecast ? '\u25BE' : '\u25B8' }}</span>
-              </div>
-              <div v-if="expanded.forecast" class="table-scroll">
-                <table class="forecast-table">
-                  <thead>
-                    <tr>
-                      <th class="row-label">Line Item</th>
-                      <th v-for="yr in analysisResult.annual_forecast.years" :key="yr" class="r">{{ yr }}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="row in analysisResult.annual_forecast.rows" :key="row.label"
-                        :class="{
-                          'section-header-row': row.is_header,
-                          'underline-row': row.underline,
-                          'topline-row': row.topline,
-                          'bold-row': row.isBold,
-                        }">
-                      <td class="row-label">{{ row.label }}</td>
-                      <td v-for="yr in analysisResult.annual_forecast.years" :key="yr" class="r">
-                        {{ fmtVal(row.values?.[yr], row.is_pct) }}
                       </td>
                     </tr>
                   </tbody>
@@ -1973,6 +2000,161 @@ loadDeals()
                     </tr>
                   </tbody>
                 </table>
+              </div>
+            </div>
+
+            <!-- Cash Management & Reserves -->
+            <div class="section expandable" v-if="analysisResult.cash_management">
+              <div class="section-header" @click="expanded.cash = !expanded.cash">
+                Cash Management &amp; Reserves
+                <span class="chevron">{{ expanded.cash ? '\u25BE' : '\u25B8' }}</span>
+              </div>
+              <div v-if="expanded.cash">
+                <div class="metric-cards" style="margin-bottom:12px">
+                  <div class="metric-card">
+                    <div class="metric-label">Beginning Cash</div>
+                    <div class="metric-value">{{ fmtCurrency(analysisResult.cash_management.beginning_cash) }}</div>
+                  </div>
+                </div>
+                <div class="table-scroll">
+                  <table class="compact-table">
+                    <thead>
+                      <tr>
+                        <th v-for="col in cashMgmtColumns" :key="col">{{ col }}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(row, i) in analysisResult.cash_management.schedule" :key="i">
+                        <td v-for="col in cashMgmtColumns" :key="col" class="r">
+                          {{ col === 'event_date' ? row[col] : fmtCurrency(row[col]) }}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <!-- XIRR Cash Flows -->
+            <div class="section expandable" v-if="analysisResult.xirr_cashflows">
+              <div class="section-header" @click="expanded.xirr = !expanded.xirr">
+                XIRR Cash Flows
+                <span class="chevron">{{ expanded.xirr ? '\u25BE' : '\u25B8' }}</span>
+              </div>
+              <div v-if="expanded.xirr">
+                <div v-for="(cfs, partner) in analysisResult.xirr_cashflows" :key="partner" style="margin-bottom:16px">
+                  <h4 style="margin:8px 0 4px">{{ partner }}</h4>
+                  <div class="table-scroll">
+                    <table class="compact-table">
+                      <thead>
+                        <tr><th>Date</th><th>Description</th><th class="r">Amount</th></tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="(cf, i) in cfs" :key="i">
+                          <td>{{ cf.date }}</td>
+                          <td>{{ cf.description }}</td>
+                          <td class="r" :class="{ neg: cf.amount < 0 }">{{ fmtCurrency(cf.amount) }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ROE Audit -->
+            <div class="section expandable" v-if="analysisResult.roe_audit">
+              <div class="section-header" @click="expanded.roe = !expanded.roe">
+                ROE Audit — Return on Equity Breakdown
+                <span class="chevron">{{ expanded.roe ? '\u25BE' : '\u25B8' }}</span>
+              </div>
+              <div v-if="expanded.roe">
+                <div v-for="section in analysisResult.roe_audit" :key="section.partner || 'deal'" style="margin-bottom:16px">
+                  <h4 style="margin:8px 0 4px">{{ section.partner || 'Deal Level' }}</h4>
+                  <div class="metric-cards" style="margin-bottom:8px">
+                    <div class="metric-card" v-if="section.metrics?.roe != null">
+                      <div class="metric-label">ITD ROE</div>
+                      <div class="metric-value">{{ fmtPct(section.metrics.roe) }}</div>
+                    </div>
+                    <div class="metric-card" v-if="section.metrics?.pref_due != null">
+                      <div class="metric-label">Pref Due</div>
+                      <div class="metric-value">{{ fmtCurrency(section.metrics.pref_due) }}</div>
+                    </div>
+                    <div class="metric-card" v-if="section.metrics?.pref_paid != null">
+                      <div class="metric-label">Pref Paid</div>
+                      <div class="metric-value">{{ fmtCurrency(section.metrics.pref_paid) }}</div>
+                    </div>
+                    <div class="metric-card" v-if="section.metrics?.pref_accrued != null">
+                      <div class="metric-label">Pref Accrued</div>
+                      <div class="metric-value">{{ fmtCurrency(section.metrics.pref_accrued) }}</div>
+                    </div>
+                  </div>
+                  <div class="table-scroll" v-if="section.events?.length">
+                    <table class="compact-table">
+                      <thead>
+                        <tr>
+                          <th>Date</th><th>Event</th><th class="r">Amount</th>
+                          <th class="r">Capital Balance</th><th class="r">Days</th>
+                          <th class="r">Wtd Capital</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="(ev, i) in section.events" :key="i">
+                          <td>{{ ev.date }}</td>
+                          <td>{{ ev.label }}</td>
+                          <td class="r" :class="{ neg: ev.amount < 0 }">{{ fmtCurrency(ev.amount) }}</td>
+                          <td class="r">{{ fmtCurrency(ev.capital_balance) }}</td>
+                          <td class="r">{{ ev.days }}</td>
+                          <td class="r">{{ fmtCurrency(ev.weighted_capital) }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- MOIC Audit -->
+            <div class="section expandable" v-if="analysisResult.moic_audit">
+              <div class="section-header" @click="expanded.moic = !expanded.moic">
+                MOIC Audit — Multiple on Invested Capital
+                <span class="chevron">{{ expanded.moic ? '\u25BE' : '\u25B8' }}</span>
+              </div>
+              <div v-if="expanded.moic">
+                <div v-for="section in analysisResult.moic_audit" :key="section.partner || 'deal'" style="margin-bottom:16px">
+                  <h4 style="margin:8px 0 4px">{{ section.partner || 'Deal Level' }}</h4>
+                  <div class="metric-cards" style="margin-bottom:8px">
+                    <div class="metric-card" v-if="section.metrics?.contributions != null">
+                      <div class="metric-label">Contributions</div>
+                      <div class="metric-value">{{ fmtCurrency(section.metrics.contributions) }}</div>
+                    </div>
+                    <div class="metric-card" v-if="section.metrics?.total_distributions != null">
+                      <div class="metric-label">Total Distributions</div>
+                      <div class="metric-value">{{ fmtCurrency(section.metrics.total_distributions) }}</div>
+                    </div>
+                    <div class="metric-card" v-if="section.metrics?.moic != null">
+                      <div class="metric-label">MOIC</div>
+                      <div class="metric-value">{{ section.metrics.moic?.toFixed(2) }}x</div>
+                    </div>
+                  </div>
+                  <div class="table-scroll" v-if="section.cashflows?.length">
+                    <table class="compact-table">
+                      <thead>
+                        <tr>
+                          <th>Date</th><th>Description</th><th>Type</th><th class="r">Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="(cf, i) in section.cashflows" :key="i">
+                          <td>{{ cf.date }}</td>
+                          <td>{{ cf.description }}</td>
+                          <td>{{ cf.type }}</td>
+                          <td class="r" :class="{ neg: cf.amount < 0 }">{{ fmtCurrency(cf.amount) }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -2046,6 +2228,7 @@ loadDeals()
 .expandable .section-header { cursor: pointer; user-select: none; }
 .chevron { font-size: 11px; color: #999; }
 .section-hint { font-size: 10px; font-weight: 400; color: #999; margin-left: 4px; }
+.field-hint { display: block; font-size: 10px; color: #999; margin-top: 2px; }
 
 /* Info grid */
 .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; font-size: 12px; }
@@ -2287,6 +2470,8 @@ loadDeals()
 .underline-row td { border-bottom: 2px solid #333; }
 .topline-row td { border-top: 2px solid #333; }
 .bold-row td { font-weight: 700; }
+.sublabel-row th { font-weight: 400; font-size: 11px; color: #888; padding-top: 0; border-bottom: 2px solid #ccc; }
+.neg { color: #d32f2f; }
 
 .empty-results { padding: 40px; text-align: center; color: #bbb; font-size: 14px; }
 

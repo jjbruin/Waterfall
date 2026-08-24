@@ -511,6 +511,19 @@ def ensure_pg_tables(engine):
             except Exception:
                 pass
 
+        # Add vnotes column to coa table if missing
+        try:
+            conn.execute(text("SAVEPOINT sp_coa_vnotes"))
+            conn.execute(text("SELECT vnotes FROM coa LIMIT 1"))
+            conn.execute(text("RELEASE SAVEPOINT sp_coa_vnotes"))
+        except Exception:
+            conn.execute(text("ROLLBACK TO SAVEPOINT sp_coa_vnotes"))
+            try:
+                conn.execute(text("ALTER TABLE coa ADD COLUMN vnotes TEXT"))
+                conn.commit()
+            except Exception:
+                pass
+
         # Fix column types — the table may have been created with all-TEXT
         # columns via pandas to_sql or SQLite DDL passed through.
         # Migrate to proper types so PostgreSQL returns ints/floats.

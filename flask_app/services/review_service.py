@@ -351,7 +351,8 @@ def return_to_draft(vcode: str, quarter: str, user_id: int, username: str,
             f"You need the '{current_step_def['role']}' role to return at this step"
         )
 
-    _update_submission(vcode, quarter, "returned", 0, returned_to_step=current_step_num)
+    prior_step = max(0, current_step_num - 1)
+    _update_submission(vcode, quarter, "returned", prior_step, returned_to_step=current_step_num)
     _add_note(vcode, quarter, user_id, username, current_step_def["role"], "return", note_text)
     return get_submission(vcode, quarter)
 

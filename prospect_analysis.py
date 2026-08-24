@@ -71,8 +71,19 @@ def build_prospect_analysis(
 
     total_cost = purchase_price + (purchase_price * closing_cost_pct) + capex_at_close
     equity_needed = total_cost - debt_amount
-    pe_equity = equity_needed * psc_equity_pct
-    op_equity = equity_needed * (1 - psc_equity_pct)
+    # Prefer explicit PE/OP amounts from Capital Budget over percentage split
+    pe_equity_override = assumptions.get('pe_equity_amount')
+    op_equity_override = assumptions.get('op_equity_amount')
+    logger.info("Equity overrides: pe=%s op=%s psc_equity_pct=%s equity_needed=%s",
+                pe_equity_override, op_equity_override, psc_equity_pct, equity_needed)
+    if pe_equity_override is not None and op_equity_override is not None:
+        pe_equity = float(pe_equity_override)
+        op_equity = float(op_equity_override)
+        equity_needed = pe_equity + op_equity
+    else:
+        pe_equity = equity_needed * psc_equity_pct
+        op_equity = equity_needed * (1 - psc_equity_pct)
+    logger.info("Final equity: pe=%s op=%s total=%s", pe_equity, op_equity, equity_needed)
 
     # Derive timing
     target_close = deal.get('target_close')
@@ -86,7 +97,8 @@ def build_prospect_analysis(
 
     start_year = close_date.year
     model_start = date(start_year, 1, 31)
-    sale_date = date(start_year + hold_years - 1, 12, 31)
+    # Sale date = end of month, hold_years after close (e.g., 9/24/2026 + 5yr → 9/30/2031)
+    sale_date = month_end(add_months(close_date, hold_years * 12))
     pro_yr_base = start_year - 1
 
     # Contribution date must be within the accounting seed window
@@ -125,33 +137,19 @@ def build_prospect_analysis(
     else:
         fc = _build_forecast(vcode, start_year, hold_years, noi_year1,
                              noi_growth_rate, capex_reserve_psf, properties,
-                             cashflows, pro_yr_base)
+                             cashflows, pro_yr_base, assumptions)
     coa = _build_coa()
 
-    # Compute exit sale price from terminal NOI / exit cap rate
-    # When noi_year1 assumption is provided, use growth formula.
-    # Otherwise derive terminal NOI from the actual forecast (Argus/Excel).
-    terminal_noi = noi_year1 * ((1 + noi_growth_rate) ** (hold_years - 1)) if noi_year1 > 0 else 0
-    if terminal_noi <= 0 and fc is not None and not fc.empty:
-        # Compute NOI from the forecast's terminal year (sale year)
-        sale_year = sale_date.year
-        fc_copy = fc.copy()
-        fc_copy['_year'] = pd.to_datetime(fc_copy['event_date']).dt.year
-        rev_accts = REVENUE_ACCTS
-        exp_accts = EXPENSE_ACCTS
-        yr_fc = fc_copy[fc_copy['_year'] == sale_year]
-        if yr_fc.empty and sale_year > start_year:
-            # Try the last year that has data
-            available_years = fc_copy['_year'].unique()
-            if len(available_years):
-                sale_year = int(max(available_years))
-                yr_fc = fc_copy[fc_copy['_year'] == sale_year]
-        rev = yr_fc.loc[yr_fc['vAccount'].isin(rev_accts), 'mAmount_norm'].sum()
-        exp = yr_fc.loc[yr_fc['vAccount'].isin(exp_accts), 'mAmount_norm'].sum()
-        terminal_noi = rev + exp  # exp is negative
-    contract_sale_price_val = terminal_noi / exit_cap_rate if exit_cap_rate > 0 and terminal_noi > 0 else None
-    logger.info("prospect_analysis(%s): terminal_noi=%.0f exit_cap=%.4f sale_price=%s sale_date=%s",
-                vcode, terminal_noi, exit_cap_rate, contract_sale_price_val, sale_date)
+    # Build synthetic MRI_Val with exit cap rate so compute.py uses
+    # twelve_month_noi_after_date() / cap_rate consistently for both
+    # the displayed terminal NOI and the sale price calculation.
+    # Set dtValuation = sale_date so there's no annual escalation.
+    mri_val = pd.DataFrame([{
+        'vcode': vcode,
+        'fCapRate': exit_cap_rate,
+        'dtValuation': sale_date,
+    }]) if exit_cap_rate > 0 else pd.DataFrame()
+
     mri_loans_raw = _build_loans(vcode, debt_amount, debt_rate,
                                  debt_term_months, io_months, amort_months,
                                  close_date)
@@ -167,18 +165,23 @@ def build_prospect_analysis(
         coa=coa,
         mri_loans_raw=mri_loans_raw,
         mri_supp=pd.DataFrame(),
-        mri_val=pd.DataFrame(),
+        mri_val=mri_val,
         relationships_raw=pd.DataFrame(),
         capital_calls_raw=pd.DataFrame(),
         isbs_raw=pd.DataFrame(),
         start_year=start_year,
-        horizon_years=hold_years,
+        horizon_years=(sale_date.year - start_year + 2),  # cover through terminal NOI year
         pro_yr_base=pro_yr_base,
         actuals_through=None,
-        contract_sale_price=contract_sale_price_val,
+        contract_sale_price=None,  # let compute.py derive from NOI / cap rate
         selling_cost_override=selling_cost_pct,
         selling_cost_type='pct',
     )
+
+    # Derive terminal NOI and exit value from compute result (single source of truth)
+    sale_dbg = result.get('sale_dbg') or {}
+    terminal_noi = sale_dbg.get('NOI_12m_After_Sale', 0)
+    exit_value = sale_dbg.get('Implied_Value', 0)
 
     # Attach assumptions summary for the UI
     result['prospect_assumptions'] = {
@@ -201,7 +204,7 @@ def build_prospect_analysis(
         'close_date': str(close_date),
         'sale_date': str(sale_date),
         'terminal_noi': terminal_noi,
-        'exit_value': contract_sale_price_val,
+        'exit_value': exit_value,
     }
 
     return result
@@ -475,17 +478,66 @@ def _build_accounting(vcode, deal_name, pe_id, op_id, pe_equity, op_equity, clos
 
 def _build_forecast(vcode, start_year, hold_years, noi_year1,
                     noi_growth_rate, capex_reserve_psf, properties,
-                    cashflows, pro_yr_base):
+                    cashflows, pro_yr_base, assumptions=None):
     """Build synthetic forecast from NOI growth assumptions or explicit cashflows.
 
-    If cashflows are provided, use them directly.
-    Otherwise, grow NOI from year 1 at the given growth rate and split
-    into revenue (positive) and expenses (negative).
+    Supports three modes:
+    1. Line-item cashflows (vaccount present) — each row has a COA account
+    2. Summary cashflows (revenue/expenses/capex) — legacy format
+    3. NOI growth rate assumptions — generate from scratch
+
+    Operating overrides (from assumptions):
+    - mgmt_fee_pct: If set, replaces imported 5040 (mgmt fee) with gross_rev × pct
+    - replacement_reserve_psf: If set, adds monthly 5092 expense = total_sf × psf / 12
     """
+    assumptions = assumptions or {}
+    mgmt_fee_pct = None
+    replacement_reserve_psf = None
+    try:
+        v = assumptions.get('mgmt_fee_pct')
+        if v is not None and v != '' and v != 0:
+            mgmt_fee_pct = float(v)
+    except (ValueError, TypeError):
+        pass
+    try:
+        v = assumptions.get('replacement_reserve_psf')
+        if v is not None and v != '' and v != 0:
+            replacement_reserve_psf = float(v)
+    except (ValueError, TypeError):
+        pass
+
+    total_gla = sum(float(p.get('gla_sf') or 0) for p in (properties or []))
+    has_line_items = assumptions.get('_has_line_items', False)
+
     rows = []
 
-    if cashflows:
-        # Use explicit prospect_cashflows
+    if cashflows and has_line_items:
+        # Mode 1: Line-item cashflows with vAccount codes
+        for cf in cashflows:
+            period_date = pd.to_datetime(cf['period_date']).date()
+            vaccount = cf.get('vaccount')
+            amount = float(cf.get('amount') or 0)
+            if not vaccount or amount == 0:
+                continue
+
+            vaccount = int(vaccount)
+            # Skip imported mgmt fee if override is set
+            if mgmt_fee_pct is not None and vaccount == 5040:
+                continue
+
+            rows.append(_fc_row(vcode, period_date, vaccount, amount, pro_yr_base))
+
+        # Apply mgmt fee override: gross_rev × mgmt_fee_pct per period
+        if mgmt_fee_pct is not None and rows:
+            _apply_mgmt_fee_override(rows, vcode, mgmt_fee_pct, pro_yr_base)
+
+        # Apply replacement reserve: total_sf × psf / 12 per month
+        if replacement_reserve_psf is not None and total_gla > 0 and rows:
+            _apply_replacement_reserve(rows, vcode, replacement_reserve_psf,
+                                       total_gla, pro_yr_base)
+
+    elif cashflows:
+        # Mode 2: Legacy summary cashflows (revenue/expenses/capex)
         for cf in cashflows:
             period_date = pd.to_datetime(cf['period_date']).date()
             rev = float(cf.get('revenue') or 0)
@@ -498,12 +550,21 @@ def _build_forecast(vcode, start_year, hold_years, noi_year1,
                 rows.append(_fc_row(vcode, period_date, 5040, -abs(exp), pro_yr_base))
             if capex:
                 rows.append(_fc_row(vcode, period_date, 7050, -abs(capex), pro_yr_base))
+
+        # Apply overrides to summary-format too
+        if mgmt_fee_pct is not None and rows:
+            # Remove 5040 rows and replace with % of gross revenue
+            rows = [r for r in rows if r['vAccount'] != 5040]
+            _apply_mgmt_fee_override(rows, vcode, mgmt_fee_pct, pro_yr_base)
+
+        if replacement_reserve_psf is not None and total_gla > 0 and rows:
+            _apply_replacement_reserve(rows, vcode, replacement_reserve_psf,
+                                       total_gla, pro_yr_base)
     else:
-        # Generate from NOI growth rate — monthly periods
-        total_gla = sum(float(p.get('gla_sf') or 0) for p in (properties or []))
+        # Mode 3: Generate from NOI growth rate — monthly periods
         annual_capex = total_gla * capex_reserve_psf if total_gla > 0 else 0
 
-        for yr_offset in range(hold_years):
+        for yr_offset in range(hold_years + 1):  # +1 for terminal NOI year
             year = start_year + yr_offset
             annual_noi = noi_year1 * ((1 + noi_growth_rate) ** yr_offset)
 
@@ -530,6 +591,37 @@ def _build_forecast(vcode, start_year, hold_years, noi_year1,
 
     df = pd.DataFrame(rows)
     return df
+
+
+def _apply_mgmt_fee_override(rows, vcode, mgmt_fee_pct, pro_yr_base):
+    """Replace management fee with gross_revenue × mgmt_fee_pct per period.
+
+    Gross revenue = sum of all GROSS_REVENUE_ACCTS amounts per period.
+    """
+    from config import GROSS_REVENUE_ACCTS
+    # Group existing rows by period to find gross revenue
+    period_rev = {}
+    for r in rows:
+        acct = r['vAccount']
+        if acct in GROSS_REVENUE_ACCTS:
+            dt = r['event_date']
+            period_rev[dt] = period_rev.get(dt, 0) + abs(r['mAmount_norm'])
+
+    # Add mgmt fee rows (negative expense)
+    for dt, gross_rev in period_rev.items():
+        fee = gross_rev * mgmt_fee_pct
+        if fee > 0:
+            rows.append(_fc_row(vcode, dt, 5040, -fee, pro_yr_base))
+
+
+def _apply_replacement_reserve(rows, vcode, reserve_psf, total_gla, pro_yr_base):
+    """Add monthly replacement reserve expense (5092) = total_sf × psf / 12."""
+    # Find all unique periods from existing rows
+    periods = sorted(set(r['event_date'] for r in rows))
+    monthly_reserve = total_gla * reserve_psf / 12
+
+    for dt in periods:
+        rows.append(_fc_row(vcode, dt, 5092, -monthly_reserve, pro_yr_base))
 
 
 def _fc_row(vcode, period_date, account, amount, pro_yr_base):
