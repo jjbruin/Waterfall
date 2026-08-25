@@ -183,22 +183,15 @@ function defaultDebtSources(): SourceItem[] {
   ]
 }
 
+// No default steps: a waterfall step needs a real entity ID, and inventing
+// one produces a deal whose contributions are attributed to a partner that
+// does not exist. Steps are built from the deal's declared entities instead.
 function defaultCfSteps(): WfStepInput[] {
-  return [
-    { entity_id: 'PSC_PE', step_type: 'pref', rate: 8.0, amount: null },
-    { entity_id: 'PSC_PE', step_type: 'residual', rate: 90, amount: null },
-    { entity_id: 'OP_PARTNER', step_type: 'residual', rate: 10, amount: null },
-  ]
+  return []
 }
 
 function defaultCapSteps(): WfStepInput[] {
-  return [
-    { entity_id: 'PSC_PE', step_type: 'pref', rate: 8.0, amount: null },
-    { entity_id: 'PSC_PE', step_type: 'return_of_capital', rate: null, amount: null },
-    { entity_id: 'OP_PARTNER', step_type: 'return_of_capital', rate: null, amount: null },
-    { entity_id: 'PSC_PE', step_type: 'residual', rate: 90, amount: null },
-    { entity_id: 'OP_PARTNER', step_type: 'residual', rate: 10, amount: null },
-  ]
+  return []
 }
 
 // ---------------------------------------------------------------------------
@@ -332,10 +325,13 @@ const entityOptions = computed(() => {
   const opts: { value: string; label: string }[] = []
   const seen = new Set<string>()
 
+  // Only entities with a declared entity ID. A name-derived or row-id
+  // placeholder cannot be matched to an MRI entity on closing, so it is not
+  // offered as a choice.
   for (const ent of entities.value) {
-    const id = ent.planned_entity_id || ent.entity_name?.toUpperCase().replace(/\s+/g, '_') || `ENT_${ent.id}`
-    if (!seen.has(id)) {
-      opts.push({ value: id, label: ent.entity_name || id })
+    const id = (ent.planned_entity_id || '').trim()
+    if (id && !seen.has(id)) {
+      opts.push({ value: id, label: ent.entity_name ? `${ent.entity_name} (${id})` : id })
       seen.add(id)
     }
   }
@@ -346,13 +342,13 @@ const entityOptions = computed(() => {
       seen.add(s.entity_id)
     }
   }
-  // Defaults if empty
-  if (!opts.length) {
-    opts.push({ value: 'PSC_PE', label: 'PSC Preferred Equity' })
-    opts.push({ value: 'OP_PARTNER', label: 'Operating Partner' })
-  }
   return opts
 })
+
+// Entities that are missing an ID, so the setup gap can be named precisely.
+const entitiesMissingId = computed(() =>
+  entities.value.filter(e => !(e.planned_entity_id || '').trim())
+)
 
 function splitTierTotals(steps: WfStepInput[]): number[] {
   // Group residual steps by tier (split at IRR Lookback boundaries)
@@ -605,7 +601,8 @@ function initDefaultWfSteps() {
     const capSteps: WfStepInput[] = []
     // Pref steps for PE entities
     for (const ent of ents) {
-      const id = ent.planned_entity_id || ent.entity_name?.toUpperCase().replace(/\s+/g, '_') || `ENT_${ent.id}`
+      const id = (ent.planned_entity_id || '').trim()
+      if (!id) continue
       const isPe = (ent.role || '').toLowerCase().includes('pe') ||
                    (ent.role || '').toLowerCase().includes('pref') ||
                    (ent.entity_type || '').toLowerCase().includes('pe')
@@ -616,12 +613,14 @@ function initDefaultWfSteps() {
     }
     // Cap_WF gets return of capital for all entities
     for (const ent of ents) {
-      const id = ent.planned_entity_id || ent.entity_name?.toUpperCase().replace(/\s+/g, '_') || `ENT_${ent.id}`
+      const id = (ent.planned_entity_id || '').trim()
+      if (!id) continue
       capSteps.push({ entity_id: id, step_type: 'return_of_capital', rate: null, amount: null })
     }
     // Residual split for both
     for (const ent of ents) {
-      const id = ent.planned_entity_id || ent.entity_name?.toUpperCase().replace(/\s+/g, '_') || `ENT_${ent.id}`
+      const id = (ent.planned_entity_id || '').trim()
+      if (!id) continue
       const share = (ent.ownership_pct || 0) * 100
       cfSteps.push({ entity_id: id, step_type: 'residual', rate: share || 50, amount: null })
       capSteps.push({ entity_id: id, step_type: 'residual', rate: share || 50, amount: null })
@@ -1590,6 +1589,23 @@ loadDeals()
 
             <!-- Builder tab -->
             <div v-if="wfTab === 'builder'" class="wf-builder">
+              <div v-if="!entityOptions.length" class="wf-setup-notice">
+                <strong>Add the deal's entities before building the waterfall.</strong>
+                <p v-if="entitiesMissingId.length">
+                  {{ entitiesMissingId.length }}
+                  {{ entitiesMissingId.length === 1 ? 'entity has' : 'entities have' }}
+                  no entity ID:
+                  {{ entitiesMissingId.map(e => e.entity_name || 'unnamed').join(', ') }}.
+                  Give each one the ID it will carry in MRI (for example
+                  <code>PPI35</code> or <code>OPPEGA</code>) in the Pipeline deal detail.
+                </p>
+                <p v-else>
+                  Open the deal in Pipeline and add each investing entity with the
+                  ID it will carry in MRI (for example <code>PPI35</code> or
+                  <code>OPPEGA</code>). Returns are attributed by that ID, so a
+                  placeholder would assign capital to the wrong partner.
+                </p>
+              </div>
               <!-- CF Waterfall Builder -->
               <div class="wf-builder-section">
                 <div class="wf-builder-header">
@@ -2360,6 +2376,24 @@ loadDeals()
 .unbalanced .balance-status { color: #e65100; }
 
 /* ========== Waterfall Builder ========== */
+.wf-setup-notice {
+  border: 1px solid #d9a344;
+  border-left: 3px solid #9a6a18;
+  background: #f8f0de;
+  color: #4a3a12;
+  border-radius: 3px;
+  padding: 0.75rem 0.9rem;
+  margin-bottom: 1rem;
+  font-size: 0.86rem;
+}
+.wf-setup-notice strong { display: block; margin-bottom: 0.3rem; }
+.wf-setup-notice p { margin: 0; line-height: 1.5; }
+.wf-setup-notice code {
+  font-family: ui-monospace, monospace;
+  background: rgba(0, 0, 0, 0.06);
+  padding: 0.05em 0.3em;
+  border-radius: 2px;
+}
 .wf-tabs { display: flex; gap: 4px; margin-bottom: 8px; }
 .wf-tabs button {
   padding: 4px 12px; border: 1px solid #ccc; border-radius: 4px;
