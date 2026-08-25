@@ -2,6 +2,7 @@
 
 import json
 import logging
+import pandas as pd
 from sqlalchemy import text
 from flask_app.db import get_engine, is_postgres
 

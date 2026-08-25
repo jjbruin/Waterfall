@@ -10,6 +10,7 @@ Properties within a portfolio deal get child codes (N0000001-01, N0000001-02, ..
 """
 
 import logging
+import pandas as pd
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
