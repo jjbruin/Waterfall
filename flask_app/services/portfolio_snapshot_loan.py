@@ -69,6 +69,11 @@ from typing import Callable, Optional
 
 import pandas as pd
 
+from flask_app.services.portfolio_snapshot_debt import (
+    BASIS_COMMITTED, BASIS_UNAVAILABLE, committed_facility, deal_loan_rows,
+    resolve_debt,
+)
+
 log = logging.getLogger(__name__)
 
 #: Above this, an LTV is treated as evidence of stale data rather than a real
@@ -161,23 +166,12 @@ def _deal_loans(loans: pd.DataFrame, vcode: str,
                 child_vcodes: Optional[list] = None) -> pd.DataFrame:
     """The loan rows that belong to a deal, falling back to its children.
 
-    Mirrors the One Pager's parent-inheritance rule: a portfolio parent holding
-    no loans of its own (Burton) uses the loans sitting on its children.
+    Delegates to portfolio_snapshot_debt so the Financial subtab, which needs
+    the same rows to size a committed facility, cannot end up selecting them by
+    a slightly different rule. Kept as a local name because the terms code below
+    also uses it.
     """
-    if loans is None or loans.empty:
-        return pd.DataFrame()
-    df = loans.copy()
-    col = next((c for c in df.columns if c.lower() == "vcode"), None)
-    if not col:
-        return pd.DataFrame()
-    df["_vc"] = df[col].astype(str).str.strip().str.upper()
-    own = df[df["_vc"] == str(vcode).strip().upper()]
-    if not own.empty:
-        return own
-    if child_vcodes:
-        kids = {str(c).strip().upper() for c in child_vcodes}
-        return df[df["_vc"].isin(kids)]
-    return pd.DataFrame()
+    return deal_loan_rows(loans, vcode, child_vcodes)
 
 
 def _loan_terms(rows: pd.DataFrame) -> dict:
@@ -376,30 +370,22 @@ def assemble_loan(investor_code: str, quarter: str, *,
         if terms["loan_count"] == 0:
             flags.append("no loan record")
 
-        orig_total = None
-        if not lrows.empty:
-            amt_col = next((c for c in lrows.columns
-                            if c.lower() == "moriginloanamt"
-                            or c.lower() == "morigloanamt"), None)
-            if amt_col:
-                vals = lrows[amt_col].map(_num).dropna()
-                orig_total = float(vals.sum()) if len(vals) else None
+        orig_total = committed_facility(lrows)
 
         # ---- debt ----
+        # The basis choice lives in portfolio_snapshot_debt.resolve_debt, which
+        # the Financial subtab calls too — the two used to disagree about the
+        # same deal's Debt (JB Fair Park 66.36 vs 77.37).
         isbs_debt = _num(cap.get("debt"))
-        if dev:
-            if orig_total:
-                debt, debt_basis = orig_total, "mOrigLoanAmt (committed facility)"
-                diag["debt_from_orig"] += 1
-            else:
-                debt, debt_basis = None, "unavailable"
-                flags.append("dev deal with no mOrigLoanAmt")
+        debt, debt_basis = resolve_debt(cap, dev, orig_total)
+        if debt_basis == BASIS_COMMITTED:
+            diag["debt_from_orig"] += 1
+        elif debt_basis == BASIS_UNAVAILABLE:
+            flags.append("dev deal with no mOrigLoanAmt")
+        elif debt:
+            diag["debt_from_isbs"] += 1
         else:
-            debt, debt_basis = isbs_debt, "ISBS Interim BS (as of quarter end)"
-            if debt:
-                diag["debt_from_isbs"] += 1
-            else:
-                flags.append("no ISBS debt balance")
+            flags.append("no ISBS debt balance")
 
         # ---- empty loan block: n/a takes precedence over the "Dev" label ----
         # A dev deal with no debt basis at all — no ISBS balance, no

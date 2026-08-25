@@ -46,6 +46,7 @@ import json
 import logging
 from typing import Callable, Optional
 
+import pandas as pd
 from sqlalchemy import text
 
 log = logging.getLogger(__name__)
@@ -219,6 +220,61 @@ def _quarterly_noi_provider(data: dict) -> Callable:
     return provider
 
 
+def _committed_debt_provider(data: dict) -> Callable:
+    """vcode -> committed facility (sum of mOrigLoanAmt), memoised.
+
+    The Financial subtab needs this to resolve a development deal's Debt on the
+    same basis the Loan subtab uses, but it takes no DataFrames of its own — so
+    the loans frame is bound here, where `data` is already in hand, and passed in
+    as a callable. Same dependency-injection shape as the One Pager provider.
+
+    Child loans are included via Portfolio_Name, matching the parent-inheritance
+    rule in `deal_loan_rows`: Burton holds no loans itself, its children do.
+    """
+    from flask_app.services.portfolio_snapshot_debt import (
+        committed_facility, deal_loan_rows,
+    )
+
+    loans = data.get("mri_loans_raw")
+    inv = data.get("inv")
+    cache: dict = {}
+
+    def children_of(vcode: str) -> list:
+        """Child vcodes rolling up into a parent, from the deals frame."""
+        if inv is None or getattr(inv, "empty", True):
+            return []
+        cols = {c.lower(): c for c in inv.columns}
+        c_vc, c_nm = cols.get("vcode"), cols.get("investment_name")
+        c_pn, c_pc = cols.get("portfolio_name"), cols.get("property_count")
+        if not (c_vc and c_pn):
+            return []
+        row = inv[inv[c_vc].astype(str).str.strip().str.lower()
+                  == str(vcode).strip().lower()]
+        if row.empty:
+            return []
+        keys = set()
+        for col in (c_nm, c_pn):
+            if col:
+                v = str(row.iloc[0].get(col) or "").strip().lower()
+                if v:
+                    keys.add(v)
+        if not keys:
+            return []
+        kid = inv[inv[c_pn].astype(str).str.strip().str.lower().isin(keys)]
+        if c_pc:
+            kid = kid[pd.to_numeric(kid[c_pc], errors="coerce").fillna(1) == 0]
+        return [str(v).strip() for v in kid[c_vc].tolist()
+                if str(v).strip().lower() != str(vcode).strip().lower()]
+
+    def provider(vcode: str):
+        if vcode not in cache:
+            rows = deal_loan_rows(loans, vcode, children_of(vcode))
+            cache[vcode] = committed_facility(rows)
+        return cache[vcode]
+
+    return provider
+
+
 def build_subtab(name: str, investor: str, quarter: str, data: dict,
                  resolved: dict,
                  one_pager_provider: Optional[Callable] = None,
@@ -239,8 +295,9 @@ def build_subtab(name: str, investor: str, quarter: str, data: dict,
                                 one_pager_provider=op)
     if name == "financial":
         from flask_app.services.portfolio_snapshot_financial import assemble_financial
-        return assemble_financial(investor, quarter, resolved=resolved,
-                                  one_pager_provider=op)
+        return assemble_financial(
+            investor, quarter, resolved=resolved, one_pager_provider=op,
+            committed_debt_provider=_committed_debt_provider(data))
     if name == "operating":
         from flask_app.services.portfolio_snapshot_operating import assemble_operating
         return assemble_operating(investor, quarter, resolved=resolved,

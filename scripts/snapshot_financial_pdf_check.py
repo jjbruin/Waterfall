@@ -90,6 +90,29 @@ COLS = ("debt", "total_pref", "ptr_equity", "total_cap", "pct_of_pref",
 #: with its own reconciliation (see the module docstring's committed_gap note).
 UNFUNDED_STRUCTURAL = True
 
+#: Deals whose Debt still differs from the PDF AFTER the shared debt basis is
+#: applied. These four ARE the entire remaining portfolio Debt gap (+95.7M);
+#: every other deal ties to the cent. Recorded so a clean run stays clean and
+#: nobody re-derives them — and so that if one ever starts matching, the check
+#: below fails and says the note is stale.
+#:
+#: None of the four is a code problem. Each needs a data answer:
+KNOWN_DEBT_RESIDUALS = {
+    "P0000114": ("Jefferson Stephens", 100.0, 50.0,
+                 "mOrigLoanAmt is exactly 2x the PDF — facility looks "
+                 "double-counted in MRI_Loans"),
+    "P0000116": ("Plaza Del Mar", 70.0, 27.6,
+                 "ISBS Interim BS at Q1 is 70.0 and only drops to 27.59 at Q2, "
+                 "so the PDF's 27.6 matches our Q2 — data vintage/restatement, "
+                 "and it is a NON-dev deal so this basis change does not touch it"),
+    "P0000021": ("JB Fair Park", 77.37, 48.98,
+                 "neither basis matches: ISBS carries a dead 2022-12-31 senior "
+                 "financing row of 66.36M and the committed facility is 77.37M"),
+    "P0000067": ("Brainerd Place Apartments", 64.40, 89.5,
+                 "committed facility is BELOW the PDF — MRI_Loans may be missing "
+                 "a tranche of the facility"),
+}
+
 #: Net ROE and ITD Distributions are manual-entry, formula TBD
 #: (get_net_roe / get_itd), and nothing is entered on live. The PDF's 4.4% /
 #: 41.3 therefore cannot be reproduced from data. Copying the published figures
@@ -132,8 +155,24 @@ def build(investor, quarter):
                                         params={"quarter": q})
         return cache[(vcode, q)]
 
+    # The committed-facility provider, built exactly as build_subtab does —
+    # from the live loans table rather than the in-process data cache.
+    from flask_app.services.portfolio_snapshot_debt import (
+        committed_facility, deal_loan_rows,
+    )
+    # 89 rows, so one page — no OFFSET, hence none of the pagination
+    # duplication that silently corrupts multi-page pulls off this endpoint.
+    d = api.get("/api/data/tables/loans/rows",
+                params={"page": 1, "page_size": 500})
+    loans = pd.DataFrame(d.get("rows") or [])
+    assert (d.get("total") or 0) <= 500, "loans no longer fits one page"
+
+    def committed_of(vcode):
+        return committed_facility(deal_loan_rows(loans, vcode))
+
     out = assemble_financial(investor, quarter, resolved=resolved,
                              one_pager_provider=one_pager,
+                             committed_debt_provider=committed_of,
                              manual_loader=lambda i, q: {},
                              footnote_loader=lambda i, q: [])
     return resolved, out
@@ -238,6 +277,73 @@ def main():
           f"{ex.get('deal_count')} remain")
     for n in (ex.get("excluded_names") or []):
         print(f"      - {n}")
+
+    # ---- shared debt basis: Financial must equal Loan, deal for deal ----
+    loan = {}
+    try:
+        ld = api.get("/api/portfolio-snapshot/loan",
+                     params={"investor": args.investor, "quarter": args.quarter})
+        loan = {r["vcode"]: r
+                for rs in (ld.get("groups") or {}).values() for r in rs}
+    except Exception as exc:
+        print(f"  !! Loan subtab unavailable ({str(exc)[:60]}) — "
+              f"agreement not checked")
+    if loan:
+        print("\n  Debt basis — Financial vs Loan")
+        print(f"      {'deal':<32}{'Financial':>12}{'Loan':>12}"
+              f"{'basis':>34}")
+        disagree, rebased, nondev_moved = [], [], []
+        for vc, r in sorted(flat.items(), key=lambda kv: kv[1]["name"]):
+            lr = loan.get(vc)
+            if lr is None:
+                continue
+            f, l = r.get("debt"), lr.get("debt")
+            same = (f is None and l is None) or (
+                f is not None and l is not None and abs(f - l) < 1)
+            if not same:
+                disagree.append((r["name"], f, l))
+            if r["is_dev"] and r.get("debt_basis") != "ISBS Interim BS (as of quarter end)":
+                rebased.append(r["name"])
+            # A non-dev deal must still be on the ISBS balance, untouched.
+            if not r["is_dev"]:
+                if (r.get("debt_isbs") is not None
+                        and r.get("debt") is not None
+                        and abs(r["debt"] - r["debt_isbs"]) > 1):
+                    nondev_moved.append(r["name"])
+            mark = "  <-- DIFFER" if not same else ""
+            print(f"      {r['name'][:31]:<32}{M(f):>12}{M(l):>12}"
+                  f"{str(r.get('debt_basis'))[:33]:>34}{mark}")
+        struct.append(("Financial and Loan agree on Debt for every deal",
+                       not disagree))
+        struct.append((f"all {sum(1 for r in flat.values() if not r['is_dev'])} "
+                       f"non-dev deals still on the ISBS balance",
+                       not nondev_moved))
+        # No dev deal may be left on the ISBS basis. Stated as "none on ISBS"
+        # rather than counting rebased deals: the committed and unavailable
+        # branches are both off-ISBS, and adding them double-counted Pegasus.
+        struct.append(("no dev deal left on the ISBS basis",
+                       not [r["name"] for r in flat.values() if r["is_dev"]
+                            and r.get("debt_basis")
+                            == "ISBS Interim BS (as of quarter end)"]))
+        if disagree:
+            for n, f, l in disagree:
+                print(f"      DIFFER {n}: Financial {M(f)} vs Loan {M(l)}")
+        if nondev_moved:
+            print(f"      NON-DEV MOVED (must not happen): {nondev_moved}")
+
+    # ---- the four known residuals ----
+    if pdf_scope:
+        print("\n  Known Debt residuals (documented, not scored as failures)")
+        for vc, (nm, exp_live, pdf_v, why) in KNOWN_DEBT_RESIDUALS.items():
+            r = flat.get(vc)
+            got = None if r is None else (r.get("debt") or 0) / 1e6
+            still_off = got is not None and abs(got - pdf_v) > 0.35
+            print(f"      {nm[:30]:<32}live {('—' if got is None else f'{got:,.2f}'):>8}"
+                  f"  PDF {pdf_v:>7,.2f}  {'still off' if still_off else 'NOW TIES'}")
+            print(f"          {why}")
+            # If it starts matching, the note is stale — fail so it gets removed.
+            struct.append((f"{nm}: KNOWN_DEBT_RESIDUALS entry still applies",
+                           still_off))
 
     struct.append(("is_dev populated (Lifecycle proxy, not the empty raw field)",
                    sum(1 for r in flat.values() if r["is_dev"]) > 0))

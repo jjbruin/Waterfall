@@ -256,6 +256,7 @@ def _subtotal(rows: list, label: str) -> dict:
 def assemble_financial(investor_code: str, quarter: str, *,
                        resolved: dict,
                        one_pager_provider: Callable[[str, str], dict],
+                       committed_debt_provider: Optional[Callable] = None,
                        manual_loader: Optional[Callable] = None,
                        footnote_loader: Optional[Callable] = None,
                        commitment_basis: str = COMMITMENT_BASIS) -> dict:
@@ -271,6 +272,19 @@ def assemble_financial(investor_code: str, quarter: str, *,
     from flask_app.services.portfolio_snapshot_service import (
         group_total_label, PORTFOLIO_TOTAL_LABEL,
     )
+    from flask_app.services.portfolio_snapshot_debt import (
+        BASIS_ISBS, resolve_debt,
+    )
+
+    # committed_debt_provider(vcode) -> committed facility, or None.
+    #
+    # Injected rather than read here, same shape as one_pager_provider: this
+    # module takes DataFrames from nobody and has no access to the loans frame.
+    # build_subtab in portfolio_snapshot_freeze wires it from data["mri_loans_raw"].
+    # Absent, every deal falls back to the ISBS basis — which is the pre-2026-08-25
+    # behaviour, so an un-wired caller degrades to the old numbers rather than
+    # blanking the column. The self-test relies on that.
+    committed_of = committed_debt_provider or (lambda vcode: None)
 
     manual = (manual_loader or _load_manual)(investor_code, quarter) or {}
     footnotes = (footnote_loader or _load_footnotes)(investor_code, quarter) or []
@@ -278,7 +292,8 @@ def assemble_financial(investor_code: str, quarter: str, *,
     diag = {"deals": 0, "dev": 0, "provider_errors": 0,
             "pct_unavailable": 0, "commitment_missing": 0,
             "manual_pending": 0, "manual_entered": 0,
-            "pdf_na_cells": 0, "excluding_dev_deals": 0}
+            "pdf_na_cells": 0, "excluding_dev_deals": 0,
+            "debt_rebased_dev": 0}
 
     def build_row(entry: dict, extra_flags: Optional[list] = None) -> dict:
         vcode = entry["vcode"]
@@ -306,7 +321,30 @@ def assemble_financial(investor_code: str, quarter: str, *,
         cap = payload.get("cap_stack") or {}
 
         # ---- Zone A: deal-level, unscaled ----
-        debt = _num(cap.get("debt"))
+        #
+        # Debt goes through the shared resolver, so this subtab and the Loan
+        # subtab print the same figure for the same deal. Before this, Financial
+        # took cap_stack['debt'] unconditionally while Loan used the committed
+        # facility for dev deals, and JB Fair Park read 66.36 here against 77.37
+        # there. Only DEV deals move; all 23 operating deals keep the ISBS
+        # balance, which already ties to the PDF.
+        debt_isbs = _num(cap.get("debt"))
+        debt_orig = None
+        try:
+            debt_orig = committed_of(vcode)
+        except Exception as exc:                       # provider must not break a row
+            flags.append(f"committed facility unavailable: {str(exc)[:60]}")
+        debt, debt_basis = resolve_debt(cap, dev, debt_orig)
+        if dev and debt_basis != BASIS_ISBS:
+            diag["debt_rebased_dev"] += 1
+            if (debt_isbs is not None and debt is not None
+                    and abs(debt - debt_isbs) > 1):
+                flags.append(
+                    f"Debt on the committed facility ({debt / 1e6:,.2f}M), not "
+                    f"the ISBS balance ({debt_isbs / 1e6:,.2f}M) — dev deal, "
+                    f"PDF footnote (6)")
+        # total_cap is NOT recomputed from `debt` — see resolve_debt's docstring.
+        # A rebased dev deal therefore does not foot exactly, as on the PDF.
         total_pref = _num(cap.get("pref_equity"))
         ptr_equity = _num(cap.get("partner_equity"))
         total_cap = _num(cap.get("total_cap"))
@@ -361,7 +399,13 @@ def assemble_financial(investor_code: str, quarter: str, *,
             "kept_despite_sold": bool(entry.get("kept_despite_sold")),
             "pdf_na_cells": sorted(na),
             # Zone A — raw values, unsuppressed
-            "debt": debt, "total_pref": total_pref, "ptr_equity": ptr_equity,
+            "debt": debt,
+            # Both candidates carried so the discarded one stays auditable and
+            # the basis is never a guess from the number's size.
+            "debt_basis": debt_basis,
+            "debt_isbs": debt_isbs,
+            "debt_orig": debt_orig,
+            "total_pref": total_pref, "ptr_equity": ptr_equity,
             "total_cap": total_cap, "committed_pref": committed_pref,
             "debt_pct": _num(cap.get("debt_pct")),
             "pref_pct": _num(cap.get("pref_equity_pct")),
