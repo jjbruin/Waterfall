@@ -70,7 +70,85 @@ def main():
                                         params={"quarter": q})
         return cache[(vcode, q)]
 
-    if subtab == "summary":
+    if subtab == "bundle":
+        # The whole /bundle payload, assembled LOCALLY. Shaped exactly like the
+        # endpoint's response so scripts/snapshot_print_check.mjs can serve it
+        # in place of the proxied one — the deployed backend cannot show local
+        # assembly work, which is how two rounds of changes went unverified in
+        # the printed document.
+        from flask_app.services.portfolio_snapshot_summary import assemble_summary
+        from flask_app.services.portfolio_snapshot_financial import (
+            assemble_financial,
+        )
+        from flask_app.services.portfolio_snapshot_operating import (
+            assemble_operating,
+        )
+        from flask_app.services.portfolio_snapshot_loan import assemble_loan
+        from flask_app.services.portfolio_snapshot_debt import (
+            committed_facility, deal_loan_rows,
+        )
+
+        def table(name, page_size=500):
+            d = api.get(f"/api/data/tables/{name}/rows",
+                        params={"page": 1, "page_size": page_size})
+            n = d.get("total") or 0
+            if n > page_size:
+                print(f"WARNING: {name} has {n} rows, only {page_size} fetched "
+                      f"— paging this endpoint duplicates rows, so the frame is "
+                      f"deliberately left short rather than corrupted",
+                      file=sys.stderr)
+            return pd.DataFrame(d.get("rows") or [])
+
+        loans = table("loans")
+        vals = table("valuations")
+
+        subtabs, errors = {}, {}
+        jobs = {
+            "summary": lambda: assemble_summary(
+                investor, quarter, resolved=resolved,
+                one_pager_provider=one_pager,
+                comment_loader=lambda i, q: {},
+                editable_loader=lambda i, q: True),
+            "financial": lambda: assemble_financial(
+                investor, quarter, resolved=resolved,
+                one_pager_provider=one_pager,
+                committed_debt_provider=lambda vc: committed_facility(
+                    deal_loan_rows(loans, vc)),
+                manual_loader=lambda i, q: {},
+                footnote_loader=lambda i, q: []),
+            "operating": lambda: assemble_operating(
+                investor, quarter, resolved=resolved,
+                one_pager_provider=one_pager,
+                comment_loader=lambda i, q: {}),
+            # NOTE no quarterly_noi_provider. That needs the ISBS frame, which
+            # is 800k+ rows and not fetchable over REST, so Debt Yield comes out
+            # None here and its column — and its subtotal — reads as a dash. The
+            # real app wires it in build_subtab, so this is a limitation of the
+            # dump, NOT of the subtab. Do not read the dash as a bug.
+            "loan": lambda: assemble_loan(
+                investor, quarter, resolved=resolved,
+                one_pager_provider=one_pager, loans=loans, valuations=vals,
+                inv=inv, comment_loader=lambda i, q: {}),
+        }
+        for name, fn in jobs.items():
+            try:
+                subtabs[name] = fn()
+            except Exception as exc:                # one bad subtab, not the lot
+                errors[name] = f"{type(exc).__name__}: {exc}"
+                print(f"WARNING: {name} failed: {exc}", file=sys.stderr)
+
+        out = {
+            "subtabs": subtabs,
+            "errors": errors,
+            "source": "live",
+            "resolution": {
+                "investor_name": resolved.get("investor_name"),
+                "quarter_end": str(resolved.get("quarter_end") or ""),
+                "diagnostics": resolved.get("diagnostics"),
+                "flagged": resolved.get("flagged"),
+            },
+        }
+    elif subtab == "summary":
         from flask_app.services.portfolio_snapshot_summary import assemble_summary
         out = assemble_summary(investor, quarter, resolved=resolved,
                                one_pager_provider=one_pager,

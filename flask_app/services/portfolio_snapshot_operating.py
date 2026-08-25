@@ -259,6 +259,87 @@ def is_dev_deal(strategy: str) -> bool:
     return str(strategy or "").strip().lower() in DEV_STRATEGIES
 
 
+# ── Subtotals ─────────────────────────────────────────────────────────────
+#
+# REVERSES the "no subtotals" decision this module shipped with (see the note in
+# the docstring). The reference PDF page 3 carries a total row per fund and a
+# portfolio total, so the subtab needs them; they are computed HERE rather than
+# in the component so a freeze captures them.
+#
+# THE AGGREGATION, derived from the PDF's own Individual Investments row rather
+# than assumed — that row reads 90.8% | 22.6 | 94.6% | 26.0 | 95.1% | 24.4 |
+# 15.0% | 7.9% over its eight member deals:
+#
+#   NOI       SUMMED. 22.6 / 26.1 / 24.4 against the published 22.6 / 26.0 /
+#             24.4 — exact on two columns and one rounding step on the third.
+#             A missing or "-" reading counts as zero, which is what the PDF's
+#             own dashes do.
+#
+#   Growth    RECOMPUTED FROM THE SUMS, not averaged from the member growths:
+#             (26.0 - 22.6) / 22.6 = 15.04% and (24.4 - 22.6) / 22.6 = 7.96%
+#             against the published 15.0% and 7.9%. Averaging the deal-level
+#             growths gives neither. Confirmed on all five funds and the
+#             portfolio row (66.7% and 52.6% both reproduce to 0.2pp).
+#
+#   Econ Occ  NOI-WEIGHTED average over the deals that carry a reading, weighted
+#             by that same column's NOI. Simple averaging is decisively wrong —
+#             At Close comes out 82.7% against a published 90.8%. Weighted lands
+#             within 0.2-1.5pp on all three columns, the residual being that the
+#             published inputs are already rounded to one decimal.
+#
+#             Revenue would be the theoretically better weight for an occupancy
+#             figure, and the backend has it; NOI is used because NOI is what
+#             the page shows, so it is the only weight this can be validated
+#             against. Revisit if a fund's mix ever makes the two diverge.
+_NOI_KEYS = ("at_close", "uw_ye", "projected_ye")
+
+
+def _weighted(rows: list, occ_key: str, noi_key: str):
+    """NOI-weighted mean of one occupancy column, or None.
+
+    Only rows carrying BOTH a reading and a non-zero weight contribute: a deal
+    with no NOI cannot pull an income-weighted average, and a deal with no
+    reading has nothing to contribute.
+    """
+    num = den = 0.0
+    for r in rows:
+        o = (r.get("econ_occ") or {}).get(occ_key)
+        w = (r.get("noi") or {}).get(noi_key)
+        if o is None or not w:
+            continue
+        num += o * w
+        den += w
+    return (num / den) if den else None
+
+
+def operating_subtotal(rows: list, label: str) -> dict:
+    """One total row over ``rows`` — a fund's deals, or every deal."""
+    noi = {}
+    for k in _NOI_KEYS:
+        vals = [(r.get("noi") or {}).get(k) for r in rows]
+        vals = [v for v in vals if v is not None]
+        noi[k] = sum(vals) if vals else None
+
+    occ = {"at_close": _weighted(rows, "at_close", "at_close"),
+           "uw_ye": _weighted(rows, "uw_ye", "uw_ye"),
+           "projected_ye": _weighted(rows, "projected_ye", "projected_ye")}
+
+    return {
+        "label": label,
+        "deal_count": len(rows),
+        # Dev deals are counted here — their NOI is real and the PDF's own
+        # subtotals include them; only their per-row DISPLAY is suppressed.
+        "dev_count": sum(1 for r in rows if r.get("is_dev")),
+        "noi": noi,
+        "econ_occ": occ,
+        # From the sums, as the PDF does.
+        "expected_growth": _growth(noi["uw_ye"], noi["at_close"]),
+        "actual_growth": _growth(noi["projected_ye"], noi["at_close"]),
+        "econ_occ_basis": "NOI-weighted mean over deals carrying a reading",
+        "noi_basis": "sum; a missing reading counts as zero",
+    }
+
+
 def _default_comment_loader(investor_code: str, quarter: str) -> dict:
     """vcode -> operating comment, from Step 2 persistence (read-only)."""
     try:
@@ -280,6 +361,10 @@ def assemble_operating(investor_code: str, quarter: str, *,
     ``resolved`` is the output of Step 1's ``resolve_investor_deals``.
     ``one_pager_provider(vcode, quarter)`` returns a One Pager payload.
     """
+    from flask_app.services.portfolio_snapshot_service import (
+        group_total_label, PORTFOLIO_TOTAL_LABEL,
+    )
+
     loader = comment_loader or _default_comment_loader
     comments = loader(investor_code, quarter) or {}
 
@@ -432,6 +517,15 @@ def assemble_operating(investor_code: str, quarter: str, *,
         "scaled": False,        # property-level metrics are never scaled
         "groups": groups,
         "ownership_flagged": flagged_rows,
+        # Subtotals ride ALONGSIDE `groups` rather than nesting inside it, so
+        # every existing consumer — the component, the guardrails, a frozen
+        # payload — keeps reading `groups` as {name: [rows]} unchanged.
+        "group_labels": {g: group_total_label(g) for g in groups},
+        "subtotals": {g: operating_subtotal(rows, group_total_label(g))
+                      for g, rows in groups.items()},
+        "total": operating_subtotal(
+            [r for rows in groups.values() for r in rows] + flagged_rows,
+            PORTFOLIO_TOTAL_LABEL),
         "diagnostics": diag,
     }
 

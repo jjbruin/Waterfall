@@ -56,6 +56,11 @@ const INVESTOR = arg('investor', 'TGAM')
 const QUARTER = arg('quarter', '2026-Q1')
 const KEEP_OPEN = process.argv.includes('--keep-open')
 
+// Produce one with:
+//   python scripts/snapshot_payload_dump.py bundle TGAM 2026-Q1 > bundle.json
+const bundleFile = arg('bundle', null)
+const LOCAL_BUNDLE = bundleFile ? readFileSync(bundleFile, 'utf8') : null
+
 const CHROME = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
   'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
@@ -86,6 +91,15 @@ function indexHtml() {
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost')
   const path = url.pathname
+
+  // ---- a locally-assembled bundle, served in place of the proxied one ----
+  // The proxy reaches the DEPLOYED backend, which cannot show local assembly
+  // work — new subtotals and a changed allocation both went unverified in the
+  // printed document that way. --bundle short-circuits that one route.
+  if (LOCAL_BUNDLE && path === '/api/portfolio-snapshot/bundle') {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    return res.end(LOCAL_BUNDLE)
+  }
 
   // ---- proxy the API to live ----
   if (path.startsWith('/api') || path.startsWith('/auth')) {

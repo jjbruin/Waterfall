@@ -11,7 +11,7 @@
  * Presentational: props in, save events out.
  */
 import { computed, ref, watch } from 'vue'
-import { fmtM, fmtPct, disp, isLiteral, DASH } from './format'
+import { fmtM, fmtPct, fmtX, disp, isLiteral, DASH } from './format'
 
 const props = defineProps<{ data: any; editable: boolean }>()
 const emit = defineEmits<{
@@ -41,11 +41,21 @@ function commit(vcode: string) {
   })
 }
 
+/** Backend-computed fund subtotals and portfolio total (see loan_subtotal —
+ *  Debt summed over every deal, ratios debt-weighted over the deals carrying a
+ *  value). Never recomputed here. */
+const subtotals = computed<Record<string, any>>(() => props.data?.subtotals || {})
+const total = computed(() => props.data?.total || null)
+
 const allRows = computed(() => {
-  const out: { group: string; rows: any[] }[] = []
-  for (const [g, rows] of Object.entries(groups.value)) out.push({ group: g, rows: rows || [] })
+  const out: { group: string; rows: any[]; subtotal: any }[] = []
+  for (const [g, rows] of Object.entries(groups.value)) {
+    out.push({ group: g, rows: rows || [], subtotal: subtotals.value[g] || null })
+  }
   if (flaggedRows.value.length) {
-    out.push({ group: 'Ownership % unavailable', rows: flaggedRows.value })
+    out.push({
+      group: 'Ownership % unavailable', rows: flaggedRows.value, subtotal: null,
+    })
   }
   return out
 })
@@ -152,18 +162,44 @@ const devCount = computed(() => {
                 <span v-else class="cmt-text">{{ r.loan_comment || '' }}</span>
               </td>
             </tr>
+            <!--
+              Fund total, labelled as the PDF labels it. Debt is summed over
+              every deal including development; the three ratios are
+              debt-weighted over the deals carrying a value, which is what
+              reproduces the published LTVs exactly. See loan_subtotal.
+            -->
+            <tr v-if="blk.subtotal" class="subtotal">
+              <td class="sticky-l">{{ blk.subtotal.label }}</td>
+              <td></td><td></td>
+              <td class="r num">{{ fmtM(blk.subtotal.debt) }}</td>
+              <td class="r num">{{ fmtX(blk.subtotal.ytd_dscr) }}</td>
+              <td class="r num">{{ fmtPct(blk.subtotal.ltv) }}</td>
+              <td class="r num">{{ fmtPct(blk.subtotal.debt_yield) }}</td>
+              <td class="cmt"></td>
+            </tr>
+            <tr class="spacer"><td colspan="8"></td></tr>
           </tbody>
         </template>
 
         <tfoot>
-          <tr>
+          <tr v-if="total">
+            <td class="sticky-l">{{ total.label }} ({{ total.deal_count }})</td>
+            <td></td><td></td>
+            <td class="r num">{{ fmtM(total.debt) }}</td>
+            <td class="r num">{{ fmtX(total.ytd_dscr) }}</td>
+            <td class="r num">{{ fmtPct(total.ltv) }}</td>
+            <td class="r num">{{ fmtPct(total.debt_yield) }}</td>
+            <td class="cmt"></td>
+          </tr>
+          <tr class="exdev-note">
             <td class="sticky-l">
-              Total excluding development deals ({{ exDevTotal.deal_count }})
+              Excluding development deals ({{ exDevTotal.deal_count }})
             </td>
             <td></td><td></td>
             <td class="r num">{{ fmtM(exDevTotal.debt) }}</td>
             <td colspan="4" class="note">
-              ratios are not summed — a portfolio DSCR or LTV would be a figure the backend never computed
+              summary ratios already exclude the development deals — they carry no
+              value to weight
             </td>
           </tr>
         </tfoot>
@@ -193,6 +229,15 @@ const devCount = computed(() => {
 
 .scroll { overflow-x: auto; border: 1px solid var(--color-border); border-radius: 8px; }
 table.grid { width: 100%; border-collapse: collapse; font-size: 12px; }
+
+tr.subtotal td {
+  font-weight: 700;
+  border-top: 1px solid var(--color-text-secondary);
+  background: #f7f9fb;
+}
+tr.spacer td { height: 8px; padding: 0; border-bottom: none; background: transparent; }
+tfoot td { font-weight: 700; border-top: 2px solid var(--color-text); background: #eef2f7; }
+tfoot tr.exdev-note td { font-weight: 400; border-top: 1px solid var(--color-border); background: transparent; }
 
 table.grid th {
   text-align: left;

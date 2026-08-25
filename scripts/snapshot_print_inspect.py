@@ -73,9 +73,17 @@ def main():
              "Excluding Development Deals", "City West", "Footnotes"]),
         2: ("page 3 — Operating",
             ["Econ Occ", "NOI At Close", "NOI U/W YE", "NOI Projected YE",
-             "Expected Growth", "Actual Growth", "n/a"]),
+             "Expected Growth", "Actual Growth", "n/a",
+             # fund labels + subtotals, PDF page 3
+             "Total Individual Investments", "Total PSC TGA 2022 LLC",
+             "Total PSC TGA 2023 LLC", "Total PSC TGA 2024 LLC",
+             "Total PSC TGA 2025 LLC", "Portfolio Totals"]),
         3: ("page 4 — Loan",
-            ["Debt", "LTV", "DSCR", "Debt Yield", "Rate", "Maturity"]),
+            ["Debt", "LTV", "DSCR", "Debt Yield", "Rate", "Maturity",
+             # fund labels + subtotals, PDF page 4
+             "Total Individual Investments", "Total PSC TGA 2022 LLC",
+             "Total PSC TGA 2023 LLC", "Total PSC TGA 2024 LLC",
+             "Total PSC TGA 2025 LLC", "Portfolio Totals"]),
     }
 
     for i, text in enumerate(pages):

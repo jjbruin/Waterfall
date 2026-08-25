@@ -141,6 +141,93 @@ def _num(v):
     return None if pd.isna(f) else f
 
 
+# ── Subtotals ─────────────────────────────────────────────────────────────
+#
+# REVERSES this subtab's "ratios are not summed" position. The reference PDF
+# page 4 carries a total row per fund and a portfolio total, each with Debt, LTV,
+# YTD DSCR and Debt Yield, so they are needed; computed HERE, not in the
+# component, so a freeze captures them.
+#
+# THE AGGREGATION, derived from the PDF's own five fund rows rather than assumed:
+#
+#   Debt   SUMMED over EVERY deal, development included. Ties all five funds to
+#          the cent — 270.5 / 268.4 / 366.5 / 279.2 / 201.5.
+#
+#   Ratios DEBT-WEIGHTED over the deals that CARRY A VALUE. Not "non-dev": the
+#          distinction matters because Jefferson Waters Creek is a dev deal with
+#          a real LTV (see WATERS_CREEK_LTV_EXCEPTION), and TGA 2022's published
+#          60.4% only reproduces if its 57.5% is included — excluding it gives
+#          61.6%. Carrying-a-value is also the rule that needs no dev concept at
+#          all, so it cannot drift from the "Dev" display.
+#
+#          LTV ties all five funds exactly: 67.4 / 60.4 / 59.4 / 62.1 / 69.1.
+#          Simple averaging misses every one of them (63.9 / 57.1 / 58.5 /
+#          61.6 / 69.1), which settles weighted-vs-simple decisively.
+#          DSCR ties TGA23 and TGA25 and is one rounding step out on TGA22
+#          (1.68 against 1.6) and TGA24 (1.57 against 1.5); simple averaging is
+#          0.3 out on TGA24, so weighted is still the better fit.
+#
+#   The PDF's footnote — "Summary level performance metrics (LTV, DSCR, and Debt
+#   Yield) exclude the development deals" — describes the effect rather than the
+#   mechanism: a dev deal renders "Dev" and so carries no value to weight, which
+#   excludes it automatically. Waters Creek is the case that shows the footnote's
+#   wording is looser than the arithmetic.
+#
+# TWO PUBLISHED FIGURES DO NOT REPRODUCE under any rule tested; recorded in
+# KNOWN_LOAN_SUBTOTAL_DIFFS rather than fitted to.
+_RATIO_KEYS = ("ltv", "ytd_dscr", "debt_yield")
+
+#: Fund total cells on PDF page 4 that no consistent rule reproduces.
+#: label -> (metric, ours, published, why it is being left alone)
+KNOWN_LOAN_SUBTOTAL_DIFFS = {
+    ("Total Individual Investments", "ytd_dscr"): (
+        "PDF prints n/a although three members carry a DSCR "
+        "(Nottingham 1.1x, Evergreen 2.9x, Ascent 2.1x, weighting to 2.08x). "
+        "No denominator produces n/a from those."),
+    ("Total Individual Investments", "debt_yield"): (
+        "PDF 4.1% against 8.71% debt-weighted over the deals with a value. "
+        "Weighting over ALL the fund's debt gives 3.76%, nearer but still not "
+        "4.1%, and that same denominator breaks TGA 2022 (4.58% against a "
+        "published 9.6%)."),
+    ("Total PSC TGA 2025 LLC", "debt_yield"): (
+        "PDF 4.9% against 13.10%, which is simply Burton's own figure since it "
+        "is the only member carrying one. 4.9% IS Burton weighted over the "
+        "fund's whole debt (13.1 x 75.3 / 201.5) — but that denominator gives "
+        "4.58% on TGA 2022 where 9.6% is published, so the two funds disagree "
+        "about the rule and neither can be adopted without breaking the other."),
+}
+
+
+def _debt_weighted(rows: list, key: str):
+    """Debt-weighted mean of one ratio over the rows carrying a value."""
+    num = den = 0.0
+    for r in rows:
+        v, d = r.get(key), r.get("debt")
+        if v is None or not d:
+            continue
+        num += v * d
+        den += d
+    return (num / den) if den else None
+
+
+def loan_subtotal(rows: list, label: str) -> dict:
+    """One total row over ``rows`` — a fund's deals, or every deal."""
+    debts = [r.get("debt") for r in rows if r.get("debt") is not None]
+    out = {
+        "label": label,
+        "deal_count": len(rows),
+        "dev_count": sum(1 for r in rows if r.get("is_dev")),
+        "debt": sum(debts) if debts else None,
+        "debt_basis": "sum over every deal, development included",
+        "ratio_basis": "debt-weighted over the deals carrying a value",
+    }
+    for k in _RATIO_KEYS:
+        out[k] = _debt_weighted(rows, k)
+        out[f"{k}_n"] = sum(1 for r in rows
+                            if r.get(k) is not None and r.get("debt"))
+    return out
+
+
 def _s(v) -> str:
     if v is None:
         return ""
@@ -309,6 +396,9 @@ def assemble_loan(investor_code: str, quarter: str, *,
     """Build the Loan subtab for one investor and quarter."""
     from flask_app.services.portfolio_snapshot_operating import (
         is_dev_deal, resolve_strategy)
+    from flask_app.services.portfolio_snapshot_service import (
+        group_total_label, PORTFOLIO_TOTAL_LABEL,
+    )
 
     loader = comment_loader or _default_comment_loader
     comments = loader(investor_code, quarter) or {}
@@ -517,6 +607,14 @@ def assemble_loan(investor_code: str, quarter: str, *,
         "ltv_review_ceiling": ltv_ceiling,
         "groups": groups,
         "ownership_flagged": flagged_rows,
+        # Alongside `groups`, not nested in it, so every existing consumer keeps
+        # reading {name: [rows]} unchanged.
+        "group_labels": {g: group_total_label(g) for g in groups},
+        "subtotals": {g: loan_subtotal(rows, group_total_label(g))
+                      for g, rows in groups.items()},
+        "total": loan_subtotal(
+            [r for rows in groups.values() for r in rows] + flagged_rows,
+            PORTFOLIO_TOTAL_LABEL),
         "diagnostics": diag,
     }
 

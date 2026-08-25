@@ -4,14 +4,20 @@
  * Actual Growth, plus a per-deal operating comment.
  *
  * Operating metrics are property-level and never scaled by ownership — only the
- * four Financial columns are. Grouped by fund with no subtotals: averaging
- * occupancy or summing NOI across a fund would invent a figure the backend
- * never computed.
+ * four Financial columns are.
+ *
+ * Grouped by fund WITH subtotals and a portfolio total, labelled as the
+ * reference PDF labels them. This reverses the module's original "no subtotals"
+ * position: the concern was inventing a figure, and the answer is that every
+ * total here is computed by `operating_subtotal` in the backend — NOI summed,
+ * occupancy NOI-weighted, growth recomputed from the sums — all three derived
+ * from the published page's own arithmetic, so a freeze captures them and the
+ * component never invents anything.
  *
  * Presentational: props in, save events out.
  */
 import { computed, ref, watch } from 'vue'
-import { fmtPct, disp, isLiteral } from './format'
+import { fmtM, fmtPct, fmtPctPts, disp, isLiteral } from './format'
 
 const props = defineProps<{ data: any; editable: boolean }>()
 const emit = defineEmits<{
@@ -51,11 +57,22 @@ function growthClass(v: unknown): string {
   return v < 0 ? 'neg' : v > 0 ? 'pos' : ''
 }
 
+/** Backend-computed fund subtotals and the portfolio total (see
+ *  operating_subtotal — NOI summed, occupancy NOI-weighted, growth from the
+ *  sums). Never recomputed here: a total the component invented could disagree
+ *  with the frozen payload. */
+const subtotals = computed<Record<string, any>>(() => props.data?.subtotals || {})
+const total = computed(() => props.data?.total || null)
+
 const allRows = computed(() => {
-  const out: { group: string; rows: any[] }[] = []
-  for (const [g, rows] of Object.entries(groups.value)) out.push({ group: g, rows: rows || [] })
+  const out: { group: string; rows: any[]; subtotal: any }[] = []
+  for (const [g, rows] of Object.entries(groups.value)) {
+    out.push({ group: g, rows: rows || [], subtotal: subtotals.value[g] || null })
+  }
   if (flaggedRows.value.length) {
-    out.push({ group: 'Ownership % unavailable', rows: flaggedRows.value })
+    out.push({
+      group: 'Ownership % unavailable', rows: flaggedRows.value, subtotal: null,
+    })
   }
   return out
 })
@@ -161,8 +178,46 @@ const allRows = computed(() => {
                 <span v-else class="cmt-text">{{ r.operating_comment || '' }}</span>
               </td>
             </tr>
+            <!--
+              Fund total, labelled as the PDF labels it ("Total PSC TGA 2022
+              LLC"). Occupancy is NOI-weighted and growth is recomputed from the
+              summed NOI, both derived from the published page — see
+              operating_subtotal.
+            -->
+            <tr v-if="blk.subtotal" class="subtotal">
+              <td class="sticky-l">{{ blk.subtotal.label }}</td>
+              <td class="r num">{{ fmtPctPts(blk.subtotal.econ_occ?.projected_ye) }}</td>
+              <td class="r num">{{ fmtM(blk.subtotal.noi?.at_close) }}</td>
+              <td class="r num">{{ fmtM(blk.subtotal.noi?.uw_ye) }}</td>
+              <td class="r num">{{ fmtM(blk.subtotal.noi?.projected_ye) }}</td>
+              <td class="r num" :class="growthClass(blk.subtotal.expected_growth)">
+                {{ fmtPct(blk.subtotal.expected_growth) }}
+              </td>
+              <td class="r num" :class="growthClass(blk.subtotal.actual_growth)">
+                {{ fmtPct(blk.subtotal.actual_growth) }}
+              </td>
+              <td class="cmt"></td>
+            </tr>
+            <tr class="spacer"><td colspan="8"></td></tr>
           </tbody>
         </template>
+
+        <tfoot v-if="total">
+          <tr>
+            <td class="sticky-l">{{ total.label }} ({{ total.deal_count }})</td>
+            <td class="r num">{{ fmtPctPts(total.econ_occ?.projected_ye) }}</td>
+            <td class="r num">{{ fmtM(total.noi?.at_close) }}</td>
+            <td class="r num">{{ fmtM(total.noi?.uw_ye) }}</td>
+            <td class="r num">{{ fmtM(total.noi?.projected_ye) }}</td>
+            <td class="r num" :class="growthClass(total.expected_growth)">
+              {{ fmtPct(total.expected_growth) }}
+            </td>
+            <td class="r num" :class="growthClass(total.actual_growth)">
+              {{ fmtPct(total.actual_growth) }}
+            </td>
+            <td class="cmt"></td>
+          </tr>
+        </tfoot>
       </table>
     </div>
 
@@ -208,6 +263,20 @@ table.grid th {
 .unitrow th { top: 26px; font-size: 9px; text-transform: none; }
 
 table.grid td { padding: 5px 8px; border-bottom: 1px solid #f2f2f2; vertical-align: top; }
+
+/* Fund total rows and the portfolio total, as on PDF page 3. */
+tr.subtotal td {
+  font-weight: 700;
+  border-top: 1px solid var(--color-text-secondary);
+  background: #f7f9fb;
+}
+tr.spacer td { height: 8px; padding: 0; border-bottom: none; background: transparent; }
+tfoot td {
+  font-weight: 700;
+  border-top: 2px solid var(--color-text);
+  background: #eef2f7;
+  padding: 6px 8px;
+}
 
 .sticky-l {
   position: sticky;
