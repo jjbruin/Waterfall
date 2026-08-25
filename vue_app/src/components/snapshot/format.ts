@@ -102,7 +102,10 @@ export function disp(v: unknown, kind: Kind = 'raw', dp?: number): string {
   switch (kind) {
     case 'pct': return fmtPct(n, dp ?? 1)
     case 'pctpts': return fmtPctPts(n, dp ?? 1)
-    case 'x': return fmtX(n, dp ?? 3)
+    // dp ?? 1, not ?? 3 — this default was overriding fmtX's own and still
+    // printing "1.144x" in a column the reference document shows as "1.1x".
+    // Changing fmtX alone was not enough; disp fixed the precision here.
+    case 'x': return fmtX(n, dp ?? 1)
     case 'currency': return fmtCurr(n)
     case 'm': return fmtM(n)
     default: return String(v)

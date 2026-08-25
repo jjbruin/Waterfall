@@ -356,7 +356,10 @@ table.grid th.r { text-align: right; }
 /* "TIAA Investment" band — centred over its four columns with the PDF's rule
    under the label only, not across the whole row. */
 .spanrow th { padding: 3px 8px 1px 8px; border-bottom: none; background: #fafafa; }
-.span-tiaa {
+/* `table.grid th` sets text-align: left and is element+class, so it outranked a
+   bare `.span-tiaa`; the band label rendered left-aligned over its four columns
+   instead of centred above them. Matching the selector's specificity fixes it. */
+table.grid th.span-tiaa {
   text-align: center;
   font-size: 10px;
   text-transform: none;

@@ -291,13 +291,22 @@ def _loan_terms(rows: pd.DataFrame) -> dict:
         rate = _num(r.get("nRate"))
         if rate is not None and rate >= 1:
             rate = rate / 100.0
+        # ONE decimal on a fixed rate, and a spread in BASIS POINTS — the units
+        # the reference document prints ("3.9% fixed", "SOFR + 350"). Two
+        # decimals put "5.29%" and "SOFR + 3.50%" in that column, and the
+        # spread-as-percent form was the last 2-decimal figure left in the
+        # printed report.
+        #
+        # NOTE this rounds a real hundredth away on screen too — 5.29% now reads
+        # 5.3%. That is the published precision; revert these two f-strings if
+        # the extra digit is wanted back.
         if rate is not None:
-            return rate, f"{rate * 100:.2f}%"
+            return rate, f"{rate * 100:.1f}%"
         idx = _s(r.get("vIndex"))
         spr = _num(r.get("vSpread"))
         if idx and spr is not None:
-            spr_pct = spr * 100 if spr < 1 else spr
-            return None, f"{idx} + {spr_pct:.2f}%"
+            spr_bps = (spr * 10000) if spr < 1 else (spr * 100)
+            return None, f"{idx} + {spr_bps:.0f}"
         if idx:
             return None, idx
         return None, None

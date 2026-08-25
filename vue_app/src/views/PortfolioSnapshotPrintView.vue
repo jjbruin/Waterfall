@@ -241,15 +241,15 @@ onMounted(async () => {
   font-weight: 700;
   letter-spacing: 0.5px;
   text-align: center;
-  margin: 6px 0 10px 0;
-  padding-bottom: 9px;
+  margin: 0 0 8px 0;
+  padding-bottom: 7px;
   border-bottom: 3px solid var(--color-text);
 }
 .pdf-client { font-size: 12px; font-weight: 700; }
 .pdf-sub {
   font-size: 11px;
   color: var(--color-text-secondary);
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .sect {
@@ -257,16 +257,21 @@ onMounted(async () => {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.4px;
-  margin: 0 0 8px 0;
+  margin: 0 0 6px 0;
 }
 .narr {
   font-size: 11.5px;
   line-height: 1.5;
-  margin: 0 0 8px 0;
-  min-height: 1em;
+  margin: 0 0 6px 0;
+  /* No min-height: an empty narrative reserved a blank line on every page. */
   white-space: pre-wrap;
 }
-.chartwrap { margin-bottom: 14px; }
+/* Centred by filling the column with balanced margins, which is how the
+   reference page centres its charts — not a narrow figure floating in gutters. */
+.chartwrap {
+  margin: 0 auto 10px auto;
+  max-width: 6.6in;
+}
 .chart-title {
   font-size: 11px;
   font-weight: 700;
@@ -296,7 +301,11 @@ onMounted(async () => {
     width: auto;
     min-height: 0;
     margin: 0;
-    padding: 0.5in;
+    /* Balanced side padding IS the centring: the content block fills the page
+       between equal margins rather than sitting in one. Slightly tighter top
+       and bottom than the sides, matching the reference page's density — it is
+       a fairly full page, not an airy one. */
+    padding: 0.42in 0.5in 0.34in 0.5in;
     border: none;
     /* Each subtab starts a new sheet; the last must not emit a trailing blank. */
     page-break-after: always;
@@ -315,8 +324,31 @@ onMounted(async () => {
     position: static !important;
     min-width: 0 !important;
   }
-  :deep(table.grid) { font-size: 7.5px !important; width: 100% !important; }
-  :deep(table.grid th), :deep(table.grid td) { padding: 2px 3px !important; }
+  /* Full width between the balanced page margins — a table that does not fill
+     the measure reads as drifting to one side. */
+  :deep(.scroll), :deep(table.grid) { width: 100% !important; }
+  :deep(table.grid) { font-size: 7.5px !important; table-layout: auto; }
+  :deep(table.grid th), :deep(table.grid td) { padding: 1.5px 3px !important; }
+  /* The comment column is what pushes the numeric columns narrow; on paper it
+     is mostly empty, so cap it and give the width back to the data. */
+  :deep(table.grid .cmt) { max-width: 1.5in; }
+
+  /* Charts: centred and tighter, so page 1 is not two figures adrift in space. */
+  .chartwrap { max-width: 6.2in; margin: 0 auto 8px auto; }
+  .chart-title { margin-bottom: 0; }
+  .sect { margin-bottom: 4px; }
+  .narr { margin-bottom: 4px; }
+  .pdf-sub { margin-bottom: 6px; }
+  .pdf-title { font-size: 20px; padding-bottom: 6px; margin-bottom: 6px; }
+
+  /* ---- placeholders are screen chrome, not document content ----
+     An un-entered manual figure reads "pending entry" on screen so whoever is
+     filling the report can see what is missing. On paper the reference document
+     shows a clean cell, and 67 italic "pending entry" strings down two columns
+     is worse than a blank. visibility, not display: the cell keeps its width so
+     the column does not collapse. */
+  :deep(.numinput.pending) { visibility: hidden !important; }
+  :deep(.manual.small) { visibility: hidden !important; }
 
   /* On-screen chrome that means nothing on paper. */
   :deep(.legend) { display: none !important; }
