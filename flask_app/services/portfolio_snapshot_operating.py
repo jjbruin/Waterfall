@@ -16,6 +16,24 @@ self-test wraps the REST endpoint. Same dependency-injection shape as Step 1.
 Operating metrics are property-level and are **never** scaled by ownership. Only
 the four TIAA columns on Subtab 2 get scaled.
 
+UNITS — the two percentage fields on this subtab are on DIFFERENT scales, and
+that is deliberate rather than an oversight:
+
+  * ``econ_occ`` / ``econ_occ_display`` are **percentage points** (92.23 = 92.23%).
+    They are copied verbatim out of the One Pager ``property_performance``
+    payload, where ``one_pager.get_property_performance`` scales every branch of
+    ``economic_occ`` to 0-100 (``uw_ye`` x100, ``at_close`` x100-if-ratio,
+    ``ytd_actual`` = avg ``Occ%`` points - bad-debt points, ``actual_ye`` a
+    weighted average of points). Rewriting them to ratios here would silently
+    diverge from the One Pager this mirrors, and would break every already-frozen
+    payload, which stores this dict as-is and renders through the same component.
+  * ``expected_growth`` / ``actual_growth`` are **decimal ratios** (0.053 = 5.3%),
+    like ``ltv`` and ``debt_yield`` on the Loan subtab.
+
+So the UI must format them with different formatters — ``fmtPctPts`` and
+``fmtPct`` respectively. Feeding occupancy through the ratio formatter is what
+rendered Flats at Dorsett Ridge as "9223.0%".
+
 Growth definitions (per the build spec):
     Expected Growth = (U/W YE NOI      - At Close NOI) / At Close NOI
     Actual Growth   = (Projected YE NOI - At Close NOI) / At Close NOI

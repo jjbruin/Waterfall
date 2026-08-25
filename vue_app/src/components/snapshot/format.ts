@@ -35,6 +35,25 @@ export function fmtPct(v: number | null | undefined, dp = 1): string {
   return (v * 100).toFixed(dp) + '%'
 }
 
+/**
+ * A value ALREADY in percentage points as a percentage (92.23 -> "92.2%").
+ *
+ * Almost every percentage on this page is a decimal ratio, so `fmtPct` is the
+ * default and this is the exception. It exists for figures the backend copies
+ * verbatim out of the One Pager `property_performance` payload, where the unit
+ * is percentage points, not a ratio — `economic_occ` is the one in use today
+ * (`one_pager.get_property_performance` scales every branch of it to 0-100).
+ *
+ * Deliberately NOT the tolerant `v > 1 ? v : v * 100` heuristic that
+ * `OnePagerView.fmtPct` uses: 0.98 is a legitimate 0.98% reading on a ratio
+ * field, so guessing the unit from the magnitude is a bug waiting for the deal
+ * that sits near the boundary. Pick the formatter that matches the field.
+ */
+export function fmtPctPts(v: number | null | undefined, dp = 1): string {
+  if (v == null) return DASH
+  return v.toFixed(dp) + '%'
+}
+
 /** A ratio like DSCR (1.8536 -> "1.854"). */
 export function fmtX(v: number | null | undefined, dp = 3): string {
   if (v == null) return DASH
@@ -53,7 +72,7 @@ export function fmtDate(v: string | null | undefined): string {
   return String(v)
 }
 
-type Kind = 'pct' | 'x' | 'currency' | 'm' | 'raw'
+type Kind = 'pct' | 'pctpts' | 'x' | 'currency' | 'm' | 'raw'
 
 /**
  * Render a backend `*_display` value.
@@ -68,6 +87,7 @@ export function disp(v: unknown, kind: Kind = 'raw', dp?: number): string {
   if (!isFinite(n)) return DASH
   switch (kind) {
     case 'pct': return fmtPct(n, dp ?? 1)
+    case 'pctpts': return fmtPctPts(n, dp ?? 1)
     case 'x': return fmtX(n, dp ?? 3)
     case 'currency': return fmtCurr(n)
     case 'm': return fmtM(n)

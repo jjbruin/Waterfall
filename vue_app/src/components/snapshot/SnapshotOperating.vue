@@ -97,7 +97,12 @@ const allRows = computed(() => {
                 <span v-if="r.is_dev" class="tag">Dev</span>
                 <span v-for="(f, i) in (r.flags || [])" :key="i" class="warn-dot" :title="f">!</span>
               </td>
-              <td class="r num">{{ disp(r.econ_occ_display, 'pct') }}</td>
+              <!--
+                'pctpts', not 'pct': econ_occ arrives from the One Pager already
+                in percentage points (92.23), so 'pct' multiplied it by 100 again
+                and rendered "9223.0%". Growth below IS a ratio, hence fmtPct.
+              -->
+              <td class="r num">{{ disp(r.econ_occ_display, 'pctpts') }}</td>
               <td class="r num">{{ fmtM(r.noi?.at_close) }}</td>
               <td class="r num">{{ fmtM(r.noi?.uw_ye) }}</td>
               <td class="r num">{{ fmtM(r.noi?.projected_ye) }}</td>
