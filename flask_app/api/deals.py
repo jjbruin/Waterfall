@@ -964,6 +964,108 @@ def save_sale_override(vcode):
     return jsonify({"message": "Sale override saved"})
 
 
+# ---------------------------------------------------------------------------
+# Parcel sales -- interim sales of part of the property before final sale
+# ---------------------------------------------------------------------------
+
+def _parcel_sale_context(vcode):
+    """Loan ids and the deal's final sale date, for validating a parcel sale."""
+    from flask_app.services import parcel_sale_service as pss
+    known_loans, final_sale = None, None
+    try:
+        data = _get_data()
+        loans = pss.get_deal_loans(data.get('mri_loans_raw'), vcode)
+        known_loans = [l['loan_id'] for l in loans]
+    except Exception as e:
+        current_app.logger.debug("parcel sale loan context unavailable: %s", e)
+        loans = []
+    try:
+        saved = _load_sale_override(vcode) or {}
+        final_sale = saved.get('sale_date_override')
+    except Exception:
+        pass
+    return loans, known_loans, final_sale
+
+
+@deals_bp.route("/<vcode>/parcel-sales", methods=["GET"])
+@login_required
+def get_parcel_sales(vcode):
+    """List parcel sales for a deal, with the loans available for a paydown."""
+    from flask_app.db import get_engine
+    from flask_app.services import parcel_sale_service as pss
+    loans, known_loans, final_sale = _parcel_sale_context(vcode)
+    sales = pss.list_parcel_sales(get_engine(), vcode)
+    for s in sales:
+        s['validation'] = pss.validate(s, known_loan_ids=known_loans,
+                                       final_sale_date=final_sale)
+    return safe_json({"parcel_sales": sales, "loans": loans})
+
+
+@deals_bp.route("/<vcode>/parcel-sales", methods=["POST"])
+@login_required
+def create_parcel_sale_route(vcode):
+    """Create a parcel sale. Rejects a sale whose economics do not reconcile."""
+    from flask_app.db import get_engine
+    from flask_app.services import parcel_sale_service as pss
+    body = request.get_json(silent=True) or {}
+    _, known_loans, final_sale = _parcel_sale_context(vcode)
+
+    result = pss.validate(body, known_loan_ids=known_loans, final_sale_date=final_sale)
+    if result['errors']:
+        return jsonify({"error": "; ".join(result['errors']),
+                        "validation": result}), 400
+
+    username = getattr(request, '_current_user', {}).get('username', '')
+    sale = pss.create_parcel_sale(get_engine(), vcode, body, username)
+    sale['validation'] = result
+    # Phase 01 does not feed the engine, but clearing keeps the cache honest
+    # once phases 02-05 make parcel sales an input to compute.
+    compute_service.clear_cache(vcode)
+    return safe_json({"parcel_sale": sale}), 201
+
+
+@deals_bp.route("/<vcode>/parcel-sales/<int:sale_id>", methods=["PUT"])
+@login_required
+def update_parcel_sale_route(vcode, sale_id):
+    """Update a parcel sale."""
+    from flask_app.db import get_engine
+    from flask_app.services import parcel_sale_service as pss
+    engine = get_engine()
+    body = request.get_json(silent=True) or {}
+
+    existing = pss.get_parcel_sale(engine, sale_id)
+    if not existing or existing['vcode'] != vcode:
+        return jsonify({"error": f"Parcel sale {sale_id} not found on {vcode}"}), 404
+
+    _, known_loans, final_sale = _parcel_sale_context(vcode)
+    merged = {**existing, **{k: v for k, v in body.items() if k != 'id'}}
+    result = pss.validate(merged, known_loan_ids=known_loans, final_sale_date=final_sale)
+    if result['errors']:
+        return jsonify({"error": "; ".join(result['errors']),
+                        "validation": result}), 400
+
+    username = getattr(request, '_current_user', {}).get('username', '')
+    sale = pss.update_parcel_sale(engine, sale_id, body, username)
+    sale['validation'] = result
+    compute_service.clear_cache(vcode)
+    return safe_json({"parcel_sale": sale})
+
+
+@deals_bp.route("/<vcode>/parcel-sales/<int:sale_id>", methods=["DELETE"])
+@login_required
+def delete_parcel_sale_route(vcode, sale_id):
+    """Delete a parcel sale."""
+    from flask_app.db import get_engine
+    from flask_app.services import parcel_sale_service as pss
+    engine = get_engine()
+    existing = pss.get_parcel_sale(engine, sale_id)
+    if not existing or existing['vcode'] != vcode:
+        return jsonify({"error": f"Parcel sale {sale_id} not found on {vcode}"}), 404
+    pss.delete_parcel_sale(engine, sale_id)
+    compute_service.clear_cache(vcode)
+    return jsonify({"message": "Parcel sale removed"})
+
+
 @deals_bp.route("/<vcode>/sale-override", methods=["DELETE"])
 @login_required
 def delete_sale_override(vcode):

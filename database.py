@@ -389,6 +389,28 @@ def ensure_pg_tables(engine):
         )
         """,
         """
+        CREATE TABLE IF NOT EXISTS parcel_sales (
+            id                   SERIAL PRIMARY KEY,
+            vcode                TEXT NOT NULL,
+            label                TEXT,
+            sale_date            TEXT,
+            sale_price           DOUBLE PRECISION,
+            cost_of_sale_value   DOUBLE PRECISION,
+            cost_of_sale_type    TEXT DEFAULT 'pct',
+            debt_application    TEXT,
+            capex_reserve_hold   DOUBLE PRECISION DEFAULT 0,
+            distribution_mode    TEXT DEFAULT 'waterfall',
+            distribution_fixed   TEXT,
+            lost_revenue         TEXT,
+            lost_expense         TEXT,
+            notes                TEXT,
+            sort_order           INTEGER DEFAULT 0,
+            created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_by           TEXT
+        )
+        """,
+        """
         CREATE TABLE IF NOT EXISTS argus_imports (
             id              SERIAL PRIMARY KEY,
             vcode           TEXT NOT NULL,
@@ -664,6 +686,35 @@ def create_additional_tables(conn: sqlite3.Connection):
             updated_by TEXT
         )
     """)
+
+    # Parcel sales -- interim sales of parcels before the final property sale.
+    # JSON columns hold the per-loan paydown allocation, per-partner fixed
+    # distribution amounts, and the revenue/expense lines the parcel takes
+    # with it, matching how prospect_assumptions stores structured blobs.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS parcel_sales (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            vcode TEXT NOT NULL,
+            label TEXT,
+            sale_date TEXT,
+            sale_price REAL,
+            cost_of_sale_value REAL,
+            cost_of_sale_type TEXT DEFAULT 'pct',
+            debt_application TEXT,
+            capex_reserve_hold REAL DEFAULT 0,
+            distribution_mode TEXT DEFAULT 'waterfall',
+            distribution_fixed TEXT,
+            lost_revenue TEXT,
+            lost_expense TEXT,
+            notes TEXT,
+            sort_order INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_by TEXT
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_parcel_sales_vcode "
+                 "ON parcel_sales(vcode)")
 
     # Capital calls (may also be populated from CSV import)
     conn.execute("""
@@ -1403,7 +1454,7 @@ def delete_waterfall_steps(vcode: str, wf_type: str = None):
 
 
 # Tables managed exclusively via the app (never overwritten by CSV import)
-PROTECTED_TABLES = {'waterfalls', 'one_pager_comments', 'waterfall_audit', 'review_roles', 'review_submissions', 'review_notes', 'one_pager_snapshots', 'prospective_loans', 'prospective_loans_audit', 'planned_loans', 'sale_overrides', 'user_requests', 'user_request_messages', 'surveillance_properties', 'insurance', 'surveillance_comments', 'lease_reviews', 'lease_tenants', 'lease_documents', 'lease_rent_steps', 'lease_cotenancy', 'lease_cotenancy_refs', 'lease_exclusive_use', 'lease_options', 'lease_validation', 'prospect_deals', 'prospect_properties', 'prospect_entities', 'prospect_investors', 'prospect_assumptions', 'prospect_cashflows', 'prospect_activity', 'lease_abstract_sections', 'lease_field_resolutions', 'lease_tenant_sales', 'lease_space_events', 'lease_space_event_results', 'lease_market_assumptions', 'lease_tenant_aliases', 'argus_imports', 'argus_cashflows', 'argus_tenants', 'argus_rent_steps', 'argus_market_profiles'}
+PROTECTED_TABLES = {'waterfalls', 'one_pager_comments', 'waterfall_audit', 'review_roles', 'review_submissions', 'review_notes', 'one_pager_snapshots', 'prospective_loans', 'prospective_loans_audit', 'planned_loans', 'sale_overrides', 'user_requests', 'user_request_messages', 'surveillance_properties', 'insurance', 'surveillance_comments', 'lease_reviews', 'lease_tenants', 'lease_documents', 'lease_rent_steps', 'lease_cotenancy', 'lease_cotenancy_refs', 'lease_exclusive_use', 'lease_options', 'lease_validation', 'prospect_deals', 'prospect_properties', 'prospect_entities', 'prospect_investors', 'prospect_assumptions', 'prospect_cashflows', 'prospect_activity', 'lease_abstract_sections', 'lease_field_resolutions', 'lease_tenant_sales', 'lease_space_events', 'lease_space_event_results', 'lease_market_assumptions', 'lease_tenant_aliases', 'argus_imports', 'argus_cashflows', 'argus_tenants', 'argus_rent_steps', 'argus_market_profiles', 'parcel_sales'}
 
 
 def _get_import_connection():

@@ -593,6 +593,190 @@ async function clearSaleOverrides() {
 watch(() => deals.currentVcode, (vc) => {
   if (vc) sellingCostTypeLocal.value = deals.sellingCostType[vc] || 'pct'
 })
+
+// ---------------------------------------------------------------------------
+// Parcel sales — interim sales of part of the property before the final sale
+// Phase 01: collect and validate the inputs. These do not yet feed the
+// forecast; the engine integration is phases 02-05.
+// ---------------------------------------------------------------------------
+
+interface ParcelDebtApp { loan_id: string; amount: number | null }
+interface ParcelSale {
+  id?: number
+  label: string
+  sale_date: string | null
+  sale_price: number | null
+  cost_of_sale_value: number | null
+  cost_of_sale_type: string
+  debt_application: ParcelDebtApp[]
+  capex_reserve_hold: number | null
+  distribution_mode: string
+  distribution_fixed: Record<string, number | null>
+  lost_revenue: { tenants?: string[]; accounts?: Record<string, number | null> }
+  lost_expense: { accounts?: Record<string, number | null> }
+  notes: string | null
+  economics?: Record<string, number>
+  validation?: { errors: string[]; warnings: string[] }
+}
+
+const parcelOpen = ref(false)
+const parcelSales = ref<ParcelSale[]>([])
+const parcelLoans = ref<any[]>([])
+const parcelLoading = ref(false)
+const parcelSaving = ref<Record<number, boolean>>({})
+const parcelError = ref('')
+const parcelDrafts = ref<Record<number, ParcelSale>>({})
+// account pickers are per-card, keyed by sale id, so one card's selection
+// does not leak into another's dropdown
+const revAcctPick = ref<Record<number, string>>({})
+const expAcctPick = ref<Record<number, string>>({})
+
+function blankParcelSale(): ParcelSale {
+  return {
+    label: 'Parcel sale', sale_date: null, sale_price: null,
+    cost_of_sale_value: 2, cost_of_sale_type: 'pct',
+    debt_application: parcelLoans.value.length === 1
+      ? [{ loan_id: parcelLoans.value[0].loan_id, amount: null }]
+      : [],
+    capex_reserve_hold: null, distribution_mode: 'waterfall',
+    distribution_fixed: {}, lost_revenue: { tenants: [], accounts: {} },
+    lost_expense: { accounts: {} }, notes: null,
+  }
+}
+
+// Mirror of the server's compute_economics so the box updates as you type.
+// The server value is authoritative once saved.
+function parcelEconomics(s: ParcelSale) {
+  const price = Number(s.sale_price) || 0
+  const cv = Number(s.cost_of_sale_value) || 0
+  const cost = (s.cost_of_sale_type === 'pct') ? price * cv / 100 : cv
+  const net = price - cost
+  const debt = (s.debt_application || []).reduce((a, d) => a + (Number(d.amount) || 0), 0)
+  const reserve = Number(s.capex_reserve_hold) || 0
+  return { cost, net, debt, reserve, remainder: net - debt - reserve }
+}
+
+function parcelFixedTotal(s: ParcelSale) {
+  return Object.values(s.distribution_fixed || {}).reduce((a, v) => a + (Number(v) || 0), 0)
+}
+
+const parcelPartners = computed(() =>
+  (deals.currentPartners || [])
+    .map((p: any) => p.Partner || p.partner || p.InvestorID)
+    .filter(Boolean)
+)
+
+async function loadParcelSales() {
+  const vc = deals.currentVcode
+  if (!vc) return
+  parcelLoading.value = true
+  parcelError.value = ''
+  try {
+    const res = await api.get(`/api/deals/${vc}/parcel-sales`)
+    parcelSales.value = res.data.parcel_sales || []
+    parcelLoans.value = res.data.loans || []
+  } catch (e: any) {
+    parcelError.value = e?.response?.data?.error || 'Could not load parcel sales.'
+  } finally {
+    parcelLoading.value = false
+  }
+}
+
+function addParcelDraft() {
+  const key = -Date.now()
+  parcelDrafts.value[key] = blankParcelSale()
+}
+
+function discardParcelDraft(key: number) {
+  delete parcelDrafts.value[key]
+}
+
+function addDebtRow(s: ParcelSale) {
+  const used = new Set((s.debt_application || []).map(d => d.loan_id))
+  const next = parcelLoans.value.find(l => !used.has(l.loan_id))
+  s.debt_application = [...(s.debt_application || []),
+    { loan_id: next ? next.loan_id : '', amount: null }]
+}
+
+function removeDebtRow(s: ParcelSale, i: number) {
+  s.debt_application.splice(i, 1)
+}
+
+function setParcelMode(s: ParcelSale, mode: string) {
+  s.distribution_mode = mode
+  if (mode === 'fixed' && !Object.keys(s.distribution_fixed || {}).length) {
+    const seeded: Record<string, number | null> = {}
+    for (const p of parcelPartners.value) seeded[p] = null
+    s.distribution_fixed = seeded
+  }
+}
+
+function lostAccountRows(block: { accounts?: Record<string, number | null> }) {
+  return Object.entries(block?.accounts || {})
+}
+
+function addLostAccount(block: { accounts?: Record<string, number | null> }, acct: string) {
+  if (!acct) return
+  if (!block.accounts) block.accounts = {}
+  block.accounts[acct] = null
+}
+
+function removeLostAccount(block: { accounts?: Record<string, number | null> }, acct: string) {
+  if (block.accounts) delete block.accounts[acct]
+}
+
+async function saveParcelDraft(key: number) {
+  const vc = deals.currentVcode
+  if (!vc) return
+  parcelSaving.value[key] = true
+  parcelError.value = ''
+  try {
+    await api.post(`/api/deals/${vc}/parcel-sales`, parcelDrafts.value[key])
+    delete parcelDrafts.value[key]
+    await loadParcelSales()
+  } catch (e: any) {
+    parcelError.value = e?.response?.data?.error || 'Could not save the parcel sale.'
+  } finally {
+    parcelSaving.value[key] = false
+  }
+}
+
+async function saveParcelSale(s: ParcelSale) {
+  const vc = deals.currentVcode
+  if (!vc || !s.id) return
+  parcelSaving.value[s.id] = true
+  parcelError.value = ''
+  try {
+    await api.put(`/api/deals/${vc}/parcel-sales/${s.id}`, s)
+    await loadParcelSales()
+  } catch (e: any) {
+    parcelError.value = e?.response?.data?.error || 'Could not save the parcel sale.'
+  } finally {
+    parcelSaving.value[s.id] = false
+  }
+}
+
+async function deleteParcelSale(s: ParcelSale) {
+  const vc = deals.currentVcode
+  if (!vc || !s.id) return
+  try {
+    await api.delete(`/api/deals/${vc}/parcel-sales/${s.id}`)
+    await loadParcelSales()
+  } catch (e: any) {
+    parcelError.value = e?.response?.data?.error || 'Could not remove the parcel sale.'
+  }
+}
+
+watch(() => deals.currentVcode, (vc) => {
+  parcelSales.value = []
+  parcelLoans.value = []
+  parcelDrafts.value = {}
+  if (vc && parcelOpen.value) loadParcelSales()
+})
+
+watch(parcelOpen, (open) => {
+  if (open && !parcelSales.value.length) loadParcelSales()
+})
 </script>
 
 <template>
@@ -688,6 +872,196 @@ watch(() => deals.currentVcode, (vc) => {
             </table>
           </div>
         </div>
+
+        <!-- Parcel Sales (interim sales before the final disposition) -->
+        <details class="parcel-box" :open="parcelOpen" @toggle="parcelOpen = ($event.target as HTMLDetailsElement).open">
+          <summary class="parcel-summary">
+            <span class="parcel-title">Parcel Sales</span>
+            <span v-if="parcelSales.length" class="parcel-count">{{ parcelSales.length }}</span>
+            <span class="parcel-hint">Interim sales of part of the property before the final sale</span>
+          </summary>
+
+          <div class="parcel-body">
+            <p class="parcel-notice">
+              Inputs are collected and validated here. They do not yet affect the
+              forecast or returns &mdash; that lands in the next phase.
+            </p>
+
+            <div v-if="parcelError" class="parcel-error">{{ parcelError }}</div>
+            <div v-if="parcelLoading" class="parcel-loading">Loading&hellip;</div>
+
+            <div v-for="s in parcelSales" :key="'saved-' + s.id" class="parcel-card">
+              <div class="parcel-card-head">
+                <input v-model="s.label" class="parcel-label" placeholder="Parcel name" />
+                <div class="parcel-actions">
+                  <button class="btn-save-override" :disabled="parcelSaving[s.id]"
+                          @click="saveParcelSale(s)">
+                    {{ parcelSaving[s.id] ? '...' : 'Save' }}
+                  </button>
+                  <button class="btn-clear-override" @click="deleteParcelSale(s)">Remove</button>
+                </div>
+              </div>
+
+              <div class="parcel-grid">
+                <label>Sale Date<input type="date" v-model="s.sale_date" /></label>
+                <label>Sale Price<input type="number" v-model.number="s.sale_price" placeholder="0" /></label>
+                <label>Cost of Sale
+                  <div class="parcel-inline">
+                    <input type="number" v-model.number="s.cost_of_sale_value" step="0.01" />
+                    <select v-model="s.cost_of_sale_type">
+                      <option value="pct">%</option>
+                      <option value="fixed">$</option>
+                    </select>
+                  </div>
+                </label>
+                <label>Hold in CapEx Reserve
+                  <input type="number" v-model.number="s.capex_reserve_hold" placeholder="0" />
+                </label>
+              </div>
+
+              <div class="parcel-sub">
+                <div class="parcel-sub-head">
+                  <span>Apply to Mortgage</span>
+                  <button v-if="parcelLoans.length > 1" class="btn-mini" @click="addDebtRow(s)">+ Loan</button>
+                </div>
+                <p v-if="!parcelLoans.length" class="parcel-muted">No loans found on this deal.</p>
+                <div v-for="(d, i) in s.debt_application" :key="'d' + i" class="parcel-inline">
+                  <select v-model="d.loan_id">
+                    <option v-for="l in parcelLoans" :key="l.loan_id" :value="l.loan_id">
+                      {{ l.label || l.loan_id }}
+                    </option>
+                  </select>
+                  <input type="number" v-model.number="d.amount" placeholder="0" />
+                  <button class="btn-mini" @click="removeDebtRow(s, i)">&times;</button>
+                </div>
+              </div>
+
+              <div class="parcel-sub">
+                <div class="parcel-sub-head"><span>Distribute the Remainder</span></div>
+                <div class="parcel-modes">
+                  <label><input type="radio" :checked="s.distribution_mode === 'pro_rata'"
+                                @change="setParcelMode(s, 'pro_rata')" /> Pro-rata by capital %</label>
+                  <label><input type="radio" :checked="s.distribution_mode === 'fixed'"
+                                @change="setParcelMode(s, 'fixed')" /> Fixed per partner</label>
+                  <label><input type="radio" :checked="s.distribution_mode === 'waterfall'"
+                                @change="setParcelMode(s, 'waterfall')" /> Capital waterfall</label>
+                </div>
+                <div v-if="s.distribution_mode === 'fixed'" class="parcel-fixed">
+                  <div v-for="p in Object.keys(s.distribution_fixed)" :key="p" class="parcel-inline">
+                    <span class="parcel-partner">{{ p }}</span>
+                    <input type="number" v-model.number="s.distribution_fixed[p]" placeholder="0" />
+                  </div>
+                  <p class="parcel-muted">
+                    Entered {{ fmtCur(parcelFixedTotal(s)) }} of
+                    {{ fmtCur(parcelEconomics(s).remainder) }}
+                  </p>
+                </div>
+                <p v-else-if="s.distribution_mode === 'pro_rata'" class="parcel-muted">
+                  Split on each partner's share of contributed capital at the sale date.
+                </p>
+                <p v-else class="parcel-muted">
+                  Run through the deal's Cap_WF steps as a capital event.
+                </p>
+              </div>
+
+              <div class="parcel-sub">
+                <div class="parcel-sub-head">
+                  <span>Revenue &amp; Expenses Lost</span>
+                  <span class="parcel-muted">tenant picker arrives with the forecast phase</span>
+                </div>
+                <div class="parcel-lost">
+                  <div>
+                    <span class="parcel-lost-label">Revenue removed (annual)</span>
+                    <div v-for="row in lostAccountRows(s.lost_revenue)" :key="'r' + row[0]" class="parcel-inline">
+                      <span class="parcel-acct">{{ row[0] }}</span>
+                      <input type="number" v-model.number="s.lost_revenue.accounts[row[0]]" />
+                      <button class="btn-mini" @click="removeLostAccount(s.lost_revenue, row[0])">&times;</button>
+                    </div>
+                    <select class="parcel-add-acct" v-model="revAcctPick[s.id]"
+                            @change="addLostAccount(s.lost_revenue, revAcctPick[s.id]); revAcctPick[s.id] = ''">
+                      <option value="">+ account</option>
+                      <option value="4010">4010 Rental Income</option>
+                      <option value="4075">4075 Other Revenue</option>
+                      <option value="4090">4090 Recoveries</option>
+                    </select>
+                  </div>
+                  <div>
+                    <span class="parcel-lost-label">Expenses removed (annual)</span>
+                    <div v-for="row in lostAccountRows(s.lost_expense)" :key="'e' + row[0]" class="parcel-inline">
+                      <span class="parcel-acct">{{ row[0] }}</span>
+                      <input type="number" v-model.number="s.lost_expense.accounts[row[0]]" />
+                      <button class="btn-mini" @click="removeLostAccount(s.lost_expense, row[0])">&times;</button>
+                    </div>
+                    <select class="parcel-add-acct" v-model="expAcctPick[s.id]"
+                            @change="addLostAccount(s.lost_expense, expAcctPick[s.id]); expAcctPick[s.id] = ''">
+                      <option value="">+ account</option>
+                      <option value="5090">5090 Real Estate Taxes</option>
+                      <option value="5020">5020 Payroll</option>
+                      <option value="5060">5060 Repairs &amp; Maintenance</option>
+                      <option value="5110">5110 Insurance</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div class="parcel-econ">
+                <span>Net proceeds <b>{{ fmtCur(parcelEconomics(s).net) }}</b></span>
+                <span>Debt paydown <b>{{ fmtCur(parcelEconomics(s).debt) }}</b></span>
+                <span>Reserve <b>{{ fmtCur(parcelEconomics(s).reserve) }}</b></span>
+                <span :class="{ 'econ-bad': parcelEconomics(s).remainder < 0 }">
+                  To distribute <b>{{ fmtCur(parcelEconomics(s).remainder) }}</b>
+                </span>
+              </div>
+
+              <ul v-if="s.validation && s.validation.errors.length" class="parcel-issues errors">
+                <li v-for="(m, i) in s.validation.errors" :key="'ve' + i">{{ m }}</li>
+              </ul>
+              <ul v-if="s.validation && s.validation.warnings.length" class="parcel-issues warnings">
+                <li v-for="(m, i) in s.validation.warnings" :key="'vw' + i">{{ m }}</li>
+              </ul>
+            </div>
+
+            <div v-for="(d, key) in parcelDrafts" :key="'draft-' + key" class="parcel-card draft">
+              <div class="parcel-card-head">
+                <input v-model="d.label" class="parcel-label" placeholder="Parcel name" />
+                <div class="parcel-actions">
+                  <button class="btn-save-override" :disabled="parcelSaving[key]"
+                          @click="saveParcelDraft(Number(key))">
+                    {{ parcelSaving[key] ? '...' : 'Add Sale' }}
+                  </button>
+                  <button class="btn-clear-override" @click="discardParcelDraft(Number(key))">Discard</button>
+                </div>
+              </div>
+              <div class="parcel-grid">
+                <label>Sale Date<input type="date" v-model="d.sale_date" /></label>
+                <label>Sale Price<input type="number" v-model.number="d.sale_price" placeholder="0" /></label>
+                <label>Cost of Sale
+                  <div class="parcel-inline">
+                    <input type="number" v-model.number="d.cost_of_sale_value" step="0.01" />
+                    <select v-model="d.cost_of_sale_type">
+                      <option value="pct">%</option>
+                      <option value="fixed">$</option>
+                    </select>
+                  </div>
+                </label>
+                <label>Hold in CapEx Reserve
+                  <input type="number" v-model.number="d.capex_reserve_hold" placeholder="0" />
+                </label>
+              </div>
+              <div class="parcel-econ">
+                <span>Net proceeds <b>{{ fmtCur(parcelEconomics(d).net) }}</b></span>
+                <span :class="{ 'econ-bad': parcelEconomics(d).remainder < 0 }">
+                  To distribute <b>{{ fmtCur(parcelEconomics(d).remainder) }}</b>
+                </span>
+              </div>
+              <p class="parcel-muted">
+                Add the sale, then set the mortgage paydown, distribution and lost revenue.
+              </p>
+            </div>
+
+            <button class="btn-add-parcel" @click="addParcelDraft">+ Add Parcel Sale</button>
+          </div>
+        </details>
 
         <!-- Sale Assumptions Override -->
         <div class="sale-override-row">
@@ -2054,5 +2428,115 @@ watch(() => deals.currentVcode, (vc) => {
   font-size: 13px;
   color: var(--color-accent);
 }
+/* ========== Parcel Sales ========== */
+.parcel-box {
+  border: 1px solid #d6dbe0;
+  border-left: 3px solid #1f4e79;
+  border-radius: 3px;
+  background: #fff;
+  margin: 10px 0;
+}
+.parcel-summary {
+  cursor: pointer;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+  user-select: none;
+}
+.parcel-summary:focus-visible { outline: 2px solid #1f4e79; outline-offset: 2px; }
+.parcel-title { font-weight: 600; color: #1f4e79; }
+.parcel-count {
+  background: #1f4e79; color: #fff; border-radius: 10px;
+  padding: 0 7px; font-size: 0.72rem; font-weight: 600;
+}
+.parcel-hint { color: #7b8794; font-size: 0.78rem; }
+.parcel-body { padding: 4px 12px 12px; }
+.parcel-notice {
+  background: #f8f0de; border-left: 3px solid #9a6a18; color: #4a3a12;
+  padding: 6px 9px; margin: 4px 0 10px; font-size: 0.78rem; border-radius: 2px;
+}
+.parcel-error {
+  background: #f8e9e9; border-left: 3px solid #a3282b; color: #7a1f21;
+  padding: 6px 9px; margin-bottom: 8px; font-size: 0.8rem; border-radius: 2px;
+}
+.parcel-loading { color: #7b8794; font-size: 0.82rem; padding: 4px 0; }
+.parcel-card {
+  border: 1px solid #e2e6ea; border-radius: 3px;
+  padding: 10px 12px; margin-bottom: 10px; background: #fcfdfe;
+}
+.parcel-card.draft { border-style: dashed; background: #fafbfc; }
+.parcel-card-head {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 8px; margin-bottom: 8px;
+}
+.parcel-label {
+  font-weight: 600; font-size: 0.88rem; border: 1px solid transparent;
+  background: transparent; padding: 2px 4px; border-radius: 2px; flex: 1;
+}
+.parcel-label:hover, .parcel-label:focus { border-color: #ccd3d9; background: #fff; }
+.parcel-actions { display: flex; gap: 6px; }
+.parcel-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px; margin-bottom: 10px;
+}
+.parcel-grid label {
+  display: flex; flex-direction: column; gap: 3px;
+  font-size: 0.75rem; color: #5a6675; font-weight: 500;
+}
+.parcel-grid input, .parcel-grid select, .parcel-inline input, .parcel-inline select {
+  padding: 4px 6px; border: 1px solid #ccd3d9; border-radius: 2px;
+  font-size: 0.82rem; font-variant-numeric: tabular-nums;
+}
+.parcel-inline { display: flex; gap: 5px; align-items: center; margin-bottom: 4px; }
+.parcel-inline input { flex: 1; min-width: 0; }
+.parcel-sub {
+  border-top: 1px solid #eceff2; padding-top: 8px; margin-bottom: 8px;
+}
+.parcel-sub-head {
+  display: flex; align-items: baseline; gap: 8px;
+  font-size: 0.78rem; font-weight: 600; color: #35434f; margin-bottom: 5px;
+}
+.parcel-modes { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 5px; }
+.parcel-modes label {
+  font-size: 0.8rem; color: #35434f; display: flex; align-items: center; gap: 4px;
+}
+.parcel-fixed { margin-top: 5px; }
+.parcel-partner, .parcel-acct {
+  font-family: ui-monospace, monospace; font-size: 0.76rem;
+  color: #35434f; min-width: 78px;
+}
+.parcel-muted { color: #7b8794; font-size: 0.76rem; margin: 3px 0 0; font-weight: 400; }
+.parcel-lost { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+.parcel-lost-label {
+  display: block; font-size: 0.74rem; color: #5a6675;
+  font-weight: 500; margin-bottom: 4px;
+}
+.parcel-add-acct {
+  padding: 3px 5px; border: 1px dashed #ccd3d9; border-radius: 2px;
+  font-size: 0.76rem; color: #5a6675; background: transparent; margin-top: 2px;
+}
+.parcel-econ {
+  display: flex; flex-wrap: wrap; gap: 14px;
+  border-top: 1px solid #eceff2; padding-top: 7px; margin-top: 4px;
+  font-size: 0.78rem; color: #5a6675;
+}
+.parcel-econ b { color: #14201d; font-variant-numeric: tabular-nums; }
+.parcel-econ .econ-bad, .parcel-econ .econ-bad b { color: #a3282b; }
+.parcel-issues { margin: 6px 0 0; padding-left: 18px; font-size: 0.77rem; }
+.parcel-issues.errors { color: #a3282b; }
+.parcel-issues.warnings { color: #8a5a12; }
+.btn-mini {
+  padding: 2px 7px; border: 1px solid #ccd3d9; border-radius: 2px;
+  background: #fff; cursor: pointer; font-size: 0.76rem; color: #5a6675;
+}
+.btn-mini:hover { background: #f2f5f7; }
+.btn-add-parcel {
+  padding: 5px 11px; border: 1px dashed #1f4e79; border-radius: 3px;
+  background: transparent; color: #1f4e79; cursor: pointer;
+  font-size: 0.82rem; font-weight: 500;
+}
+.btn-add-parcel:hover { background: #eef4f9; }
 </style>
 
