@@ -115,15 +115,39 @@ waterfall-xirr/
 - Default login: admin / admin
 
 ### Deploying Changes
-All deploys use Azure CLI (GitHub Actions secrets are not configured):
-```bash
-# 1. Build image in Azure Container Registry (use --no-logs to avoid unicode crash)
-az acr build --registry acrwaterfalldev -g rg-waterfall-dev --image waterfall-xirr:latest --no-logs .
+All deploys use Azure CLI (GitHub Actions secrets are not configured).
 
-# 2. Deploy to Container Apps (use incrementing suffix to force new revision)
-az containerapp update -g rg-waterfall-dev -n app-waterfall-dev-v2 --image acrwaterfalldev.azurecr.io/waterfall-xirr:latest --revision-suffix v301
+**Tag every image with the commit SHA it was built from, and deploy that tag — never `:latest`.**
+`:latest` is mutable, so a revision pointing at it cannot be traced back to a commit once the
+next build overwrites the tag. Deploy the SHA tag and the running revision names its own source.
+
+```bash
+# 0. Build from a known commit — the ACR build uploads the local working tree, not a git ref
+git rev-parse --short HEAD          # confirm you are on the commit you intend to ship
+git status --porcelain              # must be empty, or the image contains uncommitted work
+
+# 1. Build in ACR, tagged with the commit SHA (--no-logs avoids a unicode crash)
+SHA=$(git rev-parse --short HEAD)
+az acr build --registry acrwaterfalldev -g rg-waterfall-dev --image waterfall-xirr:$SHA --image waterfall-xirr:latest --no-logs .
+
+# 2. Lock the SHA tag so a later build cannot overwrite it (delete stays enabled for cleanup)
+az acr repository update -n acrwaterfalldev --image waterfall-xirr:$SHA --write-enabled false
+
+# 3. Deploy the SHA tag (incrementing suffix forces a new revision)
+az containerapp update -g rg-waterfall-dev -n app-waterfall-dev-v2 --image acrwaterfalldev.azurecr.io/waterfall-xirr:$SHA --revision-suffix v350
 ```
-**Note**: ACR build agent has transient failures (5-second runs) — retry if it fails. Use `--no-logs` to avoid Azure CLI unicode crash (`✓` character).
+
+Pick the revision suffix by bumping the current one — reusing a suffix is rejected. This same
+query answers "what commit is live?", since the image tag is the SHA:
+```bash
+az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --query "[?properties.active].{name:name,image:properties.template.containers[0].image}" -o table
+```
+
+**Notes**:
+- ACR build agent has transient failures (5-second runs) — retry if it fails. Confirm the run actually built rather than failing fast: `az acr task show-run --registry acrwaterfalldev --run-id <id> --query "{status:status,start:startTime,finish:finishTime}" -o tsv`
+- Use `--no-logs` to avoid Azure CLI unicode crash (`✓` character).
+- To pin an already-deployed `:latest` revision after the fact, retag its digest without rebuilding and redeploy that tag — same digest, so the content is provably identical: `az acr import -n acrwaterfalldev --source acrwaterfalldev.azurecr.io/waterfall-xirr@sha256:<digest> --image waterfall-xirr:<sha>`
+- Deploy history: revision `v349` = commit `2700c99` (first SHA-pinned revision). `v348` and earlier all point at `:latest` and are not traceable by tag.
 
 ### Local Development
 ```bash
