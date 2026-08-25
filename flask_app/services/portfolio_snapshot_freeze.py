@@ -148,12 +148,30 @@ def _one_pager_provider(data: dict) -> Callable:
 def _quarterly_noi_provider(data: dict) -> Callable:
     """(vcode, quarter) -> that quarter's periodic NOI, or None.
 
-    Reads the same pipeline Property Financials uses, so the Loan subtab's Debt
-    Yield cannot drift from the chart. A quarter missing any of its three months
-    returns None and the subtab flags it rather than annualising a stub.
+    Bulk-optimised: pre-filters ISBS once for the report's quarter, then uses
+    the SAME ``compute_cumulative_noi`` / ``cumulative_to_periodic`` /
+    ``aggregate_periodic`` pipeline from ``isbs_helpers`` per vcode. Because
+    the functions and the account lists (``IS_ACCOUNTS`` from ``config.py``)
+    are shared — not copied — the result cannot drift from the chart.
+
+    A quarter missing any of its three months returns None (the
+    ``aggregate_periodic`` function excludes incomplete quarters by
+    ``month_counts < 3``), so the None rule is inherited, not reimplemented.
+
+    Giant 7 and other parent vcodes with no ISBS rows under their own vcode
+    return None naturally: ``_prepare_isbs`` finds nothing, ``actual_dates``
+    is empty, and the pipeline returns an empty dict.
     """
     import pandas as pd
-    from flask_app.services.financials_service import get_performance_chart_data
+    from config import IS_ACCOUNTS
+    from flask_app.services.financials_service import _prepare_isbs
+    from flask_app.services.isbs_helpers import (
+        compute_cumulative_noi, cumulative_to_periodic, aggregate_periodic,
+    )
+
+    rev_accounts = [a for lst in IS_ACCOUNTS['REVENUES'].values() for a in lst]
+    exp_accounts = [a for lst in IS_ACCOUNTS['EXPENSES'].values() for a in lst]
+    isbs_raw = data["isbs_raw"]
 
     cache: dict = {}
 
@@ -167,15 +185,32 @@ def _quarterly_noi_provider(data: dict) -> Callable:
             qn = int(str(quarter).split("Q")[1])
             q_end = (pd.Timestamp(year=year, month=qn * 3, day=1)
                      + pd.offsets.MonthEnd(0))
-            chart = get_performance_chart_data(
-                data["isbs_raw"], data["occupancy_raw"], vcode,
-                freq="Quarterly", periods=12, period_end=str(q_end.date()),
-            ) or {}
-            for lbl, actual in zip(chart.get("periods") or [],
-                                   chart.get("actual_noi") or []):
-                if lbl == f"Q{qn} {year}" and actual is not None:
-                    val = float(actual)
-                    break
+
+            isbs = _prepare_isbs(isbs_raw, vcode)
+            if isbs.empty:
+                cache[key] = None
+                return None
+
+            actual = isbs[isbs['vSource'] == 'Interim IS']
+            if actual.empty:
+                cache[key] = None
+                return None
+
+            dates = sorted(actual['dtEntry_parsed'].dropna().unique())
+            if not dates:
+                cache[key] = None
+                return None
+
+            cum = compute_cumulative_noi(actual, dates, rev_accounts,
+                                         exp_accounts)
+            periodic = cumulative_to_periodic(cum, dates)
+            quarterly = aggregate_periodic(periodic, "Quarterly")
+
+            # aggregate_periodic returns only complete quarters (3 months),
+            # so a missing key IS the None rule.
+            noi = quarterly.get(q_end)
+            if noi is not None:
+                val = float(noi)
         except Exception:
             val = None
         cache[key] = val
