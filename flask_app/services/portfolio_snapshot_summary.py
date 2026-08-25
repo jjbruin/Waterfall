@@ -355,7 +355,8 @@ def assemble_summary(investor_code: str, quarter: str, *,
             "funded_missing": 0, "committed_missing": 0,
             "unclassified_strategy": 0, "unclassified_asset": 0,
             "strategy_from_investment_strategy": 0,
-            "strategy_from_lifecycle_proxy": 0}
+            "strategy_from_lifecycle_proxy": 0,
+            "kept_despite_sold_excluded": 0}
     flags: list[str] = []
 
     grouped = [(g, e) for g, items in (resolved.get("groups") or {}).items()
@@ -407,10 +408,19 @@ def assemble_summary(investor_code: str, quarter: str, *,
             diag["unclassified_asset"] += 1
             row_flags.append("Asset_Type blank")
 
+        # Reported on this page, but NOT counted in the allocation — see the
+        # note above `alloc_rows` below.
+        kept_despite_sold = bool(entry.get("kept_despite_sold"))
+        if kept_despite_sold:
+            diag["kept_despite_sold_excluded"] += 1
+            row_flags.append("sold/foreclosed before quarter end — reported but "
+                             "excluded from the page-1 allocation rollups")
+
         diag["deals"] += 1
         rows.append({
             "vcode": vcode, "name": entry.get("name", vcode),
             "group": group, "ownership_flagged": is_flagged,
+            "kept_despite_sold": kept_despite_sold,
             "lookthrough_pct": pct,
             "asset_type_raw": _s(entry.get("asset_type")),
             "asset_type": asset_bucket,
@@ -430,17 +440,53 @@ def assemble_summary(investor_code: str, quarter: str, *,
         flags.append(
             f"{diag['pct_unavailable']} deal(s) have no resolvable ownership % "
             f"and are excluded from the look-through allocation")
-    if diag["unclassified_strategy"]:
-        flags.append(f"{diag['unclassified_strategy']} deal(s) fell into "
-                     f"'{UNCLASSIFIED}' on deal type")
+    # NOTE the unclassified flag is raised further down, from the allocation
+    # population rather than from every row: City West maps to no deal type, but
+    # it is excluded from the rollups, so there is no Unclassified bucket for a
+    # flag to point at. A flag naming a bucket the payload does not contain sends
+    # the reader looking for something that is not there.
 
-    contribs = _contributions(rows, basis, assumed_pct_for_flagged)
+    # ---- what the ALLOCATION counts, as against what the page reports ----
+    #
+    # A KEEP_DESPITE_SOLD deal is on the report but out of the allocation. The
+    # reference document is internally inconsistent here and we reproduce both
+    # halves deliberately:
+    #
+    #   page 2 (Financial) LISTS City West as an Individual Investments row,
+    #     Debt n/a and Net ROE n/a under its footnote (2) — the capital is still
+    #     reported even though the asset was lost to foreclosure;
+    #   page 1 (Summary) EXCLUDES it from the allocation totals — funded
+    #     $404.2M and Multifamily $240,410,995 are both net of it.
+    #
+    # Including it moved Multifamily to $245,396,390, over the published figure
+    # by exactly City West's look-through contribution (5,925,000 x 84.1415% =
+    # $4,985,384), and it also produced a 1.2% "Unclassified" deal-type slice,
+    # since a foreclosed deal carries no Lifecycle to map.
+    #
+    # `rows` — and therefore the `deals` audit list — still holds every deal, so
+    # nothing vanishes; only the rollup inputs are narrowed, and the excluded
+    # deals are named in `excluded_from_allocation` below.
+    alloc_rows = [r for r in rows if not r["kept_despite_sold"]]
+    if diag["kept_despite_sold_excluded"]:
+        flags.append(
+            f"{diag['kept_despite_sold_excluded']} deal(s) sold before quarter "
+            f"end are reported but excluded from the allocation, matching the "
+            f"reference page 1")
+
+    n_unclassified = sum(1 for r in alloc_rows if r["deal_type"] == UNCLASSIFIED)
+    diag["unclassified_in_allocation"] = n_unclassified
+    if n_unclassified:
+        flags.append(f"{n_unclassified} deal(s) fell into '{UNCLASSIFIED}' on "
+                     f"deal type")
+
+    contribs = _contributions(alloc_rows, basis, assumed_pct_for_flagged)
     asset_alloc = _rollup(contribs, "asset_type")
     deal_alloc = _rollup(contribs, "deal_type", order=DEAL_TYPES)
 
-    # The other basis, always computed so the choice stays auditable.
+    # The other basis, always computed so the choice stays auditable. Same
+    # population as the primary — an alternate basis, not an alternate universe.
     other = "full" if basis == "lookthrough" else "lookthrough"
-    alt = _contributions(rows, other, assumed_pct_for_flagged)
+    alt = _contributions(alloc_rows, other, assumed_pct_for_flagged)
     # Literal strategy reading, likewise for audit only.
     lit = [{**c, "deal_type": c["deal_type_literal"]} for c in contribs]
 
@@ -493,6 +539,15 @@ def assemble_summary(investor_code: str, quarter: str, *,
         # audit
         "deals": rows,
         "ownership_flagged": flagged_out,
+        # Named, not merely netted out: a figure that quietly excludes a deal is
+        # indistinguishable from one that never had it.
+        "excluded_from_allocation": [
+            {"vcode": r["vcode"], "name": r["name"],
+             "reason": "sold/foreclosed before quarter end (KEEP_DESPITE_SOLD) "
+                       "— reported on the Financial page, out of the allocation",
+             "funded_deal_level": r["funded_deal_level"],
+             "asset_type": r["asset_type"], "deal_type": r["deal_type"]}
+            for r in rows if r["kept_despite_sold"]],
         "alternate_basis": {
             "basis": other,
             "asset_allocation": _rollup(alt, "asset_type"),
@@ -718,8 +773,13 @@ def _selftest():                                    # pragma: no cover
 
     chk("deal type buckets are exactly the PDF's three",
         {b["label"] for b in da["buckets"]} == set(_PDF["deal_type"]))
-    chk("no deal fell into 'Unclassified'",
-        incl["diagnostics"]["unclassified_strategy"] == 0)
+    # Reads the ALLOCATION population, not every row. City West maps to no deal
+    # type — it is foreclosed and carries no Lifecycle — but it is excluded from
+    # the rollups, so no Unclassified bucket exists for it to land in. Asserting
+    # on `unclassified_strategy` (all rows) would report a bucket the payload
+    # does not contain.
+    chk("no deal in the allocation fell into 'Unclassified'",
+        incl["diagnostics"]["unclassified_in_allocation"] == 0)
 
     lit = incl["alternate_deal_type_literal"]
     lit_err = sum(abs(b["funded"] - _PDF["deal_type"][b["label"]][1])
@@ -803,11 +863,26 @@ def _selftest():                                    # pragma: no cover
     fin_invested = sum(
         r["invested"] for g in fin["groups"].values() for r in g["deals"]
         if r.get("invested") is not None)
+    # The two subtabs now DIVERGE by design, because the reference document
+    # does: page 2 lists City West as an Individual Investments row, page 1
+    # leaves it out of the allocation totals. So Financial's Invested includes
+    # it and Summary's funded does not, and the reconciliation is stated with
+    # that bridge rather than dropped — a plain equality check would have to be
+    # deleted, and then nothing would notice a real drift.
+    excl_invested = 0.0
+    for g in fin["groups"].values():
+        for r in g["deals"]:
+            if r.get("kept_despite_sold") and r.get("invested") is not None:
+                excl_invested += r["invested"]
     print(f"\n  Summary funded (look-through, flagged excluded) "
           f"{lt:>16,.0f}")
     print(f"  Financial sum of Invested                      {fin_invested:>16,.0f}")
-    chk("Summary funded == Financial's Invested (no drift between subtabs)",
-        abs(lt - fin_invested) < 1e-6)
+    print(f"  less KEEP_DESPITE_SOLD, out of the allocation  {excl_invested:>16,.0f}")
+    print(f"  Financial Invested net of exclusions           "
+          f"{fin_invested - excl_invested:>16,.0f}")
+    chk("Summary funded == Financial's Invested net of the allocation "
+        "exclusions (no unexplained drift between subtabs)",
+        abs(lt - (fin_invested - excl_invested)) < 1e-6)
 
     print("\n" + "=" * 112)
     passed = sum(1 for _, ok in checks if ok)

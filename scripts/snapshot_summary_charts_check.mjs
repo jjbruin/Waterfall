@@ -20,10 +20,10 @@
  *   WF_TOKEN=<jwt> node scripts/snapshot_summary_charts_check.mjs
  */
 
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
@@ -56,14 +56,17 @@ const PDF = {
 }
 //: Allocation buckets that do NOT tie to the PDF, with the reason. Reported,
 //: not scored — neither is a charting fault.
+//:
+//: Multifamily USED to be here: City West joined the report via
+//: KEEP_DESPITE_SOLD (d8cd2f9) and pushed it to $245,396,390, over the
+//: published figure by exactly City West's look-through share. The allocation
+//: rollups now exclude KEEP_DESPITE_SOLD deals, so it ties again and its entry
+//: is gone. The check below fails if a remaining entry starts matching, so this
+//: list cannot silently go stale.
 const KNOWN_ALLOC_DIFFS = {
-  Multifamily:
-    'City West joined the report via KEEP_DESPITE_SOLD (commit d8cd2f9) and '
-    + 'rolls up as Multifamily: 5,925,000 x 84.1415% = $4,985,384, which is '
-    + 'exactly the +4.99M against the PDF.',
   'Self-Storage':
     'live 32.03M vs PDF 34.17M — pre-existing data difference, present before '
-    + 'any chart work and unrelated to it.',
+    + 'any chart or allocation work and unrelated to both.',
 }
 const TOL_USD = 350_000      // $0.35M, same tolerance the Financial check uses
 const TOL_PCT = 1.5          // percentage points
@@ -171,6 +174,16 @@ function main(mod, echarts, summary) {
   ck('every segment reachable on hover', typeof o1.tooltip.formatter === 'function')
   ck('axis labels carry each bar total',
      o1.xAxis.data[0].includes('$') && o1.xAxis.data[1].includes('$'))
+  // A deal held back from the allocation must be named, not just netted out.
+  const excl = summary.excluded_from_allocation || []
+  console.log(`
+  excluded from the allocation: `
+    + (excl.length ? excl.map((e) => `${e.name} (${e.vcode})`).join(', ')
+                   : 'none'))
+  ck('any allocation exclusion is named in the payload',
+     excl.every((e) => e.vcode && e.name && e.reason))
+  ck('no excluded deal leaks into a bucket',
+     !summary.asset_allocation.buckets.some((b) => b.deal_count === 0))
 
   // ---------- Chart 2 ----------
   const o2 = dealTypeOption(dealType)
@@ -281,14 +294,34 @@ function main(mod, echarts, summary) {
   }
 }
 
+// PAYLOAD SOURCE. `--payload <file>` reads a summary payload assembled by the
+// LOCAL Python backend; without it this falls back to the live endpoint.
+//
+// The distinction is not cosmetic. The live endpoint runs the DEPLOYED build, so
+// a local change to the allocation rollups is invisible through it — this check
+// reported pre-fix allocation numbers for exactly that reason while the fix sat
+// in the working tree. Produce the local payload with:
+//
+//   python scripts/snapshot_payload_dump.py summary TGAM 2026-Q1 > p.json
+//   node scripts/snapshot_summary_charts_check.mjs --payload p.json
+const pi = process.argv.indexOf('--payload')
+const payloadFile = pi > -1 ? process.argv[pi + 1] : null
+
 const [mod, echarts, summary] = await Promise.all([
   loadChartOptions(),
-  import('file://' + join(VUE, 'node_modules', 'echarts', 'index.js').replace(/\\/g, '/')),
-  get('/api/portfolio-snapshot/summary', { investor: 'TGAM', quarter: '2026-Q1' }),
+  import(pathToFileURL(join(VUE, 'node_modules', 'echarts', 'index.js')).href),
+  payloadFile
+    ? Promise.resolve(JSON.parse(readFileSync(payloadFile, 'utf8')))
+    : get('/api/portfolio-snapshot/summary',
+          { investor: 'TGAM', quarter: '2026-Q1' }),
 ])
 
 const ti = await get('/api/data/version', {})
-console.log(`LIVE build=${ti.version}  investor=TGAM quarter=2026-Q1\n`)
+console.log(`LIVE build=${ti.version}  investor=TGAM quarter=2026-Q1`)
+console.log(`payload source: ${payloadFile
+  ? `LOCAL assemble_summary (${payloadFile})`
+  : 'LIVE /summary — the DEPLOYED backend, so local backend changes will NOT '
+    + 'appear; pass --payload to test local code'}\n`)
 main(mod, echarts, summary)
 
 const failed = checks.filter((c) => !c.ok)
