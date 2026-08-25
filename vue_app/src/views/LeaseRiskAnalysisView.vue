@@ -1256,13 +1256,22 @@ onMounted(() => {
           <h3>Exclusive Use Restrictions</h3>
           <div class="table-wrapper">
             <table class="data-table">
-              <thead><tr><th>Tenant</th><th>Suite</th><th>Restricted Use</th><th>Restriction Text</th></tr></thead>
+              <thead><tr><th>Tenant</th><th>Suite</th><th>Type</th><th>Restricted Use</th><th>Carve-Outs</th><th>Restriction Text</th><th>Source</th></tr></thead>
               <tbody>
                 <tr v-for="(e, i) in exclusiveUse" :key="i">
                   <td>{{ e.tenant_name }}</td>
                   <td>{{ e.suite }}</td>
+                  <td>
+                    <span v-if="e.clause_role === 'holder'" class="role-badge role-holder"
+                          title="This tenant holds the exclusive">Holds</span>
+                    <span v-else-if="e.clause_role === 'subject'" class="role-badge role-subject"
+                          title="This tenant is bound by a restriction">Bound by</span>
+                    <span v-else class="role-badge role-unknown" title="Not classified">—</span>
+                  </td>
                   <td>{{ e.restricted_use || '-' }}</td>
+                  <td class="wrap-cell">{{ e.carve_outs || '-' }}</td>
                   <td class="wrap-cell">{{ e.restriction_text || '-' }}</td>
+                  <td class="src-cell">{{ e.source_doc || '-' }}</td>
                 </tr>
               </tbody>
             </table>
@@ -1660,6 +1669,11 @@ onMounted(() => {
 .data-table tbody tr:hover { background: #f0f4f8; }
 .data-table.compact td, .data-table.compact th { padding: 4px 8px; }
 .num-cell { text-align: right; font-variant-numeric: tabular-nums; }
+.role-badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 0.72rem; font-weight: 600; white-space: nowrap; }
+.role-holder  { background: #e8eff6; color: #1f4e79; }
+.role-subject { background: #f8f0de; color: #9a6a18; }
+.role-unknown { background: #eee; color: #888; }
+.src-cell { font-size: 0.75rem; color: #666; }
 .wrap-cell { max-width: 300px; word-wrap: break-word; white-space: normal; }
 tr.vacant { opacity: 0.5; }
 tr.resolved { background: #f0faf0; }

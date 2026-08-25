@@ -428,6 +428,14 @@ def ensure_lease_tables(engine):
     _migrate_add_column(engine, 'lease_options', 'option_start', 'TEXT')
     _migrate_add_column(engine, 'lease_options', 'option_end', 'TEXT')
 
+    # Exclusive use: review_id so rows survive a tenant rebuild, clause_role to
+    # separate a tenant's own exclusive from a restriction it is subject to,
+    # and carve_outs for the existing-tenant exceptions that decide whether a
+    # violation is actionable.
+    _migrate_add_column(engine, 'lease_exclusive_use', 'review_id', 'INTEGER')
+    _migrate_add_column(engine, 'lease_exclusive_use', 'clause_role', 'TEXT')
+    _migrate_add_column(engine, 'lease_exclusive_use', 'carve_outs', 'TEXT')
+
     # Phase 1B: file_hash + uploaded_by on lease_documents; file_data for PDF storage
     _migrate_add_column(engine, 'lease_documents', 'file_hash', 'TEXT')
     _migrate_add_column(engine, 'lease_documents', 'uploaded_by', 'TEXT')
@@ -1110,6 +1118,20 @@ def import_rent_roll_to_review(engine, review_id: int, rr_df: pd.DataFrame) -> i
         if not rev:
             raise ValueError(f"Review {review_id} not found")
 
+        # Exclusive use restrictions are keyed to tenant rows that are about
+        # to be deleted, but they can be analyst-entered or seeded from the
+        # exclusives spreadsheet -- neither of which a re-import reproduces.
+        # Carry them across by tenant identity instead of dropping them.
+        carried = conn.execute(text("""
+            SELECT UPPER(TRIM(COALESCE(t.suite, ''))),
+                   UPPER(TRIM(COALESCE(t.tenant_name, ''))),
+                   e.restriction_text, e.restricted_use, e.radius_feet,
+                   e.clause_role, e.carve_outs, e.source_doc
+            FROM lease_exclusive_use e
+            JOIN lease_tenants t ON t.id = e.tenant_id
+            WHERE t.review_id = :rid
+        """), {'rid': review_id}).fetchall()
+
         # Clear existing tenants and related data
         conn.execute(text(
             "DELETE FROM lease_validation WHERE tenant_id IN "
@@ -1178,6 +1200,34 @@ def import_rent_roll_to_review(engine, review_id: int, rr_df: pd.DataFrame) -> i
             })
             count += 1
 
+        # Re-link carried exclusives to the rebuilt tenant rows.  Anything
+        # whose tenant is no longer on the rent roll is genuinely gone.
+        restored = 0
+        for row in carried:
+            match = conn.execute(text("""
+                SELECT id FROM lease_tenants
+                WHERE review_id = :rid
+                  AND UPPER(TRIM(COALESCE(suite, ''))) = :su
+                  AND UPPER(TRIM(COALESCE(tenant_name, ''))) = :tn
+                LIMIT 1
+            """), {'rid': review_id, 'su': row[0], 'tn': row[1]}).fetchone()
+            if not match:
+                continue
+            conn.execute(text("""
+                INSERT INTO lease_exclusive_use
+                    (tenant_id, review_id, restriction_text, restricted_use,
+                     radius_feet, clause_role, carve_outs, source_doc)
+                VALUES (:tid, :rid, :rt, :ru, :rf, :cr, :co, :sd)
+            """), {
+                'tid': match[0], 'rid': review_id, 'rt': row[2], 'ru': row[3],
+                'rf': row[4], 'cr': row[5], 'co': row[6], 'sd': row[7],
+            })
+            conn.execute(text(
+                "UPDATE lease_tenants SET has_exclusive_use = TRUE WHERE id = :tid"),
+                {'tid': match[0]})
+            restored += 1
+        dropped = len(carried) - restored
+
         # Update review totals
         total_gla = float(rr_df['square_feet'].sum()) if 'square_feet' in rr_df else 0
         total_rent = float(rr_df['annual_rent'].sum()) if 'annual_rent' in rr_df else 0
@@ -1191,6 +1241,11 @@ def import_rent_roll_to_review(engine, review_id: int, rr_df: pd.DataFrame) -> i
         conn.commit()
 
     logger.info(f"Imported {count} tenants into review {review_id}")
+    if carried:
+        logger.info(
+            f"Exclusive use: carried {restored} of {len(carried)} restrictions "
+            f"across the re-import; {dropped} had no matching tenant"
+        )
     return count
 
 
@@ -1838,6 +1893,15 @@ def extract_pdf_text(source) -> Tuple[str, int]:
 # Claude API extraction
 # ---------------------------------------------------------------------------
 
+# Phrases a model (or a seeded spreadsheet) uses to say "there is no
+# exclusive".  These are the absence of a restriction, not a restriction, and
+# must not be stored as one.
+_EXCLUSIVE_NEGATIVES = {
+    'no lease provision', 'none', 'n/a', 'na', 'no', 'no exclusive',
+    'no exclusive use', 'no exclusive use provision', 'not applicable',
+    'no restriction', 'no restrictions', 'silent', 'not addressed',
+}
+
 EXTRACTION_PROMPT = """You are a commercial real estate lease analyst. Extract the following structured information from this lease document.
 
 TENANT: {tenant_name}
@@ -1877,10 +1941,16 @@ Return a JSON object with these fields (use null for fields not found):
     "is_curable": true/false,
     "uncurable_scenario": "description if applicable"
   }},
-  "exclusive_use": {{
-    "has_clause": true/false,
-    "restriction": "..."
-  }},
+  "exclusive_use": [
+    {{
+      "clause_role": "holder / subject",
+      "restricted_use": "the use that is protected or prohibited, e.g. sale of pet supplies",
+      "restriction_text": "verbatim text of the operative sentence",
+      "carve_outs": "existing tenants or uses excepted from the restriction, or null",
+      "radius_feet": number or null,
+      "source_section": "e.g. Section 1.3 / Exhibit D / Addendum 2"
+    }}
+  ],
   "renewal_options": [
     {{
       "option_number": 1,
@@ -1950,6 +2020,18 @@ IMPORTANT:
 - If this is an amendment, note which fields were modified
 - For renewal_options: option_start/option_end are the beginning and ending dates of each renewal period. If not explicitly stated, derive from the prior term's expiration + term_years. Mark exercised=true if an amendment or exercise notice confirms the option was exercised.
 - For termination_options: extract early termination rights, kick-out clauses, and similar provisions. earliest_termination_date is when the tenant can first terminate. Mark exercised=true if a termination notice was exercised.
+- For exclusive_use: this is easy to miss, so search the whole document, not
+  just a heading called "Exclusive". These provisions appear under Permitted
+  Use, Exclusive Use, Use Restrictions, Prohibited Uses, Restrictive
+  Covenants, Radius Restriction, Continuous Operation, or in an exhibit,
+  addendum, rider or site-plan attachment. Return one object per distinct
+  restriction -- a lease often has several, and an empty list means you found
+  none. Set clause_role to "holder" when THIS tenant holds the exclusive (the
+  landlord may not lease to a competing use) and "subject" when this tenant is
+  bound by someone else's exclusive or by a prohibited-use list. Capture
+  carve_outs whenever named existing tenants or uses are excepted, since they
+  determine whether a violation is actionable. Quote restriction_text
+  verbatim rather than paraphrasing.
 - For sales_provisions: Look for any requirement to report gross sales, certified sales statements, or sales audits. Extract percentage rent (overage rent) breakpoints and rates. For sales_performance_clauses, capture any provision where tenant sales performance triggers a consequence — including tenant kick-out rights (right to terminate if sales fall below a threshold), landlord recapture rights, reduced/alternative rent tied to sales levels, and radius restrictions limiting competing stores. Each clause should specify who benefits (tenant or landlord) and the exact consequence.
 
 DOCUMENT TEXT:
@@ -2513,6 +2595,54 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None,
                                     'rtn': ref_name,
                                 })
 
+                        # Store exclusive use restrictions.  A lease can carry
+                        # several, so each is a row; dedup on the restriction
+                        # itself so re-running extraction does not duplicate.
+                        for exc in (terms.get('exclusive_use') or []):
+                            if not isinstance(exc, dict):
+                                continue
+                            r_use = (exc.get('restricted_use') or '').strip()
+                            r_text = (exc.get('restriction_text') or '').strip()
+                            # Skip explicit negatives -- "no exclusive" is the
+                            # absence of a row, not a restriction.
+                            if not r_use and not r_text:
+                                continue
+                            if r_text.lower() in _EXCLUSIVE_NEGATIVES or                                r_use.lower() in _EXCLUSIVE_NEGATIVES:
+                                continue
+                            if conn.execute(sql_text("""
+                                SELECT id FROM lease_exclusive_use
+                                WHERE tenant_id = :tid AND source_doc = :sd
+                                  AND COALESCE(restricted_use, '') = :ru
+                                LIMIT 1
+                            """), {'tid': tenant_id, 'sd': doc[2],
+                                   'ru': r_use}).fetchone():
+                                continue
+                            radius = exc.get('radius_feet')
+                            try:
+                                radius = float(radius) if radius is not None else None
+                            except (TypeError, ValueError):
+                                radius = None
+                            role = (exc.get('clause_role') or '').strip().lower()
+                            if role not in ('holder', 'subject'):
+                                role = None
+                            conn.execute(sql_text("""
+                                INSERT INTO lease_exclusive_use
+                                    (tenant_id, review_id, restriction_text,
+                                     restricted_use, radius_feet, clause_role,
+                                     carve_outs, source_doc)
+                                VALUES (:tid, :rid, :rt, :ru, :rf, :cr, :co, :sd)
+                            """), {
+                                'tid': tenant_id, 'rid': review_id,
+                                'rt': r_text or None, 'ru': r_use or None,
+                                'rf': radius, 'cr': role,
+                                'co': (exc.get('carve_outs') or None),
+                                'sd': doc[2],
+                            })
+                            conn.execute(sql_text("""
+                                UPDATE lease_tenants SET has_exclusive_use = TRUE
+                                WHERE id = :tid
+                            """), {'tid': tenant_id})
+
                         # Store renewal options (with dedup by source_doc + option_number)
                         for opt in (terms.get('renewal_options') or []):
                             opt_dup = conn.execute(sql_text("""
@@ -2632,8 +2762,9 @@ def _merge_extraction_terms(base: Dict, amendment: Dict) -> Dict:
     - rent_steps: union by effective_date (amendment overwrites same date)
     - renewal_options / termination_options: merge by option_number;
       amendment can update exercised status or add new options
-    - cotenancy / exclusive_use / sales_provisions / assignment /
-      percentage_rent: amendment replaces entirely if present
+    - cotenancy / sales_provisions / assignment / percentage_rent:
+      amendment replaces entirely if present
+    - exclusive_use: list of restrictions; amendment replaces the set
     - key_dates: amendment replaces if present
     """
     merged = copy.deepcopy(base)
@@ -2693,9 +2824,14 @@ def _merge_extraction_terms(base: Dict, amendment: Dict) -> Dict:
 
     # Object fields — amendment replaces entirely if present and non-empty
     object_keys = [
-        'cotenancy', 'exclusive_use', 'sales_provisions',
+        'cotenancy', 'sales_provisions',
         'percentage_rent', 'assignment', 'key_dates',
     ]
+
+    # exclusive_use is a list of restrictions; an amendment that mentions any
+    # replaces the set, since it restates the restriction as amended.
+    if amendment.get('exclusive_use'):
+        merged['exclusive_use'] = amendment['exclusive_use']
     for key in object_keys:
         val = amendment.get(key)
         if val and isinstance(val, dict) and any(v is not None for v in val.values()):
@@ -4394,7 +4530,8 @@ def get_risk_analysis_data(engine, review_id: int) -> Dict[str, Any]:
     # Get exclusive use data
     with engine.connect() as conn:
         exc_rows = conn.execute(text("""
-            SELECT t.tenant_name, t.suite, e.restriction_text, e.restricted_use
+            SELECT t.tenant_name, t.suite, e.restriction_text, e.restricted_use,
+                   e.clause_role, e.carve_outs, e.radius_feet, e.source_doc
             FROM lease_exclusive_use e
             JOIN lease_tenants t ON t.id = e.tenant_id
             WHERE t.review_id = :rid
@@ -4404,6 +4541,8 @@ def get_risk_analysis_data(engine, review_id: int) -> Dict[str, Any]:
     exclusive_use = [{
         'tenant_name': r[0], 'suite': r[1],
         'restriction_text': r[2], 'restricted_use': r[3],
+        'clause_role': r[4], 'carve_outs': r[5],
+        'radius_feet': r[6], 'source_doc': r[7],
     } for r in exc_rows]
 
     # Get options
