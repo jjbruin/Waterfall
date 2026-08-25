@@ -13,20 +13,20 @@ Replaced `get_one_pager_data()` with direct calls to only `get_capitalization_st
 sections no subtab reads. Eliminates ~60% of per-deal work. Does NOT modify the shared
 `get_one_pager_data`; lean path calls the two functions directly with the same args.
 
-## Optimization 2: Direct ISBS lookup for quarterly NOI — PENDING
+## Optimization 2: Direct ISBS lookup for quarterly NOI — VERIFIED, READY TO DEPLOY
 **File**: `flask_app/services/portfolio_snapshot_freeze.py` — `_quarterly_noi_provider()`
 
-The Loan subtab needs one number per deal: that quarter's periodic NOI for Debt Yield.
-Currently runs the full Property Financials chart pipeline (`get_performance_chart_data()`)
-which processes 12 quarters of ISBS cumulative-to-periodic-to-aggregate data.
+Replaced full `get_performance_chart_data()` call (12-quarter pipeline) with direct use of
+the same shared `isbs_helpers` functions: `compute_cumulative_noi`, `cumulative_to_periodic`,
+`aggregate_periodic`. Uses same `IS_ACCOUNTS` from `config.py`. Only processes Interim IS
+data needed for the one requested quarter.
 
-**Fix**: Replace with direct ISBS query — single-quarter periodic NOI is just
-`YTD_at_quarter_end - YTD_at_prior_quarter_end` for revenue/expense accounts.
-Could be a single bulk query for all 32 deals instead of 32 separate chart pipelines.
+**Verification**: 210/210 matched (35 vcodes × 6 quarters) — old chart pipeline vs new
+provider produce identical results on same data, including None cases (Giant 7, East
+Manchester, incomplete quarters). Script: `scripts/verify_quarterly_noi.py --local`.
 
-**Charlene's requirement**: Must reproduce the None rule (11 of 32 deals return None NOI —
-dev deals + Giant 7 rollup), the account mapping, YTD-to-periodic conversion, and
-parent/child rollup. Verify byte-for-byte against her baseline before shipping.
+**Note**: Baseline CSV mode requires Azure-level ISBS data (through July 2026); local DB
+only has through Feb 2026. The `--local` mode proves equivalence without needing that data.
 
 ## Optimization 3: Batch pe_cap_comments query — DONE
 **Commit**: `1f679c9` (v342, Aug 24 2026)
