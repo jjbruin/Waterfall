@@ -62,7 +62,82 @@ FORCE_FUND: set[str] = set()
 #: default rule is PREFER_INDIVIDUAL_ON_MIXED (below). This map overrides the
 #: outcome for named deals (keyed on **vcode**, which is unique — InvestmentID
 #: is not). Kept separate from the rule so an exception never becomes the rule.
-GROUP_OVERRIDES: dict[str, str] = {}
+#
+# ══════════════════════════════════════════════════════════════════════════
+# TEMPORARY ENTRIES — SELF-RESOLVE AT 26Q2, REMOVE THEN
+# ══════════════════════════════════════════════════════════════════════════
+# Giant 7 and East Manchester belong in Individual Investments: they are the
+# top two rows of that block on the reference PDF (page 2), above its internal
+# dotted divider, and they roll into "Total Individual Investments".
+#
+# They land in a spurious "TGAM2" group instead, and the FUND_MIN_DEALS note
+# above predicts exactly this: TGAM2 is promoted to a fund once it reaches two
+# deals STILL HELD at the quarter. That guard assumed TGAM2's second deal was
+# "long-since disposed" — it is East Manchester, whose Sale_Date is 6/25/2026,
+# three months AFTER the 26Q1 quarter end. It is correctly retained (flagged
+# "sold after quarter end — held during quarter"), so TGAM2 reaches 2 and both
+# deals are pulled out of Individual Investments. The guard is one deal short.
+#
+# Verified live: TGAM2 groups in every quarter both are held — 2024-Q4 through
+# 2026-Q1 — and at 26Q2 it is gone and Giant 7 returns to Individual
+# Investments on its own. So these two entries are needed for 26Q1 and earlier
+# ONLY, and become dead weight from 26Q2. DELETE THEM THEN.
+#
+# The durable fix, deliberately not taken here because it edits a rule shared
+# by every investor: count only deals still held *going forward* in
+# _classify_entities, i.e. exclude sold-after-quarter-end deals from the fund
+# tally while still reporting them. That needs a guardrail run across all
+# investors, which this change does not have.
+GROUP_OVERRIDES: dict[str, str] = {
+    "P0000019": INDIVIDUAL_GROUP,      # Giant 7
+    "P0000017": INDIVIDUAL_GROUP,      # East Manchester
+}
+# ══════════════════════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════════════════════
+# DELIBERATE KEEP-DESPITE-SOLD — reference-PDF fidelity
+# ══════════════════════════════════════════════════════════════════════════
+#: Deals that stay on the report even though the sold gate would drop them.
+#:
+#: City West (PCITWES) was lost to foreclosure on 8/30/2025, so Sale_Status is
+#: SOLD with a Sale_Date before the 26Q1 quarter end and `is_sold_as_of` removes
+#: it. The reference PDF KEEPS it as an Individual Investments row — Debt n/a,
+#: Net ROE n/a, footnote (2) "City west is excluded from ROE calculations" —
+#: because the capital is still reported even though the asset is gone. Its
+#: live cap stack ties to the PDF exactly (pref 5.925M -> 5.9, partner equity
+#: 14.2465M -> 14.2, total cap 20.1715M -> 20.2).
+#:
+#: A kept deal is deliberately excluded from the fund tally in
+#: `_classify_entities` — see the note in step 3 below. Including it could
+#: promote its SPV to a fund and re-open exactly the TGAM2 problem above.
+#:
+#: This is a per-deal exception, not a rule: "foreclosed but still reported" is
+#: an editorial judgement with no field behind it. Should MRI ever carry a
+#: disposition-type or still-reporting flag, drive it off that and delete this.
+KEEP_DESPITE_SOLD: set[str] = {"PCITWES"}       # City West
+# ══════════════════════════════════════════════════════════════════════════
+
+#: Group key -> the label the reference PDF prints on that group's total row.
+#: The keys are entity codes from the traversal (TGA22 …) and the PDF spells
+#: them out ("Total PSC TGA 2022 LLC"), so the mapping lives here rather than in
+#: any one subtab — Financial, Operating and Loan all label the same groups and
+#: must not drift apart. An unmapped group falls back to "Total <key>", which is
+#: what a genuinely new fund (TGA6 at 26Q2) reads as until it is added.
+GROUP_TOTAL_LABELS: dict[str, str] = {
+    INDIVIDUAL_GROUP: "Total Individual Investments",
+    "TGA22": "Total PSC TGA 2022 LLC",
+    "TGA23": "Total PSC TGA 2023 LLC",
+    "TGA24": "Total PSC TGA 2024 LLC",
+    "TGA25": "Total PSC TGA 2025 LLC",
+}
+
+#: The PDF's label for the all-deals row. Plural, unlike the group totals.
+PORTFOLIO_TOTAL_LABEL = "Portfolio Totals"
+
+
+def group_total_label(group: str) -> str:
+    """The PDF's total-row label for a group key."""
+    return GROUP_TOTAL_LABELS.get(group, f"Total {group}")
 
 #: Mixed-route default. A route that reaches the deal through a single-deal SPV
 #: means the investor holds a direct position in that specific asset, which the
@@ -488,6 +563,7 @@ def resolve_investor_deals(investor_code: str, quarter: str,
     #    or absent entirely (Burton) — if MRI ever populates a real % on a child
     #    edge, the 9 Brainerd buildings would otherwise become report lines.
     excluded_children, excluded_sold, flagged = [], [], []
+    kept_despite_sold: list = []
     excluded_not_acquired: list[dict] = []
     acquisition_date_missing: list[dict] = []
     dropped_children: set[str] = set()
@@ -524,6 +600,17 @@ def resolve_investor_deals(investor_code: str, quarter: str,
             routes_by_deal.pop(vc)
             continue
         if is_sold_as_of(m, q_end):
+            if str(m["vcode"]).strip().upper() in KEEP_DESPITE_SOLD:
+                # Reported anyway — see KEEP_DESPITE_SOLD. Recorded in its own
+                # bucket so a kept deal is never mistaken for one the gate
+                # simply did not catch.
+                kept_despite_sold.append({
+                    "vcode": m["vcode"], "name": m["name"],
+                    "sale_date": (m["sale_date"].date()
+                                  if pd.notna(m["sale_date"]) else None),
+                    "reason": "sold/foreclosed before quarter end but kept on "
+                              "the report (KEEP_DESPITE_SOLD)"})
+                continue
             excluded_sold.append({
                 "vcode": m["vcode"], "name": m["name"],
                 "sale_date": (m["sale_date"].date()
@@ -531,8 +618,15 @@ def resolve_investor_deals(investor_code: str, quarter: str,
                 "reason": f"Sale_Status=SOLD and Sale_Date <= {q_end}"})
             routes_by_deal.pop(vc)
 
-    # 4. groups, derived from what is still held
-    is_fund = _classify_entities(routes_by_deal)
+    # 4. groups, derived from what is still held.
+    #
+    #    A KEEP_DESPITE_SOLD deal is reported but must NOT count toward an
+    #    entity's fund tally: it is sold, so counting it could promote its SPV
+    #    to a fund and re-open the very TGAM2 problem GROUP_OVERRIDES exists to
+    #    paper over. Same reasoning as the step-3 note above.
+    kept_vcodes = {k["vcode"] for k in kept_despite_sold}
+    is_fund = _classify_entities({vc: r for vc, r in routes_by_deal.items()
+                                 if vc not in kept_vcodes})
 
     groups: dict[str, list] = {}
     for vc, routes in routes_by_deal.items():
@@ -552,8 +646,13 @@ def resolve_investor_deals(investor_code: str, quarter: str,
             "sale_status": m["sale_status"],
             "sold_after_quarter": (m["sale_status"].upper() == "SOLD"
                                    and not is_sold_as_of(m, q_end)),
+            "kept_despite_sold": vc in kept_vcodes,
             "flags": [],
         }
+        if entry["kept_despite_sold"]:
+            entry["flags"].append(
+                "sold/foreclosed before quarter end — kept on the report to "
+                "match the reference PDF (KEEP_DESPITE_SOLD)")
         if mixed:
             entry["flags"].append(
                 f"multi-route: reachable {len(routes)} ways; grouped to "
@@ -620,6 +719,8 @@ def resolve_investor_deals(investor_code: str, quarter: str,
         "flagged": sorted(flagged, key=lambda f: f["name"].lower()),
         "excluded_sold": sorted(excluded_sold,
                                 key=lambda e: str(e["sale_date"] or "")),
+        "kept_despite_sold": sorted(kept_despite_sold,
+                                    key=lambda e: str(e["sale_date"] or "")),
         "excluded_not_acquired": sorted(
             excluded_not_acquired,
             key=lambda e: str(e["acquisition_date"] or "")),

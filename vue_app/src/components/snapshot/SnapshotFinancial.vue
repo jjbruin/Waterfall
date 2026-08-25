@@ -12,7 +12,7 @@
  * Presentational: props in, save events out.
  */
 import { computed, ref, watch } from 'vue'
-import { fmtM, fmtM$, fmtPct, disp } from './format'
+import { fmtM, fmtM$, fmtPct, disp, isLiteral } from './format'
 
 const props = defineProps<{ data: any; editable: boolean }>()
 const emit = defineEmits<{
@@ -23,8 +23,23 @@ const emit = defineEmits<{
 
 const groups = computed<Record<string, any>>(() => props.data?.groups || {})
 const total = computed(() => props.data?.total || null)
+/** The PDF's "Excluding Development Deals" row. Backend-computed; see
+ *  EXCLUDING_DEV_VCODES for why its population is not simply `is_dev`. */
+const exDev = computed(() => props.data?.total_excluding_dev || null)
 const footnotes = computed<any[]>(() => props.data?.footnotes || [])
 const flaggedRows = computed<any[]>(() => props.data?.ownership_flagged || [])
+
+/**
+ * PDF page-2 footnotes that belong to the page rather than to a column, so the
+ * anchored mechanism cannot carry them. Numbers are the PDF's own — (1) sits on
+ * ITD Distributions and (4)(5) on Net ROE via ANCHORS, which is why these start
+ * at (2) and skip to (6).
+ */
+const STANDING_FOOTNOTES = [
+  { number: 2, text: 'City west is excluded from ROE calculations' },
+  { number: 3, text: 'Distributions held less than one year and have depressed ROEs that will stabilize overtime.' },
+  { number: 6, text: 'Debt amount is current as of quarter end except for development deals, which reflects fully funded debt amount at construction completion.' },
+]
 
 /** Anchors an analyst can attach a footnote to. */
 const ANCHORS = [
@@ -94,83 +109,103 @@ function anchorLabel(a: string): string {
     <div class="scroll">
       <table class="grid">
         <thead>
+          <!--
+            Spanning band, per PDF page 2: "TIAA Investment" sits over the four
+            scaled columns, separating them from the deal-level cap stack on the
+            left. The zone-b tint stays — it carries the same meaning on screen
+            and is what the legend chip explains.
+          -->
+          <tr class="spanrow">
+            <th class="sticky-l"></th>
+            <th colspan="4"></th>
+            <th class="span-tiaa" colspan="4">TIAA Investment</th>
+            <th colspan="2"></th>
+          </tr>
           <tr>
-            <th class="sticky-l">Deal</th>
+            <th class="sticky-l">Property</th>
             <th class="r">Debt</th>
             <th class="r">Total Pref</th>
-            <th class="r">Ptr Equity</th>
+            <th class="r">Ptr. Equity</th>
             <th class="r">Total Cap</th>
             <th class="r zone-b">% of Pref</th>
             <th class="r zone-b">Invested{{ markerFor('invested') }}</th>
-            <th class="r zone-b">Total Commitment{{ markerFor('total_commitment') }}</th>
             <th class="r zone-b">Un-funded{{ markerFor('unfunded') }}</th>
-            <th class="r manual">Net ROE{{ markerFor('net_roe') }}</th>
+            <th class="r zone-b">Total Commitment{{ markerFor('total_commitment') }}</th>
             <th class="r manual">ITD Distributions{{ markerFor('itd_distributions') }}</th>
+            <th class="r manual">Net ROE{{ markerFor('net_roe') }}</th>
           </tr>
           <tr class="unitrow">
             <th class="sticky-l"></th>
             <th class="r">$M</th><th class="r">$M</th><th class="r">$M</th><th class="r">$M</th>
             <th class="r zone-b"></th><th class="r zone-b">$M</th>
             <th class="r zone-b">$M</th><th class="r zone-b">$M</th>
-            <th class="r manual"></th><th class="r manual">$</th>
+            <th class="r manual">$</th><th class="r manual"></th>
           </tr>
         </thead>
 
+        <!--
+          No group HEADER row: PDF page 2 lists a fund's deals and then names the
+          fund on its total row ("Total PSC TGA 2022 LLC"), with a blank spacer
+          between blocks. A header would repeat the label two rows above itself.
+        -->
         <template v-for="(blk, gname) in groups" :key="gname">
           <tbody>
-            <tr class="grouprow">
-              <td class="sticky-l" colspan="11">{{ gname }}</td>
-            </tr>
             <tr v-for="r in blk.deals" :key="r.vcode">
               <td class="sticky-l">
                 {{ r.name }}
                 <span v-if="r.is_dev" class="tag">Dev</span>
+                <span v-if="r.pdf_na_cells?.length || r.kept_despite_sold" class="star"
+                      :title="(r.flags || []).join(' · ')">*</span>
                 <span v-for="(f, i) in (r.flags || [])" :key="i" class="warn-dot" :title="f">!</span>
               </td>
-              <td class="r num">{{ fmtM(r.debt) }}</td>
+              <!-- debt_display, not debt: the PDF blanks it for City West -->
+              <td class="r num" :class="{ lit: isLiteral(r.debt_display) }">
+                {{ disp(r.debt_display, 'm') }}
+              </td>
               <td class="r num">{{ fmtM(r.total_pref) }}</td>
               <td class="r num">{{ fmtM(r.ptr_equity) }}</td>
               <td class="r num">{{ fmtM(r.total_cap) }}</td>
               <td class="r num zone-b">{{ fmtPct(r.pct_of_pref) }}</td>
               <td class="r num zone-b">{{ fmtM(r.invested) }}</td>
-              <td class="r num zone-b">{{ fmtM(r.total_commitment) }}</td>
               <td class="r num zone-b">{{ fmtM(r.unfunded) }}</td>
-              <td class="r manual">
-                <input
-                  v-model="draft[`${r.vcode}:net_roe`]"
-                  class="numinput"
-                  :class="{ pending: r.net_roe == null }"
-                  :readonly="!editable"
-                  :placeholder="String(r.net_roe_display ?? '')"
-                  :title="r.net_roe_source"
-                  @change="commitValue(r.vcode, 'net_roe')"
-                />
-              </td>
+              <td class="r num zone-b">{{ fmtM(r.total_commitment) }}</td>
               <td class="r manual">
                 <input
                   v-model="draft[`${r.vcode}:itd`]"
                   class="numinput"
                   :class="{ pending: r.itd == null }"
-                  :readonly="!editable"
+                  :readonly="!editable || r.pdf_na_cells?.includes('itd')"
                   :placeholder="String(r.itd_display ?? '')"
                   :title="r.itd_source"
                   @change="commitValue(r.vcode, 'itd')"
                 />
               </td>
+              <td class="r manual">
+                <input
+                  v-model="draft[`${r.vcode}:net_roe`]"
+                  class="numinput"
+                  :class="{ pending: r.net_roe == null }"
+                  :readonly="!editable || r.pdf_na_cells?.includes('net_roe')"
+                  :placeholder="String(r.net_roe_display ?? '')"
+                  :title="r.net_roe_source"
+                  @change="commitValue(r.vcode, 'net_roe')"
+                />
+              </td>
             </tr>
             <tr class="subtotal">
-              <td class="sticky-l">Subtotal — {{ gname }} ({{ blk.subtotal?.deal_count }})</td>
+              <td class="sticky-l">{{ blk.subtotal?.label || gname }}</td>
               <td class="r num">{{ fmtM$(blk.subtotal?.debt) }}</td>
               <td class="r num">{{ fmtM$(blk.subtotal?.total_pref) }}</td>
               <td class="r num">{{ fmtM$(blk.subtotal?.ptr_equity) }}</td>
               <td class="r num">{{ fmtM$(blk.subtotal?.total_cap) }}</td>
               <td class="r num zone-b">{{ fmtPct(blk.subtotal?.pct_of_pref) }}</td>
               <td class="r num zone-b">{{ fmtM$(blk.subtotal?.invested) }}</td>
-              <td class="r num zone-b">{{ fmtM$(blk.subtotal?.total_commitment) }}</td>
               <td class="r num zone-b">{{ fmtM$(blk.subtotal?.unfunded) }}</td>
-              <td class="r manual small">{{ blk.subtotal?.manual_entered?.net_roe ?? 0 }} entered</td>
+              <td class="r num zone-b">{{ fmtM$(blk.subtotal?.total_commitment) }}</td>
               <td class="r manual small">{{ blk.subtotal?.manual_entered?.itd ?? 0 }} entered</td>
+              <td class="r manual small">{{ blk.subtotal?.manual_entered?.net_roe ?? 0 }} entered</td>
             </tr>
+            <tr class="spacer"><td colspan="11"></td></tr>
           </tbody>
         </template>
 
@@ -186,8 +221,8 @@ function anchorLabel(a: string): string {
             <td class="r num">{{ fmtM(r.ptr_equity) }}</td>
             <td class="r num">{{ fmtM(r.total_cap) }}</td>
             <td class="r num zone-b" colspan="4">withheld — ownership chain unresolved</td>
-            <td class="r manual">{{ disp(r.net_roe_display) }}</td>
             <td class="r manual">{{ disp(r.itd_display) }}</td>
+            <td class="r manual">{{ disp(r.net_roe_display) }}</td>
           </tr>
         </tbody>
 
@@ -200,10 +235,28 @@ function anchorLabel(a: string): string {
             <td class="r num">{{ fmtM$(total.total_cap) }}</td>
             <td class="r num zone-b">{{ fmtPct(total.pct_of_pref) }}</td>
             <td class="r num zone-b">{{ fmtM$(total.invested) }}</td>
-            <td class="r num zone-b">{{ fmtM$(total.total_commitment) }}</td>
             <td class="r num zone-b">{{ fmtM$(total.unfunded) }}</td>
-            <td class="r manual small">{{ total.manual_entered?.net_roe ?? 0 }} entered</td>
+            <td class="r num zone-b">{{ fmtM$(total.total_commitment) }}</td>
             <td class="r manual small">{{ total.manual_entered?.itd ?? 0 }} entered</td>
+            <td class="r manual small">{{ total.manual_entered?.net_roe ?? 0 }} entered</td>
+          </tr>
+          <!--
+            "Excluding Development Deals", per PDF page 2: a right-aligned label
+            running up to the Un-funded column, then values in Total Commitment,
+            ITD Distributions and Net ROE only. Every other cell is blank on the
+            published page, and the backend sends null for them rather than a
+            figure nobody published.
+          -->
+          <tr v-if="exDev" class="exdev">
+            <td class="sticky-l"></td>
+            <td class="r label" colspan="7" :title="exDev.basis">
+              Excluding Development Deals =
+              <span class="exdev-n">({{ exDev.excluded_count }} removed,
+                {{ exDev.deal_count }} remaining)</span>
+            </td>
+            <td class="r num zone-b">{{ fmtM$(exDev.total_commitment) }}</td>
+            <td class="r manual small">{{ disp(exDev.itd_display, 'currency') }}</td>
+            <td class="r manual small">{{ disp(exDev.net_roe_display, 'pct') }}</td>
           </tr>
         </tfoot>
       </table>
@@ -222,6 +275,20 @@ function anchorLabel(a: string): string {
         </li>
       </ol>
       <p v-else class="hint">No footnotes. Numbering is assigned automatically and re-sequences on removal.</p>
+
+      <!--
+        Standing notes from PDF page 2 that are not tied to a column, so the
+        anchored mechanism above cannot express them. Rendered verbatim and
+        read-only; the anchored list carries (1) ITD and (4)(5) Net ROE.
+        Numbered to match the published page, NOT auto-sequenced — the PDF's
+        numbering is the reference and re-sequencing would break the tie to it.
+      -->
+      <ul class="fnlist standing">
+        <li v-for="f in STANDING_FOOTNOTES" :key="f.number">
+          <span class="fnnum">({{ f.number }})</span>
+          <span class="fntext">{{ f.text }}</span>
+        </li>
+      </ul>
 
       <div v-if="editable" class="fnadd">
         <select v-model="newFootnote.anchor">
@@ -285,6 +352,37 @@ table.grid th.r { text-align: right; }
 
 .zone-b { background: #f4f7fc; }
 .manual { background: #fffdf5; }
+
+/* "TIAA Investment" band — centred over its four columns with the PDF's rule
+   under the label only, not across the whole row. */
+.spanrow th { padding: 3px 8px 1px 8px; border-bottom: none; background: #fafafa; }
+.span-tiaa {
+  text-align: center;
+  font-size: 10px;
+  text-transform: none;
+  letter-spacing: 0.2px;
+  border-bottom: 1px solid var(--color-text-secondary) !important;
+  background: #f4f7fc !important;
+}
+.unitrow th { top: 46px; }
+
+/* Blank line between fund blocks, as on the published page. */
+tr.spacer td { height: 9px; padding: 0; border-bottom: none; background: transparent; }
+
+/* Excluding-development row: label right-aligned into the Un-funded column,
+   values in the three columns the PDF populates. */
+tr.exdev td { border-top: none; font-weight: 600; }
+tr.exdev .label {
+  text-align: right;
+  font-weight: 600;
+  white-space: nowrap;
+  background: transparent;
+}
+.exdev-n { font-weight: 400; font-size: 10px; color: var(--color-text-secondary); }
+.lit { color: var(--color-text-secondary); font-style: italic; }
+.star { color: #b26a00; font-weight: 800; cursor: help; margin-left: 3px; }
+.fnlist.standing { list-style: none; padding-left: 0; margin: 4px 0 0 0; }
+.fnlist.standing .fnnum { font-weight: 700; margin-right: 4px; }
 
 .grouprow td {
   background: #eceff1;

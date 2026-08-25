@@ -48,6 +48,20 @@ const editable = computed(() => review.value?.editable !== false)
 const subtabs = computed(() => bundle.value?.subtabs || {})
 const subtabErrors = computed(() => bundle.value?.errors || {})
 const resolution = computed(() => bundle.value?.resolution || null)
+
+/** The client line on the PDF header — the investor's display name. */
+const investorName = computed(() =>
+  resolution.value?.investor_name
+  || investors.value.find((i: any) => i.code === selectedInvestor.value)?.name
+  || selectedInvestor.value)
+
+/** ISO -> M/D/YYYY by regex; `new Date('2026-03-31')` is midnight UTC and
+ *  renders as the previous day in US timezones. Same fix as format.fmtDate. */
+function fmtDate(v?: string | null): string {
+  if (!v) return ''
+  const m = String(v).match(/^(\d{4})-(\d{2})-(\d{2})/)
+  return m ? `${parseInt(m[2])}/${parseInt(m[3])}/${m[1]}` : String(v)
+}
 const saving = computed(() => savingCount.value > 0)
 
 const canLoad = computed(() => !!selectedInvestor.value && !!selectedQuarter.value)
@@ -240,9 +254,25 @@ const statusColor = computed(() => {
       </div>
     </div>
 
+    <!--
+      Reference-PDF page header. Shared by all three table subtabs, which is why
+      it lives in the shell: pages 2, 3 and 4 all carry the "TIAA" client line
+      and the "Current Portfolio Update" subtitle. The big centred title belongs
+      to pages 1-2 only, so it is hidden on Operating and Loan.
+    -->
+    <div v-if="bundle" class="pdf-header">
+      <h1 v-if="activeTab === 'summary' || activeTab === 'financial'" class="pdf-title">
+        PORTFOLIO SNAPSHOT
+      </h1>
+      <div class="pdf-client">{{ investorName }}</div>
+      <div class="pdf-sub">
+        Current Portfolio Update (Balances as of {{ fmtDate(resolution?.quarter_end) }},
+        $ millions)
+      </div>
+    </div>
+
     <!-- Print-only header -->
     <div class="print-header">
-      <h2>Portfolio Snapshot — {{ investors.find(i => i.code === selectedInvestor)?.name || selectedInvestor }}</h2>
       <div class="print-meta">{{ selectedQuarter }} · {{ TABS.find(t => t.key === activeTab)?.label }}</div>
     </div>
 
@@ -583,12 +613,29 @@ h2 { font-size: 20px; margin: 0 0 12px 0; }
 
 .print-header { display: none; }
 
+/* Reference-PDF page header. Serif caps title over a heavy rule, then the
+   client line and the balances-as-of subtitle, matching page 2. */
+.pdf-header { margin: 4px 0 10px 0; }
+.pdf-title {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-align: center;
+  margin: 0 0 10px 0;
+  padding-bottom: 10px;
+  border-bottom: 3px solid var(--color-text);
+}
+.pdf-client { font-size: 13px; font-weight: 700; }
+.pdf-sub { font-size: 12px; color: var(--color-text-secondary); }
+
 @media print {
   .snapshot { padding: 0; }
   .snap-header { display: none; }
   .print-header { display: block; margin-bottom: 8px; }
   .print-header h2 { font-size: 16px; margin: 0 0 2px 0; }
   .print-meta { font-size: 12px; color: #666; }
+  .pdf-title { font-size: 20px; padding-bottom: 7px; border-bottom-width: 2px; }
   .review-strip { display: none; }
   .return-form { display: none; }
   .banner { display: none; }
