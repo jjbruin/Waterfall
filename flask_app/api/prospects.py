@@ -434,8 +434,11 @@ def analyze_deal(deal_id):
         from sqlalchemy import text as sa_text
         wf_vcode = deal_data['deal'].get('vcode') or f"N{deal_id:07d}"
         with get_engine().connect() as conn:
+            # ORDER BY is load-bearing: when the PE flag is ambiguous the
+            # equity split falls back to investor order, so it must be stable.
             wf_rows = conn.execute(sa_text(
-                "SELECT * FROM waterfalls WHERE vcode = :v"
+                'SELECT * FROM waterfalls WHERE vcode = :v '
+                'ORDER BY vmisc, "iOrder"'
             ), {"v": wf_vcode}).fetchall()
         if wf_rows:
             import pandas as pd
@@ -1176,6 +1179,39 @@ def build_deal_waterfall(deal_id):
 
     if not cf_inputs and not cap_inputs:
         return jsonify({'error': 'At least one waterfall step required'}), 400
+
+    # Every step must name an entity declared on the deal.  Returns are
+    # attributed by this ID and it is the key the deal is onboarded to Asset
+    # Management on, so an undeclared or placeholder ID would assign capital
+    # to a partner that does not exist.
+    declared = {
+        (e.get('planned_entity_id') or '').strip()
+        for e in (deal_data.get('entities') or [])
+        if (e.get('planned_entity_id') or '').strip()
+    }
+    used = {
+        (s.get('entity_id') or '').strip()
+        for s in list(cf_inputs) + list(cap_inputs)
+        if (s.get('entity_id') or '').strip()
+    }
+    undeclared = sorted(used - declared)
+    if undeclared:
+        if declared:
+            msg = (
+                "These waterfall entities are not set up on the deal: "
+                + ", ".join(undeclared)
+                + ". Declared entity IDs are: "
+                + ", ".join(sorted(declared))
+                + "."
+            )
+        else:
+            msg = (
+                "This deal has no entities with an entity ID, so the waterfall "
+                "cannot be attributed to anyone. Add each investing entity in "
+                "Pipeline with the ID it will carry in MRI (for example PPI35 "
+                "or OPPEGA), then build the waterfall."
+            )
+        return jsonify({'error': msg, 'undeclared_entities': undeclared}), 400
 
     steps = _convert_step_inputs(cf_inputs, 'CF_WF') + _convert_step_inputs(cap_inputs, 'Cap_WF')
 

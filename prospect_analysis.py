@@ -111,6 +111,7 @@ def build_prospect_analysis(
     # --- Build synthetic DataFrames ---
 
     inv = _build_inv(vcode, deal_name, deal, close_date, properties)
+    identity_warnings: list = []
     if waterfall_df is not None and not waterfall_df.empty:
         wf = waterfall_df
         # Build accounting from waterfall investors so IDs match
@@ -118,7 +119,7 @@ def build_prospect_analysis(
         if wf_investors:
             acct = _build_accounting_from_waterfall(
                 vcode, deal_name, wf_investors, equity_needed,
-                psc_equity_pct, seed_date)
+                psc_equity_pct, seed_date, warn=identity_warnings)
             # Set pe/op IDs for the investment map (first PE, first non-PE)
             pe_ids = [iid for iid, is_pe in wf_investors if is_pe]
             op_ids = [iid for iid, is_pe in wf_investors if not is_pe]
@@ -182,6 +183,12 @@ def build_prospect_analysis(
     sale_dbg = result.get('sale_dbg') or {}
     terminal_noi = sale_dbg.get('NOI_12m_After_Sale', 0)
     exit_value = sale_dbg.get('Implied_Value', 0)
+
+    # Surface investor-identity warnings in the Diagnostics panel.  These
+    # describe misattributed capital, so they lead the list.
+    if identity_warnings:
+        existing = result.get('debug_msgs') or []
+        result['debug_msgs'] = [f"WARNING: {w}" for w in identity_warnings] + existing
 
     # Attach assumptions summary for the UI
     result['prospect_assumptions'] = {
@@ -386,13 +393,21 @@ def _build_waterfall(vcode, pe_id, op_id, pe_pct, pref_rate, promote_pct):
 
 
 def _build_accounting_from_waterfall(vcode, deal_name, wf_investors,
-                                     total_equity, psc_equity_pct, close_date):
+                                     total_equity, psc_equity_pct, close_date,
+                                     warn=None):
     """Build accounting feed with contributions for all waterfall investors.
 
-    Splits equity among investors using the Cap_WF Share/Tag FXRate
-    percentages when available, otherwise falls back to psc_equity_pct
-    for PE vs OP split.
+    Splits equity among investors using psc_equity_pct for the PE vs OP
+    split.  The PE flag is inferred from the waterfall (a Pref or IRR step),
+    which is ambiguous when no investor carries one or when several do --
+    both cases misattribute capital, so they are reported through `warn`
+    (a list of diagnostic strings) rather than passing silently.
+
+    Whatever the split, the apportioned contributions are reconciled against
+    total_equity before returning: a mismatch corrupts every deal-level
+    return metric, so it is scaled back to the capital budget and reported.
     """
+    warn = warn if warn is not None else []
     rows = []
     n_investors = len(wf_investors)
     if n_investors == 0:
@@ -412,6 +427,24 @@ def _build_accounting_from_waterfall(vcode, deal_name, wf_investors,
     elif n_investors == 2:
         # Two investors: use psc_equity_pct to split
         pe_ids = [iid for iid, is_pe in wf_investors if is_pe]
+        if not pe_ids:
+            warn.append(
+                f"Equity split is a guess: no waterfall investor has a Pref or "
+                f"IRR step, so no PE partner could be identified. "
+                f"{wf_investors[0][0]} was given the "
+                f"{psc_equity_pct:.0%} PE share because it is first in "
+                f"waterfall order. Set the investor's planned entity ID and "
+                f"capital role to fix the attribution."
+            )
+        elif len(pe_ids) > 1:
+            warn.append(
+                f"Equity split is unreliable: {len(pe_ids)} investors "
+                f"({', '.join(pe_ids)}) each have a Pref or IRR step, so each "
+                f"was treated as the PE partner and given the "
+                f"{psc_equity_pct:.0%} PE share. Contributions have been "
+                f"scaled back to the capital budget, but the split between "
+                f"partners should not be relied on."
+            )
         for iid, is_pe in wf_investors:
             if is_pe or (not pe_ids and iid == wf_investors[0][0]):
                 share = psc_equity_pct
@@ -435,6 +468,22 @@ def _build_accounting_from_waterfall(vcode, deal_name, wf_investors,
                 'Amt': -abs(per_investor), 'Capital': 'Y',
                 'Typename': 'Investments', 'TypeID': 1001, 'Partner': iid,
             })
+
+    # Reconcile against the capital budget.  A total that does not match
+    # total_equity understates or overstates invested capital, which throws
+    # off deal-level IRR, ROE and MOIC as well as the partner split, so
+    # scale the contributions back and say so.
+    apportioned = sum(abs(r['Amt']) for r in rows)
+    if rows and total_equity and abs(apportioned - abs(total_equity)) > 1.0:
+        scale = abs(total_equity) / apportioned
+        warn.append(
+            f"Contributions totalled ${apportioned:,.0f} against "
+            f"${abs(total_equity):,.0f} of equity in the capital budget "
+            f"({apportioned / abs(total_equity):.2f}x); each investor's "
+            f"contribution was scaled by {scale:.3f} to reconcile."
+        )
+        for r in rows:
+            r['Amt'] = -abs(abs(r['Amt']) * scale)
 
     return pd.DataFrame(rows)
 
