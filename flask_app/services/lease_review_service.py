@@ -9,6 +9,7 @@ via the standard database layer.
 import copy
 import hashlib
 import json
+import re
 import logging
 import os
 import re
@@ -1893,6 +1894,52 @@ def extract_pdf_text(source) -> Tuple[str, int]:
 # Claude API extraction
 # ---------------------------------------------------------------------------
 
+# A value is a number only if it STARTS with one, after an optional currency
+# symbol or sign. "60 days" is 60; "$0.50 per sf" is 0.50; but "Greater of CPI
+# increase or $0.50 per sf" is not 0.50 -- taking a number from the middle of a
+# sentence silently records a figure the lease does not say, which is worse
+# than recording nothing.
+_NUM_LEAD = re.compile(r"^\(?\s*[-+]?\s*\$?\s*(\d[\d,]*(?:\.\d+)?)\s*\)?")
+
+
+def _to_number(value):
+    """Coerce an extracted value to a float, or None if it is not a number.
+
+    Extraction returns prose wherever a lease is descriptive rather than
+    numeric -- "Greater of CPI increase or $0.50 per sf" is a real answer to
+    "rent per sf". Passing that into a DOUBLE PRECISION column raises a
+    DataError on PostgreSQL, which aborts the surrounding transaction and
+    takes the rest of the extraction run down with it. Unparseable values
+    become NULL; the descriptive text belongs in a text column, not here.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str):
+        return None
+    s = value.strip()
+    if not s:
+        return None
+    m = _NUM_LEAD.match(s)
+    if not m:
+        return None
+    try:
+        n = float(m.group(1).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+    lead = s[:m.end()]
+    if "(" in lead or lead.lstrip().startswith("-"):
+        n = -n
+    return n
+
+
+def _to_int(value):
+    """Same as _to_number, rounded, for INTEGER columns."""
+    n = _to_number(value)
+    return None if n is None else int(round(n))
+
+
 # Phrases a model (or a seeded spreadsheet) uses to say "there is no
 # exclusive".  These are the absence of a restriction, not a restriction, and
 # must not be stored as one.
@@ -2543,9 +2590,9 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None,
                                 """), {
                                     'tid': tenant_id,
                                     'ed': step.get('effective_date'),
-                                    'mr': step.get('monthly_rent'),
-                                    'ar': step.get('annual_rent'),
-                                    'rpsf': step.get('rent_per_sf'),
+                                    'mr': _to_number(step.get('monthly_rent')),
+                                    'ar': _to_number(step.get('annual_rent')),
+                                    'rpsf': _to_number(step.get('rent_per_sf')),
                                     'sd': doc[2],  # filename
                                 })
 
@@ -2572,10 +2619,10 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None,
                                 'tid': tenant_id, 'rid': review_id,
                                 'td': cot.get('trigger_threshold'),
                                 'tt': cot.get('trigger_threshold'),
-                                'cpd': cot.get('cure_period_days'),
+                                'cpd': _to_int(cot.get('cure_period_days')),
                                 'arf': cot.get('alt_rent_formula'),
                                 'tr': cot.get('termination_right', False),
-                                'tnd': cot.get('termination_notice_days'),
+                                'tnd': _to_int(cot.get('termination_notice_days')),
                                 'sp': cot.get('sunset_or_waiver'),
                                 'ic': cot.get('is_curable', True),
                                 'wm': cot.get('sunset_or_waiver'),
@@ -2677,8 +2724,8 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None,
                                 'tid': tenant_id,
                                 'on': opt.get('option_number'),
                                 'to': opt.get('total_options'),
-                                'ty': opt.get('term_years'),
-                                'nd': opt.get('notice_days'),
+                                'ty': _to_number(opt.get('term_years')),
+                                'nd': _to_int(opt.get('notice_days')),
                                 'ndl': opt.get('notice_deadline'),
                                 'rt': opt.get('rent_terms'),
                                 'ar': opt.get('auto_renewal', False),
@@ -2722,7 +2769,7 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None,
                                 'tid': tenant_id,
                                 'on': opt.get('option_number'),
                                 'to': opt.get('total_options'),
-                                'nd': opt.get('notice_days'),
+                                'nd': _to_int(opt.get('notice_days')),
                                 'ndl': opt.get('notice_deadline'),
                                 'rt': opt.get('conditions') or opt.get('termination_fee') or '',
                                 'ex': opt.get('exercised', False),
@@ -2735,12 +2782,30 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None,
 
             except Exception as e:
                 logger.error(f"Error extracting {doc[2]}: {e}")
-                conn.execute(sql_text("""
-                    UPDATE lease_documents
-                    SET extraction_status = 'error'
-                    WHERE id = :did
-                """), {'did': doc_id})
-                conn.commit()
+                # On PostgreSQL a failed statement aborts the transaction, so
+                # every later statement -- including this one -- fails with
+                # InFailedSqlTransaction and masks the real cause. Roll back
+                # first so the status write lands and the loop can continue
+                # with the remaining documents.
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                try:
+                    conn.execute(sql_text("""
+                        UPDATE lease_documents
+                        SET extraction_status = 'error'
+                        WHERE id = :did
+                    """), {'did': doc_id})
+                    conn.commit()
+                except Exception as inner:
+                    logger.error(
+                        "Could not mark doc %s as errored: %s", doc_id, inner
+                    )
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
 
             # Report progress after each doc (success or error)
             if progress_callback:
