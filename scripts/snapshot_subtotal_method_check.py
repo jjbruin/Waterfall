@@ -21,7 +21,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from flask_app.services.portfolio_snapshot_operating import (   # noqa: E402
-    operating_subtotal,
+    operating_subtotal, NA_LABEL,
 )
 from flask_app.services.portfolio_snapshot_loan import (        # noqa: E402
     loan_subtotal, KNOWN_LOAN_SUBTOTAL_DIFFS,
@@ -38,13 +38,34 @@ M = 1e6
 
 
 def orow(occ_ac, noi_ac, occ_uw, noi_uw, occ_pj, noi_pj, dev=False):
+    """One synthetic row, shaped as ``build_row`` shapes a real one.
+
+    The ``*_display`` twins are not decoration here. Since 2026-08-25
+    ``operating_subtotal`` aggregates the twins rather than the raw metrics — so
+    that a cell reading n/a contributes nothing to the total under it — and a
+    row without them contributes nothing at all. Omitting them made every
+    published figure below read 0.00, which is the assertion doing its job:
+    these rows have to look like the ones production builds.
+
+    For a suppressed row the twin is the n/a literal, exactly as the PDF prints
+    it. That is also why the numbers still reconcile: the dev rows transcribed
+    below carry 0.0, and contributing nothing is arithmetically what
+    contributing zero was.
+    """
+    noi = {"at_close": None if noi_ac is None else noi_ac * M,
+           "uw_ye": None if noi_uw is None else noi_uw * M,
+           "projected_ye": None if noi_pj is None else noi_pj * M}
     return {
         "is_dev": dev,
         "econ_occ": {"at_close": occ_ac, "uw_ye": occ_uw,
                      "projected_ye": occ_pj},
-        "noi": {"at_close": None if noi_ac is None else noi_ac * M,
-                "uw_ye": None if noi_uw is None else noi_uw * M,
-                "projected_ye": None if noi_pj is None else noi_pj * M},
+        "noi": noi,
+        # build_row's occupancy cell is the projected -> at_close fallback; any
+        # non-string keeps the row eligible for the weighted average, which then
+        # reads the per-column raw value.
+        "econ_occ_display": (NA_LABEL if dev else
+                             (occ_pj if occ_pj is not None else occ_ac)),
+        "noi_display": {k: (NA_LABEL if dev else v) for k, v in noi.items()},
     }
 
 

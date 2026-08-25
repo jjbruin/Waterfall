@@ -14,6 +14,12 @@
  * from the published page's own arithmetic, so a freeze captures them and the
  * component never invents anything.
  *
+ * Those totals sum only the cells this table actually shows: a row reading
+ * "n/a" — a development deal, or an acquisition too recent to report —
+ * contributes nothing to the total beneath it. Worth knowing while reading this
+ * file, because it means a column here really does add up, which was not true
+ * before 2026-08-25.
+ *
  * Presentational: props in, save events out.
  */
 import { computed, ref, watch } from 'vue'
@@ -86,6 +92,10 @@ const allRows = computed(() => {
       <span v-if="diag.dev" class="chip">
         {{ diag.dev }} development deal(s) — every metric shown as “n/a”
       </span>
+      <span v-if="diag.insufficient_history" class="chip">
+        {{ diag.insufficient_history }} recent acquisition(s) — owned under a quarter,
+        every metric shown as “n/a”
+      </span>
       <span v-if="diag.dev_exceptions" class="chip warn">
         {{ diag.dev_exceptions }} temporary exception(s) marked * show real values
       </span>
@@ -123,6 +133,13 @@ const allRows = computed(() => {
               <td class="sticky-l">
                 {{ r.name }}
                 <span v-if="r.is_dev" class="tag">Dev</span>
+                <!--
+                  A non-dev row reading n/a in every column needs to say why,
+                  for the same reason the Dev tag exists: without it the reader
+                  cannot tell a withheld figure from a missing one.
+                -->
+                <span v-if="r.insufficient_history" class="tag new"
+                      :title="`Owned ${r.months_owned} month(s) at quarter end — not enough operating history to report`">New</span>
                 <span v-if="r.dev_display_exception?.length" class="star"
                       :title="`Temporary exception — real ${r.dev_display_exception.join(', ')} shown despite dev classification`">*</span>
                 <span v-for="(f, i) in (r.flags || [])" :key="i" class="warn-dot" :title="f">!</span>
@@ -331,6 +348,8 @@ table.grid th.r { text-align: right; }
   margin-left: 5px;
   text-transform: uppercase;
 }
+/* Distinct from Dev: a different reason for the same n/a. */
+.tag.new { background: #e8f0fe; color: #1a4f8a; }
 .warn-dot {
   display: inline-block;
   margin-left: 4px;

@@ -288,13 +288,33 @@ def main():
     print(f"  raw fields still numeric/None on all {len(flat)} rows: "
           f"{'yes' if not bad else 'NO — ' + str(bad[:4])}")
 
-    # ---- 3. non-dev rows untouched by the rule ----
-    nd = [r for r in flat.values() if not r["is_dev"]]
+    # ---- 3. non-dev rows untouched by THIS rule ----
+    #
+    # Widened 2026-08-25: the dev rule is no longer the only thing that can
+    # suppress a cell. A deal owned for less than one quarter also reads n/a in
+    # every metric column (INSUFFICIENT_HISTORY_MONTHS), so a non-dev row
+    # carrying that flag is correct rather than a leak — Plaza Del Mar and
+    # Hanestowne Waterstone, both bought inside 26Q1, are the two at this
+    # quarter. The check still has teeth: any OTHER non-dev row showing n/a
+    # fails, and an insufficient-history row must show n/a in EVERY column, so
+    # the flag cannot be used to excuse a single stray cell.
+    nd = [r for r in flat.values()
+          if not r["is_dev"] and not r.get("insufficient_history")]
     leaked = [r["vcode"] for r in nd for col in COLUMNS
               if cells(r)[col] == NA_LABEL]
-    checks.append(("no non-dev row shows n/a", not leaked))
-    print(f"  {len(nd)} non-dev row(s), none suppressed: "
+    checks.append(("no non-dev, non-new row shows n/a", not leaked))
+    print(f"  {len(nd)} non-dev row(s) subject to this rule, none suppressed: "
           f"{'yes' if not leaked else 'NO — ' + str(sorted(set(leaked)))}")
+
+    insuf = [r for r in flat.values() if r.get("insufficient_history")]
+    partial = [r["vcode"] for r in insuf
+               if not all(cells(r)[col] == NA_LABEL for col in COLUMNS)]
+    checks.append(("insufficient-history rows are n/a in EVERY column",
+                   not partial))
+    print(f"  {len(insuf)} insufficient-history row(s) "
+          f"({', '.join(sorted(r['name'] for r in insuf)) or 'none'}), "
+          f"all fully suppressed: "
+          f"{'yes' if not partial else 'NO — ' + str(sorted(set(partial)))}")
 
     # ---- 4. cell-by-cell vs the PDF ----
     if pdf:

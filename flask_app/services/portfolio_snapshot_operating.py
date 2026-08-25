@@ -23,10 +23,29 @@ kept: construction and lease-up status is what a dev row reports. Suppression
 lands on the ``*_display`` fields only, so no computed value moves; see
 ``DEV_SUPPRESSED_COLUMNS`` and the TEMPORARY ``DEV_DISPLAY_EXCEPTIONS``.
 
+INSUFFICIENT OPERATING HISTORY — a deal owned for less than one full quarter
+also reads n/a in every metric column, for the same reason a dev deal does and
+by the same mechanism. See ``INSUFFICIENT_HISTORY_MONTHS``.
+
 The UI must render the ``*_display`` twins, never the raw fields — a metric
 formatted straight from ``noi`` or ``expected_growth`` silently opts out of the
 suppression rule. That is the same contract ``format.ts`` states from the other
 side: the UI does not recompute or second-guess a backend display decision.
+
+SUBTOTALS AGGREGATE WHAT IS VISIBLE. Every total on this page sums the
+``*_display`` twins, so a cell reading n/a contributes nothing to the row below
+it. This is not a stylistic choice — it is the only way the page can be read.
+The alternative shipped first and was wrong: subtotals summed the raw fields,
+so ten development rows showed n/a while their real NOI went on feeding the
+total underneath, and Portfolio U/W YE printed 123.9M over visible cells that
+summed to about 104M. A total that disagrees with the column above it is the
+first thing a reader checks and the last thing they trust. The reference PDF
+excludes what it withholds, and 104.6M is what it prints.
+
+Because the totals read the display twins rather than re-deriving the rules,
+every suppression — dev, the dev exceptions, insufficient history, and whatever
+lands next — is honoured by construction. There is no second copy of the rule
+here to fall out of step with ``shown()``.
 
 UNITS — the two percentage fields on this subtab are on DIFFERENT scales, and
 that is deliberate rather than an oversight:
@@ -58,6 +77,7 @@ later will not match a PDF produced earlier. Flagged, not hidden.
 from __future__ import annotations
 
 import logging
+from datetime import date, datetime
 from typing import Callable, Optional
 
 log = logging.getLogger(__name__)
@@ -125,6 +145,48 @@ DEV_LABEL = "Dev"
 #: The comments column is NOT here and must never be: construction and lease-up
 #: status is precisely what a dev row is on the page to report.
 DEV_SUPPRESSED_COLUMNS = ("econ_occ", "noi", "expected_growth", "actual_growth")
+
+#: Months of ownership below which a deal has no operating history to report and
+#: every metric column reads n/a — the same suppression the dev rule applies, for
+#: an unrelated reason, so a brand-new acquisition is not read as a real figure.
+#:
+#: One full quarter. A deal bought inside the reporting quarter has not been
+#: owned for a period the page can describe: there is no full month of
+#: occupancy, and the NOI columns are underwriting, not performance.
+#:
+#: WHY OWNERSHIP AGE AND NOT THE DATA ITSELF. Two candidate tests were measured
+#: against live 26Q1 and both fail:
+#:
+#:   "no occupancy history"  also catches Giant 7 and East Manchester, whose
+#:       occupancy feed simply stopped in Nov 2025 (both under PSA to sell). They
+#:       carry real At Close and U/W readings the PDF prints. Missing recent data
+#:       on a nine-year-old asset is not the same statement as a new one.
+#:
+#:   "econ_occ U/W == 100.0 exactly"  is a magic constant standing in for
+#:       "the underwriting carries no vacancy line". A fully-leased single-tenant
+#:       asset can legitimately underwrite to 100% — Town Fair Tire is already at
+#:       98.7% — so this suppresses real readings on exactly the asset class
+#:       where 100% is plausible. Plaza Del Mar's 100.0% IS degenerate (zero
+#:       vacancy against 3.9M of revenue), but ownership age says so without
+#:       having to guess from the value.
+#:
+#: Ownership age is also what the reference PDF says in its own comment on these
+#: rows: "recent acquisition, not enough operating history". At 26Q1 the margin
+#: is wide enough that the threshold is not a tuned parameter — Hanestowne
+#: Waterstone is 0.4 months owned and Plaza Del Mar 0.5, and the next-youngest
+#: deal in the portfolio is Jefferson Stephens at 5.4. Anything from ~1 to ~5
+#: selects the same two deals.
+INSUFFICIENT_HISTORY_MONTHS = 3.0
+
+#: One Pager ``property_performance`` column -> our NOI key. The One Pager calls
+#: Projected YE "actual_ye"; kept as a map so the three read paths that need the
+#: translation cannot disagree.
+_OP_NOI_SOURCE = {"at_close": "at_close", "uw_ye": "uw_ye",
+                  "projected_ye": "actual_ye"}
+
+#: The ``property_performance`` blocks that must ALL be zero for a column to
+#: count as unpopulated. See ``_payload_unpopulated``.
+_POPULATION_BLOCKS = ("revenue", "expenses", "noi")
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -259,6 +321,84 @@ def is_dev_deal(strategy: str) -> bool:
     return str(strategy or "").strip().lower() in DEV_STRATEGIES
 
 
+def _payload_unpopulated(pp: dict, column: str) -> bool:
+    """True when the One Pager returned its untouched default for ``column``.
+
+    ``one_pager.get_property_performance`` seeds revenue, expenses and NOI to a
+    literal ``0`` and only overwrites them if it finds data — an ``at_close_noi``
+    row, or a December Projected IS date to scan. When it finds neither, all
+    three stay at zero and the column is indistinguishable from a property that
+    genuinely earned nothing.
+
+    That is the City West bug: a foreclosed deal with no ``at_close_noi`` row
+    printed "0.0" in the At Close column, which reads as a measured zero rather
+    than as an absence. Real zero NOI is possible — a deal can break even — but
+    zero revenue AND zero expenses AND zero NOI together is not a property, it
+    is the default. Requiring all three is what keeps a genuine break-even
+    reading (nonzero revenue, matching expenses) out of this branch.
+
+    Read here rather than fixed at source deliberately: those defaults are One
+    Pager public API, and the One Pager view, Property Financials and the
+    dashboard all do arithmetic on them. Turning them into None upstream is the
+    right end state and a much wider blast radius than this page.
+    """
+    if not pp:
+        return True
+    for block in _POPULATION_BLOCKS:
+        v = (pp.get(block) or {}).get(column)
+        if v is None:
+            continue
+        try:
+            if float(v) != 0.0:
+                return False
+        except (TypeError, ValueError):
+            return False                # non-numeric: not the numeric default
+    return True
+
+
+def _parse_date(v) -> Optional[date]:
+    """Lenient date parse, or None. Accepts ISO and the US formats MRI emits."""
+    s = str(v or "").strip()
+    if not s:
+        return None
+    try:
+        return date.fromisoformat(s[:10])
+    except ValueError:
+        pass
+    for fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(s.split(" ")[0], fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def months_owned(payload: dict, quarter_end: Optional[date]) -> Optional[float]:
+    """Months from the deal's closing date to ``quarter_end``, or None.
+
+    Reads ``date_closed`` straight out of the One Pager payload this module
+    already fetches — the same field the One Pager prints as "Date Closed",
+    which ``data_service._enrich_acquisition_dates`` derives from the earliest
+    accounting activity. No new query, and no second opinion about when a deal
+    closed.
+
+    Both spellings of the block are accepted: ``one_pager`` builds
+    ``general_information``, and ``financials_service.get_one_pager_data``
+    republishes it as ``general``. This module's provider is injected and wraps
+    one or the other depending on caller, so reading a single key would work in
+    app and silently return None under the REST-backed guardrails — which is
+    exactly how this rule first measured zero deals.
+    """
+    if not quarter_end:
+        return None
+    p = payload or {}
+    block = p.get("general") or p.get("general_information") or {}
+    closed = _parse_date(block.get("date_closed"))
+    if not closed:
+        return None
+    return (quarter_end - closed).days / 30.44
+
+
 # ── Subtotals ─────────────────────────────────────────────────────────────
 #
 # REVERSES the "no subtotals" decision this module shipped with (see the note in
@@ -273,7 +413,11 @@ def is_dev_deal(strategy: str) -> bool:
 #   NOI       SUMMED. 22.6 / 26.1 / 24.4 against the published 22.6 / 26.0 /
 #             24.4 — exact on two columns and one rounding step on the third.
 #             A missing or "-" reading counts as zero, which is what the PDF's
-#             own dashes do.
+#             own dashes do — and so does a cell a suppression rule withholds,
+#             which is the whole subtotal contract in the module docstring. The
+#             eight member deals of that Individual Investments row are all
+#             operating, which is why it validated the arithmetic cleanly while
+#             the portfolio row (ten suppressed dev rows) did not.
 #
 #   Growth    RECOMPUTED FROM THE SUMS, not averaged from the member growths:
 #             (26.0 - 22.6) / 22.6 = 15.04% and (24.4 - 22.6) / 22.6 = 7.96%
@@ -294,17 +438,46 @@ def is_dev_deal(strategy: str) -> bool:
 _NOI_KEYS = ("at_close", "uw_ye", "projected_ye")
 
 
+def _visible(v):
+    """The number a display cell shows, or None when it shows no number.
+
+    The single place a suppressed cell is turned into "contributes nothing".
+    ``*_display`` fields are polymorphic by design — a float when the metric
+    computed, the literal NA_LABEL when a rule withholds it, None when there is
+    no data — and every total on this page is built through this function, so it
+    can only ever sum what a reader can see.
+    """
+    if v is None or isinstance(v, str):
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f
+
+
+def _visible_noi(row: dict, key: str):
+    return _visible((row.get("noi_display") or {}).get(key))
+
+
 def _weighted(rows: list, occ_key: str, noi_key: str):
     """NOI-weighted mean of one occupancy column, or None.
 
     Only rows carrying BOTH a reading and a non-zero weight contribute: a deal
     with no NOI cannot pull an income-weighted average, and a deal with no
     reading has nothing to contribute.
+
+    A row whose occupancy cell is suppressed contributes to no occupancy
+    column, and the weight is the VISIBLE NOI — so a deal reading n/a across the
+    row is absent from both sides of the ratio rather than silently steering an
+    average the reader cannot see it in.
     """
     num = den = 0.0
     for r in rows:
+        if isinstance(r.get("econ_occ_display"), str):
+            continue                        # occupancy withheld on this row
         o = (r.get("econ_occ") or {}).get(occ_key)
-        w = (r.get("noi") or {}).get(noi_key)
+        w = _visible_noi(r, noi_key)
         if o is None or not w:
             continue
         num += o * w
@@ -313,12 +486,19 @@ def _weighted(rows: list, occ_key: str, noi_key: str):
 
 
 def operating_subtotal(rows: list, label: str) -> dict:
-    """One total row over ``rows`` — a fund's deals, or every deal."""
-    noi = {}
+    """One total row over ``rows`` — a fund's deals, or every deal.
+
+    Sums the DISPLAY twins, not the raw metrics: see the subtotal contract in
+    the module docstring. ``noi_contributors`` reports how many rows actually
+    fed each column, which is what makes the exclusion auditable rather than
+    something a reader has to take on trust.
+    """
+    noi, contributors = {}, {}
     for k in _NOI_KEYS:
-        vals = [(r.get("noi") or {}).get(k) for r in rows]
+        vals = [_visible_noi(r, k) for r in rows]
         vals = [v for v in vals if v is not None]
         noi[k] = sum(vals) if vals else None
+        contributors[k] = len(vals)
 
     occ = {"at_close": _weighted(rows, "at_close", "at_close"),
            "uw_ye": _weighted(rows, "uw_ye", "uw_ye"),
@@ -327,16 +507,22 @@ def operating_subtotal(rows: list, label: str) -> dict:
     return {
         "label": label,
         "deal_count": len(rows),
-        # Dev deals are counted here — their NOI is real and the PDF's own
-        # subtotals include them; only their per-row DISPLAY is suppressed.
+        # Counted, but NOT contributing: a dev row's metrics read n/a, so its
+        # NOI is excluded from the sums above. The count stays because the row
+        # is on the page and the reader can see it.
         "dev_count": sum(1 for r in rows if r.get("is_dev")),
+        "suppressed_count": sum(
+            1 for r in rows
+            if all(_visible_noi(r, k) is None for k in _NOI_KEYS)),
         "noi": noi,
+        "noi_contributors": contributors,
         "econ_occ": occ,
         # From the sums, as the PDF does.
         "expected_growth": _growth(noi["uw_ye"], noi["at_close"]),
         "actual_growth": _growth(noi["projected_ye"], noi["at_close"]),
-        "econ_occ_basis": "NOI-weighted mean over deals carrying a reading",
-        "noi_basis": "sum; a missing reading counts as zero",
+        "econ_occ_basis": ("NOI-weighted mean over deals whose occupancy cell "
+                           "is visible"),
+        "noi_basis": "sum of the visible cells; a suppressed cell contributes 0",
     }
 
 
@@ -368,10 +554,27 @@ def assemble_operating(investor_code: str, quarter: str, *,
     loader = comment_loader or _default_comment_loader
     comments = loader(investor_code, quarter) or {}
 
+    # Quarter end for the insufficient-history test. Via the One Pager's public
+    # helper rather than the service's private _quarter_end, so this module does
+    # not depend on a private name for a value it can derive itself. None just
+    # disables the rule — a quarter string this cannot parse should not blank a
+    # page.
+    try:
+        from one_pager import quarter_to_date_range      # read-only reuse
+        _, q_end = quarter_to_date_range(quarter)
+    except Exception as exc:
+        log.debug("quarter end unavailable for %r, insufficient-history rule "
+                  "disabled: %s", quarter, exc)
+        q_end = None
+
     groups: dict[str, list] = {}
     diag = {"deals": 0, "with_noi": 0, "dev": 0, "missing_at_close": 0,
             "provider_errors": 0, "comments_attached": 0,
-            "dev_suppressed": 0, "dev_exceptions": 0}
+            "dev_suppressed": 0, "dev_exceptions": 0,
+            # NOI columns where the One Pager returned its untouched default
+            # (revenue, expenses and NOI all zero) and we emit None instead.
+            "unpopulated_noi": 0,
+            "insufficient_history": 0}
 
     def build_row(vcode: str, name: str, strategy: str,
                   extra_flags: Optional[list] = None) -> dict:
@@ -393,14 +596,34 @@ def assemble_operating(investor_code: str, quarter: str, *,
             flags.append("no property_performance for this quarter")
         else:
             n, o = pp.get("noi") or {}, pp.get("economic_occ") or {}
-            noi = {"at_close": _num(n.get("at_close")),
-                   "uw_ye": _num(n.get("uw_ye")),
-                   # the One Pager calls Projected YE 'actual_ye'
-                   "projected_ye": _num(n.get("actual_ye"))}
+            # None, not the One Pager's default 0, where nothing was populated:
+            # "no At Close NOI row for this deal" must not print as a measured
+            # zero. See _payload_unpopulated.
+            noi = {}
+            for key, src in _OP_NOI_SOURCE.items():
+                if _payload_unpopulated(pp, src):
+                    noi[key] = None
+                    diag["unpopulated_noi"] += 1
+                else:
+                    noi[key] = _num(n.get(src))
             occ = {"at_close": _num(o.get("at_close")),
                    "uw_ye": _num(o.get("uw_ye")),
                    "projected_ye": _num(o.get("actual_ye")),
                    "ytd_actual": _num(o.get("ytd_actual"))}
+
+        # ---- insufficient operating history ----------------------------------
+        # A deal bought inside the reporting quarter has nothing to report yet.
+        # Independent of the dev rule and applied to the same four columns; see
+        # INSUFFICIENT_HISTORY_MONTHS for why this reads ownership age rather
+        # than trying to infer "too new" from the readings themselves.
+        mo = months_owned(payload, q_end)
+        insufficient = mo is not None and mo < INSUFFICIENT_HISTORY_MONTHS
+        if insufficient:
+            diag["insufficient_history"] += 1
+            flags.append(
+                f"insufficient operating history — owned {mo:.1f} month(s) at "
+                f"quarter end (< {INSUFFICIENT_HISTORY_MONTHS:g}); every metric "
+                f"shown as n/a")
 
         exp_g = _growth(noi["uw_ye"], noi["at_close"])
         act_g = _growth(noi["projected_ye"], noi["at_close"])
@@ -443,13 +666,22 @@ def assemble_operating(investor_code: str, quarter: str, *,
                                "(see DEV_DISPLAY_EXCEPTIONS)")
 
         def shown(column: str, value):
-            """``value``, or NA_LABEL when the dev rule suppresses ``column``.
+            """``value``, or NA_LABEL when a rule suppresses ``column``.
 
             One gate for all four metric columns, so occupancy, NOI and the two
             growth figures can never disagree about whether a deal is being
             suppressed — the disagreement that produced "Dev" occupancy sitting
-            next to a -2761.9% growth figure on the same row.
+            next to a -2761.9% growth figure on the same row. It is also the
+            only place suppression is decided, which is what lets
+            ``operating_subtotal`` honour every rule just by reading the twins.
+
+            Insufficient history is tested FIRST, so it outranks a dev
+            exception: a deal owned for two weeks has nothing to show in a
+            column regardless of which ones its stabilisation stage would
+            normally support.
             """
+            if insufficient:
+                return NA_LABEL
             if dev and not _dev_exempt(vcode, column):
                 return NA_LABEL
             return value
@@ -466,6 +698,11 @@ def assemble_operating(investor_code: str, quarter: str, *,
                 [c for c in DEV_SUPPRESSED_COLUMNS if not _dev_exempt(vcode, c)]
                 if dev else []),
             "dev_display_exception": exempted if dev else [],
+            # Why this row reads n/a when it is not a development deal, and the
+            # number the rule turned on — surfaced so the page can explain
+            # itself rather than the reason living only in this file.
+            "insufficient_history": insufficient,
+            "months_owned": (round(mo, 1) if mo is not None else None),
             # Fall back Projected YE -> YTD actual -> At Close: several deals
             # carry only some of the three (Giant 7 has no Projected YE
             # occupancy at 26Q1), and blanking the cell when a reading does
@@ -474,7 +711,8 @@ def assemble_operating(investor_code: str, quarter: str, *,
                 (v for v in (occ["projected_ye"], occ["ytd_actual"],
                              occ["at_close"]) if v is not None), None)),
             "econ_occ_basis": (
-                "dev" if (dev and not _dev_exempt(vcode, "econ_occ"))
+                "insufficient operating history" if insufficient
+                else "dev" if (dev and not _dev_exempt(vcode, "econ_occ"))
                 else next(
                     (k for k in ("projected_ye", "ytd_actual", "at_close")
                      if occ[k] is not None), None)),
