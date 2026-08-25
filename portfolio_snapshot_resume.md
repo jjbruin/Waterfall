@@ -1,16 +1,151 @@
 # PORTFOLIO SNAPSHOT — FINAL STATE / DEPLOY HANDOFF
 
-> **STATUS: COMPLETE AND HANDED TO JIM FOR DEPLOY.**
-> Deploy from **`wip/portfolio-snapshot-performance` @ `c4c2cbc`**.
-> `main` is untouched at `986881f`. Nothing pushed, nothing merged.
-> Steps 1–10 are all done. No Excel export and no further polish were required.
-> Read "Deploy handoff" below first; the rest is the build record.
+> **STATUS: MERGED TO `main` AND DEPLOYED AND LIVE.**
+> Superseded the earlier "handed to Jim for deploy" state. The feature was
+> merged at **`41c8e4a`** ("Merge wip/portfolio-snapshot-performance into main")
+> and all snapshot work is now in `origin/main`. Live builds were rotating
+> rapidly through the evening of 2026-08-24.
+> Read "SESSION 2026-08-24 (post-deploy)" immediately below first; the rest of
+> the file is the original build record and remains accurate as history.
 
-Written 2026-08-24, final revision at session close. Read
-`portfolio_snapshot_build_spec.md` (commit `010d1e9`) for the original plan; this
-file is the build record and the deploy handoff.
+Written 2026-08-24. Read `portfolio_snapshot_build_spec.md` (commit `010d1e9`)
+for the original plan; this file is the build record, the deploy handoff, and now
+the post-deploy log.
 
-**Nothing is merged, nothing is pushed, `main` is untouched at `986881f`.**
+---
+
+## SESSION 2026-08-24 (post-deploy) — READ THIS FIRST
+
+### Deployed state
+
+- **Merged and live.** `origin/main` carries the feature via merge `41c8e4a`.
+  Jim then pushed a run of small fixes on top (`65f45e9`, `1f679c9`, `13da6ba`,
+  `12484df` …). **Every one of my 16 snapshot commits is contained in
+  `origin/main`** — verified with `git merge-base --is-ancestor`.
+- Live container builds rotated repeatedly that evening
+  (`f7692533e77c` → `3a0426c1bd03` → `7b0aed6fdb0c` → `e4e80de6410f` →
+  `150a89f70ace` …). **Always re-check `/api/data/version` and confirm it is
+  stable across several probes before trusting any captured figure.** One probe
+  window hit read timeouts mid-redeploy.
+- The earlier scare that this branch "deleted Jim's cash-flow work" was a
+  **stale-base artefact, not an isolation violation**: my 16 commits were
+  17 added / 4 modified / **0 deleted**, and `cashflow_parser.py` /
+  `ProspectAnalysisView.vue` never existed on my base. Diffing *newer main →
+  older branch* reports files that only exist on the newer side as deletions.
+  The real merge preserved everything. Only genuine overlap was the 4 additive
+  shared touches, with one one-line `PROTECTED_TABLES` union to resolve.
+
+### Efficiency optimisations
+
+- **#1 lean One Pager provider — DONE by Jim (`1f679c9`).** Replaces
+  `get_one_pager_data` with direct `get_capitalization_stack` +
+  `get_property_performance` calls. **Audited output-neutral**: the snapshot
+  reads only `cap_stack` (financial/loan/summary) and `property_performance`
+  (loan/operating); `pe_performance`, `general` and the payload's `comments` are
+  read **nowhere**. The one field Jim omits, `pe_yield_on_exposure`, is also read
+  nowhere. Arg lists match, including `inv_map=`.
+- **#3 batch `pe_cap_comments` — DONE by Jim (`1f679c9`).** Pure efficiency. Two
+  behaviours that must stay: only non-empty comments are emitted, and failure
+  must degrade to `{}` (so the cross-check reports it could not run) rather than
+  raising.
+- **#2 direct-ISBS quarterly NOI — NOT DONE. Jim is building/verifying it.**
+  `_quarterly_noi_provider` is still the Property Financials chart pipeline.
+  **Baseline handed over**:
+  `~/Downloads/debt_yield_baseline_TIAA_20260824-200432_CLEAN.csv` plus its
+  `_README.txt` (build `e4e80de6410f`, git HEAD `13da6ba`).
+  **Gate: must match 26Q1 AND 26Q2 byte-for-byte, including every `None`.**
+  - Q1 alone is **not** a sufficient test: at Q1 (`months_elapsed=3`)
+    single-period NOI **equals** YTD for all 18 populated deals, so a YTD-shaped
+    implementation passes by accident. At Q2 (`months_elapsed=6`) the two differ
+    on **all 19** populated deals, by up to **+5.88pp** (Plaza Del Mar; Mount
+    Prospect +4.52, Poplar Prairie +3.30, Evergreen +2.47).
+  - 11 `None` rows per quarter, and **the None sets differ between quarters**.
+    **Giant 7 (`P0000019`) is the key trap** — portfolio parent whose NOI sits on
+    child vcodes with nothing under its own, so the chart pipeline correctly
+    returns `None`; a naive three-month sum under the parent returns 0 or invents
+    a value. Negative dev-deal NOI (Jefferson Eastchase/Waters Creek/Addison
+    Heights) must not be clamped.
+
+### Comma-parse bug — FIXED AND DEPLOYED
+
+Five Summary deals were failing on `could not convert string to float:
+'266,698'` and losing funded pref + commitment. **All 5 now parse, and zero
+flags remain across the 32 Summary rows**:
+
+| Deal | funded / committed (deal level) |
+|---|---|
+| Green Valley Ranch & Telluride | 20,000,000 / 20,000,000 |
+| ReNew Glenmoore | 20,750,000 / 20,750,000 |
+| Town Fair Tire Portfolio | 9,050,000 / 9,050,000 |
+| Burton Portfolio | 26,597,500 / 54,227,500 |
+| Trolley Square | 4,190,216 / 6,750,000 |
+
+Verified TIAA/26Q1 only — other investors and quarters not re-checked.
+
+### PDF reconciliation — TIAA 26Q1
+
+**Funded now essentially ties: `402,096,813` live vs `404,200,000` PDF
+(−0.52%)**, up from −$74.6M before the comma fix.
+
+| Asset type | Live funded | PDF | Delta |
+|---|---|---|---|
+| Multifamily | 240,411,006 | 240,410,995 | **+$11** |
+| Retail | 117,414,277 | 117,414,277 | **exact** |
+| Office | 12,243,598 | 12,243,598 | **exact** |
+| **Self-Storage** | **32,027,932** | **34,172,689** | **−2,144,757** |
+
+**← NEXT TASK.** The **entire** remaining funded gap is the Self-Storage bucket,
+2 deals — **likely Pegasus Life Storage, which also shows `n/a` debt on the Loan
+subtab.** Small, well-bounded chase.
+
+**Committed is +$31.0M over the PDF (476.1M vs 445.1M) — PRE-EXISTING, NOT A
+BUG.** Already documented in the `portfolio_snapshot_summary.py` docstring under
+"WHAT DOES NOT TIE, AND IS FLAGGED RATHER THAN FUDGED". Driven by **unfunded
+commitments on dev deals**; `diagnostics['committed_gap_attribution']` gives
+per-deal numbers (Burton 24.87M, JB Fair Park 19.42M, Jefferson Stephens 17.88M,
+Brainerd 8.41M; East Manchester runs −2.72M the other way). By asset type:
+Retail +22.1M, Multifamily +11.0M, Self-Storage −2.1M. **This is a definitional
+question for Charlene + Jim — how should unfunded dev commitments count — not a
+defect.** Reported as computed, never bent toward the PDF.
+
+**Trap when reconciling:** the PDF's Deal Type pie ($153.1M / $131.3M /
+$119.8M) is **FUNDED dollars, not committed** — they sum to $404.2M. Only the
+**asset-type** committed comparison is valid. Deal Type funded ties well:
+Value-Add −2.95M (contains the Self-Storage gap), Income +0.85M, New
+Construction −$1,988.
+
+### Open threads at 2026-08-24 close
+
+1. **NEXT: the Self-Storage −$2,144,757 funded gap.** 2 deals, likely Pegasus
+   Life Storage (also `n/a` debt on Loan). Now the only funded discrepancy.
+2. **Camp Creek YTD-DSCR: live 1.854x vs PDF 1.7x.** Separate, unrelated to the
+   efficiency work, comes from `property_performance.dscr` (which optimisation #1
+   keeps). Worth a look.
+3. **Accrued pref fix** — see the RESOLVED/NEXT TASK section further down. OREI
+   is settled as correct; Apple Self Storage + Plaza Del Mar need their own terms
+   checked before any code change.
+4. **Full PDF figure-by-figure reconciliation + flag cleanup — DEFERRED.** Needs
+   a PDF reader in the venv: there is **no poppler and no `fitz`/`pymupdf`/
+   `pdfplumber`/`pypdf`**, so the 26Q1 PDF could not be read at all. Every PDF
+   figure used today came from anchors quoted in conversation, not extracted.
+   Candidate file: `~/Downloads/3-31-26 - Portfolio Report Appendix- TIAA_revised.pdf`.
+   **Also note: snapshot "flags" are DERIVED, not stored** — there are only
+   `portfolio_snapshot_{comments,footnotes,values,frozen}` tables and no flag
+   table. Flags are recomputed per row from data conditions ("no loan record",
+   "no commitment row", "One Pager unavailable"). They are **data-availability
+   and provenance notes, not reconciliation-vs-PDF claims**, so "clear the flag
+   because the figure matches the PDF" is not a supported operation and would
+   destroy real lineage information. Fix the data or the guardrail logic instead.
+5. **Print function matching the PDF format — DEFERRED.**
+6. **Only TIAA is validated and name-resolved** (`TGAM` → "TIAA" alias).
+   **KOC and Declaration still need the MRI name query + validation.**
+
+### Working process with Jim (agreed)
+
+Both push to `origin` and leave a one-line ping. **Pull latest before starting
+anything**, and sync every session — `origin/main` moved **five times** during
+this one session (`986881f` → … → `12484df`), and Jim edits the same snapshot
+Vue components. `git pull --ff-only origin main` is the safe form.
 
 ---
 
@@ -493,7 +628,7 @@ App starts, 244 routes; persistence 35/35 and guardrails 22/22 still pass.
 
 ---
 
-## SEPARATE APP-SIDE BUG — OREI accrued pref. NOT this feature. NOT a deploy blocker.
+## SEPARATE APP-SIDE BUG — accrued pref. OREI part RESOLVED (see below). NOT this feature.
 
 Found while working on the snapshot but **entirely outside it**: this is Jim's
 app-side fix in `reports_service.py` / the ROE Summary path. **Nothing has been
@@ -519,13 +654,34 @@ swallowed, and `pref_rate` silently stays `0.0`. **Same class of bug as the
 so the waterfall-based rate lookup finds nothing either. Both paths miss, so the
 rate is zero.
 
-### THE OPEN QUESTION — do not fix before answering it
+### RESOLVED 2026-08-24 — OREI's $0 IS CORRECT. DO NOT "FIX" OREI.
 
-**The `'Default'` label may relate to a JV amendment that adjusted OREI's
-waterfall structure.** Before any fix, **the amended JV terms must confirm whether
-OREI *should* accrue 8.5% (making this a bug) or whether the current behaviour is
-intentional.** Fixing first and asking later risks manufacturing pref that the
-amendment deliberately removed.
+**Per Matt: the JV amendment last year ENDED OREI's pref accrual.** The deal is
+**cash-flow-split by percentages** now. So `vState='Default'` is a faithful
+reflection of the **amended** structure, not a mislabel, and the $0 accrued
+balance is the right answer. Manufacturing 8.5% pref here would have invented
+income the amendment deliberately removed — which is exactly why the question
+gated the fix.
+
+**The underlying code bug (a) is still real, and still needs fixing** — it just
+is not OREI's problem. It affects:
+
+- **Apple Self Storage** (~$8.06M PE capital) and **Plaza Del Mar** (~$13.60M)
+  — both show $0 accrued. **CHECK THEIR OWN TERMS FIRST.** They may also be
+  amended, in which case $0 is correct for them too. Do not assume a bug from
+  the symptom; OREI just proved the symptom is ambiguous.
+- **Cocoplum**, which accrues at 5% where `deal_terms` says 8.5% — and is
+  **genuinely two-tier (5% / 8.5%)**, so it needs a business decision, not a
+  flat rate.
+
+For reference, the accrual mechanics were walked end to end and verified against
+live: `build_pref_balance_detail()` is **simple within the year, compounded
+annually at 12/31**; base `H = prior InvBal + prior CompPref`;
+`CurrDue = H x rate x days/days_in_year(row year)` (Act/Act, no cross-year
+split); distributions pay **pref only** and never principal (surplus is truncated
+by `max(0, …)`); quarter-ends are synthesised as zero-amount rows. With
+`rate = 0` the whole chain collapses to 0 regardless of capital — which is why
+OREI shows 33 event rows, $13.39M of capital, and $0.
 
 ### The naive fix ships a REGRESSION
 
@@ -548,16 +704,27 @@ gap is unresolved.
 
 Diagnostics are **untracked, read-only**, in `scripts/`:
 `orei_accrued_diag.py` … `orei_accrued_diag5.py`, `pref_fix_impact.py`,
-`pref_fix_impact_detail.py`. They are not committed (they follow the existing
-convention for per-developer diagnostic scripts) — **they will be lost if the
-working tree is cleaned.** Commit them first if they need to survive.
+`pref_fix_impact_detail.py`, `pref_mechanics_walkthrough.py`. They are not
+committed (they follow the existing convention for per-developer diagnostic
+scripts) — **they will be lost if the working tree is cleaned.** Commit them
+first if they need to survive.
+
+`pref_fix_impact.py` is the one worth keeping: `pull` / `simulate` / `validate` /
+`report` stages, and its `validate` stage proved the simulated "before" matched
+live on **78 investor-level and all 110 deal-level comparisons, zero
+mismatches** — which is what licensed the "after" numbers.
 
 ### NEXT TASK when this is picked up
 
-**Confirm how the accrued balance is actually calculated** — walk
-`build_pref_balance_detail()` mechanics end to end — **before judging whether
-OREI's $0 is a bug or correct-per-amendment.** That determination gates
-everything else above.
+1. **Check Apple Self Storage and Plaza Del Mar's actual deal terms** — amended
+   or not? That decides whether their $0 is a bug at all.
+2. Only then implement the **reordered** lookup
+   (investor-aware waterfall match → `deal_terms` → any waterfall rate). The
+   naive `sa.text()` fix alone **ships a Pegasus/TGA22 regression** (10% → 9%,
+   −$435,165) because `deal_terms` is investor-blind.
+3. Decide Cocoplum's two-tier treatment separately.
+4. Narrow the bare `except Exception: pass` at `reports_service.py:~1008` — it
+   hid this indefinitely.
 
 ---
 
