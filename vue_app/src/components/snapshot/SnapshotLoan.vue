@@ -219,6 +219,7 @@ table.grid td { padding: 5px 8px; border-bottom: 1px solid #f2f2f2; vertical-ali
 th.sticky-l { background: #fafafa; z-index: 3; }
 
 .r { text-align: right; }
+table.grid th.r { text-align: right; }
 .num { font-variant-numeric: tabular-nums; }
 
 /* A backend literal ("Dev", n/a) is not a measurement — de-emphasise it. */
