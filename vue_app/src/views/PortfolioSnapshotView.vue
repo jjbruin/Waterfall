@@ -55,6 +55,15 @@ const investorName = computed(() =>
   || investors.value.find((i: any) => i.code === selectedInvestor.value)?.name
   || selectedInvestor.value)
 
+/** Open the consolidated 4-page document for the current selection. */
+function openPrint() {
+  const q = new URLSearchParams({
+    investor: selectedInvestor.value,
+    quarter: selectedQuarter.value,
+  })
+  window.open(`/portfolio-snapshot/print?${q}`, '_blank')
+}
+
 /** ISO -> M/D/YYYY by regex; `new Date('2026-03-31')` is midnight UTC and
  *  renders as the previous day in US timezones. Same fix as format.fmtDate. */
 function fmtDate(v?: string | null): string {
@@ -248,6 +257,20 @@ const statusColor = computed(() => {
         </div>
         <button class="btn-refresh" :disabled="!canLoad || loading" @click="load">
           {{ loading ? 'Loading…' : 'Refresh' }}
+        </button>
+        <!--
+          Opens the consolidated 4-page document in its own tab. A new tab, not
+          this one: the tabbed view mounts a single subtab and printing it yields
+          one page, and navigating away would also throw away any unsaved edit
+          in a textarea here.
+        -->
+        <button
+          class="btn-print"
+          :disabled="!bundle || loading"
+          title="Open the 4-page report (page 1 charts, Financial, Operating, Loan)"
+          @click="openPrint"
+        >
+          Print report
         </button>
         <span v-if="saving" class="save-note">Saving…</span>
         <span v-else-if="savedFlash" class="save-note ok">{{ savedFlash }}</span>
@@ -458,6 +481,19 @@ h2 { font-size: 20px; margin: 0 0 12px 0; }
 }
 .btn-refresh:hover:not(:disabled) { background: #3a63ad; }
 .btn-refresh:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.btn-print {
+  padding: 8px 16px;
+  border: 1px solid var(--color-accent);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--color-surface);
+  color: var(--color-accent);
+}
+.btn-print:hover:not(:disabled) { background: #eef2fa; }
+.btn-print:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .save-note { font-size: 12px; color: var(--color-text-secondary); font-style: italic; }
 .save-note.ok { color: #2e7d32; font-style: normal; font-weight: 600; }

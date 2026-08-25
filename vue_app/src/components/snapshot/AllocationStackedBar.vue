@@ -22,26 +22,41 @@
 import { computed } from 'vue'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
-import { CanvasRenderer } from 'echarts/renderers'
+import { CanvasRenderer, SVGRenderer } from 'echarts/renderers'
 import { BarChart } from 'echarts/charts'
 import {
   GridComponent, TooltipComponent, LegendComponent,
 } from 'echarts/components'
 import { assetAllocationOption, type Alloc } from './chartOptions'
 
-use([CanvasRenderer, BarChart, GridComponent, TooltipComponent, LegendComponent])
+use([CanvasRenderer, SVGRenderer, BarChart, GridComponent, TooltipComponent,
+     LegendComponent])
 
-const props = defineProps<{ alloc: Alloc | null }>()
+const props = withDefaults(defineProps<{
+  alloc: Alloc | null
+  /**
+   * 'svg' for the print route. A canvas is a raster: the browser scales it to
+   * the printer's DPI and the type inside the bars goes soft. SVG prints as
+   * vectors. Canvas stays the on-screen default — it redraws faster on resize.
+   */
+  renderer?: 'canvas' | 'svg'
+  height?: string
+}>(), { renderer: 'canvas', height: '380px' })
 
 const hasData = computed(() => (props.alloc?.buckets || []).length > 0)
 const option = computed(() => assetAllocationOption(props.alloc))
+// Animation off for SVG: the print route renders once and is captured
+// immediately, so an entry animation would be caught mid-flight.
+const initOptions = computed(() => ({ renderer: props.renderer }))
+const animate = computed(() => props.renderer !== 'svg')
 </script>
 
 <template>
   <v-chart
     v-if="hasData"
-    :option="option"
-    style="height: 380px; width: 100%"
+    :option="{ ...option, animation: animate }"
+    :init-options="initOptions"
+    :style="{ height, width: '100%' }"
     autoresize
   />
   <p v-else class="empty">No allocation data.</p>

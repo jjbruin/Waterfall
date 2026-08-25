@@ -17,25 +17,33 @@
 import { computed } from 'vue'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
-import { CanvasRenderer } from 'echarts/renderers'
+import { CanvasRenderer, SVGRenderer } from 'echarts/renderers'
 import { PieChart } from 'echarts/charts'
 import { TooltipComponent, LegendComponent } from 'echarts/components'
 import { dealTypeOption, type Alloc } from './chartOptions'
 
-use([CanvasRenderer, PieChart, TooltipComponent, LegendComponent])
+use([CanvasRenderer, SVGRenderer, PieChart, TooltipComponent, LegendComponent])
 
-const props = defineProps<{ alloc: Alloc | null }>()
+const props = withDefaults(defineProps<{
+  alloc: Alloc | null
+  /** 'svg' for the print route — see the note in AllocationStackedBar. */
+  renderer?: 'canvas' | 'svg'
+  height?: string
+}>(), { renderer: 'canvas', height: '380px' })
 
 const hasData = computed(
   () => (props.alloc?.buckets || []).length > 0 && !!props.alloc?.total_funded)
 const option = computed(() => dealTypeOption(props.alloc))
+const initOptions = computed(() => ({ renderer: props.renderer }))
+const animate = computed(() => props.renderer !== 'svg')
 </script>
 
 <template>
   <v-chart
     v-if="hasData"
-    :option="option"
-    style="height: 380px; width: 100%"
+    :option="{ ...option, animation: animate }"
+    :init-options="initOptions"
+    :style="{ height, width: '100%' }"
     autoresize
   />
   <p v-else class="empty">No deal-type data.</p>

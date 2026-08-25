@@ -142,15 +142,23 @@ const allRows = computed(() => {
                 {{ disp(r.actual_growth_display, 'pct') }}
               </td>
               <td class="cmt">
+                <!--
+                  Read-only renders TEXT, not a disabled control. A textarea
+                  keeps its rows="2" height even when empty, which on paper made
+                  every deal row ~48px tall and pushed a 33-deal table onto two
+                  sheets. It also just reads better: an approved snapshot should
+                  not look like a form.
+                -->
                 <textarea
+                  v-if="editable"
                   v-model="comments[r.vcode]"
                   rows="2"
                   spellcheck="true"
                   lang="en"
-                  :readonly="!editable"
-                  :placeholder="editable ? 'Comment…' : ''"
+                  placeholder="Comment…"
                   @change="commit(r.vcode)"
                 ></textarea>
+                <span v-else class="cmt-text">{{ r.operating_comment || '' }}</span>
               </td>
             </tr>
           </tbody>
@@ -242,6 +250,7 @@ table.grid th.r { text-align: right; }
   resize: vertical;
 }
 .cmt textarea[readonly] { background: #fafafa; color: var(--color-text-secondary); }
+.cmt-text { font-size: 12px; line-height: 1.35; white-space: pre-wrap; }
 
 .tag {
   font-size: 9px;

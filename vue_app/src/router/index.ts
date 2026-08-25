@@ -50,6 +50,13 @@ const routes = [
     component: () => import('../views/PortfolioSnapshotView.vue'),
   },
   {
+    // The consolidated 4-page document. Separate from the tabbed view because
+    // that one mounts a single subtab at a time; this mounts all four as pages.
+    path: '/portfolio-snapshot/print',
+    name: 'Portfolio Snapshot Print',
+    component: () => import('../views/PortfolioSnapshotPrintView.vue'),
+  },
+  {
     path: '/review-tracking',
     name: 'Review Tracking',
     component: () => import('../views/ReviewTrackingView.vue'),

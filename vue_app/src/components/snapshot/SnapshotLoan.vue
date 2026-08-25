@@ -137,15 +137,19 @@ const devCount = computed(() => {
                 {{ disp(r.debt_yield_display, 'pct') }}
               </td>
               <td class="cmt">
+                <!-- Read-only renders TEXT — see the note in SnapshotOperating:
+                     an empty textarea keeps its rows="2" height and doubled the
+                     printed table's length. -->
                 <textarea
+                  v-if="editable"
                   v-model="comments[r.vcode]"
                   rows="2"
                   spellcheck="true"
                   lang="en"
-                  :readonly="!editable"
-                  :placeholder="editable ? 'Comment…' : ''"
+                  placeholder="Comment…"
                   @change="commit(r.vcode)"
                 ></textarea>
+                <span v-else class="cmt-text">{{ r.loan_comment || '' }}</span>
               </td>
             </tr>
           </tbody>
@@ -261,6 +265,7 @@ tfoot .note {
   resize: vertical;
 }
 .cmt textarea[readonly] { background: #fafafa; color: var(--color-text-secondary); }
+.cmt-text { font-size: 12px; line-height: 1.35; white-space: pre-wrap; }
 
 .tag {
   font-size: 9px;
