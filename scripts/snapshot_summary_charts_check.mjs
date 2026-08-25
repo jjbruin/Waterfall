@@ -105,7 +105,7 @@ function main(mod, echarts, summary) {
   const asset = summary.asset_allocation
   const dealType = summary.deal_type_allocation
   const { assetAllocationOption, dealTypeOption, LABEL_MIN_PCT,
-        PIE_LABEL_MIN_PCT } = mod
+        PIE_LABEL_MIN_PCT, segmentLabel } = mod
   const RESIDUAL = new Set(['Unclassified', 'Other', 'Unknown'])
 
   // ---------- Chart 1 ----------
@@ -146,8 +146,10 @@ function main(mod, echarts, summary) {
        Math.abs(f.value - (bucket.funded / asset.total_funded) * 100) < 0.01)
     // label rule
     const shouldLabel = f.value >= LABEL_MIN_PCT
+    // The inside label is $M, not full dollars — see segmentLabel. The
+    // reference PDF prints full dollars there; this is a deliberate deviation.
     ck(`${s.name}: label ${shouldLabel ? 'shown' : 'suppressed'} per LABEL_MIN_PCT`,
-       shouldLabel ? lbl === usd(f.usd) : lbl === '')
+       shouldLabel ? lbl === segmentLabel(f.usd) : lbl === '')
     // 2px surface gap between stacked fills
     ck(`${s.name}: 2px surface gap`,
        s.itemStyle.borderWidth === 2 && s.itemStyle.borderColor === '#ffffff')

@@ -68,21 +68,16 @@ function narrativeAt(i: number): string {
   return narratives.value[i]?.text || ''
 }
 
-// The One Pager's print pattern: a timestamp we render ourselves, and the
-// document title blanked so the browser's own header does not print
-// "Waterfall XIRR" across the top of every page.
-const printTimestamp = ref('')
-
-function stamp() {
-  const now = new Date()
-  printTimestamp.value = `${now.getMonth() + 1}/${now.getDate()}/`
-    + `${now.getFullYear()}, `
-    + now.toLocaleTimeString('en-US',
-        { hour: 'numeric', minute: '2-digit', hour12: true })
-}
-
+// The document title is blanked while printing so the browser's own header
+// cannot put "Waterfall XIRR" across the top of every page. Chrome is also
+// launched with --no-pdf-header-footer in the harness, and @page margin is 0
+// with the sheet's own padding standing in — three belts for the same braces.
+//
+// NO RENDERED TIMESTAMP. The One Pager prints one in its corner, and this view
+// copied that; the reference TIAA document has none, and it was the visible
+// "8/25/2026, 3:31 PM" on every page. It was never the browser's header — it
+// was ours.
 function doPrint() {
-  stamp()
   const orig = document.title
   document.title = ' '
   nextTick(() => {
@@ -92,7 +87,6 @@ function doPrint() {
 }
 
 onMounted(async () => {
-  stamp()
   if (!investor || !quarter) {
     loadError.value = 'investor and quarter are required'
     loading.value = false
@@ -135,7 +129,6 @@ onMounted(async () => {
     <template v-else-if="bundle">
       <!-- ══ PAGE 1 — summary: narratives + the two charts ══ -->
       <section class="print-page">
-        <div class="stamp">{{ printTimestamp }}</div>
         <h1 class="pdf-title">PORTFOLIO SNAPSHOT</h1>
         <div class="pdf-client">{{ investorName }}</div>
         <div class="pdf-sub">
@@ -164,7 +157,6 @@ onMounted(async () => {
 
       <!-- ══ PAGE 2 — Financial ══ -->
       <section class="print-page">
-        <div class="stamp">{{ printTimestamp }}</div>
         <h1 class="pdf-title">PORTFOLIO SNAPSHOT</h1>
         <div class="pdf-client">{{ investorName }}</div>
         <div class="pdf-sub">
@@ -180,7 +172,6 @@ onMounted(async () => {
 
       <!-- ══ PAGE 3 — Operating ══ -->
       <section class="print-page">
-        <div class="stamp">{{ printTimestamp }}</div>
         <div class="pdf-client">{{ investorName }}</div>
         <div class="pdf-sub">
           Current Portfolio Update (Balances as of {{ asOf }}, $ millions)
@@ -195,7 +186,6 @@ onMounted(async () => {
 
       <!-- ══ PAGE 4 — Loan ══ -->
       <section class="print-page last">
-        <div class="stamp">{{ printTimestamp }}</div>
         <div class="pdf-client">{{ investorName }}</div>
         <div class="pdf-sub">
           Current Portfolio Update (Balances as of {{ asOf }}, $ millions)
@@ -243,14 +233,6 @@ onMounted(async () => {
   background: #fff;
   border: 1px solid var(--color-border);
   position: relative;
-}
-
-.stamp {
-  position: absolute;
-  top: 0.18in;
-  left: 0.5in;
-  font-size: 8px;
-  color: var(--color-text-secondary);
 }
 
 .pdf-title {
@@ -361,7 +343,26 @@ onMounted(async () => {
     padding: 0 !important;
   }
 
-  /* Keep a table from splitting a fund block across sheets where it can. */
-  :deep(tbody) { break-inside: avoid; }
+  /* ---- table pagination ----
+     `display: table-header-group` is what makes a thead REPEAT at the top of
+     each sheet a table spills onto. Without it the header prints once and the
+     continuation columns are unlabelled.
+
+     The previous `break-inside: avoid` on tbody is REMOVED, and it was the
+     cause of the detached headers: when a fund block did not fit, the browser
+     pushed the whole tbody to the next sheet but had already laid the repeated
+     thead down at the bottom of the current one, leaving a header row with no
+     data under it. Avoiding breaks inside a ROW is safe and enough — a row is
+     one line, a fund block is twenty. */
+  :deep(thead) { display: table-header-group; }
+  :deep(tfoot) { display: table-footer-group; }
+  :deep(tr) { break-inside: avoid; page-break-inside: avoid; }
+
+  /* ---- internal markers are not part of the document ----
+     "DEV", "CHILD", the "!" flag dots and the "*" exception star are working
+     annotations for an analyst reading the screen. The reference document shows
+     none of them: a development deal simply reads n/a. Hidden rather than
+     removed, because on screen they are how a reader knows WHY a cell is n/a. */
+  :deep(.tag), :deep(.warn-dot), :deep(.star) { display: none !important; }
 }
 </style>

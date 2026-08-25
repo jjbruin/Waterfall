@@ -48,10 +48,23 @@ export function m$(v: number | null | undefined): string {
   return '$' + (v / 1e6).toFixed(1) + 'M'
 }
 
+/** Full dollars with separators — the tooltip's unit, where there is room. */
 export function dollars(v: number | null | undefined): string {
   if (v == null) return '—'
   return '$' + Math.round(v).toLocaleString('en-US')
 }
+
+/**
+ * The unit for a label sitting INSIDE a bar segment.
+ *
+ * NOTE the reference PDF prints full dollars here ("$240,410,995"). $M is used
+ * instead because an 11-character number inside a 40px-tall segment is what
+ * forced the label suppression threshold up in the first place, and because the
+ * page's own subtitle already says "$ millions" — so the long form repeats a
+ * unit the reader has been given. Say the word and this is one function back to
+ * `dollars`.
+ */
+export const segmentLabel = m$
 
 /**
  * Asset Allocation — two 100%-stacked bars, one per basis.
@@ -90,7 +103,7 @@ export function assetAllocationOption(alloc: Alloc | null | undefined) {
         fontWeight: 600,
         formatter: (p: any) => {
           const d = pts[p.dataIndex]
-          return d && d.pct >= LABEL_MIN_PCT ? dollars(d.usd) : ''
+          return d && d.pct >= LABEL_MIN_PCT ? segmentLabel(d.usd) : ''
         },
       },
       data: pts.map((d) => ({ value: d.pct, usd: d.usd })),

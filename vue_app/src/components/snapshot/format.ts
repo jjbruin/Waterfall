@@ -65,9 +65,13 @@ export function fmtPctPts(v: number | null | undefined, dp = 1): string {
 }
 
 /** A ratio like DSCR (1.8536 -> "1.854"). */
-export function fmtX(v: number | null | undefined, dp = 3): string {
+export function fmtX(v: number | null | undefined, dp = 1): string {
   if (v == null) return DASH
-  return v.toFixed(dp)
+  // One decimal and an "x" suffix, as the reference document prints a coverage
+  // ratio. Was three decimals and no suffix, which put "2.087" in a column the
+  // PDF shows as "2.1x" — false precision on a figure derived from rounded NOI,
+  // and without the suffix a DSCR column reads like a percentage.
+  return v.toFixed(dp) + 'x'
 }
 
 /** ISO date -> M/D/YYYY, parsed by regex.
