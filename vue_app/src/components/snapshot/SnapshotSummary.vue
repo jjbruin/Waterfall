@@ -1,19 +1,32 @@
 <script setup lang="ts">
 /**
- * Summary subtab — allocation rollups + two narrative boxes.
+ * Summary subtab — PDF page 1: narrative, chart, narrative, chart.
  *
- * Presentational: props in, save events out. The allocation bars are plain
- * CSS-width divs rather than a chart library — four to six buckets with a
- * dollar and a percentage each read better as a labelled bar list, and it adds
- * no dependency to a build we cannot preview.
+ * LAYOUT follows the published page, which interleaves rather than stacking:
+ * the first paragraph sets up the asset-allocation chart and the second sets up
+ * the deal-type pie. The two narratives used to sit together in a "Commentary"
+ * card below both tables; each now sits directly above the chart it describes.
+ *
+ * The CSS-width bar lists they replace are gone from the headline view but the
+ * numbers are not — each chart keeps a "Show data" table underneath carrying
+ * every figure the bars showed plus the deal counts, which is also the relief
+ * the palette's contrast WARN obliges (see ./palette.ts).
+ *
+ * Presentational: props in, save events out. No computation of allocation
+ * figures happens here — the charts read the backend's existing
+ * asset_allocation / deal_type_allocation payloads untouched.
  */
 import { computed, ref, watch } from 'vue'
 import { fmtM, fmtM$, fmtPct } from './format'
+import AllocationStackedBar from './AllocationStackedBar.vue'
+import DealTypePie from './DealTypePie.vue'
 
 const props = defineProps<{ data: any; editable: boolean }>()
 const emit = defineEmits<{
   saveComment: [p: { scope: string; field: string; scope_key?: string; text: string }]
 }>()
+
+import { hueFor } from './palette'
 
 const asset = computed(() => props.data?.asset_allocation || null)
 const dealType = computed(() => props.data?.deal_type_allocation || null)
@@ -40,11 +53,9 @@ function label(field: string) {
   return n === 0 ? 'Narrative — first paragraph' : 'Narrative — second paragraph'
 }
 
-/** Bar width as a percentage of the largest bucket, so bars stay comparable. */
-function barWidth(bucket: any, buckets: any[]): string {
-  const max = Math.max(...buckets.map((b) => b.funded || 0), 0)
-  if (!max) return '0%'
-  return ((bucket.funded || 0) / max * 100).toFixed(1) + '%'
+/** The narrative that belongs above a given chart, by position. */
+function narrativeAt(i: number) {
+  return narratives.value[i] || null
 }
 </script>
 
@@ -53,13 +64,34 @@ function barWidth(bucket: any, buckets: any[]): string {
   <div v-else class="summary">
     <p v-for="(f, i) in flags" :key="i" class="flagline">{{ f }}</p>
 
-    <div class="alloc-grid">
-      <!-- Asset Allocation -->
-      <section class="card">
-        <header>
-          <h3>Asset Allocation</h3>
-          <span class="sub">{{ data.basis_note }}</span>
-        </header>
+    <!-- ── Asset Allocation: narrative, then chart (PDF page 1 order) ── -->
+    <section class="card">
+      <div v-if="narrativeAt(0)" class="narrative lead">
+        <label>{{ label(narrativeAt(0).field) }}</label>
+        <textarea
+          v-model="text[narrativeAt(0).field]"
+          rows="4"
+          spellcheck="true"
+          lang="en"
+          :readonly="!editable"
+          :placeholder="editable ? 'Type commentary…' : ''"
+          @change="commit(narrativeAt(0).field)"
+        ></textarea>
+        <span class="hint">
+          <template v-if="!editable">Locked — this snapshot is approved.</template>
+          <template v-else-if="narrativeAt(0).is_blank">Blank. Nothing is auto-generated.</template>
+          <template v-else>{{ narrativeAt(0).char_count }} characters saved.</template>
+        </span>
+      </div>
+
+      <header>
+        <h3>Asset Allocation: Funded vs. Total Commitment</h3>
+        <span class="sub">{{ data.basis_note }}</span>
+      </header>
+      <AllocationStackedBar :alloc="asset" />
+
+      <details class="showdata">
+        <summary>Show data</summary>
         <table class="alloc">
           <thead>
             <tr>
@@ -73,12 +105,7 @@ function barWidth(bucket: any, buckets: any[]): string {
           </thead>
           <tbody>
             <tr v-for="(b, idx) in (asset?.buckets || [])" :key="b.label">
-              <td>
-                <div class="bar-label">{{ b.label }}</div>
-                <div class="bar-track">
-                  <div class="bar-fill" :style="{ width: barWidth(b, asset.buckets) }"></div>
-                </div>
-              </td>
+              <td><span class="swatch" :style="{ background: hueFor(idx) }"></span>{{ b.label }}</td>
               <td class="r num">{{ idx === 0 ? fmtM$(b.funded) : fmtM(b.funded) }}</td>
               <td class="c num">{{ fmtPct(b.funded_pct) }}</td>
               <td class="r num">{{ idx === 0 ? fmtM$(b.committed) : fmtM(b.committed) }}</td>
@@ -97,14 +124,37 @@ function barWidth(bucket: any, buckets: any[]): string {
             </tr>
           </tfoot>
         </table>
-      </section>
+      </details>
+    </section>
 
-      <!-- Deal Type Allocation -->
-      <section class="card">
-        <header>
-          <h3>Deal Type Allocation</h3>
-          <span class="sub">funded dollars by investment strategy</span>
-        </header>
+    <!-- ── Deal Type: narrative, then pie ── -->
+    <section class="card">
+      <div v-if="narrativeAt(1)" class="narrative lead">
+        <label>{{ label(narrativeAt(1).field) }}</label>
+        <textarea
+          v-model="text[narrativeAt(1).field]"
+          rows="4"
+          spellcheck="true"
+          lang="en"
+          :readonly="!editable"
+          :placeholder="editable ? 'Type commentary…' : ''"
+          @change="commit(narrativeAt(1).field)"
+        ></textarea>
+        <span class="hint">
+          <template v-if="!editable">Locked — this snapshot is approved.</template>
+          <template v-else-if="narrativeAt(1).is_blank">Blank. Nothing is auto-generated.</template>
+          <template v-else>{{ narrativeAt(1).char_count }} characters saved.</template>
+        </span>
+      </div>
+
+      <header>
+        <h3>Deal Type Allocation</h3>
+        <span class="sub">funded dollars by investment strategy</span>
+      </header>
+      <DealTypePie :alloc="dealType" />
+
+      <details class="showdata">
+        <summary>Show data</summary>
         <table class="alloc">
           <thead>
             <tr>
@@ -116,12 +166,7 @@ function barWidth(bucket: any, buckets: any[]): string {
           </thead>
           <tbody>
             <tr v-for="(b, idx) in (dealType?.buckets || [])" :key="b.label">
-              <td>
-                <div class="bar-label">{{ b.label }}</div>
-                <div class="bar-track">
-                  <div class="bar-fill alt" :style="{ width: barWidth(b, dealType.buckets) }"></div>
-                </div>
-              </td>
+              <td><span class="swatch" :style="{ background: hueFor(idx) }"></span>{{ b.label }}</td>
               <td class="r num">{{ idx === 0 ? fmtM$(b.funded) : fmtM(b.funded) }}</td>
               <td class="c num">{{ fmtPct(b.funded_pct) }}</td>
               <td class="c num">{{ b.deal_count }}</td>
@@ -136,8 +181,8 @@ function barWidth(bucket: any, buckets: any[]): string {
             </tr>
           </tfoot>
         </table>
-      </section>
-    </div>
+      </details>
+    </section>
 
     <!-- Ownership-flagged deals: excluded from the scaled allocation -->
     <section v-if="flagged.length" class="card warn">
@@ -148,26 +193,24 @@ function barWidth(bucket: any, buckets: any[]): string {
       </p>
     </section>
 
-    <!-- Narrative boxes -->
-    <section class="card">
-      <header><h3>Commentary</h3></header>
+    <!--
+      Any narrative beyond the two the page lays out. Nothing produces a third
+      today, but a silently dropped comment would be worse than an extra box.
+    -->
+    <section v-if="narratives.length > 2" class="card">
+      <header><h3>Further commentary</h3></header>
       <div class="narratives">
-        <div v-for="n in narratives" :key="n.field" class="narrative">
-          <label>{{ label(n.field) }}</label>
+        <div v-for="n in narratives.slice(2)" :key="n.field" class="narrative">
+          <label>{{ n.field }}</label>
           <textarea
             v-model="text[n.field]"
-            rows="7"
+            rows="5"
             spellcheck="true"
             lang="en"
             :readonly="!editable"
             :placeholder="editable ? 'Type commentary…' : ''"
             @change="commit(n.field)"
           ></textarea>
-          <span class="hint">
-            <template v-if="!editable">Locked — this snapshot is approved.</template>
-            <template v-else-if="n.is_blank">Blank. Nothing is auto-generated.</template>
-            <template v-else>{{ n.char_count }} characters saved.</template>
-          </span>
         </div>
       </div>
     </section>
@@ -177,11 +220,32 @@ function barWidth(bucket: any, buckets: any[]): string {
 <style scoped>
 .summary { display: flex; flex-direction: column; gap: 16px; }
 
-.alloc-grid {
-  display: grid;
-  grid-template-columns: 1.35fr 1fr;
-  gap: 16px;
-  align-items: start;
+/* The lead narrative sits above its chart, as on the published page. */
+.narrative.lead { margin-bottom: 14px; }
+
+/* Every figure the old bar list carried, one click away — and the relief the
+   palette's contrast WARN requires. */
+.showdata { margin-top: 10px; }
+.showdata summary {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  padding: 4px 0;
+}
+.showdata[open] summary { margin-bottom: 6px; }
+
+/* Legend swatch in the table, so the table and the chart share one identity
+   mapping rather than the reader inferring it. */
+.swatch {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  margin-right: 6px;
+  vertical-align: baseline;
 }
 
 .card {
@@ -226,10 +290,6 @@ table.alloc tfoot td {
 .c { text-align: center; }
 .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
 
-.bar-label { font-weight: 600; margin-bottom: 3px; }
-.bar-track { height: 6px; background: #eceff1; border-radius: 3px; overflow: hidden; min-width: 90px; }
-.bar-fill { height: 100%; background: var(--color-accent); border-radius: 3px; }
-.bar-fill.alt { background: var(--color-pref, #4caf50); }
 
 .flagline { font-size: 12px; color: #856404; margin: 2px 0; }
 
@@ -265,13 +325,18 @@ table.alloc tfoot td {
 }
 
 @media (max-width: 1100px) {
-  .alloc-grid, .narratives { grid-template-columns: 1fr; }
+  .narratives { grid-template-columns: 1fr; }
 }
 
 @media print {
   .flagline { display: none; }
   .card { border: 1px solid #ccc; break-inside: avoid; }
   .card.warn { display: none; }
+  /* Canvas prints as-is; the expander is opened so the figures land on paper
+     even though its disclosure arrow means nothing there. */
+  .showdata { display: block; }
+  .showdata summary { display: none; }
+  .showdata > table { display: table !important; }
   .narrative textarea {
     border: none;
     padding: 0;
