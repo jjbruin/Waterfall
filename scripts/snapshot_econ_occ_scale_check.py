@@ -163,7 +163,8 @@ def check_page(investor, quarter, verbose):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--investor", default="TGAM")
+    ap.add_argument("--investor", default="TGAM",
+                    help="one code, or a comma-separated list")
     ap.add_argument("--quarter", default=None,
                     help="one quarter; default = every reportable quarter")
     ap.add_argument("--all-investors", action="store_true")
@@ -183,7 +184,8 @@ def main():
         investors = [i["code"] for i in
                      (api.get(f"{SNAP}/investors").get("investors") or [])]
     else:
-        investors = [args.investor]
+        investors = [c.strip().upper()
+                     for c in args.investor.split(",") if c.strip()]
     print(f"scope: {len(investors)} investor(s) x {len(quarters)} quarter(s)")
 
     checks, tot = [], {"num": 0, "dev": 0, "dash": 0, "pages": 0}
@@ -206,6 +208,25 @@ def main():
     # come out right without a backfill. Reported so it is visible, not assumed.
     print(f"\n{'=' * 88}\nFROZEN (approved) PAYLOADS")
     frozen = 0
+
+    # portfolio_snapshot_frozen is created lazily by freeze()._ensure_table, so
+    # its absence from live introspection means nothing has EVER been approved.
+    # Checked first because /bundle assembles all four subtabs, and probing it
+    # per investor x quarter is the most expensive thing this script could do.
+    try:
+        live_tables = {(t if isinstance(t, str) else t.get("name"))
+                       for t in (api.get("/api/data/tables").get("tables") or [])}
+    except Exception:
+        live_tables = None
+    if live_tables is not None and "portfolio_snapshot_frozen" not in live_tables:
+        print("  portfolio_snapshot_frozen does not exist on this database -- "
+              "no report has ever been approved, so there is nothing frozen to\n"
+              "  re-render. The fix is unit-preserving (the stored numbers stay "
+              "percentage points), so a future freeze renders correctly too.")
+        checks.append(("frozen-payload state determined", True))
+        frozen = -1             # -1 = determined by introspection, not probed
+        investors = []          # skip the /bundle probe entirely
+
     for inv in investors:
         for q in quarters:
             try:
@@ -225,7 +246,7 @@ def main():
                   f"range {min(nums):.2f}-{max(nums):.2f}" if nums
                   else f"  {inv} {q}: frozen, no numeric readings")
             checks.append((f"{inv} {q} frozen readings render in 0-100", ok))
-    if not frozen:
+    if frozen == 0:
         print("  none approved yet in scope -- nothing frozen to re-render")
 
     failed = [label for label, ok in checks if not ok]
