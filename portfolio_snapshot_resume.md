@@ -35,7 +35,13 @@ the post-deploy log.
   The real merge preserved everything. Only genuine overlap was the 4 additive
   shared touches, with one one-line `PROTECTED_TABLES` union to resolve.
 
-### Efficiency optimisations
+### Efficiency optimisations — ALL THREE COMPLETE AND VERIFIED
+
+> **#1, #2 and #3 are all done.** #1 and #3 in `1f679c9`, #2 in `f2e087b`. Each
+> was checked for output-equivalence rather than assumed: #1/#3 by audit of what
+> the subtabs actually consume, #2 by a 210-comparison diff against the captured
+> baseline. No metric moved.
+
 
 - **#1 lean One Pager provider — DONE by Jim (`1f679c9`).** Replaces
   `get_one_pager_data` with direct `get_capitalization_stack` +
@@ -48,12 +54,31 @@ the post-deploy log.
   behaviours that must stay: only non-empty comments are emitted, and failure
   must degrade to `{}` (so the cross-check reports it could not run) rather than
   raising.
-- **#2 direct-ISBS quarterly NOI — NOT DONE. Jim is building/verifying it.**
-  `_quarterly_noi_provider` is still the Property Financials chart pipeline.
-  **Baseline handed over**:
-  `~/Downloads/debt_yield_baseline_TIAA_20260824-200432_CLEAN.csv` plus its
-  `_README.txt` (build `e4e80de6410f`, git HEAD `13da6ba`).
-  **Gate: must match 26Q1 AND 26Q2 byte-for-byte, including every `None`.**
+- **#2 direct-ISBS quarterly NOI — DONE AND VERIFIED (`f2e087b`).**
+  `_quarterly_noi_provider` no longer goes through the Property Financials chart
+  pipeline; it reads ISBS directly. **Verified byte-for-byte equivalent to the
+  old pipeline: 210/210 comparisons matched — 35 vcodes × 6 quarters — with every
+  `None` case preserved (Giant 7, East Manchester, et al).** Verification is
+  Jim's, via `scripts/verify_quarterly_noi.py` (committed alongside the change);
+  the 210/210 result is recorded here as reported, not independently re-run.
+  - **The `None` rule is inherited, not reimplemented** — the new path excludes
+    incomplete quarters via `aggregate_periodic`'s `month_counts < 3`, and
+    `_prepare_isbs` finding nothing yields `None` naturally. That was the single
+    biggest risk in this change and it was handled structurally rather than by
+    special-casing, which is why the parent-with-no-own-vcode deals still behave.
+  - Baseline used as the gate:
+    `~/Downloads/debt_yield_baseline_TIAA_20260824-200432_CLEAN.csv` plus its
+    `_README.txt` (build `e4e80de6410f`, git HEAD `13da6ba`). Kept for
+    regression use — **re-diff against it after any future change to the NOI
+    account mapping in `config.py`**, which has moved three times.
+  - **Residual design note (unchanged by the verification):** the old provider
+    deliberately shared the chart's pipeline so Debt Yield could not drift from
+    the chart. The direct read is equivalent *today* but no longer coupled, so
+    the two can diverge in future if one side's account mapping or
+    cumulative→periodic handling changes and the other's does not. The 210/210
+    harness is the thing that keeps them honest — keep running it.
+
+  Why the gate was two quarters, kept as the rationale:
   - Q1 alone is **not** a sufficient test: at Q1 (`months_elapsed=3`)
     single-period NOI **equals** YTD for all 18 populated deals, so a YTD-shaped
     implementation passes by accident. At Q2 (`months_elapsed=6`) the two differ
