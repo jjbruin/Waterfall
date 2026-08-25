@@ -16,6 +16,18 @@ self-test wraps the REST endpoint. Same dependency-injection shape as Step 1.
 Operating metrics are property-level and are **never** scaled by ownership. Only
 the four TIAA columns on Subtab 2 get scaled.
 
+DEVELOPMENT DEALS — every metric column reads "n/a" (``NA_LABEL``), because
+operating history does not exist before stabilisation and a growth ratio taken
+off a near-zero At Close NOI is noise, not information. The comments column is
+kept: construction and lease-up status is what a dev row reports. Suppression
+lands on the ``*_display`` fields only, so no computed value moves; see
+``DEV_SUPPRESSED_COLUMNS`` and the TEMPORARY ``DEV_DISPLAY_EXCEPTIONS``.
+
+The UI must render the ``*_display`` twins, never the raw fields — a metric
+formatted straight from ``noi`` or ``expected_growth`` silently opts out of the
+suppression rule. That is the same contract ``format.ts`` states from the other
+side: the UI does not recompute or second-guess a backend display decision.
+
 UNITS — the two percentage fields on this subtab are on DIFFERENT scales, and
 that is deliberate rather than an oversight:
 
@@ -66,7 +78,125 @@ log = logging.getLogger(__name__)
 #: deliberately NOT consulted here.
 DEV_STRATEGIES = {"development", "new construction"}
 
+#: What a suppressed metric renders as. The PDF prints the literal "n/a" in
+#: every metric cell of a development row, so the backend hands that string
+#: through and the UI prints it verbatim.
+#:
+#: Deliberately a LITERAL and not None: None already means "no data" and renders
+#: as an em dash. "Suppressed because the deal is pre-stabilisation" and "we
+#: looked and there is nothing there" are different statements, and collapsing
+#: them would make Hanestowne Waterstone (no operating history at all)
+#: indistinguishable from Brainerd Place (a real 6.6M U/W NOI that the report
+#: deliberately withholds). The `is_dev` tag beside the deal name is what tells
+#: the reader WHY the cell reads n/a.
+#:
+#: NOTE the Loan subtab spells its equivalent differently -- there, "Dev" is the
+#: suppression literal and n/a (None -> em dash) is the no-data case. That is
+#: the PDF's own convention on its Loan page, so the two subtabs are correctly
+#: inconsistent with each other and each consistent with its page.
+NA_LABEL = "n/a"
+
+#: Superseded 2026-08-25. Econ Occ used to render "Dev" for a development deal
+#: while NOI and the two growth columns showed real numbers -- which is how
+#: Green Valley Ranch came to display an Expected Growth of -2761.9% (see
+#: DEV_SUPPRESSED_COLUMNS). The PDF suppresses every metric on a dev row, so
+#: NA_LABEL replaced this. Kept only so the rename is traceable; nothing reads
+#: it and it should go once that is no longer useful.
 DEV_LABEL = "Dev"
+
+#: The metric columns a development classification suppresses. Everything the
+#: PDF shows as n/a on a dev row, which is every metric on the subtab.
+#:
+#: WHY THE GROWTH COLUMNS MATTER MOST. Growth is (later - At Close) / At Close,
+#: and a development deal's At Close NOI is the reading least likely to be real.
+#: Eight of TIAA's ten dev deals at 26Q1 carry At Close of exactly +/-0.0, so
+#: `_growth` returns None for them and the old display happened to look right.
+#: The two that do not are the whole problem:
+#:
+#:   Green Valley Ranch (P0000100)  At Close -59,333  ->  Expected Growth -2761.9%
+#:   Pegasus Life Storage (P0000066) At Close 624,689 ->  Expected Growth +169.0%
+#:
+#: Neither is a data error to chase -- a near-zero base makes the ratio
+#: meaningless, and no correction to the numerator fixes that. The column simply
+#: does not apply before stabilisation, which is what the PDF says by printing
+#: n/a. So growth is suppressed by the dev rule for every dev deal INCLUDING
+#: both exceptions below, and that is what makes Pegasus match the PDF.
+#:
+#: The comments column is NOT here and must never be: construction and lease-up
+#: status is precisely what a dev row is on the page to report.
+DEV_SUPPRESSED_COLUMNS = ("econ_occ", "noi", "expected_growth", "actual_growth")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# TEMPORARY HARDCODED EXCEPTIONS — REMOVE WHEN THE REAL RULE LANDS
+# ══════════════════════════════════════════════════════════════════════════
+#: Development deals that still render REAL numbers in some columns, keyed by
+#: vcode -> the set of DEV_SUPPRESSED_COLUMNS exempted for that deal.
+#:
+#: Same shape of debt, and the same reasoning, as WATERS_CREEK_LTV_EXCEPTION in
+#: portfolio_snapshot_loan.py: the classification is right, but one or two
+#: columns are meaningful anyway, and nothing in the data currently says which.
+#: Per-COLUMN rather than per-deal because both exceptions here are partial --
+#: a blanket "treat as operating" would put back the garbage growth figures that
+#: are the reason this rule exists.
+#:
+#: Verified cell-by-cell against the 26Q1 PDF, page 3 (Operating):
+#:
+#:   P0000078 Jefferson Waters Creek
+#:     PDF row:  n/a | - | n/a | 2.9 | n/a | $2.3 | n/a | n/a
+#:     Econ Occ is n/a in all three columns even though live carries a real U/W
+#:     YE reading of 74.8% -- so occupancy is ACTIVELY suppressed here, not
+#:     merely absent. NOI is shown: computed U/W YE 2.931M and Projected YE
+#:     2.337M tie to the PDF's 2.9 and 2.3. Growth stays suppressed (its At
+#:     Close is 0, so it would read n/a regardless). Deal is ~56% leased and
+#:     mid-lease-up, which is why the NOI projections are real while the
+#:     occupancy series is not yet meaningful.
+#:
+#:   P0000066 Pegasus Life Storage
+#:     PDF row:  48.0% | - | 88.3% | 1.7 | 90.3% | $1.1 | n/a | n/a
+#:     The PDF treats this one as operating: real occupancy AND real NOI, with
+#:     n/a only in the two growth columns. It is an operating self-storage asset
+#:     recovering occupancy, classified development solely because
+#:     Lifecycle = "New Construction" feeds DEV_STRATEGY_ALLOW_LIFECYCLE_FALLBACK
+#:     (it is one of only two New Construction rows in the whole feed). Its own
+#:     PDF comment -- "U/W YE references reforecasted U/W, not initial" -- is the
+#:     editorial reason its growth is n/a, and no data field carries that fact.
+#:     NOT named in the creator's brief, which said Waters Creek was the only
+#:     exception; added because the brief also said to match the PDF exactly,
+#:     and the PDF is unambiguous here. FLAG FOR CONFIRMATION.
+#:
+#: The rule these stand in for is roughly "a dev deal shows the columns its
+#: stabilisation stage supports", which needs a lease-up/stabilisation state in
+#: the data that does not currently exist. Two more honest routes would also
+#: retire these: Investment_Strategy actually being populated (Pegasus is only
+#: caught by the Lifecycle proxy), or an editorial per-cell suppression control
+#: on the page. Until then this dict is technical debt and will silently keep
+#: overriding whatever real rule ships.
+DEV_DISPLAY_EXCEPTIONS = {
+    "P0000078": frozenset({"noi"}),                 # Jefferson Waters Creek
+    "P0000066": frozenset({"econ_occ", "noi"}),     # Pegasus Life Storage
+}
+
+
+def _dev_exempt(vcode: str, column: str) -> bool:
+    """True when a dev deal still shows a real value in ``column``. TEMPORARY —
+    see DEV_DISPLAY_EXCEPTIONS."""
+    return column in DEV_DISPLAY_EXCEPTIONS.get(
+        str(vcode or "").strip().upper(), frozenset())
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def display_values(row: dict, column: str) -> list:
+    """Every value the UI renders for one metric column of one row.
+
+    A list because ``noi`` is three columns on the page under one suppression
+    key. Exists so a caller auditing the display rule reads the same fields the
+    UI does, instead of re-deriving which ``*_display`` name goes with which
+    column and drifting out of step with it.
+    """
+    if column == "noi":
+        return list((row.get("noi_display") or {}).values())
+    return [row.get(f"{column}_display")]
 
 #: TEMPORARY (2026-08-24): consult Lifecycle when Investment_Strategy is empty.
 #:
@@ -155,7 +285,8 @@ def assemble_operating(investor_code: str, quarter: str, *,
 
     groups: dict[str, list] = {}
     diag = {"deals": 0, "with_noi": 0, "dev": 0, "missing_at_close": 0,
-            "provider_errors": 0, "comments_attached": 0}
+            "provider_errors": 0, "comments_attached": 0,
+            "dev_suppressed": 0, "dev_exceptions": 0}
 
     def build_row(vcode: str, name: str, strategy: str,
                   extra_flags: Optional[list] = None) -> dict:
@@ -205,28 +336,75 @@ def assemble_operating(investor_code: str, quarter: str, *,
         if comment:
             diag["comments_attached"] += 1
 
+        # ---- dev suppression: every metric reads n/a before stabilisation ----
+        # Applied to the *_display fields ONLY. The raw `econ_occ`, `noi`,
+        # `expected_growth` and `actual_growth` below are left exactly as
+        # computed, so this is a display rule that moves no value: a frozen
+        # payload keeps its real numbers and re-renders under whatever the rule
+        # is at read time, and the guardrails still audit the true figures.
+        exempted = sorted(DEV_DISPLAY_EXCEPTIONS.get(
+            str(vcode or "").strip().upper(), frozenset()))
+        if dev:
+            diag["dev_suppressed"] += 1
+            suppressed = [c for c in DEV_SUPPRESSED_COLUMNS
+                          if not _dev_exempt(vcode, c)]
+            flags.append("development deal — "
+                         + ", ".join(suppressed) + " shown as n/a")
+            if exempted:
+                diag["dev_exceptions"] += 1
+                flags.append("TEMPORARY exception — real "
+                             + ", ".join(exempted)
+                             + " shown despite dev classification "
+                               "(see DEV_DISPLAY_EXCEPTIONS)")
+
+        def shown(column: str, value):
+            """``value``, or NA_LABEL when the dev rule suppresses ``column``.
+
+            One gate for all four metric columns, so occupancy, NOI and the two
+            growth figures can never disagree about whether a deal is being
+            suppressed — the disagreement that produced "Dev" occupancy sitting
+            next to a -2761.9% growth figure on the same row.
+            """
+            if dev and not _dev_exempt(vcode, column):
+                return NA_LABEL
+            return value
+
         diag["deals"] += 1
         return {
             "vcode": vcode, "name": name,
             "strategy": strategy,
             "is_dev": dev,
-            # Operating history is meaningless pre-stabilisation, so the report
-            # shows "Dev" in place of the occupancy reading. Otherwise fall back
-            # Projected YE -> YTD actual -> At Close: several deals carry only
-            # some of the three (Giant 7 has no Projected YE occupancy at 26Q1),
-            # and blanking the cell when a reading does exist would be wrong.
-            "econ_occ_display": (
-                DEV_LABEL if dev else next(
-                    (v for v in (occ["projected_ye"], occ["ytd_actual"],
-                                 occ["at_close"]) if v is not None), None)),
+            # Which columns the dev rule withheld, and which a TEMPORARY
+            # exception let through. Surfaced so the report itself can mark the
+            # hardcode rather than it living only in this file.
+            "dev_suppressed_columns": (
+                [c for c in DEV_SUPPRESSED_COLUMNS if not _dev_exempt(vcode, c)]
+                if dev else []),
+            "dev_display_exception": exempted if dev else [],
+            # Fall back Projected YE -> YTD actual -> At Close: several deals
+            # carry only some of the three (Giant 7 has no Projected YE
+            # occupancy at 26Q1), and blanking the cell when a reading does
+            # exist would be wrong.
+            "econ_occ_display": shown("econ_occ", next(
+                (v for v in (occ["projected_ye"], occ["ytd_actual"],
+                             occ["at_close"]) if v is not None), None)),
             "econ_occ_basis": (
-                "dev" if dev else next(
+                "dev" if (dev and not _dev_exempt(vcode, "econ_occ"))
+                else next(
                     (k for k in ("projected_ye", "ytd_actual", "at_close")
                      if occ[k] is not None), None)),
+            # Raw values, UNSUPPRESSED — see the note above `shown`.
             "econ_occ": occ,
             "noi": noi,
             "expected_growth": exp_g,
             "actual_growth": act_g,
+            # Per-column display twins. The PDF's three NOI columns and two
+            # growth columns each suppress independently, which is why NOI is a
+            # dict here rather than one flag for the group: Waters Creek shows
+            # NOI while its occupancy is withheld, on the same row.
+            "noi_display": {k: shown("noi", v) for k, v in noi.items()},
+            "expected_growth_display": shown("expected_growth", exp_g),
+            "actual_growth_display": shown("actual_growth", act_g),
             "operating_comment": comment,
             "flags": flags,
         }
@@ -416,9 +594,29 @@ def _selftest():                                    # pragma: no cover
          "Anchor renewal signed."),
         ("deal with no comment yields None, not ''",
          (flat.get("P0000030") or {}).get("operating_comment") is None),
-        ("dev deals labelled Dev",
-         any(r["econ_occ_display"] == DEV_LABEL for r in flat.values()
-             if r["is_dev"]) if any(r["is_dev"] for r in flat.values()) else True),
+        # Every suppressed column on every dev row, exceptions honoured. Reads
+        # the *_display twins, which is what the UI renders.
+        ("dev deals show n/a in every non-exempted metric column",
+         all(v == NA_LABEL
+             for r in flat.values() if r["is_dev"]
+             for c in r["dev_suppressed_columns"]
+             for v in display_values(r, c))),
+        ("dev exceptions still show a real value, not n/a",
+         all(v != NA_LABEL
+             for r in flat.values() if r["is_dev"]
+             for c in r["dev_display_exception"]
+             for v in display_values(r, c))),
+        ("dev deals keep their comment column",
+         all("operating_comment" in r for r in flat.values() if r["is_dev"])),
+        # The suppression is display-only: the raw figures must survive
+        # untouched so a freeze keeps real numbers and the audit can see them.
+        ("raw metrics never carry the n/a literal",
+         all(not isinstance(v, str)
+             for r in flat.values()
+             for v in (list((r["noi"] or {}).values())
+                       + list((r["econ_occ"] or {}).values())
+                       + [r["expected_growth"], r["actual_growth"]])
+             if v is not None)),
         ("missing data is None, never 0-faked",
          all(r["expected_growth"] is None or isinstance(r["expected_growth"], float)
              for r in flat.values())),

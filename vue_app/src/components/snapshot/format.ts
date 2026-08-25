@@ -11,16 +11,26 @@
 
 export const DASH = '—' // em dash for "no value"
 
-/** $M with one decimal — the unit the reference PDF reports. */
+/** $M with one decimal — the unit the reference PDF reports.
+ *
+ * The regex strips a sign that survives only because of rounding. Jefferson
+ * Waters Creek's At Close NOI is a few cents below zero, so `toFixed(1)` gives
+ * "-0.0" — which reads as a loss where the PDF prints its accounting dash for
+ * nothing. Done on the string, not via `+ 0`, because the case to catch is any
+ * small negative that rounds to zero at this precision, not just literal -0.
+ */
 export function fmtM(v: number | null | undefined): string {
   if (v == null) return DASH
-  return (v / 1e6).toFixed(1)
+  return (v / 1e6).toFixed(1).replace(/^-(0\.0*)$/, '$1')
 }
 
-/** $M with dollar sign prefix — for first data row and total row. */
+/** $M with dollar sign prefix — for first data row and total row.
+ *
+ * Delegates so it inherits `fmtM`'s rounded-negative-zero handling; two
+ * near-identical formatters that disagreed on "-0.0" would be a trap. */
 export function fmtM$(v: number | null | undefined): string {
   if (v == null) return DASH
-  return '$' + (v / 1e6).toFixed(1)
+  return '$' + fmtM(v)
 }
 
 /** Whole dollars with thousands separators. */

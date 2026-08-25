@@ -11,7 +11,7 @@
  * Presentational: props in, save events out.
  */
 import { computed, ref, watch } from 'vue'
-import { fmtM, fmtM$, fmtPct, disp } from './format'
+import { fmtPct, disp, isLiteral } from './format'
 
 const props = defineProps<{ data: any; editable: boolean }>()
 const emit = defineEmits<{
@@ -40,9 +40,14 @@ function commit(vcode: string) {
   })
 }
 
-/** Growth is a ratio; colour it by sign so a fund reads at a glance. */
-function growthClass(v: number | null | undefined): string {
-  if (v == null) return ''
+/** Growth is a ratio; colour it by sign so a fund reads at a glance.
+ *
+ * Takes the *_display value, which is polymorphic — a suppressed dev row hands
+ * us the literal "n/a", and colouring that green or red would imply a reading
+ * the report is deliberately withholding.
+ */
+function growthClass(v: unknown): string {
+  if (typeof v !== 'number') return ''
   return v < 0 ? 'neg' : v > 0 ? 'pos' : ''
 }
 
@@ -61,9 +66,15 @@ const allRows = computed(() => {
   <div v-else class="op">
     <div class="legend">
       <span class="chip">property-level — not scaled by ownership</span>
-      <span v-if="diag.dev" class="chip">{{ diag.dev }} development deal(s) show “Dev”</span>
+      <span v-if="diag.dev" class="chip">
+        {{ diag.dev }} development deal(s) — every metric shown as “n/a”
+      </span>
+      <span v-if="diag.dev_exceptions" class="chip warn">
+        {{ diag.dev_exceptions }} temporary exception(s) marked * show real values
+      </span>
       <span v-if="diag.missing_at_close" class="chip warn">
         {{ diag.missing_at_close }} deal(s) have no At Close NOI, so growth is unavailable
+        where it is not already suppressed
       </span>
     </div>
 
@@ -95,19 +106,41 @@ const allRows = computed(() => {
               <td class="sticky-l">
                 {{ r.name }}
                 <span v-if="r.is_dev" class="tag">Dev</span>
+                <span v-if="r.dev_display_exception?.length" class="star"
+                      :title="`Temporary exception — real ${r.dev_display_exception.join(', ')} shown despite dev classification`">*</span>
                 <span v-for="(f, i) in (r.flags || [])" :key="i" class="warn-dot" :title="f">!</span>
               </td>
               <!--
-                'pctpts', not 'pct': econ_occ arrives from the One Pager already
-                in percentage points (92.23), so 'pct' multiplied it by 100 again
-                and rendered "9223.0%". Growth below IS a ratio, hence fmtPct.
+                Every metric renders its backend *_display twin, never the raw
+                field: a development row is suppressed to the literal "n/a"
+                there, and formatting `r.noi` or `r.expected_growth` directly
+                would opt that cell out of the rule. Green Valley Ranch showed
+                Expected Growth of -2761.9% that way.
+
+                'pctpts', not 'pct', on Econ Occ: it arrives from the One Pager
+                already in percentage points (92.23), so 'pct' multiplied it by
+                100 again and rendered "9223.0%". Growth IS a ratio, so 'pct'.
               -->
-              <td class="r num">{{ disp(r.econ_occ_display, 'pctpts') }}</td>
-              <td class="r num">{{ fmtM(r.noi?.at_close) }}</td>
-              <td class="r num">{{ fmtM(r.noi?.uw_ye) }}</td>
-              <td class="r num">{{ fmtM(r.noi?.projected_ye) }}</td>
-              <td class="r num" :class="growthClass(r.expected_growth)">{{ fmtPct(r.expected_growth) }}</td>
-              <td class="r num" :class="growthClass(r.actual_growth)">{{ fmtPct(r.actual_growth) }}</td>
+              <td class="r num" :class="{ lit: isLiteral(r.econ_occ_display) }">
+                {{ disp(r.econ_occ_display, 'pctpts') }}
+              </td>
+              <td class="r num" :class="{ lit: isLiteral(r.noi_display?.at_close) }">
+                {{ disp(r.noi_display?.at_close, 'm') }}
+              </td>
+              <td class="r num" :class="{ lit: isLiteral(r.noi_display?.uw_ye) }">
+                {{ disp(r.noi_display?.uw_ye, 'm') }}
+              </td>
+              <td class="r num" :class="{ lit: isLiteral(r.noi_display?.projected_ye) }">
+                {{ disp(r.noi_display?.projected_ye, 'm') }}
+              </td>
+              <td class="r num" :class="[growthClass(r.expected_growth_display),
+                                         { lit: isLiteral(r.expected_growth_display) }]">
+                {{ disp(r.expected_growth_display, 'pct') }}
+              </td>
+              <td class="r num" :class="[growthClass(r.actual_growth_display),
+                                         { lit: isLiteral(r.actual_growth_display) }]">
+                {{ disp(r.actual_growth_display, 'pct') }}
+              </td>
               <td class="cmt">
                 <textarea
                   v-model="comments[r.vcode]"
@@ -183,6 +216,10 @@ table.grid th.r { text-align: right; }
 .num { font-variant-numeric: tabular-nums; }
 .pos { color: #2e7d32; }
 .neg { color: #a12622; }
+/* Backend literals ("n/a") read as muted italics, not as data. Same treatment
+   as the Loan subtab gives "Dev". */
+.lit { color: var(--color-text-secondary); font-style: italic; }
+.star { color: #b26a00; font-weight: 800; cursor: help; margin-left: 3px; }
 
 .grouprow td {
   background: #eceff1;
