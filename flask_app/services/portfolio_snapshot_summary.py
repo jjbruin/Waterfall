@@ -19,10 +19,23 @@ build ``09fe220ae0da`` for TGAM / 2026-Q1:
     scaled by look-through %   403.95M   -0.06%   <-- reproduces the PDF
     full deal-level            540.96M  +33.79%
 
+(That 403.95M predates the PE-basis correction below; on build ``3a3aba87f155``
+the same measurement is 404.24M, +0.01%.)
+
 So the page-1 allocation dollars are TIAA's *share*, exactly like the four
 scaled columns on the Financial subtab. ``invested`` there and ``funded`` here
 read the same ``cap_stack.pref_equity`` through the same look-through %, so the
 two subtabs cannot drift apart; the self-test asserts that identity.
+
+AND IT IS THE **PE-BASIS** LOOK-THROUGH, ``lookthrough_pct_pe``, not
+``lookthrough_pct``. ``pref_equity`` and ``committed_pe`` are built from non-OP
+investors only, so scaling them by a percentage whose final hop was normalised
+against every owner — operating partner included — removes the OP stake twice.
+That cost Pegasus Life Storage $2,144,757.65 and put Self-Storage $2.14M under
+the published figure for two quarters. The two percentages are equal wherever a
+deal's OP owners sit at 0%, which was 34 of 35 TGAM deals at 26Q2, so the bug
+hid behind an ownership feed that mostly does not populate OP percentages.
+Guardrail: ``scripts/snapshot_pe_basis_check.py``.
 
 The full deal-level rollup is still computed and returned under
 ``alternate_basis`` — the choice stays auditable and reversible, the same way
@@ -30,12 +43,17 @@ the Financial subtab carries both commitment bases.
 
 WHAT DOES NOT TIE, AND IS FLAGGED RATHER THAN FUDGED
     Committed. The PDF says $445.1M; scaling ``cap_stack.committed_pe`` the
-    same way gives $477.99M (+7.39%). The $33.1M excess is concentrated in four
-    deals (Burton 24.9M, JB Fair Park 19.4M, Jefferson Stephens 17.9M, Brainerd
-    8.4M) and East Manchester runs the other way with committed 0 against
-    3.6M funded. Per-deal attribution is returned in
-    ``diagnostics['committed_gap_attribution']`` so the source can be settled;
-    the number is reported as computed, never bent toward the PDF.
+    same way gives $478.28M (+7.45%) on the PE basis. The excess is concentrated
+    in four deals (Burton 24.9M, JB Fair Park 19.4M, Jefferson Stephens 17.9M,
+    Brainerd 8.4M) and East Manchester ran the other way with committed 0
+    against 3.6M funded until it dropped out as sold at 26Q2. Per-deal
+    attribution is returned in ``diagnostics['committed_gap_attribution']`` so
+    the source can be settled; the number is reported as computed, never bent
+    toward the PDF.
+
+    Funded now DOES tie: 404.24M against the published 404.2M at 26Q1, once the
+    PE basis above is applied. It was 402.10M before, and the 2.14M gap was this
+    bug, not the "pre-existing data difference" it was annotated as.
 """
 from __future__ import annotations
 
@@ -263,6 +281,9 @@ def _rollup(contribs: list, key: str, order: Optional[tuple] = None) -> dict:
             "vcode": c["vcode"], "name": c["name"],
             "funded": c["funded"], "committed": c["committed"],
             "lookthrough_pct": c.get("lookthrough_pct"),
+            # The percentage actually applied to these dollars.
+            "lookthrough_pct_pe": c.get("lookthrough_pct_pe"),
+            "pct_used": c.get("pct_used"),
         })
 
     # Collapse an all-missing bucket to None before anything sums it.
@@ -312,10 +333,20 @@ def _contributions(rows: list, basis: str, assumed_pct: Optional[float]) -> list
     unscaled number next to scaled ones. ``assumed_pct`` exists only so the
     self-test can quantify what such a deal *would* add; it defaults to None and
     production never sets it.
+
+    THE PERCENTAGE IS THE PE-BASIS ONE. ``funded_deal_level`` is
+    ``cap_stack.pref_equity`` and ``committed_deal_level`` is
+    ``cap_stack.committed_pe``; both are built from non-OP investors only
+    (``one_pager.py`` — ``startswith("OP")`` routes an operating partner's
+    capital to ``partner_equity`` instead). Scaling them by the whole-deal
+    ``lookthrough_pct`` would subtract the OP stake a second time, so
+    ``lookthrough_pct_pe`` is used instead. See ``lookthrough_pct``'s docstring
+    for the Pegasus case that this fixes ($2,144,757.65 understated). The two
+    percentages are identical for every deal whose OP owners sit at 0%.
     """
     out = []
     for r in rows:
-        pct = r["lookthrough_pct"]
+        pct = r["lookthrough_pct_pe"]
         if basis == "full":
             f, c, used = r["funded_deal_level"], r["committed_deal_level"], None
         else:
@@ -356,7 +387,10 @@ def assemble_summary(investor_code: str, quarter: str, *,
             "unclassified_strategy": 0, "unclassified_asset": 0,
             "strategy_from_investment_strategy": 0,
             "strategy_from_lifecycle_proxy": 0,
-            "kept_despite_sold_excluded": 0}
+            "kept_despite_sold_excluded": 0,
+            # Deals where an OP holds a real (non-zero) ownership %, so the
+            # PE basis and the deal-level basis diverge. See `_contributions`.
+            "op_diluted": 0}
     flags: list[str] = []
 
     grouped = [(g, e) for g, items in (resolved.get("groups") or {}).items()
@@ -385,11 +419,19 @@ def assemble_summary(investor_code: str, quarter: str, *,
             row_flags.append("commitment unavailable")
 
         pct = entry.get("lookthrough_pct")
+        # PE basis — what actually scales the dollars. See `_contributions`.
+        pct_pe = entry.get("lookthrough_pct_pe")
         is_flagged = group is None
         if pct is None:
             diag["pct_unavailable"] += 1
             row_flags.append("ownership % unavailable — excluded from the "
                              "look-through allocation")
+        if pct is not None and pct_pe is not None and abs(pct_pe - pct) > 1e-12:
+            diag["op_diluted"] += 1
+            row_flags.append(
+                f"operating partner holds a real ownership %: deal-level "
+                f"look-through {pct * 100:.4f}% vs PE-basis "
+                f"{pct_pe * 100:.4f}% — PE dollars are scaled by the PE basis")
 
         strategy, strat_source = strategy_for(entry)
         if strat_source == "Investment_Strategy":
@@ -422,6 +464,7 @@ def assemble_summary(investor_code: str, quarter: str, *,
             "group": group, "ownership_flagged": is_flagged,
             "kept_despite_sold": kept_despite_sold,
             "lookthrough_pct": pct,
+            "lookthrough_pct_pe": pct_pe,
             "asset_type_raw": _s(entry.get("asset_type")),
             "asset_type": asset_bucket,
             "strategy": strategy, "strategy_source": strat_source,

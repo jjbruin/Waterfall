@@ -57,17 +57,24 @@ const PDF = {
 //: Allocation buckets that do NOT tie to the PDF, with the reason. Reported,
 //: not scored — neither is a charting fault.
 //:
-//: Multifamily USED to be here: City West joined the report via
+//: EMPTY, and both former entries were real bugs rather than data differences —
+//: which is the argument for keeping this list short and distrusting it.
+//:
+//: Multifamily was here first: City West joined the report via
 //: KEEP_DESPITE_SOLD (d8cd2f9) and pushed it to $245,396,390, over the
 //: published figure by exactly City West's look-through share. The allocation
-//: rollups now exclude KEEP_DESPITE_SOLD deals, so it ties again and its entry
-//: is gone. The check below fails if a remaining entry starts matching, so this
-//: list cannot silently go stale.
-const KNOWN_ALLOC_DIFFS = {
-  'Self-Storage':
-    'live 32.03M vs PDF 34.17M — pre-existing data difference, present before '
-    + 'any chart or allocation work and unrelated to both.',
-}
+//: rollups now exclude KEEP_DESPITE_SOLD deals, so it ties.
+//:
+//: Self-Storage was here next, at "live 32.03M vs PDF 34.17M — pre-existing
+//: data difference, unrelated to the chart work". That was WRONG. The gap was
+//: entirely Pegasus Life Storage, whose PE-only `pref_equity` was being scaled
+//: by the whole-deal look-through %, subtracting OPPEGA's 7.37% twice; it is
+//: $2,144,757.65, and the bucket ties the PDF to 28 cents once the PE basis is
+//: used. See scripts/snapshot_pe_basis_check.py and `lookthrough_pct`.
+//:
+//: The staleness guard below fails if an entry here starts matching the PDF, so
+//: a stale excuse cannot outlive the thing it was excusing.
+const KNOWN_ALLOC_DIFFS = {}
 const TOL_USD = 350_000      // $0.35M, same tolerance the Financial check uses
 const TOL_PCT = 1.5          // percentage points
 
@@ -159,6 +166,12 @@ function main(mod, echarts, summary) {
       const known = KNOWN_ALLOC_DIFFS[s.name]
       if (known) {
         console.log(`      known difference — ${known}`)
+        // Staleness guard: an excused bucket that now ties means the excuse is
+        // obsolete. Fail, so it gets deleted rather than shielding a real
+        // regression later. Both former entries turned out to be bugs.
+        ck(`${s.name}: KNOWN_ALLOC_DIFFS entry is still needed`,
+           Math.abs(d) > TOL_USD,
+           `now within tolerance (${usd(f.usd)} vs ${usd(pdf)}) — delete the entry`)
       } else {
         ck(`${s.name}: funded within tolerance of PDF`, Math.abs(d) <= TOL_USD,
            `${usd(f.usd)} vs ${usd(pdf)}`)

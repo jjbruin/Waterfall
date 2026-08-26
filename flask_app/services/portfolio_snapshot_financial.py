@@ -351,10 +351,30 @@ def assemble_financial(investor_code: str, quarter: str, *,
         committed_pref = _num(cap.get("committed_pe"))
 
         # ---- Zone B: the four scaled columns ----
-        pct = entry.get("lookthrough_pct")
+        #
+        # THE PE BASIS, not the deal-level look-through. Every dollar scaled
+        # here comes from `pref_equity` or `committed_pe`, which
+        # `one_pager.get_capitalization_stack` builds from non-OP investors
+        # only — an operating partner's capital is routed to `partner_equity`.
+        # Scaling by the whole-deal `lookthrough_pct` would remove the OP stake
+        # a second time (Pegasus: $2,144,757.65 low). `lookthrough_pct_pe`
+        # re-normalises the final hop against the non-OP owners and is equal to
+        # `lookthrough_pct` wherever the OP sits at 0%, which is 34 of 35 TGAM
+        # deals at 26Q2. Page 1's `funded` reads the same field, so the two
+        # subtabs still cannot drift — see portfolio_snapshot_summary's
+        # docstring and the Invested identity in its self-test.
+        pct = entry.get("lookthrough_pct_pe")
+        pct_deal_level = entry.get("lookthrough_pct")
         if pct is None:
             diag["pct_unavailable"] += 1
             flags.append("% of Pref unavailable — ownership chain unresolved")
+        if (pct is not None and pct_deal_level is not None
+                and abs(pct - pct_deal_level) > 1e-12):
+            diag["op_diluted"] = diag.get("op_diluted", 0) + 1
+            flags.append(
+                f"operating partner holds a real ownership %: % of Pref is the "
+                f"PE basis {pct * 100:.4f}%, not the deal-level look-through "
+                f"{pct_deal_level * 100:.4f}%")
 
         invested = (pct * total_pref) if (pct is not None
                                           and total_pref is not None) else None
