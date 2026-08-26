@@ -1798,6 +1798,18 @@ def compute_deal_analysis(
         sale_me=sale_me,
         sale_is_modeled=(sale_dbg is not None),
     )
+    # Parcel sales that were actually applied, for the forecast lines, the
+    # Excel export and audit. Dates are stringified for JSON.
+    result['parcel_sales_applied'] = [
+        {
+            'label': pe['label'], 'date': str(pe['date']), 'mode': pe['mode'],
+            'price': pe['price'], 'net': pe['net'], 'paydown': pe['paydown'],
+            'reserve': pe['reserve'], 'remainder': pe['remainder'],
+        }
+        for pe in parcel_events
+    ]
+    result['_parcel_events'] = parcel_events   # date objects, for reporting
+
     result['partner_results'] = partner_results
     result['deal_summary'] = deal_summary
     return result

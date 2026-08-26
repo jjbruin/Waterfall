@@ -57,6 +57,7 @@ def annual_aggregation_table(
     cf_alloc: Optional[pd.DataFrame] = None,
     cap_alloc: Optional[pd.DataFrame] = None,
     cash_schedule: Optional[pd.DataFrame] = None,
+    parcel_events: Optional[list] = None,
 ) -> pd.DataFrame:
     """
     Create annual aggregation table with integrated waterfall details
@@ -69,6 +70,10 @@ def annual_aggregation_table(
         cf_alloc: Cash flow waterfall allocations
         cap_alloc: Capital waterfall allocations
         cash_schedule: Cash flow schedule with capex_paid column (from reserves)
+        parcel_events: Interim parcel sales applied to this projection. Shown
+            as their own lines so the analyst can see the sale land, rather
+            than inferring it from a step in NOI. Deliberately excluded from
+            FAD: a parcel sale is a capital event, not operating cash.
 
     Returns DataFrame with columns for each year
     """
@@ -124,6 +129,28 @@ def annual_aggregation_table(
 
     tds_abs = out["Total Debt Service"].abs().replace(0, pd.NA)
     out["Debt Service Coverage Ratio"] = out["NOI"] / tds_abs
+
+    # Parcel sale lines, only when the projection actually has one, so every
+    # other deal's table is unchanged.  These sit below DSCR because they are
+    # capital events and are not part of FAD.
+    if parcel_events:
+        def _by_year(key):
+            acc = pd.Series(0.0, index=out.index)
+            for pe in parcel_events:
+                d = pe.get('date')
+                yr = getattr(d, 'year', None)
+                if yr is None or yr not in acc.index:
+                    continue
+                acc.loc[yr] += float(pe.get(key) or 0)
+            # Left as float zeros rather than NA: the table is fillna(0.0)'d on
+            # the way out anyway, and an object-dtype column would trip the
+            # downcasting warning there.
+            return acc
+
+        out["Parcel Sale: Net Proceeds"] = _by_year('net')
+        out["Parcel Sale: Debt Paydown"] = _by_year('paydown')
+        out["Parcel Sale: To CapEx Reserve"] = _by_year('reserve')
+        out["Parcel Sale: Distributed"] = _by_year('remainder')
 
     # Add CF Waterfall rows
     if cf_alloc is not None and not cf_alloc.empty:

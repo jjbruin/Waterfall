@@ -749,6 +749,7 @@ def _build_forecast_table(result: dict, start_year: int, horizon_years: int):
         cf_alloc=result.get("cf_alloc"),
         cap_alloc=result.get("cap_alloc"),
         cash_schedule=result.get("cash_schedule"),
+        parcel_events=result.get("_parcel_events"),
     )
     if "Year" not in table.columns:
         return None
