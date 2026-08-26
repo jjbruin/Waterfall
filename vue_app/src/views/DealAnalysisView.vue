@@ -18,6 +18,15 @@ const showArgusModal = ref(false)
 
 onMounted(async () => {
   if (data.deals.length === 0) await data.loadDeals()
+  // Other pages (One Pager, Property Financials) select a deal without
+  // computing it. Arriving here with a selection but no results left the
+  // page blank below the sale-setup box — compute it like a fresh select.
+  const vc = deals.currentVcode
+  if (vc && !deals.hasResult) {
+    await deals.computeDeal(vc)
+    deals.loadProspectiveLoans(vc)
+    loadProjections(vc)
+  }
 })
 
 async function onDealSelect(event: Event) {
