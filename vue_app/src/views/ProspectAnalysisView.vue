@@ -53,6 +53,9 @@ interface WfStepInput {
   // steps that follow become Tags at the same level -- "X% of each dollar
   // until the IRR threshold, partner tagging the rest".
   share?: number | null
+  // Tie #: rows sharing a number pair together (the engine's iOrder).
+  // Blank = automatic close-at-100 grouping.
+  level?: number | null
   wf_type?: 'CF_WF' | 'Cap_WF'  // used when sending to backend
 }
 
@@ -575,20 +578,28 @@ function initDefaultWfSteps() {
 }
 
 function _storedToInputs(steps: WfStep[]): WfStepInput[] {
+  // Lossless round-trip: every row keeps its iOrder as the explicit Tie #,
+  // and within a tie the lead (Share or gated IRR) comes before its Tags,
+  // because the save path makes the first residual at a level the Share.
+  // Without this, a rebuild after page load regrouped the ties by the
+  // close-at-100 heuristic and scrambled multi-tier structures.
+  const rank = (s: WfStep) => (s.vState === 'Tag' ? 1 : 0)
+  const ordered = [...steps].sort((a, b) => (a.iOrder - b.iOrder) || (rank(a) - rank(b)))
   const inputs: WfStepInput[] = []
-  for (const s of steps) {
+  for (const s of ordered) {
+    const level = s.iOrder
     if (s.vState === 'Pref') {
       const rate = s.nPercent > 1 ? s.nPercent : s.nPercent * 100
-      inputs.push({ entity_id: s.PropCode, step_type: 'pref', rate, amount: null })
+      inputs.push({ entity_id: s.PropCode, step_type: 'pref', rate, amount: null, level })
     } else if (s.vState === 'Initial') {
-      inputs.push({ entity_id: s.PropCode, step_type: 'return_of_capital', rate: null, amount: null })
+      inputs.push({ entity_id: s.PropCode, step_type: 'return_of_capital', rate: null, amount: null, level })
     } else if (s.vState === 'Share' || s.vState === 'Tag') {
-      inputs.push({ entity_id: s.PropCode, step_type: 'residual', rate: s.FXRate * 100, amount: null })
+      inputs.push({ entity_id: s.PropCode, step_type: 'residual', rate: s.FXRate * 100, amount: null, level })
     } else if (s.vState === 'Amt') {
-      inputs.push({ entity_id: s.PropCode, step_type: 'fixed_amount', rate: null, amount: s.mAmount })
+      inputs.push({ entity_id: s.PropCode, step_type: 'fixed_amount', rate: null, amount: s.mAmount, level })
     } else if (s.vState === 'IRR') {
       const share = (s.FXRate > 0 && s.FXRate < 1) ? s.FXRate * 100 : null
-      inputs.push({ entity_id: s.PropCode, step_type: 'irr_lookback', rate: s.nPercent, amount: null, share })
+      inputs.push({ entity_id: s.PropCode, step_type: 'irr_lookback', rate: s.nPercent, amount: null, share, level })
     }
   }
   return inputs
@@ -1210,21 +1221,11 @@ async function runAnalysis() {
   // Auto-save assumptions (persists capital budget, debt params, etc.)
   await saveAssumptions()
 
-  // Auto-build waterfall if step inputs exist (saves user from manual Build step)
-  const hasStepInputs = cfStepInputs.value.some(s => s.entity_id) || capStepInputs.value.some(s => s.entity_id)
-  if (hasStepInputs) {
-    try {
-      const wfRes = await api.post(`/api/prospects/${selectedDealId.value}/waterfall/build`, {
-        cf_steps: cfStepInputs.value.filter(s => s.entity_id),
-        cap_steps: capStepInputs.value.filter(s => s.entity_id),
-      })
-      wfSteps.value = wfRes.data.steps || []
-      wfHasStored.value = true
-    } catch (e: any) {
-      // Non-fatal: analysis can still run with synthetic waterfall
-      console.warn('Auto-build waterfall failed:', e.message)
-    }
-  }
+  // The stored waterfall is the single source of truth: Compute Returns
+  // reads it and never writes it. Only the explicit "Build & Save
+  // Waterfall" button replaces the stored steps. (An auto-build here used
+  // to re-save the Builder rows on every run, which silently overwrote
+  // hand-tuned structures after a page reload.)
 
   try {
     // Compute effective closing_cost_pct so backend formula reproduces totalUses
