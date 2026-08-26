@@ -776,7 +776,7 @@ IS_ACCOUNTS = {
         'Rental Income': ['4010', '4012'],
         'Commercial': ['4020', '4041'],
         'Abated Apartments': ['4045'],
-        'Vacancy': ['4040', '4043', '4030', '4042'],
+        'Vacancy': ['4040', '4043', '4030', '4031', '4042'],
         'RUBS': ['4070'],
         'RET': ['4091'],
         'INS': ['4092'],
@@ -1238,11 +1238,12 @@ def get_property_performance(
                 perf['dscr']['uw_ye'] = noi / uw_ds
 
             # U/W YE Economic Occupancy from Projected IS: 1 - (vacancy / rental income)
-            # 4010 = Rental Income (negative/credit), 4030 = Vacancy Loss (positive/debit)
+            # 4010 = Rental Income (negative/credit), 4030/4031 = Vacancy Loss (positive/debit;
+            # commercial deals book vacancy to 4031, some exclusively)
             uw_dec = uw_data[uw_data['dtEntry_parsed'] == dec_date]
             if not uw_dec.empty:
                 rental = uw_dec[uw_dec['vAccount'] == '4010']['mAmount'].sum()  # negative
-                vacancy = uw_dec[uw_dec['vAccount'] == '4030']['mAmount'].sum()  # positive
+                vacancy = uw_dec[uw_dec['vAccount'].isin(['4030', '4031'])]['mAmount'].sum()  # positive
                 if rental != 0:
                     perf['economic_occ']['uw_ye'] = (1 - vacancy / abs(rental)) * 100
 
