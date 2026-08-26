@@ -48,6 +48,11 @@ interface WfStepInput {
   step_type: 'pref' | 'return_of_capital' | 'residual' | 'fixed_amount' | 'irr_lookback'
   rate: number | null
   amount: number | null
+  // Gated IRR threshold: this entity's sharing % at the level (FXRate on the
+  // IRR lead). Blank = a full-pool lookback. With a share, the residual
+  // steps that follow become Tags at the same level -- "X% of each dollar
+  // until the IRR threshold, partner tagging the rest".
+  share?: number | null
   wf_type?: 'CF_WF' | 'Cap_WF'  // used when sending to backend
 }
 
@@ -388,13 +393,16 @@ const entitiesMissingId = computed(() =>
 )
 
 function splitTierTotals(steps: WfStepInput[]): number[] {
-  // Group residual steps by tier (split at IRR Lookback boundaries)
+  // Group split steps by tier. A bare IRR lookback ends a tier; a GATED one
+  // (share set) opens a tier and contributes its own share, with the
+  // residuals that follow tagging the rest -- so the tier must still sum to
+  // 100.
   const tiers: number[] = []
   let current = 0
   for (const s of steps) {
-    if (s.step_type === 'irr_lookback' && current > 0) {
-      tiers.push(current)
-      current = 0
+    if (s.step_type === 'irr_lookback') {
+      if (current > 0) tiers.push(current)
+      current = (s.share || 0) > 0 ? (s.share || 0) : 0
     } else if (s.step_type === 'residual') {
       current += (s.rate || 0)
     }
@@ -715,7 +723,8 @@ function _storedToInputs(steps: WfStep[]): WfStepInput[] {
     } else if (s.vState === 'Amt') {
       inputs.push({ entity_id: s.PropCode, step_type: 'fixed_amount', rate: null, amount: s.mAmount })
     } else if (s.vState === 'IRR') {
-      inputs.push({ entity_id: s.PropCode, step_type: 'irr_lookback', rate: s.nPercent, amount: null })
+      const share = (s.FXRate > 0 && s.FXRate < 1) ? s.FXRate * 100 : null
+      inputs.push({ entity_id: s.PropCode, step_type: 'irr_lookback', rate: s.nPercent, amount: null, share })
     }
   }
   return inputs
@@ -2020,7 +2029,11 @@ loadDeals()
                           <span class="rate-suffix">$</span><input type="number" v-model.number="step.amount" step="1000" class="rate-input" placeholder="0" />
                         </template>
                         <template v-else-if="step.step_type === 'irr_lookback'">
-                          <input type="number" v-model.number="step.rate" step="0.5" class="rate-input" placeholder="9.0" /><span class="rate-suffix">%</span>
+                          <input type="number" v-model.number="step.rate" step="0.5" class="rate-input" placeholder="9.0" /><span class="rate-suffix">% IRR</span>
+                          <span class="rate-suffix gate-share">share</span>
+                          <input type="number" v-model.number="step.share" step="1" class="rate-input"
+                                 placeholder="100" title="This entity's % of each dollar at this level until the IRR threshold is met. Blank = takes the whole pool. With a share, the residual steps below become the partners tagging at this level." />
+                          <span class="rate-suffix">%</span>
                         </template>
                         <template v-else><span class="muted">—</span></template>
                       </td>
@@ -2080,7 +2093,11 @@ loadDeals()
                           <span class="rate-suffix">$</span><input type="number" v-model.number="step.amount" step="1000" class="rate-input" placeholder="0" />
                         </template>
                         <template v-else-if="step.step_type === 'irr_lookback'">
-                          <input type="number" v-model.number="step.rate" step="0.5" class="rate-input" placeholder="9.0" /><span class="rate-suffix">%</span>
+                          <input type="number" v-model.number="step.rate" step="0.5" class="rate-input" placeholder="9.0" /><span class="rate-suffix">% IRR</span>
+                          <span class="rate-suffix gate-share">share</span>
+                          <input type="number" v-model.number="step.share" step="1" class="rate-input"
+                                 placeholder="100" title="This entity's % of each dollar at this level until the IRR threshold is met. Blank = takes the whole pool. With a share, the residual steps below become the partners tagging at this level." />
+                          <span class="rate-suffix">%</span>
                         </template>
                         <template v-else><span class="muted">—</span></template>
                       </td>

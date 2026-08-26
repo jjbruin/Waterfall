@@ -1203,15 +1203,20 @@ def build_deal_waterfall(deal_id):
         """Convert UI step inputs to waterfall rows."""
         rows = []
         order = 10
-        lead_found = False
-        residual_level_order = 10
+        # A split level stays open until its shares reach 100%, then the next
+        # residual starts a fresh level. A gated IRR opens a level carrying
+        # its own share; any non-split step closes whatever is open.
+        level_open = False
+        level_order = 10
+        level_sum = 0.0
         for s in step_inputs:
             eid = s.get('entity_id', '')
             stype = s.get('step_type', '')
             if not eid:
                 continue
-            if stype != 'residual':
-                lead_found = False
+            if stype not in ('residual', 'irr_lookback'):
+                level_open = False
+                level_sum = 0.0
             if stype == 'pref':
                 rate = float(s.get('rate') or 0)
                 rows.append({
@@ -1234,21 +1239,23 @@ def build_deal_waterfall(deal_id):
                 })
                 order += 10
             elif stype == 'residual':
-                share = float(s.get('rate') or 0) / 100
-                # A split is ONE level: the engine pairs Share with its Tags
-                # by identical iOrder, so consecutive residual steps share the
-                # level's order. Any other step type ends the run.
-                if not lead_found:
-                    state, level_order = 'Share', order
-                    residual_level_order = order
-                    order += 10
+                pct = float(s.get('rate') or 0)
+                # The engine pairs a level's Share with its Tags by identical
+                # iOrder. Join the open level as a Tag while its shares are
+                # still short of 100%; otherwise start a fresh level.
+                if level_open and level_sum < 99.5:
+                    state, this_order = 'Tag', level_order
                 else:
-                    state, level_order = 'Tag', residual_level_order
-                lead_found = True
+                    state, this_order = 'Share', order
+                    level_order = order
+                    level_sum = 0.0
+                    order += 10
+                level_open = True
+                level_sum += pct
                 rows.append({
-                    'vcode': vcode, 'vmisc': wf_name, 'iOrder': level_order,
+                    'vcode': vcode, 'vmisc': wf_name, 'iOrder': this_order,
                     'PropCode': eid, 'vState': state,
-                    'FXRate': share, 'nPercent': 0, 'mAmount': 0,
+                    'FXRate': pct / 100, 'nPercent': 0, 'mAmount': 0,
                     'vtranstype': 'Excess Cash Flow',
                     'vAmtType': '', 'vNotes': '',
                     'dteffective': dt_date(2020, 1, 1), 'nmisc': 0,
@@ -1266,14 +1273,26 @@ def build_deal_waterfall(deal_id):
                 order += 10
             elif stype == 'irr_lookback':
                 rate = float(s.get('rate') or 0)
+                gate_share = float(s.get('share') or 0)
                 rows.append({
                     'vcode': vcode, 'vmisc': wf_name, 'iOrder': order,
                     'PropCode': eid, 'vState': 'IRR',
-                    'FXRate': 0, 'nPercent': rate, 'mAmount': 0,
-                    'vtranstype': 'IRR Hurdle',
+                    # With a share, this IRR is the LEAD of a split level:
+                    # FXRate is its slice of each dollar until the threshold,
+                    # and the residual steps that follow tag at this iOrder.
+                    'FXRate': gate_share / 100 if gate_share > 0 else 0,
+                    'nPercent': rate, 'mAmount': 0,
+                    'vtranstype': ('IRR Threshold' if gate_share > 0 else 'IRR Hurdle'),
                     'vAmtType': '', 'vNotes': '',
                     'dteffective': dt_date(2020, 1, 1), 'nmisc': 0,
                 })
+                if gate_share > 0:
+                    level_order = order
+                    level_sum = gate_share
+                    level_open = True
+                else:
+                    level_open = False
+                    level_sum = 0.0
                 order += 10
         return rows
 
