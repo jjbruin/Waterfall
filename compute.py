@@ -871,6 +871,7 @@ def compute_deal_analysis(
     selling_cost_override=None,
     selling_cost_type=None,
     parcel_sales=None,
+    beginning_cash_override=None,
 ):
     """
     Compute all deal-level analysis results.
@@ -1582,9 +1583,18 @@ def compute_deal_analysis(
         else:
             refi_capital_call_amount = remaining
 
-    # Load beginning cash balance from ISBS
+    # Load beginning cash balance from ISBS, unless the caller supplies one
+    # (New Business seeds it from the Capital Budget's CapEx Reserve line, so
+    # money set aside at close is in the balance from day one and gets spent
+    # by the ordinary reserve rules as capital work is incurred).
     beginning_cash = 0.0
-    if isbs_raw is not None and not isbs_raw.empty:
+    if beginning_cash_override is not None:
+        beginning_cash = float(beginning_cash_override)
+        debug_msgs.append(
+            f"Beginning cash ${beginning_cash:,.0f} funded from the Capital "
+            f"Budget (CapEx Reserve at close)"
+        )
+    elif isbs_raw is not None and not isbs_raw.empty:
         try:
             beginning_cash = load_beginning_cash_balance(isbs_raw, deal_vcode, model_start)
         except Exception as e:

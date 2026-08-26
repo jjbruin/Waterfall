@@ -1170,8 +1170,18 @@ def analyze_deal_excel(deal_id):
     except Exception as e:
         logger.debug("wf steps for excel: %s", e)
 
+    # The exact anniversary-year forecast the app renders, so the Annual
+    # Forecast tab ties to the screen by construction.
+    annual_forecast = None
+    try:
+        payload = _continue_analyze(result, deal_data, assumptions).get_json()
+        annual_forecast = (payload or {}).get('annual_forecast')
+    except Exception as e:
+        logger.warning("annual forecast for excel: %s", e)
+
     xlsx = generate_prospect_analysis_excel(
-        result, deal_data['deal'], assumptions, wf_steps, scenario)
+        result, deal_data['deal'], assumptions, wf_steps, scenario,
+        annual_forecast=annual_forecast)
     name = (deal_data['deal'].get('deal_name') or 'deal').replace(' ', '_')
     if scenario:
         name += '_' + str(scenario.get('name', '')).replace(' ', '_')

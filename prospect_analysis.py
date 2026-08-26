@@ -26,6 +26,83 @@ from loans import build_loans_from_mri_loans, amortize_monthly_schedule
 from compute import compute_deal_analysis
 
 
+def compute_capital_budget(assumptions: dict, pe_pct_fallback: float = 0.7) -> dict:
+    """Replicate the app's Capital Budget arithmetic from the saved JSON.
+
+    Percentage-based use items store their pct, not an amount, and the PSC
+    Origination Fee is a grossed-up 1% of PE equity -- so the saved amounts
+    alone understate total uses. This mirrors getUseAmount()/pscOrigFee()/
+    totalUses() in ProspectAnalysisView exactly, and is the single source the
+    engine and the audit workbook both read, so they cannot disagree with
+    the screen.
+    """
+    import json as _json
+
+    def _load(blob):
+        if not blob:
+            return None
+        try:
+            return _json.loads(blob) if isinstance(blob, str) else blob
+        except (TypeError, ValueError):
+            return None
+
+    uses = _load((assumptions or {}).get('capital_uses_json')) or []
+    srcs = _load((assumptions or {}).get('capital_sources_json')) or {}
+
+    debt_rows = [d for d in (srcs.get('debt') or []) if isinstance(d, dict)]
+    total_debt = sum(float(d.get('amount') or 0) for d in debt_rows)
+
+    pp = 0.0
+    for u in uses:
+        if isinstance(u, dict) and u.get('id') == 'purchase_price':
+            pp = float(u.get('amount') or 0)
+
+    resolved = []          # (id, label, amount)
+    base_total = 0.0
+    for u in uses:
+        if not isinstance(u, dict) or u.get('isFixed'):
+            continue
+        amt = 0.0
+        pct = u.get('pct')
+        if u.get('pctBase') and pct not in (None, 0, ''):
+            base = pp if u['pctBase'] == 'purchase_price' else total_debt
+            amt = float(pct) / 100.0 * base
+        else:
+            amt = float(u.get('amount') or 0)
+        if amt:
+            resolved.append((u.get('id'), u.get('label') or u.get('id'), amt))
+        base_total += amt
+
+    pe_pct = float(srcs.get('pe_pct') or pe_pct_fallback * 100) / 100.0
+    orig_pct = 0.01
+    denom = 1 - orig_pct * pe_pct
+    fee = 0.0
+    if denom > 0 and base_total > total_debt:
+        fee = orig_pct * pe_pct * (base_total - total_debt) / denom
+    if fee:
+        resolved.append(('psc_orig_fee', 'PSC Origination Fee', fee))
+
+    total_uses = base_total + fee
+    equity = max(0.0, total_uses - total_debt)
+    capex_reserve = next((a for i, _, a in resolved if i == 'capex_reserve'), 0.0)
+
+    equity_rows = [e for e in (srcs.get('equity') or []) if isinstance(e, dict)]
+
+    return {
+        'uses': resolved,
+        'total_uses': total_uses,
+        'debt_rows': debt_rows,
+        'total_debt': total_debt,
+        'equity': equity,
+        'pe_pct': pe_pct,
+        'pe_amount': equity * pe_pct,
+        'op_amount': equity * (1 - pe_pct),
+        'extra_equity_rows': equity_rows,
+        'capex_reserve': capex_reserve,
+        'psc_orig_fee': fee,
+    }
+
+
 def apply_scenario_adjustments(fc, adjustments, debug_msgs=None):
     """Apply a scenario's income adjustments to the forecast.
 
@@ -141,8 +218,21 @@ def build_prospect_analysis(
     selling_cost_pct = float(assumptions.get('selling_cost_pct') or 0.02)
     capex_reserve_psf = float(assumptions.get('capex_reserve_psf') or 0.80)
 
-    total_cost = purchase_price + (purchase_price * closing_cost_pct) + capex_at_close
-    equity_needed = total_cost - debt_amount
+    # The Capital Budget is the source of truth for cost and equity when it
+    # exists; the purchase-price formula only covers deals without one. The
+    # budget replicates the app's own arithmetic (pct-based items, grossed-up
+    # PSC fee), so partner contributions tie to the Sources table on screen.
+    budget = compute_capital_budget(assumptions, pe_pct_fallback=psc_equity_pct)
+    if budget['total_uses'] > 0:
+        total_cost = budget['total_uses']
+        equity_needed = budget['equity']
+        scenario_msgs.append(
+            f"Equity from Capital Budget: total uses ${budget['total_uses']:,.0f} "
+            f"- debt ${budget['total_debt']:,.0f} = ${budget['equity']:,.0f}"
+        )
+    else:
+        total_cost = purchase_price + (purchase_price * closing_cost_pct) + capex_at_close
+        equity_needed = total_cost - debt_amount
     # Prefer explicit PE/OP amounts from Capital Budget over percentage split
     pe_equity_override = assumptions.get('pe_equity_amount')
     op_equity_override = assumptions.get('op_equity_amount')
@@ -263,7 +353,9 @@ def build_prospect_analysis(
                                  pe_equity, op_equity, seed_date)
     if argus_forecast_df is not None and not argus_forecast_df.empty:
         fc = argus_forecast_df
+        forecast_source = 'argus'
     else:
+        forecast_source = 'cashflows' if cashflows else 'noi_growth'
         fc = _build_forecast(vcode, start_year, hold_years, noi_year1,
                              noi_growth_rate, capex_reserve_psf, properties,
                              cashflows, pro_yr_base, assumptions)
@@ -380,12 +472,16 @@ def build_prospect_analysis(
         selling_cost_override=selling_cost_pct,
         selling_cost_type='pct',
         parcel_sales=parcel_sales,
+        beginning_cash_override=(budget['capex_reserve'] if budget['capex_reserve'] > 0 else None),
     )
 
     # Derive terminal NOI and exit value from compute result (single source of truth)
     sale_dbg = result.get('sale_dbg') or {}
     terminal_noi = sale_dbg.get('NOI_12m_After_Sale', 0)
     exit_value = sale_dbg.get('Implied_Value', 0)
+
+    result['forecast_source'] = forecast_source
+    result['capital_budget'] = budget
 
     if scenario or scenario_msgs:
         existing = result.get('debug_msgs') or []

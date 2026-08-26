@@ -14,42 +14,6 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Assumption fields grouped the way an auditor reads them
-_ASSUMPTION_GROUPS = [
-    ("Acquisition", [
-        ("purchase_price", "Purchase Price", "curr"),
-        ("closing_cost_pct", "Closing Cost %", "pct"),
-        ("capex_at_close", "CapEx at Close", "curr"),
-        ("hold_years", "Hold (years)", "num"),
-    ]),
-    ("Debt", [
-        ("debt_amount", "Debt Amount", "curr"),
-        ("debt_rate", "Interest Rate", "pct"),
-        ("debt_term_months", "Term (months)", "num"),
-        ("io_months", "IO (months)", "num"),
-        ("amort_months", "Amortization (months)", "num"),
-        ("lender", "Lender", "text"),
-        ("rate_type", "Rate Type", "text"),
-        ("max_ltv", "Max LTV", "num"),
-        ("min_dscr", "Min DSCR", "num"),
-        ("min_debt_yield", "Min Debt Yield", "num"),
-    ]),
-    ("Equity & Waterfall", [
-        ("psc_equity_pct", "PSC Equity %", "pct"),
-        ("pref_rate", "Preferred Return", "pct"),
-        ("promote_pct", "Promote %", "pct"),
-    ]),
-    ("Operations & Exit", [
-        ("noi_year1", "NOI Year 1", "curr"),
-        ("noi_growth_rate", "NOI Growth", "pct"),
-        ("mgmt_fee_pct", "Management Fee %", "pct"),
-        ("replacement_reserve_psf", "Replacement Reserve /SF", "num"),
-        ("capex_reserve_psf", "CapEx Reserve /SF", "num"),
-        ("exit_cap_rate", "Exit Cap Rate", "pct"),
-        ("selling_cost_pct", "Selling Cost %", "pct"),
-    ]),
-]
-
 
 def _fmt_cell(ws, row, col, value, styles, kind):
     c = ws.cell(row=row, column=col, value=value)
@@ -68,24 +32,96 @@ def _section(ws, row, title, styles):
     return row + 1
 
 
+def _waterfall_narrative(budget: Dict[str, Any],
+                         wf_steps: List[Dict[str, Any]]) -> List[str]:
+    """The deal's economics in the words a term sheet would use.
+
+    Built from the declared capital split and the saved waterfall steps:
+    prefs, full-pool IRR lookbacks, gated tiers ("X% until a Y% IRR, partner
+    tagging the rest"), and the terminal split.
+    """
+    lines: List[str] = []
+    if budget and budget.get("equity"):
+        lines.append(
+            f"PSC Equity — ${budget['pe_amount']:,.0f} ({budget['pe_pct']:.0%});  "
+            f"OP Equity — ${budget['op_amount']:,.0f} ({1 - budget['pe_pct']:.0%})"
+        )
+
+    cf = [st for st in (wf_steps or []) if st.get("vmisc") == "CF_WF"]
+    cap = [st for st in (wf_steps or []) if st.get("vmisc") == "Cap_WF"]
+
+    prefs = sorted({float(st.get("nPercent") or 0) for st in cf
+                    if str(st.get("vState")) == "Pref"})
+    if prefs:
+        split = " / ".join(
+            f"{float(st.get('FXRate') or 0):.0%} {st.get('PropCode')}"
+            for st in cf if str(st.get("vState")) in ("Share", "Tag"))
+        lines.append(
+            f"Operating cash: {', '.join(f'{p:g}%' for p in prefs)} preferred "
+            f"return, excess split {split}"
+        )
+
+    # Capital waterfall: group by iOrder (Tie #) to read the tiers in sequence
+    by_order: Dict[int, List[Dict]] = {}
+    for st in cap:
+        by_order.setdefault(int(st.get("iOrder") or 0), []).append(st)
+    for order in sorted(by_order):
+        group = by_order[order]
+        irr = [st for st in group if str(st.get("vState")) == "IRR"]
+        tags = [st for st in group if str(st.get("vState")) == "Tag"]
+        shares = [st for st in group if str(st.get("vState")) == "Share"]
+        if irr and not tags:
+            g = irr[0]
+            lines.append(
+                f"Capital events: {g.get('PropCode')} to a "
+                f"{float(g.get('nPercent') or 0):g}% IRR lookback"
+            )
+        elif irr and tags:
+            g = irr[0]
+            lines.append(
+                f"then {float(g.get('FXRate') or 0):.0%} to {g.get('PropCode')} "
+                f"until a {float(g.get('nPercent') or 0):g}% IRR ("
+                + ", ".join(f"{float(t.get('FXRate') or 0):.0%} {t.get('PropCode')}"
+                            for t in tags) + " alongside)"
+            )
+        elif shares:
+            lines.append(
+                "thereafter "
+                + " / ".join(
+                    f"{float(st.get('FXRate') or 0):.0%} {st.get('PropCode')}"
+                    for st in shares + tags)
+            )
+    return lines
+
+
 def generate_prospect_analysis_excel(
     result: Dict[str, Any],
     deal: Dict[str, Any],
     assumptions: Dict[str, Any],
     wf_steps: Optional[List[Dict[str, Any]]] = None,
     scenario: Optional[Dict[str, Any]] = None,
+    annual_forecast: Optional[Dict[str, Any]] = None,
 ) -> bytes:
-    """Build the audit workbook. Returns xlsx bytes."""
+    """Build the audit workbook. Returns xlsx bytes.
+
+    annual_forecast is the same anniversary-year table the app renders
+    (from _continue_analyze), so the sheet ties to the screen by construction.
+    """
     import json
     import pandas as pd
     from openpyxl import Workbook
     from flask_app.services.compute_service import (
         _excel_styles, _write_header_row, _autosize_columns,
-        _build_forecast_table, _write_forecast_to_sheet,
     )
 
     s = _excel_styles()
     wb = Workbook()
+    budget = result.get("capital_budget") or {}
+    forecast_source = result.get("forecast_source") or ""
+    src_label = {"argus": "Argus projection", "cashflows": "Uploaded cash flows",
+                 "noi_growth": "NOI growth assumptions"}.get(forecast_source,
+                                                             forecast_source)
+    sd = result.get("sale_dbg") or {}
 
     # ------------------------------------------------------------------
     # 1. Summary
@@ -99,6 +135,7 @@ def generate_prospect_analysis_excel(
         ("vCode", deal.get("vcode")),
         ("Stage", deal.get("stage")),
         ("Scenario", (scenario or {}).get("name") or "Live assumptions"),
+        ("Cash Flow Source", src_label),
         ("Generated", pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")),
     ]:
         ws.cell(row=r, column=1, value=label)
@@ -133,43 +170,87 @@ def generate_prospect_analysis_excel(
     c = ws.cell(row=r, column=8, value=ds.get("deal_moic"))
     c.number_format = s["mult"]
     c.font = s["bold"]
-    r += 2
-
-    sd = result.get("sale_dbg") or {}
-    if sd:
-        r = _section(ws, r, "Sale Proceeds Calculation", s)
-        for label, key, kind in [
-            ("Sale Date", None, "text"),
-            ("Terminal NOI (fwd 12 mo)", "NOI_12m_After_Sale", "curr"),
-            ("Cap Rate", "CapRate_Sale", "pct"),
-            ("Sale Price", "Implied_Value", "curr"),
-            ("Less: Selling Costs", "Selling_Cost_Amount", "curr"),
-            ("Less: Loan Payoff", "Less_Loan_Balances", "curr"),
-            ("Net Sale Proceeds", "Net_Sale_Proceeds", "curr"),
-        ]:
-            ws.cell(row=r, column=1, value=label)
-            if key is None:
-                ws.cell(row=r, column=2, value=str(result.get("sale_me") or ""))
-            else:
-                _fmt_cell(ws, r, 2, sd.get(key), s, kind)
-            r += 1
     _autosize_columns(ws)
 
     # ------------------------------------------------------------------
-    # 2. Assumptions (incl. capital budget + refi + scenario)
+    # 2. Assumptions — only inputs the projection actually uses
     # ------------------------------------------------------------------
     ws = wb.create_sheet("Assumptions")
     r = 1
-    for group, fields in _ASSUMPTION_GROUPS:
-        r = _section(ws, r, group, s)
-        for key, label, kind in fields:
-            val = (assumptions or {}).get(key)
-            if val in (None, ""):
-                continue
-            ws.cell(row=r, column=1, value=label)
-            _fmt_cell(ws, r, 2, val, s, kind)
-            r += 1
+
+    r = _section(ws, r, "Debt", s)
+    for key, label, kind in [
+        ("debt_amount", "Debt Amount", "curr"),
+        ("debt_rate", "Interest Rate", "pct"),
+        ("debt_term_months", "Term (months)", "num"),
+        ("io_months", "IO (months)", "num"),
+        ("amort_months", "Amortization (months)", "num"),
+        ("lender", "Lender", "text"),
+        ("rate_type", "Rate Type", "text"),
+    ]:
+        val = (assumptions or {}).get(key)
+        if val in (None, ""):
+            continue
+        ws.cell(row=r, column=1, value=label)
+        _fmt_cell(ws, r, 2, val, s, kind)
         r += 1
+    r += 1
+
+    # -- Equity & Waterfall: the arrangement in words --
+    r = _section(ws, r, "Equity & Waterfall", s)
+    narrative = _waterfall_narrative(budget, wf_steps or [])
+    if narrative:
+        for line in narrative:
+            ws.cell(row=r, column=1, value=line)
+            r += 1
+    else:
+        ws.cell(row=r, column=1, value="No waterfall steps saved")
+        r += 1
+    r += 1
+
+    # -- Operations & Exit: skip growth-model inputs when a real projection
+    #    (Argus / uploaded cash flows) drives the forecast --
+    r = _section(ws, r, "Operations & Exit", s)
+    ws.cell(row=r, column=1, value="Cash Flow Source")
+    ws.cell(row=r, column=2, value=src_label)
+    r += 1
+    ops_fields = [
+        ("hold_years", "Hold (years)", "num"),
+        ("mgmt_fee_pct", "Management Fee %", "pct"),
+        ("replacement_reserve_psf", "Replacement Reserve /SF", "num"),
+    ]
+    if forecast_source == "noi_growth":
+        ops_fields = [("noi_year1", "NOI Year 1", "curr"),
+                      ("noi_growth_rate", "NOI Growth", "pct"),
+                      ("capex_reserve_psf", "CapEx Reserve /SF", "num")] + ops_fields
+    for key, label, kind in ops_fields:
+        val = (assumptions or {}).get(key)
+        if val in (None, "", 0):
+            continue
+        ws.cell(row=r, column=1, value=label)
+        _fmt_cell(ws, r, 2, val, s, kind)
+        r += 1
+    # The exit, end to end: cap, cost, terminal NOI, and the proceeds math
+    ws.cell(row=r, column=1, value="Exit Cap Rate")
+    _fmt_cell(ws, r, 2, sd.get("CapRate_Sale"), s, "pct")
+    r += 1
+    ws.cell(row=r, column=1, value="Cost of Sale %")
+    _fmt_cell(ws, r, 2, (assumptions or {}).get("selling_cost_pct"), s, "pct")
+    r += 1
+    for label, key, bold in [
+        ("Terminal NOI (fwd 12 mo)", "NOI_12m_After_Sale", False),
+        ("Sale Price (NOI / Cap)", "Implied_Value", False),
+        ("Less: Cost of Sale", "Selling_Cost_Amount", False),
+        ("Less: Loan Payoff", "Less_Loan_Balances", False),
+        ("Net Sale Proceeds", "Net_Sale_Proceeds", True),
+    ]:
+        ws.cell(row=r, column=1, value=label)
+        _fmt_cell(ws, r, 2, sd.get(key), s, "curr")
+        if bold:
+            ws.cell(row=r, column=1).font = s["bold"]
+            ws.cell(row=r, column=2).font = s["bold"]
+        r += 1
+    r += 1
 
     def _json(blob):
         if not blob:
@@ -178,35 +259,6 @@ def generate_prospect_analysis_excel(
             return json.loads(blob) if isinstance(blob, str) else blob
         except (TypeError, ValueError):
             return None
-
-    uses = _json((assumptions or {}).get("capital_uses_json"))
-    if uses:
-        r = _section(ws, r, "Capital Budget — Uses", s)
-        for u in uses:
-            amt = u.get("amount")
-            if amt in (None, 0, ""):
-                continue
-            ws.cell(row=r, column=1, value=u.get("label") or u.get("id"))
-            _fmt_cell(ws, r, 2, amt, s, "curr")
-            r += 1
-        r += 1
-
-    srcs = _json((assumptions or {}).get("capital_sources_json"))
-    if srcs:
-        r = _section(ws, r, "Capital Budget — Debt Sources", s)
-        for d in (srcs.get("debt") or []):
-            amt = d.get("amount")
-            if amt in (None, 0, ""):
-                continue
-            label = d.get("label") or d.get("id")
-            if d.get("rate"):
-                label += (f"  ({d['rate']*100:.2f}%"
-                          + (f", {d.get('term_months')}mo" if d.get("term_months") else "")
-                          + ", own loan)")
-            ws.cell(row=r, column=1, value=label)
-            _fmt_cell(ws, r, 2, amt, s, "curr")
-            r += 1
-        r += 1
 
     refi = _json((assumptions or {}).get("planned_refi_json"))
     if refi and refi.get("enabled"):
@@ -240,25 +292,93 @@ def generate_prospect_analysis_excel(
     _autosize_columns(ws)
 
     # ------------------------------------------------------------------
-    # 3. Annual Forecast (reuses the AM builder)
+    # 3. Capital Budget — the app's Sources & Uses, tying to the penny
     # ------------------------------------------------------------------
-    ws = wb.create_sheet("Annual Forecast")
-    try:
-        start_year = int(str(result.get("model_start"))[:4])
-        end_year = int(str(result.get("model_end_full"))[:4])
-        built = _build_forecast_table(result, start_year, end_year - start_year + 1)
-        if built:
-            _t, wide, years = built
-            _write_forecast_to_sheet(ws, wide, years, s)
-        else:
-            ws.cell(row=1, column=1, value="No forecast data")
-    except Exception as e:
-        logger.warning("Forecast sheet failed: %s", e)
-        ws.cell(row=1, column=1, value=f"Forecast sheet unavailable: {e}")
+    ws = wb.create_sheet("Capital Budget")
+    if budget.get("total_uses"):
+        r = _section(ws, 1, "Uses", s)
+        for _id, label, amt in (budget.get("uses") or []):
+            ws.cell(row=r, column=1, value=label)
+            _fmt_cell(ws, r, 2, amt, s, "curr")
+            r += 1
+        ws.cell(row=r, column=1, value="Total Uses").font = s["bold"]
+        _fmt_cell(ws, r, 2, budget.get("total_uses"), s, "curr").font = s["bold"]
+        r += 2
+
+        r = _section(ws, r, "Sources", s)
+        for d in (budget.get("debt_rows") or []):
+            amt = float(d.get("amount") or 0)
+            if not amt:
+                continue
+            label = d.get("label") or d.get("id")
+            if d.get("rate"):
+                label += f"  ({float(d['rate']) * 100:.2f}%, own loan)"
+            ws.cell(row=r, column=1, value=label)
+            _fmt_cell(ws, r, 2, amt, s, "curr")
+            r += 1
+        pe_pct = budget.get("pe_pct") or 0
+        ws.cell(row=r, column=1, value=f"PSC Preferred Equity ({pe_pct:.0%})")
+        _fmt_cell(ws, r, 2, budget.get("pe_amount"), s, "curr")
+        r += 1
+        ws.cell(row=r, column=1, value=f"OP Equity ({1 - pe_pct:.0%})")
+        _fmt_cell(ws, r, 2, budget.get("op_amount"), s, "curr")
+        r += 1
+        for e_row in (budget.get("extra_equity_rows") or []):
+            amt = float(e_row.get("amount") or 0)
+            if not amt:
+                continue
+            ws.cell(row=r, column=1, value=e_row.get("label") or e_row.get("id"))
+            _fmt_cell(ws, r, 2, amt, s, "curr")
+            r += 1
+        total_sources = (budget.get("total_debt") or 0) + (budget.get("equity") or 0)
+        ws.cell(row=r, column=1, value="Total Sources").font = s["bold"]
+        _fmt_cell(ws, r, 2, total_sources, s, "curr").font = s["bold"]
+        r += 1
+        ws.cell(row=r, column=1, value="Sources − Uses")
+        _fmt_cell(ws, r, 2, total_sources - (budget.get("total_uses") or 0), s, "curr")
+    else:
+        ws.cell(row=1, column=1, value="No capital budget saved")
     _autosize_columns(ws)
 
     # ------------------------------------------------------------------
-    # 4. Debt Service (loan summary + monthly amortization)
+    # 4. Annual Forecast — the app's anniversary-year table, verbatim
+    # ------------------------------------------------------------------
+    ws = wb.create_sheet("Annual Forecast")
+    if annual_forecast and annual_forecast.get("rows"):
+        cols = annual_forecast.get("columns") or []
+        years = annual_forecast.get("years") or [c.get("year") for c in cols]
+        header = ["Line Item"]
+        for c in cols:
+            lbl = str(c.get("label") or c.get("year") or "")
+            if c.get("sublabel"):
+                lbl = f"{lbl} ({c['sublabel']})"
+            header.append(lbl)
+        _write_header_row(ws, 1, header, s)
+        r = 2
+        for row in annual_forecast["rows"]:
+            label = str(row.get("label") or "")
+            c = ws.cell(row=r, column=1, value=label)
+            if row.get("isBold") or row.get("is_header"):
+                c.font = s["bold"]
+            if not row.get("is_header"):
+                vals = row.get("values") or {}
+                ratio = "DSCR" in label or "Occup" in label
+                for ci, yr in enumerate(years, 2):
+                    v = vals.get(yr, vals.get(str(yr)))
+                    if v is None:
+                        continue
+                    cell = _fmt_cell(ws, r, ci, v, s, "curr")
+                    if ratio:
+                        cell.number_format = "0.00"
+                    if row.get("isBold"):
+                        cell.font = s["bold"]
+            r += 1
+    else:
+        ws.cell(row=1, column=1, value="No forecast data")
+    _autosize_columns(ws)
+
+    # ------------------------------------------------------------------
+    # 5. Debt Service (loan summary + monthly amortization)
     # ------------------------------------------------------------------
     ws = wb.create_sheet("Debt Service")
     ls = result.get("loan_sched")
@@ -301,7 +421,7 @@ def generate_prospect_analysis_excel(
     _autosize_columns(ws)
 
     # ------------------------------------------------------------------
-    # 5. Cash Management
+    # 6. Cash Management
     # ------------------------------------------------------------------
     ws = wb.create_sheet("Cash Management")
     cs = result.get("cash_schedule")
@@ -325,7 +445,7 @@ def generate_prospect_analysis_excel(
     _autosize_columns(ws)
 
     # ------------------------------------------------------------------
-    # 6. Waterfall Steps (the rules the money followed)
+    # 7. Waterfall Steps (the rules the money followed)
     # ------------------------------------------------------------------
     ws = wb.create_sheet("Waterfall Steps")
     _write_header_row(ws, 1, ["Waterfall", "Tie #", "Partner", "Step", "FX Rate",
@@ -341,34 +461,6 @@ def generate_prospect_analysis_excel(
         _fmt_cell(ws, r, 7, st.get("mAmount"), s, "curr")
         ws.cell(row=r, column=8, value=st.get("vtranstype"))
         r += 1
-    _autosize_columns(ws)
-
-    # ------------------------------------------------------------------
-    # 7. Waterfall Allocations (every dollar, every step, every period)
-    # ------------------------------------------------------------------
-    ws = wb.create_sheet("Waterfall Allocations")
-    r = 1
-    for name, key in [("CF Waterfall", "cf_alloc"), ("Capital Waterfall", "cap_alloc")]:
-        alloc = result.get(key)
-        if alloc is None or alloc.empty:
-            continue
-        r = _section(ws, r, name, s)
-        _write_header_row(ws, r, ["Period", "Tie #", "Partner", "Step",
-                                  "Allocated", "Remaining After"], s)
-        r += 1
-        for _, x in alloc.sort_values(["event_date", "iOrder"]).iterrows():
-            if not float(x.get("Allocated", 0) or 0):
-                continue
-            ws.cell(row=r, column=1, value=str(x["event_date"])[:10])
-            ws.cell(row=r, column=2, value=int(x.get("iOrder", 0) or 0))
-            ws.cell(row=r, column=3, value=str(x.get("PropCode", "")))
-            ws.cell(row=r, column=4, value=str(x.get("vState", "")))
-            _fmt_cell(ws, r, 5, float(x["Allocated"]), s, "curr")
-            _fmt_cell(ws, r, 6, float(x.get("RemainingAfter", 0) or 0), s, "curr")
-            r += 1
-        r += 1
-    if r == 1:
-        ws.cell(row=1, column=1, value="No allocations")
     _autosize_columns(ws)
 
     # ------------------------------------------------------------------
@@ -399,17 +491,6 @@ def generate_prospect_analysis_excel(
         _fmt_cell(ws, r + 2, col + 1, p.get("irr"), s, "pct")
         col += 3
     _autosize_columns(ws)
-
-    # ------------------------------------------------------------------
-    # 9. Diagnostics — the model's own account of what it did
-    # ------------------------------------------------------------------
-    ws = wb.create_sheet("Diagnostics")
-    ws.cell(row=1, column=1, value="Model Diagnostics").font = s["bold"]
-    r = 2
-    for m in (result.get("debug_msgs") or []):
-        ws.cell(row=r, column=1, value=str(m))
-        r += 1
-    ws.column_dimensions["A"].width = 140
 
     buf = BytesIO()
     wb.save(buf)
