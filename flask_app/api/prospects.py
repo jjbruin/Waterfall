@@ -1285,6 +1285,8 @@ def analyze_deal_excel(deal_id):
 @login_required
 def list_deal_scenarios(deal_id):
     from flask_app.services import scenario_service
+    # Argus imports surface as scenarios automatically (idempotent)
+    scenario_service.ensure_import_scenarios(get_engine(), deal_id)
     return jsonify({'scenarios': scenario_service.list_scenarios(get_engine(), deal_id)})
 
 

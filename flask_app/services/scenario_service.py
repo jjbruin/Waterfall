@@ -220,3 +220,59 @@ def get_risk_candidates(engine, prospect_id: int) -> List[Dict[str, Any]]:
                                         else (str(lease_end)[:10] if lease_end else None)),
                 })
         return out
+
+def ensure_import_scenarios(engine, prospect_id: int) -> None:
+    """Every Argus import surfaces as a selectable scenario (idempotent).
+
+    An import that no scenario pins gets one, named after the import and
+    pinning that import for its property plus the active imports for the
+    deal's other properties, so a multi-property scenario stays complete.
+    The first auto-created scenario for a deal with no base yet becomes
+    the Base Case when it pins the active import.
+    """
+    try:
+        with engine.connect() as c:
+            prop_ids = [r[0] for r in c.execute(text(
+                'SELECT id FROM prospect_properties WHERE prospect_id = :p'),
+                {'p': prospect_id})]
+            imports = []  # (property_id, import_id, label, filename, is_active)
+            for pid in prop_ids:
+                for r in c.execute(text(
+                        'SELECT id, import_label, original_filename, is_active '
+                        'FROM argus_imports WHERE vcode = :v ORDER BY id'),
+                        {'v': f'NP{pid:06d}'}):
+                    imports.append((pid, r[0], r[1], r[2], bool(r[3])))
+        if not imports:
+            return
+
+        existing = list_scenarios(engine, prospect_id)
+        pinned = set()
+        for s in existing:
+            ids = s.get('argus_import_ids') or {}
+            vals = ids.values() if isinstance(ids, dict) else ids
+            for v in (vals or []):
+                try:
+                    pinned.add(int(v))
+                except (TypeError, ValueError):
+                    continue
+
+        active_by_pid = {pid: iid for pid, iid, _, _, act in imports if act}
+        has_base = any(s.get('is_base') for s in existing)
+
+        for pid, iid, label, fname, act in imports:
+            if iid in pinned:
+                continue
+            pins = {str(k): int(v) for k, v in active_by_pid.items()}
+            pins[str(pid)] = int(iid)
+            create_scenario(engine, prospect_id, {
+                'name': label or fname or f'Argus import {iid}',
+                'description': f'Auto-created from Argus import: {fname or label}',
+                'is_base': (not has_base) and act,
+                'argus_import_ids': pins,
+            }, user='system')
+            pinned.add(iid)
+            if (not has_base) and act:
+                has_base = True
+    except Exception:
+        logger.exception("ensure_import_scenarios failed for prospect %s", prospect_id)
+
