@@ -946,11 +946,18 @@ def _continue_analyze(result, deal_data, assumptions):
                 logger.debug("wf steps for audit: %s", wf_err)
 
             def _roe_section(partner, timeline, summary):
-                # deal level tracks no pref; suppress those cards
+                # the full AM breakdown: pref due/paid/accrued and running
+                # ITD ROE per event, plus the summary the metric cards show.
+                # Deal level tracks no pref (mixed rates), so those stay None.
                 has_pref = partner is not None
                 return {
                     'partner': partner,
                     'metrics': {
+                        'inception': summary.get('inception'),
+                        'end': summary.get('end'),
+                        'years': summary.get('years'),
+                        'total_cf_dist': summary.get('total_cf_dist'),
+                        'wac': summary.get('wac'),
                         'roe': summary.get('roe'),
                         'pref_due': summary.get('pref_due') if has_pref else None,
                         'pref_paid': summary.get('pref_paid') if has_pref else None,
@@ -962,6 +969,10 @@ def _continue_analyze(result, deal_data, assumptions):
                         'capital_balance': r.get('Capital Balance'),
                         'days': r.get('Days at Balance'),
                         'weighted_capital': r.get('Weighted Capital'),
+                        'pref_due': r.get('Pref Due') if has_pref else None,
+                        'pref_paid': r.get('Pref Paid') if has_pref else None,
+                        'pref_accrued': r.get('Pref Accrued') if has_pref else None,
+                        'itd_roe': r.get('ITD ROE') if has_pref else None,
                     } for r in timeline],
                 }
 

@@ -2781,6 +2781,26 @@ loadDeals()
                 <div v-for="section in analysisResult.roe_audit" :key="section.partner || 'deal'" style="margin-bottom:16px">
                   <h4 style="margin:8px 0 4px">{{ section.partner || 'Deal Level' }}</h4>
                   <div class="metric-cards" style="margin-bottom:8px">
+                    <div class="metric-card" v-if="section.metrics?.inception">
+                      <div class="metric-label">Inception</div>
+                      <div class="metric-value">{{ section.metrics.inception }}</div>
+                    </div>
+                    <div class="metric-card" v-if="section.metrics?.end">
+                      <div class="metric-label">End</div>
+                      <div class="metric-value">{{ section.metrics.end }}</div>
+                    </div>
+                    <div class="metric-card" v-if="section.metrics?.years != null">
+                      <div class="metric-label">Years</div>
+                      <div class="metric-value">{{ section.metrics.years?.toFixed(2) }}</div>
+                    </div>
+                    <div class="metric-card" v-if="section.metrics?.total_cf_dist != null">
+                      <div class="metric-label">CF Distributions</div>
+                      <div class="metric-value">{{ fmtCurrency(section.metrics.total_cf_dist) }}</div>
+                    </div>
+                    <div class="metric-card" v-if="section.metrics?.wac != null">
+                      <div class="metric-label">Wtd Avg Capital</div>
+                      <div class="metric-value">{{ fmtCurrency(section.metrics.wac) }}</div>
+                    </div>
                     <div class="metric-card" v-if="section.metrics?.roe != null">
                       <div class="metric-label">ITD ROE</div>
                       <div class="metric-value">{{ fmtPct(section.metrics.roe) }}</div>
@@ -2805,6 +2825,10 @@ loadDeals()
                           <th>Date</th><th>Event</th><th class="r">Amount</th>
                           <th class="r">Capital Balance</th><th class="r">Days</th>
                           <th class="r">Wtd Capital</th>
+                          <template v-if="section.metrics?.pref_due != null">
+                            <th class="r">Pref Due</th><th class="r">Pref Paid</th>
+                            <th class="r">Pref Accrued</th><th class="r">ITD ROE</th>
+                          </template>
                         </tr>
                       </thead>
                       <tbody>
@@ -2815,6 +2839,12 @@ loadDeals()
                           <td class="r">{{ fmtCurrency(ev.capital_balance) }}</td>
                           <td class="r">{{ ev.days }}</td>
                           <td class="r">{{ fmtCurrency(ev.weighted_capital) }}</td>
+                          <template v-if="section.metrics?.pref_due != null">
+                            <td class="r">{{ fmtCurrency(ev.pref_due) }}</td>
+                            <td class="r">{{ fmtCurrency(ev.pref_paid) }}</td>
+                            <td class="r">{{ fmtCurrency(ev.pref_accrued) }}</td>
+                            <td class="r">{{ ev.itd_roe != null ? fmtPct(ev.itd_roe) : '' }}</td>
+                          </template>
                         </tr>
                       </tbody>
                     </table>
