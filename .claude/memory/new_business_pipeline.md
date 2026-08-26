@@ -116,3 +116,19 @@ Known remaining duplicates to consolidate: `prospect_deals.purchase_price` still
 ## Waterfall step pairing + gated promote tiers (Aug 26 2026)
 The engine pairs a Share with its Tags only on IDENTICAL iOrder (or shared vAmtType) -- AM convention, e.g. P0000006 step 12/12. The NB builder was writing residual steps at sequential orders, so the lead took its share alone and every Tag allocated zero. Fixed in _convert_step_inputs: consecutive residual steps share one level order; any other step type ends the run.
 **Gated two-tier promote** ("X/Y until partner hits IRR target, then A/B"): encode tier 1 as the gated partner's IRR step AS LEAD with FXRate = its share (step_max = level * fx, capped by irr_needed_distribution), partner Tag at the same iOrder for the other share; tier 2 is a plain Share/Tag pair at the next order. Windsor Square N0000003 Cap_WF is the reference: IRR 9 / IRR 9 / [IRR 13.5 fx.4 + Tag .6]@30 / [Share .75 + Tag .25]@40. Verified: 40/60 exact pre-gate, 75/25 exact when the 13.5 binds. Builder UI expresses the gate since Aug 26: the IRR Lookback step has a 'share %' field (FXRate on the lead); residual steps after a gated IRR tag at its level until shares reach 100%, then the next residual opens a fresh level. Verified against the AM cascade pattern (30/70@14.5 -> 24/76@14.6 -> 21/79 final).
+
+## Waterfall persistence: Compute Returns never writes (Aug 26 2026)
+The stored waterfall kept scrambling after page reloads: runAnalysis() auto-built
+and SAVED the Builder rows on every Compute Returns, and _storedToInputs() hydrated
+those rows lossily (dropped iOrder/Tie #, collapsed Share+Tag to generic residuals),
+so the close-at-100 heuristic regrouped the ties on the next save. One reload + one
+Compute Returns mispaired multi-tier structures (e.g. 40/60-until-13.5 + 75/25).
+Fixed in c5d0b81 (v375):
+- Compute Returns READS the stored waterfall only. The explicit "Build & Save
+  Waterfall" button is the sole write path. Do not reintroduce auto-save on analyze.
+- _storedToInputs() is lossless: level = iOrder on every row, lead-first order
+  within a tie (save path makes the first residual at a level the Share). Round-trip
+  through /waterfall/build verified as an identity on Windsor's 10 steps.
+If a scrambled structure is found: correct rows are in the waterfall_audit backups
+and scratchpad windsor_waterfall_backup*.json; the reference Cap_WF shape is in the
+"Waterfall step pairing" section above.
