@@ -249,13 +249,33 @@ def build_prospect_analysis(
 
     # Derive timing
     target_close = deal.get('target_close')
+    close_date = None
     if target_close:
         try:
             close_date = pd.to_datetime(target_close).date()
         except Exception:
+            close_date = None
+    if close_date is None:
+        # No close date on the deal: anchor to the start of the actual cash
+        # flow source, so the sale clock (close + hold) cannot drift from the
+        # forecast clock and truncate the final hold year mid-stream.
+        fc_start = None
+        if argus_forecast_df is not None and not argus_forecast_df.empty:
+            fc_start = pd.to_datetime(argus_forecast_df['event_date']).min().date()
+        elif cashflows:
+            try:
+                fc_start = min(pd.to_datetime(cf['period_date']).date()
+                               for cf in cashflows if cf.get('period_date'))
+            except (TypeError, ValueError):
+                fc_start = None
+        if fc_start is not None:
+            close_date = fc_start
+            scenario_msgs.append(
+                f"Close date defaulted to the cash flow start {fc_start} - "
+                f"set Target Close on the deal to override."
+            )
+        else:
             close_date = date(DEFAULT_START_YEAR, 1, 1)
-    else:
-        close_date = date(DEFAULT_START_YEAR, 1, 1)
 
     start_year = close_date.year
     model_start = date(start_year, 1, 31)
