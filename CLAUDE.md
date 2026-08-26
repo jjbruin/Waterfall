@@ -147,7 +147,7 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
 - ACR build agent has transient failures (5-second runs) — retry if it fails. Confirm the run actually built rather than failing fast: `az acr task show-run --registry acrwaterfalldev --run-id <id> --query "{status:status,start:startTime,finish:finishTime}" -o tsv`
 - Use `--no-logs` to avoid Azure CLI unicode crash (`✓` character).
 - To pin an already-deployed `:latest` revision after the fact, retag its digest without rebuilding and redeploy that tag — same digest, so the content is provably identical: `az acr import -n acrwaterfalldev --source acrwaterfalldev.azurecr.io/waterfall-xirr@sha256:<digest> --image waterfall-xirr:<sha>`
-- Deploy history: revision `v349` = commit `2700c99` (first SHA-pinned revision). `v348` and earlier all point at `:latest` and are not traceable by tag.
+- Deploy history (SHA-pinned): `v355` = `d58a797`, `v354` = `0b28731`, `v353` = `f754919`, `v352` = `6918db3`, `v351` = `826df0e`, `v350` = `87202b1`, `v349` = `2700c99` (first SHA-pinned revision). `v348` and earlier point at `:latest` and are not traceable by tag.
 
 ### Local Development
 ```bash
@@ -245,6 +245,24 @@ cd vue_app && npm run dev        # Frontend on http://localhost:5173
 - **Workflow**: Enter values → Recompute → optionally Save (persists to DB) or Clear. Saved overrides auto-load on deal select.
 - **API**: `GET/PUT/DELETE /api/deals/<vcode>/sale-override`. POST `/compute` accepts overrides in body; falls back to saved overrides if not provided.
 - **ISBS-anchored loan payoff**: Modeled amortization balance at sale date is scaled by `(ISBS_actual_debt / modeled_debt_at_anchor_date)` ratio. The ISBS Interim BS gives the real current outstanding; the scale factor corrects for differences between MRI origination amount and actual paydown. Diagnostic message shows anchor date, actual/modeled balances, and scale factor.
+
+### Parcel Sales (Interim Sales)
+Sales of part of a property before the final disposition. A deal can carry
+several. Expandable box on Deal Analysis, directly above the Sale row.
+
+- **Inputs per sale**: label, projected sale date, sale price, cost of sale (% or $), debt paydown allocated across mortgages, amount held in the CapEx reserve, distribution mode, and the revenue/expenses that leave with the parcel.
+- **Database**: `parcel_sales` table (id, vcode, label, sale_date, sale_price, cost_of_sale_value/type, debt_application, capex_reserve_hold, distribution_mode, distribution_fixed, lost_revenue, lost_expense, notes, sort_order). The four structured columns are JSON blobs, following `prospect_assumptions`. In `PROTECTED_TABLES`.
+- **Money flow** (`compute_economics()` in `parcel_sale_service.py`, the single definition the UI and engine share): price → less cost of sale → less debt paydown → less reserve hold → remainder distributed.
+- **Reserve hold**: passed to `build_cash_flow_schedule_from_fad()` as `reserve_deposits`; joins the cash balance *before* CapEx is funded, then is spent by the ordinary reserve rules. Anything unspent returns at the final sale through the existing `get_sale_period_total_cash()` path — no separate logic. Note the reserve can also fund operating deficits that were previously unfunded, so a parcel sale may improve returns by more than its proceeds.
+- **Debt paydown**: `Loan.curtailments` + the amortization builder. Convention is **re-amortize** — the payment is recalculated over the remaining term and the maturity date does not move, so debt service and DSCR improve from the paydown date. An interest-only loan simply drops its interest.
+- **Distribution modes**: `waterfall` feeds the remainder into `cap_period_cash` as a Cap event at the parcel date (exact — `run_interleaved_waterfalls` processes it in date order); `pro_rata` splits on contributed capital; `fixed` uses per-partner amounts. All three are a **return of capital** — they reduce capital outstanding, so weighted average capital falls and ROE rises gradually rather than spiking.
+- **Lost income**: `apply_parcel_income_loss()` spreads annual amounts across the months from the sale date, adjusting `mAmount_norm` only (the column every NOI/FAD/DSCR/terminal-value path reads). Revenue subtracts; expense adds back. Because the exit value is forward NOI / cap rate, **removing revenue automatically lowers the final sale price** — correct, and stated in diagnostics so it is not read as an error.
+- **Tenant picker**: `get_deal_tenants()` reads the MRI roster and seeds Rental Income (4010); the figure stays editable because a point-in-time rent roll will not tie to a forecast carrying growth and rollover. Identical roster rows are collapsed — the roster returns every tenant twice and summing raw rows doubles the rent removed.
+- **Cache**: parcel sales are loaded *inside* `get_cached_deal_result()` and fingerprinted into the cache key, so Deal Analysis, the reports and the assistant share one set of assumptions. The fingerprint covers only fields that change the projection, so a rename does not force a recompute.
+- **Reporting**: four lines on the Annual Forecast below DSCR — Net Proceeds, Debt Paydown, To CapEx Reserve, Distributed — added only when the deal has a sale, and picked up by the Excel export automatically. `result['parcel_sales_applied']` is a JSON-safe audit record of what was applied.
+- **Guards** (each reported rather than silent): a parcel date after the deal's sale date is ignored; a paydown at or before the actuals boundary is not modelled, since it is already in the reported balance and would otherwise corrupt the ISBS anchoring; a paydown allocated to a loan that is not modelled is not applied; a loan retired early by a paydown is not misread as a balloon and deducted again at sale; fixed amounts that miss the remainder are distributed as entered with the difference reported; an amount naming a partner not on the deal is not distributed.
+- **Known limitation**: `pro_rata` and `fixed` are applied after the waterfall runs, so pref accruing between the parcel date and the final sale is still calculated on pre-distribution capital and is slightly overstated. The `waterfall` mode has no such gap. Reported per sale in diagnostics.
+- **API**: `GET/POST /api/deals/<vcode>/parcel-sales`, `PUT/DELETE /api/deals/<vcode>/parcel-sales/<id>`, `GET /api/deals/<vcode>/parcel-sales/tenants`. Validation runs server-side on create and update; errors block the save, warnings do not.
 
 ### Cap Rate at Sale / Refinance
 - **Source column**: `fCapRate` from `valuations` table (MRI_Val)
@@ -385,7 +403,7 @@ Executive portfolio-level view with instant-load KPIs and charts. Vue: `Dashboar
 ### 2. Deal Analysis
 Main waterfall computation, partner returns, capital accounts, XIRR/MOIC metrics. Vue: `DealAnalysisView.vue`. Flask: `deals.py` + `compute_service.py`.
 
-**Layout**: Deal Information + Capitalization → Deal-Level Summary (KPI cards) → Partner Returns (non-OP partners highlighted bold with blue-grey background) → Annual Forecast (whole-dollar formatting, DSCR as 2-decimal, blank spacer/header cells) → expandable sections (Diagnostics, Debt Service, Cash Management, Capital Calls, XIRR Cash Flows, ROE Audit, MOIC Audit).
+**Layout**: Deal Information + Capitalization → Parcel Sales (expandable) → Sale Assumptions Override → Deal-Level Summary (KPI cards) → Partner Returns (non-OP partners highlighted bold with blue-grey background) → Annual Forecast (whole-dollar formatting, DSCR as 2-decimal, blank spacer/header cells) → expandable sections (Diagnostics, Debt Service, Cash Management, Capital Calls, XIRR Cash Flows, ROE Audit, MOIC Audit).
 
 **XIRR Cash Flows**: Merged side-by-side table with columns Date, Description (typename from `cashflow_details`), one amount column per partner, and Deal total column. Rows are keyed by (date, description); same-date/same-description cashflows for one partner are summed. Partner Returns IRR is computed from `combined_cfs` (the authoritative cashflow list); the XIRR Cash Flows table/Excel is a display-friendly pivot of the same data via `cashflow_details`.
 
@@ -460,7 +478,7 @@ View, edit, and create waterfall structures for any entity. Vue: `WaterfallSetup
 
 ### Sidebar: Data Management Tools
 Vue: `AppSidebar.vue` — tools are organized under the Data Management section dropdown. Flask: `data.py` API endpoints.
-- **Import CSVs** (under Database Tools) — Browser file upload (no server-side folder scan — incompatible with Azure). Select CSV files → auto-matches filenames to table definitions → shows importable/protected/unmatched status → uploads one file at a time (sequential to avoid OOM on 2GB container) with progress indicator. Protected tables (`waterfalls`, `one_pager_comments`, `waterfall_audit`, `review_roles`, `review_submissions`, `review_notes`, `one_pager_snapshots`, `prospective_loans`, `prospective_loans_audit`, `planned_loans`, `sale_overrides`, `user_requests`, `user_request_messages`) are never overwritten. Uses chunked import (`import_csv_stream()`, 50K rows/chunk, `dtype=object`) for large files like ISBS (800K+ rows). Clears data and computation caches.
+- **Import CSVs** (under Database Tools) — Browser file upload (no server-side folder scan — incompatible with Azure). Select CSV files → auto-matches filenames to table definitions → shows importable/protected/unmatched status → uploads one file at a time (sequential to avoid OOM on 2GB container) with progress indicator. Protected tables (`waterfalls`, `one_pager_comments`, `waterfall_audit`, `review_roles`, `review_submissions`, `review_notes`, `one_pager_snapshots`, `prospective_loans`, `prospective_loans_audit`, `planned_loans`, `sale_overrides`, `parcel_sales`, `user_requests`, `user_request_messages`) are never overwritten. Uses chunked import (`import_csv_stream()`, 50K rows/chunk, `dtype=object`) for large files like ISBS (800K+ rows). Clears data and computation caches.
 - **Export Database** (under Database Tools) — Export all tables as `waterfall_db_export_{timestamp}.zip` containing `{table_name}_db_export.csv` for every table.
 - **Reload Data** (under Data Management) — Reloads all cached data from the database.
 - **Feedback & Requests** — Standalone expandable section below nav. Submit errors, improvements, report requests, and analysis requests. Submit form (type, title, description, priority) + scrollable list of past requests with status badges and message counts. Click a request to see its full threaded conversation and add replies. Auto-opens when navigating with a `?reply=TOKEN` query param (from email links).
@@ -797,6 +815,13 @@ Embedded Claude-powered chat panel for natural-language queries against the port
 - `load_capital_calls()` - Load and normalize capital calls with mixed date format handling (capital_calls.py)
 - `build_capital_call_schedule()` - Build list of capital call events, optionally filtered by deal (capital_calls.py)
 - `apply_capital_calls_to_states()` - Apply capital calls to investor states with pool routing (capital_calls.py)
+
+### Parcel Sales
+- `compute_economics()` - Price less cost of sale, paydown and reserve; the remainder to distribute (parcel_sale_service.py)
+- `validate()` - Per-sale checks, errors vs warnings (parcel_sale_service.py)
+- `get_deal_loans()` / `get_deal_tenants()` - Paydown targets and roster rows for the pickers; loan_id kept in the raw form `loans.py` builds ids with, tenant rows deduped (parcel_sale_service.py)
+- `apply_parcel_income_loss()` - Remove the revenue/expenses that leave with a parcel, from the sale date forward (compute.py)
+- `apply_manual_parcel_distributions()` - Pro-rata and fixed distribution modes, as a return of capital (compute.py)
 
 ### Database
 - `save_waterfall_steps()` - Replace all waterfall steps for a vcode with audit trail; quotes column names for PostgreSQL (database.py)
