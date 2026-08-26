@@ -58,6 +58,21 @@ FUND_MIN_DEALS = 2
 #: Add the entity code to force fund treatment.
 FORCE_FUND: set[str] = set()
 
+#: Prefix that marks an operating-partner entity.
+#:
+#: COUPLED TO ``one_pager.get_capitalization_stack``, which splits a deal's
+#: funded capital on exactly this test (``investor_id.upper().startswith("OP")``
+#: -> ``partner_equity``, else -> ``pref_equity``). The two must agree: the
+#: PE-basis look-through below exists precisely to scale ``pref_equity``, and it
+#: can only do that correctly if it excludes the same entities that were left
+#: out of ``pref_equity`` in the first place. Change one, change both.
+OP_PREFIX = "OP"
+
+
+def _is_op(entity: str) -> bool:
+    """True when ``entity`` is an operating partner. See ``OP_PREFIX``."""
+    return str(entity or "").strip().upper().startswith(OP_PREFIX)
+
 #: When a deal is reachable by several routes that disagree on the group, the
 #: default rule is PREFER_INDIVIDUAL_ON_MIXED (below). This map overrides the
 #: outcome for named deals (keyed on **vcode**, which is unique — InvestmentID
@@ -237,7 +252,8 @@ class _Graph:
             self.children.setdefault(investor, []).append((investee, pct))
             self.owners.setdefault(investee, []).append((investor, pct))
 
-    def hop_share(self, investee: str, investor: str) -> Optional[float]:
+    def hop_share(self, investee: str, investor: str,
+                  pe_only: bool = False) -> Optional[float]:
         """`investor`'s normalised share of `investee`.
 
         Normalised against the sum of *all* owners of ``investee``. Entities
@@ -249,10 +265,22 @@ class _Graph:
         holds 0% — a broken chain, not a zero share. 45th & Main is exactly
         this case (PPI45M 0.0 and OPEVGR 0.0 in PMX, against 100.0 in MRI's IM
         copy), and it must be flagged rather than fabricated.
+
+        ``pe_only`` drops operating-partner owners from the denominator, giving
+        the investor's share of the *preferred-equity* capital rather than of
+        the whole deal. Use it only on the hop that lands ON the deal entity,
+        and only against a PE-only dollar figure — see ``lookthrough_pct``.
+        With every OP owner recorded at 0% (34 of 35 TGAM deals at 26Q2) this
+        returns exactly what the default does, because a 0% holder is already
+        outside the denominator.
         """
         owners = self.owners.get(investee.upper())
         if not owners:
             return None
+        if pe_only:
+            owners = [(w, p) for w, p in owners if not _is_op(w)]
+            if not owners:
+                return None
         total = sum(p for _, p in owners)
         if total <= 0:
             return None
@@ -270,9 +298,36 @@ def lookthrough_pct(deal_iid: str, investor_code: str,
     The product of the normalised ownership % at every hop, summed over every
     distinct route (a deal can be held through more than one vehicle).
 
-    Returns ``{"pct": float|None, "routes": [...], "broken": [...]}``.
-    ``pct`` is ``None`` when no route resolves — the caller must flag the deal,
-    never substitute a number.
+    Returns ``{"pct": float|None, "pct_pe": float|None, "routes": [...],
+    "broken": [...]}``. Both are ``None`` when no route resolves — the caller
+    must flag the deal, never substitute a number.
+
+    TWO BASES, AND THEY ARE NOT INTERCHANGEABLE.
+
+    ``pct`` is the investor's share of the WHOLE DEAL: the final hop is
+    normalised against every owner of the deal entity, operating partner
+    included. Use it for anything measured over total deal capital.
+
+    ``pct_pe`` is the investor's share of the deal's PREFERRED-EQUITY capital:
+    the final hop drops OP owners from its denominator. Use it — and only it —
+    to scale ``cap_stack.pref_equity`` / ``committed_pe``, which
+    ``one_pager.get_capitalization_stack`` already builds from non-OP investors
+    alone.
+
+    Multiplying a PE-only dollar figure by ``pct`` subtracts the OP stake
+    twice. Pegasus Life Storage was exactly this: OPPEGA holds 7.37% of PEGASU
+    and contributed $2,573,473.25, which lands in ``partner_equity``, so
+    ``pref_equity`` of $32,334,654.75 is TGA22's $24,150,000 plus PPILFS's
+    $8,184,654.75 and contains none of OPPEGA's money. TGAM owns 90% of both
+    vehicles, so its claim is $29,101,189.28 — but ``pct`` of 0.83367
+    (= 0.90 x 0.9263) gave $26,956,431.63, low by $2,144,757.65. ``pct_pe``
+    returns 0.90 and the figure is right.
+
+    Only the FINAL hop differs. Intermediate hops keep the full denominator: an
+    intermediate is a holding vehicle, and the investor's share of it is not a
+    PE-vs-OP question. The two values are equal for every deal whose OP owners
+    are recorded at 0% — 34 of 35 TGAM deals at 26Q2 — so this distinction bites
+    only where the ownership feed carries a real OP percentage.
     """
     g = graph if graph is not None else _Graph(relationships)
     target = str(deal_iid or "").strip().upper()
@@ -302,7 +357,15 @@ def lookthrough_pct(deal_iid: str, investor_code: str,
                 continue
             hop = {"entity": child, "share": share, "stated_pct": pct}
             if child == target:
+                # PE basis: re-normalise THIS hop only, excluding OP owners.
+                # Falls back to `share` when the PE-only denominator collapses
+                # (every non-OP owner at 0%), so a degenerate feed can never
+                # turn into a fabricated number — same rule as `hop_share`.
+                share_pe = g.hop_share(child, node, pe_only=True)
+                if share_pe is None:
+                    share_pe = share
                 routes.append({"pct": acc * share,
+                               "pct_pe": acc * share_pe,
                                "chain": trail + [hop],
                                "first_hop": (trail[0]["entity"] if trail
                                              else child)})
@@ -311,7 +374,9 @@ def lookthrough_pct(deal_iid: str, investor_code: str,
 
     walk(investor, 1.0, [], frozenset({investor}), 0)
     total = sum(r["pct"] for r in routes) if routes else None
-    return {"pct": total, "routes": routes, "broken": broken}
+    total_pe = sum(r["pct_pe"] for r in routes) if routes else None
+    return {"pct": total, "pct_pe": total_pe,
+            "routes": routes, "broken": broken}
 
 
 # ── Grouping ──────────────────────────────────────────────────────────────
@@ -633,11 +698,17 @@ def resolve_investor_deals(investor_code: str, quarter: str,
         m = deals[vc]
         group, mixed = _group_for(vc, routes, is_fund)
         pct = sum(r["pct"] for r in routes)
+        # PE basis, for scaling pref_equity / committed_pe. Equal to `pct`
+        # unless the deal entity has an OP owner at a real percentage.
+        pct_pe = sum(r["pct_pe"] for r in routes)
         entry = {
             "vcode": m["vcode"], "name": m["name"], "iid": m["iid"],
             "group": group,
             "lookthrough_pct": pct,
+            "lookthrough_pct_pe": pct_pe,
             "pct_display": round(pct * 100, 4),
+            "pct_pe_display": round(pct_pe * 100, 4),
+            "op_diluted": abs(pct_pe - pct) > 1e-12,
             "n_routes": len(routes),
             "chains": [" -> ".join([investor] + [h["entity"] for h in r["chain"]])
                        for r in routes],
@@ -697,6 +768,7 @@ def resolve_investor_deals(investor_code: str, quarter: str,
             "asset_type": m["asset_type"], "strategy": m["strategy"],
             "investment_strategy": m["investment_strategy"],
             "lookthrough_pct": None,
+            "lookthrough_pct_pe": None,
             "reason": "ownership % unavailable",
             "detail": b["detail"]["reason"],
             "via": b["detail"]["via"],
