@@ -33,6 +33,14 @@ interface SourceItem {
   removable: boolean
   level: 'portfolio' | 'property'
   propertyId: number | null  // which property (if level === 'property')
+  // Optional per-loan terms. A debt row with its own rate is modelled as its
+  // own loan (blank term/IO/amort fall back to the deal-level Debt
+  // Parameters); rows without a rate fold into one blended loan. This is how
+  // individually financed properties are expressed.
+  rate: number | null
+  term_months: number | null
+  io_months: number | null
+  amort_months: number | null
 }
 
 interface WfStepInput {
@@ -178,12 +186,14 @@ function defaultUses(): UseItem[] {
   ]
 }
 
+const _noTerms = { rate: null, term_months: null, io_months: null, amort_months: null }
+
 function defaultDebtSources(): SourceItem[] {
   return [
-    { id: 'first_mortgage', label: 'First Mortgage', amount: null, isDebt: true, removable: false, level: 'portfolio', propertyId: null },
-    { id: 'future_mtg_fundings', label: 'Future Mortgage Fundings', amount: null, isDebt: true, removable: false, level: 'portfolio', propertyId: null },
-    { id: 'second_mortgage', label: 'Second Mortgage', amount: null, isDebt: true, removable: false, level: 'portfolio', propertyId: null },
-    { id: 'future_2nd_fundings', label: 'Future Second Mortgage Fundings', amount: null, isDebt: true, removable: false, level: 'portfolio', propertyId: null },
+    { id: 'first_mortgage', label: 'First Mortgage', amount: null, isDebt: true, removable: false, level: 'portfolio', propertyId: null, ..._noTerms },
+    { id: 'future_mtg_fundings', label: 'Future Mortgage Fundings', amount: null, isDebt: true, removable: false, level: 'portfolio', propertyId: null, ..._noTerms },
+    { id: 'second_mortgage', label: 'Second Mortgage', amount: null, isDebt: true, removable: false, level: 'portfolio', propertyId: null, ..._noTerms },
+    { id: 'future_2nd_fundings', label: 'Future Second Mortgage Fundings', amount: null, isDebt: true, removable: false, level: 'portfolio', propertyId: null, ..._noTerms },
   ]
 }
 
@@ -863,7 +873,21 @@ function selectAssumption(a: any) {
         const savedMap = new Map(saved.debt.map((s: any) => [s.id, s]))
         for (const item of base) {
           const s = savedMap.get(item.id)
-          if (s) item.amount = s.amount
+          if (s) {
+            item.amount = s.amount
+            item.rate = s.rate ?? null
+            item.term_months = s.term_months ?? null
+            item.io_months = s.io_months ?? null
+            item.amort_months = s.amort_months ?? null
+            item.propertyId = s.propertyId ?? null
+          }
+        }
+        // custom per-property rows the defaults don't know about
+        for (const s of saved.debt) {
+          if (!base.some(b => b.id === s.id) && s.isDebt) {
+            base.push({ ..._noTerms, propertyId: null, level: 'portfolio',
+                        removable: true, isDebt: true, ...s })
+          }
         }
         debtSources.value = base
       }
@@ -880,6 +904,16 @@ function selectAssumption(a: any) {
     if (fm) fm.amount = a.debt_amount
   }
   assumptionsHydrated.value = true
+}
+
+async function saveAsNewVersion() {
+  if (!selectedDealId.value) return
+  const label = prompt('Name for the new assumptions version (e.g. "Individually financed", "Higher leverage")')
+  if (!label || !label.trim()) return
+  assumptionForm.value.version_label = label.trim()
+  // no id -> the backend inserts a new version instead of updating
+  selectedAssumptionId.value = null
+  await saveAssumptions()
 }
 
 async function saveAssumptions() {
@@ -1237,6 +1271,13 @@ function parseInputCurrency(s: string): number | null {
 // Formatted-input focus/blur handlers for UseItem amount fields
 const focusedUseIdx = ref<number | null>(null)
 const focusedDebtIdx = ref<number | null>(null)
+// Per-row loan-terms expander on the debt sources table
+const debtTermsOpen = ref<Record<string, boolean>>({})
+
+function setDebtRate(item: SourceItem, ev: Event) {
+  const v = (ev.target as HTMLInputElement).value
+  item.rate = v === '' ? null : Number(v) / 100
+}
 const focusedEquityIdx = ref<number | null>(null)
 const focusedPropPriceId = ref<number | null>(null)
 
@@ -1284,6 +1325,8 @@ loadDeals()
       </select>
       <span v-if="assumptionVersions.length" class="version-selector">
         <label>Assumptions:</label>
+        <button class="btn-mini" title="Save the current form as a new assumptions version"
+                @click="saveAsNewVersion">Save as New</button>
         <select @change="e => selectAssumption(assumptionVersions.find((a: any) => a.id === Number((e.target as HTMLSelectElement).value)))">
           <option v-for="v in assumptionVersions" :key="v.id" :value="v.id" :selected="v.id === selectedAssumptionId">
             {{ v.version_label }} (v{{ v.version }})
@@ -1445,11 +1488,19 @@ loadDeals()
                     </tr>
                   </thead>
                   <tbody>
-                    <tr v-for="(item, i) in debtSources" :key="item.id">
+                    <template v-for="(item, i) in debtSources" :key="item.id">
+                    <tr>
                       <td>
                         <input v-if="item.removable" v-model="item.label"
                                class="inline-label-input" placeholder="Debt source name" />
                         <span v-else>{{ item.label }}</span>
+                        <button class="btn-terms" :class="{ set: item.rate != null }"
+                                :title="item.rate != null
+                                  ? 'This source is modelled as its own loan'
+                                  : 'Give this source its own loan terms (individually financed)'"
+                                @click="debtTermsOpen[item.id] = !debtTermsOpen[item.id]">
+                          {{ item.rate != null ? 'own loan' : 'terms' }}
+                        </button>
                       </td>
                       <td class="r col-pct">
                         <select v-if="properties.length > 1" v-model="item.level" class="level-select">
@@ -1475,6 +1526,26 @@ loadDeals()
                                 class="btn-icon btn-danger btn-xs">&times;</button>
                       </td>
                     </tr>
+                    <tr v-if="debtTermsOpen[item.id]" class="debt-terms-row">
+                      <td colspan="4">
+                        <div class="debt-terms">
+                          <label>Rate %
+                            <input type="number" step="0.001" :value="item.rate != null ? item.rate * 100 : null"
+                                   placeholder="deal rate"
+                                   @input="setDebtRate(item, $event)" />
+                          </label>
+                          <label>Term (mo)<input type="number" v-model.number="item.term_months" placeholder="deal term" /></label>
+                          <label>IO (mo)<input type="number" v-model.number="item.io_months" placeholder="deal IO" /></label>
+                          <label>Amort (mo)<input type="number" v-model.number="item.amort_months" placeholder="deal amort" /></label>
+                          <span class="scenario-hint">
+                            A rate makes this source its own loan; blank fields fall back to
+                            the deal-level Debt Parameters. Leave the rate blank to fold this
+                            source into the single blended loan.
+                          </span>
+                        </div>
+                      </td>
+                    </tr>
+                    </template>
                   </tbody>
                   <tfoot>
                     <tr class="subtotal-row">
@@ -3003,4 +3074,14 @@ loadDeals()
 .compare-table tr.current td { background: #eef4f9; font-weight: 600; }
 .btn-mini.danger { color: #a3282b; border-color: #dcb0b1; }
 .derived-tag { color: #7b8794; font-size: 0.68rem; font-weight: 500; margin-left: 3px; }
+.btn-terms {
+  margin-left: 6px; padding: 1px 7px; border: 1px dashed #ccd3d9;
+  border-radius: 8px; background: transparent; cursor: pointer;
+  font-size: 0.68rem; color: #7b8794;
+}
+.btn-terms.set { border-style: solid; border-color: #1f4e79; color: #1f4e79; font-weight: 600; }
+.debt-terms-row td { background: #fbfcfe; border-top: none; padding: 4px 10px 8px; }
+.debt-terms { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
+.debt-terms label { display: flex; flex-direction: column; gap: 2px; font-size: 0.72rem; color: #5a6675; }
+.debt-terms input { width: 90px; padding: 3px 6px; border: 1px solid #ccd3d9; border-radius: 2px; font-size: 0.8rem; }
 </style>

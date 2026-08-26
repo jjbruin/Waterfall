@@ -8,6 +8,7 @@ This is a TRANSLATION LAYER, not a new engine.
 """
 
 import logging
+import json
 import pandas as pd
 import numpy as np
 from datetime import date, timedelta
@@ -280,9 +281,23 @@ def build_prospect_analysis(
         'dtValuation': sale_date,
     }]) if exit_cap_rate > 0 else pd.DataFrame()
 
+    debt_sources = None
+    try:
+        _srcs = assumptions.get('capital_sources_json')
+        if _srcs:
+            _parsed = json.loads(_srcs) if isinstance(_srcs, str) else _srcs
+            debt_sources = _parsed.get('debt') if isinstance(_parsed, dict) else None
+    except (TypeError, ValueError):
+        debt_sources = None
+
     mri_loans_raw = _build_loans(vcode, debt_amount, debt_rate,
                                  debt_term_months, io_months, amort_months,
-                                 close_date)
+                                 close_date, debt_sources=debt_sources)
+    if mri_loans_raw is not None and len(mri_loans_raw) > 1:
+        parts = ", ".join(
+            f"{r['LoanID']}: ${r['mOrigLoanAmt']:,.0f} @ {r['nRate']:.2f}%"
+            for _, r in mri_loans_raw.iterrows())
+        scenario_msgs.append(f"Individually financed: {parts}")
 
     result = compute_deal_analysis(
         deal_vcode=vcode,
@@ -313,11 +328,13 @@ def build_prospect_analysis(
     terminal_noi = sale_dbg.get('NOI_12m_After_Sale', 0)
     exit_value = sale_dbg.get('Implied_Value', 0)
 
-    if scenario:
+    if scenario or scenario_msgs:
         existing = result.get('debug_msgs') or []
-        header = ["Scenario: " + str(scenario.get('name') or scenario.get('id'))]
+        header = (["Scenario: " + str(scenario.get('name') or scenario.get('id'))]
+                  if scenario else [])
         result['debug_msgs'] = header + scenario_msgs + existing
-        result['scenario'] = {'id': scenario.get('id'), 'name': scenario.get('name')}
+        if scenario:
+            result['scenario'] = {'id': scenario.get('id'), 'name': scenario.get('name')}
 
     # Surface investor-identity warnings in the Diagnostics panel.  These
     # describe misattributed capital, so they lead the list.
@@ -868,29 +885,60 @@ def _build_coa():
 
 
 def _build_loans(vcode, debt_amount, debt_rate, debt_term_months,
-                 io_months, amort_months, close_date):
-    """Build synthetic MRI loans DataFrame."""
+                 io_months, amort_months, close_date, debt_sources=None):
+    """Build synthetic MRI loans DataFrame.
+
+    Deals are financed two ways in practice: one loan against the group, or
+    each property financed individually. A debt source row that carries its
+    own rate becomes its own loan (terms falling back to the deal-level
+    values where blank); whatever debt remains after the individually-termed
+    rows is one blended loan at the deal-level terms. With no per-row terms
+    this reduces to the original single-loan behaviour.
+    """
+    _cols = ['vCode', 'LoanID', 'dtEvent', 'mOrigLoanAmt', 'iAmortTerm',
+             'mNominalPenalty', 'iLoanTerm', 'nRate', 'vSpread', 'nFloor',
+             'vIntRatereset', 'vIntType', 'vIndex']
     if debt_amount <= 0:
-        return pd.DataFrame(columns=[
-            'vCode', 'LoanID', 'dtEvent', 'mOrigLoanAmt', 'iAmortTerm',
-            'mNominalPenalty', 'iLoanTerm', 'nRate', 'vSpread', 'nFloor',
-            'vIntRatereset', 'vIntType', 'vIndex',
-        ])
+        return pd.DataFrame(columns=_cols)
 
-    maturity_date = add_months(close_date, debt_term_months)
+    def _row(loan_id, amount, rate, term_m, io_m, amort_m):
+        return {
+            'vCode': vcode,
+            'LoanID': loan_id,
+            'dtEvent': add_months(close_date, int(term_m)),
+            'mOrigLoanAmt': float(amount),
+            'iAmortTerm': int(amort_m),
+            'mNominalPenalty': int(io_m),
+            'iLoanTerm': int(term_m),
+            'nRate': rate * 100 if rate < 1 else rate,
+            'vSpread': 0, 'nFloor': 0, 'vIntRatereset': 0,
+            'vIntType': 'Fixed', 'vIndex': '',
+        }
 
-    return pd.DataFrame([{
-        'vCode': vcode,
-        'LoanID': f'{vcode}-L1',
-        'dtEvent': maturity_date,
-        'mOrigLoanAmt': debt_amount,
-        'iAmortTerm': amort_months,
-        'mNominalPenalty': io_months,
-        'iLoanTerm': debt_term_months,
-        'nRate': debt_rate * 100 if debt_rate < 1 else debt_rate,
-        'vSpread': 0,
-        'nFloor': 0,
-        'vIntRatereset': 0,
-        'vIntType': 'Fixed',
-        'vIndex': '',
-    }])
+    rows = []
+    individual_total = 0.0
+    for src in (debt_sources or []):
+        if not isinstance(src, dict):
+            continue
+        try:
+            amt = float(src.get('amount') or 0)
+            rate = src.get('rate')
+            rate = float(rate) if rate not in (None, '') else None
+        except (TypeError, ValueError):
+            continue
+        if amt <= 0 or rate is None or rate <= 0:
+            continue  # no own terms -> folds into the blended loan
+        term_m = int(float(src.get('term_months') or 0) or debt_term_months)
+        io_m = int(float(src.get('io_months') or 0) or io_months)
+        amort_m = int(float(src.get('amort_months') or 0) or amort_months)
+        rows.append(_row(f"{vcode}-{src.get('id') or f'L{len(rows) + 1}'}",
+                         amt, rate, term_m, io_m, amort_m))
+        individual_total += amt
+
+    remainder = debt_amount - individual_total
+    if remainder > 0.5:
+        rows.append(_row(f'{vcode}-L1', remainder, debt_rate,
+                         debt_term_months, io_months, amort_months))
+    if not rows:
+        return pd.DataFrame(columns=_cols)
+    return pd.DataFrame(rows)
