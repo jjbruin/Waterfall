@@ -9,6 +9,7 @@ Vcodes: Auto-generated N-series codes (N0000001, N0000002, ...) for deals.
 Properties within a portfolio deal get child codes (N0000001-01, N0000001-02, ...).
 """
 
+import json
 import logging
 import pandas as pd
 from datetime import datetime
@@ -969,6 +970,29 @@ def save_assumptions(engine, deal_id: int, data: Dict) -> Dict:
     assumption_id = data.get('id')
     with engine.connect() as conn:
         if assumption_id:
+            # Snapshot the row being overwritten into the activity log first.
+            # An UPDATE here has destroyed work before (a form holding
+            # defaults auto-saved over a real capital budget); with the
+            # snapshot, any overwrite is recoverable instead of final.
+            try:
+                prev = conn.execute(text(
+                    "SELECT * FROM prospect_assumptions WHERE id = :aid"
+                ), {'aid': assumption_id}).mappings().fetchone()
+                if prev:
+                    snapshot = json.dumps({k: str(v) for k, v in dict(prev).items()
+                                           if v is not None})
+                    conn.execute(text("""
+                        INSERT INTO prospect_activity (prospect_id, username, action, note)
+                        VALUES (:pid, :u, 'assumptions_overwritten', :note)
+                    """), {
+                        'pid': deal_id,
+                        'u': data.get('_username') or 'system',
+                        'note': f'Pre-update snapshot of assumptions id={assumption_id}: {snapshot}',
+                    })
+            except Exception as snap_err:  # never block a save on the snapshot
+                logger.warning("Assumptions snapshot failed for id=%s: %s",
+                               assumption_id, snap_err)
+
             # Update existing
             sets = ', '.join(f"{f} = :{f}" for f in ASSUMPTION_FIELDS)
             conn.execute(text(f"""

@@ -90,6 +90,10 @@ const propertyPrices = ref<Record<number, number | null>>({})
 // Assumptions form (operating + exit)
 const assumptionVersions = ref<any[]>([])
 const selectedAssumptionId = ref<number | null>(null)
+// True only after saved assumptions were successfully loaded INTO the form.
+// Auto-save checks it: when saved versions exist but never reached the form,
+// saving would overwrite real data with screen defaults.
+const assumptionsHydrated = ref(false)
 const assumptionForm = ref({
   version_label: 'Base Case',
   noi_year1: null as number | null,
@@ -551,6 +555,7 @@ async function selectDeal(id: number) {
   scenarioResults.value = {}
   riskCandidates.value = []
   riskPickerOpen.value = false
+  assumptionsHydrated.value = false
   selectedDealId.value = id
   loadScenarios()
   analysisResult.value = null
@@ -856,10 +861,20 @@ function selectAssumption(a: any) {
     const fm = debtSources.value.find(s => s.id === 'first_mortgage')
     if (fm) fm.amount = a.debt_amount
   }
+  assumptionsHydrated.value = true
 }
 
 async function saveAssumptions() {
   if (!selectedDealId.value) return
+  // Saved versions exist but were never loaded into this form: the screen is
+  // holding defaults, and saving them would overwrite real work. Skip the
+  // save -- analysis still runs on the values already in the database.
+  if (assumptionVersions.value.length > 0 && !assumptionsHydrated.value) {
+    error.value = 'Saved assumptions exist but were not loaded into the form — ' +
+      'auto-save skipped so they are not overwritten. Re-select the deal, ' +
+      'then save manually if the values on screen are intended.'
+    return
+  }
   savingAssumptions.value = true
   try {
     const payload = {

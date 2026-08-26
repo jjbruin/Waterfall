@@ -299,6 +299,7 @@ def get_deal_assumptions(deal_id):
 def save_deal_assumptions(deal_id):
     """Create or update an assumption version."""
     data = request.json or {}
+    data['_username'] = getattr(g, 'current_user', {}).get('username', '')
     result = save_assumptions(get_engine(), deal_id, data)
     return jsonify(result), 201
 
