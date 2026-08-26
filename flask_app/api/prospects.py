@@ -338,13 +338,34 @@ def analyze_deal(deal_id):
     If 'assumption_id' is provided, loads saved assumptions as base.
     """
     from flask_app.serializers import safe_json
+
+    prepared = _run_prospect_analysis(deal_id)
+    if isinstance(prepared, tuple):
+        return prepared  # an error response
+    result = prepared['result']
+    deal_data = prepared['deal_data']
+    assumptions = prepared['assumptions']
+
+    if 'error' in result and 'partner_results' not in result:
+        return jsonify({'error': result['error']}), 400
+
+    return _continue_analyze(result, deal_data, assumptions)
+
+
+def _run_prospect_analysis(deal_id):
+    """The compute half of /analyze, shared with the Excel export.
+
+    Returns {'result', 'deal_data', 'assumptions', 'scenario'} with the raw
+    DataFrames intact, or a (response, status) tuple on error -- so the audit
+    workbook is built from exactly the computation the screen shows.
+    """
     from prospect_analysis import build_prospect_analysis
 
     deal_data = get_deal(get_engine(), deal_id)
     if not deal_data:
         return jsonify({'error': 'Deal not found'}), 404
 
-    body = request.json or {}
+    body = request.get_json(silent=True) or {}
 
     # Load saved assumptions or use request body
     assumption_id = body.get('assumption_id')
@@ -358,6 +379,19 @@ def analyze_deal(deal_id):
                 assumptions[k] = v
     else:
         assumptions = body
+        # A bare call (the Excel export, an API client) carries no form
+        # state. Running on empty assumptions silently produces a deal with
+        # no debt and phantom equity, so fall back to the deal's most recent
+        # saved version -- the thing an audit should reflect anyway.
+        from flask_app.services.prospect_service import ASSUMPTION_FIELDS
+        if not any(body.get(f) is not None for f in ASSUMPTION_FIELDS):
+            from sqlalchemy import text as _sa_text
+            with get_engine().connect() as _conn:
+                _arow = _conn.execute(_sa_text(
+                    "SELECT * FROM prospect_assumptions WHERE prospect_id = :d "
+                    "ORDER BY id DESC LIMIT 1"), {"d": deal_id}).mappings().fetchone()
+            if _arow:
+                assumptions = {**dict(_arow), **{k: v for k, v in body.items() if v is not None}}
 
     # Apply acquisition overrides from request body
     for field in ['purchase_price', 'closing_cost_pct', 'capex_at_close']:
@@ -495,9 +529,11 @@ def analyze_deal(deal_id):
         logger.exception("Prospect analysis failed for deal %d", deal_id)
         return jsonify({'error': str(e)}), 500
 
-    if 'error' in result and 'partner_results' not in result:
-        return jsonify({'error': result['error']}), 400
+    return {'result': result, 'deal_data': deal_data,
+            'assumptions': assumptions, 'scenario': scenario}
 
+
+def _continue_analyze(result, deal_data, assumptions):
     # Build anniversary-based annual forecast table for display
     annual_forecast = None
     try:
@@ -1081,6 +1117,55 @@ def cashflow_status(deal_id):
 # ---------------------------------------------------------------------------
 # Scenarios -- named bindings of cash flow source + overrides + adjustments
 # ---------------------------------------------------------------------------
+
+@prospects_bp.route('/<int:deal_id>/analyze/excel', methods=['POST'])
+@login_required
+def analyze_deal_excel(deal_id):
+    """Run the analysis and return the audit workbook.
+
+    Same body as /analyze (scenario_id, overrides); the response is an xlsx
+    whose tabs carry the inputs and every supporting calculation, with live
+    =XIRR formulas on the partner cash flows so a third party's Excel
+    recomputes the returns from the same cash flows the model used.
+    """
+    from flask import send_file
+    from io import BytesIO
+    from flask_app.services.prospect_excel import generate_prospect_analysis_excel
+
+    # The same compute half /analyze uses, with the raw DataFrames intact,
+    # so the workbook can never diverge from what the screen shows.
+    prepared = _run_prospect_analysis(deal_id)
+    if isinstance(prepared, tuple):
+        return prepared
+    result = prepared['result']
+    if 'error' in result and 'partner_results' not in result:
+        return jsonify({'error': result['error']}), 400
+    deal_data = prepared['deal_data']
+    assumptions = prepared['assumptions'] or {}
+    scenario = prepared.get('scenario')
+    engine = get_engine()
+
+    wf_steps = []
+    try:
+        vcode = deal_data['deal'].get('vcode') or f"N{deal_id:07d}"
+        from sqlalchemy import text as sa_text
+        with engine.connect() as conn:
+            wf_steps = [dict(r) for r in conn.execute(sa_text(
+                'SELECT vmisc, "iOrder", "PropCode", "vState", "FXRate", '
+                '"nPercent", "mAmount", vtranstype FROM waterfalls '
+                'WHERE vcode = :v ORDER BY vmisc, "iOrder"'), {"v": vcode}).mappings()]
+    except Exception as e:
+        logger.debug("wf steps for excel: %s", e)
+
+    xlsx = generate_prospect_analysis_excel(
+        result, deal_data['deal'], assumptions, wf_steps, scenario)
+    name = (deal_data['deal'].get('deal_name') or 'deal').replace(' ', '_')
+    if scenario:
+        name += '_' + str(scenario.get('name', '')).replace(' ', '_')
+    return send_file(BytesIO(xlsx), as_attachment=True,
+                     download_name=f"deal_analysis_{name}.xlsx",
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
 
 @prospects_bp.route('/<int:deal_id>/scenarios', methods=['GET'])
 @login_required

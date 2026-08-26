@@ -1211,6 +1211,31 @@ const scenarioComparison = computed(() => {
 // Run Analysis
 // ---------------------------------------------------------------------------
 
+const excelDownloading = ref(false)
+async function downloadAuditExcel() {
+  if (!selectedDealId.value) return
+  excelDownloading.value = true
+  try {
+    const payload: any = {}
+    if (selectedAssumptionId.value) payload.assumption_id = selectedAssumptionId.value
+    if (selectedScenarioId.value) payload.scenario_id = selectedScenarioId.value
+    const res = await api.post(
+      `/api/prospects/${selectedDealId.value}/analyze/excel`, payload,
+      { responseType: 'blob' })
+    const url = URL.createObjectURL(res.data)
+    const a = document.createElement('a')
+    a.href = url
+    const scen = scenarios.value.find(x => x.id === selectedScenarioId.value)
+    a.download = `deal_analysis_${(dealDetail.value?.deal?.deal_name || 'deal').replace(/\s+/g, '_')}${scen ? '_' + scen.name.replace(/\s+/g, '_') : ''}.xlsx`
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (e: any) {
+    analysisError.value = 'Excel export failed. Run the analysis once, then retry.'
+  } finally {
+    excelDownloading.value = false
+  }
+}
+
 async function runAnalysis() {
   if (!selectedDealId.value) return
   analysisLoading.value = true
@@ -2242,6 +2267,11 @@ loadDeals()
             <button class="btn-primary btn-lg" @click="runAnalysis"
                     :disabled="analysisLoading || !purchasePrice">
               {{ analysisLoading ? 'Computing...' : 'Compute Returns' }}
+            </button>
+            <button class="btn-secondary" :disabled="excelDownloading || !selectedDealId"
+                    @click="downloadAuditExcel"
+                    title="Audit workbook: assumptions, forecast, debt service, cash management, waterfall steps and allocations, partner cash flows with live =XIRR formulas">
+              {{ excelDownloading ? 'Building…' : 'Audit Excel' }}
             </button>
             <button class="btn-secondary" @click="saveAssumptions" :disabled="savingAssumptions">
               {{ savingAssumptions ? 'Saving...' : 'Save Assumptions' }}
