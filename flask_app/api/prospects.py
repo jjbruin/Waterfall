@@ -1204,11 +1204,14 @@ def build_deal_waterfall(deal_id):
         rows = []
         order = 10
         lead_found = False
+        residual_level_order = 10
         for s in step_inputs:
             eid = s.get('entity_id', '')
             stype = s.get('step_type', '')
             if not eid:
                 continue
+            if stype != 'residual':
+                lead_found = False
             if stype == 'pref':
                 rate = float(s.get('rate') or 0)
                 rows.append({
@@ -1232,17 +1235,24 @@ def build_deal_waterfall(deal_id):
                 order += 10
             elif stype == 'residual':
                 share = float(s.get('rate') or 0) / 100
-                state = 'Share' if not lead_found else 'Tag'
+                # A split is ONE level: the engine pairs Share with its Tags
+                # by identical iOrder, so consecutive residual steps share the
+                # level's order. Any other step type ends the run.
+                if not lead_found:
+                    state, level_order = 'Share', order
+                    residual_level_order = order
+                    order += 10
+                else:
+                    state, level_order = 'Tag', residual_level_order
                 lead_found = True
                 rows.append({
-                    'vcode': vcode, 'vmisc': wf_name, 'iOrder': order,
+                    'vcode': vcode, 'vmisc': wf_name, 'iOrder': level_order,
                     'PropCode': eid, 'vState': state,
                     'FXRate': share, 'nPercent': 0, 'mAmount': 0,
                     'vtranstype': 'Excess Cash Flow',
                     'vAmtType': '', 'vNotes': '',
                     'dteffective': dt_date(2020, 1, 1), 'nmisc': 0,
                 })
-                order += 10
             elif stype == 'fixed_amount':
                 amt = float(s.get('amount') or 0)
                 rows.append({
