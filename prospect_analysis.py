@@ -285,9 +285,13 @@ def build_prospect_analysis(
     sale_date = month_end(add_months(close_date, hold_years * 12) - timedelta(days=1))
     pro_yr_base = start_year - 1
 
-    # Contribution date must be within the accounting seed window
-    # (default cutoff = Dec 31 of start_year - 1)
-    seed_date = date(start_year - 1, 12, 31)
+    # Equity funds at close, not at a synthetic prior year-end. The seed
+    # date sits one day before close so the contribution clears the actuals
+    # cutoff (passed below as actuals_through = seed_date) while every
+    # forecast month, which starts on or after the close, stays post-cutoff.
+    # Backdating to Dec 31 of the prior year accrued ~9 months of phantom
+    # pref and stretched the ROE year count before the deal even closed.
+    seed_date = close_date - timedelta(days=1)
 
     # Investor IDs from entities or defaults
     pe_investor_id, op_investor_id = _resolve_investors(entities, psc_equity_pct)
@@ -489,7 +493,7 @@ def build_prospect_analysis(
         start_year=start_year,
         horizon_years=(sale_date.year - start_year + 2),  # cover through terminal NOI year
         pro_yr_base=pro_yr_base,
-        actuals_through=None,
+        actuals_through=str(seed_date),
         contract_sale_price=None,  # let compute.py derive from NOI / cap rate
         selling_cost_override=selling_cost_pct,
         selling_cost_type='pct',

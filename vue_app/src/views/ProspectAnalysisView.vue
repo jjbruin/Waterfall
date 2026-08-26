@@ -3424,4 +3424,8 @@ loadDeals()
 .nb-tenant-picker { border: 1px solid #e2e6ea; border-radius: 3px; padding: 6px 8px; margin-top: 6px; max-height: 220px; overflow-y: auto; background: #fff; }
 .nb-tenant-row { display: flex; gap: 8px; align-items: center; font-size: 0.78rem; padding: 2px 0; cursor: pointer; }
 .nb-tenant-row .nb-tenant-rent { margin-left: auto; color: #5a6675; font-variant-numeric: tabular-nums; }
+.metric-cards { display: flex; flex-wrap: wrap; gap: 10px; }
+.metric-card { background: #f7f9fb; border: 1px solid #e2e6ea; border-radius: 4px; padding: 8px 14px; min-width: 120px; }
+.metric-card .metric-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em; color: #5a6675; margin-bottom: 2px; }
+.metric-card .metric-value { font-size: 0.95rem; font-weight: 600; color: #14201d; font-variant-numeric: tabular-nums; }
 </style>
