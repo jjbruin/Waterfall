@@ -498,3 +498,176 @@ def get_deal_tenants(tenants_raw, vcode: str, inv=None) -> List[Dict[str, Any]]:
         })
     out.sort(key=lambda x: -(x['annual_rent'] or 0))
     return out
+
+# ---------------------------------------------------------------------------
+# New Business (prospect) deals -- N-vcodes have no MRI loans or roster.
+# Loans mirror prospect_analysis._build_loans (a debt source with its own
+# rate is its own loan, the rest is the blended L1), so a paydown saved here
+# joins the amortisation schedule the engine actually builds. Tenants come
+# from the active Argus rent roll, falling back to the property's lease
+# review.
+# ---------------------------------------------------------------------------
+
+def get_prospect_deal_loans(engine, vcode: str) -> List[Dict[str, Any]]:
+    """Paydown targets for a prospect deal, from its latest assumptions."""
+    import json
+    from sqlalchemy import text as sa_text
+    try:
+        deal_id = int(str(vcode).strip().upper().lstrip('N'))
+    except (TypeError, ValueError):
+        return []
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(sa_text(
+                'SELECT debt_amount, capital_sources_json FROM prospect_assumptions '
+                'WHERE prospect_id = :p ORDER BY version DESC, id DESC LIMIT 1'),
+                {'p': deal_id}).mappings().first()
+    except Exception as e:
+        logger.debug("prospect loans for %s: %s", vcode, e)
+        return []
+    if not row:
+        return []
+    try:
+        blob = row['capital_sources_json']
+        srcs = json.loads(blob) if isinstance(blob, str) else (blob or {})
+    except (TypeError, ValueError):
+        srcs = {}
+    debt_rows = [d for d in (srcs.get('debt') or []) if isinstance(d, dict)]
+
+    out, covered = [], 0.0
+    for d in debt_rows:
+        try:
+            amt = float(d.get('amount') or 0)
+            rate = float(d.get('rate') or 0)
+        except (TypeError, ValueError):
+            continue
+        if amt > 0 and rate > 0:
+            out.append({
+                'loan_id': f"{vcode}-{d.get('id') or f'L{len(out) + 1}'}",
+                'label': f"{d.get('label') or d.get('id')} (own loan)",
+            })
+            covered += amt
+    try:
+        total = float(row['debt_amount'] or 0)
+    except (TypeError, ValueError):
+        total = 0.0
+    if not total:
+        total = sum(float(d.get('amount') or 0) for d in debt_rows
+                    if isinstance(d.get('amount'), (int, float, str)) and d.get('amount'))
+    if total - covered > 0.5:
+        out.append({'loan_id': f'{vcode}-L1', 'label': 'Blended loan (deal terms)'})
+    return out
+
+
+def get_prospect_tenants(engine, vcode: str,
+                         scenario_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Tenants for a prospect deal, from the rent roll the analysis runs on.
+
+    Priority: (1) the Argus imports pinned by the requested scenario (or the
+    Base Case scenario when none is requested), (2) the active Argus imports,
+    (3) the property's lease review roster with analyst-resolved rent/SF
+    applied where a resolution exists. Same row shape as get_deal_tenants,
+    so the pickers are interchangeable."""
+    import json
+    from sqlalchemy import text as sa_text
+    try:
+        deal_id = int(str(vcode).strip().upper().lstrip('N'))
+    except (TypeError, ValueError):
+        return []
+    out, seen = [], set()
+
+    def _add(name, sf, rent, lease_end, vacant):
+        name = (name or '').strip()
+        if not name:
+            return
+        key = (name, rent)
+        if key in seen:
+            return
+        seen.add(key)
+        rpsf = (rent / sf) if rent and sf else None
+        out.append({
+            'tenant_name': name, 'sf_leased': sf, 'annual_rent': rent,
+            'rent_per_sf': rpsf,
+            'lease_end': str(lease_end)[:10] if lease_end else None,
+            'is_vacant': bool(vacant),
+        })
+
+    try:
+        with engine.connect() as conn:
+            prop_ids = [r[0] for r in conn.execute(sa_text(
+                'SELECT id FROM prospect_properties WHERE prospect_id = :p'),
+                {'p': deal_id})]
+
+            # (1) imports pinned by the scenario the analysis runs on
+            pinned_imports: List[int] = []
+            scen_rows = conn.execute(sa_text(
+                'SELECT id, name, is_base, argus_import_ids '
+                'FROM prospect_scenarios WHERE prospect_id = :p ORDER BY id'),
+                {'p': deal_id}).mappings().all()
+            chosen = None
+            if scenario_id:
+                chosen = next((s for s in scen_rows if s['id'] == int(scenario_id)), None)
+            if chosen is None:
+                chosen = next((s for s in scen_rows if s['is_base']
+                               or str(s['name'] or '').strip().lower() == 'base case'), None)
+            if chosen and chosen['argus_import_ids']:
+                try:
+                    blob = chosen['argus_import_ids']
+                    ids = json.loads(blob) if isinstance(blob, str) else blob
+                    vals = ids.values() if isinstance(ids, dict) else ids
+                    pinned_imports = [int(v) for v in vals if v]
+                except (TypeError, ValueError):
+                    pinned_imports = []
+
+            if pinned_imports:
+                for iid in pinned_imports:
+                    rows = conn.execute(sa_text(
+                        'SELECT tenant_name, square_feet, base_rent_annual, '
+                        'lease_end, is_vacant FROM argus_tenants '
+                        'WHERE import_id = :i'), {'i': iid}).fetchall()
+                    for r in rows:
+                        _add(r[0], r[1], r[2], r[3], r[4])
+
+            # (2) the active Argus imports
+            if not out:
+                for pid in prop_ids:
+                    rows = conn.execute(sa_text(
+                        'SELECT t.tenant_name, t.square_feet, t.base_rent_annual, '
+                        't.lease_end, t.is_vacant '
+                        'FROM argus_tenants t JOIN argus_imports i ON i.id = t.import_id '
+                        'WHERE i.vcode = :v AND i.is_active'),
+                        {'v': f'NP{pid:06d}'}).fetchall()
+                    for r in rows:
+                        _add(r[0], r[1], r[2], r[3], r[4])
+
+            # (3) lease review roster, analyst-resolved values winning
+            if not out:
+                for pid in prop_ids:
+                    rows = conn.execute(sa_text(
+                        'SELECT lt.id, lt.tenant_name, lt.square_feet, lt.annual_rent, '
+                        'lt.lease_end, lt.is_vacant '
+                        'FROM lease_tenants lt JOIN lease_reviews lr ON lr.id = lt.review_id '
+                        'WHERE lr.prospect_property_id = :p'), {'p': pid}).fetchall()
+                    if not rows:
+                        continue
+                    res = {}
+                    for tid, field, val in conn.execute(sa_text(
+                            'SELECT lfr.tenant_id, lfr.field_name, lfr.resolved_value '
+                            'FROM lease_field_resolutions lfr '
+                            'JOIN lease_tenants lt ON lt.id = lfr.tenant_id '
+                            'JOIN lease_reviews lr ON lr.id = lt.review_id '
+                            'WHERE lr.prospect_property_id = :p'), {'p': pid}).fetchall():
+                        try:
+                            res[(tid, field)] = float(val)
+                        except (TypeError, ValueError):
+                            continue
+                    for tid, name, sf, rent, end, vac in rows:
+                        sf = res.get((tid, 'square_feet'), sf)
+                        rent = res.get((tid, 'annual_rent'), rent)
+                        _add(name, sf, rent, end, vac)
+    except Exception as e:
+        logger.debug("prospect tenants for %s: %s", vcode, e)
+        return out
+    out.sort(key=lambda x: -(x['annual_rent'] or 0))
+    return out
+

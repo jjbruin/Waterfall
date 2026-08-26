@@ -975,6 +975,11 @@ def _parcel_sale_context(vcode):
     try:
         data = _get_data()
         loans = pss.get_deal_loans(data.get('mri_loans_raw'), vcode)
+        if not loans and str(vcode).strip().upper().startswith('N'):
+            # New Business deal: loans are modelled from the Capital Budget's
+            # debt sources, not MRI
+            from flask_app.db import get_engine
+            loans = pss.get_prospect_deal_loans(get_engine(), vcode)
         known_loans = [l['loan_id'] for l in loans]
     except Exception as e:
         current_app.logger.debug("parcel sale loan context unavailable: %s", e)
@@ -1026,6 +1031,13 @@ def get_parcel_sale_tenants(vcode):
     try:
         data = _get_data()
         tenants = pss.get_deal_tenants(data.get("tenants_raw"), vcode, data.get("inv"))
+        if not tenants and str(vcode).strip().upper().startswith('N'):
+            # New Business deal: the rent roll the analysis runs on -- the
+            # scenario's pinned Argus import, else the active import, else
+            # the lease review roster with analyst resolutions applied
+            from flask_app.db import get_engine
+            scen = request.args.get('scenario_id', type=int)
+            tenants = pss.get_prospect_tenants(get_engine(), vcode, scenario_id=scen)
     except Exception as e:
         current_app.logger.debug("Tenant list failed for %s: %s", vcode, e)
         tenants = []

@@ -453,6 +453,9 @@ async function selectDeal(id: number) {
   nbParcels.value = []
   nbParcelDraft.value = null
   nbParcelOpen.value = false
+  nbParcelServerLoans.value = []
+  nbParcelTenants.value = []
+  nbTenantsLoaded.value = false
   selectedDealId.value = id
   loadScenarios()
   analysisResult.value = null
@@ -1103,8 +1106,11 @@ const dealVcode = computed(() =>
 
 // Paydown targets are this deal's modelled loans: each debt source with its
 // own rate is its own loan, the rest is the blended L1 — the same ids
-// _build_loans creates.
+// _build_loans creates. The server's list (from the saved assumptions) is
+// validation-authoritative; the local synthesis covers unsaved edits.
+const nbParcelServerLoans = ref<{ loan_id: string; label: string }[]>([])
 const nbParcelLoans = computed(() => {
+  if (nbParcelServerLoans.value.length) return nbParcelServerLoans.value
   const vc = dealVcode.value
   if (!vc) return []
   const out: { loan_id: string; label: string }[] = []
@@ -1128,7 +1134,7 @@ function blankNbParcel() {
     property_vcode: properties.value.length === 1 ? (properties.value[0].vcode || null) : null,
     debt_application: [] as { loan_id: string; amount: number | null }[],
     capex_reserve_hold: null, distribution_mode: 'waterfall',
-    lost_revenue: { accounts: { '4010': null } },
+    lost_revenue: { tenants: [] as string[], accounts: { '4010': null } },
     lost_expense: { accounts: { '5090': null } },
   }
 }
@@ -1147,9 +1153,49 @@ async function loadNbParcels() {
   try {
     const res = await api.get(`/api/deals/${dealVcode.value}/parcel-sales`)
     nbParcels.value = res.data.parcel_sales || []
+    nbParcelServerLoans.value = res.data.loans || []
   } catch {
     nbParcels.value = []
+    nbParcelServerLoans.value = []
   }
+}
+
+// Tenant picker: selecting tenants seeds the 4010 amount from the Argus rent
+// roll (or the lease review). It stays editable — a point-in-time rent roll
+// will not tie exactly to a forecast carrying growth and rollover.
+const nbParcelTenants = ref<any[]>([])
+const nbTenantsLoaded = ref(false)
+const nbTenantPickerOpen = ref<Record<string, boolean>>({})
+
+async function loadNbParcelTenants() {
+  if (!dealVcode.value || nbTenantsLoaded.value) return
+  try {
+    const q = selectedScenarioId.value ? `?scenario_id=${selectedScenarioId.value}` : ''
+    const res = await api.get(`/api/deals/${dealVcode.value}/parcel-sales/tenants${q}`)
+    nbParcelTenants.value = res.data.tenants || []
+  } catch {
+    nbParcelTenants.value = []
+  } finally {
+    nbTenantsLoaded.value = true
+  }
+}
+
+function nbTenantChecked(s: any, name: string) {
+  return (s.lost_revenue?.tenants || []).includes(name)
+}
+
+function toggleNbTenant(s: any, t: any, checked: boolean) {
+  if (!s.lost_revenue) s.lost_revenue = { tenants: [], accounts: {} }
+  if (!s.lost_revenue.tenants) s.lost_revenue.tenants = []
+  if (!s.lost_revenue.accounts) s.lost_revenue.accounts = {}
+  const names = s.lost_revenue.tenants
+  const i = names.indexOf(t.tenant_name)
+  if (checked && i === -1) names.push(t.tenant_name)
+  if (!checked && i !== -1) names.splice(i, 1)
+  const total = nbParcelTenants.value
+    .filter((x: any) => names.includes(x.tenant_name))
+    .reduce((a: number, x: any) => a + (Number(x.annual_rent) || 0), 0)
+  s.lost_revenue.accounts['4010'] = Math.round(total)
 }
 
 async function saveNbParcel(sale: any) {
@@ -1937,6 +1983,24 @@ loadDeals()
                 <label>Revenue removed /yr (4010)<input type="number" v-model.number="S.lost_revenue.accounts['4010']" placeholder="0" /></label>
                 <label>Expense removed /yr (5090)<input type="number" v-model.number="S.lost_expense.accounts['5090']" placeholder="0" /></label>
               </div>
+              <div class="parcel-nb-tenants">
+                <button class="btn-mini"
+                        @click="nbTenantPickerOpen[S.id || 'x'] = !nbTenantPickerOpen[S.id || 'x']; loadNbParcelTenants()">
+                  {{ nbTenantPickerOpen[S.id || 'x'] ? 'Hide tenants' : 'Pick tenants' }}
+                </button>
+                <span v-if="(S.lost_revenue.tenants || []).length" class="field-hint">
+                  Removing: {{ S.lost_revenue.tenants.join(', ') }}
+                </span>
+                <div v-if="nbTenantPickerOpen[S.id || 'x']" class="nb-tenant-picker">
+                  <div v-if="!nbParcelTenants.length" class="field-hint">No tenant roster found — import an Argus rent roll or run a lease review.</div>
+                  <label v-for="t in nbParcelTenants" :key="t.tenant_name" class="nb-tenant-row">
+                    <input type="checkbox" :checked="nbTenantChecked(S, t.tenant_name)"
+                           @change="toggleNbTenant(S, t, ($event.target as HTMLInputElement).checked)" />
+                    <span>{{ t.tenant_name }}</span>
+                    <span class="nb-tenant-rent">{{ fmtCurrency(t.annual_rent) }}/yr</span>
+                  </label>
+                </div>
+              </div>
               <div class="parcel-nb-debt">
                 <span class="scen-section-title">Apply to Debt</span>
                 <button class="btn-mini" @click="addNbParcelDebtRow(S)">+ Loan</button>
@@ -1984,6 +2048,24 @@ loadDeals()
                 </label>
                 <label>Revenue removed /yr (4010)<input type="number" v-model.number="nbParcelDraft.lost_revenue.accounts['4010']" placeholder="0" /></label>
                 <label>Expense removed /yr (5090)<input type="number" v-model.number="nbParcelDraft.lost_expense.accounts['5090']" placeholder="0" /></label>
+              </div>
+              <div class="parcel-nb-tenants">
+                <button class="btn-mini"
+                        @click="nbTenantPickerOpen['draft'] = !nbTenantPickerOpen['draft']; loadNbParcelTenants()">
+                  {{ nbTenantPickerOpen['draft'] ? 'Hide tenants' : 'Pick tenants' }}
+                </button>
+                <span v-if="(nbParcelDraft.lost_revenue.tenants || []).length" class="field-hint">
+                  Removing: {{ nbParcelDraft.lost_revenue.tenants.join(', ') }}
+                </span>
+                <div v-if="nbTenantPickerOpen['draft']" class="nb-tenant-picker">
+                  <div v-if="!nbParcelTenants.length" class="field-hint">No tenant roster found — import an Argus rent roll or run a lease review.</div>
+                  <label v-for="t in nbParcelTenants" :key="t.tenant_name" class="nb-tenant-row">
+                    <input type="checkbox" :checked="nbTenantChecked(nbParcelDraft, t.tenant_name)"
+                           @change="toggleNbTenant(nbParcelDraft, t, ($event.target as HTMLInputElement).checked)" />
+                    <span>{{ t.tenant_name }}</span>
+                    <span class="nb-tenant-rent">{{ fmtCurrency(t.annual_rent) }}/yr</span>
+                  </label>
+                </div>
               </div>
               <div class="parcel-nb-debt">
                 <span class="scen-section-title">Apply to Debt</span>
@@ -3308,4 +3390,8 @@ loadDeals()
 .parcel-nb-econ { margin-top: 8px; font-size: 0.78rem; color: #5a6675; }
 .parcel-nb-econ b { color: #14201d; } .parcel-nb-econ .neg { color: #a3282b; }
 .parcel-count { background: #1f4e79; color: #fff; border-radius: 10px; padding: 0 7px; font-size: 0.7rem; margin-left: 6px; }
+.parcel-nb-tenants { margin-top: 8px; }
+.nb-tenant-picker { border: 1px solid #e2e6ea; border-radius: 3px; padding: 6px 8px; margin-top: 6px; max-height: 220px; overflow-y: auto; background: #fff; }
+.nb-tenant-row { display: flex; gap: 8px; align-items: center; font-size: 0.78rem; padding: 2px 0; cursor: pointer; }
+.nb-tenant-row .nb-tenant-rent { margin-left: auto; color: #5a6675; font-variant-numeric: tabular-nums; }
 </style>
