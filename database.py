@@ -408,6 +408,7 @@ def ensure_pg_tables(engine):
         CREATE TABLE IF NOT EXISTS parcel_sales (
             id                   SERIAL PRIMARY KEY,
             vcode                TEXT NOT NULL,
+            property_vcode       TEXT,
             label                TEXT,
             sale_date            TEXT,
             sale_price           DOUBLE PRECISION,
@@ -532,6 +533,20 @@ def ensure_pg_tables(engine):
             conn.execute(text("ROLLBACK TO SAVEPOINT sp_sale_date_col"))
             try:
                 conn.execute(text("ALTER TABLE sale_overrides ADD COLUMN sale_date_override TEXT"))
+                conn.commit()
+            except Exception:
+                pass
+
+        # Bind parcel sales to a property (parcels belong to a property,
+        # not a deal); column added after first release, so migrate.
+        try:
+            conn.execute(text("SAVEPOINT sp_parcel_prop_col"))
+            conn.execute(text("SELECT property_vcode FROM parcel_sales LIMIT 1"))
+            conn.execute(text("RELEASE SAVEPOINT sp_parcel_prop_col"))
+        except Exception:
+            conn.execute(text("ROLLBACK TO SAVEPOINT sp_parcel_prop_col"))
+            try:
+                conn.execute(text("ALTER TABLE parcel_sales ADD COLUMN property_vcode TEXT"))
                 conn.commit()
             except Exception:
                 pass
@@ -733,6 +748,7 @@ def create_additional_tables(conn: sqlite3.Connection):
         CREATE TABLE IF NOT EXISTS parcel_sales (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             vcode TEXT NOT NULL,
+            property_vcode TEXT,
             label TEXT,
             sale_date TEXT,
             sale_price REAL,
@@ -753,6 +769,12 @@ def create_additional_tables(conn: sqlite3.Connection):
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_parcel_sales_vcode "
                  "ON parcel_sales(vcode)")
+    # A parcel belongs to a property, not a deal: bind each sale to the
+    # property whose income it takes. Added after first release, so migrate.
+    try:
+        conn.execute("ALTER TABLE parcel_sales ADD COLUMN property_vcode TEXT")
+    except Exception:
+        pass  # already present
 
     # Capital calls (may also be populated from CSV import)
     conn.execute("""

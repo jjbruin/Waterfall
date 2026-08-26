@@ -28,7 +28,7 @@ _JSON_COLUMNS = ('debt_application', 'distribution_fixed',
 DISTRIBUTION_MODES = ('pro_rata', 'fixed', 'waterfall')
 
 _SELECT = """
-    SELECT id, vcode, label, sale_date, sale_price,
+    SELECT id, vcode, property_vcode, label, sale_date, sale_price,
            cost_of_sale_value, cost_of_sale_type, debt_application,
            capex_reserve_hold, distribution_mode, distribution_fixed,
            lost_revenue, lost_expense, notes, sort_order,
@@ -39,17 +39,18 @@ _SELECT = """
 
 def _row_to_dict(row) -> Dict[str, Any]:
     d = {
-        'id': row[0], 'vcode': row[1], 'label': row[2],
-        'sale_date': row[3], 'sale_price': row[4],
-        'cost_of_sale_value': row[5], 'cost_of_sale_type': row[6] or 'pct',
-        'debt_application': row[7],
-        'capex_reserve_hold': row[8], 'distribution_mode': row[9] or 'waterfall',
-        'distribution_fixed': row[10],
-        'lost_revenue': row[11], 'lost_expense': row[12],
-        'notes': row[13], 'sort_order': row[14],
-        'created_at': str(row[15]) if row[15] else None,
-        'updated_at': str(row[16]) if row[16] else None,
-        'updated_by': row[17],
+        'id': row[0], 'vcode': row[1], 'property_vcode': row[2],
+        'label': row[3],
+        'sale_date': row[4], 'sale_price': row[5],
+        'cost_of_sale_value': row[6], 'cost_of_sale_type': row[7] or 'pct',
+        'debt_application': row[8],
+        'capex_reserve_hold': row[9], 'distribution_mode': row[10] or 'waterfall',
+        'distribution_fixed': row[11],
+        'lost_revenue': row[12], 'lost_expense': row[13],
+        'notes': row[14], 'sort_order': row[15],
+        'created_at': str(row[16]) if row[16] else None,
+        'updated_at': str(row[17]) if row[17] else None,
+        'updated_by': row[18],
     }
     for col in _JSON_COLUMNS:
         raw = d.get(col)
@@ -288,6 +289,7 @@ def create_parcel_sale(engine, vcode: str, data: Dict[str, Any],
                        user: Optional[str] = None) -> Dict[str, Any]:
     params = {
         'v': vcode,
+        'pv': (data.get('property_vcode') or '').strip() or None,
         'lb': data.get('label') or 'Parcel sale',
         'sd': data.get('sale_date'),
         'sp': _num(data.get('sale_price')),
@@ -306,11 +308,11 @@ def create_parcel_sale(engine, vcode: str, data: Dict[str, Any],
     with engine.begin() as conn:
         new_id = conn.execute(text("""
             INSERT INTO parcel_sales
-                (vcode, label, sale_date, sale_price, cost_of_sale_value,
-                 cost_of_sale_type, debt_application, capex_reserve_hold,
-                 distribution_mode, distribution_fixed, lost_revenue,
-                 lost_expense, notes, sort_order, updated_by)
-            VALUES (:v, :lb, :sd, :sp, :cv, :ct, :da, :rh, :dm, :df, :lr,
+                (vcode, property_vcode, label, sale_date, sale_price,
+                 cost_of_sale_value, cost_of_sale_type, debt_application,
+                 capex_reserve_hold, distribution_mode, distribution_fixed,
+                 lost_revenue, lost_expense, notes, sort_order, updated_by)
+            VALUES (:v, :pv, :lb, :sd, :sp, :cv, :ct, :da, :rh, :dm, :df, :lr,
                     :le, :nt, :so, :ub)
             RETURNING id
         """), params).fetchone()[0]
@@ -326,6 +328,7 @@ def update_parcel_sale(engine, sale_id: int, data: Dict[str, Any],
     merged = {**existing, **{k: v for k, v in data.items() if k != 'id'}}
     params = {
         'i': sale_id,
+        'pv': (merged.get('property_vcode') or '').strip() or None,
         'lb': merged.get('label') or 'Parcel sale',
         'sd': merged.get('sale_date'),
         'sp': _num(merged.get('sale_price')),
@@ -344,6 +347,7 @@ def update_parcel_sale(engine, sale_id: int, data: Dict[str, Any],
     with engine.begin() as conn:
         conn.execute(text("""
             UPDATE parcel_sales SET
+                property_vcode = :pv,
                 label = :lb, sale_date = :sd, sale_price = :sp,
                 cost_of_sale_value = :cv, cost_of_sale_type = :ct,
                 debt_application = :da, capex_reserve_hold = :rh,

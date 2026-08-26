@@ -603,6 +603,7 @@ watch(() => deals.currentVcode, (vc) => {
 interface ParcelDebtApp { loan_id: string; amount: number | null }
 interface ParcelSale {
   id?: number
+  property_vcode?: string | null
   label: string
   sale_date: string | null
   sale_price: number | null
@@ -622,6 +623,7 @@ interface ParcelSale {
 const parcelOpen = ref(false)
 const parcelSales = ref<ParcelSale[]>([])
 const parcelLoans = ref<any[]>([])
+const parcelProperties = ref<{ vcode: string; name: string }[]>([])
 const parcelLoading = ref(false)
 const parcelSaving = ref<Record<number, boolean>>({})
 const parcelError = ref('')
@@ -720,6 +722,7 @@ async function loadParcelSales() {
     const res = await api.get(`/api/deals/${vc}/parcel-sales`)
     parcelSales.value = res.data.parcel_sales || []
     parcelLoans.value = res.data.loans || []
+    parcelProperties.value = res.data.properties || []
   } catch (e: any) {
     parcelError.value = e?.response?.data?.error || 'Could not load parcel sales.'
   } finally {
@@ -815,6 +818,7 @@ async function deleteParcelSale(s: ParcelSale) {
 watch(() => deals.currentVcode, (vc) => {
   parcelSales.value = []
   parcelLoans.value = []
+  parcelProperties.value = []
   parcelDrafts.value = {}
   parcelTenants.value = []
   parcelTenantsLoaded.value = false
@@ -874,52 +878,10 @@ watch(parcelOpen, (open) => {
 
     <p v-if="deals.error" class="error">{{ deals.error }}</p>
 
-    <!-- ============================================================ -->
-    <!-- Results -->
-    <!-- ============================================================ -->
-    <template v-if="deals.hasResult">
-
-      <!-- Full Workbook Download -->
-      <div class="full-download">
-        <button class="btn-download" @click="downloadExcel(`/api/deals/${deals.currentVcode}/excel/full`, `deal_analysis_${deals.currentVcode}.xlsx`)">
-          Download Full Deal Analysis (Excel)
-        </button>
-      </div>
-
-      <!-- Deal Header -->
-      <div v-if="deals.currentHeader" class="section header-section">
-        <div class="header-grid">
-          <div class="header-col">
-            <h3>Deal Information</h3>
-            <table class="info-table">
-              <tr><td>vCode</td><td>{{ deals.currentHeader.metadata.vcode }}</td></tr>
-              <tr><td>Investment Name</td><td>{{ deals.currentHeader.metadata.Investment_Name }}</td></tr>
-              <tr><td>InvestmentID</td><td>{{ deals.currentHeader.metadata.InvestmentID }}</td></tr>
-              <tr><td>Asset Type</td><td>{{ deals.currentHeader.metadata.Asset_Type }}</td></tr>
-              <tr><td>Lifecycle</td><td>{{ deals.currentHeader.metadata.Lifecycle }}</td></tr>
-              <tr><td>Units</td><td>{{ deals.currentHeader.metadata.Total_Units }}</td></tr>
-              <tr><td>SQF</td><td>{{ fmtNum(deals.currentHeader.metadata.Total_SQF) }}</td></tr>
-              <tr><td>Acquisition Date</td><td>{{ deals.currentHeader.metadata.Acquisition_Date }}</td></tr>
-            </table>
-            <p v-if="deals.currentHeader.sub_portfolio_msg" class="sub-msg">
-              {{ deals.currentHeader.sub_portfolio_msg }}
-            </p>
-          </div>
-          <div class="header-col">
-            <h3>Capitalization</h3>
-            <table class="info-table" v-if="deals.currentHeader.cap_data">
-              <tr><td>Debt</td><td class="right">{{ fmtCur(deals.currentHeader.cap_data.debt) }}</td></tr>
-              <tr><td>Pref Equity</td><td class="right">{{ fmtCur(deals.currentHeader.cap_data.pref_equity) }}</td></tr>
-              <tr class="total-border"><td>Ptr Equity</td><td class="right">{{ fmtCur(deals.currentHeader.cap_data.partner_equity) }}</td></tr>
-              <tr><td class="bold">Total Cap</td><td class="right bold">{{ fmtCur(deals.currentHeader.cap_data.total_cap) }}</td></tr>
-              <tr><td>Valuation</td><td class="right">{{ fmtCur(deals.currentHeader.cap_data.current_valuation) }}</td></tr>
-              <tr><td>Cap Rate</td><td class="right">{{ fmtPct(deals.currentHeader.cap_data.cap_rate) }}</td></tr>
-              <tr><td>PE Exp (Cap)</td><td class="right">{{ fmtPct(deals.currentHeader.cap_data.pe_exposure_cap) }}</td></tr>
-              <tr><td>PE Exp (Val)</td><td class="right">{{ fmtPct(deals.currentHeader.cap_data.pe_exposure_value) }}</td></tr>
-            </table>
-          </div>
-        </div>
-
+    <!-- Sale setup: parcel sales + sale overrides. Visible as soon as a
+         deal is selected -- these are inputs to the computation, not
+         results of it. -->
+    <div v-if="deals.currentVcode" class="section sale-setup-section">
         <!-- Parcel Sales (interim sales before the final disposition) -->
         <details class="parcel-box" :open="parcelOpen" @toggle="parcelOpen = ($event.target as HTMLDetailsElement).open">
           <summary class="parcel-summary">
@@ -950,6 +912,12 @@ watch(parcelOpen, (open) => {
               </div>
 
               <div class="parcel-grid">
+                <label v-if="parcelProperties.length">Property (parcels belong to one)
+                  <select v-model="s.property_vcode">
+                    <option :value="null">— pick property —</option>
+                    <option v-for="p in parcelProperties" :key="p.vcode" :value="p.vcode">{{ p.name }}</option>
+                  </select>
+                </label>
                 <label>Sale Date<input type="date" v-model="s.sale_date" /></label>
                 <label>Sale Price<input type="number" v-model.number="s.sale_price" placeholder="0" /></label>
                 <label>Cost of Sale
@@ -1189,6 +1157,54 @@ watch(parcelOpen, (open) => {
           </button>
           <button v-if="hasSaleOverrides" class="btn-clear-override" @click="clearSaleOverrides">Clear</button>
         </div>
+    </div>
+
+    <!-- ============================================================ -->
+    <!-- Results -->
+    <!-- ============================================================ -->
+    <template v-if="deals.hasResult">
+
+      <!-- Full Workbook Download -->
+      <div class="full-download">
+        <button class="btn-download" @click="downloadExcel(`/api/deals/${deals.currentVcode}/excel/full`, `deal_analysis_${deals.currentVcode}.xlsx`)">
+          Download Full Deal Analysis (Excel)
+        </button>
+      </div>
+
+      <!-- Deal Header -->
+      <div v-if="deals.currentHeader" class="section header-section">
+        <div class="header-grid">
+          <div class="header-col">
+            <h3>Deal Information</h3>
+            <table class="info-table">
+              <tr><td>vCode</td><td>{{ deals.currentHeader.metadata.vcode }}</td></tr>
+              <tr><td>Investment Name</td><td>{{ deals.currentHeader.metadata.Investment_Name }}</td></tr>
+              <tr><td>InvestmentID</td><td>{{ deals.currentHeader.metadata.InvestmentID }}</td></tr>
+              <tr><td>Asset Type</td><td>{{ deals.currentHeader.metadata.Asset_Type }}</td></tr>
+              <tr><td>Lifecycle</td><td>{{ deals.currentHeader.metadata.Lifecycle }}</td></tr>
+              <tr><td>Units</td><td>{{ deals.currentHeader.metadata.Total_Units }}</td></tr>
+              <tr><td>SQF</td><td>{{ fmtNum(deals.currentHeader.metadata.Total_SQF) }}</td></tr>
+              <tr><td>Acquisition Date</td><td>{{ deals.currentHeader.metadata.Acquisition_Date }}</td></tr>
+            </table>
+            <p v-if="deals.currentHeader.sub_portfolio_msg" class="sub-msg">
+              {{ deals.currentHeader.sub_portfolio_msg }}
+            </p>
+          </div>
+          <div class="header-col">
+            <h3>Capitalization</h3>
+            <table class="info-table" v-if="deals.currentHeader.cap_data">
+              <tr><td>Debt</td><td class="right">{{ fmtCur(deals.currentHeader.cap_data.debt) }}</td></tr>
+              <tr><td>Pref Equity</td><td class="right">{{ fmtCur(deals.currentHeader.cap_data.pref_equity) }}</td></tr>
+              <tr class="total-border"><td>Ptr Equity</td><td class="right">{{ fmtCur(deals.currentHeader.cap_data.partner_equity) }}</td></tr>
+              <tr><td class="bold">Total Cap</td><td class="right bold">{{ fmtCur(deals.currentHeader.cap_data.total_cap) }}</td></tr>
+              <tr><td>Valuation</td><td class="right">{{ fmtCur(deals.currentHeader.cap_data.current_valuation) }}</td></tr>
+              <tr><td>Cap Rate</td><td class="right">{{ fmtPct(deals.currentHeader.cap_data.cap_rate) }}</td></tr>
+              <tr><td>PE Exp (Cap)</td><td class="right">{{ fmtPct(deals.currentHeader.cap_data.pe_exposure_cap) }}</td></tr>
+              <tr><td>PE Exp (Val)</td><td class="right">{{ fmtPct(deals.currentHeader.cap_data.pe_exposure_value) }}</td></tr>
+            </table>
+          </div>
+        </div>
+
       </div>
 
       <!-- ============================================================ -->

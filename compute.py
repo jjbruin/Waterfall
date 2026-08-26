@@ -1047,6 +1047,8 @@ def compute_deal_analysis(
     # --- Prospective loans (refinance / new mortgage from app DB) ---
     original_loan_sched = pd.DataFrame()
     refi_dbg = None
+    refi_replaced_ids = []      # loans retired by an accepted refi
+    refi_cutoff_me = None       # month-end of the refi date
     refi_capital_call_required = False
     refi_capital_call_amount = 0.0
     refi_net_proceeds = 0.0
@@ -1085,6 +1087,8 @@ def compute_deal_analysis(
                 replacing_ids = [s.strip() for s in str(existing_loan_id_raw).split(",") if s.strip()]
                 if replacing_ids:
                     loans = [ln for ln in loans if ln.loan_id not in replacing_ids]
+                    refi_replaced_ids = replacing_ids
+                    refi_cutoff_me = month_end(as_date(prospect["refi_date"]))
                     debug_msgs.append(f"Replacing loans {replacing_ids} with prospective loan")
 
                 # Add new loan
@@ -1200,12 +1204,6 @@ def compute_deal_analysis(
                 f"net ${net:,.0f}, paydown ${paydown:,.0f}, reserve ${reserve:,.0f}, "
                 f"remainder ${remainder:,.0f} ({mode})"
             )
-            if paydown > 0:
-                debug_msgs.append(
-                    f"  note: ${paydown:,.0f} of paydown is deducted from the "
-                    f"remainder but not yet applied to the loan balance, so "
-                    f"debt service and DSCR after {p_date} are unchanged"
-                )
 
 
     if parcel_income_losses:
@@ -1263,6 +1261,41 @@ def compute_deal_analysis(
                 s = amortize_monthly_schedule(ln, model_start, model_end_full)
                 if not s.empty:
                     schedules.append(s)
+        # A replaced loan still existed from close to the refi date. Dropping
+        # its schedule overstated FAD and DSCR for that whole stretch, so its
+        # pre-refi rows come back, closed out by a retirement row: balance to
+        # zero via the curtailment column, which the balloon logic ignores and
+        # the debt-service replacement does not sum -- the payoff is funded by
+        # the refi proceeds already netted in the sizing, not by operations.
+        if refi_replaced_ids and refi_cutoff_me is not None and not original_loan_sched.empty:
+            pre = original_loan_sched[
+                original_loan_sched["LoanID"].isin(refi_replaced_ids)
+                & (original_loan_sched["event_date"] < refi_cutoff_me)
+            ].copy()
+            if not pre.empty:
+                if "curtailment" not in pre.columns:
+                    pre["curtailment"] = 0.0
+                retire_rows = []
+                for lid, grp in pre.groupby("LoanID"):
+                    last = grp.sort_values("event_date").iloc[-1]
+                    bal = float(last["ending_balance"])
+                    if bal <= 0:
+                        continue
+                    retire_rows.append({
+                        "vcode": str(deal_vcode), "LoanID": lid,
+                        "event_date": refi_cutoff_me,
+                        "rate": float(last["rate"]),
+                        "interest": 0.0, "principal": 0.0, "payment": 0.0,
+                        "curtailment": bal, "ending_balance": 0.0,
+                    })
+                schedules.append(pre)
+                if retire_rows:
+                    schedules.append(pd.DataFrame(retire_rows))
+                debug_msgs.append(
+                    f"Replaced loan(s) {refi_replaced_ids}: pre-refi debt service "
+                    f"restored through {refi_cutoff_me}, retired by the refi"
+                )
+
         if schedules:
             loan_sched = pd.concat(schedules, ignore_index=True)
     else:

@@ -578,6 +578,7 @@ async function selectDeal(id: number) {
   riskCandidates.value = []
   riskPickerOpen.value = false
   assumptionsHydrated.value = false
+  refiPlan.value = blankRefi()
   selectedDealId.value = id
   loadScenarios()
   analysisResult.value = null
@@ -903,6 +904,13 @@ function selectAssumption(a: any) {
     const fm = debtSources.value.find(s => s.id === 'first_mortgage')
     if (fm) fm.amount = a.debt_amount
   }
+  if (a.planned_refi_json) {
+    try {
+      refiPlan.value = { ...blankRefi(), ...JSON.parse(a.planned_refi_json) }
+    } catch { refiPlan.value = blankRefi() }
+  } else {
+    refiPlan.value = blankRefi()
+  }
   assumptionsHydrated.value = true
 }
 
@@ -940,6 +948,7 @@ async function saveAssumptions() {
         equity: additionalEquitySources.value,
         pe_pct: peEquityPct.value,
       }),
+      planned_refi_json: JSON.stringify(refiPlan.value),
     }
     const res = await api.post(`/api/prospects/${selectedDealId.value}/assumptions`, payload)
     const { data: versions } = await api.get(`/api/prospects/${selectedDealId.value}/assumptions`)
@@ -1273,6 +1282,22 @@ const focusedUseIdx = ref<number | null>(null)
 const focusedDebtIdx = ref<number | null>(null)
 // Per-row loan-terms expander on the debt sources table
 const debtTermsOpen = ref<Record<string, boolean>>({})
+
+// Planned refinancing within the hold: the old loans retire at the refi
+// date, the new loan amortises from there, and net proceeds run through the
+// capital waterfall. Persisted with the assumptions as planned_refi_json.
+function blankRefi() {
+  return { enabled: false, refi_date: null as string | null,
+           loan_amount: null as number | null, rate: null as number | null,
+           term_years: 10, amort_years: 30, io_years: 0,
+           closing_costs: null as number | null, holdback: null as number | null }
+}
+const refiPlan = ref(blankRefi())
+
+function setRefiRate(ev: Event) {
+  const v = (ev.target as HTMLInputElement).value
+  refiPlan.value.rate = v === '' ? null : Number(v) / 100
+}
 
 function setDebtRate(item: SourceItem, ev: Event) {
   const v = (ev.target as HTMLInputElement).value
@@ -1799,6 +1824,35 @@ loadDeals()
                 </tr>
               </tbody>
             </table>
+          </div>
+
+          <!-- ============ PLANNED REFINANCING ============ -->
+          <div class="section">
+            <div class="section-header">
+              Planned Refinancing
+              <label class="refi-toggle">
+                <input type="checkbox" v-model="refiPlan.enabled" /> planned within the hold
+              </label>
+            </div>
+            <div v-if="refiPlan.enabled" class="refi-body">
+              <div class="refi-grid">
+                <label>Refi Date<input type="date" v-model="refiPlan.refi_date" /></label>
+                <label>New Loan Amount<input type="number" v-model.number="refiPlan.loan_amount" placeholder="0" /></label>
+                <label>Rate %<input type="number" step="0.001" :value="refiPlan.rate != null ? refiPlan.rate * 100 : null"
+                                    @input="setRefiRate($event)" placeholder="e.g. 5.75" /></label>
+                <label>Term (yrs)<input type="number" v-model.number="refiPlan.term_years" /></label>
+                <label>Amort (yrs)<input type="number" v-model.number="refiPlan.amort_years" /></label>
+                <label>IO (yrs)<input type="number" v-model.number="refiPlan.io_years" /></label>
+                <label>Closing Costs<input type="number" v-model.number="refiPlan.closing_costs" placeholder="0" /></label>
+                <label>Reserve Holdback<input type="number" v-model.number="refiPlan.holdback" placeholder="0" /></label>
+              </div>
+              <p class="field-hint">
+                Replaces every modelled loan at the refi date. Net proceeds after
+                paying off the old balances, closing costs and the holdback run
+                through the capital waterfall; a shortfall raises the
+                capital-call flag in the results.
+              </p>
+            </div>
           </div>
 
           <!-- ============ OPERATING ASSUMPTIONS (collapsible) ============ -->
@@ -3084,4 +3138,9 @@ loadDeals()
 .debt-terms { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
 .debt-terms label { display: flex; flex-direction: column; gap: 2px; font-size: 0.72rem; color: #5a6675; }
 .debt-terms input { width: 90px; padding: 3px 6px; border: 1px solid #ccd3d9; border-radius: 2px; font-size: 0.8rem; }
+.refi-toggle { font-size: 0.78rem; font-weight: 400; color: #35434f; margin-left: 10px; }
+.refi-body { padding: 8px 2px; }
+.refi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
+.refi-grid label { display: flex; flex-direction: column; gap: 2px; font-size: 0.74rem; color: #5a6675; }
+.refi-grid input { padding: 4px 6px; border: 1px solid #ccd3d9; border-radius: 2px; font-size: 0.82rem; }
 </style>

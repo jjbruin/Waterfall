@@ -106,3 +106,9 @@ One home per fact; everything else derives. Applied so far:
 - **Investor identity**: `prospect_investors.planned_investor_id` + ownership % is the declaration; waterfall-shape inference is the fallback, never the master.
 - **Naming**: the assumptions-version picker in the header is labelled "Assumptions", not "Scenario" -- Scenario is exclusively the results-panel scenario system.
 Known remaining duplicates to consolidate: `prospect_deals.purchase_price` still written from Pipeline forms; assumption versions vs scenarios overlap (versions may eventually fold into scenarios).
+
+## Planned refinancing + property-bound parcels (Aug 26 2026)
+- **Planned refi (NB)**: `prospect_assumptions.planned_refi_json` {enabled, refi_date, loan_amount, rate, term/amort/io years, closing_costs, holdback}. Builds a synthetic accepted `prospective_loans_raw` row; the AM machinery does the rest (loan replacement, proceeds through Cap_WF, capital-call flag, sale extended to new maturity). Warns loudly when the refi maturity passes the forecast end (terminal value would compute from empty data).
+- **Pre-existing AM bug fixed in compute.py**: an accepted refi dropped the replaced loan's entire schedule, losing all pre-refi debt service (FAD/DSCR overstated from close to refi). Replaced loans' pre-refi rows are now restored and closed with a curtailment-marked retirement row (excluded from balloon/sale-payoff double counting).
+- **Parcels belong to a property, not a deal** (Jim): `parcel_sales.property_vcode` binds each sale to its property; the AM card offers the deal's child properties. Effects still aggregate at deal level where the waterfall runs.
+- Parcel Sales + Sale Override boxes on AM Deal Analysis now render on deal select (were gated behind hasResult, i.e. invisible until Compute).

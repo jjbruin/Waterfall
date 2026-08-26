@@ -998,7 +998,24 @@ def get_parcel_sales(vcode):
     for s in sales:
         s['validation'] = pss.validate(s, known_loan_ids=known_loans,
                                        final_sale_date=final_sale)
-    return safe_json({"parcel_sales": sales, "loans": loans})
+    # A parcel belongs to a property. Offer the deal's child properties so
+    # the sale can be bound to the one whose income it takes; a
+    # single-property deal needs no choice.
+    props = []
+    try:
+        from consolidation import get_property_vcodes_for_deal
+        data = _get_data()
+        inv = data.get('inv')
+        for pv in (get_property_vcodes_for_deal(vcode, inv) or []):
+            name = None
+            if inv is not None and not inv.empty:
+                m = inv[inv['vcode'].astype(str) == str(pv)]
+                if not m.empty:
+                    name = m.iloc[0].get('Investment_Name')
+            props.append({'vcode': str(pv), 'name': name or str(pv)})
+    except Exception as e:
+        current_app.logger.debug("parcel property list failed for %s: %s", vcode, e)
+    return safe_json({"parcel_sales": sales, "loans": loans, "properties": props})
 
 
 @deals_bp.route("/<vcode>/parcel-sales/tenants", methods=["GET"])

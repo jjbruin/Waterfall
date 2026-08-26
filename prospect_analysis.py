@@ -293,6 +293,62 @@ def build_prospect_analysis(
     mri_loans_raw = _build_loans(vcode, debt_amount, debt_rate,
                                  debt_term_months, io_months, amort_months,
                                  close_date, debt_sources=debt_sources)
+
+    # Planned refinancing within the hold. Reuses the AM prospective-loan
+    # machinery end to end: the old loans retire at the refi date, the new
+    # loan amortises from there, net proceeds flow through the capital
+    # waterfall, and a shortfall raises the capital-call flag.
+    prospective_loans_raw = None
+    try:
+        _refi_raw = assumptions.get('planned_refi_json')
+        refi = json.loads(_refi_raw) if isinstance(_refi_raw, str) else (_refi_raw or {})
+    except (TypeError, ValueError):
+        refi = {}
+    if refi.get('enabled') and refi.get('refi_date') and float(refi.get('loan_amount') or 0) > 0:
+        # The loans being replaced: every loan _build_loans just created,
+        # named the same way it names them.
+        replace_ids = []
+        if mri_loans_raw is not None and not mri_loans_raw.empty:
+            replace_ids = [str(x) for x in mri_loans_raw['LoanID'].tolist()]
+        prospective_loans_raw = pd.DataFrame([{
+            'vcode': vcode, 'status': 'accepted',
+            'refi_date': refi['refi_date'],
+            'loan_amount': float(refi.get('loan_amount') or 0),
+            'interest_rate': float(refi.get('rate') or 0),
+            'term_years': float(refi.get('term_years') or 10),
+            'amort_years': float(refi.get('amort_years') or 30),
+            'io_years': float(refi.get('io_years') or 0),
+            'closing_costs': float(refi.get('closing_costs') or 0),
+            'reserve_holdback': float(refi.get('holdback') or 0),
+            'existing_loan_id': ",".join(replace_ids),
+            'max_ltv': 0, 'min_dscr': 0, 'min_debt_yield': 0,
+            'lender_uw_noi': 0,
+            'int_type': 'Fixed', 'loan_name': 'PLANNED-REFI',
+        }])
+        scenario_msgs.append(
+            f"Planned refinancing at {refi['refi_date']}: new loan "
+            f"${float(refi['loan_amount']):,.0f} @ "
+            f"{float(refi.get('rate') or 0) * 100:.2f}% replaces "
+            f"{', '.join(replace_ids) or 'no existing loans'}"
+        )
+        # The engine extends the sale date to the new loan's maturity. A
+        # maturity past the end of the cash flow forecast means the terminal
+        # NOI -- and with it the exit value -- computes from no data at all.
+        try:
+            from utils import add_months as _am
+            _refi_maturity = _am(pd.to_datetime(refi['refi_date']).date(),
+                                 int(round(float(refi.get('term_years') or 10) * 12)))
+            _fc_end = (pd.to_datetime(argus_forecast_df['event_date']).max().date() if argus_forecast_df is not None and not argus_forecast_df.empty else None)
+            if _fc_end and _refi_maturity > _fc_end:
+                scenario_msgs.append(
+                    f"WARNING: the refi loan matures {_refi_maturity}, after the cash "
+                    f"flow forecast ends ({_fc_end}). The sale date follows the new "
+                    f"maturity, so the exit value will compute from empty data and "
+                    f"understate returns badly. Shorten the refi term or import a "
+                    f"longer Argus projection."
+                )
+        except Exception:
+            pass
     if mri_loans_raw is not None and len(mri_loans_raw) > 1:
         parts = ", ".join(
             f"{r['LoanID']}: ${r['mOrigLoanAmt']:,.0f} @ {r['nRate']:.2f}%"
@@ -312,6 +368,7 @@ def build_prospect_analysis(
         mri_supp=pd.DataFrame(),
         mri_val=mri_val,
         relationships_raw=pd.DataFrame(),
+        prospective_loans_raw=prospective_loans_raw,
         capital_calls_raw=pd.DataFrame(),
         isbs_raw=pd.DataFrame(),
         start_year=start_year,

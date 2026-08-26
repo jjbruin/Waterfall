@@ -286,6 +286,8 @@ def ensure_prospect_tables(engine):
             # Operating override fields (Aug 2026)
             ('prospect_assumptions', 'mgmt_fee_pct', 'DOUBLE PRECISION'),
             ('prospect_assumptions', 'replacement_reserve_psf', 'DOUBLE PRECISION'),
+            # Planned refinancing within the hold (Aug 2026)
+            ('prospect_assumptions', 'planned_refi_json', 'TEXT'),
             # Line-item cashflow columns
             ('prospect_cashflows', 'vaccount', 'INTEGER'),
             ('prospect_cashflows', 'line_item', 'TEXT'),
@@ -920,6 +922,7 @@ ASSUMPTION_FIELDS = [
     'origination_fee_bps', 'earnout_notes', 'guarantor_notes',
     'capital_uses_json', 'capital_sources_json',
     'mgmt_fee_pct', 'replacement_reserve_psf',
+    'planned_refi_json',
 ]
 
 
