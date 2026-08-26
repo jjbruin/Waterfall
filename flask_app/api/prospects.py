@@ -915,7 +915,11 @@ def _continue_analyze(result, deal_data, assumptions):
     except Exception:
         logger.exception("XIRR cashflows build failed")
 
-    # Build ROE / MOIC audits
+    # Build ROE / MOIC audits, flattened to the section list this page's
+    # template renders: [{partner, metrics, events|cashflows}, ..., deal-level
+    # with partner=None]. The shared builders return the AM-style dict of
+    # {'partners', 'deal_level'}, which iterated as-is renders two anonymous
+    # "Deal Level" headings and nothing else.
     roe_audit = None
     moic_audit = None
     try:
@@ -924,14 +928,80 @@ def _continue_analyze(result, deal_data, assumptions):
         deal_summary = result.get('deal_summary', {})
         sale_me = result.get('sale_me')
         if partner_results:
-            roe_audit = safe_json(compute_service.build_roe_audit(
+            # Pref rates come from the deal's saved waterfall steps
+            wf_df, vcode = None, deal_data['deal'].get('vcode')
+            try:
+                import pandas as pd
+                from sqlalchemy import text as sa_text
+                with get_engine().connect() as conn:
+                    wf_df = pd.DataFrame(conn.execute(sa_text(
+                        'SELECT vcode, "PropCode", "vState", "nPercent" '
+                        'FROM waterfalls WHERE vcode = :v'), {'v': vcode}).mappings())
+                if wf_df is not None and not wf_df.empty:
+                    # the shared rate lookup expects decimals (0.09), the
+                    # table stores percentages (9.0)
+                    wf_df['nPercent_dec'] = pd.to_numeric(
+                        wf_df['nPercent'], errors='coerce').fillna(0) / 100.0
+            except Exception as wf_err:
+                logger.debug("wf steps for audit: %s", wf_err)
+
+            def _roe_section(partner, timeline, summary):
+                # deal level tracks no pref; suppress those cards
+                has_pref = partner is not None
+                return {
+                    'partner': partner,
+                    'metrics': {
+                        'roe': summary.get('roe'),
+                        'pref_due': summary.get('pref_due') if has_pref else None,
+                        'pref_paid': summary.get('pref_paid') if has_pref else None,
+                        'pref_accrued': summary.get('pref_accrued') if has_pref else None,
+                    },
+                    'events': [{
+                        'date': r.get('Date'), 'label': r.get('Event'),
+                        'amount': r.get('Amount'),
+                        'capital_balance': r.get('Capital Balance'),
+                        'days': r.get('Days at Balance'),
+                        'weighted_capital': r.get('Weighted Capital'),
+                    } for r in timeline],
+                }
+
+            _roe = compute_service.build_roe_audit(
                 partner_results, deal_summary, sale_me,
-                wf_steps=result.get('wf_steps'),
-                vcode=result.get('prospect_assumptions', {}).get('close_date', ''),
-            ))
-            moic_audit = safe_json(compute_service.build_moic_audit(
-                partner_results, deal_summary, sale_me,
-            ))
+                wf_steps=wf_df, vcode=vcode)
+            roe_audit = [_roe_section(s['partner'], s['timeline'], s['summary'])
+                         for s in _roe['partners']]
+            dl = _roe['deal_level']
+            roe_audit.append(_roe_section(None, dl['timeline'], dl['summary']))
+            roe_audit = safe_json(roe_audit)
+
+            _moic = compute_service.build_moic_audit(
+                partner_results, deal_summary, sale_me)
+            moic_audit = []
+            for s in _moic['partners']:
+                sm = s['summary']
+                moic_audit.append({
+                    'partner': s['partner'],
+                    'metrics': {
+                        'contributions': sm.get('contributions'),
+                        'total_distributions': sm.get('total_dist'),
+                        'moic': sm.get('moic'),
+                    },
+                    'cashflows': [{
+                        'date': r.get('Date'), 'description': r.get('Description'),
+                        'type': r.get('Type'), 'amount': r.get('Amount'),
+                    } for r in s['breakdown']],
+                })
+            dl = _moic['deal_level']
+            moic_audit.append({
+                'partner': None,
+                'metrics': {
+                    'contributions': dl.get('total_contributions'),
+                    'total_distributions': dl.get('total_distributions'),
+                    'moic': dl.get('deal_moic'),
+                },
+                'cashflows': [],
+            })
+            moic_audit = safe_json(moic_audit)
     except Exception:
         logger.exception("ROE/MOIC audit build failed")
 
