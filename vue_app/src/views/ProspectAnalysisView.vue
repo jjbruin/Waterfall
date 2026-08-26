@@ -587,6 +587,9 @@ async function selectDeal(id: number) {
   riskPickerOpen.value = false
   assumptionsHydrated.value = false
   refiPlan.value = blankRefi()
+  nbParcels.value = []
+  nbParcelDraft.value = null
+  nbParcelOpen.value = false
   selectedDealId.value = id
   loadScenarios()
   analysisResult.value = null
@@ -600,6 +603,7 @@ async function selectDeal(id: number) {
       api.get(`/api/prospects/${id}/waterfall`),
     ])
     dealDetail.value = detailRes.data
+    loadNbParcels()
     assumptionVersions.value = assumRes.data || []
     wfSteps.value = wfRes.data.steps || []
     wfHasStored.value = wfRes.data.has_cf || wfRes.data.has_cap
@@ -1210,6 +1214,107 @@ const scenarioComparison = computed(() => {
 
 // Run Analysis
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Parcel sales — interim sales of a parcel before the final disposition.
+// Property-bound (parcels belong to a property); effects aggregate at deal
+// level where the waterfall runs. Uses the shared /api/deals parcel API,
+// keyed by this deal's N-code.
+// ---------------------------------------------------------------------------
+const nbParcels = ref<any[]>([])
+const nbParcelOpen = ref(false)
+const nbParcelError = ref('')
+const nbParcelSaving = ref(false)
+const nbParcelDraft = ref<any | null>(null)
+
+const dealVcode = computed(() =>
+  dealDetail.value?.deal?.vcode || (selectedDealId.value ? `N${String(selectedDealId.value).padStart(7, '0')}` : ''))
+
+// Paydown targets are this deal's modelled loans: each debt source with its
+// own rate is its own loan, the rest is the blended L1 — the same ids
+// _build_loans creates.
+const nbParcelLoans = computed(() => {
+  const vc = dealVcode.value
+  if (!vc) return []
+  const out: { loan_id: string; label: string }[] = []
+  let covered = 0
+  for (const d of debtSources.value) {
+    if ((d.rate || 0) > 0 && (d.amount || 0) > 0) {
+      out.push({ loan_id: `${vc}-${d.id}`, label: `${d.label} (own loan)` })
+      covered += d.amount || 0
+    }
+  }
+  if (totalDebt.value - covered > 0.5) {
+    out.push({ loan_id: `${vc}-L1`, label: 'Blended loan (deal terms)' })
+  }
+  return out
+})
+
+function blankNbParcel() {
+  return {
+    label: 'Parcel sale', sale_date: null, sale_price: null,
+    cost_of_sale_value: 2, cost_of_sale_type: 'pct',
+    property_vcode: properties.value.length === 1 ? (properties.value[0].vcode || null) : null,
+    debt_application: [] as { loan_id: string; amount: number | null }[],
+    capex_reserve_hold: null, distribution_mode: 'waterfall',
+    lost_revenue: { accounts: { '4010': null } },
+    lost_expense: { accounts: { '5090': null } },
+  }
+}
+
+function nbParcelEconomics(s: any) {
+  const price = Number(s.sale_price) || 0
+  const cv = Number(s.cost_of_sale_value) || 0
+  const cost = s.cost_of_sale_type === 'pct' ? price * cv / 100 : cv
+  const debt = (s.debt_application || []).reduce((a: number, d: any) => a + (Number(d.amount) || 0), 0)
+  const reserve = Number(s.capex_reserve_hold) || 0
+  return { net: price - cost, debt, reserve, remainder: price - cost - debt - reserve }
+}
+
+async function loadNbParcels() {
+  if (!dealVcode.value) return
+  try {
+    const res = await api.get(`/api/deals/${dealVcode.value}/parcel-sales`)
+    nbParcels.value = res.data.parcel_sales || []
+  } catch {
+    nbParcels.value = []
+  }
+}
+
+async function saveNbParcel(sale: any) {
+  nbParcelSaving.value = true
+  nbParcelError.value = ''
+  try {
+    if (sale.id) {
+      await api.put(`/api/deals/${dealVcode.value}/parcel-sales/${sale.id}`, sale)
+    } else {
+      await api.post(`/api/deals/${dealVcode.value}/parcel-sales`, sale)
+      nbParcelDraft.value = null
+    }
+    await loadNbParcels()
+  } catch (e: any) {
+    nbParcelError.value = e.response?.data?.error || 'Could not save the parcel sale.'
+  } finally {
+    nbParcelSaving.value = false
+  }
+}
+
+async function deleteNbParcel(sale: any) {
+  if (!sale.id) return
+  try {
+    await api.delete(`/api/deals/${dealVcode.value}/parcel-sales/${sale.id}`)
+    await loadNbParcels()
+  } catch (e: any) {
+    nbParcelError.value = e.response?.data?.error || 'Could not remove the parcel sale.'
+  }
+}
+
+function addNbParcelDebtRow(s: any) {
+  const used = new Set((s.debt_application || []).map((d: any) => d.loan_id))
+  const next = nbParcelLoans.value.find(l => !used.has(l.loan_id))
+  s.debt_application = [...(s.debt_application || []),
+    { loan_id: next ? next.loan_id : '', amount: null }]
+}
 
 const excelDownloading = ref(false)
 async function downloadAuditExcel() {
@@ -1927,6 +2032,117 @@ loadDeals()
                 through the capital waterfall; a shortfall raises the
                 capital-call flag in the results.
               </p>
+            </div>
+          </div>
+
+          <!-- ============ PARCEL SALES ============ -->
+          <div class="section">
+            <div class="section-header clickable" @click="nbParcelOpen = !nbParcelOpen">
+              Parcel Sales
+              <span v-if="nbParcels.length" class="parcel-count">{{ nbParcels.length }}</span>
+              <span class="chevron">{{ nbParcelOpen ? '\u25BE' : '\u25B8' }}</span>
+            </div>
+            <div v-if="nbParcelOpen" class="parcel-nb-body">
+              <p class="field-hint">
+                Interim sales of a parcel before the final disposition. Proceeds pay
+                down debt, feed the CapEx reserve, and distribute; the removed income
+                lowers NOI and the exit value. Saved sales apply on Compute Returns.
+              </p>
+              <div v-if="nbParcelError" class="scenario-error">{{ nbParcelError }}</div>
+
+              <div v-for="S in nbParcels" :key="'nbp' + S.id" class="parcel-nb-card">
+                <div class="parcel-nb-head">
+                  <input v-model="S.label" class="scen-name" />
+                  <button class="btn-mini" :disabled="nbParcelSaving" @click="saveNbParcel(S)">Save</button>
+                  <button class="btn-mini danger" @click="deleteNbParcel(S)">Remove</button>
+                </div>
+              <div class="parcel-nb-grid">
+                <label v-if="properties.length > 1">Property
+                  <select v-model="S.property_vcode">
+                    <option :value="null">— pick —</option>
+                    <option v-for="p in properties" :key="p.id" :value="p.vcode">{{ p.property_name }}</option>
+                  </select>
+                </label>
+                <label>Sale Date<input type="date" v-model="S.sale_date" /></label>
+                <label>Sale Price<input type="number" v-model.number="S.sale_price" placeholder="0" /></label>
+                <label>Cost of Sale %<input type="number" step="0.1" v-model.number="S.cost_of_sale_value" /></label>
+                <label>Hold in CapEx Reserve<input type="number" v-model.number="S.capex_reserve_hold" placeholder="0" /></label>
+                <label>Distribute Remainder
+                  <select v-model="S.distribution_mode">
+                    <option value="waterfall">Capital waterfall</option>
+                    <option value="pro_rata">Pro-rata by capital %</option>
+                  </select>
+                </label>
+                <label>Revenue removed /yr (4010)<input type="number" v-model.number="S.lost_revenue.accounts['4010']" placeholder="0" /></label>
+                <label>Expense removed /yr (5090)<input type="number" v-model.number="S.lost_expense.accounts['5090']" placeholder="0" /></label>
+              </div>
+              <div class="parcel-nb-debt">
+                <span class="scen-section-title">Apply to Debt</span>
+                <button class="btn-mini" @click="addNbParcelDebtRow(S)">+ Loan</button>
+                <div v-for="(d, di) in S.debt_application" :key="'d' + di" class="parcel-nb-row">
+                  <select v-model="d.loan_id">
+                    <option v-for="l in nbParcelLoans" :key="l.loan_id" :value="l.loan_id">{{ l.label }}</option>
+                  </select>
+                  <input type="number" v-model.number="d.amount" placeholder="0" />
+                  <button class="btn-mini" @click="S.debt_application.splice(di, 1)">&times;</button>
+                </div>
+              </div>
+              <div class="parcel-nb-econ">
+                Net {{ fmtCurrency(nbParcelEconomics(S).net) }} ·
+                Debt {{ fmtCurrency(nbParcelEconomics(S).debt) }} ·
+                Reserve {{ fmtCurrency(nbParcelEconomics(S).reserve) }} ·
+                <b :class="{ neg: nbParcelEconomics(S).remainder < 0 }">To distribute {{ fmtCurrency(nbParcelEconomics(S).remainder) }}</b>
+              </div>
+                <ul v-if="S.validation && S.validation.errors.length" class="parcel-issues errors">
+                  <li v-for="(m, mi) in S.validation.errors" :key="mi">{{ m }}</li>
+                </ul>
+              </div>
+
+              <div v-if="nbParcelDraft" class="parcel-nb-card draft">
+                <div class="parcel-nb-head">
+                  <input v-model="nbParcelDraft.label" class="scen-name" placeholder="Parcel name" />
+                  <button class="btn-mini" :disabled="nbParcelSaving" @click="saveNbParcel(nbParcelDraft)">Add</button>
+                  <button class="btn-mini" @click="nbParcelDraft = null">Discard</button>
+                </div>
+              <div class="parcel-nb-grid">
+                <label v-if="properties.length > 1">Property
+                  <select v-model="nbParcelDraft.property_vcode">
+                    <option :value="null">— pick —</option>
+                    <option v-for="p in properties" :key="p.id" :value="p.vcode">{{ p.property_name }}</option>
+                  </select>
+                </label>
+                <label>Sale Date<input type="date" v-model="nbParcelDraft.sale_date" /></label>
+                <label>Sale Price<input type="number" v-model.number="nbParcelDraft.sale_price" placeholder="0" /></label>
+                <label>Cost of Sale %<input type="number" step="0.1" v-model.number="nbParcelDraft.cost_of_sale_value" /></label>
+                <label>Hold in CapEx Reserve<input type="number" v-model.number="nbParcelDraft.capex_reserve_hold" placeholder="0" /></label>
+                <label>Distribute Remainder
+                  <select v-model="nbParcelDraft.distribution_mode">
+                    <option value="waterfall">Capital waterfall</option>
+                    <option value="pro_rata">Pro-rata by capital %</option>
+                  </select>
+                </label>
+                <label>Revenue removed /yr (4010)<input type="number" v-model.number="nbParcelDraft.lost_revenue.accounts['4010']" placeholder="0" /></label>
+                <label>Expense removed /yr (5090)<input type="number" v-model.number="nbParcelDraft.lost_expense.accounts['5090']" placeholder="0" /></label>
+              </div>
+              <div class="parcel-nb-debt">
+                <span class="scen-section-title">Apply to Debt</span>
+                <button class="btn-mini" @click="addNbParcelDebtRow(nbParcelDraft)">+ Loan</button>
+                <div v-for="(d, di) in nbParcelDraft.debt_application" :key="'d' + di" class="parcel-nb-row">
+                  <select v-model="d.loan_id">
+                    <option v-for="l in nbParcelLoans" :key="l.loan_id" :value="l.loan_id">{{ l.label }}</option>
+                  </select>
+                  <input type="number" v-model.number="d.amount" placeholder="0" />
+                  <button class="btn-mini" @click="nbParcelDraft.debt_application.splice(di, 1)">&times;</button>
+                </div>
+              </div>
+              <div class="parcel-nb-econ">
+                Net {{ fmtCurrency(nbParcelEconomics(nbParcelDraft).net) }} ·
+                Debt {{ fmtCurrency(nbParcelEconomics(nbParcelDraft).debt) }} ·
+                Reserve {{ fmtCurrency(nbParcelEconomics(nbParcelDraft).reserve) }} ·
+                <b :class="{ neg: nbParcelEconomics(nbParcelDraft).remainder < 0 }">To distribute {{ fmtCurrency(nbParcelEconomics(nbParcelDraft).remainder) }}</b>
+              </div>
+              </div>
+              <button v-if="!nbParcelDraft" class="btn-add-parcel" @click="nbParcelDraft = blankNbParcel()">+ Add Parcel Sale</button>
             </div>
           </div>
 
@@ -3249,4 +3465,17 @@ loadDeals()
   font-size: 0.8rem; text-align: center; font-variant-numeric: tabular-nums;
 }
 .tie-input::placeholder { color: #a8b2bc; }
+.parcel-nb-body { padding: 6px 2px; }
+.parcel-nb-card { border: 1px solid #e2e6ea; border-radius: 3px; padding: 8px 10px; margin-bottom: 8px; background: #fcfdfe; }
+.parcel-nb-card.draft { border-style: dashed; }
+.parcel-nb-head { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+.parcel-nb-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+.parcel-nb-grid label { display: flex; flex-direction: column; gap: 2px; font-size: 0.72rem; color: #5a6675; }
+.parcel-nb-grid input, .parcel-nb-grid select { padding: 4px 6px; border: 1px solid #ccd3d9; border-radius: 2px; font-size: 0.8rem; }
+.parcel-nb-debt { margin-top: 8px; }
+.parcel-nb-row { display: flex; gap: 6px; margin-top: 4px; }
+.parcel-nb-row select { flex: 2; } .parcel-nb-row input { flex: 1; }
+.parcel-nb-econ { margin-top: 8px; font-size: 0.78rem; color: #5a6675; }
+.parcel-nb-econ b { color: #14201d; } .parcel-nb-econ .neg { color: #a3282b; }
+.parcel-count { background: #1f4e79; color: #fff; border-radius: 10px; padding: 0 7px; font-size: 0.7rem; margin-left: 6px; }
 </style>

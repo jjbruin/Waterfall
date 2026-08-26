@@ -93,6 +93,7 @@ def build_prospect_analysis(
     argus_forecast_df: Optional[pd.DataFrame] = None,
     waterfall_df: Optional[pd.DataFrame] = None,
     scenario: Optional[dict] = None,
+    parcel_sales: Optional[list] = None,
 ) -> dict:
     """Build synthetic DataFrames and run compute_deal_analysis().
 
@@ -378,6 +379,7 @@ def build_prospect_analysis(
         contract_sale_price=None,  # let compute.py derive from NOI / cap rate
         selling_cost_override=selling_cost_pct,
         selling_cost_type='pct',
+        parcel_sales=parcel_sales,
     )
 
     # Derive terminal NOI and exit value from compute result (single source of truth)

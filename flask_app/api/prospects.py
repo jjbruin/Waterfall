@@ -515,6 +515,16 @@ def _run_prospect_analysis(deal_id):
         logger.debug("Waterfall DB check for prospect: %s", e)
 
     try:
+        # Parcel sales saved for this deal feed the projection (property-bound
+        # via property_vcode; effects aggregate at deal level).
+        parcel_sales = None
+        _pv = deal_data['deal'].get('vcode') or f"N{deal_id:07d}"
+        try:
+            from flask_app.services import parcel_sale_service as _pss
+            parcel_sales = _pss.list_parcel_sales(get_engine(), _pv)
+        except Exception as _pe:
+            logger.debug("parcel sales load for %s: %s", _pv, _pe)
+
         result = build_prospect_analysis(
             deal=deal_data['deal'],
             properties=deal_data['properties'],
@@ -524,6 +534,7 @@ def _run_prospect_analysis(deal_id):
             argus_forecast_df=argus_forecast_df,
             waterfall_df=waterfall_df,
             scenario=scenario,
+            parcel_sales=parcel_sales,
         )
     except Exception as e:
         logger.exception("Prospect analysis failed for deal %d", deal_id)
@@ -534,6 +545,8 @@ def _run_prospect_analysis(deal_id):
 
 
 def _continue_analyze(result, deal_data, assumptions):
+    from flask_app.serializers import safe_json
+
     # Build anniversary-based annual forecast table for display
     annual_forecast = None
     try:
