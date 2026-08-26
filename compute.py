@@ -25,7 +25,7 @@ from loaders import (load_coa, load_forecast, load_mri_loans,
 from loans import build_loans_from_mri_loans, amortize_monthly_schedule, total_loan_balance_at
 from waterfall import (run_waterfall, seed_states_from_accounting,
                        run_waterfall_period, pref_rates_from_waterfall_steps,
-                       add_pref_rates_from_waterfall_steps)
+                       add_pref_rates_from_waterfall_steps, apply_distribution)
 from planned_loans import (size_planned_second_mortgage, planned_loan_as_loan_object,
                            twelve_month_noi_after_date, projected_cap_rate_at_date,
                            size_prospective_loan, prospective_loan_as_loan_object)
@@ -655,6 +655,144 @@ def _extract_isbs_actuals_for_forecast(
     return df
 
 
+def apply_manual_parcel_distributions(parcel_events, seed_states, cf_investors,
+                                     cap_investors, cap_alloc, debug_msgs=None):
+    """Distribute a parcel sale remainder outside the waterfall.
+
+    Covers the two modes an analyst can pick instead of the capital waterfall:
+    pro-rata on contributed capital, and fixed amounts per partner. Both are
+    treated as a return of capital -- the distribution reduces each partner's
+    capital outstanding, so weighted average capital falls from the parcel
+    date and ROE rises gradually rather than spiking.
+
+    Known limitation, reported per sale: because these modes are applied after
+    the waterfall has run, preferred return accrued between the parcel date
+    and the final sale is still calculated on the pre-distribution capital.
+    Pref is therefore slightly overstated. The capital waterfall mode has no
+    such gap, since the runner processes the event in date order.
+
+    Returns the cap_alloc DataFrame with the manual rows appended.
+    """
+    msgs = debug_msgs if debug_msgs is not None else []
+    manual = [pe for pe in (parcel_events or [])
+              if pe.get('mode') in ('pro_rata', 'fixed') and pe.get('remainder', 0) > 0]
+    if not manual:
+        return cap_alloc
+
+    def _state(pc):
+        return (cap_investors or {}).get(pc) or (cf_investors or {}).get(pc) \
+            or (seed_states or {}).get(pc)
+
+    # Contributed capital per partner, for the pro-rata split.  Uses the same
+    # cashflow_types basis as investor_metrics(), so the split reconciles with
+    # the Contributions column on Partner Returns.  Sign alone would also count
+    # negative distribution corrections as contributions.
+    contributed = {}
+    for pc, st in (seed_states or {}).items():
+        cfs = st.cashflows or []
+        types = getattr(st, 'cashflow_types', None) or []
+        if types and len(types) == len(cfs):
+            total = sum(-a for (_, a), t in zip(cfs, types) if t == 'C')
+        else:
+            total = sum(-a for _, a in cfs if a < 0)
+        if total > 0:
+            contributed[pc] = total
+
+    new_rows = []
+    for pe in manual:
+        p_date, mode = pe['date'], pe['mode']
+        remainder = float(pe['remainder'])
+        label = pe.get('label') or 'Parcel sale'
+
+        if mode == 'pro_rata':
+            base = sum(contributed.values())
+            if base <= 0:
+                msgs.append(
+                    f"Parcel sale '{label}': pro-rata distribution of "
+                    f"${remainder:,.0f} could not be split -- no partner has "
+                    f"contributed capital on record"
+                )
+                continue
+            shares = {pc: remainder * amt / base for pc, amt in contributed.items()}
+            msgs.append(
+                f"Parcel sale '{label}': ${remainder:,.0f} split pro-rata on "
+                f"contributed capital of ${base:,.0f}"
+            )
+        else:
+            shares = {}
+            for pc, amt in (pe.get('fixed') or {}).items():
+                try:
+                    v = float(amt or 0)
+                except (TypeError, ValueError):
+                    continue
+                if v > 0:
+                    shares[pc] = v
+            entered = sum(shares.values())
+            if not shares:
+                msgs.append(
+                    f"Parcel sale '{label}': fixed distribution selected but no "
+                    f"partner amounts were entered; ${remainder:,.0f} was not "
+                    f"distributed"
+                )
+                continue
+            if abs(entered - remainder) > 1.0:
+                msgs.append(
+                    f"Parcel sale '{label}': fixed amounts total ${entered:,.0f} "
+                    f"against a remainder of ${remainder:,.0f}; the entered "
+                    f"amounts were distributed as given"
+                )
+
+        for pc, amount in sorted(shares.items()):
+            if amount <= 0:
+                continue
+            st = _state(pc)
+            if st is None:
+                msgs.append(
+                    f"Parcel sale '{label}': ${amount:,.0f} allocated to '{pc}', "
+                    f"which is not a partner on this deal -- not distributed"
+                )
+                continue
+            # Return of capital: reduce capital outstanding, initial pool first
+            remaining_cut = amount
+            for pool_name in ('initial', 'additional'):
+                if remaining_cut <= 0:
+                    break
+                pool = st.get_pool(pool_name)
+                take = min(remaining_cut, max(0.0, pool.capital_outstanding))
+                if take > 0:
+                    pool.capital_outstanding -= take
+                    pool.cumulative_returned += take
+                    remaining_cut -= take
+            apply_distribution(st, p_date, amount, is_cf_waterfall=False,
+                               label=f"Parcel Sale: {label}")
+            new_rows.append({
+                "event_date": p_date, "Year": p_date.year, "iOrder": 0,
+                "vAmtType": "", "PropCode": pc,
+                "vtranstype": f"Parcel Sale ({mode.replace('_', '-')})",
+                "vState": "Initial", "FXRate": 0.0, "nPercent": 0.0,
+                "Allocated": float(amount), "RemainingAfter": 0.0,
+            })
+            if remaining_cut > 0:
+                msgs.append(
+                    f"  {pc}: ${amount:,.0f} distributed, of which "
+                    f"${remaining_cut:,.0f} exceeded capital outstanding and is "
+                    f"a gain rather than a return of capital"
+                )
+
+        msgs.append(
+            f"  note: pref accrued between {p_date} and the sale is still "
+            f"calculated on pre-distribution capital, so it is slightly "
+            f"overstated; the capital waterfall mode does not have this gap"
+        )
+
+    if not new_rows:
+        return cap_alloc
+    add = pd.DataFrame(new_rows)
+    if cap_alloc is None or cap_alloc.empty:
+        return add
+    return pd.concat([cap_alloc, add], ignore_index=True).sort_values("event_date")
+
+
 def apply_parcel_income_loss(fc, losses, debug_msgs=None):
     """Remove the revenue and expenses that leave with a sold parcel.
 
@@ -1055,6 +1193,7 @@ def compute_deal_analysis(
                 'label': ps.get('label') or 'Parcel sale', 'date': p_date,
                 'price': price, 'net': net, 'paydown': paydown,
                 'reserve': reserve, 'remainder': remainder, 'mode': mode,
+                'fixed': ps.get('distribution_fixed') or {},
             })
             debug_msgs.append(
                 f"Parcel sale '{ps.get('label')}' {p_date}: price ${price:,.0f}, "
@@ -1066,11 +1205,6 @@ def compute_deal_analysis(
                     f"  note: ${paydown:,.0f} of paydown is deducted from the "
                     f"remainder but not yet applied to the loan balance, so "
                     f"debt service and DSCR after {p_date} are unchanged"
-                )
-            if mode != 'waterfall':
-                debug_msgs.append(
-                    f"  note: '{mode}' distribution is not yet applied; "
-                    f"${remainder:,.0f} is excluded from partner returns"
                 )
 
 
@@ -1578,6 +1712,13 @@ def compute_deal_analysis(
     cf_alloc, cap_alloc, cf_investors, cap_investors = run_interleaved_waterfalls(
         deal_wf_steps, deal_vcode, cf_period_cash, cap_period_cash,
         seed_states, capital_calls=capital_calls,
+    )
+
+    # Parcel sale remainders on the two manual modes are distributed here,
+    # after the waterfall, since they bypass its steps by definition.
+    cap_alloc = apply_manual_parcel_distributions(
+        parcel_events, seed_states, cf_investors, cap_investors,
+        cap_alloc, debug_msgs,
     )
 
     # --- Enhance capital events with calls and distributions ---
