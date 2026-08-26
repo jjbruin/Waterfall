@@ -621,6 +621,9 @@ Vue: `PipelineView.vue`. Flask: `prospects.py` + `prospect_service.py`.
 - **CRUD endpoints** — Full REST: `GET/POST/PUT/DELETE /api/prospects`, `/api/prospects/<id>/properties`, `/api/prospects/<id>/entities`, `/api/prospects/<id>/investors`, `/api/prospects/<id>/assumptions`.
 - **Waterfall endpoints** — `GET /<id>/waterfall` (retrieve steps), `POST /<id>/waterfall/build` (generate from investor inputs), `DELETE /<id>/waterfall` (clear).
 
+#### 11a-0. Scenario Analysis
+Named scenarios on Prospect Deal Analysis, selected from a dropdown above the results panel. A scenario binds: a cash flow source (pin an Argus import per property via `argus_import_ids`, else the normal cascade), assumption overrides (JSON overlay on `prospect_assumptions`), and income adjustments (`{label, start_date, end_date?, revenue: {acct: annual $}, expense: {...}}` — positive removes, negative adds back, applied to `mAmount_norm` by `apply_scenario_adjustments()` in `prospect_analysis.py`). Table `prospect_scenarios` (PROTECTED_TABLES). API: `GET/POST /api/prospects/<id>/scenarios`, `PUT/DELETE .../scenarios/<sid>`, `GET .../scenarios/risk-candidates` (seeds downsides from the linked lease review via `lease_reviews.prospect_property_id` — termination options, cotenancy dependents, material leases; stale termination dates fall back to lease end). `POST /analyze` accepts `scenario_id`. Equity split honours declared `prospect_investors.planned_investor_id` records (ownership %, commitments) over waterfall-shape inference. Full plan: `.claude/memory/scenario_analysis.md`.
+
 #### 11a-1. Prospect Deal Analysis
 Standalone route at `/prospect-analysis`. Vue: `ProspectAnalysisView.vue`. Flask: endpoints in `prospects.py`, engine in `prospect_analysis.py`.
 Full deal analysis view for New Business, mimicking the Asset Management Deal Analysis page with shared computation engines for consistent returns across the company.

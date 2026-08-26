@@ -546,7 +546,13 @@ async function loadDeals() {
 }
 
 async function selectDeal(id: number) {
+  scenarios.value = []
+  selectedScenarioId.value = null
+  scenarioResults.value = {}
+  riskCandidates.value = []
+  riskPickerOpen.value = false
   selectedDealId.value = id
+  loadScenarios()
   analysisResult.value = null
   analysisError.value = ''
   expanded.value = {}
@@ -916,6 +922,166 @@ async function deleteWaterfall() {
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Scenarios — named bindings of cash flow source, assumption overrides and
+// income adjustments, run through the full waterfall from the dropdown.
+// ---------------------------------------------------------------------------
+
+interface ScenarioAdjustment {
+  label: string
+  start_date: string | null
+  end_date: string | null
+  revenue: Record<string, number | null>
+  expense: Record<string, number | null>
+}
+interface Scenario {
+  id?: number
+  name: string
+  description: string | null
+  is_base: boolean
+  argus_import_ids: Record<string, number>
+  assumption_overrides: Record<string, any>
+  adjustments: ScenarioAdjustment[]
+}
+
+const scenarios = ref<Scenario[]>([])
+const selectedScenarioId = ref<number | null>(null)
+const scenarioEditorOpen = ref(false)
+const editingScenario = ref<Scenario | null>(null)
+const scenarioSaving = ref(false)
+const scenarioError = ref('')
+const riskCandidates = ref<any[]>([])
+const riskPickerOpen = ref(false)
+// results per computed scenario this session, for the comparison strip
+const scenarioResults = ref<Record<string, any>>({})
+
+// override fields offered in the editor; anything in ASSUMPTION_FIELDS works
+const OVERRIDE_FIELDS = [
+  { key: 'hold_years', label: 'Hold (years)' },
+  { key: 'exit_cap_rate', label: 'Exit Cap Rate' },
+  { key: 'debt_amount', label: 'Debt Amount' },
+  { key: 'debt_rate', label: 'Debt Rate' },
+  { key: 'pref_rate', label: 'Pref Rate' },
+]
+
+async function loadScenarios() {
+  if (!selectedDealId.value) return
+  try {
+    const res = await api.get(`/api/prospects/${selectedDealId.value}/scenarios`)
+    scenarios.value = res.data.scenarios || []
+  } catch {
+    scenarios.value = []
+  }
+}
+
+function blankScenario(): Scenario {
+  return { name: '', description: null, is_base: false,
+           argus_import_ids: {}, assumption_overrides: {}, adjustments: [] }
+}
+
+function newScenario() {
+  editingScenario.value = blankScenario()
+  scenarioEditorOpen.value = true
+  scenarioError.value = ''
+}
+
+function editScenario() {
+  const s = scenarios.value.find(x => x.id === selectedScenarioId.value)
+  if (!s) return
+  editingScenario.value = JSON.parse(JSON.stringify(s))
+  scenarioEditorOpen.value = true
+  scenarioError.value = ''
+}
+
+function duplicateScenario() {
+  const s = scenarios.value.find(x => x.id === selectedScenarioId.value)
+  if (!s) return
+  const copy = JSON.parse(JSON.stringify(s))
+  delete copy.id
+  copy.name = `${s.name} (copy)`
+  copy.is_base = false
+  editingScenario.value = copy
+  scenarioEditorOpen.value = true
+}
+
+async function saveScenario() {
+  const s = editingScenario.value
+  if (!s || !selectedDealId.value) return
+  if (!s.name.trim()) { scenarioError.value = 'Give the scenario a name.'; return }
+  scenarioSaving.value = true
+  scenarioError.value = ''
+  try {
+    if (s.id) {
+      await api.put(`/api/prospects/${selectedDealId.value}/scenarios/${s.id}`, s)
+    } else {
+      const res = await api.post(`/api/prospects/${selectedDealId.value}/scenarios`, s)
+      selectedScenarioId.value = res.data.scenario.id
+    }
+    scenarioEditorOpen.value = false
+    editingScenario.value = null
+    await loadScenarios()
+  } catch (e: any) {
+    scenarioError.value = e.response?.data?.error || 'Could not save the scenario.'
+  } finally {
+    scenarioSaving.value = false
+  }
+}
+
+async function deleteScenarioSelected() {
+  const s = scenarios.value.find(x => x.id === selectedScenarioId.value)
+  if (!s || !selectedDealId.value) return
+  if (!confirm(`Delete scenario "${s.name}"?`)) return
+  try {
+    await api.delete(`/api/prospects/${selectedDealId.value}/scenarios/${s.id}`)
+    delete scenarioResults.value[String(s.id)]
+    selectedScenarioId.value = null
+    await loadScenarios()
+  } catch (e: any) {
+    scenarioError.value = e.response?.data?.error || 'Could not delete the scenario.'
+  }
+}
+
+function addAdjustment(from?: any) {
+  const s = editingScenario.value
+  if (!s) return
+  s.adjustments.push({
+    label: from ? `${from.tenant_name} departs` : 'Adjustment',
+    start_date: from?.suggested_start || null,
+    end_date: null,
+    revenue: { '4010': from ? Math.round(from.annual_rent || 0) : null },
+    expense: { '5090': null },
+  })
+}
+
+function setOverride(field: string, ev: Event) {
+  const s = editingScenario.value
+  if (!s) return
+  const v = (ev.target as HTMLInputElement).value
+  if (v === '') delete s.assumption_overrides[field]
+  else s.assumption_overrides[field] = Number(v)
+}
+
+function removeAdjustment(i: number) {
+  editingScenario.value?.adjustments.splice(i, 1)
+}
+
+async function loadRiskCandidates() {
+  if (!selectedDealId.value) return
+  riskPickerOpen.value = !riskPickerOpen.value
+  if (riskCandidates.value.length) return
+  try {
+    const res = await api.get(`/api/prospects/${selectedDealId.value}/scenarios/risk-candidates`)
+    riskCandidates.value = res.data.candidates || []
+  } catch {
+    riskCandidates.value = []
+  }
+}
+
+const scenarioComparison = computed(() => {
+  const rows = Object.values(scenarioResults.value)
+  return rows.length >= 2 ? rows : []
+})
+
 // Run Analysis
 // ---------------------------------------------------------------------------
 
@@ -971,8 +1137,23 @@ async function runAnalysis() {
       payload.property_prices = propertyPrices.value
     }
 
+    if (selectedScenarioId.value) payload.scenario_id = selectedScenarioId.value
     const res = await api.post(`/api/prospects/${selectedDealId.value}/analyze`, payload)
     analysisResult.value = res.data
+
+    // keep this run for the scenario comparison strip
+    const key = String(selectedScenarioId.value ?? 'live')
+    const scen = scenarios.value.find(x => x.id === selectedScenarioId.value)
+    const ds = res.data?.deal_summary || {}
+    scenarioResults.value[key] = {
+      key,
+      name: scen ? scen.name : 'Live assumptions',
+      deal_irr: ds.deal_irr ?? null,
+      deal_moic: ds.deal_moic ?? null,
+      partners: (res.data?.partner_results || []).map((p: any) => ({
+        partner: p.partner, irr: p.irr, moic: p.moic,
+      })),
+    }
   } catch (e: any) {
     analysisError.value = e.response?.data?.error || e.message
   } finally {
@@ -1837,6 +2018,98 @@ loadDeals()
 
         <!-- RIGHT: Results Panel -->
         <div class="results-panel">
+          <!-- Scenario bar -->
+          <div v-if="selectedDealId" class="scenario-bar">
+            <label class="scenario-label">Scenario</label>
+            <select v-model="selectedScenarioId" class="scenario-select">
+              <option :value="null">Live assumptions</option>
+              <option v-for="s in scenarios" :key="s.id" :value="s.id">
+                {{ s.name }}{{ s.is_base ? ' (Base Case)' : '' }}
+              </option>
+            </select>
+            <button class="btn-mini" @click="newScenario">+ New</button>
+            <button class="btn-mini" :disabled="!selectedScenarioId" @click="editScenario">Edit</button>
+            <button class="btn-mini" :disabled="!selectedScenarioId" @click="duplicateScenario">Duplicate</button>
+            <button class="btn-mini danger" :disabled="!selectedScenarioId" @click="deleteScenarioSelected">Delete</button>
+            <span class="scenario-hint">Compute Returns runs the selected scenario</span>
+          </div>
+          <div v-if="scenarioError && !scenarioEditorOpen" class="scenario-error">{{ scenarioError }}</div>
+
+          <!-- Scenario editor -->
+          <div v-if="scenarioEditorOpen && editingScenario" class="scenario-editor">
+            <div class="scen-head">
+              <input v-model="editingScenario.name" placeholder="Scenario name (e.g. Base Case, Sam's Club departs 2029)" class="scen-name" />
+              <label class="scen-base"><input type="checkbox" v-model="editingScenario.is_base" /> Base Case</label>
+              <button class="btn-mini" :disabled="scenarioSaving" @click="saveScenario">{{ scenarioSaving ? '...' : (editingScenario.id ? 'Save' : 'Create') }}</button>
+              <button class="btn-mini" @click="scenarioEditorOpen = false; editingScenario = null">Cancel</button>
+            </div>
+            <input v-model="editingScenario.description" placeholder="Description (optional)" class="scen-desc" />
+            <div v-if="scenarioError" class="scenario-error">{{ scenarioError }}</div>
+
+            <div class="scen-section">
+              <span class="scen-section-title">Assumption Overrides</span>
+              <span class="scenario-hint">blank = use the deal's saved value</span>
+              <div class="scen-overrides">
+                <label v-for="f in OVERRIDE_FIELDS" :key="f.key">
+                  {{ f.label }}
+                  <input type="number" step="any"
+                         :value="editingScenario.assumption_overrides[f.key]"
+                         @input="setOverride(f.key, $event)" />
+                </label>
+              </div>
+            </div>
+
+            <div class="scen-section">
+              <span class="scen-section-title">Income Adjustments</span>
+              <button class="btn-mini" @click="addAdjustment()">+ Adjustment</button>
+              <button class="btn-mini" @click="loadRiskCandidates">{{ riskPickerOpen ? 'Hide lease risk' : 'From lease risk' }}</button>
+              <div v-if="riskPickerOpen" class="risk-picker">
+                <p v-if="!riskCandidates.length" class="scenario-hint">No lease review linked to this deal, or no at-risk tenants found.</p>
+                <div v-for="c in riskCandidates" :key="c.tenant_id" class="risk-row">
+                  <button class="btn-mini" @click="addAdjustment(c)">+</button>
+                  <span class="risk-name">{{ c.tenant_name }}</span>
+                  <span class="risk-rent">{{ fmtCurrency(c.annual_rent || 0) }}/yr</span>
+                  <span class="risk-why">{{ c.reasons.join('; ') }}</span>
+                </div>
+              </div>
+              <div v-for="(a, i) in editingScenario.adjustments" :key="i" class="adj-row">
+                <input v-model="a.label" placeholder="Label" class="adj-label" />
+                <label>From<input type="date" v-model="a.start_date" /></label>
+                <label>To (optional)<input type="date" v-model="a.end_date" /></label>
+                <label>Revenue removed /yr<input type="number" v-model.number="a.revenue['4010']" placeholder="0" /></label>
+                <label>Expense removed /yr<input type="number" v-model.number="a.expense['5090']" placeholder="0" /></label>
+                <button class="btn-mini" @click="removeAdjustment(i)">&times;</button>
+              </div>
+              <p class="scenario-hint">Positive removes income or cost from the date; negative adds it back (e.g. a re-lease). Revenue applies to account 4010, expenses to 5090.</p>
+            </div>
+          </div>
+
+          <!-- Scenario comparison -->
+          <div v-if="scenarioComparison.length" class="scenario-compare">
+            <span class="scen-section-title">Computed this session</span>
+            <table class="compare-table">
+              <thead>
+                <tr>
+                  <th>Scenario</th><th class="r">Deal IRR</th><th class="r">Deal MOIC</th>
+                  <template v-for="p in scenarioComparison[0].partners" :key="p.partner">
+                    <th class="r">{{ p.partner }} IRR</th>
+                  </template>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in scenarioComparison" :key="row.key"
+                    :class="{ current: row.key === String(selectedScenarioId ?? 'live') }">
+                  <td>{{ row.name }}</td>
+                  <td class="r">{{ row.deal_irr != null ? (row.deal_irr * 100).toFixed(2) + '%' : 'n/a' }}</td>
+                  <td class="r">{{ row.deal_moic != null ? row.deal_moic.toFixed(3) : 'n/a' }}</td>
+                  <template v-for="p in row.partners" :key="p.partner">
+                    <td class="r">{{ p.irr != null ? (p.irr * 100).toFixed(2) + '%' : 'n/a' }}</td>
+                  </template>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
           <div v-if="analysisLoading" class="computing-overlay">
             <div class="spinner"></div>
             <span>Running analysis...</span>
@@ -2644,4 +2917,51 @@ loadDeals()
 .debug-section { margin-top: 12px; }
 .debug-section summary { cursor: pointer; font-size: 12px; color: #666; }
 .debug-list { font-size: 11px; color: #666; padding-left: 20px; }
+
+/* ========== Scenarios ========== */
+.scenario-bar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 10px; margin-bottom: 10px;
+  background: #fff; border: 1px solid #d6dbe0; border-left: 3px solid #1f4e79;
+  border-radius: 3px;
+}
+.scenario-label { font-weight: 600; font-size: 0.85rem; color: #1f4e79; }
+.scenario-select { padding: 4px 8px; border: 1px solid #ccd3d9; border-radius: 3px; font-size: 0.85rem; min-width: 200px; }
+.scenario-hint { color: #7b8794; font-size: 0.75rem; }
+.scenario-error {
+  background: #f8e9e9; border-left: 3px solid #a3282b; color: #7a1f21;
+  padding: 5px 9px; margin-bottom: 8px; font-size: 0.8rem; border-radius: 2px;
+}
+.scenario-editor {
+  border: 1px dashed #1f4e79; border-radius: 3px; background: #fbfcfe;
+  padding: 10px 12px; margin-bottom: 10px;
+}
+.scen-head { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+.scen-name { flex: 1; padding: 5px 8px; border: 1px solid #ccd3d9; border-radius: 3px; font-weight: 600; }
+.scen-desc { width: 100%; padding: 4px 8px; border: 1px solid #e2e6ea; border-radius: 3px; font-size: 0.82rem; margin-bottom: 8px; }
+.scen-base { font-size: 0.8rem; color: #35434f; white-space: nowrap; display: flex; gap: 4px; align-items: center; }
+.scen-section { border-top: 1px solid #eceff2; padding-top: 8px; margin-top: 6px; }
+.scen-section-title { font-size: 0.8rem; font-weight: 600; color: #35434f; margin-right: 8px; }
+.scen-overrides { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin-top: 6px; }
+.scen-overrides label { display: flex; flex-direction: column; gap: 2px; font-size: 0.74rem; color: #5a6675; }
+.scen-overrides input { padding: 4px 6px; border: 1px solid #ccd3d9; border-radius: 2px; font-size: 0.82rem; }
+.adj-row { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; margin-top: 6px;
+  padding: 6px 8px; background: #fff; border: 1px solid #e2e6ea; border-radius: 3px; }
+.adj-row label { display: flex; flex-direction: column; gap: 2px; font-size: 0.72rem; color: #5a6675; }
+.adj-row input { padding: 3px 6px; border: 1px solid #ccd3d9; border-radius: 2px; font-size: 0.8rem; }
+.adj-label { min-width: 180px; font-weight: 500; }
+.risk-picker { border: 1px solid #e2e6ea; border-radius: 3px; padding: 6px 8px; margin-top: 6px;
+  max-height: 200px; overflow-y: auto; background: #fff; }
+.risk-row { display: grid; grid-template-columns: 26px 1.4fr 100px 2fr; gap: 6px; align-items: center;
+  font-size: 0.78rem; padding: 2px 0; }
+.risk-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.risk-rent { text-align: right; font-variant-numeric: tabular-nums; color: #35434f; }
+.risk-why { color: #7b8794; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scenario-compare { margin-bottom: 10px; padding: 8px 10px; background: #fff;
+  border: 1px solid #d6dbe0; border-radius: 3px; overflow-x: auto; }
+.compare-table { border-collapse: collapse; font-size: 0.8rem; margin-top: 5px; width: 100%; }
+.compare-table th, .compare-table td { padding: 3px 10px; border-bottom: 1px solid #eceff2; text-align: left; }
+.compare-table .r { text-align: right; font-variant-numeric: tabular-nums; }
+.compare-table tr.current td { background: #eef4f9; font-weight: 600; }
+.btn-mini.danger { color: #a3282b; border-color: #dcb0b1; }
 </style>

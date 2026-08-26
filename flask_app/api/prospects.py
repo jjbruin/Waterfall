@@ -373,6 +373,17 @@ def analyze_deal(deal_id):
                 prop['property_price'] = prop_prices[pid]
 
     # Check for property-level cash flows (Argus or Excel uploads)
+    # Scenario: a named binding of cash flow source, assumption overrides
+    # and adjustment events. Loaded here so its source choice can steer the
+    # cascade below.
+    scenario = None
+    scenario_id = (request.get_json(silent=True) or {}).get('scenario_id')
+    if scenario_id:
+        from flask_app.services import scenario_service
+        scenario = scenario_service.get_scenario(get_engine(), int(scenario_id))
+        if not scenario or scenario.get('prospect_id') != deal_id:
+            return jsonify({'error': f'Scenario {scenario_id} not found on this deal'}), 404
+
     # Priority: Argus imports > prospect_cashflows > NOI growth assumptions
     argus_forecast_df = None
     property_cashflows = None
@@ -389,8 +400,28 @@ def analyze_deal(deal_id):
 
         # Try Argus first
         try:
-            from flask_app.services.argus_service import get_property_rollup_forecast_df
-            argus_forecast_df = get_property_rollup_forecast_df(
+            from flask_app.services.argus_service import (
+                get_property_rollup_forecast_df, get_forecast_df_by_id)
+            # A scenario can pin a specific Argus import per property
+            # ("OP Model" vs "Base Case UW"); otherwise the active one wins.
+            pinned = (scenario or {}).get('argus_import_ids') or {}
+            if pinned:
+                frames = []
+                for pid in property_ids:
+                    imp_id = pinned.get(str(pid)) or pinned.get(pid)
+                    if not imp_id:
+                        continue
+                    pdf = get_forecast_df_by_id(
+                        get_engine(), f"NP{pid:06d}", int(imp_id), close_yr - 1)
+                    if pdf is not None and not pdf.empty:
+                        pdf = pdf.copy()
+                        pdf["vcode"] = deal_vcode
+                        frames.append(pdf)
+                if frames:
+                    import pandas as _pd
+                    argus_forecast_df = _pd.concat(frames, ignore_index=True)
+            if argus_forecast_df is None:
+                argus_forecast_df = get_property_rollup_forecast_df(
                 get_engine(), deal_vcode, property_ids, close_yr - 1,
             )
         except Exception as e:
@@ -457,6 +488,7 @@ def analyze_deal(deal_id):
             cashflows=property_cashflows,
             argus_forecast_df=argus_forecast_df,
             waterfall_df=waterfall_df,
+            scenario=scenario,
         )
     except Exception as e:
         logger.exception("Prospect analysis failed for deal %d", deal_id)
@@ -1044,6 +1076,66 @@ def cashflow_status(deal_id):
 # ---------------------------------------------------------------------------
 # Waterfall Builder (streamlined structure creation)
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Scenarios -- named bindings of cash flow source + overrides + adjustments
+# ---------------------------------------------------------------------------
+
+@prospects_bp.route('/<int:deal_id>/scenarios', methods=['GET'])
+@login_required
+def list_deal_scenarios(deal_id):
+    from flask_app.services import scenario_service
+    return jsonify({'scenarios': scenario_service.list_scenarios(get_engine(), deal_id)})
+
+
+@prospects_bp.route('/<int:deal_id>/scenarios', methods=['POST'])
+@login_required
+@role_required('admin', 'analyst')
+def create_deal_scenario(deal_id):
+    from flask_app.services import scenario_service
+    body = request.get_json(silent=True) or {}
+    if not (body.get('name') or '').strip():
+        return jsonify({'error': 'Scenario name is required'}), 400
+    username = getattr(g, 'current_user', {}).get('username', '')
+    s = scenario_service.create_scenario(get_engine(), deal_id, body, username)
+    return jsonify({'scenario': s}), 201
+
+
+@prospects_bp.route('/<int:deal_id>/scenarios/<int:scenario_id>', methods=['PUT'])
+@login_required
+@role_required('admin', 'analyst')
+def update_deal_scenario(deal_id, scenario_id):
+    from flask_app.services import scenario_service
+    engine = get_engine()
+    existing = scenario_service.get_scenario(engine, scenario_id)
+    if not existing or existing['prospect_id'] != deal_id:
+        return jsonify({'error': f'Scenario {scenario_id} not found on deal {deal_id}'}), 404
+    username = getattr(g, 'current_user', {}).get('username', '')
+    s = scenario_service.update_scenario(engine, scenario_id,
+                                         request.get_json(silent=True) or {}, username)
+    return jsonify({'scenario': s})
+
+
+@prospects_bp.route('/<int:deal_id>/scenarios/<int:scenario_id>', methods=['DELETE'])
+@login_required
+@role_required('admin', 'analyst')
+def delete_deal_scenario(deal_id, scenario_id):
+    from flask_app.services import scenario_service
+    engine = get_engine()
+    existing = scenario_service.get_scenario(engine, scenario_id)
+    if not existing or existing['prospect_id'] != deal_id:
+        return jsonify({'error': f'Scenario {scenario_id} not found on deal {deal_id}'}), 404
+    scenario_service.delete_scenario(engine, scenario_id)
+    return jsonify({'message': 'Scenario deleted'})
+
+
+@prospects_bp.route('/<int:deal_id>/scenarios/risk-candidates', methods=['GET'])
+@login_required
+def scenario_risk_candidates(deal_id):
+    """Tenants worth a downside scenario, from the deal's lease reviews."""
+    from flask_app.services import scenario_service
+    return jsonify({'candidates': scenario_service.get_risk_candidates(get_engine(), deal_id)})
+
 
 @prospects_bp.route('/<int:deal_id>/waterfall', methods=['GET'])
 @login_required

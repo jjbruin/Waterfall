@@ -25,6 +25,64 @@ from loans import build_loans_from_mri_loans, amortize_monthly_schedule
 from compute import compute_deal_analysis
 
 
+def apply_scenario_adjustments(fc, adjustments, debug_msgs=None):
+    """Apply a scenario's income adjustments to the forecast.
+
+    Each adjustment is {'label', 'start_date', 'end_date' (optional),
+    'revenue': {acct: annual $}, 'expense': {acct: annual $}}. Amounts are
+    annual, spread across the months inside the window. Positive removes the
+    line (a tenant leaves, an expense is saved); negative adds it back (space
+    re-leased, a new cost arrives). Only mAmount_norm is touched -- the
+    column every NOI/FAD/DSCR/terminal-value path reads -- so the effect
+    flows through debt sizing checks, the exit value and the waterfall.
+    """
+    if fc is None or fc.empty or not adjustments:
+        return fc
+    msgs = debug_msgs if debug_msgs is not None else []
+    out = fc.copy()
+    acct_str = out["vAccount"].astype(str).str.strip()
+    dates = pd.to_datetime(out["event_date"])
+
+    for adj in adjustments:
+        label = adj.get("label") or "Adjustment"
+        start = pd.to_datetime(adj.get("start_date"), errors="coerce")
+        if pd.isna(start):
+            msgs.append(f"Scenario adjustment '{label}' skipped: no usable start date")
+            continue
+        end = pd.to_datetime(adj.get("end_date"), errors="coerce") if adj.get("end_date") else None
+        window = dates >= start
+        if end is not None and not pd.isna(end):
+            window &= dates <= end
+        span = f"from {start.date()}" + (f" to {end.date()}" if end is not None and not pd.isna(end) else " onward")
+
+        for kind, sign in (("revenue", -1.0), ("expense", 1.0)):
+            for acct, annual in (adj.get(kind) or {}).items():
+                try:
+                    annual_amt = float(annual or 0)
+                except (TypeError, ValueError):
+                    continue
+                if annual_amt == 0:
+                    continue
+                monthly = annual_amt / 12.0
+                mask = window & (acct_str == str(acct).strip())
+                n_rows = int(mask.sum())
+                if n_rows == 0:
+                    msgs.append(
+                        f"Scenario adjustment '{label}': account {acct} has no "
+                        f"forecast rows {span}; ${annual_amt:,.0f}/yr of {kind} "
+                        f"not applied"
+                    )
+                    continue
+                out.loc[mask, "mAmount_norm"] = out.loc[mask, "mAmount_norm"] + sign * monthly
+                verb = "removed" if annual_amt > 0 else "added"
+                msgs.append(
+                    f"Scenario adjustment '{label}': {verb} "
+                    f"${abs(annual_amt):,.0f}/yr of {kind} on account {acct} "
+                    f"{span} ({n_rows} months)"
+                )
+    return out
+
+
 def build_prospect_analysis(
     deal: dict,
     properties: list,
@@ -33,6 +91,7 @@ def build_prospect_analysis(
     cashflows: Optional[list] = None,
     argus_forecast_df: Optional[pd.DataFrame] = None,
     waterfall_df: Optional[pd.DataFrame] = None,
+    scenario: Optional[dict] = None,
 ) -> dict:
     """Build synthetic DataFrames and run compute_deal_analysis().
 
@@ -47,6 +106,17 @@ def build_prospect_analysis(
         Full result dict from compute_deal_analysis(), or dict with 'error' key.
     """
     vcode = deal.get('vcode') or f"N{deal['id']:07d}"
+
+    # Scenario: overlay its assumption overrides before anything reads them.
+    scenario_msgs = []
+    if scenario:
+        overrides = scenario.get('assumption_overrides') or {}
+        if overrides:
+            assumptions = {**(assumptions or {}), **overrides}
+            scenario_msgs.append(
+                "Scenario '" + str(scenario.get('name')) + "': assumption "
+                "overrides applied: " + ", ".join(sorted(overrides.keys()))
+            )
     deal_name = deal.get('deal_name', 'Prospect')
 
     # Resolve key assumptions with defaults
@@ -195,6 +265,9 @@ def build_prospect_analysis(
         fc = _build_forecast(vcode, start_year, hold_years, noi_year1,
                              noi_growth_rate, capex_reserve_psf, properties,
                              cashflows, pro_yr_base, assumptions)
+
+    if scenario and (scenario.get('adjustments') or []):
+        fc = apply_scenario_adjustments(fc, scenario['adjustments'], scenario_msgs)
     coa = _build_coa()
 
     # Build synthetic MRI_Val with exit cap rate so compute.py uses
@@ -239,6 +312,12 @@ def build_prospect_analysis(
     sale_dbg = result.get('sale_dbg') or {}
     terminal_noi = sale_dbg.get('NOI_12m_After_Sale', 0)
     exit_value = sale_dbg.get('Implied_Value', 0)
+
+    if scenario:
+        existing = result.get('debug_msgs') or []
+        header = ["Scenario: " + str(scenario.get('name') or scenario.get('id'))]
+        result['debug_msgs'] = header + scenario_msgs + existing
+        result['scenario'] = {'id': scenario.get('id'), 'name': scenario.get('name')}
 
     # Surface investor-identity warnings in the Diagnostics panel.  These
     # describe misattributed capital, so they lead the list.

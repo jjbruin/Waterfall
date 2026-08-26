@@ -15,6 +15,7 @@
 - [vpn_tunnel_handoff.md](vpn_tunnel_handoff.md) — VPN tunnel to MRI: P1 DH21 negotiation issue, call scheduled Jun 23
 - [new_business_pipeline.md](new_business_pipeline.md) — New Business pipeline: prospect deals, properties, entities, lease review integration
 - [portfolio_snapshot_perf.md](portfolio_snapshot_perf.md) — Portfolio Snapshot performance: 3 optimizations pending Charlene's confirmation
+- [scenario_analysis.md](scenario_analysis.md) — NB scenario analysis: saved scenarios (OP model / Base Case / lease-risk downsides) with dropdown on Prospect Deal Analysis
 
 ## Project Overview
 - Flask + Vue application for real estate investment waterfall calculations
