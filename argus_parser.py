@@ -77,6 +77,7 @@ ARGUS_COA_MAP: List[Tuple[str, int, str]] = [
     ("r&m", 5060, "expense"),
     ("utilities", 5060, "expense"),
     ("non-recoverable", 5020, "expense"),
+    ("non recoverable", 5020, "expense"),
     ("general & admin", 5020, "expense"),
     ("g&a", 5020, "expense"),
     ("administrative", 5020, "expense"),
@@ -87,6 +88,7 @@ ARGUS_COA_MAP: List[Tuple[str, int, str]] = [
     ("tenant improvement", 7050, "capex"),
     ("leasing commission", 7050, "capex"),
     ("capital reserve", 7050, "capex"),
+    ("reserves", 7050, "capex"),
     ("capital expenditure", 7050, "capex"),
     ("capex", 7050, "capex"),
     ("roof", 7050, "capex"),
@@ -95,18 +97,70 @@ ARGUS_COA_MAP: List[Tuple[str, int, str]] = [
 ]
 
 
-def map_to_coa(line_item: str) -> Tuple[Optional[int], Optional[str]]:
+# Section headers in an Argus cash flow, normalised. The same label can mean
+# different things under different headers -- RET under "Expense Recoveries"
+# is recovery income (4091), under "Operating Expenses" it is the tax expense
+# (5090) -- so the section decides before the keyword map runs.
+_SECTION_HEADERS = {
+    "rental revenue": "rental_revenue",
+    "other tenant revenue": "recoveries",
+    "expense recoveries": "recoveries",
+    "other revenue": "other_revenue",
+    "vacancy & credit loss": "vacancy",
+    "operating expenses": "expenses",
+    "leasing costs": "capex",
+    "capital expenditures": "capex",
+}
+
+# Abbreviations Argus uses for recoverable expense lines. Ambiguous without a
+# section, so they are only mapped when one is known.
+_SECTION_ABBREVS = {
+    "recoveries": {"ret": (4091, "revenue"), "ins": (4092, "revenue"),
+                   "cam": (4090, "revenue")},
+    "expenses": {"ret": (5090, "expense"), "ins": (5110, "expense"),
+                 "cam": (5060, "expense")},
+}
+
+
+def detect_section(label: str) -> Optional[str]:
+    """Return the section key when the label is an Argus section header."""
+    return _SECTION_HEADERS.get(label.strip().lower())
+
+
+def map_to_coa(line_item: str,
+               section: Optional[str] = None) -> Tuple[Optional[int], Optional[str]]:
     """Map an Argus line item name to (COA account, category).
 
-    Uses keyword matching against ARGUS_COA_MAP.
+    The section the item sits under is consulted first, because Argus repeats
+    labels across sections with different meanings. Falls back to keyword
+    matching against ARGUS_COA_MAP, then to the section's catch-all.
     Returns (None, None) if no match found.
     """
     if not line_item:
         return None, None
     item_lower = line_item.strip().lower()
+
+    # Section-scoped abbreviations (RET / INS / CAM)
+    if section in _SECTION_ABBREVS and item_lower in _SECTION_ABBREVS[section]:
+        return _SECTION_ABBREVS[section][item_lower]
+
     for pattern, account, category in ARGUS_COA_MAP:
         if re.search(pattern, item_lower):
+            # A bare expense keyword inside the recoveries section is recovery
+            # income, not an expense -- fall through to the section catch-all.
+            if section == "recoveries" and category == "expense":
+                break
             return account, category
+
+    # Section catch-alls for items no keyword knows
+    if section == "recoveries":
+        return 4090, "revenue"
+    if section == "other_revenue":
+        return 4075, "revenue"
+    if section == "expenses":
+        return 5020, "expense"
+    if section == "capex":
+        return 7050, "capex"
     return None, None
 
 
@@ -148,6 +202,7 @@ def parse_monthly_cashflow(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     line_items = []
     occupancy = None
     unmapped = []
+    current_section = None
 
     for idx in range(len(df)):
         if idx <= header_row_idx:
@@ -158,8 +213,19 @@ def parse_monthly_cashflow(file_bytes: bytes, filename: str) -> Dict[str, Any]:
         if not label or label.lower() in ("", "nan", "none"):
             continue
 
+        # Section headers set context for the rows beneath them
+        section_key = detect_section(label)
+        if section_key is not None:
+            current_section = section_key
+            continue
+
         # Skip summary/total rows
         if _is_summary_row(label):
+            continue
+
+        # Area rows are square footage, not cash -- mapping one into the
+        # forecast would corrupt it
+        if _is_area_row(label):
             continue
 
         # Extract amounts for each period
@@ -176,8 +242,8 @@ def parse_monthly_cashflow(file_bytes: bytes, filename: str) -> Dict[str, Any]:
             occupancy = amounts
             continue
 
-        # Map to COA
-        coa_account, category = map_to_coa(label)
+        # Map to COA, in the context of the section this row sits under
+        coa_account, category = map_to_coa(label, current_section)
         mapped = coa_account is not None
         if not mapped:
             unmapped.append(label)
@@ -189,6 +255,23 @@ def parse_monthly_cashflow(file_bytes: bytes, filename: str) -> Dict[str, Any]:
             "amounts": amounts,
             "mapped": mapped,
         })
+
+    # Argus prints Scheduled Base Rent as the subtotal of Potential Base Rent
+    # and Absorption & Turnover Vacancy. When all three are present and the
+    # arithmetic confirms it, keep the granular pair and drop the subtotal --
+    # otherwise base rent is double-counted and NOI runs ~2x.
+    def _find(namefrag):
+        return [li for li in line_items if namefrag in li["name"].strip().lower()]
+
+    scheduled = _find("scheduled base rent")
+    potential = _find("potential base rent")
+    absorption = _find("absorption")
+    if scheduled and potential:
+        sched_tot = sum(sum(li["amounts"]) for li in scheduled)
+        pot_tot = sum(sum(li["amounts"]) for li in potential)
+        abs_tot = sum(sum(li["amounts"]) for li in absorption)
+        if abs(sched_tot - (pot_tot + abs_tot)) <= max(1.0, abs(sched_tot) * 1e-4):
+            line_items = [li for li in line_items if li not in scheduled]
 
     mapped_count = sum(1 for li in line_items if li["mapped"])
 
@@ -247,6 +330,12 @@ def parse_rent_roll_summary(file_bytes: bytes, filename: str) -> Dict[str, Any]:
 
     # Strategy: look for columns that match tenant fields
     col_map = _detect_rent_roll_columns(cols)
+
+    # The native Argus "Lease Summary Report" is not columnar -- each tenant
+    # is a numbered multi-row block. If no tenant column was detected, parse
+    # the blocks instead.
+    if not col_map.get("tenant_name"):
+        return _parse_rent_roll_blocks(df)
 
     if col_map.get("tenant_name"):
         for idx, row in df.iterrows():
@@ -320,6 +409,12 @@ def parse_revenue_assumptions(file_bytes: bytes, filename: str) -> Dict[str, Any
 
     col_map = _detect_market_profile_columns(cols)
     profiles = []
+
+    # The native Argus "Assumptions Report" is block-structured: a "Market
+    # Leasing Profiles" banner, then one attribute block per profile. If no
+    # profile column was detected, parse the blocks.
+    if not col_map.get("profile_name"):
+        return _parse_assumption_profile_blocks(df)
 
     if col_map.get("profile_name"):
         for idx, row in df.iterrows():
@@ -428,6 +523,236 @@ def _fc_row(vcode: str, period_date, account: int, amount: float, pro_yr_base: i
 # INTERNAL HELPERS
 # ============================================================
 
+_BLOCK_START = re.compile(r"^\s*(\d+)\.\s+(.+)$")
+_DATE_RANGE = re.compile(r"^\s*(\d{1,2}/\d{1,2}/\d{4})\s*-\s*(\d{1,2}/\d{1,2}/\d{4})\s*$")
+_TERM_RE = re.compile(r"(?:(\d+)\s*Years?)?\s*(?:(\d+)\s*Months?)?", re.IGNORECASE)
+_STEP_DATE = re.compile(r"^[A-Z][a-z]{2}-\d{4}$")
+
+
+def _cell(row, i):
+    """String value of a cell, '' when empty."""
+    if i >= len(row):
+        return ""
+    v = row.iloc[i]
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return ""
+    return str(v).strip()
+
+
+def _parse_rent_roll_blocks(df: pd.DataFrame) -> Dict[str, Any]:
+    """Parse the native Argus Lease Summary Report (multi-row tenant blocks).
+
+    Block shape, anchored on column A:
+        1. Tenant Name        | initial SF | Base/Option | rate $/SF-yr
+        Suite: XXX            | bldg share | Contract    | amount $/yr
+        M/D/YYYY - M/D/YYYY   |            | mkt leasing | rate $/mo
+        N Years M Months      |            | lease type  | amount $/mo
+        Tenure                |            |             | rental value/yr
+    Rent steps continue in columns E/F (change date, new $/SF-yr) on any row
+    of the block. "Option" blocks are renewal options for a tenant already
+    listed and are not tenants themselves.
+    """
+    tenants: List[Dict[str, Any]] = []
+    rent_steps: List[Dict[str, Any]] = []
+    option_blocks = 0
+
+    # Collect block row-index ranges
+    blocks = []
+    current = None
+    for idx in range(len(df)):
+        a = _cell(df.iloc[idx], 0)
+        if _BLOCK_START.match(a):
+            if current:
+                blocks.append(current)
+            current = [idx]
+        elif current is not None:
+            if a == "" and all(_cell(df.iloc[idx], c) == "" for c in range(1, 8)):
+                blocks.append(current)
+                current = None
+            else:
+                current.append(idx)
+    if current:
+        blocks.append(current)
+
+    for rows_idx in blocks:
+        rows = [df.iloc[i] for i in rows_idx]
+        m = _BLOCK_START.match(_cell(rows[0], 0))
+        if not m:
+            continue
+        name = m.group(2).strip()
+        status = _cell(rows[0], 2)
+
+        # rent steps live in cols E/F on every row of the block
+        steps_here = []
+        for r in rows:
+            d, v = _cell(r, 4), _to_float(_cell(r, 5))
+            if _STEP_DATE.match(d) and v:
+                steps_here.append({"effective_date": d, "rent_psf": v})
+
+        if status.lower() != "base":
+            option_blocks += 1
+            continue
+
+        sf = _to_float(_cell(rows[0], 1))
+        rate_psf = _to_float(_cell(rows[0], 3))
+        suite = ""
+        annual = 0.0
+        lease_start = lease_end = None
+        recovery = ""
+        lease_type = ""
+        term_months = 0
+
+        if len(rows) > 1:
+            a2 = _cell(rows[1], 0)
+            if a2.lower().startswith("suite"):
+                suite = a2.split(":", 1)[-1].strip()
+            annual = _to_float(_cell(rows[1], 3))
+        if len(rows) > 2:
+            dm = _DATE_RANGE.match(_cell(rows[2], 0))
+            if dm:
+                lease_start, lease_end = dm.group(1), dm.group(2)
+            ml = _cell(rows[2], 2)
+            if ml:
+                # "$18.50 NNN" or "$10.00 NNN At Home" -- pick the recovery
+                # token, not whatever happens to be last
+                for tok in ml.split():
+                    if tok.upper() in ("NNN", "NN", "N", "GROSS", "MG", "FS",
+                                       "NET", "BASE-STOP", "BASESTOP"):
+                        recovery = tok.upper()
+                        break
+        if len(rows) > 3:
+            tm = _TERM_RE.match(_cell(rows[3], 0))
+            if tm and (tm.group(1) or tm.group(2)):
+                term_months = int(tm.group(1) or 0) * 12 + int(tm.group(2) or 0)
+            lease_type = _cell(rows[3], 2)
+
+        is_vacant = "vacant" in name.lower()
+        t_index = len(tenants)
+        tenants.append({
+            "tenant_name": name,
+            "suite": suite,
+            "square_feet": sf,
+            "lease_type": lease_type or "Retail",
+            "lease_start": lease_start,
+            "lease_end": lease_end,
+            "term_months": term_months,
+            "base_rent_annual": annual,
+            "base_rent_psf": rate_psf,
+            "recovery_type": recovery,
+            "is_vacant": is_vacant,
+            # Fields the import expects that this report does not carry --
+            # they live in the recovery detail and assumptions exports
+            "ret_recovery_psf": 0.0, "ins_recovery_psf": 0.0,
+            "cam_recovery_psf": 0.0, "ti_psf": 0.0, "lc_psf": 0.0,
+            "renewal_probability": 0.0, "cpi_pct": 0.0,
+            "free_rent_months": 0, "pct_rent_breakpoint": 0.0,
+            "pct_rent_rate": 0.0, "security_deposit": 0.0,
+        })
+        for s in steps_here:
+            rent_steps.append({
+                "tenant_index": t_index,
+                "effective_date": s["effective_date"],
+                "annual_rent": s["rent_psf"] * sf if sf else 0.0,
+                "rent_psf": s["rent_psf"],
+                "step_type": "fixed",
+                "step_pct": 0.0,
+            })
+
+    total_sf = sum(t["square_feet"] for t in tenants)
+    vacant_sf = sum(t["square_feet"] for t in tenants if t["is_vacant"])
+    return {
+        "tenants": tenants,
+        "rent_steps": rent_steps,
+        "summary": {
+            "total_sf": total_sf,
+            "total_rent": sum(t["base_rent_annual"] for t in tenants),
+            "tenant_count": len(tenants),
+            "occupied_sf": total_sf - vacant_sf,
+            "vacant_sf": vacant_sf,
+            "option_blocks_skipped": option_blocks,
+        },
+    }
+
+
+# Attribute labels in an Assumptions Report profile block -> profile fields.
+# Values are read from the first year column; label matching is by prefix
+# because Argus truncates and suffixes these freely.
+_PROFILE_ATTRS = [
+    ("term length", "term_months", "years_to_months"),
+    ("renewal probability", "renewal_probability", "float"),
+    ("months vacant (blend", "vacancy_months_blended", "float"),
+    ("months vacant", "vacancy_months", "int"),
+    ("market base rent (blend", "base_rent_psf", "float"),
+    ("tenant improvements (new", "ti_new_psf", "float"),
+    ("tenant improvements (renew", "ti_renewal_psf", "float"),
+    ("tenant improvements", "ti_new_psf", "float"),
+    ("leasing commissions (new", "lc_new_pct", "float"),
+    ("leasing commissions (renew", "lc_renewal_pct", "float"),
+    ("leasing commissions", "lc_new_pct", "float"),
+    ("recovery type", "recovery_type", "str"),
+]
+
+
+def _parse_assumption_profile_blocks(df: pd.DataFrame) -> Dict[str, Any]:
+    """Parse the native Argus Assumptions Report (per-profile blocks).
+
+    Profiles follow a "Market Leasing Profile(s)" banner. Each block opens
+    with the profile name (e.g. "$12.00 NNN") on a row whose year columns
+    hold the year-ending dates, then one attribute per row. Year 1 values
+    are taken -- the report repeats most of them across years anyway.
+    """
+    profiles: List[Dict[str, Any]] = []
+    in_profiles = False
+    current: Optional[Dict[str, Any]] = None
+
+    for idx in range(len(df)):
+        row = df.iloc[idx]
+        a = _cell(row, 0)
+        if not in_profiles:
+            if a.lower().startswith("market leasing profile"):
+                in_profiles = True
+            continue
+
+        b = _cell(row, 1)
+        # A profile header row: named in col A while the year columns carry
+        # dates ("Sep-2027") rather than values
+        if a and _STEP_DATE.match(b):
+            if current:
+                profiles.append(current)
+            current = {
+                "profile_name": a,
+                "base_rent_psf": 0.0, "term_months": 0,
+                "renewal_probability": 0.0, "vacancy_months": 0,
+                "ti_new_psf": 0.0, "ti_renewal_psf": 0.0,
+                "lc_new_pct": 0.0, "lc_renewal_pct": 0.0,
+                "fixed_step_pct": 0.0, "cpi_pct": 0.0,
+                "recovery_type": "",
+            }
+            continue
+        if current is None or not a:
+            continue
+
+        low = a.lower()
+        for prefix, field, kind in _PROFILE_ATTRS:
+            if low.startswith(prefix):
+                if kind == "str":
+                    current[field] = b
+                elif kind == "years_to_months":
+                    current[field] = int(round(_to_float(b) * 12))
+                elif kind == "int":
+                    current[field] = int(round(_to_float(b)))
+                else:
+                    current[field] = _to_float(b)
+                break
+
+    if current:
+        profiles.append(current)
+    # drop the helper-only field
+    for p in profiles:
+        p.pop("vacancy_months_blended", None)
+    return {"profiles": profiles}
+
+
 def _read_excel_flexible(file_bytes: bytes, filename: str) -> Optional[pd.DataFrame]:
     """Read Excel file with flexible format detection."""
     try:
@@ -516,16 +841,31 @@ def _month_end(year: int, month: int) -> date:
 
 
 def _is_summary_row(label: str) -> bool:
-    """Check if a row label indicates a summary/total row."""
+    """Check if a row label indicates a summary/total row.
+
+    Any label starting with "total " is a subtotal of rows already captured;
+    letting it through invites an analyst to map it and double-count.
+    """
     lower = label.lower().strip()
+    if lower.startswith("total ") or lower == "total":
+        return True
     return lower in (
-        "total", "total revenue", "total expenses", "total expense",
         "net operating income", "noi", "effective gross income",
         "effective gross revenue", "gross revenue",
-        "total operating expenses", "cash flow before debt service",
+        "potential gross revenue",
+        "cash flow before debt service",
         "cash flow after debt service", "net cash flow",
-        "debt service", "total debt service",
-        "total capital costs", "total leasing costs",
+        "cash flow available for distribution",
+        "debt service",
+    )
+
+
+def _is_area_row(label: str) -> bool:
+    """Square-footage statistics rows -- not cash flow."""
+    lower = label.lower().strip()
+    return lower in (
+        "occupied area", "vacant area", "leased area", "building area",
+        "rentable area", "gross leasable area",
     )
 
 
