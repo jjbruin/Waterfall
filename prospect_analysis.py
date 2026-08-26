@@ -279,8 +279,10 @@ def build_prospect_analysis(
 
     start_year = close_date.year
     model_start = date(start_year, 1, 31)
-    # Sale date = end of month, hold_years after close (e.g., 9/24/2026 + 5yr → 9/30/2031)
-    sale_date = month_end(add_months(close_date, hold_years * 12))
+    # Sale date = end of the final hold month: the month-end preceding the
+    # hold anniversary, so the deal operates exactly hold_years * 12 months
+    # (9/24/2026 + 5yr -> 9/30/2031; 10/1/2026 + 5yr -> 9/30/2031, not 10/31).
+    sale_date = month_end(add_months(close_date, hold_years * 12) - timedelta(days=1))
     pro_yr_base = start_year - 1
 
     # Contribution date must be within the accounting seed window

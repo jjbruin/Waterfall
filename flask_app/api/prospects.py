@@ -580,7 +580,7 @@ def _continue_analyze(result, deal_data, assumptions):
                 period_end = closing_dt + relativedelta(years=n, months=-1)
                 columns_meta.append({
                     'year': n,
-                    'label': str(n),
+                    'label': 'Terminal NOI' if n == num_years else str(n),
                     'sublabel': period_end.strftime('%b-%Y'),
                 })
             all_year_keys = [0] + anniv_years  # 0 = In-Place NOI placeholder
@@ -597,8 +597,18 @@ def _continue_analyze(result, deal_data, assumptions):
             fc['_dt'] = pd.to_datetime(fc['event_date'])
             fc['_ayr'] = fc['_dt'].apply(_anniv_year)
             fc['_acct'] = pd.to_numeric(fc['vAccount'], errors='coerce').astype('Int64')
-            # Include data through num_years (hold + 1 extra for terminal NOI)
-            fc = fc[fc['_ayr'].between(1, num_years)]
+            # Hold years come from the display forecast (zeroed after sale);
+            # the terminal year must come from the un-truncated forecast, so
+            # the extra column shows the forward 12-month NOI the exit value
+            # is capped on rather than a partial post-sale stub.
+            fc = fc[fc['_ayr'].between(1, hold_years)]
+            fc_mod = result.get('fc_deal_modeled')
+            if fc_mod is not None and not fc_mod.empty:
+                fm = fc_mod.copy()
+                fm['_dt'] = pd.to_datetime(fm['event_date'])
+                fm['_ayr'] = fm['_dt'].apply(_anniv_year)
+                fm['_acct'] = pd.to_numeric(fm['vAccount'], errors='coerce').astype('Int64')
+                fc = pd.concat([fc, fm[fm['_ayr'] == num_years]], ignore_index=True)
 
             def _sum_accts(acct_set):
                 """Sum mAmount_norm by anniversary year for given accounts."""
