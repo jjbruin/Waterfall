@@ -4,6 +4,8 @@ Replaces get_cached_deal_result() which uses st.session_state + st.toast.
 Also contains ROE/MOIC audit builders extracted from app.py.
 """
 
+import hashlib
+import logging
 import copy
 from io import BytesIO
 from typing import Optional
@@ -11,11 +13,33 @@ from typing import Optional
 import pandas as pd
 import numpy as np
 
+logger = logging.getLogger(__name__)
+
 from compute import compute_deal_analysis, build_partner_results
 from loaders import load_waterfalls, load_mri_loans
 
 # Module-level deal result cache (replaces st.session_state['_deal_results'])
 _deal_cache: dict = {}
+
+
+def _parcel_fingerprint(parcel_sales) -> str:
+    """Stable short signature of the parcel sale assumptions.
+
+    Only the fields that change the projection are included, so renaming a
+    parcel or editing a note does not force a recompute.
+    """
+    if not parcel_sales:
+        return "nopar"
+    parts = []
+    for s in sorted(parcel_sales, key=lambda x: (str(x.get('sale_date')), x.get('id') or 0)):
+        econ = s.get('economics') or {}
+        parts.append("|".join(str(x) for x in (
+            s.get('id'), s.get('sale_date'),
+            econ.get('net_proceeds'), econ.get('debt_paydown'),
+            econ.get('reserve_hold'), econ.get('remainder'),
+            s.get('distribution_mode'),
+        )))
+    return hashlib.md5("~".join(parts).encode()).hexdigest()[:10]
 
 
 def get_cached_deal_result(
@@ -31,6 +55,7 @@ def get_cached_deal_result(
     selling_cost_type=None,
     sale_date_override=None,
     projection_id=None,
+    parcel_sales=None,
 ) -> dict:
     """Compute or retrieve cached deal result.
 
@@ -47,13 +72,30 @@ def get_cached_deal_result(
         selling_cost_type: 'pct' or 'fixed' for selling cost interpretation.
         sale_date_override: Override sale date string (None = use investment_map).
         projection_id: Argus projection ID to use instead of default forecast.
+        parcel_sales: Interim parcel sales. None loads whatever is saved for
+            the deal, so every consumer sees the same assumptions; pass a list
+            (including an empty one) to override.
 
     Returns:
         Full result dict from compute_deal_analysis().
     """
     at_str = str(actuals_through) if actuals_through else "none"
     proj_str = str(projection_id) if projection_id else "default"
-    cache_key = f"{vcode}|{start_year}|{horizon_years}|{pro_yr_base}|{at_str}|{proj_str}"
+
+    # Parcel sales change the projection, so they belong in the cache key.
+    # Loading them here rather than at each call site keeps Deal Analysis,
+    # the reports and the assistant on the same assumptions.
+    if parcel_sales is None:
+        try:
+            from flask_app.db import get_engine
+            from flask_app.services import parcel_sale_service as _pss
+            parcel_sales = _pss.list_parcel_sales(get_engine(), vcode)
+        except Exception as e:
+            logger.debug("Parcel sales unavailable for %s: %s", vcode, e)
+            parcel_sales = []
+    parcel_str = _parcel_fingerprint(parcel_sales)
+
+    cache_key = f"{vcode}|{start_year}|{horizon_years}|{pro_yr_base}|{at_str}|{proj_str}|{parcel_str}"
     # Sale overrides change the result but don't affect the cache key —
     # force=True overwrites the entry, and GET endpoints reuse it.
     has_sale_overrides = contract_sale_price is not None or selling_cost_override is not None or sale_date_override is not None
@@ -127,6 +169,7 @@ def get_cached_deal_result(
         contract_sale_price=contract_sale_price,
         selling_cost_override=selling_cost_override,
         selling_cost_type=selling_cost_type,
+        parcel_sales=parcel_sales,
     )
 
     _deal_cache[cache_key] = result

@@ -448,3 +448,49 @@ def get_deal_loans(mri_loans_raw, vcode: str) -> List[Dict[str, Any]]:
     # Largest loan first — the likely paydown target
     out.sort(key=lambda x: (x['orig_amount'] or 0), reverse=True)
     return out
+
+def get_deal_tenants(tenants_raw, vcode: str, inv=None) -> List[Dict[str, Any]]:
+    """Tenants on the deal, for choosing what income leaves with a parcel.
+
+    Rent comes from the roster, which is a point-in-time rent roll -- it will
+    not tie exactly to a forecast carrying growth and rollover. The picker
+    therefore only seeds the figure; the analyst can edit it afterwards, and
+    the account amount is what the projection actually uses.
+
+    Identical rows are collapsed: the roster can repeat a tenant, and summing
+    a duplicate would remove rent the property does not have.
+    """
+    try:
+        from flask_app.services.financials_service import get_tenant_roster
+    except Exception as e:  # pragma: no cover - roster is optional
+        logger.debug("Tenant roster unavailable: %s", e)
+        return []
+    if tenants_raw is None or getattr(tenants_raw, 'empty', True):
+        return []
+    try:
+        roster = get_tenant_roster(tenants_raw, vcode, inv) or {}
+    except Exception as e:
+        logger.debug("Tenant roster failed for %s: %s", vcode, e)
+        return []
+
+    seen, out = set(), []
+    for t in (roster.get('tenants') or []):
+        name = (t.get('tenant_name') or '').strip()
+        if not name:
+            continue
+        key = (name, t.get('sf_leased'), t.get('lease_start'),
+               t.get('lease_end'), t.get('annual_rent'))
+        if key in seen:
+            continue
+        seen.add(key)
+        end = t.get('lease_end')
+        out.append({
+            'tenant_name': name,
+            'sf_leased': t.get('sf_leased'),
+            'annual_rent': t.get('annual_rent'),
+            'rent_per_sf': t.get('rpsf'),
+            'lease_end': str(end)[:10] if end else None,
+            'is_vacant': bool(t.get('is_vacant')),
+        })
+    out.sort(key=lambda x: -(x['annual_rent'] or 0))
+    return out

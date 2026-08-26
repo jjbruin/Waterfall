@@ -655,6 +655,72 @@ def _extract_isbs_actuals_for_forecast(
     return df
 
 
+def apply_parcel_income_loss(fc, losses, debug_msgs=None):
+    """Remove the revenue and expenses that leave with a sold parcel.
+
+    `losses` is a list of {'date', 'label', 'revenue': {acct: annual},
+    'expense': {acct: annual}}. Amounts are annual and are spread evenly
+    across the months from the parcel sale date onward.
+
+    Only `mAmount_norm` is adjusted, which is the column every downstream
+    NOI, FAD, DSCR and terminal-value calculation reads. Revenue is positive
+    there and expense negative, so removing revenue subtracts and removing
+    expense adds -- both shrink the magnitude of the line.
+
+    Because the exit value is forward NOI divided by the cap rate, removing
+    revenue also lowers the final sale price. That is correct -- part of the
+    income was sold -- and is reported so it is not mistaken for an error.
+    """
+    if fc is None or fc.empty or not losses:
+        return fc
+    msgs = debug_msgs if debug_msgs is not None else []
+    out = fc.copy()
+    acct_str = out["vAccount"].astype(str).str.strip()
+
+    for loss in losses:
+        p_date = loss.get("date")
+        label = loss.get("label") or "Parcel sale"
+        if p_date is None:
+            continue
+        from_mask = out["event_date"] >= p_date
+
+        for kind, sign in (("revenue", -1.0), ("expense", 1.0)):
+            for acct, annual in (loss.get(kind) or {}).items():
+                try:
+                    annual_amt = float(annual or 0)
+                except (TypeError, ValueError):
+                    continue
+                if annual_amt <= 0:
+                    continue
+                monthly = annual_amt / 12.0
+                mask = from_mask & (acct_str == str(acct).strip())
+                n_rows = int(mask.sum())
+                if n_rows == 0:
+                    msgs.append(
+                        f"Parcel sale '{label}': account {acct} has no forecast "
+                        f"rows on or after {p_date}, so ${annual_amt:,.0f} of "
+                        f"{kind} could not be removed"
+                    )
+                    continue
+                existing = float(out.loc[mask, "mAmount_norm"].abs().sum())
+                out.loc[mask, "mAmount_norm"] = (
+                    out.loc[mask, "mAmount_norm"] + sign * monthly
+                )
+                removed = monthly * n_rows
+                msgs.append(
+                    f"Parcel sale '{label}': removed ${removed:,.0f} of {kind} "
+                    f"from account {acct} across {n_rows} months from {p_date} "
+                    f"(${annual_amt:,.0f}/yr)"
+                )
+                if removed > existing:
+                    msgs.append(
+                        f"  WARNING: that is more {kind} than account {acct} "
+                        f"carries after {p_date} (${existing:,.0f}); the line "
+                        f"has been driven through zero"
+                    )
+    return out
+
+
 def compute_deal_analysis(
     deal_vcode, deal_investment_id, sale_date_raw,
     inv, wf, acct, fc, coa,
@@ -666,6 +732,7 @@ def compute_deal_analysis(
     contract_sale_price=None,
     selling_cost_override=None,
     selling_cost_type=None,
+    parcel_sales=None,
 ):
     """
     Compute all deal-level analysis results.
@@ -903,6 +970,131 @@ def compute_deal_analysis(
             except Exception as e:
                 debug_msgs.append(f"Prospective loan processing failed: {e}")
 
+    # --- Parcel sales: interim sales of part of the property ---
+    # Applies the reserve hold, the debt paydown, and -- for sales set to
+    # the capital waterfall -- the remainder. Lost revenue is not yet
+    # removed from the forecast (phase 04), and the two manual distribution
+    # modes are not yet applied (phase 05); both are called out in
+    # diagnostics so the gap is visible rather than implied.
+    parcel_events = []
+    parcel_reserve_deposits = []
+    parcel_curtailments = {}   # loan_id -> [{'date', 'amount', 'label'}]
+    parcel_income_losses = []  # revenue/expense that leaves with each parcel
+    # The same boundary the waterfall uses below: on or before this date the
+    # accounting feed is authoritative, so a parcel sale there is already
+    # reflected in actual balances and must not be modelled again.
+    from datetime import date as _pdate
+    _parcel_cutoff = (pd.Timestamp(actuals_through) if actuals_through is not None
+                      else pd.Timestamp(_pdate(int(start_year) - 1, 12, 31)))
+    if parcel_sales:
+        for ps in parcel_sales:
+            try:
+                p_date = month_end(as_date(ps.get('sale_date')))
+            except Exception:
+                debug_msgs.append(
+                    f"Parcel sale '{ps.get('label') or ps.get('id')}' skipped: "
+                    f"unreadable sale date {ps.get('sale_date')!r}"
+                )
+                continue
+            if p_date is None:
+                continue
+            if sale_me is not None and p_date > sale_me:
+                debug_msgs.append(
+                    f"Parcel sale '{ps.get('label')}' on {p_date} falls after the "
+                    f"deal sale date {sale_me} and was ignored"
+                )
+                continue
+
+            econ = ps.get('economics') or {}
+            price = float(econ.get('gross_price') or 0)
+            net = float(econ.get('net_proceeds') or 0)
+            paydown = float(econ.get('debt_paydown') or 0)
+            reserve = float(econ.get('reserve_hold') or 0)
+            remainder = float(econ.get('remainder') or 0)
+            mode = (ps.get('distribution_mode') or 'waterfall').lower()
+
+            # A paydown at or before the actuals boundary is already in the
+            # reported debt balance. Modelling it again would also corrupt
+            # the ISBS anchoring at sale, which scales the modelled balance
+            # by actual/modelled at the last balance-sheet date.
+            paydown_modelled = pd.Timestamp(p_date) > _parcel_cutoff
+            if paydown > 0 and not paydown_modelled:
+                debug_msgs.append(
+                    f"  note: paydown of ${paydown:,.0f} is on or before the "
+                    f"actuals boundary {_parcel_cutoff.date()}, so it is assumed "
+                    f"already reflected in the reported loan balance and was not "
+                    f"applied to the amortisation"
+                )
+            if paydown_modelled:
+                for app in (ps.get('debt_application') or []):
+                    if not isinstance(app, dict):
+                        continue
+                    lid = str(app.get('loan_id') or '').strip()
+                    amt = float(app.get('amount') or 0)
+                    if not lid or amt <= 0:
+                        continue
+                    parcel_curtailments.setdefault(lid, []).append({
+                        'date': p_date, 'amount': amt,
+                        'label': ps.get('label') or 'Parcel sale',
+                    })
+
+            lost_rev = (ps.get('lost_revenue') or {}).get('accounts') or {}
+            lost_exp = (ps.get('lost_expense') or {}).get('accounts') or {}
+            if lost_rev or lost_exp:
+                parcel_income_losses.append({
+                    'date': p_date, 'label': ps.get('label') or 'Parcel sale',
+                    'revenue': lost_rev, 'expense': lost_exp,
+                })
+
+            if reserve > 0:
+                parcel_reserve_deposits.append({
+                    'date': p_date, 'amount': reserve,
+                    'label': ps.get('label') or 'Parcel sale',
+                })
+            parcel_events.append({
+                'label': ps.get('label') or 'Parcel sale', 'date': p_date,
+                'price': price, 'net': net, 'paydown': paydown,
+                'reserve': reserve, 'remainder': remainder, 'mode': mode,
+            })
+            debug_msgs.append(
+                f"Parcel sale '{ps.get('label')}' {p_date}: price ${price:,.0f}, "
+                f"net ${net:,.0f}, paydown ${paydown:,.0f}, reserve ${reserve:,.0f}, "
+                f"remainder ${remainder:,.0f} ({mode})"
+            )
+            if paydown > 0:
+                debug_msgs.append(
+                    f"  note: ${paydown:,.0f} of paydown is deducted from the "
+                    f"remainder but not yet applied to the loan balance, so "
+                    f"debt service and DSCR after {p_date} are unchanged"
+                )
+            if mode != 'waterfall':
+                debug_msgs.append(
+                    f"  note: '{mode}' distribution is not yet applied; "
+                    f"${remainder:,.0f} is excluded from partner returns"
+                )
+
+
+    if parcel_income_losses:
+        # Imported locally: the module-level config import omits REVENUE_ACCTS,
+        # and the only other binding sits inside a conditional branch.
+        from config import REVENUE_ACCTS as _REV, EXPENSE_ACCTS as _EXP
+        _op_accts = _REV | _EXP
+        noi_before = float(
+            fc_deal_full[fc_deal_full["vAccount"].isin(_op_accts)]
+            ["mAmount_norm"].sum()
+        )
+        fc_deal_full = apply_parcel_income_loss(
+            fc_deal_full, parcel_income_losses, debug_msgs)
+        noi_after = float(
+            fc_deal_full[fc_deal_full["vAccount"].isin(_op_accts)]
+            ["mAmount_norm"].sum()
+        )
+        debug_msgs.append(
+            f"Parcel sales: forecast NOI over the horizon ${noi_before:,.0f} -> "
+            f"${noi_after:,.0f} ({noi_after - noi_before:+,.0f}). The exit value "
+            f"is forward NOI / cap rate, so the final sale price falls with it."
+        )
+
     # Generate loan schedules — reuse pre-built schedules for unchanged loans
     if loans:
         # Build lookup of already-amortized schedules from prospective loan sizing
@@ -910,9 +1102,28 @@ def compute_deal_analysis(
         if not original_loan_sched.empty and "LoanID" in original_loan_sched.columns:
             for lid, grp in original_loan_sched.groupby("LoanID"):
                 _prebuilt[lid] = grp
+        # Attach parcel sale paydowns to the loans they were allocated to.
+        # A pre-built schedule predates the paydown, so it cannot be reused
+        # for a loan that now carries one.
+        applied_ids, unmatched = set(), dict(parcel_curtailments)
+        if parcel_curtailments:
+            for ln in loans:
+                cuts = parcel_curtailments.get(str(ln.loan_id))
+                if cuts:
+                    ln.curtailments = (ln.curtailments or []) + cuts
+                    applied_ids.add(str(ln.loan_id))
+                    unmatched.pop(str(ln.loan_id), None)
+            for lid, cuts in unmatched.items():
+                total = sum(c['amount'] for c in cuts)
+                debug_msgs.append(
+                    f"Parcel sale paydown of ${total:,.0f} allocated to loan "
+                    f"{lid}, which is not a modelled loan on this deal — "
+                    f"the paydown was NOT applied to any balance"
+                )
+
         schedules = []
         for ln in loans:
-            if ln.loan_id in _prebuilt:
+            if ln.loan_id in _prebuilt and str(ln.loan_id) not in applied_ids:
                 schedules.append(_prebuilt[ln.loan_id])
             else:
                 s = amortize_monthly_schedule(ln, model_start, model_end_full)
@@ -934,12 +1145,39 @@ def compute_deal_analysis(
         for loan_id, grp in loan_sched.groupby("LoanID"):
             grp_sorted = grp.sort_values("event_date")
             last_row = grp_sorted.iloc[-1]
+            # A loan retired early by a parcel sale paydown is not a balloon:
+            # its balance was settled from sale proceeds already accounted for,
+            # so it must not be deducted again at the final sale.
+            curtailed_off = float(last_row.get("curtailment", 0) or 0) > 0
             if (last_row["ending_balance"] < 1.0  # tolerance for float rounding
                     and last_row["principal"] > 0
+                    and not curtailed_off
                     and len(grp_sorted) > 1
                     and grp_sorted.iloc[-2]["ending_balance"] > 0):
                 balloon_keys.add((loan_id, last_row["event_date"]))
                 balloon_total += last_row["principal"]
+
+    if parcel_curtailments and not loan_sched.empty and "curtailment" in loan_sched.columns:
+        for lid, grp in loan_sched.groupby("LoanID"):
+            cut = float(grp["curtailment"].sum())
+            if cut <= 0:
+                continue
+            when = grp[grp["curtailment"] > 0]["event_date"].tolist()
+            after = grp[grp["event_date"] > max(when)]
+            before = grp[grp["event_date"] < min(when)]
+            if not before.empty and not after.empty:
+                debug_msgs.append(
+                    f"Loan {lid}: ${cut:,.0f} paid down from parcel sale proceeds "
+                    f"({', '.join(str(w) for w in when)}); payment re-amortised "
+                    f"${float(before.iloc[-1]['payment']):,.0f} -> "
+                    f"${float(after.iloc[0]['payment']):,.0f} over the remaining "
+                    f"term, maturity unchanged"
+                )
+            else:
+                debug_msgs.append(
+                    f"Loan {lid}: ${cut:,.0f} paid down from parcel sale proceeds "
+                    f"({', '.join(str(w) for w in when)}); loan retired"
+                )
 
     # --- Replace forecast debt service with modeled ---
     fc_deal_modeled = fc_deal_full.copy()
@@ -1202,7 +1440,8 @@ def compute_deal_analysis(
                 fad_monthly=fad_monthly,
                 capital_calls=capital_calls,
                 beginning_cash=beginning_cash,
-                deal_vcode=deal_vcode
+                deal_vcode=deal_vcode,
+                reserve_deposits=parcel_reserve_deposits or None
             )
             cash_summary = summarize_cash_usage(cash_schedule)
     except Exception as e:
@@ -1284,6 +1523,35 @@ def compute_deal_analysis(
                 else:
                     cap_period_cash = pd.concat([cap_period_cash, refi_cash_entry], ignore_index=True).sort_values("event_date")
             debug_msgs.append(f"Refi distributable proceeds ${distributable:,.0f} added to capital waterfall at {refi_date}")
+
+    # Add parcel sale remainders set to run through the capital waterfall
+    for pe in parcel_events:
+        if pe['mode'] != 'waterfall' or pe['remainder'] <= 0:
+            continue
+        p_date = pe['date']
+        if pd.Timestamp(p_date) <= acct_cutoff:
+            debug_msgs.append(
+                f"Parcel sale '{pe['label']}' on {p_date} is at or before the "
+                f"actuals cutoff {acct_cutoff.date()}, so its remainder is "
+                f"assumed already in the accounting history"
+            )
+            continue
+        entry = pd.DataFrame([{"event_date": p_date,
+                               "cash_available": pe['remainder']}])
+        if cap_period_cash.empty:
+            cap_period_cash = entry
+        elif p_date in cap_period_cash["event_date"].values:
+            cap_period_cash.loc[
+                cap_period_cash["event_date"] == p_date, "cash_available"
+            ] += pe['remainder']
+        else:
+            cap_period_cash = pd.concat(
+                [cap_period_cash, entry], ignore_index=True
+            ).sort_values("event_date")
+        debug_msgs.append(
+            f"Parcel sale '{pe['label']}' remainder ${pe['remainder']:,.0f} "
+            f"added to the capital waterfall at {p_date}"
+        )
 
     # Add sale proceeds to cap_period_cash
     if sale_dbg is not None and sale_dbg.get("Net_Sale_Proceeds", 0) > 0:

@@ -630,6 +630,51 @@ const parcelDrafts = ref<Record<number, ParcelSale>>({})
 // does not leak into another's dropdown
 const revAcctPick = ref<Record<number, string>>({})
 const expAcctPick = ref<Record<number, string>>({})
+const parcelTenants = ref<any[]>([])
+const parcelTenantsLoaded = ref(false)
+const tenantPickerOpen = ref<Record<number, boolean>>({})
+
+async function loadParcelTenants() {
+  const vc = deals.currentVcode
+  if (!vc || parcelTenantsLoaded.value) return
+  try {
+    const res = await api.get(`/api/deals/${vc}/parcel-sales/tenants`)
+    parcelTenants.value = res.data.tenants || []
+  } catch {
+    parcelTenants.value = []
+  } finally {
+    parcelTenantsLoaded.value = true
+  }
+}
+
+function tenantChecked(s: ParcelSale, name: string) {
+  return (s.lost_revenue?.tenants || []).includes(name)
+}
+
+// Selecting tenants seeds the account amount from the rent roll. It stays
+// editable afterwards: the roster is a point-in-time rent roll and will not
+// tie exactly to a forecast that carries growth and rollover.
+function toggleTenant(s: ParcelSale, t: any, checked: boolean) {
+  if (!s.lost_revenue) s.lost_revenue = { tenants: [], accounts: {} }
+  if (!s.lost_revenue.tenants) s.lost_revenue.tenants = []
+  if (!s.lost_revenue.accounts) s.lost_revenue.accounts = {}
+  const names = s.lost_revenue.tenants
+  const i = names.indexOf(t.tenant_name)
+  if (checked && i === -1) names.push(t.tenant_name)
+  if (!checked && i !== -1) names.splice(i, 1)
+
+  const total = parcelTenants.value
+    .filter(x => names.includes(x.tenant_name))
+    .reduce((a, x) => a + (Number(x.annual_rent) || 0), 0)
+  s.lost_revenue.accounts['4010'] = Math.round(total)
+}
+
+function selectedTenantRent(s: ParcelSale) {
+  const names = s.lost_revenue?.tenants || []
+  return parcelTenants.value
+    .filter(x => names.includes(x.tenant_name))
+    .reduce((a, x) => a + (Number(x.annual_rent) || 0), 0)
+}
 
 function blankParcelSale(): ParcelSale {
   return {
@@ -771,6 +816,8 @@ watch(() => deals.currentVcode, (vc) => {
   parcelSales.value = []
   parcelLoans.value = []
   parcelDrafts.value = {}
+  parcelTenants.value = []
+  parcelTenantsLoaded.value = false
   if (vc && parcelOpen.value) loadParcelSales()
 })
 
@@ -967,7 +1014,39 @@ watch(parcelOpen, (open) => {
               <div class="parcel-sub">
                 <div class="parcel-sub-head">
                   <span>Revenue &amp; Expenses Lost</span>
-                  <span class="parcel-muted">tenant picker arrives with the forecast phase</span>
+                  <button class="btn-mini"
+                          @click="tenantPickerOpen[s.id!] = !tenantPickerOpen[s.id!]; loadParcelTenants()">
+                    {{ tenantPickerOpen[s.id!] ? 'Hide tenants' : 'Pick tenants' }}
+                  </button>
+                  <span v-if="(s.lost_revenue?.tenants || []).length" class="parcel-muted">
+                    {{ s.lost_revenue.tenants!.length }} selected &middot;
+                    {{ fmtCur(selectedTenantRent(s)) }}/yr
+                  </span>
+                </div>
+
+                <div v-if="tenantPickerOpen[s.id!]" class="tenant-picker">
+                  <p v-if="!parcelTenants.length" class="parcel-muted">
+                    No tenant roster available for this deal &mdash; enter the
+                    amounts directly below.
+                  </p>
+                  <template v-else>
+                    <p class="parcel-muted">
+                      Ticking a tenant seeds Rental Income (4010) from the rent roll.
+                      The rent roll is a point-in-time figure, so check it against
+                      the forecast and edit if needed.
+                    </p>
+                    <div class="tenant-list">
+                      <label v-for="t in parcelTenants" :key="t.tenant_name + t.sf_leased"
+                             class="tenant-row" :class="{ vacant: t.is_vacant }">
+                        <input type="checkbox" :checked="tenantChecked(s, t.tenant_name)"
+                               @change="toggleTenant(s, t, ($event.target as HTMLInputElement).checked)" />
+                        <span class="tenant-name">{{ t.tenant_name }}</span>
+                        <span class="tenant-sf">{{ t.sf_leased ? Math.round(t.sf_leased).toLocaleString() + ' sf' : '—' }}</span>
+                        <span class="tenant-rent">{{ fmtCur(t.annual_rent || 0) }}</span>
+                        <span class="tenant-end">{{ t.lease_end || '—' }}</span>
+                      </label>
+                    </div>
+                  </template>
                 </div>
                 <div class="parcel-lost">
                   <div>
@@ -2538,5 +2617,21 @@ watch(parcelOpen, (open) => {
   font-size: 0.82rem; font-weight: 500;
 }
 .btn-add-parcel:hover { background: #eef4f9; }
+.tenant-picker {
+  border: 1px solid #e2e6ea; border-radius: 3px;
+  padding: 7px 9px; margin-bottom: 8px; background: #fbfcfd;
+}
+.tenant-list { max-height: 230px; overflow-y: auto; margin-top: 5px; }
+.tenant-row {
+  display: grid; grid-template-columns: 18px 1fr 78px 92px 88px;
+  gap: 6px; align-items: center; padding: 2px 3px;
+  font-size: 0.78rem; border-radius: 2px;
+}
+.tenant-row:hover { background: #eef4f9; }
+.tenant-row.vacant { color: #9aa5b1; font-style: italic; }
+.tenant-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tenant-sf, .tenant-rent, .tenant-end {
+  text-align: right; font-variant-numeric: tabular-nums; color: #5a6675;
+}
 </style>
 

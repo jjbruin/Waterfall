@@ -126,6 +126,18 @@ def amortize_monthly_schedule(loan: Loan, schedule_start: date, schedule_end: da
 
     amort_after_io = max(1, amort_m - io_m)
 
+    # Unscheduled principal reductions, collapsed onto their month end.
+    curtail_map = {}
+    for c in (loan.curtailments or []):
+        try:
+            c_date = month_end(c.get('date'))
+            c_amt = float(c.get('amount') or 0)
+        except Exception:
+            continue
+        if c_date is None or c_amt <= 0:
+            continue
+        curtail_map[c_date] = curtail_map.get(c_date, 0.0) + c_amt
+
     bal = float(loan.orig_amount)
     level_payment: Optional[float] = None
 
@@ -141,12 +153,16 @@ def amortize_monthly_schedule(loan: Loan, schedule_start: date, schedule_end: da
             payment = interest
             principal = 0.0
         else:
-            # Amortization period
+            # Amortization period.  periods_remaining counts this payment and
+            # every one left to the end of the amortisation term, so a payment
+            # recalculated after a curtailment still retires the loan on its
+            # original schedule -- the maturity date does not move.
+            periods_remaining = max(1, amort_after_io - (i - io_m - 1))
             if level_payment is None:
                 if r_m == 0:
-                    level_payment = bal / amort_after_io
+                    level_payment = bal / periods_remaining
                 else:
-                    level_payment = bal * r_m / (1 - (1 + r_m) ** (-amort_after_io))
+                    level_payment = bal * r_m / (1 - (1 + r_m) ** (-periods_remaining))
 
             payment = level_payment
             principal = max(0.0, payment - interest)
@@ -157,6 +173,17 @@ def amortize_monthly_schedule(loan: Loan, schedule_start: date, schedule_end: da
 
         bal = max(0.0, bal - principal)
 
+        # Curtailment lands after the scheduled payment for the period. The
+        # next amortising period recomputes the payment on the lower balance
+        # over the remaining term, so debt service falls from here on.
+        curtailed = 0.0
+        if bal > 0:
+            wanted = curtail_map.get(dte, 0.0)
+            if wanted > 0:
+                curtailed = min(wanted, bal)
+                bal = max(0.0, bal - curtailed)
+                level_payment = None
+
         rows.append({
             "vcode": loan.vcode,
             "LoanID": loan.loan_id,
@@ -165,6 +192,7 @@ def amortize_monthly_schedule(loan: Loan, schedule_start: date, schedule_end: da
             "interest": float(interest),
             "principal": float(principal),
             "payment": float(payment),
+            "curtailment": float(curtailed),
             "ending_balance": float(bal),
         })
 

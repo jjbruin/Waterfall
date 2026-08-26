@@ -240,6 +240,13 @@ class Loan:
     floor: float  # nFloor for variable loans
     cap: float  # vIntRatereset used as cap on INDEX (pre-spread)
 
+    # Unscheduled principal reductions -- today, proceeds from an interim
+    # parcel sale applied to this loan. Each entry is {'date', 'amount',
+    # 'label'}. The balance drops on that date and the payment is then
+    # recalculated over the remaining amortisation term, leaving the maturity
+    # date unchanged.
+    curtailments: Optional[List[Dict]] = None
+
     @staticmethod
     def _as_decimal(x) -> float:
         """Convert percentage to decimal if needed"""

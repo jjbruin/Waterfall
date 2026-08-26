@@ -1001,6 +1001,20 @@ def get_parcel_sales(vcode):
     return safe_json({"parcel_sales": sales, "loans": loans})
 
 
+@deals_bp.route("/<vcode>/parcel-sales/tenants", methods=["GET"])
+@login_required
+def get_parcel_sale_tenants(vcode):
+    """Tenants on the deal, for choosing what income a parcel sale removes."""
+    from flask_app.services import parcel_sale_service as pss
+    try:
+        data = _get_data()
+        tenants = pss.get_deal_tenants(data.get("tenants_raw"), vcode, data.get("inv"))
+    except Exception as e:
+        current_app.logger.debug("Tenant list failed for %s: %s", vcode, e)
+        tenants = []
+    return safe_json({"tenants": tenants})
+
+
 @deals_bp.route("/<vcode>/parcel-sales", methods=["POST"])
 @login_required
 def create_parcel_sale_route(vcode):

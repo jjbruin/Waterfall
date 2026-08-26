@@ -6,7 +6,7 @@ Manages cash reserves, capital expenditures, capital calls, and distribution log
 import logging
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 
 from config import CASH_BALANCE_ACCTS
@@ -100,7 +100,8 @@ def build_cash_flow_schedule_from_fad(
     fad_monthly: pd.DataFrame,
     capital_calls: List[Dict],
     beginning_cash: float,
-    deal_vcode: str
+    deal_vcode: str,
+    reserve_deposits: Optional[List[Dict]] = None,
 ) -> pd.DataFrame:
     """
     Build period-by-period cash flow schedule from pre-calculated FAD
@@ -111,6 +112,12 @@ def build_cash_flow_schedule_from_fad(
         beginning_cash: Starting cash balance
         deal_vcode: Deal identifier
     
+        reserve_deposits: Optional list of {'date', 'amount', 'label'} deposits
+            into the CapEx reserve mid-forecast -- today, the proceeds a parcel
+            sale holds back. They join the cash balance on their period and are
+            then spent by the ordinary reserve rules, so anything left over is
+            returned at sale by get_sale_period_total_cash().
+
     Returns:
         DataFrame with cash schedule by period
     """
@@ -134,6 +141,7 @@ def build_cash_flow_schedule_from_fad(
     # Initialize tracking columns
     schedule['beginning_cash'] = 0.0
     schedule['capital_call'] = 0.0
+    schedule['reserve_deposit'] = 0.0
     schedule['capex_paid'] = 0.0
     schedule['capex_unpaid'] = 0.0
     schedule['operating_cf'] = schedule['fad_before_capex']
@@ -162,6 +170,20 @@ def build_cash_flow_schedule_from_fad(
                     idx = schedule[mask.values].index[0]
                     schedule.loc[idx, 'capital_call'] += amount
 
+    # Reserve deposits (e.g. parcel sale proceeds held back for CapEx)
+    if reserve_deposits:
+        sched_dates = pd.to_datetime(schedule['event_date'])
+        for dep in reserve_deposits:
+            dep_date = dep.get('date')
+            amount = float(dep.get('amount') or 0)
+            if not dep_date or amount <= 0:
+                continue
+            dep_ts = pd.Timestamp(dep_date)
+            mask = sched_dates >= dep_ts
+            if mask.any():
+                idx = schedule[mask.values].index[0]
+                schedule.loc[idx, 'reserve_deposit'] += amount
+
     # Process each period
     cash_balance = beginning_cash
     carried_shortfall = 0.0  # Unpaid shortfall carried from prior periods
@@ -173,6 +195,10 @@ def build_cash_flow_schedule_from_fad(
         # Add capital calls
         capital_call = schedule.loc[idx, 'capital_call']
         cash_balance += capital_call
+
+        # Reserve deposits land before CapEx is funded, so money held back for
+        # capital work is available in the very period it arrives
+        cash_balance += schedule.loc[idx, 'reserve_deposit']
 
         # --- Step 1: Fund CapEx from cash balance ---
         capex_need = schedule.loc[idx, 'capex_need']
