@@ -98,3 +98,11 @@ The engines in `compute.py`, `waterfall.py`, `metrics.py` expect specific DataFr
 - **Argus rent roll**: Two-row headers (row 14 = category prefixes, row 15 = column names), 45 tenants, 656K SF, $7.4M annual rent
 - **Tabs**: PSC (OP↔PE waterfall), TIAA_AMB (PE↔Investor waterfall), Tenant Rent Roll, Inputs (Argus monthly D180-ER251), Bifurcated CFs (monthly by phase), Dashboard (sources/uses)
 - **UW files location**: `C:\Users\jbruin\OneDrive - peaceablestreet.com\Documents - Peaceable Street Capital\New Business\Windsor Square - Matthews, NC\UW`
+
+## Single source of truth (Jim's rule, Aug 26 2026)
+One home per fact; everything else derives. Applied so far:
+- **Purchase price**: the property is the atom (`prospect_properties.property_price`). The deal's purchase price and the Capital Budget line derive as the sum when any property is priced (read-only, tagged "Sigma properties" in the UI); `prospect_deals.purchase_price` is only a fallback for deals with no priced properties yet.
+- **Cash flows**: per-property (Argus `NP{property_id}` imports / Excel versions) roll up to deal level via `get_property_rollup_forecast_df()`; waterfalls always run against the deal-level rollup.
+- **Investor identity**: `prospect_investors.planned_investor_id` + ownership % is the declaration; waterfall-shape inference is the fallback, never the master.
+- **Naming**: the assumptions-version picker in the header is labelled "Assumptions", not "Scenario" -- Scenario is exclusively the results-panel scenario system.
+Known remaining duplicates to consolidate: `prospect_deals.purchase_price` still written from Pipeline forms; assumption versions vs scenarios overlap (versions may eventually fold into scenarios).

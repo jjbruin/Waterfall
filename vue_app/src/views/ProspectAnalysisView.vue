@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import api from '../api/client'
 
 // ---------------------------------------------------------------------------
@@ -321,6 +321,18 @@ const propertyPriceSum = computed(() => {
   return sum
 })
 
+// Property prices are the source of truth for the deal's purchase price:
+// when any property carries one, the Capital Budget line derives from the
+// sum and stops being directly editable. One number, one home.
+const purchasePriceDerived = computed(() => propertyPriceSum.value > 0)
+
+watch(propertyPriceSum, (sum) => {
+  if (sum > 0) {
+    const pp = capitalUses.value.find(u => u.id === 'purchase_price')
+    if (pp) pp.amount = sum
+  }
+})
+
 // ---------------------------------------------------------------------------
 // Computed — Waterfall Builder
 // ---------------------------------------------------------------------------
@@ -601,14 +613,20 @@ function initCapitalBudget(data: any) {
   debtSources.value = defaultDebtSources()
   additionalEquitySources.value = []
 
-  // Pre-fill purchase price from deal
-  const ppItem = capitalUses.value.find(u => u.id === 'purchase_price')
-  if (ppItem) ppItem.amount = d.purchase_price || null
-
-  // Pre-fill property prices
+  // Pre-fill property prices first -- they are the source of truth
   propertyPrices.value = {}
   for (const p of props) {
     propertyPrices.value[p.id] = p.property_price || null
+  }
+
+  // Purchase price = sum of property prices when any exist; the deal-level
+  // figure from Pipeline is only a fallback for deals without priced
+  // properties yet
+  const ppItem = capitalUses.value.find(u => u.id === 'purchase_price')
+  if (ppItem) {
+    let propSum = 0
+    for (const p of props) propSum += Number(p.property_price) || 0
+    ppItem.amount = propSum > 0 ? propSum : (d.purchase_price || null)
   }
 
   // Pre-fill PE equity pct from deal
@@ -1265,7 +1283,7 @@ loadDeals()
         </option>
       </select>
       <span v-if="assumptionVersions.length" class="version-selector">
-        <label>Scenario:</label>
+        <label>Assumptions:</label>
         <select @change="e => selectAssumption(assumptionVersions.find((a: any) => a.id === Number((e.target as HTMLSelectElement).value)))">
           <option v-for="v in assumptionVersions" :key="v.id" :value="v.id" :selected="v.id === selectedAssumptionId">
             {{ v.version_label }} (v{{ v.version }})
@@ -1351,6 +1369,11 @@ loadDeals()
                         </template>
                         <template v-else-if="item.pctBase && item.pct">
                           <span class="fmt-display">{{ fmtCurrency(getUseAmount(item)) }}</span>
+                        </template>
+                        <template v-else-if="item.id === 'purchase_price' && purchasePriceDerived">
+                          <span class="fmt-display" title="Sum of the property prices below — edit those, not this">
+                            {{ fmtCurrency(item.amount || 0) }} <small class="derived-tag">Σ properties</small>
+                          </span>
                         </template>
                         <template v-else>
                           <input type="text" class="fmt-input fmt-amt"
@@ -2979,4 +3002,5 @@ loadDeals()
 .compare-table .r { text-align: right; font-variant-numeric: tabular-nums; }
 .compare-table tr.current td { background: #eef4f9; font-weight: 600; }
 .btn-mini.danger { color: #a3282b; border-color: #dcb0b1; }
+.derived-tag { color: #7b8794; font-size: 0.68rem; font-weight: 500; margin-left: 3px; }
 </style>
