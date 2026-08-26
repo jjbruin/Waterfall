@@ -805,6 +805,47 @@ function addWfStep(list: WfStepInput[]) {
   })
 }
 
+function moveWfStep(list: WfStepInput[], i: number, dir: number) {
+  const j = i + dir
+  if (j < 0 || j >= list.length) return
+  const [row] = list.splice(i, 1)
+  list.splice(j, 0, row)
+}
+
+// The level each row will land on, mirroring the backend's assignment, so
+// the tie is visible before saving. Explicit level wins; otherwise the
+// close-at-100 heuristic groups residuals and gated IRRs.
+function computedLevels(steps: WfStepInput[]): number[] {
+  const out: number[] = []
+  let auto = 10
+  let openLevel: number | null = null
+  let openSum = 0
+  for (const s of steps) {
+    let lvl: number | null = (s.level != null && (s.level as any) !== '') ? Number(s.level) : null
+    if (s.step_type === 'residual') {
+      if (lvl == null) {
+        if (openLevel != null && openSum < 99.5) lvl = openLevel
+        else { lvl = auto; auto += 10; openSum = 0 }
+      }
+      openLevel = lvl
+      openSum += (s.rate || 0)
+    } else if (s.step_type === 'irr_lookback' && (s.share || 0) > 0) {
+      if (lvl == null) { lvl = auto; auto += 10 }
+      openLevel = lvl
+      openSum = s.share || 0
+    } else {
+      if (lvl == null) { lvl = auto; auto += 10 }
+      openLevel = null
+      openSum = 0
+    }
+    out.push(lvl)
+    if (lvl >= auto) auto = lvl + 10
+  }
+  return out
+}
+const cfLevels = computed(() => computedLevels(cfStepInputs.value))
+const capLevels = computed(() => computedLevels(capStepInputs.value))
+
 function removeWfStep(list: WfStepInput[], idx: number) {
   list.splice(idx, 1)
 }
@@ -2006,7 +2047,11 @@ loadDeals()
                   </thead>
                   <tbody>
                     <tr v-for="(step, i) in cfStepInputs" :key="'cf-'+i">
-                      <td class="col-num">{{ i + 1 }}</td>
+                      <td class="col-num tie-cell">
+                        <input type="number" v-model.number="step.level" class="tie-input"
+                               :placeholder="String(cfLevels[i])"
+                               title="Tie #: rows sharing a number pair together (the engine's iOrder). Blank = automatic — the grey number shows where this row will land." />
+                      </td>
                       <td>
                         <select v-model="step.entity_id" class="wf-select">
                           <option value="">— Select —</option>
@@ -2038,6 +2083,8 @@ loadDeals()
                         <template v-else><span class="muted">—</span></template>
                       </td>
                       <td class="col-action">
+                        <button class="btn-icon btn-xs" :disabled="i === 0" @click="moveWfStep(cfStepInputs, i, -1)">&#9650;</button>
+                        <button class="btn-icon btn-xs" :disabled="i === cfStepInputs.length - 1" @click="moveWfStep(cfStepInputs, i, 1)">&#9660;</button>
                         <button class="btn-icon btn-danger btn-xs" @click="removeWfStep(cfStepInputs, i)">&times;</button>
                       </td>
                     </tr>
@@ -2070,7 +2117,11 @@ loadDeals()
                   </thead>
                   <tbody>
                     <tr v-for="(step, i) in capStepInputs" :key="'cap-'+i">
-                      <td class="col-num">{{ i + 1 }}</td>
+                      <td class="col-num tie-cell">
+                        <input type="number" v-model.number="step.level" class="tie-input"
+                               :placeholder="String(capLevels[i])"
+                               title="Tie #: rows sharing a number pair together (the engine's iOrder). Blank = automatic — the grey number shows where this row will land." />
+                      </td>
                       <td>
                         <select v-model="step.entity_id" class="wf-select">
                           <option value="">— Select —</option>
@@ -2102,6 +2153,8 @@ loadDeals()
                         <template v-else><span class="muted">—</span></template>
                       </td>
                       <td class="col-action">
+                        <button class="btn-icon btn-xs" :disabled="i === 0" @click="moveWfStep(capStepInputs, i, -1)">&#9650;</button>
+                        <button class="btn-icon btn-xs" :disabled="i === capStepInputs.length - 1" @click="moveWfStep(capStepInputs, i, 1)">&#9660;</button>
                         <button class="btn-icon btn-danger btn-xs" @click="removeWfStep(capStepInputs, i)">&times;</button>
                       </td>
                     </tr>
@@ -3160,4 +3213,10 @@ loadDeals()
 .refi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
 .refi-grid label { display: flex; flex-direction: column; gap: 2px; font-size: 0.74rem; color: #5a6675; }
 .refi-grid input { padding: 4px 6px; border: 1px solid #ccd3d9; border-radius: 2px; font-size: 0.82rem; }
+.tie-cell { white-space: nowrap; }
+.tie-input {
+  width: 52px; padding: 3px 5px; border: 1px solid #ccd3d9; border-radius: 2px;
+  font-size: 0.8rem; text-align: center; font-variant-numeric: tabular-nums;
+}
+.tie-input::placeholder { color: #a8b2bc; }
 </style>

@@ -1200,100 +1200,111 @@ def build_deal_waterfall(deal_id):
     from datetime import date as dt_date
 
     def _convert_step_inputs(step_inputs, wf_name):
-        """Convert UI step inputs to waterfall rows."""
-        rows = []
-        order = 10
-        # A split level stays open until its shares reach 100%, then the next
-        # residual starts a fresh level. A gated IRR opens a level carrying
-        # its own share; any non-split step closes whatever is open.
-        level_open = False
-        level_order = 10
-        level_sum = 0.0
+        """Convert UI step inputs to waterfall rows.
+
+        The engine ties a level's steps together by identical iOrder: a
+        Share (or a gated IRR lead) pairs with the Tags at its order. Each
+        input row may carry an explicit `level` (the Tie # shown in the
+        builder); rows sharing a level pair together, exactly like editing
+        iOrder in the AM Waterfall Setup grid. Rows without one fall back to
+        the close-at-100 heuristic: residuals join the open level as Tags
+        until its shares reach 100%, a gated IRR opens a level with its own
+        share, and any other step closes it.
+        """
+        # ---- pass 1: assign a level to every step -------------------------
+        assigned = []           # (step, level)
+        auto = 10               # next auto level
+        open_level = None       # heuristic split level currently open
+        open_sum = 0.0
+
+        def _explicit(s):
+            lvl = s.get('level')
+            if lvl in (None, ''):
+                return None
+            try:
+                return int(float(lvl))
+            except (TypeError, ValueError):
+                return None
+
         for s in step_inputs:
-            eid = s.get('entity_id', '')
+            eid = (s.get('entity_id') or '').strip()
             stype = s.get('step_type', '')
             if not eid:
                 continue
-            if stype not in ('residual', 'irr_lookback'):
-                level_open = False
-                level_sum = 0.0
-            if stype == 'pref':
-                rate = float(s.get('rate') or 0)
-                rows.append({
-                    'vcode': vcode, 'vmisc': wf_name, 'iOrder': order,
-                    'PropCode': eid, 'vState': 'Pref',
-                    'FXRate': 1.0, 'nPercent': rate,
-                    'mAmount': 0, 'vtranstype': 'Preferred Return',
-                    'vAmtType': '', 'vNotes': '',
-                    'dteffective': dt_date(2020, 1, 1), 'nmisc': 0,
-                })
-                order += 10
-            elif stype == 'return_of_capital':
-                rows.append({
-                    'vcode': vcode, 'vmisc': wf_name, 'iOrder': order,
-                    'PropCode': eid, 'vState': 'Initial',
-                    'FXRate': 1.0, 'nPercent': 0, 'mAmount': 0,
-                    'vtranstype': 'Return of Capital',
-                    'vAmtType': '', 'vNotes': '',
-                    'dteffective': dt_date(2020, 1, 1), 'nmisc': 0,
-                })
-                order += 10
-            elif stype == 'residual':
+            lvl = _explicit(s)
+            if stype == 'residual':
                 pct = float(s.get('rate') or 0)
-                # The engine pairs a level's Share with its Tags by identical
-                # iOrder. Join the open level as a Tag while its shares are
-                # still short of 100%; otherwise start a fresh level.
-                if level_open and level_sum < 99.5:
-                    state, this_order = 'Tag', level_order
+                if lvl is None:
+                    if open_level is not None and open_sum < 99.5:
+                        lvl = open_level
+                    else:
+                        lvl = auto
+                        auto += 10
+                        open_sum = 0.0
+                    open_level = lvl
+                    open_sum += pct
                 else:
-                    state, this_order = 'Share', order
-                    level_order = order
-                    level_sum = 0.0
-                    order += 10
-                level_open = True
-                level_sum += pct
-                rows.append({
-                    'vcode': vcode, 'vmisc': wf_name, 'iOrder': this_order,
-                    'PropCode': eid, 'vState': state,
-                    'FXRate': pct / 100, 'nPercent': 0, 'mAmount': 0,
-                    'vtranstype': 'Excess Cash Flow',
-                    'vAmtType': '', 'vNotes': '',
-                    'dteffective': dt_date(2020, 1, 1), 'nmisc': 0,
-                })
+                    open_level, open_sum = lvl, open_sum + pct
+            elif stype == 'irr_lookback' and float(s.get('share') or 0) > 0:
+                if lvl is None:
+                    lvl = auto
+                    auto += 10
+                open_level = lvl
+                open_sum = float(s.get('share') or 0)
+            else:
+                if lvl is None:
+                    lvl = auto
+                    auto += 10
+                open_level = None
+                open_sum = 0.0
+            assigned.append((s, lvl))
+            # keep auto levels clear of explicit ones
+            if lvl >= auto:
+                auto = lvl + 10
+
+        # ---- pass 2: emit rows; Share vs Tag decided per level ------------
+        level_has_lead = {}
+        for s, lvl in assigned:
+            stype = s.get('step_type', '')
+            if stype == 'irr_lookback' and float(s.get('share') or 0) > 0:
+                level_has_lead[lvl] = True
+
+        rows = []
+        for s, lvl in assigned:
+            eid = (s.get('entity_id') or '').strip()
+            stype = s.get('step_type', '')
+            base = {
+                'vcode': vcode, 'vmisc': wf_name, 'iOrder': lvl,
+                'PropCode': eid, 'mAmount': 0, 'vAmtType': '', 'vNotes': '',
+                'dteffective': dt_date(2020, 1, 1), 'nmisc': 0,
+            }
+            if stype == 'pref':
+                rows.append({**base, 'vState': 'Pref', 'FXRate': 1.0,
+                             'nPercent': float(s.get('rate') or 0),
+                             'vtranstype': 'Preferred Return'})
+            elif stype == 'return_of_capital':
+                rows.append({**base, 'vState': 'Initial', 'FXRate': 1.0,
+                             'nPercent': 0, 'vtranstype': 'Return of Capital'})
+            elif stype == 'residual':
+                if level_has_lead.get(lvl):
+                    state = 'Tag'
+                else:
+                    state = 'Share'
+                    level_has_lead[lvl] = True
+                rows.append({**base, 'vState': state,
+                             'FXRate': float(s.get('rate') or 0) / 100,
+                             'nPercent': 0, 'vtranstype': 'Excess Cash Flow'})
             elif stype == 'fixed_amount':
-                amt = float(s.get('amount') or 0)
-                rows.append({
-                    'vcode': vcode, 'vmisc': wf_name, 'iOrder': order,
-                    'PropCode': eid, 'vState': 'Amt',
-                    'FXRate': 0, 'nPercent': 0, 'mAmount': amt,
-                    'vtranstype': 'Fixed Amount',
-                    'vAmtType': '', 'vNotes': '',
-                    'dteffective': dt_date(2020, 1, 1), 'nmisc': 0,
-                })
-                order += 10
+                rows.append({**base, 'vState': 'Amt', 'FXRate': 0, 'nPercent': 0,
+                             'mAmount': float(s.get('amount') or 0),
+                             'vtranstype': 'Fixed Amount'})
             elif stype == 'irr_lookback':
-                rate = float(s.get('rate') or 0)
                 gate_share = float(s.get('share') or 0)
-                rows.append({
-                    'vcode': vcode, 'vmisc': wf_name, 'iOrder': order,
-                    'PropCode': eid, 'vState': 'IRR',
-                    # With a share, this IRR is the LEAD of a split level:
-                    # FXRate is its slice of each dollar until the threshold,
-                    # and the residual steps that follow tag at this iOrder.
-                    'FXRate': gate_share / 100 if gate_share > 0 else 0,
-                    'nPercent': rate, 'mAmount': 0,
-                    'vtranstype': ('IRR Threshold' if gate_share > 0 else 'IRR Hurdle'),
-                    'vAmtType': '', 'vNotes': '',
-                    'dteffective': dt_date(2020, 1, 1), 'nmisc': 0,
-                })
-                if gate_share > 0:
-                    level_order = order
-                    level_sum = gate_share
-                    level_open = True
-                else:
-                    level_open = False
-                    level_sum = 0.0
-                order += 10
+                rows.append({**base, 'vState': 'IRR',
+                             'FXRate': gate_share / 100 if gate_share > 0 else 0,
+                             'nPercent': float(s.get('rate') or 0),
+                             'vtranstype': ('IRR Threshold' if gate_share > 0
+                                            else 'IRR Hurdle')})
         return rows
 
     cf_inputs = body.get('cf_steps', [])
