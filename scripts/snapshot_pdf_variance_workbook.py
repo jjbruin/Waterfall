@@ -49,8 +49,13 @@ TOL = {"usd_m": 0.35, "pct": 1.6, "dscr": 0.11, "ratio_pct": 0.6}
 # the reason is carried into the workbook so a reviewer never has to ask twice.
 KNOWN = {
     # --- the four Debt residuals, Financial and Loan alike ---
-    ("Financial", "P0000114", "debt"): "Jefferson Stephens: mOrigLoanAmt is exactly 2x the PDF — facility looks double-counted in MRI_Loans",
-    ("Loan", "P0000114", "debt"): "Jefferson Stephens: mOrigLoanAmt is exactly 2x the PDF — facility looks double-counted in MRI_Loans",
+    # Was recorded as "double-counted in MRI_Loans" — that attribution was wrong.
+    # MRI holds ONE Loan row. MRI_Loans.sql LEFT JOINs Loan_Date, fanning it into
+    # one row per date-event, and the mOrigLoanAmt debt fallback summed both.
+    # Fixed by data_service._collapse_loan_date_events; drop these two entries
+    # once that is deployed.
+    ("Financial", "P0000114", "debt"): "Jefferson Stephens: MRI_Loans' Loan_Date join fanned one $50M facility into an Origination row and a Maturity row, and the mOrigLoanAmt fallback summed both — NOT an MRI duplicate. Fixed in data_service._collapse_loan_date_events; remove after deploy",
+    ("Loan", "P0000114", "debt"): "Jefferson Stephens: MRI_Loans' Loan_Date join fanned one $50M facility into an Origination row and a Maturity row, and the mOrigLoanAmt fallback summed both — NOT an MRI duplicate. Fixed in data_service._collapse_loan_date_events; remove after deploy",
     ("Financial", "P0000116", "debt"): "Plaza Del Mar: ISBS Interim BS at Q1 is 70.0; it only drops to 27.59 at Q2, so the PDF's 27.6 matches our Q2 — data vintage",
     ("Loan", "P0000116", "debt"): "Plaza Del Mar: ISBS Interim BS at Q1 is 70.0; the PDF's 27.6 matches our Q2 — data vintage",
     ("Financial", "P0000021", "debt"): "JB Fair Park: neither basis matches — ISBS carries a dead 2022-12-31 senior financing row of 66.36M, committed facility is 77.37M",

@@ -50,6 +50,153 @@ def _filter_paid_off_loans(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _collapse_loan_date_events(df: pd.DataFrame) -> pd.DataFrame:
+    """Collapse MRI's date-event fan-out to one row per loan facility.
+
+    ``MRI_Loans.sql`` does ``LEFT JOIN Loan_Date LD ON L.UID = LD.LoanID``, so one
+    loan yields one row per Loan_Date event.  Every field except ``vDateType`` and
+    ``dtEvent`` repeats across those rows, so the fan-out is pure duplication as far
+    as every consumer is concerned — and each consumer breaks differently:
+
+      * ``build_loans_from_mri_loans`` (loans.py) builds one Loan per row, so a
+        facility is modelled twice and one copy "matures" on its closing date.
+        ``compute.py`` then defaults an absent sale date to the max of those
+        maturities, which for an Origination-only loan lands in the past.
+      * ``get_capitalization_stack`` (one_pager.py) sorts a deal's rows by amount
+        and renders ``iloc[1]`` as "2nd Loan Terms", so the real maturity shows up
+        as a phantom second facility.
+      * the ``mOrigLoanAmt`` debt fallbacks (one_pager.py / compute.py) sum every
+        row, doubling debt for any deal with no ISBS balance-sheet debt — which
+        also flows into the portfolio Debt Outstanding KPI and avg LTV.
+      * ``get_loan_maturity_data`` (dashboard_service.py) buckets by ``dtEvent``
+        year, so a facility is counted twice and one copy lands in its
+        *origination* year as a phantom maturity.
+
+    Collapsing here rather than in any one consumer fixes all of them at once, and
+    is the only layer that can: ``MRI_Loans.sql`` would need a full MRI refresh to
+    take effect and is bypassed entirely by CSV import.
+
+    ``dtMaturity`` is NULL on every live row, so the maturity is resolved in order:
+
+      1. ``dtMaturity``, when MRI actually carries it;
+      2. the ``dtEvent`` of the ``vDateType='Maturity'`` row;
+      3. origination + ``iLoanTerm`` months, for a loan whose only event is
+         ``Origination`` (P0000017 East Manchester — 120mo from 2025-10-17 gives
+         2035-10-17).  **A derived date is an inference, not MRI data**: MRI's own
+         convention is inconsistent (P0000114 is origination + term - 1 day, while
+         P0000116 and P0000119 are exact), so it is logged at WARNING for
+         confirmation against the loan document;
+      4. the latest ``dtEvent`` in the group, as a last resort.
+
+    The resolved date is written to BOTH ``dtEvent`` and ``dtMaturity`` because
+    consumers disagree about which they read — ``loans.py`` and
+    ``dashboard_service.py`` use ``dtEvent`` only, while ``one_pager._parse_loan``
+    prefers ``dtMaturity``.
+
+    Call AFTER :func:`_filter_paid_off_loans`: a fully repaid loan carries only a
+    'Paid Off' event, so filtering first drops it entirely, exactly as before.
+    """
+    if df is None or df.empty:
+        return df
+
+    cols = {c.lower(): c for c in df.columns}
+    vc_col, id_col = cols.get("vcode"), cols.get("loanid")
+    dt_col, ev_col = cols.get("vdatetype"), cols.get("dtevent")
+    if not (vc_col and id_col and ev_col):
+        # Not the MRI_Loans shape (e.g. a CSV without the Loan_Date join) — the
+        # fan-out cannot be present, so leave the frame alone.
+        return df
+
+    mat_col = cols.get("dtmaturity")
+    term_col = cols.get("iloanterm")
+
+    drop_idx = []      # duplicate date-event rows to remove
+    edits = {}         # survivor row index -> resolved maturity
+
+    for (vcode, loan_id), grp in df.groupby([vc_col, id_col], dropna=False, sort=False):
+        events = grp[dt_col].astype(str).str.strip().str.lower() if dt_col else None
+        mat_rows = grp[events == "maturity"] if events is not None else grp.iloc[0:0]
+
+        # A lone row already labelled 'Maturity' is the normal case (82 of 86 live
+        # rows) and already carries the right date — leave it completely alone.
+        if len(grp) == 1 and not mat_rows.empty:
+            continue
+
+        # Keep the Maturity row as the survivor when there is one.
+        survivor = (mat_rows if not mat_rows.empty else grp).index[0]
+        drop_idx.extend(i for i in grp.index if i != survivor)
+
+        resolved = None
+        if mat_col is not None:
+            existing = pd.to_datetime(df.at[survivor, mat_col], errors="coerce")
+            if pd.notna(existing):
+                resolved = existing
+        if resolved is None and not mat_rows.empty:
+            resolved = pd.to_datetime(mat_rows.iloc[0][ev_col], errors="coerce")
+        if resolved is None:
+            resolved = _derive_maturity_from_origination(
+                grp, events, ev_col, term_col, vcode, loan_id)
+        if resolved is None:
+            resolved = pd.to_datetime(grp[ev_col], errors="coerce").max()
+
+        if pd.notna(resolved):
+            edits[survivor] = resolved
+        if len(grp) > 1:
+            logger.info(
+                "Collapsed %d Loan_Date event rows to 1 for %s/LoanID %s; maturity=%s",
+                len(grp), vcode, loan_id,
+                resolved.date() if pd.notna(resolved) else None)
+
+    if not drop_idx and not edits:
+        return df
+
+    # Drop rather than rebuild, so the untouched rows keep their exact dtypes and
+    # null representation (pd.concat would rewrite None as NaN across the frame).
+    out = df.drop(index=drop_idx)
+
+    for idx, resolved in edits.items():
+        for col in (ev_col, mat_col):
+            if col is None:
+                continue
+            # A string-typed date column takes ISO text; a datetime column takes
+            # the Timestamp. Every consumer re-parses with pd.to_datetime.
+            out.at[idx, col] = (resolved
+                                if pd.api.types.is_datetime64_any_dtype(out[col])
+                                else resolved.strftime("%Y-%m-%dT%H:%M:%S"))
+        if dt_col is not None:
+            out.at[idx, dt_col] = "Maturity"
+
+    out = out.reset_index(drop=True)
+    if len(out) != len(df):
+        logger.info("Loan_Date fan-out: %d rows -> %d loan facilities",
+                    len(df), len(out))
+    return out
+
+
+def _derive_maturity_from_origination(grp, events, ev_col, term_col, vcode, loan_id):
+    """Maturity = origination + iLoanTerm months, for an Origination-only loan.
+
+    Returns None when there is no Origination event or no usable term, leaving the
+    caller to fall back to the latest dtEvent.
+    """
+    if events is None or term_col is None:
+        return None
+    orig_rows = grp[events == "origination"]
+    if orig_rows.empty:
+        return None
+    orig = pd.to_datetime(orig_rows.iloc[0][ev_col], errors="coerce")
+    term = pd.to_numeric(orig_rows.iloc[0][term_col], errors="coerce")
+    if pd.isna(orig) or pd.isna(term) or term <= 0:
+        return None
+    derived = orig + pd.DateOffset(months=int(term))
+    logger.warning(
+        "%s/LoanID %s has no Maturity event; DERIVED maturity %s from "
+        "origination %s + iLoanTerm %d months. Confirm against the loan document "
+        "— MRI's term convention is inconsistent (some loans are term - 1 day).",
+        vcode, loan_id, derived.date(), orig.date(), int(term))
+    return derived
+
+
 def _enrich_acquisition_dates(inv: pd.DataFrame, acct: pd.DataFrame) -> None:
     """Derive Acquisition_Date from earliest accounting activity per deal.
 
@@ -426,8 +573,10 @@ def load_all(db_path: str, pro_yr_base: int = 2025) -> dict:
     fc = load_forecast(fc_assembled, coa, pro_yr_base)
 
     # Optional tables
+    # mri_loans_all keeps MRI's per-date-event rows: one_pager's refi detection
+    # looks for vDateType='Paid Off' events, so it must NOT be collapsed.
     mri_loans_all = get_adapter("loans").load(config)  # unfiltered — includes Paid Off
-    mri_loans_raw = _filter_paid_off_loans(mri_loans_all)
+    mri_loans_raw = _collapse_loan_date_events(_filter_paid_off_loans(mri_loans_all))
     mri_val = get_adapter("valuations").load(config)
     relationships_raw = get_adapter("relationships").load(config)
     capital_calls_raw = get_adapter("capital_calls").load(config)
@@ -596,7 +745,7 @@ def refresh_table(table_name: str):
             if table_name == "accounting":
                 fresh = _normalize_accounting(fresh)
             if table_name == "loans":
-                fresh = _filter_paid_off_loans(fresh)
+                fresh = _collapse_loan_date_events(_filter_paid_off_loans(fresh))
             data[cache_key_name] = fresh
 
             # Reassemble isbs_raw from split tables when a split table changes

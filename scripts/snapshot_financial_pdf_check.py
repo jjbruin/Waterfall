@@ -96,11 +96,21 @@ UNFUNDED_STRUCTURAL = True
 #: nobody re-derives them — and so that if one ever starts matching, the check
 #: below fails and says the note is stale.
 #:
-#: None of the four is a code problem. Each needs a data answer:
+#: Three of the four need a data answer. P0000114 was a CODE problem and is
+#: fixed on the branch (see below) — its entry stays only until that ships,
+#: because this check reads live.
 KNOWN_DEBT_RESIDUALS = {
+    # CORRECTED ATTRIBUTION: this is NOT MRI double-counting. MRI holds ONE Loan
+    # row; MRI_Loans.sql LEFT JOINs Loan_Date, which fans it into one row per
+    # date-event (Origination + Maturity). Every field but vDateType/dtEvent
+    # repeats, so the mOrigLoanAmt debt fallback summed the same $50M facility
+    # twice. Fixed by data_service._collapse_loan_date_events; verified by
+    # scripts/loan_fanout_fix_check.py. DELETE this entry once the fix is
+    # deployed — live will then report 50.0 and tie to the PDF.
     "P0000114": ("Jefferson Stephens", 100.0, 50.0,
-                 "mOrigLoanAmt is exactly 2x the PDF — facility looks "
-                 "double-counted in MRI_Loans"),
+                 "Loan_Date date-event fan-out double-counted the facility "
+                 "(fixed in data_service._collapse_loan_date_events; delete "
+                 "this entry after deploy)"),
     "P0000116": ("Plaza Del Mar", 70.0, 27.6,
                  "ISBS Interim BS at Q1 is 70.0 and only drops to 27.59 at Q2, "
                  "so the PDF's 27.6 matches our Q2 — data vintage/restatement, "
