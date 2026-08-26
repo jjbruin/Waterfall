@@ -12,6 +12,14 @@ api.interceptors.request.use((config) => {
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
   }
+  // The instance default of application/json overrides the multipart
+  // boundary FormData needs, so Flask sees no files and uploads fail with
+  // "No file provided". Dropping the header here lets axios set
+  // multipart/form-data with the boundary itself, for every uploader —
+  // including ones that forget the per-call header override.
+  if (config.data instanceof FormData) {
+    config.headers.delete('Content-Type')
+  }
   return config
 })
 
