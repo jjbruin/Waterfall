@@ -325,14 +325,22 @@ const entityOptions = computed(() => {
   const opts: { value: string; label: string }[] = []
   const seen = new Set<string>()
 
-  // Only entities with a declared entity ID. A name-derived or row-id
+  // Only participants with a declared ID. A name-derived or row-id
   // placeholder cannot be matched to an MRI entity on closing, so it is not
-  // offered as a choice.
+  // offered as a choice. Investors nested under an entity count too --
+  // waterfall capital is usually attributed to them, not the property SPV.
   for (const ent of entities.value) {
     const id = (ent.planned_entity_id || '').trim()
     if (id && !seen.has(id)) {
       opts.push({ value: id, label: ent.entity_name ? `${ent.entity_name} (${id})` : id })
       seen.add(id)
+    }
+    for (const inv of (ent.investors || [])) {
+      const iid = (inv.planned_investor_id || '').trim()
+      if (iid && !seen.has(iid)) {
+        opts.push({ value: iid, label: inv.investor_name ? `${inv.investor_name} (${iid})` : iid })
+        seen.add(iid)
+      }
     }
   }
   // Also include entities from existing waterfall steps
@@ -345,9 +353,12 @@ const entityOptions = computed(() => {
   return opts
 })
 
-// Entities that are missing an ID, so the setup gap can be named precisely.
+// Entities that are missing an ID (and whose investors carry none either),
+// so the setup gap can be named precisely.
 const entitiesMissingId = computed(() =>
-  entities.value.filter(e => !(e.planned_entity_id || '').trim())
+  entities.value.filter(e =>
+    !(e.planned_entity_id || '').trim() &&
+    !(e.investors || []).some((i: any) => (i.planned_investor_id || '').trim()))
 )
 
 function splitTierTotals(steps: WfStepInput[]): number[] {
@@ -594,36 +605,54 @@ function initCapitalBudget(data: any) {
     ? 90 : 90  // Default 90%, can be overridden
 }
 
+// The participants a waterfall step can be attributed to: investors when
+// Pipeline modelled them (the usual case), else entities with their own IDs.
+function wfParticipants(): { id: string; isPe: boolean; share: number }[] {
+  const out: { id: string; isPe: boolean; share: number }[] = []
+  for (const ent of entities.value) {
+    for (const inv of (ent.investors || [])) {
+      const id = (inv.planned_investor_id || '').trim()
+      if (!id) continue
+      const t = (inv.investor_type || '').toLowerCase()
+      out.push({
+        id,
+        isPe: t.includes('pref') || t.includes('pe'),
+        share: Number(inv.ownership_pct) || 0,
+      })
+    }
+  }
+  if (out.length) return out
+  for (const ent of entities.value) {
+    const id = (ent.planned_entity_id || '').trim()
+    if (!id) continue
+    const roleType = `${ent.role || ''} ${ent.entity_type || ''}`.toLowerCase()
+    out.push({
+      id,
+      isPe: roleType.includes('pe') || roleType.includes('pref'),
+      share: Number(ent.ownership_pct) || 0,
+    })
+  }
+  return out
+}
+
 function initDefaultWfSteps() {
-  const ents = entities.value
-  if (ents.length) {
+  const parts = wfParticipants()
+  if (parts.length) {
     const cfSteps: WfStepInput[] = []
     const capSteps: WfStepInput[] = []
-    // Pref steps for PE entities
-    for (const ent of ents) {
-      const id = (ent.planned_entity_id || '').trim()
-      if (!id) continue
-      const isPe = (ent.role || '').toLowerCase().includes('pe') ||
-                   (ent.role || '').toLowerCase().includes('pref') ||
-                   (ent.entity_type || '').toLowerCase().includes('pe')
-      if (isPe) {
-        cfSteps.push({ entity_id: id, step_type: 'pref', rate: 8.0, amount: null })
-        capSteps.push({ entity_id: id, step_type: 'pref', rate: 8.0, amount: null })
+    for (const p of parts) {
+      if (p.isPe) {
+        cfSteps.push({ entity_id: p.id, step_type: 'pref', rate: 8.0, amount: null })
+        capSteps.push({ entity_id: p.id, step_type: 'pref', rate: 8.0, amount: null })
       }
     }
-    // Cap_WF gets return of capital for all entities
-    for (const ent of ents) {
-      const id = (ent.planned_entity_id || '').trim()
-      if (!id) continue
-      capSteps.push({ entity_id: id, step_type: 'return_of_capital', rate: null, amount: null })
+    for (const p of parts) {
+      capSteps.push({ entity_id: p.id, step_type: 'return_of_capital', rate: null, amount: null })
     }
-    // Residual split for both
-    for (const ent of ents) {
-      const id = (ent.planned_entity_id || '').trim()
-      if (!id) continue
-      const share = (ent.ownership_pct || 0) * 100
-      cfSteps.push({ entity_id: id, step_type: 'residual', rate: share || 50, amount: null })
-      capSteps.push({ entity_id: id, step_type: 'residual', rate: share || 50, amount: null })
+    for (const p of parts) {
+      const share = p.share * 100
+      cfSteps.push({ entity_id: p.id, step_type: 'residual', rate: share || 50, amount: null })
+      capSteps.push({ entity_id: p.id, step_type: 'residual', rate: share || 50, amount: null })
     }
     cfStepInputs.value = cfSteps.length ? cfSteps : defaultCfSteps()
     capStepInputs.value = capSteps.length ? capSteps : defaultCapSteps()

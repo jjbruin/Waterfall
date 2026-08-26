@@ -1184,11 +1184,21 @@ def build_deal_waterfall(deal_id):
     # attributed by this ID and it is the key the deal is onboarded to Asset
     # Management on, so an undeclared or placeholder ID would assign capital
     # to a partner that does not exist.
+    # Declared IDs come from BOTH places Pipeline models a participant:
+    # entity records (planned_entity_id) and the investor records nested
+    # under them (planned_investor_id). Waterfall capital is usually
+    # attributed to investors, so leaving them out rejected correctly
+    # modelled deals.
     declared = {
         (e.get('planned_entity_id') or '').strip()
         for e in (deal_data.get('entities') or [])
         if (e.get('planned_entity_id') or '').strip()
     }
+    for e in (deal_data.get('entities') or []):
+        for inv in (e.get('investors') or []):
+            pid = (inv.get('planned_investor_id') or '').strip()
+            if pid:
+                declared.add(pid)
     used = {
         (s.get('entity_id') or '').strip()
         for s in list(cf_inputs) + list(cap_inputs)

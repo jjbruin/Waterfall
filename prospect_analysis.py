@@ -112,14 +112,70 @@ def build_prospect_analysis(
 
     inv = _build_inv(vcode, deal_name, deal, close_date, properties)
     identity_warnings: list = []
+
+    # Investor records declared in Pipeline: {planned_investor_id: info}.
+    # When the waterfall's PropCodes all match declared investors, the equity
+    # split comes from their ownership percentages (or commitments) instead of
+    # being inferred from the waterfall's shape -- inference cannot tell the
+    # PE partner apart when both sides carry Pref or IRR steps.
+    declared_investors = {}
+    for ent in (entities or []):
+        for dinv in (ent.get('investors') or []):
+            pid = str(dinv.get('planned_investor_id') or '').strip()
+            if not pid:
+                continue
+            itype = str(dinv.get('investor_type') or '').lower()
+            declared_investors[pid] = {
+                'share': float(dinv.get('ownership_pct') or 0),
+                'commitment': float(dinv.get('commitment') or 0),
+                'is_pe': 'pref' in itype or itype == 'pe',
+            }
+
     if waterfall_df is not None and not waterfall_df.empty:
         wf = waterfall_df
         # Build accounting from waterfall investors so IDs match
         wf_investors = _get_waterfall_investors(wf)
-        if wf_investors:
+        wf_ids = [iid for iid, _ in wf_investors]
+        if wf_investors and declared_investors and \
+                all(iid in declared_investors for iid in wf_ids):
+            # Declared beats inferred: split by ownership %, falling back to
+            # commitment proportions when percentages are absent.
+            weights = {iid: declared_investors[iid]['share'] for iid in wf_ids}
+            basis = 'ownership percentages'
+            if sum(weights.values()) <= 0:
+                weights = {iid: declared_investors[iid]['commitment'] for iid in wf_ids}
+                basis = 'commitments'
+            total_w = sum(weights.values())
+            rows = []
+            if total_w > 0:
+                for iid in wf_ids:
+                    amt = equity_needed * weights[iid] / total_w
+                    if amt > 0:
+                        rows.append({
+                            'InvestmentID': vcode, 'InvestorID': iid,
+                            'EffectiveDate': seed_date, 'MajorType': 'Contributions',
+                            'Amt': -abs(amt), 'Capital': 'Y',
+                            'Typename': 'Investments', 'TypeID': 1001, 'Partner': iid,
+                        })
+            if rows:
+                acct = pd.DataFrame(rows)
+                identity_warnings.append(
+                    "Equity split taken from declared investor records ("
+                    + basis + "): "
+                    + ", ".join(f"{iid} {weights[iid] / total_w:.0%}" for iid in wf_ids)
+                )
+                # PE/OP flags also come from the declaration
+                wf_investors = [(iid, declared_investors[iid]['is_pe'])
+                                for iid in wf_ids]
+            else:
+                acct = _build_accounting_from_waterfall(
+                    vcode, deal_name, wf_investors, equity_needed,
+                    psc_equity_pct, seed_date, warn=identity_warnings)
+        elif wf_investors:
             acct = _build_accounting_from_waterfall(
                 vcode, deal_name, wf_investors, equity_needed,
                 psc_equity_pct, seed_date, warn=identity_warnings)
+        if wf_investors:
             # Set pe/op IDs for the investment map (first PE, first non-PE)
             pe_ids = [iid for iid, is_pe in wf_investors if is_pe]
             op_ids = [iid for iid, is_pe in wf_investors if not is_pe]
