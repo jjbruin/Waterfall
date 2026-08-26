@@ -149,10 +149,28 @@ def tracking():
 @reviews_bp.route("/investors", methods=["GET"])
 @login_required
 def investors():
-    """Get distinct upstream investor IDs for the tracking filter dropdown."""
+    """Upstream investors for the tracking filter dropdown, as {code, name}.
+
+    The CODE is what /tracking filters on — its recursive CTE binds
+    ``TRIM(r."InvestorID") = :inv`` against the relationships feed, so only a
+    real investor ID matches. The NAME is display only.
+
+    That distinction is the whole point of returning pairs. TIAA reaches its 35
+    deals as ``TGAM``; an option whose value were the literal string "TIAA"
+    would match no relationship row and silently render an empty table. So the
+    dropdown shows "TIAA" and still submits "TGAM".
+
+    Shape and sort mirror /api/portfolio-snapshot/investors, which already does
+    this — same helper, same ordering by display name — so the two dropdowns
+    cannot disagree about what an investor is called.
+    """
+    from flask_app.services.portfolio_snapshot_service import get_investor_name
+
     try:
-        data = get_investor_list()
-        return jsonify({"investors": data})
+        out = [{"code": c, "name": get_investor_name(c)}
+               for c in (get_investor_list() or [])]
+        out.sort(key=lambda r: (r["name"] or r["code"]).lower())
+        return jsonify({"investors": out})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

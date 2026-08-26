@@ -26,7 +26,10 @@ const error = ref<string | null>(null)
 const quarterFilter = ref('2026-Q2')
 const investorFilter = ref('')
 const statusFilter = ref('')
-const investorOptions = ref<string[]>([])
+// {code, name}: the option's VALUE is the investor code, because /tracking
+// filters on it; the label is the display name. TIAA is code TGAM, so a
+// label-valued option would filter to nothing.
+const investorOptions = ref<{ code: string; name: string }[]>([])
 
 // Summary counts
 const draftCount = computed(() => items.value.filter(i => i.status === 'draft').length)
@@ -127,7 +130,7 @@ function filterByStatus(status: string) {
         <label>Investor:</label>
         <select v-model="investorFilter" @change="loadTracking" class="filter-select">
           <option value="">All</option>
-          <option v-for="inv in investorOptions" :key="inv" :value="inv">{{ inv }}</option>
+          <option v-for="inv in investorOptions" :key="inv.code" :value="inv.code">{{ inv.name }}</option>
         </select>
       </div>
       <div class="filter-group">
