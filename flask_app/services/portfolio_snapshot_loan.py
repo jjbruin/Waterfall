@@ -301,6 +301,16 @@ def _loan_terms(rows: pd.DataFrame) -> dict:
         # 5.3%. That is the published precision; revert these two f-strings if
         # the extra digit is wanted back.
         if rate is not None:
+            # "3.9% fixed", the reference document's form. Whitelisted on
+            # 'fixed' rather than appending whatever vIntType holds: the column
+            # carries 'Non-Interest Bearing' on Post Commons, which would print
+            # "6.3% non-interest bearing" where the PDF reads "6.3% fixed", and
+            # 'Variable' on a loan that reached this branch only because it has
+            # an all-in rate -- the PDF prints those as INDEX + spread, never as
+            # "7.0% variable". Anything else keeps the bare number, which is
+            # what the six rows with no vIntType at all already render.
+            if _s(r.get("vIntType")).lower() == "fixed":
+                return rate, f"{rate * 100:.1f}% fixed"
             return rate, f"{rate * 100:.1f}%"
         idx = _s(r.get("vIndex"))
         spr = _num(r.get("vSpread"))
