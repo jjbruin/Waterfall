@@ -1308,3 +1308,4 @@ correct all three date fields together.
 `a2d242f` (exit field) — head **`a2d242f`**, handed to Jim, time-sensitive for Monday KOC
 reporting. **Not yet deployed.** All three are Vue/TS changes, so `az acr build` is the real
 typecheck; nothing was typechecked locally.
+- [PPI Ownership Waterfalls plan](ppi_ownership_waterfalls.md) - NB upstream investor-relationship waterfalls (AM fees, net-of-fee IRR promotes) reusing the PSCKOC engine; approved plan, phases 1-5
