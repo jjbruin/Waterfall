@@ -115,7 +115,7 @@ onboarding.
 - Deal-level N->P re-key already exists; extend to the vehicle split's vcode
   reference if it was N-keyed.
 
-## Phases  (status: 1-5 DONE Aug 27 -- feature complete; 4-5 pending. Phase 3 note: upstream engine double-credited terminal recipients in state cashflows — fixed via state_credited flag on run_upstream_waterfall_period; PSCKOC/Portfolio Analysis IRR gates and state-based XIRRs become more correct, spot-check advised. NB runs CF+Cap interleaved with one shared state dict + one quarterly fee tracker.)
+## Phases  (status: 1-5 DONE Aug 27 -- feature complete. Phase 3 note: upstream engine double-credited terminal recipients in state cashflows — fixed via state_credited flag on run_upstream_waterfall_period; PSCKOC/Portfolio Analysis IRR gates and state-based XIRRs become more correct, spot-check advised. NB runs CF+Cap interleaved with one shared state dict + one quarterly fee tracker.)
 1. **Stack model + CRUD** — entity roles, terms JSON, endpoints, validation
    (slices sum to 100, participant shares sum, fee/hurdle sanity).
 2. **Builder + save** — templates that emit the vehicle split and
@@ -187,3 +187,20 @@ Verified ties: TGAM 12.41% net on 17,235,000; 13 investors 18.46%/1.954x at
 exact pro-rata; PSCMAN fees 741,657 (=693,782+47,875 exact) + promote 173,120
 = 4.0% of pool; dists net of fees == deal PPIWIND dists to the dollar.
 Open: TGA6 modeled with NO pref (straight 90/10 + 9% gate) — confirm with Jim.
+
+## Display refinements (Aug 27-28, v394-v395)
+- Annual pivot in the dropdown mirrors the operating forecast: anniversary
+  columns from the close date, sale month-end clamped into the final hold
+  year (mid-month closes put month 60's sale in anniversary yr hold+1
+  otherwise); rows = step | recipient | CF/Cap per waterfall-bearing entity;
+  passthrough feeders and terminal self-sections hidden; AM Fee lines
+  aggregated across sources.
+- Non-PSC fund investors pool into one 'Fund Investors (n)' participant line
+  (pooled dated cashflows -> exact group IRR); PSC1, the outside JV partner
+  (TGAM) and the manager (PSCMAN) stay individual. Per-investor math still
+  runs underneath (individual fee bases).
+- Windsor facts: target_close moved by Jim to 2026-09-24; TGA6/AMB6
+  waterfalls live in the shared table (setup_tga6.py in the session
+  scratchpad holds the generator); Windsor PPI stack = one relationship
+  linked to TGA6 (TGAM 90 lp / INV6 10 psc, existing_entity=true).
+
