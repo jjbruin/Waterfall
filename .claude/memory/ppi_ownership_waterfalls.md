@@ -115,7 +115,7 @@ onboarding.
 - Deal-level N->P re-key already exists; extend to the vehicle split's vcode
   reference if it was N-keyed.
 
-## Phases  (status: 1 DONE Aug 27; 2-5 pending)
+## Phases  (status: 1-2 DONE Aug 27; 3-5 pending)
 1. **Stack model + CRUD** — entity roles, terms JSON, endpoints, validation
    (slices sum to 100, participant shares sum, fee/hurdle sanity).
 2. **Builder + save** — templates that emit the vehicle split and

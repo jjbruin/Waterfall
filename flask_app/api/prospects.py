@@ -1369,6 +1369,48 @@ def save_ppi_stack(deal_id):
     return jsonify(result)
 
 
+@prospects_bp.route('/<int:deal_id>/ppi-stack/build', methods=['POST'])
+@login_required
+@role_required('admin', 'analyst')
+def build_ppi_waterfalls(deal_id):
+    """Generate and save the stack's waterfall steps (explicit write --
+    the same Build & Save rule as the deal Builder)."""
+    from flask_app.services import ppi_stack_service as pss
+    username = g.current_user.get('username', '')
+    result = pss.build_stack_waterfalls(get_engine(), deal_id, username)
+    if not result.get('ok'):
+        return jsonify({'error': '; '.join(result['validation']['errors']),
+                        'validation': result['validation']}), 400
+    # steps carry date objects; serialize shallowly
+    from flask_app.serializers import safe_json
+    return jsonify(safe_json(result))
+
+
+@prospects_bp.route('/<int:deal_id>/ppi-stack/steps', methods=['GET'])
+@login_required
+def get_ppi_stack_steps(deal_id):
+    """The stored waterfall steps for every entity in the deal's stack."""
+    from flask_app.services import ppi_stack_service as pss
+    from sqlalchemy import text as sa_text
+    stack = pss.get_stack(get_engine(), deal_id)
+    vcodes = []
+    if (stack.get('vehicle') or {}).get('entity_id'):
+        vcodes.append(stack['vehicle']['entity_id'])
+    vcodes += [r['entity_id'] for r in (stack.get('relationships') or [])
+               if r.get('entity_id')]
+    steps = {}
+    with get_engine().connect() as conn:
+        for vc in vcodes:
+            rows = [dict(r) for r in conn.execute(sa_text(
+                'SELECT vmisc, "iOrder", "PropCode", "vState", "FXRate", '
+                '"nPercent", "mAmount", "vNotes", vtranstype FROM waterfalls '
+                'WHERE vcode = :v ORDER BY vmisc, "iOrder", "vState"'),
+                {'v': vc}).mappings()]
+            if rows:
+                steps[vc] = rows
+    return jsonify({'steps': steps})
+
+
 @prospects_bp.route('/ppi-entities', methods=['GET'])
 @login_required
 def list_ppi_entities():

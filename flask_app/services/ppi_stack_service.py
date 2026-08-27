@@ -336,3 +336,212 @@ def save_stack(engine, prospect_id: int, stack: Dict[str, Any],
     saved = get_stack(engine, prospect_id)
     saved_check = validate_stack(saved)
     return {'ok': True, 'stack': saved, 'validation': saved_check}
+
+# ---------------------------------------------------------------------------
+# Phase 2: generate the waterfall steps from the declared stack.
+#
+# Template (the standard Peaceable deal, per Jim Aug 27; TGA22 is the AM
+# reference): CF and capital shared pro-rata between PSC and the investor(s);
+# the AM fee is deducted from the investor's distributions (AMFee rows at
+# iOrder 900+, vNotes = source investor, nPercent = raw percent, mAmount =
+# periods/yr); PSC earns a promote only after the investor reaches the
+# minimum IRR (IRR gate, computed net of fees by the engine). PSCKOC-style
+# catch-ups are deliberately NOT templated.
+#
+# Rate conventions follow the AM rows: Pref/IRR rates as decimals (0.08),
+# AMFee as raw percent (0.95).
+# ---------------------------------------------------------------------------
+
+def _post_gate_splits(participants, terms):
+    """Post-promote tier percentages (decimals summing to 1.0).
+
+    promote_pct of the excess is the promote pool; promote_shared_pct of
+    that pool goes back to the LPs pro-rata; the rest of the pool is PSC's.
+    The remaining (1 - promote) splits pro-rata across ALL participants.
+    """
+    promote = float(terms.get('promote_pct') or 0) / 100.0
+    shared = float(terms.get('promote_shared_pct') or 0) / 100.0
+    lps = [p for p in participants if (p.get('type') or '').lower() != 'psc']
+    psc = next((p for p in participants
+                if (p.get('type') or '').lower() == 'psc'), None)
+    lp_total = sum(float(p.get('share_pct') or 0) for p in lps) or 1.0
+
+    out = {}
+    for p_row in lps:
+        share = float(p_row.get('share_pct') or 0) / 100.0
+        lp_frac = float(p_row.get('share_pct') or 0) / lp_total
+        out[p_row['investor_id']] = (1 - promote) * share \
+            + promote * shared * lp_frac
+    if psc is not None:
+        share = float(psc.get('share_pct') or 0) / 100.0
+        out[psc['investor_id']] = (1 - promote) * share \
+            + promote * (1 - shared)
+    return out
+
+
+def _participant_ids(rel, prospect_id, n):
+    """Resolve participant ids, defaulting placeholders that keep LP vs PSC
+    distinguishable until MRI assigns real ids at closing."""
+    parts = []
+    for j, p_row in enumerate(rel.get('participants') or [], 1):
+        pid = (p_row.get('investor_id') or '').strip()
+        if not pid:
+            kind = 'PSC' if (p_row.get('type') or '').lower() == 'psc' else 'INV'
+            pid = f"{kind}{prospect_id:04d}{n}{j}"
+        parts.append({**p_row, 'investor_id': pid})
+    return parts
+
+
+def build_relationship_steps(vcode, rel, prospect_id, n):
+    """Waterfall rows (CF_WF + Cap_WF) for one relationship, keyed by vcode."""
+    from datetime import date as dt_date
+    terms = _load_terms(rel.get('terms'))
+    participants = _participant_ids(rel, prospect_id, n)
+    lps = [p for p in participants if (p.get('type') or '').lower() != 'psc']
+    psc = next((p for p in participants
+                if (p.get('type') or '').lower() == 'psc'), None)
+    lps.sort(key=lambda p_row: -float(p_row.get('share_pct') or 0))
+    ordered = lps + ([psc] if psc else [])
+
+    def _row(wf, order, pc, state, fx, npct, mamt, notes, trans):
+        return {'vcode': vcode, 'vmisc': wf, 'iOrder': order, 'vAmtType': '',
+                'vNotes': notes, 'PropCode': pc, 'nmisc': 0,
+                'dteffective': dt_date(2020, 1, 1), 'vtranstype': trans,
+                'mAmount': mamt, 'nPercent': npct, 'FXRate': fx,
+                'vState': state}
+
+    rows = []
+    pref = terms.get('pref_rate_pct')
+    pref_dec = float(pref) / 100.0 if pref else None
+    fee = float(terms.get('am_fee_pct') or 0)
+    periods = int(terms.get('fee_periods_per_year') or 4)
+    min_irr = terms.get('min_irr_pct')
+    gate_dec = float(min_irr) / 100.0 if min_irr else None
+    promote = float(terms.get('promote_pct') or 0)
+
+    def _pro_rata_tier(wf, order, lead_state, trans):
+        for k, p_row in enumerate(ordered):
+            fx = float(p_row.get('share_pct') or 0) / 100.0
+            state = lead_state if k == 0 else 'Tag'
+            rows.append(_row(wf, order, p_row['investor_id'], state,
+                             fx, 0, 0, '', trans))
+
+    # ---- CF_WF: (pref) -> pro-rata split; fee from investor distributions
+    if pref_dec:
+        for k, p_row in enumerate(ordered):
+            fx = float(p_row.get('share_pct') or 0) / 100.0
+            state = 'Pref' if k == 0 else 'Tag'
+            rows.append(_row('CF_WF', 10, p_row['investor_id'], state,
+                             fx, pref_dec if k == 0 else 0, 0, '',
+                             'Preferred Return'))
+    _pro_rata_tier('CF_WF', 20, 'Share', 'Excess Cash Flow')
+
+    # ---- Cap_WF: (pref) -> return of capital -> IRR gate -> promote tier
+    order = 10
+    if pref_dec:
+        for k, p_row in enumerate(ordered):
+            fx = float(p_row.get('share_pct') or 0) / 100.0
+            state = 'Pref' if k == 0 else 'Tag'
+            rows.append(_row('Cap_WF', order, p_row['investor_id'], state,
+                             fx, pref_dec if k == 0 else 0, 0, '',
+                             'Preferred Return'))
+        order += 10
+    _pro_rata_tier('Cap_WF', order, 'Initial', 'Return of Capital')
+    order += 10
+    if gate_dec and promote > 0:
+        # gate: lead LP's IRR (net of fees) releases pro-rata until the
+        # minimum IRR; with several LPs the largest gates for the tier
+        for k, p_row in enumerate(ordered):
+            fx = float(p_row.get('share_pct') or 0) / 100.0
+            state = 'IRR' if k == 0 else 'Tag'
+            rows.append(_row('Cap_WF', order, p_row['investor_id'], state,
+                             fx, gate_dec if k == 0 else 0, 0, '',
+                             'IRR Threshold'))
+        order += 10
+        splits = _post_gate_splits(participants, terms)
+        post = sorted(splits.items(), key=lambda kv: -kv[1])
+        for k, (pid, fx) in enumerate(post):
+            state = 'Share' if k == 0 else 'Tag'
+            rows.append(_row('Cap_WF', order, pid, state, round(fx, 6),
+                             0, 0, '', 'Promote Split'))
+    else:
+        _pro_rata_tier('Cap_WF', order, 'Share', 'Excess Cash Flow')
+
+    # ---- AM fee rows (both waterfalls, one per LP, quarterly-capped)
+    if fee > 0 and psc is not None:
+        for j, p_row in enumerate(lps):
+            for wf in ('CF_WF', 'Cap_WF'):
+                rows.append(_row(wf, 900 + j, psc['investor_id'], 'AMFee',
+                                 1.0, fee, periods, p_row['investor_id'],
+                                 'AM Fee'))
+    return rows
+
+
+def build_stack_waterfalls(engine, prospect_id: int,
+                           username: str = '') -> Dict[str, Any]:
+    """Generate and SAVE the stack's waterfalls (explicit write, mirroring
+    the deal Builder's rule that only Build & Save touches stored steps).
+
+    Multi-relationship stacks get a pro-rata Share/Tag split on the vehicle
+    id routing into the relationship entities; a single-relationship stack
+    puts the relationship waterfall directly on the vehicle id.
+    Returns {'ok', 'steps': {vcode: [rows]}, 'validation'}.
+    """
+    import pandas as pd
+    from datetime import date as dt_date
+    from database import save_waterfall_steps
+
+    stack = get_stack(engine, prospect_id)
+    check = validate_stack(stack)
+    if check['errors']:
+        return {'ok': False, 'validation': check}
+    rels = stack.get('relationships') or []
+    vehicle = stack.get('vehicle') or {}
+    vehicle_id = (vehicle.get('entity_id') or '').strip()
+    if not rels:
+        return {'ok': False, 'validation': {
+            'errors': ['No relationships declared.'], 'warnings': []}}
+    if not vehicle_id:
+        return {'ok': False, 'validation': {
+            'errors': ['The PE vehicle needs an entity id.'], 'warnings': []}}
+
+    steps_by_vcode: Dict[str, list] = {}
+    warnings = list(check['warnings'])
+
+    if len(rels) == 1:
+        steps_by_vcode[vehicle_id] = build_relationship_steps(
+            vehicle_id, rels[0], prospect_id, 1)
+    else:
+        split_rows = []
+        ordered = sorted(rels, key=lambda r: -float(r.get('slice_pct') or 0))
+        for wf in ('CF_WF', 'Cap_WF'):
+            for k, rel in enumerate(ordered):
+                split_rows.append({
+                    'vcode': vehicle_id, 'vmisc': wf, 'iOrder': 10,
+                    'vAmtType': '', 'vNotes': '',
+                    'PropCode': rel['entity_id'],
+                    'nmisc': 0, 'dteffective': dt_date(2020, 1, 1),
+                    'vtranstype': 'Pro Rata Split',
+                    'mAmount': 0, 'nPercent': 0,
+                    'FXRate': float(rel.get('slice_pct') or 0) / 100.0,
+                    'vState': 'Share' if k == 0 else 'Tag'})
+        steps_by_vcode[vehicle_id] = split_rows
+        for n, rel in enumerate(rels, 1):
+            steps_by_vcode[rel['entity_id']] = build_relationship_steps(
+                rel['entity_id'], rel, prospect_id, n)
+        lps_multi = [r['name'] for r in rels
+                     if len([p_row for p_row in r['participants']
+                             if (p_row.get('type') or '').lower() != 'psc']) > 1]
+        if lps_multi:
+            warnings.append(
+                "Relationships with several investors gate the promote on "
+                "the largest investor's IRR: " + ", ".join(lps_multi))
+
+    for vcode, rows in steps_by_vcode.items():
+        save_waterfall_steps(vcode, pd.DataFrame(rows))
+    logger.info("PPI waterfalls built for prospect %s by %s: %s",
+                prospect_id, username,
+                {k: len(v) for k, v in steps_by_vcode.items()})
+    return {'ok': True, 'steps': steps_by_vcode,
+            'validation': {'errors': [], 'warnings': warnings}}
+
