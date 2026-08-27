@@ -508,7 +508,30 @@ def build_stack_waterfalls(engine, prospect_id: int,
     steps_by_vcode: Dict[str, list] = {}
     warnings = list(check['warnings'])
 
-    if len(rels) == 1:
+    # A relationship linked to an EXISTING entity keeps that entity's
+    # waterfall: its steps are never generated or overwritten. The vehicle
+    # then routes into it via the pro-rata split, even for a single
+    # relationship.
+    def _has_existing_waterfall(entity_id):
+        from sqlalchemy import text as sa_text
+        with engine.connect() as c:
+            return bool(c.execute(sa_text(
+                'SELECT 1 FROM waterfalls WHERE vcode = :v LIMIT 1'),
+                {'v': entity_id}).scalar())
+
+    linked = {}
+    for rel in rels:
+        rid = (rel.get('entity_id') or '').strip()
+        terms = _load_terms(rel.get('terms'))
+        if rid and not rid.upper().startswith('NR') \
+                and (terms.get('existing_entity')
+                     or _has_existing_waterfall(rid)):
+            linked[rid] = True
+            warnings.append(
+                f"{rel.get('name') or rid}: linked to existing entity {rid} "
+                f"— its stored waterfall is kept, not regenerated.")
+
+    if len(rels) == 1 and not linked:
         steps_by_vcode[vehicle_id] = build_relationship_steps(
             vehicle_id, rels[0], prospect_id, 1)
     else:
@@ -527,6 +550,8 @@ def build_stack_waterfalls(engine, prospect_id: int,
                     'vState': 'Share' if k == 0 else 'Tag'})
         steps_by_vcode[vehicle_id] = split_rows
         for n, rel in enumerate(rels, 1):
+            if rel['entity_id'] in linked:
+                continue
             steps_by_vcode[rel['entity_id']] = build_relationship_steps(
                 rel['entity_id'], rel, prospect_id, n)
         lps_multi = [r['name'] for r in rels
