@@ -793,12 +793,16 @@ def apply_manual_parcel_distributions(parcel_events, seed_states, cf_investors,
     return pd.concat([cap_alloc, add], ignore_index=True).sort_values("event_date")
 
 
-def apply_parcel_income_loss(fc, losses, debug_msgs=None):
+def apply_parcel_income_loss(fc, losses, debug_msgs=None, detail_out=None):
     """Remove the revenue and expenses that leave with a sold parcel.
 
     `losses` is a list of {'date', 'label', 'revenue': {acct: annual},
     'expense': {acct: annual}}. Amounts are annual and are spread evenly
     across the months from the parcel sale date onward.
+
+    `detail_out`, when given, collects the revenue actually removed per
+    parcel/account/month, so a display can back the reduction out of the
+    revenue line and show it as its own labelled row.
 
     Only `mAmount_norm` is adjusted, which is the column every downstream
     NOI, FAD, DSCR and terminal-value calculation reads. Revenue is positive
@@ -845,6 +849,13 @@ def apply_parcel_income_loss(fc, losses, debug_msgs=None):
                     out.loc[mask, "mAmount_norm"] + sign * monthly
                 )
                 removed = monthly * n_rows
+                if kind == "revenue" and detail_out is not None:
+                    detail_out.append({
+                        "label": label,
+                        "acct": str(acct).strip(),
+                        "monthly": monthly,
+                        "dates": [str(d)[:10] for d in out.loc[mask, "event_date"]],
+                    })
                 msgs.append(
                     f"Parcel sale '{label}': removed ${removed:,.0f} of {kind} "
                     f"from account {acct} across {n_rows} months from {p_date} "
@@ -1207,6 +1218,7 @@ def compute_deal_analysis(
             )
 
 
+    parcel_revenue_detail = []
     if parcel_income_losses:
         # Imported locally: the module-level config import omits REVENUE_ACCTS,
         # and the only other binding sits inside a conditional branch.
@@ -1217,7 +1229,8 @@ def compute_deal_analysis(
             ["mAmount_norm"].sum()
         )
         fc_deal_full = apply_parcel_income_loss(
-            fc_deal_full, parcel_income_losses, debug_msgs)
+            fc_deal_full, parcel_income_losses, debug_msgs,
+            detail_out=parcel_revenue_detail)
         noi_after = float(
             fc_deal_full[fc_deal_full["vAccount"].isin(_op_accts)]
             ["mAmount_norm"].sum()
@@ -1852,6 +1865,9 @@ def compute_deal_analysis(
         for pe in parcel_events
     ]
     result['_parcel_events'] = parcel_events   # date objects, for reporting
+    # Revenue removed per parcel/account/month, so displays can show the
+    # reduction as its own labelled row under the revenue line
+    result['parcel_revenue_detail'] = parcel_revenue_detail
 
     result['partner_results'] = partner_results
     result['deal_summary'] = deal_summary

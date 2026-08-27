@@ -688,6 +688,50 @@ def _continue_analyze(result, deal_data, assumptions):
                                 'is_pct': False, 'is_header': False,
                                 'underline': False, 'topline': False,
                             })
+
+                # Parcel sales: the lost rent is netted into the revenue rows
+                # by the engine. Back it out of the group lines and show each
+                # parcel as its own labelled reduction directly below Rental
+                # Income (before Vacancy). Group totals and NOI are unchanged.
+                prd = result.get('parcel_revenue_detail') or []
+                if prd and rev_details:
+                    acct_group = {}   # acct -> group label
+                    for lbl, accts in IS_ACCOUNTS.get('REVENUES', {}).items():
+                        for a in accts:
+                            acct_group[str(a)] = f'  {lbl}'
+                    by_group = {}     # group label -> {yr: removed}
+                    by_parcel = {}    # parcel label -> {yr: removed}
+                    for d in prd:
+                        glabel = acct_group.get(str(d.get('acct')))
+                        monthly = float(d.get('monthly') or 0)
+                        for ds in (d.get('dates') or []):
+                            yr = _anniv_year(pd.Timestamp(ds))
+                            if not (1 <= yr <= num_years):
+                                continue
+                            if glabel:
+                                by_group.setdefault(glabel, {})
+                                by_group[glabel][yr] = by_group[glabel].get(yr, 0) + monthly
+                            by_parcel.setdefault(d.get('label') or 'Parcel sale', {})
+                            by_parcel[d.get('label') or 'Parcel sale'][yr] =                                 by_parcel[d.get('label') or 'Parcel sale'].get(yr, 0) + monthly
+                    # add the removal back to the group lines
+                    for row in rev_details:
+                        add = by_group.get(row['label'])
+                        if not add:
+                            continue
+                        vals = {int(k): v for k, v in (row['values'] or {}).items()}
+                        for yr, amt in add.items():
+                            vals[yr] = vals.get(yr, 0) + amt
+                        row['values'] = safe_json(vals)
+                    # insert the labelled reductions after Rental Income
+                    at = next((i for i, r in enumerate(rev_details)
+                               if r['label'].strip() == 'Rental Income'), -1)
+                    for j, (plabel, yrs) in enumerate(sorted(by_parcel.items())):
+                        rev_details.insert(at + 1 + j, {
+                            'label': f'  Less: {plabel}',
+                            'values': safe_json({yr: -amt for yr, amt in yrs.items()}),
+                            'is_pct': False, 'is_header': False,
+                            'underline': False, 'topline': False,
+                        })
             except Exception as detail_err:
                 logger.warning("Detail line items failed: %s", detail_err)
 
