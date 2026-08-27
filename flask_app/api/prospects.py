@@ -1345,9 +1345,19 @@ def analyze_deal_excel(deal_id):
     except Exception as e:
         logger.warning("annual forecast for excel: %s", e)
 
+    ppi = None
+    try:
+        from flask_app.services import ppi_upstream_service
+        did = deal_data['deal'].get('id')
+        if did:
+            ppi = ppi_upstream_service.build_ppi_results(
+                get_engine(), int(did), result)
+    except Exception:
+        logger.exception("PPI sheet build failed")
+
     xlsx = generate_prospect_analysis_excel(
         result, deal_data['deal'], assumptions, wf_steps, scenario,
-        annual_forecast=annual_forecast)
+        annual_forecast=annual_forecast, ppi=ppi)
     name = (deal_data['deal'].get('deal_name') or 'deal').replace(' ', '_')
     if scenario:
         name += '_' + str(scenario.get('name', '')).replace(' ', '_')

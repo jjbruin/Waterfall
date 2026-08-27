@@ -101,6 +101,7 @@ def generate_prospect_analysis_excel(
     wf_steps: Optional[List[Dict[str, Any]]] = None,
     scenario: Optional[Dict[str, Any]] = None,
     annual_forecast: Optional[Dict[str, Any]] = None,
+    ppi: Optional[Dict[str, Any]] = None,
 ) -> bytes:
     """Build the audit workbook. Returns xlsx bytes.
 
@@ -462,6 +463,65 @@ def generate_prospect_analysis_excel(
         ws.cell(row=r, column=8, value=st.get("vtranstype"))
         r += 1
     _autosize_columns(ws)
+
+    # ------------------------------------------------------------------
+    # 7b. PPI Ownership — the stack upstream of the PE vehicle
+    # ------------------------------------------------------------------
+    if ppi and (ppi.get("participants") or ppi.get("notes")):
+        ws = wb.create_sheet("PPI Ownership")
+        r = 1
+        ws.cell(row=r, column=1, value=f"PE Vehicle: {ppi.get('vehicle', '')}"
+                ).font = s["bold"]
+        r += 1
+        for note in (ppi.get("notes") or []):
+            ws.cell(row=r, column=1, value=str(note))
+            r += 1
+        r += 1
+        if ppi.get("participants"):
+            r = _section(ws, r, "Participants", s)
+            _write_header_row(ws, r, ["Participant", "Type", "Relationships",
+                                      "Contributions", "Distributions",
+                                      "AM Fees Paid", "AM Fees Received",
+                                      "Net", "IRR", "MOIC"], s)
+            r += 1
+            for p_row in ppi["participants"]:
+                ws.cell(row=r, column=1,
+                        value=f"{p_row.get('name')} ({p_row.get('investor_id')})")
+                ws.cell(row=r, column=2, value=p_row.get("type"))
+                ws.cell(row=r, column=3,
+                        value=", ".join(p_row.get("relationships") or []))
+                _fmt_cell(ws, r, 4, p_row.get("contributions"), s, "curr")
+                _fmt_cell(ws, r, 5, p_row.get("distributions"), s, "curr")
+                _fmt_cell(ws, r, 6, p_row.get("am_fees_paid"), s, "curr")
+                _fmt_cell(ws, r, 7, p_row.get("am_fees_received"), s, "curr")
+                _fmt_cell(ws, r, 8, p_row.get("net_total"), s, "curr")
+                _fmt_cell(ws, r, 9, p_row.get("irr"), s, "pct")
+                c = ws.cell(row=r, column=10, value=p_row.get("moic"))
+                c.number_format = s["mult"]
+                r += 1
+            r += 1
+        for rel in (ppi.get("relationships") or []):
+            r = _section(ws, r, f"{rel.get('name')} ({rel.get('entity_id')}, "
+                                f"{rel.get('slice_pct')}%)", s)
+            for b in (rel.get("breakdown") or []):
+                ws.cell(row=r, column=1, value=b.get("category"))
+                ws.cell(row=r, column=2, value=b.get("participant"))
+                _fmt_cell(ws, r, 3, b.get("amount"), s, "curr")
+                r += 1
+            fs = rel.get("fee_schedule") or []
+            if fs:
+                ws.cell(row=r, column=1, value="AM fee schedule").font = s["bold"]
+                r += 1
+                _write_header_row(ws, r, ["Date", "Recipient", "Waterfall", "Fee"], s)
+                r += 1
+                for f in fs:
+                    ws.cell(row=r, column=1, value=f.get("date"))
+                    ws.cell(row=r, column=2, value=f.get("recipient"))
+                    ws.cell(row=r, column=3, value=f.get("waterfall"))
+                    _fmt_cell(ws, r, 4, f.get("fee"), s, "curr")
+                    r += 1
+            r += 1
+        _autosize_columns(ws)
 
     # ------------------------------------------------------------------
     # 8. Partner Cash Flows — with live =XIRR so Excel audits the IRR

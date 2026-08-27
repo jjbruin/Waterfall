@@ -456,6 +456,11 @@ async function selectDeal(id: number) {
   nbParcelServerLoans.value = []
   nbParcelTenants.value = []
   nbTenantsLoaded.value = false
+  ppiStack.value = { vehicle: null, relationships: [] }
+  ppiSteps.value = {}
+  ppiError.value = ''
+  ppiWarnings.value = []
+  ppiOpen.value = false
   selectedDealId.value = id
   loadScenarios()
   analysisResult.value = null
@@ -470,6 +475,7 @@ async function selectDeal(id: number) {
     ])
     dealDetail.value = detailRes.data
     loadNbParcels()
+    loadPpiStack()
     assumptionVersions.value = assumRes.data || []
     wfSteps.value = wfRes.data.steps || []
     wfHasStored.value = wfRes.data.has_cf || wfRes.data.has_cap
@@ -1231,6 +1237,112 @@ function addNbParcelDebtRow(s: any) {
   const next = nbParcelLoans.value.find(l => !used.has(l.loan_id))
   s.debt_application = [...(s.debt_application || []),
     { loan_id: next ? next.loan_id : '', amount: null }]
+}
+
+// ---------------------------------------------------------------------------
+// PPI Ownership Stack — Peaceable's investor relationships upstream of the
+// PE vehicle. Declared here, built into stored waterfalls on explicit
+// Build & Save (same reads-never-writes rule as the deal Builder), computed
+// into analysisResult.ppi_waterfalls by Compute Returns.
+// ---------------------------------------------------------------------------
+interface PpiParticipant {
+  id?: number; name: string; investor_id: string | null
+  share_pct: number | null; commitment?: number | null; type: 'psc' | 'lp'
+}
+interface PpiRelationship {
+  id?: number; name: string; entity_id: string | null; slice_pct: number | null
+  terms: Record<string, any>; participants: PpiParticipant[]
+}
+const ppiStack = ref<{ vehicle: any; relationships: PpiRelationship[] }>(
+  { vehicle: null, relationships: [] })
+const ppiOpen = ref(false)
+const ppiSaving = ref(false)
+const ppiBuilding = ref(false)
+const ppiError = ref('')
+const ppiWarnings = ref<string[]>([])
+const ppiSteps = ref<Record<string, any[]>>({})
+const ppiEntities = ref<{ entity_id: string }[]>([])
+
+function blankPpiTerms() {
+  return { am_fee_pct: null, fee_periods_per_year: 4, pref_rate_pct: null,
+           min_irr_pct: null, promote_pct: null, promote_shared_pct: 0 }
+}
+
+function blankPpiRelationship(): PpiRelationship {
+  return {
+    name: '', entity_id: null, slice_pct: null, terms: blankPpiTerms(),
+    participants: [
+      { name: '', investor_id: null, share_pct: null, type: 'lp' },
+      { name: 'PSC co-invest', investor_id: 'PSC1', share_pct: null, type: 'psc' },
+    ],
+  }
+}
+
+async function loadPpiStack() {
+  if (!selectedDealId.value) return
+  try {
+    const res = await api.get(`/api/prospects/${selectedDealId.value}/ppi-stack`)
+    const stack = res.data.stack || { vehicle: null, relationships: [] }
+    if (!stack.vehicle) {
+      // default the vehicle to the deal-level PE participant
+      const pe = wfSteps.value.find(s => s.vmisc === 'CF_WF' && s.vState === 'Pref')
+      stack.vehicle = { name: 'PE vehicle', entity_id: pe ? pe.PropCode : null }
+    }
+    ppiStack.value = stack
+    ppiWarnings.value = res.data.validation?.warnings || []
+    if (stack.relationships?.length) loadPpiSteps()
+  } catch {
+    ppiStack.value = { vehicle: null, relationships: [] }
+  }
+}
+
+async function loadPpiSteps() {
+  if (!selectedDealId.value) return
+  try {
+    const res = await api.get(`/api/prospects/${selectedDealId.value}/ppi-stack/steps`)
+    ppiSteps.value = res.data.steps || {}
+  } catch { ppiSteps.value = {} }
+}
+
+async function loadPpiEntities() {
+  if (ppiEntities.value.length) return
+  try {
+    const res = await api.get('/api/prospects/ppi-entities')
+    ppiEntities.value = res.data.entities || []
+  } catch { ppiEntities.value = [] }
+}
+
+async function savePpiStack(): Promise<boolean> {
+  if (!selectedDealId.value) return false
+  ppiSaving.value = true
+  ppiError.value = ''
+  try {
+    const res = await api.put(`/api/prospects/${selectedDealId.value}/ppi-stack`,
+                              ppiStack.value)
+    ppiStack.value = res.data.stack
+    ppiWarnings.value = res.data.validation?.warnings || []
+    return true
+  } catch (e: any) {
+    ppiError.value = e.response?.data?.error || 'Could not save the stack.'
+    return false
+  } finally {
+    ppiSaving.value = false
+  }
+}
+
+async function buildPpiWaterfalls() {
+  if (!(await savePpiStack())) return
+  ppiBuilding.value = true
+  ppiError.value = ''
+  try {
+    const res = await api.post(`/api/prospects/${selectedDealId.value}/ppi-stack/build`, {})
+    ppiWarnings.value = res.data.validation?.warnings || []
+    await loadPpiSteps()
+  } catch (e: any) {
+    ppiError.value = e.response?.data?.error || 'Could not build the waterfalls.'
+  } finally {
+    ppiBuilding.value = false
+  }
 }
 
 const excelDownloading = ref(false)
@@ -2421,6 +2533,108 @@ loadDeals()
             </div>
           </div>
 
+          <!-- ============ PPI OWNERSHIP STACK ============ -->
+          <div class="section">
+            <div class="section-header clickable" @click="ppiOpen = !ppiOpen; loadPpiEntities()">
+              PPI Ownership Stack
+              <span v-if="ppiStack.relationships.length" class="parcel-count">{{ ppiStack.relationships.length }}</span>
+              <span v-if="Object.keys(ppiSteps).length" class="badge-saved">Built</span>
+              <span class="chevron">{{ ppiOpen ? '\u25BE' : '\u25B8' }}</span>
+            </div>
+            <div v-if="ppiOpen" class="ppi-body">
+              <p class="field-hint">
+                How the PE vehicle's position splits across Peaceable's investor
+                relationships: pro-rata sharing, quarterly AM fees on funded
+                capital, and promotes after the investor's minimum IRR (net of
+                fees). Build &amp; Save stores the waterfalls; Compute Returns
+                runs them.
+              </p>
+              <div v-if="ppiError" class="scenario-error">{{ ppiError }}</div>
+              <ul v-if="ppiWarnings.length" class="parcel-issues">
+                <li v-for="(w, wi) in ppiWarnings" :key="wi">{{ w }}</li>
+              </ul>
+
+              <div class="ppi-vehicle" v-if="ppiStack.vehicle">
+                <label>PE Vehicle<input v-model="ppiStack.vehicle.name" placeholder="name" /></label>
+                <label>Entity ID<input v-model="ppiStack.vehicle.entity_id" placeholder="e.g. PPIWIND" /></label>
+              </div>
+
+              <div v-for="(rel, ri) in ppiStack.relationships" :key="'rel' + ri" class="ppi-rel-card">
+                <div class="ppi-rel-head">
+                  <input v-model="rel.name" class="scen-name" placeholder="Relationship name" />
+                  <label class="ppi-inline">Slice %
+                    <input type="number" step="0.1" v-model.number="rel.slice_pct" /></label>
+                  <label class="ppi-inline">Entity ID
+                    <input v-model="rel.entity_id" list="ppi-entity-list"
+                           placeholder="blank = placeholder" /></label>
+                  <button class="btn-mini danger" @click="ppiStack.relationships.splice(ri, 1)">Remove</button>
+                </div>
+                <div class="ppi-terms-grid">
+                  <label>AM Fee %/yr<input type="number" step="0.05" v-model.number="rel.terms.am_fee_pct" placeholder="0.95" /></label>
+                  <label>Fee periods/yr
+                    <select v-model.number="rel.terms.fee_periods_per_year">
+                      <option :value="4">Quarterly</option>
+                      <option :value="1">Annual</option>
+                      <option :value="2">Semi-annual</option>
+                      <option :value="12">Monthly</option>
+                    </select>
+                  </label>
+                  <label>CF Pref % (optional)<input type="number" step="0.25" v-model.number="rel.terms.pref_rate_pct" placeholder="none" /></label>
+                  <label>Investor min IRR %<input type="number" step="0.25" v-model.number="rel.terms.min_irr_pct" placeholder="9.0" /></label>
+                  <label>Promote %<input type="number" step="1" v-model.number="rel.terms.promote_pct" placeholder="20" /></label>
+                  <label>Promote shared w/ investors %<input type="number" step="5" v-model.number="rel.terms.promote_shared_pct" placeholder="0" /></label>
+                </div>
+                <div class="ppi-participants">
+                  <span class="scen-section-title">Participants</span>
+                  <button class="btn-mini" @click="rel.participants.push({ name: '', investor_id: null, share_pct: null, type: 'lp' })">+ Investor</button>
+                  <div v-for="(pp, pi) in rel.participants" :key="'pp' + pi" class="ppi-part-row">
+                    <select v-model="pp.type">
+                      <option value="lp">Investor</option>
+                      <option value="psc">PSC</option>
+                    </select>
+                    <input v-model="pp.name" placeholder="name" />
+                    <input v-model="pp.investor_id" placeholder="entity id (blank = placeholder)" />
+                    <input type="number" step="0.5" v-model.number="pp.share_pct" placeholder="share %" class="ppi-share" />
+                    <button class="btn-mini" @click="rel.participants.splice(pi, 1)">&times;</button>
+                  </div>
+                </div>
+              </div>
+              <datalist id="ppi-entity-list">
+                <option v-for="e in ppiEntities" :key="e.entity_id" :value="e.entity_id" />
+              </datalist>
+
+              <div class="ppi-actions">
+                <button class="btn-mini" @click="ppiStack.relationships.push(blankPpiRelationship())">+ Add Relationship</button>
+                <button class="btn-secondary" :disabled="ppiSaving" @click="savePpiStack">
+                  {{ ppiSaving ? 'Saving...' : 'Save Stack' }}
+                </button>
+                <button class="btn-primary" :disabled="ppiBuilding || !ppiStack.relationships.length"
+                        @click="buildPpiWaterfalls">
+                  {{ ppiBuilding ? 'Building...' : 'Build & Save PPI Waterfalls' }}
+                </button>
+              </div>
+
+              <details v-if="Object.keys(ppiSteps).length" class="ppi-steps-preview">
+                <summary>Stored steps ({{ Object.values(ppiSteps).reduce((a, v) => a + v.length, 0) }})</summary>
+                <div v-for="(rows, vc) in ppiSteps" :key="vc" style="margin-top:6px">
+                  <h5 style="margin:4px 0">{{ vc }}</h5>
+                  <table class="compact-table">
+                    <thead><tr><th>WF</th><th>Tie</th><th>Partner</th><th>Step</th>
+                      <th class="r">FX</th><th class="r">Rate</th><th class="r">Amt</th><th>Notes</th></tr></thead>
+                    <tbody>
+                      <tr v-for="(s, si) in rows" :key="si">
+                        <td>{{ s.vmisc }}</td><td>{{ s.iOrder }}</td><td>{{ s.PropCode }}</td>
+                        <td>{{ s.vState }}</td><td class="r">{{ s.FXRate }}</td>
+                        <td class="r">{{ s.nPercent }}</td><td class="r">{{ s.mAmount }}</td>
+                        <td>{{ s.vNotes }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+            </div>
+          </div>
+
           <!-- Action buttons -->
           <div class="action-bar">
             <button class="btn-primary btn-lg" @click="runAnalysis"
@@ -2681,6 +2895,100 @@ loadDeals()
                     </tr>
                   </tbody>
                 </table>
+              </div>
+            </div>
+
+            <!-- PPI Ownership Waterfalls -->
+            <div class="section expandable" v-if="analysisResult.ppi_waterfalls">
+              <div class="section-header" @click="expanded.ppi = !expanded.ppi">
+                PPI Ownership Waterfalls
+                <span class="chevron">{{ expanded.ppi ? '\u25BE' : '\u25B8' }}</span>
+              </div>
+              <div v-if="expanded.ppi">
+                <ul v-if="analysisResult.ppi_waterfalls.notes?.length" class="parcel-issues">
+                  <li v-for="(n, ni) in analysisResult.ppi_waterfalls.notes" :key="ni">{{ n }}</li>
+                </ul>
+
+                <template v-if="analysisResult.ppi_waterfalls.participants?.length">
+                  <div class="metric-cards" style="margin-bottom:10px"
+                       v-if="analysisResult.ppi_waterfalls.psc_summary">
+                    <div class="metric-card">
+                      <div class="metric-label">PSC AM Fees</div>
+                      <div class="metric-value">{{ fmtCurrency(analysisResult.ppi_waterfalls.psc_summary.total_fees) }}</div>
+                    </div>
+                    <div class="metric-card">
+                      <div class="metric-label">PSC Co-invest</div>
+                      <div class="metric-value">{{ fmtCurrency(analysisResult.ppi_waterfalls.psc_summary.total_contributions) }}</div>
+                    </div>
+                    <div class="metric-card">
+                      <div class="metric-label">PSC Distributions</div>
+                      <div class="metric-value">{{ fmtCurrency(analysisResult.ppi_waterfalls.psc_summary.total_distributions) }}</div>
+                    </div>
+                    <div class="metric-card" v-if="analysisResult.ppi_waterfalls.psc_summary.irr != null">
+                      <div class="metric-label">PSC IRR (incl. fees + promote)</div>
+                      <div class="metric-value">{{ fmtPct(analysisResult.ppi_waterfalls.psc_summary.irr) }}</div>
+                    </div>
+                  </div>
+
+                  <div class="table-scroll">
+                    <table class="compact-table">
+                      <thead>
+                        <tr>
+                          <th>Participant</th><th>Relationships</th>
+                          <th class="r">Contributions</th><th class="r">Distributions</th>
+                          <th class="r">AM Fees Paid</th><th class="r">AM Fees Recd</th>
+                          <th class="r">Net</th><th class="r">IRR</th><th class="r">MOIC</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="p in analysisResult.ppi_waterfalls.participants"
+                            :key="p.investor_id"
+                            :class="{ 'psc-row': p.type === 'psc' }">
+                          <td>{{ p.name }} <span class="ppi-id">({{ p.investor_id }})</span></td>
+                          <td>{{ p.relationships.join(', ') }}</td>
+                          <td class="r">{{ fmtCurrency(p.contributions) }}</td>
+                          <td class="r">{{ fmtCurrency(p.distributions) }}</td>
+                          <td class="r">{{ fmtCurrency(p.am_fees_paid) }}</td>
+                          <td class="r">{{ fmtCurrency(p.am_fees_received) }}</td>
+                          <td class="r">{{ fmtCurrency(p.net_total) }}</td>
+                          <td class="r">{{ p.irr != null ? fmtPct(p.irr) : '—' }}</td>
+                          <td class="r">{{ p.moic != null ? fmtDec(p.moic, 2) + 'x' : '—' }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div v-for="rel in analysisResult.ppi_waterfalls.relationships"
+                       :key="rel.entity_id" class="ppi-rel-result">
+                    <h4 style="margin:10px 0 4px">
+                      {{ rel.name }} <span class="ppi-id">({{ rel.entity_id }}, {{ rel.slice_pct }}%)</span>
+                    </h4>
+                    <div class="table-scroll" v-if="rel.breakdown?.length">
+                      <table class="compact-table">
+                        <thead><tr><th>Category</th><th>Participant</th><th class="r">Amount</th></tr></thead>
+                        <tbody>
+                          <tr v-for="(b, bi) in rel.breakdown" :key="bi">
+                            <td>{{ b.category }}</td><td>{{ b.participant }}</td>
+                            <td class="r">{{ fmtCurrency(b.amount) }}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <details v-if="rel.fee_schedule?.length">
+                      <summary>AM fee schedule ({{ rel.fee_schedule.length }} payments,
+                        {{ fmtCurrency(rel.fee_schedule.reduce((a, f) => a + f.fee, 0)) }})</summary>
+                      <table class="compact-table" style="margin-top:4px">
+                        <thead><tr><th>Date</th><th>Recipient</th><th>Waterfall</th><th class="r">Fee</th></tr></thead>
+                        <tbody>
+                          <tr v-for="(f, fi) in rel.fee_schedule" :key="fi">
+                            <td>{{ f.date }}</td><td>{{ f.recipient }}</td>
+                            <td>{{ f.waterfall }}</td><td class="r">{{ fmtCurrency(f.fee) }}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </details>
+                  </div>
+                </template>
               </div>
             </div>
 
@@ -3428,4 +3736,22 @@ loadDeals()
 .metric-card { background: #f7f9fb; border: 1px solid #e2e6ea; border-radius: 4px; padding: 8px 14px; min-width: 120px; }
 .metric-card .metric-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em; color: #5a6675; margin-bottom: 2px; }
 .metric-card .metric-value { font-size: 0.95rem; font-weight: 600; color: #14201d; font-variant-numeric: tabular-nums; }
+.ppi-body { padding: 6px 2px; }
+.ppi-vehicle { display: flex; gap: 10px; margin-bottom: 8px; }
+.ppi-vehicle label, .ppi-inline { display: flex; flex-direction: column; gap: 2px; font-size: 0.72rem; color: #5a6675; }
+.ppi-vehicle input, .ppi-inline input { padding: 4px 6px; border: 1px solid #ccd3d9; border-radius: 2px; font-size: 0.8rem; }
+.ppi-rel-card { border: 1px solid #e2e6ea; border-radius: 3px; padding: 8px 10px; margin-bottom: 8px; background: #fcfdfe; }
+.ppi-rel-head { display: flex; gap: 8px; align-items: flex-end; margin-bottom: 6px; }
+.ppi-terms-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin-bottom: 6px; }
+.ppi-terms-grid label { display: flex; flex-direction: column; gap: 2px; font-size: 0.72rem; color: #5a6675; }
+.ppi-terms-grid input, .ppi-terms-grid select { padding: 4px 6px; border: 1px solid #ccd3d9; border-radius: 2px; font-size: 0.8rem; }
+.ppi-participants { margin-top: 4px; }
+.ppi-part-row { display: flex; gap: 6px; margin-top: 4px; }
+.ppi-part-row select { flex: 0 0 90px; } .ppi-part-row input { flex: 1; }
+.ppi-part-row .ppi-share { flex: 0 0 80px; }
+.ppi-actions { display: flex; gap: 8px; margin-top: 8px; }
+.ppi-steps-preview { margin-top: 10px; font-size: 0.8rem; }
+.ppi-id { color: #8a94a0; font-weight: 400; font-size: 0.75rem; }
+.ppi-rel-result { margin-top: 8px; }
+.psc-row { background: #f0f6f2; font-weight: 600; }
 </style>

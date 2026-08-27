@@ -115,7 +115,7 @@ onboarding.
 - Deal-level N->P re-key already exists; extend to the vehicle split's vcode
   reference if it was N-keyed.
 
-## Phases  (status: 1-3 DONE Aug 27; 4-5 pending. Phase 3 note: upstream engine double-credited terminal recipients in state cashflows — fixed via state_credited flag on run_upstream_waterfall_period; PSCKOC/Portfolio Analysis IRR gates and state-based XIRRs become more correct, spot-check advised. NB runs CF+Cap interleaved with one shared state dict + one quarterly fee tracker.)
+## Phases  (status: 1-4 DONE Aug 27; 4-5 pending. Phase 3 note: upstream engine double-credited terminal recipients in state cashflows — fixed via state_credited flag on run_upstream_waterfall_period; PSCKOC/Portfolio Analysis IRR gates and state-based XIRRs become more correct, spot-check advised. NB runs CF+Cap interleaved with one shared state dict + one quarterly fee tracker.)
 1. **Stack model + CRUD** — entity roles, terms JSON, endpoints, validation
    (slices sum to 100, participant shares sum, fee/hurdle sanity).
 2. **Builder + save** — templates that emit the vehicle split and
