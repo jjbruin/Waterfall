@@ -83,6 +83,13 @@ LTV_REVIEW_CEILING = 1.50
 
 VARIOUS = "Various"
 
+#: vIntType values that mean the loan is priced off an index rather than a
+#: single all-in rate. Only 'Variable' occurs on live today (19 of 90 rows);
+#: the synonyms are here so a relabelling upstream does not silently drop a
+#: loan back to showing its number. See rate_of() for why these take
+#: precedence over nRate.
+FLOATING_INT_TYPES = {"variable", "floating", "adjustable"}
+
 #: Development deals have no stabilised operations, so the three ratio columns
 #: render this literal instead of a number — matching the PDF. Debt, Rate and
 #: Maturity still display normally for them.
@@ -288,6 +295,23 @@ def _loan_terms(rows: pd.DataFrame) -> dict:
         left every floating-rate deal with a blank Rate (Jefferson Addison
         Heights, Eastchase, Stephens, Waters Creek and one of Brainerd's two).
         """
+        # A floating loan is priced by its index and spread, so that form wins
+        # over any all-in nRate sitting beside it. nRate used to be checked
+        # first, which meant a floating loan carrying both showed the number
+        # and its index was discarded even though it was right there in the
+        # row -- Plaza Del Mar read "7.7%" against a PDF that says "SOFR + 400".
+        #
+        # BOTH index and spread are required. A floating loan missing either
+        # falls through to the number rather than rendering a partial "SOFR",
+        # and a loan whose vIntType is not floating is never touched -- Trolley
+        # Square is 'Fixed' with a stray vIndex and no spread, and must keep
+        # reading "6.3% fixed" as the PDF has it.
+        itype = _s(r.get("vIntType")).lower()
+        idx_f, spr_f = _s(r.get("vIndex")), _num(r.get("vSpread"))
+        if itype in FLOATING_INT_TYPES and idx_f and spr_f is not None:
+            bps = (spr_f * 10000) if spr_f < 1 else (spr_f * 100)
+            return None, f"{idx_f} + {bps:.0f}"
+
         rate = _num(r.get("nRate"))
         if rate is not None and rate >= 1:
             rate = rate / 100.0
