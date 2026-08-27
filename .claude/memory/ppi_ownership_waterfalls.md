@@ -130,14 +130,39 @@ Verification: hand-modeled two-relationship Windsor case (e.g. 60/40 slices,
 0.95% fee, 9% net-IRR gate, 20% promote shared on one side only) cross-checked
 against the PSCKOC engine's known-good behaviors.
 
-## Open questions for Jim (asked Aug 27)
-1. AM fee base: funded capital outstanding (reduced by ROC) or committed?
-   Paid quarterly? (Engine default: balance-based, per-quarter cap.)
-2. Promote timing: continuous catch-up as cash flows (Promote step) vs
-   crystallized at capital events via IRR lookback gates (IRR step) — PSCKOC
-   uses IRR gates in Cap_WF; confirm per-relationship convention.
-3. Are permanent relationship/entity IDs known at modeling time (MRI PPI
-   convention) or assigned at close? (Determines how much re-keying the
-   migration needs.)
-4. Multiple investors inside one relationship, or always one investor +
-   PSC? (Affects participant table shape, not the engine.)
+## Answers (Jim, Aug 27) — design resolutions
+
+1. **AM fee base = funded capital reduced by ROC, paid quarterly.** Matches
+   AMFee's balance-based behavior (capital_outstanding falls with returns of
+   capital) with mAmount = 4 periods/yr and the per-quarter cap. Builder
+   default: quarterly.
+2. **PSCKOC's catch-up is unique — do not template it.** The STANDARD deal:
+   CF and capital shared pro-rata between PSC and the investor(s); AM fee paid
+   out of the investor's distribution (AMFee: vNotes = investor, PropCode =
+   PSC — pool-neutral deduction, exactly the engine semantics); PSC earns a
+   promote AFTER the investor achieves a minimum IRR. Standard template per
+   relationship:
+     - Tier 1: pro-rata Share/Tag (PSC co-invest % / investor %)
+     - AMFee step (investor source -> PSC), quarterly on funded balance
+     - Cap_WF gate: investor IRR-as-lead (nPercent = min IRR, net of fees by
+       engine construction, FXRate = investor share) + PSC Tag; then the
+       post-promote tier Share/Tag with PSC's promoted share
+     - "Promote shared with investors" = FXRates on the post-gate tier
+   The Promote (catch-up) vState stays available as an "advanced" step for
+   PSCKOC-style deals but is not in the default template.
+3. **Entity IDs are assigned at closing — but a relationship may already
+   exist.** Builder offers two bindings per relationship: (a) link to an
+   EXISTING entity (picker over the AM ownership tree / entities that already
+   have waterfalls) — the NB deal is modeled as an addition to that JV, and at
+   close the deal simply routes into the existing relationship (its permanent
+   waterfall may already exist; offer reuse vs override); (b) a PLACEHOLDER ID
+   (e.g. NR{deal}{n}) re-keyed to the MRI-assigned ID by the onboarding
+   wizard — the wizard gains a rename step (waterfalls vcode/PropCode rows +
+   prospect rows), mirroring the N->P deal re-key.
+4. **One relationship can have one or many investors.** Participant table is
+   per-relationship with N investor rows + PSC; pro-rata inside the
+   relationship by ownership_pct; the IRR promote gate applies per investor
+   (each investor's lookback gates its own share) — engine supports multiple
+   gated leads at separate tie levels; validation warns when investor shares
+   within a relationship do not sum to 100% net of PSC.
+
