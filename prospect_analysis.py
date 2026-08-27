@@ -380,6 +380,12 @@ def build_prospect_analysis(
     if argus_forecast_df is not None and not argus_forecast_df.empty:
         fc = argus_forecast_df
         forecast_source = 'argus'
+        # Operating assumption overrides apply to an Argus forecast too --
+        # _build_forecast (which applies them) only runs for the uploaded/
+        # growth modes, so a mgmt fee % or replacement reserve $/SF was
+        # silently ignored whenever Argus drove the cash flows.
+        fc = _apply_operating_overrides_df(
+            fc, vcode, assumptions, properties, pro_yr_base, scenario_msgs)
     else:
         forecast_source = 'cashflows' if cashflows else 'noi_growth'
         fc = _build_forecast(vcode, start_year, hold_years, noi_year1,
@@ -973,6 +979,73 @@ def _build_forecast(vcode, start_year, hold_years, noi_year1,
 
     df = pd.DataFrame(rows)
     return df
+
+
+def _apply_operating_overrides_df(fc, vcode, assumptions, properties,
+                                  pro_yr_base, msgs):
+    """Apply mgmt_fee_pct / replacement_reserve_psf to a forecast DataFrame.
+
+    Same semantics as the row-list helpers _build_forecast uses: the fee
+    replaces any imported 5040 with gross revenue x pct per period, and the
+    reserve adds a monthly 5092 expense of total SF x $/SF / 12 for every
+    forecast month.
+    """
+    from config import GROSS_REVENUE_ACCTS
+    assumptions = assumptions or {}
+
+    def _num(key):
+        try:
+            v = assumptions.get(key)
+            return float(v) if v not in (None, '', 0) else None
+        except (TypeError, ValueError):
+            return None
+
+    mgmt_fee_pct = _num('mgmt_fee_pct')
+    reserve_psf = _num('replacement_reserve_psf')
+    if mgmt_fee_pct is None and reserve_psf is None:
+        return fc
+
+    fc = fc.copy()
+    acct_num = pd.to_numeric(fc['vAccount'], errors='coerce')
+    new_rows = []
+
+    if mgmt_fee_pct is not None:
+        dropped = float(-fc.loc[acct_num == 5040, 'mAmount_norm'].sum())
+        fc = fc[acct_num != 5040]
+        acct_num = pd.to_numeric(fc['vAccount'], errors='coerce')
+        rev = fc[acct_num.isin(GROSS_REVENUE_ACCTS)]
+        by_period = rev.groupby('event_date')['mAmount_norm'].sum().abs()
+        total_fee = 0.0
+        for dt, gross in by_period.items():
+            fee = float(gross) * mgmt_fee_pct
+            if fee > 0:
+                new_rows.append(_fc_row(vcode, dt, 5040, -fee, pro_yr_base))
+                total_fee += fee
+        msgs.append(
+            f"Management fee override: {mgmt_fee_pct:.2%} of gross revenue "
+            f"(replaces ${dropped:,.0f} imported 5040; ${total_fee:,.0f} total)"
+        )
+
+    if reserve_psf is not None:
+        total_gla = sum(float(p.get('gla_sf') or 0) for p in (properties or []))
+        if total_gla > 0:
+            monthly = total_gla * reserve_psf / 12
+            periods = sorted(pd.to_datetime(fc['event_date']).dt.date.unique())
+            for dt in periods:
+                new_rows.append(_fc_row(vcode, dt, 5092, -monthly, pro_yr_base))
+            msgs.append(
+                f"Replacement reserve applied: {total_gla:,.0f} SF x "
+                f"${reserve_psf:.2f}/SF = ${total_gla * reserve_psf:,.0f}/yr (account 5092)"
+            )
+        else:
+            msgs.append(
+                "Replacement reserve $/SF is set but no property GLA is "
+                "entered -- add square footage to the properties to apply it."
+            )
+
+    if new_rows:
+        fc = pd.concat([fc, pd.DataFrame(new_rows)], ignore_index=True)
+    return fc
 
 
 def _apply_mgmt_fee_override(rows, vcode, mgmt_fee_pct, pro_yr_base):

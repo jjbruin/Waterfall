@@ -655,7 +655,20 @@ def _continue_analyze(result, deal_data, assumptions):
                     ('REVENUES', rev_details, REVENUE_ACCTS),
                     ('EXPENSES', exp_details, EXPENSE_ACCTS),
                 ]:
-                    for label, accts in IS_ACCOUNTS.get(section, {}).items():
+                    groups = IS_ACCOUNTS.get(section, {})
+                    if section == 'EXPENSES':
+                        # NB shows the replacement reserve (5092, from the
+                        # $/SF assumption) as its own line under Management
+                        # Fee instead of buried in Repairs & Maintenance.
+                        groups = {}
+                        for lbl, accts in IS_ACCOUNTS['EXPENSES'].items():
+                            if lbl == 'Repairs & Maintenance':
+                                groups[lbl] = [a for a in accts if a != '5092']
+                            else:
+                                groups[lbl] = accts
+                            if lbl == 'Management Fee':
+                                groups['Replacement Reserve'] = ['5092']
+                    for label, accts in groups.items():
                         target = {int(a) for a in accts} & acct_set
                         if not target:
                             continue
