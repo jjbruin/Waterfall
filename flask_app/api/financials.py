@@ -313,6 +313,7 @@ def one_pager(vcode):
             full_data=data,
             relationships=data.get("relationships_raw"),
             mri_loans_all=data.get("mri_loans_all"),
+            inspection=data.get("inspection_raw"),
         )
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -438,6 +439,7 @@ def one_pager_batch():
                 full_data=data,
                 relationships=data.get("relationships_raw"),
                 mri_loans_all=data.get("mri_loans_all"),
+                inspection=data.get("inspection_raw"),
             )
         except Exception as e:
             page["data"] = None

@@ -119,7 +119,12 @@ def resolve_debt(cap: Optional[dict], dev: bool,
     67.1). Recomputing Total Cap would change a second metric to tidy up a
     presentation artefact the source document also carries.
     """
-    isbs = _num((cap or {}).get("debt"))
+    # ``debt_isbs`` is the ISBS balance BEFORE the One Pager's development
+    # override (which rebases a dev deal's own Debt onto Inspection mHardCosts).
+    # This page must not follow that: its dev rule is the committed facility,
+    # per PDF footnote (6). The ``debt`` fallback keeps a cap stack built before
+    # those twins existed — a frozen snapshot — reading exactly as it did.
+    isbs = _num((cap or {}).get("debt_isbs", (cap or {}).get("debt")))
     if not dev:
         return isbs, BASIS_ISBS
     if committed:

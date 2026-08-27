@@ -328,7 +328,9 @@ def assemble_financial(investor_code: str, quarter: str, *,
         # facility for dev deals, and JB Fair Park read 66.36 here against 77.37
         # there. Only DEV deals move; all 23 operating deals keep the ISBS
         # balance, which already ties to the PDF.
-        debt_isbs = _num(cap.get("debt"))
+        # The pre-override ISBS balance — see portfolio_snapshot_debt.resolve_debt.
+        # Diagnostic only; the printed figure comes from resolve_debt below.
+        debt_isbs = _num(cap.get("debt_isbs", cap.get("debt")))
         debt_orig = None
         try:
             debt_orig = committed_of(vcode)
@@ -347,7 +349,10 @@ def assemble_financial(investor_code: str, quarter: str, *,
         # A rebased dev deal therefore does not foot exactly, as on the PDF.
         total_pref = _num(cap.get("pref_equity"))
         ptr_equity = _num(cap.get("partner_equity"))
-        total_cap = _num(cap.get("total_cap"))
+        # Total Cap stays on the ISBS debt basis. The One Pager rebases a dev
+        # deal's own Total Cap onto hard costs; this column must not move with
+        # it or it loses its tie to the published PDF.
+        total_cap = _num(cap.get("total_cap_isbs", cap.get("total_cap")))
         committed_pref = _num(cap.get("committed_pe"))
 
         # ---- Zone B: the four scaled columns ----

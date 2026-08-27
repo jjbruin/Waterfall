@@ -1117,7 +1117,7 @@ def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
                        waterfalls, acct, occupancy_raw=None,
                        budget_econ_occ=None, deal_terms=None, at_close_noi=None,
                        full_data=None, relationships=None, event_dates=None,
-                       mri_loans_all=None):
+                       mri_loans_all=None, inspection=None):
     """Aggregate all One Pager sections into a single response.
 
     Args:
@@ -1148,7 +1148,8 @@ def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
     general = get_general_information(inv, vcode, event_dates=event_dates)
     cap_stack = get_capitalization_stack(vcode, mri_loans, mri_val, waterfalls, acct, inv,
                                          isbs_raw=isbs_raw, quarter_str=quarter_str,
-                                         relationships=relationships)
+                                         relationships=relationships,
+                                         inspection=inspection)
     prop_perf = get_property_performance(vcode, quarter_str, isbs_raw, mri_val, occupancy_raw,
                                           budget_econ_occ_df=budget_econ_occ,
                                           at_close_noi_df=at_close_noi,

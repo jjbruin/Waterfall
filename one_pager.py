@@ -399,6 +399,88 @@ def _loans_share_terms(deal_loans: pd.DataFrame) -> bool:
     return len(keys) == 1
 
 
+def _is_dev_deal(vcode: str, inv_map: pd.DataFrame) -> bool:
+    """True when a deal is a development deal, by the app's one definition.
+
+    Field precedence mirrors ``portfolio_snapshot_operating.resolve_strategy``:
+    ``Investment_Strategy`` wins wherever it is populated, and ``Lifecycle``
+    fills the gap. That fallback is not decoration — Investment_Strategy is
+    0/110 populated on live (no MRI query selects it and it is absent from
+    mri_service.MRI_COLUMNS), so Lifecycle decides every classification today.
+    Reading Investment_Strategy alone would make this branch dead code.
+
+    The strategy set itself comes from config.DEV_STRATEGIES, shared with the
+    Portfolio Snapshot, so the two pages cannot disagree about which deals are
+    development deals even though they show different debt for them.
+    """
+    from config import is_dev_deal as _is_dev
+
+    if inv_map is None or inv_map.empty:
+        return False
+
+    df = inv_map
+    col = 'vcode' if 'vcode' in df.columns else ('vCode' if 'vCode' in df.columns else None)
+    if col is None:
+        return False
+
+    match = df[df[col].astype(str).str.strip().str.upper() == str(vcode).strip().upper()]
+    if match.empty:
+        return False
+    row = match.iloc[0]
+
+    for field in ('Investment_Strategy', 'Lifecycle'):
+        if field in row.index and pd.notna(row[field]):
+            value = str(row[field]).strip()
+            if value:
+                return _is_dev(value)
+    return False
+
+
+def _dev_hard_costs(vcode: str, inspection: pd.DataFrame,
+                    inv_map: pd.DataFrame) -> Optional[float]:
+    """Hard costs drawn to date for a deal, or None when there is nothing on record.
+
+    SUM of ``mHardCosts`` over the deal's inspection rows. The live table
+    currently holds one row per deal, so sum and latest are the same figure —
+    but ``queries/MRI_Inspection.sql`` returns one row per draw, so a sum is
+    what survives the real feed landing. ``mHardCosts`` is matched
+    case-insensitively; note the plural, ``mHardCost`` does not exist.
+
+    None means "no inspection row", which the caller uses to leave the deal on
+    its existing ISBS debt. **0.0 is a value, not an absence** — a development
+    deal that has drawn nothing yet reports zero hard costs, and that is data.
+    Same convention as ``portfolio_snapshot_debt._num``.
+
+    Parent→child inheritance matches the loan fallback in
+    ``get_capitalization_stack``: a portfolio parent carrying no inspection of
+    its own uses its children's rows.
+    """
+    if inspection is None or getattr(inspection, 'empty', True):
+        return None
+
+    df = inspection
+    col = next((c for c in df.columns if c.lower() == 'vcode'), None)
+    hard_col = next((c for c in df.columns if c.lower() == 'mhardcosts'), None)
+    if col is None or hard_col is None:
+        return None
+
+    codes = df[col].astype(str).str.strip().str.upper()
+    rows = df[codes == str(vcode).strip().upper()]
+
+    if rows.empty:
+        child_vcodes = {c.strip().upper() for c in _child_vcodes_for_parent(vcode, inv_map)}
+        if child_vcodes:
+            rows = df[codes.isin(child_vcodes)]
+
+    if rows.empty:
+        return None
+
+    vals = pd.to_numeric(rows[hard_col], errors='coerce').dropna()
+    if vals.empty:
+        return None
+    return float(vals.sum())
+
+
 def get_capitalization_stack(
     vcode: str,
     mri_loans: pd.DataFrame,
@@ -409,6 +491,7 @@ def get_capitalization_stack(
     isbs_raw: pd.DataFrame = None,
     quarter_str: str = None,
     relationships: pd.DataFrame = None,
+    inspection: pd.DataFrame = None,
 ) -> Dict[str, Any]:
     """
     Get capitalization stack and deal terms
@@ -420,6 +503,9 @@ def get_capitalization_stack(
         waterfalls: Waterfalls DataFrame
         acct: Accounting feed DataFrame
         inv_map: Investment map DataFrame
+        inspection: Construction draw inspections. When supplied, a development
+            deal's ``debt`` is the hard costs drawn to date rather than the
+            ISBS balance. See the debt-basis block below.
 
     Returns:
         Dictionary with cap stack data
@@ -439,6 +525,13 @@ def get_capitalization_stack(
         'rate_cap': None,
         'debt': 0.0,
         'debt_pct': 0.0,
+        # The debt actually shown, plus the untouched ISBS basis beside it. The
+        # Portfolio Snapshot reads the *_isbs twins so its Debt and Total Cap
+        # columns do not move when a dev deal is rebased here. See the
+        # debt-basis block below and portfolio_snapshot_debt.resolve_debt.
+        'debt_basis': '',
+        'debt_isbs': 0.0,
+        'total_cap_isbs': 0.0,
         'pref_equity': 0.0,
         'pref_equity_pct': 0.0,
         'partner_equity': 0.0,
@@ -486,6 +579,34 @@ def get_capitalization_stack(
                         deal_loans = inherited
             if not deal_loans.empty and 'mOrigLoanAmt' in deal_loans.columns:
                 cap['debt'] = pd.to_numeric(deal_loans['mOrigLoanAmt'], errors='coerce').fillna(0).sum()
+
+    # ---- Debt basis: development deals report hard costs drawn to date ----
+    #
+    # A development deal's ISBS balance answers the wrong question on this page.
+    # What the One Pager is reporting for a deal still under construction is how
+    # much has actually been drawn, which is the Inspection table's mHardCosts,
+    # summed over the deal's draws.
+    #
+    # Deliberately placed AFTER both branches above so it is an override of a
+    # settled figure, not a third branch: a dev deal with no inspection row
+    # (18 of the 26 on live) keeps exactly the debt it had before this existed.
+    # Only `hard_costs is not None` overrides, so 0.0 — a dev deal that has
+    # drawn nothing — is honoured as the real $0.0M it is.
+    #
+    # THE SNAPSHOT MUST NOT FOLLOW. `debt_isbs` is captured before the override
+    # and `total_cap_isbs` is computed from it further down, because the
+    # Portfolio Snapshot resolves dev debt to the full committed facility
+    # (portfolio_snapshot_debt.resolve_debt, PDF footnote (6)) and reads
+    # cap_stack for Total Cap. Without these twins, rebasing `debt` here would
+    # silently move the Snapshot's Total Cap column and break its tie to the
+    # published PDF.
+    cap['debt_isbs'] = cap['debt']
+    cap['debt_basis'] = 'ISBS Interim BS (as of quarter end)'
+    if _is_dev_deal(vcode_str, inv_map):
+        hard_costs = _dev_hard_costs(vcode_str, inspection, inv_map)
+        if hard_costs is not None:
+            cap['debt'] = hard_costs
+            cap['debt_basis'] = 'mHardCosts (hard costs drawn to date)'
 
     # Loan terms — always from MRI_Loans (independent of debt source)
     if mri_loans is not None and not mri_loans.empty:
@@ -753,6 +874,10 @@ def get_capitalization_stack(
 
     # Calculate totals and percentages
     cap['total_cap'] = cap['debt'] + cap['pref_equity'] + cap['partner_equity']
+
+    # The same total on the pre-override debt basis, for the Portfolio Snapshot.
+    # Identical to total_cap for every deal this page did not rebase.
+    cap['total_cap_isbs'] = cap['debt_isbs'] + cap['pref_equity'] + cap['partner_equity']
 
     if cap['total_cap'] > 0:
         cap['debt_pct'] = cap['debt'] / cap['total_cap']

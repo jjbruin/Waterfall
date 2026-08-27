@@ -119,6 +119,10 @@ def _one_pager_provider(data: dict) -> Callable:
                 data["wf"], data["acct"], data["inv"],
                 isbs_raw=data["isbs_raw"], quarter_str=quarter,
                 relationships=data.get("relationships_raw"),
+                # Carries the debt_isbs / total_cap_isbs twins this page reads.
+                # Passing it does NOT move any Snapshot figure — the dev branch
+                # of resolve_debt already ignores the One Pager's debt.
+                inspection=data.get("inspection_raw"),
             )
             prop_perf = get_property_performance(
                 vcode, quarter, data["isbs_raw"], data["mri_val"],

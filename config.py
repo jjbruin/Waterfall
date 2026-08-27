@@ -285,3 +285,27 @@ IS_ACCOUNTS = {
         'Extraordinary Expenses': ['5400'],
     },
 }
+
+
+# ============================================================
+# DEV DEAL CLASSIFICATION
+# ============================================================
+#
+# Lives here rather than in a flask service because two layers now need it and
+# they sit on opposite sides of the app: ``one_pager.py`` (core, imported by
+# scripts with no flask on the path) reads it to pick the cap-stack debt basis,
+# and ``portfolio_snapshot_operating.py`` reads it for the "Dev" display, the
+# mOrigLoanAmt debt path and the "Excluding Development Deals" subtotal.
+#
+# ONE definition, so those cannot disagree about what a development deal is.
+# ``portfolio_snapshot_operating`` imports both names and re-exports them, which
+# is why ``portfolio_snapshot_financial`` and ``portfolio_snapshot_loan`` still
+# import them from there unchanged.
+
+#: Strategy values that mark a development deal.
+DEV_STRATEGIES = {"development", "new construction"}
+
+
+def is_dev_deal(strategy):
+    """True when a strategy string names a development deal."""
+    return str(strategy or "").strip().lower() in DEV_STRATEGIES

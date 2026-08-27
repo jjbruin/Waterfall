@@ -475,7 +475,8 @@ def assemble_loan(investor_code: str, quarter: str, *,
         # The basis choice lives in portfolio_snapshot_debt.resolve_debt, which
         # the Financial subtab calls too — the two used to disagree about the
         # same deal's Debt (JB Fair Park 66.36 vs 77.37).
-        isbs_debt = _num(cap.get("debt"))
+        # Pre-override ISBS balance — see portfolio_snapshot_debt.resolve_debt.
+        isbs_debt = _num(cap.get("debt_isbs", cap.get("debt")))
         debt, debt_basis = resolve_debt(cap, dev, orig_total)
         if debt_basis == BASIS_COMMITTED:
             diag["debt_from_orig"] += 1

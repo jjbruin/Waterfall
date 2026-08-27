@@ -441,6 +441,7 @@ def _save_snapshot(vcode: str, quarter: str, approved_by: str):
             event_dates=data.get("event_dates_raw"),
             full_data=data,
             relationships=data.get("relationships_raw"),
+            inspection=data.get("inspection_raw"),
         )
         chart_data = get_one_pager_chart(
             vcode, data["isbs_raw"], data["occupancy_raw"], quarter=quarter,

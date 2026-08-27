@@ -80,6 +80,11 @@ import logging
 from datetime import date, datetime
 from typing import Callable, Optional
 
+# The dev-deal definition moved to config.py so one_pager.py (core, no flask on
+# its import path) can share it. Re-exported here under the same names, so
+# portfolio_snapshot_financial and portfolio_snapshot_loan import unchanged.
+from config import DEV_STRATEGIES, is_dev_deal  # noqa: F401
+
 log = logging.getLogger(__name__)
 
 #: Values of **deals.Investment_Strategy** that mark a development deal.
@@ -96,7 +101,10 @@ log = logging.getLogger(__name__)
 #: values that look like strategies -- Development 24, Value-Add 31, Income 22,
 #: Stable 16, New Construction 2, Redevelopment 1, Lease up 1 -- but is
 #: deliberately NOT consulted here.
-DEV_STRATEGIES = {"development", "new construction"}
+#:
+#: The set itself now lives in config.DEV_STRATEGIES and is imported at the top
+#: of this module, so one_pager.py's cap-stack debt basis classifies a deal the
+#: same way this page does. The commentary above still applies to it.
 
 #: What a suppressed metric renders as. The PDF prints the literal "n/a" in
 #: every metric cell of a development row, so the backend hands that string
@@ -315,10 +323,6 @@ def _growth(later, base):
     if later is None or base is None or base == 0:
         return None
     return (later - base) / base
-
-
-def is_dev_deal(strategy: str) -> bool:
-    return str(strategy or "").strip().lower() in DEV_STRATEGIES
 
 
 def _payload_unpopulated(pp: dict, column: str) -> bool:

@@ -605,6 +605,9 @@ def load_all(db_path: str, pro_yr_base: int = 2025) -> dict:
     deal_terms_raw = get_adapter("deal_terms").load(config)
     at_close_noi_raw = get_adapter("at_close_noi").load(config)
     event_dates_raw = get_adapter("event_dates").load(config)
+    # Construction draw inspections. Read by one_pager.get_capitalization_stack()
+    # to base a development deal's cap-stack debt on hard costs drawn to date.
+    inspection_raw = get_adapter("inspection").load(config)
 
     # Normalize investment map
     normalize_columns(inv)
@@ -649,6 +652,8 @@ def load_all(db_path: str, pro_yr_base: int = 2025) -> dict:
         at_close_noi_raw = None
     if event_dates_raw.empty:
         event_dates_raw = None
+    if inspection_raw.empty:
+        inspection_raw = None
 
     data = {
         "inv": inv,
@@ -680,6 +685,7 @@ def load_all(db_path: str, pro_yr_base: int = 2025) -> dict:
         "deal_terms_raw": deal_terms_raw,
         "at_close_noi_raw": at_close_noi_raw,
         "event_dates_raw": event_dates_raw,
+        "inspection_raw": inspection_raw,
     }
 
     _cache[cache_key] = data
@@ -712,6 +718,7 @@ def refresh_table(table_name: str):
         "capital_calls": "capital_calls_raw",
         "loans": "mri_loans_raw",
         "event_dates": "event_dates_raw",
+        "inspection": "inspection_raw",
     }
     cache_key_name = table_to_key.get(table_name, table_name)
 
