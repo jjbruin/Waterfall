@@ -433,6 +433,7 @@ const statusColor = computed(() => {
             v-else-if="activeTab === 'loan'"
             :data="subtabs.loan"
             :editable="editable"
+            :screen-note="true"
             @save-comment="onSaveComment"
           />
         </template>

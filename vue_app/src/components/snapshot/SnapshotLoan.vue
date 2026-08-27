@@ -13,7 +13,18 @@
 import { computed, ref, watch } from 'vue'
 import { fmtM, fmtPct, fmtX, disp, isLiteral, DASH } from './format'
 
-const props = defineProps<{ data: any; editable: boolean }>()
+const props = defineProps<{
+  data: any
+  editable: boolean
+  /**
+   * Screen-only annotations. Defaults to off so a render path that does not
+   * ask for them never gets them — the consolidated print view omits it.
+   * Deliberately NOT derived from `editable`: the app view sets that false on
+   * a locked/approved quarter, which is exactly when a reader is comparing
+   * against a published PDF and most needs the caveat.
+   */
+  screenNote?: boolean
+}>()
 const emit = defineEmits<{
   saveComment: [p: { scope: string; field: string; scope_key?: string; text: string }]
 }>()
@@ -210,6 +221,18 @@ const devCount = computed(() => {
       Development deals use the committed facility (<code>mOrigLoanAmt</code>) for Debt;
       operating deals use the ISBS balance-sheet balance as of quarter end. Hover a Debt
       figure for its basis.
+    </p>
+
+    <!--
+      Screen only. Suppressed twice over: this v-if (the print view omits the
+      prop) and `:deep(.hint) { display: none }` under @media print in
+      PortfolioSnapshotPrintView. Lives in the template, never in `data`, so it
+      cannot reach the frozen snapshot payload or the footnotes table.
+    -->
+    <p v-if="screenNote" class="hint">
+      Loan details reflect the current facility on record. Loans refinanced or paid
+      off after a given quarter's report date may not match that quarter's published
+      figures.
     </p>
   </div>
 </template>
