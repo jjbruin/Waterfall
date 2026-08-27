@@ -445,6 +445,74 @@ def build_ppi_results(engine, prospect_id: int,
             'irr': psc[0]['irr'] if len(psc) == 1 else None,
         }
 
+    # ---- annual pivot: years across the top (the forecast table's
+    #      anniversary mapping), rows = step | recipient | CF/Cap ----------
+    annual_table = None
+    try:
+        hold_years = int((result.get('prospect_assumptions') or {})
+                         .get('hold_years') or 0)
+        if close and hold_years and not alloc.empty:
+            from dateutil.relativedelta import relativedelta
+            close_ts = pd.Timestamp(close)
+
+            def _ayr(d):
+                d = pd.Timestamp(d)
+                md = (d.year - close_ts.year) * 12 + (d.month - close_ts.month)
+                return md // 12 + 1 if md >= 0 else 0
+
+            years = list(range(1, hold_years + 1))
+            columns = [{'year': n, 'label': str(n),
+                        'sublabel': (close_ts + relativedelta(years=n, months=-1)
+                                     ).strftime('%b-%Y')} for n in years]
+            a = alloc.copy()
+            a = a[a['vState'].astype(str) != 'TypenameRoute']
+            # only entities that ran a waterfall: passthroughs and terminal
+            # self-sections would repeat every number a second time
+            a = a[a['Entity'].astype(str).isin(have)]
+            a['_amt'] = pd.to_numeric(a['Allocated'], errors='coerce').fillna(0)
+            a = a[a['_amt'] != 0]
+            a['_ayr'] = a['event_date'].apply(_ayr)
+            # the sale month-end can fall one month past the last anniversary
+            # (a mid-month close): clamp trailing events into the final year
+            a['_ayr'] = a['_ayr'].clip(upper=hold_years)
+            a = a[a['_ayr'].between(1, hold_years)]
+            # one AM Fee line per entity/waterfall, summed across sources
+            a.loc[a['vState'].astype(str) == 'AMFee', 'iOrder'] = 900
+
+            # entities in stack order: vehicle, declared, then discovered
+            ent_rank = {vehicle_id: 0}
+            for i, rid in enumerate(declared_ids, 1):
+                ent_rank[rid] = i
+            names = {r['entity_id']: (r.get('name') or r['entity_id'])
+                     for r in rels if r.get('entity_id')}
+
+            rows_out = []
+            for ent in sorted(a['Entity'].astype(str).unique(),
+                              key=lambda e_: (ent_rank.get(e_, 99), e_)):
+                grp_e = a[a['Entity'].astype(str) == ent]
+                rows_out.append({'entity': ent,
+                                 'label': names.get(ent, ent),
+                                 'is_header': True, 'values': {}})
+                keyed = grp_e.groupby(
+                    ['WaterfallType', 'iOrder', 'vtranstype', 'PropCode'])
+                ordered = sorted(
+                    keyed, key=lambda kv: (0 if kv[0][0] == 'CF_WF' else 1,
+                                           int(kv[0][1] or 0), kv[0][3]))
+                for (wf, _io, trans, pc), g in ordered:
+                    vals = g.groupby('_ayr')['_amt'].sum()
+                    rows_out.append({
+                        'entity': ent,
+                        'step': trans or '',
+                        'recipient': pc,
+                        'wf': 'CF' if wf == 'CF_WF' else 'Capital',
+                        'is_header': False,
+                        'values': {int(k): float(v) for k, v in vals.items()},
+                    })
+            annual_table = {'years': years, 'columns': columns,
+                            'rows': rows_out}
+    except Exception:
+        logger.exception("PPI annual pivot failed")
+
     return {
         'vehicle': vehicle_id,
         'seed_date': str(seed_date),
@@ -454,5 +522,6 @@ def build_ppi_results(engine, prospect_id: int,
         'participants': participants_out,
         'relationships': rels_out,
         'psc_summary': psc_summary,
+        'annual_table': annual_table,
         'notes': notes,
     }

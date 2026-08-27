@@ -3032,24 +3032,50 @@ loadDeals()
                     </table>
                   </div>
 
+                  <!-- annual view: years across the top, like the
+                       operating forecast; rows = step | recipient | CF/Cap -->
+                  <div class="table-scroll" style="margin-top:10px"
+                       v-if="analysisResult.ppi_waterfalls.annual_table?.rows?.length">
+                    <table class="forecast-table">
+                      <thead>
+                        <tr>
+                          <th class="row-label">Waterfall Step</th>
+                          <th>Recipient</th>
+                          <th>Type</th>
+                          <th v-for="col in analysisResult.ppi_waterfalls.annual_table.columns"
+                              :key="col.year" class="r">
+                            {{ col.label }}<span v-if="col.sublabel" class="col-sub"><br>{{ col.sublabel }}</span>
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="(row, ri) in analysisResult.ppi_waterfalls.annual_table.rows"
+                            :key="ri" :class="{ 'section-header-row': row.is_header }">
+                          <template v-if="row.is_header">
+                            <td class="row-label" style="font-weight:600"
+                                :colspan="3 + analysisResult.ppi_waterfalls.annual_table.years.length">
+                              {{ row.label }} <span class="ppi-id">({{ row.entity }})</span>
+                            </td>
+                          </template>
+                          <template v-else>
+                            <td class="row-label">  {{ row.step }}</td>
+                            <td>{{ row.recipient }}</td>
+                            <td>{{ row.wf }}</td>
+                            <td v-for="yr in analysisResult.ppi_waterfalls.annual_table.years"
+                                :key="yr" class="r">
+                              {{ row.values[yr] != null || row.values[String(yr)] != null
+                                 ? fmtCurrency(row.values[yr] ?? row.values[String(yr)]) : '' }}
+                            </td>
+                          </template>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+
                   <div v-for="rel in analysisResult.ppi_waterfalls.relationships"
                        :key="rel.entity_id" class="ppi-rel-result">
-                    <h4 style="margin:10px 0 4px">
-                      {{ rel.name }} <span class="ppi-id">({{ rel.entity_id }}, {{ rel.slice_pct }}%)</span>
-                    </h4>
-                    <div class="table-scroll" v-if="rel.breakdown?.length">
-                      <table class="compact-table">
-                        <thead><tr><th>Category</th><th>Participant</th><th class="r">Amount</th></tr></thead>
-                        <tbody>
-                          <tr v-for="(b, bi) in rel.breakdown" :key="bi">
-                            <td>{{ b.category }}</td><td>{{ b.participant }}</td>
-                            <td class="r">{{ fmtCurrency(b.amount) }}</td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
                     <details v-if="rel.fee_schedule?.length">
-                      <summary>AM fee schedule ({{ rel.fee_schedule.length }} payments,
+                      <summary>{{ rel.name }} — AM fee schedule ({{ rel.fee_schedule.length }} payments,
                         {{ fmtCurrency(rel.fee_schedule.reduce((a, f) => a + f.fee, 0)) }})</summary>
                       <table class="compact-table" style="margin-top:4px">
                         <thead><tr><th>Date</th><th>Recipient</th><th>Waterfall</th><th class="r">Fee</th></tr></thead>
@@ -3828,4 +3854,5 @@ loadDeals()
 .ppi-id { color: #8a94a0; font-weight: 400; font-size: 0.75rem; }
 .ppi-rel-result { margin-top: 8px; }
 .psc-row { background: #f0f6f2; font-weight: 600; }
+.col-sub { font-weight: 400; font-size: 0.65rem; color: #8a94a0; }
 </style>
