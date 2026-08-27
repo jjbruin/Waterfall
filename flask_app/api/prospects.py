@@ -1076,6 +1076,20 @@ def _continue_analyze(result, deal_data, assumptions):
     except Exception:
         logger.exception("ROE/MOIC audit build failed")
 
+    # PPI ownership waterfalls (upstream of the PE vehicle), when a stack
+    # is declared. Failures degrade to a note, never break the analysis.
+    ppi_waterfalls = None
+    try:
+        from flask_app.services import ppi_upstream_service
+        deal_id = deal_data['deal'].get('id')
+        if deal_id:
+            ppi_waterfalls = ppi_upstream_service.build_ppi_results(
+                get_engine(), int(deal_id), result)
+    except Exception:
+        logger.exception("PPI upstream build failed")
+        ppi_waterfalls = {'notes': ['PPI waterfall computation failed - '
+                                    'see server logs.']}
+
     return jsonify(safe_json({
         'vcode': result.get('prospect_assumptions', {}).get('close_date', ''),
         'partner_results': result.get('partner_results', []),
@@ -1090,6 +1104,7 @@ def _continue_analyze(result, deal_data, assumptions):
         'moic_audit': moic_audit,
         'sale_dbg': result.get('sale_dbg'),
         'cap_data': result.get('cap_data', {}),
+        'ppi_waterfalls': ppi_waterfalls,
     }))
 
 

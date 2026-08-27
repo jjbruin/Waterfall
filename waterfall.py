@@ -1468,9 +1468,17 @@ def run_upstream_waterfall_period(
     typename_routed: bool = False,
     amfee_exclusions: Optional[dict] = None,
     amt_quarterly_tracker: Optional[Dict] = None,
+    state_credited: bool = False,
 ) -> Dict[str, float]:
     """
     Process upstream waterfall for a single entity in a single period.
+
+    state_credited: True when the caller already applied this cash to
+    entity_id's InvestorState (a waterfall step credits its recipient
+    before recursing). The terminal branch then only records the
+    allocation row and the beneficiary total -- without this, terminal
+    recipients were credited TWICE in their state cashflows, inflating
+    every IRR-gate lookback that read them.
 
     If entity has a waterfall definition, use it.
     Otherwise, distribute pari passu by ownership percentage.
@@ -1808,6 +1816,7 @@ def run_upstream_waterfall_period(
                             source_typename=source_typename,
                             amfee_exclusions=amfee_exclusions,
                             amt_quarterly_tracker=amt_quarterly_tracker,
+                            state_credited=True,
                         )
                         for term_id, term_cash in sub_terminal.items():
                             terminal_cash[term_id] = terminal_cash.get(term_id, 0.0) + term_cash
@@ -1874,6 +1883,7 @@ def run_upstream_waterfall_period(
                             source_typename=source_typename,
                             amfee_exclusions=amfee_exclusions,
                             amt_quarterly_tracker=amt_quarterly_tracker,
+                            state_credited=True,
                         )
                         for term_id, term_cash in sub_terminal.items():
                             terminal_cash[term_id] = terminal_cash.get(term_id, 0.0) + term_cash
@@ -1900,7 +1910,9 @@ def run_upstream_waterfall_period(
 
         stt = entity_states[entity_id]
         is_cf_wf = (wf_type == "CF_WF")
-        apply_distribution(stt, period_date, cash_available, is_cf_wf, label=source_typename or "Terminal Distribution")
+        if not state_credited:
+            apply_distribution(stt, period_date, cash_available, is_cf_wf,
+                               label=source_typename or "Terminal Distribution")
 
         allocation_rows.append({
             "event_date": period_date,
