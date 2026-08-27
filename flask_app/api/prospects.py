@@ -1436,6 +1436,26 @@ def get_ppi_stack_steps(deal_id):
     return jsonify({'steps': steps})
 
 
+@prospects_bp.route('/<int:deal_id>/ppi-stack/migrate', methods=['POST'])
+@login_required
+@role_required('admin')
+def migrate_ppi_stack(deal_id):
+    """Migrate the stack to its closing identities (MRI-assigned ids) and
+    write the AM ownership rows. Body: {id_map: {old: new}, close_date,
+    write_relationships}."""
+    from flask_app.services import ppi_stack_service as pss
+    body = request.get_json(silent=True) or {}
+    username = g.current_user.get('username', '')
+    result = pss.migrate_stack_at_close(
+        get_engine(), deal_id,
+        id_map=body.get('id_map') or {},
+        close_date=body.get('close_date'),
+        write_relationships=bool(body.get('write_relationships', True)),
+        username=username)
+    status = 200 if result.get('ok') else 400
+    return jsonify(result), status
+
+
 @prospects_bp.route('/ppi-entities', methods=['GET'])
 @login_required
 def list_ppi_entities():

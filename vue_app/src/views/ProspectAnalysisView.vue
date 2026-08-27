@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import api from '../api/client'
+import { useAuthStore } from '../stores/auth'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1330,6 +1331,51 @@ async function savePpiStack(): Promise<boolean> {
   }
 }
 
+// Migration at close: map placeholder ids to the MRI-assigned ones.
+const authStore = useAuthStore()
+const ppiMigrateMap = ref<Record<string, string>>({})
+const ppiMigrateDate = ref<string | null>(null)
+const ppiMigrating = ref(false)
+const ppiMigrateNotes = ref<string[]>([])
+
+const ppiStackIds = computed(() => {
+  const ids: string[] = []
+  const veh = ppiStack.value.vehicle?.entity_id
+  if (veh) ids.push(veh)
+  for (const rel of ppiStack.value.relationships) {
+    if (rel.entity_id) ids.push(rel.entity_id)
+    for (const pp of rel.participants) {
+      if (pp.investor_id && !ids.includes(pp.investor_id)) ids.push(pp.investor_id)
+    }
+  }
+  return ids
+})
+
+async function migratePpiStack() {
+  if (!selectedDealId.value) return
+  const map: Record<string, string> = {}
+  for (const [k, v] of Object.entries(ppiMigrateMap.value)) {
+    if (v && v.trim() && v.trim() !== k) map[k] = v.trim()
+  }
+  if (!Object.keys(map).length) {
+    ppiError.value = 'Enter at least one closing id that differs.'
+    return
+  }
+  ppiMigrating.value = true
+  ppiError.value = ''
+  try {
+    const res = await api.post(`/api/prospects/${selectedDealId.value}/ppi-stack/migrate`,
+      { id_map: map, close_date: ppiMigrateDate.value, write_relationships: true })
+    ppiMigrateNotes.value = res.data.notes || []
+    ppiMigrateMap.value = {}
+    await loadPpiStack()
+  } catch (e: any) {
+    ppiError.value = e.response?.data?.error || 'Migration failed.'
+  } finally {
+    ppiMigrating.value = false
+  }
+}
+
 async function buildPpiWaterfalls() {
   if (!(await savePpiStack())) return
   ppiBuilding.value = true
@@ -2613,6 +2659,34 @@ loadDeals()
                   {{ ppiBuilding ? 'Building...' : 'Build & Save PPI Waterfalls' }}
                 </button>
               </div>
+
+              <details v-if="ppiStack.relationships.length && authStore.isAdmin"
+                       class="ppi-steps-preview">
+                <summary>Migrate at Close (admin)</summary>
+                <p class="field-hint">
+                  MRI assigns the real entity ids at closing. Map each modeling
+                  id to its final id — waterfalls, fee sources, and the
+                  prospect records are re-keyed, and ownership rows are written
+                  so the AM tree and Portfolio Analysis pick the stack up.
+                  Ids left blank keep their current value.
+                </p>
+                <div v-for="sid in ppiStackIds" :key="sid" class="ppi-part-row">
+                  <span style="flex:0 0 140px; font-size:0.78rem; padding-top:5px">{{ sid }}</span>
+                  <input v-model="ppiMigrateMap[sid]" :placeholder="'final id (blank = keep ' + sid + ')'" />
+                </div>
+                <div class="ppi-part-row">
+                  <span style="flex:0 0 140px; font-size:0.78rem; padding-top:5px">Closing date</span>
+                  <input type="date" v-model="ppiMigrateDate" />
+                </div>
+                <div class="ppi-actions">
+                  <button class="btn-secondary" :disabled="ppiMigrating" @click="migratePpiStack">
+                    {{ ppiMigrating ? 'Migrating...' : 'Migrate Stack' }}
+                  </button>
+                </div>
+                <ul v-if="ppiMigrateNotes.length" class="parcel-issues">
+                  <li v-for="(n, ni) in ppiMigrateNotes" :key="ni">{{ n }}</li>
+                </ul>
+              </details>
 
               <details v-if="Object.keys(ppiSteps).length" class="ppi-steps-preview">
                 <summary>Stored steps ({{ Object.values(ppiSteps).reduce((a, v) => a + v.length, 0) }})</summary>

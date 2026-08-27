@@ -545,3 +545,168 @@ def build_stack_waterfalls(engine, prospect_id: int,
     return {'ok': True, 'steps': steps_by_vcode,
             'validation': {'errors': [], 'warnings': warnings}}
 
+# ---------------------------------------------------------------------------
+# Phase 5: migration at close.
+#
+# MRI assigns the real entity ids when a deal closes. This re-keys the
+# placeholder ids everywhere the stack used them (waterfall vcodes,
+# PropCodes, AMFee vNotes sources, and the prospect rows) and writes the
+# ownership rows that let the AM side's tree and Portfolio Analysis pick
+# the stack up natively.
+# ---------------------------------------------------------------------------
+
+def _stack_ids(stack, prospect_id):
+    """Every entity/participant id the stack references (placeholders
+    resolved the same way the builder resolves them)."""
+    ids = []
+    veh = ((stack.get('vehicle') or {}).get('entity_id') or '').strip()
+    if veh:
+        ids.append(veh)
+    for n, rel in enumerate(stack.get('relationships') or [], 1):
+        rid = (rel.get('entity_id') or '').strip()
+        if rid:
+            ids.append(rid)
+        for p_row in _participant_ids(rel, prospect_id, n):
+            ids.append(p_row['investor_id'])
+    return ids
+
+
+def migrate_stack_at_close(engine, prospect_id: int,
+                           id_map: Optional[Dict[str, str]] = None,
+                           close_date: Optional[str] = None,
+                           write_relationships: bool = True,
+                           username: str = '') -> Dict[str, Any]:
+    """Migrate the stack to its closing identities.
+
+    id_map: {placeholder_or_old_id: final_MRI_id}. Only ids the stack
+    actually references are honored. When a final id ALREADY carries a
+    waterfall (the deal joined an existing JV), the existing waterfall is
+    kept: the placeholder's steps are deleted, not copied over it, and this
+    is reported.
+
+    Ownership rows are written into `relationships` (InvestmentID = owned
+    entity, InvestorID = owner, OwnershipPct as whole percent). That table
+    is refreshed from MRI, so these rows are a BRIDGE until MRI carries the
+    real ownership records after closing.
+    """
+    from sqlalchemy import text as sa_text
+
+    stack = get_stack(engine, prospect_id)
+    rels = stack.get('relationships') or []
+    if not rels:
+        return {'ok': False, 'notes': ['No PPI stack declared.']}
+    known = set(_stack_ids(stack, prospect_id))
+    id_map = {str(k).strip(): str(v).strip()
+              for k, v in (id_map or {}).items()
+              if str(k).strip() in known and str(v).strip()
+              and str(v).strip() != str(k).strip()}
+
+    notes: List[str] = []
+    renames: List[Dict[str, str]] = []
+    rel_rows_written = 0
+
+    with engine.begin() as c:
+        # A mapped final id that already carries a waterfall is a linked JV
+        # whose waterfall we keep; its rows are never rewritten. Precomputed
+        # so the scope below is order-independent.
+        from sqlalchemy import text as _t
+        kept_existing = [
+            new for old, new in id_map.items()
+            if c.execute(_t('SELECT COUNT(*) FROM waterfalls WHERE vcode = :v'),
+                         {'v': new}).scalar()
+            and c.execute(_t('SELECT COUNT(*) FROM waterfalls WHERE vcode = :v'),
+                          {'v': old}).scalar()]
+        # ---- 1. re-key waterfall rows -----------------------------------
+        for old, new in id_map.items():
+            existing = c.execute(sa_text(
+                'SELECT COUNT(*) FROM waterfalls WHERE vcode = :v'),
+                {'v': new}).scalar()
+            mine = c.execute(sa_text(
+                'SELECT COUNT(*) FROM waterfalls WHERE vcode = :v'),
+                {'v': old}).scalar()
+            if mine and existing:
+                c.execute(sa_text(
+                    'DELETE FROM waterfalls WHERE vcode = :v'), {'v': old})
+                notes.append(
+                    f"{new} already has a waterfall (existing JV) — kept it; "
+                    f"the {mine} steps built under {old} were removed.")
+            elif mine:
+                c.execute(sa_text(
+                    'UPDATE waterfalls SET vcode = :n WHERE vcode = :o'),
+                    {'n': new, 'o': old})
+            # PropCode + AMFee source references, scoped to the stack's
+            # waterfalls so unrelated entities are never touched — and never
+            # a linked JV whose existing waterfall was kept
+            scope = [id_map.get(i, i) for i in known
+                     if id_map.get(i, i) not in kept_existing]
+            c.execute(sa_text(
+                'UPDATE waterfalls SET "PropCode" = :n '
+                'WHERE "PropCode" = :o AND vcode = ANY(:s)'),
+                {'n': new, 'o': old, 's': scope})
+            c.execute(sa_text(
+                'UPDATE waterfalls SET "vNotes" = :n '
+                'WHERE "vNotes" = :o AND vcode = ANY(:s)'),
+                {'n': new, 'o': old, 's': scope})
+            renames.append({'from': old, 'to': new})
+
+        # ---- 2. prospect rows follow ------------------------------------
+        for old, new in id_map.items():
+            c.execute(sa_text(
+                'UPDATE prospect_entities SET planned_entity_id = :n '
+                'WHERE prospect_id = :p AND planned_entity_id = :o'),
+                {'n': new, 'o': old, 'p': prospect_id})
+            c.execute(sa_text(
+                'UPDATE prospect_investors SET planned_investor_id = :n '
+                'WHERE planned_investor_id = :o AND entity_id IN '
+                '(SELECT id FROM prospect_entities WHERE prospect_id = :p)'),
+                {'n': new, 'o': old, 'p': prospect_id})
+
+        # ---- 3. ownership rows for the AM tree --------------------------
+        if write_relationships:
+            import pandas as pd
+            start = pd.Timestamp(close_date).to_pydatetime() if close_date                 else None
+            final = get_stack(engine, prospect_id)
+            veh = ((final.get('vehicle') or {}).get('entity_id') or '').strip()
+            veh = id_map.get(veh, veh)
+            multi = len(final.get('relationships') or []) > 1
+
+            def _own(owned, owner, pct, name):
+                nonlocal rel_rows_written
+                exists = c.execute(sa_text(
+                    'SELECT COUNT(*) FROM relationships '
+                    'WHERE "InvestmentID" = :a AND TRIM("InvestorID") = :b '
+                    'AND "EndDate" IS NULL'),
+                    {'a': owned, 'b': owner}).scalar()
+                if exists:
+                    notes.append(f"ownership row {owned} <- {owner} already "
+                                 f"exists — left as is")
+                    return
+                c.execute(sa_text(
+                    'INSERT INTO relationships ("InvestmentID", "InvestorID", '
+                    '"OwnershipPct", "Name", "StartDate", "EndDate") '
+                    'VALUES (:a, :b, :p, :n, :d, NULL)'),
+                    {'a': owned, 'b': owner, 'p': float(pct or 0),
+                     'n': name, 'd': start})
+                rel_rows_written += 1
+
+            for n, rel in enumerate(final.get('relationships') or [], 1):
+                rid = (rel.get('entity_id') or '').strip()
+                rid = id_map.get(rid, rid)
+                rname = rel.get('name') or rid
+                if multi and veh:
+                    _own(veh, rid, rel.get('slice_pct'), rname)
+                owner_of = rid if multi else veh
+                for p_row in _participant_ids(rel, prospect_id, n):
+                    pid = id_map.get(p_row['investor_id'], p_row['investor_id'])
+                    _own(owner_of, pid, p_row.get('share_pct'), rname)
+
+    if rel_rows_written:
+        notes.append(
+            f"{rel_rows_written} ownership rows written to `relationships` — "
+            f"note this table is refreshed from MRI, so these rows are a "
+            f"bridge until MRI carries the real ownership records.")
+    logger.info("PPI stack migrated for prospect %s by %s: %s",
+                prospect_id, username, renames)
+    return {'ok': True, 'renames': renames,
+            'relationships_written': rel_rows_written, 'notes': notes}
+
