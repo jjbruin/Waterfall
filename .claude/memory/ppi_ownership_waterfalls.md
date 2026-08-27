@@ -166,3 +166,24 @@ against the PSCKOC engine's known-good behaviors.
    gated leads at separate tie levels; validation warns when investor shares
    within a relationship do not sum to 100% net of PSC.
 
+
+## Linked-JV chains (Aug 27 2026, v393) — TGA6 reference case
+Windsor joins the existing TIAA JV: stack = one relationship linked to TGA6
+(TGAM 90 lp / INV6 10 psc), vehicle PPIWIND routes 100% into it. Hand-built
+waterfalls (queries in scratchpad setup_tga6.py): TGA6 CF 90/10 + AMFee 95bps
+TGAM->PSCMAN; Cap = ROC 90/10 -> TGAM IRR gate 9% net -> promote tier PSCMAN
+.04 / TGAM .72 / INV6 .24 (PSCMAN keeps 20% OF the 20% promote). AMB6 =
+Share/Tag at the ACTIVE relationships percentages + 13 AMFee rows 50bps to
+PSCMAN. INV6 = pure passthrough (no waterfall).
+Engine rules added (ppi_upstream_service): closure bounded downward from the
+vehicle — declared/passthrough entities run waterfalls, distribution children
+with their own waterfalls are TERMINAL (PSC1's house wf out of scope), fee/
+promote recipients are TERMINAL (manager's owners out of scope); wf-bearing
+entities keep their own ownership rows for the capital cascade only; ended
+relationship generations (EndDate set) filtered; linked relationships seed
+once at the entity, cascade derives all levels below (no double count);
+feeders/intermediates hidden from the participant table.
+Verified ties: TGAM 12.41% net on 17,235,000; 13 investors 18.46%/1.954x at
+exact pro-rata; PSCMAN fees 741,657 (=693,782+47,875 exact) + promote 173,120
+= 4.0% of pool; dists net of fees == deal PPIWIND dists to the dollar.
+Open: TGA6 modeled with NO pref (straight 90/10 + 9% gate) — confirm with Jim.
