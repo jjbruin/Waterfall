@@ -32,7 +32,22 @@ PropIntAgg AS (
         pint.vCode,
         MAX(CASE WHEN pint.vIntType = 'Total Units' THEN pint.iInt END) AS totunits,
         MAX(CASE WHEN pint.vIntType = 'Rentable SF' THEN pint.iInt END) AS rentablesf,
-        MAX(CASE WHEN pint.vIntType = 'Original Purchase Price' THEN pint.iInt END) AS original_purchase_price
+        -- Two labels carry the purchase price. Records created from mid-2025
+        -- store it as 'Purchase Price'; everything before that used
+        -- 'Original Purchase Price'. Reading only the latter returned NULL for
+        -- the newer deals, and _upsert_deals overwrites on non-null only
+        -- (mri_service.py), so a refresh could never repair it.
+        --
+        -- COALESCE, not IN (...), so the precedence is explicit. A single
+        -- MAX over both labels would return the LARGER NUMBER rather than the
+        -- preferred label, silently changing any deal that carries both.
+        -- This form cannot: the first argument is exactly the previous
+        -- expression, so the second is reached only where the result was
+        -- already NULL.
+        COALESCE(
+            MAX(CASE WHEN pint.vIntType = 'Original Purchase Price' THEN pint.iInt END),
+            MAX(CASE WHEN pint.vIntType = 'Purchase Price' THEN pint.iInt END)
+        ) AS original_purchase_price
     FROM PropInt pint
     WHERE pint.delete_flag IS NULL
     GROUP BY pint.vCode

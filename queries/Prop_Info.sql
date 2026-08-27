@@ -142,7 +142,13 @@ PropIntAgg AS (
         pint.vCode,
         MAX(CASE WHEN pint.vIntType = 'Total Units' THEN pint.iInt END) AS totunits,
         MAX(CASE WHEN pint.vIntType = 'Rentable SF' THEN pint.iInt END) AS rentablesf,
-        MAX(CASE WHEN pint.vIntType = 'Original Purchase Price' THEN pint.iInt END) AS original_purchase_price
+        -- Mirrors Prop_Info_Core.sql: both purchase-price labels, with
+        -- 'Original Purchase Price' taking precedence. See that file for why
+        -- COALESCE rather than IN (...).
+        COALESCE(
+            MAX(CASE WHEN pint.vIntType = 'Original Purchase Price' THEN pint.iInt END),
+            MAX(CASE WHEN pint.vIntType = 'Purchase Price' THEN pint.iInt END)
+        ) AS original_purchase_price
     FROM PropInt pint
     WHERE pint.delete_flag IS NULL
     GROUP BY pint.vCode
