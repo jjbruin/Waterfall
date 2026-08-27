@@ -397,6 +397,48 @@ def build_ppi_results(engine, prospect_id: int,
             'cashflows': [(str(d), float(a)) for d, a in
                           sorted(cfs, key=lambda x: x[0])],
         })
+    # Fund investors other than PSC are reviewed as a group on a new
+    # deal — pool them into one line (per-investor precision still drives
+    # the fee and IRR math underneath; identical pro-rata timing means the
+    # group IRR is exact, not an average).
+    grouped = [p_row for p_row in participants_out
+               if p_row['type'] == 'indirect']
+    grouped_ids = {p_row['investor_id'] for p_row in grouped}
+    if len(grouped) > 1:
+        participants_out = [p_row for p_row in participants_out
+                            if p_row['type'] != 'indirect']
+        pooled_cfs: Dict[str, float] = {}
+        for p_row in grouped:
+            for d, a in p_row['cashflows']:
+                pooled_cfs[d] = pooled_cfs.get(d, 0.0) + a
+        cfs = sorted(pooled_cfs.items())
+        g_contrib = sum(p_row['contributions'] for p_row in grouped)
+        g_dists = sum(p_row['distributions'] for p_row in grouped)
+        g_irr = None
+        try:
+            from datetime import date as _date
+            if cfs and g_contrib > 0 and g_dists > 0:
+                g_irr = xirr([(pd.Timestamp(d).date(), a) for d, a in cfs])
+        except Exception:
+            g_irr = None
+        participants_out.append({
+            'investor_id': 'FUND',
+            'name': f'Fund Investors ({len(grouped)})',
+            'type': 'indirect',
+            'relationships': sorted({r for p_row in grouped
+                                     for r in p_row['relationships']}),
+            'contributions': g_contrib,
+            'distributions': g_dists,
+            'am_fees_paid': sum(p_row['am_fees_paid'] for p_row in grouped),
+            'am_fees_received': sum(p_row['am_fees_received'] for p_row in grouped),
+            'post_gate_distributions': sum(p_row['post_gate_distributions']
+                                           for p_row in grouped),
+            'net_total': g_dists - g_contrib,
+            'moic': (g_dists / g_contrib) if g_contrib > 0 else None,
+            'irr': g_irr,
+            'cashflows': [(d, float(a)) for d, a in cfs],
+        })
+
     participants_out.sort(key=lambda p_row: (p_row['type'] != 'lp',
                                              -p_row['contributions']))
 
@@ -478,6 +520,10 @@ def build_ppi_results(engine, prospect_id: int,
             a = a[a['_ayr'].between(1, hold_years)]
             # one AM Fee line per entity/waterfall, summed across sources
             a.loc[a['vState'].astype(str) == 'AMFee', 'iOrder'] = 900
+            # non-PSC fund investors read as one group
+            if grouped_ids:
+                mask = a['PropCode'].astype(str).isin(grouped_ids)
+                a.loc[mask, 'PropCode'] = 'Fund Investors'
 
             # entities in stack order: vehicle, declared, then discovered
             ent_rank = {vehicle_id: 0}
