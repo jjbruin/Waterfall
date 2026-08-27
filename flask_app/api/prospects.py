@@ -967,6 +967,9 @@ def _continue_analyze(result, deal_data, assumptions):
                         'amount': row.get('Amount', 0),
                         'source': row.get('Source', ''),
                     })
+                # Chronological: cashflow_details keeps append order, which
+                # puts manual parcel events after the CF stream
+                cfs.sort(key=lambda c: c['date'])
                 cf_data[pr['partner']] = cfs
             xirr_cashflows = safe_json(cf_data)
     except Exception:
