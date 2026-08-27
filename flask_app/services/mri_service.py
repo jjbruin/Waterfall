@@ -372,7 +372,27 @@ def _upsert_deals(df: pd.DataFrame, engine) -> dict:
         mask = existing["vcode"] == vc
         for col in mri_cols_present:
             if pd.notna(row[col]):
-                existing.loc[mask, col] = row[col]
+                # `existing` is read back from an all-TEXT table — see the
+                # sa.Text() dtype map on the write below — so under pandas 3.0
+                # every column comes back as the `str` dtype, and assigning a
+                # float into one raises rather than silently upcasting to
+                # object as pandas 2.x did:
+                #
+                #   Invalid value '1.0' for dtype 'str'
+                #
+                # MRI returns Total_Units, Size_Sqf and Acquisition_Price as
+                # float64 — a NULL anywhere in the column promotes int64 — so
+                # 30 Bearfoot's single unit arrives as 1.0 and the whole
+                # Prop_Info_Core refresh dies on the first row. Year_Built is
+                # unaffected: vYearBuiltRange is a varchar and stays object.
+                #
+                # Normalising a whole float to int before stringifying keeps
+                # the table's existing convention ('1', not '1.0'), which the
+                # blanket str() coercion further down would otherwise bake in.
+                val = row[col]
+                if isinstance(val, float) and val.is_integer():
+                    val = int(val)
+                existing.loc[mask, col] = str(val)
         updated += 1
 
     # Insert new rows (vcodes not in existing)
