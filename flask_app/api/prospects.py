@@ -1341,6 +1341,42 @@ def analyze_deal_excel(deal_id):
                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
+# ---------------------------------------------------------------------------
+# PPI ownership stack (relationships between Peaceable and its investors)
+# ---------------------------------------------------------------------------
+
+@prospects_bp.route('/<int:deal_id>/ppi-stack', methods=['GET'])
+@login_required
+def get_ppi_stack(deal_id):
+    """The declared PPI ownership stack with its validation state."""
+    from flask_app.services import ppi_stack_service as pss
+    stack = pss.get_stack(get_engine(), deal_id)
+    return jsonify({'stack': stack, 'validation': pss.validate_stack(stack)})
+
+
+@prospects_bp.route('/<int:deal_id>/ppi-stack', methods=['PUT'])
+@login_required
+@role_required('admin', 'analyst')
+def save_ppi_stack(deal_id):
+    """Replace the declared stack. Validation errors block the save."""
+    from flask_app.services import ppi_stack_service as pss
+    body = request.get_json(silent=True) or {}
+    username = g.current_user.get('username', '')
+    result = pss.save_stack(get_engine(), deal_id, body, username)
+    if not result.get('ok'):
+        return jsonify({'error': '; '.join(result['validation']['errors']),
+                        'validation': result['validation']}), 400
+    return jsonify(result)
+
+
+@prospects_bp.route('/ppi-entities', methods=['GET'])
+@login_required
+def list_ppi_entities():
+    """Existing AM entities a relationship can link to (JV additions)."""
+    from flask_app.services import ppi_stack_service as pss
+    return jsonify({'entities': pss.list_existing_entities(get_engine())})
+
+
 @prospects_bp.route('/<int:deal_id>/scenarios', methods=['GET'])
 @login_required
 def list_deal_scenarios(deal_id):

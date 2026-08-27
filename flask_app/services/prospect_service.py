@@ -288,6 +288,9 @@ def ensure_prospect_tables(engine):
             ('prospect_assumptions', 'replacement_reserve_psf', 'DOUBLE PRECISION'),
             # Planned refinancing within the hold (Aug 2026)
             ('prospect_assumptions', 'planned_refi_json', 'TEXT'),
+            # PPI ownership stack (Aug 2026): structured terms per
+            # relationship entity -- the Builder's lossless source
+            ('prospect_entities', 'terms_json', 'TEXT'),
             # Line-item cashflow columns
             ('prospect_cashflows', 'vaccount', 'INTEGER'),
             ('prospect_cashflows', 'line_item', 'TEXT'),
