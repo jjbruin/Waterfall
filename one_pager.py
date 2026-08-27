@@ -1801,6 +1801,34 @@ def _get_uw_7073_signed(
         # positive = contribution → negative cashflow; negative = ROC → positive cashflow
         events.append((period_date, -periodic))
 
+    # Drop an event that arrived identically from both sources.
+    #
+    # The two paths above read the same account from two tables that overlap:
+    # isbs_uw_supplements is a sparse CSV backfill for deals where MRI's
+    # Projected IS was missing 7073, but MRI has since started reporting some
+    # of them. Burton carries its 6/30/2025 contribution of 26,597,500 in
+    # BOTH, so it was counted twice and its U/W ROE ran on double the capital.
+    #
+    # Keyed on (date, amount), NOT date alone. Seasons at Bel Air has two
+    # genuinely different supplement contributions on 2025-06-30
+    # (-3,562,882 and -2,518,202); collapsing by date would silently merge
+    # them. Rounded to the cent because the base path reaches its value
+    # through a cumulative subtraction and the supplement path reads it
+    # directly, so the two can differ in the float tail.
+    #
+    # Verified against live: of the 61 deals carrying 7073 data, only Burton
+    # changes (3 contributions -> 2), and every deal's returns of capital are
+    # byte-identical either side.
+    deduped: List[Tuple[date, float]] = []
+    seen: set = set()
+    for event_date, amount in events:
+        key = (event_date, round(amount, 2))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append((event_date, amount))
+    events = deduped
+
     events.sort(key=lambda x: x[0])
     return events
 
