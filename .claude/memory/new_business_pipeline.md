@@ -132,3 +132,38 @@ Fixed in c5d0b81 (v375):
 If a scrambled structure is found: correct rows are in the waterfall_audit backups
 and scratchpad windsor_waterfall_backup*.json; the reference Cap_WF shape is in the
 "Waterfall step pairing" section above.
+
+## Aug 27 2026: timing, overrides, parcel + scenario integration (v380-v385)
+- **Equity funds at close**: seed_date = close_date - 1 day, actuals_through moves
+  with it (prospect_analysis). Backdating to Dec 31 of the prior year accrued ~9
+  months of phantom pref and stretched ROE years. Close date falls back to the
+  cash-flow source start when target_close is blank (Windsor = 10/1/2026).
+- **Sale = month-end preceding the hold anniversary** (exactly hold*12 months).
+  Terminal NOI column in the annual forecast = forward 12 months from the
+  un-truncated forecast; ties to sale_dbg.NOI_12m_After_Sale by construction.
+- **compute_capital_budget()** is the single source for total cost/equity
+  (mirrors the app's Sources & Uses incl. grossed-up PSC fee); CapEx Reserve
+  use seeds beginning cash via beginning_cash_override.
+- **Operating overrides run on Argus too** (_apply_operating_overrides_df):
+  mgmt_fee_pct replaces 5040 with gross rev x pct; replacement_reserve_psf adds
+  monthly 5092 (own "Replacement Reserve" line under Management Fee, NB only).
+- **Manual parcel distributions are runner events** (build_manual_parcel_events
+  + manual_events on run_interleaved_waterfalls): pref accrues to the parcel
+  date on the pre-cut balance, then the ROC reduces pools — pref for all later
+  periods accrues on reduced capital, same as waterfall mode. The old
+  "pref slightly overstated" limitation is gone.
+- **NB parcel context**: loans from the saved Capital Budget
+  (get_prospect_deal_loans, ids match _build_loans), tenants from the
+  scenario-pinned/active Argus rent roll else the lease-review roster with
+  analyst resolutions (get_prospect_tenants). Multi-tenant picker sums into
+  4010. Parcel rent shows as "Less: {name}" under Rental Income via
+  result['parcel_revenue_detail'].
+- **Argus imports auto-surface as scenarios** (ensure_import_scenarios,
+  idempotent on scenario listing; first active-pinning scenario becomes Base
+  Case — also anchors the parcel tenant picker's rent roll).
+- **NB ROE/MOIC audits at AM parity**; XIRR Cash Flows sorted by date.
+- **Deploy race lesson**: background `git push` in a compound command can be
+  rejected while the ACR build proceeds from a stale local branch — always
+  `git pull --rebase` BEFORE building, and verify the built SHA is on
+  origin/main before deploying (v376/v378 were built off-main; v377/v379
+  superseded them minutes later).
