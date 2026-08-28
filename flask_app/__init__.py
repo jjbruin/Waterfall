@@ -79,12 +79,17 @@ def create_app(config_name: str = None) -> Flask:
             # Ensure lease review tables exist
             from flask_app.services.lease_review_service import ensure_lease_tables
             ensure_lease_tables(engine)
+            # Ensure valuation cycle tables exist
+            from flask_app.services.valuation_service import ensure_valuation_tables
+            ensure_valuation_tables(engine)
 
     # Ensure surveillance tables (SQLite path — PG handled above)
     if not app.config.get("DATABASE_URL"):
         with app.app_context():
             from flask_app.services.surveillance_service import ensure_tables
             ensure_tables()
+            from flask_app.services.valuation_service import ensure_valuation_tables
+            ensure_valuation_tables()
 
     # Configure data adapters (MRI API if env vars set, else database)
     with app.app_context():
@@ -153,6 +158,9 @@ def create_app(config_name: str = None) -> Flask:
 
     from flask_app.api.argus import argus_bp
     app.register_blueprint(argus_bp, url_prefix="/api/argus")
+
+    from flask_app.api.valuations import valuations_bp
+    app.register_blueprint(valuations_bp, url_prefix="/api/valuations")
 
     # Health check
     @app.route("/health")

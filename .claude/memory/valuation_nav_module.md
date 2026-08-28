@@ -1,6 +1,44 @@
-# Valuations & NAV Audit Packages — Design (Aug 28, 2026)
+# Valuations & NAV Audit Packages — Design + Phase 1 (Aug 28, 2026)
 
-**Status: DESIGN ONLY — nothing built.** Full proposal published as artifact:
+**Status: Phase 1 BUILT on branch `feat/valuations-phase1` — not merged, not deployed.**
+
+## Phase 1 implementation (Aug 28, 2026)
+- **Tables** (SQLite + PG via `ensure_valuation_tables()`, all in PROTECTED_TABLES):
+  `valuation_cycles`, `valuation_records` (UNIQUE(cycle_id, vcode)),
+  `valuation_documents` (blob store, SHA-256 dedup per record), `valuation_comments`
+  (UNIQUE(record_id, section); sections: budget_review, balance_sheet, general).
+- **Service** `flask_app/services/valuation_service.py`: cycle create/seed (idempotent
+  reseed picks up new deals), policy classification (`_classify`: dev→cost, <12mo→cost,
+  PE>=5M→third_party, else internal; PE funded nets signed contributions — no abs()),
+  children inherit parent classification via `_child_parent_map` (Property_Count>=1 =
+  parent; Portfolio_Name matches parent Investment_Name OR parent Portfolio_Name —
+  Burton exception), record CRUD + status actions (open/signed_off/excluded),
+  documents, comments, `import_argus()` (wraps argus_service with
+  import_type='valuation', label '{year} Valuation', links import_id to record),
+  `get_budget_review()` (3-col: cycle-yr Estimate = YTD actual + budget remainder /
+  next-yr Budget / Argus Val yr 1 — reuses financials_service._calculate_is_amounts +
+  IS_ACCOUNTS; principal per-source: BS-change+budget / 7060 / argus 7060),
+  `get_balance_sheet()` (prior Dec-31 vs latest Interim BS by vAccountType/vAccount/
+  vDescription).
+- **API** `flask_app/api/valuations.py` at /api/valuations (registered in __init__.py;
+  ensure hooks in both PG and SQLite startup blocks).
+- **Vue** `ValuationsView.vue` at /valuations (sidebar: AM section between Surveillance
+  and One Pager). Dashboard (cycle selector, clickable summary cards, parent/child
+  indented table) + workspace (?record=id): Assumptions & Docs / Budget Review /
+  Balance Sheet tabs, doc upload one-file-per-request, Argus upload, comments, analyst
+  sign-off, print (all tabs forced visible via .tab-panel !important over v-show).
+- **Verified locally**: 2025 test cycle seeded 84 records (53 third_party/16 internal/
+  15 cost pre-override); Asbury budget-review Budget column ties the printed 2025 form
+  EXACTLY (816,863 / 1,140,073 / 733,416 / 264,000 / 106,800); BS ties (AR 150,860,
+  mortgage 5,351,478). Test cycle left in local waterfall.db (records reset clean).
+- **.claude/launch.json** added (flask-api :5000, vue-dev :5173).
+- **Notes**: `valuations` table name was taken (MRI_Val feed) — new tables prefixed
+  `valuation_*`. Argus upload of the *audit package* workbook fails parse ("Could not
+  detect monthly periods") — correct behavior; upload the raw Argus export.
+- **Phase 2 next**: committee analyses 1&2, parallel unanimous approvals
+  (valuation_approvals), CCO recorder, snapshots, committee workbook export.
+
+Full design proposal published as artifact:
 https://claude.ai/code/artifact/b30ce007-5715-4bd6-b3a1-5f7206843144
 Source documents reviewed: Valuation Policy (9/18/25), 2025 Valuation Summary Report - LIVE.xlsx,
 Asbury Commons appraisal (25-16252-000-A2-NDA), Asbury Review Form 2025.pdf,

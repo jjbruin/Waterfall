@@ -97,6 +97,11 @@ const routes = [
     component: () => import('../views/SurveillanceView.vue'),
   },
   {
+    path: '/valuations',
+    name: 'Valuations',
+    component: () => import('../views/ValuationsView.vue'),
+  },
+  {
     path: '/data-explorer',
     name: 'Data Explorer',
     component: () => import('../views/DataExplorerView.vue'),
