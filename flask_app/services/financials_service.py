@@ -1156,7 +1156,12 @@ def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
                                           deal_terms_df=deal_terms,
                                           mri_loans_all_df=mri_loans_all,
                                           inv_map=inv) if quarter_str else {}
-    pe_perf = get_pe_performance(vcode, quarter_str, acct, waterfalls, inv, isbs_raw=isbs_raw) if quarter_str else {}
+    # deal_terms goes in as a FALLBACK for coupon / participation only — the
+    # waterfall stays primary inside get_pe_performance().  Contrast
+    # _enrich_cap_stack_from_deal_terms() below, which overrides.
+    pe_perf = get_pe_performance(vcode, quarter_str, acct, waterfalls, inv,
+                                 isbs_raw=isbs_raw,
+                                 deal_terms=deal_terms) if quarter_str else {}
     comments = get_one_pager_comments(vcode, quarter_str) if quarter_str else {}
 
     # Enrich PE performance from deal analysis waterfall results
@@ -1372,7 +1377,13 @@ def _compute_accrued_from_pref_detail(vcode: str, data: dict, quarter_str: str,
 
 
 def _enrich_cap_stack_from_deal_terms(cap_stack: dict, deal_terms, vcode: str):
-    """Override cap_stack PE coupon/participation with authoritative MRI deal terms."""
+    """Override cap_stack PE coupon/participation with authoritative MRI deal terms.
+
+    ``one_pager._pe_terms_fallback()`` reads the SAME two fields for the PE
+    Performance block (pe_coupon -> Coupon, pe_split_capital -> Participation).
+    Change the mapping or the ``< 1`` percent normalisation here and change it
+    there too, or the two blocks print different numbers for the same term.
+    """
     import pandas as pd
 
     dt = deal_terms.copy()
