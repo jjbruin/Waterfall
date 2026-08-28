@@ -285,3 +285,232 @@ def balance_sheet(record_id):
     except Exception as e:
         logger.error(f"balance_sheet failed: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
+
+
+# ------------------------------------------------------------
+# Phase 2 — permissions
+# ------------------------------------------------------------
+
+def _review_roles() -> list:
+    from flask_app.services.review_service import get_user_review_roles
+    try:
+        return get_user_review_roles(g.current_user["id"])
+    except Exception:
+        return []
+
+
+@valuations_bp.route("/permissions", methods=["GET"])
+@login_required
+def permissions():
+    roles = _review_roles()
+    committee = [r for r in roles if r in valuation_service.COMMITTEE_ROLES]
+    return jsonify({
+        "review_roles": roles,
+        "committee_roles": committee,
+        "can_approve": bool(committee),
+        "is_recorder": valuation_service.RECORDER_ROLE in roles,
+        "app_role": g.current_user.get("role"),
+    })
+
+
+# ------------------------------------------------------------
+# Phase 2 — Reviewer Q&A
+# ------------------------------------------------------------
+
+@valuations_bp.route("/records/<int:record_id>/questions", methods=["POST"])
+@login_required
+def ask_question(record_id):
+    body = request.get_json(silent=True) or {}
+    roles = _review_roles()
+    role_label = next((r for r in roles if r in valuation_service.COMMITTEE_ROLES
+                       or r == valuation_service.RECORDER_ROLE), "")
+    try:
+        result = valuation_service.ask_question(
+            get_engine(), record_id, body.get("text", ""), _username(), role_label)
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"ask_question failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@valuations_bp.route("/questions/<int:question_id>/answer", methods=["PUT"])
+@login_required
+@role_required("admin", "analyst")
+def answer_question(question_id):
+    body = request.get_json(silent=True) or {}
+    try:
+        result = valuation_service.answer_question(
+            get_engine(), question_id, body.get("text", ""), _username())
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"answer_question failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@valuations_bp.route("/questions/<int:question_id>/resolve", methods=["POST"])
+@login_required
+def resolve_question(question_id):
+    try:
+        result = valuation_service.resolve_question(get_engine(), question_id, _username())
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"resolve_question failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+# ------------------------------------------------------------
+# Phase 2 — Committee approvals + snapshot
+# ------------------------------------------------------------
+
+@valuations_bp.route("/records/<int:record_id>/approve", methods=["POST"])
+@login_required
+def committee_approve(record_id):
+    body = request.get_json(silent=True) or {}
+    try:
+        result = valuation_service.committee_approve(
+            get_engine(), record_id, _review_roles(), _username(),
+            data_service.get_data(), note=body.get("note", ""))
+        return jsonify(safe_json(result))
+    except PermissionError as e:
+        return jsonify({"error": str(e)}), 403
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"committee_approve failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@valuations_bp.route("/records/<int:record_id>/return", methods=["POST"])
+@login_required
+def committee_return(record_id):
+    body = request.get_json(silent=True) or {}
+    try:
+        result = valuation_service.committee_return(
+            get_engine(), record_id, _review_roles(), _username(), body.get("note", ""))
+        return jsonify(result)
+    except PermissionError as e:
+        return jsonify({"error": str(e)}), 403
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"committee_return failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@valuations_bp.route("/records/<int:record_id>/snapshot", methods=["GET"])
+@login_required
+def get_snapshot(record_id):
+    try:
+        result = valuation_service.get_snapshot(get_engine(), record_id)
+        if result is None:
+            return jsonify({"error": "No approved snapshot for this record"}), 404
+        return jsonify(safe_json(result))
+    except Exception as e:
+        logger.error(f"get_snapshot failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+# ------------------------------------------------------------
+# Phase 2 — Committee summary + workbook
+# ------------------------------------------------------------
+
+@valuations_bp.route("/cycles/<int:cycle_id>/committee-summary", methods=["GET"])
+@login_required
+def committee_summary(cycle_id):
+    try:
+        result = valuation_service.get_committee_summary(
+            get_engine(), cycle_id, data_service.get_data())
+        return jsonify(safe_json(result))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"committee_summary failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@valuations_bp.route("/cycles/<int:cycle_id>/committee-excel", methods=["GET"])
+@login_required
+def committee_excel(cycle_id):
+    try:
+        content = valuation_service.generate_committee_workbook(
+            get_engine(), cycle_id, data_service.get_data())
+        return send_file(
+            BytesIO(content),
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            download_name="valuation_committee_summary.xlsx",
+            as_attachment=True,
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"committee_excel failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@valuations_bp.route("/cycles/<int:cycle_id>/approve-all", methods=["POST"])
+@login_required
+def approve_all(cycle_id):
+    """Batch approval: this member approves every signed-off record in the cycle."""
+    roles = _review_roles()
+    committee = [r for r in roles if r in valuation_service.COMMITTEE_ROLES]
+    if not committee:
+        return jsonify({"error": "Only Valuation Committee members can approve"}), 403
+    try:
+        engine = get_engine()
+        data = data_service.get_data()
+        dash = valuation_service.get_cycle_dashboard(engine, cycle_id, data)
+        approved, completed = 0, 0
+        for rec in dash["records"]:
+            if rec["status"] != "signed_off":
+                continue
+            result = valuation_service.committee_approve(
+                engine, rec["id"], committee, _username(), data,
+                note="Batch approval — all unexceptional valuations")
+            approved += 1
+            if result["status"] == "approved":
+                completed += 1
+        return jsonify({"approved_by_member": approved, "fully_approved": completed})
+    except Exception as e:
+        logger.error(f"approve_all failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+# ------------------------------------------------------------
+# Phase 2 — AI appraisal summary
+# ------------------------------------------------------------
+
+@valuations_bp.route("/records/<int:record_id>/ai-summary", methods=["GET"])
+@login_required
+def get_ai_summary(record_id):
+    from flask_app.services import valuation_ai_service
+    try:
+        result = valuation_ai_service.get_ai_summary(get_engine(), record_id)
+        if result is None:
+            return jsonify({"exists": False})
+        return jsonify({"exists": True, **safe_json(result)})
+    except Exception as e:
+        logger.error(f"get_ai_summary failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@valuations_bp.route("/records/<int:record_id>/ai-summary", methods=["POST"])
+@login_required
+@role_required("admin", "analyst")
+def generate_ai_summary(record_id):
+    from flask_app.services import valuation_ai_service
+    body = request.get_json(silent=True) or {}
+    try:
+        result = valuation_ai_service.generate_appraisal_summary(
+            get_engine(), record_id, _username(), doc_id=body.get("doc_id"))
+        return jsonify({"exists": True, **safe_json(result)})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"generate_ai_summary failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500

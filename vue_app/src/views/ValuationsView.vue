@@ -53,9 +53,23 @@ const searchText = ref('')
 const selectedRecordId = ref<number | null>(null)
 const record = ref<any | null>(null)
 const recordLoading = ref(false)
-const activeTab = ref<'assumptions' | 'budget' | 'balance'>('assumptions')
+const activeTab = ref<'assumptions' | 'budget' | 'balance' | 'qa' | 'ai'>('assumptions')
 const saving = ref(false)
 const saveMsg = ref('')
+
+// Phase 2 state
+const perms = ref<{ committee_roles: string[]; can_approve: boolean; is_recorder: boolean }>({
+  committee_roles: [], can_approve: false, is_recorder: false,
+})
+const viewMode = ref<'records' | 'committee'>('records')
+const committee = ref<any | null>(null)
+const committeeLoading = ref(false)
+const newQuestion = ref('')
+const answerDrafts = ref<Record<number, string>>({})
+const qaBusy = ref(false)
+const aiSummary = ref<any | null>(null)
+const aiLoading = ref(false)
+const aiGenerating = ref(false)
 
 const budgetReview = ref<any | null>(null)
 const budgetLoading = ref(false)
@@ -101,6 +115,10 @@ const costCount = computed(() => countBy(r => r.effective_classification === 'co
 
 const canEdit = computed(() => auth.isAnalyst)
 const recordEditable = computed(() => record.value && record.value.status === 'open' && canEdit.value)
+// Comments and Q&A answers stay editable through committee review, lock on approval
+const commentsEditable = computed(() => record.value && record.value.status !== 'approved' && canEdit.value)
+const openQuestions = computed(() =>
+  (record.value?.questions || []).filter((q: any) => q.status === 'open').length)
 
 // ------------------------------------------------------------
 // Loaders
@@ -191,10 +209,166 @@ async function loadBalanceSheet() {
   }
 }
 
+async function loadAiSummary(force = false) {
+  if (!selectedRecordId.value || (aiSummary.value && !force)) return
+  aiLoading.value = true
+  try {
+    const res = await api.get(`/api/valuations/records/${selectedRecordId.value}/ai-summary`)
+    aiSummary.value = res.data.exists ? res.data : { exists: false }
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
+  } finally {
+    aiLoading.value = false
+  }
+}
+
 watch(activeTab, (tab) => {
   if (tab === 'budget') loadBudgetReview()
   if (tab === 'balance') loadBalanceSheet()
+  if (tab === 'ai') loadAiSummary()
 })
+
+// ------------------------------------------------------------
+// Phase 2 — permissions, Q&A, approvals, committee, AI
+// ------------------------------------------------------------
+async function loadPermissions() {
+  try {
+    const res = await api.get('/api/valuations/permissions')
+    perms.value = res.data
+  } catch { /* viewer defaults are fine */ }
+}
+
+async function loadCommittee(force = false) {
+  if (!selectedCycleId.value || (committee.value && !force)) return
+  committeeLoading.value = true
+  try {
+    const res = await api.get(`/api/valuations/cycles/${selectedCycleId.value}/committee-summary`)
+    committee.value = res.data
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
+  } finally {
+    committeeLoading.value = false
+  }
+}
+
+watch(viewMode, (m) => { if (m === 'committee') loadCommittee() })
+
+async function askQuestion() {
+  if (!selectedRecordId.value || !newQuestion.value.trim()) return
+  qaBusy.value = true
+  try {
+    await api.post(`/api/valuations/records/${selectedRecordId.value}/questions`, {
+      text: newQuestion.value,
+    })
+    newQuestion.value = ''
+    await openRecord(selectedRecordId.value)
+    activeTab.value = 'qa'
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
+  } finally {
+    qaBusy.value = false
+  }
+}
+
+async function answerQuestion(q: any) {
+  const text = (answerDrafts.value[q.id] || '').trim()
+  if (!text || !selectedRecordId.value) return
+  qaBusy.value = true
+  try {
+    await api.put(`/api/valuations/questions/${q.id}/answer`, { text })
+    delete answerDrafts.value[q.id]
+    await openRecord(selectedRecordId.value)
+    activeTab.value = 'qa'
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
+  } finally {
+    qaBusy.value = false
+  }
+}
+
+async function resolveQuestion(q: any) {
+  if (!selectedRecordId.value) return
+  try {
+    await api.post(`/api/valuations/questions/${q.id}/resolve`)
+    await openRecord(selectedRecordId.value)
+    activeTab.value = 'qa'
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
+  }
+}
+
+async function approveRecord() {
+  if (!selectedRecordId.value) return
+  try {
+    const res = await api.post(`/api/valuations/records/${selectedRecordId.value}/approve`, {})
+    saveMsg.value = res.data.status === 'approved'
+      ? 'Unanimously approved — valuation locked and snapshot saved'
+      : `Approval recorded — waiting on: ${res.data.missing_roles.join(', ')}`
+    setTimeout(() => (saveMsg.value = ''), 5000)
+    await openRecord(selectedRecordId.value)
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
+  }
+}
+
+async function returnRecord() {
+  if (!selectedRecordId.value) return
+  const note = prompt('Return to the asset manager — what needs to change? (required)')
+  if (!note?.trim()) return
+  try {
+    await api.post(`/api/valuations/records/${selectedRecordId.value}/return`, { note })
+    await openRecord(selectedRecordId.value)
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
+  }
+}
+
+async function approveAllSigned() {
+  if (!selectedCycleId.value) return
+  if (!confirm('Approve every signed-off valuation in this cycle as your committee role(s)?')) return
+  try {
+    const res = await api.post(`/api/valuations/cycles/${selectedCycleId.value}/approve-all`)
+    saveMsg.value = `Approved ${res.data.approved_by_member} record(s); ${res.data.fully_approved} now fully approved`
+    setTimeout(() => (saveMsg.value = ''), 5000)
+    await loadCommittee(true)
+    await loadDashboard()
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
+  }
+}
+
+async function downloadCommitteeExcel() {
+  if (!selectedCycleId.value) return
+  try {
+    const res = await api.get(`/api/valuations/cycles/${selectedCycleId.value}/committee-excel`, {
+      responseType: 'blob',
+    })
+    const url = URL.createObjectURL(res.data)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'valuation_committee_summary.xlsx'
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
+  }
+}
+
+async function generateAiSummary() {
+  if (!selectedRecordId.value) return
+  aiGenerating.value = true
+  error.value = null
+  try {
+    const res = await api.post(`/api/valuations/records/${selectedRecordId.value}/ai-summary`, {})
+    aiSummary.value = res.data
+    saveMsg.value = 'AI appraisal summary generated'
+    setTimeout(() => (saveMsg.value = ''), 4000)
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
+  } finally {
+    aiGenerating.value = false
+  }
+}
 
 // ------------------------------------------------------------
 // Actions
@@ -372,16 +546,31 @@ const CLASS_LABELS: Record<string, string> = {
   third_party: '3rd Party', internal: 'Internal', cost: 'Cost',
 }
 const STATUS_LABELS: Record<string, string> = {
-  open: 'Open', signed_off: 'Signed Off', excluded: 'Excluded',
+  open: 'Open', signed_off: 'Signed Off', approved: 'Approved', excluded: 'Excluded',
 }
+const ROLE_LABELS: Record<string, string> = { president: 'President', ceo: 'CEO', cio: 'CIO' }
+const COMMITTEE_ROLES = ['president', 'ceo', 'cio']
 function classBadge(c: string) {
   return { third_party: 'badge-third', internal: 'badge-internal', cost: 'badge-cost' }[c] || 'badge-internal'
 }
 function statusBadge(s: string) {
-  return { open: 'status-open', signed_off: 'status-signed', excluded: 'status-excluded' }[s] || 'status-open'
+  return {
+    open: 'status-open', signed_off: 'status-signed',
+    approved: 'status-approved', excluded: 'status-excluded',
+  }[s] || 'status-open'
+}
+function fmtOcc(v: number | null | undefined): string {
+  if (v === null || v === undefined) return '—'
+  // The model may return a fraction (1.0) or a percentage (100)
+  return (v <= 1 ? v * 100 : v).toFixed(0) + '%'
+}
+function fmtDateTime(d: string | null | undefined): string {
+  if (!d) return ''
+  return fmtDate(d.slice(0, 10))
 }
 
 onMounted(async () => {
+  loadPermissions()
   await loadCycles()
   await loadDashboard()
   const rec = Number(route.query.record)
@@ -389,7 +578,9 @@ onMounted(async () => {
 })
 watch(selectedCycleId, () => {
   router.replace({ query: { ...route.query, cycle: String(selectedCycleId.value) } })
+  committee.value = null
   loadDashboard()
+  if (viewMode.value === 'committee') loadCommittee(true)
 })
 </script>
 
@@ -406,6 +597,10 @@ watch(selectedCycleId, () => {
       <div class="header-row no-print">
         <h2>Valuations</h2>
         <div class="header-controls">
+          <div class="view-toggle">
+            <button :class="{ active: viewMode === 'records' }" @click="viewMode = 'records'">Records</button>
+            <button :class="{ active: viewMode === 'committee' }" @click="viewMode = 'committee'">Committee Summary</button>
+          </div>
           <select v-model.number="selectedCycleId" class="cycle-select">
             <option v-for="c in cycles" :key="c.id" :value="c.id">
               {{ c.year }} Cycle (as of {{ fmtDate(c.as_of_date) }})
@@ -424,6 +619,7 @@ watch(selectedCycleId, () => {
       </div>
 
       <template v-else>
+        <template v-if="viewMode === 'records'">
         <div class="summary-cards no-print">
           <div class="summary-card" :class="{ active: statusFilter === 'open' }" @click="filterByStatus('open')">
             <span class="card-count">{{ openCount }}</span>
@@ -461,6 +657,8 @@ watch(selectedCycleId, () => {
                 <th class="num">&Delta;</th>
                 <th>Docs</th>
                 <th>Argus</th>
+                <th title="Open reviewer questions">Q</th>
+                <th title="Committee approvals">Appr.</th>
                 <th>Status</th>
               </tr>
             </thead>
@@ -490,14 +688,115 @@ watch(selectedCycleId, () => {
                   <span v-if="r.doc_count" class="doc-count">{{ r.doc_count }}</span>
                 </td>
                 <td><span v-if="r.has_argus" class="mini-badge argus">CF</span></td>
+                <td><span v-if="(r as any).open_questions" class="mini-badge qbadge">{{ (r as any).open_questions }}</span></td>
+                <td>
+                  <span v-if="r.status === 'signed_off' || r.status === 'approved'" class="appr-count">
+                    {{ (r as any).approval_count || 0 }}/3
+                  </span>
+                </td>
                 <td><span class="status-badge" :class="statusBadge(r.status)">{{ STATUS_LABELS[r.status] || r.status }}</span></td>
               </tr>
               <tr v-if="!filteredRecords.length">
-                <td colspan="9" class="empty-row">No records match.</td>
+                <td colspan="11" class="empty-row">No records match.</td>
               </tr>
             </tbody>
           </table>
         </div>
+        </template>
+
+        <!-- ===== Committee Summary view ===== -->
+        <template v-else>
+          <div class="committee-actions no-print">
+            <button class="btn-secondary" @click="downloadCommitteeExcel">Download Committee Workbook</button>
+            <button v-if="perms.can_approve" class="btn-primary" @click="approveAllSigned">
+              Approve All Signed-Off
+            </button>
+            <span v-if="perms.can_approve" class="perm-note">
+              You approve as: {{ perms.committee_roles.map(r => ROLE_LABELS[r] || r).join(', ') }}
+            </span>
+            <span v-else-if="perms.is_recorder" class="perm-note">Recorder (CCO)</span>
+          </div>
+          <div v-if="committeeLoading" class="loading-text">Building committee analyses...</div>
+          <template v-if="committee">
+            <div class="panel">
+              <h3>Analysis 1 — Preferred Equity NAV</h3>
+              <p class="panel-note">Pref balance and accrued pref computed from accounting through
+                {{ fmtDate(committee.cycle?.as_of_date) }}. Current-cycle Pref NAV arrives with the NAV engine (Phase 3).</p>
+              <div class="table-scroll">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>Deal</th><th>Status</th>
+                      <th class="num">Pref Balance</th><th class="num">Accrued Pref</th>
+                      <th class="num">Balance w/ Accrual</th>
+                      <th class="num">Pref NAV</th><th class="num">Prior Pref NAV</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="r in committee.analysis1" :key="r.vcode" class="clickable-row"
+                        @click="openRecord(records.find(x => x.vcode === r.vcode)?.id || 0)">
+                      <td class="deal-name">{{ r.deal_name }}</td>
+                      <td><span class="status-badge" :class="statusBadge(r.status)">{{ STATUS_LABELS[r.status] || r.status }}</span></td>
+                      <td class="num">{{ fmtCurrency(r.pref_balance) }}</td>
+                      <td class="num">{{ fmtCurrency(r.accrued_pref) }}</td>
+                      <td class="num">{{ fmtCurrency(r.balance_with_accrual) }}</td>
+                      <td class="num">{{ fmtCurrency(r.pref_nav) }}</td>
+                      <td class="num">{{ fmtCurrency(r.prior_pref_nav) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="panel" style="margin-top:16px">
+              <h3>Analysis 2 — Methods &amp; Values, Year over Year</h3>
+              <div class="table-scroll">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>Deal</th><th>Status</th><th class="num">Q</th>
+                      <th>Method (Prior &rarr; Now)</th>
+                      <th class="num">Cap (Prior &rarr; Now)</th>
+                      <th class="num">Exit Cap</th>
+                      <th class="num">Disc</th>
+                      <th class="num">NOI</th>
+                      <th class="num">Prior Value</th><th class="num">Value</th>
+                      <th class="num">Var</th><th class="num">Var %</th>
+                      <th class="num">Debt</th><th class="num">Net Proceeds (est)</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="r in committee.analysis2" :key="r.vcode" class="clickable-row"
+                        :class="{ 'child-row': r.is_child }"
+                        @click="openRecord(records.find(x => x.vcode === r.vcode)?.id || 0)">
+                      <td class="deal-name">
+                        <span v-if="r.is_child" class="child-indent">&#x21B3;</span>{{ r.deal_name }}
+                      </td>
+                      <td><span class="status-badge" :class="statusBadge(r.status)">{{ STATUS_LABELS[r.status] || r.status }}</span></td>
+                      <td class="num"><span v-if="r.open_questions" class="mini-badge qbadge">{{ r.open_questions }}</span></td>
+                      <td>{{ r.prior_method || '—' }} &rarr; {{ r.method || '—' }}</td>
+                      <td class="num">{{ fmtPct(r.prior_cap_rate) }} &rarr; {{ fmtPct(r.cap_rate) }}</td>
+                      <td class="num">{{ fmtPct(r.prior_term_cap) }} &rarr; {{ fmtPct(r.term_cap) }}</td>
+                      <td class="num">{{ fmtPct(r.prior_discount) }} &rarr; {{ fmtPct(r.discount) }}</td>
+                      <td class="num">{{ fmtCurrency(r.noi) }}</td>
+                      <td class="num">{{ fmtCurrency(r.prior_value) }}</td>
+                      <td class="num">{{ fmtCurrency(r.value) }}</td>
+                      <td class="num" :class="{ pos: (r.value_var ?? 0) > 0, neg: (r.value_var ?? 0) < 0 }">{{ fmtCurrency(r.value_var) }}</td>
+                      <td class="num" :class="{ pos: (r.value_var ?? 0) > 0, neg: (r.value_var ?? 0) < 0 }">{{ fmtPct(r.value_var_pct) }}</td>
+                      <td class="num">{{ fmtCurrency(r.debt) }}</td>
+                      <td class="num">{{ fmtCurrency(r.net_proceeds) }}</td>
+                      <td>
+                        <span v-if="r.direction === 'Up'" class="dir-up">&#9650;</span>
+                        <span v-else-if="r.direction === 'Down'" class="dir-down">&#9660;</span>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </template>
+        </template>
       </template>
     </template>
 
@@ -511,12 +810,27 @@ watch(selectedCycleId, () => {
           </h2>
         </div>
         <div class="header-controls" v-if="record">
+          <div v-if="record.status === 'signed_off' || record.status === 'approved'" class="committee-chips">
+            <span v-for="role in COMMITTEE_ROLES" :key="role" class="role-chip"
+                  :class="{ done: record.approval_state?.approved_roles?.includes(role) }">
+              {{ record.approval_state?.approved_roles?.includes(role) ? '✓' : '○' }} {{ ROLE_LABELS[role] }}
+            </span>
+          </div>
           <span class="status-badge" :class="statusBadge(record.status)">{{ STATUS_LABELS[record.status] || record.status }}</span>
           <button v-if="record.status === 'open' && canEdit" class="btn-primary" @click="recordAction('sign_off')">
             Analyst Sign-off
           </button>
           <button v-else-if="record.status === 'signed_off' && canEdit" class="btn-secondary" @click="recordAction('reopen')">
             Reopen
+          </button>
+          <button v-if="perms.can_approve && record.status === 'signed_off'
+                        && !COMMITTEE_ROLES.every(r => !perms.committee_roles.includes(r) || record.approval_state?.approved_roles?.includes(r))"
+                  class="btn-primary" @click="approveRecord">
+            Approve
+          </button>
+          <button v-if="(perms.can_approve || perms.is_recorder) && (record.status === 'signed_off' || record.status === 'approved')"
+                  class="btn-secondary" @click="returnRecord">
+            Return
           </button>
           <button class="btn-secondary" @click="printForm">Print</button>
         </div>
@@ -546,6 +860,10 @@ watch(selectedCycleId, () => {
           <button :class="{ active: activeTab === 'assumptions' }" @click="activeTab = 'assumptions'">Assumptions &amp; Documents</button>
           <button :class="{ active: activeTab === 'budget' }" @click="activeTab = 'budget'">Budget Review</button>
           <button :class="{ active: activeTab === 'balance' }" @click="activeTab = 'balance'">Balance Sheet</button>
+          <button :class="{ active: activeTab === 'qa' }" @click="activeTab = 'qa'">
+            Q&amp;A <span v-if="openQuestions" class="mini-badge qbadge">{{ openQuestions }}</span>
+          </button>
+          <button :class="{ active: activeTab === 'ai' }" @click="activeTab = 'ai'">AI Summary</button>
         </div>
 
         <!-- ===== Tab: Assumptions & Documents ===== -->
@@ -682,9 +1000,9 @@ watch(selectedCycleId, () => {
 
           <div class="panel">
             <h3>General Comments</h3>
-            <textarea v-model="comments.general" rows="3" :disabled="!recordEditable"
+            <textarea v-model="comments.general" rows="3" :disabled="!commentsEditable"
                       placeholder="Notes for the committee record..."></textarea>
-            <div class="form-actions no-print" v-if="recordEditable">
+            <div class="form-actions no-print" v-if="commentsEditable">
               <button class="btn-secondary" @click="saveComment('general')" :disabled="commentSaving.general">
                 {{ commentSaving.general ? 'Saving...' : 'Save Comment' }}
               </button>
@@ -756,9 +1074,9 @@ watch(selectedCycleId, () => {
 
             <div class="panel">
               <h3>Analyst Commentary</h3>
-              <textarea v-model="comments.budget_review" rows="5" :disabled="!recordEditable"
+              <textarea v-model="comments.budget_review" rows="5" :disabled="!commentsEditable"
                         placeholder="Variance drivers: lease assumptions, credit loss, expense differences vs budget..."></textarea>
-              <div class="form-actions no-print" v-if="recordEditable">
+              <div class="form-actions no-print" v-if="commentsEditable">
                 <button class="btn-secondary" @click="saveComment('budget_review')" :disabled="commentSaving.budget_review">
                   {{ commentSaving.budget_review ? 'Saving...' : 'Save Commentary' }}
                 </button>
@@ -809,13 +1127,176 @@ watch(selectedCycleId, () => {
 
             <div class="panel">
               <h3>Balance Sheet Commentary</h3>
-              <textarea v-model="comments.balance_sheet" rows="4" :disabled="!recordEditable"
+              <textarea v-model="comments.balance_sheet" rows="4" :disabled="!commentsEditable"
                         placeholder="AR/AP movements, reserve balances, anything the committee should see..."></textarea>
-              <div class="form-actions no-print" v-if="recordEditable">
+              <div class="form-actions no-print" v-if="commentsEditable">
                 <button class="btn-secondary" @click="saveComment('balance_sheet')" :disabled="commentSaving.balance_sheet">
                   {{ commentSaving.balance_sheet ? 'Saving...' : 'Save Commentary' }}
                 </button>
               </div>
+            </div>
+          </template>
+        </div>
+
+        <!-- ===== Tab: Q&A ===== -->
+        <div v-show="activeTab === 'qa'" class="tab-panel">
+          <div class="panel no-print" v-if="record.status !== 'approved'">
+            <h3>Ask a Question</h3>
+            <p class="panel-note">Reviewers and committee members can ask about the valuation or its
+              assumptions; the asset manager answers here and the thread becomes part of the record.</p>
+            <textarea v-model="newQuestion" rows="2"
+                      placeholder="e.g. What supports the terminal cap tightening vs the survey midpoint?"></textarea>
+            <div class="form-actions">
+              <button class="btn-primary" @click="askQuestion" :disabled="qaBusy || !newQuestion.trim()">
+                {{ qaBusy ? 'Posting...' : 'Post Question' }}
+              </button>
+            </div>
+          </div>
+
+          <div class="panel" v-for="q in (record.questions || [])" :key="q.id">
+            <div class="qa-head">
+              <span class="status-badge" :class="{
+                'status-open': q.status === 'open',
+                'status-signed': q.status === 'answered',
+                'status-approved': q.status === 'resolved',
+              }">{{ q.status }}</span>
+              <span class="qa-meta">{{ q.asked_by }} &middot; {{ fmtDateTime(q.asked_at) }}</span>
+            </div>
+            <div class="qa-question">{{ q.question_text }}</div>
+            <div v-if="q.answer_text" class="qa-answer">
+              <div class="qa-meta">Answered by {{ q.answered_by }} &middot; {{ fmtDateTime(q.answered_at) }}</div>
+              {{ q.answer_text }}
+            </div>
+            <div v-if="canEdit && q.status !== 'resolved'" class="qa-reply no-print">
+              <textarea v-model="answerDrafts[q.id]" rows="2"
+                        :placeholder="q.answer_text ? 'Revise the answer...' : 'Provide an answer...'"></textarea>
+              <div class="form-actions">
+                <button class="btn-secondary" @click="answerQuestion(q)" :disabled="qaBusy || !(answerDrafts[q.id] || '').trim()">
+                  {{ q.answer_text ? 'Update Answer' : 'Post Answer' }}
+                </button>
+                <button v-if="q.status === 'answered'" class="btn-secondary" @click="resolveQuestion(q)">
+                  Mark Resolved
+                </button>
+              </div>
+            </div>
+            <div v-else-if="(perms.can_approve || perms.is_recorder) && q.status === 'answered'" class="form-actions no-print">
+              <button class="btn-secondary" @click="resolveQuestion(q)">Mark Resolved</button>
+            </div>
+          </div>
+          <div v-if="!(record.questions || []).length" class="empty-note" style="padding: 8px 2px">
+            No questions yet.
+          </div>
+        </div>
+
+        <!-- ===== Tab: AI Summary ===== -->
+        <div v-show="activeTab === 'ai'" class="tab-panel">
+          <div v-if="aiLoading" class="loading-text">Checking for a stored summary...</div>
+          <div class="panel no-print" v-if="aiSummary && !aiSummary.exists">
+            <h3>AI Appraisal Summary</h3>
+            <p class="panel-note">Condenses the uploaded appraisal PDF to a few key pages: how the
+              appraiser approached the valuation, the assumptions that drive the value, market context,
+              and risks — then cross-checks the extracted assumptions against what was entered.</p>
+            <button class="btn-primary" @click="generateAiSummary" :disabled="aiGenerating || !canEdit">
+              {{ aiGenerating ? 'Reading the appraisal (about a minute)...' : 'Generate Summary' }}
+            </button>
+          </div>
+
+          <template v-if="aiSummary?.exists">
+            <div class="panel ai-meta-panel no-print">
+              <span class="panel-note">
+                Generated {{ fmtDateTime(aiSummary.created_at) }} by {{ aiSummary.created_by }}
+                from {{ aiSummary.summary?._meta?.source_document }}
+                ({{ aiSummary.summary?._meta?.page_count }} pages, {{ aiSummary.model }}).
+                AI-generated — verify against the report before relying on it.
+              </span>
+              <button class="btn-secondary" @click="generateAiSummary" :disabled="aiGenerating || !canEdit">
+                {{ aiGenerating ? 'Regenerating...' : 'Regenerate' }}
+              </button>
+            </div>
+
+            <div class="panel">
+              <h3>Executive Summary</h3>
+              <p class="ai-text">{{ aiSummary.summary.executive_summary }}</p>
+              <div class="ai-facts" v-if="aiSummary.summary.value_conclusion">
+                <div class="fact"><span class="strip-label">As-Is Value</span>{{ fmtCurrency(aiSummary.summary.value_conclusion.as_is_value) }}</div>
+                <div class="fact"><span class="strip-label">Per SF</span>{{ fmtCurrency(aiSummary.summary.value_conclusion.per_sf) }}</div>
+                <div class="fact"><span class="strip-label">Prior Value</span>{{ fmtCurrency(aiSummary.summary.value_conclusion.prior_value) }}</div>
+                <div class="fact"><span class="strip-label">Change</span>
+                  <span :class="{ pos: (aiSummary.summary.value_conclusion.change_amount ?? 0) > 0, neg: (aiSummary.summary.value_conclusion.change_amount ?? 0) < 0 }">
+                    {{ fmtCurrency(aiSummary.summary.value_conclusion.change_amount) }}
+                    ({{ fmtPct(aiSummary.summary.value_conclusion.change_pct) }})
+                  </span>
+                </div>
+                <div class="fact"><span class="strip-label">Interest</span>{{ aiSummary.summary.value_conclusion.interest_appraised || '—' }}</div>
+                <div class="fact"><span class="strip-label">Occupancy</span>{{ fmtOcc(aiSummary.summary.property?.occupancy_pct) }}</div>
+              </div>
+            </div>
+
+            <div class="panel" v-if="aiSummary.checks?.length">
+              <h3>Assumption Cross-Check <span class="panel-note" style="font-weight:400">entered on the record vs extracted from the appraisal</span></h3>
+              <div class="table-scroll">
+                <table class="data-table">
+                  <thead><tr><th>Field</th><th class="num">Entered</th><th class="num">From Appraisal</th><th>Match</th></tr></thead>
+                  <tbody>
+                    <tr v-for="c in aiSummary.checks" :key="c.field">
+                      <td>{{ c.field }}</td>
+                      <td class="num">{{ c.entered ?? '—' }}</td>
+                      <td class="num">{{ c.extracted ?? '—' }}</td>
+                      <td>
+                        <span v-if="c.match === true" class="mini-badge argus">match</span>
+                        <span v-else-if="c.match === false" class="mini-badge mismatch">differs</span>
+                        <span v-else class="mini-badge">n/a</span>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="panel">
+              <h3>Valuation Approach</h3>
+              <p class="ai-text">{{ aiSummary.summary.valuation_approach }}</p>
+            </div>
+
+            <div class="panel" v-if="aiSummary.summary.key_assumptions">
+              <h3>Key Assumptions</h3>
+              <div class="ai-facts">
+                <div class="fact"><span class="strip-label">Going-in Cap</span>{{ fmtPct(aiSummary.summary.key_assumptions.overall_cap_rate) }}</div>
+                <div class="fact"><span class="strip-label">Terminal Cap</span>{{ fmtPct(aiSummary.summary.key_assumptions.terminal_cap_rate) }}</div>
+                <div class="fact"><span class="strip-label">Discount Rate</span>{{ fmtPct(aiSummary.summary.key_assumptions.discount_rate) }}</div>
+                <div class="fact"><span class="strip-label">Rent Growth</span>{{ fmtPct(aiSummary.summary.key_assumptions.market_rent_growth) }}</div>
+                <div class="fact"><span class="strip-label">Expense Growth</span>{{ fmtPct(aiSummary.summary.key_assumptions.expense_growth) }}</div>
+                <div class="fact"><span class="strip-label">Selling Costs</span>{{ fmtPct(aiSummary.summary.key_assumptions.selling_costs_at_reversion) }}</div>
+                <div class="fact"><span class="strip-label">Vacancy / Credit</span>{{ fmtPct(aiSummary.summary.key_assumptions.vacancy_credit_loss) }}</div>
+                <div class="fact"><span class="strip-label">DCF Hold</span>{{ aiSummary.summary.key_assumptions.dcf_hold_period_years != null ? aiSummary.summary.key_assumptions.dcf_hold_period_years + ' yrs' : '—' }}</div>
+              </div>
+              <p class="ai-text" v-if="aiSummary.summary.key_assumptions.notes" style="margin-top:10px">
+                {{ aiSummary.summary.key_assumptions.notes }}
+              </p>
+            </div>
+
+            <div class="panel-grid">
+              <div class="panel" v-if="aiSummary.summary.market_overview?.length">
+                <h3>Market Overview</h3>
+                <ul class="ai-list"><li v-for="(b, i) in aiSummary.summary.market_overview" :key="i">{{ b }}</li></ul>
+              </div>
+              <div class="panel" v-if="aiSummary.summary.rent_and_leasing?.length">
+                <h3>Rent &amp; Leasing</h3>
+                <ul class="ai-list"><li v-for="(b, i) in aiSummary.summary.rent_and_leasing" :key="i">{{ b }}</li></ul>
+              </div>
+              <div class="panel" v-if="aiSummary.summary.positives?.length">
+                <h3>Positives</h3>
+                <ul class="ai-list"><li v-for="(b, i) in aiSummary.summary.positives" :key="i">{{ b }}</li></ul>
+              </div>
+              <div class="panel" v-if="aiSummary.summary.risks?.length">
+                <h3>Risks</h3>
+                <ul class="ai-list"><li v-for="(b, i) in aiSummary.summary.risks" :key="i">{{ b }}</li></ul>
+              </div>
+            </div>
+
+            <div class="panel" v-if="aiSummary.summary.extraordinary_assumptions?.length">
+              <h3>Extraordinary Assumptions &amp; Hypothetical Conditions</h3>
+              <ul class="ai-list"><li v-for="(b, i) in aiSummary.summary.extraordinary_assumptions" :key="i">{{ b }}</li></ul>
             </div>
           </template>
         </div>
@@ -957,6 +1438,41 @@ textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--color-border)
 .occ-bar { width: 26px; background: var(--color-accent); border-radius: 3px 3px 0 0; min-height: 2px; }
 .occ-val { font-size: 11px; font-weight: 600; margin-top: 2px; }
 .occ-label { font-size: 10px; color: var(--color-text-secondary); white-space: nowrap; }
+
+/* phase 2 */
+.view-toggle { display: inline-flex; border: 1px solid var(--color-border); border-radius: 6px; overflow: hidden; }
+.view-toggle button { padding: 6px 12px; border: none; background: var(--color-surface); font-size: 13px; cursor: pointer; color: var(--color-text-secondary); }
+.view-toggle button.active { background: var(--color-accent); color: #fff; }
+.committee-actions { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+.perm-note { font-size: 12px; color: var(--color-text-secondary); }
+.status-approved { background: #e8f5e9; color: #1b5e20; border: 1px solid #a5d6a7; }
+.qbadge { background: #fff3e0; color: #e65100; }
+.mini-badge.mismatch { background: #fdecea; color: #b3402f; }
+.appr-count { font-size: 12px; font-weight: 600; color: var(--color-text-secondary); }
+.committee-chips { display: inline-flex; gap: 6px; }
+.role-chip {
+  font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 12px;
+  background: #eeeeee; color: #777;
+}
+.role-chip.done { background: #e8f5e9; color: #2e7d32; }
+.dir-up { color: #2e7d32; }
+.dir-down { color: #b3402f; }
+.qa-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.qa-meta { font-size: 11.5px; color: var(--color-text-secondary); }
+.qa-question { font-weight: 600; font-size: 13.5px; margin-bottom: 8px; white-space: pre-wrap; }
+.qa-answer {
+  background: var(--color-bg); border-left: 3px solid var(--color-accent);
+  border-radius: 0 6px 6px 0; padding: 8px 12px; font-size: 13.5px;
+  margin-bottom: 8px; white-space: pre-wrap;
+}
+.qa-answer .qa-meta { margin-bottom: 4px; }
+.qa-reply textarea { margin-bottom: 0; }
+.ai-meta-panel { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.ai-text { font-size: 13.5px; line-height: 1.55; margin: 4px 0; max-width: 90ch; white-space: pre-wrap; }
+.ai-facts { display: flex; flex-wrap: wrap; gap: 16px 24px; margin-top: 10px; font-size: 13.5px; }
+.ai-facts .fact { min-width: 110px; }
+.ai-list { margin: 4px 0 0; padding-left: 18px; font-size: 13.5px; line-height: 1.5; }
+.ai-list li { margin: 4px 0; }
 
 /* print */
 @media print {

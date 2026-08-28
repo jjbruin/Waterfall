@@ -1,6 +1,54 @@
-# Valuations & NAV Audit Packages — Design + Phase 1 (Aug 28, 2026)
+# Valuations & NAV Audit Packages — Design + Phases 1-2 (Aug 28, 2026)
 
-**Status: Phase 1 BUILT on branch `feat/valuations-phase1` — not merged, not deployed.**
+**Status: Phases 1 AND 2 BUILT on branch `feat/valuations-phase1` — not merged, not deployed.**
+
+## Phase 2 implementation (Aug 28, 2026)
+- **New tables** (added to `_VALUATION_DDL`, protected): `valuation_questions`
+  (Q→single editable answer, status open/answered/resolved), `valuation_approvals`
+  (member_role, action approve/return, active flag — history kept), `valuation_snapshots`
+  (record_id UNIQUE, full JSON freeze), `valuation_ai_summaries` (record_id UNIQUE).
+- **Committee = President/CEO/CIO, parallel unanimous; CCO = recorder** (approves
+  nothing, can return). Roles reuse the shared `review_roles` table — **'cio' added to
+  REVIEW_ROLE_NAMES** in review_service.py so admins assign it in Settings. A user
+  holding multiple committee roles approves all of them in one click. All 3 active
+  approvals → status 'approved' + snapshot (record/budget-review/balance-sheet JSON);
+  approved records are locked (`_require_not_approved` on every write); return requires
+  a note, clears approvals, deletes the snapshot, back to 'open'. Batch approve-all
+  endpoint per cycle.
+- **Q&A**: any logged-in user asks (asker's committee/recorder role labeled);
+  analyst/admin answers (re-answer updates); answered→resolved by AM or committee.
+  Open-question counts on dashboard + committee views. Editable through review,
+  frozen at approval (comments too — `commentsEditable` = not approved).
+- **Committee summary** (`get_committee_summary`): Analysis 1 (pref balance + accrued
+  pref via `build_roe_summary_row` from reports_service at the cycle as-of; prior Pref
+  NAV from mri_val mMezzanineValue; current Pref NAV = Phase 3) + Analysis 2 (method/
+  cap/exit cap/disc/NOI/value YoY vs mri_val prior year, debt via get_isbs_debt_balance,
+  net proceeds = value − debt estimate pending NAV walk, up/down + rate deltas).
+  **Ties verified to the 2025 workbook**: Asbury 1,490,000/26,452.60/1,516,452.60 and
+  Giant 7 20,200,000/352,808.22 exact. 2-sheet Excel export (`generate_committee_workbook`).
+- **AI appraisal summary** (`valuation_ai_service.py`): pulls latest appraisal blob,
+  PyMuPDF text extraction (pdfplumber fallback; scanned PDFs rejected with clear msg,
+  cap 350k chars), claude-sonnet-4-6 → structured JSON (exec summary, approach,
+  key_assumptions, value_conclusion, market/rent/positives/risks bullets, extraordinary
+  assumptions, in-place income). Stored per record; regenerate replaces. Server-side
+  **cross-checks extracted vs entered** assumptions (6 fields, tolerance-based).
+  JSON parse via `raw_decode` of first object (model may append commentary).
+  **Verified on the real 170-page Asbury appraisal: all 6 checks match** (9.4M, 7.25%,
+  7.5%, 8.5%, 2%, NOI 706,041≈709,790), narrative correctly captures DCF-primary
+  reconciliation + Winn-Dixie flat-option NOI suppression. ~75s per run.
+- **API adds**: /permissions, records/<id>/questions + questions/<id>/answer|resolve,
+  records/<id>/approve|return|snapshot, cycles/<id>/committee-summary|committee-excel|
+  approve-all, records/<id>/ai-summary GET/POST.
+- **Vue**: Records|Committee Summary toggle on dashboard (analyses tables, workbook
+  download, approve-all, click-through); workspace committee chips (✓/○ per role) +
+  Approve/Return (role-gated via /permissions); Q&A tab; AI Summary tab (facts grid,
+  cross-check table with match/differs badges, regenerate). Q/Appr. columns on records
+  table.
+- **Local test state**: admin holds 'cio' review role in local waterfall.db; Asbury
+  record carries the real appraisal PDF + generated AI summary + real 2025 assumptions.
+- **Phase 3 next**: NAV engine (compute_nav, BS curation UI, pref walk refactor,
+  agreement refs), auditor package Excel, publish step (valuations row + forecast_feed
+  + protect `valuations` from MRI refresh).
 
 ## Phase 1 implementation (Aug 28, 2026)
 - **Tables** (SQLite + PG via `ensure_valuation_tables()`, all in PROTECTED_TABLES):

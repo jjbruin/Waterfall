@@ -45,7 +45,13 @@ PE_THRESHOLD = 5_000_000.0
 HOLD_MONTHS_MIN = 12
 
 CLASSIFICATIONS = ("third_party", "internal", "cost")
-RECORD_STATUSES = ("open", "signed_off", "excluded")
+RECORD_STATUSES = ("open", "signed_off", "approved", "excluded")
+
+# Valuation Committee (parallel unanimous — decisions Aug 28, 2026).
+# Roles live in the shared review_roles table; 'cio' was added to
+# REVIEW_ROLE_NAMES for this. The CCO records but does not approve.
+COMMITTEE_ROLES = ("president", "ceo", "cio")
+RECORDER_ROLE = "cco"
 DOC_TYPES = ("appraisal", "argus", "llc_excerpt", "bs_support", "other")
 COMMENT_SECTIONS = ("budget_review", "balance_sheet", "general")
 
@@ -112,8 +118,55 @@ _VALUATION_DDL = [
         UNIQUE(record_id, section)
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS valuation_questions (
+        id {pk},
+        record_id INTEGER NOT NULL,
+        question_text TEXT NOT NULL,
+        asked_by TEXT,
+        asked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        answer_text TEXT,
+        answered_by TEXT,
+        answered_at TIMESTAMP,
+        status TEXT NOT NULL DEFAULT 'open'
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS valuation_approvals (
+        id {pk},
+        record_id INTEGER NOT NULL,
+        member_role TEXT NOT NULL,
+        username TEXT,
+        action TEXT NOT NULL,
+        note TEXT,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS valuation_snapshots (
+        id {pk},
+        record_id INTEGER NOT NULL UNIQUE,
+        snapshot_json TEXT,
+        approved_by TEXT,
+        approved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS valuation_ai_summaries (
+        id {pk},
+        record_id INTEGER NOT NULL UNIQUE,
+        doc_id INTEGER,
+        summary_json TEXT,
+        model TEXT,
+        created_by TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
     "CREATE INDEX IF NOT EXISTS idx_valuation_records_cycle ON valuation_records(cycle_id)",
     "CREATE INDEX IF NOT EXISTS idx_valuation_documents_record ON valuation_documents(record_id)",
+    "CREATE INDEX IF NOT EXISTS idx_valuation_questions_record ON valuation_questions(record_id)",
+    "CREATE INDEX IF NOT EXISTS idx_valuation_approvals_record ON valuation_approvals(record_id)",
 ]
 
 
@@ -337,7 +390,11 @@ def get_cycle_dashboard(engine, cycle_id: int, data: dict) -> Dict[str, Any]:
                    (SELECT COUNT(*) FROM valuation_documents d
                      WHERE d.record_id = r.id) AS doc_count,
                    (SELECT COUNT(*) FROM valuation_documents d
-                     WHERE d.record_id = r.id AND d.doc_type = 'appraisal') AS appraisal_count
+                     WHERE d.record_id = r.id AND d.doc_type = 'appraisal') AS appraisal_count,
+                   (SELECT COUNT(*) FROM valuation_questions q
+                     WHERE q.record_id = r.id AND q.status = 'open') AS open_questions,
+                   (SELECT COUNT(*) FROM valuation_approvals a
+                     WHERE a.record_id = r.id AND a.active = 1 AND a.action = 'approve') AS approval_count
             FROM valuation_records r WHERE r.cycle_id = :i
         """), {"i": cycle_id}).fetchall()
 
@@ -437,11 +494,32 @@ def get_record(engine, record_id: int, data: dict) -> Dict[str, Any]:
             SELECT section, comment_text, updated_by, updated_at
             FROM valuation_comments WHERE record_id = :i
         """), {"i": record_id}).fetchall()
+        questions = conn.execute(text("""
+            SELECT * FROM valuation_questions WHERE record_id = :i ORDER BY asked_at, id
+        """), {"i": record_id}).fetchall()
+        approvals = conn.execute(text("""
+            SELECT member_role, username, action, note, created_at
+            FROM valuation_approvals WHERE record_id = :i AND active = 1
+            ORDER BY created_at
+        """), {"i": record_id}).fetchall()
+        ai_meta = conn.execute(text("""
+            SELECT id, doc_id, model, created_by, created_at
+            FROM valuation_ai_summaries WHERE record_id = :i
+        """), {"i": record_id}).fetchone()
 
     rec = _row_dict(row)
     rec["cycle"] = _row_dict(cyc) if cyc else None
     rec["documents"] = [_row_dict(d) for d in docs]
     rec["comments"] = {c._mapping["section"]: _row_dict(c) for c in comments}
+    rec["questions"] = [_row_dict(q) for q in questions]
+    rec["approvals"] = [_row_dict(a) for a in approvals]
+    approved_roles = {a._mapping["member_role"] for a in approvals if a._mapping["action"] == "approve"}
+    rec["approval_state"] = {
+        "approved_roles": sorted(approved_roles),
+        "missing_roles": [r for r in COMMITTEE_ROLES if r not in approved_roles],
+        "is_approved": rec.get("status") == "approved",
+    }
+    rec["ai_summary_meta"] = _row_dict(ai_meta) if ai_meta else None
     rec["effective_classification"] = rec.get("classification_override") or rec.get("classification")
 
     # Deal header + valuation history from the MRI_Val feed
@@ -504,8 +582,20 @@ def _valuation_history(mri_val: Optional[pd.DataFrame], vcode: str) -> List[Dict
     return out
 
 
+def _require_not_approved(engine, record_id: int):
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT status FROM valuation_records WHERE id = :i"), {"i": record_id}
+        ).fetchone()
+    if not row:
+        raise ValueError(f"Valuation record {record_id} not found")
+    if row[0] == "approved":
+        raise ValueError("This valuation is approved and locked — the committee must return it before edits")
+
+
 def update_record(engine, record_id: int, fields: Dict[str, Any], username: str) -> Dict[str, Any]:
     ensure_valuation_tables(engine)
+    _require_not_approved(engine, record_id)
     sets, params = [], {"i": record_id, "now": _now()}
     for k in _RECORD_FIELDS:
         if k not in fields:
@@ -556,6 +646,8 @@ def record_action(engine, record_id: int, action: str, username: str) -> Dict[st
         return {"status": "signed_off"}
 
     if action == "reopen":
+        if status == "approved":
+            raise ValueError("Approved valuations must be returned by the Valuation Committee")
         with engine.begin() as conn:
             conn.execute(text("""
                 UPDATE valuation_records
@@ -583,6 +675,7 @@ def record_action(engine, record_id: int, action: str, username: str) -> Dict[st
 def upload_documents(engine, record_id: int, files: List[Tuple[str, bytes]],
                      doc_type: str, username: str) -> Dict[str, Any]:
     ensure_valuation_tables(engine)
+    _require_not_approved(engine, record_id)
     if doc_type not in DOC_TYPES:
         doc_type = "other"
     with engine.connect() as conn:
@@ -628,6 +721,7 @@ def get_document(engine, record_id: int, doc_id: int) -> Tuple[str, bytes]:
 
 
 def delete_document(engine, record_id: int, doc_id: int) -> bool:
+    _require_not_approved(engine, record_id)
     with engine.begin() as conn:
         result = conn.execute(text("""
             DELETE FROM valuation_documents WHERE id = :d AND record_id = :r
@@ -642,6 +736,7 @@ def delete_document(engine, record_id: int, doc_id: int) -> bool:
 def save_comment(engine, record_id: int, section: str, comment_text: str,
                  username: str) -> Dict[str, Any]:
     ensure_valuation_tables(engine)
+    _require_not_approved(engine, record_id)
     if section not in COMMENT_SECTIONS:
         raise ValueError(f"Unknown comment section: {section}")
     with engine.begin() as conn:
@@ -671,6 +766,7 @@ def import_argus(engine, record_id: int, file_bytes: bytes, filename: str,
     into forecast_feed is the Phase 3 approval step."""
     from flask_app.services import argus_service
 
+    _require_not_approved(engine, record_id)
     with engine.connect() as conn:
         row = conn.execute(text("""
             SELECT r.vcode, c.year FROM valuation_records r
@@ -932,3 +1028,388 @@ def get_balance_sheet(engine, record_id: int, data: dict) -> Dict[str, Any]:
         "current_date": current_date.strftime("%Y-%m-%d") if current_date is not None else None,
         "rows": rows,
     }
+
+
+# ============================================================
+# Phase 2 â€” Reviewer Q&A
+# ============================================================
+
+def ask_question(engine, record_id: int, question_text: str, username: str,
+                 role_label: str = "") -> Dict[str, Any]:
+    """Any reviewer can ask; the asking user's review role is kept for display."""
+    ensure_valuation_tables(engine)
+    if not (question_text or "").strip():
+        raise ValueError("Question text is required")
+    with engine.connect() as conn:
+        exists = conn.execute(
+            text("SELECT id FROM valuation_records WHERE id = :i"), {"i": record_id}
+        ).fetchone()
+    if not exists:
+        raise ValueError(f"Valuation record {record_id} not found")
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO valuation_questions (record_id, question_text, asked_by, asked_at, status)
+            VALUES (:r, :q, :u, :now, 'open')
+        """), {"r": record_id, "q": question_text.strip(),
+               "u": f"{username} ({role_label})" if role_label else username, "now": _now()})
+    return {"status": "asked"}
+
+
+def answer_question(engine, question_id: int, answer_text: str, username: str) -> Dict[str, Any]:
+    """Asset managers (analyst/admin) answer; re-answering updates the answer."""
+    if not (answer_text or "").strip():
+        raise ValueError("Answer text is required")
+    with engine.begin() as conn:
+        result = conn.execute(text("""
+            UPDATE valuation_questions
+            SET answer_text = :a, answered_by = :u, answered_at = :now,
+                status = CASE WHEN status = 'resolved' THEN status ELSE 'answered' END
+            WHERE id = :i
+        """), {"a": answer_text.strip(), "u": username, "now": _now(), "i": question_id})
+    if result.rowcount == 0:
+        raise ValueError(f"Question {question_id} not found")
+    return {"status": "answered"}
+
+
+def resolve_question(engine, question_id: int, username: str) -> Dict[str, Any]:
+    with engine.begin() as conn:
+        result = conn.execute(text("""
+            UPDATE valuation_questions SET status = 'resolved' WHERE id = :i
+        """), {"i": question_id})
+    if result.rowcount == 0:
+        raise ValueError(f"Question {question_id} not found")
+    return {"status": "resolved"}
+
+
+# ============================================================
+# Phase 2 â€” Committee approvals (parallel unanimous) + snapshot
+# ============================================================
+
+def committee_approve(engine, record_id: int, member_roles: List[str], username: str,
+                      data: dict, note: str = "") -> Dict[str, Any]:
+    """Record an approval for each committee role the user holds. When all of
+    COMMITTEE_ROLES carry an active approval, the record is Approved and a
+    snapshot freezes it."""
+    ensure_valuation_tables(engine)
+    roles = [r for r in member_roles if r in COMMITTEE_ROLES]
+    if not roles:
+        raise PermissionError("Only Valuation Committee members (President, CEO, CIO) can approve")
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT status FROM valuation_records WHERE id = :i"), {"i": record_id}
+        ).fetchone()
+    if not row:
+        raise ValueError(f"Valuation record {record_id} not found")
+    if row[0] not in ("signed_off", "approved"):
+        raise ValueError("The analyst must sign off before the committee approves")
+
+    with engine.begin() as conn:
+        for role in roles:
+            conn.execute(text("""
+                UPDATE valuation_approvals SET active = 0
+                WHERE record_id = :r AND member_role = :m AND active = 1
+            """), {"r": record_id, "m": role})
+            conn.execute(text("""
+                INSERT INTO valuation_approvals
+                    (record_id, member_role, username, action, note, active, created_at)
+                VALUES (:r, :m, :u, 'approve', :n, 1, :now)
+            """), {"r": record_id, "m": role, "u": username, "n": note or None, "now": _now()})
+        approved_roles = {r[0] for r in conn.execute(text("""
+            SELECT member_role FROM valuation_approvals
+            WHERE record_id = :r AND active = 1 AND action = 'approve'
+        """), {"r": record_id}).fetchall()}
+
+    fully_approved = all(r in approved_roles for r in COMMITTEE_ROLES)
+    if fully_approved and row[0] != "approved":
+        with engine.begin() as conn:
+            conn.execute(text("""
+                UPDATE valuation_records SET status = 'approved', updated_at = :now
+                WHERE id = :i
+            """), {"i": record_id, "now": _now()})
+        _save_snapshot(engine, record_id, data, username)
+
+    return {
+        "status": "approved" if fully_approved else "pending",
+        "approved_roles": sorted(approved_roles),
+        "missing_roles": [r for r in COMMITTEE_ROLES if r not in approved_roles],
+    }
+
+
+def committee_return(engine, record_id: int, member_roles: List[str], username: str,
+                     note: str) -> Dict[str, Any]:
+    """Return a valuation to the asset manager. Requires a note (the reason is
+    part of the committee record). Clears all active approvals; a snapshot from
+    a prior approval is removed â€” it no longer represents an approved state."""
+    ensure_valuation_tables(engine)
+    allowed = [r for r in member_roles if r in COMMITTEE_ROLES or r == RECORDER_ROLE]
+    if not allowed:
+        raise PermissionError("Only committee members or the recorder (CCO) can return a valuation")
+    if not (note or "").strip():
+        raise ValueError("A return requires a note explaining what needs to change")
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT status FROM valuation_records WHERE id = :i"), {"i": record_id}
+        ).fetchone()
+    if not row:
+        raise ValueError(f"Valuation record {record_id} not found")
+
+    with engine.begin() as conn:
+        conn.execute(text("""
+            UPDATE valuation_approvals SET active = 0 WHERE record_id = :r AND active = 1
+        """), {"r": record_id})
+        conn.execute(text("""
+            INSERT INTO valuation_approvals
+                (record_id, member_role, username, action, note, active, created_at)
+            VALUES (:r, :m, :u, 'return', :n, 1, :now)
+        """), {"r": record_id, "m": allowed[0], "u": username, "n": note.strip(), "now": _now()})
+        conn.execute(text("""
+            UPDATE valuation_records
+            SET status = 'open', signed_off_by = NULL, signed_off_at = NULL, updated_at = :now
+            WHERE id = :i
+        """), {"i": record_id, "now": _now()})
+        conn.execute(text("DELETE FROM valuation_snapshots WHERE record_id = :r"), {"r": record_id})
+    return {"status": "returned"}
+
+
+def _save_snapshot(engine, record_id: int, data: dict, username: str):
+    """Freeze the record, review-form data, Q&A and approvals as approved."""
+    import json as _json
+    from flask_app.serializers import safe_json
+
+    payload: Dict[str, Any] = {"record": get_record(engine, record_id, data)}
+    try:
+        payload["budget_review"] = get_budget_review(engine, record_id, data)
+    except Exception as e:
+        payload["budget_review"] = {"error": str(e)}
+    try:
+        payload["balance_sheet"] = get_balance_sheet(engine, record_id, data)
+    except Exception as e:
+        payload["balance_sheet"] = {"error": str(e)}
+
+    snapshot_json = _json.dumps(safe_json(payload), default=str)
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM valuation_snapshots WHERE record_id = :r"), {"r": record_id})
+        conn.execute(text("""
+            INSERT INTO valuation_snapshots (record_id, snapshot_json, approved_by, approved_at)
+            VALUES (:r, :j, :u, :now)
+        """), {"r": record_id, "j": snapshot_json, "u": username, "now": _now()})
+
+
+def get_snapshot(engine, record_id: int) -> Optional[Dict[str, Any]]:
+    import json as _json
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT snapshot_json, approved_by, approved_at
+            FROM valuation_snapshots WHERE record_id = :r
+        """), {"r": record_id}).fetchone()
+    if not row:
+        return None
+    return {
+        "approved_by": row[1],
+        "approved_at": _serialize(row[2]),
+        "data": _json.loads(row[0]) if row[0] else None,
+    }
+
+
+# ============================================================
+# Phase 2 â€” Committee summary (Analyses 1 & 2)
+# ============================================================
+
+def get_committee_summary(engine, cycle_id: int, data: dict) -> Dict[str, Any]:
+    """The two analyses the Valuation Committee reviews, live.
+
+    Analysis 1 (Pref NAV): pref balance, accrued pref (accounting + waterfall
+    rates through the cycle as-of date), prior-year Pref NAV from the
+    valuations feed. Current-cycle Pref NAV lands with the Phase 3 NAV engine.
+
+    Analysis 2 (Methods & values): method / cap / terminal cap / discount /
+    NOI / value, this cycle vs prior year, with a simple net-proceeds estimate
+    (value less current ISBS debt) pending the full Phase 3 NAV walk.
+    """
+    from flask_app.services.reports_service import build_roe_summary_row
+    from compute import get_isbs_debt_balance
+
+    dash = get_cycle_dashboard(engine, cycle_id, data)
+    cycle = dash["cycle"]
+    year = int(cycle["year"])
+    as_of = pd.Timestamp(cycle["as_of_date"]).date()
+
+    mri_val = data.get("mri_val")
+    prior = _prior_rows(mri_val, year - 1)
+    acct = data.get("acct")
+    inv = data.get("inv")
+    wf = data.get("wf")
+    isbs_raw = data.get("isbs_raw")
+
+    analysis1, analysis2 = [], []
+    for rec in dash["records"]:
+        if rec["status"] == "excluded":
+            continue
+        vcode = rec["vcode"]
+        p = prior.get(vcode, {})
+
+        cur_value = rec.get("concluded_value")
+        cur_debt = None
+        try:
+            if isbs_raw is not None:
+                cur_debt = float(get_isbs_debt_balance(isbs_raw, vcode) or 0) or None
+        except Exception:
+            cur_debt = None
+
+        prior_value = p.get("value")
+        cap_delta = _delta(rec.get("cap_rate"), p.get("cap_rate"))
+        disc_delta = _delta(rec.get("discount_rate"), p.get("discount_rate"))
+        value_var = (cur_value - prior_value) if cur_value is not None and prior_value else None
+        analysis2.append({
+            "vcode": vcode,
+            "deal_name": rec["deal_name"],
+            "is_child": rec["is_child"],
+            "status": rec["status"],
+            "open_questions": rec.get("open_questions", 0),
+            "approval_count": rec.get("approval_count", 0),
+            "prior_method": p.get("method"),
+            "method": rec.get("method"),
+            "prior_cap_rate": p.get("cap_rate"), "cap_rate": rec.get("cap_rate"),
+            "prior_term_cap": p.get("term_cap_rate"), "term_cap": rec.get("term_cap_rate"),
+            "prior_discount": p.get("discount_rate"), "discount": rec.get("discount_rate"),
+            "prior_noi": p.get("noi"), "noi": rec.get("direct_cap_noi"),
+            "prior_value": prior_value, "value": cur_value,
+            "value_var": value_var,
+            "value_var_pct": (value_var / prior_value) if value_var is not None and prior_value else None,
+            "prior_debt": p.get("debt"), "debt": cur_debt,
+            "prior_net_proceeds": (p.get("value") - p.get("debt")) if p.get("value") and p.get("debt") is not None else None,
+            "net_proceeds": (cur_value - cur_debt) if cur_value is not None and cur_debt is not None else None,
+            "direction": ("Up" if value_var > 0 else "Down") if value_var else None,
+            "cap_delta": cap_delta,
+            "discount_delta": disc_delta,
+        })
+
+        # Analysis 1 â€” parent/standalone deals only (pref lives at the deal)
+        if rec["is_child"]:
+            continue
+        pref_balance = accrued = None
+        try:
+            roe_row = build_roe_summary_row(
+                vcode, rec["deal_name"], acct, inv, as_of, wf_steps=wf, isbs_raw=None)
+            if roe_row:
+                pref_balance = roe_row["Current Balance"]
+                accrued = roe_row["Accrued Pref"]
+        except Exception:
+            logger.warning(f"Analysis 1 pref computation failed for {vcode}", exc_info=True)
+        analysis1.append({
+            "vcode": vcode,
+            "deal_name": rec["deal_name"],
+            "status": rec["status"],
+            "pref_balance": pref_balance,
+            "accrued_pref": accrued,
+            "balance_with_accrual": (pref_balance + accrued) if pref_balance is not None and accrued is not None else None,
+            "pref_nav": None,  # Phase 3 â€” NAV engine
+            "prior_pref_nav": p.get("pe_nav"),
+        })
+
+    return {"cycle": cycle, "analysis1": analysis1, "analysis2": analysis2}
+
+
+def _prior_rows(mri_val: Optional[pd.DataFrame], prior_year: int) -> Dict[str, dict]:
+    out: Dict[str, dict] = {}
+    if mri_val is None or mri_val.empty:
+        return out
+    df = mri_val.copy()
+    vcode_col = "vCode" if "vCode" in df.columns else "vcode"
+    if vcode_col not in df.columns or "dtValuation" not in df.columns:
+        return out
+    df["_dt"] = pd.to_datetime(df["dtValuation"], errors="coerce")
+    df = df[df["_dt"].dt.year == prior_year]
+    for _, r in df.iterrows():
+        out[str(r[vcode_col]).strip()] = {
+            "method": _s(r.get("vMethod")) or None,
+            "cap_rate": _num(r.get("fCapRate")),
+            "term_cap_rate": _num(r.get("nTermCapRate")),
+            "discount_rate": _num(r.get("nDiscountRateForEquityInterest")),
+            "noi": _num(r.get("mAnnualNOI")),
+            "value": _num(r.get("mIncomeCapConcludedValue")),
+            "debt": _num(r.get("mDebtValue")),
+            "pe_nav": _num(r.get("mMezzanineValue")),
+        }
+    return out
+
+
+def _delta(cur, prior):
+    if cur is None or prior is None:
+        return None
+    return cur - prior
+
+
+def generate_committee_workbook(engine, cycle_id: int, data: dict) -> bytes:
+    """Two-sheet Excel replacing the manual Valuation Summary workbook."""
+    from io import BytesIO
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    summary = get_committee_summary(engine, cycle_id, data)
+    year = summary["cycle"]["year"]
+
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    curr = "#,##0"
+    pct = "0.00%"
+
+    wb = Workbook()
+
+    def _sheet(ws, title_text, cols, rows):
+        ws.cell(row=1, column=1, value=title_text).font = Font(bold=True, size=13)
+        for ci, (label, _, _) in enumerate(cols, 1):
+            c = ws.cell(row=3, column=ci, value=label)
+            c.font = header_font
+            c.fill = header_fill
+            c.alignment = Alignment(horizontal="center", wrap_text=True)
+        r = 4
+        for row in rows:
+            for ci, (_, key, fmt) in enumerate(cols, 1):
+                v = row.get(key)
+                cell = ws.cell(row=r, column=ci, value=v)
+                if fmt and isinstance(v, (int, float)):
+                    cell.number_format = fmt
+            r += 1
+        for ci, (label, _, _) in enumerate(cols, 1):
+            ws.column_dimensions[ws.cell(row=3, column=ci).column_letter].width = max(12, min(34, len(label) + 4))
+        ws.freeze_panes = "A4"
+
+    yy, py = str(year)[2:], str(year - 1)[2:]
+    ws1 = wb.active
+    ws1.title = "Pref NAV"
+    cols1 = [
+        ("Vcode", "vcode", None), ("Deal", "deal_name", None), ("Status", "status", None),
+        (f"'{yy} Pref Balance", "pref_balance", curr),
+        (f"'{yy} Accrued Pref", "accrued_pref", curr),
+        ("Balance w/ Accrual", "balance_with_accrual", curr),
+        (f"'{yy} Pref NAV", "pref_nav", curr),
+        (f"'{py} Pref NAV", "prior_pref_nav", curr),
+    ]
+    _sheet(ws1, f"PSC - Property Valuation Analysis (As of 12/31/{year}) - Pref NAV",
+           cols1, summary["analysis1"])
+
+    ws2 = wb.create_sheet("Methods & Values")
+    cols2 = [
+        ("Vcode", "vcode", None), ("Deal", "deal_name", None), ("Status", "status", None),
+        (f"'{py} Method", "prior_method", None), (f"'{yy} Method", "method", None),
+        (f"'{py} Cap", "prior_cap_rate", pct), (f"'{yy} Cap", "cap_rate", pct),
+        (f"'{py} Exit Cap", "prior_term_cap", pct), (f"'{yy} Exit Cap", "term_cap", pct),
+        (f"'{py} Disc", "prior_discount", pct), (f"'{yy} Disc", "discount", pct),
+        (f"'{py} NOI", "prior_noi", curr), (f"'{yy} NOI", "noi", curr),
+        (f"'{py} Value", "prior_value", curr), (f"'{yy} Value", "value", curr),
+        ("Var to Prior", "value_var", curr), ("Var %", "value_var_pct", pct),
+        (f"'{py} Debt", "prior_debt", curr), (f"'{yy} Debt", "debt", curr),
+        ("Net Proceeds (est)", "net_proceeds", curr),
+        ("Up/Down", "direction", None),
+        ("Cap Chg", "cap_delta", pct), ("Disc Chg", "discount_delta", pct),
+    ]
+    _sheet(ws2, f"PSC - Property Valuation Analysis (As of 12/31/{year}) - Methods & Values",
+           cols2, summary["analysis2"])
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
