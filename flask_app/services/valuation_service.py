@@ -490,12 +490,30 @@ def _prior_values(mri_val: Optional[pd.DataFrame], prior_year: int) -> Dict[str,
     vcode_col = "vCode" if "vCode" in df.columns else "vcode"
     if vcode_col not in df.columns or "dtValuation" not in df.columns:
         return out
-    df["_dt"] = pd.to_datetime(df["dtValuation"], errors="coerce")
+    # format="mixed" IS LOAD-BEARING. A bare to_datetime infers ONE format from
+    # the first element and NaTs every row that does not match; a NaT then has
+    # a NaN .dt.year, so the row silently drops out of the year filter below.
+    # This table now has more than one writer: publish() writes
+    # as_of.strftime("%Y-%m-%d") ("2026-06-30") while the MRI back-history is
+    # "...T00:00:00", and the legacy export used "12/31/2025 0:00". Same idiom
+    # as portfolio_snapshot_loan._latest_valuation and one_pager.py:738.
+    df["_dt"] = pd.to_datetime(df["dtValuation"], format="mixed",
+                               errors="coerce")
     df = df[df["_dt"].dt.year == prior_year]
+    # NEWEST-WINS. The year filter can now match MORE THAN ONE row per deal:
+    # publish() de-duplicates by exact date, not by year, so an interim
+    # valuation and the year-end one can both sit in prior_year. Without this
+    # sort the dict below just kept whichever row iterated last -- i.e. frame
+    # order decided the answer. Sorted descending, the first row per vcode is
+    # that year's latest and the guard below keeps it.
+    df = df.sort_values("_dt", ascending=False)
     for _, r in df.iterrows():
+        key = str(r[vcode_col]).strip()
+        if key in out:
+            continue    # a newer row for this deal already supplied a value
         val = pd.to_numeric(r.get("mIncomeCapConcludedValue"), errors="coerce")
         if pd.notna(val):
-            out[str(r[vcode_col]).strip()] = float(val)
+            out[key] = float(val)
     return out
 
 
@@ -604,7 +622,15 @@ def _valuation_history(mri_val: Optional[pd.DataFrame], vcode: str) -> List[Dict
     df = df[df[vcode_col].astype(str).str.strip().str.lower() == str(vcode).strip().lower()]
     if df.empty:
         return []
-    df["_dt"] = pd.to_datetime(df["dtValuation"], errors="coerce")
+    # format="mixed" IS LOAD-BEARING -- see _prior_values above for why.
+    # The failure here is subtler than a drop: this function has no dropna, so
+    # a NaT row still RENDERS (its date falls back to the raw string) but sorts
+    # to the BOTTOM of the history instead of the top. A newly published
+    # valuation would look present and correct while sitting under rows years
+    # older than it. No tie-break needed -- the sort below already orders by
+    # date descending; it just needs real dates to sort on.
+    df["_dt"] = pd.to_datetime(df["dtValuation"], format="mixed",
+                               errors="coerce")
     df = df.sort_values("_dt", ascending=False)
     out = []
     for _, r in df.iterrows():
@@ -1372,10 +1398,17 @@ def _prior_rows(mri_val: Optional[pd.DataFrame], prior_year: int) -> Dict[str, d
     vcode_col = "vCode" if "vCode" in df.columns else "vcode"
     if vcode_col not in df.columns or "dtValuation" not in df.columns:
         return out
-    df["_dt"] = pd.to_datetime(df["dtValuation"], errors="coerce")
+    # format="mixed" + NEWEST-WINS -- identical reasoning to _prior_values
+    # above, which this mirrors row-for-row. Keep the two in step.
+    df["_dt"] = pd.to_datetime(df["dtValuation"], format="mixed",
+                               errors="coerce")
     df = df[df["_dt"].dt.year == prior_year]
+    df = df.sort_values("_dt", ascending=False)
     for _, r in df.iterrows():
-        out[str(r[vcode_col]).strip()] = {
+        key = str(r[vcode_col]).strip()
+        if key in out:
+            continue    # a newer row for this deal already supplied the values
+        out[key] = {
             "method": _s(r.get("vMethod")) or None,
             "cap_rate": _num(r.get("fCapRate")),
             "term_cap_rate": _num(r.get("nTermCapRate")),
