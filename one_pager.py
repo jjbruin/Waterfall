@@ -1928,6 +1928,48 @@ def _get_uw_roc_events(
 # PREFERRED EQUITY PERFORMANCE
 # ============================================================
 
+def _pe_terms_fallback(pe: Dict[str, Any], deal_terms: pd.DataFrame,
+                       vcode_str: str) -> None:
+    """Fill a still-zero PE coupon / participation from the MRI deal terms.
+
+    THE SAME TWO FIELDS the Capitalization block uses, so the two blocks agree:
+    ``pe_coupon`` -> Coupon and ``pe_split_capital`` -> Participation, matching
+    ``_enrich_cap_stack_from_deal_terms()`` in ``financials_service.py``.  Keep
+    the mapping and the ``< 1`` percent normalisation identical in both places
+    or one page will print two different numbers for the same term again.
+
+    The one deliberate difference is precedence.  The cap stack lets deal_terms
+    OVERRIDE the waterfall; this does not.  The waterfall is the structure that
+    actually runs, so it stays primary and a deal that has one is untouched.
+    """
+    dt = deal_terms.copy()
+    normalize_columns(dt)
+    if 'vcode' not in dt.columns and 'vCode' in dt.columns:
+        dt = dt.rename(columns={'vCode': 'vcode'})
+    if 'vcode' not in dt.columns:
+        return
+    # Case-insensitive, unlike the cap stack's exact match.  Both live sources
+    # store uppercase P-codes so the two resolve the same row today; this is
+    # the safer side to err on if a casing ever diverges.
+    row = dt[dt['vcode'].astype(str).str.strip().str.upper()
+             == str(vcode_str).strip().upper()]
+    if row.empty:
+        return
+    r = row.iloc[0]
+
+    for key, col in (('coupon', 'pe_coupon'),
+                     ('participation', 'pe_split_capital')):
+        # Gated on the value still being 0 — precisely the condition
+        # OnePagerView renders as "N/A".  Per field, not per row, so a deal
+        # carrying a Pref step but no Share step keeps its real coupon and
+        # picks up only the participation.
+        if pe.get(key):
+            continue
+        v = pd.to_numeric(r.get(col), errors='coerce')
+        if pd.notna(v) and v > 0:
+            pe[key] = float(v) if v < 1 else float(v) / 100
+
+
 def get_pe_performance(
     vcode: str,
     quarter_str: str,
@@ -1935,6 +1977,7 @@ def get_pe_performance(
     waterfalls: pd.DataFrame,
     inv_map: pd.DataFrame,
     isbs_raw: pd.DataFrame = None,
+    deal_terms: pd.DataFrame = None,
 ) -> Dict[str, Any]:
     """
     Get Preferred Equity performance metrics
@@ -1946,6 +1989,8 @@ def get_pe_performance(
         waterfalls: Waterfalls DataFrame
         inv_map: Investment map DataFrame
         isbs_raw: ISBS DataFrame (for U/W ROE from Projected IS account 7071)
+        deal_terms: Deal terms DataFrame (MRI txfinancial_IC).  Fallback only,
+            for coupon / participation — see _pe_terms_fallback().
 
     Returns:
         Dictionary with PE performance metrics
@@ -1988,6 +2033,18 @@ def get_pe_performance(
                     part = pd.to_numeric(share_rows.iloc[0]['FXRate'], errors='coerce')
                     if pd.notna(part):
                         pe['participation'] = part if part < 1 else part / 100
+
+    # Whatever the waterfall did not supply, take from the MRI deal terms.
+    #
+    # Three live deals carry complete deal_terms and ZERO waterfall rows —
+    # Plaza Del Mar (P0000116), Apple Self Storage (P0000003) and Jefferson
+    # Stephens (P0000114).  The `waterfalls` table is in PROTECTED_TABLES and
+    # is NOT MRI-fed; it is built by hand in Waterfall Setup, so no refresh
+    # will ever populate it for them.  Until it is built, this block printed
+    # "N/A" while the Capitalization block above it printed 8.50% from the same
+    # contract — the same deal, the same page, two different answers.
+    if deal_terms is not None and not deal_terms.empty:
+        _pe_terms_fallback(pe, deal_terms, vcode_str)
 
     # Get funded, committed PE, and ROC from accounting feed
     if acct is not None and not acct.empty and inv_map is not None:
