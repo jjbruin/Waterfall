@@ -934,6 +934,28 @@ IS_ACCOUNTS = {
     'UW_DEBT_SERVICE': ['7010'],
 }
 
+#: Operating reserve releases that NET against the gross at-close 5xxx costs.
+#: AT CLOSE ONLY — DO NOT "TIDY" THIS AWAY.
+#:
+#: 7083 is OPERATING RESERVE RELEASE: a credit (negative mAmount) funding the
+#: gross operating costs booked in the same period, so adding it to expenses
+#: leaves the real cost borne by the property. The at-close buckets key off the
+#: 5xxx prefix, so the offset — a 7xxx account — was dropped entirely and the
+#: column showed gross cost against zero revenue. 30 Bearfoot (P0000001) at
+#: 2020-12-31 is the case: 5060 16,668.00 + 5090 37,152.00 + 5110 6,280.00 =
+#: 60,100.00 against 7083 of -60,100.00, on a deal whose rows sum to exactly 0.
+#:
+#: A NAMED ACCOUNT, NOT A '7xxx' RULE, and deliberately only this one. 7083 is
+#: on exactly one deal portfolio-wide. Every other 7xxx account reaching an
+#: at-close date must stay out: 7073/7074 are capital proceeds (netting them
+#: adds 22.2M to Jefferson Addison Heights), 7071/7072 distributions, 7050
+#: capex, 7075 reserves for replacement (below NOI, 61 deals), and 7080 offsets
+#: 7010 debt service, not operating cost.
+#:
+#: Mirrored in queries/Prop_Info_AtClose.sql, which nets the same account into
+#: at_close_expenses for the primary path. Change both or the two disagree.
+AT_CLOSE_RESERVE_RELEASE_ACCTS = ['7083']
+
 
 def get_property_performance(
     vcode: str,
@@ -1428,6 +1450,21 @@ def get_property_performance(
             if dec_dates:
                 at_close_date = min(dec_dates)
                 rev, exp, noi, ds = calc_amounts(uw_data, as_of_date=at_close_date)
+
+                # Net the operating reserve release against the gross cost —
+                # see AT_CLOSE_RESERVE_RELEASE_ACCTS.  Applied HERE rather than
+                # inside calc_amounts() on purpose: that helper also serves the
+                # YTD Actual, YTD Budget, Projected YE and U/W YE columns, and
+                # this netting is an at-close-only correction.  Same shape as
+                # the 7070 abatement fold-in above — the release is a credit,
+                # so adding it reduces expenses.
+                ac_release = uw_data[
+                    (uw_data['dtEntry_parsed'] == at_close_date)
+                    & (uw_data['vAccount'].isin(AT_CLOSE_RESERVE_RELEASE_ACCTS))
+                ]['mAmount'].sum()
+                exp += ac_release
+                noi = rev - exp
+
                 perf['revenue']['at_close'] = rev
                 perf['expenses']['at_close'] = exp
                 perf['noi']['at_close'] = noi
