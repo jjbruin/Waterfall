@@ -49,7 +49,7 @@ static/
 
 # Local utilities
 migrate_to_database.py
-SESSION_HANDOFF.md
+/SESSION_HANDOFF.md
 
 # Portfolio Snapshot chart-check SVG output (scripts/snapshot_summary_charts_check.mjs)
 vue_app/.chartcheck/
