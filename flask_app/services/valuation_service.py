@@ -163,6 +163,40 @@ _VALUATION_DDL = [
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS valuation_nav_results (
+        id {pk},
+        record_id INTEGER NOT NULL UNIQUE,
+        inputs_json TEXT,
+        walk_json TEXT,
+        net_proceeds DOUBLE PRECISION,
+        psc_nav DOUBLE PRECISION,
+        op_nav DOUBLE PRECISION,
+        computed_by TEXT,
+        computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS valuation_bs_selections (
+        id {pk},
+        record_id INTEGER NOT NULL,
+        account TEXT NOT NULL,
+        included INTEGER NOT NULL,
+        updated_by TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(record_id, account)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS valuation_step_refs (
+        id {pk},
+        vcode TEXT NOT NULL,
+        wf_type TEXT NOT NULL,
+        iorder INTEGER NOT NULL,
+        agreement_ref TEXT,
+        UNIQUE(vcode, wf_type, iorder)
+    )
+    """,
     "CREATE INDEX IF NOT EXISTS idx_valuation_records_cycle ON valuation_records(cycle_id)",
     "CREATE INDEX IF NOT EXISTS idx_valuation_documents_record ON valuation_documents(record_id)",
     "CREATE INDEX IF NOT EXISTS idx_valuation_questions_record ON valuation_questions(record_id)",
@@ -180,6 +214,13 @@ def ensure_valuation_tables(engine=None):
     with engine.begin() as conn:
         for ddl in _VALUATION_DDL:
             conn.execute(text(ddl.format(pk=pk, blob=blob)))
+    # Idempotent column migrations (records created before Phase 3)
+    for col, col_type in (("published_at", "TIMESTAMP"), ("published_by", "TEXT")):
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE valuation_records ADD COLUMN {col} {col_type}"))
+        except Exception:
+            pass  # column already exists
 
 
 def _now() -> str:
@@ -1031,7 +1072,7 @@ def get_balance_sheet(engine, record_id: int, data: dict) -> Dict[str, Any]:
 
 
 # ============================================================
-# Phase 2 â€” Reviewer Q&A
+# Phase 2 — Reviewer Q&A
 # ============================================================
 
 def ask_question(engine, record_id: int, question_text: str, username: str,
@@ -1082,7 +1123,7 @@ def resolve_question(engine, question_id: int, username: str) -> Dict[str, Any]:
 
 
 # ============================================================
-# Phase 2 â€” Committee approvals (parallel unanimous) + snapshot
+# Phase 2 — Committee approvals (parallel unanimous) + snapshot
 # ============================================================
 
 def committee_approve(engine, record_id: int, member_roles: List[str], username: str,
@@ -1140,7 +1181,7 @@ def committee_return(engine, record_id: int, member_roles: List[str], username: 
                      note: str) -> Dict[str, Any]:
     """Return a valuation to the asset manager. Requires a note (the reason is
     part of the committee record). Clears all active approvals; a snapshot from
-    a prior approval is removed â€” it no longer represents an approved state."""
+    a prior approval is removed — it no longer represents an approved state."""
     ensure_valuation_tables(engine)
     allowed = [r for r in member_roles if r in COMMITTEE_ROLES or r == RECORDER_ROLE]
     if not allowed:
@@ -1187,6 +1228,11 @@ def _save_snapshot(engine, record_id: int, data: dict, username: str):
         payload["balance_sheet"] = get_balance_sheet(engine, record_id, data)
     except Exception as e:
         payload["balance_sheet"] = {"error": str(e)}
+    try:
+        from flask_app.services.valuation_nav_service import get_nav
+        payload["nav"] = get_nav(engine, record_id)
+    except Exception as e:
+        payload["nav"] = {"error": str(e)}
 
     snapshot_json = _json.dumps(safe_json(payload), default=str)
     with engine.begin() as conn:
@@ -1214,7 +1260,7 @@ def get_snapshot(engine, record_id: int) -> Optional[Dict[str, Any]]:
 
 
 # ============================================================
-# Phase 2 â€” Committee summary (Analyses 1 & 2)
+# Phase 2 — Committee summary (Analyses 1 & 2)
 # ============================================================
 
 def get_committee_summary(engine, cycle_id: int, data: dict) -> Dict[str, Any]:
@@ -1229,9 +1275,11 @@ def get_committee_summary(engine, cycle_id: int, data: dict) -> Dict[str, Any]:
     (value less current ISBS debt) pending the full Phase 3 NAV walk.
     """
     from flask_app.services.reports_service import build_roe_summary_row
+    from flask_app.services.valuation_nav_service import nav_results_for_cycle
     from compute import get_isbs_debt_balance
 
     dash = get_cycle_dashboard(engine, cycle_id, data)
+    nav_by_vcode = nav_results_for_cycle(engine, cycle_id)
     cycle = dash["cycle"]
     year = int(cycle["year"])
     as_of = pd.Timestamp(cycle["as_of_date"]).date()
@@ -1280,13 +1328,17 @@ def get_committee_summary(engine, cycle_id: int, data: dict) -> Dict[str, Any]:
             "value_var_pct": (value_var / prior_value) if value_var is not None and prior_value else None,
             "prior_debt": p.get("debt"), "debt": cur_debt,
             "prior_net_proceeds": (p.get("value") - p.get("debt")) if p.get("value") and p.get("debt") is not None else None,
-            "net_proceeds": (cur_value - cur_debt) if cur_value is not None and cur_debt is not None else None,
+            # Full NAV net proceeds when computed; simple value-less-debt estimate otherwise
+            "net_proceeds": nav_by_vcode.get(vcode, {}).get("net_proceeds")
+                if vcode in nav_by_vcode
+                else ((cur_value - cur_debt) if cur_value is not None and cur_debt is not None else None),
+            "has_nav": vcode in nav_by_vcode,
             "direction": ("Up" if value_var > 0 else "Down") if value_var else None,
             "cap_delta": cap_delta,
             "discount_delta": disc_delta,
         })
 
-        # Analysis 1 â€” parent/standalone deals only (pref lives at the deal)
+        # Analysis 1 — parent/standalone deals only (pref lives at the deal)
         if rec["is_child"]:
             continue
         pref_balance = accrued = None
@@ -1305,7 +1357,7 @@ def get_committee_summary(engine, cycle_id: int, data: dict) -> Dict[str, Any]:
             "pref_balance": pref_balance,
             "accrued_pref": accrued,
             "balance_with_accrual": (pref_balance + accrued) if pref_balance is not None and accrued is not None else None,
-            "pref_nav": None,  # Phase 3 â€” NAV engine
+            "pref_nav": nav_by_vcode.get(vcode, {}).get("psc_nav"),
             "prior_pref_nav": p.get("pe_nav"),
         })
 

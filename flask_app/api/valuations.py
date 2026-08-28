@@ -514,3 +514,128 @@ def generate_ai_summary(record_id):
     except Exception as e:
         logger.error(f"generate_ai_summary failed: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
+
+
+# ------------------------------------------------------------
+# Phase 3 — NAV engine, curation, packages, publish
+# ------------------------------------------------------------
+
+@valuations_bp.route("/records/<int:record_id>/nav", methods=["GET"])
+@login_required
+def get_nav(record_id):
+    from flask_app.services import valuation_nav_service
+    try:
+        engine = get_engine()
+        data = data_service.get_data()
+        inputs = valuation_nav_service.get_nav_inputs(engine, record_id, data)
+        result = valuation_nav_service.get_nav(engine, record_id)
+        return jsonify(safe_json({"inputs": inputs, "result": result}))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"get_nav failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@valuations_bp.route("/records/<int:record_id>/bs-selections", methods=["PUT"])
+@login_required
+@role_required("admin", "analyst")
+def save_bs_selections(record_id):
+    from flask_app.services import valuation_nav_service
+    body = request.get_json(silent=True) or {}
+    try:
+        result = valuation_nav_service.save_bs_selections(
+            get_engine(), record_id, body.get("selections", {}), _username())
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"save_bs_selections failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@valuations_bp.route("/records/<int:record_id>/nav/compute", methods=["POST"])
+@login_required
+@role_required("admin", "analyst")
+def compute_nav(record_id):
+    from flask_app.services import valuation_nav_service
+    try:
+        result = valuation_nav_service.compute_nav(
+            get_engine(), record_id, data_service.get_data(), _username())
+        return jsonify(safe_json(result))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"compute_nav failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@valuations_bp.route("/step-refs", methods=["PUT"])
+@login_required
+@role_required("admin", "analyst")
+def set_step_ref():
+    from flask_app.services import valuation_nav_service
+    body = request.get_json(silent=True) or {}
+    vcode = body.get("vcode")
+    iorder = body.get("iorder")
+    if not vcode or iorder is None:
+        return jsonify({"error": "vcode and iorder are required"}), 400
+    try:
+        result = valuation_nav_service.set_step_ref(
+            get_engine(), str(vcode), int(iorder), body.get("agreement_ref", ""), _username())
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"set_step_ref failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@valuations_bp.route("/records/<int:record_id>/nav-package", methods=["GET"])
+@login_required
+def nav_package(record_id):
+    from flask_app.services import valuation_nav_service
+    try:
+        content = valuation_nav_service.generate_nav_package(
+            get_engine(), record_id, data_service.get_data())
+        return send_file(
+            BytesIO(content),
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            download_name=f"NAV_package_{record_id}.xlsx",
+            as_attachment=True,
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"nav_package failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@valuations_bp.route("/cycles/<int:cycle_id>/nav-packages", methods=["GET"])
+@login_required
+def cycle_nav_packages(cycle_id):
+    from flask_app.services import valuation_nav_service
+    try:
+        content = valuation_nav_service.generate_cycle_packages_zip(
+            get_engine(), cycle_id, data_service.get_data())
+        return send_file(
+            BytesIO(content), mimetype="application/zip",
+            download_name="nav_audit_packages.zip", as_attachment=True,
+        )
+    except Exception as e:
+        logger.error(f"cycle_nav_packages failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@valuations_bp.route("/records/<int:record_id>/publish", methods=["POST"])
+@login_required
+@role_required("admin")
+def publish_record(record_id):
+    from flask_app.services import valuation_nav_service
+    try:
+        result = valuation_nav_service.publish_record(
+            get_engine(), record_id, data_service.get_data(), _username())
+        return jsonify(safe_json(result))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"publish_record failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500

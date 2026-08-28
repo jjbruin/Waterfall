@@ -976,11 +976,16 @@ def build_pref_balance_detail(
     acct: pd.DataFrame,
     inv_map: pd.DataFrame,
     wf_steps: Optional[pd.DataFrame] = None,
+    pref_rate_override: Optional[float] = None,
 ) -> dict:
     """Build pref balance detail matching the PE_Pref_Balances Excel layout.
 
     Returns dict with 'header' (summary info) and 'rows' (transaction detail).
     Uses Act/Act day count convention (366 for leap years).
+
+    pref_rate_override skips the deal_terms/waterfall rate priority — used by
+    the valuation NAV engine for OP-side pref, where deal_terms.pe_coupon (the
+    PE rate) would be wrong.
     """
     from loaders import build_investmentid_to_vcode
 
@@ -989,21 +994,22 @@ def build_pref_balance_detail(
     deal_iids = [iid for iid, vc in inv_to_vcode.items()
                  if str(vc).strip().upper() == vcode_str.upper()]
 
-    # Get pref rate — priority: deal_terms pe_coupon > waterfall
-    pref_rate = 0.0
+    # Get pref rate — priority: explicit override > deal_terms pe_coupon > waterfall
+    pref_rate = float(pref_rate_override) if pref_rate_override else 0.0
 
     # 1. deal_terms pe_coupon (authoritative contractual rate)
-    try:
-        from database import _sa_engine
-        if _sa_engine is not None:
-            dt_df = pd.read_sql(
-                "SELECT pe_coupon FROM deal_terms WHERE UPPER(vcode) = :vc",
-                _sa_engine, params={"vc": vcode_str.upper()},
-            )
-            if not dt_df.empty and pd.notna(dt_df.iloc[0]["pe_coupon"]):
-                pref_rate = float(dt_df.iloc[0]["pe_coupon"])
-    except Exception:
-        pass
+    if pref_rate <= 0:
+        try:
+            from database import _sa_engine
+            if _sa_engine is not None:
+                dt_df = pd.read_sql(
+                    "SELECT pe_coupon FROM deal_terms WHERE UPPER(vcode) = :vc",
+                    _sa_engine, params={"vc": vcode_str.upper()},
+                )
+                if not dt_df.empty and pd.notna(dt_df.iloc[0]["pe_coupon"]):
+                    pref_rate = float(dt_df.iloc[0]["pe_coupon"])
+        except Exception:
+            pass
 
     # 2. Waterfall Pref step matching this investor
     if pref_rate <= 0 and wf_steps is not None and not wf_steps.empty:

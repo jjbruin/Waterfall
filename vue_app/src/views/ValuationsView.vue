@@ -53,7 +53,7 @@ const searchText = ref('')
 const selectedRecordId = ref<number | null>(null)
 const record = ref<any | null>(null)
 const recordLoading = ref(false)
-const activeTab = ref<'assumptions' | 'budget' | 'balance' | 'qa' | 'ai'>('assumptions')
+const activeTab = ref<'assumptions' | 'budget' | 'balance' | 'qa' | 'ai' | 'nav'>('assumptions')
 const saving = ref(false)
 const saveMsg = ref('')
 
@@ -70,6 +70,14 @@ const qaBusy = ref(false)
 const aiSummary = ref<any | null>(null)
 const aiLoading = ref(false)
 const aiGenerating = ref(false)
+
+// Phase 3 — NAV
+const navData = ref<any | null>(null)
+const navLoading = ref(false)
+const navComputing = ref(false)
+const navSelectionsDirty = ref(false)
+const publishing = ref(false)
+const refDrafts = ref<Record<number, string>>({})
 
 const budgetReview = ref<any | null>(null)
 const budgetLoading = ref(false)
@@ -156,6 +164,8 @@ async function openRecord(id: number) {
   record.value = null
   budgetReview.value = null
   balanceSheet.value = null
+  aiSummary.value = null
+  navData.value = null
   activeTab.value = 'assumptions'
   recordLoading.value = true
   try {
@@ -222,11 +232,113 @@ async function loadAiSummary(force = false) {
   }
 }
 
+async function loadNav(force = false) {
+  if (!selectedRecordId.value || (navData.value && !force)) return
+  navLoading.value = true
+  try {
+    const res = await api.get(`/api/valuations/records/${selectedRecordId.value}/nav`)
+    navData.value = res.data
+    navSelectionsDirty.value = false
+    refDrafts.value = {}
+    for (const l of navData.value?.result?.walk || []) {
+      if (refDrafts.value[l.iorder] === undefined) refDrafts.value[l.iorder] = l.agreement_ref || ''
+    }
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
+  } finally {
+    navLoading.value = false
+  }
+}
+
 watch(activeTab, (tab) => {
   if (tab === 'budget') loadBudgetReview()
   if (tab === 'balance') loadBalanceSheet()
   if (tab === 'ai') loadAiSummary()
+  if (tab === 'nav') loadNav()
 })
+
+// ------------------------------------------------------------
+// Phase 3 — NAV actions
+// ------------------------------------------------------------
+async function computeNav() {
+  if (!selectedRecordId.value) return
+  navComputing.value = true
+  error.value = null
+  try {
+    if (navSelectionsDirty.value) await saveBsSelections(false)
+    await api.post(`/api/valuations/records/${selectedRecordId.value}/nav/compute`, {})
+    await loadNav(true)
+    committee.value = null // committee summary now stale
+    saveMsg.value = 'NAV computed'
+    setTimeout(() => (saveMsg.value = ''), 3000)
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
+  } finally {
+    navComputing.value = false
+  }
+}
+
+function toggleBsLine(line: any) {
+  if (!line.selectable) return
+  line.included = !line.included
+  navSelectionsDirty.value = true
+}
+
+async function saveBsSelections(reload = true) {
+  if (!selectedRecordId.value || !navData.value?.inputs) return
+  const selections: Record<string, boolean> = {}
+  for (const l of navData.value.inputs.lines) {
+    if (l.selectable) selections[l.account] = !!l.included
+  }
+  await api.put(`/api/valuations/records/${selectedRecordId.value}/bs-selections`, { selections })
+  navSelectionsDirty.value = false
+  if (reload) await loadNav(true)
+}
+
+async function saveStepRef(line: any) {
+  if (!navData.value) return
+  const ref_ = (refDrafts.value[line.iorder] || '').trim()
+  try {
+    await api.put('/api/valuations/step-refs', {
+      vcode: navData.value.inputs.vcode, iorder: line.iorder, agreement_ref: ref_,
+    })
+    for (const l of navData.value.result?.walk || []) {
+      if (l.iorder === line.iorder) l.agreement_ref = ref_
+    }
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
+  }
+}
+
+function downloadNavPackage() {
+  if (!selectedRecordId.value) return
+  const token = localStorage.getItem('token')
+  window.open(`/api/valuations/records/${selectedRecordId.value}/nav-package?token=${token}`, '_blank')
+}
+
+function downloadCyclePackages() {
+  if (!selectedCycleId.value) return
+  const token = localStorage.getItem('token')
+  window.open(`/api/valuations/cycles/${selectedCycleId.value}/nav-packages?token=${token}`, '_blank')
+}
+
+async function publishRecord() {
+  if (!selectedRecordId.value) return
+  if (!confirm('Publish this approved valuation? It becomes the valuation of record '
+    + '(valuations table + Val_IS forecast) for every downstream report.')) return
+  publishing.value = true
+  try {
+    const res = await api.post(`/api/valuations/records/${selectedRecordId.value}/publish`, {})
+    saveMsg.value = `Published — valuations row written`
+      + (res.data.forecast_rows ? `, ${res.data.forecast_rows} forecast rows staged as Val_IS` : '')
+    setTimeout(() => (saveMsg.value = ''), 6000)
+    await openRecord(selectedRecordId.value)
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
+  } finally {
+    publishing.value = false
+  }
+}
 
 // ------------------------------------------------------------
 // Phase 2 — permissions, Q&A, approvals, committee, AI
@@ -708,6 +820,7 @@ watch(selectedCycleId, () => {
         <template v-else>
           <div class="committee-actions no-print">
             <button class="btn-secondary" @click="downloadCommitteeExcel">Download Committee Workbook</button>
+            <button class="btn-secondary" @click="downloadCyclePackages">Download NAV Packages (zip)</button>
             <button v-if="perms.can_approve" class="btn-primary" @click="approveAllSigned">
               Approve All Signed-Off
             </button>
@@ -832,6 +945,13 @@ watch(selectedCycleId, () => {
                   class="btn-secondary" @click="returnRecord">
             Return
           </button>
+          <span v-if="record.published_at" class="mini-badge argus" :title="'Published by ' + record.published_by">
+            Published {{ fmtDateTime(record.published_at) }}
+          </span>
+          <button v-else-if="auth.isAdmin && record.status === 'approved'" class="btn-primary"
+                  @click="publishRecord" :disabled="publishing">
+            {{ publishing ? 'Publishing...' : 'Publish' }}
+          </button>
           <button class="btn-secondary" @click="printForm">Print</button>
         </div>
       </div>
@@ -864,6 +984,7 @@ watch(selectedCycleId, () => {
             Q&amp;A <span v-if="openQuestions" class="mini-badge qbadge">{{ openQuestions }}</span>
           </button>
           <button :class="{ active: activeTab === 'ai' }" @click="activeTab = 'ai'">AI Summary</button>
+          <button :class="{ active: activeTab === 'nav' }" @click="activeTab = 'nav'">NAV</button>
         </div>
 
         <!-- ===== Tab: Assumptions & Documents ===== -->
@@ -1300,6 +1421,117 @@ watch(selectedCycleId, () => {
             </div>
           </template>
         </div>
+
+        <!-- ===== Tab: NAV ===== -->
+        <div v-show="activeTab === 'nav'" class="tab-panel">
+          <div v-if="navLoading" class="loading-text">Loading NAV inputs...</div>
+          <template v-if="navData">
+            <div class="panel">
+              <div class="ai-meta-panel no-print">
+                <span class="panel-note" v-if="navData.result">
+                  Computed {{ fmtDateTime(navData.result.computed_at) }} by {{ navData.result.computed_by }}
+                  <span v-if="navSelectionsDirty" class="warn-note"> — balance sheet selections changed, recompute to apply</span>
+                </span>
+                <span class="panel-note" v-else>No NAV computed yet for this record.</span>
+                <span style="display:flex; gap:8px">
+                  <button class="btn-primary" @click="computeNav" :disabled="navComputing || !canEdit">
+                    {{ navComputing ? 'Computing...' : (navData.result ? 'Recompute NAV' : 'Compute NAV') }}
+                  </button>
+                  <button v-if="navData.result" class="btn-secondary" @click="downloadNavPackage">
+                    Download Auditor Package
+                  </button>
+                </span>
+              </div>
+
+              <template v-if="navData.result">
+                <div class="ai-facts" style="margin-top:14px">
+                  <div class="fact"><span class="strip-label">Value ({{ navData.result.value_source === 'cost_derived' ? 'cost derived' : navData.result.value_source === 'children_rollup' ? 'children rollup' : 'entered' }})</span>{{ fmtCurrency(navData.result.value) }}</div>
+                  <div class="fact"><span class="strip-label">Less Debt</span>({{ fmtCurrency(navData.result.debt) }})</div>
+                  <div class="fact"><span class="strip-label">Current Assets</span>{{ fmtCurrency(navData.result.current_assets) }}</div>
+                  <div class="fact"><span class="strip-label">Current Liabilities</span>({{ fmtCurrency(navData.result.current_liabilities) }})</div>
+                  <div class="fact"><span class="strip-label">Net Proceeds</span><strong>{{ fmtCurrency(navData.result.net_proceeds) }}</strong></div>
+                  <div class="fact"><span class="strip-label">PSC NAV</span><strong class="pos">{{ fmtCurrency(navData.result.psc_nav) }}</strong></div>
+                  <div class="fact"><span class="strip-label">OP NAV</span>{{ fmtCurrency(navData.result.op_nav) }}</div>
+                </div>
+
+                <h3 style="margin-top:18px">Liquidation Waterfall</h3>
+                <div class="table-scroll">
+                  <table class="data-table">
+                    <thead>
+                      <tr><th>Ref</th><th>Recipient</th><th>Step</th><th class="num">Rate</th>
+                          <th class="num">Amount</th><th class="num">Remaining</th></tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(l, i) in navData.result.walk" :key="i">
+                        <td>
+                          <input v-if="canEdit" class="ref-input" v-model="refDrafts[l.iorder]"
+                                 placeholder="8.2(a)" @change="saveStepRef(l)" />
+                          <span v-else>{{ l.agreement_ref }}</span>
+                        </td>
+                        <td>{{ l.recipient }}</td>
+                        <td>{{ l.step }} <span class="qa-meta">{{ l.label }}</span></td>
+                        <td class="num">{{ l.rate != null && (l.step === 'Pref' || l.step === 'IRR') ? fmtPct(l.rate) : '' }}</td>
+                        <td class="num">{{ fmtCurrency(l.allocated) }}</td>
+                        <td class="num">{{ fmtCurrency(l.remaining_after) }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <ul class="ai-list" v-if="navData.result.notes?.length">
+                  <li v-for="(n, i) in navData.result.notes" :key="i" class="qa-meta">{{ n }}</li>
+                </ul>
+                <div class="ai-facts" v-if="navData.result.pref" style="margin-top:8px">
+                  <div class="fact" v-for="(p, pc) in navData.result.pref" :key="pc">
+                    <span class="strip-label">{{ pc }} accrued pref @ {{ fmtPct(p.pref_rate) }}</span>
+                    {{ fmtCurrency(p.accrued_pref) }}
+                  </div>
+                </div>
+              </template>
+            </div>
+
+            <div class="panel">
+              <h3>Balance Sheet Adjustment — Current Assets &amp; Liabilities</h3>
+              <p class="panel-note">
+                The app suggests the inclusion set; adjust per your knowledge of the property's books.
+                Selections carry forward to next year's cycle
+                <span v-if="navData.inputs?.has_prior_selections">(carried forward from the prior cycle)</span>.
+                Snapshot: <span v-for="(d, v) in navData.inputs?.snapshot_dates" :key="v">{{ v }} {{ fmtDate(d) }} </span>
+              </p>
+              <div class="table-scroll">
+                <table class="data-table">
+                  <thead>
+                    <tr><th class="no-print">Include</th><th>Acct</th><th>Line Item</th>
+                        <th class="num">Amount</th><th>Note</th></tr>
+                  </thead>
+                  <tbody>
+                    <template v-for="section in ['Assets', 'Liabilities']" :key="section">
+                      <tr class="row-section"><td colspan="5">{{ section.toUpperCase() }}</td></tr>
+                      <tr v-for="(l, i) in (navData.inputs?.lines || []).filter((x: any) => x.account_type === section)"
+                          :key="section + i" :class="{ 'line-excluded': !l.included && l.selectable }">
+                        <td class="no-print">
+                          <input type="checkbox" :checked="l.included" :disabled="!l.selectable || !canEdit"
+                                 @change="toggleBsLine(l)" />
+                        </td>
+                        <td class="mono">{{ l.account }}</td>
+                        <td>{{ l.description }}</td>
+                        <td class="num">{{ fmtCurrency(l.amount) }}</td>
+                        <td>
+                          <span v-if="l.is_debt" class="mini-badge">debt</span>
+                          <span v-else-if="l.changed_vs_prior" class="mini-badge mismatch" title="Treatment differs from the prior cycle">changed</span>
+                        </td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+              <div class="form-actions no-print" v-if="canEdit">
+                <button class="btn-primary" @click="computeNav" :disabled="navComputing">
+                  {{ navComputing ? 'Computing...' : 'Save Selections & Recompute' }}
+                </button>
+              </div>
+            </div>
+          </template>
+        </div>
       </template>
     </template>
   </div>
@@ -1473,6 +1705,15 @@ textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--color-border)
 .ai-facts .fact { min-width: 110px; }
 .ai-list { margin: 4px 0 0; padding-left: 18px; font-size: 13.5px; line-height: 1.5; }
 .ai-list li { margin: 4px 0; }
+
+/* phase 3 — NAV */
+.ref-input {
+  width: 72px; padding: 3px 6px; border: 1px solid var(--color-border);
+  border-radius: 4px; font-size: 12px; font-family: monospace;
+  background: var(--color-surface); color: var(--color-text);
+}
+.line-excluded td { color: var(--color-text-secondary); }
+.line-excluded td.num { text-decoration: line-through; }
 
 /* print */
 @media print {

@@ -1,6 +1,64 @@
-# Valuations & NAV Audit Packages — Design + Phases 1-2 (Aug 28, 2026)
+# Valuations & NAV Audit Packages — Design + Phases 1-3 (Aug 28, 2026)
 
-**Status: Phases 1 AND 2 BUILT on branch `feat/valuations-phase1` — not merged, not deployed.**
+**Status: Phases 1, 2 AND 3 BUILT on branch `feat/valuations-phase1` — not merged, not deployed.**
+
+## Phase 3 implementation (Aug 28, 2026)
+- **NAV engine** (`flask_app/services/valuation_nav_service.py`): value − ISBS BS debt
+  + curated current assets − curated current liabilities = net proceeds →
+  `run_waterfall(Cap_WF)` at the cycle as-of on states seeded from accounting with the
+  **Excel-exact pref walk injected** (`build_pref_balance_detail` per Cap_WF Pref
+  investor; new `pref_rate_override` param so OP investors use their own step rate, not
+  deal_terms.pe_coupon; tiers zeroed + `last_accrual_date = as_of` so the engine can't
+  re-accrue under Act/365F+grace). PSC NAV = non-OP allocations; walk persisted to
+  `valuation_nav_results` (inputs_json + walk_json).
+- **VERIFIED vs the Asbury Excel package** (net proceeds 4,540,806.46): pref 26,452.60 /
+  capital 1,490,000 / OP pref 14,243.71 / OP capital 802,308 all EXACT. IRR lookback
+  223,912.82 vs Excel 230,522.89 — **date convention, not an error**: the manual
+  workbook discounts distributions at month-end "IRR Dates"; the engine uses actual
+  payment dates (acquisition fees excluded per app-wide policy). XNPV closed form
+  reproduces both conventions exactly. A note to this effect is emitted in every NAV
+  result with IRR steps.
+- **`irr_needed_distribution()` in waterfall.py REPLACED with the closed form**
+  `x = −XNPV(target, cfs) × (1+target)^t` (metrics.xnpv, Act/365). Equivalent to the
+  old brentq-over-xirr search (verified to the penny on Asbury) but exact and immune to
+  solver noise. Blast radius: PSCKOC / Portfolio Analysis / prospect IRR gates may
+  shift by solver-precision amounts (improvement).
+- **BS curation**: `valuation_bs_selections` (record_id, account, included). Defaults:
+  assets 1000-1199 in; liabilities 2000-2149 in except DEBT_BS_ACCTS; equity never.
+  Stored > prior-cycle carry-forward > default; `changed_vs_prior` flag per line; debt
+  rows locked. Consolidated across parent+child vcodes at each vcode's latest BS ≤ as-of.
+- **Cost-basis derivation**: when classification=cost and no value entered, value =
+  debt + Σ seeded capital_outstanding + Σ accrued pref (components reported).
+  Portfolio parents: entered value > Σ children concluded values; walk runs at parent.
+- **Agreement refs**: `valuation_step_refs` (vcode, wf_type, iorder UNIQUE) — survives
+  waterfall re-saves; editable inline on the NAV walk (e.g. 8.2(a)…8.2(g) on Asbury).
+- **Auditor package Excel** (`generate_nav_package`): NAV_Calc / Bal_Sht (with Included
+  + changed flags) / Accrued_Pref + OP_Pref (Excel-exact columns) / IRR_Lookbacks
+  (cashflow history + NAV-walk terminal rows + live `_xlfn.XIRR` check) / LLC_Waterfall
+  (steps + refs + uploaded excerpt list) / Loader (Val_IS rows). Cycle-level zip
+  endpoint. Committee view gains "Download NAV Packages (zip)".
+- **Publish** (`publish_record`, admin, requires approved + computed NAV): writes the
+  `valuations` row (mEquityValue = net proceeds, mMezzanineValue = PSC NAV; deletes
+  same-date rows by PARSED date — MRI rows store '12/31/2025 0:00', publishes store
+  ISO) + inserts Val_IS_{year} rows into `forecasts` (Date 'M/D/YYYY', mAmount =
+  −amount_norm → MRI sign convention, Pro_Yr = year − PRO_YR_BASE; verified signs match
+  the real Loader tab) + stamps published_at/by + refresh_table('valuations'/'forecasts')
+  + clear_cache(vcode). **System-of-record cutover shipped**: 'valuations' added to
+  PROTECTED_TABLES; MRI_VAL query set to download-only (target_table=None) in
+  mri_service QUERY_REGISTRY.
+- **Committee integration**: Analysis 1 pref_nav = stored psc_nav; Analysis 2
+  net_proceeds = stored NAV net proceeds when computed (has_nav flag), else
+  value−debt estimate. Snapshots now freeze the NAV too.
+- **API adds**: GET/records/<id>/nav (inputs+result), PUT bs-selections,
+  POST nav/compute, PUT /step-refs, GET nav-package (xlsx), GET cycles/<id>/nav-packages
+  (zip), POST records/<id>/publish (admin).
+- **Vue**: NAV tab (summary facts, walk with editable ref column, notes, pref balances,
+  BS curation checkboxes with 'changed' badges + Save & Recompute), Publish button in
+  the header (admin, approved, shows Published stamp after).
+- **Follow-ups**: verify a real Argus export end-to-end (synthetic rows tested the
+  publish path); IRR-step completeness audit across deals (Rates feed vs Cap_WF);
+  multi-tier lookbacks (Asbury Excel also shows a 15% solve — only the 12% step is in
+  the waterfall); PG smoke test of new DDL on first Azure deploy.
 
 ## Phase 2 implementation (Aug 28, 2026)
 - **New tables** (added to `_VALUATION_DDL`, protected): `valuation_questions`

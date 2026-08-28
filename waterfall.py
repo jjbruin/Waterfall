@@ -14,7 +14,6 @@ KEY PRINCIPLES:
 from datetime import date
 from typing import Dict, List, Tuple, Optional
 import pandas as pd
-from scipy.optimize import brentq
 
 from models import InvestorState, CapitalPool, PrefTier
 from metrics import xirr, investor_metrics
@@ -130,30 +129,28 @@ def irr_needed_distribution(ist: InvestorState, d: date, target_irr: float, max_
         if "acquisition fee" not in lbl.lower()
     ]
 
-    def irr_of(x):
-        cfs = hurdle_cfs + [(d, float(x))]
-        r = xirr(cfs)
-        return r if r is not None else -999.0
-
-    r0 = irr_of(0.0)
-    if r0 >= target_irr:
-        return 0.0
-
-    r1 = irr_of(max_cash)
-    if r1 < target_irr:
-        # Even all cash doesn't reach target; take all
-        return max_cash
-
-    # Root find x such that irr(x) = target
-    def f(x):
-        rr = irr_of(x)
-        return rr - target_irr
+    # Closed form. The top-up x at date d that lands XIRR exactly on target
+    # satisfies XNPV_target(cfs) + x / (1+target)^t = 0, so
+    #     x = -XNPV_target(cfs) * (1+target)^t
+    # with t measured from the earliest cashflow (metrics.xnpv convention,
+    # Act/365). This replaces the previous brentq search over xirr(), whose
+    # solver tolerance translated into dollar errors in the tens of thousands
+    # (the reported IRR moves ~1e-7 per dollar on a seasoned deal, so IRR
+    # noise of 1e-6 smeared the root by >$10k).
+    from metrics import xnpv
 
     try:
-        x = float(brentq(f, 0.0, max_cash, xtol=0.01, maxiter=50))
-        return max(0.0, min(max_cash, x))
+        npv = xnpv(target_irr, hurdle_cfs)
     except Exception:
         return 0.0
+    if npv >= 0:
+        # Already at or above the target IRR — no lookback distribution owed
+        return 0.0
+
+    t0 = min(cf_date for cf_date, _ in hurdle_cfs)
+    years = (d - t0).days / 365.0
+    x = -npv * ((1.0 + target_irr) ** years)
+    return max(0.0, min(max_cash, float(x)))
 
 
 def pay_default_interest(ist: InvestorState, d: date, available: float,
