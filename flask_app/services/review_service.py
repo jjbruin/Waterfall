@@ -19,7 +19,9 @@ REVIEW_STEPS = [
     {'step': 5, 'role': None,            'status': 'approved',        'label': 'Approved'},
 ]
 
-REVIEW_ROLE_NAMES = [s['role'] for s in REVIEW_STEPS if s['role']]
+# 'cio' is not a One Pager chain step — it exists for the Valuation Committee
+# (President / CEO / CIO, parallel unanimous; see valuation_service).
+REVIEW_ROLE_NAMES = [s['role'] for s in REVIEW_STEPS if s['role']] + ['cio']
 
 
 def _ensure_tables():

@@ -75,8 +75,12 @@ QUERY_REGISTRY = {
     },
     "MRI_VAL": {
         "server": "im",
-        "target_table": "valuations",
-        "description": "Property valuations & cap rates",
+        # The app is the system of record for valuations (Aug 2026 — approved
+        # valuation cycles publish rows directly; MRI has no valuation entry
+        # screen). Download-only so a refresh can never overwrite app-published
+        # rows; the historical MRI_Val rows remain as back-history.
+        "target_table": None,
+        "description": "Property valuations & cap rates (download-only — app is system of record)",
     },
     "MRI_Occupancy_Download": {
         "server": "im",
