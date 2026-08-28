@@ -385,8 +385,61 @@ def _loan_terms(rows: pd.DataFrame) -> dict:
 
 # ── Valuations ────────────────────────────────────────────────────────────
 
-def _latest_valuation(valuations: pd.DataFrame, vcode: str) -> dict:
-    """Most recent mIncomeCapConcludedValue by dtValuation for a deal."""
+def valuation_year_end(quarter: Optional[str]) -> Optional[pd.Timestamp]:
+    """The fiscal year-end a report of this quarter values as-of.
+
+    THE RULE: the most recent December 31 that is on or before the quarter's
+    own end date.  Equivalently, the prior completed year-end for Q1-Q3, and
+    the quarter's own date for Q4:
+
+        2026-Q1 (ends 3/31/26)  -> 2025-12-31
+        2026-Q2 (ends 6/30/26)  -> 2025-12-31
+        2026-Q3 (ends 9/30/26)  -> 2025-12-31
+        2026-Q4 (ends 12/31/26) -> 2026-12-31
+        2027-Q1 (ends 3/31/27)  -> 2026-12-31
+
+    Returns None for an unparseable quarter, which the caller treats as
+    "no guard" so a malformed input can never blank out a whole page.
+    """
+    try:
+        year = int(str(quarter).split("-Q")[0])
+        qn = int(str(quarter).split("Q")[1])
+    except (AttributeError, IndexError, ValueError):
+        return None
+    if not 1 <= qn <= 4:
+        return None
+    return pd.Timestamp(year=year if qn == 4 else year - 1, month=12, day=31)
+
+
+def _latest_valuation(valuations: pd.DataFrame, vcode: str,
+                      quarter: Optional[str] = None) -> dict:
+    """Most recent mIncomeCapConcludedValue by dtValuation for a deal.
+
+    YEAR-END GUARD — DO NOT REMOVE.  With ``quarter`` supplied, candidates are
+    first restricted to ``dtValuation <= valuation_year_end(quarter)``, so a
+    report can never value a deal off a PARTIAL current-year valuation.
+
+    This became live-relevant in Aug 2026: MRI_VAL went download-only and the
+    app became the system of record for valuations, so
+    ``valuation_nav_service.publish`` now writes rows with
+    ``dtValuation = the record's as_of_date`` -- which can be ANY date, not
+    just a 12/31.  Without the guard, a valuation published as-of 2026-06-30
+    would immediately outrank the 2025-12-31 row on a 26Q1 report and silently
+    restate a already-published quarter's LTV. Today the table is 12/31-only,
+    so this fires on nothing; it is preventative.
+
+    NOT a 12/31-of-2025 hardcode and NOT a "12/31 only" filter: the boundary
+    moves with the report (see valuation_year_end), and a genuine 2026-12-31
+    valuation is selected as soon as reporting reaches 26Q4. Any real year-end
+    still qualifies.
+
+    A deal whose ONLY row is after the boundary yields no valuation and the
+    caller renders the existing "no valuation" state. That is deliberate --
+    blank is honest where a partial-year figure would be wrong.
+
+    Without ``quarter`` the behaviour is exactly as before (no guard), so the
+    self-test and any other caller are unaffected.
+    """
     out = {"value": None, "as_of": None}
     if valuations is None or valuations.empty:
         return out
@@ -403,8 +456,25 @@ def _latest_valuation(valuations: pd.DataFrame, vcode: str) -> dict:
         return out
     sub["_v"] = sub[val_col].map(_num)
     if dt_col:
-        sub["_dt"] = pd.to_datetime(sub[dt_col], errors="coerce")
+        # format="mixed" IS LOAD-BEARING, not tidying. Plain to_datetime infers
+        # ONE format from the first element and coerces every row that does not
+        # match to NaT, which dropna then deletes. Today every row is MRI's
+        # "YYYY-MM-DDT00:00:00" so a single format happens to fit -- but
+        # valuation_nav_service.publish writes as_of.strftime("%Y-%m-%d")
+        # ("2026-06-30"), and the legacy MRI export carries "12/31/2025 0:00".
+        # Either of those lands as NaT under the inferred format and the row
+        # vanishes, so an app-published valuation would be INVISIBLE to LTV
+        # rather than merely mis-ranked. Matches one_pager.py, which already
+        # parses this same column with format="mixed".
+        sub["_dt"] = pd.to_datetime(sub[dt_col], format="mixed",
+                                    errors="coerce")
         sub = sub.dropna(subset=["_dt"]).sort_values("_dt", ascending=False)
+        # The guard. Applied BEFORE the pick, and only when both a boundary
+        # and a parsed date column exist -- an undated frame keeps its old
+        # behaviour rather than losing every row.
+        cutoff = valuation_year_end(quarter)
+        if cutoff is not None:
+            sub = sub[sub["_dt"] <= cutoff]
     sub = sub[sub["_v"].notna() & (sub["_v"] > 0)]
     if sub.empty:
         return out
@@ -546,7 +616,10 @@ def assemble_loan(investor_code: str, quarter: str, *,
         # >ceiling guard therefore only ever fires for NON-dev deals now, as a
         # backstop against stale data (its original catch, JB Fair Park at 457%,
         # is a dev deal and is handled here instead).
-        val = _latest_valuation(valuations, vcode)
+        # `quarter` scopes the valuation to the report's own year-end, so a
+        # mid-year published valuation cannot restate an earlier quarter —
+        # see the year-end guard in _latest_valuation.
+        val = _latest_valuation(valuations, vcode, quarter)
         ltv = ltv_flag = None
         if dev and not ltv_exempt:
             diag["ltv_dev"] += 1
