@@ -1114,9 +1114,21 @@ def run_record_checks(engine, record_id: int, data: dict) -> Dict[str, Any]:
         if mri_val is not None and not mri_val.empty and nav.get("psc_nav"):
             df = mri_val.copy()
             vcol = "vCode" if "vCode" in df.columns else "vcode"
-            df["_dt"] = pd.to_datetime(df["dtValuation"], errors="coerce")
+            # format="mixed" IS LOAD-BEARING: a bare to_datetime infers one
+            # format from the first element and NaTs the rest, and a NaT has a
+            # NaN .dt.year, so the row drops out of the year filter and this
+            # swing check SILENTLY never fires. publish() writes
+            # "2026-06-30"; the MRI back-history is "...T00:00:00". Matches
+            # valuation_service._prior_values and portfolio_snapshot_loan.
+            df["_dt"] = pd.to_datetime(df["dtValuation"], format="mixed",
+                                       errors="coerce")
             prior = df[(df[vcol].astype(str).str.strip().str.upper() == vcode.upper())
                        & (df["_dt"].dt.year == year - 1)]
+            # NEWEST-WINS before .iloc[0]: publish() de-duplicates by exact
+            # date, not by year, so a deal can hold an interim AND a year-end
+            # valuation in the same year. Unsorted, .iloc[0] took whichever
+            # happened to come first in the frame.
+            prior = prior.sort_values("_dt", ascending=False)
             if not prior.empty:
                 prior_mezz = pd.to_numeric(prior.iloc[0].get("mMezzanineValue"), errors="coerce")
                 if pd.notna(prior_mezz) and prior_mezz > 0:
