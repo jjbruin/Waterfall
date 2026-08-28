@@ -1,6 +1,24 @@
-# Valuations & NAV Audit Packages — Design + Phases 1-3 (Aug 28, 2026)
+# Valuations & NAV Audit Packages — Design + Phases 1-4 (Aug 28, 2026)
 
-**Status: Phases 1, 2 AND 3 BUILT on branch `feat/valuations-phase1` — not merged, not deployed.**
+**Status: ALL FOUR PHASES BUILT on branch `feat/valuations-phase1`.**
+
+## Phase 4 implementation (Aug 28, 2026)
+- **Tie-out checks** (`run_record_checks` in valuation_nav_service): Cap_WF present,
+  Pref step present, IRR step vs deal_terms.irr_lookback (the completeness audit,
+  automated per record), assumptions complete (children-rollup aware), children values
+  complete, appraisal doc + Argus link required for third_party, LLC excerpt reminder,
+  open questions, AI cross-check mismatches, value vs NOI/cap sanity (±10%), Argus
+  year-1 NOI vs entered NOI (±5%, REVENUE_ACCTS|EXPENSE_ACCTS over first 12 months of
+  the import), BS snapshot staleness (>92 days), BS treatment changed vs prior cycle,
+  NAV staleness vs record edits, PSC NAV vs prior-year published mezz (>25% swing →
+  info). Endpoint GET /records/<id>/checks; Vue: expandable "Tie-out checks" strip in
+  the workspace header, auto-loaded per record.
+- **Apply extracted values**: AI Summary cross-check table gains per-row "apply" +
+  "Apply All Extracted Values" (also fills appraiser firm + appraisal date). Uses the
+  existing PUT; only while the record is open.
+- **Assistant tools**: `get_valuation_cycle` (status board + NAVs) and
+  `get_valuation_detail` (record + NAV walk + checks + Q&A) added to
+  assistant_service (22 tools now); system prompt mentions valuation cycles.
 
 ## Phase 3 implementation (Aug 28, 2026)
 - **NAV engine** (`flask_app/services/valuation_nav_service.py`): value − ISBS BS debt

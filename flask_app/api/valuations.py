@@ -625,6 +625,21 @@ def cycle_nav_packages(cycle_id):
         return jsonify({"error": str(e)}), 500
 
 
+@valuations_bp.route("/records/<int:record_id>/checks", methods=["GET"])
+@login_required
+def record_checks(record_id):
+    from flask_app.services import valuation_nav_service
+    try:
+        result = valuation_nav_service.run_record_checks(
+            get_engine(), record_id, data_service.get_data())
+        return jsonify(safe_json(result))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"record_checks failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
 @valuations_bp.route("/records/<int:record_id>/publish", methods=["POST"])
 @login_required
 @role_required("admin")

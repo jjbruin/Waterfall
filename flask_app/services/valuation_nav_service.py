@@ -918,3 +918,219 @@ def generate_cycle_packages_zip(engine, cycle_id: int, data: dict) -> bytes:
         if added == 0:
             zf.writestr("README.txt", "No records with a computed NAV in this cycle yet.")
     return buf.getvalue()
+
+
+# ============================================================
+# Phase 4 — Tie-out / reconciliation checks
+# ============================================================
+
+def run_record_checks(engine, record_id: int, data: dict) -> Dict[str, Any]:
+    """Automatic tie-outs for one valuation record.
+
+    Severity: fail (blocks a defensible package) > warn (needs a look) >
+    info (worth knowing) > ok. Each check reports even when it passes so
+    the reviewer can see what was tested.
+    """
+    from config import REVENUE_ACCTS, EXPENSE_ACCTS
+    from flask_app.services.valuation_service import ensure_valuation_tables
+    ensure_valuation_tables(engine)
+
+    rec = _load_record(engine, record_id)
+    vcode = rec["vcode"]
+    year = int(rec["cycle_year"])
+    as_of = pd.Timestamp(rec["as_of_date"])
+    classification = rec.get("classification_override") or rec.get("classification")
+    checks: List[Dict[str, str]] = []
+
+    def _add(key, severity, message):
+        checks.append({"key": key, "severity": severity, "message": message})
+
+    # --- Waterfall structure ---
+    steps = _cap_wf_steps(data, vcode)
+    if steps.empty:
+        _add("cap_wf", "fail", "No Cap_WF waterfall — the NAV walk cannot run (see Waterfall Setup)")
+    else:
+        _add("cap_wf", "ok", f"Cap_WF present ({len(steps)} steps)")
+        pref_steps = steps[steps["vState"] == "Pref"]
+        if pref_steps.empty:
+            _add("pref_step", "warn", "Cap_WF has no Pref step — no accrued pref will be paid in the walk")
+        # IRR lookback completeness: deal_terms says a lookback exists
+        try:
+            with engine.connect() as conn:
+                dt_row = conn.execute(text(
+                    "SELECT irr_lookback FROM deal_terms WHERE UPPER(vcode) = :v"
+                ), {"v": vcode.upper()}).fetchone()
+            expected_lookback = float(dt_row[0]) if dt_row and dt_row[0] is not None else None
+        except Exception:
+            expected_lookback = None
+        irr_steps = steps[steps["vState"] == "IRR"]
+        if expected_lookback and expected_lookback > 0 and irr_steps.empty:
+            _add("irr_step", "warn",
+                 f"deal_terms carries a {expected_lookback:.0%} IRR lookback but the Cap_WF has no IRR step — "
+                 "the NAV walk will skip the lookback")
+        elif not irr_steps.empty:
+            rate_col = "nPercent_dec" if "nPercent_dec" in irr_steps.columns else "nPercent"
+            rates = sorted({float(r) for r in irr_steps[rate_col].dropna()})
+            _add("irr_step", "ok", "IRR lookback step(s) at " + ", ".join(f"{r:.0%}" for r in rates))
+
+    # --- Assumption completeness ---
+    if classification != "cost":
+        missing = [label for label, field in (
+            ("method", "method"), ("concluded value", "concluded_value"),
+            ("going-in cap rate", "cap_rate"),
+        ) if rec.get(field) in (None, "")]
+        if rec["children"] and rec.get("concluded_value") in (None, "") and "concluded value" in missing:
+            child_vals = [c for c in rec["children"] if c.get("concluded_value") is not None]
+            if len(child_vals) == len(rec["children"]):
+                missing.remove("concluded value")  # rollup covers it
+        if missing:
+            _add("assumptions", "warn", "Missing: " + ", ".join(missing))
+        else:
+            _add("assumptions", "ok", "Assumptions complete")
+    else:
+        _add("assumptions", "ok", "Cost basis — value derived from capital balances + accrued pref")
+
+    # --- Children values (portfolio parents) ---
+    if rec["children"]:
+        missing_children = [c["vcode"] for c in rec["children"] if c.get("concluded_value") is None]
+        if missing_children:
+            _add("children", "warn",
+                 f"{len(missing_children)} child propert{'y' if len(missing_children) == 1 else 'ies'} "
+                 f"missing a concluded value: {', '.join(missing_children)}")
+        else:
+            _add("children", "ok", f"All {len(rec['children'])} child property values entered")
+
+    # --- Evidence ---
+    with engine.connect() as conn:
+        doc_types = {r[0] for r in conn.execute(text(
+            "SELECT DISTINCT doc_type FROM valuation_documents WHERE record_id = :r"
+        ), {"r": record_id}).fetchall()}
+        open_q = conn.execute(text(
+            "SELECT COUNT(*) FROM valuation_questions WHERE record_id = :r AND status = 'open'"
+        ), {"r": record_id}).fetchone()[0]
+    if classification == "third_party":
+        if "appraisal" in doc_types:
+            _add("appraisal_doc", "ok", "Appraisal document on file")
+        else:
+            _add("appraisal_doc", "warn", "Third-party classification but no appraisal PDF uploaded")
+        if rec.get("argus_import_id"):
+            _add("argus", "ok", "Argus projection linked")
+        else:
+            _add("argus", "warn", "No Argus projection linked — the Budget Review valuation column and "
+                                  "the Val_IS forecast publish will be empty")
+    if "llc_excerpt" not in doc_types:
+        _add("llc_excerpt", "info", "No LLC agreement excerpt uploaded — the auditor package cites the "
+                                    "modeled waterfall without agreement evidence")
+    if open_q:
+        _add("questions", "warn", f"{open_q} reviewer question(s) still open")
+    else:
+        _add("questions", "ok", "No open reviewer questions")
+
+    # --- AI cross-check ---
+    try:
+        from flask_app.services.valuation_ai_service import get_ai_summary
+        ai = get_ai_summary(engine, record_id)
+    except Exception:
+        ai = None
+    if ai:
+        mismatches = [c["field"] for c in ai.get("checks", []) if c.get("match") is False]
+        if mismatches:
+            _add("ai_crosscheck", "warn",
+                 "Entered assumptions differ from the appraisal per the AI summary: " + ", ".join(mismatches))
+        else:
+            _add("ai_crosscheck", "ok", "Entered assumptions match the AI-extracted appraisal values")
+    elif classification == "third_party" and "appraisal" in doc_types:
+        _add("ai_crosscheck", "info", "AI appraisal summary not generated yet — no automated cross-check")
+
+    # --- Direct-cap sanity: value vs NOI / cap ---
+    val, noi, cap = rec.get("concluded_value"), rec.get("direct_cap_noi"), rec.get("cap_rate")
+    if val and noi and cap:
+        implied = float(noi) / float(cap)
+        diff_pct = (float(val) - implied) / implied
+        if abs(diff_pct) > 0.10:
+            _add("value_vs_cap", "warn",
+                 f"Concluded value {float(val):,.0f} is {diff_pct:+.1%} vs NOI/cap implied {implied:,.0f} — "
+                 "fine for a DCF conclusion, but worth confirming")
+        else:
+            _add("value_vs_cap", "ok",
+                 f"Value within {diff_pct:+.1%} of the NOI/cap implied {implied:,.0f}")
+
+    # --- Argus year-1 NOI vs entered NOI ---
+    if rec.get("argus_import_id") and noi:
+        try:
+            from flask_app.services import argus_service
+            try:
+                from flask import current_app
+                pro_yr_base = int(current_app.config.get("PRO_YR_BASE_DEFAULT", year))
+            except Exception:
+                pro_yr_base = year
+            fc = argus_service.get_forecast_df_by_id(engine, vcode, int(rec["argus_import_id"]), pro_yr_base)
+            if fc is not None and not fc.empty:
+                fc = fc.copy()
+                fc["event_date"] = pd.to_datetime(fc["event_date"])
+                start = fc["event_date"].min()
+                yr1 = fc[fc["event_date"] < start + pd.DateOffset(months=12)]
+                noi_accts = REVENUE_ACCTS | EXPENSE_ACCTS
+                argus_noi = float(yr1[yr1["vAccount"].astype(int).isin(noi_accts)]["mAmount_norm"].sum())
+                diff = (argus_noi - float(noi)) / float(noi) if noi else 0
+                if abs(diff) > 0.05:
+                    _add("argus_noi", "warn",
+                         f"Argus year-1 NOI {argus_noi:,.0f} is {diff:+.1%} vs the entered direct-cap NOI "
+                         f"{float(noi):,.0f}")
+                else:
+                    _add("argus_noi", "ok",
+                         f"Argus year-1 NOI {argus_noi:,.0f} within {diff:+.1%} of the entered NOI")
+        except Exception:
+            logger.warning(f"argus_noi check failed for {vcode}", exc_info=True)
+
+    # --- Balance sheet staleness + NAV state ---
+    nav = get_nav(engine, record_id)
+    if nav:
+        for vc, snap in (nav.get("snapshot_dates") or {}).items():
+            if not snap:
+                _add("bs_staleness", "warn", f"{vc}: no Interim BS reported — NAV uses no balance sheet")
+                continue
+            age_days = (as_of - pd.Timestamp(snap)).days
+            if age_days > 92:
+                _add("bs_staleness", "warn",
+                     f"{vc}: balance sheet snapshot {snap} is {age_days} days before the valuation date")
+            else:
+                _add("bs_staleness", "ok", f"{vc}: balance sheet as of {snap}")
+        changed = [l["account"] for l in (nav.get("bs_lines") or []) if l.get("changed_vs_prior")]
+        if changed:
+            _add("bs_changed", "info",
+                 "Balance sheet treatment changed vs the prior cycle on account(s): " + ", ".join(changed))
+        # Stale NAV vs later assumption edits
+        try:
+            if rec.get("updated_at") and nav.get("computed_at") and \
+                    str(nav["computed_at"]) < str(rec["updated_at"]):
+                _add("nav_stale", "warn", "The record changed after the NAV was computed — recompute")
+            else:
+                _add("nav_stale", "ok", "NAV is current with the record")
+        except Exception:
+            pass
+        # Swing vs prior-year published Pref NAV
+        mri_val = data.get("mri_val")
+        if mri_val is not None and not mri_val.empty and nav.get("psc_nav"):
+            df = mri_val.copy()
+            vcol = "vCode" if "vCode" in df.columns else "vcode"
+            df["_dt"] = pd.to_datetime(df["dtValuation"], errors="coerce")
+            prior = df[(df[vcol].astype(str).str.strip().str.upper() == vcode.upper())
+                       & (df["_dt"].dt.year == year - 1)]
+            if not prior.empty:
+                prior_mezz = pd.to_numeric(prior.iloc[0].get("mMezzanineValue"), errors="coerce")
+                if pd.notna(prior_mezz) and prior_mezz > 0:
+                    swing = (float(nav["psc_nav"]) - float(prior_mezz)) / float(prior_mezz)
+                    sev = "info" if abs(swing) > 0.25 else "ok"
+                    _add("nav_vs_prior", sev,
+                         f"PSC NAV {float(nav['psc_nav']):,.0f} vs prior-year {float(prior_mezz):,.0f} "
+                         f"({swing:+.1%})")
+    elif rec.get("status") in ("signed_off", "approved"):
+        _add("nav_computed", "warn", "No NAV computed yet for a record in committee review")
+    else:
+        _add("nav_computed", "info", "No NAV computed yet")
+
+    counts = {"fail": 0, "warn": 0, "info": 0, "ok": 0}
+    for c in checks:
+        counts[c["severity"]] = counts.get(c["severity"], 0) + 1
+    return {"record_id": record_id, "vcode": vcode, "checks": checks, "counts": counts}

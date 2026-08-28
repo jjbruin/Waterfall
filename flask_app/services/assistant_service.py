@@ -305,6 +305,34 @@ TOOLS = [
         },
     },
     {
+        "name": "get_valuation_cycle",
+        "description": "Status of an annual property valuation cycle: every deal's classification (third-party appraisal / internal / cost), method, concluded value vs prior year, committee approval progress, open reviewer questions, and computed Pref NAV. Use for questions about the valuation process, committee review status, or year-over-year value changes.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "year": {
+                    "type": "integer",
+                    "description": "Cycle year (e.g. 2026). Omit for the most recent cycle.",
+                },
+            },
+        },
+    },
+    {
+        "name": "get_valuation_detail",
+        "description": "Full detail of one deal's valuation record in a cycle: assumptions (method, value, cap rates, discount), classification and reason, approval state, the NAV liquidation walk (net proceeds, PSC NAV, OP NAV), automated tie-out checks, and reviewer Q&A. Use resolve_deal first if you only have a name.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "vcode": {"type": "string", "description": "Deal vcode (e.g. P0000004)"},
+                "year": {
+                    "type": "integer",
+                    "description": "Cycle year. Omit for the most recent cycle.",
+                },
+            },
+            "required": ["vcode"],
+        },
+    },
+    {
         "name": "get_user_feedback",
         "description": "Get all user-submitted feedback requests (errors, improvements, report requests, analysis requests) with full message threads. Use this during design sessions to understand what users have reported and requested.",
         "input_schema": {
@@ -343,6 +371,7 @@ You have access to the full portfolio database, deal computation engine, and fin
 - Reviewing debt service schedules, loan amortization, and balloon payments
 - Checking cash reserves, distributable cash, and CapEx funding
 - Looking up tenant rosters, lease expirations, and rent rolls (commercial deals)
+- Annual valuation cycles: classification, committee approval status, appraisal assumptions, NAV walks, and tie-out checks (get_valuation_cycle / get_valuation_detail)
 
 Tool selection tips:
 - Use get_one_pager for current NOI, PE exposure, DSCR, cap stack, deal terms, property performance
@@ -551,6 +580,10 @@ def execute_tool(tool_name: str, tool_input: dict) -> str:
             return _tool_get_tenant_roster(tool_input)
         elif tool_name == "get_user_feedback":
             return _tool_get_user_feedback(tool_input)
+        elif tool_name == "get_valuation_cycle":
+            return _tool_get_valuation_cycle(tool_input)
+        elif tool_name == "get_valuation_detail":
+            return _tool_get_valuation_detail(tool_input)
         else:
             return json.dumps({"error": f"Unknown tool: {tool_name}"})
     except Exception as e:
@@ -1253,6 +1286,94 @@ def _tool_get_tenant_roster(inp):
         return json.dumps(out, default=str)
     except Exception as e:
         return json.dumps({"error": f"Tenant roster error for '{vcode}': {str(e)}"})
+
+
+def _tool_get_valuation_cycle(inp):
+    """Annual valuation cycle status board for the assistant."""
+    from sqlalchemy import text
+    from flask_app.db import get_engine
+    from flask_app.services import valuation_service
+    from flask_app.services.valuation_nav_service import nav_results_for_cycle
+
+    engine = get_engine()
+    valuation_service.ensure_valuation_tables(engine)
+    year = inp.get("year")
+    with engine.connect() as conn:
+        if year:
+            row = conn.execute(text("SELECT id, year FROM valuation_cycles WHERE year = :y"),
+                               {"y": int(year)}).fetchone()
+        else:
+            row = conn.execute(text(
+                "SELECT id, year FROM valuation_cycles ORDER BY year DESC LIMIT 1")).fetchone()
+    if not row:
+        return json.dumps({"message": "No valuation cycle found" + (f" for {year}" if year else "")})
+
+    data = _get_data()
+    dash = valuation_service.get_cycle_dashboard(engine, int(row[0]), data)
+    navs = nav_results_for_cycle(engine, int(row[0]))
+
+    records = []
+    for r in dash["records"]:
+        nav = navs.get(r["vcode"], {})
+        records.append({
+            "vcode": r["vcode"], "deal": r["deal_name"], "is_child": r["is_child"],
+            "classification": r["effective_classification"],
+            "classification_reason": r.get("classification_reason"),
+            "method": r.get("method"), "concluded_value": r.get("concluded_value"),
+            "prior_year_value": r.get("prior_value"), "value_change": r.get("value_change"),
+            "status": r["status"], "approvals": f"{r.get('approval_count', 0)}/3",
+            "open_questions": r.get("open_questions", 0),
+            "has_appraisal_doc": r.get("has_appraisal"), "has_argus": r.get("has_argus"),
+            "psc_nav": nav.get("psc_nav"), "nav_net_proceeds": nav.get("net_proceeds"),
+            "published_at": r.get("published_at"),
+        })
+    return json.dumps({"cycle": dash["cycle"], "record_count": len(records),
+                       "records": records}, default=str)
+
+
+def _tool_get_valuation_detail(inp):
+    """One deal's valuation record: assumptions, approvals, NAV walk, checks, Q&A."""
+    from sqlalchemy import text
+    from flask_app.db import get_engine
+    from flask_app.services import valuation_service
+    from flask_app.services import valuation_nav_service as nav_service
+
+    engine = get_engine()
+    valuation_service.ensure_valuation_tables(engine)
+    vcode = str(inp["vcode"]).strip()
+    year = inp.get("year")
+    with engine.connect() as conn:
+        if year:
+            row = conn.execute(text("""
+                SELECT r.id FROM valuation_records r
+                JOIN valuation_cycles c ON c.id = r.cycle_id
+                WHERE UPPER(r.vcode) = :v AND c.year = :y
+            """), {"v": vcode.upper(), "y": int(year)}).fetchone()
+        else:
+            row = conn.execute(text("""
+                SELECT r.id FROM valuation_records r
+                JOIN valuation_cycles c ON c.id = r.cycle_id
+                WHERE UPPER(r.vcode) = :v ORDER BY c.year DESC LIMIT 1
+            """), {"v": vcode.upper()}).fetchone()
+    if not row:
+        return json.dumps({"error": f"No valuation record for {vcode}"
+                           + (f" in the {year} cycle" if year else "")
+                           + ". Use get_valuation_cycle to list records."})
+    record_id = int(row[0])
+
+    data = _get_data()
+    rec = valuation_service.get_record(engine, record_id, data)
+    # Trim heavy fields the assistant does not need
+    for k in ("documents", "valuation_history", "comments"):
+        rec.pop(k, None)
+    nav = nav_service.get_nav(engine, record_id)
+    if nav:
+        nav.pop("bs_lines", None)
+    try:
+        checks = nav_service.run_record_checks(engine, record_id, data)
+    except Exception as e:
+        checks = {"error": str(e)}
+    return json.dumps({"record": rec, "nav": nav, "checks": checks}, default=str)
 
 
 def _tool_get_user_feedback(inp):

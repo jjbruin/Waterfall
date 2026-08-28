@@ -71,6 +71,11 @@ const aiSummary = ref<any | null>(null)
 const aiLoading = ref(false)
 const aiGenerating = ref(false)
 
+// Phase 4 — checks + apply-extracted
+const checksData = ref<any | null>(null)
+const checksExpanded = ref(false)
+const applying = ref(false)
+
 // Phase 3 — NAV
 const navData = ref<any | null>(null)
 const navLoading = ref(false)
@@ -166,6 +171,7 @@ async function openRecord(id: number) {
   balanceSheet.value = null
   aiSummary.value = null
   navData.value = null
+  checksData.value = null
   activeTab.value = 'assumptions'
   recordLoading.value = true
   try {
@@ -177,6 +183,7 @@ async function openRecord(id: number) {
       balance_sheet: res.data.comments?.balance_sheet?.comment_text || '',
       general: res.data.comments?.general?.comment_text || '',
     }
+    loadChecks() // non-blocking tie-out checks
   } catch (e: any) {
     error.value = e.response?.data?.error || e.message
   } finally {
@@ -229,6 +236,66 @@ async function loadAiSummary(force = false) {
     error.value = e.response?.data?.error || e.message
   } finally {
     aiLoading.value = false
+  }
+}
+
+async function loadChecks() {
+  if (!selectedRecordId.value) return
+  try {
+    const res = await api.get(`/api/valuations/records/${selectedRecordId.value}/checks`)
+    checksData.value = res.data
+  } catch { /* non-blocking */ }
+}
+
+const CHECK_FIELD_MAP: Record<string, string> = {
+  'Concluded Value': 'concluded_value',
+  'Going-in Cap Rate': 'cap_rate',
+  'Terminal Cap Rate': 'term_cap_rate',
+  'Discount Rate': 'discount_rate',
+  'Cost of Sale %': 'cost_of_sale_pct',
+  'Direct Cap NOI': 'direct_cap_noi',
+}
+
+async function applyExtracted(check: any) {
+  const field = CHECK_FIELD_MAP[check.field]
+  if (!field || check.extracted == null || !selectedRecordId.value) return
+  applying.value = true
+  try {
+    await api.put(`/api/valuations/records/${selectedRecordId.value}`, { [field]: check.extracted })
+    await openRecord(selectedRecordId.value)
+    activeTab.value = 'ai'
+    await loadAiSummary(true)
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
+  } finally {
+    applying.value = false
+  }
+}
+
+async function applyAllExtracted() {
+  if (!selectedRecordId.value || !aiSummary.value?.exists) return
+  const body: Record<string, any> = {}
+  for (const c of aiSummary.value.checks || []) {
+    const field = CHECK_FIELD_MAP[c.field]
+    if (field && c.extracted != null) body[field] = c.extracted
+  }
+  const s = aiSummary.value.summary || {}
+  if (s.appraiser?.firm) body.appraiser = s.appraiser.firm
+  const apprDate = s.value_conclusion?.value_date || s.appraiser?.appraisal_date
+  if (apprDate && /^\d{4}-\d{2}-\d{2}/.test(apprDate)) body.appraisal_date = apprDate.slice(0, 10)
+  if (!Object.keys(body).length) return
+  applying.value = true
+  try {
+    await api.put(`/api/valuations/records/${selectedRecordId.value}`, body)
+    saveMsg.value = `Applied ${Object.keys(body).length} extracted value(s) to the record`
+    setTimeout(() => (saveMsg.value = ''), 4000)
+    await openRecord(selectedRecordId.value)
+    activeTab.value = 'ai'
+    await loadAiSummary(true)
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
+  } finally {
+    applying.value = false
   }
 }
 
@@ -976,6 +1043,27 @@ watch(selectedCycleId, () => {
         </div>
         <div class="class-reason">{{ record.classification_reason }}</div>
 
+        <div v-if="checksData" class="checks-strip no-print">
+          <button class="checks-toggle" @click="checksExpanded = !checksExpanded">
+            {{ checksExpanded ? '▾' : '▸' }} Tie-out checks:
+            <span v-if="checksData.counts.fail" class="mini-badge mismatch">{{ checksData.counts.fail }} failed</span>
+            <span v-if="checksData.counts.warn" class="mini-badge qbadge">{{ checksData.counts.warn }} warning{{ checksData.counts.warn > 1 ? 's' : '' }}</span>
+            <span v-if="checksData.counts.info" class="mini-badge">{{ checksData.counts.info }} info</span>
+            <span class="mini-badge argus">{{ checksData.counts.ok }} passed</span>
+            <span class="btn-link" style="margin-left:8px" @click.stop="loadChecks">refresh</span>
+          </button>
+          <div v-if="checksExpanded" class="checks-list">
+            <div v-for="(c, i) in checksData.checks" :key="i" class="check-row">
+              <span class="mini-badge" :class="{
+                mismatch: c.severity === 'fail',
+                qbadge: c.severity === 'warn',
+                argus: c.severity === 'ok',
+              }">{{ c.severity }}</span>
+              <span>{{ c.message }}</span>
+            </div>
+          </div>
+        </div>
+
         <div class="tabs no-print">
           <button :class="{ active: activeTab === 'assumptions' }" @click="activeTab = 'assumptions'">Assumptions &amp; Documents</button>
           <button :class="{ active: activeTab === 'budget' }" @click="activeTab = 'budget'">Budget Review</button>
@@ -1354,10 +1442,15 @@ watch(selectedCycleId, () => {
             </div>
 
             <div class="panel" v-if="aiSummary.checks?.length">
-              <h3>Assumption Cross-Check <span class="panel-note" style="font-weight:400">entered on the record vs extracted from the appraisal</span></h3>
+              <div class="ai-meta-panel">
+                <h3 style="margin:0">Assumption Cross-Check <span class="panel-note" style="font-weight:400">entered on the record vs extracted from the appraisal</span></h3>
+                <button v-if="recordEditable" class="btn-secondary no-print" @click="applyAllExtracted" :disabled="applying">
+                  {{ applying ? 'Applying...' : 'Apply All Extracted Values' }}
+                </button>
+              </div>
               <div class="table-scroll">
                 <table class="data-table">
-                  <thead><tr><th>Field</th><th class="num">Entered</th><th class="num">From Appraisal</th><th>Match</th></tr></thead>
+                  <thead><tr><th>Field</th><th class="num">Entered</th><th class="num">From Appraisal</th><th>Match</th><th class="no-print"></th></tr></thead>
                   <tbody>
                     <tr v-for="c in aiSummary.checks" :key="c.field">
                       <td>{{ c.field }}</td>
@@ -1368,10 +1461,19 @@ watch(selectedCycleId, () => {
                         <span v-else-if="c.match === false" class="mini-badge mismatch">differs</span>
                         <span v-else class="mini-badge">n/a</span>
                       </td>
+                      <td class="no-print">
+                        <button v-if="recordEditable && c.extracted != null && c.match !== true"
+                                class="btn-link" @click="applyExtracted(c)" :disabled="applying">
+                          apply
+                        </button>
+                      </td>
                     </tr>
                   </tbody>
                 </table>
               </div>
+              <p class="panel-note" v-if="!recordEditable" style="margin-top:8px">
+                Values can be applied while the record is open (before analyst sign-off).
+              </p>
             </div>
 
             <div class="panel">
@@ -1714,6 +1816,19 @@ textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--color-border)
 }
 .line-excluded td { color: var(--color-text-secondary); }
 .line-excluded td.num { text-decoration: line-through; }
+
+/* phase 4 — checks */
+.checks-strip {
+  background: var(--color-surface); border: 1px solid var(--color-border);
+  border-radius: 8px; padding: 8px 14px; margin-bottom: 14px;
+}
+.checks-toggle {
+  border: none; background: none; cursor: pointer; font-size: 13px;
+  display: flex; align-items: center; gap: 8px; padding: 0; color: var(--color-text);
+}
+.checks-list { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.check-row { display: flex; gap: 10px; align-items: baseline; font-size: 13px; }
+.check-row .mini-badge { flex: none; min-width: 40px; text-align: center; }
 
 /* print */
 @media print {
