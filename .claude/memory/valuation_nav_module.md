@@ -1,6 +1,10 @@
 # Valuations & NAV Audit Packages — Design + Phases 1-4 (Aug 28, 2026)
 
-**Status: ALL FOUR PHASES BUILT on branch `feat/valuations-phase1`.**
+**Status: ALL FOUR PHASES DEPLOYED — merged to main as `c6083f0` (with Charlene's
+`a060c59` One Pager PE terms fallback) and live on Azure as revision `v397`
+(Aug 28, 2026). PG tables created cleanly on first boot; /api/valuations live.
+No cycle opened in production yet — create the cycle from the Valuations page
+and assign the committee roles (president/ceo/cio) in Settings.**
 
 ## Phase 4 implementation (Aug 28, 2026)
 - **Tie-out checks** (`run_record_checks` in valuation_nav_service): Cap_WF present,
