@@ -1068,8 +1068,31 @@ def get_property_performance(
     # Budget fallback: when no budget rows exist for the report year, reuse
     # the prior year's budget (per LLC agreement).  Shift dates forward by
     # 12 months so downstream date-range filters work unchanged.
+    #
+    # NOT FOR DEVELOPMENT DEALS (creator decision, Jim, 2026-08-31).  A
+    # stabilized deal's prior year is a fair stand-in for the current one.  A
+    # development deal's is a LEASE-UP year that by definition will not repeat,
+    # so republishing it as the current projection invents a Projected YE out
+    # of a budget the property has already grown past.  Live examples this
+    # rule exists for: Jefferson Addison Heights (P0000077) published a
+    # -700K Projected YE NOI assembled entirely from its shifted 2025 lease-up
+    # budget, and the four Brainerd buildings published a Projected YE with no
+    # actual component in it at all.
+    #
+    # Declining to shift IS the whole fix.  The prior-year rows stay in
+    # budget_data but fall outside every current-year date range below, so they
+    # contribute 0 and a dev deal lands on exactly the path a deal with no
+    # budget at all already takes: Projected YE = YTD Actual, YTD Budget = 0.
+    # There is deliberately no second branch here to fall out of step.
+    #
+    # Detection is the app's one definition (config.DEV_STRATEGIES, via
+    # _is_dev_deal) so this cannot disagree with the dev debt basis above or
+    # the Portfolio Snapshot's "Dev" suppression.  inv_map is None only in
+    # build_chart_data() at the bottom of this module, which reads ytd_actual,
+    # uw_ye and economic_occ.ytd_actual — never a budget-derived field — so the
+    # chart is unaffected either way.
     _report_year = int(quarter_str.split('-')[0])
-    if not budget_data.empty:
+    if not budget_data.empty and not _is_dev_deal(vcode_str, inv_map):
         has_report_year_budget = (budget_data['dtEntry_parsed'].dt.year == _report_year).any()
         if not has_report_year_budget:
             prior = budget_data[budget_data['dtEntry_parsed'].dt.year == _report_year - 1].copy()
