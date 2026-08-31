@@ -518,6 +518,29 @@ def build_ppi_results(engine, prospect_id: int,
             'members': [p_row['investor_id'] for p_row in psc],
             'cashflows': [(dstr, round(float(a), 2)) for dstr, a in merged_cfs],
         }
+        # PSC1's own line in the participants table carries the consolidated
+        # return — the manager's fees/promote and the origination fee ARE
+        # PSC1's economics (it owns PSCMAN 100%), so its row must not read
+        # as co-invest-only. The manager row stays as a memo of where the
+        # fee/promote dollars arrive.
+        equity_psc = [p_row for p_row in psc if p_row['type'] == 'psc']
+        if psc_summary['consolidated'] and len(equity_psc) == 1:
+            row = equity_psc[0]
+            row['name'] = f"{row['name']} (incl. " + ", ".join(
+                [p_row['investor_id'] for p_row in psc
+                 if p_row['type'] == 'mgr']
+                + (['orig fee'] if orig_fee > 0 else [])) + ")"
+            row['distributions'] = sum(p_row['distributions'] for p_row in psc) + orig_fee
+            row['am_fees_received'] = psc_summary['total_fees']
+            row['post_gate_distributions'] = psc_summary['total_promote']
+            row['net_total'] = pos - neg
+            row['irr'] = cons_irr
+            row['moic'] = psc_summary['moic']
+            row['cashflows'] = psc_summary['cashflows']
+            for p_row in psc:
+                if p_row['type'] == 'mgr':
+                    p_row['name'] = f"{p_row['name']} (rolled into {row['investor_id']})"
+                    p_row['moic'] = None
 
     # ---- annual pivot: years across the top (the forecast table's
     #      anniversary mapping), rows = step | recipient | CF/Cap ----------
