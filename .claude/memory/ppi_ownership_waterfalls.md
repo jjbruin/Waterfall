@@ -215,7 +215,10 @@ Jim's conventions, modeled on Windsor/TGA6/AMB6:
   the AMB6 fee is a wash (paid on its line, received on PSCMAN's, netted per date).
   Windsor: IRR 63.2%, MOIC 3.33x on 818,227 co-invest (fees 741,657 + promote 173,120
   + orig fee 191,500). Vue cards: PSC Promote / PSC Orig Fee / Consolidated IRR+MOIC
-  + explanatory note.
+  + explanatory note. **v402 (`1495d61`)**: PSC1's row in the participants table itself
+  carries the consolidated figures — renamed "PSC1 (incl. PSCMAN, orig fee)", manager
+  row marked "rolled into PSC1" — because the co-invest-only 19.09% on PSC1's line was
+  read as the missing consolidation.
 
 ## Display refinements (Aug 27-28, v394-v395)
 - Annual pivot in the dropdown mirrors the operating forecast: anniversary
