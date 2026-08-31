@@ -188,7 +188,7 @@ exact pro-rata; PSCMAN fees 741,657 (=693,782+47,875 exact) + promote 173,120
 = 4.0% of pool; dists net of fees == deal PPIWIND dists to the dollar.
 Open: TGA6 modeled with NO pref (straight 90/10 + 9% gate) — confirm with Jim.
 
-## AMFee accrual + PSC1 consolidated returns (Aug 31 2026 — working tree)
+## AMFee accrual + PSC1 consolidated returns (Aug 31 2026 — `9432f87`, DEPLOYED as v401)
 Jim's conventions, modeled on Windsor/TGA6/AMB6:
 - **TGA6 Cap tie 30 corrected** (Jim edited via Waterfall Setup, verified): TGAM .70 /
   INV6 .26 / PSCMAN .04. The 20-pt promote splits 20% PSCMAN / 80% members; PSCMAN's
