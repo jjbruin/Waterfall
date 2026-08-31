@@ -13,8 +13,43 @@ Reads, never writes:
 Three column zones:
 
 Zone A — deal-level capitalisation, NOT scaled
-    Debt, Total Pref, Ptr Equity, Total Cap and the cap-stack percentages, taken
-    straight from the One Pager payload.
+    Debt, Total Pref, Ptr Equity, Total Cap and the cap-stack percentages.
+
+    TOTAL PREF IS THE COMMITTED PREF TRANCHE (``cap_stack.committed_pe``), not
+    funded. Established against the baseline PDF at 26Q1 three independent ways:
+
+      * The PDF's own arithmetic. ``Invested = pct x FUNDED`` holds 33/33, and
+        ``Total Commitment = pct x (the Total Pref column)`` holds 30/33 — the
+        three misses being rounding on the printed one-decimal figure (Mount
+        Prospect, Town Fair) and Brainerd's printed 74% disagreeing with the
+        live 63.142%. So ``Un-funded = pct x (Total Pref - funded)``, i.e. the
+        Total Pref column is the committed basis by construction.
+      * The six deals where the PDF itself prints a non-zero Un-funded — its own
+        data declaring committed > funded — span dev and non-dev alike, and
+        Total Pref matches ``committed_pe`` on five of six (Giant 7 21.00,
+        Brainerd 31.72, Seasons 35.45, Trolley 6.75, Stephens 22.73). There is
+        no dev/non-dev split.
+      * The portfolio total. Funded sums to 546.88 (-48.4 vs the PDF's 595.3);
+        committed to 641.64 (+46.3); committed less the three disputed
+        commitment VALUES gives 595.35 against 595.3.
+
+    Per-deal ties go 27/33 funded -> 30/33 committed. The three that still
+    differ — Nottingham, Burton, JB Fair Park — are commitment-VALUE disputes
+    (the PDF blanks their Un-funded, i.e. its source thinks them fully funded),
+    not a basis question. They are the IA_Contribution-vs-IA_Commitment item
+    waiting on Alay; do not bend the basis to them.
+
+    PTR EQUITY STAYS FUNDED. The OP side has commitment rows on 31 of 33 deals,
+    but switching to them scores WORSE — 28/33 funded against 27/33 committed —
+    and the data is not trustworthy: Brainerd's larger OP "Commitment" row
+    (18,777,867.84) equals its cumulative funded contributions to the cent, so
+    summing both OP rows double-counts by 10.6M. Unlike the pref rows, the OP
+    rows carry no 1% acquisition fee, so the test that corroborated the pref
+    tranches cannot be run. Left alone deliberately.
+
+    Total Cap is RE-FOOTED as debt_isbs + Total Pref + Ptr Equity so the four
+    printed columns add up. The debt leg stays the ISBS/current basis, NOT the
+    footnote-6 dev rebase — see the total_cap block in build_row.
 
 Zone B — the four "TIAA Investment" columns, the ONLY scaled columns
     % of Pref        = Step 1's multi-hop look-through (Nottingham 41.2124%)
@@ -22,15 +57,18 @@ Zone B — the four "TIAA Investment" columns, the ONLY scaled columns
     Total Commitment = % of Pref x commitment basis   (see COMMITMENT_BASIS)
     Un-funded        = Total Commitment - Invested
 
-    COMMITMENT_BASIS is a deliberate switch because the two candidates disagree
-    and only one reproduces the PDF. Verified on Nottingham at 26Q1:
-        funded pref            9,135,000  -> Commitment 3,764,751, Un-funded 0
-        committed_pe          12,058,426  -> Commitment 4,969,564, Un-funded 1,204,814
-    The PDF shows Total Commitment ~3.8M and Un-funded blank, i.e. it scales
-    *funded*. Note 9,135,000 + 2,923,426.79 (a contribution dated 2026-06-01)
-    equals the 12,058,426.79 commitment row to the cent, so the committed figure
-    is real — the PDF simply is not using it. Both are always computed and
-    returned; this constant only decides which fills ``total_commitment``.
+    INVESTED STAYS ON FUNDED. It ties the PDF 33/33 and is the one column that
+    must not follow the Total Pref switch — it is TIAA's actually-contributed
+    slice, not its pledge. Both commitment bases are always computed and
+    returned (``total_commitment_if_funded`` / ``_if_committed``) so the choice
+    stays auditable and reversible.
+
+    Switching Total Commitment onto the committed basis also closes the
+    inter-page disagreement: page 1 (portfolio_snapshot_summary) has always
+    scaled ``committed_pe``, while this page shipped ``COMMITMENT_BASIS="funded"``,
+    so the same figure read 409.23 here and 478.28 there at 26Q1 — a 69.05M gap.
+    Both now read 485.99. The residual against the PDF's 445.1 is the same three
+    disputed commitment values.
 
 Zone C — manual entry, never derived (formula TBD)
     Net ROE and ITD Distributions are per-deal editable boxes. Analysts type
@@ -67,10 +105,11 @@ from typing import Callable, Optional
 
 log = logging.getLogger(__name__)
 
-#: Which figure the Total Commitment column scales. "funded" reproduces the
-#: reference PDF; "committed_pe" uses the accounting commitment rows, which are
-#: the authoritative commitment but do not match the published page.
-COMMITMENT_BASIS = "funded"          # "funded" | "committed_pe"
+#: Which figure the Total Commitment column scales. "committed_pe" is the
+#: accounting commitment rows — the authoritative commitment, the basis the
+#: reference PDF's Total Pref column is on, and what page 1 has always scaled.
+#: "funded" is retained so the pre-2026-08-31 numbers can be reproduced.
+COMMITMENT_BASIS = "committed_pe"    # "funded" | "committed_pe"
 
 PENDING = "pending entry"
 
@@ -146,8 +185,11 @@ def _na_cells(vcode: str) -> frozenset:
 
 #: Zone A columns summed for subtotals. % columns are recomputed from the sums
 #: rather than added, since averaging percentages is meaningless.
+#: ``funded_pref`` is summed but never printed — it is the denominator the
+#: subtotal "% of Pref" needs; see _subtotal.
 _SUM_COLS = ("debt", "total_pref", "ptr_equity", "total_cap",
-             "committed_pref", "invested", "total_commitment", "unfunded")
+             "funded_pref", "committed_pref", "invested", "total_commitment",
+             "unfunded")
 
 
 def _num(v):
@@ -239,8 +281,20 @@ def _subtotal(rows: list, label: str) -> dict:
         vals = [r[c] for r in rows if r.get(c) is not None]
         out[c] = sum(vals) if vals else None
     tp, tc = out.get("total_pref"), out.get("total_cap")
-    out["pct_of_pref"] = ((out["invested"] / tp)
-                          if (out.get("invested") is not None and tp) else None)
+    # "% of Pref" on a subtotal row is the dollar-weighted average of the
+    # per-deal look-through percentages above it, which is
+    # sum(pct x funded) / sum(funded) = invested / funded_pref. The denominator
+    # is FUNDED, deliberately, even though Total Pref is now committed:
+    #   * it keeps the cell a weighted average of the column it sits under;
+    #   * dividing by committed would move a displayed cell as a side effect of
+    #     the Total Pref basis switch — TGA 2025 would read 46% against the
+    #     PDF's 90%, purely because Burton's disputed commitment (54.23M vs the
+    #     PDF's 26.6M) inflates that group's denominator.
+    # On funded this cell is unchanged from before the switch, and TGA 2025
+    # reproduces the PDF's 90% exactly.
+    fp = out.get("funded_pref")
+    out["pct_of_pref"] = ((out["invested"] / fp)
+                          if (out.get("invested") is not None and fp) else None)
     out["debt_pct"] = (out["debt"] / tc) if (out.get("debt") is not None and tc) else None
     out["pref_pct"] = (tp / tc) if (tp is not None and tc) else None
     out["ptr_pct"] = ((out["ptr_equity"] / tc)
@@ -270,7 +324,7 @@ def assemble_financial(investor_code: str, quarter: str, *,
         is_dev_deal, resolve_strategy,
     )
     from flask_app.services.portfolio_snapshot_service import (
-        group_total_label, PORTFOLIO_TOTAL_LABEL,
+        group_total_label, PORTFOLIO_TOTAL_LABEL, resolve_committed_pref,
     )
     from flask_app.services.portfolio_snapshot_debt import (
         BASIS_ISBS, resolve_debt,
@@ -347,13 +401,47 @@ def assemble_financial(investor_code: str, quarter: str, *,
                     f"PDF footnote (6)")
         # total_cap is NOT recomputed from `debt` — see resolve_debt's docstring.
         # A rebased dev deal therefore does not foot exactly, as on the PDF.
-        total_pref = _num(cap.get("pref_equity"))
-        ptr_equity = _num(cap.get("partner_equity"))
-        # Total Cap stays on the ISBS debt basis. The One Pager rebases a dev
-        # deal's own Total Cap onto hard costs; this column must not move with
-        # it or it loses its tie to the published PDF.
-        total_cap = _num(cap.get("total_cap_isbs", cap.get("total_cap")))
+        funded_pref = _num(cap.get("pref_equity"))
         committed_pref = _num(cap.get("committed_pe"))
+        ptr_equity = _num(cap.get("partner_equity"))
+
+        # Total Pref = the COMMITTED pref tranche. See the module docstring for
+        # the three lines of evidence. `committed_pe` already carries a funded
+        # fallback for the two deals with no commitment row (East Manchester,
+        # City West) — one_pager.get_capitalization_stack, so page 1 gets it too.
+        # The `or funded_pref` here is belt-and-braces for a payload built before
+        # that fallback existed (a frozen snapshot, a stale worker); it can only
+        # raise a zero, never lower a real pledge.
+        if commitment_basis == "committed_pe":
+            total_pref, pref_basis = resolve_committed_pref(cap)
+            if pref_basis == "funded (no commitment row)":
+                flags.append(
+                    "no commitment row — Total Pref falls back to funded pref "
+                    f"({(funded_pref or 0) / 1e6:,.2f}M)")
+        else:
+            total_pref, pref_basis = funded_pref, "funded"
+
+        # Total Cap is RE-FOOTED so Debt + Total Pref + Ptr Equity add up to it
+        # on screen. Without this it would stay `total_cap_isbs`, which is built
+        # from FUNDED pref, and the four printed columns would visibly not sum.
+        #
+        # The debt leg stays `debt_isbs` — the ISBS/current basis — NOT the
+        # footnote-6 dev rebase in `debt` above. The One Pager rebases a dev
+        # deal's own Total Cap onto hard costs and this column must not follow
+        # it; a rebased dev deal therefore still does not foot exactly, as on
+        # the PDF. Measured at 26Q1: this formula ties the PDF's Total Cap on
+        # 21/33 deals, the same as the shipped `total_cap_isbs` (21/33). Using
+        # the resolved footnote-6 debt instead would tie 22/33, but that moves
+        # the Debt basis of Total Cap, which is out of scope here.
+        # Explicit None test, not truthiness: a genuinely zero cap stack is data,
+        # and must not silently fall through to the funded-basis total.
+        if None in (debt_isbs, total_pref, ptr_equity):
+            total_cap = _num(cap.get("total_cap_isbs", cap.get("total_cap")))
+        else:
+            total_cap = debt_isbs + total_pref + ptr_equity
+        # The pre-switch value, so the change stays auditable on the payload.
+        total_cap_funded_basis = _num(
+            cap.get("total_cap_isbs", cap.get("total_cap")))
 
         # ---- Zone B: the four scaled columns ----
         #
@@ -381,21 +469,29 @@ def assemble_financial(investor_code: str, quarter: str, *,
                 f"PE basis {pct * 100:.4f}%, not the deal-level look-through "
                 f"{pct_deal_level * 100:.4f}%")
 
-        invested = (pct * total_pref) if (pct is not None
-                                          and total_pref is not None) else None
-        basis_val = (total_pref if commitment_basis == "funded"
-                     else committed_pref)
+        # Invested scales FUNDED, always — TIAA's actually-contributed slice.
+        # It reads `funded_pref` explicitly rather than `total_pref` so it cannot
+        # follow the Total Pref basis switch: it ties the PDF 33/33 on funded and
+        # that identity is what proves the Total Pref column is committed.
+        invested = (pct * funded_pref) if (pct is not None
+                                           and funded_pref is not None) else None
+        # Total Commitment scales the same figure Total Pref prints, so
+        # `Total Commitment = pct x Total Pref` — the PDF identity — holds, and
+        # `Un-funded = pct x (Total Pref - funded)` falls out of it.
+        basis_val = (funded_pref if commitment_basis == "funded"
+                     else total_pref)
         if commitment_basis == "committed_pe" and not committed_pref:
+            # Not a missing figure any more — the funded fallback covers it —
+            # but still counted so the two no-commitment-row deals stay visible.
             diag["commitment_missing"] += 1
-            flags.append("no commitment row — Total Commitment unavailable")
         total_commitment = (pct * basis_val) if (pct is not None
                                                 and basis_val is not None) else None
         unfunded = ((total_commitment - invested)
                     if (total_commitment is not None and invested is not None)
                     else None)
         # Both bases carried so the choice is auditable and reversible.
-        commitment_funded = (pct * total_pref) if (pct is not None
-                                                  and total_pref is not None) else None
+        commitment_funded = (pct * funded_pref) if (pct is not None
+                                                   and funded_pref is not None) else None
         commitment_committed = (pct * committed_pref) if (
             pct is not None and committed_pref is not None) else None
 
@@ -432,6 +528,14 @@ def assemble_financial(investor_code: str, quarter: str, *,
             "debt_orig": debt_orig,
             "total_pref": total_pref, "ptr_equity": ptr_equity,
             "total_cap": total_cap, "committed_pref": committed_pref,
+            # Both pref bases carried, same principle as the two debt bases:
+            # `funded_pref` is what Invested scales and what the subtotal
+            # "% of Pref" divides by, and `pref_basis` says which source
+            # `total_pref` actually came from ("funded (no commitment row)" on
+            # East Manchester and City West).
+            "funded_pref": funded_pref,
+            "pref_basis": pref_basis,
+            "total_cap_funded_basis": total_cap_funded_basis,
             "debt_pct": _num(cap.get("debt_pct")),
             "pref_pct": _num(cap.get("pref_equity_pct")),
             "ptr_pct": _num(cap.get("partner_equity_pct")),
@@ -534,11 +638,29 @@ def assemble_financial(investor_code: str, quarter: str, *,
 
 # ── Self-test ─────────────────────────────────────────────────────────────
 
-# PDF 26Q1, Financial page — the values supplied for Nottingham
+# PDF 26Q1, Financial page.
+#
+# Giant 7 is the primary Zone B case: it is one of the six deals where the PDF
+# itself prints a non-zero Un-funded, so it discriminates funded from committed,
+# and on the committed basis all five figures tie the published page.
+#
+# Nottingham is kept as the documented DISPUTE. Its commitment row (12,058,427)
+# is real — 9,135,000 funded plus a 2,923,426.79 contribution dated 2026-06-01
+# sums to it to the cent — but the PDF prints 9.1 and blanks Un-funded, i.e. its
+# source treats the deal as fully funded. That is the IA_Contribution vs
+# IA_Commitment question with Alay, not a basis error, so the self-test asserts
+# what the code SHOULD produce and reports the PDF delta rather than failing.
 _PDF = {
+    "P0000019": {"name": "Giant 7", "pct_of_pref": 57.0,
+                 "invested_m": 11.5, "commitment_m": 11.9, "unfunded_m": 0.5,
+                 "total_pref_m": 21.0, "disputed": False},
     "P0000030": {"name": "Nottingham Village", "pct_of_pref": 41.0,
                  "invested_m": 3.8, "commitment_m": 3.8, "unfunded_m": 0.0,
-                 "total_pref_m": 9.1},
+                 "total_pref_m": 9.1, "disputed": True,
+                 # what the committed basis correctly produces
+                 "expect_total_pref_m": 12.058427,
+                 "expect_commitment_m": 4.969564,
+                 "expect_unfunded_m": 1.204814},
 }
 
 
@@ -627,27 +749,39 @@ def _selftest():                                    # pragma: no cover
         print(f"    [{'PASS' if cond else 'FAIL'}] {label}")
 
     print("=" * 118)
-    print("ZONE B — the four scaled TIAA columns (Nottingham vs PDF)")
-    print(f"{'metric':<26}{'computed':>16}{'PDF':>10}{'delta':>12}   verdict")
-    print("-" * 118)
-    r = flat.get("P0000030") or {}
-    p = _PDF["P0000030"]
-    tests = [
-        ("% of Pref", (r.get("pct_of_pref") or 0) * 100, p["pct_of_pref"], 0.5),
-        ("Invested ($M)", (r.get("invested") or 0) / 1e6, p["invested_m"], 0.06),
-        ("Total Commitment ($M)", (r.get("total_commitment") or 0) / 1e6,
-         p["commitment_m"], 0.06),
-        ("Un-funded ($M)", (r.get("unfunded") or 0) / 1e6, p["unfunded_m"], 0.06),
-        ("Total Pref ($M)", (r.get("total_pref") or 0) / 1e6,
-         p["total_pref_m"], 0.06),
-    ]
-    for metric, comp, pdf, tol in tests:
-        d = comp - pdf
-        ok = abs(d) <= tol
-        print(f"{metric:<26}{comp:>16.4f}{pdf:>10.2f}{d:>+12.4f}   "
-              f"{'ok' if ok else 'MISMATCH'}")
-        checks.append((f"Nottingham {metric}", ok))
+    print("ZONE B — the four scaled TIAA columns vs PDF")
+    for vc, p in _PDF.items():
+        r_ = flat.get(vc) or {}
+        tag = "  (DISPUTED commitment value — see _PDF)" if p["disputed"] else ""
+        print(f"\n  {vc} {p['name']}{tag}")
+        print(f"  {'metric':<24}{'computed':>16}{'expected':>12}"
+              f"{'delta':>12}{'PDF':>8}   verdict")
+        print("  " + "-" * 114)
+        tests = [
+            ("% of Pref", (r_.get("pct_of_pref") or 0) * 100,
+             p["pct_of_pref"], 0.5),
+            ("Invested ($M)", (r_.get("invested") or 0) / 1e6,
+             p["invested_m"], 0.06),
+            ("Total Commitment ($M)", (r_.get("total_commitment") or 0) / 1e6,
+             p.get("expect_commitment_m", p["commitment_m"]), 0.06),
+            ("Un-funded ($M)", (r_.get("unfunded") or 0) / 1e6,
+             p.get("expect_unfunded_m", p["unfunded_m"]), 0.06),
+            ("Total Pref ($M)", (r_.get("total_pref") or 0) / 1e6,
+             p.get("expect_total_pref_m", p["total_pref_m"]), 0.06),
+        ]
+        pdf_col = {"% of Pref": p["pct_of_pref"],
+                   "Invested ($M)": p["invested_m"],
+                   "Total Commitment ($M)": p["commitment_m"],
+                   "Un-funded ($M)": p["unfunded_m"],
+                   "Total Pref ($M)": p["total_pref_m"]}
+        for metric, comp, exp, tol in tests:
+            d = comp - exp
+            ok = abs(d) <= tol
+            print(f"  {metric:<24}{comp:>16.4f}{exp:>12.4f}{d:>+12.4f}"
+                  f"{pdf_col[metric]:>8.2f}   {'ok' if ok else 'MISMATCH'}")
+            checks.append((f"{p['name']} {metric}", ok))
 
+    r = flat.get("P0000030") or {}
     print(f"\n  commitment basis in use: {out['commitment_basis']!r}")
     print(f"  Nottingham both bases:  funded -> "
           f"{(r.get('total_commitment_if_funded') or 0)/1e6:.4f}M   "
@@ -717,12 +851,57 @@ def _selftest():                                    # pragma: no cover
     chk("only the 4 TIAA columns are declared scaled",
         out["scaled_columns"] == ["pct_of_pref", "invested",
                                   "total_commitment", "unfunded"])
-    chk("Zone A comes from the One Pager cap stack (Nottingham pref 9,135,000)",
-        abs((flat.get("P0000030") or {}).get("total_pref", 0) - 9135000) < 1)
-    chk("Total Cap = Debt + Total Pref + Ptr Equity (Nottingham)",
-        abs((r.get("total_cap") or 0)
-            - ((r.get("debt") or 0) + (r.get("total_pref") or 0)
-               + (r.get("ptr_equity") or 0))) < 1)
+    chk("Zone A comes from the One Pager cap stack "
+        "(Nottingham funded pref 9,135,000)",
+        abs((flat.get("P0000030") or {}).get("funded_pref", 0) - 9135000) < 1)
+    chk("Total Pref is the COMMITTED tranche "
+        "(Nottingham committed 12,058,427, not funded 9,135,000)",
+        abs((flat.get("P0000030") or {}).get("total_pref", 0) - 12058427) < 1)
+
+    # ---- the committed-basis invariants (2026-08-31) ----
+    chk("Total Pref == committed_pref wherever a commitment row exists",
+        all(abs(x["total_pref"] - x["committed_pref"]) < 1
+            for x in flat.values()
+            if x.get("committed_pref") and x.get("total_pref") is not None))
+    fb_rows = [x for x in flat.values()
+               if x.get("pref_basis") == "funded (no commitment row)"]
+    chk("the funded fallback fires on exactly the 2 no-commitment-row deals",
+        {x["vcode"] for x in fb_rows} == {"P0000017", "PCITWES"})
+    chk("fallback deals print funded pref, never 0",
+        all(x["total_pref"] == x["funded_pref"] and x["total_pref"] > 0
+            for x in fb_rows))
+    chk("East Manchester Total Pref = 3,600,000 via the fallback",
+        abs((flat.get("P0000017") or {}).get("total_pref", 0) - 3_600_000) < 1)
+    chk("City West Total Pref = 5,925,000 via the fallback",
+        abs((flat.get("PCITWES") or {}).get("total_pref", 0) - 5_925_000) < 1)
+    chk("Invested scales FUNDED, not Total Pref, on every scaled deal",
+        all(abs(x["invested"] - x["pct_of_pref"] * x["funded_pref"]) < 1e-6
+            for x in flat.values()
+            if x.get("invested") is not None
+            and x.get("pct_of_pref") is not None
+            and x.get("funded_pref") is not None))
+    chk("Total Commitment = % of Pref x Total Pref (the PDF identity)",
+        all(abs(x["total_commitment"] - x["pct_of_pref"] * x["total_pref"]) < 1e-6
+            for x in flat.values()
+            if x.get("total_commitment") is not None
+            and x.get("pct_of_pref") is not None
+            and x.get("total_pref") is not None))
+    chk("Total Cap re-foots to debt_isbs + Total Pref + Ptr Equity",
+        all(abs(x["total_cap"] - (x["debt_isbs"] + x["total_pref"]
+                                  + x["ptr_equity"])) < 1
+            for x in flat.values()
+            if None not in (x.get("total_cap"), x.get("debt_isbs"),
+                            x.get("total_pref"), x.get("ptr_equity"))))
+    chk("Ptr Equity is untouched — still cap_stack.partner_equity (funded)",
+        all(abs(x["ptr_equity"]
+                - (cache[(x["vcode"], Q)].get("cap_stack") or {})
+                .get("partner_equity", 0)) < 1
+            for x in flat.values() if x.get("ptr_equity") is not None))
+    chk("subtotal '% of Pref' divides FUNDED pref, so it did not move",
+        all(b["subtotal"]["pct_of_pref"] is None
+            or abs(b["subtotal"]["pct_of_pref"]
+                   - b["subtotal"]["invested"] / b["subtotal"]["funded_pref"]) < 1e-9
+            for b in out["groups"].values()))
     chk("Un-funded = Commitment - Invested for every deal",
         all(x["unfunded"] is None
             or abs(x["unfunded"] - (x["total_commitment"] - x["invested"])) < 1e-6

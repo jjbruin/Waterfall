@@ -154,6 +154,45 @@ def group_total_label(group: str) -> str:
     """The PDF's total-row label for a group key."""
     return GROUP_TOTAL_LABELS.get(group, f"Total {group}")
 
+
+def resolve_committed_pref(cap: dict) -> tuple:
+    """(committed pref, basis label) for one One Pager cap stack.
+
+    THE SINGLE DEFINITION both subtabs use, so page 1's asset allocation and
+    page 2's Total Pref / Total Commitment cannot disagree about the same deal.
+    Same role as ``portfolio_snapshot_debt.resolve_debt`` plays for Debt.
+
+    ``cap_stack.committed_pe`` is summed from Typename='Commitment' accounting
+    rows and is 0.0 for the two deals that have none — East Manchester (PPI20)
+    and City West (PPICW), both pre-dating the convention. Printed as-is they
+    read as a real "$0.0M committed" instead of "no pledge on file". Funded pref
+    is the correct floor: capital actually contributed is committed by
+    definition, so this can only raise a zero, never lower a real pledge.
+
+    ``one_pager.get_capitalization_stack`` applies the same fallback at source
+    and publishes ``committed_pe_basis``; this function prefers that marker when
+    present. It repeats the fallback rather than trusting it because the payload
+    is fetched over HTTP from a deployed app, so an un-deployed backend serves
+    the pre-fallback 0.0 and the two pages would silently diverge — which is
+    exactly what happened when the switch was first wired.
+    """
+    committed = cap.get("committed_pe")
+    funded = cap.get("pref_equity")
+    try:
+        committed = None if committed is None else float(committed)
+    except (TypeError, ValueError):
+        committed = None
+    try:
+        funded = None if funded is None else float(funded)
+    except (TypeError, ValueError):
+        funded = None
+
+    if committed:
+        return committed, (cap.get("committed_pe_basis") or "commitment rows")
+    if funded:
+        return funded, "funded (no commitment row)"
+    return committed, (cap.get("committed_pe_basis") or "none")
+
 #: Mixed-route default. A route that reaches the deal through a single-deal SPV
 #: means the investor holds a direct position in that specific asset, which the
 #: investor report presents as an Individual Investment even when a fund also

@@ -42,14 +42,23 @@ The full deal-level rollup is still computed and returned under
 the Financial subtab carries both commitment bases.
 
 WHAT DOES NOT TIE, AND IS FLAGGED RATHER THAN FUDGED
-    Committed. The PDF says $445.1M; scaling ``cap_stack.committed_pe`` the
-    same way gives $478.28M (+7.45%) on the PE basis. The excess is concentrated
-    in four deals (Burton 24.9M, JB Fair Park 19.4M, Jefferson Stephens 17.9M,
-    Brainerd 8.4M) and East Manchester ran the other way with committed 0
-    against 3.6M funded until it dropped out as sold at 26Q2. Per-deal
-    attribution is returned in ``diagnostics['committed_gap_attribution']`` so
-    the source can be settled; the number is reported as computed, never bent
-    toward the PDF.
+    Committed. The PDF says $445.1M; scaling committed pref the same way gives
+    $485.99M on the PE basis. The excess is concentrated in three deals — Burton
+    24.9M, JB Fair Park 19.4M, Nottingham 1.2M — which are commitment-VALUE
+    disputes (the PDF blanks their Un-funded, i.e. its source treats them as
+    fully funded), the IA_Contribution-vs-IA_Commitment question waiting on
+    Alay. Per-deal attribution is returned in
+    ``diagnostics['committed_gap_attribution']`` so the source can be settled;
+    the number is reported as computed, never bent toward the PDF.
+
+    Committed now goes through ``resolve_committed_pref``, the shared resolver
+    the Financial subtab's Total Pref also uses, so the two pages report the
+    same committed dollars for the same deal. Before that, this page counted
+    East Manchester and City West as $0.0M committed (neither has a commitment
+    row) while page 2 showed their funded pref, and the two committed totals
+    differed by 7.71M at 26Q1. Page 2 additionally shipped
+    ``COMMITMENT_BASIS="funded"`` until 2026-08-31, which made the same figure
+    read 409.23 there against 478.28 here — a 69.05M gap. Both now read 485.99.
 
     Funded now DOES tie: 404.24M against the published 404.2M at 26Q1, once the
     PE basis above is applied. It was 402.10M before, and the 2.14M gap was this
@@ -410,13 +419,27 @@ def assemble_summary(investor_code: str, quarter: str, *,
         cap = payload.get("cap_stack") or {}
 
         funded = _num(cap.get("pref_equity"))
-        committed = _num(cap.get("committed_pe"))
+        # Committed goes through the SHARED resolver, so this page and the
+        # Financial subtab's Total Pref / Total Commitment cannot disagree about
+        # the same deal. It applies the funded floor for the two deals with no
+        # commitment row (East Manchester, City West) — without it this page
+        # counted them as $0.0M committed while page 2, on the committed basis,
+        # showed their real funded pref, and the two committed totals differed
+        # by 7.71M at 26Q1. See resolve_committed_pref's docstring.
+        from flask_app.services.portfolio_snapshot_service import (
+            resolve_committed_pref,
+        )
+        committed, committed_basis = resolve_committed_pref(cap)
+        committed = _num(committed)
         if funded is None:
             diag["funded_missing"] += 1
             row_flags.append("funded pref unavailable")
         if committed is None:
             diag["committed_missing"] += 1
             row_flags.append("commitment unavailable")
+        elif committed_basis == "funded (no commitment row)":
+            row_flags.append(
+                "no commitment row — committed falls back to funded pref")
 
         pct = entry.get("lookthrough_pct")
         # PE basis — what actually scales the dollars. See `_contributions`.
@@ -471,6 +494,7 @@ def assemble_summary(investor_code: str, quarter: str, *,
             "deal_type": deal_type, "deal_type_literal": deal_type_literal,
             "funded_deal_level": funded,
             "committed_deal_level": committed,
+            "committed_basis": committed_basis,
             "flags": row_flags,
         })
 

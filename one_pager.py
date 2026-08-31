@@ -547,6 +547,8 @@ def get_capitalization_stack(
         'pe_exposure_on_value': 0.0,
         'pe_yield_on_exposure': 0.0,
         'committed_pe': 0.0,
+        # Which source `committed_pe` came from — see the fallback below.
+        'committed_pe_basis': '',
     }
 
     vcode_str = _canonical_vcode(vcode, inv_map)
@@ -875,6 +877,36 @@ def get_capitalization_stack(
                         cap['pref_equity'] += max(0, balance)
         except Exception as e:
             pass
+
+    # ---- Committed pref falls back to funded when no commitment row exists ----
+    #
+    # `committed_pe` is summed from Typename='Commitment' accounting rows. Two
+    # deals on live have none at all: East Manchester (PPI20) and City West
+    # (PPICW), both pre-dating the convention. Left at 0.0 they read as a real
+    # "$0.0M committed" rather than as "no pledge on file" — and the Portfolio
+    # Snapshot's Total Pref, now on the committed basis, would print $0.0 for
+    # deals carrying $3.60M and $5.92M of funded pref.
+    #
+    # Funded is the correct floor: capital actually contributed is committed by
+    # definition, so this can only ever raise a zero, never lower a real pledge.
+    #
+    # IT HAS TO LIVE HERE. `pe_performance.committed_pe` carries a similar
+    # fallback (financials_service._enrich_pe_from_deal_result), but it is not
+    # reliable: it fires for East Manchester and NOT for City West, because it
+    # needs a deal result that a foreclosed deal does not produce. Placing it at
+    # `get_capitalization_stack` — the single definition both Snapshot pages
+    # read (portfolio_snapshot_financial and portfolio_snapshot_summary) — is
+    # what stops the two pages disagreeing about the same deal.
+    #
+    # Deliberately outside the try/except above so it still applies when the
+    # accounting block raised and left both figures at their 0.0 defaults.
+    cap['committed_pe_basis'] = 'commitment rows'
+    if not cap['committed_pe']:
+        if cap['pref_equity']:
+            cap['committed_pe'] = cap['pref_equity']
+            cap['committed_pe_basis'] = 'funded (no commitment row)'
+        else:
+            cap['committed_pe_basis'] = 'none'
 
     # Calculate totals and percentages
     cap['total_cap'] = cap['debt'] + cap['pref_equity'] + cap['partner_equity']
