@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -1027,6 +1028,69 @@ def _occupancy_trend(occ_raw: Optional[pd.DataFrame], vcode: str, year: int) -> 
 # Balance sheet analysis (Review Form page 2)
 # ============================================================
 
+# Leading GL code in vInput labels, e.g. "11006-000 CASH - OPERATING"
+_GL_CODE_RE = re.compile(r"^\s*\d[\w\-./]*\s+")
+
+
+def _range_account_type(account) -> str:
+    """Classify an account number by range when the coa table doesn't know it."""
+    try:
+        n = int(str(account).strip())
+    except (TypeError, ValueError):
+        return ""
+    if 1000 <= n < 2000:
+        return "Assets"
+    if 2000 <= n < 2500:
+        return "Liabilities"
+    if 2500 <= n < 4000:
+        return "Equity"
+    if 4000 <= n < 5000:
+        return "Revenues"
+    if 5000 <= n < 10000:
+        return "Expenses"
+    return ""
+
+
+def ensure_bs_annotations(bs: pd.DataFrame, data: dict) -> pd.DataFrame:
+    """Guarantee vAccountType and vDescription columns on an ISBS frame.
+
+    Live MRI ISBS exports (queries/ISBS_Download.sql) carry neither column —
+    they exist only in legacy monolithic CSV loads. Account type comes from
+    the coa table (account-number-range fallback); description falls back to
+    the GL label in vInput with its leading GL code stripped.
+    """
+    bs = bs.copy()
+
+    type_map: Dict[str, str] = {}
+    coa = data.get("coa") if isinstance(data, dict) else None
+    if coa is not None and not coa.empty and "vAccount" in coa.columns:
+        for _, r in coa.dropna(subset=["vAccount"]).iterrows():
+            key = str(int(r["vAccount"]))
+            typ = str(r.get("vAccountType") or "").strip()
+            if typ and key not in type_map:
+                type_map[key] = typ
+
+    accts = bs["vAccount"].astype(str).str.strip()
+    fallback_type = accts.map(lambda a: type_map.get(a) or _range_account_type(a))
+    if "vAccountType" not in bs.columns:
+        bs["vAccountType"] = fallback_type
+    else:
+        cur = bs["vAccountType"].fillna("").astype(str).str.strip()
+        bs["vAccountType"] = cur.where(cur != "", fallback_type)
+
+    if "vInput" in bs.columns:
+        fallback_desc = bs["vInput"].fillna("").astype(str).str.strip().map(
+            lambda s: _GL_CODE_RE.sub("", s).strip() or s)
+    else:
+        fallback_desc = pd.Series("", index=bs.index)
+    if "vDescription" not in bs.columns:
+        bs["vDescription"] = fallback_desc
+    else:
+        cur = bs["vDescription"].fillna("").astype(str).str.strip()
+        bs["vDescription"] = cur.where(cur != "", fallback_desc)
+    return bs
+
+
 def get_balance_sheet(engine, record_id: int, data: dict) -> Dict[str, Any]:
     """Prior year-end vs latest Interim BS, grouped by vAccountType and
     vDescription — the raw material for the Review Form balance sheet page
@@ -1050,6 +1114,7 @@ def get_balance_sheet(engine, record_id: int, data: dict) -> Dict[str, Any]:
     bs = isbs[isbs["vSource"] == "Interim BS"]
     if bs.empty:
         return {"vcode": vcode, "rows": [], "prior_date": None, "current_date": None}
+    bs = ensure_bs_annotations(bs, data)
 
     periods = sorted(bs["dtEntry_parsed"].dropna().unique())
     prior_target = pd.Timestamp(f"{year - 1}-12-31")
@@ -1093,6 +1158,10 @@ def get_balance_sheet(engine, record_id: int, data: dict) -> Dict[str, Any]:
         "vcode": vcode,
         "prior_date": prior_date.strftime("%Y-%m-%d") if prior_date is not None else None,
         "current_date": current_date.strftime("%Y-%m-%d") if current_date is not None else None,
+        "as_of_date": as_of.strftime("%Y-%m-%d"),
+        # False when the cycle's as-of BS (e.g. 12/31) isn't reported yet and
+        # the most recent available month is shown instead
+        "current_is_as_of": bool(current_date is not None and current_date.normalize() == as_of.normalize()),
         "rows": rows,
     }
 

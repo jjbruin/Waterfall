@@ -168,8 +168,19 @@ def _bs_snapshot(data: dict, vcodes: List[str], as_of: pd.Timestamp):
 
     if not frames:
         return [], snapshot_dates
-    allbs = pd.concat(frames, ignore_index=True)
-    grouped = allbs.groupby(["vAccountType", "vAccount", "vDescription"], dropna=False)["mAmount"].sum().reset_index()
+    from flask_app.services.valuation_service import ensure_bs_annotations
+    allbs = ensure_bs_annotations(pd.concat(frames, ignore_index=True), data)
+
+    def _join_descriptions(s: pd.Series) -> str:
+        # One curation line per account (selections are keyed by account) —
+        # roll distinct GL labels into a single description
+        labels = [str(x).strip() for x in s if str(x).strip() and str(x).strip().lower() != "nan"]
+        joined = " / ".join(dict.fromkeys(labels))
+        return joined[:77] + "..." if len(joined) > 80 else joined
+
+    grouped = (allbs.groupby(["vAccountType", "vAccount"], dropna=False)
+               .agg(mAmount=("mAmount", "sum"), vDescription=("vDescription", _join_descriptions))
+               .reset_index())
     type_order = {"Assets": 0, "Liabilities": 1, "Equity": 2}
     grouped["_ord"] = grouped["vAccountType"].map(lambda t: type_order.get(str(t), 3))
     grouped = grouped.sort_values(["_ord", "vAccount"])

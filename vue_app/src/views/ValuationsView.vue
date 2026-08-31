@@ -103,6 +103,31 @@ const FORM_FIELDS = [
   'classification_override', 'override_note',
 ]
 
+// Comma-formatted dollar inputs (Concluded Value, Direct Cap NOI): the form
+// keeps the numeric value; these hold the display string shown in the input.
+const CURRENCY_FIELDS = ['concluded_value', 'direct_cap_noi'] as const
+const currencyDisplay = ref<Record<string, string>>({ concluded_value: '', direct_cap_noi: '' })
+
+function fmtInputNumber(v: any): string {
+  if (v === null || v === undefined || v === '' || isNaN(Number(v))) return ''
+  return Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 })
+}
+
+function syncCurrencyDisplays() {
+  for (const f of CURRENCY_FIELDS) currencyDisplay.value[f] = fmtInputNumber(form.value[f])
+}
+
+function onCurrencyInput(field: string, e: Event) {
+  const raw = (e.target as HTMLInputElement).value
+  currencyDisplay.value[field] = raw
+  const n = parseFloat(raw.replace(/[$,\s]/g, ''))
+  form.value[field] = isNaN(n) ? null : n
+}
+
+function onCurrencyBlur(field: string) {
+  currencyDisplay.value[field] = fmtInputNumber(form.value[field])
+}
+
 // ------------------------------------------------------------
 // Computed
 // ------------------------------------------------------------
@@ -178,6 +203,7 @@ async function openRecord(id: number) {
     const res = await api.get(`/api/valuations/records/${id}`)
     record.value = res.data
     for (const f of FORM_FIELDS) form.value[f] = res.data[f]
+    syncCurrencyDisplays()
     comments.value = {
       budget_review: res.data.comments?.budget_review?.comment_text || '',
       balance_sheet: res.data.comments?.balance_sheet?.comment_text || '',
@@ -715,6 +741,14 @@ function fmtRatio(v: number | null | undefined): string {
   if (v === null || v === undefined) return '—'
   return v.toFixed(2) + 'x'
 }
+// Assumption Cross-Check: rate fields as percentages, dollar fields with commas
+const PCT_CHECK_FIELDS = new Set(['Going-in Cap Rate', 'Terminal Cap Rate', 'Discount Rate', 'Cost of Sale %'])
+function fmtCheckValue(field: string, v: any): string {
+  if (v === null || v === undefined || v === '') return '—'
+  const n = Number(v)
+  if (isNaN(n)) return String(v)
+  return PCT_CHECK_FIELDS.has(field) ? fmtPct(n) : fmtCurrency(n)
+}
 function fmtDate(d: string | null | undefined): string {
   if (!d) return '—'
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d)
@@ -1092,7 +1126,9 @@ watch(selectedCycleId, () => {
                   </select>
                 </label>
                 <label>Concluded Value
-                  <input type="number" step="any" v-model.number="form.concluded_value" :disabled="!recordEditable" />
+                  <input type="text" inputmode="decimal" :value="currencyDisplay.concluded_value"
+                         @input="onCurrencyInput('concluded_value', $event)"
+                         @blur="onCurrencyBlur('concluded_value')" :disabled="!recordEditable" />
                 </label>
                 <label>Going-in Cap Rate
                   <input type="number" step="0.0001" v-model.number="form.cap_rate" :disabled="!recordEditable" placeholder="0.0725" />
@@ -1104,7 +1140,9 @@ watch(selectedCycleId, () => {
                   <input type="number" step="0.0001" v-model.number="form.discount_rate" :disabled="!recordEditable" placeholder="0.0850" />
                 </label>
                 <label>Direct Cap NOI
-                  <input type="number" step="any" v-model.number="form.direct_cap_noi" :disabled="!recordEditable" />
+                  <input type="text" inputmode="decimal" :value="currencyDisplay.direct_cap_noi"
+                         @input="onCurrencyInput('direct_cap_noi', $event)"
+                         @blur="onCurrencyBlur('direct_cap_noi')" :disabled="!recordEditable" />
                 </label>
                 <label>Cost of Sale %
                   <input type="number" step="0.001" v-model.number="form.cost_of_sale_pct" :disabled="!recordEditable" placeholder="0.02" />
@@ -1303,6 +1341,10 @@ watch(selectedCycleId, () => {
               <p class="panel-note">
                 {{ fmtDate(balanceSheet.prior_date) }} (prior year end) vs {{ fmtDate(balanceSheet.current_date) }} (latest reported).
               </p>
+              <p class="panel-note warn-note" v-if="balanceSheet.current_date && balanceSheet.current_is_as_of === false">
+                The {{ fmtDate(balanceSheet.as_of_date) }} balance sheet is not yet in ISBS —
+                showing the most recent month available ({{ fmtDate(balanceSheet.current_date) }}).
+              </p>
               <div class="table-scroll">
                 <table class="data-table">
                   <thead>
@@ -1454,8 +1496,8 @@ watch(selectedCycleId, () => {
                   <tbody>
                     <tr v-for="c in aiSummary.checks" :key="c.field">
                       <td>{{ c.field }}</td>
-                      <td class="num">{{ c.entered ?? '—' }}</td>
-                      <td class="num">{{ c.extracted ?? '—' }}</td>
+                      <td class="num">{{ fmtCheckValue(c.field, c.entered) }}</td>
+                      <td class="num">{{ fmtCheckValue(c.field, c.extracted) }}</td>
                       <td>
                         <span v-if="c.match === true" class="mini-badge argus">match</span>
                         <span v-else-if="c.match === false" class="mini-badge mismatch">differs</span>

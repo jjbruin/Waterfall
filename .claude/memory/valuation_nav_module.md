@@ -1,5 +1,34 @@
 # Valuations & NAV Audit Packages — Design + Phases 1-4 (Aug 28, 2026)
 
+## Azure ISBS column fix + input formatting (Aug 31, 2026 — in working tree, not yet deployed)
+First production use surfaced a `'vAccountType'` KeyError banner on opening any record,
+with the Balance Sheet and NAV tabs blank. Root cause: `get_balance_sheet()` and the NAV
+`_bs_snapshot()` grouped on `vAccountType`/`vDescription`, which exist only in the legacy
+monolithic `isbs` CSV load (local dev). The live MRI export (`queries/ISBS_Download.sql`)
+carries neither column, so Azure's `isbs_interim_bs` never has them — Phase 1 was verified
+against local data and the gap never showed.
+- **Fix**: `ensure_bs_annotations(bs, data)` in valuation_service.py — fills
+  `vAccountType` from the `coa` table (account → type; Azure coa covers all but 4 BS
+  accounts) with an account-number-range fallback (1xxx Assets / 2000-2499 Liabilities /
+  2500-3999 Equity), and `vDescription` from the GL label in `vInput` with the leading GL
+  code stripped. Applied in `get_balance_sheet` (keeps per-GL-line detail rows on Azure)
+  and `_bs_snapshot` (groups by account only — curation checkboxes are keyed by account —
+  with distinct GL labels joined into one description). Verified: stripping the legacy
+  columns from local data reproduces identical NAV lines/amounts (19 lines, exact parity)
+  and a working balance-sheet response.
+- **BS month fallback**: was already latest-≤-as-of; response now carries `as_of_date` +
+  `current_is_as_of`, and the Vue shows "12/31/{yr} balance sheet not yet in ISBS —
+  showing most recent month available (M/D/YYYY)" when the year-end BS is missing.
+- **Comma inputs**: Concluded Value and Direct Cap NOI are text inputs with comma
+  formatting (parse on input, format on blur, `currencyDisplay` refs synced on record
+  open) — the form still stores plain numbers.
+- **Assumption Cross-Check formatting**: `fmtCheckValue(field, v)` — dollar fields
+  (Concluded Value, Direct Cap NOI) via fmtCurrency (commas, no decimals), rate fields
+  (Going-in/Terminal Cap, Discount, Cost of Sale %) via fmtPct (2 decimals). Keyed on
+  the exact field labels emitted by valuation_ai_service's cross-check pairs.
+- The Balance Sheet tab reads ISBS Interim BS, not uploaded "Balance Sheet Support"
+  documents — those are evidence attachments only.
+
 **Status: ALL FOUR PHASES DEPLOYED — merged to main as `c6083f0` (with Charlene's
 `a060c59` One Pager PE terms fallback) and live on Azure as revision `v397`
 (Aug 28, 2026). PG tables created cleanly on first boot; /api/valuations live.
