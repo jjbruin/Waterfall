@@ -188,6 +188,35 @@ exact pro-rata; PSCMAN fees 741,657 (=693,782+47,875 exact) + promote 173,120
 = 4.0% of pool; dists net of fees == deal PPIWIND dists to the dollar.
 Open: TGA6 modeled with NO pref (straight 90/10 + 9% gate) — confirm with Jim.
 
+## AMFee accrual + PSC1 consolidated returns (Aug 31 2026 — working tree)
+Jim's conventions, modeled on Windsor/TGA6/AMB6:
+- **TGA6 Cap tie 30 corrected** (Jim edited via Waterfall Setup, verified): TGAM .70 /
+  INV6 .26 / PSCMAN .04. The 20-pt promote splits 20% PSCMAN / 80% members; PSCMAN's
+  carve MUST sit at the TGA6 tie — AMB6 receives one pooled inflow and cannot
+  distinguish promote dollars from co-invest dollars (the mix varies by period), so a
+  fixed FXRate inside AMB6 can't express "20% of just the promote".
+- **AMFee `;accrue` modifier** (vNotes: `SOURCE;accrue`, composable with
+  `;exclude:...`): upstream runner only. The quarterly fee is ASSESSED per quarter
+  (tracker key unchanged), but payment caps at the source's net non-Contribution
+  cashflows within the quarter; the shortfall carries in the shared tracker under
+  (entity, order, source, 'amfee_accrued') and is paid from later distributions.
+  CF+Cap runs share the tracker, so a Cap event can clear accrual from a lean CF
+  quarter. Non-flagged steps byte-identical behavior (PSCKOC/TGA22 untouched).
+  Limitation: a quarter with NO distribution event runs no waterfall, so its fee is
+  neither charged nor accrued (deal CF events fire quarterly in practice). The
+  deal-level run_waterfall path parses but ignores the flag (no cross-period tracker).
+  AMB6's 26 AMFee rows on Azure carry `;accrue` (old engine ignores the modifier —
+  safe pre-deploy). Verified on Windsor: the 2030-Q3 shortfall (−759.64 pooled) now
+  defers and fully recovers later; totals identical, IRR moves ~2e-6.
+- **PSC1 consolidated returns** (psc_summary in ppi_upstream_service): PSCMAN is 100%
+  PSC1-owned, so psc_summary merges the date-keyed cashflows of all 'psc'+'mgr'
+  participants plus `result['capital_budget']['psc_orig_fee']` at close, and reports
+  consolidated irr/moic/total_promote/orig_fee/members/cashflows. PSC1's own share of
+  the AMB6 fee is a wash (paid on its line, received on PSCMAN's, netted per date).
+  Windsor: IRR 63.2%, MOIC 3.33x on 818,227 co-invest (fees 741,657 + promote 173,120
+  + orig fee 191,500). Vue cards: PSC Promote / PSC Orig Fee / Consolidated IRR+MOIC
+  + explanatory note.
+
 ## Display refinements (Aug 27-28, v394-v395)
 - Annual pivot in the dropdown mirrors the operating forecast: anniversary
   columns from the close date, sale month-end clamped into the final hold

@@ -628,8 +628,10 @@ def run_waterfall_period(
                 # Post-distribution AM fee: deduct from source investor, pay to recipient.
                 # Pool-neutral — does NOT reduce the remaining cash pool.
                 # vNotes syntax: "SOURCE_PC" or "SOURCE_PC;exclude:IID1,IID2"
+                # (the ";accrue" modifier applies in the upstream runner only —
+                # this deal-level path has no cross-period fee tracker)
                 raw_vnotes = str(lead.get("vNotes", "")).strip()
-                source_pc, excluded_iids = parse_amfee_vnotes(raw_vnotes)
+                source_pc, excluded_iids, _amfee_accrue = parse_amfee_vnotes(raw_vnotes)
                 periods_per_year = max(1.0, lead_m_amount) if lead_m_amount > 0 else 4.0
                 # AMFee nPercent is always a percentage (e.g. 0.95 = 0.95%).
                 # nPercent_dec wrongly keeps values <= 1.0 as-is (treating
@@ -798,23 +800,30 @@ def run_waterfall_period(
 # ============================================================
 
 
-def parse_amfee_vnotes(vnotes: str) -> Tuple[str, List[str]]:
-    """Parse AMFee vNotes for source investor and optional exclusions.
+def parse_amfee_vnotes(vnotes: str) -> Tuple[str, List[str], bool]:
+    """Parse AMFee vNotes for source investor and optional modifiers.
 
-    Syntax: "SOURCE_PC" or "SOURCE_PC;exclude:IID1,IID2"
+    Syntax: "SOURCE_PC" with optional ";"-separated modifiers:
+      "SOURCE_PC;exclude:IID1,IID2" — exclude investments from the fee base
+      "SOURCE_PC;accrue"            — pay the fee only out of the source's
+                                      distributions; any shortfall accrues
+                                      and is paid from later distributions
 
     Returns:
-        (source_propcode, list_of_excluded_investment_ids)
+        (source_propcode, list_of_excluded_investment_ids, accrue)
     """
     parts = vnotes.split(";")
     source_pc = parts[0].strip()
     excluded = []
+    accrue = False
     for part in parts[1:]:
         part = part.strip()
         if part.lower().startswith("exclude:"):
             ids = part[len("exclude:"):].strip()
             excluded = [x.strip() for x in ids.split(",") if x.strip()]
-    return source_pc, excluded
+        elif part.lower() == "accrue":
+            accrue = True
+    return source_pc, excluded, accrue
 
 
 def build_amfee_exclusions(
@@ -1702,9 +1711,11 @@ def run_upstream_waterfall_period(
                         # Pool-neutral — does NOT reduce the remaining cash pool.
                         # Cap at one fee per quarter (same issue as Amt — multiple
                         # deal distributions trigger the same entity waterfall).
-                        # vNotes syntax: "SOURCE_PC" or "SOURCE_PC;exclude:IID1,IID2"
+                        # vNotes syntax: "SOURCE_PC" plus optional modifiers
+                        # ";exclude:IID1,IID2" and ";accrue" (pay only out of the
+                        # source's distributions; shortfall carries forward).
                         raw_vnotes = str(step.get("vNotes", "")).strip()
-                        source_pc, excluded_iids = parse_amfee_vnotes(raw_vnotes)
+                        source_pc, excluded_iids, amfee_accrue = parse_amfee_vnotes(raw_vnotes)
                         m_amount = float(step.get("mAmount", 0) or 0)
                         periods_per_year = max(1.0, m_amount) if m_amount > 0 else 4.0
                         # AMFee nPercent is always a percentage (e.g. 0.95 = 0.95%).
@@ -1723,22 +1734,46 @@ def run_upstream_waterfall_period(
                                 )
                                 fee_base = max(0.0, fee_base)
                             fee = fee_base * amfee_rate / periods_per_year
-                            # Cap at one fee per quarter to prevent over-counting
+                            # Cap at one fee ASSESSMENT per quarter to prevent
+                            # over-counting when multiple deal distributions
+                            # trigger the same entity waterfall in one quarter
                             if fee > 0 and amt_quarterly_tracker is not None:
                                 p_date = period_date if isinstance(period_date, date) else pd.to_datetime(period_date).date()
                                 qtr = (p_date.year, (p_date.month - 1) // 3)
                                 tracker_key = (entity_id, order, qtr)
-                                already_paid = amt_quarterly_tracker.get(tracker_key, 0.0)
-                                fee_remaining = max(0.0, fee - already_paid)
-                                if fee_remaining > 0:
-                                    source_ist.cashflows.append((period_date, -fee_remaining))
+                                already = amt_quarterly_tracker.get(tracker_key, 0.0)
+                                assessed = max(0.0, fee - already)
+                                if assessed > 0:
+                                    amt_quarterly_tracker[tracker_key] = already + assessed
+                                charge = assessed
+                                if amfee_accrue:
+                                    # Pay only out of what the source has actually
+                                    # received this quarter (net of fees already
+                                    # taken); the rest accrues to later quarters.
+                                    acc_key = (entity_id, order, source_pc, "amfee_accrued")
+                                    due = assessed + amt_quarterly_tracker.get(acc_key, 0.0)
+                                    avail = 0.0
+                                    lbls = (source_ist.cashflow_labels
+                                            if len(source_ist.cashflow_labels) == len(source_ist.cashflows)
+                                            else [''] * len(source_ist.cashflows))
+                                    for (cf_d, cf_a), cf_l in zip(source_ist.cashflows, lbls):
+                                        c_date = cf_d if isinstance(cf_d, date) else pd.to_datetime(cf_d).date()
+                                        if (c_date.year, (c_date.month - 1) // 3) == qtr \
+                                                and str(cf_l) != 'Contribution':
+                                            avail += float(cf_a)
+                                    avail = max(0.0, avail)
+                                    charge = min(due, avail)
+                                    amt_quarterly_tracker[acc_key] = due - charge
+                                if charge > 0:
+                                    source_ist.cashflows.append((period_date, -charge))
                                     source_ist.cashflow_labels.append(step_vtlabel)
                                     source_ist.cashflow_types.append('C')
-                                    apply_distribution(stt, period_date, fee_remaining, is_cf_wf,
+                                    apply_distribution(stt, period_date, charge, is_cf_wf,
                                                        label=step_vtlabel)
-                                    amfee_actual = fee_remaining
-                                    amt_quarterly_tracker[tracker_key] = already_paid + fee_remaining
+                                    amfee_actual = charge
                             elif fee > 0:
+                                # No tracker (single-shot run): accrual cannot
+                                # persist across periods — charge in full
                                 source_ist.cashflows.append((period_date, -fee))
                                 source_ist.cashflow_labels.append(step_vtlabel)
                                 source_ist.cashflow_types.append('C')

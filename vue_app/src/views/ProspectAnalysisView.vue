@@ -2990,6 +2990,14 @@ loadDeals()
                       <div class="metric-label">PSC AM Fees</div>
                       <div class="metric-value">{{ fmtCurrency(analysisResult.ppi_waterfalls.psc_summary.total_fees) }}</div>
                     </div>
+                    <div class="metric-card" v-if="analysisResult.ppi_waterfalls.psc_summary.total_promote">
+                      <div class="metric-label">PSC Promote</div>
+                      <div class="metric-value">{{ fmtCurrency(analysisResult.ppi_waterfalls.psc_summary.total_promote) }}</div>
+                    </div>
+                    <div class="metric-card" v-if="analysisResult.ppi_waterfalls.psc_summary.orig_fee">
+                      <div class="metric-label">PSC Orig Fee</div>
+                      <div class="metric-value">{{ fmtCurrency(analysisResult.ppi_waterfalls.psc_summary.orig_fee) }}</div>
+                    </div>
                     <div class="metric-card">
                       <div class="metric-label">PSC Co-invest</div>
                       <div class="metric-value">{{ fmtCurrency(analysisResult.ppi_waterfalls.psc_summary.total_contributions) }}</div>
@@ -2999,10 +3007,19 @@ loadDeals()
                       <div class="metric-value">{{ fmtCurrency(analysisResult.ppi_waterfalls.psc_summary.total_distributions) }}</div>
                     </div>
                     <div class="metric-card" v-if="analysisResult.ppi_waterfalls.psc_summary.irr != null">
-                      <div class="metric-label">PSC IRR (incl. fees + promote)</div>
+                      <div class="metric-label">PSC1 Consolidated IRR</div>
                       <div class="metric-value">{{ fmtPct(analysisResult.ppi_waterfalls.psc_summary.irr) }}</div>
                     </div>
+                    <div class="metric-card" v-if="analysisResult.ppi_waterfalls.psc_summary.moic != null">
+                      <div class="metric-label">PSC1 Consolidated MOIC</div>
+                      <div class="metric-value">{{ analysisResult.ppi_waterfalls.psc_summary.moic.toFixed(2) }}x</div>
+                    </div>
                   </div>
+                  <p class="muted-note" v-if="analysisResult.ppi_waterfalls.psc_summary?.consolidated"
+                     style="margin:-4px 0 10px">
+                    PSC1 consolidated returns roll PSCMAN (100% owned) fees and promote plus the PSC
+                    origination fee into PSC1's cashflows; PSC1's own share of the AM fee nets out.
+                  </p>
 
                   <div class="table-scroll">
                     <table class="compact-table">
@@ -3376,6 +3393,7 @@ loadDeals()
 .chevron { font-size: 11px; color: #999; }
 .section-hint { font-size: 10px; font-weight: 400; color: #999; margin-left: 4px; }
 .field-hint { display: block; font-size: 10px; color: #999; margin-top: 2px; }
+.muted-note { font-size: 11px; color: #888; }
 
 /* Info grid */
 .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; font-size: 12px; }

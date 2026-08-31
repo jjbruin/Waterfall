@@ -480,11 +480,43 @@ def build_ppi_results(engine, prospect_id: int,
            if p_row['type'] in ('psc', 'mgr')]
     psc_summary = None
     if psc:
+        # PSC1 consolidated return: the manager (PSCMAN) is wholly owned by
+        # PSC1, so its AM fees and promote — plus the deal's PSC origination
+        # fee from the capital budget — roll into one PSC cashflow stream.
+        # PSC1's own share of an AM fee is a wash here: paid on its investor
+        # line, received back on the manager's line, netting to fee income
+        # from the outside members only.
+        orig_fee = float((result.get('capital_budget') or {})
+                         .get('psc_orig_fee') or 0.0)
+        merged: Dict[str, float] = {}
+        for p_row in psc:
+            for dstr, a in p_row['cashflows']:
+                merged[dstr] = merged.get(dstr, 0.0) + float(a)
+        if orig_fee > 0:
+            fee_date = str(pd.Timestamp(close).date() if close else seed_date)
+            merged[fee_date] = merged.get(fee_date, 0.0) + orig_fee
+        merged_cfs = sorted(merged.items())
+        cons_irr = None
+        try:
+            if merged_cfs and min(a for _, a in merged_cfs) < 0 \
+                    and max(a for _, a in merged_cfs) > 0:
+                cons_irr = xirr([(pd.Timestamp(dstr).date(), a)
+                                 for dstr, a in merged_cfs])
+        except Exception:
+            cons_irr = None
+        pos = sum(a for _, a in merged_cfs if a > 0)
+        neg = -sum(a for _, a in merged_cfs if a < 0)
         psc_summary = {
             'total_fees': sum(p_row['am_fees_received'] for p_row in psc),
             'total_contributions': sum(p_row['contributions'] for p_row in psc),
             'total_distributions': sum(p_row['distributions'] for p_row in psc),
-            'irr': psc[0]['irr'] if len(psc) == 1 else None,
+            'total_promote': sum(p_row['post_gate_distributions'] for p_row in psc),
+            'orig_fee': orig_fee,
+            'irr': cons_irr,
+            'moic': (pos / neg) if neg > 0 else None,
+            'consolidated': len(psc) > 1 or orig_fee > 0,
+            'members': [p_row['investor_id'] for p_row in psc],
+            'cashflows': [(dstr, round(float(a), 2)) for dstr, a in merged_cfs],
         }
 
     # ---- annual pivot: years across the top (the forecast table's
