@@ -9,6 +9,19 @@ The pass condition is deliberately two-sided:
   * every deal that HAS a waterfall Pref/Share row is byte-identical, and
   * exactly the deals with deal_terms and no waterfall row gain a value.
 
+Two later amendments:
+  * PRESENT_ZERO — one sanctioned exception to "the waterfall stays primary",
+    where deal_terms.pe_split_capital == 0 corrects a participation the
+    waterfall read off the wrong entity. See that constant, and the dedicated
+    guardrail scripts/onepager_participation_zero_check.py.
+  * An absent participation is now None rather than 0.0 so the page can tell
+    "no such term" (N/A) from "the term is nil" (0.0%). Both print N/A, so the
+    diff is taken on the RENDERED value, not the raw one.
+
+Run it against a PRE-v397 base to exercise the original fallback assertions;
+against a main-based baseline those two are reported as SKIP, because the
+feature they assert is already present on both sides.
+
 Only the coupon / participation block is exercised, so ``acct`` and ``isbs_raw``
 go in as None — the funded / ROE / accrual fields those drive are untouched by
 this change and fetching the accounting feed over REST is not viable anyway.
@@ -38,6 +51,18 @@ MUST_CHANGE = {"P0000116", "P0000003", "P0000114"}
 #: Has a waterfall, has a Share row, has NO vState='Pref' row. The coupon here
 #: comes from deal_terms; the participation stays the waterfall's.
 PREF_ABSENT_WITH_WATERFALL = {"P0000033", "P0000061", "P0000062"}
+
+#: The ONE sanctioned exception to "the waterfall stays primary".
+#:
+#: deal_terms.pe_split_capital == 0.0 overrides a waterfall-derived
+#: participation, because the waterfall reader takes the first vState='Share'
+#: row with no PropCode filter and therefore reports the OPERATING PARTNER's
+#: share on a deal where the PE has no Share row — it cannot express "the PE
+#: participates in nothing", which is what that shape means. Both of these
+#: carry two Share rows owned by OPJPI at FXRate 1.0, which the `< 1` heuristic
+#: renders as 1%. See one_pager._pe_terms_fallback() and the dedicated
+#: guardrail scripts/onepager_participation_zero_check.py.
+PRESENT_ZERO = {"P0000077", "P0000085"}
 
 
 def _fetch(cache_path):
@@ -147,11 +172,36 @@ def _report(cache_path, before_path, after_path):
         checks.append((label, bool(cond)))
         print(f"    [{'PASS' if cond else 'FAIL'}] {label}")
 
+    def skip(label, why):
+        print(f"    [SKIP] {label}\n           {why}")
+
     def fmt(v):
         return "N/A" if not v else f"{v * 100:.2f}%"
 
-    changed = sorted(k for k in before
-                     if before[k] != after.get(k))
+    def shown(v, null_check):
+        """What OnePagerView prints. `null_check` is the post-fix rule
+        (``x != null``); before the fix the template tested truthiness."""
+        ok = (v is not None) if null_check else bool(v)
+        return "N/A" if not ok else f"{v * 100:.2f}%"
+
+    # An absent participation is now None where it used to be 0.0. Both print
+    # N/A, so that is NOT a change — diff on what the page shows, or the 68
+    # deals with no participation term drown the report.
+    def same(k):
+        b, a = before[k], after.get(k, {})
+        return (b.get("coupon") == a.get("coupon")
+                and shown(b.get("participation"), False)
+                == shown(a.get("participation"), True))
+
+    changed = sorted(k for k in before if not same(k))
+
+    # This script was written to validate the deal_terms fallback while it was
+    # still unmerged. Once it landed on main, a main-based baseline ALREADY has
+    # it, so the two checks asserting "the fallback appeared" cannot pass and
+    # say nothing about the working tree. Detect that and skip them explicitly
+    # rather than fail — silently dropping them would be worse.
+    baseline_has_fallback = any(before.get(k, {}).get("coupon")
+                                for k in MUST_CHANGE)
 
     print("=" * 100)
     print("CHANGED DEALS — PE Performance Coupon / Participation")
@@ -160,9 +210,13 @@ def _report(cache_path, before_path, after_path):
     print("  " + "-" * 96)
     for k in changed:
         b, a = before[k], after[k]
+        # `shown`, not `fmt` — fmt() calls a 0.0 "N/A" (the same falsy-zero
+        # confusion this fix is about) and would misreport 0.0% as absent.
+        part_move = (shown(b.get("participation"), False) + " -> "
+                     + shown(a.get("participation"), True))
         print(f"  {k:<10}{name.get(k, '?')[:31]:<32}"
               f"{fmt(b.get('coupon')) + ' -> ' + fmt(a.get('coupon')):>18}"
-              f"{fmt(b.get('participation')) + ' -> ' + fmt(a.get('participation')):>22}")
+              f"{part_move:>22}")
         dt = dt_rows.get(k, {})
         print(f"  {'':<10}deal_terms: pe_coupon={dt.get('pe_coupon')!r} "
               f"pe_split_capital={dt.get('pe_split_capital')!r}  "
@@ -180,14 +234,22 @@ def _report(cache_path, before_path, after_path):
     # FIELD rather than per deal, because a deal can legitimately have a Share
     # row and no Pref row.
     overwritten = [(k, f) for k in before for f in ("coupon", "participation")
-                   if before[k].get(f) and before[k][f] != after[k].get(f)]
-    chk("no field the waterfall supplied was overwritten "
-        f"({len(overwritten)} violations)", not overwritten)
+                   if before[k].get(f) and before[k][f] != after[k].get(f)
+                   # The sanctioned exception, and ONLY toward an explicit zero.
+                   and not (f == "participation" and k in PRESENT_ZERO
+                            and after[k].get(f) == 0.0)]
+    chk("no field the waterfall supplied was overwritten, outside the "
+        f"sanctioned present-zero deals ({len(overwritten)} violations)",
+        not overwritten)
     for k, f in overwritten:
         print(f"           {k} {f}: {before[k][f]} -> {after[k].get(f)}")
 
-    chk("every changed field was 0/None before",
-        all(not before[k].get(f) for k in changed
+    chk("the present-zero deals went to exactly 0.0 in both directions "
+        f"{sorted(PRESENT_ZERO)}",
+        all(after.get(k, {}).get("participation") == 0.0 for k in PRESENT_ZERO))
+
+    chk("every changed field was 0/None before (present-zero deals aside)",
+        all(not before[k].get(f) for k in changed if k not in PRESENT_ZERO
             for f in ("coupon", "participation")
             if before[k].get(f) != after[k].get(f)))
 
@@ -199,8 +261,13 @@ def _report(cache_path, before_path, after_path):
                            ("participation", "pe_split_capital"))
             if before[k].get(f) != after[k].get(f)))
 
-    chk(f"the three target deals all changed {sorted(MUST_CHANGE)}",
-        MUST_CHANGE <= set(changed))
+    if baseline_has_fallback:
+        skip(f"the three target deals all changed {sorted(MUST_CHANGE)}",
+             "baseline already contains the deal_terms fallback, so there is "
+             "nothing for it to gain — run against a pre-v397 base to exercise")
+    else:
+        chk(f"the three target deals all changed {sorted(MUST_CHANGE)}",
+            MUST_CHANGE <= set(changed))
 
     burton = "P0000109"
     chk(f"Burton {burton} unchanged at coupon "
@@ -210,22 +277,33 @@ def _report(cache_path, before_path, after_path):
         and before.get(burton, {}).get("coupon"))
 
     full_wf = [k for k in before if before[k].get("coupon")
-               and before[k].get("participation")]
+               and before[k].get("participation") and k not in PRESENT_ZERO]
     chk("every deal whose waterfall gave BOTH values is byte-identical "
-        f"({len(full_wf)} deals)",
+        f"({len(full_wf)} deals, present-zero pair aside)",
         all(before[k] == after[k] for k in full_wf))
 
-    chk("no deal LOST a value",
-        all(not (before[k].get(f) and not after[k].get(f))
+    # 0.0 -> None is NOT a loss: both render N/A. A loss is a value that stops
+    # being shown, which is why this now tests the rendered form.
+    chk("no deal LOST a displayed value",
+        all(not (shown(before[k].get(f), False) != "N/A"
+                 and shown(after[k].get(f), True) == "N/A")
             for k in before for f in ("coupon", "participation")))
 
-    pref_absent = sorted(k for k in changed if k in wf_vcodes)
-    chk("the only waterfall-backed deals that changed are the known "
-        f"vState='Default' pref deals {sorted(PREF_ABSENT_WITH_WATERFALL)}",
-        set(pref_absent) == PREF_ABSENT_WITH_WATERFALL)
-    chk("...and they changed COUPON ONLY, keeping the waterfall participation",
+    pref_absent = sorted(k for k in changed
+                         if k in wf_vcodes and k not in PRESENT_ZERO)
+    if baseline_has_fallback:
+        skip("the only waterfall-backed deals that changed are the known "
+             f"vState='Default' pref deals {sorted(PREF_ABSENT_WITH_WATERFALL)}",
+             "same baseline caveat — those deals gained their coupon in v397, "
+             f"so against a main base they are unchanged (found {pref_absent})")
+    else:
+        chk("the only waterfall-backed deals that changed are the known "
+            f"vState='Default' pref deals {sorted(PREF_ABSENT_WITH_WATERFALL)}",
+            set(pref_absent) == PREF_ABSENT_WITH_WATERFALL)
+    chk("no waterfall-backed deal outside the present-zero pair moved its "
+        "participation",
         all(before[k]["participation"] == after[k]["participation"]
-            and before[k]["participation"] for k in pref_absent))
+            for k in pref_absent))
 
     no_wf_no_dt = sorted(k for k in before
                          if k not in wf_vcodes and k not in dt_rows)
