@@ -738,7 +738,9 @@ function printOnePager() {
               <td class="val right">{{ fmtPctInt(cap.debt_pct) }}</td>
             </tr>
             <tr>
-              <td class="lbl">P.E. Participation:</td><td class="val">{{ cap.pe_participation ? fmtPct(cap.pe_participation) : 'N/A' }}</td>
+              <!-- != null, not truthiness: a nil participation (0) is a real
+                   term and prints 0.0%; only an absent one prints N/A. -->
+              <td class="lbl">P.E. Participation:</td><td class="val">{{ cap.pe_participation != null ? fmtPct(cap.pe_participation) : 'N/A' }}</td>
               <td class="lbl">Pref. Equity:</td><td class="val right">{{ fmtMil(cap.pref_equity) }}</td>
               <td class="val right">{{ fmtPctInt(cap.pref_equity_pct) }}</td>
             </tr>
@@ -813,7 +815,7 @@ function printOnePager() {
             </tr>
             <tr>
               <td class="lbl">Remaining to Fund:</td><td class="val">{{ fmtMil0(pe.remaining_to_fund) }}</td>
-              <td class="lbl">Participation:</td><td class="val">{{ pe.participation ? fmtPct(pe.participation) : 'N/A' }}</td><td></td><td></td>
+              <td class="lbl">Participation:</td><td class="val">{{ pe.participation != null ? fmtPct(pe.participation) : 'N/A' }}</td><td></td><td></td>
             </tr>
             <tr><td colspan="6" style="height: 6px;"></td></tr>
             <tr>
@@ -907,7 +909,7 @@ function printOnePager() {
                 <td class="val right">{{ fmtPctInt(pg.data.cap_stack?.debt_pct) }}</td>
               </tr>
               <tr>
-                <td class="lbl">P.E. Participation:</td><td class="val">{{ pg.data.cap_stack?.pe_participation ? fmtPct(pg.data.cap_stack.pe_participation) : 'N/A' }}</td>
+                <td class="lbl">P.E. Participation:</td><td class="val">{{ pg.data.cap_stack?.pe_participation != null ? fmtPct(pg.data.cap_stack.pe_participation) : 'N/A' }}</td>
                 <td class="lbl">Pref. Equity:</td><td class="val right">{{ fmtMil(pg.data.cap_stack?.pref_equity) }}</td>
                 <td class="val right">{{ fmtPctInt(pg.data.cap_stack?.pref_equity_pct) }}</td>
               </tr>
@@ -982,7 +984,7 @@ function printOnePager() {
               </tr>
               <tr>
                 <td class="lbl">Remaining to Fund:</td><td class="val">{{ fmtMil0(pg.data.pe_performance?.remaining_to_fund) }}</td>
-                <td class="lbl">Participation:</td><td class="val">{{ pg.data.pe_performance?.participation ? fmtPct(pg.data.pe_performance.participation) : 'N/A' }}</td><td></td><td></td>
+                <td class="lbl">Participation:</td><td class="val">{{ pg.data.pe_performance?.participation != null ? fmtPct(pg.data.pe_performance.participation) : 'N/A' }}</td><td></td><td></td>
               </tr>
               <tr><td colspan="6" style="height: 6px;"></td></tr>
               <tr>

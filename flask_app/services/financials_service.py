@@ -1404,9 +1404,17 @@ def _enrich_cap_stack_from_deal_terms(cap_stack: dict, deal_terms, vcode: str):
     if pd.notna(coupon) and coupon > 0:
         cap_stack["pe_coupon"] = coupon if coupon < 1 else coupon / 100
 
-    # PE Split (capital event) — use as participation if available
+    # PE Split (capital event) — use as participation if available.
+    #
+    # `>= 0`, not `> 0`: a present zero is an answer, not a missing value.  It
+    # means the PE takes no share of the residual, and it must reach the page
+    # so the reader sees 0.0% rather than the waterfall's misread of the
+    # operating partner's Share row.  Absent stays absent — pd.notna() already
+    # filters a null/missing pe_split_capital out, leaving cap_stack's None
+    # default to render as N/A.  Mirrors one_pager._pe_terms_fallback(); keep
+    # the two in step or the page prints two numbers for the same term.
     pe_split = pd.to_numeric(r.get("pe_split_capital"), errors="coerce")
-    if pd.notna(pe_split) and pe_split > 0:
+    if pd.notna(pe_split) and pe_split >= 0:
         cap_stack["pe_participation"] = pe_split if pe_split < 1 else pe_split / 100
 
     # IRR Lookback — new field

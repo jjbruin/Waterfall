@@ -513,7 +513,11 @@ def get_capitalization_stack(
     cap = {
         'purchase_price': 0.0,
         'pe_coupon': 0.0,  # From waterfalls nPercent
-        'pe_participation': 0.0,  # From waterfalls FXRate where vState='Share'
+        # None, NOT 0.0 — the One Pager must tell "no participation term on
+        # this deal" (renders N/A) apart from "the term is nil" (renders 0.0%).
+        # A present zero is a real answer: deal_terms.pe_split_capital == 0 says
+        # the PE takes no share of the residual.  See _pe_terms_fallback().
+        'pe_participation': None,  # From waterfalls FXRate where vState='Share'
         'loan_maturity': None,
         'loan_rate': 0.0,
         'loan_type': '',  # Fixed/Variable
@@ -1064,8 +1068,31 @@ def get_property_performance(
     # Budget fallback: when no budget rows exist for the report year, reuse
     # the prior year's budget (per LLC agreement).  Shift dates forward by
     # 12 months so downstream date-range filters work unchanged.
+    #
+    # NOT FOR DEVELOPMENT DEALS (creator decision, Jim, 2026-08-31).  A
+    # stabilized deal's prior year is a fair stand-in for the current one.  A
+    # development deal's is a LEASE-UP year that by definition will not repeat,
+    # so republishing it as the current projection invents a Projected YE out
+    # of a budget the property has already grown past.  Live examples this
+    # rule exists for: Jefferson Addison Heights (P0000077) published a
+    # -700K Projected YE NOI assembled entirely from its shifted 2025 lease-up
+    # budget, and the four Brainerd buildings published a Projected YE with no
+    # actual component in it at all.
+    #
+    # Declining to shift IS the whole fix.  The prior-year rows stay in
+    # budget_data but fall outside every current-year date range below, so they
+    # contribute 0 and a dev deal lands on exactly the path a deal with no
+    # budget at all already takes: Projected YE = YTD Actual, YTD Budget = 0.
+    # There is deliberately no second branch here to fall out of step.
+    #
+    # Detection is the app's one definition (config.DEV_STRATEGIES, via
+    # _is_dev_deal) so this cannot disagree with the dev debt basis above or
+    # the Portfolio Snapshot's "Dev" suppression.  inv_map is None only in
+    # build_chart_data() at the bottom of this module, which reads ytd_actual,
+    # uw_ye and economic_occ.ytd_actual — never a budget-derived field — so the
+    # chart is unaffected either way.
     _report_year = int(quarter_str.split('-')[0])
-    if not budget_data.empty:
+    if not budget_data.empty and not _is_dev_deal(vcode_str, inv_map):
         has_report_year_budget = (budget_data['dtEntry_parsed'].dt.year == _report_year).any()
         if not has_report_year_budget:
             prior = budget_data[budget_data['dtEntry_parsed'].dt.year == _report_year - 1].copy()
@@ -1996,15 +2023,38 @@ def _pe_terms_fallback(pe: Dict[str, Any], deal_terms: pd.DataFrame,
 
     for key, col in (('coupon', 'pe_coupon'),
                      ('participation', 'pe_split_capital')):
-        # Gated on the value still being 0 — precisely the condition
-        # OnePagerView renders as "N/A".  Per field, not per row, so a deal
-        # carrying a Pref step but no Share step keeps its real coupon and
-        # picks up only the participation.
-        if pe.get(key):
-            continue
         v = pd.to_numeric(r.get(col), errors='coerce')
-        if pd.notna(v) and v > 0:
-            pe[key] = float(v) if v < 1 else float(v) / 100
+        if pd.isna(v) or v < 0:
+            continue                      # nothing to say about this field
+        v = float(v)
+
+        if key == 'coupon':
+            # Unchanged: fill only when the waterfall gave nothing, and only
+            # from a positive rate.  A 0% coupon is not a thing.
+            if pe.get(key) or v == 0:
+                continue
+        else:
+            # Participation carries ONE extra rule: an explicit zero in
+            # deal_terms overrides whatever the waterfall produced.
+            #
+            # The waterfall reader takes the first vState='Share' row with no
+            # PropCode filter, so on a deal where the PE has no Share row it
+            # silently reports the OPERATING PARTNER's share instead — there is
+            # no way for it to say "the PE participates in nothing", which is
+            # exactly what that shape means.  pe_split_capital == 0 is MRI
+            # stating the term affirmatively, so it wins.  Live today this is
+            # Jefferson Eastchase (P0000085) and Jefferson Addison Heights
+            # (P0000077): both carry two Share rows owned by OPJPI at
+            # FXRate 1.0, which the `< 1` heuristic below renders as 1%.
+            #
+            # A POSITIVE deal_terms value still defers to the waterfall, so the
+            # six deals where the two sources disagree on a real number are
+            # untouched.  Keep it that way — picking a winner there is a
+            # separate question about which source is right.
+            if pe.get(key) is not None and v != 0:
+                continue
+
+        pe[key] = v if v < 1 else v / 100
 
 
 def get_pe_performance(
@@ -2036,7 +2086,8 @@ def get_pe_performance(
         'committed_pe': 0.0,
         'remaining_to_fund': 0.0,
         'coupon': 0.0,
-        'participation': 0.0,
+        # None, NOT 0.0 — see the matching note in get_capitalization_stack().
+        'participation': None,
         'funded_to_date': 0.0,
         'return_of_capital': 0.0,
         'roe_to_date': 0.0,
