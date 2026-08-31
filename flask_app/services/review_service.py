@@ -507,8 +507,36 @@ def get_tracking_data(quarter_filter: str | None = None,
     _ensure_tables()
     engine = get_engine()
 
+    # THE QUARTER BELONGS ON THE JOIN, NOT IN THE WHERE.
+    #
+    # Joining on vcode alone and testing `(rs.quarter = :qf OR rs.quarter IS
+    # NULL)` afterwards drops any deal whose ONLY submission is a DIFFERENT
+    # quarter: the row exists, so `IS NULL` is false, and it is the wrong
+    # quarter, so the equality is false. The deal vanishes instead of reading
+    # Draft — which is what a deal with no submission at all correctly does.
+    # Green Valley Ranch (P0000100), reviewed in 2026-Q1 only, disappeared from
+    # the 2026-Q2 view, and 2026-Q2 is what ReviewTrackingView.vue defaults to.
+    #
+    # Qualifying the join makes a non-matching quarter read as NULL, so the
+    # COALESCEs below turn it into a Draft row stamped with the requested
+    # quarter. It also removes the need for any quarter test in the WHERE.
+    #
+    # With no quarter requested, the join takes each deal's LATEST submission.
+    # Joining unqualified would emit one row PER submission — 30 Bearfoot
+    # (2025-Q3 + 2026-Q2) and Green Valley Ranch (2026-Q1 + 2026-Q2) each
+    # rendered twice. MAX() over the 'YYYY-QN' text sorts correctly by quarter
+    # and needs no date parsing.
+    if quarter_filter:
+        rs_join = ("LEFT JOIN review_submissions rs "
+                   "ON rs.vcode = d.vcode AND rs.quarter = :qf")
+    else:
+        rs_join = ("LEFT JOIN review_submissions rs "
+                   "ON rs.vcode = d.vcode AND rs.quarter = ("
+                   "SELECT MAX(s2.quarter) FROM review_submissions s2 "
+                   "WHERE s2.vcode = d.vcode)")
+
     # Build query — double-quote mixed-case columns for PostgreSQL compatibility
-    sql = """
+    sql = f"""
         SELECT
             d.vcode,
             d."Investment_Name" as deal_name,
@@ -523,7 +551,7 @@ def get_tracking_data(quarter_filter: str | None = None,
             COALESCE(nc.addressable_count, 0) as addressable_count,
             COALESCE(nc.addressed_count, 0) as addressed_count
         FROM deals d
-        LEFT JOIN review_submissions rs ON rs.vcode = d.vcode
+        {rs_join}
         LEFT JOIN (
             SELECT vcode, quarter,
                    COUNT(*) as addressable_count,
@@ -538,7 +566,9 @@ def get_tracking_data(quarter_filter: str | None = None,
 
     conditions = []
     if quarter_filter:
-        conditions.append("(rs.quarter = :qf OR rs.quarter IS NULL)")
+        # No WHERE clause for the quarter — rs_join above already restricted
+        # the submission to this quarter, and filtering here as well is what
+        # dropped the prior-quarter deals.
         params["qf"] = quarter_filter
     if status_filter:
         if status_filter == "draft":
