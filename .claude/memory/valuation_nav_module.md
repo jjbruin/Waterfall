@@ -1,6 +1,6 @@
 # Valuations & NAV Audit Packages — Design + Phases 1-4 (Aug 28, 2026)
 
-## Azure ISBS column fix + input formatting (Aug 31, 2026 — in working tree, not yet deployed)
+## Azure ISBS column fix + input formatting (Aug 31, 2026 — `b8bdfea`, DEPLOYED as v400)
 First production use surfaced a `'vAccountType'` KeyError banner on opening any record,
 with the Balance Sheet and NAV tabs blank. Root cause: `get_balance_sheet()` and the NAV
 `_bs_snapshot()` grouped on `vAccountType`/`vDescription`, which exist only in the legacy
