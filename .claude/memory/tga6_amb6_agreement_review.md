@@ -201,3 +201,51 @@ needs the engine to tag a distribution with the upstream tier it came from — p
 waterfall row format cannot carry. **Not attempted.** So PSC1's 72.83% still includes
 promote dollars it is not entitled to under the agreement, and PSCMAN's Class B promote
 share is still missing. Correcting it will move PSC1 down and PSCMAN up.
+
+
+## v2 — the 9% gates restored per Jim (Sep 1 2026). THIS IS THE LIVE STRUCTURE.
+
+Jim: *"the flat 20/70/10 sharing only applies after TIAA has a 9% current return since
+inception for the CF waterfall and a 9% IRR after AM fees for capital events."*
+
+That resolves the three-way conflict. The agreement's tier ORDER is right; the commercial
+terms add a gate the section text does not spell out:
+- **CF — "9% current return since inception"** IS the cumulative unpaid Preferred Return of
+  §6.02(b). The `Pref` tier already implements it; nothing to add.
+- **Capital — "9% IRR after AM fees"** is the `IRR` vState, which solves the top-up needed
+  from the full cashflow history *net of AM fees and expenses*. Restored at **Cap tie 25**,
+  i.e. AFTER §6.03(b) pref and §6.03(d) return of capital, BEFORE the §6.03(e) residual.
+  It is now a backstop catching only the shortfall the pref leaves once fees are netted —
+  not, as in the old model, a substitute for the missing pref.
+
+### Final live TGA6 structure
+CF_WF : 1 `Amt` expenses · 10 `Pref` 9% .90/.10 · 20 `Share` .70/.30 · 900/901 `AMFee`
+Cap_WF: 1 `Amt` · 10 `Pref` 9% .90/.10 · 20 `Initial` ROC .90/.10 · **25 `IRR` 9% .90/.10**
+        · 30 `Share` .70/.30 · 900/901 `AMFee` on TGAM and INV6
+
+### Windsor, live on Azure
+| participant | contributions | distributions | IRR |
+|---|---|---|---|
+| TGAM (TIAA) | 17,235,000 | 27,280,983 | 12.178% |
+| Fund Investors (12) | 1,096,773 | 2,313,461 | 21.239% |
+| PSC1 | 818,227 | 2,787,535 | 72.378% |
+| PSCMAN | 0 | 832,620 | — |
+
+Sale-year tiers: pref 22,500 · ROC 16,075,074 · **IRR gate 492,356 (TGAM 443,120 /
+INV6 49,236)** · residual 4,158,181 (TGAM 2,910,727 / INV6 1,247,454, exactly 70/30).
+
+### It now ties to the Excel
+| configuration | TGAM annual-bucket IRR |
+|---|---|
+| old model (no pref, IRR gate standing in for it, .70/.04/.26) | 11.568% |
+| agreement literal (pref, no gate, .70/.30) | 11.383% |
+| **agreement + the 9% gates — LIVE** | **11.480%** |
+| Excel / TIAA one-pager | 11.740% |
+
+Gap to the Excel **+0.260pp**, against the **-0.236pp** projection difference measured
+independently in Phase 0 (the app's forecast delivers ~226k less to the vehicle over the
+hold). **Unexplained residual: 0.024pp.** The waterfall is effectively reconciled; what
+remains is the cash-flow vintage, not the structure.
+
+**This supersedes the pending `IRRPromote` vState recommendation entirely** — no new vState
+is needed. The existing `IRR` step, placed after pref and ROC, is the right mechanism.
