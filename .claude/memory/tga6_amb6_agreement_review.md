@@ -422,3 +422,54 @@ TGA22 drops out. Remaining: **AMB6 §8.4(b)** (promote receipts vs investment re
 PSC1 excluded from promote) and **TGA6's 20-vs-10 split** inside INV6's 30%. Still the same
 one feature, but the argument for it is weaker than stated earlier and should not be
 oversold.
+
+
+## PROVENANCE — the feature ALREADY EXISTS (Sep 1 2026, proven in a harness)
+
+Jim asked for a provenance feature to implement AMB6 §8.4(b). **No engine change is needed.**
+`run_upstream_waterfall_period` already routes by source tier: if `source_vtranstype`
+contains "Promote" and the receiving entity has `vmisc == 'Promote_WF'` rows, that waterfall
+is used instead of CF_WF/Cap_WF (waterfall.py ~1586). `source_vtranstype` is forwarded
+through both the typename-route branch and the ownership-cascade branch, so it survives a
+passthrough hop.
+
+**Verified** (`scratchpad/promote_wf_test.py`, synthetic steps, no DB writes) on 1,000,000
+through a TGA6 residual tier split into a capital leg and a promote leg:
+
+```
+TGA6 tie 30   TGAM   700,000  'Residual Split'
+              INV6   100,000  'Residual Split'   <- Capital Units leg
+              INV6PU 200,000  'Promote Split'    <- Promote Units leg
+  capital leg -> INV6   -> AMB6 via Cap_WF      -> PSC1 42,727 + CCGSI + IREP   (PSC1 IN)
+  promote leg -> INV6PU -> AMB6 via Promote_WF  -> PSCMAN 109,100 + CCGSI + IREP (PSC1 OUT)
+```
+
+Exactly §8.4(b): investment receipts to Class A pro rata including PSC1; promote receipts to
+Class B plus non-Peaceable Class A with PSC1 excluded.
+
+### To apply it, three rows-only changes
+1. **TGA6 tie 30 -> three rows**: TGAM `Share` .70 / INV6 `Tag` .10 (vtranstype
+   'Residual Split') / **INV6PU `Tag` .20 (vtranstype 'Promote Split')**. Economics unchanged
+   — the PSC side still totals 30% — it only separates the 20 promote points from the 10
+   capital points so they can be tagged. Faithful to §6.03(e), which itself distinguishes
+   Promote Units from Capital Units in the same tier.
+2. **AMB6 `Promote_WF`**: PSCMAN (Class B) plus the 12 non-Peaceable Class A pro rata among
+   themselves, **PSC1 omitted entirely**.
+3. **A route for INV6PU into AMB6.**
+
+### TWO INPUTS STILL MISSING — do not write to the DB without them
+- **(a) The Exhibit C band.** It keys off aggregate capital contributions **MADE** by
+  non-Peaceable Class A Members. Exhibit B gives OBLIGATIONS ($6,300,000 of $11,000,000 ->
+  the $6.25M band, ~45.45% non-Peaceable / ~54.55% Class B). The funded figure is **not
+  derivable from app data**: AMB6 member contributions are fund-level and absent from the
+  deal-keyed `accounting` feed (PSC1's -94,974,771 there is portfolio-wide, not its AMB6
+  $4.7M). **Jim or Charlene must supply funded non-Peaceable Class A capital.** Guessing the
+  band misallocates every promote dollar between PSCMAN and the members.
+- **(b) A durable route for INV6PU.** The harness used a `relationships` row, but that table
+  is MRI-refreshed and the row would be wiped. The alternative is a one-step waterfall on
+  INV6PU in the PROTECTED `waterfalls` table — but `ppi_upstream_service._stack_closure`
+  treats a waterfall-bearing distribution child as TERMINAL, so that may not run on the NB
+  path. Needs its own harness test before use.
+
+**Nothing written to the database.** The mechanism is proven; the configuration is blocked on
+(a) and (b).
