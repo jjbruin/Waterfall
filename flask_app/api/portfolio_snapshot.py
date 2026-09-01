@@ -386,11 +386,12 @@ def put_value():
             value = float(str(raw).replace(",", "").replace("%", "").replace("$", ""))
         except (TypeError, ValueError):
             return jsonify({"error": f"value {raw!r} is not a number"}), 400
+    vcode = (body.get("vcode") or "").strip()
+    field = (body.get("field") or "").strip()
     try:
         row = P.save_value(
             investor, quarter,
-            deal_vcode=(body.get("vcode") or ""),
-            field=(body.get("field") or ""),
+            deal_vcode=vcode, field=field,
             value=value, updated_by=username,
         )
     except P.NotEditable as exc:
@@ -399,7 +400,23 @@ def put_value():
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
-    return jsonify(safe_json({"saved": row}))
+
+    # The display twin and source string the Financial assembly would have
+    # produced for this cell, so the UI can patch the one row it changed
+    # instead of refetching /bundle. Without these the shell refetched the
+    # whole payload on every entry purely to read them back, rebuilding all
+    # four subtabs and blanking the page behind "Building snapshot…".
+    from flask_app.services.portfolio_snapshot_financial import (
+        manual_display, manual_na_cells, MANUAL_SOURCE,
+    )
+    return jsonify(safe_json({
+        "saved": row,
+        "vcode": vcode,
+        "field": field,
+        "value": value,
+        "display": manual_display(field, value, manual_na_cells(vcode)),
+        "source": MANUAL_SOURCE,
+    }))
 
 
 @portfolio_snapshot_bp.route("/footnote", methods=["POST"])

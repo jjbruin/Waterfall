@@ -143,12 +143,66 @@ function onSaveComment(p: { scope: string; field: string; scope_key?: string; te
   })
 }
 
+/** Every Financial deal row, grouped rows and ownership-flagged alike.
+ *
+ *  Both sets carry manual figures and both are counted into the portfolio
+ *  total by ``_subtotal`` on the backend (``all_rows + flagged_rows``), so a
+ *  recount that saw only the grouped rows would undercount.
+ */
+function financialRows(): any[] {
+  const fin = bundle.value?.subtabs?.financial
+  if (!fin) return []
+  const rows: any[] = []
+  for (const blk of Object.values<any>(fin.groups || {})) rows.push(...(blk.deals || []))
+  rows.push(...(fin.ownership_flagged || []))
+  return rows
+}
+
+/** Recount the "N entered" cells after one manual figure changed.
+ *
+ *  A count, not a formatting decision: the backend rule is "not in (None,
+ *  PENDING)", and a row's raw ``net_roe`` / ``itd`` is a number or null — the
+ *  PENDING sentinel only ever lives in the ``*_display`` twin, which the
+ *  server sends us. So `!= null` reproduces it exactly. The display string
+ *  itself is never derived here; see manual_display in
+ *  portfolio_snapshot_financial.py.
+ *
+ *  total_excluding_dev.manual_entered is deliberately left alone — it is not
+ *  rendered, and its own manual cells are hardcoded PENDING on the backend.
+ */
+function recountManual() {
+  const fin = bundle.value?.subtabs?.financial
+  if (!fin) return
+  const tally = (rows: any[]) => ({
+    itd: rows.filter((r) => r.itd != null).length,
+    net_roe: rows.filter((r) => r.net_roe != null).length,
+  })
+  for (const blk of Object.values<any>(fin.groups || {})) {
+    if (blk.subtotal) blk.subtotal.manual_entered = tally(blk.deals || [])
+  }
+  if (fin.total) fin.total.manual_entered = tally(financialRows())
+}
+
 function onSaveValue(p: { vcode: string; field: string; value: string | number | null }) {
   withSave(async () => {
-    await api.put(`${BASE}/value`, { ...ctx(), ...p })
-    // Manual figures feed the Financial rows, so re-read to pick up the
-    // backend's own display/source strings rather than guessing them here.
-    await load()
+    const res = await api.put(`${BASE}/value`, { ...ctx(), ...p })
+    // Patch the single row we changed. This used to `await load()`, which
+    // refetched /bundle — rebuilding all four subtabs server-side and swapping
+    // the body for the "Building snapshot…" placeholder — on every entry. That
+    // read as a page refresh: focus and scroll lost, and the child's draft
+    // watcher reseeded, discarding anything half-typed in another cell.
+    // The Loan tab's comments never did this (see onSaveComment), which is why
+    // they always felt right.
+    const d = res.data || {}
+    const row = financialRows().find((r) => r.vcode === p.vcode)
+    if (row) {
+      // The stored number, not the raw string: the backend parses "1,234"/"5%"
+      // and the row must hold what was persisted.
+      row[p.field] = d.value ?? null
+      row[`${p.field}_display`] = d.display
+      if (d.source) row[`${p.field}_source`] = d.source
+      recountManual()
+    }
   })
 }
 
