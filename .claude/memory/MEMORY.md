@@ -9,7 +9,7 @@
 - [portfolio_analysis.md](portfolio_analysis.md) — Portfolio Analysis tab (upstream entity analysis, actual/proposed modes)
 - [transfer_aware_returns.md](transfer_aware_returns.md) — Design doc: transfer-aware IRR/ROE/MOIC (scoped, not yet implemented)
 - [onepager_audit_q1_2026.md](onepager_audit_q1_2026.md) — Q1 2026 audit: Azure vs Excel One Pager (959 discrepancies, 7 code bugs, data gaps)
-- [session_handoff.md](session_handoff.md) — CURRENT rolling handoff (Aug 2026): what is live (v395), open items, deploy/process rules. Supersedes the dated May handoffs.
+- [session_handoff.md](session_handoff.md) — **CURRENT rolling handoff (Sep 1 2026, v408 live)**: two tracks — investor groups around a deal (KOC slice, Phase 0 done, Phases 1-4 open) and Charlene's update stream (what shipped v403-v408, what is open with her, what is settled). Read this first.
 - [session_handoff_may7b.md](session_handoff_may7b.md) — Session handoff: pref accrual fix, combined table, TGA23 step deletion
 - [ai_assistant.md](ai_assistant.md) — Embedded AI assistant (Claude API, tools, streaming chat)
 - [ai_assistant_roadmap.md](ai_assistant_roadmap.md) — AI assistant enhancement plan (15 items, prioritized)
