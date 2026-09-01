@@ -98,12 +98,20 @@ function addFootnote() {
 }
 
 /** Where a footnote's marker sits, for the list entry. The backend resolved the
- *  scope; this only words it. */
+ *  scope; this only words it.
+ *
+ *  A snapshot frozen BEFORE this change stored the raw persistence rows, which
+ *  carry `anchor` but no `scope`. Falling back to the anchor keeps an approved
+ *  report readable instead of printing a bare colon — those payloads are frozen
+ *  on purpose and are never re-composed. */
 function placementLabel(f: any): string {
   if (f?.scope === 'property') {
     return `${f.label || f.vcode} (property)`
   }
-  return f?.column ? `${f.label} column` : (f?.label || '')
+  if (f?.scope === 'column') {
+    return f.column ? `${f.label} column` : (f.label || '')
+  }
+  return f?.anchor || ''
 }
 </script>
 
