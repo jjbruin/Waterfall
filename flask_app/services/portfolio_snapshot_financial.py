@@ -119,6 +119,35 @@ NA_LABEL = "n/a"
 
 MANUAL_FIELDS = ("net_roe", "itd")
 
+#: What a manual figure's ``*_source`` cell reads. One constant so the assembly
+#: and the save endpoint cannot describe the same cell differently.
+MANUAL_SOURCE = "manual entry (formula TBD)"
+
+
+def manual_display(field: str, value, na_cells=None):
+    """The ``*_display`` twin for one manual figure.
+
+    Extracted so ``PUT /value`` can return the display string the assembly
+    would have produced, instead of the UI re-deriving it. The UI used to get
+    it by refetching the whole ``/bundle`` after every entry — see
+    ``onSaveValue`` in PortfolioSnapshotView.vue — which rebuilt all four
+    subtabs and blanked the page behind the "Building snapshot…" placeholder on
+    each keystroke commit. The rule lives here and nowhere else so the patched
+    cell and a later full rebuild always agree.
+
+    ``na`` outranks PENDING: the PDF states the cell does not apply, so
+    prompting an analyst to fill it would be wrong.
+    """
+    if field in (na_cells or ()):
+        return NA_LABEL
+    return PENDING if value is None else value
+
+
+def manual_na_cells(vcode: str) -> frozenset:
+    """The PDF's n/a columns for one deal — the input to ``manual_display``."""
+    return PDF_NA_CELLS.get(str(vcode or "").strip().upper(), frozenset())
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # TEMPORARY HARDCODE — the PDF's "Excluding Development Deals" population
 # ══════════════════════════════════════════════════════════════════════════
@@ -500,11 +529,10 @@ def assemble_financial(investor_code: str, quarter: str, *,
         for f, accessor in (("net_roe", get_net_roe), ("itd", get_itd)):
             v = accessor(vcode, investor_code, quarter, manual)
             row_manual[f] = v
-            # n/a outranks "pending entry": the PDF states this cell does not
-            # apply, so prompting an analyst to fill it would be wrong.
-            row_manual[f + "_display"] = (
-                NA_LABEL if f in na else (PENDING if v is None else v))
-            row_manual[f + "_source"] = "manual entry (formula TBD)"
+            # Rule lives in manual_display so PUT /value returns the same
+            # string without rebuilding the subtab — see that function.
+            row_manual[f + "_display"] = manual_display(f, v, na)
+            row_manual[f + "_source"] = MANUAL_SOURCE
             if f in na:
                 pass                       # not pending — it does not apply
             elif v is None:
