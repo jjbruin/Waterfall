@@ -20,6 +20,7 @@
 - [valuation_nav_module.md](valuation_nav_module.md) — Design (Aug 2026, not built): annual valuation review/approval + auditor NAV package module under Asset Management
 - [allocation_scenarios_plan.md](allocation_scenarios_plan.md) — PLAN (Sep 1 2026, not built): scenario-scoped PPI stacks so a $ slice of a deal can be diverted to another JV without losing the base case, + net-returns one-page PDF and JV allocation roll-up
 - [commit_review_charlene.md](commit_review_charlene.md) — review of all 83 Charlene commits for symptom-vs-root-cause; the dev-deal special-casing cluster and the two self-declared per-deal hardcodes. Deploy rule lives in CLAUDE.md.
+- [tga6_amb6_agreement_review.md](tga6_amb6_agreement_review.md) — the TGA6 and Ambassadors Fund VI executed LLC agreements vs the modeled waterfalls: 9% pref missing from both TGA6 tiers, an IRR step with no basis in the agreement, PSC=INV6 not PSCMAN, and AMB6 §8.4(b) promote-receipts stream not implemented (PSC1 is excluded from promote but currently receives it)
 - [psckoc_structure.md](psckoc_structure.md) — PSC KOC I LLC terms RECOVERED from the Belair net-returns PDF (8% coupon pari-passu 85/15, 1.50% accruing AM fee, 20% catch-up, $15k venture costs); the prior agreement-reading session and its step rows are GONE
 
 ## Project Overview
