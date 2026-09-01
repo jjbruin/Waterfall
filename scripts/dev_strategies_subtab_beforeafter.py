@@ -27,6 +27,9 @@ OUT = os.environ.get(
 QUARTER = os.environ.get("WF_CHECK_QUARTER", "2026-Q1")
 
 PEGASUS, BELLEVILLE = "P0000066", "P0000006"
+#: Jefferson Waters Creek — its LTV exception was retired 2026-09-01, so it is
+#: the third and last deal this change is allowed to move.
+WATERS_CREEK = "P0000078"
 
 #: Investors whose reports carry the two deals, plus one that carries neither
 #: (a control: nothing on it may move).
@@ -377,10 +380,9 @@ def report():
 
     chk(f"at least one dev deal is on the reports ({len(dev_seen)} seen)",
         bool(dev_seen))
-    # WATERS_CREEK_LTV_EXCEPTION is a deliberate creator instruction that keeps
-    # a real LTV on one dev deal; it is required for the TGA22 fund LTV
-    # subtotal to reproduce the published 60.4%. Excluded by name, not by a
-    # blanket allowance, so a second exemption appearing would fail here.
+    # NO exemptions. The Waters Creek LTV exception was retired on instruction
+    # 2026-09-01, so all three columns are asserted over EVERY dev deal with no
+    # name excluded — a re-introduced carve-out would fail here.
     WC = "P0000078"
     chk("every dev deal shows 'Dev' for YTD DSCR",
         all(r.get("ytd_dscr_display") == "Dev" for r in dev_seen.values()),
@@ -390,16 +392,23 @@ def report():
         all(r.get("debt_yield_display") == "Dev" for r in dev_seen.values()),
         str({v: r.get("debt_yield_display") for v, r in dev_seen.items()
              if r.get("debt_yield_display") != "Dev"}))
-    chk("every dev deal shows 'Dev' for LTV, bar the Waters Creek exception",
-        all(r.get("ltv_display") == "Dev"
-            for v, r in dev_seen.items() if v != WC),
+    chk("every dev deal shows 'Dev' for LTV — INCLUDING Waters Creek",
+        all(r.get("ltv_display") == "Dev" for r in dev_seen.values()),
         str({v: r.get("ltv_display") for v, r in dev_seen.items()
-             if v != WC and r.get("ltv_display") != "Dev"}))
-    chk("Waters Creek is still the ONLY dev deal with a numeric LTV",
-        [v for v, r in dev_seen.items()
-         if isinstance(r.get("ltv_display"), (int, float))] in ([], [WC]),
+             if r.get("ltv_display") != "Dev"}))
+    chk("NO dev deal shows a numeric LTV any more",
+        not [v for v, r in dev_seen.items()
+             if isinstance(r.get("ltv_display"), (int, float))],
         str([v for v, r in dev_seen.items()
              if isinstance(r.get("ltv_display"), (int, float))]))
+    wc_row = dev_seen.get(WC) or {}
+    chk("Waters Creek specifically: LTV display is 'Dev' and its raw ltv is "
+        "None, so nothing suppressed survives into a subtotal",
+        wc_row.get("ltv_display") == "Dev" and wc_row.get("ltv") is None,
+        f"display={wc_row.get('ltv_display')!r} raw={wc_row.get('ltv')!r}")
+    chk("no dev deal is flagged as an LTV exception",
+        not any(r.get("ltv_dev_exception") for r in dev_seen.values()),
+        str([v for v, r in dev_seen.items() if r.get("ltv_dev_exception")]))
     chk("no dev deal lost its Rate or Maturity to a 'Dev' or 'N/A' literal",
         all(r.get("rate_display") not in ("Dev", "N/A")
             and r.get("maturity_display") not in ("Dev", "N/A")
@@ -504,8 +513,14 @@ def report():
     # signal. Compared on the keys the two sides share; the new keys are then
     # checked on their own terms (above, and in the two "only Pegasus" checks).
     NEW_KEYS = {"debt_display", "debt_free"}
+    # The three deals this change is ALLOWED to move, and why:
+    #   Pegasus     reclassified operating + debt-free display
+    #   Belleville  reclassified operating, data recovered
+    #   Waters Creek  its LTV exception was retired, so its LTV cell and raw
+    #                 ltv both change (57.5% -> "Dev" / None)
+    EXPECTED_MOVERS = {PEGASUS, BELLEVILLE, WATERS_CREEK}
     moved = []
-    new_key_report = {}
+    unexpected_diffs = {}
     for code in INVESTORS:
         for sub in ("operating", "loan", "financial"):
             rb = (b["investors"].get(code, {}) or {}).get(sub, {}) or {}
@@ -517,15 +532,21 @@ def report():
                 if {k: rb[vc][k] for k in shared} != {
                         k: ra[vc][k] for k in shared}:
                     moved.append((code, sub, vc))
-                    if vc not in (PEGASUS, BELLEVILLE):
-                        diffs = {k: (rb[vc][k], ra[vc][k]) for k in shared
-                                 if rb[vc][k] != ra[vc][k]}
-                        new_key_report[(sub, vc)] = diffs
+                    if vc not in EXPECTED_MOVERS:
+                        unexpected_diffs[(sub, vc)] = {
+                            k: (rb[vc][k], ra[vc][k]) for k in shared
+                            if rb[vc][k] != ra[vc][k]}
     others = sorted({(s, v) for _, s, v in moved
-                     if v not in (PEGASUS, BELLEVILLE)})
-    chk("ONLY Pegasus and Belleville moved on any subtab, on any report "
-        "(comparing the keys both sides share)",
-        not others, f"also moved: {others}\n         {new_key_report}")
+                     if v not in EXPECTED_MOVERS})
+    chk("ONLY Pegasus, Belleville and Waters Creek moved vs main, on any "
+        "subtab of any report (comparing the keys both sides share)",
+        not others, f"also moved: {others}\n         {unexpected_diffs}")
+    # Waters Creek must move ONLY on the loan subtab — the LTV exception was
+    # display-only, so its Operating and Financial rows have no business
+    # changing.
+    wc_subs = sorted({s for _, s, v in moved if v == WATERS_CREEK})
+    chk("Waters Creek moved on the LOAN subtab only",
+        wc_subs in ([], ["loan"]), f"moved on: {wc_subs}")
 
     print(f"\n  rows that moved: "
           f"{sorted({(s, v) for _, s, v in moved})}")
@@ -539,6 +560,50 @@ def report():
                 only_new.append(vc)
     chk("every loan row carries the new debt_display / debt_free keys",
         not only_new, f"missing on: {sorted(set(only_new))}")
+
+    # ── vs the PRIOR STATE of this branch, if captured ────────────────────
+    #
+    # `before.json` is main, so the section above measures the WHOLE branch.
+    # This one isolates the Waters Creek commit alone: capture `prior` from the
+    # preceding commit and only Waters Creek's loan row may differ.
+    prior_path = os.path.join(OUT, "prior.json")
+    if os.path.exists(prior_path):
+        with open(prior_path, encoding="utf-8") as fh:
+            p = json.load(fh)
+        print("\n" + "=" * 100)
+        print("VS PRIOR BRANCH STATE — the Waters Creek change in isolation")
+        print("=" * 100)
+        _, pw = find(p, "loan", WATERS_CREEK)
+        _, aw = find(a, "loan", WATERS_CREEK)
+        print(f"  {'field':<26}{'prior':>26}{'after':>26}")
+        for k in ("is_dev", "ltv", "ltv_display", "ltv_dev_exception",
+                  "ytd_dscr_display", "debt_yield_display", "rate_display",
+                  "maturity_display", "debt_display"):
+            print(f"  {k:<26}{f(pw.get(k)):>26}{f(aw.get(k)):>26}")
+        chk("Waters Creek LTV went from a real number to 'Dev'",
+            isinstance(pw.get("ltv_display"), (int, float))
+            and aw.get("ltv_display") == "Dev",
+            f"{pw.get('ltv_display')!r} -> {aw.get('ltv_display')!r}")
+        chk("Waters Creek Rate / Maturity / Debt did NOT move",
+            pw.get("rate_display") == aw.get("rate_display")
+            and pw.get("maturity_display") == aw.get("maturity_display")
+            and pw.get("debt_display") == aw.get("debt_display"))
+        pmoved = []
+        for code in INVESTORS:
+            for sub in ("operating", "loan", "financial"):
+                rp = (p["investors"].get(code, {}) or {}).get(sub, {}) or {}
+                ra = (a["investors"].get(code, {}) or {}).get(sub, {}) or {}
+                for vc in sorted(set(rp) & set(ra)):
+                    if rp[vc] != ra[vc]:
+                        pmoved.append((sub, vc))
+        print(f"\n  rows that moved vs prior: {sorted(set(pmoved))}")
+        chk("vs the prior branch state, ONLY Waters Creek moved — Pegasus and "
+            "Belleville are already settled",
+            {v for _, v in pmoved} <= {WATERS_CREEK},
+            f"also moved: {sorted({v for _, v in pmoved} - {WATERS_CREEK})}")
+    else:
+        print(f"\n  (no prior.json at {prior_path} — skipping the "
+              f"prior-state comparison)")
 
     # dev counts and the excluding-dev row
     print("\n" + "=" * 100)
@@ -617,14 +682,13 @@ def report():
                        if r.get(k) is not None and r.get("debt")]
             if carried:
                 leaks[v] = carried
-        # Waters Creek legitimately carries a raw LTV (its exception), and the
-        # published TGA22 60.4% only reproduces WITH it — so it is the one
-        # allowed contributor, and only to LTV. Removed by exact match, so it
-        # contributing to DSCR or Debt Yield would still be reported.
-        if leaks.get("P0000078") == ["ltv"]:
-            del leaks["P0000078"]
-        chk(f"{code}: no dev deal contributes to a ratio subtotal "
-            f"(bar Waters Creek's LTV exception)", not leaks, str(leaks))
+        # No allowance at all now that the Waters Creek exception is retired:
+        # the PDF footnote ("summary metrics exclude the development deals")
+        # and the arithmetic finally agree. The cost is the TGA22 LTV tie —
+        # 60.4% published against 61.6% here — recorded in
+        # KNOWN_LOAN_SUBTOTAL_DIFFS, not fitted to.
+        chk(f"{code}: NO dev deal contributes to any ratio subtotal",
+            not leaks, str(leaks))
         # Debt, by contrast, must include them.
         tot = (a["investors"].get(code, {}) or {}).get("loan_total") or {}
         all_debt = [r.get("debt") for r in rows_by_vc.values()
