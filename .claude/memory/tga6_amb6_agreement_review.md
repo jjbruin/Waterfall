@@ -473,3 +473,57 @@ Class B plus non-Peaceable Class A with PSC1 excluded.
 
 **Nothing written to the database.** The mechanism is proven; the configuration is blocked on
 (a) and (b).
+
+
+## Why AMB6 member contributions are missing — it is DATA, not the SQL (Sep 1 2026)
+
+Jim asked whether the `accounting_feed` SQL explains ANCORA's missing AMB6 contributions.
+**It does not. The query is working; MRI's `IA_Contribution` has no rows.**
+
+Decisive evidence — the same query, same code path, across the sibling funds:
+
+| InvestmentID | investors WITH contributions | investors WITH distributions |
+|---|---|---|
+| AMB23 | 10 | 10 |
+| AMB24 | **13** | 13 |
+| **AMB6** | **1** (PSC1 only) | **13** |
+| TGA22 | 2 | 2 |
+
+AMB24 loads 24 contribution rows each for PSC1, CCGSI, SSSPI, MSFPI, WRI, FXCHI, JJCI, JPHI…
+through exactly the same `IA_Contribution` -> `IA_Subtype` path. If the query dropped
+fund-member contributions structurally, AMB23 and AMB24 would show AMB6's 1-of-N pattern.
+
+On AMB6, every non-PSC1 member has **exactly one row, a `Distribution: Income`**, and no
+contribution at all — ANCORA/BATTEN/SHEIRA/CLWI/DBH/FXCHI/ITHI 285.92 each, ATLAS 343.10,
+CWSPART/JJCI 571.84, IREP 1,143.68, CCGSI 2,573.28. Those are exactly pro rata to the
+Exhibit B obligations (285.92/250,000 = 2,573.28/2,250,000 = 0.0011437), so MRI knows the
+investor/fund pairing — someone posted the income distribution but the **subscriptions were
+never entered**. PSC1's 7 contribution rows totalling -4,571,874.71 against its $4,700,000
+obligation are present, which is why it is the only one that loads.
+
+**Consequence**: this is the blocker on the Exhibit C band for AMB6 §8.4(b). The funded
+non-Peaceable Class A capital is not derivable because it is not in MRI. Once the AMB6
+subscriptions are entered into `IA_Contribution`, the band becomes derivable automatically
+and the Promote_WF configuration can be finished from data rather than from Exhibit B
+obligations.
+
+### Three real observations on the SQL itself (none cause the above)
+1. **No `TRIM()` on the IDs.** 3,641 of 12,827 rows carry untrimmed `InvestmentID`/
+   `InvestorID`; `'TGA22'` (len 5) and `'TGA22 '` (len 6) both exist as distinct values. The
+   app is safe because `loaders`/`data_service` do `.str.strip().str.upper()` at load, but
+   any raw export analysed in Excel splits those into two entities. Adding `TRIM()` in the
+   query fixes it at source.
+2. **`AND S.MajorType = 'Contribution'` inside a LEFT JOIN ON clause is a silent-loss trap.**
+   A contribution whose subtype is not classified `MajorType='Contribution'` still returns a
+   row, but with NULL `MajorType`/`Typename` — and every downstream consumer keys on
+   `MajorType` containing "contrib", so it is neither contribution nor distribution and
+   vanishes without erroring. Only 4 such rows portfolio-wide today, so it is not the AMB6
+   cause, but it is the mechanism by which rows COULD disappear invisibly. An INNER JOIN
+   (fails loudly) or a post-join NULL check would surface it.
+3. **Dead branch in `Cum_Amt`.** Its contribution leg selects `FROM IA_Contribution C2` and
+   then tests `S2.Typename = 'Distribution: Return of Capital'` — a contribution row can
+   never carry a distribution typename, so that OR branch never matches. Harmless, but it
+   suggests the intent was not what the code does. Also note `Cum_Amt` counts only
+   `Contribution: Investments`, so Operating Capital, Partnership Expenses and the other
+   contribution types are excluded from the running balance — worth confirming that is
+   deliberate.
