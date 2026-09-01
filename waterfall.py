@@ -1605,6 +1605,28 @@ def run_upstream_waterfall_period(
                 if str(pc) not in entity_states:
                     entity_states[str(pc)] = InvestorState(propcode=str(pc))
 
+            # A Pref step's tier must EXIST before accrual runs. It used to be
+            # created lazily inside the step handler below -- i.e. after
+            # accrue_all_pools() had already run for this period -- so in the
+            # first period a Pref step fired there was no tier to accrue into,
+            # the step paid 0, and its cash fell through to the next tier. On a
+            # 90/10 pref over a 70/30 residual that silently moved 20 points to
+            # the wrong party. Only upstream entities were affected: the
+            # deal-level handler matches an existing tier by rate rather than
+            # creating one, because seed_states_from_accounting sets them up.
+            for _, _pstep in steps[
+                steps["vState"].astype(str).str.strip() == "Pref"
+            ].iterrows():
+                _pstt = entity_states.get(str(_pstep["PropCode"]))
+                if _pstt is None:
+                    continue
+                _ppool = _pstt.get_pool("initial")
+                if not _ppool.pref_tiers:
+                    _prate = float(
+                        _pstep.get("nPercent_dec", _pstep.get("nPercent", 0)) or 0)
+                    _ppool.pref_tiers.append(
+                        PrefTier(tier_name="pref", pref_rate=_prate))
+
             # Accrue pref on all entity states to current period date
             # (needed for pre-seeded states with capital_outstanding)
             p_date = period_date if isinstance(period_date, date) else pd.to_datetime(period_date).date()

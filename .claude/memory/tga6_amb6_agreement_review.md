@@ -301,3 +301,50 @@ Portfolio Analysis, and any NB stack the Builder generates with a pref. All woul
 first-period pref accrual they currently lose. **Not fixed — flagged for Jim per the
 pre-deploy rule.** The fix is to create the tier when the state is seeded (or at the top of
 the period, before `accrue_all_pools`), not inside the step handler.
+
+
+## FIX BUILT + BLAST RADIUS MEASURED (Sep 1 2026) — committed, NOT deployed
+
+`waterfall.py` `run_upstream_waterfall_period`: a block now pre-creates each `Pref` step's
+tier on the recipient's initial pool **before** the `accrue_all_pools()` loop, instead of
+lazily inside the step handler. ~14 lines, no behaviour change anywhere else.
+
+Verified on the controlled annual harness: year 1 goes from 302,085 light to matching the
+Excel **to the dollar**; TIAA 11.355% -> 11.710% against the Excel's 11.793%.
+
+### Who is actually affected
+Only upstream entities with a NON-ZERO `Pref` step. Querying `waterfalls`: **TGA6, TGA22,
+TGA23, TGA24, TGA25** (PPIBRP's Pref is 0%; the 57 `P0000xxx` Pref steps are deal-level and
+run through the unaffected handler).
+
+### Measured, before vs after, on live Azure data
+**Windsor / TGA6 (New Business)** — the intended fix:
+| participant | dists delta | IRR before | IRR after | delta |
+|---|---|---|---|---|
+| TGAM (TIAA) | **+23,517** | 12.178% | 12.229% | +0.052pp |
+| PSC1 | -9,972 | 72.378% | 70.125% | -2.253pp |
+| Fund Investors (12) | -13,469 | 21.239% | 20.692% | -0.546pp |
+| PSCMAN | +76 | — | — | — |
+
+**Portfolio Analysis** (in-process; the dev server dropped non-deterministically on these):
+| entity | verdict | detail |
+|---|---|---|
+| **TGA22** | **MOVED, materially** | TGAM **+2,155,940** (10.189% -> 10.316%), PSC1 **+239,549** (10.162% -> 10.310%), **PSCMAN -2,211,948** |
+| TGA23 | moved slightly | INV23 -38,580 (35.756% -> 35.338%), TGAM +38,580; PSCMAN unchanged |
+| TGA24 | unchanged | — |
+| TGA25 | unchanged | — |
+
+**PSCKOC also moves** — its members' returns are computed from TGA22, which is the entity
+that shifts most.
+
+### Reading the TGA22 movement
+It is in the right direction and the old behaviour was the bug: TGA22's Cap_WF is
+tie 10 `Pref` 8% (TGAM .90 / PSC1 .10) -> tie 20 ROC -> tie 25 IRR -> tie 30 promote
+(PSCMAN .20 / TGAM .72 / PSC1 .08). Accruing the first period's pref moves cash into tie 10
+and out of tie 30, so PSCMAN's promote falls and the capital members gain — split 90/10
+between TGAM and PSC1, which is exactly what the numbers show. TGA22's states are seeded
+from real accounting, so pref *should* have been accruing from the contribution dates all
+along.
+
+**NOT DEPLOYED.** $2.2M moving off PSCMAN on TGA22 is a large enough correction that Jim
+should authorise it before it reaches the live app. The commit is on `main` only.
