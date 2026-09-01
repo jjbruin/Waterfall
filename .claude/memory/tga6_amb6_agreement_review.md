@@ -348,3 +348,51 @@ along.
 
 **NOT DEPLOYED.** $2.2M moving off PSCMAN on TGA22 is a large enough correction that Jim
 should authorise it before it reaches the live app. The commit is on `main` only.
+
+
+## TIAA hurdle-rate convention across the TGA series (Jim, Sep 1 2026)
+
+> "The 9% rate with TIAA began with TGA6. Everything before that had an 8% hurdle before
+> PSC could earn its promote."
+
+Verified against `waterfalls` — every rate already matches, nothing to change:
+
+| entity | Pref | IRR gate |
+|---|---|---|
+| TGA22 | 8% | 8% |
+| TGA23 / TGA24 / TGA25 | 8% | (no IRR step) |
+| **TGA6** | **9%** | **9%** |
+
+**This retires a change I was about to propose.** After Jim's earlier remark that PSC earns
+no TGA22 promote "until TIAA has a net 9% IRR on everything but the LifeStorage investment",
+I had flagged TGA22's 8% as wrong and was going to raise it to 9%. It is CORRECT at 8% —
+the 9% is TGA6-era only. Asking rather than shipping was what caught it.
+
+## TGA22 / LifeStorage — what IS still wrong
+`PEGASU` = **Pegasus Life Storage** = P0000066, the LifeStorage investment inside TGA22.
+
+- **Already correct**: no AM fee on LifeStorage. Both waterfalls carry
+  `TGAM;exclude:PEGASU` and `PSC1;exclude:PEGASU` at tie 900/901.
+- **Already correct**: the 8% hurdle on the rest of the portfolio (tie 25 `IRR` @ 0.08).
+- **MISSING**: the **10% IRR hurdle on LifeStorage**. PSC's promote should not release until
+  TIAA clears 8% net on everything *except* LifeStorage **and** 10% on LifeStorage — two
+  hurdles, both required. The model tests one blended 8% IRR over TIAA's whole TGA22
+  cashflow history, so the promote at tie 30 (PSCMAN .20) very likely releases earlier than
+  the real terms allow.
+
+**Consequence for the pref-fix blast radius**: the $2.2M measured moving off PSCMAN on TGA22
+is movement inside a promote gate that does not implement TGA22's terms. It should not be
+read as the cost of the pref fix.
+
+## The provenance gap — now THREE independent instances
+Partitioning TIAA's TGA22 cashflows by source investment is the same missing capability as
+AMB6 §8.4(b) (promote receipts vs investment receipts) and the TGA6 20-vs-10 split inside
+INV6's 30%. One feature — a **source-investment tag carried on each credited distribution** —
+unlocks all three.
+
+Tractable, not speculative: the upstream runner already walks cash up per deal, so the source
+is known at allocation time and simply discarded; accounting rows carry `InvestmentID` for
+the realized side; and `build_amfee_exclusions` already partitions *capital* by investment.
+The natural surface is to let `IRR` steps take the same `vNotes` syntax `AMFee` already
+supports — `exclude:PEGASU` / `include:PEGASU` — so TGA22 becomes two IRR steps:
+`IRR 8% exclude:PEGASU` and `IRR 10% include:PEGASU`, promote gated behind both.
