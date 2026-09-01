@@ -19,6 +19,7 @@
 - [scenario_analysis.md](scenario_analysis.md) — NB scenario analysis: saved scenarios (OP model / Base Case / lease-risk downsides) with dropdown on Prospect Deal Analysis
 - [valuation_nav_module.md](valuation_nav_module.md) — Design (Aug 2026, not built): annual valuation review/approval + auditor NAV package module under Asset Management
 - [allocation_scenarios_plan.md](allocation_scenarios_plan.md) — PLAN (Sep 1 2026, not built): scenario-scoped PPI stacks so a $ slice of a deal can be diverted to another JV without losing the base case, + net-returns one-page PDF and JV allocation roll-up
+- [commit_review_charlene.md](commit_review_charlene.md) — review of all 83 Charlene commits for symptom-vs-root-cause; the dev-deal special-casing cluster and the two self-declared per-deal hardcodes. Deploy rule lives in CLAUDE.md.
 - [psckoc_structure.md](psckoc_structure.md) — PSC KOC I LLC terms RECOVERED from the Belair net-returns PDF (8% coupon pari-passu 85/15, 1.50% accruing AM fee, 20% catch-up, $15k venture costs); the prior agreement-reading session and its step rows are GONE
 
 ## Project Overview

@@ -115,6 +115,32 @@ waterfall-xirr/
 - Default login: admin / admin
 
 ### Deploying Changes
+
+**BEFORE DEPLOYING ANY COMMIT: review it for symptom repair, and tell Jim first.**
+(Jim's standing instruction, Sep 1 2026, after `50695d9` shipped an override that
+zeroed correct data on 12 deals.)
+
+Fix problems, not symptoms. Read the diff and ask what the commit is actually doing:
+
+- Does it **suppress, zero, blank, force or special-case** a value rather than correct
+  the computation that produced it? A value overridden downstream is still computed
+  wrong upstream, and every other consumer keeps reading the wrong one.
+- Is the **trigger a proxy** for the thing it claims to detect? (`50695d9` keyed off
+  the presence of a `2015-12-31` row in MRI's export — an export artifact — to infer
+  "this deal has no baseline".)
+- Does the stated rationale **hold for every deal it touches**? Enumerate the affected
+  rows from live data and check. `50695d9`'s rationale held for 2 of the 12 it acted on.
+- Does it use a **sentinel value** where the answer is "unknown"? Return `None`, never
+  `0` — a `0` that means "no data" is indistinguishable from a real zero to every
+  consumer, and only renders as a dash because `fmtMil()` happens to treat `0` as `—`.
+- Is it a **per-deal hardcode** (a vcode in a constant)? Those are always symptom
+  repairs, however well documented.
+
+Verifying that a commit does what its message says is NOT the same as verifying the
+premise. Both are required. When a commit is a symptom repair — even a well-reasoned,
+well-documented one — say so to Jim, with the affected deals and figures, and get his
+call BEFORE building the image. Deploy is not the place to discover the question.
+
 All deploys use Azure CLI (GitHub Actions secrets are not configured).
 
 **Tag every image with the commit SHA it was built from, and deploy that tag — never `:latest`.**
