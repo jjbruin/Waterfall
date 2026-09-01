@@ -527,3 +527,34 @@ obligations.
    `Contribution: Investments`, so Operating Capital, Partnership Expenses and the other
    contribution types are excluded from the running balance — worth confirming that is
    deliberate.
+
+
+## UNBLOCKED — accounting is booking the missing AMB6 contributions (Jim, Sep 1 2026)
+
+When they land in MRI `IA_Contribution` and the feed is refreshed, do this in order:
+
+1. **Re-derive the Exhibit C band from FUNDED capital.** Sum `MajorType='Contribution'`
+   for AMB6 excluding PSC1 (a Peaceable Class A Member). The band is
+   `floor(funded / 250,000)` steps at 1.818pp each: $250k -> 1.82%/98.18% … $11.0M ->
+   80%/20%. The obligation basis suggests ~45.45% non-Peaceable / ~54.55% Class B, but
+   **use the funded figure — do not ship the obligation number.**
+2. **Configure §8.4(b)**, mechanism already proven (see the Promote_WF section above):
+   TGA6 tie 30 -> TGAM `Share` .70 / INV6 `Tag` .10 'Residual Split' / INV6PU `Tag` .20
+   'Promote Split'; an AMB6 `Promote_WF` at the Exhibit C split with **PSC1 omitted**;
+   and a durable route for INV6PU into AMB6 (still needs its own harness test — a
+   `relationships` row is wiped by MRI refresh, and the NB closure may treat a
+   waterfall-bearing distribution child as terminal).
+
+### EXPECT AM-SIDE MOVEMENT, and re-measure before/after
+Booking the contributions changes seeded capital, not just the fee base:
+- **AMB6's 0.5% Quarterly Manager Fee** is charged per member off
+  `source_ist.total_capital_outstanding`. On the AM path (Portfolio Analysis / PSCKOC)
+  states seed from accounting, so the 12 outside members currently seed at **zero capital
+  and therefore ~zero fee**. Once booked, PSCMAN's AMB6 fee income rises materially.
+  (The NB/Windsor path is unaffected — it seeds synthetically via `_cascade_seed` from the
+  vehicle, which is why an AM Fee of 9,575/yr already shows there.)
+- Any AMB6 member IRR/MOIC on the AM side currently has no contribution leg, so those
+  figures are not meaningful today and will become so.
+
+Use the same harness as the pref-fix blast radius (`scratchpad/blast_inproc.py`, in-process,
+the dev server drops on these computes) to capture before/after across AMB6 and PSCKOC.
