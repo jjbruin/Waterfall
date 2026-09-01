@@ -206,21 +206,32 @@ function onSaveValue(p: { vcode: string; field: string; value: string | number |
   })
 }
 
+/** Splice a footnote mutation's response back into the Financial subtab.
+ *
+ *  Both `footnotes` and `footnote_marks` must move together: the markers on
+ *  the column headers and the property names are numbers into that exact list,
+ *  so replacing one without the other would leave a marker pointing at a
+ *  footnote that has been renumbered or removed. The server composes both from
+ *  one call (`_footnote_payload`), which is why they cannot disagree.
+ */
+function applyFootnotes(data: any) {
+  const fin = bundle.value?.subtabs?.financial
+  if (!fin) return
+  fin.footnotes = data?.footnotes || []
+  fin.footnote_marks = data?.footnote_marks || { column: {}, property: {} }
+}
+
 function onAddFootnote(p: { anchor: string; text: string }) {
   withSave(async () => {
     const res = await api.post(`${BASE}/footnote`, { ...ctx(), ...p })
-    if (bundle.value?.subtabs?.financial) {
-      bundle.value.subtabs.financial.footnotes = res.data.footnotes || []
-    }
+    applyFootnotes(res.data)
   }, 'Footnote added')
 }
 
 function onRemoveFootnote(id: number) {
   withSave(async () => {
     const res = await api.delete(`${BASE}/footnote/${id}`, { params: ctx() })
-    if (bundle.value?.subtabs?.financial) {
-      bundle.value.subtabs.financial.footnotes = res.data.footnotes || []
-    }
+    applyFootnotes(res.data)
   }, 'Footnote removed')
 }
 

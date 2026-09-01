@@ -88,6 +88,19 @@ Zone C — manual entry, never derived (formula TBD)
     allocation) the computation drops into the body of those two functions and
     nothing in the assembly changes.
 
+TOTAL CURRENT FUNDING, the row directly under Portfolio Totals, is the FUNDED
+twin of it over the same population. It is a subtotal of figures the rows above
+already carry from the One Pager cap stack, not a new metric — see
+``FUNDING_SOURCE_FIELDS`` for which cap-stack value each column sums and why the
+Debt and Total Pref legs deliberately differ from the columns they sit under.
+
+FOOTNOTES are placed by SCOPE. A footnote about how a COLUMN is calculated puts
+its number on that column header; one about a PROPERTY puts it next to that
+deal's name. The page's standing notes and the analyst-entered rows are numbered
+together in ONE sequence, and the UI renders the resulting marker index rather
+than deciding anything — see ``COLUMN_ANCHORS`` / ``STANDING_FOOTNOTES`` /
+``compose_footnotes``.
+
 Totals: per-fund subtotals and a portfolio total over **all** deals, labelled
 with the reference PDF's wording via ``portfolio_snapshot_service`` (so the
 three table subtabs cannot drift apart), plus an "Excluding Development Deals"
@@ -122,6 +135,184 @@ MANUAL_FIELDS = ("net_roe", "itd")
 #: What a manual figure's ``*_source`` cell reads. One constant so the assembly
 #: and the save endpoint cannot describe the same cell differently.
 MANUAL_SOURCE = "manual entry (formula TBD)"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# FOOTNOTES — one registry, placement driven by SCOPE
+# ══════════════════════════════════════════════════════════════════════════
+#: anchor key -> where its marker belongs.
+#:
+#: THE RULE, and the only rule: a footnote that describes how an entire COLUMN
+#: is calculated or treated puts its number on that COLUMN HEADER; a footnote
+#: about one PROPERTY puts its number next to that PROPERTY'S NAME. Nothing in
+#: the UI decides this — it renders ``footnote_marks`` (below), which this map
+#: produces, so the two cannot disagree and a new footnote needs no UI change.
+#:
+#: ``column`` is the per-row field key the header sits over, so the marker and
+#: the cells beneath it are named by the same string.
+#:
+#: A property anchor is ``deal:<VCODE>``; it is not enumerated here because the
+#: population changes every quarter. ``footnote_scope`` parses it, and
+#: ``property_anchor``/``anchor_choices`` build the list the UI offers, so an
+#: analyst can attach a footnote to any deal on the page WITHOUT a code change.
+COLUMN_ANCHORS: dict[str, str] = {
+    # anchor key            -> column field key
+    "debt": "debt",
+    "total_pref": "total_pref",
+    "ptr_equity": "ptr_equity",
+    "total_cap": "total_cap",
+    "pct_of_pref": "pct_of_pref",
+    "invested": "invested",
+    "unfunded": "unfunded",
+    "total_commitment": "total_commitment",
+    # Stored anchor key kept as-is for footnotes already in the database; the
+    # column it marks is `itd`.
+    "itd_distributions": "itd",
+    "net_roe": "net_roe",
+}
+
+#: Column field key -> the header label, for the footnote list's "where it
+#: sits" line and for the anchor picker.
+COLUMN_LABELS: dict[str, str] = {
+    "debt": "Debt",
+    "total_pref": "Total Pref",
+    "ptr_equity": "Ptr. Equity",
+    "total_cap": "Total Cap",
+    "pct_of_pref": "% of Pref",
+    "invested": "Invested",
+    "unfunded": "Un-funded",
+    "total_commitment": "Total Commitment",
+    "itd": "ITD Distributions",
+    "net_roe": "Net ROE",
+}
+
+PROPERTY_ANCHOR_PREFIX = "deal:"
+
+
+def property_anchor(vcode: str) -> str:
+    """The anchor key that puts a marker on one deal's property name."""
+    return PROPERTY_ANCHOR_PREFIX + str(vcode or "").strip().upper()
+
+
+#: Footnotes that are part of the page itself rather than analyst commentary,
+#: transcribed from the reference PDF. Declared as DATA, with an anchor and no
+#: number: numbering is assigned by ``compose_footnotes`` over the whole list,
+#: so adding, removing or re-anchoring one is a one-line edit here and every
+#: marker follows automatically.
+#:
+#: The PDF's own numbering is NOT preserved. It could not be: the PDF's (3)
+#: ("Distributions held less than one year and have depressed ROEs that will
+#: stabilize over time") is removed at the author's instruction, and keeping the
+#: gap would print (1)(2)(4)(5)(6). It also never worked — these were numbered
+#: 2/3/6 by hand while the database footnotes numbered themselves from 1, so two
+#: different footnotes could both print as "(2)". One sequence over one list is
+#: what makes every marker point at the right note.
+#:
+#: Order here is the reader's order down the page: the column notes first,
+#: left to right, then the property notes.
+STANDING_FOOTNOTES: tuple = (
+    {"anchor": "debt",
+     "text": "Debt amount is current as of quarter end except for development "
+             "deals, which reflects fully funded debt amount at construction "
+             "completion."},
+    {"anchor": property_anchor("PCITWES"),
+     "text": "City West is excluded from ROE calculations."},
+)
+
+
+def footnote_scope(anchor: str) -> dict:
+    """``{"scope", "column"|"vcode", "label"}`` for one anchor key.
+
+    An anchor nobody recognises degrades to a column-scoped marker on nothing —
+    it still gets a number and still prints in the list, so a footnote can never
+    silently vanish because its anchor was mistyped.
+    """
+    key = str(anchor or "").strip()
+    if key.lower().startswith(PROPERTY_ANCHOR_PREFIX):
+        vc = key[len(PROPERTY_ANCHOR_PREFIX):].strip().upper()
+        return {"scope": "property", "vcode": vc, "column": None, "label": vc}
+    col = COLUMN_ANCHORS.get(key)
+    if col:
+        return {"scope": "column", "vcode": None, "column": col,
+                "label": COLUMN_LABELS.get(col, col)}
+    return {"scope": "column", "vcode": None, "column": None,
+            "label": key or "(unanchored)"}
+
+
+def compose_footnotes(db_rows: Optional[list] = None,
+                      vcodes: Optional[set] = None) -> list:
+    """The page's footnotes as ONE numbered, scope-resolved list.
+
+    Standing notes first (declaration order), then the analyst-entered rows in
+    the order persistence returns them, renumbered 1..N across both. The
+    database rows keep their ``id`` so they stay removable; a standing note has
+    ``id`` None and ``standing`` True, which is what the UI's remove button
+    keys off.
+
+    Numbering is derived here and nowhere else, so a marker on a header or a
+    property name and the entry in the list are the same integer by
+    construction.
+
+    ``vcodes`` is the population actually on the page. A property-scoped
+    footnote whose deal is NOT on it is dropped before numbering: City West is
+    on the report at 26Q1 (kept despite foreclosure) but gone by 26Q2, and its
+    footnote would otherwise print with a number that appears nowhere in the
+    table. Nothing is lost — the database row survives and the note returns the
+    moment the deal does. Numbering closes over the gap, which is the whole
+    reason numbers are assigned here rather than stored.
+    """
+    on_page = None if vcodes is None else {
+        str(v).strip().upper() for v in vcodes}
+    out: list = []
+    for f in STANDING_FOOTNOTES:
+        out.append({"id": None, "standing": True,
+                    "anchor": f["anchor"], "text": f["text"]})
+    for r in (db_rows or []):
+        out.append({"id": r.get("id"), "standing": False,
+                    "anchor": r.get("anchor") or "",
+                    "text": r.get("text") or ""})
+    kept: list = []
+    for f in out:
+        f.update(footnote_scope(f["anchor"]))
+        if (on_page is not None and f["scope"] == "property"
+                and f.get("vcode") not in on_page):
+            continue
+        kept.append(f)
+    for i, f in enumerate(kept, start=1):
+        f["number"] = i
+    return kept
+
+
+def footnote_marks(composed: list) -> dict:
+    """``{"column": {col: [n]}, "property": {vcode: [n]}}`` for the renderer.
+
+    The UI looks a marker up by the column key it is already rendering, or by
+    the row's vcode. It performs no scope logic of its own.
+    """
+    marks: dict = {"column": {}, "property": {}}
+    for f in composed or []:
+        if f.get("scope") == "property" and f.get("vcode"):
+            marks["property"].setdefault(f["vcode"], []).append(f["number"])
+        elif f.get("column"):
+            marks["column"].setdefault(f["column"], []).append(f["number"])
+    return marks
+
+
+def anchor_choices(rows: Optional[list] = None) -> list:
+    """What the "Add footnote" picker offers: every column, then every deal.
+
+    Built from the report's own rows, so the property options are exactly the
+    deals on the page this quarter and adding a property-scoped footnote never
+    needs a code change.
+    """
+    out = [{"key": a, "label": COLUMN_LABELS.get(c, c), "scope": "column"}
+           for a, c in COLUMN_ANCHORS.items()]
+    for r in (rows or []):
+        out.append({"key": property_anchor(r.get("vcode")),
+                    "label": r.get("name") or r.get("vcode"),
+                    "scope": "property"})
+    return out
+# ══════════════════════════════════════════════════════════════════════════
 
 
 def manual_display(field: str, value, na_cells=None):
@@ -317,6 +508,80 @@ def _load_footnotes(investor_code: str, quarter: str) -> list:
         return []
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# "Total Current Funding" — the FUNDED-basis twin of Portfolio Totals
+# ══════════════════════════════════════════════════════════════════════════
+#: Printed column -> the per-deal field it sums.
+#:
+#: EVERY FIELD HERE IS ALREADY ON THE ROW, straight from the One Pager cap
+#: stack. This row is a SUBTOTAL OF EXISTING DATA, not a new metric: nothing is
+#: recomputed, no new source is read, and each column is the sum of the same
+#: figure the One Pager publishes per deal.
+#:
+#:   debt        <- cap_stack.debt_isbs      the balance-sheet debt drawn as of
+#:                  quarter end. NOT the row's printed ``debt``, which for a
+#:                  development deal is rebased onto the committed facility at
+#:                  construction completion (footnote on the Debt header) and is
+#:                  therefore not funded-to-date.
+#:   total_pref  <- cap_stack.pref_equity    FUNDED pref. The Total Pref column
+#:                  above prints the COMMITTED tranche; this row is the funded
+#:                  basis, which is the whole point of it.
+#:   ptr_equity  <- cap_stack.partner_equity already funded — unchanged.
+#:   total_cap   <- the three above, per deal, so the row foots across.
+FUNDING_SOURCE_FIELDS: dict[str, str] = {
+    "debt": "debt_isbs",
+    "total_pref": "funded_pref",
+    "ptr_equity": "ptr_equity",
+    "total_cap": "total_cap_funded",
+}
+
+#: cap-stack key behind each of those, for the payload's own audit trail.
+FUNDING_SOURCE_LABELS: dict[str, str] = {
+    "debt": "cap_stack.debt_isbs (funded to date)",
+    "total_pref": "cap_stack.pref_equity (funded, not committed)",
+    "ptr_equity": "cap_stack.partner_equity (funded)",
+    "total_cap": "debt_isbs + pref_equity + partner_equity, per deal",
+}
+
+FUNDING_TOTAL_LABEL = "Total Current Funding"
+
+
+def _funding_total(rows: list, label: str = FUNDING_TOTAL_LABEL) -> dict:
+    """Per-column funded-to-date totals over ``rows``.
+
+    Each column is its OWN total across every deal — four independent sums, not
+    one figure repeated. A column sums only the deals that carry that figure and
+    reports how many those were, so a partial column is visible rather than
+    quietly low; a column no deal carries is ``None``, never 0.
+    """
+    out: dict = {"label": label, "deal_count": len(rows)}
+    for col, field in FUNDING_SOURCE_FIELDS.items():
+        vals = [r[field] for r in rows if r.get(field) is not None]
+        out[col] = sum(vals) if vals else None
+        out[col + "_source"] = FUNDING_SOURCE_LABELS[col]
+        out[col + "_deal_count"] = len(vals)
+        out[col + "_missing"] = sorted(r["vcode"] for r in rows
+                                       if r.get(field) is None)
+    # The independent ISBS twin of Total Cap (cap_stack.total_cap_isbs summed),
+    # carried so the derived total can be checked against the One Pager's own
+    # funded-basis figure without recomputing anything.
+    twin = [r["total_cap_funded_basis"] for r in rows
+            if r.get("total_cap_funded_basis") is not None]
+    out["total_cap_isbs_sum"] = sum(twin) if twin else None
+    parts = [out.get(c) for c in ("debt", "total_pref", "ptr_equity")]
+    out["foots"] = (out.get("total_cap") is not None
+                    and all(p is not None for p in parts)
+                    and abs(out["total_cap"] - sum(parts)) < 1.0)
+    out["basis"] = (
+        "Funded to date. Sum of the One Pager cap-stack values each deal "
+        "already carries — Debt is the quarter-end balance-sheet balance (not "
+        "the development rebase on the Debt column above), Total Pref is FUNDED "
+        "pref (not the committed tranche above), Ptr Equity is funded partner "
+        "equity, and Total Cap is the three added per deal.")
+    return out
+# ══════════════════════════════════════════════════════════════════════════
+
+
 def _subtotal(rows: list, label: str) -> dict:
     """Sum the dollar columns; recompute ratios from the sums."""
     out = {"label": label, "deal_count": len(rows)}
@@ -384,7 +649,8 @@ def assemble_financial(investor_code: str, quarter: str, *,
     committed_of = committed_debt_provider or (lambda vcode: None)
 
     manual = (manual_loader or _load_manual)(investor_code, quarter) or {}
-    footnotes = (footnote_loader or _load_footnotes)(investor_code, quarter) or []
+    db_footnotes = (footnote_loader
+                    or _load_footnotes)(investor_code, quarter) or []
 
     diag = {"deals": 0, "dev": 0, "provider_errors": 0,
             "pct_unavailable": 0, "commitment_missing": 0,
@@ -486,6 +752,16 @@ def assemble_financial(investor_code: str, quarter: str, *,
         total_cap_funded_basis = _num(
             cap.get("total_cap_isbs", cap.get("total_cap")))
 
+        # The funded-basis Total Cap this deal contributes to the "Total Current
+        # Funding" row: the same three cap-stack figures added, on the funded
+        # basis throughout. None — never 0 — when any leg is missing, so a deal
+        # with an unknown component drops out of the column and is named in
+        # ``total_cap_missing`` instead of dragging the total down by a
+        # fabricated zero.
+        total_cap_funded = (
+            None if None in (debt_isbs, funded_pref, ptr_equity)
+            else debt_isbs + funded_pref + ptr_equity)
+
         # ---- Zone B: the four scaled columns ----
         #
         # THE PE BASIS, not the deal-level look-through. Every dollar scaled
@@ -578,6 +854,8 @@ def assemble_financial(investor_code: str, quarter: str, *,
             "funded_pref": funded_pref,
             "pref_basis": pref_basis,
             "total_cap_funded_basis": total_cap_funded_basis,
+            # The funded-basis leg of the "Total Current Funding" row.
+            "total_cap_funded": total_cap_funded,
             "debt_pct": _num(cap.get("debt_pct")),
             "pref_pct": _num(cap.get("pref_equity_pct")),
             "ptr_pct": _num(cap.get("partner_equity_pct")),
@@ -621,6 +899,22 @@ def assemble_financial(investor_code: str, quarter: str, *,
     #
     total_rows = all_rows + flagged_rows
     total = _subtotal(total_rows, PORTFOLIO_TOTAL_LABEL)
+
+    # "Total Current Funding" — the row directly under Portfolio Totals. Same
+    # population, funded basis, and every figure a sum of values these rows
+    # already carry from the One Pager cap stack.
+    total_current_funding = _funding_total(total_rows)
+    diag["funding_row_foots"] = bool(total_current_funding.get("foots"))
+
+    composed_footnotes = compose_footnotes(
+        db_footnotes, vcodes={r["vcode"] for r in total_rows})
+    diag["footnotes"] = len(composed_footnotes)
+    diag["footnotes_property_scoped"] = sum(
+        1 for f in composed_footnotes if f.get("scope") == "property")
+    # Footnotes withheld because the deal they are about is not on this
+    # quarter's page — counted rather than dropped silently.
+    diag["footnotes_off_page"] = (
+        len(compose_footnotes(db_footnotes)) - len(composed_footnotes))
 
     # ---- "Excluding Development Deals", the row under Portfolio Totals ----
     #
@@ -672,8 +966,14 @@ def assemble_financial(investor_code: str, quarter: str, *,
         "groups": groups,
         "ownership_flagged": flagged_rows,
         "total": total,
+        "total_current_funding": total_current_funding,
         "total_excluding_dev": total_excluding_dev,
-        "footnotes": footnotes,
+        # ONE numbered list over the standing notes and the analyst-entered
+        # rows, with each entry's scope resolved, plus the marker index the
+        # headers and property names render from. See compose_footnotes.
+        "footnotes": composed_footnotes,
+        "footnote_marks": footnote_marks(composed_footnotes),
+        "footnote_anchors": anchor_choices(total_rows),
         "diagnostics": diag,
     }
 
@@ -962,8 +1262,21 @@ def _selftest():                                    # pragma: no cover
     chk("every ownership-flagged deal withholds Zone B",
         all(x["pct_of_pref"] is None and x["invested"] is None
             for x in out["ownership_flagged"]))
-    chk("2 footnotes carried, numbered 1..2",
-        [f_["number"] for f_ in out["footnotes"]] == [1, 2])
+    # The standing notes and the two the self-test entered are ONE sequence —
+    # see compose_footnotes. Two standing plus two entered is 1..4, and the
+    # numbering must be contiguous whatever the counts are.
+    n_standing = len(STANDING_FOOTNOTES)
+    chk(f"{n_standing} standing + 2 entered footnotes, numbered contiguously",
+        [f_["number"] for f_ in out["footnotes"]]
+        == list(range(1, n_standing + 3)))
+    chk("the Debt footnote's number is on the Debt COLUMN header",
+        any(f_["scope"] == "column" and f_["column"] == "debt"
+            for f_ in out["footnotes"])
+        and bool((out["footnote_marks"]["column"] or {}).get("debt")))
+    chk("the City West footnote's number is on the PROPERTY, not a header",
+        bool((out["footnote_marks"]["property"] or {}).get("PCITWES")))
+    chk("the removed footnote (3) is gone",
+        not any("depressed ROEs" in f_["text"] for f_ in out["footnotes"]))
     chk("subtotals sum their deals (Individual Investments invested)",
         abs((out["groups"].get("Individual Investments", {})
              .get("subtotal", {}).get("invested") or 0)

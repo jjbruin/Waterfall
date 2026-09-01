@@ -391,10 +391,32 @@ onMounted(async () => {
   :deep(tr) { break-inside: avoid; page-break-inside: avoid; }
 
   /* ---- internal markers are not part of the document ----
-     "DEV", "CHILD", the "!" flag dots and the "*" exception star are working
-     annotations for an analyst reading the screen. The reference document shows
-     none of them: a development deal simply reads n/a. Hidden rather than
-     removed, because on screen they are how a reader knows WHY a cell is n/a. */
+     "DEV", "CHILD", "NEW", the "!" flag dots and the "*" exception star are
+     working annotations for an analyst reading the screen. The reference
+     document shows none of them: a development deal simply reads n/a. Hidden
+     rather than removed, because on screen they are how a reader knows WHY a
+     cell is n/a.
+
+     `.tag` covers every variant — the plain "Dev", `.tag.new` on Operating and
+     `.tag.alt` ("child") on Loan — because they all carry the base class. No
+     "?" marker exists on any subtab; if one is ever added it must be added to
+     this list, and `scripts/snapshot_print_markers_check.py` fails if a new
+     marker class appears that is not suppressed here. */
   :deep(.tag), :deep(.warn-dot), :deep(.star) { display: none !important; }
+
+  /* NOT hidden: `.fnmark`, the footnote marker on a property name. It sits in
+     the same cell as the star and the flag dots and looks like more of the
+     same, but it is part of the published document — it is what ties City West
+     to its footnote. Stated here so a later tidy-up does not sweep it in with
+     the annotations above. */
+
+  /* ---- small auto-written notes beside the figures ----
+     Text the app composes to explain a row, as opposed to data or an authored
+     footnote: the deal counts appended to the Financial excluding-development
+     label, and the Loan tab's "summary ratios already exclude..." aside. Both
+     read as clutter next to the numbers on paper and neither is on the
+     reference document. The labels and every figure stay. */
+  :deep(.exdev-n) { display: none !important; }
+  :deep(tfoot .note) { display: none !important; }
 }
 </style>

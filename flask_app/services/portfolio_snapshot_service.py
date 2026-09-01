@@ -103,9 +103,35 @@ def _is_op(entity: str) -> bool:
 # _classify_entities, i.e. exclude sold-after-quarter-end deals from the fund
 # tally while still reporting them. That needs a guardrail run across all
 # investors, which this change does not have.
+#
+# ── Jefferson Eastchase: an EDITORIAL override, not a data correction ─────
+# FLAGGED FOR JIM. Requested by the report author (work order, Sep 1 2026);
+# the ownership feed does NOT support it and neither does the reference PDF.
+#
+# What the data says, read live 2026-09-01 on Azure PG:
+#     EASTCH  <- PPIECH 100%  (OPJPI 0%)
+#     PPIECH  <- TGA23 68.0504% | INVECH 16.6383% (owned 100% by PSC1)
+#                              | ERIBPI 15.3113%
+#     TGA23   <- TGAM 90%
+# ONE route from TGAM, first hop TGA23, which reaches 8 held deals and is
+# therefore a fund by FUND_MIN_DEALS. 0.90 x 0.680504 = 61.2454%, which is the
+# 61% the reference PDF itself prints for this deal — inside its
+# "Total PSC TGA 2023 LLC" block, not Individual Investments. TIAA has no
+# direct or SPV route to Eastchase: INVECH is Peaceable's own co-invest and
+# ERIBPI is a third party, and neither is reachable from TGAM.
+#
+# So there is nothing to "fix" upstream: the grouping rule is reading correct
+# data correctly. This entry is a presentation decision recorded as one, and
+# per the standing rule on per-deal hardcodes it should be confirmed rather
+# than assumed. Its effect is a transfer between two subtotals — TGA23 loses
+# Eastchase, Individual Investments gains it — and Portfolio Totals, the
+# excluding-development row and every deal-level figure are untouched.
+# If the intent is instead that TIAA holds Eastchase outside TGA 2023, the
+# durable fix is an ownership row in MRI and this entry should be deleted.
 GROUP_OVERRIDES: dict[str, str] = {
     "P0000019": INDIVIDUAL_GROUP,      # Giant 7
     "P0000017": INDIVIDUAL_GROUP,      # East Manchester
+    "P0000085": INDIVIDUAL_GROUP,      # Jefferson Eastchase — see the note above
 }
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -732,6 +758,18 @@ def resolve_investor_deals(investor_code: str, quarter: str,
     is_fund = _classify_entities({vc: r for vc, r in routes_by_deal.items()
                                  if vc not in kept_vcodes})
 
+    # An editorial placement must not be invisible: record every override that
+    # actually fired, with the group the traversal would have chosen on its own.
+    # ``_group_for("", ...)`` is the same function with the override lookup
+    # missed deliberately (no vcode is ""), so the "derived" group is the real
+    # rule's answer rather than a re-implementation of it.
+    overrides_applied = [
+        {"vcode": vc, "name": deals[vc]["name"],
+         "forced_group": GROUP_OVERRIDES[vc],
+         "derived_group": _group_for("", routes, is_fund)[0]}
+        for vc, routes in sorted(routes_by_deal.items())
+        if vc in GROUP_OVERRIDES]
+
     groups: dict[str, list] = {}
     for vc, routes in routes_by_deal.items():
         m = deals[vc]
@@ -844,6 +882,10 @@ def resolve_investor_deals(investor_code: str, quarter: str,
             "acquisition_date_missing": acquisition_date_missing,
             "fund_entities": sorted(e for e, f in is_fund.items() if f),
             "spv_entities": sorted(e for e, f in is_fund.items() if not f),
+            # Which deals were placed by GROUP_OVERRIDES rather than by the
+            # traversal, and where the traversal would have put them. Recorded
+            # so an editorial placement is never invisible in the payload.
+            "group_overrides_applied": overrides_applied,
         },
     }
 

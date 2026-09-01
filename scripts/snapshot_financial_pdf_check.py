@@ -79,6 +79,22 @@ _PDF_PORTFOLIO = (1386.0, 595.3, 308.4, 2258.9, 0.68, 404.2, 40.9, 445.1)
 _PDF_EXDEV_COMMITMENT = 299.3
 _PDF_INDIVIDUAL_MEMBERS = set(_PDF.keys())
 
+#: Deals the app deliberately shows in Individual Investments that the
+#: reference PDF does NOT. Each is an editorial placement recorded in
+#: ``portfolio_snapshot_service.GROUP_OVERRIDES``, so this check reports the
+#: divergence instead of failing on it — a divergence nobody declared still
+#: fails, which is the point of listing them.
+#:
+#:   P0000085 Jefferson Eastchase — the PDF prints it inside "Total PSC TGA
+#:   2023 LLC" at 61%, and the ownership feed agrees (one route, TGAM 90% of
+#:   TGA23 x TGA23 68.0504% of PPIECH). Moved at the report author's request,
+#:   Sep 1 2026. See the note above GROUP_OVERRIDES.
+#:
+#: The TGA23 and Individual Investments GROUP TOTALS therefore no longer tie
+#: the PDF either, by exactly this deal's figures. That is a value difference,
+#: scored in the values section, not a structural failure.
+DELIBERATE_EXTRA_INDIVIDUAL = {"P0000085"}
+
 COLS = ("debt", "total_pref", "ptr_equity", "total_cap", "pct_of_pref",
         "invested", "unfunded", "total_commitment")
 
@@ -231,8 +247,12 @@ def main():
 
     if pdf_scope:
         indiv = {r["vcode"] for r in out["groups"]["Individual Investments"]["deals"]}
-        struct.append(("Individual Investments holds exactly the PDF's 8 deals",
-                       indiv == _PDF_INDIVIDUAL_MEMBERS))
+        struct.append(("Individual Investments holds the PDF's 8 deals plus "
+                       "only the declared editorial additions",
+                       indiv == (_PDF_INDIVIDUAL_MEMBERS
+                                 | DELIBERATE_EXTRA_INDIVIDUAL)))
+        struct.append(("every declared editorial addition is actually there",
+                       DELIBERATE_EXTRA_INDIVIDUAL <= indiv))
         print(f"  Individual Investments: {len(indiv)} deals")
         for vc in sorted(indiv):
             mark = []
@@ -249,7 +269,12 @@ def main():
         if missing:
             print(f"      MISSING vs PDF: {sorted(missing)}")
         if extra:
-            print(f"      EXTRA vs PDF:   {sorted(extra)}")
+            declared = sorted(extra & DELIBERATE_EXTRA_INDIVIDUAL)
+            undeclared = sorted(extra - DELIBERATE_EXTRA_INDIVIDUAL)
+            if declared:
+                print(f"      EXTRA vs PDF (declared editorial): {declared}")
+            if undeclared:
+                print(f"      EXTRA vs PDF (UNDECLARED):        {undeclared}")
 
     seen = {}
     for g, b in out["groups"].items():
