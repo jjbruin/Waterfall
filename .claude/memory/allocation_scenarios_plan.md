@@ -109,7 +109,52 @@ Equity | % Owned | {Investor} Equity | IRR | ROE | MOIC plus a bold total row.
 - Type/Strategy from `deals.Asset_Type` / investment strategy; Sale Yr from the sale-date
   cascade. Runs for TGA6 and for PSCKOC (KOC's own $5M view). Print + Excel.
 
-## Open decisions for Jim
+## ANSWERED by Jim, Sep 1 2026 (supersedes the open decisions below)
+1. **"Fully caught up in the promote" = the deal stands on its own**, not factoring in the
+   portfolio's history/performance. Combined with the Belair PDF's catch-up note
+   ("estimated based upon this investment's contribution to the PSC/KofC JV"), this means a
+   STANDALONE run: promote_base/promote_carry accumulate from this deal only.
+   **The engine already does this when running one deal — Phase 2(b) `gates_satisfied` is
+   NOT needed and is dropped from the plan.**
+2. **The $5M comes off the top**, not out of TIAA's share. So the TGA6 relationship falls
+   to 73.89% and its own 90/10 applies to the reduced base: TGAM 12,735,000 /
+   INV6 1,415,000 / PSCKOC 5,000,000 (KCREIT 4,250,000 / PSC1 750,000). PSC's co-invest
+   shrinks pro-rata alongside TIAA's.
+3. **Underwritten basis while building the portfolio** — use the underwritten projections,
+   not the AM engine's actual+forecast blend. `isbs_uw_supplements` is the load path.
+   See "TGA6 underwriting gap" below for exactly what is missing.
+4. **PSCKOC has its own fee structure** and the $5M runs completely through it — AM fees,
+   deal expenses and catch-up. Terms recovered in [psckoc_structure.md](psckoc_structure.md).
+
+## TGA6 underwriting gap (measured against Azure PG, Sep 1 2026)
+| Emailed row | PPI entity | InvestmentID | In `deals`? | UW rows | Waterfall |
+|---|---|---|---|---|---|
+| Presidential Arms | PPIPRE | PRES | yes P0000119 | **none** (108 Interim IS actual rows at 6/30/2026 only) | **none** |
+| Fairview Heights | PPIFVH | FAIRVH | yes P0000117 | **none** | **none** |
+| Elme Bethesda | PPIBET | Elme | **no row** | none | none |
+| Parma | PPIPAR | PARMA | **no row** | none | none |
+| Prestige American SS | PPISPA | AMERI | **no row** | none | none |
+
+- **`isbs_uw_supplements` today holds ONLY account 7073** (56 rows, PE disposition
+  proceeds) — it was built narrowly for the U/W ROE denominator. It has no revenue,
+  expense, NOI or debt-service accounts.
+- **But the pipe is already general**: `_append_uw_supplements()` stamps
+  `vSource='Projected IS'` on whatever rows the table holds, and those flow into
+  `isbs_raw` and the forecast assembly. So full UW projections CAN be loaded through it
+  with no code change.
+- **Lightest sufficient ask** — the roll-up needs each deal's PE cash flow stream, not a
+  full property model. Accounts **7071 (PEACEABLE CASH FLOW)** and **7073 (PEACEABLE
+  DISPOSITION PROCEEDS)** already carry exactly that, and the U/W ROE path already reads
+  both with correct sign conventions. Loading 7071 + 7073 per deal means **no deal-level
+  waterfall is required** for these five — feed the PE stream straight into the TGA6
+  upstream waterfall.
+- Also needed for the display columns: `deals` rows for Elme / PARMA / AMERI, and each
+  deal's total pref commitment, asset type, strategy and projected sale year.
+- **Underwritten-basis run mode**: the AM path always blends actuals before
+  `actuals_through`. A roll-up "as underwritten" must run with `actuals_through=None` and
+  the forecast forced to the Projected IS source — a per-run option, new but small.
+
+## Superseded open decisions (kept for the record)
 1. **"Fully caught up in the promote" — confirm the mechanics.** Reading taken above:
    the gate is treated as already met, so the slice splits at post-promote percentages
    from period one (PCBLE takes its carry share immediately). Alternative reading: the
