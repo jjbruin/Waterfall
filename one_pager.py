@@ -993,6 +993,82 @@ IS_ACCOUNTS = {
 AT_CLOSE_RESERVE_RELEASE_ACCTS = ['7083']
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# At-Close requires a Year-0 (2015-12-31) Projected IS row
+# ══════════════════════════════════════════════════════════════════════════
+#: The date MRI's underwriting carries its Year-0 baseline on. Every Projected
+#: IS row dated 2015 portfolio-wide is 2015-12-31 (626 of 108,963 rows, no
+#: other 2015 date exists), and it sits on 52 of 134 deals — including deals
+#: that closed years later, which is why it reads as a Year-0 anchor rather
+#: than as a real period.
+#:
+#: THE RULE (author's, 2026-09-01, narrowed 2026-09-01): a DEVELOPMENT deal
+#: with NO 2015-12-31 Projected IS row has no underwritten baseline to compare
+#: against, so its At-Close column is not a measurement. Those deals report 0.
+#: Everything else is untouched — values tie to the reference PDF and must not
+#: move.
+#:
+#: WHY THE DEVELOPMENT CONDITION IS LOAD-BEARING. The Year-0 row alone is far
+#: too broad a test: 21 deals hold a non-zero At-Close today and lack the row,
+#: and NINE of them are not development deals carrying figures that are simply
+#: correct — all six Town Fair Tire children (which sum to 2,291,330 against
+#: their parent's 2,305,024, and the parent HAS the row and keeps it),
+#: Quakertown Shopping Center 1,015,688, Donald Lynch 52,439 and Crowne Plaza
+#: 20,441. Missing the Year-0 anchor is a property of MRI's underwriting
+#: export, not evidence that a stabilised asset earned nothing. Only when the
+#: deal is also pre-income does the absent baseline mean the column has nothing
+#: real to report.
+AT_CLOSE_YEAR0_DATE = '2015-12-31'
+
+#: Restrict the gate to development deals. Off would restore the broad rule,
+#: which zeros the nine deals listed above — do not turn it off without
+#: re-reading that list.
+AT_CLOSE_YEAR0_DEV_ONLY = True
+
+#: Off restores the pre-rule behaviour exactly (no other branch changes), so
+#: the rule can be reverted without a code archaeology exercise.
+AT_CLOSE_REQUIRE_YEAR0_ROW = True
+
+#: WHY THE WHOLE COLUMN AND NOT THE NOI CELL ALONE.
+#:
+#: The brief says "At-Close NOI = 0". Revenue, Expenses and NOI are three rows
+#: of ONE column on the One Pager's Property Performance table, and
+#: `rev - exp == noi` holds on every deal measured (11/11 sampled live). Zeroing
+#: only the NOI cell would publish arithmetic that does not foot: Green Valley
+#: Ranch would read Revenue 0, Expenses 59,333, NOI 0, and Jefferson Addison
+#: Heights Revenue 0, Expenses 115,440, NOI 0 — a visibly broken row, and one a
+#: reader would take as a display bug rather than as "no baseline".
+#:
+#: Zeroing the column also makes the Portfolio Snapshot render an em dash
+#: rather than "$0.0": `portfolio_snapshot_operating._payload_unpopulated`
+#: treats revenue AND expenses AND noi all-zero as "the One Pager returned its
+#: untouched default". That is what the reference PDF prints for these deals —
+#: a dash, not a zero — so the wider zeroing is what matches the page.
+#:
+#: DSCR goes to None (em dash), not 0.0: a zero ratio would assert the deal
+#: cannot cover its debt service, which is a different and false claim.
+AT_CLOSE_ZERO_WHOLE_COLUMN = True
+
+
+def _has_year0_projected_row(uw_data: pd.DataFrame) -> bool:
+    """True when this deal carries a Year-0 (2015-12-31) Projected IS row.
+
+    ``uw_data`` is already ``isbs[isbs['vSource'] == 'Projected IS']`` scoped to
+    the deal, and is NOT date-filtered, so the whole underwriting history is
+    visible here — the Year-0 row is not cut off by the report quarter.
+
+    Compared on the normalised date, not the raw string: ``dtEntry`` arrives as
+    ``2015-12-31T00:00:00`` from the API and as a Timestamp from the loader, and
+    a string match would silently answer False for one of them and zero every
+    deal on the page.
+    """
+    if uw_data is None or uw_data.empty or 'dtEntry_parsed' not in uw_data.columns:
+        return False
+    target = pd.Timestamp(AT_CLOSE_YEAR0_DATE).normalize()
+    dates = pd.to_datetime(uw_data['dtEntry_parsed'], errors='coerce').dropna()
+    return bool((dates.dt.normalize() == target).any())
+
+
 def get_property_performance(
     vcode: str,
     quarter_str: str,
@@ -1529,6 +1605,46 @@ def get_property_performance(
                 perf['noi']['at_close'] = noi
                 if ds > 0:
                     perf['dscr']['at_close'] = noi / ds
+
+        # ---- Year-0 gate: dev deal + no 2015-12-31 row -> no At-Close ------
+        #
+        # Placed AFTER both branches deliberately, so it overrides a settled
+        # figure rather than being a third way of computing one. Both the
+        # at_close_noi table path and the earliest-December fallback are
+        # subject to it, and neither had to learn about it.
+        #
+        # A deal with no Projected IS at all never reaches here (this whole
+        # block is inside `if not uw_data.empty`) and already carries the
+        # seeded 0 / None, which is the same answer — so the gate does not
+        # need a branch for it.
+        #
+        # BOTH conditions are required — see AT_CLOSE_YEAR0_DEV_ONLY for the
+        # nine non-development deals the Year-0 test alone would wrongly zero.
+        #
+        # `_is_dev_deal` is the app's ONE definition (config.DEV_STRATEGIES via
+        # Investment_Strategy, falling back to the Lifecycle proxy), shared
+        # with the Portfolio Snapshot's "Dev" suppression and the dev debt
+        # basis above, so the three cannot disagree about which deals are
+        # development deals. It follows that set: Pegasus Life Storage is
+        # caught today only because Lifecycle = "New Construction" is in
+        # DEV_STRATEGIES, and drops out of this gate automatically when that
+        # value is removed — no change is needed here.
+        #
+        # inv_map is None only in build_chart_data() at the bottom of this
+        # module, where _is_dev_deal returns False and the gate no-ops. That is
+        # the safe direction (never zero a deal we cannot classify) and it
+        # costs nothing: that path reads ytd_actual, uw_ye and
+        # economic_occ.ytd_actual, never an At-Close field.
+        _gate_dev = (not AT_CLOSE_YEAR0_DEV_ONLY
+                     or _is_dev_deal(vcode_str, inv_map))
+        if (AT_CLOSE_REQUIRE_YEAR0_ROW and _gate_dev
+                and not _has_year0_projected_row(uw_data)):
+            perf['noi']['at_close'] = 0
+            if AT_CLOSE_ZERO_WHOLE_COLUMN:
+                perf['revenue']['at_close'] = 0
+                perf['expenses']['at_close'] = 0
+                perf['dscr']['at_close'] = None
+            perf['at_close_zeroed_no_year0'] = True
 
     # Economic Occupancy at Close from deal_terms (txfinancial_IC)
     # Outside the uw_data block — deal_terms is independent of ISBS data
