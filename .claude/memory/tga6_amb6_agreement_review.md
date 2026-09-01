@@ -374,15 +374,22 @@ the 9% is TGA6-era only. Asking rather than shipping was what caught it.
 - **Already correct**: no AM fee on LifeStorage. Both waterfalls carry
   `TGAM;exclude:PEGASU` and `PSC1;exclude:PEGASU` at tie 900/901.
 - **Already correct**: the 8% hurdle on the rest of the portfolio (tie 25 `IRR` @ 0.08).
-- **MISSING**: the **10% IRR hurdle on LifeStorage**. PSC's promote should not release until
-  TIAA clears 8% net on everything *except* LifeStorage **and** 10% on LifeStorage — two
-  hurdles, both required. The model tests one blended 8% IRR over TIAA's whole TGA22
-  cashflow history, so the promote at tie 30 (PSCMAN .20) very likely releases earlier than
-  the real terms allow.
+- **Also correct — do NOT add a 10% LifeStorage hurdle.** I initially recorded its absence
+  as a defect. **It is not one** (Jim, Sep 1 2026):
 
-**Consequence for the pref-fix blast radius**: the $2.2M measured moving off PSCMAN on TGA22
-is movement inside a promote gate that does not implement TGA22's terms. It should not be
-read as the cost of the pref fix.
+  > "I don't think we need to add the 10% hurdle to TGA22 for LifeStorage. 10% is all the
+  > deal will get, meaning it will likely drag the promote down if the other deals are
+  > earning higher rates, which was the point. The large funding was related to a workout on
+  > a deal that was behind schedule. Peaceable agreed to add the deal to TGA22 and not
+  > charge an asset management fee on it as consideration for the additional capital."
+
+  The 10% describes what LifeStorage will YIELD, not a gate to encode. Because it sits in
+  the portfolio, its lower return pulls the blended 8% IRR test down and DELAYS PSC's
+  promote — which is the bargained-for economics, not an error. The single blended `IRR` 8%
+  step at tie 25 is therefore exactly right, and the fee waiver is already captured by
+  `;exclude:PEGASU`.
+
+**TGA22 REQUIRES NO CHANGES.** Rates right, fee exclusion right, gate right.
 
 ## The provenance gap — now THREE independent instances
 Partitioning TIAA's TGA22 cashflows by source investment is the same missing capability as
@@ -396,3 +403,22 @@ the realized side; and `build_amfee_exclusions` already partitions *capital* by 
 The natural surface is to let `IRR` steps take the same `vNotes` syntax `AMFee` already
 supports — `exclude:PEGASU` / `include:PEGASU` — so TGA22 becomes two IRR steps:
 `IRR 8% exclude:PEGASU` and `IRR 10% include:PEGASU`, promote gated behind both.
+
+
+## Consequence: the TGA22 pref-fix number IS meaningful after all
+
+I had discounted the $2,211,948 moving off PSCMAN on TGA22 on the grounds that it sat inside
+a mis-specified promote gate. With TGA22 confirmed correct as modeled, that reasoning falls
+away: the movement is a **genuine correction inside a correct structure**. PSCMAN has been
+over-collecting promote because TGA22's first-period pref was never accruing, so cash that
+belonged at tie 10 (TGAM .90 / PSC1 .10) was reaching tie 30 (PSCMAN .20) instead. The
+90/10 split of the gain between TGAM (+2,155,940) and PSC1 (+239,549) is the tell.
+
+That makes the pref fix MORE consequential to authorise, not less — it corrects a real
+misallocation on a live JV, and $2.2M of PSCMAN promote is the size of the correction.
+
+## The provenance case is now TWO instances, not three
+TGA22 drops out. Remaining: **AMB6 §8.4(b)** (promote receipts vs investment receipts,
+PSC1 excluded from promote) and **TGA6's 20-vs-10 split** inside INV6's 30%. Still the same
+one feature, but the argument for it is weaker than stated earlier and should not be
+oversold.
