@@ -419,6 +419,22 @@ def put_value():
     }))
 
 
+def _footnote_payload(db_rows) -> dict:
+    """What add/remove hand back: the SAME composed list ``/bundle`` sends.
+
+    The shell splices this straight into ``subtabs.financial.footnotes``, so if
+    this returned the raw persistence rows the page would lose the standing
+    notes, the single numbering and every scope resolution until the next full
+    rebuild — the markers on the headers and property names would then point at
+    numbers that no longer exist. One composer, both paths.
+    """
+    from flask_app.services.portfolio_snapshot_financial import (
+        compose_footnotes, footnote_marks,
+    )
+    composed = compose_footnotes(db_rows)
+    return {"footnotes": composed, "footnote_marks": footnote_marks(composed)}
+
+
 @portfolio_snapshot_bp.route("/footnote", methods=["POST"])
 @login_required
 def post_footnote():
@@ -442,7 +458,7 @@ def post_footnote():
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
-    return jsonify(safe_json({"footnotes": rows}))
+    return jsonify(safe_json(_footnote_payload(rows)))
 
 
 @portfolio_snapshot_bp.route("/footnote/<int:footnote_id>", methods=["DELETE"])
@@ -460,7 +476,7 @@ def delete_footnote(footnote_id):
         return jsonify({"error": str(exc), "locked": True}), 409
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
-    return jsonify(safe_json({"footnotes": rows}))
+    return jsonify(safe_json(_footnote_payload(rows)))
 
 
 # ── approval pipeline ─────────────────────────────────────────────────────

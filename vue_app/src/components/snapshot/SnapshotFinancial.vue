@@ -23,46 +23,44 @@ const emit = defineEmits<{
 
 const groups = computed<Record<string, any>>(() => props.data?.groups || {})
 const total = computed(() => props.data?.total || null)
+/** The funded-to-date twin of Portfolio Totals, directly beneath it.
+ *  Backend-computed by `_funding_total`: each column is the sum of the One
+ *  Pager cap-stack value every row already carries, on the FUNDED basis. */
+const funding = computed(() => props.data?.total_current_funding || null)
 /** The PDF's "Excluding Development Deals" row. Backend-computed; see
  *  EXCLUDING_DEV_VCODES for why its population is not simply `is_dev`. */
 const exDev = computed(() => props.data?.total_excluding_dev || null)
-const footnotes = computed<any[]>(() => props.data?.footnotes || [])
 const flaggedRows = computed<any[]>(() => props.data?.ownership_flagged || [])
 
 /**
- * PDF page-2 footnotes that belong to the page rather than to a column, so the
- * anchored mechanism cannot carry them. Numbers are the PDF's own — (1) sits on
- * ITD Distributions and (4)(5) on Net ROE via ANCHORS, which is why these start
- * at (2) and skip to (6).
+ * Footnotes — ONE list, already numbered and scope-resolved by the backend.
+ *
+ * There is no second hardcoded list here any more. The page's standing notes
+ * live in `STANDING_FOOTNOTES` in portfolio_snapshot_financial.py alongside the
+ * analyst-entered rows, `compose_footnotes` numbers both in one sequence, and
+ * `footnote_marks` says where each number goes. The component renders that
+ * index and decides nothing: a footnote whose scope is a COLUMN marks its
+ * column header, one whose scope is a PROPERTY marks that deal's name.
  */
-const STANDING_FOOTNOTES = [
-  { number: 2, text: 'City west is excluded from ROE calculations' },
-  { number: 3, text: 'Distributions held less than one year and have depressed ROEs that will stabilize overtime.' },
-  { number: 6, text: 'Debt amount is current as of quarter end except for development deals, which reflects fully funded debt amount at construction completion.' },
-]
+const footnotes = computed<any[]>(() => props.data?.footnotes || [])
 
-/** Anchors an analyst can attach a footnote to. */
-const ANCHORS = [
-  { key: 'invested', label: 'Invested' },
-  { key: 'total_commitment', label: 'Total Commitment' },
-  { key: 'unfunded', label: 'Un-funded' },
-  { key: 'net_roe', label: 'Net ROE' },
-  { key: 'itd_distributions', label: 'ITD Distributions' },
-]
+/** {column: {colKey: [n]}, property: {vcode: [n]}} */
+const marks = computed<any>(
+  () => props.data?.footnote_marks || { column: {}, property: {} })
 
-/** anchor -> footnote numbers, so the header can render its "(n)" markers. */
-const marks = computed<Record<string, number[]>>(() => {
-  const m: Record<string, number[]> = {}
-  for (const f of footnotes.value) {
-    const a = f.anchor || ''
-    if (!m[a]) m[a] = []
-    if (f.number != null) m[a].push(f.number)
-  }
-  return m
-})
+/** Anchors the "Add footnote" picker offers — every column plus every deal on
+ *  this page, built server-side so a property-scoped note needs no code change. */
+const ANCHORS = computed<any[]>(() => props.data?.footnote_anchors || [])
 
-function markerFor(anchor: string): string {
-  const nums = marks.value[anchor]
+/** Marker for a COLUMN header, by the column's field key. */
+function colMark(col: string): string {
+  const nums = marks.value?.column?.[col]
+  return nums && nums.length ? `(${nums.join(',')})` : ''
+}
+
+/** Marker for a PROPERTY name, by the deal's vcode. */
+function dealMark(vcode: string): string {
+  const nums = marks.value?.property?.[String(vcode || '').toUpperCase()]
   return nums && nums.length ? `(${nums.join(',')})` : ''
 }
 
@@ -85,16 +83,27 @@ function commitValue(vcode: string, field: 'net_roe' | 'itd') {
   emit('saveValue', { vcode, field, value: raw === '' ? null : raw })
 }
 
-const newFootnote = ref<{ anchor: string; text: string }>({ anchor: ANCHORS[0].key, text: '' })
+const newFootnote = ref<{ anchor: string; text: string }>({ anchor: '', text: '' })
+
+watch(ANCHORS, (list) => {
+  if (!newFootnote.value.anchor && list?.length) {
+    newFootnote.value.anchor = list[0].key
+  }
+}, { immediate: true })
 
 function addFootnote() {
-  if (!newFootnote.value.text.trim()) return
+  if (!newFootnote.value.text.trim() || !newFootnote.value.anchor) return
   emit('addFootnote', { anchor: newFootnote.value.anchor, text: newFootnote.value.text })
   newFootnote.value = { anchor: newFootnote.value.anchor, text: '' }
 }
 
-function anchorLabel(a: string): string {
-  return ANCHORS.find((x) => x.key === a)?.label || a
+/** Where a footnote's marker sits, for the list entry. The backend resolved the
+ *  scope; this only words it. */
+function placementLabel(f: any): string {
+  if (f?.scope === 'property') {
+    return `${f.label || f.vcode} (property)`
+  }
+  return f?.column ? `${f.label} column` : (f?.label || '')
 }
 </script>
 
@@ -122,17 +131,24 @@ function anchorLabel(a: string): string {
             <th colspan="2"></th>
           </tr>
           <tr>
+            <!--
+              Every header carries its own marker slot. A footnote that
+              describes how a COLUMN is calculated belongs here, and `colMark`
+              is the only thing that decides whether one shows — no header is
+              special-cased, so re-anchoring a footnote moves its number with
+              no change to this markup.
+            -->
             <th class="sticky-l">Property</th>
-            <th class="r">Debt</th>
-            <th class="r">Total Pref</th>
-            <th class="r">Ptr. Equity</th>
-            <th class="r">Total Cap</th>
-            <th class="r zone-b">% of Pref</th>
-            <th class="r zone-b">Invested{{ markerFor('invested') }}</th>
-            <th class="r zone-b">Un-funded{{ markerFor('unfunded') }}</th>
-            <th class="r zone-b">Total Commitment{{ markerFor('total_commitment') }}</th>
-            <th class="r manual">ITD Distributions{{ markerFor('itd_distributions') }}</th>
-            <th class="r manual">Net ROE{{ markerFor('net_roe') }}</th>
+            <th class="r">Debt{{ colMark('debt') }}</th>
+            <th class="r">Total Pref{{ colMark('total_pref') }}</th>
+            <th class="r">Ptr. Equity{{ colMark('ptr_equity') }}</th>
+            <th class="r">Total Cap{{ colMark('total_cap') }}</th>
+            <th class="r zone-b">% of Pref{{ colMark('pct_of_pref') }}</th>
+            <th class="r zone-b">Invested{{ colMark('invested') }}</th>
+            <th class="r zone-b">Un-funded{{ colMark('unfunded') }}</th>
+            <th class="r zone-b">Total Commitment{{ colMark('total_commitment') }}</th>
+            <th class="r manual">ITD Distributions{{ colMark('itd') }}</th>
+            <th class="r manual">Net ROE{{ colMark('net_roe') }}</th>
           </tr>
           <tr class="unitrow">
             <th class="sticky-l"></th>
@@ -152,7 +168,7 @@ function anchorLabel(a: string): string {
           <tbody>
             <tr v-for="r in blk.deals" :key="r.vcode">
               <td class="sticky-l">
-                {{ r.name }}
+                {{ r.name }}<span v-if="dealMark(r.vcode)" class="fnmark">{{ dealMark(r.vcode) }}</span>
                 <span v-if="r.is_dev" class="tag">Dev</span>
                 <span v-if="r.pdf_na_cells?.length || r.kept_despite_sold" class="star"
                       :title="(r.flags || []).join(' · ')">*</span>
@@ -213,7 +229,7 @@ function anchorLabel(a: string): string {
           <tr class="grouprow"><td class="sticky-l" colspan="11">Ownership % unavailable</td></tr>
           <tr v-for="r in flaggedRows" :key="r.vcode">
             <td class="sticky-l">
-              {{ r.name }}
+              {{ r.name }}<span v-if="dealMark(r.vcode)" class="fnmark">{{ dealMark(r.vcode) }}</span>
               <span v-for="(f, i) in (r.flags || [])" :key="i" class="warn-dot" :title="f">!</span>
             </td>
             <td class="r num">{{ fmtM(r.debt) }}</td>
@@ -241,6 +257,31 @@ function anchorLabel(a: string): string {
             <td class="r manual small">{{ total.manual_entered?.net_roe ?? 0 }} entered</td>
           </tr>
           <!--
+            "Total Current Funding" — directly under Portfolio Totals, same
+            deal population, funded basis. Each of the four cells is its OWN
+            column total (not one summed figure), and each is a sum of the One
+            Pager cap-stack value the rows above already carry: Debt is the
+            quarter-end balance-sheet balance rather than the development
+            rebase the Debt column itself uses, and Total Pref is FUNDED pref
+            rather than the committed tranche. The scaled TIAA columns are left
+            blank — they are already a funded/committed pair of their own
+            (Invested / Total Commitment) and a third basis under them would
+            invite the wrong subtraction.
+          -->
+          <tr v-if="funding" class="funding">
+            <td class="sticky-l" :title="funding.basis">{{ funding.label }}</td>
+            <td class="r num" :title="funding.debt_source">{{ fmtM$(funding.debt) }}</td>
+            <td class="r num" :title="funding.total_pref_source">{{ fmtM$(funding.total_pref) }}</td>
+            <td class="r num" :title="funding.ptr_equity_source">{{ fmtM$(funding.ptr_equity) }}</td>
+            <td class="r num" :title="funding.total_cap_source">{{ fmtM$(funding.total_cap) }}</td>
+            <td class="r num zone-b"></td>
+            <td class="r num zone-b"></td>
+            <td class="r num zone-b"></td>
+            <td class="r num zone-b"></td>
+            <td class="r manual"></td>
+            <td class="r manual"></td>
+          </tr>
+          <!--
             "Excluding Development Deals", per PDF page 2: a right-aligned label
             running up to the Un-funded column, then values in Total Commitment,
             ITD Distributions and Net ROE only. Every other cell is blank on the
@@ -262,37 +303,41 @@ function anchorLabel(a: string): string {
       </table>
     </div>
 
-    <!-- Footnotes -->
+    <!--
+      Footnotes — one list, one sequence.
+
+      The page's standing notes and the analyst-entered ones are numbered
+      together by the backend, so no two footnotes can share a number and every
+      marker on a header or a property name resolves here. The "where" line
+      states the placement the scope produced, which is how a misplaced marker
+      shows up as a misplaced marker rather than as a mystery.
+    -->
     <section class="footnotes">
       <h4>Footnotes</h4>
       <ol v-if="footnotes.length" class="fnlist">
-        <li v-for="f in footnotes" :key="f.id">
+        <li v-for="f in footnotes" :key="f.number">
           <span class="fnnum">({{ f.number }})</span>
-          <span class="fnanchor">{{ anchorLabel(f.anchor) }}:</span>
+          <span class="fnanchor" :class="{ prop: f.scope === 'property' }">{{ placementLabel(f) }}:</span>
           <span class="fntext">{{ f.text }}</span>
-          <button v-if="editable" class="btn-x" title="Remove; the rest re-number"
+          <!-- Only an analyst-entered footnote is removable here; a standing
+               note has no database row to delete. -->
+          <button v-if="editable && f.id != null" class="btn-x"
+                  title="Remove; the rest re-number"
                   @click="emit('removeFootnote', f.id)">&times;</button>
         </li>
       </ol>
       <p v-else class="hint">No footnotes. Numbering is assigned automatically and re-sequences on removal.</p>
 
-      <!--
-        Standing notes from PDF page 2 that are not tied to a column, so the
-        anchored mechanism above cannot express them. Rendered verbatim and
-        read-only; the anchored list carries (1) ITD and (4)(5) Net ROE.
-        Numbered to match the published page, NOT auto-sequenced — the PDF's
-        numbering is the reference and re-sequencing would break the tie to it.
-      -->
-      <ul class="fnlist standing">
-        <li v-for="f in STANDING_FOOTNOTES" :key="f.number">
-          <span class="fnnum">({{ f.number }})</span>
-          <span class="fntext">{{ f.text }}</span>
-        </li>
-      </ul>
-
       <div v-if="editable" class="fnadd">
         <select v-model="newFootnote.anchor">
-          <option v-for="a in ANCHORS" :key="a.key" :value="a.key">{{ a.label }}</option>
+          <optgroup label="Column (marker on the column header)">
+            <option v-for="a in ANCHORS.filter((x) => x.scope === 'column')"
+                    :key="a.key" :value="a.key">{{ a.label }}</option>
+          </optgroup>
+          <optgroup label="Property (marker on the property name)">
+            <option v-for="a in ANCHORS.filter((x) => x.scope === 'property')"
+                    :key="a.key" :value="a.key">{{ a.label }}</option>
+          </optgroup>
         </select>
         <input v-model="newFootnote.text" placeholder="Footnote text…" @keyup.enter="addFootnote" />
         <button class="btn-sm" :disabled="!newFootnote.text.trim()" @click="addFootnote">Add footnote</button>
@@ -384,8 +429,25 @@ tr.exdev .label {
 .exdev-n { font-weight: 400; font-size: 10px; color: var(--color-text-secondary); }
 .lit { color: var(--color-text-secondary); font-style: italic; }
 .star { color: #b26a00; font-weight: 800; cursor: help; margin-left: 3px; }
-.fnlist.standing { list-style: none; padding-left: 0; margin: 4px 0 0 0; }
-.fnlist.standing .fnnum { font-weight: 700; margin-right: 4px; }
+
+/* Footnote marker on a property name. Superscript so it reads as a reference
+   and cannot be mistaken for part of the deal name. Column-header markers are
+   inline text in the <th> and need no styling of their own. */
+.fnmark {
+  font-size: 9px;
+  vertical-align: super;
+  line-height: 0;
+  color: var(--color-text-secondary);
+  margin-left: 1px;
+}
+
+/* "Total Current Funding" — a subtotal of the same population on the funded
+   basis, so it reads as part of the total block but lighter than it. */
+tfoot tr.funding td {
+  font-weight: 600;
+  border-top: none;
+  background: #f7f9fb;
+}
 
 .grouprow td {
   background: #eceff1;
@@ -452,6 +514,7 @@ tfoot td {
 .fnlist li { display: flex; gap: 6px; align-items: baseline; padding: 3px 0; }
 .fnnum { font-weight: 700; color: var(--color-accent); }
 .fnanchor { font-weight: 600; color: var(--color-text-secondary); }
+.fnanchor.prop { color: #2c4f8c; }
 .fntext { flex: 1; }
 .btn-x {
   border: none;
