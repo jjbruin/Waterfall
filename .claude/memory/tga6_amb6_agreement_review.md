@@ -249,3 +249,55 @@ remains is the cash-flow vintage, not the structure.
 
 **This supersedes the pending `IRRPromote` vState recommendation entirely** — no new vState
 is needed. The existing `IRR` step, placed after pref and ROC, is the right mechanism.
+
+
+## ENGINE DEFECT FOUND — upstream `Pref` does not accrue in its first period
+
+Jim asked whether the residual gap was the app's monthly convention vs the Excel's annual
+one. **It is not** — bucketing already normalises the discounting, and a controlled test
+settles it.
+
+**The test** (`scratchpad/annual_test.py`): run the app's own TGA6 tiers ANNUALLY on the
+EXCEL's own vehicle cash flows, seeded with the Excel's equity, and compare TIAA's output
+to the Excel's row 47. Same cash, same convention, so only the waterfall logic differs.
+(Two harness adjustments for an annual run: drop the `Amt` step, whose cap is per quarter,
+and set `AMFee` mAmount 4 -> 1.)
+
+| | TIAA IRR | year-1 diff vs Excel |
+|---|---|---|
+| as-is | 11.355% | **-302,085** |
+| **with the pref tier pre-created** | **11.710%** | **-0** |
+| Excel (on these dates) | 11.793% | — |
+
+**Root cause.** `run_upstream_waterfall_period` calls `accrue_all_pools()` for every
+PropCode *before* the step loop (waterfall.py:1608-1614), but the upstream `Pref` handler
+creates the pref tier lazily *inside* the loop:
+
+```python
+elif state == "Pref":
+    pool = stt.get_pool("initial")
+    if not pool.pref_tiers:                     # <- created here, AFTER accrual ran
+        pool.pref_tiers.append(PrefTier(tier_name="pref", pref_rate=rate))
+```
+
+So in the period a `Pref` step is first encountered there is no tier to accrue into, the
+step pays 0, and the cash falls through to the next tier. On TGA6 that means it drops to the
+70/30 residual instead of the 90/10 pref — TIAA loses 20 points of it.
+
+**The deal-level path is NOT affected**: its `Pref` handler (waterfall.py:547) *matches* an
+existing tier by rate rather than creating one, because `seed_states_from_accounting` sets
+the tiers up during seeding. The defect is specific to upstream entities with synthetically
+seeded states.
+
+**Live impact on Windsor** is one month, not one year (the tier exists from the second event
+on): seed 2026-09-23 to the first event 2026-10-31 is 38 days, so ~161,470 of pref routed
+through 70/30 instead of 90/10, costing TGAM ~32,000 — roughly 0.03pp of IRR.
+
+**That closes the reconciliation**: live gap 0.260pp = 0.236pp projection vintage (measured
+in Phase 0) + ~0.03pp this defect.
+
+**Blast radius if fixed**: every upstream entity with a `Pref` step — TGA6, TGA22, PSCKOC,
+Portfolio Analysis, and any NB stack the Builder generates with a pref. All would gain a
+first-period pref accrual they currently lose. **Not fixed — flagged for Jim per the
+pre-deploy rule.** The fix is to create the tier when the state is seeded (or at the top of
+the period, before `accrue_all_pools`), not inside the step handler.
