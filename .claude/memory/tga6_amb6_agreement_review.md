@@ -7,8 +7,11 @@ Sources read in full:
 - **AMB6**: `OneDrive\Documents - Peaceable Street Capital\Capital Campaign\Ambassadors Fund
   VI\PSC Ambassadors Fund TGA VI LLC - EXECUTED - Amended and Restated LLC Agreement.pdf`
 
-**Verdict: the modeled waterfalls do NOT match either agreement. Six discrepancies, four
-material. Nothing changed — this is a review only.**
+**Verdict: the modeled waterfalls did NOT match either agreement. Six discrepancies, four
+material.**
+
+**STATUS (Jim, Sep 1 2026): TGA6 REBUILT to the agreement and live on Azure. AMB6 NOT
+changed — §8.4(b) cannot be expressed in waterfall rows (see "AMB6 remains open" below).**
 
 ## Entity identities (settles a question we got wrong)
 - TGA6 **"PSC"** = **PSC Investment TGA VI LLC** = the app's **INV6**.
@@ -144,3 +147,57 @@ IREP .090909, CWSPART/JJCI .045455, ATLAS .027273, seven at .022727). That part 
    This needs the engine to carry a *provenance tag* on distributions (which upstream tier
    they came from) — the one genuinely new engine capability in this list.
 6. Re-check the PSC1 consolidated return after (5); it is currently overstated.
+
+
+## APPLIED — TGA6 rebuilt to the agreement (Sep 1 2026, live on Azure)
+
+Written through `save_waterfall_steps` (audit trail); `dteffective` restored afterwards for
+the known NULL defect. App validator: **no errors** on either waterfall (one warning, "Pref
+FXRate 0.9 typically 1.0", which is the same shape TGA22 uses).
+
+| | CF_WF | Cap_WF |
+|---|---|---|
+| tie 1 | `Amt` TGA6_EXP 1,875/qtr (§5.07) | same |
+| tie 10 | **`Pref` TGAM .90 @ 9% + Tag INV6 .10** (§6.02(b)) | **same** (§6.03(b)) |
+| tie 20 | **`Share` TGAM .70 + Tag INV6 .30** (§6.02(d)) | `Initial` TGAM .90 + Tag INV6 .10 (§6.03(d)) |
+| tie 30 | — | **`Share` TGAM .70 + Tag INV6 .30** (§6.03(e)) |
+| tie 900/901 | **`AMFee` PSCMAN 0.95% on TGAM AND on INV6** (§5.06) | same |
+
+Removed: the `IRR` step (no basis in Article VI) and PSCMAN's .04 promote share.
+Added: the 9% Pref tier on both waterfalls, and the second AMFee row — §5.06 charges 0.95%
+on *the Members'* contributions, so the single TGAM row was collecting only 90% of the fee.
+
+### Windsor rerun — before vs after
+| participant | contrib | dists before | dists after | IRR before | IRR after |
+|---|---|---|---|---|---|
+| TGAM (TIAA) | 17,235,000 | 27,332,134 | **27,182,512** | 12.281% | **12.076%** |
+| Fund Investors (12) | 1,096,773 | 2,186,092 | **2,369,858** | 18.992% | **21.917%** |
+| PSC1 | 818,227 | 2,772,789 | **2,829,609** | 64.960% | **72.828%** |
+| PSCMAN | 0 | 912,895 | **832,620** | n/a | n/a |
+
+Tier totals over the hold, all tying to the agreement's ratios:
+pref 7,118,803 (TGAM 6,406,923 / INV6 711,880 = 90/10) · CF residual 378,517 (70/30) ·
+ROC 19,150,000 (90/10) · Cap residual 4,650,537 (70/30) · expenses 37,500 ·
+AM fee 784,745 (was 693,782 — the missing 10% now charged).
+Total distributed 31,335,357 against 31,357,858 of deal cash into the vehicle. Balances.
+
+**TGAM annual-bucket IRR: 11.568% -> 11.383%.** The Excel/TIAA one-pager prints **11.740%**,
+so conforming to the agreement moved the app *further* from the Excel (0.172pp below ->
+0.357pp below). Expected: the agreement's §6.03(e) is a flat 20/70/10 with no hurdle, the
+Excel takes 20% of the XNPV excess above 9%. **Three rules, and only one can govern the
+investor-facing page — still Jim's call.**
+
+### Two reporting artifacts introduced (cosmetic, not economic)
+1. `TGA6_EXP` now shows in the participants table as a line with 37,500 of "distributions".
+   It is an expense sink, not a participant, and should be filtered out of that table.
+2. `psc_summary.total_promote` now reads **0**, because it keys off
+   `vtranstype == 'Promote Split'` rows paid to PSCMAN, and the promote correctly flows to
+   INV6 now. The promote is real (INV6's 1,395,161 at the Cap residual) — the label is wrong.
+
+## AMB6 remains open — and PSC1's return is still overstated
+§8.4(b) requires promote receipts to be split on a different basis from investment receipts
+(Class B + non-Peaceable Class A on the Exhibit C sliding scale, **PSC1 excluded**). That
+needs the engine to tag a distribution with the upstream tier it came from — provenance the
+waterfall row format cannot carry. **Not attempted.** So PSC1's 72.83% still includes
+promote dollars it is not entitled to under the agreement, and PSCMAN's Class B promote
+share is still missing. Correcting it will move PSC1 down and PSCMAN up.
