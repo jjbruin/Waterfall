@@ -1316,7 +1316,7 @@ typecheck; nothing was typechecked locally.
 - [PPI Ownership Waterfalls plan](ppi_ownership_waterfalls.md) - NB upstream investor-relationship waterfalls (AM fees, net-of-fee IRR promotes) reusing the PSCKOC engine; approved plan, phases 1-5
 
 
-## OPEN DEFECT — At-Close Year-0 gate is 10 deals too broad (v407, Sep 1 2026)
+## At-Close Year-0 gate — reviewed, KNOWN, and deliberately kept (v407, Sep 1 2026)
 
 `50695d9` (deployed v407) zeroes the One Pager At-Close column when a deal is a
 DEVELOPMENT deal AND its Projected IS has no 2015-12-31 "Year-0" row. Stated rationale:
@@ -1351,8 +1351,20 @@ rev=0 exp=0 noi=0.
 pre-rule behaviour exactly. `AT_CLOSE_YEAR0_DEV_ONLY` / `AT_CLOSE_ZERO_WHOLE_COLUMN` are
 the other two flags.
 
-**Recommended fix**: swap the trigger to the revenue==0/expenses>0 data test and return
-None rather than 0. Awaiting Jim's decision (raised by him Sep 1 after the v407 deploy).
+**Recommended fix if it is ever reopened**: the trigger should be a real stabilisation
+state on the deal, and it should return None rather than 0. NOTE the revenue==0/expenses>0
+test floated earlier is NOT a valid defect signal — Jim confirmed expenses arriving before
+revenue is the expected shape for a development deal placing units into service, so that
+data is correct.
+
+**DECIDED (Jim, Sep 1 2026): LEAVE IT AS DEPLOYED.** The override stays in force on v407.
+This is a settled decision, not an open item — do not revert it, narrow it, or re-raise it
+without Jim asking. The accepted state is that At-Close reads as an em dash on all 12
+deals, including the 10 whose underlying figures are complete and correct (9 Brainerd
+buildings, Pegasus Life Storage). Anyone reconciling a Brainerd or Pegasus At-Close to
+`at_close_noi` will find a real number behind a blank column — that is expected, not a bug
+to chase.
+
 
 **Process note**: this shipped on Jim's deploy request after I verified it did what its
 commit message said, without questioning whether it should do that. Verifying intent is

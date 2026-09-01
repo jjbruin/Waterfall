@@ -69,8 +69,18 @@ lacks a `2015-12-31` row. Three problems:
 expenses before revenue is expected — *the data is correct*. That also retires my own
 earlier suggestion of triggering on "revenue == 0 with expenses > 0" as a defect test; it
 is the normal shape, not a defect. Any suppression here is an editorial choice about what
-the column is for, not a data fix. **No change made — awaiting Jim.**
-Kill switch: `AT_CLOSE_REQUIRE_YEAR0_ROW = False` reverts exactly.
+the column is for, not a data fix.
+
+**DECIDED (Jim, Sep 1 2026): LEAVE IT AS DEPLOYED.** The override stays in force on v407.
+This is a settled decision, not an open item — do not revert it, narrow it, or re-raise it
+without Jim asking. The accepted state is that At-Close reads as an em dash on all 12
+deals, including the 10 whose underlying figures are complete and correct (9 Brainerd
+buildings, Pegasus Life Storage). Anyone reconciling a Brainerd or Pegasus At-Close to
+`at_close_noi` will find a real number behind a blank column — that is expected, not a bug
+to chase.
+
+Kill switch, recorded only so it is findable if that decision is ever revisited:
+`AT_CLOSE_REQUIRE_YEAR0_ROW = False` reverts exactly.
 
 ## The architectural note worth acting on
 
