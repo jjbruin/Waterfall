@@ -18,6 +18,7 @@
 - [portfolio_snapshot_perf.md](portfolio_snapshot_perf.md) — Portfolio Snapshot performance: 3 optimizations pending Charlene's confirmation
 - [scenario_analysis.md](scenario_analysis.md) — NB scenario analysis: saved scenarios (OP model / Base Case / lease-risk downsides) with dropdown on Prospect Deal Analysis
 - [valuation_nav_module.md](valuation_nav_module.md) — Design (Aug 2026, not built): annual valuation review/approval + auditor NAV package module under Asset Management
+- [allocation_scenarios_plan.md](allocation_scenarios_plan.md) — PLAN (Sep 1 2026, not built): scenario-scoped PPI stacks so a $ slice of a deal can be diverted to another JV without losing the base case, + net-returns one-page PDF and JV allocation roll-up
 
 ## Project Overview
 - Flask + Vue application for real estate investment waterfall calculations
