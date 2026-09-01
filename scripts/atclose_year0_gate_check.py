@@ -298,13 +298,21 @@ def report():
                 f"after={a.get(vc, {}).get('error')}")
 
     # 1. the two named targets
-    for vc, was in (("P0000100", -59333), ("P0000077", -115440)):
+    #
+    # The pre-gate figures were -59,333 (P0000100) and -115,440 (P0000077).
+    # Those are HISTORICAL as of commit 50695d9, which shipped the Year-0 gate
+    # to main — so the "before" side of any capture taken from main is already
+    # zero, and asserting the old values here would fail on a tree where the
+    # gate is working correctly. What still matters is that both sides read
+    # exactly 0: the current change must not disturb the shipped gate.
+    PRE_GATE = {"P0000100": -59333, "P0000077": -115440}
+    for vc, was in PRE_GATE.items():
         rb, ra = b.get(vc, {}), a.get(vc, {})
-        chk(f"{vc}: before ~{was:,}",
-            rb.get("noi") is not None and abs(float(rb["noi"]) - was) < 2,
-            f"before={f(rb.get('noi'))}")
-        chk(f"{vc}: At-Close NOI is now exactly 0",
-            ra.get("noi") == 0, f"after={ra.get('noi')!r}")
+        chk(f"{vc}: At-Close NOI is exactly 0 after (pre-gate it was "
+            f"{was:,})", ra.get("noi") == 0, f"after={ra.get('noi')!r}")
+        chk(f"{vc}: unchanged by THIS change — the shipped Year-0 gate still "
+            f"owns it", rb.get("noi") == ra.get("noi"),
+            f"before={f(rb.get('noi'))} after={f(ra.get('noi'))}")
 
     # 2. the zero group
     chk("every EXPECT_ZERO deal is classified development",
@@ -332,7 +340,19 @@ def report():
     chk("every EXPECT_KEEP deal lacks the 2015-12-31 row "
         "(so only the dev condition spares it)",
         all(b[vc].get("has_year0") is False for vc in EXPECT_KEEP))
-    moved_keep = {vc: (b[vc], a[vc]) for vc in EXPECT_KEEP if b[vc] != a[vc]}
+    OUT_FIELDS = ("revenue", "expenses", "noi", "dscr", "zeroed_flag",
+                  "noi_uw_ye", "noi_actual_ye", "noi_ytd_actual",
+                  "occ_at_close", "occ_uw_ye")
+
+    def outs(r):
+        """The computed cells. `is_dev` / `has_year0` are the gate's INPUTS —
+        excluded because the DEV_STRATEGIES fix legitimately moves is_dev for
+        Belleville while leaving every figure it produces identical, which is
+        precisely the property this check should be able to state."""
+        return {k: r.get(k) for k in OUT_FIELDS}
+
+    moved_keep = {vc: (b[vc], a[vc]) for vc in EXPECT_KEEP
+                  if outs(b[vc]) != outs(a[vc])}
     chk(f"all {len(EXPECT_KEEP)} non-development deals are UNCHANGED",
         not moved_keep,
         "; ".join(f"{vc}: {f(x.get('noi'))} -> {f(y.get('noi'))}"
@@ -341,7 +361,8 @@ def report():
         all(not a[vc].get("zeroed_flag") for vc in EXPECT_KEEP))
 
     # 4. deals WITH the row are byte-identical
-    moved_same = {vc: (b[vc], a[vc]) for vc in EXPECT_SAME if b[vc] != a[vc]}
+    moved_same = {vc: (b[vc], a[vc]) for vc in EXPECT_SAME
+                  if outs(b[vc]) != outs(a[vc])}
     chk(f"all {len(EXPECT_SAME)} deals WITH a 2015-12-31 row are UNCHANGED",
         not moved_same,
         "; ".join(f"{vc}: {f(x.get('noi'))} -> {f(y.get('noi'))}"
@@ -369,32 +390,49 @@ def report():
         f"(sum {kid_sum:,.0f} vs parent 2,305,024)",
         abs(kid_sum - 2291330) < 5, f"sum={kid_sum:,.0f}")
 
-    # 7. Pegasus, in both classification states
-    print("\n  -- Pegasus, under each dev classification --")
+    # 7. Pegasus: SAME OUTCOME, DIFFERENT ROUTE
+    #
+    # Two changes landed together on 2026-09-01 and they pull in opposite
+    # directions on this deal:
+    #
+    #   * "new construction" LEFT config.DEV_STRATEGIES, so Pegasus is no
+    #     longer development and the dev leg of the gate stops firing for it.
+    #   * one_pager.AT_CLOSE_FORCE_SUPPRESS names it explicitly, so the gate
+    #     fires anyway.
+    #
+    # Net effect on the page: nothing — the At-Close column stays zeroed, as
+    # published. That is the point, and it is why BOTH legs are asserted
+    # separately below rather than just the final figure: a zero that arrived
+    # for the wrong reason would pass a value-only check and would silently
+    # break the next time the classification moved.
+    print("\n  -- Pegasus: un-tagged as dev, but still suppressed --")
     peg_now = a.get(PEGASUS, {})
-    chk("Pegasus is dev TODAY (Lifecycle 'New Construction' in DEV_STRATEGIES)",
+    chk("Pegasus WAS dev before the fix (Lifecycle 'New Construction')",
         b.get(PEGASUS, {}).get("is_dev") is True)
-    chk("Pegasus IS zeroed today — expected, pending the classification fix",
+    chk("Pegasus is NO LONGER classified development",
+        peg_now.get("is_dev") is False, f"is_dev={peg_now.get('is_dev')}")
+    chk("Pegasus At-Close is STILL zeroed — the force list holds the column "
+        "down now that the dev tag is gone (it would otherwise read 624,689)",
         peg_now.get("noi") == 0, f"after={f(peg_now.get('noi'))}")
-    fixed_path = os.path.join(OUT, "after_devfix.json")
-    if os.path.exists(fixed_path):
-        with open(fixed_path, encoding="utf-8") as fh:
-            af = json.load(fh)
-        pf = af.get(PEGASUS, {})
-        chk("with 'new construction' removed, Pegasus is no longer dev",
-            pf.get("is_dev") is False, f"is_dev={pf.get('is_dev')}")
-        chk("with 'new construction' removed, Pegasus KEEPS 624,689",
-            pf.get("noi") is not None and abs(float(pf["noi"]) - 624689) < 2,
-            f"noi={f(pf.get('noi'))}")
-        chk("removing it changes nothing else in the zero group",
-            all(af[vc].get("noi") == 0 for vc in EXPECT_ZERO),
-            str({vc: af[vc].get("noi") for vc in EXPECT_ZERO
-                 if af[vc].get("noi") != 0}))
-        chk("removing it changes nothing in the keep group",
-            all(af[vc] == a[vc] for vc in EXPECT_KEEP))
-    else:
-        chk("after_devfix.json captured (run: capture after_devfix)", False,
-            f"missing {fixed_path}")
+    chk("Pegasus carries the zeroed flag, so the suppression is recorded on "
+        "the payload and not merely a coincidental zero",
+        bool(peg_now.get("zeroed_flag")))
+    chk("Pegasus At-Close was zeroed BEFORE too — the published page does not "
+        "move", b.get(PEGASUS, {}).get("noi") == 0,
+        f"before={f(b.get(PEGASUS, {}).get('noi'))}")
+
+    from one_pager import AT_CLOSE_FORCE_SUPPRESS, _at_close_force_suppressed
+    chk("Pegasus is the only deal in AT_CLOSE_FORCE_SUPPRESS",
+        set(AT_CLOSE_FORCE_SUPPRESS) == {PEGASUS},
+        str(sorted(AT_CLOSE_FORCE_SUPPRESS)))
+    chk("the force list matches case-insensitively (vcode casing varies by "
+        "source)", _at_close_force_suppressed(PEGASUS.lower())
+        and _at_close_force_suppressed(PEGASUS))
+    chk("no deal in the KEEP group is force-suppressed",
+        not any(_at_close_force_suppressed(vc) for vc in EXPECT_KEEP))
+    chk("no deal in the SAME group is force-suppressed — Belleville in "
+        "particular keeps its real 70,716",
+        not any(_at_close_force_suppressed(vc) for vc in EXPECT_SAME))
 
     print("\n" + "=" * 108)
     zeroed = [vc for vc in DEALS if a.get(vc, {}).get("zeroed_flag")]
@@ -412,8 +450,11 @@ if __name__ == "__main__":
         build_fixture()
     elif cmd == "capture":
         label = sys.argv[2]
-        # "after_devfix" simulates the pending dev-classification fix by
-        # dropping "new construction" from DEV_STRATEGIES for this run only.
+        # "after_devfix" used to SIMULATE the dev-classification fix while it
+        # was still pending, by dropping "new construction" from
+        # DEV_STRATEGIES for one run. The fix shipped on 2026-09-01 so plain
+        # "after" now covers it; the override is kept only so the same
+        # simulation can be replayed against an older tree.
         capture(label,
                 dev_strategies={"development"}
                 if label == "after_devfix" else None)

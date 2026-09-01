@@ -111,10 +111,18 @@ def check_display_rule():
         and F.manual_display("net_roe", 0.048,
                              frozenset({"net_roe"})) == F.NA_LABEL)
 
-    # City West is the live PDF_NA_CELLS row; every other deal has none.
+    # City West is the long-standing PDF_NA_CELLS row. Pegasus joined it when
+    # "new construction" left DEV_STRATEGIES — untagged, its Debt would have
+    # rendered "$0.0" instead of blanking, so it carries a debt-only entry.
+    # The negative case therefore uses a deal with no entry at all.
     chk("manual_na_cells reads PDF_NA_CELLS, case-insensitively",
         F.manual_na_cells("pcitwes") == frozenset({"debt", "net_roe"})
-        and F.manual_na_cells("P0000066") == frozenset())
+        and F.manual_na_cells("p0000066") == frozenset({"debt"})
+        and F.manual_na_cells("P0000030") == frozenset())
+    chk("a debt-only n/a entry does not blank that deal's manual cells",
+        F.manual_display("net_roe", None, F.manual_na_cells("P0000066"))
+        == F.PENDING
+        and F.manual_display("itd", 1.17, F.manual_na_cells("P0000066")) == 1.17)
 
     # The assembly must go through the helper, not re-derive the rule.
     src = read(os.path.join(ROOT, "flask_app", "services",

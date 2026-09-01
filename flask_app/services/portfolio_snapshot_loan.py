@@ -53,13 +53,32 @@ Debt Yield
     Both equal ytd x 4 at Q1. ``debt_yield_ytd_annualised`` carries the second
     form alongside for comparison.
 
-    Rendered as "Dev" for development deals — see DEV_DISPLAY.
+    Rendered as "Dev" for development deals — see DEV_DISPLAY — and as "N/A"
+    for a debt-free deal, where there is no denominator at all.
 
 Rate / Maturity
     Computed here, never read as a literal string. The deal's own loans are used
     when it has any; a portfolio parent with none falls back to its children's.
     One loan, or several that share rate + maturity + interest type, renders the
     actual terms; two or more with differing terms renders "Various".
+
+    REAL for development deals — the "Dev" literal is confined to the three
+    ratio columns, because a construction facility has a rate and a maturity
+    even before the asset stabilises.
+
+DISPLAY PRECEDENCE (2026-09-01), highest first. Every rule below touches the
+``*_display`` twins only; the raw fields are always the computed figures, so
+the subtotals and the guardrails see the truth and a frozen payload re-renders
+under whatever the rule is at read time.
+
+  1. Debt free (DEBT_FREE_DEALS) — Debt an em dash, and LTV / YTD DSCR /
+     Debt Yield / Rate / Maturity the literal "N/A". Says "this asset carries
+     no debt", which is neither "no data" nor "Dev".
+  2. Development (config.DEV_STRATEGIES) — "Dev" on LTV, YTD DSCR and Debt
+     Yield, for EVERY development deal with no exemption of any kind. Debt,
+     Rate and Maturity stay real.
+  3. Otherwise the computed value, or an em dash where it could not be
+     computed.
 """
 
 from __future__ import annotations
@@ -94,48 +113,101 @@ FLOATING_INT_TYPES = {"variable", "floating", "adjustable"}
 #: render this literal instead of a number — matching the PDF. Debt, Rate and
 #: Maturity still display normally for them.
 #:
-#: One precedence rule sits ahead of this: a dev deal with NO debt basis at all
-#: renders n/a, not "Dev" — see ``dev_no_data`` in ``assemble_loan``.
+#: UNCONDITIONAL as of 2026-09-01. It previously yielded to a ``dev_no_data``
+#: test — a dev deal with no debt basis at all rendered n/a instead of "Dev" —
+#: which existed for exactly one deal, Pegasus Life Storage, and only because
+#: that deal was miscoded development. With "new construction" out of
+#: config.DEV_STRATEGIES, Pegasus is operating and no dev deal is left in that
+#: state (verified live at 26Q1: all 9 carry a debt basis, ``dev_no_data`` is
+#: empty). The test is gone rather than left dormant: a dev deal's three ratio
+#: columns are unreportable because the asset is pre-stabilisation, which is
+#: true whether or not a facility is on record, so letting a missing balance
+#: turn "Dev" into a bare dash lost information. ``dev_no_data`` survives on
+#: the payload as a diagnostic only — see ``assemble_loan``.
+#:
+#: NO EXEMPTIONS as of 2026-09-01. The Waters Creek LTV exception was retired
+#: on instruction — see the retirement note below — so this literal now applies
+#: to every development deal in all three columns.
 DEV_DISPLAY = "Dev"
 DEV_RATIO_COLUMNS = ("ltv", "ytd_dscr", "debt_yield")
 
 # ══════════════════════════════════════════════════════════════════════════
-# TEMPORARY HARDCODED EXCEPTION — REMOVE WHEN THE REAL RULE LANDS
+# TEMPORARY HARDCODED EXCEPTION 1 of 2 — DEBT-FREE DEALS
+# Remove when the real rule lands. See also exception 2 (Waters Creek LTV).
 # ══════════════════════════════════════════════════════════════════════════
-#: Development deals that nonetheless render a REAL LTV instead of "Dev".
+#: Deals held with NO DEBT, whose loan row reports that fact rather than
+#: computing ratios from a zero balance.
 #:
-#: Creator instruction, 26Q1: Jefferson Waters Creek received a true
-#: income-based valuation on entering lease-up, so its LTV is meaningful even
-#: though the deal is still classified as development. DSCR and Debt Yield stay
-#: "Dev" for it — only the LTV column is exempted.
+#: Rendered as: Debt an em dash, and LTV / YTD DSCR / Debt Yield / Rate /
+#: Maturity the literal ``NA_DISPLAY``. This is a POSITIVE statement — "this
+#: asset carries no debt, so these columns do not apply" — which is why it is a
+#: literal and not the bare dash that means "no data". It is also emphatically
+#: NOT "Dev": these are operating assets, and conflating the two would undo the
+#: classification fix that made this entry necessary.
 #:
-#: Verified: computed 57.51% against the PDF's 57.4% (+0.11pp). That tie also
-#: settles the numerator — the dev debt basis (mOrigLoanAmt 51,667,000, the
-#: committed facility) is correct here. The ISBS drawn balance (48,416,160)
-#: would give 53.89% and would NOT match, so the exception un-suppresses the
-#: LTV computation without changing which debt figure feeds it.
+#: P0000066 Pegasus Life Storage is the case: ISBS balance a real 0.0, no loan
+#: record, no mOrigLoanAmt, and the reference PDF prints n/a across its ratio
+#: columns. It used to reach that display by accident — misclassified
+#: development, so ``resolve_debt`` took the dev branch, found no committed
+#: facility and returned (None, unavailable), which the old ``dev_no_data``
+#: test turned into dashes. Correcting the classification puts it on the ISBS
+#: branch, where the balance is a real 0.0 and Debt would print "$0.0" — a
+#: measured zero where the page means not-applicable.
 #:
-#: THIS IS A ONE-QUARTER STOPGAP, keyed by vcode, and is deliberately the only
-#: hardcoded deal reference in this module. The rule it stands in for is:
+#: WHY THIS IS KEYED BY VCODE AND NOT DERIVED. The obvious data rule —
+#: non-dev, no loan record, debt 0-or-None — is not specific enough: measured
+#: live at 26Q1 it also catches PCITWES City West (identical fingerprint: 0
+#: loans, ISBS 0.0, no facility), a foreclosed deal whose blank columns mean
+#: "this deal is gone", not "this deal is unlevered". The two need different
+#: words on the page and the data cannot currently tell them apart. The rule
+#: this stands in for is:
 #:
-#:      a development deal shows a real LTV when its
-#:      `mIncomeCapConcludedValue` reflects a true income-based valuation
-#:      (rather than a cost-basis or as-stabilised placeholder)
+#:      a deal shows N/A across its debt columns when it is held
+#:      UNLEVERED BY DESIGN, as distinct from having no debt on record
 #:
-#: Implementing that properly needs a way to tell a genuine income-based
-#: valuation from a placeholder in the `valuations` table — most likely a
-#: valuation-method or basis column that is not currently extracted. Once that
-#: exists, delete this constant and `_ltv_exception()` and drive the exemption
-#: off the data. Anything added here in the meantime is technical debt: it will
-#: silently keep overriding the real rule after it ships.
-WATERS_CREEK_LTV_EXCEPTION = {"P0000078"}       # Jefferson Waters Creek
+#: which needs a capital-structure intent field, or a lifecycle value that
+#: separates "unlevered" from "disposed", neither of which is extracted today.
+#: Anything added here in the meantime is technical debt.
+NA_DISPLAY = "N/A"
+DEBT_FREE_DEALS = {"P0000066"}                  # Pegasus Life Storage
 
 
-def _ltv_exception(vcode: str) -> bool:
-    """True for a dev deal that still renders a real LTV. TEMPORARY —
-    see WATERS_CREEK_LTV_EXCEPTION."""
-    return str(vcode or "").strip().upper() in WATERS_CREEK_LTV_EXCEPTION
+def _debt_free(vcode: str) -> bool:
+    """True for a deal held with no debt, whose debt columns read N/A.
+    TEMPORARY — see DEBT_FREE_DEALS."""
+    return str(vcode or "").strip().upper() in DEBT_FREE_DEALS
 # ══════════════════════════════════════════════════════════════════════════
+
+# ── RETIRED 2026-09-01: the Waters Creek LTV exception ────────────────────
+#
+# `WATERS_CREEK_LTV_EXCEPTION` / `_ltv_exception()` used to un-suppress the LTV
+# column for P0000078 Jefferson Waters Creek, the one development deal that had
+# received a true income-based valuation on entering lease-up. Its computed
+# 57.51% tied the PDF's 57.4% (+0.11pp), and that tie also confirmed the
+# numerator: the dev debt basis (mOrigLoanAmt 51,667,000, the committed
+# facility) is right, where the ISBS drawn balance (48,416,160) would have
+# given 53.89% and missed.
+#
+# REMOVED ON INSTRUCTION: every genuine development deal now shows "Dev" for
+# LTV, YTD DSCR and Debt Yield, with no per-deal exemption. The rule is now
+# uniform and there is no hardcoded deal reference left in the dev path.
+#
+# TWO CONSEQUENCES, both deliberate and neither hidden:
+#
+#   * Waters Creek's LTV cell goes from 57.5% to "Dev".
+#   * The TGA 2022 fund LTV subtotal no longer reproduces the published 60.4%.
+#     That figure only came out with Waters Creek's 57.5% weighted in; without
+#     it the debt-weighted mean over the remaining four members is 61.6%. This
+#     is recorded in KNOWN_LOAN_SUBTOTAL_DIFFS rather than worked around,
+#     because the alternative — keeping a value out of the display but inside
+#     the subtotal — would make the total unauditable from the rows above it.
+#
+# The rule this stood in for is unchanged and still unimplemented: a
+# development deal could show a real LTV when its `mIncomeCapConcludedValue`
+# reflects a genuine income-based valuation rather than a cost-basis or
+# as-stabilised placeholder. That needs a valuation-method column the
+# `valuations` table does not currently expose. If it ever lands, it belongs in
+# the data, not here.
 
 
 def _num(v):
@@ -160,16 +232,15 @@ def _num(v):
 #   Debt   SUMMED over EVERY deal, development included. Ties all five funds to
 #          the cent — 270.5 / 268.4 / 366.5 / 279.2 / 201.5.
 #
-#   Ratios DEBT-WEIGHTED over the deals that CARRY A VALUE. Not "non-dev": the
-#          distinction matters because Jefferson Waters Creek is a dev deal with
-#          a real LTV (see WATERS_CREEK_LTV_EXCEPTION), and TGA 2022's published
-#          60.4% only reproduces if its 57.5% is included — excluding it gives
-#          61.6%. Carrying-a-value is also the rule that needs no dev concept at
-#          all, so it cannot drift from the "Dev" display.
+#   Ratios DEBT-WEIGHTED over the deals that CARRY A VALUE. Carrying-a-value
+#          needs no dev concept at all, so the subtotal cannot drift from the
+#          "Dev" display: whatever the display rule suppresses is, by the same
+#          act, out of the weighting.
 #
-#          LTV ties all five funds exactly: 67.4 / 60.4 / 59.4 / 62.1 / 69.1.
-#          Simple averaging misses every one of them (63.9 / 57.1 / 58.5 /
-#          61.6 / 69.1), which settles weighted-vs-simple decisively.
+#          LTV tied all five funds exactly — 67.4 / 60.4 / 59.4 / 62.1 / 69.1 —
+#          while the Waters Creek LTV exception was live. Simple averaging
+#          missed every one (63.9 / 57.1 / 58.5 / 61.6 / 69.1), which settles
+#          weighted-vs-simple decisively and is unaffected by the retirement.
 #          DSCR ties TGA23 and TGA25 and is one rounding step out on TGA22
 #          (1.68 against 1.6) and TGA24 (1.57 against 1.5); simple averaging is
 #          0.3 out on TGA24, so weighted is still the better fit.
@@ -177,16 +248,27 @@ def _num(v):
 #   The PDF's footnote — "Summary level performance metrics (LTV, DSCR, and Debt
 #   Yield) exclude the development deals" — describes the effect rather than the
 #   mechanism: a dev deal renders "Dev" and so carries no value to weight, which
-#   excludes it automatically. Waters Creek is the case that shows the footnote's
-#   wording is looser than the arithmetic.
+#   excludes it automatically. Since the Waters Creek exception was retired on
+#   2026-09-01 the footnote and the arithmetic finally say the same thing — at
+#   the cost of the TGA 2022 LTV tie, below.
 #
-# TWO PUBLISHED FIGURES DO NOT REPRODUCE under any rule tested; recorded in
+# THREE PUBLISHED FIGURES DO NOT REPRODUCE; recorded in
 # KNOWN_LOAN_SUBTOTAL_DIFFS rather than fitted to.
 _RATIO_KEYS = ("ltv", "ytd_dscr", "debt_yield")
 
 #: Fund total cells on PDF page 4 that no consistent rule reproduces.
 #: label -> (metric, ours, published, why it is being left alone)
 KNOWN_LOAN_SUBTOTAL_DIFFS = {
+    ("Total PSC TGA 2022 LLC", "ltv"): (
+        "PDF 60.4% against 61.6%. This one is a KNOWN COST, not a mystery: the "
+        "published figure reproduced exactly while Jefferson Waters Creek's "
+        "real 57.5% LTV was weighted in, and that exception was retired on "
+        "2026-09-01 so that every development deal shows 'Dev' with no "
+        "per-deal carve-out. Waters Creek's debt (51,667,000 of the fund's "
+        "243.3M) leaving the denominator moves the mean from 60.4% to 61.6%. "
+        "Restoring the tie means restoring the exception — the two cannot both "
+        "hold. Deliberately NOT fixed by weighting a value the rows above no "
+        "longer display, which would make the total unauditable from them."),
     ("Total Individual Investments", "ytd_dscr"): (
         "PDF prints n/a although three members carry a DSCR "
         "(Nottingham 1.1x, Evergreen 2.9x, Ascent 2.1x, weighting to 2.08x). "
@@ -520,7 +602,7 @@ def assemble_loan(investor_code: str, quarter: str, *,
     diag = {"deals": 0, "dev": 0, "debt_from_isbs": 0, "debt_from_orig": 0,
             "ltv_ok": 0, "ltv_no_valuation": 0, "ltv_flagged_review": 0,
             "ltv_dev": 0, "ltv_dev_exception": 0, "dev_no_data": 0,
-            "dscr_dev": 0,
+            "debt_free": 0, "dscr_dev": 0,
             "dy_ok": 0, "dy_dev_suppressed": 0, "dy_no_ytd": 0,
             "various_terms": 0, "comments_attached": 0, "provider_errors": 0}
 
@@ -543,14 +625,6 @@ def assemble_loan(investor_code: str, quarter: str, *,
         dev = is_dev_deal(strategy)
         if dev:
             diag["dev"] += 1
-        # TEMPORARY: dev deal exempted from the "Dev" LTV suppression only.
-        # DSCR and Debt Yield below stay keyed on `dev` alone, so they still
-        # render "Dev" for it. See WATERS_CREEK_LTV_EXCEPTION.
-        ltv_exempt = dev and _ltv_exception(vcode)
-        if ltv_exempt:
-            diag["ltv_dev_exception"] += 1
-            flags.append("TEMPORARY exception — real LTV shown despite dev "
-                         "classification (income-based valuation at lease-up)")
 
         try:
             payload = one_pager_provider(vcode, quarter) or {}
@@ -591,24 +665,31 @@ def assemble_loan(investor_code: str, quarter: str, *,
         else:
             flags.append("no ISBS debt balance")
 
-        # ---- empty loan block: n/a takes precedence over the "Dev" label ----
-        # A dev deal with no debt basis at all — no ISBS balance, no
-        # mOrigLoanAmt, no loan record — has nothing to show, so the three
-        # ratio columns read n/a rather than claiming a status the data does
-        # not support. Gated here, AHEAD of the dev checks below.
-        # Pegasus Life Storage at 26Q1 is the case: the PDF shows n/a for its
-        # LTV, DSCR and Debt Yield, while the label alone would render "Dev".
-        #
-        # Deliberately keyed on `debt is None` — the "loan block is empty"
-        # signal — and NOT on per-column ratio availability. Per-column gating
-        # over-flips: no dev deal carries a real YTD DSCR (raw ytd_actual is
-        # None on 9 of the 10 at 26Q1), so DSCR would fall to n/a almost
-        # everywhere and JB Fair Park would stop reading "Dev" where the PDF
-        # shows it. Scoped to dev deals so a non-dev deal never loses its real
-        # DSCR, which is NOI / debt service and does not depend on the balance.
+        # ---- diagnostic only: a dev deal with an empty loan block ----------
+        # No ISBS balance, no mOrigLoanAmt, no loan record. This USED TO
+        # suppress the three ratio columns to a bare dash ahead of the "Dev"
+        # label; it no longer does — see DEV_DISPLAY for why that test was
+        # removed and how Pegasus Life Storage, its only subject, is handled
+        # now. Kept on the payload because frozen snapshots carry the key and
+        # the guardrails audit it, and because a dev deal reaching this state
+        # is still worth surfacing.
         dev_no_data = dev and debt is None
         if dev_no_data:
             diag["dev_no_data"] += 1
+            flags.append("dev deal with an empty loan block — ratios still "
+                         "read 'Dev' (the asset is pre-stabilisation)")
+
+        # ---- debt free: N/A across the debt columns, ahead of everything ---
+        # A positive statement that the asset carries no debt, so no ratio
+        # applies — distinct from the em dash that means "no data", and
+        # distinct from "Dev". Checked here so it wins over both. See
+        # DEBT_FREE_DEALS.
+        debt_free = _debt_free(vcode)
+        if debt_free:
+            diag["debt_free"] += 1
+            flags.append("held with no debt — Debt shown as a dash, and LTV / "
+                         "YTD DSCR / Debt Yield / Rate / Maturity as "
+                         f"{NA_DISPLAY!r}")
 
         # ---- LTV ----
         # Dev deals render "Dev": the ratio is meaningless pre-stabilisation and
@@ -621,7 +702,7 @@ def assemble_loan(investor_code: str, quarter: str, *,
         # see the year-end guard in _latest_valuation.
         val = _latest_valuation(valuations, vcode, quarter)
         ltv = ltv_flag = None
-        if dev and not ltv_exempt:
+        if dev:
             diag["ltv_dev"] += 1
         elif debt and val["value"]:
             raw = debt / val["value"]
@@ -648,11 +729,10 @@ def assemble_loan(investor_code: str, quarter: str, *,
             quarterly_noi_provider(vcode, quarter))
         annualised = dy = dy_ytd = None
         if dev:
-            flags.append(
-                "no debt basis — LTV / YTD DSCR / Debt Yield shown as n/a"
-                if dev_no_data
-                else "ratios shown as 'Dev' — development deal")
+            flags.append("ratios shown as 'Dev' — development deal")
             diag["dy_dev_suppressed"] += 1
+        elif debt_free:
+            pass                        # already flagged, and N/A not n/a
         elif not debt:
             flags.append("Debt Yield n/a — no debt balance")
         elif q_noi is None:
@@ -671,32 +751,56 @@ def assemble_loan(investor_code: str, quarter: str, *,
             diag["comments_attached"] += 1
         diag["deals"] += 1
 
+        # ---- displays ------------------------------------------------------
+        # Every raw field below is left EXACTLY as computed; only the *_display
+        # twins carry a suppression. That keeps the subtotals, the guardrails
+        # and a frozen payload reading the true figures, and lets the display
+        # rule change later without moving a number.
+        #
+        # Precedence, highest first:
+        #   1. debt free  -> N/A on five columns, dash on Debt
+        #   2. dev        -> "Dev" on the three ratio columns, UNCONDITIONALLY
+        #   3. the computed value
         return {
             "vcode": vcode, "name": name, "strategy": strategy, "is_dev": dev,
             "debt": debt, "debt_basis": debt_basis,
+            # Dash for a debt-free deal, so a real 0.0 balance does not print
+            # "$0.0". The raw `debt` stays 0.0 and still feeds the subtotals,
+            # where it contributes nothing either way.
+            "debt_display": None if debt_free else debt,
+            "debt_free": debt_free,
             "isbs_debt": isbs_debt, "orig_loan_amt": orig_total,
             "valuation": val["value"], "valuation_as_of": val["as_of"],
             "ltv": ltv, "ltv_review_flag": ltv_flag,
-            # n/a (None) wins over "Dev" when the loan block is empty —
-            # see dev_no_data above.
-            "ltv_display": (None if dev_no_data else
-                            DEV_DISPLAY if (dev and not ltv_exempt) else ltv),
-            "ltv_dev_exception": ltv_exempt,
+            "ltv_display": (NA_DISPLAY if debt_free else
+                            DEV_DISPLAY if dev else ltv),
+            # Always False since the Waters Creek exception was retired. The
+            # KEY survives because SnapshotLoan.vue reads it for a tooltip and
+            # a star, and snapshots frozen while the exception was live carry
+            # it as True — dropping the field would make those old payloads and
+            # the component disagree. See the retirement note near the top.
+            "ltv_dev_exception": False,
             "dev_no_data": dev_no_data,
             "ytd_dscr": dscr_ytd,
-            "ytd_dscr_display": (None if dev_no_data else
+            "ytd_dscr_display": (NA_DISPLAY if debt_free else
                                  DEV_DISPLAY if dev else dscr_ytd),
             "ytd_noi": ytd_noi, "quarter_noi": q_noi,
             "annualised_noi": annualised,
             "months_elapsed": n_months, "debt_yield": dy,
-            "debt_yield_display": (None if dev_no_data else
+            "debt_yield_display": (NA_DISPLAY if debt_free else
                                    DEV_DISPLAY if dev else dy),
             "debt_yield_ytd_annualised": dy_ytd,
             "debt_yield_basis": "single-quarter Interim IS NOI x 4 / debt",
             "loan_count": terms["loan_count"],
-            "rate": terms["rate"], "rate_display": terms["rate_display"],
+            "rate": terms["rate"],
+            # Rate and Maturity stay REAL for a dev deal — only the three ratio
+            # columns carry "Dev". A debt-free deal has no facility to describe,
+            # so these two read N/A with the rest.
+            "rate_display": (NA_DISPLAY if debt_free
+                             else terms["rate_display"]),
             "maturity": terms["maturity"],
-            "maturity_display": terms["maturity_display"],
+            "maturity_display": (NA_DISPLAY if debt_free
+                                 else terms["maturity_display"]),
             "interest_type": terms["interest_type"],
             "terms_various": terms["various"],
             "loans_inherited_from_children": inherited,
@@ -955,19 +1059,23 @@ def _selftest():                                    # pragma: no cover
         all(r["strategy"].strip().lower() != "redevelopment" or not r["is_dev"]
             for r in flat.values()))
     chk("Brainerd renders Various", (flat.get("P0000067") or {}).get("terms_various") is True)
-    chk("all dev deals render 'Dev' for LTV / YTD DSCR / Debt Yield "
-        "(except the temporary LTV exception and the empty-loan-block case)",
+    chk("all dev deals render 'Dev' for LTV / YTD DSCR / Debt Yield, with no "
+        "exemption of any kind",
         all(r["ltv_display"] == DEV_DISPLAY
             and r["ytd_dscr_display"] == DEV_DISPLAY
             and r["debt_yield_display"] == DEV_DISPLAY
-            for r in flat.values()
-            if r["is_dev"] and not r["ltv_dev_exception"]
-            and not r["dev_no_data"]) and
+            for r in flat.values() if r["is_dev"]) and
         any(r["is_dev"] for r in flat.values()))
+    chk("dev deals keep REAL Rate / Maturity / Debt — the 'Dev' literal is "
+        "confined to the three ratio columns",
+        all(r["rate_display"] not in (DEV_DISPLAY, NA_DISPLAY)
+            and r["maturity_display"] not in (DEV_DISPLAY, NA_DISPLAY)
+            and not isinstance(r["debt_display"], str)
+            for r in flat.values() if r["is_dev"]))
 
-    # ---- empty loan block: n/a takes precedence over "Dev" ----
+    # ---- dev suppression is now unconditional ----
     print("\n" + "=" * 108)
-    print('EMPTY LOAN BLOCK — dev deal with no debt basis reads n/a, not "Dev"')
+    print('DEV RATIO COLUMNS — "Dev" is forced, with or without a debt basis')
     print("=" * 108)
     print(f"  {'vcode':<10}{'deal':<30}{'debt':>14}{'LTV':>9}{'DSCR':>8}"
           f"{'DebtYld':>9}   dev_no_data")
@@ -984,84 +1092,127 @@ def _selftest():                                    # pragma: no cover
               f"{d(r['debt_yield_display'])[:8]:>9}   "
               f"{r['dev_no_data']}")
 
+    # Pegasus Life Storage was the dev_no_data case until 2026-09-01, when
+    # "new construction" left config.DEV_STRATEGIES and it became the operating
+    # deal it always was. It is held DEBT FREE (ISBS 0.0, no loan record, no
+    # mOrigLoanAmt), so it now takes the DEBT_FREE_DEALS path: Debt an em dash,
+    # and five columns the literal "N/A". Asserted against BOTH of the other
+    # two routes to a blank cell — the dev gate and a bare dash — so they can
+    # never be confused for each other.
     peg = flat.get("P0000066") or {}
-    chk("Pegasus has no debt basis (empty loan block)",
-        peg.get("debt") is None and peg.get("orig_loan_amt") is None
+    print(f"    Pegasus: is_dev={peg.get('is_dev')} "
+          f"debt_free={peg.get('debt_free')} debt={peg.get('debt')!r} "
+          f"debt_display={peg.get('debt_display')!r} "
+          f"loans={peg.get('loan_count')} ltv={peg.get('ltv_display')!r} "
+          f"dscr={peg.get('ytd_dscr_display')!r} "
+          f"dy={peg.get('debt_yield_display')!r} "
+          f"rate={peg.get('rate_display')!r} "
+          f"maturity={peg.get('maturity_display')!r} "
+          f"dev_no_data={peg.get('dev_no_data')}")
+    chk("Pegasus is no longer classified development",
+        peg.get("is_dev") is False)
+    chk("Pegasus has no debt on record (empty loan block)",
+        peg.get("debt") in (None, 0) and peg.get("orig_loan_amt") is None
         and peg.get("loan_count") == 0)
-    chk("Pegasus is flagged dev_no_data", peg.get("dev_no_data") is True)
-    chk("Pegasus LTV reads n/a, not 'Dev' (matches PDF)",
-        peg.get("ltv_display") is None)
-    chk("Pegasus YTD DSCR reads n/a, not 'Dev' (matches PDF)",
-        peg.get("ytd_dscr_display") is None)
-    chk("Pegasus Debt Yield reads n/a, not 'Dev' (matches PDF)",
-        peg.get("debt_yield_display") is None)
-    chk("Pegasus carries the n/a explanation flag",
-        any("no debt basis" in f for f in peg.get("flags") or []))
+    chk("Pegasus is flagged debt_free", peg.get("debt_free") is True)
+    chk("Pegasus is NOT flagged dev_no_data — that diagnostic is dev-only",
+        not peg.get("dev_no_data"))
+    chk("Pegasus Debt renders an em dash, NOT its real 0.0 balance",
+        peg.get("debt_display") is None and peg.get("debt") == 0)
+    chk("Pegasus reads 'N/A' on all five debt columns",
+        all(peg.get(k) == NA_DISPLAY for k in
+            ("ltv_display", "ytd_dscr_display", "debt_yield_display",
+             "rate_display", "maturity_display")))
+    chk("Pegasus never reads 'Dev' — it is an operating, unlevered asset",
+        not any(peg.get(k) == DEV_DISPLAY for k in
+                ("ltv_display", "ytd_dscr_display", "debt_yield_display",
+                 "rate_display", "maturity_display")))
+    chk("Pegasus is the ONLY debt-free deal — City West has the same data "
+        "fingerprint and must NOT be swept in (see DEBT_FREE_DEALS)",
+        sorted(r["vcode"] for r in flat.values() if r.get("debt_free"))
+        in ([], ["P0000066"]))
+    cw = flat.get("PCITWES") or {}
+    if cw:
+        chk("City West keeps its em dashes and gains no N/A literal",
+            not cw.get("debt_free")
+            and not any(cw.get(k) == NA_DISPLAY for k in
+                        ("ltv_display", "ytd_dscr_display",
+                         "debt_yield_display", "rate_display",
+                         "maturity_display")))
 
     no_data = sorted(r["vcode"] for r in flat.values() if r["dev_no_data"])
-    chk("EXACTLY ONE deal changes — only Pegasus is dev_no_data",
-        no_data == ["P0000066"])
-    chk("the other 9 dev deals keep 'Dev' on DSCR and Debt Yield",
+    print(f"    dev_no_data deals: {no_data}")
+    chk("no deal is dev_no_data now that Pegasus is operating",
+        no_data == [])
+    chk("every dev deal keeps 'Dev' on DSCR and Debt Yield",
         all(r["ytd_dscr_display"] == DEV_DISPLAY
             and r["debt_yield_display"] == DEV_DISPLAY
-            for r in flat.values()
-            if r["is_dev"] and r["vcode"] != "P0000066"))
-    chk("the other 9 dev deals keep 'Dev' on LTV (bar Waters Creek)",
+            for r in flat.values() if r["is_dev"]))
+    chk("every dev deal keeps 'Dev' on LTV — no deal excluded",
         all(r["ltv_display"] == DEV_DISPLAY for r in flat.values()
-            if r["is_dev"] and r["vcode"] not in ("P0000066", "P0000078")))
+            if r["is_dev"]))
     chk("gate is scoped to dev deals — no non-dev deal is dev_no_data",
         all(not r["dev_no_data"] for r in flat.values() if not r["is_dev"]))
-    chk("no non-dev deal lost its real DSCR to the gate",
+    # The debt-free deal is excluded BY NAME rather than by allowing any
+    # mismatch: its DSCR is deliberately the N/A literal, and every other
+    # operating deal must still pass its real number straight through.
+    chk("no ordinary operating deal lost its real DSCR to a suppression",
         all(r["ytd_dscr_display"] == r["ytd_dscr"]
-            for r in flat.values() if not r["is_dev"]))
+            for r in flat.values()
+            if not r["is_dev"] and not r.get("debt_free")))
+    chk("every operating deal's Debt display IS its raw debt, bar the "
+        "debt-free one",
+        all(r["debt_display"] == r["debt"] for r in flat.values()
+            if not r.get("debt_free")))
 
-    # ---- TEMPORARY Waters Creek LTV exception ----
+    # ---- Waters Creek: the retired LTV exception ----
     print("\n" + "=" * 108)
-    print('TEMPORARY LTV EXCEPTION — Jefferson Waters Creek: real LTV, '
-          '"Dev" for DSCR / Debt Yield')
+    print('RETIRED LTV EXCEPTION — Jefferson Waters Creek now shows "Dev" '
+          'for LTV like every other dev deal')
     print("=" * 108)
     wc = flat.get("P0000078") or {}
     print(f"    deal   : P0000078 {wc.get('name', '?')}")
     print(f"    strategy={wc.get('strategy')!r}  is_dev={wc.get('is_dev')}  "
           f"ltv_dev_exception={wc.get('ltv_dev_exception')}")
     print(f"    LTV display        : {wc.get('ltv_display')!r}"
-          f"   (numeric {wc.get('ltv')})")
+          f"   (raw numeric {wc.get('ltv')})")
     print(f"    YTD DSCR display   : {wc.get('ytd_dscr_display')!r}")
     print(f"    Debt Yield display : {wc.get('debt_yield_display')!r}")
     print(f"    debt {wc.get('debt')!r} ({wc.get('debt_basis')})")
     print(f"    ISBS debt {wc.get('isbs_debt')!r}   "
           f"mOrigLoanAmt {wc.get('orig_loan_amt')!r}")
     print(f"    valuation {wc.get('valuation')!r} as of {wc.get('valuation_as_of')!r}")
-    if wc.get("valuation") and wc.get("isbs_debt"):
-        print(f"    LTV on ISBS drawn balance would be "
-              f"{wc['isbs_debt'] / wc['valuation']:.2%} "
-              f"(shown value uses the committed facility)")
+    if wc.get("valuation") and wc.get("debt"):
+        print(f"    the LTV it USED to display was "
+              f"{wc['debt'] / wc['valuation']:.2%} "
+              f"(committed facility / valuation) — now suppressed")
 
     chk("Waters Creek is classified as a dev deal", wc.get("is_dev") is True)
-    chk("Waters Creek is the LTV exception",
-        wc.get("ltv_dev_exception") is True)
-    chk("Waters Creek shows a REAL numeric LTV, not 'Dev'",
-        isinstance(wc.get("ltv_display"), (int, float))
-        and wc.get("ltv_display") is not None
-        and wc.get("ltv_display") == wc.get("ltv"))
-    chk("Waters Creek still shows 'Dev' for YTD DSCR",
+    chk("Waters Creek shows 'Dev' for LTV — the exception is retired",
+        wc.get("ltv_display") == DEV_DISPLAY)
+    chk("Waters Creek shows 'Dev' for YTD DSCR",
         wc.get("ytd_dscr_display") == DEV_DISPLAY)
-    chk("Waters Creek still shows 'Dev' for Debt Yield",
+    chk("Waters Creek shows 'Dev' for Debt Yield",
         wc.get("debt_yield_display") == DEV_DISPLAY)
-    chk("Waters Creek is the ONLY LTV exception",
-        [r["vcode"] for r in flat.values() if r["ltv_dev_exception"]]
-        == ["P0000078"])
-    # Excludes Waters Creek (the temporary LTV exception) and any deal caught
-    # by the empty-loan-block gate, which reads n/a rather than "Dev".
-    chk("every OTHER dev deal shows 'Dev' for LTV",
+    # The raw LTV is not computed for a dev deal at all (the `if dev` branch
+    # short-circuits ahead of the arithmetic), so there is no suppressed number
+    # sitting on the payload waiting to be weighted into a subtotal. This is
+    # what makes the TGA22 LTV difference honest rather than hidden — see
+    # KNOWN_LOAN_SUBTOTAL_DIFFS.
+    chk("Waters Creek carries NO raw LTV either, so it cannot feed a subtotal",
+        wc.get("ltv") is None)
+    chk("NO deal is an LTV exception any more",
+        not any(r["ltv_dev_exception"] for r in flat.values()))
+    chk("EVERY dev deal shows 'Dev' for LTV, with no carve-out",
         all(r["ltv_display"] == DEV_DISPLAY for r in flat.values()
-            if r["is_dev"] and r["vcode"] != "P0000078"
-            and not r["dev_no_data"]))
-    chk("no non-dev deal is ever an LTV exception",
-        all(not r["ltv_dev_exception"] for r in flat.values()
-            if not r["is_dev"]))
-    chk("the exception constant names exactly one deal",
-        WATERS_CREEK_LTV_EXCEPTION == {"P0000078"})
+            if r["is_dev"]))
+    chk("no dev deal carries a raw ratio value at all, so the three ratio "
+        "subtotals exclude development entirely",
+        all(r["ltv"] is None and r["ytd_dscr"] is None
+            and r["debt_yield"] is None
+            for r in flat.values() if r["is_dev"]))
+    chk("the retired constant is gone from the module",
+        not hasattr(sys.modules[__name__], "WATERS_CREEK_LTV_EXCEPTION"))
     chk("dev deals still show numeric Debt",
         all(r["debt"] is not None for r in flat.values()
             if r["is_dev"] and r["orig_loan_amt"]))
@@ -1073,9 +1224,12 @@ def _selftest():                                    # pragma: no cover
         and (flat.get("P0000021") or {}).get("ltv_review_flag") is None)
     chk("LTV guard no longer fires for any dev deal (backstop only)",
         all(r["ltv_review_flag"] is None for r in flat.values() if r["is_dev"]))
-    chk("non-dev deals keep numeric LTV display",
+    # Excludes the debt-free deal by name: its LTV is deliberately the N/A
+    # literal, and every OTHER operating deal must stay numeric-or-em-dash.
+    chk("ordinary operating deals keep a numeric LTV display",
         all(r["ltv_display"] is None or isinstance(r["ltv_display"], float)
-            for r in flat.values() if not r["is_dev"]))
+            for r in flat.values()
+            if not r["is_dev"] and not r.get("debt_free")))
     chk("Debt Yield basis is single-quarter x 4",
         all(r["debt_yield_basis"].startswith("single-quarter")
             for r in flat.values()))

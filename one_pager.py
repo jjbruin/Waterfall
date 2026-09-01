@@ -1049,6 +1049,51 @@ AT_CLOSE_REQUIRE_YEAR0_ROW = True
 #: cannot cover its debt service, which is a different and false claim.
 AT_CLOSE_ZERO_WHOLE_COLUMN = True
 
+# ══════════════════════════════════════════════════════════════════════════
+# TEMPORARY EDITORIAL SUPPRESSION — REMOVE WHEN THE UNDERWRITING IS RESTATED
+# ══════════════════════════════════════════════════════════════════════════
+#: Deals whose At-Close column is suppressed REGARDLESS of classification.
+#:
+#: The Year-0 gate above is keyed on the development classification, so a deal
+#: leaving DEV_STRATEGIES silently recovers its At-Close figure. That is the
+#: right default — an operating deal should show its baseline — but it is wrong
+#: for a deal whose baseline was suppressed on its own merits and only happened
+#: to be reached through the dev branch.
+#:
+#: P0000066 Pegasus Life Storage is that deal. It carries no Year-0 Projected IS
+#: row, so the gate fired for it while it was miscoded "New Construction", and
+#: the published page prints a dash for its At-Close accordingly. Removing "new
+#: construction" from config.DEV_STRATEGIES on 2026-09-01 corrected the
+#: classification and, on its own, would have un-zeroed the column to a
+#: revenue/expense/NOI triple of 624,689 that has never been published. Its own
+#: PDF comment — "U/W YE references reforecasted U/W, not initial" — is the
+#: editorial reason: the underwriting on file is a later reforecast, not the
+#: at-close baseline, so the column has no honest value to show. No data field
+#: carries that fact, which is why this is a hardcoded vcode and not a rule.
+#:
+#: Consequences, both intended: the Portfolio Snapshot Operating subtab renders
+#: an em dash rather than "$0.0" (all three rows zero -> `_payload_unpopulated`,
+#: see AT_CLOSE_ZERO_WHOLE_COLUMN above), and both growth columns stay n/a
+#: because `_growth` returns None on a zero base — which is what the PDF prints.
+#:
+#: THIS IS TECHNICAL DEBT, keyed by vcode, and will keep overriding whatever
+#: real rule ships. It is retired when the deal's Year-0 underwriting is
+#: restated in MRI (the gate then passes on the data), or when an editorial
+#: per-cell suppression control lands on the page.
+AT_CLOSE_FORCE_SUPPRESS = {"P0000066"}          # Pegasus Life Storage
+
+
+def _at_close_force_suppressed(vcode: str) -> bool:
+    """True for a deal whose At-Close column is suppressed by editorial
+    decision rather than by classification. TEMPORARY — see
+    AT_CLOSE_FORCE_SUPPRESS.
+
+    Case-insensitive: ``vcode`` arrives as the deals table's own casing via
+    ``_canonical_vcode``, which is upper on live and lower in some fixtures.
+    """
+    return str(vcode or "").strip().upper() in AT_CLOSE_FORCE_SUPPRESS
+# ══════════════════════════════════════════════════════════════════════════
+
 
 def _has_year0_projected_row(uw_data: pd.DataFrame) -> bool:
     """True when this deal carries a Year-0 (2015-12-31) Projected IS row.
@@ -1625,18 +1670,26 @@ def get_property_performance(
         # Investment_Strategy, falling back to the Lifecycle proxy), shared
         # with the Portfolio Snapshot's "Dev" suppression and the dev debt
         # basis above, so the three cannot disagree about which deals are
-        # development deals. It follows that set: Pegasus Life Storage is
-        # caught today only because Lifecycle = "New Construction" is in
-        # DEV_STRATEGIES, and drops out of this gate automatically when that
-        # value is removed — no change is needed here.
+        # development deals.
+        #
+        # AT_CLOSE_FORCE_SUPPRESS is ORed in because that coupling cuts both
+        # ways: when "new construction" left DEV_STRATEGIES on 2026-09-01,
+        # Pegasus Life Storage dropped out of this gate and would have
+        # recovered a 624,689 At-Close column that has never been published.
+        # Its suppression is editorial, not classification-driven, so it is
+        # named explicitly rather than riding on a dev tag that is now
+        # (correctly) gone. See AT_CLOSE_FORCE_SUPPRESS.
         #
         # inv_map is None only in build_chart_data() at the bottom of this
         # module, where _is_dev_deal returns False and the gate no-ops. That is
         # the safe direction (never zero a deal we cannot classify) and it
         # costs nothing: that path reads ytd_actual, uw_ye and
-        # economic_occ.ytd_actual, never an At-Close field.
+        # economic_occ.ytd_actual, never an At-Close field. The force list is
+        # deliberately OUTSIDE that concern — it needs no inv_map, so a
+        # suppressed deal stays suppressed even there.
         _gate_dev = (not AT_CLOSE_YEAR0_DEV_ONLY
-                     or _is_dev_deal(vcode_str, inv_map))
+                     or _is_dev_deal(vcode_str, inv_map)
+                     or _at_close_force_suppressed(vcode_str))
         if (AT_CLOSE_REQUIRE_YEAR0_ROW and _gate_dev
                 and not _has_year0_projected_row(uw_data)):
             perf['noi']['at_close'] = 0
