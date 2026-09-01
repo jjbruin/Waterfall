@@ -303,7 +303,35 @@ IS_ACCOUNTS = {
 # import them from there unchanged.
 
 #: Strategy values that mark a development deal.
-DEV_STRATEGIES = {"development", "new construction"}
+#:
+#: "new construction" was REMOVED 2026-09-01. On this feed that Lifecycle value
+#: describes the VINTAGE of the building, not that Peaceable is constructing it,
+#: and it sat on exactly two deals — both finished assets bought after they were
+#: built:
+#:
+#:   P0000006 Belleville Self Storage   Year_Built 2020, acquired 04/12/2021
+#:   P0000066 Pegasus Life Storage      Year_Built 2020, acquired 05/11/2022
+#:
+#: Two independent registers agree they are not construction deals. Every
+#: genuine one carries Year_Built = "To Be Built" (8 deals, all Lifecycle
+#: "Development"), and the MRI ``inspection`` table — the construction-draw
+#: register, 10 rows portfolio-wide — has no row for either. The reference PDF
+#: also treats both as operating, printing real occupancy and NOI for Pegasus.
+#:
+#: The cost of the miscoding was real: Belleville's Operating row discarded a
+#: genuine 93.2% occupancy and 1.14M NOI, and its Loan row printed "Dev" over a
+#: computable 82.6% LTV, 0.708 DSCR and 5.44% Debt Yield.
+#:
+#: Removing it also drops Pegasus out of the At-Close Year-0 gate in
+#: one_pager.py, which keys on this set rather than carrying its own list.
+#: The Portfolio Snapshot Summary's DEAL_TYPE_MAP is a SEPARATE map and already
+#: bucketed "new construction" as Income, so the allocation pie does not move.
+#:
+#: NOTE this leaves the set a single value. It stays a set because
+#: Investment_Strategy is not yet populated (0/134) and will bring its own
+#: vocabulary when MRI feeds it — at which point new development values are
+#: added here and nowhere else.
+DEV_STRATEGIES = {"development"}
 
 
 def is_dev_deal(strategy):

@@ -222,29 +222,38 @@ _POPULATION_BLOCKS = ("revenue", "expenses", "noi")
 #:     mid-lease-up, which is why the NOI projections are real while the
 #:     occupancy series is not yet meaningful.
 #:
-#:   P0000066 Pegasus Life Storage
-#:     PDF row:  48.0% | - | 88.3% | 1.7 | 90.3% | $1.1 | n/a | n/a
-#:     The PDF treats this one as operating: real occupancy AND real NOI, with
-#:     n/a only in the two growth columns. It is an operating self-storage asset
-#:     recovering occupancy, classified development solely because
-#:     Lifecycle = "New Construction" feeds DEV_STRATEGY_ALLOW_LIFECYCLE_FALLBACK
-#:     (it is one of only two New Construction rows in the whole feed). Its own
-#:     PDF comment -- "U/W YE references reforecasted U/W, not initial" -- is the
-#:     editorial reason its growth is n/a, and no data field carries that fact.
-#:     NOT named in the creator's brief, which said Waters Creek was the only
-#:     exception; added because the brief also said to match the PDF exactly,
-#:     and the PDF is unambiguous here. FLAG FOR CONFIRMATION.
+#: RETIRED 2026-09-01 — P0000066 Pegasus Life Storage.
 #:
-#: The rule these stand in for is roughly "a dev deal shows the columns its
-#: stabilisation stage supports", which needs a lease-up/stabilisation state in
-#: the data that does not currently exist. Two more honest routes would also
-#: retire these: Investment_Strategy actually being populated (Pegasus is only
-#: caught by the Lifecycle proxy), or an editorial per-cell suppression control
-#: on the page. Until then this dict is technical debt and will silently keep
-#: overriding whatever real rule ships.
+#:     It carried frozenset({"econ_occ", "noi"}) to force real occupancy and NOI
+#:     through, because the PDF treats it as operating (48.0% | - | 88.3% | 1.7 |
+#:     90.3% | $1.1 | n/a | n/a) while we classified it development. That
+#:     classification was the bug, not the display: Lifecycle "New Construction"
+#:     described the BUILDING's vintage, and the deal is a finished 2020 asset
+#:     bought in 2022 with no construction-draw record. "new construction" has
+#:     now been removed from config.DEV_STRATEGIES, so the deal is operating,
+#:     nothing suppresses it, and this entry became unreachable — `_dev_exempt`
+#:     is only ever consulted for a dev deal. Deleted rather than left inert so
+#:     it cannot mislead the next reader into thinking a suppression is in play.
+#:
+#:     Its At-Close column and both growth columns still read as a dash / n/a,
+#:     and still correctly, but by a DIFFERENT and now explicit route. The
+#:     At-Close Year-0 gate in one_pager keys on DEV_STRATEGIES, so un-tagging
+#:     the deal would have un-zeroed that column to 624,689 — a figure that has
+#:     never been published. `one_pager.AT_CLOSE_FORCE_SUPPRESS` now names the
+#:     deal outright, so the column stays zeroed, `_payload_unpopulated` still
+#:     sees all three rows at zero and renders the dash, and `_growth` still
+#:     returns None on a zero base. The PDF's own comment -- "U/W YE references
+#:     reforecasted U/W, not initial" -- remains the editorial reason, and no
+#:     data field carries it.
+#:
+#: The rule the survivor stands in for is roughly "a dev deal shows the columns
+#: its stabilisation stage supports", which needs a lease-up/stabilisation state
+#: in the data that does not currently exist. The honest route that would retire
+#: it is an editorial per-cell suppression control on the page. Until then this
+#: dict is technical debt and will silently keep overriding whatever real rule
+#: ships.
 DEV_DISPLAY_EXCEPTIONS = {
     "P0000078": frozenset({"noi"}),                 # Jefferson Waters Creek
-    "P0000066": frozenset({"econ_occ", "noi"}),     # Pegasus Life Storage
 }
 
 

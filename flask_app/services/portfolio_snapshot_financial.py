@@ -203,8 +203,22 @@ EXCLUDING_DEV_COLUMNS = ("total_commitment", "itd", "net_roe")
 #:
 #: Display only: the raw `debt` stays 0.0 and the raw `net_roe` stays whatever
 #: the accessor returned, so no value moves and the guardrails still see them.
+#:
+#: Pegasus Life Storage is held DEBT FREE — its ISBS balance is a real 0.0, it
+#: has no loan record and no mOrigLoanAmt — and the PDF prints a dash for it.
+#: It used to get that dash by accident: it was misclassified development, so
+#: `resolve_debt` took the dev branch, found no committed facility and returned
+#: (None, unavailable) -> em dash. Removing "new construction" from
+#: DEV_STRATEGIES corrects the classification and, on its own, would have
+#: flipped that cell to "$0.0" — which reads as a measured debt-free position
+#: rather than as not-applicable, and regresses against the published page.
+#: This entry restores the dash on purpose rather than by side effect.
+#:
+#: Only `debt`. Its Net ROE is a real cell awaiting manual entry and must keep
+#: prompting as "pending entry".
 PDF_NA_CELLS: dict[str, frozenset] = {
     "PCITWES": frozenset({"debt", "net_roe"}),      # City West
+    "P0000066": frozenset({"debt"}),                # Pegasus Life Storage
 }
 # ══════════════════════════════════════════════════════════════════════════
 

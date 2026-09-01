@@ -93,6 +93,19 @@ const devCount = computed(() => {
   }
   return n
 })
+
+/**
+ * The Debt cell's value.
+ *
+ * `debt_display` arrived 2026-09-01 so a debt-free deal could print a dash
+ * instead of its real 0.0 balance. Snapshots frozen before that date have no
+ * such key, and reading it straight would render every one of their Debt cells
+ * as a dash — so the fallback tests for the KEY, not for a nullish value: a
+ * present null is the deliberate dash, an absent key is an old payload.
+ */
+function debtCell(r: any): unknown {
+  return r && 'debt_display' in r ? r.debt_display : r?.debt
+}
 </script>
 
 <template>
@@ -101,9 +114,14 @@ const devCount = computed(() => {
     <div class="legend">
       <span class="chip">property-level — not scaled by ownership</span>
       <span class="chip">Debt Yield = single-quarter NOI &times; 4 &divide; debt</span>
-      <span v-if="devCount" class="chip">{{ devCount }} development deal(s) show “Dev”</span>
+      <span v-if="devCount" class="chip">
+        {{ devCount }} development deal(s) show “Dev” for LTV, DSCR and Debt Yield
+      </span>
+      <span v-if="diag.debt_free" class="chip">
+        {{ diag.debt_free }} debt-free deal(s) show “N/A”
+      </span>
       <span v-if="diag.dev_no_data" class="chip warn">
-        {{ diag.dev_no_data }} with an empty loan block show n/a
+        {{ diag.dev_no_data }} development deal(s) have an empty loan block
       </span>
       <span v-if="diag.ltv_flagged_review" class="chip warn">
         {{ diag.ltv_flagged_review }} LTV withheld above {{ fmtPct(ceiling, 0) }}
@@ -145,7 +163,13 @@ const devCount = computed(() => {
               </td>
               <td :class="{ various: r.terms_various }">{{ r.rate_display ?? DASH }}</td>
               <td :class="{ various: r.terms_various }">{{ r.maturity_display ?? DASH }}</td>
-              <td class="r num" :title="r.debt_basis">{{ fmtM(r.debt) }}</td>
+              <!-- debt_display, not debt: a debt-free deal prints a dash where
+                   its real 0.0 balance would otherwise read as "$0.0". Same
+                   pattern as SnapshotFinancial's debt_display. -->
+              <td class="r num" :class="{ lit: isLiteral(debtCell(r)) }"
+                  :title="r.debt_free ? 'Held with no debt' : r.debt_basis">
+                {{ disp(debtCell(r), 'm') }}
+              </td>
               <td class="r num" :class="{ lit: isLiteral(r.ytd_dscr_display) }">
                 {{ disp(r.ytd_dscr_display, 'x') }}
               </td>
