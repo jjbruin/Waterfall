@@ -226,3 +226,75 @@ So the Excel is running an accruing 9% coupon the app is not. Material, and it r
 TGA6's tie order, so it needs Jim's decision rather than a unilateral fix.
 **Jim is sending the source Excel model**, which will settle this exactly rather than by
 inference.
+
+
+## PHASE 0 CLOSED (Sep 1 2026) — the source Excel resolves it exactly
+
+Model: `~\OneDrive\Documents\TIAA - Windsor Square - Base Case - 8.19.2026.xlsx`,
+sheet **`TIAA_AMB`** (the sheet that prints the PDF). Read with openpyxl after stripping a
+corrupt `<definedNames>` block whose value is the literal text "Formula removed, name can be
+deleted." — openpyxl refuses the file otherwise; copy it and delete that block first.
+
+### The promote is the closed form the app ALREADY has
+`TIAA_AMB` rows 152-154 and 43:
+```
+r152  TIAA CF before promote = participation (r44) + ROC (r42) + operating net of fees (r40)
+r153  each column / (1+9%)^((date - D11)/365)        <- discounted at the COUPON
+O153  = SUM(r153)                                    = XNPV(9%, pre-promote CFs)
+O154  = O153 * (1+9%)^((MAX(dates) - D11)/365)       = the excess, compounded to exit
+r43   promote = -O154 * 20%
+```
+Reproduced **to the penny**: O153 2,240,516.40 vs sheet 2,240,516.39; O154 3,448,126.22 vs
+3,448,126.21; promote 689,625.24 exact. **Discount base is `D11` = 2026-09-30**
+(`=PSC!B84`), not the close date — every period is then a clean 365-day year.
+
+This is exactly `x = XNPV(target, cfs) x (1+target)^t`, i.e. the same closed form that
+replaced `irr_needed_distribution()`'s brentq search during the valuation NAV work — only
+the sign convention differs (the engine solves the amount NEEDED to reach the target; the
+Excel takes the EXCESS above it).
+
+### The tie-out
+| | TIAA IRR |
+|---|---|
+| app, monthly, TGA6 as structured today | 12.281% |
+| app, annual buckets (the Excel's convention) | 11.568% |
+| **app, annual + the Excel's promote structure** | **11.748%** |
+| **Excel as printed** | **11.740%** |
+
+**0.008pp apart.** Phase 0's earlier -0.236pp "projection" residual largely cancels: the
+Excel-shape promote is smaller than the app's current one, which offsets the app's lower
+exit pool. The two models agree.
+
+### The one real structural difference
+- **Excel**: the investor keeps its FULL pro-rata share; PSC then takes 20% of the excess
+  above a 9% IRR. On the app's cash flows that promote is **670,736**.
+- **App today**: tie 20 tops TGAM up to a 9% IRR (`IRR` vState), then tie 30 splits the
+  residual TGAM .70 / INV6 .26 / PSCMAN .04. That concedes 20 points of the tie-30 pool =
+  **856,189**, i.e. **185,452 too much promote**, routed 4/20 to PSCMAN and 16/20 to INV6.
+- The two shapes are only *approximately* equivalent and the gap drifts with the cash-flow
+  shape, so calibrating tie-30 FXRates is not a fix.
+
+**Recommendation — a new `IRRPromote` vState.** `FXRate` = promote share (0.20),
+`nPercent` = the coupon (0.09), `vNotes` = the investor whose IRR is measured; allocates
+`FXRate x max(0, xnpv(nPercent, investor_cfs) x (1+nPercent)^t)` to the recipient at the
+sale tie. ~15 lines reusing `metrics.xnpv`, and it makes the app tie to the Excel **by
+construction** rather than by calibration. Then TGA6 Cap_WF becomes:
+tie 10 ROC 90/10 -> tie 20 `IRRPromote` PSC 20% @ 9% -> tie 30 residual 90/10.
+
+### CORRECTION to the earlier session note: TGA6 is RIGHT to have no Pref step
+The earlier inference — that the Excel pays an accrued 9% coupon at the sale ahead of the
+promote — was **wrong**. Rows 62-64 do accrue an "Investor Due / Paid / Accrued" coupon, but
+the accrued balance (166,801 at year 5) is **never paid**: it only (i) caps the operating
+distribution via `r63 = MIN(due, distributable x 90%)` and (ii) supplies the 9% discount
+rate in the promote calc. The coupon is a **hurdle rate, not a payable**. So the absence of
+a `Pref` step on TGA6 is correct, and no Pref step should be added. Good thing the model was
+read rather than the arithmetic trusted.
+
+### Two smaller confirmations
+- **AM fee base**: Excel charges 0.95% on **row 16 = TOTAL** equity, then allocates 90% to
+  TIAA (`r38 = -r69 x 90%`). The app charges `AMFee` on TGAM's own capital, which is
+  0.95% x 90% x total — arithmetically identical. No change needed.
+- **The Excel's AM fee is subordinated and accrues**: `r69 = MIN(due, Investor Paid)` with
+  `r70` carrying the shortfall forward. TGA6's `AMFee` has no `;accrue`. Row 70 is zero
+  throughout this deal so it does not bite here, but **TGA6's AMFee should carry `;accrue`**
+  to match the model on a weaker deal.
