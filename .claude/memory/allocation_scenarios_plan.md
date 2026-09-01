@@ -165,3 +165,64 @@ Equity | % Owned | {Investor} Equity | IRR | ROE | MOIC plus a bold total row.
 3. **"As underwritten" in the roll-up** — recompute the five existing TGA6 deals live
    from current projections, or freeze the underwriting figures that were emailed?
 4. **Does the KOC slice pay the same 0.95% AM fee / 20% promote terms**, or PSCKOC's own?
+
+
+## PHASE 0 RESULT (Sep 1 2026) — the waterfall ties; the gap is convention + projection
+
+Target: `TIAA - Windsor Square Net Returns 9.1.2026.pdf`. Its own printed cash flows solve
+to **11.740%** (the page prints "11.8%"), MOIC 1.565x on contributions of 17,241,750 and
+distributions of 26,987,075.
+
+| step | TGAM IRR | delta |
+|---|---|---|
+| app as shipped (before this session) | 12.319% | |
+| + TGA6 venture-expense step added (the real fix) | 12.281% | -0.038 |
+| + annual buckets, i.e. the PDF's convention | 11.516% | **-0.766** |
+| + startup cost inside the equity basis (17,241,750) | 11.504% | -0.011 |
+| **residual vs the PDF's 11.740%** | | **-0.236** |
+
+**Distribution frequency is the whole story (-0.766pp).** The app models actual monthly
+distributions; the Excel models one annual distribution per anniversary. Same dollars,
+earlier receipt, higher IRR. This is a presentation convention, NOT an error — and it
+yields the rule the one-pager must follow:
+
+> **The net-returns page must compute IRR / ROE / MOIC from the same annual figures it
+> prints.** Print 11 annual columns and derive the metrics from monthly cash flows and the
+> page will not reproduce its own numbers — an investor can catch that. Deriving them from
+> the printed columns makes the app tie to the Excel by construction.
+
+**The -0.236pp residual is the underlying projection, not the waterfall.** Cash reaching
+PPIWIND over the hold: operating app 7,534,821 vs PDF 7,377,607 (+157,214); capital app
+23,823,037 vs PDF 24,206,135 (-383,098); net **-225,884**, of which TIAA's 90% is -203,295.
+The app's Argus-based forecast is simply a different vintage from the Excel's. Do not
+"fix" it — the one-pager should name its cash-flow source so the difference is explainable.
+
+### DONE — TGA6 venture-expense step (was genuinely missing)
+`Amt` at iOrder 1 on both CF_WF and Cap_WF, PropCode **`TGA6_EXP`**, `mAmount` **1875**,
+vNotes "Quarterly: $7,500/yr venture expense (pari-passu)". Saved on Azure through
+`save_waterfall_steps` (audit trail written). Notes:
+- `mAmount` on `Amt` is capped **per quarter** (tracker key `(entity, iOrder, quarter)`), so
+  an annual $7,500 is entered as 1,875. Same iOrder on both waterfalls so CF and Cap share
+  one quarterly cap and cannot double-charge.
+- Recipient is `TGA6_EXP`, following the `{entity}_EXP` convention PSC1/PSC3 already use.
+  **Deliberate**: routing it to PSCMAN (the TGA22 convention) would flow a third-party
+  expense into PSCMAN's income and therefore into PSC1's consolidated return.
+- Verified: yr5 charges exactly 7,500. A quarter with no distribution event charges nothing
+  (the waterfall does not run) — same limitation as the `;accrue` fee.
+- **`save_waterfall_steps()` wrote NULL into `dteffective`** for the 11 pre-existing rows;
+  restored by hand. `dteffective` is a required column in `loaders.load_waterfalls`. Worth a
+  look before the next programmatic save.
+
+### STILL OPEN — TGA6 has no 9% coupon, and the Excel appears to have one
+The PDF's structure legend reads "Coupon **9.00%**", but TGA6's stored Cap_WF has **no
+`Pref` step** — only a 9% **IRR gate** at tie 20. Different mechanics: a coupon accrues and
+compounds, an IRR gate is a lookback test.
+Arithmetic evidence from the PDF's own sale year: PSC promote 689,625 = 20% of 3,448,125,
+so **1,095,647 was paid ahead of the promote**. A 9% coupon on the declining balance
+(17,241,750 then 14,493,239) totals 6,769,324 against 5,891,178 of operating cash actually
+received net of fees — an **878,146 shortfall before compounding**, which compounds toward
+the implied 1,095,647. The app's IRR gate instead allocated only **352,885**.
+So the Excel is running an accruing 9% coupon the app is not. Material, and it restructures
+TGA6's tie order, so it needs Jim's decision rather than a unilateral fix.
+**Jim is sending the source Excel model**, which will settle this exactly rather than by
+inference.
