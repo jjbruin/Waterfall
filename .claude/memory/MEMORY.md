@@ -1313,3 +1313,46 @@ correct all three date fields together.
 reporting. **Not yet deployed.** All three are Vue/TS changes, so `az acr build` is the real
 typecheck; nothing was typechecked locally.
 - [PPI Ownership Waterfalls plan](ppi_ownership_waterfalls.md) - NB upstream investor-relationship waterfalls (AM fees, net-of-fee IRR promotes) reusing the PSCKOC engine; approved plan, phases 1-5
+
+
+## OPEN DEFECT — At-Close Year-0 gate is 10 deals too broad (v407, Sep 1 2026)
+
+`50695d9` (deployed v407) zeroes the One Pager At-Close column when a deal is a
+DEVELOPMENT deal AND its Projected IS has no 2015-12-31 "Year-0" row. Stated rationale:
+such a deal "has no underwritten Year-0 baseline, so its At-Close column is not a
+measurement."
+
+**Measured against live Azure data, that rationale holds for 2 of the 12 deals it acts on.**
+All 12 had a COMPLETE, FOOTING At-Close measurement in `at_close_noi`
+(`-revenue - expenses + noi` = 0 to the cent on all 12). Only Green Valley Ranch
+(p0000100) and Jefferson Addison Heights (p0000077) show the pathology described —
+revenue 0 with expenses only, which genuinely cannot be read as a stabilised NOI.
+
+The other **10 lost real figures**: 9 Brainerd buildings (Bldg E **1,662,811**, F(2)
+954,662, D 155,615, C 76,829, F 55,910, B1/B2 52,728 each, G 4,050, H 2,283) and
+**Pegasus Life Storage 624,689**. Confirmed live on v407: all now return
+rev=0 exp=0 noi=0.
+
+**Two problems:**
+1. **Wrong trigger.** Presence of a 2015-12-31 row is an artifact of MRI's underwriting
+   export (626 of 108,963 rows, on 52 of 134 deals, including deals that closed years
+   later) — the commit's own comment concedes it "is a property of MRI's underwriting
+   export, not evidence that a stabilised asset earned nothing", then uses its absence as
+   the signal anyway. The real signal is in the data: **revenue == 0 while expenses > 0**
+   means there is no income baseline. That test catches exactly the 2 deals.
+2. **0 used as a sentinel for "no data".** The One Pager only renders an em dash because
+   `fmtMil()` happens to treat `0` as `'—'` (`val === 0` in its guard). The API returns a
+   genuine `0`, so every other consumer — Portfolio Snapshot (which needs its own
+   all-zero heuristic `_payload_unpopulated`), Excel, the assistant, any future report —
+   reads zero economics as fact. Should return **None**, not 0.
+
+**Kill switch exists**: `AT_CLOSE_REQUIRE_YEAR0_ROW = False` in one_pager.py restores
+pre-rule behaviour exactly. `AT_CLOSE_YEAR0_DEV_ONLY` / `AT_CLOSE_ZERO_WHOLE_COLUMN` are
+the other two flags.
+
+**Recommended fix**: swap the trigger to the revenue==0/expenses>0 data test and return
+None rather than 0. Awaiting Jim's decision (raised by him Sep 1 after the v407 deploy).
+
+**Process note**: this shipped on Jim's deploy request after I verified it did what its
+commit message said, without questioning whether it should do that. Verifying intent is
+not the same as verifying the premise.
