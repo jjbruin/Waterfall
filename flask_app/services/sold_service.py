@@ -8,7 +8,8 @@ import numpy as np
 import io
 from typing import Optional
 
-from loaders import normalize_accounting_feed, build_investmentid_to_vcode
+from loaders import (normalize_accounting_feed, build_investmentid_to_vcode,
+                     capital_after, capital_outstanding)
 from metrics import xirr, xnpv, calculate_roe
 
 # Module-level sold returns cache — cleared by clear_sold_cache()
@@ -213,7 +214,12 @@ def build_deal_detail(vcode: str, inv_sold: pd.DataFrame, acct: pd.DataFrame,
     for _, r in deal_acct.iterrows():
         amt = float(r["Amt"])
         if r["is_contribution"]:
-            cashflow = -abs(amt)
+            # Preserve sign here too. The distribution branch below already did
+            # (see its note), but abs() on this one turned a POSITIVE
+            # contribution row — which is how MRI reverses a contribution —
+            # into another contribution, counting the capital twice instead of
+            # cancelling it. JB Fair Park's $3.85M read as $11.55M.
+            cashflow = amt
         elif r["is_distribution"]:
             cashflow = amt  # Preserve sign — negative means correction/reversal
         else:
@@ -239,11 +245,12 @@ def build_deal_detail(vcode: str, inv_sold: pd.DataFrame, acct: pd.DataFrame,
     balances = []
     for _, r in df.iterrows():
         cf = r["Cashflow (XIRR)"]
-        if cf < 0:
-            balance += abs(cf)
-        elif r["Capital"] == "Y" and cf > 0:
-            balance = max(0.0, balance - cf)
-        balances.append(balance)
+        # Same set of rows as before — anything that is cash in, plus any
+        # capital-flagged cash out — but netted BY SIGN, so a reversal reverses.
+        # See capital_after in loaders.
+        if cf < 0 or r["Capital"] == "Y":
+            balance = capital_after(balance, cf)
+        balances.append(capital_outstanding(balance))
     df["Capital Balance"] = balances
 
     # Compute summary metrics — use original EffectiveDate (date objects) for XIRR
@@ -551,8 +558,10 @@ def compute_net_waterfall_for_deal(deal_acct: pd.DataFrame, inv: pd.DataFrame,
         scaled = gross * ownership_pct
 
         if ev["is_contribution"]:
-            contrib = abs(scaled)
-            capital_balance += contrib
+            # Signed: a positive contribution row is a REVERSAL and must remove
+            # the capital it originally added, not add it again.
+            contrib = -scaled
+            capital_balance = max(0.0, capital_balance + contrib)
             net_cashflows.append((d, -contrib))
             waterfall_detail.append({
                 "Date": str(d),

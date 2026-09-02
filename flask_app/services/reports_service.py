@@ -265,6 +265,7 @@ def _compute_accrued_pref(deal_acct: pd.DataFrame, report_date: date,
     and excess CF distributions. Compounds at year-end (always, no grace period).
     Uses Act/Act day count convention (366 for leap years).
     """
+    from loaders import capital_after, capital_outstanding
     if not pref_rates:
         return 0.0
 
@@ -347,12 +348,15 @@ def _compute_accrued_pref(deal_acct: pd.DataFrame, report_date: date,
                     pay = min(payment, pref_cy)
                     pref_cy -= pay
 
-            # Update capital balance
-            if "contrib" in major:
-                capital += abs(amt)
-            elif "distri" in major:
-                if "return of capital" in tname or "realized gain" in tname:
-                    capital = max(0.0, capital - abs(amt))
+            # Update capital balance. The TYPE decides whether the row touches
+            # capital, the AMOUNT'S SIGN decides which way — see capital_after
+            # in loaders. abs() here applied a reversal in the same direction
+            # as the entry it reverses.
+            touches_capital = ("contrib" in major) or (
+                "distri" in major
+                and ("return of capital" in tname or "realized gain" in tname))
+            if touches_capital:
+                capital = capital_after(capital, amt)
 
             prev_date = evt_date
 
@@ -987,7 +991,8 @@ def build_pref_balance_detail(
     the valuation NAV engine for OP-side pref, where deal_terms.pe_coupon (the
     PE rate) would be wrong.
     """
-    from loaders import build_investmentid_to_vcode
+    from loaders import (build_investmentid_to_vcode, capital_after,
+                         capital_outstanding)
 
     vcode_str = str(vcode).strip()
     inv_to_vcode = build_investmentid_to_vcode(inv_map)
@@ -1135,11 +1140,13 @@ def build_pref_balance_detail(
         tname = typename.lower()
 
         # --- Update capital balance FIRST (affects InvBal for this row) ---
-        if "contrib" in major:
-            inv_bal += abs(amt)
-        elif "distri" in major:
-            if "return of capital" in tname or "realized gain" in tname:
-                inv_bal = max(0.0, inv_bal - abs(amt))
+        # Signed, not abs() — a reversal carries the opposite sign under the
+        # same MajorType and Typename. See capital_after in loaders.
+        touches_capital = ("contrib" in major) or (
+            "distri" in major
+            and ("return of capital" in tname or "realized gain" in tname))
+        if touches_capital:
+            inv_bal = capital_after(inv_bal, amt)
 
         # --- H: Inv+Comp = PRIOR row's InvBal + PRIOR row's CompPref ---
         # On the first row there is no prior, so Inv+Comp = 0 (matches Excel)
@@ -1225,9 +1232,9 @@ def build_pref_balance_detail(
         "investment_id": inv_id,
         "pref_rate": pref_rate,
         "report_date": report_date.isoformat(),
-        "investment_balance": inv_bal,
+        "investment_balance": capital_outstanding(inv_bal),
         "accrued_pref": total_accrued,
-        "total": inv_bal + total_accrued,
+        "total": capital_outstanding(inv_bal) + total_accrued,
         "annual_pref_est": annual_pref_est,
     }
 

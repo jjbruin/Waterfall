@@ -287,6 +287,64 @@ def normalize_accounting_feed(acct: pd.DataFrame = None) -> pd.DataFrame:
     return a
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# Capital outstanding — THE SIGN OF THE AMOUNT IS THE DIRECTION
+# ══════════════════════════════════════════════════════════════════════════
+#: One definition, used by every place that walks the accounting feed keeping a
+#: running capital balance: the Deal Analysis waterfall seeding, ROE Summary's
+#: accrued pref, the Pref Balance Detail report and Sold Portfolio.
+#:
+#: WHY THIS EXISTS. Each of those used to read the row's TYPE and then take
+#: ``abs()`` of the amount:
+#:
+#:     if is_contribution:  capital += abs(amt)
+#:     elif is_capital_return:  capital = max(0.0, capital - abs(amt))
+#:
+#: which discards the one piece of information that distinguishes a booking
+#: from its REVERSAL. MRI reverses an entry by re-posting it with the opposite
+#: sign under the same MajorType and Typename, so ``abs()`` applied the reversal
+#: in the same direction as the original and moved capital by twice the amount
+#: instead of leaving it unchanged.
+#:
+#: Measured on the live feed (2026-09-02): 66 such rows across 16 deals and 37
+#: (deal, investor) pairs, mis-stating capital by ~$80.5M in total. 30 Bearfoot
+#: carried $540,000 for OPMCCORD where the true figure was $960,000, and pref
+#: accrued at 56% of the correct rate for eighteen months as a result; JB Fair
+#: Park's $3.85M contribution was carried as $11.55M.
+#:
+#: THE RULE. The accounting feed's sign convention already encodes direction:
+#: cash INTO the deal is negative (a contribution), cash OUT is positive (a
+#: return of capital). So the change in capital outstanding is simply the
+#: NEGATED amount, whatever the row's type says, and a reversal reverses itself
+#: because its sign is flipped. The type is still what decides WHETHER a row
+#: touches capital — it is no longer asked which way.
+def capital_after(capital: float, amt: float) -> float:
+    """Capital outstanding after one capital-affecting row. NOT floored.
+
+    ``amt`` is the raw signed accounting amount: negative (cash in) increases
+    capital, positive (cash out) decreases it.
+
+    THE RUNNING TOTAL IS ALLOWED TO GO NEGATIVE, and that is deliberate. An
+    earlier version of this floored at zero on every row, which made the answer
+    depend on the order of same-day rows: JB Fair Park's 2020-12-18 reversal
+    (+3,850,000) sorts BEFORE the contribution it reverses (-3,850,000), so the
+    floor swallowed the reversal and the two remaining contributions both
+    landed — 7,700,000 against a true 3,850,000. Netting without a floor is a
+    plain sum, so it cannot depend on order at all.
+
+    Floor at the point of USE instead: ``capital_outstanding`` for accrual and
+    for display is ``max(0.0, running)``. A running total that ends BELOW zero
+    is a real finding — the feed returned more capital than it ever contributed
+    — and callers report it rather than absorbing it silently.
+    """
+    return float(capital) - float(amt)
+
+
+def capital_outstanding(running: float) -> float:
+    """The running total as a balance: floored at zero. See ``capital_after``."""
+    return max(0.0, float(running))
+
+
 def build_investmentid_to_vcode(inv_map: pd.DataFrame = None) -> dict:
     """
     Build mapping from InvestmentID to vcode

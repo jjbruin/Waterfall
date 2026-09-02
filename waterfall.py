@@ -17,7 +17,8 @@ import pandas as pd
 
 from models import InvestorState, CapitalPool, PrefTier
 from metrics import xirr, investor_metrics
-from loaders import build_investmentid_to_vcode, normalize_accounting_feed
+from loaders import (build_investmentid_to_vcode, normalize_accounting_feed,
+                     capital_after, capital_outstanding)
 from config import typename_to_pool, resolve_pool_and_action, resolve_upstream_typename_route
 
 
@@ -1197,7 +1198,13 @@ def seed_states_from_accounting(
 
         # CONTRIBUTIONS: Route to correct pool and record cashflow
         if is_contribution:
-            cf = amt if amt < 0 else -abs(amt)  # Ensure negative
+            # PRESERVE THE SIGN, exactly as the distribution branch below does.
+            # This used to force every contribution row negative, so a POSITIVE
+            # one — which is how MRI reverses a contribution — was recorded as a
+            # second contribution instead of cancelling the first. It fed both
+            # the XIRR cashflow and the pool's capital_outstanding, i.e. the
+            # capital the Initial Capital step later returns.
+            cf = amt
             stt.cashflows.append((d, cf))
             stt.cashflow_labels.append(str(r.get("Typename", "")))
             stt.cashflow_types.append('C')
@@ -1205,13 +1212,17 @@ def seed_states_from_accounting(
             # Route to named pool via Typename
             pool_name = typename_to_pool(str(r.get("Typename", "")))
             pool = stt.get_pool(pool_name)
-            pool.capital_outstanding += abs(cf)
+            # Negated, not abs(): cash in is negative, so this ADDS capital, and
+            # a reversal (positive) removes it. See capital_after in loaders.
+            pool.capital_outstanding = capital_outstanding(
+                capital_after(pool.capital_outstanding, cf))
 
             # Operating capital: track cumulative cap from actual contributions
             if pool_name == "operating":
                 if pool.cumulative_cap is None:
                     pool.cumulative_cap = 0.0
-                pool.cumulative_cap += abs(cf)
+                pool.cumulative_cap = max(
+                    0.0, capital_after(pool.cumulative_cap, cf))
 
             if stt.last_accrual_date is None:
                 stt.last_accrual_date = d
@@ -1370,11 +1381,14 @@ def seed_states_from_accounting(
                             abs(tr_amt), pref_accrued_current_year, pref_unpaid_compounded, pref_accrued_prior_year
                         )
 
-                    # Update capital balance
-                    if tr["is_contribution"]:
-                        current_capital += abs(tr_amt)
-                    elif tr["is_capital"] and tr["is_distribution"]:
-                        current_capital = max(0.0, current_capital - abs(tr_amt))
+                    # Update capital balance.
+                    #
+                    # The row's TYPE decides whether it touches capital; the
+                    # AMOUNT'S SIGN decides which way. See capital_after in
+                    # loaders — taking abs() here moved a reversal in the same
+                    # direction as the entry it reverses.
+                    if tr["is_contribution"] or (tr["is_capital"] and tr["is_distribution"]):
+                        current_capital = capital_after(current_capital, tr_amt)
 
                     prev_date = tr_date
 

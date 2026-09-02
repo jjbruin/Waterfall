@@ -16,6 +16,7 @@ from datetime import date, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 from database import execute_query, get_db_connection
 from utils import normalize_columns
+from loaders import capital_after
 
 
 # ============================================================
@@ -865,10 +866,17 @@ def get_capitalization_stack(
                     if investor_id not in investor_balances:
                         investor_balances[investor_id] = 0.0
 
-                    if "contrib" in major_type:
-                        investor_balances[investor_id] += abs(amt)
-                    if "distri" in major_type and "return of capital" in type_name:
-                        investor_balances[investor_id] -= abs(amt)
+                    # Netted BY SIGN, not abs(). Cash in is negative and cash
+                    # out positive, so a reversal — same MajorType and Typename,
+                    # opposite sign — cancels the entry it reverses instead of
+                    # repeating it. See capital_after in loaders. This feeds
+                    # partner_equity / pref_equity, i.e. the Portfolio
+                    # Snapshot's Ptr. Equity and Total Cap columns.
+                    if ("contrib" in major_type
+                            or ("distri" in major_type
+                                and "return of capital" in type_name)):
+                        investor_balances[investor_id] = capital_after(
+                            investor_balances[investor_id], amt)
 
                 for investor_id, balance in investor_balances.items():
                     if investor_id.upper().startswith("OP"):
@@ -2396,8 +2404,12 @@ def get_pe_performance(
                         continue
 
                     if "contrib" in major_type:
-                        pe['funded_to_date'] += abs(amt)
-                        capital_events.append((evt_date, -abs(amt)))
+                        # Signed, matching the ROC branch below, which already
+                        # notes that a negative amount is a correction. A
+                        # POSITIVE contribution row is the same thing for a
+                        # contribution and must reduce funded-to-date.
+                        pe['funded_to_date'] += -amt
+                        capital_events.append((evt_date, amt))
                     elif "distri" in major_type:
                         if "return of capital" in type_name or "realized gain" in type_name:
                             # Capital return (or correction if amt < 0)
