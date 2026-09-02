@@ -71,11 +71,15 @@ CAP = {
 # Typed manual entries. Note the AGGREGATE keys: a fund subtotal, the portfolio
 # total and the excluding-development row each carry their own Net ROE, stored
 # through the same table and the same endpoint as a deal cell.
+# ITD IS STORED IN MILLIONS, the unit the column displays — these are the real
+# 26Q1 figures (Giant 7 5.87, JB Fair Park 1.17). v410 wrote this fixture in
+# DOLLARS and passed, which is exactly why every live cell then rendered
+# "$0.00M": the fixture agreed with the bug instead of catching it.
 MANUAL = {
-    "P0000019": {"itd": 15_330_000.0, "net_roe": 4.4},
-    "PCITWES": {"itd": 2_100_000.0},                   # net_roe is n/a here
-    "P0000030": {"itd": 1_250_000.0, "net_roe": 7.9},
-    "P0000067": {"itd": 900_000.0, "net_roe": -2.1},   # development
+    "P0000019": {"itd": 5.87, "net_roe": 4.4},
+    "PCITWES": {"itd": 2.10},                          # net_roe is n/a here
+    "P0000030": {"itd": 1.25, "net_roe": 7.9},
+    "P0000067": {"itd": 0.90, "net_roe": -2.1},        # development
     # P0000075 deliberately has no ITD, so the column is partial.
     "__GROUP__:IND": {"net_roe": 5.1},
     "__GROUP__:TGA22": {"net_roe": 3.2},
@@ -154,9 +158,12 @@ def report(before_f: str, after_f: str) -> int:
               + ("\n           " + detail if detail else ""))
 
     print("\n1. Total Current Funding row removed")
-    chk("BEFORE had the row", b["has_funding_row"],
-        "label=" + repr(b.get("funding_row_label")))
-    chk("AFTER does not have the row", not a["has_funding_row"])
+    # An invariant of the AFTER side. Against a pre-removal baseline the detail
+    # line shows the row that went; against a later one it says "already gone",
+    # and either way the assertion is the same.
+    chk("the row is absent", not a["has_funding_row"],
+        "baseline: " + (repr(b.get("funding_row_label"))
+                        if b["has_funding_row"] else "already removed"))
 
     print("\n2. Portfolio Totals intact (the row above it must not move)")
     for col in ("deal_count", "total_pref", "total_cap", "total_commitment"):
@@ -165,7 +172,7 @@ def report(before_f: str, after_f: str) -> int:
             "{} -> {}".format(bv, av))
 
     print("\n3. ITD renders with its unit, per deal")
-    for vc, want in (("P0000019", "$15.33M"), ("P0000030", "$1.25M"),
+    for vc, want in (("P0000019", "$5.87M"), ("P0000030", "$1.25M"),
                      ("P0000067", "$0.90M")):
         got = a["deals"][vc]["itd_display"]
         chk("{} ITD displays {}".format(vc, want), got == want,
@@ -176,28 +183,54 @@ def report(before_f: str, after_f: str) -> int:
         "got " + repr(a["deals"]["P0000075"]["itd_display"]))
 
     print("\n4. ITD summed onto every aggregate row")
-    #   IND   = 15.33 + 2.10                     = 17.43
-    #   TGA22 =  1.25 + 0.90 (P0000075 has none) =  2.15
-    #   TOTAL                                    = 19.58
-    for key, want in (("IND", 17_430_000.0), ("TGA22", 2_150_000.0)):
+    #   IND   = 5.87 + 2.10                     = 7.97
+    #   TGA22 = 1.25 + 0.90 (P0000075 has none) = 2.15
+    #   TOTAL                                   = 10.12
+    for key, want in (("IND", 7.97), ("TGA22", 2.15)):
         got = a["groups"][key].get("itd")
-        chk("{} subtotal ITD = {:,.0f}".format(key, want),
-            got is not None and abs(got - want) < 1,
+        chk("{} subtotal ITD = ${:,.2f}M".format(key, want),
+            got is not None and abs(got - want) < 1e-6,
             "got {}   before: {}".format(got, b["groups"][key].get("itd")))
-    chk("Portfolio Totals ITD = 19,580,000",
+    chk("Portfolio Totals ITD = $10.12M",
         a["total"].get("itd") is not None
-        and abs(a["total"]["itd"] - 19_580_000.0) < 1,
+        and abs(a["total"]["itd"] - 10.12) < 1e-6,
         "got {}   before: {}".format(a["total"].get("itd"),
                                      b["total"].get("itd")))
-    chk("the sums were absent BEFORE",
-        b["total"].get("itd") is None and b["groups"]["IND"].get("itd") is None)
+    # Stated as an invariant of the AFTER side, not as a delta: this script is
+    # run against whatever baseline is to hand, and against v410 (which already
+    # sums) a "was absent before" assertion fails for the wrong reason.
+    chk("every aggregate row carries a sum",
+        all(x.get("itd") is not None for x in
+            [a["total"], a["groups"]["IND"], a["excluding_dev"]]),
+        "before: total={}  IND={}".format(b["total"].get("itd"),
+                                          b["groups"]["IND"].get("itd")))
     chk("a partial column reports how many deals fed it",
         a["groups"]["TGA22"].get("itd_deal_count") == 2
         and a["groups"]["TGA22"].get("deal_count") == 3,
         str(a["groups"]["TGA22"].get("itd_source")))
     chk("Portfolio Totals ITD displays with its unit",
-        a["total"].get("itd_display") == "$19.58M",
+        a["total"].get("itd_display") == "$10.12M",
         "got " + repr(a["total"].get("itd_display")))
+
+    # ── The v410 regression, asserted directly ────────────────────────────
+    #
+    # ITD is stored in the unit its column displays. A formatter that divides
+    # by 1e6 turns every real figure into "$0.00M" — which is what shipped, and
+    # what the live page showed for every deal. This is the check that would
+    # have caught it, had the fixture not been written in dollars too.
+    print("\n4b. No value renders as $0.00M (the v410 regression)")
+    zeroed = [(vc, r["itd"], r["itd_display"])
+              for vc, r in a["deals"].items()
+              if r["itd"] not in (None, 0) and r["itd_display"] == "$0.00M"]
+    chk("no non-zero ITD renders as $0.00M", not zeroed, str(zeroed))
+    chk("BEFORE this fix the same figures rendered $0.00M across the board",
+        all(r["itd_display"] == "$0.00M"
+            for r in b["deals"].values() if r["itd"] not in (None, 0)),
+        str({vc: r["itd_display"] for vc, r in b["deals"].items()}))
+    chk("the 26Q1 reference figures render exactly",
+        a["deals"]["P0000019"]["itd_display"] == "$5.87M"
+        and a["groups"]["IND"]["itd_display"] == "$7.97M",
+        "Giant 7 and its fund subtotal")
 
     print("\n5. Net ROE manual at every level, displayed with %")
     chk("per-deal Net ROE displays 4.4%",
@@ -232,13 +265,13 @@ def report(before_f: str, after_f: str) -> int:
 
     print("\n6. Excluding Development Deals")
     ex = a["excluding_dev"]
-    #   non-development ITD = 15.33 + 2.10 + 1.25 = 18.68  (P0000067 removed)
-    chk("ITD = non-development deals only (18,680,000)",
-        ex.get("itd") is not None and abs(ex["itd"] - 18_680_000.0) < 1,
+    #   non-development ITD = 5.87 + 2.10 + 1.25 = 9.22  (P0000067 removed)
+    chk("ITD = non-development deals only ($9.22M)",
+        ex.get("itd") is not None and abs(ex["itd"] - 9.22) < 1e-6,
         "got {}   before: {}".format(ex.get("itd"),
                                      b["excluding_dev"].get("itd")))
-    chk("Brainerd's 900,000 is the difference from Portfolio Totals",
-        abs((a["total"]["itd"] or 0) - (ex["itd"] or 0) - 900_000.0) < 1)
+    chk("Brainerd's 0.90 is the difference from Portfolio Totals",
+        abs((a["total"]["itd"] or 0) - (ex["itd"] or 0) - 0.90) < 1e-6)
     chk("Net ROE is the typed 6.3%, not a sum",
         ex.get("net_roe_display") == "6.3%",
         "got " + repr(ex.get("net_roe_display")) + "   before: "

@@ -391,21 +391,83 @@ onMounted(async () => {
   /* The Summary card chrome would draw a box inside each printed page. */
   :deep(.summary .card) { border: none !important; padding: 0 !important; }
 
-  /* Textareas print as text, not as form controls. */
-  :deep(textarea) {
+  /* ---- form controls print as TEXT, in the table's own font ----
+     `font: inherit` is the load-bearing line. A textarea or input does NOT
+     inherit font-family or font-size from its container — the browser gives it
+     a UA default of about 13.3px in a system font, while the printed table is
+     7.5px. That is why the Operating and Loan comments and the ITD / Net ROE
+     cells came out visibly bigger and in a different typeface from every other
+     cell on the page. Setting the border, padding and background alone (which
+     is all this used to do) leaves the type wrong.
+
+     Shorthand `font` rather than font-size + font-family, so nothing else the
+     UA sets on a form control — weight, style, line-height, variant — survives
+     either. */
+  /* `.cmt-text` is the READ-ONLY rendering of a comment — the print view sets
+     `editable: false`, so the Operating and Loan comments come through as text
+     rather than as a textarea, and the rule below on form controls never
+     reaches them. It carries a hardcoded `font-size: 12px`, which is right on
+     screen (where the table is 12px) and 60% too large on paper (where the
+     table is 7.5px). Measured: the comment printed at 7.4pt against 4.6pt for
+     every other cell. */
+  :deep(.cmt-text) {
+    font: inherit !important;
+    line-height: 1.25 !important;
+  }
+
+  :deep(textarea), :deep(input) {
+    font: inherit !important;
+    letter-spacing: inherit !important;
+    color: var(--color-text) !important;
     border: none !important;
     padding: 0 !important;
+    background: transparent !important;
+  }
+  :deep(textarea) {
     resize: none;
     overflow: visible;
     height: auto !important;
-    background: transparent !important;
-    color: var(--color-text) !important;
   }
-  :deep(.numinput) {
-    border: none !important;
-    background: transparent !important;
-    padding: 0 !important;
+  /* A right-aligned numeric input has to keep its alignment; the reset above
+     would otherwise leave it reading left against the column beside it. */
+  :deep(.numinput) { text-align: right !important; width: 100% !important; }
+
+  /* ---- column separators, per the 26Q1 reference ----
+     Light VERTICAL rules structuring the table, plus the horizontal rules
+     above. Hairline weight and a pale grey deliberately: the reference is not
+     a full boxed grid, it is a set of faint guides that stop the eye sliding
+     between columns on a 30-row page.
+
+     Placement follows the reference: a rule at every numeric column boundary,
+     and a slightly stronger one at the ZONE boundaries — where the deal-level
+     cap stack gives way to the "TIAA Investment" block, and where that gives
+     way to the manual ITD / Net ROE columns. The zone classes already exist on
+     Financial; Operating and Loan have no zones and simply take the light
+     rule throughout. */
+  :deep(table.grid th), :deep(table.grid td) {
+    border-right: 0.5px solid #e3e6ea !important;
   }
+  :deep(table.grid th:last-child), :deep(table.grid td:last-child) {
+    border-right: none !important;
+  }
+  /* The first zone-b / manual cell in each row opens its block. */
+  :deep(table.grid .zone-b + .zone-b) { border-left: none !important; }
+  :deep(table.grid td.zone-b:first-of-type),
+  :deep(table.grid th.zone-b),
+  :deep(table.grid td.manual),
+  :deep(table.grid th.manual) {
+    border-left: 0.5px solid #c9ced6 !important;
+  }
+  :deep(table.grid .manual + .manual) { border-left: none !important; }
+
+  /* Numeric columns: enough room that a figure never crowds its neighbour,
+     not so much that the table stops fitting. The deal-name column is the one
+     that flexes, since it is the only text of variable length. */
+  :deep(table.grid td.num), :deep(table.grid th.r) {
+    min-width: 0.42in;
+    white-space: nowrap;
+  }
+  :deep(table.grid .sticky-l) { min-width: 1.35in; }
 
   /* ---- table pagination ----
      `display: table-header-group` is what makes a thead REPEAT at the top of

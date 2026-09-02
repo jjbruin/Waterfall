@@ -382,8 +382,17 @@ def put_value():
     raw = body.get("value")
     value = None
     if raw not in (None, ""):
+        # Accept the cell back in the form it is DISPLAYED: "$5.87M", "4.4%",
+        # "1,250". The number is stored in the unit its column shows — ITD in
+        # millions, Net ROE in percentage points — so stripping the decoration
+        # is all that is needed and nothing is rescaled. A trailing "M" is
+        # stripped too, so a figure copied off the page (or out of the print
+        # PDF) pastes straight back in instead of failing to parse.
+        txt = str(raw).strip().replace(",", "").replace("%", "").replace("$", "")
+        if txt[-1:] in ("M", "m"):
+            txt = txt[:-1].strip()
         try:
-            value = float(str(raw).replace(",", "").replace("%", "").replace("$", ""))
+            value = float(txt)
         except (TypeError, ValueError):
             return jsonify({"error": f"value {raw!r} is not a number"}), 400
     vcode = (body.get("vcode") or "").strip()

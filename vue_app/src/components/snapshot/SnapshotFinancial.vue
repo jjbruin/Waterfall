@@ -235,7 +235,11 @@ function placementLabel(f: any): string {
             <th class="r">$M</th><th class="r">$M</th><th class="r">$M</th><th class="r">$M</th>
             <th class="r zone-b"></th><th class="r zone-b">$M</th>
             <th class="r zone-b">$M</th><th class="r zone-b">$M</th>
-            <th class="r manual">$</th><th class="r manual"></th>
+            <!-- "$M", not "$". ITD is typed and stored in MILLIONS, the same
+                 unit every other money column on this page declares. The lone
+                 "$" here is what let v410 read the stored figures as dollars
+                 and divide them to "$0.00M". -->
+            <th class="r manual">$M</th><th class="r manual">%</th>
           </tr>
         </thead>
 

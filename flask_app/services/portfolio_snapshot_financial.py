@@ -94,8 +94,10 @@ Zone C — manual entry, never derived (formula TBD)
              the deals above it. Aggregate rows store their own entry against
              a reserved key — see ``AGG_TOTAL_VCODE``.
 
-    Both render with their unit on the value ("$15.33M", "4.4%") through
-    ``format_manual``, so a cell reads the same on screen and in print.
+    Both are STORED IN THE UNIT THEIR COLUMN DISPLAYS — ITD in millions of
+    dollars, Net ROE in percentage points — and render with that unit on the
+    value ("$5.87M", "4.4%") through ``format_manual``, so a cell reads the
+    same on screen and in print and nothing is converted in either direction.
 
     *** ITD FORMULA STILL TBD AT DEAL LEVEL ***
     The assembly reads the per-deal figures through exactly two accessors,
@@ -505,18 +507,31 @@ def format_manual(field: str, value) -> str:
     round-tripped as a bare "4.4" and the analyst's "%" appeared to be
     discarded.
 
-    Net ROE is stored in PERCENTAGE POINTS — the analyst types "4.4%", the save
-    endpoint strips the sign and stores 4.4, and this puts it back. There is
-    deliberately NO magnitude heuristic (``v < 1`` therefore a ratio): 0.9 is a
-    legitimate 0.9% reading, so inferring the unit from the size of the number
-    is a bug waiting for the value that sits on the boundary. Same reasoning as
-    the note on ``fmtPctPts`` in the Vue formatters.
+    THE RULE FOR BOTH FIELDS: a manual figure is stored in the unit its column
+    DISPLAYS, exactly as the analyst typed it. Nothing is converted on the way
+    in or on the way out.
+
+        net_roe   PERCENTAGE POINTS.  "4.4%"   -> stores 4.4    -> "4.4%"
+        itd       MILLIONS OF DOLLARS. "$5.87M" -> stores 5.87  -> "$5.87M"
+
+    ITD is NOT stored in dollars. v410 assumed it was and divided by 1e6 here,
+    which rendered every live figure as "$0.00M" — a stored 5.87 is 5.87
+    million, not 5.87 dollars. The column header said "$" while every other
+    money column said "$M", so the header agreed with the wrong reading; it now
+    says "$M" too. Storing the displayed unit is what stops this recurring:
+    with no conversion anywhere there is no factor to get backwards.
+
+    There is deliberately NO magnitude heuristic on either field (``v < 1``
+    therefore a ratio, or ``v > 1000`` therefore dollars). 0.9 is a legitimate
+    0.9% reading and 0.9 is a legitimate $0.9M, so inferring a unit from the
+    size of a number is a bug waiting for the value that sits on the boundary.
+    Same reasoning as the note on ``fmtPctPts`` in the Vue formatters.
     """
     if value is None:
         return PENDING
     if field == "itd":
         sign = "-" if value < 0 else ""
-        return f"{sign}${abs(value) / 1e6:,.2f}M"
+        return f"{sign}${abs(value):,.2f}M"
     if field == "net_roe":
         return f"{value:.1f}%"
     return str(value)

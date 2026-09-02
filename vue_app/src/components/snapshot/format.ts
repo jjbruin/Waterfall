@@ -132,12 +132,15 @@ export function isLiteral(v: unknown): boolean {
  */
 export function fmtItd(v: number | null | undefined): string {
   if (v == null) return DASH
+  // ITD is stored IN MILLIONS, the unit the column displays — no conversion.
+  // Dividing by 1e6 here is what made every live figure read "$0.00M".
   const sign = v < 0 ? '-' : ''
-  return sign + '$' + (Math.abs(v) / 1e6).toFixed(2) + 'M'
+  return sign + '$' + Math.abs(v).toFixed(2) + 'M'
 }
 
-/** Net ROE, stored in PERCENTAGE POINTS (4.4 -> "4.4%"). No magnitude
- *  heuristic — see the note on `fmtPctPts` and on `format_manual`. */
+/** Net ROE, stored in PERCENTAGE POINTS (4.4 -> "4.4%"). Both manual fields
+ *  store the unit their column displays; no magnitude heuristic — see the note
+ *  on `fmtPctPts` and on `format_manual`. */
 export function fmtNetRoe(v: number | null | undefined): string {
   if (v == null) return DASH
   return v.toFixed(1) + '%'

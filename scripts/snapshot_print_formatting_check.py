@@ -20,7 +20,8 @@ prints against a local backend) and pass its path.
     python scripts/snapshot_print_formatting_check.py fanout          # needs the DB
     python scripts/snapshot_print_formatting_check.py separators
     python scripts/snapshot_print_formatting_check.py pages <file.pdf> [payload_dir]
-    python scripts/snapshot_print_formatting_check.py all  <file.pdf> [payload_dir]
+    python scripts/snapshot_print_formatting_check.py fonts <file.pdf>
+    python scripts/snapshot_print_formatting_check.py all   <file.pdf> [payload_dir]
 """
 from __future__ import annotations
 
@@ -162,6 +163,13 @@ def check_separators() -> None:
         ":deep(table.grid tfoot tr:first-child td)" in src)
     chk("the inter-group spacer is preserved on paper",
         ":deep(table.grid tr.spacer td)" in src)
+    chk("light VERTICAL rules at the column boundaries",
+        "border-right: 0.5px solid" in src
+        and ":deep(table.grid th:last-child)" in src,
+        "hairline between columns, none on the last")
+    chk("a slightly stronger rule at the zone boundaries",
+        "border-left: 0.5px solid #c9ced6" in src,
+        "before the TIAA Investment block and before the manual columns")
     chk("scoped to table.grid, which Summary does not render",
         "table.grid" in src and ".summary .card" in src,
         "Summary is narrative and charts; it has no table.grid")
@@ -208,6 +216,58 @@ def check_pages(pdf_path: str, payload_dir: str = "") -> None:
             not missing, "missing: " + ", ".join(missing[:5]))
 
 
+def check_fonts(pdf_path: str) -> None:
+    """Comment and manual-input cells print in the table's own font and size.
+
+    Measured off the PDF, not asserted off the CSS: a `<textarea>`, an `<input>`
+    and a `<span class="cmt-text">` each reach their type size by a different
+    route, and only the rendered document proves all three landed in the same
+    place.
+
+    Two causes were fixed: form controls do not inherit font-family or
+    font-size from their container (the UA gives them ~13.3px against a 7.5px
+    table), and `.cmt-text` — the READ-ONLY rendering the print view actually
+    uses — hardcodes 12px.
+    """
+    print("\n5. Comment and input cells print at the table's size")
+    try:
+        import pdfplumber
+    except ImportError:
+        chk("pdfplumber available", False, "pip install pdfplumber")
+        return
+
+    def sizes_for(pg, phrase):
+        chars = pg.chars
+        txt = "".join(c["text"] for c in chars)
+        i = txt.find(phrase)
+        if i < 0:
+            return None
+        return sorted({(round(c["size"], 1), c["fontname"].split("+")[-1])
+                       for c in chars[i:i + len(phrase)]})
+
+    with pdfplumber.open(pdf_path) as pdf:
+        pages = pdf.pages
+        # Anchor: an ordinary deal-name cell on each page is the size everything
+        # else must match.
+        for idx, label, probes in (
+            (1, "Financial", ("5.87M", "4.4%")),
+            (2, "Operating", ("Occupancy held at",)),
+            (3, "Loan", ("Fixed through 2029",)),
+        ):
+            anchor = sizes_for(pages[idx], "Evergreen Plaza")
+            if not anchor:
+                chk(f"{label}: anchor cell found", False,
+                    "no 'Evergreen Plaza' row on this page")
+                continue
+            for probe in probes:
+                got = sizes_for(pages[idx], probe)
+                if got is None:
+                    print(f"      (skipped {label} {probe!r} — not on the page)")
+                    continue
+                chk(f"{label}: {probe!r} matches an ordinary cell",
+                    got == anchor, f"{got} against anchor {anchor}")
+
+
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
     pdf = sys.argv[2] if len(sys.argv) > 2 else ""
@@ -220,11 +280,14 @@ if __name__ == "__main__":
         check_separators()
     elif cmd == "pages" and pdf:
         check_pages(pdf, pdir)
+    elif cmd == "fonts" and pdf:
+        check_fonts(pdf)
     elif cmd == "all" and pdf:
         check_terms()
         check_fanout()
         check_separators()
         check_pages(pdf, pdir)
+        check_fonts(pdf)
     else:
         print(__doc__)
         raise SystemExit(2)
