@@ -222,12 +222,15 @@ def report(before_f: str, after_f: str) -> int:
         str(a["blanked"]["marks"]))
     chk("nor on the column it tagged",
         not (a["blanked"]["marks"]["column"] or {}).get("total_cap"))
-    chk("BEFORE: the blanks were numbered and marked",
-        len(b["blanked"]["footnotes"]) == 5
-        and bool((b["blanked"]["marks"]["property"] or {}).get("P0000019")),
-        f"{len(b['blanked']['footnotes'])} notes, marker "
-        f"{(b['blanked']['marks']['property'] or {}).get('P0000019')} on "
-        f"P0000019 — exactly the marker that could not be cleared")
+    # Stated about the AFTER side, for the same reason as the others here: a
+    # baseline that already drops blanks would fail a "BEFORE it was broken"
+    # assertion even though nothing regressed.
+    _b_blank = len(b["blanked"]["footnotes"])
+    chk("no blank note survives to hold a number",
+        all(str(f["text"]).strip() for f in bl),
+        f"baseline composed {_b_blank} notes from the same rows"
+        + (" — including the two blanks, with a live marker on P0000019"
+           if _b_blank == 5 else " — already dropping blanks"))
     chk("the survivors renumber with no gap",
         [f["number"] for f in bl] == [1, 2, 3],
         str([f["number"] for f in bl]))

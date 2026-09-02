@@ -223,10 +223,17 @@ def report(before_f: str, after_f: str) -> int:
               for vc, r in a["deals"].items()
               if r["itd"] not in (None, 0) and r["itd_display"] == "$0.00M"]
     chk("no non-zero ITD renders as $0.00M", not zeroed, str(zeroed))
-    chk("BEFORE this fix the same figures rendered $0.00M across the board",
-        all(r["itd_display"] == "$0.00M"
-            for r in b["deals"].values() if r["itd"] not in (None, 0)),
-        str({vc: r["itd_display"] for vc, r in b["deals"].items()}))
+    # Stated about the AFTER side. Against the v410 baseline this showed the
+    # bug; against any later baseline the bug is already gone, and a "BEFORE it
+    # was broken" assertion then fails for the wrong reason.
+    chk("every entered ITD renders its real figure",
+        all(r["itd_display"] != "$0.00M"
+            for r in a["deals"].values() if r["itd"] not in (None, 0)),
+        "baseline showed " + ("the $0.00M bug"
+                              if all(r["itd_display"] == "$0.00M"
+                                     for r in b["deals"].values()
+                                     if r["itd"] not in (None, 0))
+                              else "correct figures already"))
     chk("the 26Q1 reference figures render exactly",
         a["deals"]["P0000019"]["itd_display"] == "$5.87M"
         and a["groups"]["IND"]["itd_display"] == "$7.97M",
