@@ -54,3 +54,40 @@ nothing anywhere.
 So "returns more capital than contributed" is only a meaningful measure for a
 pair that was actually funded under that same pair. I asserted it as a finding
 once before checking, and it was an artifact of my own grouping.
+
+---
+
+# MANUAL_RATIO_SEEDS — a stopgap with an expiry (Sep 2 2026)
+
+`v416` (`eb7520d`) shipped six hand-typed LTV / YTD DSCR / Debt Yield figures in
+`portfolio_snapshot_loan.MANUAL_RATIO_SEEDS` (P0000109, P0000116, P0000117,
+P0000118, P0000119, P0000120). Jim approved it **knowingly, as a stopgap**, so
+quarter-end reports could go out — not as a fix.
+
+Since the same release the subtotals weight what the row *displays*, so those
+typed figures now drive **investor-facing totals**: 26Q2 Portfolio LTV 63.9%,
+Portfolio DSCR 1.75x, TGA 6 DSCR 1.27x. The sharpest single item is
+Presidential Arms' typed **1.1x replacing a computed 3.8x**, which is what
+moves TGA 6.
+
+**What actually needs fixing** — the ratios are uncomputable for structural
+reasons, none addressed:
+
+* no valuation dated on or before the report year-end → `_latest_valuation`
+  finds nothing → no LTV
+* no full YTD Interim IS plus balance-sheet principal movement → no DSCR
+* no complete three-month quarter of actual NOI → no Debt Yield
+
+Retiring it is one deletion per deal: remove a vcode from the dict and its
+cells revert to the engine. A weekday reminder runs at 09:00 under the
+scheduled task `retire-manual-ratio-seeds`; delete that task once the dict is
+empty.
+
+**Known defect shipped with it:** the row's warning flag still reads "the
+computed figures … still feed the subtotals", true when written in `2a3fabe`
+and made false by `eb7520d` an hour later. Visible on the row tooltip.
+
+**Not independently verified:** the 126-check guardrail behind this imports
+`scripts/live_api.py`, which is still not committed, so the before/after
+figures are Charlene's. See [[MEMORY]] — that gap has now blocked verification
+on several changes.
