@@ -36,7 +36,12 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   saveComment: [p: { scope: string; field: string; scope_key?: string; text: string }]
+  saveValue: [p: { vcode: string; field: string; value: string | number | null }]
 }>()
+
+/** The three ratio columns, where a row says they are typed rather than
+ *  computed (`*_is_manual`, from MANUAL_RATIO_SEEDS). */
+type RatioField = 'ltv' | 'ytd_dscr' | 'debt_yield'
 
 const groups = computed<Record<string, any[]>>(() => props.data?.groups || {})
 const flaggedRows = computed<any[]>(() => props.data?.ownership_flagged || [])
@@ -59,6 +64,66 @@ function commit(vcode: string) {
     scope: 'deal', field: 'loan', scope_key: vcode,
     text: comments.value[vcode] ?? '',
   })
+}
+
+/* ── Typed ratio cells ────────────────────────────────────────────────────
+ *
+ * Same three-part pattern as the Financial subtab's Net ROE / ITD, and
+ * deliberately the same code shape so the two cannot drift: a `draft` map of
+ * what is in each box, a `focusKey` so a cell shows its FORMATTED value
+ * ("69.0%", "1.9x") at rest and the bare number while it is being typed, and
+ * a commit that emits the raw text for the server to parse.
+ *
+ * The value stored is in the unit the column displays — percentage points for
+ * LTV and Debt Yield, a multiple for DSCR — so nothing is scaled here. See
+ * format_manual_ratio on the backend, which owns the rendering rule; this
+ * component never formats a manual figure itself.
+ */
+const draft = ref<Record<string, string>>({})
+const focusKey = ref<string | null>(null)
+
+const RATIO_FIELDS: RatioField[] = ['ltv', 'ytd_dscr', 'debt_yield']
+
+watch(() => props.data, (d) => {
+  const next: Record<string, string> = {}
+  const seed = (r: any) => {
+    for (const f of RATIO_FIELDS) {
+      if (!r?.[`${f}_is_manual`]) continue
+      const v = r[`${f}_manual`]
+      next[`${r.vcode}:${f}`] = v == null ? '' : String(v)
+    }
+  }
+  for (const rows of Object.values<any>(d?.groups || {})) for (const r of (rows || [])) seed(r)
+  for (const r of (d?.ownership_flagged || [])) seed(r)
+  draft.value = next
+}, { immediate: true })
+
+function commitValue(vcode: string, field: RatioField) {
+  focusKey.value = null
+  const raw = (draft.value[`${vcode}:${field}`] ?? '').trim()
+  emit('saveValue', { vcode, field, value: raw === '' ? null : raw })
+}
+
+/** What a typed input shows right now: the bare number while it has focus,
+ *  the backend's formatted string otherwise, and '' when the cell has been
+ *  cleared so the placeholder comes through. */
+function cellText(vcode: string, field: RatioField, display: unknown): string {
+  const k = `${vcode}:${field}`
+  if (focusKey.value === k) return draft.value[k] ?? ''
+  if ((draft.value[k] ?? '') === '') return ''
+  return typeof display === 'string' ? display : String(draft.value[k])
+}
+
+/** The tooltip on a typed cell: whether it is an entry or still the
+ *  pre-filled figure, and what the engine computes for the same cell — so the
+ *  typed number can always be read against its own arithmetic instead of
+ *  hiding it. */
+function manualTitle(r: any, field: RatioField, kind: 'pct' | 'x'): string {
+  const src = r?.[`${field}_source`] || 'manual entry'
+  const c = r?.[`${field}_computed`]
+  const computed = c == null ? 'not computable from the data on record'
+    : (kind === 'x' ? fmtX(c) : fmtPct(c))
+  return `${src} — computed: ${computed}`
 }
 
 /** Backend-computed fund subtotals and portfolio total (see loan_subtotal —
@@ -129,6 +194,11 @@ function debtCell(r: any): unknown {
       <span v-if="diag.debt_free" class="chip">
         {{ diag.debt_free }} debt-free deal(s) show “N/A”
       </span>
+      <span v-if="diag.manual_deals" class="chip">
+        {{ diag.manual_deals }} recent acquisition(s) carry typed LTV / DSCR /
+        Debt Yield — {{ diag.manual_entered || 0 }} of {{ diag.manual_cells }}
+        cells entered, the rest pre-filled
+      </span>
       <span v-if="diag.dev_no_data" class="chip warn">
         {{ diag.dev_no_data }} development deal(s) have an empty loan block
       </span>
@@ -187,16 +257,63 @@ function debtCell(r: any): unknown {
                   :title="r.debt_free ? 'Held with no debt' : r.debt_basis">
                 {{ disp(debtCell(r), 'm') }}
               </td>
-              <td class="r num" :class="{ lit: isLiteral(r.ytd_dscr_display) }">
-                {{ disp(r.ytd_dscr_display, 'x') }}
+              <!-- The three ratio columns. A row the backend marks
+                   `*_is_manual` renders a typeable box holding the entry (or
+                   the figure it was pre-filled with); every other row is
+                   exactly the read-only cell it always was. The `_computed`
+                   figure rides along in the tooltip so a typed cell can be
+                   read against its own arithmetic. -->
+              <td class="r num" :class="{ manual: r.ytd_dscr_is_manual, lit: !r.ytd_dscr_is_manual && isLiteral(r.ytd_dscr_display) }">
+                <input
+                  v-if="r.ytd_dscr_is_manual"
+                  :value="cellText(r.vcode, 'ytd_dscr', r.ytd_dscr_display)"
+                  @input="draft[`${r.vcode}:ytd_dscr`] = ($event.target as HTMLInputElement).value"
+                  @focus="focusKey = `${r.vcode}:ytd_dscr`"
+                  @blur="focusKey = null"
+                  class="numinput"
+                  :class="{ pending: r.ytd_dscr_manual == null }"
+                  :readonly="!editable"
+                  :placeholder="String(r.ytd_dscr_display ?? '')"
+                  :title="manualTitle(r, 'ytd_dscr', 'x')"
+                  @change="commitValue(r.vcode, 'ytd_dscr')"
+                />
+                <template v-else>{{ disp(r.ytd_dscr_display, 'x') }}</template>
               </td>
-              <td class="r num" :class="{ lit: isLiteral(r.ltv_display) }"
+              <td class="r num" :class="{ manual: r.ltv_is_manual, lit: !r.ltv_is_manual && isLiteral(r.ltv_display) }"
                   :title="r.ltv_review_flag || (r.ltv_dev_exception ? 'Temporary exception — real LTV shown despite dev classification' : '')">
-                {{ disp(r.ltv_display, 'pct') }}
-                <span v-if="r.ltv_dev_exception" class="star" title="Temporary LTV exception">*</span>
+                <input
+                  v-if="r.ltv_is_manual"
+                  :value="cellText(r.vcode, 'ltv', r.ltv_display)"
+                  @input="draft[`${r.vcode}:ltv`] = ($event.target as HTMLInputElement).value"
+                  @focus="focusKey = `${r.vcode}:ltv`"
+                  @blur="focusKey = null"
+                  class="numinput"
+                  :class="{ pending: r.ltv_manual == null }"
+                  :readonly="!editable"
+                  :placeholder="String(r.ltv_display ?? '')"
+                  :title="manualTitle(r, 'ltv', 'pct')"
+                  @change="commitValue(r.vcode, 'ltv')"
+                />
+                <template v-else>
+                  {{ disp(r.ltv_display, 'pct') }}
+                  <span v-if="r.ltv_dev_exception" class="star" title="Temporary LTV exception">*</span>
+                </template>
               </td>
-              <td class="r num" :class="{ lit: isLiteral(r.debt_yield_display) }">
-                {{ disp(r.debt_yield_display, 'pct') }}
+              <td class="r num" :class="{ manual: r.debt_yield_is_manual, lit: !r.debt_yield_is_manual && isLiteral(r.debt_yield_display) }">
+                <input
+                  v-if="r.debt_yield_is_manual"
+                  :value="cellText(r.vcode, 'debt_yield', r.debt_yield_display)"
+                  @input="draft[`${r.vcode}:debt_yield`] = ($event.target as HTMLInputElement).value"
+                  @focus="focusKey = `${r.vcode}:debt_yield`"
+                  @blur="focusKey = null"
+                  class="numinput"
+                  :class="{ pending: r.debt_yield_manual == null }"
+                  :readonly="!editable"
+                  :placeholder="String(r.debt_yield_display ?? '')"
+                  :title="manualTitle(r, 'debt_yield', 'pct')"
+                  @change="commitValue(r.vcode, 'debt_yield')"
+                />
+                <template v-else>{{ disp(r.debt_yield_display, 'pct') }}</template>
               </td>
               <td class="cmt">
                 <!-- Read-only renders TEXT — see the note in SnapshotOperating:
@@ -337,6 +454,22 @@ table.grid th.r { text-align: right; }
 
 /* A backend literal ("Dev", n/a) is not a measurement — de-emphasise it. */
 .lit { color: var(--color-text-secondary); font-style: italic; }
+
+/* A typed cell, tinted the same as the Financial subtab's manual columns so
+   "this figure was entered, not computed" reads the same on both pages. */
+td.manual { background: #fffdf5; }
+.numinput {
+  width: 72px;
+  padding: 3px 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font-size: 12px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  box-sizing: border-box;
+}
+.numinput[readonly] { background: #fafafa; color: var(--color-text-secondary); }
+.numinput.pending::placeholder { color: #b0b0b0; font-style: italic; }
 /* A cell listing more than one loan. Normal weight and colour — it is data,
    not a placeholder — and allowed to wrap at the separator so two facilities
    never force the table wider than one printed page. */
@@ -418,6 +551,18 @@ tfoot .note {
     overflow: visible;
     height: auto !important;
   }
+  /* A typed cell prints as the figure, not as a form control — same rule the
+     Financial subtab uses for Net ROE and ITD. The value is the input's own
+     text (the backend's formatted string at rest), so it carries its unit
+     into print. Width auto so the number is not clipped at 72px. */
+  .numinput {
+    border: none;
+    background: transparent !important;
+    padding: 0;
+    width: auto;
+    color: inherit;
+  }
+  td.manual { background: transparent; }
   table.grid { font-size: 10px; }
 }
 </style>

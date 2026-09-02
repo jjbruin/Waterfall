@@ -370,7 +370,12 @@ def put_comment():
 @portfolio_snapshot_bp.route("/value", methods=["PUT"])
 @login_required
 def put_value():
-    """Save a manual number (Financial subtab Net ROE / ITD, per deal)."""
+    """Save a manual number, per deal.
+
+    Financial subtab: Net ROE / ITD. Loan subtab: the typed LTV / YTD DSCR /
+    Debt Yield cells. One endpoint because the row is keyed by field, not by
+    subtab — see VALUE_FIELDS in portfolio_snapshot_persistence.
+    """
     from flask_app.services import portfolio_snapshot_persistence as P
     body = request.get_json(silent=True) or {}
     investor = (body.get("investor") or "").strip().upper()
@@ -410,21 +415,37 @@ def put_value():
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
-    # The display twin and source string the Financial assembly would have
-    # produced for this cell, so the UI can patch the one row it changed
-    # instead of refetching /bundle. Without these the shell refetched the
-    # whole payload on every entry purely to read them back, rebuilding all
-    # four subtabs and blanking the page behind "Building snapshot…".
-    from flask_app.services.portfolio_snapshot_financial import (
-        manual_display, manual_na_cells, MANUAL_SOURCE,
+    # The display twin and source string the assembly would have produced for
+    # this cell, so the UI can patch the one row it changed instead of
+    # refetching /bundle. Without these the shell refetched the whole payload
+    # on every entry purely to read them back, rebuilding all four subtabs and
+    # blanking the page behind "Building snapshot…".
+    #
+    # Which assembly owns the rule depends on the field, and the FIELD is the
+    # only thing that decides — the request never says which subtab it came
+    # from. A Loan ratio formats as "69.0%" / "1.9x" and reports a different
+    # source (entered vs still pre-filled), so routing it through the Financial
+    # helper would have handed back a bare "69.0" and called it Net ROE's
+    # source string.
+    from flask_app.services.portfolio_snapshot_loan import (
+        MANUAL_RATIO_FIELDS, MANUAL_SOURCE_ENTERED, format_manual_ratio,
     )
+    if field in MANUAL_RATIO_FIELDS:
+        display = format_manual_ratio(field, value)
+        source = MANUAL_SOURCE_ENTERED
+    else:
+        from flask_app.services.portfolio_snapshot_financial import (
+            manual_display, manual_na_cells, MANUAL_SOURCE,
+        )
+        display = manual_display(field, value, manual_na_cells(vcode))
+        source = MANUAL_SOURCE
     return jsonify(safe_json({
         "saved": row,
         "vcode": vcode,
         "field": field,
         "value": value,
-        "display": manual_display(field, value, manual_na_cells(vcode)),
-        "source": MANUAL_SOURCE,
+        "display": display,
+        "source": source,
     }))
 
 

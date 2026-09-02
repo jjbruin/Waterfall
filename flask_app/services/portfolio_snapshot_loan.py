@@ -77,7 +77,13 @@ under whatever the rule is at read time.
   2. Development (config.DEV_STRATEGIES) — "Dev" on LTV, YTD DSCR and Debt
      Yield, for EVERY development deal with no exemption of any kind. Debt,
      Rate and Maturity stay real.
-  3. Otherwise the computed value, or an em dash where it could not be
+  3. A TYPED cell (MANUAL_RATIO_SEEDS, 2026-09-02) — the six recent
+     acquisitions whose ratios cannot be computed from the data on record
+     carry a typeable figure instead, pre-filled and editable, on the same
+     footing as the Financial subtab's Net ROE and ITD. The computed twin
+     survives as ``*_computed`` and is what the subtotals keep weighting, so a
+     typed cell moves no aggregate.
+  4. Otherwise the computed value, or an em dash where it could not be
      computed.
 """
 
@@ -185,6 +191,161 @@ def _debt_free(vcode: str) -> bool:
     """True for a deal held with no debt, whose debt columns read N/A.
     TEMPORARY — see DEBT_FREE_DEALS."""
     return str(vcode or "").strip().upper() in DEBT_FREE_DEALS
+# ══════════════════════════════════════════════════════════════════════════
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# TEMPORARY HARDCODED EXCEPTION 2 of 2 — MANUAL RATIO CELLS
+# Remove the seeds when the fallback formulas land in the data.
+# ══════════════════════════════════════════════════════════════════════════
+#: Deals whose LTV / YTD DSCR / Debt Yield are TYPED, not computed, with the
+#: figure each cell starts life holding.
+#:
+#: WHY THESE SIX AND WHY NOW. All six are recent acquisitions, and the three
+#: ratios cannot be computed for them from what the source systems hold today:
+#:
+#:   LTV        every one of the six lacks a valuation dated on or before the
+#:              report's year-end, so `_latest_valuation` returns nothing and
+#:              the computed cell is empty (the 2026 acquisitions have no
+#:              12/31 valuation yet; Burton and Plaza Del Mar have none at all).
+#:   YTD DSCR   needs a One Pager `dscr.ytd_actual`, which needs a full YTD
+#:              Interim IS plus a balance-sheet principal movement.
+#:   Debt Yield needs a COMPLETE quarter of actual NOI; `aggregate_periodic`
+#:              drops a quarter missing any of its three months.
+#:
+#: Verified on live 26Q2 before this existed: P0000117/118/120 had all three
+#: empty, P0000119 had DSCR only, and Burton/Plaza Del Mar had DSCR and Debt
+#: Yield but no LTV. Hence the per-deal field lists below — Burton and Plaza
+#: Del Mar take LTV alone and KEEP their computed DSCR and Debt Yield, and
+#: P0000119's typed 1.1x deliberately replaces a computed 3.8x on the page.
+#:
+#: THIS IS A HARDCODE AND IT IS A SYMPTOM REPAIR, in the sense CLAUDE.md means:
+#: vcodes in a constant, standing in for data that is not there. It is
+#: deliberately shaped so removing it is one deletion — take a deal out of this
+#: dict and its cells go back to whatever the engine computes, with no other
+#: code change — and so nothing it touches can leak:
+#:
+#:   * the raw computed `ltv` / `ytd_dscr` / `debt_yield` are LEFT ALONE, so the
+#:     fund subtotals, the portfolio total, every guardrail and any frozen
+#:     payload keep reading the computed truth. A typed cell contributes to no
+#:     aggregate, exactly as the Financial subtab's Net ROE and ITD do not.
+#:   * `*_computed` carries the figure the engine produced, beside the typed
+#:     one, so a cell can always be read back against its own arithmetic.
+#:   * a deal absent from this dict is byte-identical to before.
+#:
+#: SEEDS ARE A DEFAULT, NOT A VALUE. The seed shows until somebody types over
+#: it; after that the stored entry wins, including a deliberately CLEARED cell
+#: (a stored NULL renders the em dash and does NOT spring back to the seed).
+#: See `resolve_manual_ratio`.
+#:
+#: Units follow the house rule for every manual cell — stored in the unit the
+#: column DISPLAYS, nothing converted in or out (see `format_manual` in
+#: portfolio_snapshot_financial and `fmtPctPts` in the Vue formatters):
+#:
+#:      ltv          PERCENTAGE POINTS   69.0  -> "69.0%"
+#:      debt_yield   PERCENTAGE POINTS   12.1  -> "12.1%"
+#:      ytd_dscr     COVERAGE MULTIPLE    1.9  -> "1.9x"
+#:
+#: which is why the seeds below are 69.0 and not 0.69. The computed twins are
+#: decimals for the two percentages, so they are NOT interchangeable with these
+#: and must never be summed together — the reason a typed cell stays out of the
+#: aggregates rather than being written into the raw field.
+MANUAL_RATIO_FIELDS = ("ltv", "ytd_dscr", "debt_yield")
+
+MANUAL_RATIO_SEEDS: dict[str, dict] = {
+    "P0000109": {"ltv": 69.0},                                    # Burton Retail Portfolio
+    "P0000116": {"ltv": 64.2},                                    # Plaza Del Mar
+    "P0000117": {"ltv": 69.7, "ytd_dscr": 1.9, "debt_yield": 12.1},   # Fairview Heights
+    "P0000118": {"ltv": 75.7, "ytd_dscr": 1.5, "debt_yield": 8.9},    # Hanestowne Waterstone
+    "P0000119": {"ltv": 70.6, "ytd_dscr": 1.1, "debt_yield": 5.93},   # Presidential Arms
+    "P0000120": {"ltv": 74.0, "ytd_dscr": 1.5, "debt_yield": 9.7},    # Citizen Storage
+}
+
+#: The two source strings a typed cell reports, so the page can always say
+#: whether a figure is somebody's entry or the value it was pre-filled with.
+MANUAL_SOURCE_ENTERED = "manual entry"
+MANUAL_SOURCE_SEED = "manual entry (pre-filled — editable)"
+
+
+def manual_ratio_fields(vcode: str) -> tuple:
+    """The ratio columns that are TYPED for one deal — empty for every other."""
+    return tuple(f for f in MANUAL_RATIO_FIELDS
+                 if f in MANUAL_RATIO_SEEDS.get(
+                     str(vcode or "").strip().upper(), {}))
+
+
+def format_manual_ratio(field: str, value) -> Optional[str]:
+    """How a typed ratio reads, unit included — the ONE place that rule lives.
+
+    Mirrors ``portfolio_snapshot_financial.format_manual``: the unit belongs to
+    the value, so the same cell reads "69.0%" / "1.9x" on screen, in print, and
+    in the string ``PUT /value`` hands back after a save.
+
+    None returns None, not a "pending" literal: unlike Net ROE and ITD — which
+    are pending until an analyst supplies them — every cell here starts with a
+    seed, so the only way to reach None is to clear one deliberately. That is a
+    dash, the same as any other absent figure.
+
+    No magnitude heuristic, for the reason given on the seeds: 0.9 is a
+    legitimate 0.9% and a legitimate 0.9x.
+
+    ONE decimal, the precision the reference document prints and the precision
+    the computed cells beside these use (``fmtPct``/``fmtX`` in the Vue
+    formatters both default to 1) — EXCEPT where a second decimal is carrying
+    information, which is a property of the number and not a guess about it:
+    5.93 renders "5.93%" because rounding it to 5.9% would silently drop a
+    digit somebody typed, while 69.0 stays "69.0%" rather than becoming "69%".
+    """
+    if value is None:
+        return None
+    if field == "ytd_dscr":
+        return f"{value:{_manual_fmt(value)}}x"
+    if field in ("ltv", "debt_yield"):
+        return f"{value:{_manual_fmt(value)}}%"
+    return str(value)
+
+
+def _manual_fmt(value: float) -> str:
+    """``.1f``, or ``.2f`` when the hundredths digit is not just rounding."""
+    return ".2f" if round(value, 1) != round(value, 2) else ".1f"
+
+
+def resolve_manual_ratio(field: str, vcode: str, stored: Optional[dict]):
+    """``(value, source, entered)`` for one typed cell.
+
+    ``stored`` is this deal's ``{field: value}`` map out of Step 2 persistence.
+    MEMBERSHIP is what decides, not truthiness: a field present with a NULL
+    value is a cell somebody emptied on purpose, and restoring the seed under
+    it would overwrite an edit with a default.
+    """
+    vc = str(vcode or "").strip().upper()
+    if field not in MANUAL_RATIO_SEEDS.get(vc, {}):
+        return None, None, False
+    if stored is not None and field in stored:
+        return stored[field], MANUAL_SOURCE_ENTERED, True
+    return MANUAL_RATIO_SEEDS[vc][field], MANUAL_SOURCE_SEED, False
+
+
+def _default_manual_loader(investor_code: str, quarter: str) -> dict:
+    """{vcode: {field: value}} of typed ratios from Step 2 (read-only).
+
+    Same shape and same read as ``portfolio_snapshot_financial._load_manual``;
+    filtered to this subtab's fields so a Net ROE entry can never land in a
+    ratio cell. Failure degrades to "nothing stored", which shows the seeds —
+    never a blank page.
+    """
+    out: dict = {}
+    try:
+        from flask_app.services.portfolio_snapshot_persistence import get_elements
+        for r in get_elements("value", investor_code, quarter):
+            field = r.get("field")
+            if field in MANUAL_RATIO_FIELDS:
+                out.setdefault(
+                    str(r.get("deal_vcode") or "").strip().upper(),
+                    {})[field] = r.get("value")
+    except Exception as exc:
+        log.debug("manual ratio values unavailable: %s", exc)
+    return out
 # ══════════════════════════════════════════════════════════════════════════
 
 # ── RETIRED 2026-09-01: the Waters Creek LTV exception ────────────────────
@@ -637,6 +798,7 @@ def assemble_loan(investor_code: str, quarter: str, *,
                   inv: Optional[pd.DataFrame] = None,
                   quarterly_noi_provider: Optional[Callable] = None,
                   comment_loader: Optional[Callable] = None,
+                  manual_loader: Optional[Callable] = None,
                   ltv_ceiling: float = LTV_REVIEW_CEILING) -> dict:
     """Build the Loan subtab for one investor and quarter."""
     from flask_app.services.portfolio_snapshot_operating import (
@@ -647,6 +809,9 @@ def assemble_loan(investor_code: str, quarter: str, *,
 
     loader = comment_loader or _default_comment_loader
     comments = loader(investor_code, quarter) or {}
+    # Typed ratio cells, one query for the page — see MANUAL_RATIO_SEEDS.
+    manual = (manual_loader or _default_manual_loader)(
+        investor_code, quarter) or {}
     n_months = months_elapsed(quarter)
 
     diag = {"deals": 0, "dev": 0, "debt_from_isbs": 0, "debt_from_orig": 0,
@@ -654,7 +819,9 @@ def assemble_loan(investor_code: str, quarter: str, *,
             "ltv_dev": 0, "ltv_dev_exception": 0, "dev_no_data": 0,
             "debt_free": 0, "dscr_dev": 0,
             "dy_ok": 0, "dy_dev_suppressed": 0, "dy_no_ytd": 0,
-            "various_terms": 0, "comments_attached": 0, "provider_errors": 0}
+            "various_terms": 0, "comments_attached": 0, "provider_errors": 0,
+            "manual_deals": 0, "manual_cells": 0,
+            "manual_entered": 0, "manual_prefilled": 0, "manual_cleared": 0}
 
     child_cache: dict = {}
 
@@ -805,13 +972,15 @@ def assemble_loan(investor_code: str, quarter: str, *,
         # Every raw field below is left EXACTLY as computed; only the *_display
         # twins carry a suppression. That keeps the subtotals, the guardrails
         # and a frozen payload reading the true figures, and lets the display
-        # rule change later without moving a number.
+        # rule change later without moving a number. A typed ratio cell obeys
+        # the same rule — see the overlay under this dict.
         #
         # Precedence, highest first:
         #   1. debt free  -> N/A on five columns, dash on Debt
         #   2. dev        -> "Dev" on the three ratio columns, UNCONDITIONALLY
-        #   3. the computed value
-        return {
+        #   3. a TYPED cell (MANUAL_RATIO_SEEDS) -> the entry, or its seed
+        #   4. the computed value
+        row = {
             "vcode": vcode, "name": name, "strategy": strategy, "is_dev": dev,
             "debt": debt, "debt_basis": debt_basis,
             # Dash for a debt-free deal, so a real 0.0 balance does not print
@@ -857,6 +1026,44 @@ def assemble_loan(investor_code: str, quarter: str, *,
             "loan_comment": comment,
             "flags": flags,
         }
+
+        # ---- typed ratio cells (the six recent acquisitions) ---------------
+        #
+        # Applied AFTER the dict so it is visibly an overlay on a settled row
+        # and not a fourth branch inside each metric. Three invariants, all
+        # asserted in scripts/snapshot_loan_manual_cells_check.py:
+        #
+        #   * a deal with no seeds is untouched — no key added, nothing moved;
+        #   * the raw `ltv` / `ytd_dscr` / `debt_yield` are never overwritten,
+        #     so subtotals, totals and guardrails still see the computation;
+        #   * the debt-free and dev literals still outrank a typed cell, so
+        #     adding a seed to such a deal could not silently un-suppress it.
+        typed = manual_ratio_fields(vcode)
+        if typed:
+            diag["manual_deals"] += 1
+            stored = manual.get(str(vcode).strip().upper())
+            literal = (NA_DISPLAY if debt_free else
+                       DEV_DISPLAY if dev else None)
+            for f in typed:
+                value, source, entered = resolve_manual_ratio(f, vcode, stored)
+                diag["manual_cells"] += 1
+                diag["manual_entered" if entered else "manual_prefilled"] += 1
+                if entered and value is None:
+                    diag["manual_cleared"] += 1
+                row[f"{f}_computed"] = row.get(f)
+                row[f"{f}_manual"] = value
+                row[f"{f}_is_manual"] = True
+                row[f"{f}_source"] = source
+                row[f"{f}_entered"] = entered
+                # The literal wins where there is one; today none of the six is
+                # dev or debt free, so this resolves to the typed figure.
+                row[f"{f}_display"] = (literal if literal is not None
+                                       else format_manual_ratio(f, value))
+            flags.append(
+                "LTV / YTD DSCR / Debt Yield typed on this deal where marked "
+                "(pre-filled, editable) — the computed figures are kept as "
+                "*_computed and still feed the subtotals")
+        return row
 
     groups: dict[str, list] = {}
     for group, items in (resolved.get("groups") or {}).items():
@@ -1206,10 +1413,22 @@ def _selftest():                                    # pragma: no cover
     # The debt-free deal is excluded BY NAME rather than by allowing any
     # mismatch: its DSCR is deliberately the N/A literal, and every other
     # operating deal must still pass its real number straight through.
+    #
+    # A TYPED cell is excluded the same way — by the row's own
+    # `ytd_dscr_is_manual` flag, not by vcode — because its display is an
+    # entered figure, which is neither the computed number nor a suppression of
+    # it. The invariant this protects is unchanged for every other deal, and
+    # the typed cells have their own before/after guardrail
+    # (scripts/snapshot_loan_manual_cells_check.py) asserting that the raw
+    # `ytd_dscr` beneath them never moved.
     chk("no ordinary operating deal lost its real DSCR to a suppression",
         all(r["ytd_dscr_display"] == r["ytd_dscr"]
             for r in flat.values()
-            if not r["is_dev"] and not r.get("debt_free")))
+            if not r["is_dev"] and not r.get("debt_free")
+            and not r.get("ytd_dscr_is_manual")))
+    chk("a typed DSCR leaves the computed figure in the raw field",
+        all(r["ytd_dscr"] == r.get("ytd_dscr_computed")
+            for r in flat.values() if r.get("ytd_dscr_is_manual")))
     chk("every operating deal's Debt display IS its raw debt, bar the "
         "debt-free one",
         all(r["debt_display"] == r["debt"] for r in flat.values()
@@ -1275,11 +1494,17 @@ def _selftest():                                    # pragma: no cover
     chk("LTV guard no longer fires for any dev deal (backstop only)",
         all(r["ltv_review_flag"] is None for r in flat.values() if r["is_dev"]))
     # Excludes the debt-free deal by name: its LTV is deliberately the N/A
-    # literal, and every OTHER operating deal must stay numeric-or-em-dash.
+    # literal, and every OTHER operating deal must stay numeric-or-em-dash —
+    # bar a TYPED cell, whose display is the entered figure with its unit
+    # ("69.0%"), excluded by the row's own flag rather than by vcode.
     chk("ordinary operating deals keep a numeric LTV display",
         all(r["ltv_display"] is None or isinstance(r["ltv_display"], float)
             for r in flat.values()
-            if not r["is_dev"] and not r.get("debt_free")))
+            if not r["is_dev"] and not r.get("debt_free")
+            and not r.get("ltv_is_manual")))
+    chk("a typed LTV leaves the computed figure in the raw field",
+        all(r["ltv"] == r.get("ltv_computed")
+            for r in flat.values() if r.get("ltv_is_manual")))
     chk("Debt Yield basis is single-quarter x 4",
         all(r["debt_yield_basis"].startswith("single-quarter")
             for r in flat.values()))

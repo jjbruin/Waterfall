@@ -105,7 +105,18 @@ _ELEMENT_SPECS = {
     },
 }
 
-VALUE_FIELDS = ("net_roe", "itd")
+#: Manual number fields, across every subtab. One flat list because a value row
+#: is keyed by (investor, quarter, deal, field) and nothing else — the field
+#: name is what says which column it belongs to, so the names must stay unique
+#: across subtabs.
+#:
+#:   net_roe, itd            Financial subtab (page 2)
+#:   ltv, ytd_dscr,          Loan subtab (page 4) — the typed ratio cells, see
+#:   debt_yield              MANUAL_RATIO_SEEDS in portfolio_snapshot_loan
+#:
+#: Every one stores the unit its column DISPLAYS (see format_manual /
+#: format_manual_ratio); this list only says which fields exist.
+VALUE_FIELDS = ("net_roe", "itd", "ltv", "ytd_dscr", "debt_yield")
 COMMENT_SCOPES = ("report", "deal")
 
 

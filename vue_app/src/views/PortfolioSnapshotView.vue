@@ -159,6 +159,21 @@ function financialRows(): any[] {
   return rows
 }
 
+/** The Loan subtab's rows. Its groups are plain arrays of deals, not the
+ *  `{deals, subtotal}` blocks the Financial subtab uses — see assemble_loan. */
+function loanRows(): any[] {
+  const ln = bundle.value?.subtabs?.loan
+  if (!ln) return []
+  const rows: any[] = []
+  for (const rs of Object.values<any>(ln.groups || {})) rows.push(...(rs || []))
+  rows.push(...(ln.ownership_flagged || []))
+  return rows
+}
+
+/** Manual number fields that belong to the Loan subtab's ratio columns.
+ *  Mirrors MANUAL_RATIO_FIELDS on the backend. */
+const RATIO_FIELDS = ['ltv', 'ytd_dscr', 'debt_yield']
+
 /** Recount the "N entered" cells after one manual figure changed.
  *
  *  A count, not a formatting decision: the backend rule is "not in (None,
@@ -250,6 +265,23 @@ function onSaveValue(p: { vcode: string; field: string; value: string | number |
     // The Loan tab's comments never did this (see onSaveComment), which is why
     // they always felt right.
     const d = res.data || {}
+    // The Loan subtab's typed ratio cells go through the same endpoint, so the
+    // patch is routed by FIELD. They cannot use the Financial branch: a ratio
+    // is patched onto `<field>_manual`, never onto the raw `ltv`/`ytd_dscr`/
+    // `debt_yield`, which stay the computed figures the subtotals weight (see
+    // MANUAL_RATIO_SEEDS in portfolio_snapshot_loan.py). Writing the typed
+    // number into the raw field would silently move the fund subtotals — and
+    // mix percentage points into a column of decimals.
+    if (RATIO_FIELDS.includes(p.field)) {
+      const row = loanRows().find((r) => r.vcode === p.vcode)
+      if (row) {
+        row[`${p.field}_manual`] = d.value ?? null
+        row[`${p.field}_display`] = d.display
+        row[`${p.field}_entered`] = true
+        if (d.source) row[`${p.field}_source`] = d.source
+      }
+      return
+    }
     // A deal row, or one of the aggregate rows — Net ROE is typeable at every
     // level, and an aggregate stores against a reserved key rather than a
     // vcode. Same endpoint, same response, same patch.
@@ -599,6 +631,7 @@ const statusColor = computed(() => {
             :editable="editable"
             :screen-note="true"
             @save-comment="onSaveComment"
+            @save-value="onSaveValue"
           />
         </template>
       </template>
