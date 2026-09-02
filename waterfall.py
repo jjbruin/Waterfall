@@ -1373,13 +1373,39 @@ def seed_states_from_accounting(
                         )
                         pref_accrued_current_year += accrued
 
-                    # Handle pref distribution (reduces accrued pref)
-                    # TypeID may be string — coerce for safe comparison
+                    # Reduce accrued pref by what was actually paid against it.
+                    #
+                    # BOTH a Preferred Return (1019) AND an Excess Cash Flow
+                    # (1020) do that. Excess CF sits BELOW pref in every one of
+                    # these waterfalls, so a partner cannot receive it while
+                    # pref is outstanding — an excess payment is evidence the
+                    # pref was current. Counting only 1019 left phantom accrued
+                    # pref standing behind later excess distributions: 30
+                    # Bearfoot showed OPMCCORD $8,995 owed while $1,055,944 of
+                    # excess cash flow had been paid to it since the last pref
+                    # payment. reports_service._compute_accrued_pref has always
+                    # applied both; this path did not, and the two disagreed.
+                    #
+                    # Signed, like everything else here: a positive row pays
+                    # pref down, a NEGATIVE one is a reversal and puts it back.
+                    # This deal reclassifies pref to excess CF that way (a
+                    # -10,314.15 pref row beside a +10,314.15 excess row), and
+                    # abs() would have applied both as payments.
                     _tid = pd.to_numeric(tr["TypeID"], errors="coerce") if isinstance(tr["TypeID"], str) else tr["TypeID"]
-                    if _tid == 1019.0:
-                        pref_accrued_current_year, pref_unpaid_compounded, pref_accrued_prior_year = apply_pref_payment(
-                            abs(tr_amt), pref_accrued_current_year, pref_unpaid_compounded, pref_accrued_prior_year
-                        )
+                    _tname = str(tr.get("Typename", "")).lower()
+                    _pays_pref = (
+                        _tid in (1019.0, 1020.0)
+                        or "preferred return" in _tname
+                        or "pref return" in _tname
+                        or "excess cash" in _tname)
+                    if _pays_pref and bool(tr.get("is_distribution")):
+                        if tr_amt > 0:
+                            pref_accrued_current_year, pref_unpaid_compounded, pref_accrued_prior_year = apply_pref_payment(
+                                tr_amt, pref_accrued_current_year,
+                                pref_unpaid_compounded, pref_accrued_prior_year
+                            )
+                        elif tr_amt < 0:
+                            pref_accrued_current_year += -tr_amt
 
                     # Update capital balance.
                     #
