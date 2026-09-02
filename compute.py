@@ -995,13 +995,31 @@ def compute_deal_analysis(
         or (isinstance(sale_date_raw, float) and pd.isna(sale_date_raw))
         or str(sale_date_raw).strip() == ""
     )
+    # THE ACTUAL SALE DATE AND ITS MONTH END ARE DIFFERENT THINGS, and both are
+    # needed. ``month_end`` used to be applied at the moment of parsing, which
+    # threw the real date away before anything could use it: a 4 Sep sale became
+    # 30 Sep everywhere, so pref accrued and debt ran 26 extra days.
+    #
+    #   sale_actual  when the deal actually closes. Pref stops accruing here,
+    #                and the loan is paid off here.
+    #   sale_me      the month end it falls in. The forecast, the cash schedule
+    #                and the terminal-NOI window stay on this monthly grid --
+    #                the operating data is not accurate enough to split a month
+    #                (author's instruction, Sep 2 2026), and the terminal NOI
+    #                window must still start the first month AFTER the month of
+    #                sale, which is what anchoring it on the month end gives.
     if sale_date_explicit:
-        sale_date = month_end(as_date(sale_date_raw))
+        sale_actual = as_date(sale_date_raw)
     else:
-        sale_date = month_end(_horizon_end_date(int(start_year), int(horizon_years)))
+        sale_actual = _horizon_end_date(int(start_year), int(horizon_years))
+
+    if sale_actual < model_start:
+        sale_actual = model_start
+    sale_date = month_end(sale_actual)
 
     if sale_date < month_end(model_start):
         sale_date = month_end(model_start)
+        sale_actual = sale_date
 
     sale_me = month_end(sale_date)
 
@@ -1029,11 +1047,13 @@ def compute_deal_analysis(
         if max_maturity and month_end(max_maturity) > sale_me:
             old_sale = sale_me
             sale_me = month_end(max_maturity)
+            sale_actual = max_maturity
             debug_msgs.append(
                 f"Sale date set to max loan maturity: {old_sale} -> {sale_me}"
             )
         elif max_maturity:
             sale_me = month_end(max_maturity)
+            sale_actual = max_maturity
             debug_msgs.append(f"Sale date set to max loan maturity: {sale_me}")
 
     # Planned loan sizing
@@ -1128,6 +1148,7 @@ def compute_deal_analysis(
                 if new_maturity and new_maturity > sale_me:
                     old_sale = sale_me
                     sale_me = month_end(new_maturity)
+                    sale_actual = new_maturity
                     debug_msgs.append(f"Sale date extended from {old_sale} to {sale_me} (new loan maturity)")
 
                 # Track refi proceeds for capital waterfall
@@ -1416,18 +1437,34 @@ def compute_deal_analysis(
     can_compute_sale = (contract_sale_price is not None) or (mri_val is not None and not mri_val.empty)
     if can_compute_sale:
         try:
-            noi_12_sale = twelve_month_noi_after_date(fc_deal_modeled, sale_me)
+            # THE WINDOW STARTS THE MONTH AFTER THE MONTH OF SALE.
+            #
+            # ``twelve_month_noi_after_date`` anchors at month_end(anchor) and
+            # filters ``>= start``, so passing sale_me put the SALE MONTH itself
+            # at the front of the window: a 4 Sep sale priced the exit on Sep
+            # 2026 - Aug 2027. That double-counts September, which the seller
+            # keeps in full on the cash schedule. Anchoring one month later
+            # gives Oct 2026 - Sep 2027: the seller keeps the whole month of
+            # sale, the buyer's forward NOI starts the next one, and neither
+            # side splits a month (author's instruction, Sep 2 2026).
+            #
+            # Deliberately anchored on sale_me, not the actual sale date - the
+            # rule is about which MONTH the sale falls in, so 4 Sep and 30 Sep
+            # give the same window.
+            from utils import add_months as _add_months
+            noi_anchor = _add_months(month_end(sale_me), 1)
+            noi_12_sale = twelve_month_noi_after_date(fc_deal_modeled, noi_anchor)
             # Diagnostic: log each month in the 12-month NOI window
             try:
-                from utils import add_months as _add_months
-                _start_me = month_end(sale_me)
+                _start_me = month_end(noi_anchor)
                 _end_me = _add_months(_start_me, 12)
                 _f12 = fc_deal_modeled[(fc_deal_modeled["event_date"] >= _start_me) & (fc_deal_modeled["event_date"] < _end_me)].copy()
                 _rev_exp = REVENUE_ACCTS | EXPENSE_ACCTS
                 _noi_rows = _f12[_f12["vAccount"].isin(_rev_exp)].copy()
                 _noi_rows["_month"] = pd.to_datetime(_noi_rows["event_date"]).dt.strftime("%Y-%m")
                 _monthly = _noi_rows.groupby("_month")["mAmount_norm"].sum().sort_index()
-                log.info("Terminal NOI breakdown (sale_me=%s, window %s to %s):", sale_me, _start_me, _end_me)
+                log.info("Terminal NOI breakdown (sale_me=%s, window %s to %s):",
+                         sale_me, _start_me, _end_me)
                 for _m, _v in _monthly.items():
                     log.info("  %s: %,.0f", _m, _v)
                 log.info("  TOTAL: %,.0f", _monthly.sum())
@@ -1465,7 +1502,10 @@ def compute_deal_analysis(
             # included in operating debt service (they are repaid from sale proceeds).
             # Anchor to ISBS actual balance when available — the modeled schedule
             # amortizes from origination amount which may differ from reality.
-            modeled_bal_sale = total_loan_balance_at(loan_sched, sale_me)
+            # The ACTUAL sale date, not its month end: interest stops when the
+            # loan is repaid, which is the day the deal closes. A 4 Sep sale was
+            # carrying the loan to 30 Sep.
+            modeled_bal_sale = total_loan_balance_at(loan_sched, sale_actual)
             isbs_debt = get_isbs_debt_balance(isbs_raw, deal_vcode, mri_loans=mri_loans_raw)
             if isbs_debt is not None and isbs_debt > 0 and not loan_sched.empty:
                 # Find the ISBS anchor date (most recent BS period)
@@ -1771,6 +1811,34 @@ def compute_deal_analysis(
                 cap_period_cash.loc[cap_period_cash["event_date"] == sale_me, "cash_available"] += sale_dbg["Net_Sale_Proceeds"]
             else:
                 cap_period_cash = pd.concat([cap_period_cash, sale_cash_entry], ignore_index=True).sort_values("event_date")
+
+    # --- The closing period settles on the SALE DATE, not the month end ---
+    #
+    # Pref accrues to the date of each waterfall event, so leaving the final
+    # event on the month end accrued it past the closing: OPMCCORD's $300,000
+    # into 30 Bearfoot earned 48 days of 9% to 30 Sep against a 4 Sep sale, 26
+    # days too many.
+    #
+    # Only the DATE moves. The period keeps all of its cash — September's
+    # operations are collected in full, because the operating data is not
+    # accurate enough to split a month (author's instruction) — and the
+    # forecast, the cash schedule and the terminal-NOI window all stay on the
+    # monthly grid. What changes is when the money is recorded as moving, which
+    # is also when pref stops running.
+    if sale_actual != sale_me:
+        if cf_period_cash is not None and not cf_period_cash.empty:
+            _m = cf_period_cash["event_date"] == sale_me
+            if _m.any():
+                cf_period_cash.loc[_m, "event_date"] = sale_actual
+        if cap_period_cash is not None and not cap_period_cash.empty:
+            _m = cap_period_cash["event_date"] == sale_me
+            if _m.any():
+                cap_period_cash.loc[_m, "event_date"] = sale_actual
+        debug_msgs.append(
+            f"Closing period settles on the sale date {sale_actual} rather than "
+            f"month end {sale_me}; pref and debt stop there. Operations, the "
+            f"cash schedule and the terminal NOI window stay on the month end."
+        )
 
     # --- Run waterfalls ---
     wf_steps = load_waterfalls(wf)
