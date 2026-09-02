@@ -939,13 +939,31 @@ def assemble_financial(investor_code: str, quarter: str, *,
             flags.append("kept on the report despite being sold/foreclosed "
                          "before quarter end")
 
+        # THE CAPITAL STACK IS NOT ALWAYS READ AT THE REPORTED QUARTER.
+        #
+        # `stack_quarter` is the reported quarter for every deal still held. A
+        # KEEP_DESPITE_SOLD row carries the last quarter it WAS held instead,
+        # because the equity figures are netted through the quarter end and the
+        # sale returns the capital: at 26Q2 East Manchester read Total Pref 0,
+        # Invested 0, Total Commitment 0 against a real $3.60M tranche, and the
+        # row is on the page precisely to report that capital and its ROE.
+        # The rule and its edge cases live in
+        # portfolio_snapshot_service.last_held_quarter; this is the only
+        # consumer today.
+        #
+        # Debt is unaffected either way: SOLD_NA_CELLS blanks it on every
+        # kept-sold row, so `debt_leg` below is 0 regardless of which quarter
+        # the stack came from.
+        stack_quarter = entry.get("stack_quarter") or quarter
         try:
-            payload = one_pager_provider(vcode, quarter) or {}
+            payload = one_pager_provider(vcode, stack_quarter) or {}
         except Exception as exc:
             diag["provider_errors"] += 1
             flags.append(f"One Pager unavailable: {str(exc)[:80]}")
             payload = {}
         cap = payload.get("cap_stack") or {}
+        if stack_quarter != quarter:
+            diag["stack_rebased"] = diag.get("stack_rebased", 0) + 1
 
         # ---- Zone A: deal-level, unscaled ----
         #
@@ -1115,6 +1133,11 @@ def assemble_financial(investor_code: str, quarter: str, *,
             "investment_strategy": strat, "strategy_source": strat_source,
             "is_dev": dev,
             "kept_despite_sold": sold,
+            # The quarter the capital stack was actually read at. Equal to the
+            # reported quarter on every row but a rebased kept-sold one, and
+            # carried so a frozen snapshot says on its face which date its
+            # equity figures are as at.
+            "stack_quarter": stack_quarter,
             # What the UI prints after the property name. Server-side so the
             # on-screen table and the print view cannot label differently —
             # SnapshotFinancial.vue is the single component both render.

@@ -410,8 +410,19 @@ def assemble_summary(investor_code: str, quarter: str, *,
     for group, entry in grouped + [(None, e) for e in flagged_entries]:
         vcode = entry["vcode"]
         row_flags = []
+        # Same date the Financial subtab reads the stack at — the reported
+        # quarter for everything still held, the last quarter it WAS held for a
+        # KEEP_DESPITE_SOLD row (portfolio_snapshot_service.last_held_quarter).
+        # No allocation total moves: a kept-sold deal is out of every one of
+        # them (`alloc_rows` below). What it keeps honest is
+        # `excluded_from_allocation`, which prints those deals'
+        # `funded_deal_level` — without this, page 1 would report East
+        # Manchester's funded pref as $0 while page 2 printed $3.60M for the
+        # same deal, which is exactly the drift the shared committed resolver
+        # exists to prevent.
+        stack_quarter = entry.get("stack_quarter") or quarter
         try:
-            payload = one_pager_provider(vcode, quarter) or {}
+            payload = one_pager_provider(vcode, stack_quarter) or {}
         except Exception as exc:
             diag["provider_errors"] += 1
             row_flags.append(f"One Pager unavailable: {str(exc)[:80]}")

@@ -168,13 +168,27 @@ GROUP_OVERRIDES: dict[str, str] = {
 #: stays — in Individual Investments, where GROUP_OVERRIDES already put it.
 #:
 #: It is NOT a clean City West clone, and the difference is handled in
-#: portfolio_snapshot_financial rather than here. Its 26Q2 cap stack, read live:
+#: portfolio_snapshot_financial rather than here. Its 26Q2 cap stack, read live
+#: AT 26Q2 — which is no longer how the row is built, see below:
 #:     Debt        9,641,912   STALE — the loan left with the asset, but unlike
 #:                             City West's it is not zero, so printing it would
 #:                             put $9.6M of debt on a sold deal AND carry it
 #:                             into every subtotal. See SOLD_NA_CELLS.
-#:     Total Pref          0   real — capital returned at sale
-#:     Ptr Equity  2,400,000   real — the residual this row exists to report
+#:     Total Pref          0   the sale returned the capital and the equity
+#:                             block nets through the quarter end, so the whole
+#:                             $3.60M tranche read as zero — along with
+#:                             Invested and Total Commitment.
+#:     Ptr Equity  2,400,000   the only figure left standing, because only the
+#:                             PE side carries a return-of-capital row.
+#:
+#: THE STACK IS THEREFORE READ AT THE LAST QUARTER THE DEAL WAS HELD — 26Q1 for
+#: East Manchester, 25Q2 for City West — via ``last_held_quarter`` and the
+#: ``stack_quarter`` field on each entry. The row exists to report the capital
+#: and the ROE earned on it; netting it to zero removes the thing being
+#: reported. City West is unaffected in fact as well as in principle: it has no
+#: return-of-capital row at all, so its figures are flat across every quarter
+#: and the rebase is a measured no-op
+#: (``scripts/snapshot_kept_sold_stack_check.py``).
 #:
 #: This is a per-deal exception, not a rule: "sold but still reported" is an
 #: editorial judgement with no field behind it. Should MRI ever carry a
@@ -677,6 +691,43 @@ def is_acquired_as_of(meta: dict, quarter_end: date) -> bool:
     return pd.Timestamp(ad).date() <= quarter_end
 
 
+def last_held_quarter(meta: dict) -> Optional[str]:
+    """The last quarter this deal was still held, as ``'YYYY-QN'``.
+
+    A deal's capital stack is netted from accounting **through the quarter
+    end** — contributions less returns of capital. That is the right question
+    for a deal we still hold, and the wrong one for a deal we do not: the sale
+    returns the capital, so every equity figure nets to zero and a row kept on
+    the report for its ROE loses the very numbers the ROE is a return *on*.
+
+    A ``KEEP_DESPITE_SOLD`` row is a historical record, so it is read at the
+    last date it was a going concern. Because the sale itself falls inside the
+    quarter that contains it, the answer is always the quarter **before** that
+    one: the last quarter end strictly earlier than the sale date. East
+    Manchester, sold 6/25/2026, reports its 2026-Q1 stack; City West,
+    foreclosed 8/30/2025, its 2025-Q2 stack.
+
+    ``None`` when there is no usable earlier quarter — no sale date on file, or
+    a sale date so early that the deal had not closed by the quarter before it
+    (a data error; rebasing onto it would fabricate an empty stack). The caller
+    then reads the reported quarter, i.e. the behaviour that was there before.
+    """
+    sd = meta.get("sale_date")
+    if sd is None or pd.isna(sd):
+        return None
+    sale = pd.Timestamp(sd)
+    # The quarter containing the sale ends on or after the sale, so the last
+    # quarter end strictly before it is always the preceding quarter.
+    prior = sale.to_period("Q") - 1
+    quarter = f"{prior.year}-Q{prior.quarter}"
+
+    ad = meta.get("acquisition_date")
+    if ad is not None and not pd.isna(ad):
+        if prior.end_time.date() < pd.Timestamp(ad).date():
+            return None
+    return quarter
+
+
 # ── Entry point ───────────────────────────────────────────────────────────
 
 def resolve_investor_deals(investor_code: str, quarter: str,
@@ -822,12 +873,32 @@ def resolve_investor_deals(investor_code: str, quarter: str,
             "sold_after_quarter": (m["sale_status"].upper() == "SOLD"
                                    and not is_sold_as_of(m, q_end)),
             "kept_despite_sold": vc in kept_vcodes,
+            "sale_date": (m["sale_date"].date().isoformat()
+                          if pd.notna(m["sale_date"]) else None),
+            # The quarter whose CAPITAL STACK this row reports. The reported
+            # quarter for everything still held; for a KEEP_DESPITE_SOLD row,
+            # the last quarter it was held — see last_held_quarter. Consumers
+            # read this rather than deciding for themselves, so the Financial
+            # subtab and anything added later cannot pick different dates for
+            # the same row.
+            "stack_quarter": quarter,
             "flags": [],
         }
         if entry["kept_despite_sold"]:
             entry["flags"].append(
                 "sold/foreclosed before quarter end — kept on the report to "
                 "match the reference PDF (KEEP_DESPITE_SOLD)")
+            held = last_held_quarter(m)
+            if held and held != quarter:
+                entry["stack_quarter"] = held
+                entry["flags"].append(
+                    f"capital stack read as at {held}, the last quarter it was "
+                    f"held — the sale returns the capital, so reading it at "
+                    f"{quarter} nets the equity to zero")
+            elif not held:
+                entry["flags"].append(
+                    "no usable pre-sale quarter (missing or pre-acquisition "
+                    f"sale date) — capital stack read at {quarter}")
         if mixed:
             entry["flags"].append(
                 f"multi-route: reachable {len(routes)} ways; grouped to "
