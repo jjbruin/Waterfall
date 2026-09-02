@@ -79,7 +79,7 @@ def _is_op(entity: str) -> bool:
 #: is not). Kept separate from the rule so an exception never becomes the rule.
 #
 # ══════════════════════════════════════════════════════════════════════════
-# TEMPORARY ENTRIES — SELF-RESOLVE AT 26Q2, REMOVE THEN
+# TEMPORARY ENTRIES — needed for 26Q1 and earlier
 # ══════════════════════════════════════════════════════════════════════════
 # Giant 7 and East Manchester belong in Individual Investments: they are the
 # top two rows of that block on the reference PDF (page 2), above its internal
@@ -95,8 +95,17 @@ def _is_op(entity: str) -> bool:
 #
 # Verified live: TGAM2 groups in every quarter both are held — 2024-Q4 through
 # 2026-Q1 — and at 26Q2 it is gone and Giant 7 returns to Individual
-# Investments on its own. So these two entries are needed for 26Q1 and earlier
-# ONLY, and become dead weight from 26Q2. DELETE THEM THEN.
+# Investments on its own. So both entries are load-bearing for 26Q1 and earlier
+# and inert from 26Q2 onward.
+#
+# The note here used to read "DELETE THEM THEN". Do NOT, now that East
+# Manchester is in KEEP_DESPITE_SOLD (Sep 2 2026) and therefore stays on the
+# report past its sale: from 26Q2 it is excluded from the fund tally as a kept
+# deal, so TGAM2 holds only Giant 7, is not a fund, and BOTH deals reach
+# Individual Investments by the ordinary rule. These entries are then
+# belt-and-braces rather than dead — they agree with the rule instead of
+# overriding it, and removing them is a no-op only for as long as that stays
+# true. Cheap to keep, and they still carry 26Q1 and every earlier quarter.
 #
 # The durable fix, deliberately not taken here because it edits a rule shared
 # by every investor: count only deals still held *going forward* in
@@ -104,11 +113,15 @@ def _is_op(entity: str) -> bool:
 # tally while still reporting them. That needs a guardrail run across all
 # investors, which this change does not have.
 #
-# ── Jefferson Eastchase: an EDITORIAL override, not a data correction ─────
-# FLAGGED FOR JIM. Requested by the report author (work order, Sep 1 2026);
-# the ownership feed does NOT support it and neither does the reference PDF.
+# ── Jefferson Eastchase: OVERRIDE WITHDRAWN (Sep 2 2026) ──────────────────
+# There is deliberately no P0000085 entry here.
 #
-# What the data says, read live 2026-09-01 on Azure PG:
+# One was added Sep 1 2026 on a work order that moved Jefferson Eastchase into
+# Individual Investments. The author has since withdrawn it: the intended deal
+# was EAST MANCHESTER, not EastCHASE. The override is removed rather than left
+# in place, so Eastchase groups by the ordinary rule again.
+#
+# The rule was never wrong about it. Read live 2026-09-01 on Azure PG:
 #     EASTCH  <- PPIECH 100%  (OPJPI 0%)
 #     PPIECH  <- TGA23 68.0504% | INVECH 16.6383% (owned 100% by PSC1)
 #                              | ERIBPI 15.3113%
@@ -116,22 +129,18 @@ def _is_op(entity: str) -> bool:
 # ONE route from TGAM, first hop TGA23, which reaches 8 held deals and is
 # therefore a fund by FUND_MIN_DEALS. 0.90 x 0.680504 = 61.2454%, which is the
 # 61% the reference PDF itself prints for this deal — inside its
-# "Total PSC TGA 2023 LLC" block, not Individual Investments. TIAA has no
-# direct or SPV route to Eastchase: INVECH is Peaceable's own co-invest and
-# ERIBPI is a third party, and neither is reachable from TGAM.
+# "Total PSC TGA 2023 LLC" block, exactly where removing this entry puts it
+# back. TIAA has no direct or SPV route to Eastchase: INVECH is Peaceable's own
+# co-invest and ERIBPI is a third party, and neither is reachable from TGAM.
 #
-# So there is nothing to "fix" upstream: the grouping rule is reading correct
-# data correctly. This entry is a presentation decision recorded as one, and
-# per the standing rule on per-deal hardcodes it should be confirmed rather
-# than assumed. Its effect is a transfer between two subtotals — TGA23 loses
-# Eastchase, Individual Investments gains it — and Portfolio Totals, the
-# excluding-development row and every deal-level figure are untouched.
-# If the intent is instead that TIAA holds Eastchase outside TGA 2023, the
-# durable fix is an ownership row in MRI and this entry should be deleted.
+# Effect of the withdrawal is a transfer between two subtotals — Individual
+# Investments loses Eastchase, TGA 2023 regains it — and Portfolio Totals, the
+# excluding-development row (which is population-scoped, not group-scoped, so
+# P0000085 stays in EXCLUDING_DEV_VCODES) and every deal-level figure are
+# untouched. Do not re-add it without an ownership row in MRI behind it.
 GROUP_OVERRIDES: dict[str, str] = {
     "P0000019": INDIVIDUAL_GROUP,      # Giant 7
     "P0000017": INDIVIDUAL_GROUP,      # East Manchester
-    "P0000085": INDIVIDUAL_GROUP,      # Jefferson Eastchase — see the note above
 }
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -152,10 +161,28 @@ GROUP_OVERRIDES: dict[str, str] = {
 #: `_classify_entities` — see the note in step 3 below. Including it could
 #: promote its SPV to a fund and re-open exactly the TGAM2 problem above.
 #:
-#: This is a per-deal exception, not a rule: "foreclosed but still reported" is
-#: an editorial judgement with no field behind it. Should MRI ever carry a
+#: East Manchester (P0000017) joins it Sep 2 2026, at the author's instruction,
+#: on the same footing: Sale_Date 6/25/2026, so `is_sold_as_of` drops it from
+#: 26Q2 onward while 26Q1 and earlier are unaffected (it was held then and the
+#: gate never fired). The capital is still reported after the sale, so the row
+#: stays — in Individual Investments, where GROUP_OVERRIDES already put it.
+#:
+#: It is NOT a clean City West clone, and the difference is handled in
+#: portfolio_snapshot_financial rather than here. Its 26Q2 cap stack, read live:
+#:     Debt        9,641,912   STALE — the loan left with the asset, but unlike
+#:                             City West's it is not zero, so printing it would
+#:                             put $9.6M of debt on a sold deal AND carry it
+#:                             into every subtotal. See SOLD_NA_CELLS.
+#:     Total Pref          0   real — capital returned at sale
+#:     Ptr Equity  2,400,000   real — the residual this row exists to report
+#:
+#: This is a per-deal exception, not a rule: "sold but still reported" is an
+#: editorial judgement with no field behind it. Should MRI ever carry a
 #: disposition-type or still-reporting flag, drive it off that and delete this.
-KEEP_DESPITE_SOLD: set[str] = {"PCITWES"}       # City West
+KEEP_DESPITE_SOLD: set[str] = {
+    "PCITWES",        # City West — foreclosed 8/30/2025
+    "P0000017",       # East Manchester — sold 6/25/2026
+}
 # ══════════════════════════════════════════════════════════════════════════
 
 #: Group key -> the label the reference PDF prints on that group's total row.
@@ -999,10 +1026,24 @@ def _selftest():                                    # pragma: no cover
          flat.get("P0000066", {}).get("group") == INDIVIDUAL_GROUP),
         ("Pegasus = 83.367% across both routes",
          abs(flat.get("P0000066", {}).get("pct_display", 0) - 83.367) < 0.01),
-        ("City West excluded as sold",
-         any(e["vcode"] == "PCITWES" for e in res["excluded_sold"])),
-        ("East Manchester excluded (sold inside Q2)",
-         any(e["vcode"] == "P0000017" for e in res["excluded_sold"])),
+        # Both sold deals are KEPT, not excluded — see KEEP_DESPITE_SOLD. The
+        # gate must still have FIRED on them (they are in kept_despite_sold,
+        # not merely uncaught), and they must land in Individual Investments.
+        ("City West kept despite sold, in Individual Investments",
+         any(e["vcode"] == "PCITWES" for e in res["kept_despite_sold"])
+         and flat.get("PCITWES", {}).get("group") == INDIVIDUAL_GROUP),
+        ("East Manchester kept despite sold (sold inside Q2)",
+         any(e["vcode"] == "P0000017" for e in res["kept_despite_sold"])
+         and flat.get("P0000017", {}).get("group") == INDIVIDUAL_GROUP),
+        ("neither kept deal is also excluded as sold",
+         not ({"PCITWES", "P0000017"}
+              & {e["vcode"] for e in res["excluded_sold"]})),
+        # Jefferson Eastchase groups by the rule again — its GROUP_OVERRIDES
+        # entry was withdrawn Sep 2 2026.
+        ("Jefferson Eastchase in TGA23, not Individual Investments",
+         flat.get("P0000085", {}).get("group") == "TGA23"),
+        ("Jefferson Eastchase has no group override",
+         "P0000085" not in GROUP_OVERRIDES),
         ("TGA6 grouped as a fund, not Individual",
          "TGA6" in res["groups"] and
          flat.get("P0000117", {}).get("group") == "TGA6"),
@@ -1072,14 +1113,17 @@ def _selftest():                                    # pragma: no cover
          set(NOT_YET) <= q3_present),
         ("26Q2 drops none for acquisition date",
          q2["diagnostics"]["excluded_not_acquired_count"] == 0),
-        # Q1 is Q2's population minus the 3, plus East Manchester, which Q2
-        # excludes as sold on 2026-06-25 but Q1 still held. The gate must not
-        # disturb the sold gate at the other end of the window.
-        ("26Q1 == 26Q2 minus the 3, plus East Manchester (sold in Q2)",
-         q1_present == (q2_present - set(NOT_YET)) | {"P0000017"}),
-        ("East Manchester held in Q1, sold out of Q2",
-         "P0000017" in q1_present
-         and any(e["vcode"] == "P0000017" for e in q2["excluded_sold"])),
+        # Q1 is exactly Q2's population minus the 3 not-yet-acquired deals.
+        # East Manchester used to be the extra term here: Q2 dropped it as sold
+        # on 2026-06-25 while Q1 still held it. It is now in KEEP_DESPITE_SOLD,
+        # so it is on BOTH pages and the populations differ only by the gate
+        # under test.
+        ("26Q1 == 26Q2 minus the 3 not-yet-acquired deals",
+         q1_present == q2_present - set(NOT_YET)),
+        ("East Manchester on both pages: held in Q1, kept-despite-sold in Q2",
+         "P0000017" in q1_present and "P0000017" in q2_present
+         and not any(e["vcode"] == "P0000017" for e in q1["kept_despite_sold"])
+         and any(e["vcode"] == "P0000017" for e in q2["kept_despite_sold"])),
         ("no deal is both excluded-as-sold and excluded-as-not-acquired",
          not ({e["vcode"] for e in q1["excluded_sold"]}
               & {e["vcode"] for e in q1["excluded_not_acquired"]})),

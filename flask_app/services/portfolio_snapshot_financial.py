@@ -107,8 +107,18 @@ three table subtabs cannot drift apart), plus an "Excluding Development Deals"
 row under the portfolio total — see ``EXCLUDING_DEV_VCODES``.
 
 Display-only suppression, as on the Operating subtab: the ``*_display`` twins
-carry ``NA_LABEL`` where the PDF prints n/a, and the raw fields are left exactly
-as computed. Nothing here changes a metric value.
+carry ``NA_LABEL`` where a cell does not apply, and the raw fields are left
+exactly as computed. Nothing here changes a metric value.
+
+Two sources decide which cells those are — ``PDF_NA_CELLS``, a static
+reference-PDF map, and ``SOLD_NA_CELLS``, a rule that fires on any row reported
+after its sale (``kept_despite_sold``). An n/a cell is ALSO taken out of the
+column total beneath it, via the ``debt_summable`` / ``debt_isbs_summable``
+twins: a cell reading "not applicable" that is nonetheless inside the subtotal
+just moves the misleading figure one row down. That exclusion is a measured
+no-op for every deal n/a on PDF grounds (City West and Pegasus both carry a
+real 0.0) and removes exactly one live figure — East Manchester's 9,641,912
+stale post-sale balance.
 """
 
 from __future__ import annotations
@@ -215,8 +225,13 @@ STANDING_FOOTNOTES: tuple = (
      "text": "Debt amount is current as of quarter end except for development "
              "deals, which reflects fully funded debt amount at construction "
              "completion."},
-    {"anchor": property_anchor("PCITWES"),
-     "text": "City West is excluded from ROE calculations."},
+    # ONE note, TWO anchors. Both deals are sold and both are out of the ROE
+    # numbers, so a second note would print the same sentence twice under two
+    # numbers. ``anchors`` (plural) puts one number on both property names;
+    # ``anchor`` (singular) still works and is what the database rows use.
+    {"anchors": (property_anchor("PCITWES"), property_anchor("P0000017")),
+     "text": "City West and East Manchester are excluded from ROE "
+             "calculations."},
 )
 
 
@@ -239,6 +254,30 @@ def footnote_scope(anchor: str) -> dict:
             "label": key or "(unanchored)"}
 
 
+def footnote_anchor_keys(f: dict) -> list:
+    """Every anchor one footnote carries, as a list.
+
+    A footnote may name ONE anchor (``anchor``, which is what the analyst-entered
+    database rows use) or SEVERAL (``anchors``, a standing note that applies to
+    more than one deal — the ROE-exclusion note covers City West AND East
+    Manchester and must print as a single number on both property names, not as
+    two identical notes).
+
+    Both spellings resolve here so nothing downstream has to know which was
+    used, and ``anchors`` order is preserved.
+    """
+    keys = list(f.get("anchors") or ())
+    if not keys and f.get("anchor"):
+        keys = [f["anchor"]]
+    seen, out = set(), []
+    for k in keys:
+        s = str(k or "").strip()
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+
 def compose_footnotes(db_rows: Optional[list] = None,
                       vcodes: Optional[set] = None) -> list:
     """The page's footnotes as ONE numbered, scope-resolved list.
@@ -254,29 +293,44 @@ def compose_footnotes(db_rows: Optional[list] = None,
     construction.
 
     ``vcodes`` is the population actually on the page. A property-scoped
-    footnote whose deal is NOT on it is dropped before numbering: City West is
-    on the report at 26Q1 (kept despite foreclosure) but gone by 26Q2, and its
-    footnote would otherwise print with a number that appears nowhere in the
-    table. Nothing is lost — the database row survives and the note returns the
-    moment the deal does. Numbering closes over the gap, which is the whole
-    reason numbers are assigned here rather than stored.
+    footnote whose deal is NOT on it is dropped before numbering: a footnote
+    would otherwise print with a number that appears nowhere in the table.
+    Nothing is lost — the database row survives and the note returns the moment
+    the deal does. Numbering closes over the gap, which is the whole reason
+    numbers are assigned here rather than stored.
+
+    A MULTI-ANCHOR note is filtered per anchor: it survives while ANY of its
+    deals is on the page, and marks only the ones that are. The ROE-exclusion
+    note names City West and East Manchester, so it must not disappear because
+    one of the two dropped off, nor put a marker on a name that is not printed.
     """
     on_page = None if vcodes is None else {
         str(v).strip().upper() for v in vcodes}
     out: list = []
     for f in STANDING_FOOTNOTES:
         out.append({"id": None, "standing": True,
-                    "anchor": f["anchor"], "text": f["text"]})
+                    "anchors": footnote_anchor_keys(f),
+                    "text": f["text"]})
     for r in (db_rows or []):
         out.append({"id": r.get("id"), "standing": False,
-                    "anchor": r.get("anchor") or "",
+                    "anchors": footnote_anchor_keys(r),
                     "text": r.get("text") or ""})
     kept: list = []
     for f in out:
-        f.update(footnote_scope(f["anchor"]))
-        if (on_page is not None and f["scope"] == "property"
-                and f.get("vcode") not in on_page):
-            continue
+        pairs = [(k, footnote_scope(k)) for k in (f["anchors"] or [""])]
+        if on_page is not None:
+            pairs = [(k, s) for k, s in pairs
+                     if s["scope"] != "property" or s["vcode"] in on_page]
+            if not pairs:
+                continue
+        f["anchors"] = [k for k, _ in pairs]
+        f["scopes"] = [s for _, s in pairs]
+        # The first surviving anchor is also published flat, so every existing
+        # reader of f["scope"] / f["vcode"] / f["column"] / f["anchor"] keeps
+        # working unchanged on the single-anchor notes it has always seen.
+        f.update(pairs[0][1])
+        f["anchor"] = pairs[0][0]
+        f["label"] = " / ".join(s["label"] for _, s in pairs)
         kept.append(f)
     for i, f in enumerate(kept, start=1):
         f["number"] = i
@@ -291,10 +345,15 @@ def footnote_marks(composed: list) -> dict:
     """
     marks: dict = {"column": {}, "property": {}}
     for f in composed or []:
-        if f.get("scope") == "property" and f.get("vcode"):
-            marks["property"].setdefault(f["vcode"], []).append(f["number"])
-        elif f.get("column"):
-            marks["column"].setdefault(f["column"], []).append(f["number"])
+        # Every surviving anchor, not just the flat first one: a multi-anchor
+        # note has to put its ONE number on each of its names.
+        scopes = f.get("scopes") or [f]
+        for s in scopes:
+            if s.get("scope") == "property" and s.get("vcode"):
+                marks["property"].setdefault(
+                    s["vcode"], []).append(f["number"])
+            elif s.get("column"):
+                marks["column"].setdefault(s["column"], []).append(f["number"])
     return marks
 
 
@@ -334,9 +393,17 @@ def manual_display(field: str, value, na_cells=None):
     return PENDING if value is None else value
 
 
-def manual_na_cells(vcode: str) -> frozenset:
-    """The PDF's n/a columns for one deal — the input to ``manual_display``."""
-    return PDF_NA_CELLS.get(str(vcode or "").strip().upper(), frozenset())
+def manual_na_cells(vcode: str, sold: bool = False) -> frozenset:
+    """The n/a columns for one deal — the input to ``manual_display``.
+
+    ``sold`` is the row's ``kept_despite_sold``: a deal reported after its sale
+    also gets ``SOLD_NA_CELLS``. Defaults False for the one caller that cannot
+    know it — ``PUT /value`` in the API, which has a vcode but no resolved
+    population. That path is unreachable for an n/a cell anyway: the assembly
+    publishes the resolved set as ``pdf_na_cells`` on the row and the UI marks
+    those inputs ``readonly``, so no value is ever submitted for one.
+    """
+    return _na_cells(vcode, sold)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -411,19 +478,58 @@ PDF_NA_CELLS: dict[str, frozenset] = {
     "PCITWES": frozenset({"debt", "net_roe"}),      # City West
     "P0000066": frozenset({"debt"}),                # Pegasus Life Storage
 }
+
+#: The columns that stop applying when a deal is reported AFTER its sale, i.e.
+#: on any row whose ``kept_despite_sold`` is set (KEEP_DESPITE_SOLD in
+#: portfolio_snapshot_service — City West, East Manchester).
+#:
+#: A RULE, not a per-deal hardcode, and deliberately keyed on the sale rather
+#: than on the vcode:
+#:
+#:   debt     the loan left with the asset, so the balance still sitting on the
+#:            balance sheet is stale. City West's happens to be 0.0 and is
+#:            already listed above for PDF fidelity; East Manchester's is a live
+#:            9,641,912 at 26Q2, which is exactly why this cannot be a static
+#:            vcode entry — East Manchester was HELD at 26Q1 with that same
+#:            9,641,912 genuinely outstanding, and a static entry would blank a
+#:            correct figure on that page too. Keyed on the sale, 26Q1 is
+#:            untouched and 26Q2 onward reads n/a.
+#:   net_roe  both deals are excluded from ROE — the standing footnote says so
+#:            in as many words. Its marker is anchored to both property names.
+#:
+#: ``itd`` is NOT here: inception-to-date distributions are a real, final figure
+#: for a sold deal (City West carries 0.4 at 26Q2) and must keep prompting.
+SOLD_NA_CELLS: frozenset = frozenset({"debt", "net_roe"})
 # ══════════════════════════════════════════════════════════════════════════
 
 
-def _na_cells(vcode: str) -> frozenset:
-    return PDF_NA_CELLS.get(str(vcode or "").strip().upper(), frozenset())
+def _na_cells(vcode: str, sold: bool = False) -> frozenset:
+    """Every n/a column for one row: the static PDF map plus the sold rule."""
+    na = PDF_NA_CELLS.get(str(vcode or "").strip().upper(), frozenset())
+    return (na | SOLD_NA_CELLS) if sold else na
 
-#: Zone A columns summed for subtotals. % columns are recomputed from the sums
-#: rather than added, since averaging percentages is meaningless.
+#: Subtotal column -> the per-row field it sums. % columns are recomputed from
+#: the sums rather than added, since averaging percentages is meaningless.
 #: ``funded_pref`` is summed but never printed — it is the denominator the
 #: subtotal "% of Pref" needs; see _subtotal.
-_SUM_COLS = ("debt", "total_pref", "ptr_equity", "total_cap",
-             "funded_pref", "committed_pref", "invested", "total_commitment",
-             "unfunded")
+#:
+#: EVERY COLUMN SUMS ITSELF except Debt, which sums ``debt_summable`` — the
+#: printed ``debt`` with an n/a cell taken out. See ``debt_summable`` in
+#: build_row for why a cell that reads "not applicable" must not be inside the
+#: total underneath it.
+_SUM_FIELDS: dict[str, str] = {
+    "debt": "debt_summable",
+    "total_pref": "total_pref",
+    "ptr_equity": "ptr_equity",
+    "total_cap": "total_cap",
+    "funded_pref": "funded_pref",
+    "committed_pref": "committed_pref",
+    "invested": "invested",
+    "total_commitment": "total_commitment",
+    "unfunded": "unfunded",
+}
+
+_SUM_COLS = tuple(_SUM_FIELDS)
 
 
 def _num(v):
@@ -528,8 +634,15 @@ def _load_footnotes(investor_code: str, quarter: str) -> list:
 #:                  basis, which is the whole point of it.
 #:   ptr_equity  <- cap_stack.partner_equity already funded — unchanged.
 #:   total_cap   <- the three above, per deal, so the row foots across.
+#:
+#: The debt leg reads ``debt_isbs_summable``, not ``debt_isbs`` — the same
+#: figure with an n/a cell removed, for the same reason the Debt column above
+#: sums ``debt_summable``. A sold deal's stale balance is not funded-to-date
+#: debt either. No-op for every deal whose Debt is n/a on PDF grounds (City
+#: West and Pegasus both carry a real 0.0); it removes East Manchester's
+#: 9,641,912 stale balance and nothing else.
 FUNDING_SOURCE_FIELDS: dict[str, str] = {
-    "debt": "debt_isbs",
+    "debt": "debt_isbs_summable",
     "total_pref": "funded_pref",
     "ptr_equity": "ptr_equity",
     "total_cap": "total_cap_funded",
@@ -537,7 +650,7 @@ FUNDING_SOURCE_FIELDS: dict[str, str] = {
 
 #: cap-stack key behind each of those, for the payload's own audit trail.
 FUNDING_SOURCE_LABELS: dict[str, str] = {
-    "debt": "cap_stack.debt_isbs (funded to date)",
+    "debt": "cap_stack.debt_isbs (funded to date), n/a cells excluded",
     "total_pref": "cap_stack.pref_equity (funded, not committed)",
     "ptr_equity": "cap_stack.partner_equity (funded)",
     "total_cap": "debt_isbs + pref_equity + partner_equity, per deal",
@@ -585,8 +698,8 @@ def _funding_total(rows: list, label: str = FUNDING_TOTAL_LABEL) -> dict:
 def _subtotal(rows: list, label: str) -> dict:
     """Sum the dollar columns; recompute ratios from the sums."""
     out = {"label": label, "deal_count": len(rows)}
-    for c in _SUM_COLS:
-        vals = [r[c] for r in rows if r.get(c) is not None]
+    for c, field in _SUM_FIELDS.items():
+        vals = [r[field] for r in rows if r.get(field) is not None]
         out[c] = sum(vals) if vals else None
     tp, tc = out.get("total_pref"), out.get("total_cap")
     # "% of Pref" on a subtotal row is the dollar-weighted average of the
@@ -665,13 +778,14 @@ def assemble_financial(investor_code: str, quarter: str, *,
         dev = is_dev_deal(strat)
         if dev:
             diag["dev"] += 1
-        na = _na_cells(vcode)
+        sold = bool(entry.get("kept_despite_sold"))
+        na = _na_cells(vcode, sold)
         if na:
             diag["pdf_na_cells"] += 1
             flags.append("TEMPORARY — " + ", ".join(sorted(na))
-                         + " shown as n/a to match the reference PDF "
-                           "(see PDF_NA_CELLS)")
-        if entry.get("kept_despite_sold"):
+                         + " shown as n/a (see PDF_NA_CELLS / SOLD_NA_CELLS)")
+        if sold:
+            diag["kept_despite_sold"] = diag.get("kept_despite_sold", 0) + 1
             flags.append("kept on the report despite being sold/foreclosed "
                          "before quarter end")
 
@@ -744,10 +858,21 @@ def assemble_financial(investor_code: str, quarter: str, *,
         # the Debt basis of Total Cap, which is out of scope here.
         # Explicit None test, not truthiness: a genuinely zero cap stack is data,
         # and must not silently fall through to the funded-basis total.
-        if None in (debt_isbs, total_pref, ptr_equity):
+        #
+        # A DEBT LEG SHOWN AS n/a IS LEFT OUT OF IT. The point of re-footing is
+        # that the four printed columns add up on screen; a row printing
+        # "Debt n/a" and a Total Cap that silently contains that debt does not
+        # add up, and the figure it does not add up by is the one the n/a exists
+        # to keep off the page. East Manchester at 26Q2 would read Debt n/a |
+        # Pref $0.0 | Ptr $2.4 | Total Cap $12.0 — the missing $9.6M being the
+        # stale balance on an asset that has been sold. No-op for City West and
+        # Pegasus, whose n/a Debt is a real 0.0.
+        debt_na = "debt" in na
+        debt_leg = 0.0 if debt_na else debt_isbs
+        if None in (debt_leg, total_pref, ptr_equity):
             total_cap = _num(cap.get("total_cap_isbs", cap.get("total_cap")))
         else:
-            total_cap = debt_isbs + total_pref + ptr_equity
+            total_cap = debt_leg + total_pref + ptr_equity
         # The pre-switch value, so the change stays auditable on the payload.
         total_cap_funded_basis = _num(
             cap.get("total_cap_isbs", cap.get("total_cap")))
@@ -758,9 +883,12 @@ def assemble_financial(investor_code: str, quarter: str, *,
         # with an unknown component drops out of the column and is named in
         # ``total_cap_missing`` instead of dragging the total down by a
         # fabricated zero.
+        # Same n/a treatment as `total_cap` above, so the "Total Current
+        # Funding" row foots against its own Debt column, which sums
+        # `debt_isbs_summable`.
         total_cap_funded = (
-            None if None in (debt_isbs, funded_pref, ptr_equity)
-            else debt_isbs + funded_pref + ptr_equity)
+            None if None in (debt_leg, funded_pref, ptr_equity)
+            else debt_leg + funded_pref + ptr_equity)
 
         # ---- Zone B: the four scaled columns ----
         #
@@ -835,10 +963,20 @@ def assemble_financial(investor_code: str, quarter: str, *,
             "vcode": vcode, "name": entry["name"],
             "investment_strategy": strat, "strategy_source": strat_source,
             "is_dev": dev,
-            "kept_despite_sold": bool(entry.get("kept_despite_sold")),
+            "kept_despite_sold": sold,
+            # What the UI prints after the property name. Server-side so the
+            # on-screen table and the print view cannot label differently —
+            # SnapshotFinancial.vue is the single component both render.
+            "sold_label": "(Sold)" if sold else None,
             "pdf_na_cells": sorted(na),
             # Zone A — raw values, unsuppressed
             "debt": debt,
+            # The two summable twins: the printed figure with an n/a cell taken
+            # out, so a total never contains a cell that reads "not
+            # applicable". `debt`/`debt_isbs` above stay exactly as computed —
+            # nothing is overwritten and every audit still sees the raw number.
+            "debt_summable": None if debt_na else debt,
+            "debt_isbs_summable": None if debt_na else debt_isbs,
             # Both candidates carried so the discarded one stays auditable and
             # the basis is never a guess from the number's size.
             "debt_basis": debt_basis,
@@ -865,8 +1003,8 @@ def assemble_financial(investor_code: str, quarter: str, *,
             "invested": invested,
             "total_commitment": total_commitment,
             "unfunded": unfunded,
-            # Display twin for the one Zone A column the PDF ever blanks.
-            "debt_display": NA_LABEL if "debt" in na else debt,
+            # Display twin for the one Zone A column that is ever blanked.
+            "debt_display": NA_LABEL if debt_na else debt,
             "commitment_basis": commitment_basis,
             "total_commitment_if_funded": commitment_funded,
             "total_commitment_if_committed": commitment_committed,
@@ -1228,12 +1366,19 @@ def _selftest():                                    # pragma: no cover
             if x.get("total_commitment") is not None
             and x.get("pct_of_pref") is not None
             and x.get("total_pref") is not None))
+    # An n/a Debt leg counts as 0 here — see the total_cap block in build_row.
     chk("Total Cap re-foots to debt_isbs + Total Pref + Ptr Equity",
-        all(abs(x["total_cap"] - (x["debt_isbs"] + x["total_pref"]
-                                  + x["ptr_equity"])) < 1
+        all(abs(x["total_cap"]
+                - ((0.0 if "debt" in x["pdf_na_cells"] else x["debt_isbs"])
+                   + x["total_pref"] + x["ptr_equity"])) < 1
             for x in flat.values()
             if None not in (x.get("total_cap"), x.get("debt_isbs"),
                             x.get("total_pref"), x.get("ptr_equity"))))
+    chk("an n/a Debt row still foots against what it PRINTS",
+        all(abs(x["total_cap"] - (x["total_pref"] + x["ptr_equity"])) < 1
+            for x in flat.values() if "debt" in x["pdf_na_cells"]
+            and None not in (x.get("total_cap"), x.get("total_pref"),
+                             x.get("ptr_equity"))))
     chk("Ptr Equity is untouched — still cap_stack.partner_equity (funded)",
         all(abs(x["ptr_equity"]
                 - (cache[(x["vcode"], Q)].get("cap_stack") or {})
@@ -1273,8 +1418,23 @@ def _selftest():                                    # pragma: no cover
         any(f_["scope"] == "column" and f_["column"] == "debt"
             for f_ in out["footnotes"])
         and bool((out["footnote_marks"]["column"] or {}).get("debt")))
-    chk("the City West footnote's number is on the PROPERTY, not a header",
+    chk("the ROE-exclusion footnote's number is on the PROPERTY, not a header",
         bool((out["footnote_marks"]["property"] or {}).get("PCITWES")))
+    # ONE note, TWO names, ONE number — see STANDING_FOOTNOTES.
+    roe_note = next((f_ for f_ in out["footnotes"]
+                     if "excluded from ROE" in f_["text"]), None)
+    chk("the ROE-exclusion footnote marks City West AND East Manchester",
+        bool(roe_note)
+        and (out["footnote_marks"]["property"] or {}).get("PCITWES")
+        == [roe_note["number"]]
+        and (out["footnote_marks"]["property"] or {}).get("P0000017")
+        == [roe_note["number"]])
+    chk("it names both deals in its text",
+        bool(roe_note) and "City West" in roe_note["text"]
+        and "East Manchester" in roe_note["text"])
+    chk("it is ONE footnote, not two identical ones",
+        sum(1 for f_ in out["footnotes"]
+            if "excluded from ROE" in f_["text"]) == 1)
     chk("the removed footnote (3) is gone",
         not any("depressed ROEs" in f_["text"] for f_ in out["footnotes"]))
     chk("subtotals sum their deals (Individual Investments invested)",
@@ -1315,10 +1475,38 @@ def _selftest():                                    # pragma: no cover
         and (flat.get("PCITWES") or {}).get("net_roe_display") == NA_LABEL)
     chk("City West raw Debt untouched underneath the n/a",
         not isinstance((flat.get("PCITWES") or {}).get("debt"), str))
+    chk("City West labelled (Sold)",
+        (flat.get("PCITWES") or {}).get("sold_label") == "(Sold)")
+    # 26Q1: East Manchester was still HELD (sold 6/25/2026), so the sold rule
+    # must NOT fire and its real 9,641,912 debt must print. This is the check
+    # that would have caught a static PDF_NA_CELLS entry blanking a live figure
+    # on a page where the asset was still owned.
+    em = flat.get("P0000017") or {}
+    chk("East Manchester at 26Q1 is NOT labelled sold",
+        em.get("kept_despite_sold") is False and em.get("sold_label") is None)
+    chk("East Manchester at 26Q1 prints its real Debt, not n/a",
+        abs((em.get("debt") or 0) - 9_641_912) < 1
+        and em.get("debt_display") == em.get("debt"))
+    chk("East Manchester at 26Q1 keeps prompting for Net ROE",
+        em.get("net_roe_display") == PENDING)
+    chk("SOLD_NA_CELLS fires on exactly the kept-despite-sold rows",
+        {x["vcode"] for x in flat.values()
+         if SOLD_NA_CELLS <= set(x["pdf_na_cells"])}
+        == {x["vcode"] for x in flat.values() if x["kept_despite_sold"]})
     n_all = sum(len(b["deals"]) for b in out["groups"].values())         + len(out["ownership_flagged"])
     chk("portfolio total covers ALL deals (incl. ownership-flagged)",
         out["total"]["deal_count"] == n_all)
-    chk("total Debt equals the sum of every deal's Debt",
+    chk("total Debt equals the sum of every deal's PRINTED Debt",
+        abs((out["total"]["debt"] or 0)
+            - sum(x["debt"] or 0 for x in flat.values()
+                  if "debt" not in x["pdf_na_cells"])) < 1)
+    chk("no n/a Debt cell is inside the Debt total",
+        all(x.get("debt_summable") is None for x in flat.values()
+            if "debt" in x["pdf_na_cells"]))
+    # At 26Q1 that exclusion must be a NO-OP: the only n/a Debt cells are City
+    # West's and Pegasus's, both a real 0.0. If this ever fails, a live figure
+    # has started being dropped from the total and needs saying out loud.
+    chk("excluding n/a Debt changes nothing at 26Q1 (all such cells are 0.0)",
         abs((out["total"]["debt"] or 0)
             - sum(x["debt"] or 0 for x in flat.values())) < 1)
     chk("Zone C read through the accessors (source tagged)",

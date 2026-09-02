@@ -12,9 +12,10 @@ and fails when they disagree:
     print view's hide list;
   * a literal "?" marker must not exist anywhere — the work order calls for its
     removal, and this fails if one is ever introduced;
-  * ``.fnmark``, the footnote marker on a property name, must NOT be hidden: it
-    is part of the published document, not an annotation, and it sits in the
-    same cell as the markers that are.
+  * ``.fnmark``, the footnote marker on a property name, and ``.sold``, the
+    "(Sold)" after one, must NOT be hidden: both are part of the published
+    document, not annotations, and both sit in the same cell as the markers
+    that are.
 
 Static: reads the .vue sources, renders nothing, needs no browser, no server
 and no database. It is a wiring check — it proves the rules exist and cover
@@ -46,7 +47,11 @@ SUBTABS = ("SnapshotFinancial.vue", "SnapshotOperating.vue",
 ANNOTATION_BASES = ("tag", "warn-dot", "star")
 
 #: Classes that look like annotations but ARE document content.
-MUST_SURVIVE = ("fnmark",)
+#:
+#: ``sold`` is the "(Sold)" after City West's and East Manchester's names. It is
+#: deliberately NOT a `.tag`: the pills are suppressed above, and a deal
+#: reported after its disposition has to say so on the printed page too.
+MUST_SURVIVE = ("fnmark", "sold")
 
 CHECKS: list = []
 
@@ -138,6 +143,16 @@ def main() -> int:
     fin = read(os.path.join(SNAP, "SnapshotFinancial.vue"))
     chk("the property footnote marker is rendered on the property name",
         'class="fnmark"' in fin and "dealMark(r.vcode)" in fin)
+    # Same vacuity guard for "(Sold)": it must be RENDERED, and rendered from
+    # the server's `sold_label` rather than from a name match in the component.
+    chk('"(Sold)" is rendered on the property name, driven by sold_label',
+        'class="sold"' in fin and "r.sold_label" in fin)
+    # Comments stripped first: the component names City West in prose to explain
+    # why the Debt cell reads `debt_display`, which is documentation, not logic.
+    fin_code = re.sub(r"<!--.*?-->|/\*.*?\*/", " ", fin, flags=re.S)
+    fin_code = re.sub(r"^\s*(?://|\*).*$", " ", fin_code, flags=re.M)
+    chk('"(Sold)" is not hardcoded per deal in the component',
+        not re.search(r"City West|East Manchester", fin_code))
     chk("column footnote markers are rendered on the column headers",
         fin.count("colMark(") >= 10)
     chk("no hardcoded standing-footnote list remains in the component "

@@ -118,7 +118,14 @@ def flatten(fin):
 
 FIELDS = ("total_pref", "total_cap", "invested", "ptr_equity", "debt",
           "total_commitment", "unfunded", "pct_of_pref", "funded_pref",
-          "committed_pref", "pref_basis")
+          "committed_pref", "pref_basis",
+          # Per-ROW, not per-vcode: KEEP_DESPITE_SOLD membership says a deal
+          # WOULD be kept if the sold gate fired, and the gate only fires in
+          # the quarters after the sale. East Manchester is in that set and is
+          # kept at 26Q2, but at 26Q1 it was still held and is an ordinary row
+          # on both pages. The like-for-like population check below has to read
+          # the flag the assembly actually set for THIS quarter.
+          "kept_despite_sold")
 
 
 def snap(fin, summ):
@@ -356,15 +363,22 @@ def main():
           f"after {sum_c:>10,.2f}")
     print(f"  INTER-PAGE GAP            before {sum_c_b - fin_c_b:>+10,.2f}   "
           f"after {sum_c - fin_c:>+10,.2f}")
-    # Like-for-like population. Page 1's asset allocation deliberately drops the
-    # KEEP_DESPITE_SOLD deals (City West) — portfolio_snapshot_service, kept_vcodes
-    # — while page 2 keeps their row. So the two totals cannot be equal outright;
-    # the invariant is that they agree once that population difference is removed.
-    from flask_app.services.portfolio_snapshot_service import KEEP_DESPITE_SOLD
-    kept_contrib = sum(
-        (r.get("total_commitment") or 0) / 1e6
-        for vc, r in after["deals"].items() if vc in KEEP_DESPITE_SOLD)
-    print(f"  page 2 less KEEP_DESPITE_SOLD ({sorted(KEEP_DESPITE_SOLD)}, "
+    # Like-for-like population. Page 1's asset allocation deliberately drops a
+    # kept-despite-sold deal — portfolio_snapshot_service, kept_vcodes — while
+    # page 2 keeps its row. So the two totals cannot be equal outright; the
+    # invariant is that they agree once that population difference is removed.
+    #
+    # Read off the ROW's flag, not KEEP_DESPITE_SOLD membership. The set names
+    # every deal that WOULD be kept once sold; the gate only fires in the
+    # quarters after the sale. East Manchester joined the set on 2026-09-02 and
+    # is kept from 26Q2, but at 26Q1 — the quarter this script runs — it was
+    # still held and is an ordinary row on BOTH pages. Subtracting it on
+    # membership removed 2.72M page 1 had never excluded.
+    kept = {vc: r for vc, r in after["deals"].items()
+            if r.get("kept_despite_sold")}
+    kept_contrib = sum((r.get("total_commitment") or 0) / 1e6
+                       for r in kept.values())
+    print(f"  page 2 less kept-despite-sold ({sorted(kept)}, "
           f"{kept_contrib:,.2f}M) = {fin_c - kept_contrib:,.2f}")
     chk("page 1 and page 2 agree on committed, like-for-like population",
         abs(sum_c - (fin_c - kept_contrib)) < 0.01,

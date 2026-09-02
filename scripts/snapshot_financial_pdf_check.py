@@ -85,15 +85,17 @@ _PDF_INDIVIDUAL_MEMBERS = set(_PDF.keys())
 #: divergence instead of failing on it — a divergence nobody declared still
 #: fails, which is the point of listing them.
 #:
-#:   P0000085 Jefferson Eastchase — the PDF prints it inside "Total PSC TGA
-#:   2023 LLC" at 61%, and the ownership feed agrees (one route, TGAM 90% of
-#:   TGA23 x TGA23 68.0504% of PPIECH). Moved at the report author's request,
-#:   Sep 1 2026. See the note above GROUP_OVERRIDES.
+#: EMPTY as of Sep 2 2026, and the group totals tie the PDF again because of it.
 #:
-#: The TGA23 and Individual Investments GROUP TOTALS therefore no longer tie
-#: the PDF either, by exactly this deal's figures. That is a value difference,
-#: scored in the values section, not a structural failure.
-DELIBERATE_EXTRA_INDIVIDUAL = {"P0000085"}
+#: It held P0000085 Jefferson Eastchase for one day. The PDF prints that deal
+#: inside "Total PSC TGA 2023 LLC" at 61% and the ownership feed agrees (one
+#: route, TGAM 90% of TGA23 x TGA23 68.0504% of PPIECH); it was moved to
+#: Individual Investments on Sep 1 at the report author's request, and the
+#: request was withdrawn on Sep 2 — the deal meant was East MANCHESTER, which
+#: the PDF also carries in Individual Investments and which needed
+#: KEEP_DESPITE_SOLD rather than a regrouping. So there is nothing left to
+#: declare, and an undeclared divergence fails, which is the point.
+DELIBERATE_EXTRA_INDIVIDUAL: set = set()
 
 COLS = ("debt", "total_pref", "ptr_equity", "total_cap", "pct_of_pref",
         "invested", "unfunded", "total_commitment")

@@ -407,8 +407,13 @@ onMounted(async () => {
   /* NOT hidden: `.fnmark`, the footnote marker on a property name. It sits in
      the same cell as the star and the flag dots and looks like more of the
      same, but it is part of the published document — it is what ties City West
-     to its footnote. Stated here so a later tidy-up does not sweep it in with
-     the annotations above. */
+     and East Manchester to the ROE-exclusion footnote. Stated here so a later
+     tidy-up does not sweep it in with the annotations above.
+
+     NOT hidden either: `.sold`, the "(Sold)" after a property name. Same
+     reasoning — a deal reported after its disposition must say so on paper as
+     well as on screen, which is why it is plain italic text rather than a
+     `.tag` pill (those are suppressed above). Do not add it to the hide list. */
 
   /* ---- small auto-written notes beside the figures ----
      Text the app composes to explain a row, as opposed to data or an authored

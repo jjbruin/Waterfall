@@ -176,13 +176,17 @@ function placementLabel(f: any): string {
           <tbody>
             <tr v-for="r in blk.deals" :key="r.vcode">
               <td class="sticky-l">
-                {{ r.name }}<span v-if="dealMark(r.vcode)" class="fnmark">{{ dealMark(r.vcode) }}</span>
+                {{ r.name }}<span v-if="dealMark(r.vcode)" class="fnmark">{{ dealMark(r.vcode) }}</span><span
+                  v-if="r.sold_label" class="sold"> {{ r.sold_label }}</span>
                 <span v-if="r.is_dev" class="tag">Dev</span>
                 <span v-if="r.pdf_na_cells?.length || r.kept_despite_sold" class="star"
                       :title="(r.flags || []).join(' · ')">*</span>
                 <span v-for="(f, i) in (r.flags || [])" :key="i" class="warn-dot" :title="f">!</span>
               </td>
-              <!-- debt_display, not debt: the PDF blanks it for City West -->
+              <!-- debt_display, not debt: the server blanks it where the debt
+                   does not apply — the PDF's n/a cells, and any deal reported
+                   after its sale, whose balance is stale. See PDF_NA_CELLS /
+                   SOLD_NA_CELLS in portfolio_snapshot_financial.py. -->
               <td class="r num" :class="{ lit: isLiteral(r.debt_display) }">
                 {{ disp(r.debt_display, 'm') }}
               </td>
@@ -237,7 +241,8 @@ function placementLabel(f: any): string {
           <tr class="grouprow"><td class="sticky-l" colspan="11">Ownership % unavailable</td></tr>
           <tr v-for="r in flaggedRows" :key="r.vcode">
             <td class="sticky-l">
-              {{ r.name }}<span v-if="dealMark(r.vcode)" class="fnmark">{{ dealMark(r.vcode) }}</span>
+              {{ r.name }}<span v-if="dealMark(r.vcode)" class="fnmark">{{ dealMark(r.vcode) }}</span><span
+                v-if="r.sold_label" class="sold"> {{ r.sold_label }}</span>
               <span v-for="(f, i) in (r.flags || [])" :key="i" class="warn-dot" :title="f">!</span>
             </td>
             <td class="r num">{{ fmtM(r.debt) }}</td>
@@ -437,6 +442,14 @@ tr.exdev .label {
 .exdev-n { font-weight: 400; font-size: 10px; color: var(--color-text-secondary); }
 .lit { color: var(--color-text-secondary); font-style: italic; }
 .star { color: #b26a00; font-weight: 800; cursor: help; margin-left: 3px; }
+
+/* "(Sold)" after a property name. Part of the PUBLISHED document — a deal
+   reported after its disposition has to say so — so it is deliberately plain
+   text in the row's own type rather than a `.tag` pill or a `.star`: the print
+   stylesheet hides both of those as screen-only annotation, and this must
+   survive into print. See PortfolioSnapshotPrintView.vue. Server-driven off
+   `sold_label`, so screen and print cannot label differently. */
+.sold { font-style: italic; color: var(--color-text-secondary); }
 
 /* Footnote marker on a property name. Superscript so it reads as a reference
    and cannot be mistaken for part of the deal name. Column-header markers are
