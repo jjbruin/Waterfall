@@ -279,6 +279,8 @@ function applyFootnotes(data: any) {
   if (!fin) return
   fin.footnotes = data?.footnotes || []
   fin.footnote_marks = data?.footnote_marks || { column: {}, property: {} }
+  // Standing notes this quarter has removed, so the UI can offer them back.
+  fin.standing_removed = data?.standing_removed || []
 }
 
 function onAddFootnote(p: { anchor: string; text: string }) {
@@ -293,6 +295,40 @@ function onRemoveFootnote(id: number) {
     const res = await api.delete(`${BASE}/footnote/${id}`, { params: ctx() })
     applyFootnotes(res.data)
   }, 'Footnote removed')
+}
+
+/** Reword a footnote.
+ *
+ *  An analyst-entered note is addressed by its database id. One of the page's
+ *  STANDING notes has no row, so it is addressed by its stable key and the
+ *  wording is stored against a reserved anchor for this investor and quarter
+ *  only — every other quarter keeps the transcribed default, and "Restore"
+ *  drops the override rather than retyping it.
+ */
+function onEditFootnote(p: { id: number | null; standingKey: string | null; text: string }) {
+  withSave(async () => {
+    const res = p.standingKey
+      ? await api.put(`${BASE}/footnote/standing/${encodeURIComponent(p.standingKey)}`,
+                      { ...ctx(), text: p.text })
+      : await api.put(`${BASE}/footnote/${p.id}`, { ...ctx(), text: p.text })
+    applyFootnotes(res.data)
+  }, 'Footnote updated')
+}
+
+function onRemoveStandingFootnote(key: string) {
+  withSave(async () => {
+    const res = await api.delete(
+      `${BASE}/footnote/standing/${encodeURIComponent(key)}`, { params: ctx() })
+    applyFootnotes(res.data)
+  }, 'Footnote removed from this quarter')
+}
+
+function onRestoreStandingFootnote(key: string) {
+  withSave(async () => {
+    const res = await api.post(
+      `${BASE}/footnote/standing/${encodeURIComponent(key)}/restore`, { ...ctx() })
+    applyFootnotes(res.data)
+  }, 'Standard wording restored')
 }
 
 async function refreshReview() {
@@ -547,6 +583,9 @@ const statusColor = computed(() => {
             @save-value="onSaveValue"
             @add-footnote="onAddFootnote"
             @remove-footnote="onRemoveFootnote"
+            @edit-footnote="onEditFootnote"
+            @remove-standing-footnote="onRemoveStandingFootnote"
+            @restore-standing-footnote="onRestoreStandingFootnote"
           />
           <SnapshotOperating
             v-else-if="activeTab === 'operating'"

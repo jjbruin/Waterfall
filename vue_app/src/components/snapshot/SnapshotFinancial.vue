@@ -19,6 +19,11 @@ const emit = defineEmits<{
   saveValue: [p: { vcode: string; field: string; value: string | number | null }]
   addFootnote: [p: { anchor: string; text: string }]
   removeFootnote: [id: number]
+  // Editing. A footnote is addressed by its database id, or — for one of the
+  // page's standing notes, which has no row — by its stable key.
+  editFootnote: [p: { id: number | null; standingKey: string | null; text: string }]
+  removeStandingFootnote: [key: string]
+  restoreStandingFootnote: [key: string]
 }>()
 
 const groups = computed<Record<string, any>>(() => props.data?.groups || {})
@@ -39,6 +44,33 @@ const flaggedRows = computed<any[]>(() => props.data?.ownership_flagged || [])
  * column header, one whose scope is a PROPERTY marks that deal's name.
  */
 const footnotes = computed<any[]>(() => props.data?.footnotes || [])
+
+/** Standing notes this quarter has taken off the page, offered back. */
+const standingRemoved = computed<any[]>(() => props.data?.standing_removed || [])
+
+/** Local draft of each footnote's text, keyed by id or standing key. */
+const fnDraft = ref<Record<string, string>>({})
+
+function fnKey(f: any): string {
+  return f?.standing_key ? `s:${f.standing_key}` : `i:${f?.id}`
+}
+
+watch(footnotes, (list) => {
+  const next: Record<string, string> = {}
+  for (const f of (list || [])) next[fnKey(f)] = f.text || ''
+  fnDraft.value = next
+}, { immediate: true })
+
+function commitFootnote(f: any) {
+  const text = (fnDraft.value[fnKey(f)] ?? '').trim()
+  if (text === (f.text || '').trim()) return
+  emit('editFootnote', { id: f.id ?? null, standingKey: f.standing_key ?? null, text })
+}
+
+function deleteFootnote(f: any) {
+  if (f.standing_key) emit('removeStandingFootnote', f.standing_key)
+  else if (f.id != null) emit('removeFootnote', f.id)
+}
 
 /** {column: {colKey: [n]}, property: {vcode: [n]}} */
 const marks = computed<any>(
@@ -130,8 +162,15 @@ function addFootnote() {
   newFootnote.value = { anchor: newFootnote.value.anchor, text: '' }
 }
 
-/** Where a footnote's marker sits, for the list entry. The backend resolved the
- *  scope; this only words it.
+/** Where a footnote's marker sits. TOOLTIP ONLY.
+ *
+ *  This used to be rendered in front of the footnote text ("Debt column:",
+ *  "City West (property):"), which read as though the app had written the first
+ *  words of the note. Footnote text is now entirely the analyst's, so the
+ *  placement moved to the row's title attribute: still there when a marker
+ *  looks misplaced, absent from the page and from print.
+ *
+ *  The backend resolved the scope; this only words it.
  *
  *  A snapshot frozen BEFORE this change stored the raw persistence rows, which
  *  carry `anchor` but no `scope`. Falling back to the anchor keeps an approved
@@ -396,21 +435,52 @@ function placementLabel(f: any): string {
     <section class="footnotes">
       <h4>Footnotes</h4>
       <ol v-if="footnotes.length" class="fnlist">
-        <li v-for="f in footnotes" :key="f.number">
+        <li v-for="f in footnotes" :key="f.number"
+            :title="`marker on ${placementLabel(f)}`">
           <span class="fnnum">({{ f.number }})</span>
-          <span class="fnanchor" :class="{ prop: f.scope === 'property' }">{{ placementLabel(f) }}:</span>
-          <span class="fntext">{{ f.text }}</span>
-          <!-- Only an analyst-entered footnote is removable here; a standing
-               note has no database row to delete. -->
-          <button v-if="editable && f.id != null" class="btn-x"
-                  title="Remove; the rest re-number"
-                  @click="emit('removeFootnote', f.id)">&times;</button>
+          <!-- The text is the analyst's, all of it. No placement label, no
+               scope prefix, nothing inserted in front of it: the scope decides
+               only WHERE the marker goes, and the placement is in this row's
+               tooltip. -->
+          <input v-if="editable" class="fnedit"
+                 :value="fnDraft[fnKey(f)]"
+                 @input="fnDraft[fnKey(f)] = ($event.target as HTMLInputElement).value"
+                 @change="commitFootnote(f)"
+                 @keyup.enter="commitFootnote(f)" />
+          <span v-else class="fntext">{{ f.text }}</span>
+          <!-- Every footnote can be reworded and removed, standing notes
+               included. A standing note has no database row, so it is addressed
+               by its key and the change is stored against a reserved anchor for
+               this quarter only — reversible, and it does not touch the default
+               any other quarter starts from. -->
+          <button v-if="editable && f.edited" class="btn-x undo"
+                  title="Restore the standard wording for this note"
+                  @click="emit('restoreStandingFootnote', f.standing_key)">&#8635;</button>
+          <button v-if="editable" class="btn-x"
+                  :title="f.standing_key
+                    ? 'Take this standing note off this quarter (reversible)'
+                    : 'Remove; the rest re-number'"
+                  @click="deleteFootnote(f)">&times;</button>
         </li>
       </ol>
       <p v-else class="hint">No footnotes. Numbering is assigned automatically and re-sequences on removal.</p>
 
+      <!-- Standing notes taken off this quarter, offered back. Without this a
+           deleted standing note is simply gone from the UI and there is nothing
+           left to click to bring it back. -->
+      <p v-if="editable && standingRemoved.length" class="hint restored">
+        Removed from this quarter:
+        <span v-for="r in standingRemoved" :key="r.key" class="restore-chip">
+          &ldquo;{{ r.text.slice(0, 48) }}{{ r.text.length > 48 ? '…' : '' }}&rdquo;
+          <button class="btn-sm"
+                  @click="emit('restoreStandingFootnote', r.key)">Restore</button>
+        </span>
+      </p>
+
       <div v-if="editable" class="fnadd">
-        <select v-model="newFootnote.anchor">
+        <!-- Placement only. Choosing a column or a property decides where the
+             number is printed; it puts nothing into the text. -->
+        <select v-model="newFootnote.anchor" title="Where the marker goes — text is unaffected">
           <optgroup label="Column (marker on the column header)">
             <option v-for="a in ANCHORS.filter((x) => x.scope === 'column')"
                     :key="a.key" :value="a.key">{{ a.label }}</option>
@@ -591,11 +661,28 @@ tfoot td {
   background: var(--color-surface);
 }
 .footnotes h4 { font-size: 13px; margin: 0 0 8px 0; }
+/* An editable footnote is a borderless input so the list reads as text, not
+   as a form: the analyst clicks the words and types. It gains a rule only on
+   hover and focus. */
+.fnedit {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  color: inherit;
+  border: none;
+  border-bottom: 1px solid transparent;
+  background: transparent;
+  padding: 0 1px;
+}
+.fnedit:hover { border-bottom-color: var(--color-border); }
+.fnedit:focus { outline: none; border-bottom-color: #2c4f8c; background: #fbfcfe; }
+.btn-x.undo { color: #2c4f8c; }
+.restore-chip { margin-left: 8px; white-space: nowrap; }
+.hint.restored { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+
 .fnlist { margin: 0; padding-left: 0; list-style: none; font-size: 12px; }
 .fnlist li { display: flex; gap: 6px; align-items: baseline; padding: 3px 0; }
 .fnnum { font-weight: 700; color: var(--color-accent); }
-.fnanchor { font-weight: 600; color: var(--color-text-secondary); }
-.fnanchor.prop { color: #2c4f8c; }
 .fntext { flex: 1; }
 .btn-x {
   border: none;

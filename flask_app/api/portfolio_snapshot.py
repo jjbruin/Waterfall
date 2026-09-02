@@ -429,10 +429,12 @@ def _footnote_payload(db_rows) -> dict:
     numbers that no longer exist. One composer, both paths.
     """
     from flask_app.services.portfolio_snapshot_financial import (
-        compose_footnotes, footnote_marks,
+        compose_footnotes, footnote_marks, standing_removed,
     )
     composed = compose_footnotes(db_rows)
-    return {"footnotes": composed, "footnote_marks": footnote_marks(composed)}
+    return {"footnotes": composed,
+            "footnote_marks": footnote_marks(composed),
+            "standing_removed": standing_removed(db_rows)}
 
 
 @portfolio_snapshot_bp.route("/footnote", methods=["POST"])
@@ -456,6 +458,135 @@ def post_footnote():
         return jsonify({"error": str(exc), "locked": True}), 409
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    return jsonify(safe_json(_footnote_payload(rows)))
+
+
+@portfolio_snapshot_bp.route("/footnote/<int:footnote_id>", methods=["PUT"])
+@login_required
+def put_footnote(footnote_id):
+    """Edit one analyst-entered footnote's text. Its number does not move."""
+    from flask_app.services import portfolio_snapshot_persistence as P
+    body = request.get_json(silent=True) or {}
+    investor = (body.get("investor") or "").strip().upper()
+    quarter = (body.get("quarter") or "").strip()
+    err = _missing(investor, quarter)
+    if err:
+        return err
+    username = _current_user().get("username") or ""
+    try:
+        rows = P.update_footnote(investor, quarter, footnote_id,
+                                 footnote_text=(body.get("text") or ""),
+                                 updated_by=username)
+    except P.NotEditable as exc:
+        return jsonify({"error": str(exc), "locked": True}), 409
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    return jsonify(safe_json(_footnote_payload(rows)))
+
+
+# ── standing footnotes: per-quarter edit / delete / restore ───────────────
+#
+# A standing footnote lives in STANDING_FOOTNOTES, not in the table, so it has
+# no id to address. These three act on its KEY and record the change as a row
+# under a reserved anchor, scoped to this investor and quarter. See
+# STANDING_EDIT_PREFIX in portfolio_snapshot_financial for why.
+
+def _standing_key_or_400(key: str):
+    from flask_app.services.portfolio_snapshot_financial import STANDING_KEYS
+    k = (key or "").strip()
+    if k not in STANDING_KEYS:
+        return None, (jsonify({"error": f"unknown standing footnote {k!r}",
+                               "known": list(STANDING_KEYS)}), 404)
+    return k, None
+
+
+@portfolio_snapshot_bp.route("/footnote/standing/<key>", methods=["PUT"])
+@login_required
+def put_standing_footnote(key):
+    """Reword one standing footnote on THIS quarter's page only."""
+    from flask_app.services import portfolio_snapshot_persistence as P
+    from flask_app.services.portfolio_snapshot_financial import (
+        standing_edit_anchor, standing_delete_anchor,
+    )
+    k, bad = _standing_key_or_400(key)
+    if bad:
+        return bad
+    body = request.get_json(silent=True) or {}
+    investor = (body.get("investor") or "").strip().upper()
+    quarter = (body.get("quarter") or "").strip()
+    err = _missing(investor, quarter)
+    if err:
+        return err
+    username = _current_user().get("username") or ""
+    try:
+        # Rewording a note that was deleted brings it back — the tombstone and
+        # an edit cannot both stand, and the analyst just said what it should
+        # say, which is not a request to keep it hidden.
+        P.remove_footnotes_by_anchor(investor, quarter,
+                                     [standing_delete_anchor(k)])
+        rows = P.upsert_footnote_by_anchor(
+            investor, quarter, anchor=standing_edit_anchor(k),
+            footnote_text=(body.get("text") or ""), updated_by=username)
+    except P.NotEditable as exc:
+        return jsonify({"error": str(exc), "locked": True}), 409
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    return jsonify(safe_json(_footnote_payload(rows)))
+
+
+@portfolio_snapshot_bp.route("/footnote/standing/<key>", methods=["DELETE"])
+@login_required
+def delete_standing_footnote(key):
+    """Take one standing footnote off THIS quarter's page. Reversible."""
+    from flask_app.services import portfolio_snapshot_persistence as P
+    from flask_app.services.portfolio_snapshot_financial import (
+        standing_delete_anchor,
+    )
+    k, bad = _standing_key_or_400(key)
+    if bad:
+        return bad
+    investor, quarter = _args()
+    err = _missing(investor, quarter)
+    if err:
+        return err
+    username = _current_user().get("username") or ""
+    try:
+        rows = P.upsert_footnote_by_anchor(
+            investor, quarter, anchor=standing_delete_anchor(k),
+            footnote_text="", updated_by=username)
+    except P.NotEditable as exc:
+        return jsonify({"error": str(exc), "locked": True}), 409
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    return jsonify(safe_json(_footnote_payload(rows)))
+
+
+@portfolio_snapshot_bp.route("/footnote/standing/<key>/restore",
+                             methods=["POST"])
+@login_required
+def restore_standing_footnote(key):
+    """Drop this quarter's edit and tombstone, restoring the default text."""
+    from flask_app.services import portfolio_snapshot_persistence as P
+    from flask_app.services.portfolio_snapshot_financial import (
+        standing_edit_anchor, standing_delete_anchor,
+    )
+    k, bad = _standing_key_or_400(key)
+    if bad:
+        return bad
+    body = request.get_json(silent=True) or {}
+    investor = (body.get("investor") or "").strip().upper()
+    quarter = (body.get("quarter") or "").strip()
+    err = _missing(investor, quarter)
+    if err:
+        return err
+    try:
+        rows = P.remove_footnotes_by_anchor(
+            investor, quarter,
+            [standing_edit_anchor(k), standing_delete_anchor(k)])
+    except P.NotEditable as exc:
+        return jsonify({"error": str(exc), "locked": True}), 409
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
     return jsonify(safe_json(_footnote_payload(rows)))

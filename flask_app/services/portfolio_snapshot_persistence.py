@@ -402,6 +402,67 @@ def add_footnote(investor_code: str, quarter: str, anchor: str, footnote_text: s
     return next((n for n in notes if n["seq"] == nxt), notes[-1] if notes else {})
 
 
+def update_footnote(investor_code: str, quarter: str, footnote_id: int,
+                    footnote_text: str, updated_by: str = "") -> list[dict]:
+    """Replace one footnote's text in place; anchor, seq and number are kept.
+
+    Editing does NOT re-sequence: the note keeps its number, so a marker already
+    read off the page still points at the same note after a wording change.
+    Like every other write here it resets the row to the page's current review
+    status, so a late edit cannot carry a stale approval forward.
+    """
+    _ensure_tables()
+    _require_editable(investor_code, quarter)
+    doc = document_status(investor_code, quarter)
+    with _engine().begin() as conn:
+        conn.execute(text("""
+            UPDATE portfolio_snapshot_footnotes
+            SET text = :t, status = :st, current_step = :cs,
+                approver = NULL, approved_at = NULL,
+                updated_at = CURRENT_TIMESTAMP, updated_by = :u
+            WHERE id = :id AND investor_code = :i AND quarter = :q
+        """), {"t": footnote_text, "st": doc["status"], "cs": doc["current_step"],
+               "u": updated_by, "id": footnote_id, "i": investor_code,
+               "q": quarter})
+    return get_elements("footnote", investor_code, quarter)
+
+
+def upsert_footnote_by_anchor(investor_code: str, quarter: str, anchor: str,
+                              footnote_text: str,
+                              updated_by: str = "") -> list[dict]:
+    """One row per anchor: replace its text, or create it.
+
+    The write path for a per-quarter edit or deletion of a STANDING footnote,
+    whose anchor is reserved (``standing-edit:<key>`` / ``standing-delete:<key>``
+    — see portfolio_snapshot_financial). Those anchors carry at most one row
+    each, which ordinary footnote anchors deliberately do not, so this is a
+    separate function rather than a change to ``add_footnote``.
+    """
+    _ensure_tables()
+    _require_editable(investor_code, quarter)
+    existing = [r for r in get_elements("footnote", investor_code, quarter)
+                if str(r.get("anchor") or "").strip() == anchor]
+    if existing:
+        return update_footnote(investor_code, quarter, existing[0]["id"],
+                               footnote_text, updated_by=updated_by)
+    add_footnote(investor_code, quarter, anchor=anchor,
+                 footnote_text=footnote_text, updated_by=updated_by)
+    return get_elements("footnote", investor_code, quarter)
+
+
+def remove_footnotes_by_anchor(investor_code: str, quarter: str,
+                               anchors) -> list[dict]:
+    """Delete every row on the given anchors. Used to RESTORE a standing note:
+    dropping its edit and tombstone rows puts the transcribed default back."""
+    _ensure_tables()
+    _require_editable(investor_code, quarter)
+    wanted = {str(a or "").strip() for a in (anchors or ())}
+    for r in get_elements("footnote", investor_code, quarter):
+        if str(r.get("anchor") or "").strip() in wanted:
+            remove_footnote(investor_code, quarter, r["id"])
+    return get_elements("footnote", investor_code, quarter)
+
+
 def remove_footnote(investor_code: str, quarter: str, footnote_id: int) -> list[dict]:
     """Delete a footnote and re-sequence the rest so numbering stays contiguous."""
     _ensure_tables()

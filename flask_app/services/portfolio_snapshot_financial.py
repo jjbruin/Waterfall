@@ -230,8 +230,14 @@ def property_anchor(vcode: str) -> str:
 #:
 #: Order here is the reader's order down the page: the column notes first,
 #: left to right, then the property notes.
+#: Each carries a stable ``key``. That key is what an analyst's per-quarter EDIT
+#: or DELETE of a standing note is recorded against — see ``STANDING_EDIT_PREFIX``
+#: — so the note can be reworded or dropped on one page without touching the
+#: default every other quarter starts from, and without this tuple becoming a
+#: place the app writes to. Never renumber or reuse a key.
 STANDING_FOOTNOTES: tuple = (
-    {"anchor": "debt",
+    {"key": "debt_basis",
+     "anchor": "debt",
      "text": "Debt amount is current as of quarter end except for development "
              "deals, which reflects fully funded debt amount at construction "
              "completion."},
@@ -239,10 +245,76 @@ STANDING_FOOTNOTES: tuple = (
     # numbers, so a second note would print the same sentence twice under two
     # numbers. ``anchors`` (plural) puts one number on both property names;
     # ``anchor`` (singular) still works and is what the database rows use.
-    {"anchors": (property_anchor("PCITWES"), property_anchor("P0000017")),
+    {"key": "roe_exclusion",
+     "anchors": (property_anchor("PCITWES"), property_anchor("P0000017")),
      "text": "City West and East Manchester are excluded from ROE "
              "calculations."},
 )
+
+# ══════════════════════════════════════════════════════════════════════════
+# Per-quarter EDIT and DELETE of a standing footnote
+# ══════════════════════════════════════════════════════════════════════════
+#: A standing footnote is defined in code, so it has no database row to edit or
+#: delete — which is why footnote 2 could not be touched. Rather than seeding
+#: every page's standing notes into the table (a write on read, and a migration
+#: across every quarter ever produced), an analyst's change to one is recorded
+#: as an ORDINARY footnote row whose ``anchor`` is reserved:
+#:
+#:     standing-edit:<key>      replacement text for that standing note
+#:     standing-delete:<key>    that standing note is off this page
+#:
+#: Both are scoped to one (investor, quarter), so rewording a note on 26Q1
+#: leaves 26Q2 reading the default, and a new quarter always starts from the
+#: transcribed reference text. Deleting the override row restores the default —
+#: nothing is destroyed, which is the point of doing it this way.
+#:
+#: A tombstone is its OWN anchor rather than an empty-text edit: "" would be a
+#: sentinel meaning "deleted", indistinguishable from a note somebody cleared by
+#: accident, and every reader would have to know the convention.
+STANDING_EDIT_PREFIX = "standing-edit:"
+STANDING_DELETE_PREFIX = "standing-delete:"
+
+#: Every key STANDING_FOOTNOTES defines, in page order.
+STANDING_KEYS: tuple = tuple(f["key"] for f in STANDING_FOOTNOTES)
+
+
+def standing_edit_anchor(key: str) -> str:
+    return STANDING_EDIT_PREFIX + str(key or "").strip()
+
+
+def standing_delete_anchor(key: str) -> str:
+    return STANDING_DELETE_PREFIX + str(key or "").strip()
+
+
+def _standing_overrides(db_rows: Optional[list]) -> tuple:
+    """``({key: text}, {deleted keys}, [rows that are ordinary footnotes])``.
+
+    Splits the reserved anchors out of the page's stored rows so they steer the
+    standing notes instead of printing as footnotes of their own. A reserved
+    anchor naming a key that NO LONGER EXISTS — a constant renamed under an
+    analyst's stored wording — falls through and prints as an ordinary
+    footnote. It is neither dropped from the page nor deleted from the table:
+    the same rule ``footnote_scope`` follows for a mistyped anchor, which is
+    that a footnote never silently vanishes.
+    """
+    edits: dict = {}
+    deleted: set = set()
+    plain: list = []
+    for r in (db_rows or []):
+        anchor = str(r.get("anchor") or "").strip()
+        if anchor.startswith(STANDING_EDIT_PREFIX):
+            key = anchor[len(STANDING_EDIT_PREFIX):]
+            if key in STANDING_KEYS:
+                edits[key] = r.get("text") or ""
+                continue
+        elif anchor.startswith(STANDING_DELETE_PREFIX):
+            key = anchor[len(STANDING_DELETE_PREFIX):]
+            if key in STANDING_KEYS:
+                deleted.add(key)
+                continue
+        plain.append(r)
+    return edits, deleted, plain
+# ══════════════════════════════════════════════════════════════════════════
 
 
 def footnote_scope(anchor: str) -> dict:
@@ -316,13 +388,22 @@ def compose_footnotes(db_rows: Optional[list] = None,
     """
     on_page = None if vcodes is None else {
         str(v).strip().upper() for v in vcodes}
+    # An analyst's per-quarter edit or deletion of a STANDING note is stored as
+    # a row under a reserved anchor. Those rows steer the standing notes below
+    # instead of printing as footnotes of their own.
+    edits, deleted, plain_rows = _standing_overrides(db_rows)
     out: list = []
     for f in STANDING_FOOTNOTES:
-        out.append({"id": None, "standing": True,
+        if f["key"] in deleted:
+            continue
+        edited = f["key"] in edits
+        out.append({"id": None, "standing": True, "standing_key": f["key"],
+                    "edited": edited,
                     "anchors": footnote_anchor_keys(f),
-                    "text": f["text"]})
-    for r in (db_rows or []):
-        out.append({"id": r.get("id"), "standing": False,
+                    "text": edits[f["key"]] if edited else f["text"]})
+    for r in plain_rows:
+        out.append({"id": r.get("id"), "standing": False, "standing_key": None,
+                    "edited": False,
                     "anchors": footnote_anchor_keys(r),
                     "text": r.get("text") or ""})
     kept: list = []
@@ -345,6 +426,18 @@ def compose_footnotes(db_rows: Optional[list] = None,
     for i, f in enumerate(kept, start=1):
         f["number"] = i
     return kept
+
+
+def standing_removed(db_rows: Optional[list] = None) -> list:
+    """The standing footnotes this page has taken off, so they can be put back.
+
+    A deleted standing note is absent from ``compose_footnotes`` by design, and
+    a thing that is absent cannot be restored from the UI. This publishes what
+    was removed — key and default text — alongside the list.
+    """
+    _, deleted, _ = _standing_overrides(db_rows)
+    return [{"key": f["key"], "text": f["text"]}
+            for f in STANDING_FOOTNOTES if f["key"] in deleted]
 
 
 def footnote_marks(composed: list) -> dict:
@@ -1061,6 +1154,10 @@ def assemble_financial(investor_code: str, quarter: str, *,
 
     composed_footnotes = compose_footnotes(
         db_footnotes, vcodes={r["vcode"] for r in total_rows})
+    removed_standing = standing_removed(db_footnotes)
+    diag["footnotes_standing_removed"] = len(removed_standing)
+    diag["footnotes_standing_edited"] = sum(
+        1 for f in composed_footnotes if f.get("edited"))
     diag["footnotes"] = len(composed_footnotes)
     diag["footnotes_property_scoped"] = sum(
         1 for f in composed_footnotes if f.get("scope") == "property")
@@ -1132,6 +1229,8 @@ def assemble_financial(investor_code: str, quarter: str, *,
         # headers and property names render from. See compose_footnotes.
         "footnotes": composed_footnotes,
         "footnote_marks": footnote_marks(composed_footnotes),
+        # Standing notes this quarter has removed — the UI offers them back.
+        "standing_removed": removed_standing,
         "footnote_anchors": anchor_choices(total_rows),
         "diagnostics": diag,
     }
