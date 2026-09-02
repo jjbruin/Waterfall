@@ -12,7 +12,12 @@ typeable did exactly that and nothing else:
   4. every deal that is NOT one of the six is byte-identical to before;
   5. the debt-free and development literals still outrank a typed cell;
   6. persistence accepts the three new field names, round-trips them, and still
-     rejects an unknown one.
+     rejects an unknown one;
+  7. the fund subtotals and the portfolio total WEIGHT the typed figures
+     (2026-09-02), in the computed unit, and every total can be re-derived from
+     the rows printed above it. Section G prints the full before/after for both
+     reported quarters, where "before" is the retired rule — weight the
+     computed field alone — replayed over the SAME rows.
 
 BEFORE and AFTER come from the SAME live inputs and the same committed
 function — the only difference is ``MANUAL_RATIO_SEEDS``, emptied for the
@@ -73,13 +78,37 @@ def flatten(out: dict) -> dict:
     return flat
 
 
-def build(manual: dict, seeds: dict, providers: dict) -> dict:
+def old_subtotal(rows: list, label: str) -> dict:
+    """THE RETIRED RULE, replayed for the before-side of section G.
+
+    Verbatim what ``loan_subtotal`` did until 2026-09-02: debt-weight the
+    COMPUTED field and nothing else, so a typed cell carried no weight. Kept
+    here rather than behind a flag in the module — production code should hold
+    one rule, and a guardrail is the right place for the one it replaced.
+    """
+    out = {"label": label}
+    for k in L._RATIO_KEYS:
+        num = den = 0.0
+        n = 0
+        for r in rows:
+            v, d = r.get(k), r.get("debt")
+            if v is None or not d:
+                continue
+            num += v * d
+            den += d
+            n += 1
+        out[k] = (num / den) if den else None
+        out[f"{k}_n"] = n
+    return out
+
+
+def build(manual: dict, seeds: dict, providers: dict, quarter: str = Q) -> dict:
     """One assemble_loan run with a given seed table and stored-value map."""
     saved = L.MANUAL_RATIO_SEEDS
     L.MANUAL_RATIO_SEEDS = seeds
     try:
         return L.assemble_loan(
-            INV, Q,
+            INV, quarter,
             resolved=providers["resolved"],
             one_pager_provider=providers["one_pager"],
             loans=providers["loans"], valuations=providers["valuations"],
@@ -141,6 +170,17 @@ def main() -> int:
 
     providers = {"resolved": resolved, "one_pager": one_pager, "loans": loans,
                  "valuations": vals, "inv": inv, "q_noi": q_noi}
+
+    def providers_for(quarter: str) -> dict:
+        """The same frames and the same memoised providers, another quarter.
+
+        Only Step 1 is re-resolved; the One Pager and NOI caches are keyed by
+        (vcode, quarter) already, so nothing is fetched twice.
+        """
+        return {**providers,
+                "resolved": api.get("/api/portfolio-snapshot/deals",
+                                    params={"investor": INV,
+                                            "quarter": quarter})}
 
     SEEDS = dict(L.MANUAL_RATIO_SEEDS)
 
@@ -207,14 +247,21 @@ def main() -> int:
     for f in L.MANUAL_RATIO_FIELDS:
         chk(f"raw {f} identical on EVERY deal, typed ones included",
             all(fa[v].get(f) == fb[v].get(f) for v in fb))
-    chk("fund subtotals identical",
-        after["subtotals"] == before["subtotals"])
-    chk("portfolio total identical", after["total"] == before["total"])
-    for k, v in after["subtotals"].items():
-        ltv = v.get("ltv")
-        print(f"    subtotal {k:<26} LTV "
-              f"{('%.1f%%' % (ltv * 100)) if ltv else '—':>8}  "
-              f"(weighting {v.get('ltv_n')} deals)")
+    # The DEBT leg of every total is summed over every deal and has nothing to
+    # do with the ratio columns, so it must not have moved. This is what keeps
+    # section G's movements attributable to the ratio rule alone.
+    chk("every subtotal's Debt is unchanged",
+        all(after["subtotals"][g]["debt"] == before["subtotals"][g]["debt"]
+            for g in before["subtotals"]))
+    chk("the portfolio total's Debt is unchanged",
+        after["total"]["debt"] == before["total"]["debt"])
+    # A group with no typed member must produce an identical total row.
+    typed_groups = {g for g, rows in after["groups"].items()
+                    if any(r["vcode"] in EXPECTED for r in rows)}
+    print(f"    groups holding a typed deal: {sorted(typed_groups)}")
+    chk("a group with NO typed member has an identical total row",
+        all(after["subtotals"][g] == before["subtotals"][g]
+            for g in before["subtotals"] if g not in typed_groups))
 
     # Every non-typed deal must be byte-identical; a typed deal may differ ONLY
     # in the keys the overlay owns.
@@ -345,6 +392,132 @@ def main() -> int:
         chk("an unknown field is still rejected", False)
     except ValueError:
         chk("an unknown field is still rejected", True)
+
+    # ---- G. subtotals and totals: every published figure that moves ------
+    #
+    # The rule changed on 2026-09-02 from "weight the computed field" to
+    # "weight what the row displays". Both reported quarters are shown because
+    # the six deals appear in different funds and different numbers in each.
+    print("\n" + "=" * 100)
+    print("G. SUBTOTALS AND PORTFOLIO TOTALS — every figure that moves")
+    print("=" * 100)
+
+    def pct(v):
+        return "—" if v is None else f"{v * 100:.1f}%"
+
+    def mult(v):
+        return "—" if v is None else f"{v:.2f}x"
+
+    UNITS = {"ltv": pct, "debt_yield": pct, "ytd_dscr": mult}
+
+    for quarter in ("2026-Q1", "2026-Q2"):
+        prov = providers if quarter == Q else providers_for(quarter)
+        seeded = build({}, SEEDS, prov, quarter)
+        plain = build({}, {}, prov, quarter)
+        rows_by_group = seeded["groups"]
+        all_rows = [r for rs in rows_by_group.values() for r in rs] + \
+            (seeded.get("ownership_flagged") or [])
+
+        # The before-side, two ways, which must agree: the same assembly with
+        # no seeds at all, and the RETIRED RULE replayed over the SEEDED rows.
+        # Agreement is what proves "before" really is the pre-change page and
+        # not merely a page without typed cells.
+        for g, rs in rows_by_group.items():
+            old = old_subtotal(rs, g)
+            new_before = plain["subtotals"][g]
+            same = all(
+                (old[k] is None and new_before[k] is None)
+                or (old[k] is not None and new_before[k] is not None
+                    and abs(old[k] - new_before[k]) < 1e-12)
+                for k in L._RATIO_KEYS)
+            chk(f"{quarter} {g}: the retired rule over seeded rows equals the "
+                f"un-seeded assembly", same)
+
+        print(f"\n  {quarter}")
+        print(f"    {'total row':<30}{'metric':<11}"
+              f"{'BEFORE':>9}{'AFTER':>9}{'move':>9}   weighted (before -> after)")
+        print("    " + "-" * 92)
+        movers = 0
+        for label, rs, sb, sa in (
+                [(g, rows_by_group[g], plain["subtotals"][g],
+                  seeded["subtotals"][g]) for g in rows_by_group]
+                + [("PORTFOLIO TOTAL", all_rows, plain["total"],
+                    seeded["total"])]):
+            for k in L._RATIO_KEYS:
+                b, a = sb[k], sa[k]
+                if b is None and a is None:
+                    continue
+                moved = (b is None) != (a is None) or (
+                    b is not None and a is not None and abs(a - b) > 5e-6)
+                if not moved:
+                    continue
+                movers += 1
+                fmt = UNITS[k]
+                delta = ("populates" if b is None else
+                         "blanks" if a is None else
+                         f"{(a - b) * 100:+.1f}pp" if k != "ytd_dscr"
+                         else f"{a - b:+.2f}x")
+                print(f"    {sa['label'][:29]:<30}{k:<11}"
+                      f"{fmt(b):>9}{fmt(a):>9}{delta:>9}   "
+                      f"{sb[k + '_n']} -> {sa[k + '_n']} deals "
+                      f"({sa[k + '_typed_n']} typed)")
+        print(f"    {movers} figure(s) moved")
+
+        # Every AFTER total must be re-derivable from the rows above it, using
+        # the displayed values — the invariant the change exists to restore.
+        for label, rs, s in ([(g, rows_by_group[g], seeded["subtotals"][g])
+                              for g in rows_by_group]
+                             + [("PORTFOLIO TOTAL", all_rows, seeded["total"])]):
+            for k in L._RATIO_KEYS:
+                num = den = 0.0
+                for r in rs:
+                    v, d = L.aggregation_value(r, k), r.get("debt")
+                    if v is None or not d:
+                        continue
+                    num += v * d
+                    den += d
+                want = (num / den) if den else None
+                got = s[k]
+                ok_ = ((want is None and got is None)
+                       or (want is not None and got is not None
+                           and abs(want - got) < 1e-12))
+                if not ok_:
+                    chk(f"{quarter} {label} {k} re-derives from its rows", False)
+        chk(f"{quarter}: every total re-derives from the DISPLAYED values of "
+            f"the rows above it", True)
+
+        # The two funds the work order names.
+        if quarter == "2026-Q2":
+            for g in ("TGA25", "TGA6"):
+                chk(f"{quarter} {g} LTV was blank and now populates",
+                    plain["subtotals"][g]["ltv"] is None
+                    and seeded["subtotals"][g]["ltv"] is not None)
+                chk(f"{quarter} {g} LTV weights ONLY typed members",
+                    seeded["subtotals"][g]["ltv_n"]
+                    == seeded["subtotals"][g]["ltv_typed_n"])
+            # Hand-checked arithmetic on the smaller fund, so the unit
+            # conversion is proved against numbers and not just against itself:
+            # 69.7% x 13.25M + 70.6% x 49.49M over 62.74M.
+            t6 = seeded["subtotals"]["TGA6"]["ltv"]
+            want = (0.697 * 13_250_000 + 0.706 * 49_490_000) / 62_740_000
+            print(f"\n    TGA6 LTV by hand: {want * 100:.3f}% "
+                  f"against {t6 * 100:.3f}%")
+            chk("TGA6 LTV matches the hand calculation to 0.01pp",
+                abs(t6 - want) < 1e-4)
+            chk("no total is absurd — every LTV lands under 150%, which a "
+                "missed /100 could not",
+                all(s["ltv"] is None or s["ltv"] < 1.5
+                    for s in list(seeded["subtotals"].values())
+                    + [seeded["total"]]))
+
+        # Development stays out, by the same mechanism as before: seeding a dev
+        # deal and a debt-free deal must not add a gram of weight anywhere.
+        forced = build({}, {**SEEDS, "P0000066": {"ltv": 50.0},
+                            "P0000021": {"debt_yield": 9.0}}, prov, quarter)
+        chk(f"{quarter}: seeding a dev deal and the debt-free deal moves NO "
+            f"subtotal — the literals carry no value to weight",
+            forced["subtotals"] == seeded["subtotals"]
+            and forced["total"] == seeded["total"])
 
     ok = sum(1 for _, c in CHECKS if c)
     print(f"\n  {ok}/{len(CHECKS)} checks passed — "

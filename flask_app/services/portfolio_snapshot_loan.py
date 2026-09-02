@@ -81,8 +81,13 @@ under whatever the rule is at read time.
      acquisitions whose ratios cannot be computed from the data on record
      carry a typeable figure instead, pre-filled and editable, on the same
      footing as the Financial subtab's Net ROE and ITD. The computed twin
-     survives as ``*_computed`` and is what the subtotals keep weighting, so a
-     typed cell moves no aggregate.
+     survives as ``*_computed``.
+
+     THE SUBTOTALS WEIGHT THE TYPED FIGURE (changed 2026-09-02, same day):
+     they aggregate what the row DISPLAYS, so a fund total can be re-derived
+     from the rows printed above it. See ``aggregation_value`` — including why
+     the unit conversion there is load-bearing, and why a cleared cell falls
+     out of the total instead of reverting to its computed twin.
   4. Otherwise the computed value, or an em dash where it could not be
      computed.
 """
@@ -402,10 +407,18 @@ def _num(v):
 #   Debt   SUMMED over EVERY deal, development included. Ties all five funds to
 #          the cent — 270.5 / 268.4 / 366.5 / 279.2 / 201.5.
 #
-#   Ratios DEBT-WEIGHTED over the deals that CARRY A VALUE. Carrying-a-value
-#          needs no dev concept at all, so the subtotal cannot drift from the
-#          "Dev" display: whatever the display rule suppresses is, by the same
-#          act, out of the weighting.
+#   Ratios DEBT-WEIGHTED over the deals that CARRY A DISPLAYED VALUE — see
+#          ``aggregation_value``. Carrying-a-value needs no dev concept at all,
+#          so the subtotal cannot drift from the "Dev" display: whatever the
+#          display rule suppresses is, by the same act, out of the weighting.
+#
+#          "Displayed" rather than "computed" since 2026-09-02, when the three
+#          ratio columns became typeable on six recent acquisitions. A typed
+#          entry is weighted like any other displayed figure, converted into
+#          the computed unit first. The invariant is the point: every total on
+#          this page can be re-derived from the rows printed above it, which is
+#          the same standard the retired Waters Creek exception was held to
+#          (see KNOWN_LOAN_SUBTOTAL_DIFFS, TGA 2022 LTV).
 #
 #          LTV tied all five funds exactly — 67.4 / 60.4 / 59.4 / 62.1 / 69.1 —
 #          while the Waters Creek LTV exception was live. Simple averaging
@@ -453,15 +466,72 @@ KNOWN_LOAN_SUBTOTAL_DIFFS = {
         "is the only member carrying one. 4.9% IS Burton weighted over the "
         "fund's whole debt (13.1 x 75.3 / 201.5) — but that denominator gives "
         "4.58% on TGA 2022 where 9.6% is published, so the two funds disagree "
-        "about the rule and neither can be adopted without breaking the other."),
+        "about the rule and neither can be adopted without breaking the other. "
+        "NOTE the 13.10% figure is this harness's, computed from the PDF's own "
+        "member rows; on LIVE data the same total now also weights Hanestowne's "
+        "typed 8.9% (26Q1: 12.3%, 26Q2: 11.4% with Citizen Storage as well) — "
+        "see aggregation_value. The published-vs-ours question is unchanged by "
+        "that; the denominator is still the disagreement."),
 }
 
 
+#: The ratio columns a TYPED entry stores in PERCENTAGE POINTS, where the
+#: computed twin is a decimal. Nothing else needs converting — a typed DSCR and
+#: a computed DSCR are both plain multiples.
+_MANUAL_PCT_KEYS = ("ltv", "debt_yield")
+
+
+def aggregation_value(row: dict, key: str):
+    """What a subtotal weights for one deal and one ratio column.
+
+    THE RULE: a subtotal aggregates the figure the row DISPLAYS — the typed
+    entry where there is one, the computed figure otherwise — so a fund total
+    can always be re-derived from the rows printed above it. Before 2026-09-02
+    this read the computed field alone, which left the TGA 2025 and TGA 6 LTV
+    totals blank while their members displayed typed LTVs, and left TGA 6's
+    DSCR reading 3.81x out of Presidential Arms' computed figure on a page
+    whose Presidential Arms row says 1.1x.
+
+    THE UNIT CONVERSION IS THE WHOLE DIFFICULTY, and is why this is not the
+    one-line change it looks like. A typed cell stores the unit its column
+    DISPLAYS (69.0 for 69%, per format_manual_ratio), while the computed twin
+    is a decimal (0.6202…). Measured on live 26Q2: weighting Burton's typed
+    69.0 beside Seasons at Bel Air's computed 0.6203 without converting gives
+    those two deals a mean LTV of 3,201%. Typed percentages are therefore
+    divided by 100 to enter the computed unit; DSCR passes through.
+
+    THREE CASES CARRY NO VALUE and are skipped, so they neither move a total
+    nor silently put a figure in one that the page does not show:
+
+      * a computed cell that could not be computed (None) — unchanged;
+      * a CLEARED typed cell (stored NULL, renders an em dash). The computed
+        figure is deliberately NOT used as a fallback here: the analyst emptied
+        the cell, and weighting a number the row no longer prints is exactly
+        what made these totals unauditable;
+      * a cell suppressed to a literal — "Dev" for a development deal, "N/A"
+        for a debt-free one. Development stays out of the summary metrics, as
+        PDF page 4's footnote states, and it stays out by the same mechanism as
+        before: no displayed value, no weight. Seeding a dev deal could not
+        sneak one in.
+    """
+    if not row.get(f"{key}_is_manual"):
+        return row.get(key)
+    if row.get(f"{key}_display") in (DEV_DISPLAY, NA_DISPLAY):
+        return None
+    v = row.get(f"{key}_manual")
+    if v is None:
+        return None
+    return (v / 100.0) if key in _MANUAL_PCT_KEYS else v
+
+
 def _debt_weighted(rows: list, key: str):
-    """Debt-weighted mean of one ratio over the rows carrying a value."""
+    """Debt-weighted mean of one ratio over the rows carrying a value.
+
+    "Carrying a value" is ``aggregation_value``, i.e. what the row displays.
+    """
     num = den = 0.0
     for r in rows:
-        v, d = r.get(key), r.get("debt")
+        v, d = aggregation_value(r, key), r.get("debt")
         if v is None or not d:
             continue
         num += v * d
@@ -478,12 +548,23 @@ def loan_subtotal(rows: list, label: str) -> dict:
         "dev_count": sum(1 for r in rows if r.get("is_dev")),
         "debt": sum(debts) if debts else None,
         "debt_basis": "sum over every deal, development included",
-        "ratio_basis": "debt-weighted over the deals carrying a value",
+        "ratio_basis": ("debt-weighted over the deals carrying a DISPLAYED "
+                        "value — a typed entry where there is one, the "
+                        "computed figure otherwise"),
     }
     for k in _RATIO_KEYS:
         out[k] = _debt_weighted(rows, k)
+        # `_n` counts what was actually weighted, so it moves with the rule
+        # rather than describing the retired one; `_typed_n` says how much of
+        # that came from a typed cell, which is what makes a moved total
+        # explainable without reading the code.
         out[f"{k}_n"] = sum(1 for r in rows
-                            if r.get(k) is not None and r.get("debt"))
+                            if aggregation_value(r, k) is not None
+                            and r.get("debt"))
+        out[f"{k}_typed_n"] = sum(1 for r in rows
+                                  if r.get(f"{k}_is_manual")
+                                  and aggregation_value(r, k) is not None
+                                  and r.get("debt"))
     return out
 
 
