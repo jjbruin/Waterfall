@@ -23,10 +23,6 @@ const emit = defineEmits<{
 
 const groups = computed<Record<string, any>>(() => props.data?.groups || {})
 const total = computed(() => props.data?.total || null)
-/** The funded-to-date twin of Portfolio Totals, directly beneath it.
- *  Backend-computed by `_funding_total`: each column is the sum of the One
- *  Pager cap-stack value every row already carries, on the FUNDED basis. */
-const funding = computed(() => props.data?.total_current_funding || null)
 /** The PDF's "Excluding Development Deals" row. Backend-computed; see
  *  EXCLUDING_DEV_VCODES for why its population is not simply `is_dev`. */
 const exDev = computed(() => props.data?.total_excluding_dev || null)
@@ -64,23 +60,60 @@ function dealMark(vcode: string): string {
   return nums && nums.length ? `(${nums.join(',')})` : ''
 }
 
-/** Local draft of the two manual figures, keyed `vcode:field`. */
+/** Local draft of the manual figures, keyed `vcode:field`.
+ *
+ *  `vcode` is a deal for the per-deal cells and a RESERVED KEY for the Net ROE
+ *  on an aggregate row — `__GROUP__:<key>`, `__TOTAL__`, `__EXCLUDING_DEV__`,
+ *  published by the backend on each row as `net_roe_vcode`. Same draft map,
+ *  same commit path, same endpoint. */
 const draft = ref<Record<string, string>>({})
+
+/** The cell currently being typed in, if any.
+ *
+ *  A manual cell shows its FORMATTED value ("$15.33M", "4.4%") at rest and the
+ *  bare number while it is being edited, so the unit is visible everywhere —
+ *  on screen and in print — without a "%" ever being fed back into the input
+ *  and re-parsed. */
+const focusKey = ref<string | null>(null)
+
+function seed(next: Record<string, string>, key: string, v: any) {
+  next[key] = v == null ? '' : String(v)
+}
 
 watch(() => props.data, (d) => {
   const next: Record<string, string> = {}
-  for (const blk of Object.values<any>(d?.groups || {})) {
+  for (const [g, blk] of Object.entries<any>(d?.groups || {})) {
     for (const r of (blk.deals || [])) {
-      next[`${r.vcode}:net_roe`] = r.net_roe == null ? '' : String(r.net_roe)
-      next[`${r.vcode}:itd`] = r.itd == null ? '' : String(r.itd)
+      seed(next, `${r.vcode}:net_roe`, r.net_roe)
+      seed(next, `${r.vcode}:itd`, r.itd)
     }
+    const sk = blk.subtotal?.net_roe_vcode || `__GROUP__:${g}`
+    seed(next, `${sk}:net_roe`, blk.subtotal?.net_roe)
+  }
+  if (d?.total) {
+    seed(next, `${d.total.net_roe_vcode || '__TOTAL__'}:net_roe`, d.total.net_roe)
+  }
+  if (d?.total_excluding_dev) {
+    const k = d.total_excluding_dev.net_roe_vcode || '__EXCLUDING_DEV__'
+    seed(next, `${k}:net_roe`, d.total_excluding_dev.net_roe)
   }
   draft.value = next
 }, { immediate: true })
 
 function commitValue(vcode: string, field: 'net_roe' | 'itd') {
+  focusKey.value = null
   const raw = (draft.value[`${vcode}:${field}`] ?? '').trim()
   emit('saveValue', { vcode, field, value: raw === '' ? null : raw })
+}
+
+/** What a manual input shows right now: the raw number while it has focus, the
+ *  backend's formatted string the rest of the time, and '' when nothing is
+ *  entered so the placeholder ("pending entry" / "n/a") comes through. */
+function cellText(vcode: string, field: 'net_roe' | 'itd', display: unknown): string {
+  const k = `${vcode}:${field}`
+  if (focusKey.value === k) return draft.value[k] ?? ''
+  if ((draft.value[k] ?? '') === '') return ''
+  return typeof display === 'string' ? display : String(draft.value[k])
 }
 
 const newFootnote = ref<{ anchor: string; text: string }>({ anchor: '', text: '' })
@@ -197,9 +230,16 @@ function placementLabel(f: any): string {
               <td class="r num zone-b">{{ fmtM(r.invested) }}</td>
               <td class="r num zone-b">{{ fmtM(r.unfunded) }}</td>
               <td class="r num zone-b">{{ fmtM(r.total_commitment) }}</td>
+              <!-- The input shows "$15.33M" / "4.4%" at rest and the bare
+                   number only while it has focus, so the unit is on the value
+                   in the UI and in print. `editable` is false in the print
+                   view, which renders this same component. -->
               <td class="r manual">
                 <input
-                  v-model="draft[`${r.vcode}:itd`]"
+                  :value="cellText(r.vcode, 'itd', r.itd_display)"
+                  @input="draft[`${r.vcode}:itd`] = ($event.target as HTMLInputElement).value"
+                  @focus="focusKey = `${r.vcode}:itd`"
+                  @blur="focusKey = null"
                   class="numinput"
                   :class="{ pending: r.itd == null }"
                   :readonly="!editable || r.pdf_na_cells?.includes('itd')"
@@ -210,7 +250,10 @@ function placementLabel(f: any): string {
               </td>
               <td class="r manual">
                 <input
-                  v-model="draft[`${r.vcode}:net_roe`]"
+                  :value="cellText(r.vcode, 'net_roe', r.net_roe_display)"
+                  @input="draft[`${r.vcode}:net_roe`] = ($event.target as HTMLInputElement).value"
+                  @focus="focusKey = `${r.vcode}:net_roe`"
+                  @blur="focusKey = null"
                   class="numinput"
                   :class="{ pending: r.net_roe == null }"
                   :readonly="!editable || r.pdf_na_cells?.includes('net_roe')"
@@ -230,8 +273,26 @@ function placementLabel(f: any): string {
               <td class="r num zone-b">{{ fmtM$(blk.subtotal?.invested) }}</td>
               <td class="r num zone-b">{{ fmtM$(blk.subtotal?.unfunded) }}</td>
               <td class="r num zone-b">{{ fmtM$(blk.subtotal?.total_commitment) }}</td>
-              <td class="r manual small">{{ blk.subtotal?.manual_entered?.itd ?? 0 }} entered</td>
-              <td class="r manual small">{{ blk.subtotal?.manual_entered?.net_roe ?? 0 }} entered</td>
+              <!-- ITD is SUMMED from the deals above; Net ROE is this row's
+                   own typed figure. See _subtotal in
+                   portfolio_snapshot_financial.py. -->
+              <td class="r num" :title="blk.subtotal?.itd_source">
+                {{ disp(blk.subtotal?.itd_display) }}
+              </td>
+              <td class="r manual">
+                <input
+                  :value="cellText(blk.subtotal?.net_roe_vcode, 'net_roe', blk.subtotal?.net_roe_display)"
+                  @input="draft[`${blk.subtotal?.net_roe_vcode}:net_roe`] = ($event.target as HTMLInputElement).value"
+                  @focus="focusKey = `${blk.subtotal?.net_roe_vcode}:net_roe`"
+                  @blur="focusKey = null"
+                  class="numinput"
+                  :class="{ pending: blk.subtotal?.net_roe == null }"
+                  :readonly="!editable"
+                  :placeholder="String(blk.subtotal?.net_roe_display ?? '')"
+                  :title="blk.subtotal?.net_roe_source"
+                  @change="commitValue(blk.subtotal?.net_roe_vcode, 'net_roe')"
+                />
+              </td>
             </tr>
             <tr class="spacer"><td colspan="11"></td></tr>
           </tbody>
@@ -266,33 +327,23 @@ function placementLabel(f: any): string {
             <td class="r num zone-b">{{ fmtM$(total.invested) }}</td>
             <td class="r num zone-b">{{ fmtM$(total.unfunded) }}</td>
             <td class="r num zone-b">{{ fmtM$(total.total_commitment) }}</td>
-            <td class="r manual small">{{ total.manual_entered?.itd ?? 0 }} entered</td>
-            <td class="r manual small">{{ total.manual_entered?.net_roe ?? 0 }} entered</td>
-          </tr>
-          <!--
-            "Total Current Funding" — directly under Portfolio Totals, same
-            deal population, funded basis. Each of the four cells is its OWN
-            column total (not one summed figure), and each is a sum of the One
-            Pager cap-stack value the rows above already carry: Debt is the
-            quarter-end balance-sheet balance rather than the development
-            rebase the Debt column itself uses, and Total Pref is FUNDED pref
-            rather than the committed tranche. The scaled TIAA columns are left
-            blank — they are already a funded/committed pair of their own
-            (Invested / Total Commitment) and a third basis under them would
-            invite the wrong subtraction.
-          -->
-          <tr v-if="funding" class="funding">
-            <td class="sticky-l" :title="funding.basis">{{ funding.label }}</td>
-            <td class="r num" :title="funding.debt_source">{{ fmtM$(funding.debt) }}</td>
-            <td class="r num" :title="funding.total_pref_source">{{ fmtM$(funding.total_pref) }}</td>
-            <td class="r num" :title="funding.ptr_equity_source">{{ fmtM$(funding.ptr_equity) }}</td>
-            <td class="r num" :title="funding.total_cap_source">{{ fmtM$(funding.total_cap) }}</td>
-            <td class="r num zone-b"></td>
-            <td class="r num zone-b"></td>
-            <td class="r num zone-b"></td>
-            <td class="r num zone-b"></td>
-            <td class="r manual"></td>
-            <td class="r manual"></td>
+            <td class="r num" :title="total.itd_source">
+              {{ disp(total.itd_display) }}
+            </td>
+            <td class="r manual">
+              <input
+                :value="cellText(total.net_roe_vcode, 'net_roe', total.net_roe_display)"
+                @input="draft[`${total.net_roe_vcode}:net_roe`] = ($event.target as HTMLInputElement).value"
+                @focus="focusKey = `${total.net_roe_vcode}:net_roe`"
+                @blur="focusKey = null"
+                class="numinput"
+                :class="{ pending: total.net_roe == null }"
+                :readonly="!editable"
+                :placeholder="String(total.net_roe_display ?? '')"
+                :title="total.net_roe_source"
+                @change="commitValue(total.net_roe_vcode, 'net_roe')"
+              />
+            </td>
           </tr>
           <!--
             "Excluding Development Deals", per PDF page 2: a right-aligned label
@@ -309,8 +360,25 @@ function placementLabel(f: any): string {
                 {{ exDev.deal_count }} remaining)</span>
             </td>
             <td class="r num zone-b">{{ fmtM$(exDev.total_commitment) }}</td>
-            <td class="r manual small">{{ disp(exDev.itd_display, 'currency') }}</td>
-            <td class="r manual small">{{ disp(exDev.net_roe_display, 'pct') }}</td>
+            <!-- ITD summed over the non-development deals only; Net ROE typed
+                 for this row (key __EXCLUDING_DEV__). -->
+            <td class="r num" :title="exDev.itd_source">
+              {{ disp(exDev.itd_display) }}
+            </td>
+            <td class="r manual">
+              <input
+                :value="cellText(exDev.net_roe_vcode, 'net_roe', exDev.net_roe_display)"
+                @input="draft[`${exDev.net_roe_vcode}:net_roe`] = ($event.target as HTMLInputElement).value"
+                @focus="focusKey = `${exDev.net_roe_vcode}:net_roe`"
+                @blur="focusKey = null"
+                class="numinput"
+                :class="{ pending: exDev.net_roe == null }"
+                :readonly="!editable"
+                :placeholder="String(exDev.net_roe_display ?? '')"
+                :title="exDev.net_roe_source"
+                @change="commitValue(exDev.net_roe_vcode, 'net_roe')"
+              />
+            </td>
           </tr>
         </tfoot>
       </table>
@@ -460,14 +528,6 @@ tr.exdev .label {
   line-height: 0;
   color: var(--color-text-secondary);
   margin-left: 1px;
-}
-
-/* "Total Current Funding" — a subtotal of the same population on the funded
-   basis, so it reads as part of the total block but lighter than it. */
-tfoot tr.funding td {
-  font-weight: 600;
-  border-top: none;
-  background: #f7f9fb;
 }
 
 .grouprow td {

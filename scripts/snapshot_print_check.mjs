@@ -35,14 +35,19 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
 const DIST = join(ROOT, 'vue_app', 'dist')
 const OUT_DIR = join(ROOT, 'vue_app', '.chartcheck')
-const UPSTREAM = 'https://app-waterfall-dev-v2.icyplant-026fb2db'
-  + '.eastus.azurecontainerapps.io'
+// Where /api and /auth are proxied. Defaults to the live dev app; set
+// WF_UPSTREAM=http://127.0.0.1:5000 to print against a LOCAL Flask, which is
+// how an unmerged backend change gets its print PDF rendered before it ships.
+const UPSTREAM = process.env.WF_UPSTREAM
+  || ('https://app-waterfall-dev-v2.icyplant-026fb2db'
+      + '.eastus.azurecontainerapps.io')
 
 const TOKEN = process.env.WF_TOKEN
 if (!TOKEN) {
   console.error('WF_TOKEN not set')
   process.exit(2)
 }
+console.log(`upstream: ${UPSTREAM}`)
 if (!existsSync(join(DIST, 'index.html'))) {
   console.error(`no build at ${DIST} — run: cd vue_app && npx vite build`)
   process.exit(2)

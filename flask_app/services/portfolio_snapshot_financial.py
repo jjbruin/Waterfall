@@ -81,18 +81,28 @@ Zone C — manual entry, never derived (formula TBD)
     and a saved value resets to the page's current review status. Absent ->
     ``pending entry``, never a fabricated number and never zero.
 
-    *** MANUAL FOR NOW — FORMULA TBD ***
-    The assembly reads these through exactly two accessors, ``get_net_roe()``
-    and ``get_itd()``. When the methods are settled (Net ROE: net of fund-level
-    expenses weighted by dollars invested and time; ITD: footnote-1 fee
-    allocation) the computation drops into the body of those two functions and
-    nothing in the assembly changes.
+    The two columns behave DIFFERENTLY above deal level:
 
-TOTAL CURRENT FUNDING, the row directly under Portfolio Totals, is the FUNDED
-twin of it over the same population. It is a subtotal of figures the rows above
-already carry from the One Pager cap stack, not a new metric — see
-``FUNDING_SOURCE_FIELDS`` for which cap-stack value each column sums and why the
-Debt and Total Pref legs deliberately differ from the columns they sit under.
+      ITD    is SUMMED onto every aggregate row — each fund subtotal, Portfolio
+             Totals, and the excluding-development row (non-development deals
+             only). Per-deal ITD stays typed; the arithmetic is not re-keyed.
+             A row no member deal has fed is None, never 0.
+
+      Net ROE is MANUAL AT EVERY LEVEL and never derived. It is calculated
+             off-app, net of fund-level expenses weighted by dollars invested
+             and time, so an aggregate figure is not the sum or the average of
+             the deals above it. Aggregate rows store their own entry against
+             a reserved key — see ``AGG_TOTAL_VCODE``.
+
+    Both render with their unit on the value ("$15.33M", "4.4%") through
+    ``format_manual``, so a cell reads the same on screen and in print.
+
+    *** ITD FORMULA STILL TBD AT DEAL LEVEL ***
+    The assembly reads the per-deal figures through exactly two accessors,
+    ``get_net_roe()`` and ``get_itd()``. When the ITD method is settled
+    (footnote-1 fee allocation) the computation drops into the body of that
+    function and nothing in the assembly changes. Net ROE is not slated to
+    become a formula.
 
 FOOTNOTES are placed by SCOPE. A footnote about how a COLUMN is calculated puts
 its number on that column header; one about a PROPERTY puts it next to that
@@ -374,6 +384,51 @@ def anchor_choices(rows: Optional[list] = None) -> list:
 # ══════════════════════════════════════════════════════════════════════════
 
 
+#: Reserved ``deal_vcode`` keys for a manual figure that belongs to an
+#: AGGREGATE row rather than to a deal.
+#:
+#: ``save_element`` keys a value by (investor, quarter, deal_vcode, field) and
+#: deliberately does not require ``deal_vcode`` to name a real deal, so a
+#: subtotal, the portfolio total and the excluding-development row store
+#: through the SAME table and the SAME ``PUT /value`` endpoint as a deal cell,
+#: with no schema change and no second write path. The double underscores keep
+#: them outside any possible vcode.
+AGG_TOTAL_VCODE = "__TOTAL__"
+AGG_EXDEV_VCODE = "__EXCLUDING_DEV__"
+AGG_GROUP_PREFIX = "__GROUP__:"
+
+
+def group_agg_vcode(group: str) -> str:
+    """The manual-entry key for one fund group's subtotal row."""
+    return AGG_GROUP_PREFIX + str(group or "").strip()
+
+
+def format_manual(field: str, value) -> str:
+    """How an ENTERED manual figure reads, unit included.
+
+    The unit belongs to the VALUE, not to the column header, so the same cell
+    reads "$15.33M" / "4.4%" on screen, in print, and in the string
+    ``PUT /value`` hands straight back after a save. Before this the cell
+    round-tripped as a bare "4.4" and the analyst's "%" appeared to be
+    discarded.
+
+    Net ROE is stored in PERCENTAGE POINTS — the analyst types "4.4%", the save
+    endpoint strips the sign and stores 4.4, and this puts it back. There is
+    deliberately NO magnitude heuristic (``v < 1`` therefore a ratio): 0.9 is a
+    legitimate 0.9% reading, so inferring the unit from the size of the number
+    is a bug waiting for the value that sits on the boundary. Same reasoning as
+    the note on ``fmtPctPts`` in the Vue formatters.
+    """
+    if value is None:
+        return PENDING
+    if field == "itd":
+        sign = "-" if value < 0 else ""
+        return f"{sign}${abs(value) / 1e6:,.2f}M"
+    if field == "net_roe":
+        return f"{value:.1f}%"
+    return str(value)
+
+
 def manual_display(field: str, value, na_cells=None):
     """The ``*_display`` twin for one manual figure.
 
@@ -390,7 +445,7 @@ def manual_display(field: str, value, na_cells=None):
     """
     if field in (na_cells or ()):
         return NA_LABEL
-    return PENDING if value is None else value
+    return format_manual(field, value)
 
 
 def manual_na_cells(vcode: str, sold: bool = False) -> frozenset:
@@ -614,89 +669,15 @@ def _load_footnotes(investor_code: str, quarter: str) -> list:
         return []
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# "Total Current Funding" — the FUNDED-basis twin of Portfolio Totals
-# ══════════════════════════════════════════════════════════════════════════
-#: Printed column -> the per-deal field it sums.
-#:
-#: EVERY FIELD HERE IS ALREADY ON THE ROW, straight from the One Pager cap
-#: stack. This row is a SUBTOTAL OF EXISTING DATA, not a new metric: nothing is
-#: recomputed, no new source is read, and each column is the sum of the same
-#: figure the One Pager publishes per deal.
-#:
-#:   debt        <- cap_stack.debt_isbs      the balance-sheet debt drawn as of
-#:                  quarter end. NOT the row's printed ``debt``, which for a
-#:                  development deal is rebased onto the committed facility at
-#:                  construction completion (footnote on the Debt header) and is
-#:                  therefore not funded-to-date.
-#:   total_pref  <- cap_stack.pref_equity    FUNDED pref. The Total Pref column
-#:                  above prints the COMMITTED tranche; this row is the funded
-#:                  basis, which is the whole point of it.
-#:   ptr_equity  <- cap_stack.partner_equity already funded — unchanged.
-#:   total_cap   <- the three above, per deal, so the row foots across.
-#:
-#: The debt leg reads ``debt_isbs_summable``, not ``debt_isbs`` — the same
-#: figure with an n/a cell removed, for the same reason the Debt column above
-#: sums ``debt_summable``. A sold deal's stale balance is not funded-to-date
-#: debt either. No-op for every deal whose Debt is n/a on PDF grounds (City
-#: West and Pegasus both carry a real 0.0); it removes East Manchester's
-#: 9,641,912 stale balance and nothing else.
-FUNDING_SOURCE_FIELDS: dict[str, str] = {
-    "debt": "debt_isbs_summable",
-    "total_pref": "funded_pref",
-    "ptr_equity": "ptr_equity",
-    "total_cap": "total_cap_funded",
-}
+def _subtotal(rows: list, label: str, *, agg_vcode: Optional[str] = None,
+              investor_code: str = "", quarter: str = "",
+              manual: Optional[dict] = None) -> dict:
+    """Sum the dollar columns; recompute ratios from the sums.
 
-#: cap-stack key behind each of those, for the payload's own audit trail.
-FUNDING_SOURCE_LABELS: dict[str, str] = {
-    "debt": "cap_stack.debt_isbs (funded to date), n/a cells excluded",
-    "total_pref": "cap_stack.pref_equity (funded, not committed)",
-    "ptr_equity": "cap_stack.partner_equity (funded)",
-    "total_cap": "debt_isbs + pref_equity + partner_equity, per deal",
-}
-
-FUNDING_TOTAL_LABEL = "Total Current Funding"
-
-
-def _funding_total(rows: list, label: str = FUNDING_TOTAL_LABEL) -> dict:
-    """Per-column funded-to-date totals over ``rows``.
-
-    Each column is its OWN total across every deal — four independent sums, not
-    one figure repeated. A column sums only the deals that carry that figure and
-    reports how many those were, so a partial column is visible rather than
-    quietly low; a column no deal carries is ``None``, never 0.
+    ``agg_vcode`` is the reserved manual-entry key for this row (see
+    ``AGG_TOTAL_VCODE``). Passing it makes the row's Net ROE typeable; omitting
+    it leaves the cell None.
     """
-    out: dict = {"label": label, "deal_count": len(rows)}
-    for col, field in FUNDING_SOURCE_FIELDS.items():
-        vals = [r[field] for r in rows if r.get(field) is not None]
-        out[col] = sum(vals) if vals else None
-        out[col + "_source"] = FUNDING_SOURCE_LABELS[col]
-        out[col + "_deal_count"] = len(vals)
-        out[col + "_missing"] = sorted(r["vcode"] for r in rows
-                                       if r.get(field) is None)
-    # The independent ISBS twin of Total Cap (cap_stack.total_cap_isbs summed),
-    # carried so the derived total can be checked against the One Pager's own
-    # funded-basis figure without recomputing anything.
-    twin = [r["total_cap_funded_basis"] for r in rows
-            if r.get("total_cap_funded_basis") is not None]
-    out["total_cap_isbs_sum"] = sum(twin) if twin else None
-    parts = [out.get(c) for c in ("debt", "total_pref", "ptr_equity")]
-    out["foots"] = (out.get("total_cap") is not None
-                    and all(p is not None for p in parts)
-                    and abs(out["total_cap"] - sum(parts)) < 1.0)
-    out["basis"] = (
-        "Funded to date. Sum of the One Pager cap-stack values each deal "
-        "already carries — Debt is the quarter-end balance-sheet balance (not "
-        "the development rebase on the Debt column above), Total Pref is FUNDED "
-        "pref (not the committed tranche above), Ptr Equity is funded partner "
-        "equity, and Total Cap is the three added per deal.")
-    return out
-# ══════════════════════════════════════════════════════════════════════════
-
-
-def _subtotal(rows: list, label: str) -> dict:
-    """Sum the dollar columns; recompute ratios from the sums."""
     out = {"label": label, "deal_count": len(rows)}
     for c, field in _SUM_FIELDS.items():
         vals = [r[field] for r in rows if r.get(field) is not None]
@@ -720,11 +701,43 @@ def _subtotal(rows: list, label: str) -> dict:
     out["pref_pct"] = (tp / tc) if (tp is not None and tc) else None
     out["ptr_pct"] = ((out["ptr_equity"] / tc)
                       if (out.get("ptr_equity") is not None and tc) else None)
-    # Manual columns are never summed — a subtotal of partly-entered figures
-    # would read as complete. Counted instead.
+    # How many member deals actually carry each manual figure. Kept — and kept
+    # ALONGSIDE the ITD sum below — because a subtotal of a partly-entered
+    # column would otherwise read as complete. The count is what makes a
+    # partial sum visible rather than quietly low.
     out["manual_entered"] = {
         f: sum(1 for r in rows if r.get(f) not in (None, PENDING))
         for f in MANUAL_FIELDS}
+
+    # ---- ITD Distributions: SUMMED from the member deals ----
+    #
+    # The one manual column that aggregates. Per-deal ITD stays typed, but a
+    # subtotal / total / excluding-development row adds the deals beneath it
+    # rather than asking for the same arithmetic to be re-keyed. A row where no
+    # member has been entered yet is None (em dash), NOT 0 — a zero here is
+    # indistinguishable from a real zero-distribution population.
+    itd_vals = [r["itd"] for r in rows if r.get("itd") is not None]
+    out["itd"] = sum(itd_vals) if itd_vals else None
+    out["itd_display"] = (format_manual("itd", out["itd"])
+                          if out["itd"] is not None else None)
+    out["itd_deal_count"] = len(itd_vals)
+    out["itd_source"] = (
+        f"sum of {len(itd_vals)} of {len(rows)} member deals" if itd_vals
+        else "no member deal has an ITD figure entered")
+
+    # ---- Net ROE: MANUAL at this level too, never derived ----
+    #
+    # Net ROE is calculated off-app (net of fund-level expenses weighted by
+    # dollars invested and time), so an aggregate figure is NOT the sum or the
+    # average of the deals above it and must not be presented as though it
+    # were. The row therefore takes its own typed entry, stored against
+    # ``agg_vcode``.
+    out["net_roe_vcode"] = agg_vcode
+    out["net_roe"] = (_manual_value("net_roe", agg_vcode, investor_code,
+                                    quarter, manual)
+                      if agg_vcode else None)
+    out["net_roe_display"] = manual_display("net_roe", out["net_roe"])
+    out["net_roe_source"] = MANUAL_SOURCE
     return out
 
 
@@ -877,15 +890,16 @@ def assemble_financial(investor_code: str, quarter: str, *,
         total_cap_funded_basis = _num(
             cap.get("total_cap_isbs", cap.get("total_cap")))
 
-        # The funded-basis Total Cap this deal contributes to the "Total Current
-        # Funding" row: the same three cap-stack figures added, on the funded
-        # basis throughout. None — never 0 — when any leg is missing, so a deal
-        # with an unknown component drops out of the column and is named in
-        # ``total_cap_missing`` instead of dragging the total down by a
-        # fabricated zero.
-        # Same n/a treatment as `total_cap` above, so the "Total Current
-        # Funding" row foots against its own Debt column, which sums
-        # `debt_isbs_summable`.
+        # This deal's Total Cap on the FUNDED basis: the same three cap-stack
+        # figures added, funded throughout. None — never 0 — when any leg is
+        # missing, so a deal with an unknown component is absent rather than
+        # dragged down by a fabricated zero. Same n/a treatment as `total_cap`
+        # above.
+        #
+        # Carried on the row as an audit figure only. It was the per-deal leg of
+        # the "Total Current Funding" row, removed Sep 2 2026 at the report
+        # author's request; the field stays because it is the funded twin of a
+        # printed column and costs nothing, but nothing renders it today.
         total_cap_funded = (
             None if None in (debt_leg, funded_pref, ptr_equity)
             else debt_leg + funded_pref + ptr_equity)
@@ -1022,7 +1036,11 @@ def assemble_financial(investor_code: str, quarter: str, *,
         # alongside as the stable key the UI iterates and persistence uses.
         groups[group] = {"deals": rows, "group": group,
                          "label": group_total_label(group),
-                         "subtotal": _subtotal(rows, group_total_label(group))}
+                         "subtotal": _subtotal(
+                             rows, group_total_label(group),
+                             agg_vcode=group_agg_vcode(group),
+                             investor_code=investor_code, quarter=quarter,
+                             manual=manual)}
         all_rows.extend(rows)
 
     flagged_rows = []
@@ -1036,13 +1054,10 @@ def assemble_financial(investor_code: str, quarter: str, *,
     # belong in the total; only their Zone B dollars stay None.
     #
     total_rows = all_rows + flagged_rows
-    total = _subtotal(total_rows, PORTFOLIO_TOTAL_LABEL)
-
-    # "Total Current Funding" — the row directly under Portfolio Totals. Same
-    # population, funded basis, and every figure a sum of values these rows
-    # already carry from the One Pager cap stack.
-    total_current_funding = _funding_total(total_rows)
-    diag["funding_row_foots"] = bool(total_current_funding.get("foots"))
+    total = _subtotal(total_rows, PORTFOLIO_TOTAL_LABEL,
+                      agg_vcode=AGG_TOTAL_VCODE,
+                      investor_code=investor_code, quarter=quarter,
+                      manual=manual)
 
     composed_footnotes = compose_footnotes(
         db_footnotes, vcodes={r["vcode"] for r in total_rows})
@@ -1066,7 +1081,10 @@ def assemble_financial(investor_code: str, quarter: str, *,
     kept = [r for r in total_rows if r["vcode"] not in EXCLUDING_DEV_VCODES]
     removed = [r for r in total_rows if r["vcode"] in EXCLUDING_DEV_VCODES]
     diag["excluding_dev_deals"] = len(removed)
-    ex_full = _subtotal(kept, "Excluding Development Deals")
+    ex_full = _subtotal(kept, "Excluding Development Deals",
+                        agg_vcode=AGG_EXDEV_VCODE,
+                        investor_code=investor_code, quarter=quarter,
+                        manual=manual)
     # Blank every column the PDF leaves blank on this row. Emitting the full
     # subtotal would put eight more numbers on screen that the published page
     # does not show, and a reader would reasonably take them as sourced.
@@ -1080,18 +1098,22 @@ def assemble_financial(investor_code: str, quarter: str, *,
         "manual_entered": ex_full["manual_entered"],
         **{c: (ex_full.get(c) if c in EXCLUDING_DEV_COLUMNS else None)
            for c in _SUM_COLS},
-        # Net ROE over the reduced population, and ITD. Both are manual
-        # (formula TBD) with no portfolio-level entry, so they are None and
-        # render as "pending entry" — never the PDF's figure copied across,
-        # which would present a published number as a computed one.
-        "net_roe": None,
-        "itd": None,
-        "net_roe_display": PENDING,
-        "itd_display": PENDING,
-        "basis": ("Total Commitment recomputed over the "
-                  f"{ex_full['deal_count']} non-development deals; "
-                  "ITD and Net ROE are manual (formula TBD) and carry no "
-                  "portfolio-level entry"),
+        # ITD is the SUM of the non-development deals only — the population
+        # this row exists to report. Net ROE is this row's OWN typed entry
+        # (key AGG_EXDEV_VCODE): it is calculated off-app over the reduced
+        # population and is not derivable from the deals above.
+        "itd": ex_full["itd"],
+        "itd_display": ex_full["itd_display"],
+        "itd_deal_count": ex_full["itd_deal_count"],
+        "itd_source": ex_full["itd_source"],
+        "net_roe": ex_full["net_roe"],
+        "net_roe_display": ex_full["net_roe_display"],
+        "net_roe_vcode": AGG_EXDEV_VCODE,
+        "net_roe_source": MANUAL_SOURCE,
+        "basis": ("Total Commitment recomputed and ITD summed over the "
+                  f"{ex_full['deal_count']} non-development deals "
+                  f"({ex_full['itd_deal_count']} of them carry an ITD "
+                  "figure); Net ROE is a manual entry for this row"),
     }
 
     return {
@@ -1104,7 +1126,6 @@ def assemble_financial(investor_code: str, quarter: str, *,
         "groups": groups,
         "ownership_flagged": flagged_rows,
         "total": total,
-        "total_current_funding": total_current_funding,
         "total_excluding_dev": total_excluding_dev,
         # ONE numbered list over the standing notes and the analyst-entered
         # rows, with each entry's scope resolved, plus the marker index the

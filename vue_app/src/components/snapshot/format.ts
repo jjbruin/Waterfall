@@ -116,3 +116,29 @@ export function disp(v: unknown, kind: Kind = 'raw', dp?: number): string {
 export function isLiteral(v: unknown): boolean {
   return typeof v === 'string'
 }
+
+/**
+ * An ENTERED manual figure with its unit — the client mirror of
+ * `format_manual` in portfolio_snapshot_financial.py.
+ *
+ * The BACKEND owns this rule. Every manual cell renders the `*_display` string
+ * the server sends, and `PUT /value` hands that string straight back after a
+ * save, so the two can never disagree on a figure the analyst typed.
+ *
+ * These exist for the one case the server has not spoken to yet: the ITD
+ * subtotals are re-added on the client the moment a deal cell is committed, so
+ * the aggregate rows move with the entry instead of waiting for the next
+ * `/bundle`. Keep them in step with `format_manual`.
+ */
+export function fmtItd(v: number | null | undefined): string {
+  if (v == null) return DASH
+  const sign = v < 0 ? '-' : ''
+  return sign + '$' + (Math.abs(v) / 1e6).toFixed(2) + 'M'
+}
+
+/** Net ROE, stored in PERCENTAGE POINTS (4.4 -> "4.4%"). No magnitude
+ *  heuristic — see the note on `fmtPctPts` and on `format_manual`. */
+export function fmtNetRoe(v: number | null | undefined): string {
+  if (v == null) return DASH
+  return v.toFixed(1) + '%'
+}

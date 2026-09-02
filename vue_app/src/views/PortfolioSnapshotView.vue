@@ -16,6 +16,7 @@ import SnapshotSummary from '../components/snapshot/SnapshotSummary.vue'
 import SnapshotFinancial from '../components/snapshot/SnapshotFinancial.vue'
 import SnapshotOperating from '../components/snapshot/SnapshotOperating.vue'
 import SnapshotLoan from '../components/snapshot/SnapshotLoan.vue'
+import { fmtItd } from '../components/snapshot/format'
 
 const BASE = '/api/portfolio-snapshot'
 
@@ -181,6 +182,61 @@ function recountManual() {
     if (blk.subtotal) blk.subtotal.manual_entered = tally(blk.deals || [])
   }
   if (fin.total) fin.total.manual_entered = tally(financialRows())
+  resumITD()
+}
+
+/** Re-add the ITD sums after one deal's figure changed.
+ *
+ *  ITD is summed onto every aggregate row by `_subtotal` in
+ *  portfolio_snapshot_financial.py; this repeats that addition on the client so
+ *  the subtotals move with the cell the analyst just left, instead of waiting
+ *  for the next full `/bundle`. Deliberately kept to the ARITHMETIC — the
+ *  formatting rule stays server-side, and this reuses the same `fmtItd` the
+ *  cells render through. The authoritative figures arrive on the next load.
+ *
+ *  The excluding-development row sums the non-development deals only, so it
+ *  filters on the vcode list the backend published on that row rather than
+ *  re-deriving the population here.
+ */
+function resumITD() {
+  const fin = bundle.value?.subtabs?.financial
+  if (!fin) return
+  const sum = (rows: any[]) => {
+    const vals = rows.map((r) => r.itd).filter((v) => v != null)
+    return vals.length ? vals.reduce((a, b) => a + b, 0) : null
+  }
+  const put = (row: any, rows: any[]) => {
+    if (!row) return
+    row.itd = sum(rows)
+    row.itd_display = row.itd == null ? null : fmtItd(row.itd)
+    row.itd_deal_count = rows.filter((r) => r.itd != null).length
+  }
+  for (const blk of Object.values<any>(fin.groups || {})) {
+    put(blk.subtotal, blk.deals || [])
+  }
+  const all = financialRows()
+  put(fin.total, all)
+  const ex = fin.total_excluding_dev
+  if (ex) {
+    const removed = new Set<string>(ex.excluded_vcodes || [])
+    put(ex, all.filter((r) => !removed.has(String(r.vcode || '').toUpperCase())))
+  }
+}
+
+/** The manual-figure objects that are NOT deals: each fund subtotal, Portfolio
+ *  Totals, and the excluding-development row. Keyed by the reserved vcode the
+ *  backend stores their Net ROE against (AGG_TOTAL_VCODE and friends), so a
+ *  save targeting one of them lands on the right object. */
+function aggregateTargets(): Record<string, any> {
+  const fin = bundle.value?.subtabs?.financial
+  if (!fin) return {}
+  const out: Record<string, any> = {}
+  for (const [g, blk] of Object.entries<any>(fin.groups || {})) {
+    if (blk.subtotal) out[`__GROUP__:${g}`] = blk.subtotal
+  }
+  if (fin.total) out['__TOTAL__'] = fin.total
+  if (fin.total_excluding_dev) out['__EXCLUDING_DEV__'] = fin.total_excluding_dev
+  return out
 }
 
 function onSaveValue(p: { vcode: string; field: string; value: string | number | null }) {
@@ -194,7 +250,11 @@ function onSaveValue(p: { vcode: string; field: string; value: string | number |
     // The Loan tab's comments never did this (see onSaveComment), which is why
     // they always felt right.
     const d = res.data || {}
+    // A deal row, or one of the aggregate rows — Net ROE is typeable at every
+    // level, and an aggregate stores against a reserved key rather than a
+    // vcode. Same endpoint, same response, same patch.
     const row = financialRows().find((r) => r.vcode === p.vcode)
+      || aggregateTargets()[p.vcode]
     if (row) {
       // The stored number, not the raw string: the backend parses "1,234"/"5%"
       // and the row must hold what was persisted.
