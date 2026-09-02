@@ -64,6 +64,13 @@ watch(footnotes, (list) => {
 function commitFootnote(f: any) {
   const text = (fnDraft.value[fnKey(f)] ?? '').trim()
   if (text === (f.text || '').trim()) return
+  // CLEARING THE TEXT REMOVES THE FOOTNOTE. It is the obvious gesture, and
+  // saving an empty one used to leave a blank entry that still held its number
+  // and still stamped its marker on a column header or property name.
+  if (!text) {
+    deleteFootnote(f)
+    return
+  }
   emit('editFootnote', { id: f.id ?? null, standingKey: f.standing_key ?? null, text })
 }
 
@@ -450,7 +457,8 @@ function placementLabel(f: any): string {
                  :value="fnDraft[fnKey(f)]"
                  @input="fnDraft[fnKey(f)] = ($event.target as HTMLInputElement).value"
                  @change="commitFootnote(f)"
-                 @keyup.enter="commitFootnote(f)" />
+                 @keyup.enter="commitFootnote(f)"
+                 placeholder="Footnote text — clear it to remove the footnote" />
           <span v-else class="fntext">{{ f.text }}</span>
           <!-- Every footnote can be reworded and removed, standing notes
                included. A standing note has no database row, so it is addressed
@@ -460,11 +468,13 @@ function placementLabel(f: any): string {
           <button v-if="editable && f.edited" class="btn-x undo"
                   title="Restore the standard wording for this note"
                   @click="emit('restoreStandingFootnote', f.standing_key)">&#8635;</button>
-          <button v-if="editable" class="btn-x"
+          <!-- Labelled, not a bare glyph. The × alone was not read as a way
+               to remove a footnote, so analysts cleared the text instead. -->
+          <button v-if="editable" class="btn-rm"
                   :title="f.standing_key
-                    ? 'Take this standing note off this quarter (reversible)'
-                    : 'Remove; the rest re-number'"
-                  @click="deleteFootnote(f)">&times;</button>
+                    ? 'Remove this standing note from this quarter, marker and all (reversible)'
+                    : 'Remove this footnote and its marker; the rest re-number'"
+                  @click="deleteFootnote(f)">Remove</button>
         </li>
       </ol>
       <p v-else class="hint">No footnotes. Numbering is assigned automatically and re-sequences on removal.</p>
@@ -689,6 +699,18 @@ tfoot tr:not(:first-child) td { border-top: none; }
 .fnedit:hover { border-bottom-color: var(--color-border); }
 .fnedit:focus { outline: none; border-bottom-color: #2c4f8c; background: #fbfcfe; }
 .btn-x.undo { color: #2c4f8c; }
+.btn-rm {
+  border: 1px solid var(--color-border);
+  background: #fff;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn-rm:hover { border-color: #a12622; color: #a12622; }
 .restore-chip { margin-left: 8px; white-space: nowrap; }
 .hint.restored { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 

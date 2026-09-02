@@ -410,6 +410,14 @@ def compose_footnotes(db_rows: Optional[list] = None,
                     "text": r.get("text") or ""})
     kept: list = []
     for f in out:
+        # A footnote with no text is not a footnote. Clearing the text is the
+        # obvious way to try to remove one, and before this it left a BLANK
+        # entry still holding its number and still stamping its marker on a
+        # column header or a property name — the "(1), (2) markers can't be
+        # cleared" report. The UI now deletes on an empty commit; this is the
+        # backstop for rows already saved in that state, and it costs nothing.
+        if not str(f.get("text") or "").strip():
+            continue
         pairs = [(k, footnote_scope(k)) for k in (f["anchors"] or [""])]
         if on_page is not None:
             pairs = [(k, s) for k, s in pairs

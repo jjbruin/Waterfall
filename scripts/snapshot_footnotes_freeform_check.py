@@ -87,8 +87,14 @@ def capture(outfile: str) -> int:
         {"id": 22, "anchor": edit_pfx + "a_key_that_was_renamed",
          "text": "Wording an analyst typed against a constant since renamed."}])
 
+    scenarios["blanked"] = _payload(PLAIN_ROWS[:1] + [
+        {"id": 30, "anchor": "deal:P0000019", "text": ""},
+        {"id": 31, "anchor": "total_cap", "text": "   "}])
+
     src = io.open(VUE, encoding="utf-8").read()
     scenarios["_vue"] = {
+        "clearing_removes": "if (!text) {" in src and "deleteFootnote(f)" in src,
+        "remove_is_labelled": ">Remove<" in src,
         "renders_placement_before_text": bool(
             re.search(r'class="fnanchor"', src)),
         "has_editable_footnote_input": 'class="fnedit"' in src,
@@ -120,11 +126,12 @@ def report(before_f: str, after_f: str) -> int:
               + ("\n           " + detail if detail else ""))
 
     print("\n1. The prefix was RENDERED, never stored")
-    chk("BEFORE: the component printed the placement in front of the text",
-        b["_vue"]["renders_placement_before_text"],
-        'the <span class="fnanchor">{{ placementLabel(f) }}:</span> that made '
-        'footnote 1 read "Debt column: Debt amount is..."')
-    chk("AFTER: it does not", not a["_vue"]["renders_placement_before_text"])
+    chk("no placement label is printed in front of the text",
+        not a["_vue"]["renders_placement_before_text"],
+        'baseline ' + ("HAD the <span class=\"fnanchor\">...</span> that made "
+                       'footnote 1 read "Debt column: Debt amount is..."'
+                       if b["_vue"]["renders_placement_before_text"]
+                       else "was already clean"))
     chk("stored text is unchanged by the composer on BOTH sides",
         _texts(b["baseline"])[-3:] == _texts(a["baseline"])[-3:]
         == [r["text"] for r in PLAIN_ROWS],
@@ -147,9 +154,10 @@ def report(before_f: str, after_f: str) -> int:
             for t in _texts(a["baseline"])))
 
     print("\n3. Every footnote is editable")
-    chk("AFTER: the list renders an editable input per note",
-        a["_vue"]["has_editable_footnote_input"])
-    chk("BEFORE: it did not", not b["_vue"]["has_editable_footnote_input"])
+    chk("the list renders an editable input per note",
+        a["_vue"]["has_editable_footnote_input"],
+        "baseline " + ("did not" if not b["_vue"]["has_editable_footnote_input"]
+                       else "already did"))
     ed = a["edited"]["footnotes"]
     note = next((f for f in ed if f["standing_key"] == "debt_basis"), None)
     chk("a STANDING note takes an override text",
@@ -159,17 +167,22 @@ def report(before_f: str, after_f: str) -> int:
         note and note["edited"] is True)
     chk("its number and anchors do not move",
         note and note["number"] == 1 and note["anchors"] == ["debt"])
-    chk("BEFORE: the same rows changed nothing",
-        next(f for f in b["edited"]["footnotes"]
-             if f.get("standing"))["text"].startswith("Debt amount is current"))
+    _b0 = next((f for f in b["edited"]["footnotes"] if f.get("standing")), {})
+    chk("the override, not the default, is what renders",
+        note and not note["text"].startswith("Debt amount is current"),
+        "baseline rendered "
+        + ("the default" if str(_b0.get("text", "")).startswith("Debt amount")
+           else "the override too"))
     chk("the override row does NOT also print as a footnote of its own",
         sum(1 for f in ed if "quarter-end balance" in f["text"]) == 1,
         "%d notes total" % len(ed))
 
     print("\n4. Every footnote is deletable, and a standing note comes back")
     dl = a["deleted"]["footnotes"]
-    chk("BEFORE: delete was offered only where there was a database id",
-        b["_vue"]["delete_gated_on_db_id_only"])
+    chk("delete is not gated on a database id",
+        not a["_vue"]["delete_gated_on_db_id_only"],
+        "baseline gated it" if b["_vue"]["delete_gated_on_db_id_only"]
+        else "baseline already ungated")
     chk("AFTER: it is offered for every note",
         not a["_vue"]["delete_gated_on_db_id_only"]
         and a["_vue"]["offers_restore"])
@@ -182,8 +195,10 @@ def report(before_f: str, after_f: str) -> int:
         [r["key"] for r in (a["deleted"]["standing_removed"] or [])]
         == ["roe_exclusion"],
         str(a["deleted"]["standing_removed"]))
-    chk("BEFORE: nothing was restorable because nothing could be deleted",
-        b["deleted"]["standing_removed"] in (None, []))
+    chk("a removed standing note is offered back",
+        bool(a["deleted"]["standing_removed"]),
+        "baseline offered "
+        + str(b["deleted"]["standing_removed"] or "nothing"))
     chk("numbering closes over the gap and stays contiguous",
         [f["number"] for f in dl] == list(range(1, len(dl) + 1)),
         str([f["number"] for f in dl]))
@@ -193,7 +208,37 @@ def report(before_f: str, after_f: str) -> int:
             for f in both)
         and not any(f["standing_key"] == "roe_exclusion" for f in both))
 
-    print("\n5. A rename does not swallow an analyst's wording")
+    print("\n5. A blank footnote is a REMOVED footnote")
+    # The reported symptom: "we can add and edit footnotes but there's no way
+    # to delete one, especially the number markers (1), (2) can't be cleared."
+    # Delete existed; what did not work was the obvious gesture. Clearing the
+    # text saved a BLANK footnote that still held its number and still stamped
+    # its marker on a column header or a property name.
+    bl = a["blanked"]["footnotes"]
+    chk("an emptied footnote holds no number", len(bl) == 3,
+        f"{len(bl)} notes: {[f['text'][:24] for f in bl]}")
+    chk("and no marker on the property it tagged",
+        not (a["blanked"]["marks"]["property"] or {}).get("P0000019"),
+        str(a["blanked"]["marks"]))
+    chk("nor on the column it tagged",
+        not (a["blanked"]["marks"]["column"] or {}).get("total_cap"))
+    chk("BEFORE: the blanks were numbered and marked",
+        len(b["blanked"]["footnotes"]) == 5
+        and bool((b["blanked"]["marks"]["property"] or {}).get("P0000019")),
+        f"{len(b['blanked']['footnotes'])} notes, marker "
+        f"{(b['blanked']['marks']['property'] or {}).get('P0000019')} on "
+        f"P0000019 — exactly the marker that could not be cleared")
+    chk("the survivors renumber with no gap",
+        [f["number"] for f in bl] == [1, 2, 3],
+        str([f["number"] for f in bl]))
+    chk("clearing the text now REMOVES rather than saving a blank",
+        a["_vue"]["clearing_removes"])
+    chk("and the remove control is labelled, not a bare glyph",
+        a["_vue"]["remove_is_labelled"],
+        "baseline had a bare x" if not b["_vue"].get("remove_is_labelled")
+        else "already labelled at the baseline")
+
+    print("\n6. A rename does not swallow an analyst's wording")
     uk = a["unknown_key"]["footnotes"]
     chk("an override naming a key that no longer exists still PRINTS",
         any("since renamed" in f["text"] for f in uk),
