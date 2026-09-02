@@ -161,8 +161,17 @@ def portfolio() -> None:
                   f"grain - not capital accounts, nothing to read into:")
             for i, v, o, _f in sorted(unfunded, key=lambda x: -x[2])[:6]:
                 print(f"         {i}/{v}: paid out ${o:,.2f} against no capital")
+            # ANSWERED (Jim, Sep 2 2026) - do not re-raise. The funded pairs
+            # below are all PSC3 as the investor into a fund vehicle, and PSC3
+            # had a redemption event: PSC1 acquired PSCMAN from PSC3 while the
+            # Investee Funds, previously held by PSC3's members, were assigned
+            # from the members to PSC3 directly. The mismatch is journal
+            # entries from that redemption. It does not reach any reported
+            # figure: returns are run for the individual assets INSIDE PSC3,
+            # never for PSC3 itself, and none of the entities listed here is in
+            # the deals table.
             print(f"      {len(funded)} funded pair(s) return more than they "
-                  f"took in - the only ones worth a question:")
+                  f"took in - PSC3 redemption journal entries, out of scope:")
             for i, v, o, f in sorted(funded, key=lambda x: -x[2])[:6]:
                 pct = (o / f * 100) if f else 0
                 print(f"         {i}/{v}: funded ${f:,.0f}, over by ${o:,.0f} "

@@ -1370,3 +1370,4 @@ to chase.
 **Process note**: this shipped on Jim's deploy request after I verified it did what its
 commit message said, without questioning whether it should do that. Verifying intent is
 not the same as verifying the premise.
+- [Reversed capital entries & PSC3](capital_reversal_and_psc3.md) — the abs() sign bug, and why PSC3 looks over-returned (answered, don't re-raise)
