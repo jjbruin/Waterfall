@@ -119,18 +119,35 @@ def main() -> int:
         chk("both deals are still in KEEP_DESPITE_SOLD",
             {"PCITWES", "P0000017"} <= set(KEEP_DESPITE_SOLD))
 
-        print("\n5. FLAGGED, NOT CHANGED — the ROE-exclusion footnote")
+        print("\n5. The ROE-exclusion footnote — City West only")
+        # Decided Sep 2 2026: East Manchester came out. A page cannot show a
+        # Net ROE for a deal and also footnote that the deal is excluded from
+        # ROE. City West stays — it was foreclosed, not sold, so there is
+        # genuinely no ROE to report.
+        from flask_app.services.portfolio_snapshot_financial import (
+            compose_footnotes, footnote_marks,
+        )
+        marks = footnote_marks(compose_footnotes([]))
         note = next((f for f in STANDING_FOOTNOTES
                      if "excluded from ROE" in f["text"]), None)
         print(f"      text:    {note['text'] if note else '(missing)'}")
         print(f"      anchors: {list(note.get('anchors') or ()) if note else []}")
-        chk("it still names BOTH deals, awaiting the author's decision",
-            note is not None
-            and "deal:P0000017" in [str(x) for x in (note.get("anchors") or ())],
-            "East Manchester now shows a Net ROE while this note says it is "
-            "excluded from ROE — the two cannot both be true. Removing "
-            "P0000017 from anchors is the one-line change if the author wants "
-            "the note to be City West only.")
+        anchors = [str(x) for x in (note.get("anchors") or ())] if note else []
+        chk("East Manchester is NOT anchored to it",
+            "deal:P0000017" not in anchors,
+            "its Net ROE is typeable and its ITD shows, so the note would "
+            "contradict its own row")
+        chk("and its name is not in the text either",
+            note is not None and "East Manchester" not in note["text"],
+            "removing only the anchor would leave a note naming a deal it no "
+            "longer marks")
+        chk("City West is still anchored — foreclosed, genuinely no ROE",
+            "deal:PCITWES" in anchors)
+        chk("no marker is placed on East Manchester's property name",
+            not (marks["property"] or {}).get("P0000017"),
+            str(marks["property"]))
+        chk("City West still carries its marker",
+            bool((marks["property"] or {}).get("PCITWES")))
 
     passed = sum(CHECKS)
     print(f"\n  {passed}/{len(CHECKS)} checks passed")

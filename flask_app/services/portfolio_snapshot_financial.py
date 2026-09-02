@@ -247,19 +247,23 @@ STANDING_FOOTNOTES: tuple = (
     # numbers, so a second note would print the same sentence twice under two
     # numbers. ``anchors`` (plural) puts one number on both property names;
     # ``anchor`` (singular) still works and is what the database rows use.
-    # FLAGGED FOR THE AUTHOR, NOT CHANGED (Sep 2 2026). This note says East
-    # Manchester is excluded from ROE, but from 26Q2 its Net ROE is a cell the
-    # analyst types into and its ITD distributions are shown, precisely so the
-    # sold deal's contribution to fund ROE is visible. The two statements
-    # cannot both be true. Removing P0000017 from ``anchors`` below is the
-    # one-line change if the author decides the note should be City West only;
-    # it is deliberately left alone until they do. City West itself is
-    # genuinely excluded — it was foreclosed, and its Net ROE stays n/a through
-    # PDF_NA_CELLS.
+    # CITY WEST ONLY. East Manchester was added to this note on Sep 2 2026 and
+    # removed the same day, at the author's decision, because the page had
+    # started contradicting itself: East Manchester's Net ROE is a cell the
+    # analyst types into and its ITD distributions are shown — that is the whole
+    # reason its row is kept after the sale — so a footnote saying it is
+    # excluded from ROE could not also be true.
+    #
+    # City West stays. It was FORECLOSED, not sold: there is no ROE to report,
+    # its Net ROE renders n/a through its own PDF_NA_CELLS entry, and the two
+    # deals are not the same case even though both are in KEEP_DESPITE_SOLD.
+    #
+    # ``anchors`` (plural) is kept rather than reverting to the singular
+    # ``anchor``: the multi-anchor path is exercised by other notes and by the
+    # guardrails, and a one-element tuple reads the same to compose_footnotes.
     {"key": "roe_exclusion",
-     "anchors": (property_anchor("PCITWES"), property_anchor("P0000017")),
-     "text": "City West and East Manchester are excluded from ROE "
-             "calculations."},
+     "anchors": (property_anchor("PCITWES"),),
+     "text": "City West is excluded from ROE calculations."},
 )
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -685,8 +689,9 @@ PDF_NA_CELLS: dict[str, frozenset] = {
 #: fidelity, and that is untouched. So the sale-keyed rule now blanks only what
 #: the sale genuinely invalidates, and the one deal that really is out of the
 #: ROE numbers says so through its own entry rather than through a rule that
-#: also catches deals we are measuring. FLAGGED: the standing ROE-exclusion
-#: footnote still names both deals — see the note in STANDING_FOOTNOTES.
+#: also catches deals we are measuring. The standing ROE-exclusion footnote was
+#: narrowed to City West on the same day, so the page no longer says East
+#: Manchester is excluded from ROE while showing its Net ROE.
 #:
 #: ``itd`` was never here: inception-to-date distributions are a real, final
 #: figure for a sold deal (City West carries 0.4 at 26Q2) and must keep
