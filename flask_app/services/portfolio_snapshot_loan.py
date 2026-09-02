@@ -84,6 +84,7 @@ under whatever the rule is at read time.
 from __future__ import annotations
 
 import logging
+from datetime import date as _date
 from typing import Callable, Optional
 
 import pandas as pd
@@ -100,7 +101,15 @@ log = logging.getLogger(__name__)
 #: the stale-debt cases (JB Fair Park 457.7%, Trolley Square 366.4%).
 LTV_REVIEW_CEILING = 1.50
 
+#: Retired as a displayed value Sep 2 2026 — a multi-loan deal now lists its
+#: loans (see _loan_terms). Kept because the self-test and the guardrails name
+#: it when asserting that nothing renders it any more.
 VARIOUS = "Various"
+
+#: What separates one loan's terms from the next in a single cell. Spaces
+#: around the bar so the column can wrap between loans instead of forcing the
+#: table wider.
+TERM_SEP = " | "
 
 #: vIntType values that mean the loan is priced off an index rather than a
 #: single all-in rate. Only 'Variable' occurs on live today (19 of 90 rows);
@@ -427,41 +436,82 @@ def _loan_terms(rows: pd.DataFrame) -> dict:
             return None, idx
         return None, None
 
+    def fmt_mat(m):
+        return None if m is None else f"{m.month}/{m.day}/{m.year}"
+
     terms = []
     for _, r in rows.iterrows():
         rate, rate_disp = rate_of(r)
-        terms.append((rate, maturity_of(r), _s(r.get("vIntType")).lower(),
-                      rate_disp))
+        terms.append({"rate": rate, "maturity": maturity_of(r),
+                      "interest_type": _s(r.get("vIntType")).lower(),
+                      "rate_display": rate_disp,
+                      "amount": _num(r.get("mOrigLoanAmt"))})
 
     out["loan_count"] = len(terms)
-    distinct = {t for t in terms}
-    if len(distinct) == 1:
-        rate, mat, itype, rate_disp = terms[0]
-        out.update(rate=rate, maturity=mat, interest_type=itype or None,
-                   rate_display=rate_disp,
-                   maturity_display=(None if mat is None
-                                     else f"{mat.month}/{mat.day}/{mat.year}"))
+
+    # Two loans on identical terms are one line, not the same value printed
+    # twice. Keyed on what the reader sees.
+    seen, uniq = set(), []
+    for t in terms:
+        k = (t["rate_display"], t["maturity"], t["interest_type"])
+        if k not in seen:
+            seen.add(k)
+            uniq.append(t)
+
+    if len(uniq) == 1:
+        t = uniq[0]
+        out.update(rate=t["rate"], maturity=t["maturity"],
+                   interest_type=t["interest_type"] or None,
+                   rate_display=t["rate_display"],
+                   maturity_display=fmt_mat(t["maturity"]))
         return out
 
-    # More than one distinct term set -> Various on whichever field differs.
-    # Compared on the rate *descriptor*, so a fixed 4.25% and a floating
-    # SOFR+2.00% register as different even though both lack a shared nRate.
-    rate_descs = {t[3] for t in terms}
-    mats = {t[1] for t in terms}
-    types = {t[2] for t in terms}
+    # ── More than one loan: LIST THEM, do not collapse to "Various" ────────
+    #
+    # "Various" told the reader a deal had several loans and then withheld all
+    # of them. Each loan's actual terms are printed instead, joined by " | ",
+    # LARGEST FACILITY FIRST so Rate and Maturity are in the same order and
+    # position n of one pairs with position n of the other.
+    #
+    # A field whose values are all the SAME stays a single value rather than
+    # being repeated once per loan: three of the four multi-loan deals at 26Q1
+    # share one maturity across both facilities, and "8/18/2027 | 8/18/2027"
+    # doubles the column width to say what one date already says. The pairing
+    # still reads correctly — a single value applies to every loan listed.
+    #
+    # ``various`` stays True: it means "this deal has more than one facility",
+    # which is still the case and is what the callers test.
+    uniq.sort(key=lambda t: (-(t["amount"] or 0.0),
+                             t["maturity"] or _date.max,
+                             t["rate_display"] or ""))
     out["various"] = True
-    if len(rate_descs) == 1:
-        out["rate"] = terms[0][0]
-        out["rate_display"] = terms[0][3]
+    out["terms_list"] = [
+        {"rate_display": t["rate_display"],
+         "maturity_display": fmt_mat(t["maturity"]),
+         "amount": t["amount"], "interest_type": t["interest_type"] or None}
+        for t in uniq]
+
+    rate_descs = [t["rate_display"] for t in uniq]
+    mats = [t["maturity"] for t in uniq]
+    types = [t["interest_type"] for t in uniq]
+
+    if len(set(rate_descs)) == 1:
+        out["rate"] = uniq[0]["rate"]
+        out["rate_display"] = rate_descs[0]
     else:
-        out["rate_display"] = VARIOUS
-    if len(mats) == 1 and terms[0][1] is not None:
-        m = terms[0][1]
-        out["maturity"] = m
-        out["maturity_display"] = f"{m.month}/{m.day}/{m.year}"
+        # A loan with no readable pricing prints an em dash in its slot rather
+        # than closing up, so the positions still line up with Maturity.
+        out["rate_display"] = TERM_SEP.join(d or "—" for d in rate_descs)
+
+    if len(set(mats)) == 1:
+        out["maturity"] = mats[0]
+        out["maturity_display"] = fmt_mat(mats[0])
     else:
-        out["maturity_display"] = VARIOUS
-    out["interest_type"] = terms[0][2] if len(types) == 1 else VARIOUS
+        out["maturity_display"] = TERM_SEP.join(
+            fmt_mat(m) or "—" for m in mats)
+
+    out["interest_type"] = (types[0] if len(set(types)) == 1
+                            else TERM_SEP.join(t or "—" for t in types))
     return out
 
 

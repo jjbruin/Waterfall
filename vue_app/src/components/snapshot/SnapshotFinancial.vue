@@ -609,18 +609,26 @@ tr.exdev .label {
   padding: 5px 8px;
 }
 
+/* The fund-group separator, same weight as the Operating and Loan subtabs use
+   — this one was a lighter --color-border and read as a hairline next to them.
+   The print stylesheet restates these once for all three tables; see the
+   separator block in PortfolioSnapshotPrintView. */
 .subtotal td {
   font-weight: 700;
-  border-top: 1px solid var(--color-border);
+  border-top: 1px solid var(--color-text-secondary);
   background: #f8f9fa;
 }
 .subtotal .small, tfoot .small { font-weight: 400; font-size: 10px; color: var(--color-text-secondary); }
 
 tfoot td {
   font-weight: 800;
-  border-top: 2px solid var(--color-border);
+  border-top: 2px solid var(--color-text);
   background: #f2f4f7;
 }
+/* Only the FIRST tfoot row carries the heavy rule. The excluding-development
+   row sits under Portfolio Totals as part of the same block and would
+   otherwise repeat it. */
+tfoot tr:not(:first-child) td { border-top: none; }
 
 .tag {
   font-size: 9px;

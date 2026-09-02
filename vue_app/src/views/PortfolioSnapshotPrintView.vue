@@ -350,6 +350,38 @@ onMounted(async () => {
   :deep(.numinput.pending) { visibility: hidden !important; }
   :deep(.manual.small) { visibility: hidden !important; }
 
+  /* ---- fund-group separator rules (Financial, Operating, Loan) ----
+     The 26Q1 report breaks the table up with horizontal lines so the eye can
+     find where one fund ends and its subtotal begins, instead of reading 30
+     unbroken rows. Declared HERE, once, with :deep() rather than three times
+     in three scoped components, so the three tables cannot drift apart — the
+     same reason group_total_label lives in the service layer.
+
+     Placement: a rule above every fund subtotal, a heavier one above the
+     portfolio total, and the inter-group spacer keeps the groups apart. NOT on
+     the Summary page, which is narrative and charts and has no such table —
+     the selectors are anchored on `table.grid`, which only the three data
+     subtabs render.
+
+     The reference PDF is not in this repository (only its values are, in
+     scripts/snapshot_pdf_variance_pdfdata.py), so the weights match the
+     convention the Operating and Loan subtabs already use on screen rather
+     than a measurement of the original. One place to change if it needs to be
+     heavier or lighter. */
+  :deep(table.grid tr.subtotal td) {
+    border-top: 1px solid var(--color-text-secondary) !important;
+  }
+  :deep(table.grid tfoot tr:first-child td) {
+    border-top: 2px solid var(--color-text) !important;
+  }
+  /* The blank row between one group and the next. It carries the separation on
+     paper, so it must not be squeezed out by the fit rules below. */
+  :deep(table.grid tr.spacer td) {
+    height: 6px !important;
+    padding: 0 !important;
+    border: none !important;
+  }
+
   /* On-screen chrome that means nothing on paper. */
   :deep(.legend) { display: none !important; }
   :deep(.diag), :deep(.fnadd), :deep(.hint) { display: none !important; }

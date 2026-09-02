@@ -13,6 +13,15 @@
 import { computed, ref, watch } from 'vue'
 import { fmtM, fmtPct, fmtX, disp, isLiteral, DASH } from './format'
 
+/** The per-loan breakdown, for the cell's tooltip: which facility is which. */
+function termsTitle(r: any): string {
+  const list = r?.terms_list
+  if (!Array.isArray(list) || list.length < 2) return ''
+  return list.map((t: any, i: number) =>
+    `${i + 1}. ${t.rate_display || '—'} · ${t.maturity_display || '—'}`
+    + (t.amount ? ` · $${(t.amount / 1e6).toFixed(1)}M` : '')).join('\n')
+}
+
 const props = defineProps<{
   data: any
   editable: boolean
@@ -161,8 +170,16 @@ function debtCell(r: any): unknown {
                       title="No loans on this deal; terms inherited from its child properties">child</span>
                 <span v-for="(f, i) in (r.flags || [])" :key="i" class="warn-dot" :title="f">!</span>
               </td>
-              <td :class="{ various: r.terms_various }">{{ r.rate_display ?? DASH }}</td>
-              <td :class="{ various: r.terms_various }">{{ r.maturity_display ?? DASH }}</td>
+              <!-- A multi-loan deal lists each facility's real terms, largest
+                   first, joined by " | " and in the same order across both
+                   columns, so the first rate belongs to the first maturity.
+                   `multi` only lets the cell wrap between loans; it is real
+                   data now and is not dimmed. It used to read "Various", which
+                   is why these were styled as a soft literal. -->
+              <td :class="{ multi: r.terms_various }" :title="termsTitle(r)">
+                {{ r.rate_display ?? DASH }}</td>
+              <td :class="{ multi: r.terms_various }" :title="termsTitle(r)">
+                {{ r.maturity_display ?? DASH }}</td>
               <!-- debt_display, not debt: a debt-free deal prints a dash where
                    its real 0.0 balance would otherwise read as "$0.0". Same
                    pattern as SnapshotFinancial's debt_display. -->
@@ -320,7 +337,10 @@ table.grid th.r { text-align: right; }
 
 /* A backend literal ("Dev", n/a) is not a measurement — de-emphasise it. */
 .lit { color: var(--color-text-secondary); font-style: italic; }
-.various { color: var(--color-text-secondary); font-style: italic; }
+/* A cell listing more than one loan. Normal weight and colour — it is data,
+   not a placeholder — and allowed to wrap at the separator so two facilities
+   never force the table wider than one printed page. */
+.multi { white-space: normal; }
 .star { color: #b26a00; font-weight: 800; cursor: help; }
 
 .grouprow td {
