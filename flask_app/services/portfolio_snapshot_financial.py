@@ -247,6 +247,15 @@ STANDING_FOOTNOTES: tuple = (
     # numbers, so a second note would print the same sentence twice under two
     # numbers. ``anchors`` (plural) puts one number on both property names;
     # ``anchor`` (singular) still works and is what the database rows use.
+    # FLAGGED FOR THE AUTHOR, NOT CHANGED (Sep 2 2026). This note says East
+    # Manchester is excluded from ROE, but from 26Q2 its Net ROE is a cell the
+    # analyst types into and its ITD distributions are shown, precisely so the
+    # sold deal's contribution to fund ROE is visible. The two statements
+    # cannot both be true. Removing P0000017 from ``anchors`` below is the
+    # one-line change if the author decides the note should be City West only;
+    # it is deliberately left alone until they do. City West itself is
+    # genuinely excluded — it was foreclosed, and its Net ROE stays n/a through
+    # PDF_NA_CELLS.
     {"key": "roe_exclusion",
      "anchors": (property_anchor("PCITWES"), property_anchor("P0000017")),
      "text": "City West and East Manchester are excluded from ROE "
@@ -665,12 +674,24 @@ PDF_NA_CELLS: dict[str, frozenset] = {
 #:            9,641,912 genuinely outstanding, and a static entry would blank a
 #:            correct figure on that page too. Keyed on the sale, 26Q1 is
 #:            untouched and 26Q2 onward reads n/a.
-#:   net_roe  both deals are excluded from ROE — the standing footnote says so
-#:            in as many words. Its marker is anchored to both property names.
+#: ``net_roe`` WAS here and is not any more (Sep 2 2026, at the report author's
+#: request). A sold deal's ROE and ITD distributions are tracked — they are the
+#: point of keeping the row on the page — so Net ROE has to stay a cell the
+#: analyst can type in. Suppressing it here made it read-only and there was no
+#: way to enter one.
 #:
-#: ``itd`` is NOT here: inception-to-date distributions are a real, final figure
-#: for a sold deal (City West carries 0.4 at 26Q2) and must keep prompting.
-SOLD_NA_CELLS: frozenset = frozenset({"debt", "net_roe"})
+#: City West is UNAFFECTED by that: its Net ROE reads n/a because it is listed
+#: in ``PDF_NA_CELLS`` above, a static per-deal entry for reference-PDF
+#: fidelity, and that is untouched. So the sale-keyed rule now blanks only what
+#: the sale genuinely invalidates, and the one deal that really is out of the
+#: ROE numbers says so through its own entry rather than through a rule that
+#: also catches deals we are measuring. FLAGGED: the standing ROE-exclusion
+#: footnote still names both deals — see the note in STANDING_FOOTNOTES.
+#:
+#: ``itd`` was never here: inception-to-date distributions are a real, final
+#: figure for a sold deal (City West carries 0.4 at 26Q2) and must keep
+#: prompting for entry.
+SOLD_NA_CELLS: frozenset = frozenset({"debt"})
 # ══════════════════════════════════════════════════════════════════════════
 
 
