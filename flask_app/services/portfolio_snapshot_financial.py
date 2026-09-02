@@ -693,6 +693,17 @@ PDF_NA_CELLS: dict[str, frozenset] = {
 #: narrowed to City West on the same day, so the page no longer says East
 #: Manchester is excluded from ROE while showing its Net ROE.
 #:
+#: DEBT STAYS n/a EVEN THOUGH THE ROW IS NOW READ AT ITS LAST HELD QUARTER, and
+#: that is a decision, not an oversight — do not "fix" it. Once
+#: ``last_held_quarter`` rebases a kept-sold row to the quarter before the sale,
+#: the balance it would show is no longer the stale post-sale reading this rule
+#: was written to suppress: East Manchester's $9,641,912 was genuinely
+#: outstanding at 26Q1. Raised with the author Sep 2 2026, who chose to keep it
+#: blank — the row is there to carry the equity behind a sold deal's ROE, not to
+#: restate its leverage. The consequence, accepted knowingly, is that Total Cap
+#: reads 6.0M (pref + partner equity) rather than 15.6M, so the row foots
+#: against what it prints. Reopening this means changing what the row is FOR.
+#:
 #: ``itd`` was never here: inception-to-date distributions are a real, final
 #: figure for a sold deal (City West carries 0.4 at 26Q2) and must keep
 #: prompting for entry.
