@@ -27,6 +27,13 @@ INSUFFICIENT OPERATING HISTORY — a deal owned for less than one full quarter
 also reads n/a in every metric column, for the same reason a dev deal does and
 by the same mechanism. See ``INSUFFICIENT_HISTORY_MONTHS``.
 
+TEMPORARY PER-DEAL SUPPRESSION — one deal (Hanestowne Waterstone) reads n/a by
+name rather than by rule, because the outcome the report author wants cannot be
+expressed as an ownership age: Hanestowne at 3.4 months and Plaza Del Mar at
+3.5 are three days apart and are to be treated differently. See
+``TEMP_OPERATING_SUPPRESS``, which also records the data-driven rule that would
+replace it and why that rule was not written blind.
+
 The UI must render the ``*_display`` twins, never the raw fields — a metric
 formatted straight from ``noi`` or ``expected_growth`` silently opts out of the
 suppression rule. That is the same contract ``format.ts`` states from the other
@@ -185,6 +192,46 @@ DEV_SUPPRESSED_COLUMNS = ("econ_occ", "noi", "expected_growth", "actual_growth")
 #: deal in the portfolio is Jefferson Stephens at 5.4. Anything from ~1 to ~5
 #: selects the same two deals.
 INSUFFICIENT_HISTORY_MONTHS = 3.0
+
+# ══════════════════════════════════════════════════════════════════════════
+# TEMPORARY, HANESTOWNE ONLY — an editorial exception to a working rule
+# ══════════════════════════════════════════════════════════════════════════
+#: Deals whose Operating metrics read n/a regardless of what the rules above
+#: decide. Every column: econ occ, all three NOI figures, and both growth
+#: figures.
+#:
+#: A PER-DEAL HARDCODE, and the third on the Portfolio Snapshot after
+#: MANUAL_RATIO_SEEDS and PROJECTED_YE_NOI_FALLBACK. Labelled rather than
+#: dressed up. What makes it defensible here, and it is a narrow argument:
+#:
+#:   THE REQUESTED OUTCOME IS NOT EXPRESSIBLE AS AN AGE. Hanestowne Waterstone
+#:   (P0000118) is 3.4 months owned at 26Q2 and Plaza Del Mar (P0000116) is
+#:   3.5 — THREE DAYS APART. The report author wants Hanestowne suppressed and
+#:   Plaza Del Mar showing its figures, so no value of
+#:   INSUFFICIENT_HISTORY_MONTHS can separate them: 5.0 catches both, 3.0
+#:   catches neither. This is therefore an exception to a rule that works, not
+#:   a patch over one that does not, which is the distinction that matters
+#:   when reading it as a hardcode.
+#:
+#: THE DURABLE RULE IS PROBABLY NOT AGE AT ALL. The stated reason Hanestowne
+#: differs from Plaza Del Mar is that it has no actual operating data, while
+#: Plaza Del Mar has data the page can print. If that is the real distinction
+#: then the rule wants to be "suppress a recent acquisition carrying no actual
+#: operating readings" — keyed on the data, retiring itself the quarter the
+#: feed starts, and covering the next acquisition without anyone editing this
+#: file. It is not implemented here because P0000118 is absent from the local
+#: snapshot (accounting ends 2026-06-02), so the premise could not be measured
+#: rather than assumed. Raised with the report author; see the module docstring.
+#:
+#: TO RETIRE: delete the vcode. Nothing else references it, the raw values are
+#: never touched, and the row goes back to whatever the rules compute. It does
+#: NOT expire on its own — it is a vcode set, per the work order, so it will
+#: keep firing next quarter when Hanestowne has history unless someone removes
+#: it. Tracked by the weekday `retire-manual-ratio-seeds` reminder alongside the
+#: other two hardcodes for exactly that reason.
+TEMP_OPERATING_SUPPRESS: frozenset = frozenset({
+    "P0000118",          # Hanestowne Waterstone — 3.4 months owned at 26Q2
+})
 
 #: One Pager ``property_performance`` column -> our NOI key. The One Pager calls
 #: Projected YE "actual_ye"; kept as a map so the three read paths that need the
@@ -587,7 +634,7 @@ def assemble_operating(investor_code: str, quarter: str, *,
             # NOI columns where the One Pager returned its untouched default
             # (revenue, expenses and NOI all zero) and we emit None instead.
             "unpopulated_noi": 0,
-            "insufficient_history": 0}
+            "insufficient_history": 0, "temp_suppressed": 0}
 
     def build_row(vcode: str, name: str, strategy: str,
                   extra_flags: Optional[list] = None) -> dict:
@@ -646,6 +693,18 @@ def assemble_operating(investor_code: str, quarter: str, *,
             flags.append(
                 "no closing date on the payload — the insufficient-history "
                 "rule could not be applied to this deal")
+        # TEMPORARY per-deal override — see TEMP_OPERATING_SUPPRESS. Kept
+        # separate from `insufficient` so the row can say which rule blanked it
+        # and the age rule's own reporting stays honest about what it caught.
+        temp_suppressed = (str(vcode or "").strip().upper()
+                           in TEMP_OPERATING_SUPPRESS)
+        if temp_suppressed:
+            diag["temp_suppressed"] = diag.get("temp_suppressed", 0) + 1
+            flags.append(
+                "TEMPORARY per-deal suppression — recent acquisition without "
+                "enough operating history to report; every metric shown as n/a "
+                "(see TEMP_OPERATING_SUPPRESS, remove the vcode to retire)")
+
         insufficient = mo is not None and mo < INSUFFICIENT_HISTORY_MONTHS
         if insufficient:
             diag["insufficient_history"] += 1
@@ -709,6 +768,8 @@ def assemble_operating(investor_code: str, quarter: str, *,
             column regardless of which ones its stabilisation stage would
             normally support.
             """
+            if temp_suppressed:
+                return NA_LABEL
             if insufficient:
                 return NA_LABEL
             if dev and not _dev_exempt(vcode, column):
@@ -732,6 +793,10 @@ def assemble_operating(investor_code: str, quarter: str, *,
             # itself rather than the reason living only in this file.
             "insufficient_history": insufficient,
             "months_owned": (round(mo, 1) if mo is not None else None),
+            # A TEMPORARY per-deal override blanked this row, NOT the age rule.
+            # Surfaced so the report marks the hardcode rather than it living
+            # only in this file — same contract as dev_display_exception.
+            "temp_suppressed": temp_suppressed,
             # Fall back Projected YE -> YTD actual -> At Close: several deals
             # carry only some of the three (Giant 7 has no Projected YE
             # occupancy at 26Q1), and blanking the cell when a reading does
@@ -740,7 +805,8 @@ def assemble_operating(investor_code: str, quarter: str, *,
                 (v for v in (occ["projected_ye"], occ["ytd_actual"],
                              occ["at_close"]) if v is not None), None)),
             "econ_occ_basis": (
-                "insufficient operating history" if insufficient
+                "TEMPORARY per-deal suppression" if temp_suppressed
+                else "insufficient operating history" if insufficient
                 else "dev" if (dev and not _dev_exempt(vcode, "econ_occ"))
                 else next(
                     (k for k in ("projected_ye", "ytd_actual", "at_close")
