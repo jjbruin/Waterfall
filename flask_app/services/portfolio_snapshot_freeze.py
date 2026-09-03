@@ -96,19 +96,35 @@ def _one_pager_provider(data: dict) -> Callable:
 
     Lean path: calls only ``get_capitalization_stack`` and
     ``get_property_performance`` directly — the only two sections the
-    snapshot subtabs read. Skips ``pe_performance``, ``general``, and
-    ``comments`` (3 of the 5 sub-functions in ``get_one_pager_data``),
-    cutting per-deal cost by ~60%.
+    snapshot subtabs read. Skips ``pe_performance`` and ``comments``, and
+    builds ``general`` from the ``inv`` row rather than calling
+    ``get_general_information``, cutting per-deal cost by ~60%.
+
+    THE GENERAL BLOCK CARRIES ONE FIELD, AND IT IS NOT OPTIONAL. Skipping the
+    block entirely used to mean the Operating tab's insufficient-history rule
+    read no closing date for ANY deal: ``months_owned`` returns None without
+    one, the rule is guarded on ``mo is not None``, and so it NEVER FIRED —
+    measured at 30 of 30 deals on the 26Q2 page before this. A brand-new
+    acquisition was therefore reported as though it had a full operating
+    history. The date comes straight off the row through
+    ``one_pager.closing_date_from_row``, the same precedence the full path
+    applies, so the two cannot disagree and no extra query is made.
 
     The shared ``get_one_pager_data`` is NOT modified — this is a parallel
     path that returns the same ``cap_stack`` and ``property_performance``
     keys with identical values.
     """
     from one_pager import (
-        get_capitalization_stack, get_property_performance,
+        closing_date_from_row, get_capitalization_stack,
+        get_property_performance,
     )
 
     deal_terms = data.get("deal_terms_raw")
+    inv = data["inv"]
+    _inv_by_vcode: dict = {}
+    if inv is not None and not getattr(inv, "empty", True) and "vcode" in inv.columns:
+        for _, _r in inv.iterrows():
+            _inv_by_vcode.setdefault(str(_r["vcode"]).strip().upper(), _r)
     cache: dict = {}
 
     def provider(vcode: str, quarter: str) -> dict:
@@ -144,6 +160,13 @@ def _one_pager_provider(data: dict) -> Callable:
             cache[key] = {
                 "cap_stack": cap_stack,
                 "property_performance": prop_perf,
+                # Only what a subtab actually reads — today, the closing date
+                # the insufficient-history rule needs. Deliberately not the
+                # whole general block: this path exists to stay lean.
+                "general": {
+                    "date_closed": closing_date_from_row(
+                        _inv_by_vcode.get(str(vcode).strip().upper())),
+                },
             }
         return cache[key]
 

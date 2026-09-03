@@ -629,7 +629,23 @@ def assemble_operating(investor_code: str, quarter: str, *,
         # Independent of the dev rule and applied to the same four columns; see
         # INSUFFICIENT_HISTORY_MONTHS for why this reads ownership age rather
         # than trying to infer "too new" from the readings themselves.
+        # The guard fails OPEN — no closing date means no suppression — so a
+        # payload that does not carry one silently exempts the deal. That is
+        # backwards for a rule whose purpose is catching deals too new to
+        # report, and it is how the rule managed to fire on NOTHING until the
+        # lean provider started supplying the date (Sep 3 2026): `months_owned`
+        # returned None for all 30 deals on the page.
+        #
+        # Left failing open on purpose — suppressing on unknown would blank a
+        # deal whose payload lacks the field for an unrelated reason — but the
+        # condition is now REPORTED, so it shows up as a flag rather than as a
+        # rule that quietly does nothing.
         mo = months_owned(payload, q_end)
+        if mo is None:
+            diag["no_closing_date"] = diag.get("no_closing_date", 0) + 1
+            flags.append(
+                "no closing date on the payload — the insufficient-history "
+                "rule could not be applied to this deal")
         insufficient = mo is not None and mo < INSUFFICIENT_HISTORY_MONTHS
         if insufficient:
             diag["insufficient_history"] += 1

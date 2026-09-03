@@ -225,6 +225,34 @@ def get_underwritten_exit(event_dates: Optional[pd.DataFrame],
                               'Asset Management', 'U/W Exit', 'Actual')
 
 
+#: Where a deal's closing date comes from, in precedence order. Exported
+#: because TWO paths need it and they must not drift: ``get_general_information``
+#: below, and the Portfolio Snapshot's lean provider
+#: (``portfolio_snapshot_freeze._one_pager_provider``), which skips the general
+#: block for speed but still has to supply this one field — the Operating tab's
+#: insufficient-history rule reads it, and read nothing at all until Sep 3 2026.
+DATE_CLOSED_COLUMNS = ("Acquisition_Date", "DateClosed", "Date_Closed",
+                       "dtClosed", "ClosingDate")
+
+
+def closing_date_from_row(row) -> Optional[date]:
+    """A deal's closing date from its ``inv`` row, or None.
+
+    The same precedence and the same parse ``get_general_information`` applies,
+    so the lean provider and the full One Pager cannot disagree about when a
+    deal closed.
+    """
+    if row is None:
+        return None
+    for col in DATE_CLOSED_COLUMNS:
+        try:
+            if col in row.index and pd.notna(row[col]):
+                return pd.to_datetime(row[col]).date()
+        except Exception:
+            continue
+    return None
+
+
 def get_general_information(inv_map: pd.DataFrame, vcode: str,
                             event_dates: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
     """
@@ -283,7 +311,7 @@ def get_general_information(inv_map: pd.DataFrame, vcode: str,
         'investment_strategy': ['Investment_Strategy', 'Lifecycle', 'InvestmentStrategy', 'Strategy', 'vStrategy'],
         'units': ['Total_Units', 'Units', 'iUnits', 'units'],
         'sqft': ['Size_Sqf', 'SF', 'SquareFeet', 'SqFt', 'sqft', 'mSF'],
-        'date_closed': ['Acquisition_Date', 'DateClosed', 'Date_Closed', 'dtClosed', 'ClosingDate'],
+        'date_closed': list(DATE_CLOSED_COLUMNS),
         'year_built': ['Year_Built', 'YearBuilt', 'iYearBuilt'],
         # anticipated_exit is sourced from event_dates above, not from inv
         'investment_name': ['Investment_Name', 'InvestmentName', 'vName'],
