@@ -147,6 +147,18 @@ body {
     margin: 0;
   }
 
+  /* Landscape sheets, for documents whose tables need width rather than
+     height. A NAMED page box only applies to an element that asks for it with
+     `page: landscape-sheet`, so declaring it globally changes nothing on its
+     own — which is what lets orientation vary per document without any view
+     redefining the default page box and breaking the others (see above). The
+     Portfolio Snapshot's printed report opts in; the One Pager and the Lease
+     Abstract stay portrait. */
+  @page landscape-sheet {
+    size: letter landscape;
+    margin: 0;
+  }
+
   .sidebar {
     display: none !important;
   }

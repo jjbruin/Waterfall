@@ -683,6 +683,18 @@ tfoot tr:not(:first-child) td { border-top: none; }
   background: var(--color-surface);
 }
 .footnotes h4 { font-size: 13px; margin: 0 0 8px 0; }
+/* On paper the block sits under a full-page table and every line of it
+   competes with a deal row for the same inches. */
+@media print {
+  /* This block competes with deal rows for the same inches: it sits under a
+     table that runs the height of the page, and at its screen size it needed
+     1.08in against the 0.88in left over — which is what pushed a three-line
+     note onto a fifth sheet of its own. Roughly 0.45in here. */
+  .footnotes { padding: 3px 6px; margin-top: 4px; }
+  .footnotes h4 { font-size: 8.5px; margin: 0 0 2px 0; }
+  .fnlist { font-size: 7px; }
+  .fnlist li { padding: 0; line-height: 1.25; }
+}
 /* An editable footnote is a borderless input so the list reads as text, not
    as a form: the analyst clicks the words and types. It gains a rule only on
    hover and focus. */

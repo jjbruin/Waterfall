@@ -157,7 +157,7 @@ onMounted(async () => {
 
       <!-- ══ PAGE 2 — Financial ══ -->
       <section class="print-page">
-        <h1 class="pdf-title">PORTFOLIO SNAPSHOT</h1>
+        <h1 class="pdf-title repeat">PORTFOLIO SNAPSHOT</h1>
         <div class="pdf-client">{{ investorName }}</div>
         <div class="pdf-sub">
           Current Portfolio Update (Balances as of {{ asOf }}, $ millions)
@@ -206,7 +206,7 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   gap: 12px;
-  max-width: 8.5in;
+  max-width: 11in;
   margin: 0 auto 12px auto;
 }
 .btn {
@@ -225,10 +225,20 @@ onMounted(async () => {
 /* On screen each page is a sheet, so the pagination is visible before printing
    rather than being a surprise at the dialog. */
 .print-page {
-  width: 8.5in;
-  min-height: 11in;
+  /* LANDSCAPE. The tables, not the charts, decide this: every one of pages
+     2-4 laid out WIDER than a portrait column (7.68in of content in 7.50in)
+     while leaving 2-3in of blank paper at the foot, and the only way they fit
+     at all was 4.5pt type — below legal fine print. Landscape trades 2.5in of
+     height for 2.5in of width, which is the exchange this document wants; the
+     vertical slack absorbs most of the loss. Page 1 is landscape too rather
+     than mixing orientation mid-report, and gains by it: it was using 5.7in of
+     a 7.5in column with nearly 5in of dead space beneath two stacked charts. */
+  width: 11in;
+  min-height: 8.5in;
   box-sizing: border-box;
-  padding: 0.5in;
+  /* Identical to the print padding below, so the sheet on screen is the sheet
+     that comes out of the printer. */
+  padding: 0.36in 0.5in 0.30in 0.5in;
   margin: 0 auto 16px auto;
   background: #fff;
   border: 1px solid var(--color-border);
@@ -287,6 +297,61 @@ onMounted(async () => {
 }
 .err { color: #a12622; font-size: 12px; }
 
+/* ── table fitting: ON SCREEN AS WELL AS ON PAPER ─────────────────────────
+   These used to live inside @media print, which meant this page — whose only
+   purpose is to show what will print — did not itself show what would print.
+   On screen the tables kept overflow-x:auto, their full interactive font and
+   the sticky column's min-width, so they overflowed the sheet with a scrollbar
+   and clipped columns. Reviewers reasonably read that as broken formatting.
+   A preview that does not preview is worse than no preview, so they apply
+   always and the two renderings cannot diverge again. */
+
+/* The interactive scroll container clips the table at its own width, which on
+   paper means silently losing right-hand columns. */
+:deep(.scroll) {
+  overflow: visible !important;
+  border: 1px solid #ccc;
+}
+:deep(.sticky-l) {
+  position: static !important;
+  min-width: 0 !important;
+}
+/* Full width between the balanced page margins — a table that does not fill
+   the measure reads as drifting to one side. */
+:deep(.scroll), :deep(table.grid) { width: 100% !important; }
+/* SIZED TO THE LIVE ROW COUNT, NOT THE ONE ON SCREEN HERE.
+   It was 7.5px, printing at 4.5pt — below legal fine print, and the least
+   professional thing about the document. 8px prints at ~6pt.
+
+   Why not larger, when landscape looks like it affords it: rotating a sheet
+   does not add area, it reshapes it. Letter is 93.5 sq in either way. Landscape
+   buys 2.5in of measure — which is what stops the tables overflowing sideways
+   and lets the comment column breathe — and pays for it with 2.5in of height,
+   which is the dimension a 36-deal table is already short of.
+
+   The budget, measured from a real printed sheet rather than estimated: 7.74in
+   of usable height, ~1.9in of it fixed (titles, column heads, the footnote
+   block), leaving 5.8in for ~44 rows of deals, groups and subtotals. That caps
+   the row pitch at 0.132in, which is 8px. At 9.5px the pitch is 0.157in and the
+   Financial table runs 0.5in past the foot of the page ON LIVE — invisible in
+   this local snapshot, which carries 30 deals where live carries 36. */
+:deep(table.grid) { font-size: 8px !important; table-layout: auto; }
+/* LINE HEIGHT, not font size, is what sets the row pitch at these sizes — at
+   8px the default leading still held the pitch at 0.146in, barely below the
+   0.157in it was at 9.5px. Pinning it to 1.05 drops the pitch to ~0.12in and
+   BUYS BACK the type size: 9px here prints larger than 8px did with default
+   leading, on a shorter table. Vertical padding is minimal for the same
+   reason; horizontal padding is generous because width is what landscape
+   bought. */
+:deep(table.grid th), :deep(table.grid td) {
+  padding: 0.5px 5px !important;
+  line-height: 1.05 !important;
+}
+/* Uncapped from 1.5in. The cap existed only because a portrait measure could
+   not afford the width; on a landscape sheet a wider comment column also BUYS
+   height back, since most comments then set on one line instead of two. */
+:deep(table.grid .cmt) { max-width: 2.9in; }
+
 /* ── the printed document ─────────────────────────────────────────────── */
 @media print {
   /* The page box (letter portrait, zero margin — which is what suppresses the
@@ -304,41 +369,36 @@ onMounted(async () => {
        between equal margins rather than sitting in one. Slightly tighter top
        and bottom than the sides, matching the reference page's density — it is
        a fairly full page, not an airy one. */
-    padding: 0.42in 0.5in 0.34in 0.5in;
+    padding: 0.36in 0.5in 0.30in 0.5in;
     border: none;
+    /* Opt this document into the LANDSCAPE page box. Named page boxes are the
+       only way orientation can differ per document: `@page` itself cannot be
+       scoped, so a view that redefines the default breaks every other view
+       that prints (v421). Both boxes are declared in App.vue; a named one
+       affects nothing until an element asks for it, as here. */
+    page: landscape-sheet;
     /* Each subtab starts a new sheet; the last must not emit a trailing blank. */
     page-break-after: always;
     break-after: page;
   }
   .print-page.last { page-break-after: auto; break-after: auto; }
 
-  /* Wide tables: the interactive scroll container clips them at the viewport,
-     which on paper means silently losing right-hand columns. Let them lay out,
-     and drop the sticky-column min-width that was reserving screen space. */
-  :deep(.scroll) {
-    overflow: visible !important;
-    border: 1px solid #ccc;
-  }
-  :deep(.sticky-l) {
-    position: static !important;
-    min-width: 0 !important;
-  }
-  /* Full width between the balanced page margins — a table that does not fill
-     the measure reads as drifting to one side. */
-  :deep(.scroll), :deep(table.grid) { width: 100% !important; }
-  :deep(table.grid) { font-size: 7.5px !important; table-layout: auto; }
-  :deep(table.grid th), :deep(table.grid td) { padding: 1.5px 3px !important; }
-  /* The comment column is what pushes the numeric columns narrow; on paper it
-     is mostly empty, so cap it and give the width back to the data. */
-  :deep(table.grid .cmt) { max-width: 1.5in; }
-
-  /* Charts: centred and tighter, so page 1 is not two figures adrift in space. */
-  .chartwrap { max-width: 6.2in; margin: 0 auto 8px auto; }
+  /* Charts: centred, and wide enough to hold a landscape measure without
+     stretching flat. */
+  .chartwrap { max-width: 7.6in; margin: 0 auto 10px auto; }
   .chart-title { margin-bottom: 0; }
   .sect { margin-bottom: 4px; }
   .narr { margin-bottom: 4px; }
-  .pdf-sub { margin-bottom: 6px; }
+  .pdf-sub { margin-bottom: 3px; }
   .pdf-title { font-size: 20px; padding-bottom: 6px; margin-bottom: 6px; }
+  /* The cover title repeated on the Financial page costs it 0.53in that
+     Operating and Loan do not spend — measured: its table starts at 1.30in
+     where theirs start at 0.77in — and Financial is also the only page
+     carrying the footnote block. That combination is what put a three-line
+     note onto a sheet of its own. The client line and "Balances as of" stay,
+     so the page still identifies itself; only the second printing of the
+     document's cover title goes. */
+  .pdf-title.repeat { display: none; }
 
   /* ---- placeholders are screen chrome, not document content ----
      An un-entered manual figure reads "pending entry" on screen so whoever is
