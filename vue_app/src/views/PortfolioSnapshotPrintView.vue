@@ -289,10 +289,9 @@ onMounted(async () => {
 
 /* ── the printed document ─────────────────────────────────────────────── */
 @media print {
-  /* Suppress the browser's own header/footer (URL, title, page number) the way
-     the One Pager does: zero @page margin, and the sheet's own padding stands
-     in for it. */
-  @page { size: letter portrait; margin: 0; }
+  /* The page box (letter portrait, zero margin — which is what suppresses the
+     browser's own header/footer) is set ONCE globally in App.vue. The
+     .print-page padding below stands in for the margin. */
 
   .print-doc { background: #fff; padding: 0; }
   .no-print { display: none !important; }

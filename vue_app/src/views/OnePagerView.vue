@@ -1292,12 +1292,9 @@ function printOnePager() {
   .no-print, .print-hide { display: none !important; }
   .print-only { display: block !important; }
 
-  /* Suppress browser headers/footers (title, URL, date, page number)
-     by setting @page margin to 0 and using body padding for content margins */
-  @page {
-    size: letter portrait;
-    margin: 0;
-  }
+  /* The page box (letter portrait, zero margin) is set ONCE globally in
+     App.vue — see the note there. The 0.4in/0.5in padding below is this view's
+     real margin. */
 
   body, html {
     margin: 0 !important;

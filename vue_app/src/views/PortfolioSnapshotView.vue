@@ -864,7 +864,11 @@ h2 { font-size: 20px; margin: 0 0 12px 0; }
 .pdf-sub { font-size: 12px; color: var(--color-text-secondary); }
 
 @media print {
-  .snapshot { padding: 0; }
+  /* This view's real margin. It used to be `@page { margin: 0.5in }`, which
+     could not be scoped and so reset the page box for every other print view
+     in the app — the One Pager included. Same 0.5in on paper, but it stops at
+     this view's own container. See the note in App.vue. */
+  .snapshot { padding: 0.5in; }
   .snap-header { display: none; }
   .print-header { display: block; margin-bottom: 8px; }
   .print-header h2 { font-size: 16px; margin: 0 0 2px 0; }
@@ -876,6 +880,5 @@ h2 { font-size: 20px; margin: 0 0 12px 0; }
   .diag { display: none; }
   .tabbar { display: none; }
   .tabbody { padding: 0; }
-  @page { margin: 0.5in; }
 }
 </style>

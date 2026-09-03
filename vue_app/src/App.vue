@@ -120,6 +120,33 @@ body {
 
 /* Print: hide app shell, let page content fill the page */
 @media print {
+  /* THE ONLY @page RULE IN THE APPLICATION. Keep it that way.
+     ------------------------------------------------------------------
+     `@page` cannot be scoped. Vue's scoped CSS works by appending a
+     [data-v-hash] attribute to selectors, and an at-rule that styles the page
+     box has no selector to append to — so a `@page` written inside any
+     component's <style scoped> escapes into the global sheet and applies to
+     every route in the app. Routes are lazy-loaded and Vite leaves a route's
+     stylesheet in the document after you navigate away, so with more than one
+     `@page` in the build the winner is decided by which route you happened to
+     visit last. That is not a hypothetical: a `@page { margin: 0.5in }` added
+     to the Portfolio Snapshot on Aug 24 2026 (830934d) silently changed the
+     One Pager's printed output, growing its side margins and — because a
+     non-zero page margin is what gives Chrome room to draw its own header and
+     footer — putting the "Waterfall XIRR" title back on the page. Nothing in
+     OnePagerView.vue had been touched since July.
+
+     Zero margin is deliberate and load-bearing: it is what suppresses the
+     browser's own header/footer (title, URL, date, page number). Each print
+     view supplies its real margins as padding on its own container, which
+     also lets them differ per view without fighting over one page box.
+
+     scripts/print_page_rule_check.py fails the build if a second one appears. */
+  @page {
+    size: letter portrait;
+    margin: 0;
+  }
+
   .sidebar {
     display: none !important;
   }

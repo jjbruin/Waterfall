@@ -470,13 +470,14 @@ watch(tenantId, () => { loadAbstract() })
     margin-bottom: 8px;
   }
 
-  @page {
-    margin: 0.5in;
-    size: letter;
-  }
-
+  /* This view's real margin. It used to be `@page { margin: 0.5in }`, which
+     could not be scoped and so reset the page box for every other print view
+     in the app. Same 0.5in on paper, contained to this view. See App.vue.
+     The page box itself (letter portrait) is now the global one — this rule
+     said `size: letter` without an orientation, which left the choice to the
+     print dialog; portrait is what it has always rendered as. */
   .lease-abstract-page {
-    padding: 0;
+    padding: 0.5in;
   }
   .abstract-page {
     border: none;
