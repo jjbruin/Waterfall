@@ -514,6 +514,8 @@ def aggregation_value(row: dict, key: str):
         before: no displayed value, no weight. Seeding a dev deal could not
         sneak one in.
     """
+    if row.get("sold_suppressed"):
+        return None
     if not row.get(f"{key}_is_manual"):
         return row.get(key)
     if row.get(f"{key}_display") in (DEV_DISPLAY, NA_DISPLAY):
@@ -541,7 +543,10 @@ def _debt_weighted(rows: list, key: str):
 
 def loan_subtotal(rows: list, label: str) -> dict:
     """One total row over ``rows`` — a fund's deals, or every deal."""
-    debts = [r.get("debt") for r in rows if r.get("debt") is not None]
+    # A sold deal's balance is not part of the portfolio's debt — the same
+    # exclusion the Financial subtab makes through `debt_summable`.
+    debts = [r.get("debt") for r in rows
+             if r.get("debt") is not None and not r.get("sold_suppressed")]
     out = {
         "label": label,
         "deal_count": len(rows),
@@ -918,7 +923,8 @@ def assemble_loan(investor_code: str, quarter: str, *,
         return child_cache[vcode]
 
     def build_row(vcode: str, name: str, strategy: str,
-                  extra_flags: Optional[list] = None) -> dict:
+                  extra_flags: Optional[list] = None,
+                  sold: bool = False) -> dict:
         flags = list(extra_flags or [])
         dev = is_dev_deal(strategy)
         if dev:
@@ -1091,6 +1097,7 @@ def assemble_loan(investor_code: str, quarter: str, *,
                                    DEV_DISPLAY if dev else dy),
             "debt_yield_ytd_annualised": dy_ytd,
             "debt_yield_basis": "single-quarter Interim IS NOI x 4 / debt",
+            "kept_despite_sold": bool(sold),
             "loan_count": terms["loan_count"],
             "rate": terms["rate"],
             # Rate and Maturity stay REAL for a dev deal — only the three ratio
@@ -1144,16 +1151,44 @@ def assemble_loan(investor_code: str, quarter: str, *,
                 "LTV / YTD DSCR / Debt Yield typed on this deal where marked "
                 "(pre-filled, editable) — the computed figures are kept as "
                 "*_computed and still feed the subtotals")
+        # ---- a deal reported AFTER its sale carries no loan ----------------
+        #
+        # The asset and its facility went together, so Rate, Maturity, Debt,
+        # YTD DSCR, LTV and Debt Yield all describe something that no longer
+        # exists. Every one reads an em dash.
+        #
+        # Keyed on the sale, not on a vcode — the same rule the Financial
+        # subtab applies through SOLD_NA_CELLS, and this closes a real
+        # disagreement between the two pages: East Manchester's Financial row
+        # said Debt n/a while its Loan row printed 9,641,912 AND summed that
+        # figure into the fund and portfolio Debt totals.
+        #
+        # Display only. The raw `debt`, `ltv`, `ytd_dscr` and `debt_yield` are
+        # left exactly as computed, so nothing is overwritten and every audit
+        # still sees them; `sold_suppressed` is what keeps them out of the
+        # totals — see loan_subtotal and aggregation_value.
+        if sold:
+            diag["sold_suppressed"] = diag.get("sold_suppressed", 0) + 1
+            row["sold_suppressed"] = True
+            for _f in ("rate_display", "maturity_display", "debt_display",
+                       "ltv_display", "ytd_dscr_display", "debt_yield_display"):
+                row[_f] = None
+            flags.append(
+                "sold — the loan left with the asset, so every loan column "
+                "reads n/a and none of them feeds a subtotal")
+
         return row
 
     groups: dict[str, list] = {}
     for group, items in (resolved.get("groups") or {}).items():
-        groups[group] = [build_row(e["vcode"], e["name"], resolve_strategy(e)[0])
+        groups[group] = [build_row(e["vcode"], e["name"], resolve_strategy(e)[0],
+                                   sold=bool(e.get("kept_despite_sold")))
                          for e in items]
 
     flagged_rows = []
     for f in (resolved.get("flagged") or []):
         row = build_row(f["vcode"], f["name"], resolve_strategy(f)[0],
+                        sold=bool(f.get("kept_despite_sold")),
                         extra_flags=[f"ownership {f.get('reason', 'unavailable')}"])
         row["ownership_flagged"] = True
         flagged_rows.append(row)
