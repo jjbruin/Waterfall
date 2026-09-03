@@ -101,3 +101,37 @@ keep accumulating, one page at a time.
 Secondary, cheaper: populate `Investment_Strategy` (it is empty on live, so the dev
 classification runs entirely off the `Lifecycle` proxy — which is why Pegasus is caught at
 all, via `Lifecycle = "New Construction"`, one of only two such rows in the feed).
+
+
+---
+
+## Sep 2 2026 — a second day of her commits, reviewed the same way
+
+Eight revisions shipped (v409-v416). Her work in that chain: `7dc7bd8` (Eastchase override
+withdrawn, East Manchester kept after sale), `019b592` (Prompts A/B/C), and the two commits
+behind v416.
+
+**The pattern from Sep 1 held**: the great majority are genuine root-cause fixes carrying
+live-data guardrails, and `7dc7bd8` is a good example — it REMOVES a hardcode (the Sep 1
+Eastchase `GROUP_OVERRIDES` entry, added on a work order that had meant East MANCHESTER) and
+replaces a would-be vcode entry with `SOLD_NA_CELLS`, a rule keyed on the sale date. Reviewed
+and judged not a symptom repair; deployed.
+
+**`eb7520d` / `2a3fabe` is the exception, and the standing rule worked.** `MANUAL_RATIO_SEEDS`
+is a per-deal hardcode of six vcodes with hand-typed LTV / DSCR / Debt Yield. Charlene
+labelled it a symptom repair herself and both commits ended "NOT DEPLOYED … goes to Jim
+before any image is built" — which is exactly right, and is the behaviour the Sep 1 rule was
+written to produce. It was flagged with the affected deals and figures, and **Jim took it
+knowingly as a stopgap** so quarter-end reports could go out, with a standing daily reminder
+to replace it. See the handoff and `capital_reversal_and_psc3.md`.
+
+**What I could NOT verify, three times over**: her guardrails import `scripts/live_api.py`,
+which is still not committed. `snapshot_financial_pdf_check`, `snapshot_pe_basis_check`, the
+module self-tests and the 126-check script behind `eb7520d` all fail at import for anyone
+else. Her measured before/after figures had to be taken on trust; I verified the code and
+partial local assemblies instead. **Committing that file is the single highest-value thing
+she could do for reviewability.**
+
+**One habit worth passing back to her**: several before/after scripts assert "BEFORE the
+feature was absent", which breaks as soon as the baseline moves forward — it produced three
+false failures in one day. State the invariant about the AFTER side instead.

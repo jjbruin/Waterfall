@@ -9,7 +9,7 @@
 - [portfolio_analysis.md](portfolio_analysis.md) — Portfolio Analysis tab (upstream entity analysis, actual/proposed modes)
 - [transfer_aware_returns.md](transfer_aware_returns.md) — Design doc: transfer-aware IRR/ROE/MOIC (scoped, not yet implemented)
 - [onepager_audit_q1_2026.md](onepager_audit_q1_2026.md) — Q1 2026 audit: Azure vs Excel One Pager (959 discrepancies, 7 code bugs, data gaps)
-- [session_handoff.md](session_handoff.md) — **CURRENT rolling handoff (Sep 1 2026, v408 live)**: two tracks — investor groups around a deal (KOC slice, Phase 0 done, Phases 1-4 open) and Charlene's update stream (what shipped v403-v408, what is open with her, what is settled). Read this first.
+- [session_handoff.md](session_handoff.md) — **CURRENT rolling handoff (Sep 2 2026, v416 live)**: three tracks — investor groups around a deal (KOC slice, Phase 0 done, Phases 1-4 open), the Sep 2 engine corrections (capital reversals, excess-CF pref, mid-month sale dates, terminal NOI window — start here if returns look wrong), and Charlene's update stream (what shipped v403-v416, what is open, what is settled). Read this first.
 - [session_handoff_may7b.md](session_handoff_may7b.md) — Session handoff: pref accrual fix, combined table, TGA23 step deletion
 - [ai_assistant.md](ai_assistant.md) — Embedded AI assistant (Claude API, tools, streaming chat)
 - [ai_assistant_roadmap.md](ai_assistant_roadmap.md) — AI assistant enhancement plan (15 items, prioritized)
@@ -1370,4 +1370,4 @@ to chase.
 **Process note**: this shipped on Jim's deploy request after I verified it did what its
 commit message said, without questioning whether it should do that. Verifying intent is
 not the same as verifying the premise.
-- [Reversed capital entries & PSC3](capital_reversal_and_psc3.md) — the abs() sign bug, and why PSC3 looks over-returned (answered, don't re-raise)
+- [Reversed capital entries, PSC3, and the ratio stopgap](capital_reversal_and_psc3.md) — the abs() sign bug and the two traps in fixing it; why PSC3 looks over-returned (answered, do not re-raise); and MANUAL_RATIO_SEEDS, the six-deal hardcode shipped in v416 as a stopgap, what actually needs fixing, and how to retire it

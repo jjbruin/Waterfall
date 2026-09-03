@@ -1,20 +1,30 @@
-# Session Handoff — through Sep 1 2026 (v408 live)
+# Session Handoff — through Sep 2 2026 (v416 live)
 
 Rolling handoff for the next session/developer. Update in place; keep only what is still
-live. Deploy history lives in CLAUDE.md (SHA-pinned). Supersedes the Aug 28 / v396 handoff.
+live. Deploy history lives in CLAUDE.md (SHA-pinned). Supersedes the Sep 1 / v408 handoff.
 
 ## Where things stand
-- **Live**: `v408` = `e5ef21d`, healthy, 100% traffic. Merge of five Jim-approved items —
-  Charlene's `8de3d53` + `9043c92`, the upstream `Pref` first-period fix `16bcf8b`, the
-  Total Current Funding row + scope-placed footnotes, and the Jefferson Eastchase override.
-- **main == origin/main**, everything pushed.
-- The Sep 1 chain ran v405 → v408. See CLAUDE.md for the SHA-pinned list.
+- **Live**: `v416` = `eb7520d`, healthy, 100% traffic. **main == origin/main**, all pushed.
+- Sep 2 ran **v409 → v416, eight revisions**. Six were engine corrections found by pulling
+  on one question from Jim about a $300,000 contribution; two were Charlene's snapshot work.
+- **Seven new guardrail scripts** now cover this ground, all passing:
+  `capital_reversal_sign_check` 19, `pref_excess_cf_check` 6, `sale_date_month_end_check` 10,
+  `snapshot_kept_sold_stack_check` 38, `snapshot_east_manchester_check` 26,
+  `snapshot_itd_roe_check` 30, `snapshot_footnotes_freeform_check` 28,
+  `snapshot_print_formatting_check` 44.
 
 ## STANDING RULE — read before deploying anything
-CLAUDE.md "Deploying Changes" now carries Jim's pre-deploy symptom-repair check (added
-Sep 1 after `50695d9` shipped an override that zeroed correct data on 12 deals).
+CLAUDE.md "Deploying Changes" carries Jim's pre-deploy symptom-repair check (added Sep 1
+after `50695d9` shipped an override that zeroed correct data on 12 deals).
 **Verifying that a commit does what its message says is NOT verifying its premise.** Flag a
-symptom repair to Jim, with affected deals and figures, BEFORE building the image.
+symptom repair to Jim, with affected deals and figures, BEFORE building the image. It fired
+for real on Sep 2 against `eb7520d` and Jim took the stopgap knowingly — see below.
+
+## A guardrail habit worth keeping
+Several before/after scripts asserted **"BEFORE the feature was absent/broken"**. Those fail
+the moment the baseline is a commit that already has the fix, which happened three times in
+one day as the chain moved. **State the invariant about the AFTER side and report what the
+baseline happened to show.** All known cases are converted; write new ones that way.
 
 ---
 
@@ -89,6 +99,46 @@ AMB6 fee is currently charged on ~zero seeded capital.
 
 ---
 
+# TRACK 3 — Sep 2 engine corrections (start here if returns look wrong)
+
+All six came from ONE question: Jim asked why OPMCCORD's $300,000 into 30 Bearfoot showed
+$5,388 of pref and no return of capital. Each answer exposed the next. Full detail in
+`.claude/memory/capital_reversal_and_psc3.md`.
+
+| # | Fix | Revision |
+|---|---|---|
+| 1 | **A reversed entry no longer moves capital twice.** MRI reverses by re-posting with the OPPOSITE SIGN under the same MajorType/Typename; six sites took `abs()`. Rule now in `loaders.capital_after`. | v412 |
+| 2 | **Excess Cash Flow pays pref down.** It sits BELOW pref, so a partner cannot receive it while pref is outstanding; the seeding counted only TypeID 1019. `reports_service` always applied both — the two paths had been disagreeing. | v412 |
+| 3 | **A mid-month sale is not a month-end sale.** `month_end()` was applied at PARSE time, so the real date was gone. Now `sale_actual` (pref stops, loan repaid, closing settles) vs `sale_me` (monthly grid). | v414 |
+| 4 | **Terminal NOI starts the month AFTER the sale month** — it used to begin WITH it while the cash schedule also gave the seller that month. | v414 |
+| 5 | **A kept-sold deal reports the stack it had while held** (`last_held_quarter`). | v414 |
+| 6 | ITD stored in MILLIONS; footnote removal; print separators and cell font. | v411, v412 |
+
+**Two rules that are easy to break again**, both learned the hard way:
+- **Do not floor a running capital total per row.** JB Fair Park's reversal sorts BEFORE the
+  entry it reverses; a per-row `max(0.0, ...)` swallows it and both remaining contributions
+  land. Floor at the point of USE (`capital_outstanding`).
+- **Do not add a magnitude heuristic** to decide a unit. 0.9 is a legitimate $0.9M and a
+  legitimate 0.9%. Manual figures store the unit their column DISPLAYS.
+
+**Confirmed against the published page**: the corrected partner equity ties the 26Q1
+reference PDF on three deals that did not tie before — JB Fair Park 3.9, Pegasus 2.6,
+Cocoplum 23.4, and Cocoplum Total Cap 108.9 to the decimal.
+
+**Portfolio effect**: accrued pref 159.9M → 152.5M (−7.4M) across 37 of 101 pairs. Five
+pairs went UP, correctly — they have reversed pref payments that `abs()` had been counting
+as extra payments.
+
+### Found but NOT fixed
+- **One day of pref is dropped per investor per year.** `accrue_to_date` splits at year end
+  then resumes at `date(year+1, 1, 1)`, skipping 31 Dec → 1 Jan. Visible as a 30-day January
+  accrual where 31 is due (~$74/yr on $300k; order of $37k/yr portfolio-wide, understated).
+- **`cap_stack.pref_equity` is capital OUTSTANDING** while three columns describe it as
+  funded / invested / committed. A LIVE deal with a PARTIAL return of capital would already
+  understate Invested. None on the 26Q2 page has one — dormant, not safe.
+
+---
+
 # TRACK 2 — Charlene's updates
 
 Review of all 83 of her commits: `.claude/memory/commit_review_charlene.md`. Headline —
@@ -106,25 +156,57 @@ independently in six modules.
 | `50695d9` | At-Close zeroed for dev deals with no Year-0 row | v407 |
 | `8de3d53` + `9043c92` | Waters Creek LTV exception retired; dev-tag correction | v408 |
 
+### Deployed Sep 2
+| commit | what | revision |
+|---|---|---|
+| `7dc7bd8` | Eastchase override withdrawn; East Manchester kept after sale; `SOLD_NA_CELLS` | v409 |
+| `019b592` | Prompts A/B/C — funding row out, ITD summed, Net ROE manual everywhere; footnotes free-form; per-loan Rate/Maturity, one page per subtab, separators | v410 |
+| `8534916` | ITD stored in MILLIONS (v410 printed `$0.00M` on every live cell); vertical separators; comment/input cells print in the table's font | v411 |
+| `da354a3` | Capital reversals; excess-CF pref; clearing a footnote removes it | v412 |
+| `7d21769` | East Manchester Net ROE typeable (`SOLD_NA_CELLS` → `{"debt"}`) | v413 |
+| `bd001e8` | Mid-month sale dates; terminal NOI window; kept-sold cap stack | v414 |
+| `639f023` | Footnote 2 → City West only | v415 |
+| `eb7520d` | **STOPGAP** — six-deal `MANUAL_RATIO_SEEDS` + subtotals weight what the row displays | v416 |
+
 ### Open with Charlene
-1. **Prompt C item 4** — "remove the auto-generated footnotes from both views" is ambiguous.
-   After the footnote rework the Financial list holds exactly the two notes she wants kept;
-   the remaining system-written notes are methodology paragraphs on
-   `SnapshotOperating.vue`, `SnapshotLoan.vue` and `SnapshotSummary.vue`. **She must pick.**
-2. **The print PDF has not been visually re-rendered** (`node_modules` absent in the agent
-   worktree). The marker-suppression *rules* are proven by a static guardrail; the paper is
-   not. **Needs a visual pass before anything goes out.**
-3. **`9043c92`'s two new per-deal hardcodes**, accepted by Jim as-is but still debt:
-   `one_pager.AT_CLOSE_FORCE_SUPPRESS = {"P0000066"}` (writes `0` as an unknown-sentinel over
-   a complete footing measurement — Pegasus revenue 973,606 − expenses 348,917 = NOI 624,689)
-   and `portfolio_snapshot_loan.DEBT_FREE_DEALS = {"P0000066"}` (defended as underivable, but
-   `Sale_Status` and valuation-row coverage both separate Pegasus from City West).
-4. **Jefferson Eastchase `GROUP_OVERRIDES`** — deployed at Jim's direction. It is a per-deal
-   hardcode that disagrees with both the ownership data (61.2% via TGA23, one route) and the
-   reference PDF (which prints 61% inside "Total PSC TGA 2023 LLC"). The durable fix is an
-   MRI ownership row; delete the entry when that exists.
-5. **`DEV_DISPLAY_EXCEPTIONS` Pegasus entry** still carries Charlene's own
+1. **`MANUAL_RATIO_SEEDS` is a stopgap with an expiry.** Six vcodes carry hand-typed LTV /
+   DSCR / Debt Yield, and since `eb7520d` those typed figures **drive investor-facing
+   totals** (26Q2 Portfolio LTV 63.9%, DSCR 1.75x, TGA 6 DSCR 1.27x). Jim approved it
+   knowingly so quarter-end reports could go out. The sharpest item is **Presidential Arms'
+   typed 1.1x replacing a computed 3.8x** — that single override is what moves TGA 6.
+   Root cause is three structural data gaps, none fixed: no valuation on/before year-end,
+   no full YTD Interim IS + BS principal movement, no complete quarter of actual NOI.
+   A weekday 09:00 reminder runs as scheduled task `retire-manual-ratio-seeds`; delete it
+   when the dict empties. Retiring is one deletion per deal.
+2. **`scripts/live_api.py` IS STILL NOT COMMITTED.** About a dozen guardrails import it,
+   including `snapshot_financial_pdf_check`, `snapshot_pe_basis_check`, the module
+   self-tests and the 126-check script behind `eb7520d`. **Nobody but Charlene can
+   reproduce them**, and that blocked independent verification three times on Sep 2. This
+   is the single highest-value thing she could commit.
+3. **Known defect shipped in v416**: the Loan row's warning flag reads "the computed
+   figures … still feed the subtotals" — true when written in `2a3fabe`, made false by
+   `eb7520d` an hour later. Visible on the row tooltip. One line.
+4. **Footnote 2 is settled** — City West only, decided by Jim Sep 2. East Manchester came
+   out because its Net ROE is typeable and its ITD shows.
+5. **East Manchester Debt stays n/a DELIBERATELY**, and Total Cap 6.0M rather than 15.6M.
+   Jim raised the inconsistency (the row is read at the last held quarter, where the
+   9,641,912 WAS outstanding); Charlene's instruction is to keep it blank and Jim confirmed
+   following it. Reasoning is written at the `SOLD_NA_CELLS` definition. **Not an oversight
+   — reopening it means changing what the row is for.**
+6. **Jefferson Eastchase `GROUP_OVERRIDES` — RESOLVED Sep 2.** The Sep 1 override was
+   withdrawn in `7dc7bd8`; the work order had meant East MANCHESTER. The ordinary rule had
+   Eastchase in TGA 2023 correctly all along.
+7. **`DEV_DISPLAY_EXCEPTIONS` Pegasus entry** still carries Charlene's own
    **"FLAG FOR CONFIRMATION"** in the code, unanswered.
+8. **`9043c92`'s two per-deal hardcodes** remain debt: `AT_CLOSE_FORCE_SUPPRESS` and
+   `DEBT_FREE_DEALS`, both `{"P0000066"}`.
+
+### Resolved Sep 2 — no longer open
+- The print PDF **has** now been rendered and inspected end to end. `snapshot_print_check.mjs`
+  takes `WF_UPSTREAM`, so it can print against a LOCAL Flask instead of live — that is how an
+  unmerged backend change gets a PDF before it ships.
+- The footnote rework shipped: free-form text, every note editable and deletable including
+  the code-defined standing ones, clearing the text removes the note and its marker.
 
 ### Settled — do not reopen
 - **At-Close Year-0 gate stays as deployed** (Jim, Sep 1). All 12 affected deals have
@@ -135,6 +217,18 @@ independently in six modules.
 ---
 
 ## Known defects / debt worth carrying forward
+- **One day of pref is dropped per investor per year** — `accrue_to_date` skips
+  31 Dec → 1 Jan when it splits at the year boundary. See Track 3.
+- **`cap_stack.pref_equity` is capital OUTSTANDING** while three columns call it
+  funded/invested/committed. Dormant; bites the first live deal with a partial ROC.
+- **The `deals.Sale_Date` column is not what the model uses.** Priority is sale override →
+  `event_dates` projected disposition → horizon/max maturity. The local snapshot has no
+  `event_dates` table at all, so a local run falls back and will NOT reproduce a live sale
+  date — inject one, or use `sale_date_override`, when testing anything sale-related.
+- **The local `waterfall.db` accounting feed ends 2026-06-02.** Anything that turns on a
+  later event — East Manchester's 6/25/2026 sale, the 8/13/2026 contribution — cannot be
+  seen locally and must be simulated. Say so when reporting; do not conclude "no defect"
+  from a snapshot that predates the data.
 - **`save_waterfall_steps()` writes NULL into `dteffective`** — restore it after any
   programmatic save. `dteffective` is required by `loaders.load_waterfalls`.
 - **`accounting_feed.sql` has no `TRIM()`** — 3,641 of 12,827 rows carry untrimmed IDs
