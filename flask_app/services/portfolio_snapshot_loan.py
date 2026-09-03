@@ -257,6 +257,31 @@ def _debt_free(vcode: str) -> bool:
 #: aggregates rather than being written into the raw field.
 MANUAL_RATIO_FIELDS = ("ltv", "ytd_dscr", "debt_yield")
 
+# ══════════════════════════════════════════════════════════════════════════
+# TEMPORARY, GIANT 7 ONLY — Projected YE NOI stands in for a stopped NOI feed
+# ══════════════════════════════════════════════════════════════════════════
+#: Giant 7 (P0000019) is under PSA to sell and its NOI feed stopped in Nov 2025,
+#: so there is no complete quarter of actual NOI and no YTD DSCR: both cells
+#: read an em dash. Its One Pager still carries a Projected YE NOI (~9.2M), and
+#: the author asked for that to drive the two cells until the deal closes.
+#:
+#: A PER-DEAL HARDCODE, and the second of its kind on this page after
+#: MANUAL_RATIO_SEEDS. Labelled rather than dressed up. It is:
+#:
+#:   * scoped by vcode, so no other deal's basis moves — every other row keeps
+#:     the single-quarter x 4 Debt Yield and the One Pager's YTD DSCR;
+#:   * a FALLBACK, not an override: it only fires where the real input is
+#:     missing, so the moment Giant 7's feed resumes the computed figures win
+#:     and this becomes dead weight;
+#:   * one deletion to retire — remove the vcode and the cells go back to
+#:     whatever the engine computes.
+#:
+#: The DSCR side reuses the One Pager's own ``dscr.actual_ye``, which is already
+#: "Projected YE NOI over debt service" — the same ratio the author asked for,
+#: rather than a second opinion about what Giant 7's debt service is.
+PROJECTED_YE_NOI_FALLBACK: frozenset = frozenset({"P0000019"})   # Giant 7
+
+
 MANUAL_RATIO_SEEDS: dict[str, dict] = {
     "P0000109": {"ltv": 69.0},                                    # Burton Retail Portfolio
     "P0000116": {"ltv": 64.2},                                    # Plaza Del Mar
@@ -1026,6 +1051,17 @@ def assemble_loan(investor_code: str, quarter: str, *,
         dscr_ytd = None if dev else _num((perf.get("dscr") or {}).get("ytd_actual"))
         if dev:
             diag["dscr_dev"] += 1
+        # TEMPORARY, Giant 7 only — see PROJECTED_YE_NOI_FALLBACK.
+        _ye_fallback = (str(vcode or "").strip().upper()
+                        in PROJECTED_YE_NOI_FALLBACK)
+        if dscr_ytd is None and _ye_fallback and not dev:
+            _ye_dscr = _num((perf.get("dscr") or {}).get("actual_ye"))
+            if _ye_dscr is not None:
+                dscr_ytd = _ye_dscr
+                diag["ye_fallback_dscr"] = diag.get("ye_fallback_dscr", 0) + 1
+                flags.append(
+                    "TEMPORARY: YTD DSCR from Projected YE NOI over debt "
+                    "service — the actual NOI feed stopped (deal under PSA)")
 
         # ---- Debt Yield: single-quarter NOI x 4 (see module docstring) ----
         ytd_noi = _num((perf.get("noi") or {}).get("ytd_actual"))
@@ -1039,6 +1075,16 @@ def assemble_loan(investor_code: str, quarter: str, *,
             pass                        # already flagged, and N/A not n/a
         elif not debt:
             flags.append("Debt Yield n/a — no debt balance")
+        elif q_noi is None and _ye_fallback and _num(
+                (perf.get("noi") or {}).get("actual_ye")):
+            # TEMPORARY, Giant 7 only — see PROJECTED_YE_NOI_FALLBACK.
+            annualised = _num((perf.get("noi") or {}).get("actual_ye"))
+            dy = annualised / debt
+            diag["ye_fallback_dy"] = diag.get("ye_fallback_dy", 0) + 1
+            flags.append(
+                f"TEMPORARY: Debt Yield from Projected YE NOI "
+                f"({annualised:,.0f}) over debt — no complete quarter of "
+                f"actual NOI (deal under PSA)")
         elif q_noi is None:
             flags.append("Debt Yield n/a — no complete quarter of actual NOI")
             diag["dy_no_ytd"] += 1
