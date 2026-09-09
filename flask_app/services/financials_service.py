@@ -1192,8 +1192,16 @@ def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
 def _enrich_pe_from_deal_result(pe: dict, vcode: str, data: dict, quarter_str: str = None):
     """Enrich PE performance metrics from deal analysis waterfall results.
 
-    Uses seed_states (current balances at actuals boundary) for:
-    - current_pe_balance: capital outstanding as of today
+    Uses seed_states for:
+    - current_pe_balance: capital outstanding AS OF THE REPORT QUARTER END
+
+      It said "as of today", and did that literally — the deal result was
+      computed with the GLOBAL actuals boundary, so the balance sat on a
+      different date from every other figure on the page and stopped tying to
+      the Funded to Date printed above it. Corrected Sep 9 2026; the cutoff is
+      derived from ``quarter_str`` at the call to get_cached_deal_result below.
+      Everything else in this function was already quarter-scoped, which is
+      what made the balance the odd one out.
 
     Uses build_pref_balance_detail (authoritative row-by-row calculation) for:
     - accrued_balance: matches the Pref Balance Detail report exactly
@@ -1215,9 +1223,45 @@ def _enrich_pe_from_deal_result(pe: dict, vcode: str, data: dict, quarter_str: s
         pro_yr_base = current_app.config["PRO_YR_BASE_DEFAULT"]
         actuals_through = current_app.config.get("ACTUALS_THROUGH")
 
+        # THE SEED MUST BE AS OF THE REPORT QUARTER, NOT THE GLOBAL BOUNDARY.
+        #
+        # `seed_states` is built from accounting up to whatever cutoff the deal
+        # result was computed with. Passing the GLOBAL `actuals_through` seeded
+        # every One Pager to that date — 2026-07-31 on live — while every other
+        # figure on the page is filtered to the quarter end. So a contribution
+        # landing in the gap between the two dates showed up in Current Pref
+        # Equity Balance and nowhere else, and the balance stopped tying to the
+        # Funded to Date printed directly above it.
+        #
+        # Burton Retail Portfolio (P0000109) at 26Q2 is the case that surfaced
+        # it: funded 26,597,500 at 6/30, balance printed 54,227,500. The
+        # difference is one contribution dated 2026-07-01 for 27,630,000 — ONE
+        # DAY after quarter end, inside the 7/31 boundary. It read as the full
+        # commitment only by coincidence: that draw completed the tranche, so
+        # 26,597,500 + 27,630,000 is exactly `committed_pe`. Nothing here ever
+        # read the commitment.
+        #
+        # JB Fair Park (P0000021) had the same defect, unreported: +1,462,095
+        # from a 2026-07-30 contribution. Its NEXT draw, 2026-08-19 for
+        # 1,286,682, was NOT in the figure — which is what pins the cause to
+        # the 7/31 boundary rather than to "as of today".
+        #
+        # Capped at the global boundary, never past it: beyond that date the
+        # engine's cash flows come from the forecast rather than from
+        # accounting, so seeding later would mix the two bases.
+        seed_cutoff = actuals_through
+        if quarter_str:
+            from one_pager import quarter_to_date_range
+            _, q_end = quarter_to_date_range(quarter_str)
+            if actuals_through:
+                boundary = pd.Timestamp(actuals_through).date()
+                seed_cutoff = min(q_end, boundary)
+            else:
+                seed_cutoff = q_end
+
         result = get_cached_deal_result(
             vcode, start_year, horizon_years, pro_yr_base, data,
-            actuals_through=actuals_through,
+            actuals_through=seed_cutoff,
         )
 
         partner_results = result.get("partner_results", [])
@@ -1232,6 +1276,15 @@ def _enrich_pe_from_deal_result(pe: dict, vcode: str, data: dict, quarter_str: s
                 continue
             total_capital_outstanding += state.total_capital_outstanding
 
+        # Capital outstanding per the ENGINE, at the quarter end. Kept on
+        # seed_states rather than recomputed as `funded_to_date -
+        # return_of_capital`: that looks like the same thing and is not, because
+        # `return_of_capital` also absorbs "realized gain" rows, so the
+        # subtraction understates the balance on any deal carrying a gain while
+        # capital is still outstanding. East Manchester is the visible proof —
+        # its ROC field is 5,139,662 against 3,600,000 funded, so the formula
+        # yields -1,539,662 where the engine correctly reports 0. One
+        # definition of capital outstanding, asked at the right date.
         pe["current_pe_balance"] = total_capital_outstanding
 
         # Accrued balance from authoritative Pref Balance Detail calculation
