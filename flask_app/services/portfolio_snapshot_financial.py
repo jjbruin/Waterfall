@@ -47,9 +47,12 @@ Zone A — deal-level capitalisation, NOT scaled
     rows carry no 1% acquisition fee, so the test that corroborated the pref
     tranches cannot be run. Left alone deliberately.
 
-    Total Cap is RE-FOOTED as debt_isbs + Total Pref + Ptr Equity so the four
-    printed columns add up. The debt leg stays the ISBS/current basis, NOT the
-    footnote-6 dev rebase — see the total_cap block in build_row.
+    Total Cap is RE-FOOTED as Debt + Total Pref + Ptr Equity so the four
+    printed columns add up — using the SAME Debt the Debt column prints, which
+    on a development deal is the committed facility (footnote 6). The leg was
+    the ISBS/current balance until Sep 9 2026, which is what made six dev rows
+    visibly not sum; see the total_cap block in build_row for the figures and
+    for the earlier decision this reverses.
 
 Zone B — the four "TIAA Investment" columns, the ONLY scaled columns
     % of Pref        = Step 1's multi-hop look-through (Nottingham 41.2124%)
@@ -1032,14 +1035,53 @@ def assemble_financial(investor_code: str, quarter: str, *,
         # on screen. Without this it would stay `total_cap_isbs`, which is built
         # from FUNDED pref, and the four printed columns would visibly not sum.
         #
-        # The debt leg stays `debt_isbs` — the ISBS/current basis — NOT the
-        # footnote-6 dev rebase in `debt` above. The One Pager rebases a dev
-        # deal's own Total Cap onto hard costs and this column must not follow
-        # it; a rebased dev deal therefore still does not foot exactly, as on
-        # the PDF. Measured at 26Q1: this formula ties the PDF's Total Cap on
-        # 21/33 deals, the same as the shipped `total_cap_isbs` (21/33). Using
-        # the resolved footnote-6 debt instead would tie 22/33, but that moves
-        # the Debt basis of Total Cap, which is out of scope here.
+        # THE DEBT LEG IS THE FIGURE THE DEBT COLUMN PRINTS — `debt`, straight
+        # off `resolve_debt`, which is the committed facility on a development
+        # deal per PDF footnote (6). It was `debt_isbs` (the ISBS/current
+        # balance) until Sep 9 2026, and that is precisely what stopped the dev
+        # rows adding up: the column showed committed while the total contained
+        # current, so the row missed by exactly `debt - debt_isbs`. Six rows at
+        # 26Q2, the four reported plus two nobody had noticed:
+        #
+        #     JB Fair Park          77.4 + 30.0 +  3.9 = 111.2  vs 100.2   11.0
+        #     Jefferson Eastchase   53.9 + 29.4 + 14.7 =  98.0  vs  83.9   14.0
+        #     Jefferson Addison Hts 44.0 + 24.8 + 17.5 =  86.2  vs  79.3    7.0
+        #     Jefferson Waters Crk  51.7 + 23.0 + 14.3 =  89.0  vs  87.3    1.7
+        #     Jefferson Stephens   100.0 + 22.7 + 11.3 = 134.1  vs  84.1   50.0
+        #     Trolley Square        30.8 +  6.8 +  6.7 =  44.3  vs  17.8   26.5
+        #
+        # A ROW THAT FOOTS AGAINST WHAT IT PRINTS is the rule now, at the report
+        # author's instruction (Sep 9 2026). It REVERSES the earlier decision
+        # recorded in `resolve_debt`'s docstring, and that decision rested on a
+        # PREMISE THAT DOES NOT HOLD: it said a rebased dev deal was left not
+        # footing "because the published page does not foot either", citing JB
+        # Fair Park's 48.98 + 14.3 + 3.9 = 67.2 against a printed 67.1.
+        #
+        # That 0.08 is ROUNDING on columns printed to one decimal, not a
+        # footing failure. Checked against the full 26Q1 transcription in
+        # scripts/snapshot_pdf_variance_pdfdata.py, THE PDF FOOTS ON 30 OF ITS
+        # 31 TESTABLE ROWS — including five of these six dev deals, on the
+        # committed basis (Eastchase 53.9 + 29.4 + 14.7 = 98.0 exactly,
+        # Addison Heights 81.3, Waters Creek 86.2, Stephens 84.0). So the
+        # source document puts committed debt inside Total Cap on a dev deal
+        # and the app was the outlier, not the PDF.
+        #
+        # The one row the PDF itself does not foot is TROLLEY SQUARE: it prints
+        # 30.8 + 6.8 + 6.8 against a Total Cap of 13.5, which its own columns
+        # miss by 30.9 and which matches neither basis here (4.3 ISBS -> 17.8
+        # before, 44.3 after). Left alone: this change cannot make a row agree
+        # with a total the source contradicts, and 13.5 looks like a
+        # current-cap figure on an early-stage deal. Worth raising separately.
+        #
+        # Measured consequence at 26Q1, so nothing is traded away for the
+        # footing: Total Cap ties the PDF on 22/33 deals against 21/33 for the
+        # ISBS leg (Eastchase moves 78.0 -> 98.0, an exact tie). The four still
+        # missing are the KNOWN_DEBT_RESIDUALS data-vintage cases — live's
+        # committed facilities have moved since the March print (Stephens 50.0
+        # -> 100.0, JB Fair Park 48.98 -> 77.4), which is a Debt-column
+        # question and not this one.
+        #
+        # `total_cap_funded` below deliberately keeps the ISBS leg — see there.
         # Explicit None test, not truthiness: a genuinely zero cap stack is data,
         # and must not silently fall through to the funded-basis total.
         #
@@ -1052,8 +1094,18 @@ def assemble_financial(investor_code: str, quarter: str, *,
         # stale balance on an asset that has been sold. No-op for City West and
         # Pegasus, whose n/a Debt is a real 0.0.
         debt_na = "debt" in na
-        debt_leg = 0.0 if debt_na else debt_isbs
+        # The printed leg (committed on a dev deal) and the ISBS leg, kept
+        # apart: the first foots the row, the second is what the funded-basis
+        # audit twin is built from.
+        debt_leg = 0.0 if debt_na else debt
+        debt_leg_isbs = 0.0 if debt_na else debt_isbs
         if None in (debt_leg, total_pref, ptr_equity):
+            # An UNKNOWN leg is not a zero. A dev deal with no facility on
+            # record prints an em dash for Debt (resolve_debt ->
+            # BASIS_UNAVAILABLE) and cannot be made to foot against a figure
+            # that does not exist, so the row keeps the One Pager's own total
+            # rather than quietly dropping the debt out of it. No deal is in
+            # this state at 26Q2; the branch is what keeps a future one honest.
             total_cap = _num(cap.get("total_cap_isbs", cap.get("total_cap")))
         else:
             total_cap = debt_leg + total_pref + ptr_equity
@@ -1071,9 +1123,15 @@ def assemble_financial(investor_code: str, quarter: str, *,
         # the "Total Current Funding" row, removed Sep 2 2026 at the report
         # author's request; the field stays because it is the funded twin of a
         # printed column and costs nothing, but nothing renders it today.
+        #
+        # ITS DEBT LEG IS THE ISBS BALANCE, not the printed/committed one that
+        # now foots `total_cap`. "Funded throughout" is the whole meaning of
+        # this field: the pref leg is funded pref, so the debt leg has to be
+        # the amount actually drawn. Following the footnote-6 rebase here would
+        # make it committed debt against funded pref, which is neither basis.
         total_cap_funded = (
-            None if None in (debt_leg, funded_pref, ptr_equity)
-            else debt_leg + funded_pref + ptr_equity)
+            None if None in (debt_leg_isbs, funded_pref, ptr_equity)
+            else debt_leg_isbs + funded_pref + ptr_equity)
 
         # ---- Zone B: the four scaled columns ----
         #
