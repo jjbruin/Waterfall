@@ -145,8 +145,26 @@ const allRows = computed(() => {
   return out
 })
 
-/** Excluding-development subtotal — this subtab is the only place it lives. */
+/**
+ * Excluding-development subtotal — SERVER-COMPUTED since 2026-09-09.
+ *
+ * It used to be summed here, and it was the only total on the report that was,
+ * which is why it was the only one that did not foot: this loop added the raw
+ * `r.debt` while the Debt cell rendered `debtCell(r)`, so a suppressed row
+ * printed "—" and still contributed its balance (East Manchester's
+ * $9,641,912 — the subtotal read $984.8M against $975.1M of displayed rows).
+ * `loan_subtotal` on the server has excluded suppressed rows since 2026-09-02,
+ * which is why the fund totals and Portfolio Totals were always right.
+ *
+ * The fallback is for a snapshot FROZEN BEFORE the server published this key,
+ * and it applies the suppression rule the old loop was missing, so an archived
+ * report foots too. It tests for the KEY, not for a nullish value — the same
+ * distinction `debtCell` makes below, since a present null is a deliberate
+ * dash and an absent key is an old payload.
+ */
 const exDevTotal = computed(() => {
+  const served = (props.data as any)?.total_excluding_dev
+  if (served) return served
   let debt = 0
   let n = 0
   let any = false
@@ -154,7 +172,10 @@ const exDevTotal = computed(() => {
     for (const r of (rows || [])) {
       if (r.is_dev) continue
       n++
-      if (r.debt != null) { debt += r.debt; any = true }
+      // Sum what the row DISPLAYS: a suppressed cell carries no figure into
+      // the total that claims to add up the column above it.
+      const d = debtCell(r)
+      if (d != null && typeof d !== 'string') { debt += d as number; any = true }
     }
   }
   return { debt: any ? debt : null, deal_count: n }
