@@ -40,7 +40,7 @@ from flask_app.services.portfolio_snapshot_service import (      # noqa: E402
     GROUP_OVERRIDES, KEEP_DESPITE_SOLD,
 )
 from flask_app.services.portfolio_snapshot_financial import (    # noqa: E402
-    assemble_financial, EXCLUDING_DEV_VCODES, EXCLUDING_DEV_COLUMNS,
+    assemble_financial, EXCLUDING_DEV_COLUMNS,
     PDF_NA_CELLS, NA_LABEL, PENDING, _SUM_COLS,
 )
 
@@ -298,9 +298,16 @@ def main():
 
     ex = out.get("total_excluding_dev") or {}
     struct.append(("excluding-development row present", bool(ex)))
-    struct.append(("excluding-dev removes exactly EXCLUDING_DEV_VCODES",
+    # The population is the rows' own `is_dev` since Sep 9 2026 — the same
+    # definition the Loan subtab uses. Asserted as a PROPERTY (every dev deal
+    # removed, no dev deal kept) rather than against a list of vcodes, which is
+    # what the deleted EXCLUDING_DEV_VCODES could not guarantee.
+    struct.append(("excluding-dev removes exactly the development deals",
                    set(ex.get("excluded_vcodes") or [])
-                   == (EXCLUDING_DEV_VCODES & set(flat))))
+                   == {vc for vc, r in flat.items() if r["is_dev"]}))
+    struct.append(("excluding-dev keeps no development deal",
+                   not any(r["is_dev"] for vc, r in flat.items()
+                           if vc not in set(ex.get("excluded_vcodes") or []))))
     struct.append(("excluding-dev populates only the PDF's 3 columns",
                    all(ex.get(c) is None for c in _SUM_COLS
                        if c not in EXCLUDING_DEV_COLUMNS)))

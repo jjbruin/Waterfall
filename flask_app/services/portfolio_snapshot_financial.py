@@ -119,7 +119,9 @@ than deciding anything — see ``COLUMN_ANCHORS`` / ``STANDING_FOOTNOTES`` /
 Totals: per-fund subtotals and a portfolio total over **all** deals, labelled
 with the reference PDF's wording via ``portfolio_snapshot_service`` (so the
 three table subtabs cannot drift apart), plus an "Excluding Development Deals"
-row under the portfolio total — see ``EXCLUDING_DEV_VCODES``.
+row under the portfolio total, whose population is the rows' own ``is_dev`` —
+the SAME definition the Loan subtab's excluding-development total uses, so the
+two pages cannot disagree about which deals are development.
 
 Display-only suppression, as on the Operating subtab: the ``*_display`` twins
 carry ``NA_LABEL`` where a cell does not apply, and the raw fields are left
@@ -594,40 +596,42 @@ def manual_na_cells(vcode: str, sold: bool = False) -> frozenset:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# TEMPORARY HARDCODE — the PDF's "Excluding Development Deals" population
+# The "Excluding Development Deals" population — ``is_dev``, and nothing else
 # ══════════════════════════════════════════════════════════════════════════
-#: The deals the PDF's excluding-development row removes, keyed by vcode.
-#:
-#: This is NOT ``is_dev``, and the difference is the whole reason it is a
-#: hardcode. Our classification (Lifecycle proxy, via ``resolve_strategy``)
-#: marks TEN deals development at 26Q1. The PDF's row removes EIGHT: it keeps
-#: JB Fair Park and Pegasus Life Storage in the subtotal, both of which produce
-#: income (ITD 1.17 / ROE 4.8% and ITD 0.91 / ROE 2.8% on page 2) and so are not
-#: "development" for this purpose.
-#:
-#: Derived from the PDF, not guessed: Portfolio Total Commitment 445.1 less the
-#: excluding-dev 299.3 leaves 145.8 to explain, and these eight deals'
-#: Total Commitment sums to exactly 145.8 (23.6 + 20.7 + 22.3 + 18.0 + 16.7 +
-#: 18.0 + 6.1 + 20.4). Nine subsets of the candidate pool hit 145.8 arithmetically,
-#: so the fit alone is not proof; this is the only one that is also coherent —
-#: it is exactly the deals whose page-3 comments read "Construction in progress"
-#: / "Pref equity funding has started", and exactly the negative-Net-ROE rows
-#: minus the two "Recent acquisition, not enough operating history" deals
-#: (Hanestowne Village, Plaza Del Mar), which are not development deals.
-#:
-#: CONFIRM WITH THE AUTHOR before trusting the row. The rule it stands in for
-#: needs a development/stabilisation state in the data that does not exist —
-#: once it does, delete this and filter on it.
-EXCLUDING_DEV_VCODES: frozenset = frozenset({
-    "P0000067",     # Brainerd Place Apartments
-    "P0000078",     # Jefferson Waters Creek
-    "P0000077",     # Jefferson Addison Heights
-    "P0000085",     # Jefferson Eastchase
-    "P0000089",     # 45th & Main
-    "P0000100",     # Green Valley Ranch & Telluride
-    "P0000110",     # Trolley Square
-    "P0000114",     # Jefferson Stephens
-})
+# EXCLUDING_DEV_VCODES IS GONE (Sep 9 2026). It was a frozenset of eight vcodes
+# transcribed from the reference PDF, carrying its own definition of
+# development, and its docstring's closing instruction was "CONFIRM WITH THE
+# AUTHOR before trusting the row ... once [a real state exists], delete this and
+# filter on it". The author has now confirmed: JB FAIR PARK IS A DEVELOPMENT
+# DEAL, both pages must exclude it, and this is that deletion.
+#
+# WHAT IT COST WHILE IT LIVED. The list omitted JB Fair Park (P0000021), which
+# `is_dev_deal` classifies as development, so the two pages of the same report
+# answered the same question differently:
+#
+#     page 6 (Financial)  hardcoded list  28 deals  371.4M commitment / 47.394M ITD
+#     page 8 (Loan)       row `is_dev`    27 deals  <-- excluded JB Fair Park
+#
+# The per-row flags were never in conflict — both subtabs resolve `is_dev`
+# through `resolve_strategy` + `is_dev_deal` and agreed on all 36 rows at 26Q2.
+# It was only ever the second POPULATION that dissented, which is exactly the
+# failure mode a hardcode alongside a real classifier invites.
+#
+# The PDF-fit reasoning is preserved here because it explains how the list was
+# arrived at and why it looked sound: Portfolio Total Commitment 445.1 less the
+# published excluding-dev 299.3 leaves 145.8, and those eight deals' Total
+# Commitment summed to exactly 145.8. Nine subsets of the candidate pool hit
+# 145.8 arithmetically, so the fit was never proof on its own — and it turned
+# out to encode a March vintage of the population rather than a rule. Its other
+# stated ground, that JB Fair Park "produces income (ITD 1.17 / ROE 4.8%) and so
+# is not development for this purpose", is not a definition of development; a
+# construction deal can distribute.
+#
+# Pegasus Life Storage, the list's other named keep, needs nothing here: it was
+# reclassified non-development at source when "new construction" came out of
+# DEV_STRATEGIES, so `is_dev` already agrees the list was right about it. JB
+# Fair Park was the only live disagreement, and removing the list changes
+# exactly that one deal.
 
 #: Which columns the excluding-dev row actually populates. The PDF leaves every
 #: other cell on that row blank, so the assembly emits None for them rather than
@@ -1315,9 +1319,20 @@ def assemble_financial(investor_code: str, quarter: str, *,
     # assertion that it was absent is replaced by checks that it is present and
     # correctly scoped.
     #
-    # Population is EXCLUDING_DEV_VCODES, not `is_dev` — see that constant.
-    kept = [r for r in total_rows if r["vcode"] not in EXCLUDING_DEV_VCODES]
-    removed = [r for r in total_rows if r["vcode"] in EXCLUDING_DEV_VCODES]
+    # POPULATION IS `is_dev` — the row's own flag, the same one the Loan subtab
+    # filters its excluding-development total on. It was a hardcoded vcode list
+    # (EXCLUDING_DEV_VCODES, deleted Sep 9 2026) and that is what made the two
+    # pages disagree: the list omitted JB FAIR PARK, which `is_dev_deal` calls
+    # development, so page 6 kept it in the excluding-dev totals while page 8
+    # removed it. One deal, both pages, opposite answers.
+    #
+    # The per-row `is_dev` flags never disagreed — both subtabs already resolve
+    # them through `resolve_strategy` + `is_dev_deal`, and all 36 rows agree at
+    # 26Q2. Only the two exclusion POPULATIONS differed, so the fix is to ask
+    # the rows rather than a second list. There is now one definition of
+    # development on the report and no vcode to keep in step with it.
+    kept = [r for r in total_rows if not r["is_dev"]]
+    removed = [r for r in total_rows if r["is_dev"]]
     diag["excluding_dev_deals"] = len(removed)
     ex_full = _subtotal(kept, "Excluding Development Deals",
                         agg_vcode=AGG_EXDEV_VCODE,
@@ -1708,15 +1723,23 @@ def _selftest():                                    # pragma: no cover
     ex = out.get("total_excluding_dev") or {}
     chk("Excluding-Development total present",
         bool(ex) and ex.get("label") == "Excluding Development Deals")
-    chk("excluding-dev removes exactly the EXCLUDING_DEV_VCODES present",
+    # The population is now the rows' own `is_dev`, so the assertion is that it
+    # removes EVERY development deal and nothing else — the property the Loan
+    # subtab's row has always satisfied, and the one a vcode list could not
+    # guarantee. Stated over `is_dev` rather than over a list of names, so it
+    # keeps holding as the portfolio changes.
+    chk("excluding-dev removes exactly the development deals",
         set(ex.get("excluded_vcodes") or [])
-        == (EXCLUDING_DEV_VCODES & set(flat)))
+        == {vc for vc, x in flat.items() if x["is_dev"]})
+    chk("excluding-dev keeps no development deal",
+        not any(flat[vc]["is_dev"] for vc in flat
+                if vc not in set(ex.get("excluded_vcodes") or [])))
     chk("excluding-dev deal_count = all deals minus those removed",
         ex.get("deal_count") == len(flat) - len(ex.get("excluded_vcodes") or []))
     chk("excluding-dev Total Commitment = sum over the kept deals",
         abs((ex.get("total_commitment") or 0)
             - sum(x["total_commitment"] or 0 for vc, x in flat.items()
-                  if vc not in EXCLUDING_DEV_VCODES)) < 1)
+                  if not x["is_dev"])) < 1)
     chk("excluding-dev Total Commitment < the portfolio total",
         (ex.get("total_commitment") or 0) < (out["total"]["total_commitment"] or 0))
     chk("excluding-dev blanks every column the PDF leaves blank",
