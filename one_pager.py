@@ -1181,11 +1181,40 @@ def get_property_performance(
     """
     perf = {
         'economic_occ': {'ytd_actual': None, 'ytd_budget': None, 'variance': None, 'at_close': None, 'actual_ye': None, 'uw_ye': None},
-        'revenue': {'ytd_actual': 0, 'ytd_budget': 0, 'variance': 0, 'at_close': 0, 'actual_ye': 0, 'uw_ye': 0},
-        'expenses': {'ytd_actual': 0, 'ytd_budget': 0, 'variance': 0, 'at_close': 0, 'actual_ye': 0, 'uw_ye': 0},
-        'noi': {'ytd_actual': 0, 'ytd_budget': 0, 'variance': 0, 'at_close': 0, 'actual_ye': 0, 'uw_ye': 0},
+        # ``ytd_actual`` SEEDS TO None, NOT 0 — a partner that has not reported
+        # is not a property that earned nothing. Everything else on these three
+        # blocks keeps its 0 default deliberately; see the note below.
+        'revenue': {'ytd_actual': None, 'ytd_budget': 0, 'variance': 0, 'at_close': 0, 'actual_ye': 0, 'uw_ye': 0},
+        'expenses': {'ytd_actual': None, 'ytd_budget': 0, 'variance': 0, 'at_close': 0, 'actual_ye': 0, 'uw_ye': 0},
+        'noi': {'ytd_actual': None, 'ytd_budget': 0, 'variance': 0, 'at_close': 0, 'actual_ye': 0, 'uw_ye': 0},
         'dscr': {'ytd_actual': None, 'ytd_budget': None, 'variance': None, 'at_close': None, 'actual_ye': None, 'uw_ye': None},
     }
+    # WHY ONLY ``ytd_actual`` MOVED TO None, AND NOT THE WHOLE BLOCK.
+    #
+    # Seeding these to a literal 0 is a sentinel for "no data" throughout, and
+    # turning every one of them into None is the right end state — that is
+    # already written down at ``_payload_unpopulated`` in
+    # portfolio_snapshot_operating, which works around the At Close case from
+    # the far side and records the reason for not fixing it here: these
+    # defaults are One Pager public API and several pages do arithmetic on
+    # them.
+    #
+    # ``ytd_actual`` is separable and was checked one consumer at a time:
+    #   * lines below that read it for Projected YE are already gated on
+    #     ``has_current_year_actuals``, i.e. on the very condition that decides
+    #     whether it was populated;
+    #   * ``build_chart_data`` maps ``!= 0`` to None, so None lands on the same
+    #     branch 0 did and the chart is byte-identical;
+    #   * ``financials_service`` reads it as ``... or 0`` for the PE yield;
+    #   * the Operating subtab reads at_close / uw_ye / actual_ye and never
+    #     this key, so ``_payload_unpopulated`` is untouched — it still needs
+    #     its 0s and still has them;
+    #   * ``fmtMil`` renders None and 0 identically as an em dash, so no cell
+    #     that was readable becomes blank.
+    #
+    # The other five keys are NOT safe to move in the same breath and are left
+    # exactly as they were. Doing them properly means retiring
+    # ``_payload_unpopulated`` at the same time, which is a separate change.
 
     if isbs_df is None or isbs_df.empty:
         return perf
@@ -1758,8 +1787,27 @@ def get_property_performance(
                     perf['economic_occ']['at_close'] = float(eoc) * 100 if eoc <= 1 else float(eoc)
 
     # Calculate variances
+    #
+    # A VARIANCE NEEDS SOMETHING TO COMPARE. `ytd_actual` is None when no
+    # actual period exists in the report year on or before quarter end
+    # (`ytd_date` never resolved above), and there is no variance to state
+    # against an actual nobody filed. Guarded the same way `dscr` below always
+    # was — that block had it from the start and these three did not.
+    #
+    # This is the CONSUMER side of the None seeding. The DISPLAY side is the
+    # point of the change: OnePagerView recomputes the percentage itself from
+    # `ytd_actual` / `ytd_budget` rather than reading this field, and its
+    # `fmtVariance` already returns blank on a null actual — it simply never
+    # saw one, because a missing actual arrived as 0 and (0 - budget)/budget is
+    # a confident -100%. Giant 7 and East Manchester printed exactly that on
+    # Revenue, Expenses and NOI while their YTD Actual cells read as dashes.
     for metric in ['revenue', 'expenses', 'noi']:
-        perf[metric]['variance'] = perf[metric]['ytd_actual'] - perf[metric]['ytd_budget']
+        if (perf[metric]['ytd_actual'] is not None
+                and perf[metric]['ytd_budget'] is not None):
+            perf[metric]['variance'] = (perf[metric]['ytd_actual']
+                                        - perf[metric]['ytd_budget'])
+        else:
+            perf[metric]['variance'] = None
 
     if perf['dscr']['ytd_actual'] is not None and perf['dscr']['ytd_budget'] is not None:
         perf['dscr']['variance'] = perf['dscr']['ytd_actual'] - perf['dscr']['ytd_budget']
