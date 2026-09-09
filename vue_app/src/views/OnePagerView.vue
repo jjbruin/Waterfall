@@ -408,6 +408,24 @@ function fmtPct(val: number | null | undefined): string {
  * two decimals would show "-12.85%" but would restate every occupancy cell on
  * the report, which is a wider change than this one is.
  */
+/**
+ * The Debt cell of the capitalisation stack.
+ *
+ * `debt_display` is null on a deal sold by the reported quarter: MRI stops the
+ * balance sheet at disposal rather than writing the payoff down, so the last
+ * period on file is a pre-sale balance that would otherwise print forever
+ * (East Manchester, sold 2026-06-25, showed a Nov-2025 $9,641,912). The
+ * Portfolio Snapshot has suppressed this for months; this keeps the two views
+ * telling the same story.
+ *
+ * Tests for the KEY, not for a nullish value — a present null is the deliberate
+ * suppression, an absent key is a snapshot frozen before the field existed and
+ * must keep rendering its raw `debt` exactly as it always did. Same rule as
+ * `debtCell` in SnapshotLoan.vue.
+ */
+function capDebtCell(c: any): number | null | undefined {
+  return c && 'debt_display' in c ? c.debt_display : c?.debt
+}
 function fmtOcc(val: number | null | undefined): string {
   if (val == null || isNaN(val)) return '—'
   return val.toFixed(1) + '%'
@@ -769,7 +787,7 @@ function printOnePager() {
             </tr>
             <tr>
               <td class="lbl">P.E. Coupon:</td><td class="val">{{ cap.pe_coupon ? fmtPct(cap.pe_coupon) : 'N/A' }}</td>
-              <td class="lbl">Debt:</td><td class="val right">{{ fmtMil(cap.debt) }}</td>
+              <td class="lbl">Debt:</td><td class="val right">{{ fmtMil(capDebtCell(cap)) }}</td>
               <td class="val right">{{ fmtPctInt(cap.debt_pct) }}</td>
             </tr>
             <tr>
@@ -940,7 +958,7 @@ function printOnePager() {
               </tr>
               <tr>
                 <td class="lbl">P.E. Coupon:</td><td class="val">{{ pg.data.cap_stack?.pe_coupon ? fmtPct(pg.data.cap_stack.pe_coupon) : 'N/A' }}</td>
-                <td class="lbl">Debt:</td><td class="val right">{{ fmtMil(pg.data.cap_stack?.debt) }}</td>
+                <td class="lbl">Debt:</td><td class="val right">{{ fmtMil(capDebtCell(pg.data.cap_stack)) }}</td>
                 <td class="val right">{{ fmtPctInt(pg.data.cap_stack?.debt_pct) }}</td>
               </tr>
               <tr>

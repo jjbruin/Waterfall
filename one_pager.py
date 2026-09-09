@@ -944,21 +944,84 @@ def get_capitalization_stack(
         else:
             cap['committed_pe_basis'] = 'none'
 
+    # ---- A SOLD DEAL'S DEBT IS NOT REPORTED ----
+    #
+    # MRI stops the balance sheet when a deal is disposed; it does not write the
+    # payoff down. So the last period on file is a PRE-SALE balance, and reading
+    # "the most recent period on or before quarter end" returns it indefinitely.
+    # East Manchester sold 2026-06-25 and its whole BS ends 2025-11, so the One
+    # Pager printed $9,641,912 — a seven-month-stale figure for a loan that went
+    # with the asset.
+    #
+    # The Portfolio Snapshot has suppressed exactly this since Sep 2026
+    # (SOLD_NA_CELLS / sold_suppressed); the One Pager had no equivalent and
+    # printed the stale number, so the two views disagreed about the same deal.
+    #
+    # `is_sold_as_of` is the Snapshot's own quarter-aware test, imported rather
+    # than reimplemented: Sale_Status == 'SOLD' AND Sale_Date <= quarter end. It
+    # is deliberately NOT gated on KEEP_DESPITE_SOLD — that set decides which
+    # rows stay on the Snapshot PAGE, a population question. The One Pager opens
+    # for any deal, so the test that matters is simply whether it was sold by
+    # the quarter being reported. A deal sold AFTER the quarter end was still
+    # held during it and keeps its debt.
+    #
+    # WHY THE EXISTING PAID-OFF GUARD DOES NOT CATCH THESE. `get_isbs_debt_balance`
+    # zeroes debt when the debt accounts go stale relative to the deal's own
+    # latest BS period. On every one of these deals the WHOLE feed stops at once,
+    # so debt is not stale relative to the rest of the sheet and the guard never
+    # fires. Measured on all 8 affected deals at 26Q2: last debt period == last
+    # BS period, every time.
+    #
+    # DISPLAY ONLY — `debt` and `debt_isbs` keep their raw values so audits and
+    # the Snapshot's own `debt_isbs` twin still see the figure. Only the printed
+    # cell and the totals built from it change.
+    sold_suppressed = False
+    if quarter_str and inv_map is not None and not inv_map.empty:
+        try:
+            from flask_app.services.portfolio_snapshot_service import is_sold_as_of
+            _vc = 'vcode' if 'vcode' in inv_map.columns else 'vCode'
+            _row = inv_map[inv_map[_vc].astype(str).str.strip().str.upper()
+                           == vcode_str.upper()]
+            if not _row.empty:
+                _r = _row.iloc[0]
+                _, _q_end = quarter_to_date_range(quarter_str)
+                sold_suppressed = is_sold_as_of(
+                    {"sale_status": _r.get("Sale_Status"),
+                     "sale_date": pd.to_datetime(_r.get("Sale_Date"),
+                                                 errors="coerce")},
+                    _q_end)
+        except Exception:
+            # A deal whose sale cannot be resolved keeps reporting its debt —
+            # failing open leaves the page exactly as it was.
+            sold_suppressed = False
+
+    cap['sold_suppressed'] = sold_suppressed
+    # The leg the printed columns add up to. Zero on a suppressed row so Debt +
+    # Pref + Partner still equals Total Cap on screen — the same treatment the
+    # Snapshot gives an n/a Debt, and the reason its East Manchester row reads
+    # 6.0M rather than 15.6M.
+    debt_leg = 0.0 if sold_suppressed else cap['debt']
+    debt_leg_isbs = 0.0 if sold_suppressed else cap['debt_isbs']
+
     # Calculate totals and percentages
-    cap['total_cap'] = cap['debt'] + cap['pref_equity'] + cap['partner_equity']
+    cap['total_cap'] = debt_leg + cap['pref_equity'] + cap['partner_equity']
 
     # The same total on the pre-override debt basis, for the Portfolio Snapshot.
     # Identical to total_cap for every deal this page did not rebase.
-    cap['total_cap_isbs'] = cap['debt_isbs'] + cap['pref_equity'] + cap['partner_equity']
+    cap['total_cap_isbs'] = debt_leg_isbs + cap['pref_equity'] + cap['partner_equity']
 
     if cap['total_cap'] > 0:
-        cap['debt_pct'] = cap['debt'] / cap['total_cap']
+        cap['debt_pct'] = debt_leg / cap['total_cap']
         cap['pref_equity_pct'] = cap['pref_equity'] / cap['total_cap']
         cap['partner_equity_pct'] = cap['partner_equity'] / cap['total_cap']
-        cap['pe_exposure_on_cap'] = (cap['debt'] + cap['pref_equity']) / cap['total_cap'] * 100
+        cap['pe_exposure_on_cap'] = (debt_leg + cap['pref_equity']) / cap['total_cap'] * 100
 
     if cap['current_valuation'] > 0:
-        cap['pe_exposure_on_value'] = (cap['debt'] + cap['pref_equity']) / cap['current_valuation'] * 100
+        cap['pe_exposure_on_value'] = (debt_leg + cap['pref_equity']) / cap['current_valuation'] * 100
+
+    # The printed Debt cell. None renders as an em dash through `fmtMil`, the
+    # same as any other absent figure on the page — no new display convention.
+    cap['debt_display'] = None if sold_suppressed else cap['debt']
 
     return cap
 
