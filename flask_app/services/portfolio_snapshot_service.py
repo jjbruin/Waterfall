@@ -136,7 +136,8 @@ def _is_op(entity: str) -> bool:
 # Effect of the withdrawal is a transfer between two subtotals — Individual
 # Investments loses Eastchase, TGA 2023 regains it — and Portfolio Totals, the
 # excluding-development row (which is population-scoped, not group-scoped, so
-# P0000085 stays in EXCLUDING_DEV_VCODES) and every deal-level figure are
+# P0000085 is still removed from it — as a development deal by ``is_dev``) and
+# every deal-level figure are
 # untouched. Do not re-add it without an ownership row in MRI behind it.
 GROUP_OVERRIDES: dict[str, str] = {
     "P0000019": INDIVIDUAL_GROUP,      # Giant 7

@@ -28,8 +28,11 @@ const emit = defineEmits<{
 
 const groups = computed<Record<string, any>>(() => props.data?.groups || {})
 const total = computed(() => props.data?.total || null)
-/** The PDF's "Excluding Development Deals" row. Backend-computed; see
- *  EXCLUDING_DEV_VCODES for why its population is not simply `is_dev`. */
+/** The PDF's "Excluding Development Deals" row. Backend-computed, and its
+ *  population IS simply `is_dev` — the same definition SnapshotLoan's
+ *  excluding-development total filters on, so the two pages agree on which
+ *  deals are development. It used to be a hardcoded vcode list that omitted
+ *  JB Fair Park; see the assembly for what that cost. */
 const exDev = computed(() => props.data?.total_excluding_dev || null)
 const flaggedRows = computed<any[]>(() => props.data?.ownership_flagged || [])
 

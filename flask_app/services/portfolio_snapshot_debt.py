@@ -35,8 +35,9 @@ After the change 29 of 33 deals tie to the cent and the whole remaining gap is
 four named data problems (see KNOWN_DEBT_RESIDUALS in
 ``scripts/snapshot_debt_basis_check.py``). Attributable beats small.
 
-Total Cap is deliberately NOT recomputed from the chosen Debt — see
-``resolve_debt``.
+The Financial subtab's Total Cap IS recomputed from the Debt chosen here, so
+that row adds up to its own printed columns — see ``resolve_debt``. It was
+deliberately not, until Sep 9 2026; that reversal is recorded there.
 """
 
 from __future__ import annotations
@@ -111,13 +112,31 @@ def resolve_debt(cap: Optional[dict], dev: bool,
     distrust, and an em dash is honest where a stale number is not. Pegasus Life
     Storage is that case — held debt free, ISBS 0.0, and the PDF prints a dash.
 
-    Total Cap is NOT derived from this. It stays the One Pager's own
-    ``cap_stack['total_cap']``, so for a rebased dev deal
-    Debt + Total Pref + Ptr Equity no longer foots exactly to Total Cap. That is
-    deliberate and matches the published page, which does not foot either
-    (JB Fair Park: 48.98 + 14.3 + 3.9 = 67.2 against a printed Total Cap of
-    67.1). Recomputing Total Cap would change a second metric to tidy up a
-    presentation artefact the source document also carries.
+    TOTAL CAP IS DERIVED FROM THIS on the Financial subtab, as of Sep 9 2026.
+    It re-foots Debt + Total Pref + Ptr Equity using whatever figure this
+    function returns, so a rebased dev deal adds up to its own printed total.
+
+    THAT REVERSES WHAT THIS DOCSTRING USED TO SAY, and the reversal is not just
+    a change of preference — the old reasoning was WRONG ON ITS FACTS. It left
+    Total Cap on the One Pager's ``cap_stack`` on the grounds that "the
+    published page does not foot either", citing JB Fair Park's
+    48.98 + 14.3 + 3.9 = 67.2 against a printed 67.1. That 0.08 is rounding on
+    one-decimal columns. The PDF actually foots on 30 of its 31 testable rows,
+    five of these six dev deals included, WITH COMMITTED DEBT IN TOTAL CAP —
+    Jefferson Eastchase prints 53.9 + 29.4 + 14.7 = 98.0 exactly. The app was
+    the only thing not footing.
+
+    So on the report author's instruction (Sep 9 2026) the row now adds up to
+    what it prints. Six rows were affected at 26Q2 — the four reported plus
+    Jefferson Stephens and Trolley Square, which nobody had noticed — each
+    missing by exactly this function's committed figure less the ISBS balance,
+    up to 50.0M. The re-footing lives in the ``total_cap`` block of
+    ``portfolio_snapshot_financial.build_row``; see there for the figures, for
+    Trolley Square's separate PDF-side anomaly, and for why the funded-basis
+    audit twin keeps the ISBS leg.
+
+    The Loan subtab prints Debt from here too and has no Total Cap column, so
+    it is unaffected either way.
     """
     # ``debt_isbs`` is the ISBS balance BEFORE the One Pager's development
     # override (which rebases a dev deal's own Debt onto Inspection mHardCosts).

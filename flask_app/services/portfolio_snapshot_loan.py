@@ -464,6 +464,11 @@ def _num(v):
 # KNOWN_LOAN_SUBTOTAL_DIFFS rather than fitted to.
 _RATIO_KEYS = ("ltv", "ytd_dscr", "debt_yield")
 
+#: Label on the excluding-development row. The UI appends the deal count in
+#: parentheses, as the published page does ("Excluding development deals (27)"),
+#: so the count is not baked into the string here.
+EXCLUDING_DEV_LABEL = "Excluding development deals"
+
 #: Fund total cells on PDF page 4 that no consistent rule reproduces.
 #: label -> (metric, ours, published, why it is being left alone)
 KNOWN_LOAN_SUBTOTAL_DIFFS = {
@@ -1255,6 +1260,43 @@ def assemble_loan(investor_code: str, quarter: str, *,
         "total": loan_subtotal(
             [r for rows in groups.values() for r in rows] + flagged_rows,
             PORTFOLIO_TOTAL_LABEL),
+        # ---- "Excluding development deals (N)" ----
+        #
+        # COMPUTED HERE AS OF SEP 9 2026. It was the one total on the report
+        # assembled client-side (`exDevTotal` in SnapshotLoan.vue), and that is
+        # why it was the one total that did not foot: the client copy summed the
+        # RAW `debt` while the cell beside it rendered `debt_display`, so a
+        # suppressed row printed "—" and still fed the total underneath it.
+        #
+        #     shown            984,768,975.62
+        #     displayed rows   975,127,063.62
+        #     gap                9,641,912.00   East Manchester, to the cent
+        #
+        # `loan_subtotal` has had the right rule since 2026-09-02 — it drops any
+        # row with `sold_suppressed`, which is exactly why the fund subtotals
+        # and Portfolio Totals were never wrong. Routing this row through the
+        # same function is the fix: there is now ONE debt-summing rule on the
+        # subtab, so the suppression treatment cannot be applied to some totals
+        # and missed on another.
+        #
+        # Development is excluded by the row's own `is_dev` — the same flag the
+        # Financial subtab's excluding-development row uses since 142a92f, so
+        # the two pages agree on the population as well as on the arithmetic.
+        #
+        # Flagged rows are included, as they are in `total` above and as the
+        # client computation included them: an unresolved ownership chain does
+        # not make a deal non-development or its debt unreal. None on the 26Q2
+        # page today.
+        #
+        # `deal_count` is every VISIBLE non-development row, so East Manchester
+        # and City West still count — they are on the page, they simply carry no
+        # debt figure. Dropping them from the count would misreport the
+        # population to make the arithmetic look tidy.
+        "total_excluding_dev": loan_subtotal(
+            [r for rows in groups.values() for r in rows
+             if not r.get("is_dev")]
+            + [r for r in flagged_rows if not r.get("is_dev")],
+            EXCLUDING_DEV_LABEL),
         "diagnostics": diag,
     }
 
