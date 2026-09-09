@@ -377,6 +377,41 @@ function fmtPct(val: number | null | undefined): string {
   const pct = val > 1 ? val : val * 100
   return pct.toFixed(1) + '%'
 }
+/**
+ * Economic occupancy, whose unit is fixed BY CONTRACT: the backend always
+ * sends percentage points (72.3 means 72.3%), never a decimal fraction.
+ *
+ * Deliberately not `fmtPct`. That one has to guess the unit from the magnitude
+ * (`val > 1 ? val : val * 100`) because it also formats genuinely-decimal
+ * fields — pe_coupon arrives as 0.08 and must print "8%". `fmtPct` is correct
+ * for those and is left exactly as it is.
+ *
+ * The guess is wrong for occupancy in BOTH directions, and it is a guess about
+ * a unit, which is the thing a formatter should never infer from the size of a
+ * number:
+ *
+ *   -12.8468  ->  "-1284.7%"   a negative never satisfies `> 1`, so it was
+ *                              scaled by 100. This is Jefferson Waters Creek's
+ *                              YTD Budget cell.
+ *     0.5     ->  "50%"        a genuinely low occupancy, silently centupled.
+ *
+ * Fixing the unit here rather than bounding the value keeps the page honest
+ * about what the data says: -12.85% is what the calculation produced, and it
+ * now prints as -12.85% instead of as a number nobody can act on. Whether that
+ * figure OUGHT to be negative is a data question (Waters Creek's budget books
+ * 51% of rental income to account 4043 during lease-up), not a display one.
+ *
+ * ONE decimal, matching every other percentage cell on the page, so that no
+ * correctly-formatted value moves: 95.4 still prints "95.4%", not "95.40%".
+ * The consequence is that Waters Creek's -12.8468 reads "-12.8%" rather than
+ * "-12.85%" — the same figure at the page's standard precision. Switching to
+ * two decimals would show "-12.85%" but would restate every occupancy cell on
+ * the report, which is a wider change than this one is.
+ */
+function fmtOcc(val: number | null | undefined): string {
+  if (val == null || isNaN(val)) return '—'
+  return val.toFixed(1) + '%'
+}
 function fmtPctInt(val: number | null | undefined): string {
   if (val == null || isNaN(val)) return '—'
   const pct = val > 1 ? val : val * 100
@@ -410,10 +445,10 @@ const perfRows = computed(() => {
 
 function buildPerfRows(p: any) {
   return [
-    { label: 'Economic Occ.', ytdA: fmtPct(p.economic_occ?.ytd_actual), ytdB: fmtPct(p.economic_occ?.ytd_budget),
+    { label: 'Economic Occ.', ytdA: fmtOcc(p.economic_occ?.ytd_actual), ytdB: fmtOcc(p.economic_occ?.ytd_budget),
       variance: p.economic_occ?.ytd_actual != null && p.economic_occ?.ytd_budget != null
         ? (p.economic_occ.ytd_actual - p.economic_occ.ytd_budget).toFixed(1) + '%' : '',
-      atClose: fmtPct(p.economic_occ?.at_close), actualYE: fmtPct(p.economic_occ?.actual_ye), uwYE: fmtPct(p.economic_occ?.uw_ye) },
+      atClose: fmtOcc(p.economic_occ?.at_close), actualYE: fmtOcc(p.economic_occ?.actual_ye), uwYE: fmtOcc(p.economic_occ?.uw_ye) },
     { label: 'Revenue', ytdA: fmtMil(p.revenue?.ytd_actual), ytdB: fmtMil(p.revenue?.ytd_budget),
       variance: fmtVariance(p.revenue?.ytd_actual, p.revenue?.ytd_budget),
       atClose: fmtMil(p.revenue?.at_close), actualYE: fmtMil(p.revenue?.actual_ye), uwYE: fmtMil(p.revenue?.uw_ye) },
