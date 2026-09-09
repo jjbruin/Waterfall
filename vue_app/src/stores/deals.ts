@@ -189,6 +189,7 @@ export const useDealsStore = defineStore('deals', () => {
 
   // Raw capital calls (for editing)
   const rawCapitalCalls = ref<Record<string, RawCapitalCall[]>>({})
+  const rawCapitalCallsError = ref('')
 
   // Refi info from last compute
   const refiDbg = ref<Record<string, any>>({})
@@ -440,7 +441,14 @@ export const useDealsStore = defineStore('deals', () => {
     try {
       const res = await api.get(`/api/deals/${vcode}/raw-capital-calls`)
       rawCapitalCalls.value[vcode] = res.data.capital_calls
-    } catch { /* ignore */ }
+      rawCapitalCallsError.value = ''
+    } catch (e: any) {
+      // An empty list is indistinguishable from a deal that has no capital
+      // calls, so the failure has to be reported rather than ignored.
+      rawCapitalCalls.value[vcode] = []
+      rawCapitalCallsError.value =
+        e?.response?.data?.error || e?.message || 'Could not load capital calls.'
+    }
   }
 
   async function createRawCapitalCall(vcode: string, data: Record<string, any>) {
@@ -477,6 +485,7 @@ export const useDealsStore = defineStore('deals', () => {
     prospectiveLoans.value = {}
     sizingResults.value = {}
     rawCapitalCalls.value = {}
+    rawCapitalCallsError.value = ''
     refiDbg.value = {}
     refiCapitalCallRequired.value = {}
     refiCapitalCallAmount.value = {}
@@ -488,7 +497,7 @@ export const useDealsStore = defineStore('deals', () => {
     partnerResults, dealSummaries, debugMsgs,
     headers, forecasts, debtService, cashData, capitalCalls,
     xirrCashflows, roeAudits, moicAudits,
-    prospectiveLoans, sizingResults, rawCapitalCalls,
+    prospectiveLoans, sizingResults, rawCapitalCalls, rawCapitalCallsError,
     refiDbg, refiCapitalCallRequired, refiCapitalCallAmount,
     contractSalePrice, sellingCostOverride, sellingCostType, saleOverrideSaved, saleDateOverride,
     // Computed

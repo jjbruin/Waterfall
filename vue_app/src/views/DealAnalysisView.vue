@@ -298,6 +298,7 @@ const selectedSizing = computed<SizingResult | null>(() => {
 const showCapCallForm = ref(false)
 const capCallForm = ref<Record<string, any>>({})
 const capCallSaving = ref(false)
+const capCallError = ref('')
 const editingCapCallId = ref<number | null>(null)
 
 // Get investor keys from current partner results for PropCode dropdown
@@ -308,6 +309,7 @@ const capitalCallInvestors = computed(() => {
 })
 
 function resetCapCallForm() {
+  capCallError.value = ''
   capCallForm.value = {
     PropCode: '',
     CallDate: '',
@@ -329,6 +331,7 @@ function openCapCallForm(prefill?: Record<string, any>) {
 }
 
 function editCapCall(call: any) {
+  capCallError.value = ''
   editingCapCallId.value = call.id
   capCallForm.value = {
     PropCode: call.PropCode || '',
@@ -345,6 +348,19 @@ function editCapCall(call: any) {
 async function saveCapCall() {
   const vc = deals.currentVcode
   if (!vc) return
+  capCallError.value = ''
+  if (!capCallForm.value.PropCode) {
+    capCallError.value = 'Select an investor.'
+    return
+  }
+  if (!capCallForm.value.CallDate) {
+    capCallError.value = 'Enter a call date.'
+    return
+  }
+  if (!Number(capCallForm.value.Amount)) {
+    capCallError.value = 'Enter an amount.'
+    return
+  }
   capCallSaving.value = true
   try {
     if (editingCapCallId.value) {
@@ -359,6 +375,10 @@ async function saveCapCall() {
     // Refresh the capital calls section
     deals.loadCapitalCalls(vc)
     deals.loadRawCapitalCalls(vc)
+  } catch (e: any) {
+    // The form stays open carrying the entry, so a failed save cannot look
+    // like a save that silently did nothing.
+    capCallError.value = e?.response?.data?.error || e?.message || 'Could not save the capital call.'
   } finally {
     capCallSaving.value = false
   }
@@ -367,7 +387,13 @@ async function saveCapCall() {
 async function deleteCapCall(callId: number) {
   const vc = deals.currentVcode
   if (!vc) return
-  await deals.deleteRawCapitalCall(vc, callId)
+  capCallError.value = ''
+  try {
+    await deals.deleteRawCapitalCall(vc, callId)
+  } catch (e: any) {
+    capCallError.value = e?.response?.data?.error || e?.message || 'Could not remove the capital call.'
+    return
+  }
   await deals.computeDeal(vc, true)
   deals.loadCapitalCalls(vc)
   deals.loadRawCapitalCalls(vc)
@@ -446,6 +472,10 @@ function fmtNum(v: any): string {
 }
 function fmtDate(v: any): string {
   if (!v) return '—'
+  // Parse ISO dates from their parts — new Date('2026-09-30') is midnight UTC,
+  // which renders as the day before in US timezones (same fix as OnePagerView).
+  const m = String(v).match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (m) return `${parseInt(m[2])}/${parseInt(m[3])}/${m[1]}`
   const d = new Date(v)
   return isNaN(d.getTime()) ? String(v) : d.toLocaleDateString('en-US')
 }
@@ -1552,6 +1582,7 @@ watch(parcelOpen, (open) => {
               <textarea v-model="capCallForm.Notes" rows="2"></textarea>
             </div>
           </div>
+          <p v-if="capCallError" class="error">{{ capCallError }}</p>
           <div class="modal-actions">
             <button class="btn-primary" @click="saveCapCall" :disabled="capCallSaving">
               {{ capCallSaving ? 'Saving...' : 'Save & Recompute' }}
@@ -1755,7 +1786,7 @@ watch(parcelOpen, (open) => {
           <template v-else-if="deals.currentCapCalls">
             <DataTable v-if="deals.currentCapCalls.length"
               :columns="[
-                { key: 'call_date', label: 'Date' },
+                { key: 'call_date', label: 'Date', format: 'date' },
                 { key: 'investor_id', label: 'Investor' },
                 { key: 'typename', label: 'Type' },
                 { key: 'amount', label: 'Amount', format: 'currency', align: 'right' },
@@ -1764,6 +1795,8 @@ watch(parcelOpen, (open) => {
             />
             <p v-else class="placeholder">No capital calls in computed results</p>
           </template>
+
+          <p v-if="deals.rawCapitalCallsError" class="error">{{ deals.rawCapitalCallsError }}</p>
 
           <!-- Raw Capital Calls (editable) -->
           <details v-if="deals.currentRawCapitalCalls.length" class="raw-calls-detail">

@@ -27,6 +27,14 @@ function formatCell(value: any, format?: string): string {
       return typeof value === 'number' ? (value * 100).toFixed(2) + '%' : String(value)
     case 'multiple':
       return typeof value === 'number' ? value.toFixed(2) + 'x' : String(value)
+    case 'date': {
+      // Read the parts rather than new Date(): an ISO date is midnight UTC and
+      // renders as the day before in US timezones.
+      const m = String(value).match(/^(\d{4})-(\d{2})-(\d{2})/)
+      if (m) return `${parseInt(m[2])}/${parseInt(m[3])}/${m[1]}`
+      const d = new Date(value)
+      return isNaN(d.getTime()) ? String(value) : d.toLocaleDateString('en-US')
+    }
     default:
       return String(value)
   }

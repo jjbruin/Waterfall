@@ -4,6 +4,7 @@ from flask import Blueprint, request, jsonify, current_app, send_file
 import io
 
 from flask_app.auth.routes import login_required
+from flask_app.db import get_engine, is_postgres
 from flask_app.services import data_service, compute_service
 from flask_app.serializers import df_to_records, safe_json
 from database import (
@@ -521,106 +522,209 @@ def capital_calls(vcode):
 # Capital calls CRUD (database-managed)
 # ============================================================
 
+# Canonical column names, in the order the CSV feed supplies them.
+_CAP_CALL_COLUMNS = (
+    "Vcode", "PropCode", "CallDate", "Amount",
+    "CallType", "FundingSource", "Notes", "Typename",
+)
+_CAP_CALL_NUMERIC = {"amount"}
+
+
+def _cap_calls_schema(engine):
+    """Resolve capital_calls' real column names, creating what is missing.
+
+    The table is normally created by the ``MRI_Capital_Calls.csv`` import,
+    which runs through ``pandas.to_sql(if_exists="replace")``.  That drops and
+    recreates the table from the CSV's own headers, so neither the case of a
+    column nor its presence can be assumed — and PostgreSQL folds an unquoted
+    identifier to lowercase while erroring on a quoted one that does not match
+    exactly.  ``create_additional_tables``/``run_migrations`` run only on the
+    SQLite path (see ``flask_app/__init__``), so on PostgreSQL the ``Typename``
+    column and any surrogate key may never have been added at all.
+
+    Returns ``{lowercase_name: actual_name}`` for the columns that exist.
+    """
+    from sqlalchemy import inspect as sa_inspect, text
+
+    insp = sa_inspect(engine)
+    if not insp.has_table("capital_calls"):
+        amount_type = "DOUBLE PRECISION" if is_postgres() else "REAL"
+        with engine.begin() as conn:
+            conn.execute(text(
+                "CREATE TABLE capital_calls ("
+                '"Vcode" TEXT, "PropCode" TEXT, "CallDate" TEXT, '
+                f'"Amount" {amount_type}, '
+                '"CallType" TEXT, "FundingSource" TEXT, "Notes" TEXT, '
+                "\"Typename\" TEXT DEFAULT 'Contribution: Investments')"
+            ))
+        insp = sa_inspect(engine)
+
+    cols = {c["name"].lower(): c["name"] for c in insp.get_columns("capital_calls")}
+
+    to_add = []
+    if "typename" not in cols:
+        to_add.append(("\"Typename\" TEXT DEFAULT 'Contribution: Investments'",
+                       "typename", "Typename"))
+    if "id" not in cols and is_postgres():
+        # PostgreSQL has no rowid and to_sql leaves the table without a key,
+        # so edit and delete need a surrogate one.  SERIAL backfills the
+        # rows already there.
+        to_add.append(('"id" SERIAL', "id", "id"))
+
+    for ddl, key, name in to_add:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE capital_calls ADD COLUMN {ddl}"))
+            cols[key] = name
+        except Exception as e:
+            current_app.logger.warning("capital_calls: could not add %s: %s", name, e)
+
+    return cols
+
+
+def _cap_call_id_expr():
+    """The per-row identifier that edit and delete key on."""
+    return '"id"' if is_postgres() else "rowid"
+
+
+def _cap_call_write_params(body, cols, vcode=None):
+    """Map submitted fields onto the columns that actually exist."""
+    assign = {}
+    for canonical in _CAP_CALL_COLUMNS:
+        key = canonical.lower()
+        if key not in cols:
+            continue
+        if canonical == "Vcode":
+            if vcode is not None:
+                assign[canonical] = vcode
+            continue
+        if canonical == "Typename":
+            assign[canonical] = body.get("Typename") or "Contribution: Investments"
+            continue
+        raw = body.get(canonical, "")
+        if key in _CAP_CALL_NUMERIC:
+            try:
+                assign[canonical] = float(raw or 0)
+            except (TypeError, ValueError):
+                raise ValueError(f"{canonical} must be a number, got {raw!r}")
+        else:
+            assign[canonical] = "" if raw is None else raw
+    return assign
+
+
 @deals_bp.route("/<vcode>/raw-capital-calls", methods=["GET"])
 @login_required
 def raw_capital_calls(vcode):
     """Get raw capital calls from database for editing."""
-    from database import get_db_connection
-    conn = get_db_connection()
+    from sqlalchemy import text
+    engine = get_engine()
     try:
-        rows = conn.execute(
-            "SELECT rowid as id, * FROM capital_calls WHERE Vcode = ? ORDER BY CallDate",
-            (vcode,),
-        ).fetchall()
+        cols = _cap_calls_schema(engine)
+        select_cols = [f"{_cap_call_id_expr()} AS id"]
+        for canonical in _CAP_CALL_COLUMNS:
+            actual = cols.get(canonical.lower())
+            select_cols.append(
+                f'"{actual}" AS "{canonical}"' if actual else f'NULL AS "{canonical}"'
+            )
+        order_by = f'"{cols["calldate"]}"' if "calldate" in cols else _cap_call_id_expr()
+        sql = (
+            f'SELECT {", ".join(select_cols)} FROM capital_calls '
+            f'WHERE "{cols["vcode"]}" = :v ORDER BY {order_by}'
+        )
+        with engine.connect() as conn:
+            rows = conn.execute(text(sql), {"v": vcode}).mappings().all()
         return jsonify(safe_json({"capital_calls": [dict(r) for r in rows]}))
-    except Exception:
-        return jsonify({"capital_calls": []})
-    finally:
-        conn.close()
+    except Exception as e:
+        # Reported, not swallowed — an empty list here is indistinguishable
+        # from a deal that genuinely has no capital calls.
+        current_app.logger.exception("Failed to load capital calls for %s", vcode)
+        return jsonify({"error": str(e), "capital_calls": []}), 500
 
 
 @deals_bp.route("/<vcode>/raw-capital-calls", methods=["POST"])
 @login_required
 def create_capital_call(vcode):
     """Create a new capital call."""
-    from database import get_db_connection
+    from sqlalchemy import text
     body = request.get_json(force=True)
-    conn = get_db_connection()
+    engine = get_engine()
     try:
-        conn.execute(
-            "INSERT INTO capital_calls (Vcode, PropCode, CallDate, Amount, CallType, FundingSource, Notes, Typename) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                vcode,
-                body.get("PropCode", ""),
-                body.get("CallDate", ""),
-                float(body.get("Amount", 0)),
-                body.get("CallType", ""),
-                body.get("FundingSource", ""),
-                body.get("Notes", ""),
-                body.get("Typename", "Contribution: Investments"),
-            ),
-        )
-        conn.commit()
+        cols = _cap_calls_schema(engine)
+        assign = _cap_call_write_params(body, cols, vcode=vcode)
+        names = ", ".join(f'"{cols[c.lower()]}"' for c in assign)
+        binds = ", ".join(f":{c}" for c in assign)
+        with engine.begin() as conn:
+            conn.execute(
+                text(f"INSERT INTO capital_calls ({names}) VALUES ({binds})"),
+                assign,
+            )
         # Full data reload to ensure the new capital call is picked up —
         # refresh_table alone can miss it when capital_calls_raw was None.
         data_service.reload()
         compute_service.clear_cache(vcode)
         return jsonify({"status": "created"}), 201
     except Exception as e:
+        current_app.logger.exception("Failed to create capital call for %s", vcode)
         return jsonify({"error": str(e)}), 500
-    finally:
-        conn.close()
 
 
 @deals_bp.route("/<vcode>/raw-capital-calls/<int:call_id>", methods=["PUT"])
 @login_required
 def update_capital_call(vcode, call_id):
     """Update an existing capital call."""
-    from database import get_db_connection
+    from sqlalchemy import text
     body = request.get_json(force=True)
-    conn = get_db_connection()
+    engine = get_engine()
     try:
-        conn.execute(
-            "UPDATE capital_calls SET PropCode=?, CallDate=?, Amount=?, CallType=?, FundingSource=?, Notes=?, Typename=? "
-            "WHERE rowid=?",
-            (
-                body.get("PropCode", ""),
-                body.get("CallDate", ""),
-                float(body.get("Amount", 0)),
-                body.get("CallType", ""),
-                body.get("FundingSource", ""),
-                body.get("Notes", ""),
-                body.get("Typename", "Contribution: Investments"),
-                call_id,
-            ),
-        )
-        conn.commit()
+        cols = _cap_calls_schema(engine)
+        assign = _cap_call_write_params(body, cols)
+        if not assign:
+            return jsonify({"error": "No editable columns on capital_calls"}), 500
+        sets = ", ".join(f'"{cols[c.lower()]}" = :{c}' for c in assign)
+        params = dict(assign, _id=call_id, _v=vcode)
+        with engine.begin() as conn:
+            res = conn.execute(
+                text(
+                    f"UPDATE capital_calls SET {sets} "
+                    f'WHERE {_cap_call_id_expr()} = :_id AND "{cols["vcode"]}" = :_v'
+                ),
+                params,
+            )
+        if res.rowcount == 0:
+            return jsonify({"error": f"Capital call {call_id} not found on {vcode}"}), 404
         data_service.reload()
         compute_service.clear_cache(vcode)
         return jsonify({"status": "updated"})
     except Exception as e:
+        current_app.logger.exception("Failed to update capital call %s", call_id)
         return jsonify({"error": str(e)}), 500
-    finally:
-        conn.close()
 
 
 @deals_bp.route("/<vcode>/raw-capital-calls/<int:call_id>", methods=["DELETE"])
 @login_required
 def delete_capital_call(vcode, call_id):
     """Delete a capital call."""
-    from database import get_db_connection
-    conn = get_db_connection()
+    from sqlalchemy import text
+    engine = get_engine()
     try:
-        conn.execute("DELETE FROM capital_calls WHERE rowid=?", (call_id,))
-        conn.commit()
+        cols = _cap_calls_schema(engine)
+        with engine.begin() as conn:
+            res = conn.execute(
+                text(
+                    "DELETE FROM capital_calls "
+                    f'WHERE {_cap_call_id_expr()} = :_id AND "{cols["vcode"]}" = :_v'
+                ),
+                {"_id": call_id, "_v": vcode},
+            )
+        if res.rowcount == 0:
+            return jsonify({"error": f"Capital call {call_id} not found on {vcode}"}), 404
         data_service.reload()
         compute_service.clear_cache(vcode)
         return jsonify({"status": "deleted"})
     except Exception as e:
+        current_app.logger.exception("Failed to delete capital call %s", call_id)
         return jsonify({"error": str(e)}), 500
-    finally:
-        conn.close()
+
 
 
 # ============================================================
