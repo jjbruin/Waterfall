@@ -271,6 +271,12 @@ def get_entity_nav_data(wf: pd.DataFrame, inv: pd.DataFrame, relationships_raw: 
             "has_wf": has_wf,
         })
 
+    # Sort by what the dropdown actually shows. all_ids is sorted by vcode,
+    # but the label leads with the investment name, so ordering by vcode reads
+    # as unsorted on screen. vcode stays the tiebreaker for unnamed entities,
+    # whose label is the vcode itself.
+    entities.sort(key=lambda e: (e["label"].casefold(), e["vcode"]))
+
     return {"entities": entities}
 
 
