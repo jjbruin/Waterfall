@@ -164,6 +164,33 @@ def delete_steps(vcode: str, wf_type: Optional[str] = None) -> dict:
         return {"success": False, "message": str(e)}
 
 
+def steps_to_records(df: pd.DataFrame) -> list:
+    """Waterfall rows -> JSON-safe records, sorted by iOrder.
+
+    THE SCRUB IS THE POINT, and it is here rather than inline because it was
+    inline: `e6858b5` fixed "Waterfall Setup showing 0 steps" by replacing NaN
+    in `get_waterfall_steps` only, and the two copy paths kept the unscrubbed
+    line and therefore kept the bug.
+
+    A NaN reaches the client as a bare ``NaN`` token, which is not valid JSON.
+    Axios does NOT reject that — with its default ``silentJSONParsing`` a
+    response that fails to parse comes back as the raw STRING, so
+    ``res.data.cf_wf`` is undefined, the caller stores ``[]``, and no error is
+    ever raised: the UI reports a successful copy over an empty grid.
+    """
+    if df is None or df.empty:
+        return []
+    cols = [c for c in WF_COLUMNS if c in df.columns]
+    out = df[cols].sort_values("iOrder")
+    for col in ["FXRate", "nPercent", "mAmount"]:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
+    for col in ["PropCode", "vState", "vtranstype", "vAmtType", "vNotes"]:
+        if col in out.columns:
+            out[col] = out[col].fillna("").astype(str)
+    return out.to_dict(orient="records")
+
+
 def get_waterfall_steps(wf: pd.DataFrame, vcode: str,
                         valid_entities: set = None) -> dict:
     """Get CF_WF and Cap_WF steps for an entity.
@@ -178,24 +205,9 @@ def get_waterfall_steps(wf: pd.DataFrame, vcode: str,
     cf_wf = entity_wf[entity_wf["vmisc"] == "CF_WF"] if not entity_wf.empty else pd.DataFrame()
     cap_wf = entity_wf[entity_wf["vmisc"] == "Cap_WF"] if not entity_wf.empty else pd.DataFrame()
 
-    def to_records(df):
-        if df.empty:
-            return []
-        cols = [c for c in WF_COLUMNS if c in df.columns]
-        out = df[cols].sort_values("iOrder")
-        # Replace NaN with 0.0 for numeric fields, "" for strings
-        # (NaN is not valid JSON and breaks frontend parsing)
-        for col in ["FXRate", "nPercent", "mAmount"]:
-            if col in out.columns:
-                out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
-        for col in ["PropCode", "vState", "vtranstype", "vAmtType", "vNotes"]:
-            if col in out.columns:
-                out[col] = out[col].fillna("").astype(str)
-        return out.to_dict(orient="records")
-
     return {
-        "cf_wf": to_records(cf_wf),
-        "cap_wf": to_records(cap_wf),
+        "cf_wf": steps_to_records(cf_wf),
+        "cap_wf": steps_to_records(cap_wf),
         "has_cf": not cf_wf.empty,
         "has_cap": not cap_wf.empty,
     }
@@ -362,9 +374,7 @@ def copy_cf_to_cap(wf: pd.DataFrame, vcode: str) -> dict:
     if cf_rows.empty:
         return {"success": False, "error": "No CF_WF steps to copy"}
 
-    cols = [c for c in WF_COLUMNS if c in cf_rows.columns]
-    cap_steps = cf_rows[cols].sort_values("iOrder").to_dict(orient="records")
-    return {"success": True, "cap_wf": cap_steps}
+    return {"success": True, "cap_wf": steps_to_records(cf_rows)}
 
 
 # ── Copy from another entity ────────────────────────────────────────────
@@ -378,12 +388,7 @@ def copy_waterfall_from_entity(source_vcode: str, wf: pd.DataFrame) -> dict:
     result = {}
     for wf_type in ("cf_wf", "cap_wf"):
         vmisc = "CF_WF" if wf_type == "cf_wf" else "Cap_WF"
-        rows = src[src["vmisc"] == vmisc]
-        if not rows.empty:
-            cols = [c for c in WF_COLUMNS if c in rows.columns]
-            result[wf_type] = rows[cols].sort_values("iOrder").to_dict(orient="records")
-        else:
-            result[wf_type] = []
+        result[wf_type] = steps_to_records(src[src["vmisc"] == vmisc])
     return result
 
 
