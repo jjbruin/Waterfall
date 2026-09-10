@@ -843,20 +843,38 @@ def _subtotal(rows: list, label: str, *, agg_vcode: Optional[str] = None,
         vals = [r[field] for r in rows if r.get(field) is not None]
         out[c] = sum(vals) if vals else None
     tp, tc = out.get("total_pref"), out.get("total_cap")
-    # "% of Pref" on a subtotal row is the dollar-weighted average of the
-    # per-deal look-through percentages above it, which is
-    # sum(pct x funded) / sum(funded) = invested / funded_pref. The denominator
-    # is FUNDED, deliberately, even though Total Pref is now committed:
-    #   * it keeps the cell a weighted average of the column it sits under;
-    #   * dividing by committed would move a displayed cell as a side effect of
-    #     the Total Pref basis switch — TGA 2025 would read 46% against the
-    #     PDF's 90%, purely because Burton's disputed commitment (54.23M vs the
-    #     PDF's 26.6M) inflates that group's denominator.
-    # On funded this cell is unchanged from before the switch, and TGA 2025
-    # reproduces the PDF's 90% exactly.
-    fp = out.get("funded_pref")
-    out["pct_of_pref"] = ((out["invested"] / fp)
-                          if (out.get("invested") is not None and fp) else None)
+    # "% of Pref" on a subtotal row is COMMITTED-weighted: the Total Commitment
+    # it prints over the Total Pref it prints. That makes the row re-derivable
+    # from itself — subtotal % x subtotal Total Pref == subtotal Total
+    # Commitment — which is the identity every DEAL row already satisfies and
+    # which the reference document also uses.
+    #
+    # It used to divide FUNDED pref (invested / funded_pref), a weighted average
+    # of the per-deal percentages. That is a defensible statistic but it is not
+    # the one printed beside it, so the cell could not be checked against its own
+    # row. The comment here previously defended funded on the grounds that
+    # committed "would make TGA 2025 read 46% against the PDF's 90%" — that is
+    # variant C, `invested / committed`, which mixes a funded numerator with a
+    # committed denominator. Committing BOTH sides gives TGA 2025 = 66.2 / 73.6
+    # = 90%, which is what the PDF shows.
+    #
+    # MEASURED AGAINST THE REFERENCE (26Q1 baseline PDF, p2), committed-weighted
+    # reproduces every fund-group subtotal: Individual Investments 69.9/100.1 =
+    # 70%, TGA 2022 109.5/133.0 = 82%, TGA 2023 112.7/169.5 = 67%, TGA 2024
+    # 91.8/119.3 = 77%, TGA 2025 66.2/73.6 = 90%. Funded-weighting matches none
+    # of them except where a group has no unfunded commitment.
+    #
+    # THE PORTFOLIO TOTALS ROW IS THE ONE EXCEPTION, and it is the document that
+    # is inconsistent, not this code: the PDF's grand total reads 68%, which is
+    # its Invested over its Total Pref (404.2 / 595.3 = 67.9%) — a third basis,
+    # used on that row only. Committed-weighting gives 445.1 / 595.3 = 74.8%.
+    # The total is deliberately kept on the SAME rule as the groups it sums, so
+    # it will not reproduce the PDF's 68%. Flagged rather than special-cased:
+    # one row on a different basis is what made this column unauditable to begin
+    # with.
+    commitment = out.get("total_commitment")
+    out["pct_of_pref"] = ((commitment / tp)
+                          if (commitment is not None and tp) else None)
     out["debt_pct"] = (out["debt"] / tc) if (out.get("debt") is not None and tc) else None
     out["pref_pct"] = (tp / tc) if (tp is not None and tc) else None
     out["ptr_pct"] = ((out["ptr_equity"] / tc)
@@ -1660,11 +1678,17 @@ def _selftest():                                    # pragma: no cover
                 - (cache[(x["vcode"], Q)].get("cap_stack") or {})
                 .get("partner_equity", 0)) < 1
             for x in flat.values() if x.get("ptr_equity") is not None))
-    chk("subtotal '% of Pref' divides FUNDED pref, so it did not move",
+    # The subtotal is COMMITTED-weighted, so it re-derives from its own row:
+    # % x Total Pref == Total Commitment, the same identity the deal rows hold.
+    chk("subtotal '% of Pref' x subtotal Total Pref == subtotal Total Commitment",
         all(b["subtotal"]["pct_of_pref"] is None
-            or abs(b["subtotal"]["pct_of_pref"]
-                   - b["subtotal"]["invested"] / b["subtotal"]["funded_pref"]) < 1e-9
+            or abs(b["subtotal"]["pct_of_pref"] * b["subtotal"]["total_pref"]
+                   - b["subtotal"]["total_commitment"]) < 1e-6
             for b in out["groups"].values()))
+    chk("and so does the Portfolio Totals row",
+        out["total"]["pct_of_pref"] is None
+        or abs(out["total"]["pct_of_pref"] * out["total"]["total_pref"]
+               - out["total"]["total_commitment"]) < 1e-6)
     chk("Un-funded = Commitment - Invested for every deal",
         all(x["unfunded"] is None
             or abs(x["unfunded"] - (x["total_commitment"] - x["invested"])) < 1e-6
