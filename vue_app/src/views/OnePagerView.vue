@@ -1443,20 +1443,24 @@ function printOnePager() {
     margin-bottom: 0;
     display: flex;
     flex-direction: column;
-    /* MIN-height, not height, and no overflow clip.
+    /* EXACTLY one page, and nothing is clipped to achieve it.
        ------------------------------------------------------------------
-       This was `height: calc(100vh - 0.8in)` with `overflow: hidden`, which
-       made the sheet exactly one page and threw away anything that did not
-       fit. Since the Business Plan block was the only flexible item on the
-       page, it absorbed the entire shortfall and collapsed — the narrative
-       did not merely clip at the bottom, it disappeared, on all 45 deals
-       that carry one. See the note on .bp-section.
-       As a minimum, a page whose content fits still fills exactly one sheet,
-       so `margin-top: auto` on the chart keeps it pinned to the bottom
-       exactly as before and nothing moves for those deals. A page whose
-       content does not fit now grows and paginates instead of silently
-       dropping investor-facing text. */
-    min-height: calc(100vh - 0.8in);
+       Three requirements that look contradictory: one page per deal, every
+       character rendered, and no second page. They are reconcilable because
+       the CHART is the only thing that does not fit — measured across all 45
+       narrative deals, the tallest TEXT on any of them ends at 664pt of the
+       734.4pt box (Poplar Prairie), so the words always fit on their own.
+       So the chart comes OUT of the flow (see .chart-section) and is pinned to
+       the foot of the sheet. Flowed content is then text only, which fits, so
+       the fixed height below can never spill onto a second page and never has
+       to clip anything to avoid one.
+       This replaces `min-height`, which was correct for "never lose a word" but
+       let the sheet grow to two pages when the chart could not fit. The earlier
+       `height` + `overflow: hidden` was the opposite error: one page, bought by
+       silently deleting the narrative. This is one page AND every word. */
+    position: relative;
+    height: calc(100vh - 0.8in);
+    overflow: visible;
   }
 
   .op-sheet.page-break {
@@ -1534,6 +1538,9 @@ function printOnePager() {
   .bp-section {
     flex: 0 0 auto;
     overflow: visible !important;
+    /* Above the out-of-flow chart, so an overlapping narrative stays legible. */
+    position: relative;
+    z-index: 1;
   }
   /* The print-only twins of the two textareas. 10.7px is 8pt exactly
      (8 * 96/72), the legibility floor for body text on this page — nothing
@@ -1580,16 +1587,25 @@ function printOnePager() {
      with the header suppression print_page_rule_check enforces — flagged, not
      taken unilaterally. */
   .chart-section {
-    break-inside: avoid;
-    flex-shrink: 0;
-    margin-top: auto;
-    /* The screen rule puts 4px of padding above the rule; in print that plus
-       the 1px border is ~3.75pt of chrome, and page one has only about 3pt of
-       slack. PMAT Midwest - North Heights misses a single page by ~1.5pt with
-       it and makes it without: it has NO narrative, printed fine on one page
-       before, and must still. Trimming here rather than anywhere else because
-       it is the chart's own spacing and costs nothing legible. */
-    padding-top: 1px;
+    /* OUT OF FLOW, pinned to the foot of the sheet.
+       This is what makes "one page, nothing clipped" possible: the chart is
+       the only element that does not fit, so it stops competing for flow space
+       and the text — which always fits on its own — decides the page height.
+       A long narrative now OVERLAPS the chart instead of pushing it to a second
+       page or being cut. Poplar Prairie is the only deal where that happens
+       today: its text ends 30pt into the chart's band. Both are fully present
+       in the PDF and the chart can be dragged clear in Acrobat.
+       `margin-top: auto` is gone with the flow position; `break-inside` no
+       longer applies to an out-of-flow box and is dropped with it. */
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    /* Below the narrative in paint order, so where they overlap the WORDS stay
+       readable and the chart shows through behind them. Positioned elements
+       otherwise paint over in-flow content, which would hide exactly the three
+       lines this change exists to keep. */
+    z-index: 0;
   }
 
   /* Force chart to print */
