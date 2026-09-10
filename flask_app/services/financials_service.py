@@ -203,6 +203,31 @@ def get_performance_chart_data(
     """
     isbs = _prepare_isbs(isbs_raw, vcode)
     if isbs.empty:
+        # A deal with no ISBS rows at all still gets its calendar window when one
+        # was asked for. This guard used to return before the window was built,
+        # while the sibling guard below ("rows, but none in Interim IS /
+        # Projected IS") already exempted the windowed case — the same intent
+        # applied to one early return and not the other. The consequence was an
+        # empty `periods`, which the One Pager rendered as the text "No chart
+        # data available" instead of a chart, on four deals at 26Q2: Donald
+        # Lynch, Jefferson Stephens, Fairview Heights and Citizen Storage. All
+        # four are new/development deals with zero rows in every ISBS table and
+        # zero occupancy readings — having no data yet is expected, and is not a
+        # reason to withhold the axes.
+        #
+        # NULL series, never 0. Zero-fill exists to stop stray pre-close rows
+        # showing through on a deal that HAS data; here there is nothing to
+        # suppress, and ten quarters of 0.0 would draw flat lines asserting that
+        # NOI and occupancy were measured at zero. They were not measured at
+        # all. Null renders as no plotted point, which is the honest frame: the
+        # reader gets labelled axes and an empty plot.
+        if window_end_quarter and freq == "Quarterly":
+            labels = [f"Q{(pd.Timestamp(d).month - 1) // 3 + 1} {pd.Timestamp(d).year}"
+                      for d in _quarter_window(window_end_quarter, periods)]
+            empty = [None] * len(labels)
+            return {"periods": labels, "actual_noi": list(empty),
+                    "uw_noi": list(empty), "occupancy": list(empty),
+                    "frequency": freq, "available_period_ends": []}
         return {"periods": [], "actual_noi": [], "uw_noi": [], "occupancy": [],
                 "frequency": freq, "available_period_ends": []}
 

@@ -67,6 +67,8 @@ const TAG = arg('tag', 'out')
 // get_one_pager_data() against live PostgreSQL.
 const opFile = arg('onepager', null)
 const LOCAL_OP = opFile ? readFileSync(opFile, 'utf8') : null
+const chartFile = arg('chart', null)
+const LOCAL_CHART = chartFile ? readFileSync(chartFile, 'utf8') : null
 
 const CHROME = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -128,6 +130,11 @@ const server = createServer(async (req, res) => {
   if (LOCAL_OP && path === `/api/financials/${VCODE}/one-pager`) {
     res.writeHead(200, { 'content-type': 'application/json' })
     return res.end(LOCAL_OP)
+  }
+  // Same idea for the chart endpoint, which is a separate request.
+  if (LOCAL_CHART && path === `/api/financials/${VCODE}/one-pager/chart`) {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    return res.end(LOCAL_CHART)
   }
 
   if (path.startsWith('/api') || path.startsWith('/auth')) {

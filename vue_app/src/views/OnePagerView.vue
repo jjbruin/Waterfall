@@ -552,6 +552,12 @@ function niceCeil(v: number) {
 function noiAxisBounds(uw: (number | null)[], act: (number | null)[], occ: (number | null)[]) {
   const noi = [...uw, ...act].filter((v): v is number => v != null)
   const bars = occ.filter((v): v is number => v != null && v > 0)
+  // No NOI anywhere — an empty frame. Fall through and the 0.05 floor below
+  // would scale the axis 0.00-0.05, which is not wrong but reads as an
+  // arbitrary magnification of nothing. A plain 0.00-1.00 gives five clean
+  // 0.20 steps against the left axis's 0-100, so the two sets of gridlines
+  // still line up and the empty chart looks deliberate rather than broken.
+  if (!noi.length) return { min: 0, max: 1 }
   const maxNoi = noi.length ? Math.max(...noi) : 0
   const minNoi = noi.length ? Math.min(...noi) : 0
   const headroom = Math.min(0.95, Math.max(0.45, (bars.length ? Math.min(...bars) : 95) / 100))
@@ -563,15 +569,33 @@ function noiAxisBounds(uw: (number | null)[], act: (number | null)[], occ: (numb
   return { min, max }
 }
 
+/**
+ * The chart option. ALWAYS returns a frame — never null.
+ *
+ * It used to return null when there was no data, and the template rendered
+ * "No chart data available." in place of the chart. A deal with nothing to plot
+ * yet is not a deal with a broken chart: the axes, gridlines, labels and legend
+ * are the report's structure and belong on the page whether or not there is a
+ * line to draw on them. Four deals at 26Q2 print that message — Donald Lynch,
+ * Jefferson Stephens, Fairview Heights and Citizen Storage — all new or
+ * development deals with no ISBS rows and no occupancy readings yet.
+ *
+ * Missing series arrive as nulls, which ECharts simply does not plot, so the
+ * empty case needs no special drawing path: same axes, same legend, no marks.
+ *
+ * `periods` is normally supplied even with no data (the backend builds the
+ * calendar window), so the x-axis carries its ten quarter labels. The `?? []`
+ * fallbacks cover the one case where it cannot — a chart request that failed
+ * outright, which surfaces its own error banner separately.
+ */
 function buildChartOption(cr: Record<string, any> | null) {
-  if (!cr || !cr.periods?.length) return null
-  const labels = cr.periods.map((p: string) => {
+  const labels = (cr?.periods ?? []).map((p: string) => {
     const m = p.match(/^Q(\d)\s+(\d{4})$/)
     return m ? `${m[2]}-Q${m[1]}` : p
   })
-  const actualNoi = cr.actual_noi.map((v: number | null) => v != null ? +(v / 1_000_000).toFixed(2) : null)
-  const uwNoi = cr.uw_noi.map((v: number | null) => v != null ? +(v / 1_000_000).toFixed(2) : null)
-  const occ = cr.occupancy.map((v: number | null) => v != null ? +v.toFixed(1) : null)
+  const actualNoi = (cr?.actual_noi ?? []).map((v: number | null) => v != null ? +(v / 1_000_000).toFixed(2) : null)
+  const uwNoi = (cr?.uw_noi ?? []).map((v: number | null) => v != null ? +(v / 1_000_000).toFixed(2) : null)
+  const occ = (cr?.occupancy ?? []).map((v: number | null) => v != null ? +v.toFixed(1) : null)
   const noiAxis = noiAxisBounds(uwNoi, actualNoi, occ)
   return {
     title: { text: 'Physical Occupancy vs. NOI', subtext: '($ Millions)', left: 'center', top: 0,
@@ -937,8 +961,10 @@ function printOnePager() {
 
         <!-- CHART -->
         <div class="chart-section">
-          <v-chart v-if="chartOption" :option="chartOption" style="width: 100%; height: 300px;" autoresize />
-          <p v-else class="empty">No chart data available.</p>
+          <!-- No v-if / no "no data" fallback: buildChartOption always returns
+               a frame, and a deal with nothing to plot shows empty axes rather
+               than a message where the chart should be. -->
+          <v-chart :option="chartOption" style="width: 100%; height: 300px;" autoresize />
         </div>
       </div>
       </template>
@@ -1105,8 +1131,8 @@ function printOnePager() {
 
           <!-- CHART -->
           <div class="chart-section">
-            <v-chart v-if="buildChartOption(pg.chart)" :option="buildChartOption(pg.chart)!" style="width: 100%; height: 300px;" autoresize />
-            <p v-else class="empty">No chart data available.</p>
+            <!-- Same as single mode: always a frame, never a message. -->
+            <v-chart :option="buildChartOption(pg.chart)" style="width: 100%; height: 300px;" autoresize />
           </div>
         </div>
 
