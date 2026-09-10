@@ -239,6 +239,20 @@ def get_entities_with_waterfalls(wf: pd.DataFrame, inv: pd.DataFrame) -> list[di
     return sorted(result, key=lambda x: x["name"])
 
 
+#: `InvestmentID` values that mean "this deal has no MRI investment id" rather
+#: than naming one.  25 deals carry the literal string ``NONE`` locally, so
+#: keying `inv_id_to_vcode` on it made one arbitrary deal -- whichever iterated
+#: last -- the answer for every one of them.  No relationships row carries
+#: ``NONE`` today, so nothing looks it up and the collision is currently
+#: harmless; it is excluded because the day one arrives it would attach a real
+#: ownership row to the wrong deal, silently and with no error to notice.
+_PLACEHOLDER_INVESTMENT_IDS = frozenset({"NONE", "NAN", "NULL", "N/A", "-"})
+
+
+def _is_placeholder_id(iid: str) -> bool:
+    return str(iid).strip().upper() in _PLACEHOLDER_INVESTMENT_IDS
+
+
 def get_entity_nav_data(wf: pd.DataFrame, inv: pd.DataFrame, relationships_raw: pd.DataFrame) -> dict:
     """Build entity navigation data: options list, ownership tree info, investor lists.
 
@@ -255,7 +269,7 @@ def get_entity_nav_data(wf: pd.DataFrame, inv: pd.DataFrame, relationships_raw: 
             iid = str(r.get("InvestmentID", "")).strip()
             if vc:
                 inv_names[vc] = nm
-                if iid:
+                if iid and not _is_placeholder_id(iid):
                     inv_id_to_vcode[iid] = vc
                     if iid not in inv_names:
                         inv_names[iid] = nm
@@ -266,8 +280,24 @@ def get_entity_nav_data(wf: pd.DataFrame, inv: pd.DataFrame, relationships_raw: 
         for eid in relationships_raw["InvestmentID"].astype(str).str.strip().unique():
             rel_vcodes.add(inv_id_to_vcode.get(eid, eid))
 
-    # Include entities from relationships AND any with waterfalls
-    all_ids = sorted(rel_vcodes | wf_vcodes)
+    # ACTIVE DEALS ARE LISTED WHETHER OR NOT THEY HAVE A WATERFALL, which is the
+    # point of this page: the list used to be `rel_vcodes | wf_vcodes`, so a deal
+    # with neither a relationships row nor a waterfall could not be selected --
+    # and a deal cannot be given its first waterfall without being selectable.
+    # Jefferson Stephens (P0000114) sat in exactly that gap.
+    #
+    # Sold deals are NOT added, but a sold deal that HAS a waterfall still
+    # appears through `wf_vcodes`, so nothing that used to be listed is lost.
+    deal_vcodes = set()
+    if inv is not None and not inv.empty:
+        from flask_app.services import data_service
+        live = data_service.exclude_sold(inv)
+        if live is not None and not live.empty:
+            deal_vcodes = {
+                v for v in live["vcode"].astype(str).str.strip().tolist() if v
+            }
+
+    all_ids = sorted(rel_vcodes | wf_vcodes | deal_vcodes)
 
     entities = []
     for eid in all_ids:
