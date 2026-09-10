@@ -453,6 +453,31 @@ function fmtVariance(actual: number | null | undefined, budget: number | null | 
   const pct = ((actual - budget) / Math.abs(budget)) * 100
   return Math.round(pct) + '%'
 }
+/**
+ * Economic occupancy variance — actual less budget, in percentage POINTS.
+ *
+ * Not `fmtVariance`: that one is a percent-of-budget change and rounds to a
+ * whole number, which is right for Revenue / Expenses / NOI. Occupancy is
+ * already a percentage, so its variance is the plain difference at the same one
+ * decimal as the two cells beside it.
+ *
+ * The `-0.0` guard is the whole reason this is a function. `toFixed` keeps the
+ * sign of a value that rounds away to zero, so a variance too small to show at
+ * one decimal still printed its minus sign. Mount Prospect Plaza at 26Q2 is the
+ * live case: actual 95.6000, budget 95.6439, a variance of -0.0439 that reads
+ * "-0.0%". A minus sign in front of a zero reads as a shortfall against budget
+ * and the report is not claiming one — at the precision it prints, the two
+ * figures are the same. Only the exact string is rewritten, so nothing that
+ * rounds to a genuine figure moves: -0.06 still prints "-0.1%".
+ *
+ * "0.0%", not an em dash: both readings exist and their difference really is
+ * zero. A dash would claim the variance is unknown.
+ */
+function fmtOccVariance(actual: number | null | undefined, budget: number | null | undefined): string {
+  if (actual == null || budget == null) return ''
+  const s = (actual - budget).toFixed(1)
+  return (s === '-0.0' ? '0.0' : s) + '%'
+}
 
 // Property Performance table rows (single mode)
 const perfRows = computed(() => {
@@ -464,8 +489,7 @@ const perfRows = computed(() => {
 function buildPerfRows(p: any) {
   return [
     { label: 'Economic Occ.', ytdA: fmtOcc(p.economic_occ?.ytd_actual), ytdB: fmtOcc(p.economic_occ?.ytd_budget),
-      variance: p.economic_occ?.ytd_actual != null && p.economic_occ?.ytd_budget != null
-        ? (p.economic_occ.ytd_actual - p.economic_occ.ytd_budget).toFixed(1) + '%' : '',
+      variance: fmtOccVariance(p.economic_occ?.ytd_actual, p.economic_occ?.ytd_budget),
       atClose: fmtOcc(p.economic_occ?.at_close), actualYE: fmtOcc(p.economic_occ?.actual_ye), uwYE: fmtOcc(p.economic_occ?.uw_ye) },
     { label: 'Revenue', ytdA: fmtMil(p.revenue?.ytd_actual), ytdB: fmtMil(p.revenue?.ytd_budget),
       variance: fmtVariance(p.revenue?.ytd_actual, p.revenue?.ytd_budget),
@@ -645,10 +669,27 @@ const activeChartResult = computed(() => viewingSnapshot.value ? snapshotChart.v
 // ============================================================
 // Print
 // ============================================================
-const printTimestamp = ref('')
+/**
+ * NO RENDERED TIMESTAMP.
+ *
+ * This view used to print `M/D/YYYY, h:mm AM/PM` into the top-left corner of
+ * every sheet, from a `.print-date` div that is `display:none` on screen and
+ * `display:block !important` under `@media print`. Because it appeared only in
+ * the printed file, and in exactly the format Chrome uses, it read as the
+ * browser's own print header bleeding through — it was reported as such
+ * ("9/3/2026, 2:39 PM" on Flats at Dorsett Ridge). It was never the browser's.
+ * It was ours, and the browser's header has been suppressed since v421.
+ *
+ * The Portfolio Snapshot print view hit the identical confusion and removed its
+ * copy for the identical reason (see PortfolioSnapshotPrintView.vue) — the
+ * reference investor document carries no timestamp. This is that same removal.
+ *
+ * The browser's header is still suppressed three ways and none of them is this:
+ * `@page { margin: 0 }` in App.vue leaves Chrome no room to draw one, the page
+ * padding stands in for the margin, and the title is blanked below so a header
+ * drawn anyway could not say "Waterfall XIRR".
+ */
 function printOnePager() {
-  const now = new Date()
-  printTimestamp.value = `${now.getMonth() + 1}/${now.getDate()}/${now.getFullYear()}, ${now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}`
   // Blank the page title so browser doesn't print "Waterfall XIRR" in the header
   const origTitle = document.title
   document.title = ' '
@@ -749,7 +790,6 @@ function printOnePager() {
         </div>
 
         <div class="op-sheet">
-        <div class="print-date">{{ printTimestamp }}</div>
         <h1 class="op-title">{{ gen.investment_name || deals.currentVcode }}</h1>
 
         <!-- GENERAL INFORMATION -->
@@ -920,7 +960,6 @@ function printOnePager() {
       <!-- Batch pages — one op-sheet per deal, page-break between -->
       <template v-for="(pg, idx) in batchPages" :key="pg.vcode">
         <div v-if="pg.data" class="op-sheet" :class="{ 'page-break': idx < batchPages.length - 1 }">
-          <div class="print-date">{{ printTimestamp }}</div>
           <h1 class="op-title">{{ pg.data.general?.investment_name || pg.vcode }}</h1>
 
           <!-- GENERAL INFORMATION -->
@@ -1163,10 +1202,6 @@ function printOnePager() {
 }
 
 /* Print date — hidden on screen */
-.print-date {
-  display: none;
-}
-
 /* Title */
 .op-title {
   text-align: center;
@@ -1378,13 +1413,6 @@ function printOnePager() {
   }
 
   /* Print-only date/time in upper left */
-  .print-date {
-    display: block !important;
-    font-size: 11px;
-    color: #333;
-    margin-bottom: 2px;
-  }
-
   .op-title { font-size: 20px; margin-bottom: 1px !important; padding-bottom: 2px !important; }
 
   /* Uniform tight spacing between all sections */

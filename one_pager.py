@@ -573,7 +573,14 @@ def get_capitalization_stack(
         'current_valuation': 0.0,
         'valuation_year': '',
         'pe_exposure_on_cap': 0.0,
-        'pe_exposure_on_value': 0.0,
+        # None, NOT 0.0 — "we cannot compute this" is not "the exposure is nil".
+        # This is only assigned when `current_valuation > 0`, so on a deal with
+        # no valuation the default is what the page prints. As 0.0 it rendered
+        # "0.0%" beside a Valuation cell reading an em dash: a real computed
+        # exposure of zero, sitting next to the missing input it would have been
+        # computed from. `fmtPct` renders None as the same em dash, so the two
+        # cells now agree that the figure does not exist.
+        'pe_exposure_on_value': None,
         'pe_yield_on_exposure': 0.0,
         'committed_pe': 0.0,
         # Which source `committed_pe` came from — see the fallback below.
