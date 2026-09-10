@@ -58,6 +58,50 @@ interface PreviewAllocation {
   Allocated: number
 }
 
+/**
+ * Read a {cf_wf, cap_wf} body, or throw with a message worth showing.
+ *
+ * A response that fails to parse as JSON arrives here as a STRING, not an
+ * object: axios's default `silentJSONParsing` swallows the parse error and
+ * hands back the raw text instead of rejecting. `data.cf_wf` is then
+ * `undefined`, and the old `|| []` turned that into an empty grid the caller
+ * reported as a successful copy — which is exactly how a bare `NaN` in the
+ * payload (fixed server-side in bf093c2) stayed invisible for 68 of 92 deals.
+ *
+ * So the shape is checked rather than defaulted. The server being fixed is not
+ * a reason to keep trusting it: this is the layer that decides whether a
+ * failure is visible.
+ */
+/**
+ * Outcome of a call that loads steps into the drafts. Discriminated on
+ * `success` so the caller cannot read a step count off a failure, and an
+ * explicit annotation is required for that narrowing — an inferred return type
+ * widens `true` to `boolean` and the union stops discriminating.
+ */
+export type StepsLoadResult =
+  | { success: true; cf: number; cap: number }
+  | { success: false; message: string }
+
+/** The server's own error text where there is one, else the thrown message. */
+function errMsg(e: any, fallback: string): string {
+  return e?.response?.data?.error || e?.message || fallback
+}
+
+function readStepsPayload(data: any): { cf: WaterfallStep[]; cap: WaterfallStep[] } {
+  if (data == null || typeof data !== 'object') {
+    throw new Error(
+      'The server returned a malformed response that could not be read as JSON.'
+    )
+  }
+  if (!Array.isArray(data.cf_wf) && !Array.isArray(data.cap_wf)) {
+    throw new Error('The server response contained no waterfall steps.')
+  }
+  return {
+    cf: Array.isArray(data.cf_wf) ? data.cf_wf : [],
+    cap: Array.isArray(data.cap_wf) ? data.cap_wf : [],
+  }
+}
+
 export const useWaterfallStore = defineStore('waterfall', () => {
   const currentEntity = ref<string>('')
   const cfSteps = ref<WaterfallStep[]>([])
@@ -104,8 +148,11 @@ export const useWaterfallStore = defineStore('waterfall', () => {
         api.get(`/api/waterfall-setup/${vcode}/investors`).catch(() => ({ data: { investors: [] } })),
         api.get(`/api/waterfall-setup/${vcode}/ownership-tree`).catch(() => ({ data: { owners: [], selected: null, investments: [], investors: [] } })),
       ])
-      cfSteps.value = stepsRes.data.cf_wf || []
-      capSteps.value = stepsRes.data.cap_wf || []
+      // Same guard as the copy paths: a body that failed to parse must read as
+      // a load error, not as "this entity has no waterfall".
+      const { cf, cap } = readStepsPayload(stepsRes.data)
+      cfSteps.value = cf
+      capSteps.value = cap
       hasCf.value = stepsRes.data.has_cf || false
       hasCap.value = stepsRes.data.has_cap || false
       investors.value = invRes.data.investors || []
@@ -198,20 +245,32 @@ export const useWaterfallStore = defineStore('waterfall', () => {
     capDirty.value = true
   }
 
-  async function copyFromEntity(sourceVcode: string) {
-    const res = await api.get(`/api/waterfall-setup/copy-from/${sourceVcode}`)
-    cfSteps.value = res.data.cf_wf || []
-    capSteps.value = res.data.cap_wf || []
-    cfDirty.value = true
-    capDirty.value = true
+  async function copyFromEntity(sourceVcode: string): Promise<StepsLoadResult> {
+    try {
+      const res = await api.get(`/api/waterfall-setup/copy-from/${sourceVcode}`)
+      const { cf, cap } = readStepsPayload(res.data)
+      cfSteps.value = cf
+      capSteps.value = cap
+      cfDirty.value = true
+      capDirty.value = true
+      return { success: true, cf: cf.length, cap: cap.length }
+    } catch (e: any) {
+      return { success: false, message: errMsg(e, 'Copy failed.') }
+    }
   }
 
-  async function createFromTemplate(vcode: string, template: 'new' | 'pari-passu') {
-    const res = await api.post(`/api/waterfall-setup/${vcode}/template/${template}`)
-    cfSteps.value = res.data.cf_wf || []
-    capSteps.value = res.data.cap_wf || []
-    cfDirty.value = true
-    capDirty.value = true
+  async function createFromTemplate(vcode: string, template: 'new' | 'pari-passu'): Promise<StepsLoadResult> {
+    try {
+      const res = await api.post(`/api/waterfall-setup/${vcode}/template/${template}`)
+      const { cf, cap } = readStepsPayload(res.data)
+      cfSteps.value = cf
+      capSteps.value = cap
+      cfDirty.value = true
+      capDirty.value = true
+      return { success: true, cf: cf.length, cap: cap.length }
+    } catch (e: any) {
+      return { success: false, message: errMsg(e, 'Could not build the template.') }
+    }
   }
 
   function resetSteps(vcode: string) {

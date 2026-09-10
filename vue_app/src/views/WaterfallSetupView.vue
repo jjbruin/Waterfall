@@ -134,18 +134,36 @@ function handleExportCsv() {
 
 // ── New Waterfall Creation ───────────────────────────────────────────────
 
+// Both of these report what actually arrived. Announcing success without
+// looking at the result is what let a malformed response read as a successful
+// copy over an empty grid — the same silent-success shape as the capital-call
+// save. A step count in the message means an empty result cannot pass for one.
+
 async function createNew(template: 'new' | 'pari-passu') {
   if (!selectedEntity.value) return
   clearStatus()
-  await wf.createFromTemplate(selectedEntity.value, template)
-  setStatus('info', `Created ${template === 'new' ? 'standard' : 'pari passu'} waterfall template. Review and save.`)
+  const res = await wf.createFromTemplate(selectedEntity.value, template)
+  const kind = template === 'new' ? 'standard' : 'pari passu'
+  if (!res.success) {
+    setStatus('error', res.message || `Could not build the ${kind} template.`)
+  } else if (!res.cf && !res.cap) {
+    setStatus('error', `The ${kind} template came back empty — nothing to edit.`)
+  } else {
+    setStatus('info', `Created ${kind} template: ${res.cf} CF_WF and ${res.cap} Cap_WF steps. Review and save.`)
+  }
 }
 
 async function copyFromDeal() {
   if (!copySourceVcode.value) return
   clearStatus()
-  await wf.copyFromEntity(copySourceVcode.value)
-  setStatus('info', `Copied waterfall from ${copySourceVcode.value}. Review and save.`)
+  const res = await wf.copyFromEntity(copySourceVcode.value)
+  if (!res.success) {
+    setStatus('error', res.message || 'Copy failed.')
+  } else if (!res.cf && !res.cap) {
+    setStatus('error', `${copySourceVcode.value} has no waterfall steps to copy.`)
+  } else {
+    setStatus('info', `Copied ${res.cf} CF_WF and ${res.cap} Cap_WF steps from ${copySourceVcode.value}. Review and save.`)
+  }
 }
 
 // ── Status Messages ──────────────────────────────────────────────────────
