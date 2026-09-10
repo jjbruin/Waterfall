@@ -1,244 +1,236 @@
-# Session Handoff — through Sep 2 2026 (v416 live)
+# Session Handoff — through Sep 10 2026 (v428 live)
 
 Rolling handoff for the next session/developer. Update in place; keep only what is still
-live. Deploy history lives in CLAUDE.md (SHA-pinned). Supersedes the Sep 1 / v408 handoff.
+live. Per-revision post-mortems live in `.claude/memory/deploy_history.md` (CLAUDE.md keeps
+the deploy rule and a one-line SHA index).
+
+**Supersedes the Sep 2 / v416 handoff, now archived at `session_handoff_sep2.md`.** That
+file still holds TRACK 1 (the KOC slice / investor groups around a deal), TRACK 2
+(Charlene's stream through v416) and TRACK 3 (the Sep 2 engine corrections). **None of
+those was touched on Sep 10 and their state is unchanged — read that file for them.** The
+durable defect list is carried forward here so it does not get lost behind an archive.
 
 ## Where things stand
-- **Live**: `v416` = `eb7520d`, healthy, 100% traffic. **main == origin/main**, all pushed.
-- Sep 2 ran **v409 → v416, eight revisions**. Six were engine corrections found by pulling
-  on one question from Jim about a $300,000 contribution; two were Charlene's snapshot work.
-- **Seven new guardrail scripts** now cover this ground, all passing:
-  `capital_reversal_sign_check` 19, `pref_excess_cf_check` 6, `sale_date_month_end_check` 10,
-  `snapshot_kept_sold_stack_check` 38, `snapshot_east_manchester_check` 26,
-  `snapshot_itd_roe_check` 30, `snapshot_footnotes_freeform_check` 28,
-  `snapshot_print_formatting_check` 44.
+- **Live**: `v428` = `dfc38df`, healthy, clean boot, zero error lines.
+- **main == origin/main**, everything pushed. Tip is `608ca8b`.
+- **FIVE COMMITS ON MAIN ARE NOT IN THE LIVE IMAGE** (`git log dfc38df..main`). Only three
+  of them matter, and all three are Charlene's and investor-facing:
+  - `e5699c6` One Pager print: the Business Plan narrative is no longer thrown away
+  - `62161a9` One Pager print: the whole report on one page, at a legibility floor
+  - `948be26` One Pager print: always exactly one page, and never a lost word
+
+  The other two need no deploy: `608ca8b` is a read-only script, and `737ca65` is the docs
+  commit that records v428 and was necessarily made after the image was built.
+
+  The three print commits arrived on origin during the Sep 10 session and were rebased
+  past, not reviewed and not shipped. **They need the standing symptom-repair review before
+  anyone builds an image**, and they change what prints on an investor document.
 
 ## STANDING RULE — read before deploying anything
-CLAUDE.md "Deploying Changes" carries Jim's pre-deploy symptom-repair check (added Sep 1
-after `50695d9` shipped an override that zeroed correct data on 12 deals).
+CLAUDE.md "Deploying Changes" carries Jim's pre-deploy symptom-repair check.
 **Verifying that a commit does what its message says is NOT verifying its premise.** Flag a
-symptom repair to Jim, with affected deals and figures, BEFORE building the image. It fired
-for real on Sep 2 against `eb7520d` and Jim took the stopgap knowingly — see below.
+symptom repair to Jim, with affected deals and figures, BEFORE building the image.
 
-## A guardrail habit worth keeping
-Several before/after scripts asserted **"BEFORE the feature was absent/broken"**. Those fail
-the moment the baseline is a commit that already has the fix, which happened three times in
-one day as the chain moved. **State the invariant about the AFTER side and report what the
-baseline happened to show.** All known cases are converted; write new ones that way.
+## The habit that paid on Sep 10
+Every headline figure in this session was **measured against the real function on real
+data** before it was reported, and three of the first four conclusions were wrong. The
+pattern that caught them: state the claim, then try to reproduce it from the database. See
+"Corrections made mid-session" below — they are recorded because each one was reported to
+Jim confidently first.
 
 ---
 
-# TRACK 1 — Investor groups around a deal (the KOC slice)
+# TRACK A — Brainerd / TIAA look-through (THE OPEN ITEM)
 
-Plan: `.claude/memory/allocation_scenarios_plan.md` ·
-artifact https://claude.ai/code/artifact/07eae40b-cc8e-4d99-b2c9-0113d3549714
-Agreement analysis: `.claude/memory/tga6_amb6_agreement_review.md` ·
-PSC KOC terms: `.claude/memory/psckoc_structure.md`
+**Status: root cause found and proved. Data fix NOT made. Nothing deployed.**
 
-**The ask**: share $5M of Windsor Square with PSCKOC without losing the TIAA-only case;
-make it repeatable for any amount / any deal / any JV; produce the one-page net-returns PDF
-and the JV allocation roll-up.
+## The finding
+TIAA's Total Commitment on Brainerd Place Apartments is understated because the ownership
+graph is missing one edge. The legal org chart (`PPI Brainerd (CT) LLC - Org Chart w TIAA
+24.11.21 Transfer PSC Investee Brainerd (CT).pdf`, in the deal's Legal/Org Chart folder)
+records a **11/21/2024 transfer of 53.975% of PSC Investee Brainerd (CT) LLC [INVBPA] from
+Peaceable Street Capital to PSC TGA 2022 LLC [TGA22]**. It was never recorded in MRI.
 
-### Phase 0 — tie the app to the Excel ✅ DONE
-Reconciled to the source model (`TIAA - Windsor Square - Base Case - 8.19.2026.xlsx`, sheet
-`TIAA_AMB`). Waterfall mechanics tie; the residual is cash-flow vintage.
-- Added TGA6's missing venture-expense step (`Amt` TGA6_EXP 1,875/qtr = $7,500/yr).
-- Rebuilt TGA6 to the executed LLC agreement + Jim's commercial terms — see Track 1 detail
-  below. Live TGAM 12.178% monthly / 11.480% annual-bucket vs the Excel's 11.740%; the gap
-  is 0.236pp projection vintage + ~0.03pp (now fixed) engine defect.
-- **`IRRPromote` vState: NOT needed, retired.** The existing `IRR` step in the right
-  position is the mechanism.
-- **The one-pager must compute IRR/ROE/MOIC from the annual figures it prints** — the app
-  runs monthly, the Excel annually, worth 0.766pp. Print the columns and derive the metrics
-  from them or the page will not reproduce its own numbers.
+Because `relationships` has INVBPA as PSC1 100%, TGAM's third route to PPIBPA does not
+exist:
 
-### Phases 1–4 — NOT STARTED
-1. **Allocation scenarios** — `scenario_id` (nullable) on `prospect_entities` +
-   `prospect_investors`, NULL = the deal's base stack, copy-on-write clone. Waterfall steps
-   stay un-scoped (they are real entities' real terms). This is the blocker for "KOC might
-   decline".
-2. **Dollar slices** — `slice_basis`/`slice_amount`; enter $5M once and the host
-   relationship absorbs the residual. ("Off the top": TGAM 12,735,000 / INV6 1,415,000 /
-   PSCKOC 5,000,000 → KCREIT 4,250,000 / PSC1 750,000.) The "caught-up promote" needs NO
-   flag — it is PSC KOC §6.06(d), and a standalone single-deal run already does it.
-   PSCKOC still has **no waterfall rows anywhere**; terms are recovered in
-   `psckoc_structure.md` (8% coupon pari-passu 85/15, 1.50% AM fee subordinated + accruing,
-   20% catch-up, $15k venture costs) and map onto existing vStates.
-   **Note**: PSCKOC's pref compounds **9/30**, the engine compounds 12/31 — configurable
-   compounding month is a correctness gate before any PSCKOC page ships.
-   **Also**: new PSCKOC deals go in at 90/10 while older ones keep 85/15, so pref/ROC use
-   the per-deal ratio while catch-up/residual use the blended Capital Unit ratio.
-3. **Net returns one-pager** — re-pivot of the existing payload; print-to-PDF via the One
-   Pager `@media print` pattern (no PDF library needed). Both TIAA and KOC layouts.
-4. **JV allocation roll-up** — the emailed table. **Blocked on data**: all five existing
-   TGA6 deals lack underwriting rows and waterfalls, three lack `deals` rows entirely.
-   Lightest ask is **7071 + 7073 per deal** into `isbs_uw_supplements` — then no deal-level
-   waterfall is needed, the PE stream feeds the upstream waterfall directly.
+| Route | Today | Corrected |
+|---|---|---|
+| TGA22 → PPIBPA | 44.4513% | 44.9100% |
+| TGA22 → INVBPS → PPIBPA | 18.6907% | 11.2274% |
+| TGA22 → **INVBPA** → INVBPS → PPIBPA | **missing** | **18.2773%** |
+| **TIAA total** | **63.1420%** | **74.4147%** |
 
-### TGA6 — live structure (rebuilt Sep 1 to the executed agreement)
+Jim's independent figure was 74.41%. Chart cross-checks tie to four decimals: TGA22 58.435%
+vs the chart's 58.434% Borrower, TIAA 52.591% vs 52.591%.
+
+**Total Commitment $11,622,976 → $13,698,026** on the funded-pref basis.
+
+## THE ENGINE IS CORRECT — do not "fix" the walk
+`lookthrough_pct` in `portfolio_snapshot_service.py` already sums every distinct route; it
+returned 2 routes and was fed an incomplete graph. Patch the three hops into the
+relationships frame and the unmodified function returns **74.4147%** via 3 routes. This was
+verified, not assumed.
+
+## The data fix, not yet made
+Must land **in MRI** — `relationships` is MRI-refreshed, so a direct DB edit is overwritten.
+
+| Entity | Current | Org chart |
+|---|---|---|
+| INVBPA | PSC1 100% | PSC1 46.025% / **TGA22 53.975%** |
+| INVBPS | INVBPA 58.9654 / TGA22 41.0345 | INVBPA 75.10 / TGA22 24.90 |
+| PPIBPA | INVBPS 50.6097 / TGA22 49.3903 | INVBPS 50.10 / TGA22 49.90 |
+
+Blast radius is contained: INVBPA and INVBPS reach only Brainerd and its nine child
+buildings, which the report already excludes.
+
+## Why nobody caught it, and why the obvious detectors do not work
+**TGAM 63.142% + PSC1 36.858% = exactly 100%.** A transfer moves ownership *between*
+owners, so the total is preserved and the books balance while 11.27 points sit with the
+wrong party. Both candidate detectors were tested and neither finds it:
+- **A conservation check passes today.** That is why the reconciliation report deliberately
+  ships none — including one would imply a guarantee it cannot give.
+- **The commitments cross-check does not flag INVBPA**: both feeds say PSC1 100%, both
+  predate the transfer. **Agreement between the feeds is not evidence of correctness.**
+
+The only source that knows is the legal org chart. Proposed durable fix (designed, not
+built): a protected `ownership_attestations` table — deal, investor, attested %, as-of
+date, source document — with the Snapshot flagging any deal whose computed look-through
+differs beyond a tolerance, and rows auto-retiring once the feed agrees so it cannot ossify
+the way `MANUAL_RATIO_SEEDS` has.
+
+## Second, independent understatement on the same deal
+Brainerd's **Total Pref is funded pref, not committed**. The family has zero accounting
+`is_commitment` rows, so `resolve_committed_pref` falls back to funded ($18,407,677.40) and
+labels it `funded (no commitment row)`. The `commitments` table shows PPIBPA at
+**$31,721,927.29** across two generations — which matches the org chart's figure to the
+cent, confirming those generations are **additive, not superseding**. Fixing the percentage
+alone leaves this understated. `commitments_raw` is loaded at `data_service.py:586` and
+**read by nothing**.
+
+---
+
+# TRACK B — Ownership reconciliation report (`608ca8b`, shipped, not deployed)
+
+`scripts/ownership_reconciliation.py` — read-only, touches no engine path. Self-test 15/15
+via `--selftest`.
+
 ```
-CF_WF : 1 Amt TGA6_EXP 1875/qtr · 10 Pref 9% .90/.10 · 20 Share .70/.30 · 900/901 AMFee
-Cap_WF: 1 Amt · 10 Pref 9% · 20 Initial ROC .90/.10 · 25 IRR 9% · 30 Share .70/.30 · 900/901 AMFee
+.venv/Scripts/python.exe scripts/ownership_reconciliation.py
 ```
-Removed PSCMAN's .04 promote share — the agreement's "PSC" is **PSC Investment TGA VI LLC =
-INV6**, not PSC Manager LLC. Jim's original .70/.30 instruction was right. AMFee now charges
-**both** members per §5.06 (the single TGAM row collected only 90% of the fee).
-**Hurdle convention**: 8% pre-TGA6 (TGA22/23/24/25), 9% from TGA6. Do not "correct" TGA22.
-**TGA22 needs NO changes** — the 10% LifeStorage yield dragging the blended 8% test is the
-bargained-for economics, and the fee waiver is already `;exclude:PEGASU`.
 
-### AMB6 §8.4(b) — mechanism PROVEN, configuration blocked
-The provenance feature **already exists**: `run_upstream_waterfall_period` routes to a
-`Promote_WF` when the source tier's vtranstype contains "Promote", and forwards the tag
-through passthrough hops. Verified in `scratchpad/promote_wf_test.py`.
-Remaining: derive the Exhibit C band from **funded** non-PSC1 capital (accounting is booking
-the missing AMB6 contributions — see that section in the agreement review), configure the
-TGA6 tie-30 split + AMB6 `Promote_WF` with PSC1 omitted, and find a durable route for INV6PU
-that survives MRI refresh. **Expect AM-side movement when the contributions land**: PSCMAN's
-AMB6 fee is currently charged on ~zero seeded capital.
+**Current queue**: 30 of 200 entities disagree between `relationships` and `commitments`;
+20 carry economics, governing **$424m** of funded pref (TGA23 $125m, OWPSC $108m, TGA24
+$100m). Separately, **38 rows / $69.7m of commitment money funded against a 0% or absent
+ownership row** — that check needs only ONE feed to contradict itself, so it is firmer
+evidence than a split disagreement and is the better place to start.
 
----
+**Both feeds are stale, in opposite directions** — which is why the report names no
+authority. Brainerd: `commitments` matches the chart at INVBPS, `relationships` does not.
+OWPSC: the reverse — `relationships` correctly ends BPH's 48.9688% on 2025-12-31 and starts
+WOFC on 2026-01-01, while `commitments` still names BPH.
 
-# TRACK 3 — Sep 2 engine corrections (start here if returns look wrong)
+## Corrections made mid-session — read before re-deriving any of this
+1. **TGA23/TGA24 are NOT a TIAA overstatement.** Reported as one; retracted. Both feeds
+   state TGAM at 90% and the money agrees: `TGAM/(TGAM+INV23)` and `TGAM/(TGAM+AMB24)` are
+   each **exactly 90.000000%**. The apparent dilution was a second-closing sleeve
+   (`INV23-P`, $1,475,409 at a stated 0%) and a member recorded one level up (`AMB24`).
+   *Still genuinely open, and small*: is INV23-P's $1.47m matched by a TGAM increment? If
+   not TGAM really is 88.95% on TGA23. Two of three signals say 90%.
+2. **`relationships.Name` names the INVESTMENT, not the investor.** Every row of TGA23
+   carries "PSC TGA 2023 LLC". Reading it as an investor name made INV23/INV23-P look like
+   one legal entity; a merge built on that collapsed four distinct OWPSC members into one.
+   Removed. The self-test pins the column's meaning.
+3. **Reachability is not ownership.** PSCMAN ranked first at $472m through a **0% edge**
+   into TGA22. Exposure is now weighted by the entity's own look-through and it scores zero.
+4. **32 apparent "missing owners" are the same member a level up** — the whole
+   DCXVIA/DCXVIB family sits under PSC3. Resolved by a reachability walk, not reported as
+   breaks.
+5. **Deal entities are not holding vehicles** — `relationships` carries the PE vehicle at
+   100% while `commitments` includes the OP. Reported separately, not dropped.
 
-All six came from ONE question: Jim asked why OPMCCORD's $300,000 into 30 Bearfoot showed
-$5,388 of pref and no return of capital. Each answer exposed the next. Full detail in
-`.claude/memory/capital_reversal_and_psc3.md`.
-
-| # | Fix | Revision |
-|---|---|---|
-| 1 | **A reversed entry no longer moves capital twice.** MRI reverses by re-posting with the OPPOSITE SIGN under the same MajorType/Typename; six sites took `abs()`. Rule now in `loaders.capital_after`. | v412 |
-| 2 | **Excess Cash Flow pays pref down.** It sits BELOW pref, so a partner cannot receive it while pref is outstanding; the seeding counted only TypeID 1019. `reports_service` always applied both — the two paths had been disagreeing. | v412 |
-| 3 | **A mid-month sale is not a month-end sale.** `month_end()` was applied at PARSE time, so the real date was gone. Now `sale_actual` (pref stops, loan repaid, closing settles) vs `sale_me` (monthly grid). | v414 |
-| 4 | **Terminal NOI starts the month AFTER the sale month** — it used to begin WITH it while the cash schedule also gave the seller that month. | v414 |
-| 5 | **A kept-sold deal reports the stack it had while held** (`last_held_quarter`). | v414 |
-| 6 | ITD stored in MILLIONS; footnote removal; print separators and cell font. | v411, v412 |
-
-**Two rules that are easy to break again**, both learned the hard way:
-- **Do not floor a running capital total per row.** JB Fair Park's reversal sorts BEFORE the
-  entry it reverses; a per-row `max(0.0, ...)` swallows it and both remaining contributions
-  land. Floor at the point of USE (`capital_outstanding`).
-- **Do not add a magnitude heuristic** to decide a unit. 0.9 is a legitimate $0.9M and a
-  legitimate 0.9%. Manual figures store the unit their column DISPLAYS.
-
-**Confirmed against the published page**: the corrected partner equity ties the 26Q1
-reference PDF on three deals that did not tie before — JB Fair Park 3.9, Pegasus 2.6,
-Cocoplum 23.4, and Cocoplum Total Cap 108.9 to the decimal.
-
-**Portfolio effect**: accrued pref 159.9M → 152.5M (−7.4M) across 37 of 101 pairs. Five
-pairs went UP, correctly — they have reversed pref payments that `abs()` had been counting
-as extra payments.
-
-### Found but NOT fixed
-- **One day of pref is dropped per investor per year.** `accrue_to_date` splits at year end
-  then resumes at `date(year+1, 1, 1)`, skipping 31 Dec → 1 Jan. Visible as a 30-day January
-  accrual where 31 is due (~$74/yr on $300k; order of $37k/yr portfolio-wide, understated).
-- **`cap_stack.pref_equity` is capital OUTSTANDING** while three columns describe it as
-  funded / invested / committed. A LIVE deal with a PARTIAL return of capital would already
-  understate Invested. None on the 26Q2 page has one — dormant, not safe.
+**Checked and clean**: no active (investment, investor) pair carries more than one row, so
+the engine's graph — which appends every row as an edge — cannot double-count. The 0.0000%
+rows visible on OWPSC are ended generations.
 
 ---
 
-# TRACK 2 — Charlene's updates
+# TRACK C — Waterfall Setup (all shipped and live in v426–v428)
 
-Review of all 83 of her commits: `.claude/memory/commit_review_charlene.md`. Headline —
-**the great majority are genuine root-cause fixes with live-data guardrails**; the
-exceptions cluster on one missing concept (an asset stabilisation state) worked around
-independently in six modules.
+Three defects, all found from one report by Jim that copying a waterfall "said it copied"
+and produced nothing.
 
-### Deployed Sep 1
-| commit | what | revision |
-|---|---|---|
-| `0cb14ba` + `150db60` | nil participation renders 0%; prior-year budget fallback skips dev deals | v403 |
-| `97d3945` | Review Tracking quarter on the JOIN | v404 |
-| `7827c6f` | Snapshot Financial Total Pref = committed tranche | v405 |
-| `d48469b` | PUT /value returns display/source, no bundle refetch | v406 |
-| `50695d9` | At-Close zeroed for dev deals with no Year-0 row | v407 |
-| `8de3d53` + `9043c92` | Waters Creek LTV exception retired; dev-tag correction | v408 |
+1. **`bf093c2` (v427) — "Copy from deal" copied nothing on 68 of 92 deals.** A blank
+   `nPercent` reaches `json.dumps` as a bare `NaN`, which is not valid JSON. **Axios does
+   not reject that**: with default `silentJSONParsing` a body that fails to parse comes back
+   as the raw STRING, so `res.data.cf_wf` is undefined, the store writes `[]`, and nothing
+   throws. **This shipped twice** — `e6858b5` fixed it in `get_waterfall_steps` by writing
+   the scrub INLINE, so the two copy paths kept the unscrubbed line. Now one definition,
+   `steps_to_records`. Guardrail `waterfall_copy_json_check.py` 12/12.
+2. **`02023d1` (v428) — the UI announces what it actually got.** `copyFromDeal` awaited and
+   then reported success without looking at the result, which is what made the above
+   *silent*. One guard, `readStepsPayload`, on all three step-loading paths; both handlers
+   now print step counts.
+3. **`dfc38df` (v428) — an active deal is selectable before it has a waterfall.** The entity
+   list was `rel_vcodes | wf_vcodes`, so a deal with neither could not be selected — and a
+   deal cannot be given its FIRST waterfall without being selectable. Jefferson Stephens
+   (P0000114) sat in that gap. 12 deals became reachable; verified purely additive by
+   diffing the payload (254 → 266, nothing lost, `has_wf` identical at 92). Guardrail
+   `waterfall_entity_nav_check.py` 16/16.
 
-### Deployed Sep 2
-| commit | what | revision |
-|---|---|---|
-| `7dc7bd8` | Eastchase override withdrawn; East Manchester kept after sale; `SOLD_NA_CELLS` | v409 |
-| `019b592` | Prompts A/B/C — funding row out, ITD summed, Net ROE manual everywhere; footnotes free-form; per-loan Rate/Maturity, one page per subtab, separators | v410 |
-| `8534916` | ITD stored in MILLIONS (v410 printed `$0.00M` on every live cell); vertical separators; comment/input cells print in the table's font | v411 |
-| `da354a3` | Capital reversals; excess-CF pref; clearing a footnote removes it | v412 |
-| `7d21769` | East Manchester Net ROE typeable (`SOLD_NA_CELLS` → `{"debt"}`) | v413 |
-| `bd001e8` | Mid-month sale dates; terminal NOI window; kept-sold cap stack | v414 |
-| `639f023` | Footnote 2 → City West only | v415 |
-| `eb7520d` | **STOPGAP** — six-deal `MANUAL_RATIO_SEEDS` + subtotals weight what the row displays | v416 |
+**Not browser-verified** — dev servers cannot be started from a session the harness flags
+unattended. A minute on live closes it: open Waterfall Setup, confirm Jefferson Stephens is
+listed, copy Eastchase into it, expect 4 CF / 8 Cap rows **with those counts in the
+message**.
 
-### Open with Charlene
-1. **`MANUAL_RATIO_SEEDS` is a stopgap with an expiry.** Six vcodes carry hand-typed LTV /
-   DSCR / Debt Yield, and since `eb7520d` those typed figures **drive investor-facing
-   totals** (26Q2 Portfolio LTV 63.9%, DSCR 1.75x, TGA 6 DSCR 1.27x). Jim approved it
-   knowingly so quarter-end reports could go out. The sharpest item is **Presidential Arms'
-   typed 1.1x replacing a computed 3.8x** — that single override is what moves TGA 6.
-   Root cause is three structural data gaps, none fixed: no valuation on/before year-end,
-   no full YTD Interim IS + BS principal movement, no complete quarter of actual NOI.
-   A weekday 09:00 reminder runs as scheduled task `retire-manual-ratio-seeds`; delete it
-   when the dict empties. Retiring is one deletion per deal.
-2. **`scripts/live_api.py` IS STILL NOT COMMITTED.** About a dozen guardrails import it,
-   including `snapshot_financial_pdf_check`, `snapshot_pe_basis_check`, the module
-   self-tests and the 126-check script behind `eb7520d`. **Nobody but Charlene can
-   reproduce them**, and that blocked independent verification three times on Sep 2. This
-   is the single highest-value thing she could commit.
-3. **Known defect shipped in v416**: the Loan row's warning flag reads "the computed
-   figures … still feed the subtotals" — true when written in `2a3fabe`, made false by
-   `eb7520d` an hour later. Visible on the row tooltip. One line.
-4. **Footnote 2 is settled** — City West only, decided by Jim Sep 2. East Manchester came
-   out because its Net ROE is typeable and its ITD shows.
-5. **East Manchester Debt stays n/a DELIBERATELY**, and Total Cap 6.0M rather than 15.6M.
-   Jim raised the inconsistency (the row is read at the last held quarter, where the
-   9,641,912 WAS outstanding); Charlene's instruction is to keep it blank and Jim confirmed
-   following it. Reasoning is written at the `SOLD_NA_CELLS` definition. **Not an oversight
-   — reopening it means changing what the row is for.**
-6. **Jefferson Eastchase `GROUP_OVERRIDES` — RESOLVED Sep 2.** The Sep 1 override was
-   withdrawn in `7dc7bd8`; the work order had meant East MANCHESTER. The ordinary rule had
-   Eastchase in TGA 2023 correctly all along.
-7. **`DEV_DISPLAY_EXCEPTIONS` Pegasus entry** still carries Charlene's own
-   **"FLAG FOR CONFIRMATION"** in the code, unanswered.
-8. **`9043c92`'s two per-deal hardcodes** remain debt: `AT_CLOSE_FORCE_SUPPRESS` and
-   `DEBT_FREE_DEALS`, both `{"P0000066"}`.
-
-### Resolved Sep 2 — no longer open
-- The print PDF **has** now been rendered and inspected end to end. `snapshot_print_check.mjs`
-  takes `WF_UPSTREAM`, so it can print against a LOCAL Flask instead of live — that is how an
-  unmerged backend change gets a PDF before it ships.
-- The footnote rework shipped: free-form text, every note editable and deletable including
-  the code-defined standing ones, clearing the text removes the note and its marker.
-
-### Settled — do not reopen
-- **At-Close Year-0 gate stays as deployed** (Jim, Sep 1). All 12 affected deals have
-  complete data; 10 lost real figures (Brainerd Bldg E 1,662,811, Pegasus 624,689). A
-  Brainerd/Pegasus At-Close reconciling to a real `at_close_noi` behind a blank column is
-  **expected**. Kill switch if ever revisited: `AT_CLOSE_REQUIRE_YEAR0_ROW = False`.
+Also live: **`89c39a3` (v426) — `capital_calls` joined PROTECTED_TABLES** at Jim's
+instruction; the CSV import's `to_sql(if_exists="replace")` was dropping every hand-typed
+call. Capital calls are app-entered only now. Known consequence: 5,127 blank-Vcode rows can
+no longer be cleaned from the UI (harmless to every computation via `load_capital_calls`'
+dropna, but permanent).
 
 ---
 
 ## Known defects / debt worth carrying forward
+Carried from the Sep 2 handoff; all still true unless marked.
+
 - **One day of pref is dropped per investor per year** — `accrue_to_date` skips
-  31 Dec → 1 Jan when it splits at the year boundary. See Track 3.
+  31 Dec → 1 Jan when it splits at the year boundary. See TRACK 3 in `session_handoff_sep2.md`.
 - **`cap_stack.pref_equity` is capital OUTSTANDING** while three columns call it
   funded/invested/committed. Dormant; bites the first live deal with a partial ROC.
+- **`commitments_raw` is loaded and read by nothing** (`data_service.py:586`, payload line
+  682). 542 rows of real commitment data unused. NEW Sep 10.
+- **`relationships.Name` is the investment's name, not the investor's.** NEW Sep 10.
 - **The `deals.Sale_Date` column is not what the model uses.** Priority is sale override →
   `event_dates` projected disposition → horizon/max maturity. The local snapshot has no
-  `event_dates` table at all, so a local run falls back and will NOT reproduce a live sale
-  date — inject one, or use `sale_date_override`, when testing anything sale-related.
-- **The local `waterfall.db` accounting feed ends 2026-06-02.** Anything that turns on a
-  later event — East Manchester's 6/25/2026 sale, the 8/13/2026 contribution — cannot be
-  seen locally and must be simulated. Say so when reporting; do not conclude "no defect"
+  `event_dates` table, so a local run will NOT reproduce a live sale date.
+- **The local `waterfall.db` accounting feed ends 2026-06-02.** Anything turning on a later
+  event cannot be seen locally and must be simulated. Say so; do not conclude "no defect"
   from a snapshot that predates the data.
+- **P0000116–P0000120 and P0000114 are absent from the local snapshot**, so anything about
+  recent acquisitions must be proved against injected rows at their real dates.
 - **`save_waterfall_steps()` writes NULL into `dteffective`** — restore it after any
-  programmatic save. `dteffective` is required by `loaders.load_waterfalls`.
-- **`accounting_feed.sql` has no `TRIM()`** — 3,641 of 12,827 rows carry untrimmed IDs
-  (`'TGA22'` and `'TGA22 '` both exist). The app strips at load; raw exports do not.
+  programmatic save; it is required by `loaders.load_waterfalls`.
+- **`accounting_feed.sql` has no `TRIM()`** — 3,641 of 12,827 rows carry untrimmed IDs.
 - **`accounting_feed.sql` LEFT JOIN has `AND S.MajorType = ...` in the ON clause** — an
-  unclassified row survives with NULL MajorType and then vanishes silently from every
-  consumer. Only 4 rows today, but it is the mechanism for invisible loss.
-- **The Flask dev server drops connections on heavy computes** (Portfolio Analysis, PSCKOC)
-  non-deterministically. Measure in-process instead — `scratchpad/blast_inproc.py` is the
-  pattern; `compute_portfolio_actual(eid, data, start_year, horizon_years, pro_yr_base)`.
-- **`Investment_Strategy` is 0 of 134 populated** on live, so the dev classification runs
-  entirely off the `Lifecycle` proxy. Populating it is the cheap half of retiring the
-  dev-special-case debt; a real stabilisation state is the full fix.
+  unclassified row survives with NULL MajorType and vanishes silently from every consumer.
+- **The Flask dev server drops connections on heavy computes** (Portfolio Analysis, PSCKOC).
+  Measure in-process; `scratchpad/blast_inproc.py` is the pattern.
+- **`Investment_Strategy` is 0 of 134 populated** on live, so dev classification runs
+  entirely off the `Lifecycle` proxy.
+- **Dev servers cannot be started from an unattended session** (a scheduled-task run). Vue
+  changes then reach only function/payload level, never the screen. Say so explicitly.
+- **Three per-deal hardcodes remain on the Portfolio Snapshot** — `MANUAL_RATIO_SEEDS` (6
+  deals), `PROJECTED_YE_NOI_FALLBACK` (Giant 7), `TEMP_OPERATING_SUPPRESS` (Hanestowne, who
+  carries one on two subtabs). Tracked by the weekday `retire-manual-ratio-seeds` task.
+  `scripts/live_api.py` is still uncommitted, so the guardrail behind the seeds cannot be
+  reproduced by anyone but Charlene.
+
+## Suggested next steps, in order
+1. **Review and deploy Charlene's three One Pager print commits** — they are investor-facing
+   and sitting undeployed on main.
+2. **The Brainerd MRI correction** (TRACK A) — the one item with a known-right answer.
+3. **Work the $69.7m "capital with no ownership" list** before the $424m split queue; it is
+   firmer evidence and a shorter list.
+4. **Spot-check Waterfall Setup on live** (TRACK C) — one minute, closes the only
+   unverified part of v427/v428.
