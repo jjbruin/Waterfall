@@ -918,7 +918,15 @@ function printOnePager() {
         <table class="comments-row-table">
           <tbody><tr>
             <td class="lbl" style="vertical-align: top; width: 80px;">Comments:</td>
-            <td><textarea v-model="econComments" class="comment-input" rows="3" placeholder="Property performance comments..." spellcheck="true" lang="en" :readonly="commentsLocked"></textarea></td>
+            <!-- A textarea does not grow to its content, so in print it shows
+                 only its `rows` and silently drops the rest — Dorsett Ridge lost
+                 the second half of a 458-character comment, and 33 of 45 deals
+                 carry more than three rows' worth. Same print-only twin the
+                 Business Plan has had all along. -->
+            <td>
+              <textarea v-model="econComments" class="comment-input print-hide" rows="3" placeholder="Property performance comments..." spellcheck="true" lang="en" :readonly="commentsLocked"></textarea>
+              <div class="econ-print-text print-only">{{ econComments }}</div>
+            </td>
           </tr></tbody>
         </table>
 
@@ -947,7 +955,10 @@ function printOnePager() {
             <tr>
               <td class="lbl">Current Pref Equity Balance:</td><td class="val">{{ fmtMil0(pe.current_pe_balance) }}</td>
               <td class="lbl">Accrued Balance:</td><td class="val">{{ fmtMil0(pe.accrued_balance) }}</td>
-              <td colspan="2"><textarea v-model="accruedPrefComment" class="comment-input small" rows="2" placeholder="Accrued pref comment..." spellcheck="true" lang="en" :readonly="commentsLocked"></textarea></td>
+              <td colspan="2">
+                <textarea v-model="accruedPrefComment" class="comment-input small print-hide" rows="2" placeholder="Accrued pref comment..." spellcheck="true" lang="en" :readonly="commentsLocked"></textarea>
+                <div class="pref-print-text print-only">{{ accruedPrefComment }}</div>
+              </td>
             </tr>
           </tbody>
         </table>
@@ -964,7 +975,7 @@ function printOnePager() {
           <!-- No v-if / no "no data" fallback: buildChartOption always returns
                a frame, and a deal with nothing to plot shows empty axes rather
                than a message where the chart should be. -->
-          <v-chart :option="chartOption" style="width: 100%; height: 300px;" autoresize />
+          <v-chart :option="chartOption" style="width: 100%; height: 170px;" autoresize />
         </div>
       </div>
       </template>
@@ -1132,7 +1143,7 @@ function printOnePager() {
           <!-- CHART -->
           <div class="chart-section">
             <!-- Same as single mode: always a frame, never a message. -->
-            <v-chart :option="buildChartOption(pg.chart)" style="width: 100%; height: 300px;" autoresize />
+            <v-chart :option="buildChartOption(pg.chart)" style="width: 100%; height: 170px;" autoresize />
           </div>
         </div>
 
@@ -1383,7 +1394,9 @@ function printOnePager() {
 .bp-input {
   min-height: 80px;
 }
-.bp-print-text {
+.bp-print-text,
+.econ-print-text,
+.pref-print-text {
   display: none;
 }
 .print-only {
@@ -1451,11 +1464,11 @@ function printOnePager() {
   }
 
   /* Print-only date/time in upper left */
-  .op-title { font-size: 20px; margin-bottom: 1px !important; padding-bottom: 2px !important; }
+  .op-title { font-size: 16px; margin-bottom: 1px !important; padding-bottom: 2px !important; }
 
   /* Uniform tight spacing between all sections */
   .section-header {
-    font-size: 13px;
+    font-size: 11px;
     padding: 2px 0 1px 0 !important;
     margin: 1px 0 1px 0 !important;
   }
@@ -1468,7 +1481,7 @@ function printOnePager() {
   .pe-table tr td[style*="height"] { height: 0px !important; padding: 0 !important; }
 
   .info-table td, .cap-table td, .perf-table th, .perf-table td, .pe-table td {
-    font-size: 12.5px;
+    font-size: 10.7px;
     padding: 0.5px 3px 0.5px 0;
   }
   .info-table, .pe-table { margin-bottom: 0 !important; }
@@ -1492,7 +1505,7 @@ function printOnePager() {
     padding: 0 !important;
     resize: none !important;
     background: transparent !important;
-    font-size: 12.5px !important;
+    font-size: 10.7px !important;
     overflow: visible !important;
     height: auto !important;
     min-height: 0 !important;
@@ -1522,9 +1535,21 @@ function printOnePager() {
     flex: 0 0 auto;
     overflow: visible !important;
   }
+  /* The print-only twins of the two textareas. 10.7px is 8pt exactly
+     (8 * 96/72), the legibility floor for body text on this page — nothing
+     here goes below it. */
+  .econ-print-text,
+  .pref-print-text {
+    display: block !important;
+    font-size: 10.7px !important;
+    font-family: inherit;
+    white-space: pre-wrap;
+    overflow: visible !important;
+    height: auto;
+  }
   .bp-print-text {
     display: block !important;
-    font-size: 13px !important;
+    font-size: 10.7px !important;
     font-family: inherit;
     white-space: pre-wrap;
     overflow: visible !important;
