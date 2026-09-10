@@ -145,7 +145,19 @@ chk(`${sample[0]}: x-axis carries its labels`,
   (opt.xAxis.data || []).length === (sample[1].periods || []).length)
 
 console.log('\n3. deals WITH data are byte-for-byte unchanged')
-if (!buildBase) {
+// Once this change is ON the base ref, "before" and "after" are the same code
+// and the comparison has nothing left to say — in particular no payload can be
+// previously-null any more. That is not a regression, so it must not read as
+// one: a guardrail that only passes until it is merged is broken. Sections 1,
+// 2 and 4 are the permanent invariants; this section is a migration check and
+// retires itself, and can be re-run against the real merge base with
+// WF_BASE_REF=<sha>.
+if (baseSrc !== null && baseSrc.replace(/\r\n/g, '\n') === nowSrc.replace(/\r\n/g, '\n')) {
+  console.log(`  [SKIP] ${BASE_REF} already carries this change — nothing to`
+    + ' compare. Re-run against the merge base to exercise it:')
+  console.log('         WF_BASE_REF=<sha before the change> node'
+    + ' scripts/onepager_empty_chart_frame_check.mjs <payloads.json>')
+} else if (!buildBase) {
   console.log('  [SKIP] no base revision available')
 } else {
   // Only payloads that actually carry a reading. A payload with no data is
