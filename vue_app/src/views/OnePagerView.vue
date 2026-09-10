@@ -881,7 +881,16 @@ function printOnePager() {
               <td class="val right">{{ fmtPct(cap.pe_exposure_on_cap) }}</td>
             </tr>
             <tr>
-              <td class="lbl">Pref Equity capitalization:</td><td class="val"><textarea v-model="peCapComment" class="inline-comment" rows="1" placeholder="" spellcheck="true" lang="en" :readonly="commentsLocked"></textarea></td>
+              <td class="lbl">Pref Equity capitalization:</td>
+              <!-- `rows="1"` with `overflow: hidden` shows exactly one line, so
+                   anything that wraps was not printed at all — 7 deals lose the
+                   tail of their ownership split, e.g. Nottingham Village's
+                   "KOC 44%, TIAA 41%, PSC 13%, Declaration 2%". Same print-only
+                   twin the Business Plan and the two comment blocks use. -->
+              <td class="val">
+                <textarea v-model="peCapComment" class="inline-comment print-hide" rows="1" placeholder="" spellcheck="true" lang="en" :readonly="commentsLocked"></textarea>
+                <div class="pecap-print-text print-only">{{ peCapComment }}</div>
+              </td>
               <td class="lbl">P.E. Expos. on {{ cap.valuation_year ? cap.valuation_year.slice(-2) : '' }} Value:</td>
               <td></td><td class="val right">{{ fmtPct(cap.pe_exposure_on_value) }}</td>
             </tr>
@@ -1396,7 +1405,8 @@ function printOnePager() {
 }
 .bp-print-text,
 .econ-print-text,
-.pref-print-text {
+.pref-print-text,
+.pecap-print-text {
   display: none;
 }
 .print-only {
@@ -1546,7 +1556,8 @@ function printOnePager() {
      (8 * 96/72), the legibility floor for body text on this page — nothing
      here goes below it. */
   .econ-print-text,
-  .pref-print-text {
+  .pref-print-text,
+  .pecap-print-text {
     display: block !important;
     font-size: 10.7px !important;
     font-family: inherit;

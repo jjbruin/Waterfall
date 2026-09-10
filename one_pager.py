@@ -572,7 +572,16 @@ def get_capitalization_stack(
         'total_cap': 0.0,
         'current_valuation': 0.0,
         'valuation_year': '',
-        'pe_exposure_on_cap': 0.0,
+        # None, NOT 0.0 — the same sentinel that was fixed on
+        # `pe_exposure_on_value` below, and for the same reason. Only assigned
+        # when `total_cap > 0`, so on a deal with no capitalisation at all the
+        # default is what the page prints, and 0.0 rendered "0.0%" — a real
+        # computed exposure of nil rather than an admission that there is
+        # nothing to compute it from. Two deals at 26Q2 print it: PSC Investee
+        # Fund XII (P0000063) and Donald Lynch (P0000049). `fmtPct` renders None
+        # as an em dash. The Portfolio Snapshot carries this field through
+        # `_num()`, which maps None to None, and neither sums nor renders it.
+        'pe_exposure_on_cap': None,
         # None, NOT 0.0 — "we cannot compute this" is not "the exposure is nil".
         # This is only assigned when `current_valuation > 0`, so on a deal with
         # no valuation the default is what the page prints. As 0.0 it rendered
