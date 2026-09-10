@@ -262,8 +262,9 @@ function placementLabel(f: any): string {
           <tbody>
             <tr v-for="r in blk.deals" :key="r.vcode">
               <td class="sticky-l">
+                <!-- `&nbsp;`, not a plain space: see the .sold rule below. -->
                 {{ r.name }}<span v-if="dealMark(r.vcode)" class="fnmark">{{ dealMark(r.vcode) }}</span><span
-                  v-if="r.sold_label" class="sold"> {{ r.sold_label }}</span>
+                  v-if="r.sold_label" class="sold">&nbsp;{{ r.sold_label }}</span>
                 <span v-if="r.is_dev" class="tag">Dev</span>
                 <span v-if="r.pdf_na_cells?.length || r.kept_despite_sold" class="star"
                       :title="(r.flags || []).join(' · ')">*</span>
@@ -355,8 +356,9 @@ function placementLabel(f: any): string {
           <tr class="grouprow"><td class="sticky-l" colspan="11">Ownership % unavailable</td></tr>
           <tr v-for="r in flaggedRows" :key="r.vcode">
             <td class="sticky-l">
+              <!-- `&nbsp;`, not a plain space: see the .sold rule below. -->
               {{ r.name }}<span v-if="dealMark(r.vcode)" class="fnmark">{{ dealMark(r.vcode) }}</span><span
-                v-if="r.sold_label" class="sold"> {{ r.sold_label }}</span>
+                v-if="r.sold_label" class="sold">&nbsp;{{ r.sold_label }}</span>
               <span v-for="(f, i) in (r.flags || [])" :key="i" class="warn-dot" :title="f">!</span>
             </td>
             <td class="r num">{{ fmtM(r.debt) }}</td>
@@ -603,7 +605,29 @@ tr.exdev .label {
    text in the row's own type rather than a `.tag` pill or a `.star`: the print
    stylesheet hides both of those as screen-only annotation, and this must
    survive into print. See PortfolioSnapshotPrintView.vue. Server-driven off
-   `sold_label`, so screen and print cannot label differently. */
+   `sold_label`, so screen and print cannot label differently.
+
+   THE SEPARATOR IS A `&nbsp;` IN THE TEMPLATE, NOT A SPACE AND NOT A MARGIN.
+   The markup used to read `<span class="sold"> {{ r.sold_label }}</span>`, and
+   that leading space never reached the browser: Vue's compiler runs in its
+   default `condense` whitespace mode, which strips whitespace at the start of
+   an element's children. The built bundle contains the span with no space in
+   it at all, which is why the published document printed "East Manchester(Sold)"
+   and ran the footnote marker straight into the label on "City West(2)(Sold)" —
+   the only reason the marker looks separated is `.fnmark`'s own margin-left.
+
+   So it cannot be another plain space, or the compiler removes it again. Of the
+   two that survive:
+     * a `margin-left` here would match `.fnmark` and `.star` — but it draws a
+       gap without putting a character in the document, so the investor PDF
+       would still extract and copy/paste as "East Manchester(Sold)";
+     * `&nbsp;` is a real character, so it survives into the PDF's text, and
+       being non-breaking it also stops "(Sold)" orphaning onto its own line in
+       this column.
+
+   Deliberately NOT changed: `.fnmark` keeps its 1px margin and stays attached
+   to the property name. A superscript reference conventionally sits tight
+   against the word it marks, and that is how the reference document sets it. */
 .sold { font-style: italic; color: var(--color-text-secondary); }
 
 /* Footnote marker on a property name. Superscript so it reads as a reference
