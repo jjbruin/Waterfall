@@ -1430,8 +1430,20 @@ function printOnePager() {
     margin-bottom: 0;
     display: flex;
     flex-direction: column;
-    height: calc(100vh - 0.8in); /* exactly one page minus top+bottom padding */
-    overflow: hidden;
+    /* MIN-height, not height, and no overflow clip.
+       ------------------------------------------------------------------
+       This was `height: calc(100vh - 0.8in)` with `overflow: hidden`, which
+       made the sheet exactly one page and threw away anything that did not
+       fit. Since the Business Plan block was the only flexible item on the
+       page, it absorbed the entire shortfall and collapsed — the narrative
+       did not merely clip at the bottom, it disappeared, on all 45 deals
+       that carry one. See the note on .bp-section.
+       As a minimum, a page whose content fits still fills exactly one sheet,
+       so `margin-top: auto` on the chart keeps it pinned to the bottom
+       exactly as before and nothing moves for those deals. A page whose
+       content does not fit now grows and paginates instead of silently
+       dropping investor-facing text. */
+    min-height: calc(100vh - 0.8in);
   }
 
   .op-sheet.page-break {
@@ -1486,19 +1498,37 @@ function printOnePager() {
     min-height: 0 !important;
   }
 
-  /* Business plan: fill remaining space, clip if too long */
+  /* Business plan: print all of it. It is narrative an asset manager wrote for
+     an investor, and dropping the end of it silently is worse than a second
+     page.
+     ------------------------------------------------------------------------
+     This block used to read "fill remaining space, clip if too long", and it
+     did the clipping with `flex: 1 1 auto; min-height: 0; overflow: hidden`
+     inside a sheet fixed at exactly one page. Two things made that far more
+     destructive than "if too long" suggests:
+       * the chart below is `flex-shrink: 0` at a fixed 300px, and everything
+         above is fixed too, so .bp-section was the ONLY flexible item and
+         absorbed the whole shortfall;
+       * `min-height: 0` let it shrink below its content, and `overflow:
+         hidden` then painted none of it.
+     The result was not a trimmed tail. Measured on the real print path, the
+     block collapsed to between zero and half a line on every deal that has a
+     narrative — Belleville's 292 characters printed nothing at all, and Flats
+     at Dorsett Ridge showed one horizontally-sliced line. 45 of 56 active
+     deals carry a narrative and all of it was missing from the paper.
+     `flex: 0 0 auto` stops it being shrunk below its content, and with the
+     sheet on min-height the page grows instead. */
   .bp-section {
-    overflow: hidden !important;
-    flex: 1 1 auto;
-    min-height: 0;
+    flex: 0 0 auto;
+    overflow: visible !important;
   }
   .bp-print-text {
     display: block !important;
     font-size: 13px !important;
     font-family: inherit;
     white-space: pre-wrap;
-    overflow: hidden !important;
-    height: 100%;
+    overflow: visible !important;
+    height: auto;
   }
   .comment-text.bp-text {
     overflow: visible !important;
@@ -1506,11 +1536,35 @@ function printOnePager() {
     min-height: 0 !important;
   }
 
-  /* Chart anchored to bottom of page */
+  /* Chart anchored to bottom of page.
+     `margin-top: auto` still pins it to the foot of the sheet whenever the
+     content leaves free space; with a narrative now printing above it there
+     usually is none, and the chart moves to the second page instead.
+     NO EXTRA TOP PADDING HERE, and the reason is measured rather than assumed.
+     When the chart is pushed to a second page it lands ~3.7pt from the physical
+     paper edge, because the page box is `margin: 0` app-wide (App.vue) — a
+     non-zero page margin is what gives Chrome room to draw its own header and
+     footer, so continuation pages get no top margin of their own. A
+     `padding-top: 0.4in` here does fix that (measured: chart top moves 3.7pt ->
+     29.2pt, matching page 1) but it COSTS 28.8pt on page one, and page one has
+     only about 3pt of slack. It therefore pushed the chart onto a second page
+     for the 11 deals that have no narrative at all and were printing correctly
+     on one page. Protecting 11 working documents outweighs a 3.7pt offset that
+     is only a risk on a physical printer's unprintable strip, not in the PDF.
+     The real fix is a page-box margin for continuation pages, which conflicts
+     with the header suppression print_page_rule_check enforces — flagged, not
+     taken unilaterally. */
   .chart-section {
     break-inside: avoid;
     flex-shrink: 0;
     margin-top: auto;
+    /* The screen rule puts 4px of padding above the rule; in print that plus
+       the 1px border is ~3.75pt of chrome, and page one has only about 3pt of
+       slack. PMAT Midwest - North Heights misses a single page by ~1.5pt with
+       it and makes it without: it has NO narrative, printed fine on one page
+       before, and must still. Trimming here rather than anywhere else because
+       it is the chart's own spacing and costs nothing legible. */
+    padding-top: 1px;
   }
 
   /* Force chart to print */

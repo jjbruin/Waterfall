@@ -152,9 +152,17 @@ console.log('\n3. deals WITH data are byte-for-byte unchanged')
 // 2 and 4 are the permanent invariants; this section is a migration check and
 // retires itself, and can be re-run against the real merge base with
 // WF_BASE_REF=<sha>.
-if (baseSrc !== null && baseSrc.replace(/\r\n/g, '\n') === nowSrc.replace(/\r\n/g, '\n')) {
-  console.log(`  [SKIP] ${BASE_REF} already carries this change — nothing to`
-    + ' compare. Re-run against the merge base to exercise it:')
+// Ask the BASE what it does, rather than whether its file text matches ours.
+// Comparing the sources was too narrow: any LATER edit to OnePagerView.vue —
+// the Business Plan print fix was the first — makes the text differ again while
+// the base still already frames, so the migration check came back and failed a
+// second time. What actually matters is behaviour: if the base already returns
+// a frame for a no-data payload, there is nothing left to migrate.
+const NO_DATA_PROBE = { periods: [], actual_noi: [], uw_noi: [], occupancy: [] }
+if (buildBase && buildBase(NO_DATA_PROBE) != null) {
+  console.log(`  [SKIP] ${BASE_REF} already frames a no-data payload — the`
+    + ' migration this section checks has happened. Re-run against a base from'
+    + ' before it to exercise the comparison:')
   console.log('         WF_BASE_REF=<sha before the change> node'
     + ' scripts/onepager_empty_chart_frame_check.mjs <payloads.json>')
 } else if (!buildBase) {
