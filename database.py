@@ -1514,7 +1514,30 @@ def delete_waterfall_steps(vcode: str, wf_type: str = None):
 
 
 # Tables managed exclusively via the app (never overwritten by CSV import)
-PROTECTED_TABLES = {'waterfalls', 'one_pager_comments', 'waterfall_audit', 'review_roles', 'review_submissions', 'review_notes', 'one_pager_snapshots', 'prospective_loans', 'prospective_loans_audit', 'planned_loans', 'sale_overrides', 'user_requests', 'user_request_messages', 'surveillance_properties', 'insurance', 'surveillance_comments', 'lease_reviews', 'lease_tenants', 'lease_documents', 'lease_rent_steps', 'lease_cotenancy', 'lease_cotenancy_refs', 'lease_exclusive_use', 'lease_options', 'lease_validation', 'prospect_deals', 'prospect_properties', 'prospect_entities', 'prospect_investors', 'prospect_assumptions', 'prospect_cashflows', 'prospect_activity', 'lease_abstract_sections', 'lease_field_resolutions', 'lease_tenant_sales', 'lease_space_events', 'lease_space_event_results', 'lease_market_assumptions', 'lease_tenant_aliases', 'argus_imports', 'argus_cashflows', 'argus_tenants', 'argus_rent_steps', 'argus_market_profiles', 'parcel_sales', 'prospect_scenarios', 'valuation_cycles', 'valuation_records', 'valuation_documents', 'valuation_comments', 'valuation_questions', 'valuation_approvals', 'valuation_snapshots', 'valuation_ai_summaries', 'valuation_nav_results', 'valuation_bs_selections', 'valuation_step_refs', 'valuations'}
+#
+# `capital_calls` JOINED THIS SET Sep 10 2026, at Jim's instruction, and it is
+# the one entry here that used to have a CSV feed.  The import goes through
+# `to_sql(if_exists="replace")`, which DROPS the table, so a single
+# `MRI_Capital_Calls.csv` upload silently destroyed every call typed into Deal
+# Analysis — the two Asbury Commons calls entered on v423 among them.
+#
+# WHAT IT COSTS is only the bulk upload: `capital_calls` is NOT in
+# `mri_service.QUERY_REGISTRY`, so "Refresh All Data from MRI" never touched it
+# and no automated feed is interrupted.  Capital calls are now app-entered
+# only, added and deleted per row through
+# `/api/deals/<vcode>/raw-capital-calls`.  The upload UI already renders a
+# protected file with a "locked" badge and excludes it from the importable
+# count, so a skipped import announces itself rather than looking like a
+# success.
+#
+# KNOWN CONSEQUENCE, reported rather than silently accepted: rows already in
+# the table with a blank `Vcode` — 5,127 of 5,130 locally, empty trailing rows
+# from a past CSV — are invisible to the app, because the GET filters by vcode,
+# and the replace that used to clear them is now blocked.  They are harmless to
+# every computation (`load_capital_calls` drops them via
+# `dropna(subset=['deal_name', 'call_date', 'amount'])`) but they can no longer
+# be cleaned from the UI.  Purging them is a separate, deliberate act.
+PROTECTED_TABLES = {'capital_calls', 'waterfalls', 'one_pager_comments', 'waterfall_audit', 'review_roles', 'review_submissions', 'review_notes', 'one_pager_snapshots', 'prospective_loans', 'prospective_loans_audit', 'planned_loans', 'sale_overrides', 'user_requests', 'user_request_messages', 'surveillance_properties', 'insurance', 'surveillance_comments', 'lease_reviews', 'lease_tenants', 'lease_documents', 'lease_rent_steps', 'lease_cotenancy', 'lease_cotenancy_refs', 'lease_exclusive_use', 'lease_options', 'lease_validation', 'prospect_deals', 'prospect_properties', 'prospect_entities', 'prospect_investors', 'prospect_assumptions', 'prospect_cashflows', 'prospect_activity', 'lease_abstract_sections', 'lease_field_resolutions', 'lease_tenant_sales', 'lease_space_events', 'lease_space_event_results', 'lease_market_assumptions', 'lease_tenant_aliases', 'argus_imports', 'argus_cashflows', 'argus_tenants', 'argus_rent_steps', 'argus_market_profiles', 'parcel_sales', 'prospect_scenarios', 'valuation_cycles', 'valuation_records', 'valuation_documents', 'valuation_comments', 'valuation_questions', 'valuation_approvals', 'valuation_snapshots', 'valuation_ai_summaries', 'valuation_nav_results', 'valuation_bs_selections', 'valuation_step_refs', 'valuations'}
 
 
 def _get_import_connection():

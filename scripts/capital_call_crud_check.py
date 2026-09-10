@@ -13,6 +13,10 @@ ever reaches the database, so:
     editable list always looked empty;
   * PUT/DELETE additionally keyed on `rowid`, which PostgreSQL does not have.
 
+It also covers the Sep 10 2026 decision to put `capital_calls` in
+PROTECTED_TABLES: all four CSV import entry points must refuse it AND leave the
+rows intact, while the app's own add / edit / delete keep working.
+
 This check exercises the real view functions through a Flask test request
 against a real database.  Run with no arguments for SQLite; pass a PostgreSQL
 URL to run the same battery there:
@@ -246,6 +250,12 @@ def run_pg_branch():
     create_engine(f"sqlite:///{sqlite_path}").connect().close()
 
     app, deals_api, _ = build_app(None, sqlite_path)
+    # RESTORED IN THE finally BELOW. Without that this patch leaks into every
+    # later section — it made the protection battery run the PostgreSQL branch
+    # against a SQLite fixture, where the surrogate-id ALTER cannot succeed, so
+    # every row came back with a null id and edit/delete 404'd. A guardrail
+    # whose result depends on section order is not a guardrail.
+    _real_is_postgres = deals_api.is_postgres
     deals_api.is_postgres = lambda: True
 
     statements = []
@@ -334,17 +344,165 @@ def run_pg_branch():
     check("Typename is added with a quoted identifier",
           any('"Typename"' in q for q in ddl), str(ddl))
 
+    deals_api.is_postgres = _real_is_postgres
+    check("is_postgres restored, so later sections are not polluted",
+          deals_api.is_postgres is _real_is_postgres)
+
     # the SERIAL DDL is PostgreSQL-only, so assert the text the branch builds
     src = open("flask_app/api/deals.py", encoding="utf-8").read()
     check("surrogate key DDL is quoted id SERIAL", '"id" SERIAL' in src)
+
+
+def run_protection(database_url=None):
+    """capital_calls is protected from CSV import, and the app can still edit it.
+
+    Protected Sep 10 2026 at Jim's instruction.  The import goes through
+    ``to_sql(if_exists="replace")``, which DROPS the table, so one
+    ``MRI_Capital_Calls.csv`` upload silently destroyed every hand-entered
+    call.  What matters is not the status string the import returns but that
+    the ROWS SURVIVE, so each of the four entry points is called for real
+    against a seeded row and the row is counted afterwards.
+    """
+    import csv as _csv
+    import tempfile as _tf
+    import database as legacy
+
+    label = "PostgreSQL" if database_url else "SQLite"
+    print(f"\n=== capital_calls protection ({label}) ===")
+
+    tmpdir = _tf.mkdtemp()
+    sqlite_path = os.path.join(tmpdir, "capcall_protect.db")
+    if not database_url:
+        create_engine(f"sqlite:///{sqlite_path}").connect().close()
+
+    app, deals_api, _ = build_app(database_url, sqlite_path)
+
+    check("capital_calls is in PROTECTED_TABLES",
+          "capital_calls" in legacy.PROTECTED_TABLES)
+
+    with app.app_context():
+        from flask_app.db import get_engine
+        engine = get_engine()
+        hdrs = auth_headers(app)
+        seed_csv_shaped_table(engine)
+
+        # a row the app owns, which no import may destroy
+        with app.test_request_context(
+            f"/api/deals/{VCODE}/raw-capital-calls", method="POST", headers=hdrs,
+            json={"PropCode": PROPCODES[0], "CallDate": CALL_DATE,
+                  "Amount": AMOUNT, "Notes": "protected-row",
+                  "Typename": "Contribution: Investments"},
+        ):
+            _, status = deals_api.create_capital_call(VCODE)
+        check("seeded an app-entered call", status == 201)
+
+        def count_rows():
+            with engine.connect() as conn:
+                return conn.execute(text(
+                    'SELECT COUNT(*) FROM capital_calls WHERE "Notes" = :n'),
+                    {"n": "protected-row"}).scalar()
+
+        check("the app-entered call is present", count_rows() == 1)
+
+        # a CSV that would wipe the table if the import ran
+        hostile = pd.DataFrame([{
+            "Vcode": "P0000999", "PropCode": "WIPED", "CallDate": "1/1/2020",
+            "Amount": 1.0, "CallType": "", "FundingSource": "", "Notes": "",
+        }])
+        csv_dir = os.path.join(tmpdir, "csvs")
+        os.makedirs(csv_dir, exist_ok=True)
+        csv_path = os.path.join(csv_dir, "MRI_Capital_Calls.csv")
+        hostile.to_csv(csv_path, index=False, quoting=_csv.QUOTE_MINIMAL)
+
+        # ---- all four entry points ------------------------------------
+        r = legacy.import_csv_dataframe("capital_calls", hostile.copy(),
+                                        source="guardrail")
+        check("import_csv_dataframe refuses it", r.get("status") == "protected", str(r))
+        check("  rows survive", count_rows() == 1)
+
+        with open(csv_path, "rb") as fh:
+            r = legacy.import_csv_stream("capital_calls", fh, source="guardrail")
+        check("import_csv_stream refuses it", r.get("status") == "protected", str(r))
+        check("  rows survive", count_rows() == 1)
+
+        r = legacy.import_single_csv(csv_dir, "capital_calls")
+        got = r.get("capital_calls", r)
+        check("import_single_csv refuses it", got.get("status") == "protected", str(r))
+        check("  rows survive", count_rows() == 1)
+
+        r = legacy.import_csvs_to_database(csv_dir)
+        got = r.get("capital_calls", {})
+        check("import_csvs_to_database refuses it",
+              got.get("status") == "protected", str(got))
+        check("  rows survive", count_rows() == 1)
+
+        # nothing from the hostile CSV leaked in by any path
+        with engine.connect() as conn:
+            wiped = conn.execute(text(
+                'SELECT COUNT(*) FROM capital_calls WHERE "PropCode" = :p'),
+                {"p": "WIPED"}).scalar()
+        check("no imported row leaked in", wiped == 0, f"count={wiped}")
+
+        # ---- protection must not touch the app's own CRUD -------------
+        with app.test_request_context(
+            f"/api/deals/{VCODE}/raw-capital-calls", headers=hdrs
+        ):
+            resp = deals_api.raw_capital_calls(VCODE)
+        payload = resp.get_json() if not isinstance(resp, tuple) else resp[0].get_json()
+        rows = [r for r in payload.get("capital_calls", [])
+                if r.get("Notes") == "protected-row"]
+        check("the app still lists it", len(rows) == 1, str(payload.get("error", "")))
+
+        if rows:
+            cid = rows[0]["id"]
+            with app.test_request_context(
+                f"/api/deals/{VCODE}/raw-capital-calls/{cid}",
+                method="PUT", headers=hdrs,
+                json={"PropCode": PROPCODES[0], "CallDate": CALL_DATE,
+                      "Amount": 1234.0, "Notes": "protected-row",
+                      "Typename": "Contribution: Investments"},
+            ):
+                out = deals_api.update_capital_call(VCODE, cid)
+            _r, st = out if isinstance(out, tuple) else (out, 200)
+            check("the app can still EDIT a protected-table row", st == 200,
+                  f"status={st} body={_r.get_json()}")
+
+            with app.test_request_context(
+                f"/api/deals/{VCODE}/raw-capital-calls/{cid}",
+                method="DELETE", headers=hdrs,
+            ):
+                out = deals_api.delete_capital_call(VCODE, cid)
+            _r, st = out if isinstance(out, tuple) else (out, 200)
+            check("the app can still DELETE a protected-table row", st == 200,
+                  f"status={st} body={_r.get_json()}")
+            check("  the row is gone", count_rows() == 0)
+
+        # ---- the UI is told, so a skipped import is not silent --------
+        from database import TABLE_DEFINITIONS
+        check("capital_calls still has a TABLE_DEFINITIONS entry (so the "
+              "upload UI can match the file and badge it 'locked')",
+              "capital_calls" in TABLE_DEFINITIONS)
+
+        # ---- the orphan rows the app cannot reach ---------------------
+        # Documented, not asserted away: rows with a blank Vcode are invisible
+        # to the vcode-filtered GET, and the replace that used to clear them is
+        # now blocked.  Harmless to every computation, but permanent.
+        with engine.connect() as conn:
+            orphans = conn.execute(text(
+                'SELECT COUNT(*) FROM capital_calls '
+                'WHERE "Vcode" IS NULL OR TRIM("Vcode") = \'\'')).scalar()
+        print(f"  note   orphan rows with no Vcode in this fixture: {orphans} "
+              f"(undeletable from the app by design of the vcode filter)")
 
 
 def main():
     url = sys.argv[1] if len(sys.argv) > 1 else None
     run(None)
     run_pg_branch()
+    run_protection(None)
     if url:
         run(url)
+        run_protection(url)
     passed = sum(1 for _, ok, _ in results if ok)
     print(f"\n{passed}/{len(results)} checks passed")
     return 0 if passed == len(results) else 1
