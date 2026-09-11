@@ -789,30 +789,57 @@ def get_capitalization_stack(
                         deal_val['_dt_parsed'] = pd.to_datetime(deal_val[dt_col], format='mixed', dayfirst=False, errors='coerce')
                         deal_val = deal_val.dropna(subset=['_dt_parsed']).sort_values('_dt_parsed', ascending=False)
                         break
-                val_row = deal_val.iloc[0] if not deal_val.empty else None
 
-                if val_row is not None and 'mIncomeCapConcludedValue' in deal_val.columns:
+                # AS OF THE REPORT QUARTER, like every other cell on this row.
+                # Debt is fetched with `as_of_date=q_end` and the equity block filters
+                # `EffectiveDate <= q_end`, but the valuation used to ignore the quarter
+                # entirely and always take the newest row on file. Once a 12/31 valuation
+                # is published, re-opening an earlier quarter showed that FUTURE valuation
+                # against that quarter's debt and equity — so P.E. Exposure on Value was a
+                # ratio between two different dates. Only rows dated on or before the
+                # quarter end are eligible; without a quarter (non-One-Pager callers) the
+                # behaviour is unchanged.
+                if quarter_str and '_dt_parsed' in deal_val.columns:
+                    _, _val_q_end = quarter_to_date_range(quarter_str)
+                    deal_val = deal_val[deal_val['_dt_parsed'].dt.date <= _val_q_end]
+
+            if not deal_val.empty:
+                # A BLANK IN ONE COLUMN MUST NOT DISCARD A GOOD VALUATION. This took the
+                # newest row unconditionally and then read `mIncomeCapConcludedValue` off
+                # it; a newer row with that column empty produced 0.0 — no valuation shown
+                # at all — while a complete older row sat right behind it. Prefer the most
+                # recent row that actually carries a value, and fall back to the newest row
+                # only so the date-derived fields below still populate.
+                val_row = deal_val.iloc[0]
+                if 'mIncomeCapConcludedValue' in deal_val.columns:
+                    _vals = pd.to_numeric(deal_val['mIncomeCapConcludedValue'], errors='coerce')
+                    _usable = deal_val[_vals.notna() & (_vals > 0)]
+                    if not _usable.empty:
+                        val_row = _usable.iloc[0]
+            else:
+                val_row = None
+
+            if val_row is not None:
+                if 'mIncomeCapConcludedValue' in deal_val.columns:
                     v = pd.to_numeric(val_row['mIncomeCapConcludedValue'], errors='coerce')
                     cap['current_valuation'] = float(v) if pd.notna(v) else 0.0
 
                 # Valuation year from date column
-                if val_row is not None:
-                    for dt_col in ['dtValuation', 'dtVal', 'dtReported', 'dtEntry']:
-                        if dt_col in val_row.index and pd.notna(val_row[dt_col]):
-                            try:
-                                cap['valuation_year'] = str(pd.to_datetime(val_row[dt_col]).year)
-                            except:
-                                pass
-                            break
+                for dt_col in ['dtValuation', 'dtVal', 'dtReported', 'dtEntry']:
+                    if dt_col in val_row.index and pd.notna(val_row[dt_col]):
+                        try:
+                            cap['valuation_year'] = str(pd.to_datetime(val_row[dt_col]).year)
+                        except Exception:
+                            pass
+                        break
 
                 # Purchase price from valuations table
-                if val_row is not None:
-                    for pp_col in ['mPurchasePrice', 'Acquisition_Price']:
-                        if pp_col in deal_val.columns:
-                            pp = pd.to_numeric(val_row[pp_col], errors='coerce')
-                            if pd.notna(pp) and pp > 0:
-                                cap['purchase_price'] = float(pp)
-                                break
+                for pp_col in ['mPurchasePrice', 'Acquisition_Price']:
+                    if pp_col in deal_val.columns:
+                        pp = pd.to_numeric(val_row[pp_col], errors='coerce')
+                        if pd.notna(pp) and pp > 0:
+                            cap['purchase_price'] = float(pp)
+                            break
 
     # Fallback: purchase price from investment map (deals table)
     if cap['purchase_price'] == 0 and inv_map is not None and not inv_map.empty:
