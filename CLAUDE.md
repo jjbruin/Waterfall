@@ -241,6 +241,7 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v432` = `9d9fa1d`
   - `v431` = `9d9e545`
   - `v430` = `33a4bf5` (config-only roll: DATABASE_URL moved to a secret ref during the credential rotation — same image as v429)
   - `v429` = `33a4bf5` †
