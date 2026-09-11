@@ -226,41 +226,6 @@ whether loading the missing actuals picks those months up. Do not "fix" it first
 
 ## 3. Data and operations — Jim
 
-### 3.1 Excel serials in `EffectiveDate` — $20.18M, and the defect has changed shape
-Values like `43402`, `43448` instead of dates (they decode to 2018-10-29 and 2018-12-14);
-`to_datetime(errors='coerce')` → NaT. Originally 101 rows / $20.18M, including
-**Woodlands Square's entire $9.7M pref equity contribution** plus 91 Preferred Return
-distributions ($9.44M).
-
-**NEEDS RE-MEASURING BEFORE ANY FIX — run `scripts/effectivedate_serial_check.py`.** Three
-things changed since the August finding and each moves the answer:
-
-1. **It is no longer an inconsistency. It is a silent omission.** In August the rows were
-   *included* in Total Cap (which had no date filter) and *dropped* from PE Performance
-   (which had one) — two figures on one page disagreeing. `9086f16` (v198) added the date
-   filter to the cap stack (`one_pager.py:878`), so **both paths now drop them**. That is
-   consistent, and it means the money is invisible everywhere rather than wrongly counted
-   in one place. Arguably worse: a disagreement is noticeable, a silent drop is not.
-2. **The local SQLite snapshot is CLEAN** — 11,886 rows, every `EffectiveDate` in
-   `YYYY-MM-DD`, zero parse failures (verified Sep 11 2026). The audit measured **live
-   Azure**, which is a different and more current dataset. So this may already be fixed
-   upstream, or it may be Azure-only. **Unknown until someone runs the check against
-   `DATABASE_URL`.**
-3. **`accounting` IS in `mri_service.QUERY_REGISTRY`** (verified Sep 11). "Refresh All Data
-   from MRI" overwrites the table, so **a fix applied to the database does not survive a
-   refresh.** This is the structural fact that decides the whole approach.
-
-**The trap, and why the original "fix the source data" instruction is right:** do not make
-the parser tolerate serials. `queries/accounting_feed.sql` selects `EffectiveDate` raw with
-no CAST, so the value arrives as MRI holds it — or as whatever exported it left behind.
-Excel serials appearing in a date column is the signature of a CSV that passed through
-Excel, which converts dates to serials on save. If that is the path, the corruption is in
-the transport and blessing it in the parser guarantees the next batch is silent too.
-
-Sequence: run the check against Azure → if the rows are gone, close this → if they are
-still there, establish whether MRI itself holds serials or the export introduces them,
-because that decides whether the fix is upstream or in the import path.
-
 ### 3.2 JB Fair Park balance-sheet backfill
 BS data stops 6/30/2025 while peers run to 6/30/2026, so `cap['debt']` reads a stale
 **12/31/2022** row on account 2150 → $66,363,992. `get_isbs_debt_balance()` detects the
@@ -353,6 +318,45 @@ it" and "nothing happened" are different claims and only the first is supported.
 **Open, and larger than this incident:** the repo is public — an internal financial
 modeling app with deal vcodes, investor entity IDs and infrastructure names throughout.
 That is a decision, not a defect, and it is still Jim's to make.
+
+### Excel serials in `EffectiveDate` — gone from live data (closed Sep 11 2026)
+The Aug 2026 audit found 101 rows / $20.18M carrying Excel serials instead of dates,
+including **Woodlands Square's entire $9.7M pref equity contribution**. **They are no
+longer there.**
+
+**Measured on live Azure through the Data Explorer** (which reads the app's own database,
+so no credential was handled): **13,052 accounting rows**, up from 12,403 on Aug 6 — current
+data, not a stale snapshot. A `434` contains-filter on `EffectiveDate` returns nothing, and
+a **descending sort returns 2026 dates at the top with no bare numbers**. That sort is the
+exhaustive test: the column is text, so any 5-digit serial starting with `4` would sort
+above every `19xx`/`20xx` date regardless of which year it encoded. The `434` filter alone
+was not sufficient — it only covers the `43xxx` range, roughly Oct 2018 – Jan 2019, which
+happened to be the two examples the audit named.
+
+**WHY they are gone is unknown.** Nobody fixed this deliberately. Most likely a re-export
+replaced the rows, since `accounting` is in `mri_service.QUERY_REGISTRY` and every refresh
+overwrites the table. **That means it can recur** — if the cause was a CSV passing through
+Excel (which converts dates to serials on save), the next export by the same route
+reintroduces it, silently.
+
+**The detector is `scripts/effectivedate_serial_check.py`** — read-only, reproduces the
+app's exact `pd.to_datetime(errors="coerce")` parse, decodes serials to real dates, and
+warns that a database fix would not survive a refresh. Run it after any accounting
+re-import.
+
+**Two things learned here that outlived the item:**
+1. **The v198 filter changed the defect's shape.** In August the rows were *included* in
+   Total Cap (no date filter) and *dropped* from PE Performance. `9086f16` added the filter
+   to the cap stack (`one_pager.py:878`), so both paths now drop an unparseable row — the
+   money would be invisible everywhere rather than inconsistently counted. A disagreement
+   between two figures is noticeable; a silent drop is not. If this recurs, it recurs
+   quieter than it did.
+2. **A clean result from the wrong database looks exactly like a clean one from the right
+   database.** The first run of the detector fell back to local SQLite because
+   `DATABASE_URL` was unset, and reported "CLEAN, 11,886 rows" — which was quoted as the
+   live answer. The row count was what gave it away. The script now names its source **in
+   the verdict line**, exits `2` on a local clean result, and takes `--require-postgres` to
+   refuse to run at all without a live connection.
 
 ### Postgres had no usable log retention — fixed Sep 11 2026
 Asked of the credential incident above: did anyone actually use it during the five months?

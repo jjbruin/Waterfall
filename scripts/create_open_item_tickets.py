@@ -36,6 +36,13 @@ import urllib.request
 # The tickets. Each description is the six-line brief the /open-items skill uses:
 # what's wrong / evidence / why it matters / recommended fix / the trap / how to verify.
 # Numbered §-refs point back into .claude/memory/open_items.md for the full entry.
+#
+# `n` IS A STABLE LABEL, NOT AN INDEX — gaps are deliberate. 13, 14 and 15 were resolved on
+# Sep 11 2026 (the cbui JWT had long since expired; the committed wfadmin password was
+# purged and rotated; the Excel serials are gone from live data — see open_items.md §4) and
+# their numbers were retired rather than reused, so "ticket 7" still means the same thing it
+# meant in the conversation where these were reviewed. Renumbering would silently re-point
+# every earlier reference. New items take the next unused number.
 # --------------------------------------------------------------------------------------
 
 TICKETS: list[dict] = [
@@ -394,26 +401,6 @@ user's still works.""",
 # ---- Jim's data / ops items. Same shape, different owner. -----------------------------
 TICKETS += [
     dict(
-        n=15, type="error", priority="high",
-        title="DATA: 101 rows carry Excel serials in EffectiveDate — $20.18M (open_items 3.1)",
-        body="""What's wrong: EffectiveDate holds Excel serial numbers (43402, 43448, ...) instead of dates
-on 101 accounting rows. to_datetime(errors='coerce') turns them into NaT.
-
-Why it matters: $20.18M, and the two consumers disagree — the rows are INCLUDED in Total Cap
-(no date filter there) and DROPPED from PE Performance (which filters on date). Includes
-Woodlands Square's ENTIRE $9.7M pref equity contribution, plus 91 Preferred Return
-distributions ($9.44M).
-
-Recommended: fix in the source data. This is not a code fix — code cannot recover a date it
-was never given.
-
-The trap: do not 'handle' serials in the parser. That would bless bad source data and hide
-the next batch.
-
-Verify: after the source fix, Woodlands Square's pref equity should appear in PE Performance,
-and Total Cap should not move.""",
-    ),
-    dict(
         n=16, type="error", priority="medium",
         title="DATA: JB Fair Park balance sheet stops 6/30/2025; debt reads a 12/31/2022 row (open_items 3.2)",
         body="""What's wrong: a data gap, not a code bug.
@@ -495,6 +482,34 @@ Recommended: open Burton's One Pager on Azure and read the debt line. Re-run
 scripts/burton_loandump.py against PG for the wider sweep.
 
 Verify: debt is a current figure, not 0 and not a years-old balance.""",
+    ),
+    dict(
+        n=21, type="error", priority="medium",
+        title="Audit logging coverage on the rest of the infrastructure (open_items 3.4)",
+        body="""What's wrong: unknown, and that is the point. Nobody has checked.
+
+Evidence (why this was raised): the Postgres server had log_connections ON but
+logfiles.retention_days = 3, logfiles.download_enable = off, and NO diagnostic settings at
+all — so when it mattered (a credential public for five months) there was nothing to read.
+Fixed for Postgres Sep 11 2026: retention 3 -> 7, and a pg-logs diagnostic setting now
+ships PostgreSQLLogs to workspace-rgwaterfalldev5uCa at 30-day retention.
+
+Not checked: the container app app-waterfall-dev-v2, the registry acrwaterfalldev (who
+pulled or pushed an image), the storage account, and the container app environment.
+
+Why it matters: four Log Analytics workspaces exist in rg-waterfall-dev at 30-day
+retention, but they were created automatically by Container Apps. Their existence is not
+evidence that anything is being shipped to them.
+
+Recommended: `az monitor diagnostic-settings list` per resource, and wire anything
+security-relevant into the existing workspace the way pg-logs now is.
+
+The trap: an empty log query reads like "nothing happened". It usually means the log was
+never collected. Confirm a category is enabled AND flowing before treating its silence as
+evidence of anything.
+
+Verify: for each resource, a non-empty diagnostic-settings list naming an enabled category
+and a real workspace.""",
     ),
     dict(
         n=20, type="analysis", priority="low",

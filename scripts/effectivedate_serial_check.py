@@ -40,16 +40,33 @@ EXCEL_EPOCH = _dt.date(1899, 12, 30)  # Excel's day 0, accounting for its 1900 l
 
 
 def get_engine():
+    """Returns (engine, source_label). The label goes in the VERDICT, not just a header.
+
+    A clean result from the wrong database is indistinguishable from a clean result from
+    the right one. That happened on Sep 11 2026: DATABASE_URL was unset, this fell back to
+    the local snapshot, and the local snapshot's row count was quoted as the live answer.
+    So the source now travels with the answer.
+    """
     url = os.environ.get("DATABASE_URL")
     if url:
         if url.startswith("postgres://"):
             url = url.replace("postgres://", "postgresql://", 1)
-        print(f"source: PostgreSQL ({url.split('@')[-1].split('?')[0]})")
-        return create_engine(url)
+        host = url.split("@")[-1].split("?")[0]
+        return create_engine(url), f"LIVE PostgreSQL ({host})"
+    if "--require-postgres" in sys.argv:
+        raise SystemExit(
+            "REFUSING TO RUN: DATABASE_URL is not set, and --require-postgres was given.\n"
+            "  PowerShell has no inline env-var prefix - these must be TWO statements in\n"
+            "  the SAME shell:\n"
+            "    $env:DATABASE_URL = 'postgresql://USER:PASS@psql-waterfall-dev."
+            "postgres.database.azure.com:5432/waterfall_xirr?sslmode=require'\n"
+            "    .venv\\Scripts\\python.exe scripts\\effectivedate_serial_check.py "
+            "--require-postgres\n"
+            "  Confirm it took with:  $env:DATABASE_URL.Length"
+        )
     db = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                       "waterfall.db")
-    print(f"source: sqlite ({db})")
-    return create_engine(f"sqlite:///{db}")
+    return create_engine(f"sqlite:///{db}"), f"LOCAL sqlite snapshot ({db})"
 
 
 def as_excel_serial(v):
@@ -70,7 +87,8 @@ def main() -> int:
     except Exception:
         pass
 
-    eng = get_engine()
+    eng, source = get_engine()
+    print(f"source: {source}")
     with eng.connect() as conn:
         df = pd.read_sql(text(
             "SELECT \"InvestmentID\", \"InvestorID\", \"EffectiveDate\", \"MajorType\", "
@@ -84,9 +102,15 @@ def main() -> int:
     bad = df[parsed.isna()].copy()
 
     if bad.empty:
-        print("\nCLEAN — every EffectiveDate parses. Nothing is being silently dropped.")
-        print("If this ran against local SQLite, re-run it against Azure before closing "
-              "the item: the audit finding was measured on live data.")
+        # The verdict names its own source. Quoting this line alone must not be able to
+        # imply the live database was checked when it was not.
+        print(f"\nCLEAN on {source} — {len(df):,} rows, every EffectiveDate parses.")
+        if source.startswith("LOCAL"):
+            print("\n  *** THIS IS NOT THE LIVE DATABASE. The audit finding was measured "
+                  "on live\n      Azure, which carried 12,403 rows on Aug 6 2026 — more "
+                  "than this snapshot.\n      A clean local result says NOTHING about it. "
+                  "Re-run with --require-postgres.")
+            return 2
         return 0
 
     bad["Amt_num"] = pd.to_numeric(bad["Amt"], errors="coerce").fillna(0.0)
