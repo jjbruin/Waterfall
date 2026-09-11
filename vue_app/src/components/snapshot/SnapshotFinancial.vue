@@ -280,10 +280,25 @@ function placementLabel(f: any): string {
               <td class="r num">{{ fmtM(r.total_pref) }}</td>
               <td class="r num">{{ fmtM(r.ptr_equity) }}</td>
               <td class="r num">{{ fmtM(r.total_cap) }}</td>
-              <td class="r num zone-b">{{ fmtPct(r.pct_of_pref) }}</td>
-              <td class="r num zone-b">{{ fmtM(r.invested) }}</td>
-              <td class="r num zone-b">{{ fmtM(r.unfunded) }}</td>
-              <td class="r num zone-b">{{ fmtM(r.total_commitment) }}</td>
+              <!-- The four scaled cells, or ONE cell saying why there are none.
+                   A deal whose ownership chain does not resolve stays in its
+                   fund block and withholds the percentage in place; it is no
+                   longer moved to a separate list at the foot of the table.
+                   `ownership_unresolved` is set by the backend from the same
+                   condition that empties the cells, so the label and the blank
+                   cannot disagree. -->
+              <template v-if="r.ownership_unresolved">
+                <td class="r num zone-b withheld" colspan="4"
+                    :title="r.ownership_detail || ''">
+                  withheld — ownership chain unresolved
+                </td>
+              </template>
+              <template v-else>
+                <td class="r num zone-b">{{ fmtPct(r.pct_of_pref) }}</td>
+                <td class="r num zone-b">{{ fmtM(r.invested) }}</td>
+                <td class="r num zone-b">{{ fmtM(r.unfunded) }}</td>
+                <td class="r num zone-b">{{ fmtM(r.total_commitment) }}</td>
+              </template>
               <!-- The input shows "$15.33M" / "4.4%" at rest and the bare
                    number only while it has focus, so the unit is on the value
                    in the UI and in print. `editable` is false in the print
@@ -352,8 +367,16 @@ function placementLabel(f: any): string {
           </tbody>
         </template>
 
+        <!--
+          FALLBACK ONLY, and normally empty. A deal whose ownership chain does
+          not resolve now sits in its own fund block above, withholding the four
+          scaled cells in place — see the `ownership_unresolved` branch in the
+          deal row. This block is what remains for a deal the backend could not
+          place at all (no derivable first hop), so such a deal still appears
+          instead of vanishing. Both 26Q2 deals seat, so nothing renders here.
+        -->
         <tbody v-if="flaggedRows.length">
-          <tr class="grouprow"><td class="sticky-l" colspan="11">Ownership % unavailable</td></tr>
+          <tr class="grouprow"><td class="sticky-l" colspan="11">Ownership % unavailable — group could not be derived</td></tr>
           <tr v-for="r in flaggedRows" :key="r.vcode">
             <td class="sticky-l">
               <!-- `&nbsp;`, not a plain space: see the .sold rule below. -->
@@ -567,6 +590,18 @@ table.grid th.r { text-align: right; }
 
 .zone-b { background: #f4f7fc; }
 .manual { background: #fffdf5; }
+
+/* "withheld — ownership chain unresolved", spanning the four scaled columns of
+   a deal that keeps its place in its fund block. Italic and secondary so it
+   reads as a statement about the cells rather than as a value in them, and
+   centred because it belongs to all four columns and not to the last one.
+   Part of the published document — a withheld figure has to say it is withheld
+   — so, like `.sold`, it is plain text that survives into print. */
+.withheld {
+  font-style: italic;
+  color: var(--color-text-secondary);
+  text-align: center;
+}
 
 /* "TIAA Investment" band — centred over its four columns with the PDF's rule
    under the label only, not across the whole row. */

@@ -939,6 +939,35 @@ def resolve_investor_deals(investor_code: str, quarter: str,
         # it must not surface as an ownership-flagged row either.
         if is_sold_as_of(m, q_end) or not is_acquired_as_of(m, q_end):
             continue
+        # WHICH BLOCK THIS DEAL BELONGS IN IS KNOWN EVEN THOUGH ITS PERCENTAGE
+        # IS NOT, and that is a property of WHERE the chain breaks rather than a
+        # guess about it. The walk fails on the LAST hop — every owner of the
+        # deal entity holds 0%, so that hop cannot be normalised — which means
+        # the trail leading down to it was traversed successfully and its first
+        # hop, the only thing `_group_for` consults, is in hand.
+        #
+        # Live at 26Q2 both flagged deals read:
+        #     TGAM -90%-> TGA24 -100%-> PPI45M -> 45MAIN   (break here)
+        #     TGAM -90%-> TGA24 -100%-> PPITFT -> TFTP     (break here)
+        # so both belong in the PSC TGA 2024 LLC block.
+        #
+        # Derived through `_group_for` itself, given one pseudo-route, so the
+        # placement follows the SAME rule as every resolvable deal rather than a
+        # second implementation of it. `is_fund` is the map already computed
+        # from the RESOLVED routes above: a broken deal must never count toward
+        # an entity's fund tally, or an SPV could be promoted to a fund by a
+        # deal whose ownership nobody can read. (No-op here either way — TGA24
+        # reaches 4 resolved deals against FUND_MIN_DEALS=2 — but the ordering
+        # is what keeps that true for the next broken chain.)
+        #
+        # An empty trail means the deal entity hangs directly off the investor;
+        # `first_hop` is then the deal entity itself, matching how a resolved
+        # route names its own first hop. A deal entity is never a fund, so that
+        # lands in Individual Investments.
+        trail = b["detail"].get("partial_chain") or []
+        first_hop = trail[0]["entity"] if trail else b["detail"]["entity"]
+        derived_group, _mixed = _group_for(
+            m["vcode"], [{"first_hop": first_hop, "pct": 0.0}], is_fund)
         flagged.append({
             "vcode": m["vcode"], "name": m["name"], "iid": m["iid"],
             "asset_type": m["asset_type"], "strategy": m["strategy"],
@@ -948,6 +977,15 @@ def resolve_investor_deals(investor_code: str, quarter: str,
             "reason": "ownership % unavailable",
             "detail": b["detail"]["reason"],
             "via": b["detail"]["via"],
+            # ADDITIVE. This function's own behaviour is unchanged: the deal is
+            # still returned under `flagged` and still absent from `groups`, so
+            # every existing consumer — the Summary, Operating and Loan subtabs
+            # — sees exactly what it did before. The Financial subtab reads
+            # these three keys to seat the row in its normal block; see
+            # assemble_financial.
+            "first_hop": first_hop,
+            "partial_chain": [h.get("entity") for h in trail],
+            "derived_group": derived_group,
         })
 
     for g in groups:

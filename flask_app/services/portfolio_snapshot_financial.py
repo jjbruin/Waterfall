@@ -55,6 +55,17 @@ Zone A — deal-level capitalisation, NOT scaled
     for the earlier decision this reverses.
 
 Zone B — the four "TIAA Investment" columns, the ONLY scaled columns
+    A DEAL WHOSE LOOK-THROUGH DOES NOT RESOLVE KEEPS ITS PLACE. All four cells
+    are withheld (the row carries ``ownership_unresolved`` and the UI labels
+    them), but the row sits in its ordinary fund block, under that block's
+    subtotal, in name order. It used to be lifted out into a separate
+    "Ownership % unavailable" list at the foot of the table, which put two
+    ordinary PSC TGA 2024 LLC members — 45th & Main and Town Fair Tire
+    Portfolio — outside the fund, with their Debt / Total Pref / Ptr Equity /
+    Total Cap under no subtotal while still inside Portfolio Totals. What is
+    unavailable is the percentage, not the deal's place on the report. See the
+    seating block in assemble_financial.
+
     % of Pref        = Step 1's multi-hop look-through (Nottingham 41.2124%)
     Invested         = % of Pref x funded pref        (cap_stack.pref_equity)
     Total Commitment = % of Pref x commitment basis   (see COMMITMENT_BASIS)
@@ -1273,6 +1284,16 @@ def assemble_financial(investor_code: str, quarter: str, *,
             "invested": invested,
             "total_commitment": total_commitment,
             "unfunded": unfunded,
+            # THE FOUR ZONE B CELLS ARE WITHHELD, NOT ABSENT. Set from the same
+            # condition that withholds them — a look-through of None — so the
+            # label and the blank can never disagree. The UI prints "withheld —
+            # ownership chain unresolved" across the four columns on a row that
+            # carries this, which is what the segregated block used to say; the
+            # row now says it in its normal place instead of being moved out of
+            # the fund to say it.
+            "ownership_unresolved": pct is None,
+            "ownership_detail": entry.get("detail"),
+            "ownership_via": entry.get("via"),
             # Display twin for the one Zone A column that is ever blanked.
             "debt_display": NA_LABEL if debt_na else debt,
             "commitment_basis": commitment_basis,
@@ -1283,10 +1304,54 @@ def assemble_financial(investor_code: str, quarter: str, *,
             "flags": flags,
         }
 
+    # AN OWNERSHIP-UNRESOLVED DEAL SITS IN ITS NORMAL BLOCK, not in a separate
+    # list at the foot of the table.
+    #
+    # It used to be segregated: `resolved["flagged"]` was rendered under its own
+    # "Ownership % unavailable" heading below every fund block, so two deals
+    # that are ordinary members of PSC TGA 2024 LLC — 45th & Main and Town Fair
+    # Tire Portfolio — appeared to be outside the fund, and their Debt, Total
+    # Pref, Ptr Equity and Total Cap sat under no subtotal at all while still
+    # counting toward Portfolio Totals. A reader adding up the TGA 2024 block
+    # got a different answer from the page's own total.
+    #
+    # What is unavailable is the PERCENTAGE, not the deal's place on the report.
+    # The four Zone B cells stay withheld — `pct` is None below, so Invested,
+    # Total Commitment and Un-funded are None and the row carries
+    # `ownership_unresolved` for the UI to label — and nothing here fabricates a
+    # look-through. Only the row's POSITION changes.
+    #
+    # `derived_group` comes from portfolio_snapshot_service, which resolves it
+    # with the same `_group_for` rule every other deal goes through; see the
+    # note on the flagged entry there for why the group is knowable when the
+    # percentage is not.
+    unresolved_by_group: dict[str, list] = {}
+    unseated: list = []
+    for f in (resolved.get("flagged") or []):
+        g = f.get("derived_group")
+        if g:
+            unresolved_by_group.setdefault(g, []).append(f)
+        else:
+            # No derived group — a payload from before the service published
+            # one, or a break so early that no first hop exists. Kept in the
+            # old segregated list rather than dropped or guessed at.
+            unseated.append(f)
+
+    def _ownership_flags(entry: dict) -> list:
+        return [f"ownership {entry.get('reason', 'unavailable')}"]
+
     groups: dict[str, dict] = {}
     all_rows: list = []
     for group, items in (resolved.get("groups") or {}).items():
-        rows = [build_row(e) for e in items]
+        # Same ordering the resolver uses inside a block, applied to the merged
+        # list so a seated row lands in its alphabetical place rather than
+        # always at the end.
+        entries = sorted(
+            list(items) + unresolved_by_group.pop(group, []),
+            key=lambda e: str(e.get("name") or "").lower())
+        rows = [build_row(e, extra_flags=(_ownership_flags(e)
+                                          if e.get("derived_group") else None))
+                for e in entries]
         # The PDF labels a group only on its total row ("Total PSC TGA 2022
         # LLC"), so the mapped label lives on the subtotal. `group` is kept
         # alongside as the stable key the UI iterates and persistence uses.
@@ -1299,16 +1364,44 @@ def assemble_financial(investor_code: str, quarter: str, *,
                              manual=manual)}
         all_rows.extend(rows)
 
+    # A block whose ONLY members are unresolved deals still gets printed. There
+    # is no such block at 26Q2 — both seated deals join a TGA24 block that
+    # already has four resolved members — but without this the deals would
+    # vanish from the page entirely the first time a fund's whole set breaks,
+    # which is the one failure mode this change must not introduce.
+    for group in list(unresolved_by_group):
+        entries = sorted(unresolved_by_group.pop(group),
+                         key=lambda e: str(e.get("name") or "").lower())
+        rows = [build_row(e, extra_flags=_ownership_flags(e)) for e in entries]
+        groups[group] = {"deals": rows, "group": group,
+                         "label": group_total_label(group),
+                         "subtotal": _subtotal(
+                             rows, group_total_label(group),
+                             agg_vcode=group_agg_vcode(group),
+                             investor_code=investor_code, quarter=quarter,
+                             manual=manual)}
+        all_rows.extend(rows)
+        diag["unresolved_only_groups"] = diag.get("unresolved_only_groups", 0) + 1
+
+    diag["ownership_unresolved_seated"] = sum(
+        1 for r in all_rows if r.get("ownership_unresolved"))
+
+    # Only a deal with no derivable group is left segregated now — see
+    # `unseated` above. The list and its UI block are kept for exactly that
+    # case rather than deleted, so a break the service cannot place still
+    # surfaces instead of disappearing.
     flagged_rows = []
-    for f in (resolved.get("flagged") or []):
-        row = build_row(f, extra_flags=[f"ownership {f.get('reason','unavailable')}"])
+    for f in unseated:
+        row = build_row(f, extra_flags=_ownership_flags(f))
         row["ownership_flagged"] = True
         flagged_rows.append(row)
+    diag["ownership_unseated"] = len(flagged_rows)
 
-    # Portfolio total over ALL deals, including the ownership-flagged ones:
+    # Portfolio total over ALL deals, including any still-segregated ones:
     # their Zone A figures are deal-level and ownership-independent, so they
-    # belong in the total; only their Zone B dollars stay None.
-    #
+    # belong in the total; only their Zone B dollars stay None. Seating a deal
+    # moves it from `flagged_rows` into `all_rows`, so this population — and
+    # therefore every Portfolio Totals figure — is unchanged by that move.
     total_rows = all_rows + flagged_rows
     total = _subtotal(total_rows, PORTFOLIO_TOTAL_LABEL,
                       agg_vcode=AGG_TOTAL_VCODE,
@@ -1707,6 +1800,61 @@ def _selftest():                                    # pragma: no cover
     chk("every ownership-flagged deal withholds Zone B",
         all(x["pct_of_pref"] is None and x["invested"] is None
             for x in out["ownership_flagged"]))
+
+    # ---- ownership-unresolved deals keep their place ----
+    #
+    # The deals whose look-through does not resolve are ordinary members of a
+    # fund block and must be reported there. These check the SEATING, not the
+    # arithmetic: the percentage stays withheld either way.
+    unresolved = [x for x in flat.values() if x.get("ownership_unresolved")]
+    seated = {vc: g for g, b in out["groups"].items()
+              for vc in (r["vcode"] for r in b["deals"])}
+    # Not gated on there BEING one: a quarter where every chain resolves is a
+    # good quarter, not a failed test. The count is printed so an empty run
+    # cannot be mistaken for a passing one.
+    print(f"\nownership-unresolved deals this quarter: {len(unresolved)} "
+          f"{sorted(x['vcode'] for x in unresolved)}")
+    chk("every ownership-unresolved deal is seated in a fund block",
+        all(x["vcode"] in seated for x in unresolved))
+    chk("nothing is left in the segregated ownership_flagged list",
+        out["ownership_flagged"] == [])
+    chk("a seated unresolved deal still withholds all four Zone B cells",
+        all(x["pct_of_pref"] is None and x["invested"] is None
+            and x["total_commitment"] is None and x["unfunded"] is None
+            for x in unresolved))
+    chk("a seated unresolved deal still reports its Zone A figures",
+        all(x["total_pref"] is not None and x["ptr_equity"] is not None
+            for x in unresolved))
+    # The group each one lands in is the service's `derived_group`, which comes
+    # from the same `_group_for` rule every resolvable deal goes through.
+    derived = {f["vcode"]: f.get("derived_group")
+               for f in (resolved.get("flagged") or [])}
+    chk("each is seated in the group its own chain derives",
+        all(seated.get(vc) == g for vc, g in derived.items() if g))
+    # Seating MOVES a row between two populations that were both already inside
+    # Portfolio Totals, so no total may move. This is the check that would catch
+    # a double count.
+    chk("Portfolio Totals still covers every deal exactly once",
+        out["total"]["deal_count"] == len({r["vcode"] for r in flat.values()})
+        == sum(len(b["deals"]) for b in out["groups"].values())
+        + len(out["ownership_flagged"]))
+    chk("Portfolio Totals Total Pref still equals the sum of every deal's",
+        abs((out["total"]["total_pref"] or 0)
+            - sum(x["total_pref"] or 0 for x in flat.values())) < 1)
+    # A seated row is inside its block's subtotal — the defect this fixes was a
+    # row printed under a subtotal that did not contain it.
+    for vc, g in derived.items():
+        if not g or g not in out["groups"]:
+            continue
+        blk = out["groups"][g]
+        chk(f"{vc} is inside the {g} subtotal",
+            abs((blk["subtotal"]["total_pref"] or 0)
+                - sum(r["total_pref"] or 0 for r in blk["deals"])) < 1
+            and vc in {r["vcode"] for r in blk["deals"]})
+    chk("deals stay in name order inside every block",
+        all([r["name"].lower() for r in b["deals"]]
+            == sorted(r["name"].lower() for r in b["deals"])
+            for b in out["groups"].values()))
     # The standing notes and the two the self-test entered are ONE sequence —
     # see compose_footnotes. Two standing plus two entered is 1..4, and the
     # numbering must be contiguous whatever the counts are.
