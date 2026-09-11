@@ -494,6 +494,10 @@ MRI's query record limits make exporting the monolithic `ISBS_Download.csv` (800
 | `isbs_valuation_is` | `ISBS_Valuation_IS.csv` | Valuation IS | Valuation — periodic monthly |
 | `isbs_uw_supplements` | `ISBS_UW_Supplements.csv` | Projected IS | Supplemental UW records (e.g. 7073 capital contributions) — importable via CSV upload, persists across MRI refreshes (not in QUERY_REGISTRY) |
 
+| `isbs_budget_is_supplements` | — (app-written) | Budget IS | Partner budgets imported and vetted in the valuation section, before MRI has them |
+
+- **Supplement ownership decides protection** (Sep 11 2026). `isbs_budget_is_supplements` is in `PROTECTED_TABLES` because the APP writes it and holds the only copy of a budget between import and approval. The other four supplements are **deliberately not protected**: a CSV is their source of record and `replace` is their designed refresh. Protecting `isbs_uw_supplements`, which has no app write path, briefly froze its 56 rows (they feed One Pager PE ROE via 7073) — protection without a write path is a lockout, not a safeguard. Guardrail: `scripts/isbs_supplement_precedence_check.py`.
+- **Where MRI and an app supplement share a key, the app wins** — `(vcode, dtEntry, vSource, vAccount)`. Written as "remove MRI rows whose key a supplement covers", NOT `drop_duplicates`: ISBS is a **journal**, one key legitimately carries many rows that consumers SUM, and the `drop_duplicates` formulation was measured taking `isbs_raw` from 797,660 to 439,268 rows.
 - **Assembly**: `_assemble_isbs()` in `data_service.py` loads split tables, restores `vSource` column, concatenates into `isbs_raw`. Supplements from legacy monolithic `isbs` table for any missing vSource categories. Falls back entirely to legacy table if no split tables exist. After assembly, `_append_uw_supplements()` appends rows from `isbs_uw_supplements` (defaults `vSource='Projected IS'` if not present in CSV).
 - **CSV upload**: Auto-detects split table filenames via `TABLE_DEFINITIONS` in `database.py`
 - **Cache**: `refresh_table()` reassembles `isbs_raw` when any split table or `isbs_uw_supplements` is updated

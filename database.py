@@ -1538,23 +1538,28 @@ def delete_waterfall_steps(vcode: str, wf_type: str = None):
 # `dropna(subset=['deal_name', 'call_date', 'amount'])`) but they can no longer
 # be cleaned from the UI.  Purging them is a separate, deliberate act.
 PROTECTED_TABLES = {'capital_calls', 'waterfalls', 'one_pager_comments', 'waterfall_audit', 'review_roles', 'review_submissions', 'review_notes', 'one_pager_snapshots', 'prospective_loans', 'prospective_loans_audit', 'planned_loans', 'sale_overrides', 'user_requests', 'user_request_messages', 'surveillance_properties', 'insurance', 'surveillance_comments', 'lease_reviews', 'lease_tenants', 'lease_documents', 'lease_rent_steps', 'lease_cotenancy', 'lease_cotenancy_refs', 'lease_exclusive_use', 'lease_options', 'lease_validation', 'prospect_deals', 'prospect_properties', 'prospect_entities', 'prospect_investors', 'prospect_assumptions', 'prospect_cashflows', 'prospect_activity', 'lease_abstract_sections', 'lease_field_resolutions', 'lease_tenant_sales', 'lease_space_events', 'lease_space_event_results', 'lease_market_assumptions', 'lease_tenant_aliases', 'argus_imports', 'argus_cashflows', 'argus_tenants', 'argus_rent_steps', 'argus_market_profiles', 'parcel_sales', 'prospect_scenarios', 'valuation_cycles', 'valuation_records', 'valuation_documents', 'valuation_comments', 'valuation_questions', 'valuation_approvals', 'valuation_snapshots', 'valuation_ai_summaries', 'valuation_nav_results', 'valuation_bs_selections', 'valuation_step_refs', 'valuations',
-                    # ── ISBS supplements ──────────────────────────────────────
-                    # App-entered records that MUST survive an MRI refresh — that is
-                    # the entire reason the supplements family exists. They are NOT in
-                    # mri_service.QUERY_REGISTRY, so a refresh never touches them, but
-                    # the CSV import runs to_sql(if_exists="replace"), which DROPS the
-                    # table. One `ISBS_Budget_IS_Supplements.csv` upload would therefore
-                    # destroy every budget the team had imported and vetted, with no
-                    # error — the same way a single MRI_Capital_Calls.csv upload
-                    # destroyed every app-entered capital call on Sep 10 2026.
+                    # ── ISBS budget supplement ────────────────────────────────
+                    # PROTECT WHAT THE APP WRITES, NOT THE WHOLE FAMILY.
                     #
-                    # The budget supplement in particular is becoming the SOURCE of
-                    # record for unapproved budgets: MRI does not receive them until
-                    # they are analysed and approved, so between import and approval
-                    # the app holds the only copy.
-                    'isbs_uw_supplements', 'isbs_budget_is_supplements',
-                    'isbs_interim_is_supplements', 'isbs_interim_bs_supplements',
-                    'isbs_valuation_is_supplements'}
+                    # This table is the SOURCE OF RECORD for unapproved budgets: MRI
+                    # does not receive a budget until it has been analysed and
+                    # approved, so between import and approval the app holds the only
+                    # copy. The CSV import runs to_sql(if_exists="replace"), which
+                    # DROPS the table, so one `ISBS_Budget_IS_Supplements.csv` upload
+                    # would destroy every budget the team had vetted, with no error —
+                    # the way a single MRI_Capital_Calls.csv upload destroyed every
+                    # app-entered capital call on Sep 10 2026.
+                    #
+                    # The other four supplement tables are deliberately NOT here
+                    # (Jim's call, Sep 11 2026, after this shipped protecting all
+                    # five). Ownership runs the other way for them: a CSV is their
+                    # source of record and `replace` is their DESIGNED refresh, not an
+                    # accident. `isbs_uw_supplements` has no app write path at all, so
+                    # protecting it did not make its 56 rows safe — it made them
+                    # unchangeable, and those rows feed the One Pager's underwritten
+                    # PE ROE (7073 capital events). Protect each one if and when the
+                    # app becomes its writer.
+                    'isbs_budget_is_supplements'}
 
 
 def _get_import_connection():

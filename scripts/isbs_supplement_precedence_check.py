@@ -3,16 +3,20 @@
 
 TWO RULES, both learned the hard way.
 
-1. THE SUPPLEMENT TABLES MUST BE PROTECTED FROM CSV IMPORT. They exist precisely to
-   survive an MRI refresh — none is in `mri_service.QUERY_REGISTRY`, so a refresh never
-   touches them. But the CSV import runs `to_sql(if_exists="replace")`, which DROPS the
-   table. One `ISBS_Budget_IS_Supplements.csv` upload would destroy every budget the team
-   had imported and vetted, with no error, exactly as a single MRI_Capital_Calls.csv
-   upload destroyed every app-entered capital call on Sep 10 2026.
+1. PROTECT WHAT THE APP WRITES — AND ONLY THAT. The CSV import runs
+   `to_sql(if_exists="replace")`, which DROPS the table, so one
+   `ISBS_Budget_IS_Supplements.csv` upload would destroy every budget the team had
+   imported and vetted, with no error, exactly as a single MRI_Capital_Calls.csv upload
+   destroyed every app-entered capital call on Sep 10 2026. The budget supplement is the
+   SOURCE OF RECORD for unapproved budgets — MRI does not receive one until it is
+   analysed and approved — so between import and approval the app holds the only copy.
 
-   This matters more for the budget supplement than the others: MRI does not receive a
-   budget until it is analysed and approved, so between import and approval THE APP HOLDS
-   THE ONLY COPY.
+   THE OTHER FOUR ARE DELIBERATELY NOT PROTECTED, and this reversed on Sep 11 2026 after
+   the first version protected all five. Ownership runs the other way for them: a CSV is
+   their source of record and `replace` is their DESIGNED refresh. `isbs_uw_supplements`
+   has no app write path at all, so protecting it did not make its 56 rows safe — it made
+   them unchangeable, and they feed the One Pager's underwritten PE ROE (7073 capital
+   events). Protection without a write path is a lockout, not a safeguard.
 
 2. WHERE BOTH EXIST, THE APP'S ROW WINS. Supplements are appended, not merged, so once
    MRI loads an approved budget the same (vcode, dtEntry, vSource, vAccount) appears
@@ -58,17 +62,30 @@ def main() -> int:
     import database
     from flask_app.services import data_service as ds
 
-    print("1. Every ISBS supplement table is protected from CSV import")
-    for t in sorted(ds._ISBS_SUPPLEMENTS):
-        chk(f"{t} is in PROTECTED_TABLES", t in database.PROTECTED_TABLES,
-            "a CSV upload would DROP this table and destroy app-entered records")
+    # The app writes exactly one supplement table today (budget_import_validate.commit).
+    # Protect that one; the rest are CSV-owned and must stay loadable.
+    APP_WRITTEN = {"isbs_budget_is_supplements"}
+    CSV_OWNED = set(ds._ISBS_SUPPLEMENTS) - APP_WRITTEN
 
-    print("\n2. ...and the import entry point actually refuses them")
-    for t in sorted(ds._ISBS_SUPPLEMENTS):
-        # Signature is (table_name, df) — short-circuits on PROTECTED_TABLES before any DB work.
+    print("1. The table the APP writes is protected from CSV import")
+    for t in sorted(APP_WRITTEN):
+        chk(f"{t} is in PROTECTED_TABLES", t in database.PROTECTED_TABLES,
+            "a CSV upload would DROP this table and destroy vetted budgets")
+        # Signature is (table_name, df) — short-circuits before any DB work.
         res = database.import_csv_dataframe(t, pd.DataFrame([{"vcode": "X"}]))
         chk(f"import_csv_dataframe('{t}') returns protected",
             isinstance(res, dict) and res.get("status") == "protected", f"got {res}")
+
+    print("\n2. The CSV-OWNED supplements stay loadable — protection without a write "
+          "path is a lockout")
+    for t in sorted(CSV_OWNED):
+        chk(f"{t} is NOT protected", t not in database.PROTECTED_TABLES,
+            "its CSV is its only load path; protecting it freezes the table forever")
+    chk("in particular isbs_uw_supplements, which feeds One Pager PE ROE (7073)",
+        "isbs_uw_supplements" not in database.PROTECTED_TABLES)
+    chk("and no supplement table is protected unless the app writes it",
+        {t for t in ds._ISBS_SUPPLEMENTS if t in database.PROTECTED_TABLES} == APP_WRITTEN,
+        f"{sorted(t for t in ds._ISBS_SUPPLEMENTS if t in database.PROTECTED_TABLES)}")
 
     print("\n3. None of them is in QUERY_REGISTRY — an MRI refresh must not own them")
     from flask_app.services import mri_service
