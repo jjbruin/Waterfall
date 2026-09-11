@@ -373,9 +373,15 @@ def resolve_question(question_id):
 def committee_approve(record_id):
     body = request.get_json(silent=True) or {}
     try:
+        # `on_behalf_of` lets an ADMIN cast a vote for a seat they do not hold — to
+        # correct an error, or when a seat is vacant and the cycle is otherwise
+        # unclosable. It is recorded as such against the approval, not hidden. The
+        # service enforces admin-only, committee-roles-only, and a mandatory note.
         result = valuation_service.committee_approve(
             get_engine(), record_id, _review_roles(), _username(),
-            data_service.get_data(), note=body.get("note", ""))
+            data_service.get_data(), note=body.get("note", ""),
+            is_admin=(g.current_user.get("role") == "admin"),
+            on_behalf_of=body.get("on_behalf_of") or [])
         return jsonify(safe_json(result))
     except PermissionError as e:
         return jsonify({"error": str(e)}), 403

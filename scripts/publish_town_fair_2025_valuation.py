@@ -40,6 +40,8 @@ import urllib.request
 RECORD_ID = 71
 VCODE = "P0000107"
 VALUE = 33_910_000.0
+APPROVE_NOTE = ("Cost-basis carry for 2025, per the record's classification. Approving to "
+                "enter the 12/31/2025 valuation that was missing from the cycle.")
 NOTE = ("Carried at cost per the 2025 cycle classification. Cost basis = purchase price "
         "30,750,000 + capital prefunded for improvements + closing costs + accrued "
         "preferred return through 12/31/2025 = 33,910,000. This is the carrying basis, "
@@ -78,6 +80,10 @@ def main() -> int:
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--commit", action="store_true", help="actually perform the steps")
+    ap.add_argument("--on-behalf", metavar="ROLES",
+                    help="admin override: comma-separated committee seats to vote on "
+                         "behalf of, e.g. 'president,ceo,cio'. Each is RECORDED as an "
+                         "override under your username with the approval note.")
     args = ap.parse_args()
 
     base = os.environ.get("WATERFALL_API", "").strip()
@@ -131,16 +137,27 @@ def main() -> int:
     print(f"     {'ok' if ok else 'FAILED: ' + str(res.get('_error'))[:120]}")
 
     print("  4  committee approval ...")
+    # --on-behalf casts the committee vote for seats you do not hold. Each one is
+    # recorded as an admin override against the approval, under your username, with the
+    # note below — the trail then reads "one person voted three seats, and why" rather
+    # than "three members agreed". See scripts/valuation_admin_override_check.py.
+    body = {"note": APPROVE_NOTE}
+    if args.on_behalf:
+        body["on_behalf_of"] = [r.strip() for r in args.on_behalf.split(",") if r.strip()]
+        print(f"     casting ON BEHALF OF: {body['on_behalf_of']}  (recorded as override)")
     ok, res = api("POST", f"/api/valuations/records/{RECORD_ID}/approve", token, base,
-                  {"note": "Cost-basis carry for 2025, per the classification."},
-                  allow_fail=True)
+                  body, allow_fail=True)
     if not ok:
         print(f"     NOT APPROVED: {str(res.get('_error'))[:200]}")
-        print("     The committee is president + ceo + cio and EVERY role must approve.")
-        print("     Steps 1-3 are saved; whoever holds the remaining roles picks it up")
-        print("     at /valuations. Re-run this script afterwards to publish.")
+        print("     The committee is president + ceo + cio and EVERY required role must")
+        print("     approve. Either the remaining holders approve at /valuations, or")
+        print("     re-run this with --on-behalf 'president,ceo,cio' as admin.")
+        print("     Steps 1-3 are saved either way.")
         return 2
-    print(f"     {json.dumps(res)[:200]}")
+    print(f"     {json.dumps(res)[:260]}")
+    if res.get("has_admin_override"):
+        print(f"     NOTE: seats {res.get('cast_on_behalf_roles')} were voted by "
+              f"{res.get('cast_on_behalf_by')} — recorded as an override.")
 
     print("  5  publishing ...")
     ok, res = api("POST", f"/api/valuations/records/{RECORD_ID}/publish", token, base,

@@ -229,6 +229,17 @@ def ensure_valuation_tables(engine=None):
             conn.execute(text("ALTER TABLE valuation_cycles ADD COLUMN required_roles TEXT"))
     except Exception:
         pass  # column already exists
+    # Admin-override columns on the approval itself. An override is a real approval that
+    # happens to have been cast by someone who does not hold the role — the row must say
+    # so, or the trail shows three independent approvals where one person acted.
+    for col, col_type in (("cast_by_admin", "INTEGER DEFAULT 0"),
+                          ("cast_on_behalf", "INTEGER DEFAULT 0")):
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    f"ALTER TABLE valuation_approvals ADD COLUMN {col} {col_type}"))
+        except Exception:
+            pass  # column already exists
 
 
 def get_required_roles(engine, cycle_id: int) -> tuple:
@@ -1260,13 +1271,52 @@ def resolve_question(engine, question_id: int, username: str) -> Dict[str, Any]:
 # ============================================================
 
 def committee_approve(engine, record_id: int, member_roles: List[str], username: str,
-                      data: dict, note: str = "") -> Dict[str, Any]:
-    """Record an approval for each committee role the user holds. When all of
-    COMMITTEE_ROLES carry an active approval, the record is Approved and a
-    snapshot freezes it."""
+                      data: dict, note: str = "", is_admin: bool = False,
+                      on_behalf_of: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Record an approval for each committee role the user holds. When every REQUIRED
+    role carries an active approval, the record is Approved and a snapshot freezes it.
+
+    ADMIN OVERRIDE (`on_behalf_of`). An admin may cast a vote for a role they do not
+    hold — needed to correct an error, or when a seat is vacant and a cycle would
+    otherwise be unclosable. The control is not removed, it is RECORDED: each such row
+    is written with `cast_on_behalf = 1` and `cast_by_admin = 1` under the admin's own
+    username, so the trail shows one person acting for three seats rather than three
+    independent approvals. That distinction is the whole point, and it is why this is
+    preferable to assigning one person every committee role.
+
+    Three deliberate constraints:
+      * It must be ASKED FOR. Being an admin is not enough — `on_behalf_of` names the
+        roles explicitly, so an admin who also holds `cio` approves as cio normally and
+        an override is never a side effect of who you are.
+      * A NOTE IS REQUIRED. An exception without a stated reason is worse than no
+        record, because it looks routine later.
+      * Only COMMITTEE_ROLES may be named, and only an admin may name them.
+    """
     ensure_valuation_tables(engine)
     roles = [r for r in member_roles if r in COMMITTEE_ROLES]
-    if not roles:
+
+    override = [r.strip().lower() for r in (on_behalf_of or []) if r and r.strip()]
+    if override:
+        if not is_admin:
+            raise PermissionError(
+                "Only an admin may cast a committee vote on behalf of a role they do "
+                "not hold")
+        bad = [r for r in override if r not in COMMITTEE_ROLES]
+        if bad:
+            raise ValueError(
+                f"Not Valuation Committee roles: {bad}. "
+                f"Valid: {', '.join(COMMITTEE_ROLES)}")
+        if not (note or "").strip():
+            raise ValueError(
+                "An admin override requires a note saying why the vote is being cast "
+                "on someone else's behalf — it is recorded against the approval")
+
+    # Roles the user holds are cast normally; named roles they do not hold are cast as
+    # an override. A role they DO hold is never downgraded to an override.
+    own = [r for r in roles]
+    on_behalf = [r for r in override if r not in own]
+
+    if not own and not on_behalf:
         raise PermissionError("Only Valuation Committee members (President, CEO, CIO) can approve")
 
     with engine.connect() as conn:
@@ -1286,20 +1336,36 @@ def committee_approve(engine, record_id: int, member_roles: List[str], username:
     required = get_required_roles(engine, row[1])
 
     with engine.begin() as conn:
-        for role in roles:
+        for role, behalf in [(r, False) for r in own] + [(r, True) for r in on_behalf]:
             conn.execute(text("""
                 UPDATE valuation_approvals SET active = 0
                 WHERE record_id = :r AND member_role = :m AND active = 1
             """), {"r": record_id, "m": role})
+            # The note carries the override marker in its own text too. The columns are
+            # the machine-readable record; this makes it visible in any view that shows
+            # the note and has not been taught about the columns yet.
+            row_note = note or None
+            if behalf:
+                row_note = (f"[CAST ON BEHALF OF {role.upper()} BY ADMIN {username}] "
+                            f"{note}".strip())
             conn.execute(text("""
                 INSERT INTO valuation_approvals
-                    (record_id, member_role, username, action, note, active, created_at)
-                VALUES (:r, :m, :u, 'approve', :n, 1, :now)
-            """), {"r": record_id, "m": role, "u": username, "n": note or None, "now": _now()})
-        approved_roles = {r[0] for r in conn.execute(text("""
-            SELECT member_role FROM valuation_approvals
+                    (record_id, member_role, username, action, note, active, created_at,
+                     cast_by_admin, cast_on_behalf)
+                VALUES (:r, :m, :u, 'approve', :n, 1, :now, :adm, :bhf)
+            """), {"r": record_id, "m": role, "u": username, "n": row_note,
+                   "now": _now(), "adm": 1 if (behalf and is_admin) else 0,
+                   "bhf": 1 if behalf else 0})
+        _rows = conn.execute(text("""
+            SELECT member_role, username, COALESCE(cast_on_behalf, 0)
+            FROM valuation_approvals
             WHERE record_id = :r AND active = 1 AND action = 'approve'
-        """), {"r": record_id}).fetchall()}
+        """), {"r": record_id}).fetchall()
+    approved_roles = {r[0] for r in _rows}
+    # Every seat whose vote was cast by someone who does not hold it. Reported so a
+    # caller never has to infer it, and so a UI can mark the record without a join.
+    on_behalf_roles = sorted({r[0] for r in _rows if r[2]})
+    on_behalf_by = sorted({r[1] for r in _rows if r[2] and r[1]})
 
     fully_approved = all(r in approved_roles for r in required)
     if fully_approved and row[0] != "approved":
@@ -1318,6 +1384,11 @@ def committee_approve(engine, record_id: int, member_roles: List[str], username:
         # assuming the full committee. A narrowed cycle should be obvious in the response.
         "required_roles": list(required),
         "committee_narrowed": list(required) != list(COMMITTEE_ROLES),
+        # An approval reached with any seat voted by a non-holder is a different fact
+        # from one reached by three role-holders. Say which this is.
+        "cast_on_behalf_roles": on_behalf_roles,
+        "cast_on_behalf_by": on_behalf_by,
+        "has_admin_override": bool(on_behalf_roles),
     }
 
 
