@@ -4,6 +4,8 @@
 
 Shared project memory files are in `.claude/memory/`. Read `MEMORY.md` there at the start of every conversation for project context, conventions, and architecture notes. Update these files as you work — they are committed to git and shared across all developers.
 
+**The live work queue is `.claude/memory/open_items.md`** — what is still open, with evidence and an owner. Run `/open-items` to triage it. Close items there as they ship rather than letting them drift back into session narratives.
+
 **Date-stamp anything describing work in flight, and delete it when the work ships.**
 A section that says a branch is unmerged reads as authoritative for as long as it sits
 here, and nothing distinguishes it from a current one. On Sep 11 2026 this file still
