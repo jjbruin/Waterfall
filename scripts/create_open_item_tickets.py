@@ -336,51 +336,63 @@ it until someone confirms the intent.
 
 Verify: pick one deal, load its missing actuals, re-read Projected YE.""",
     ),
+    dict(
+        n=13, type="error", priority="medium",
+        title="A reset password is the literal string 'password', emailed in plaintext (open_items 1.9)",
+        body="""What's wrong: there is no admin "set a password" endpoint. The only admin reset path is
+POST /auth/users/<id>/send-welcome (the "Send Welcome" button in Settings > Users), and it
+sets every user to the same hardcoded literal.
+
+Evidence: flask_app/auth/routes.py:358 — `temp_pw = "password"` (verified Sep 11 2026). It
+then flags must_change_password and EMAILS the password in plaintext.
+
+Why it matters: the value is identical for every user and every reset, so it is guessable
+by anyone who has ever been onboarded. must_change_password narrows the window to that
+user's next login — it does not close it, and the email persists in a mailbox indefinitely.
+
+Recommended: generate a random temporary password per reset, and make the existing
+/auth/forgot-password flow (one-hour single-use token, no password in the email) the
+default for an EXISTING user. send-welcome then only matters for genuine onboarding.
+
+The trap: `change_password(user_id, temp_pw, clear_must_change=False)` and the
+must_change_password UPDATE are two separate statements. If the password becomes random,
+a failure between them leaves an account on a password nobody knows.
+
+Verify: reset a test user twice and confirm the two temporary passwords differ, and that
+neither appears in the email body.""",
+    ),
+    dict(
+        n=14, type="error", priority="medium",
+        title="A leaked JWT cannot be revoked — it stays valid up to 24h (open_items 1.10)",
+        body="""What's wrong: there is no way to invalidate a single user's token.
+
+Evidence (verified Sep 11 2026): JWT_EXPIRATION_HOURS = 24 (flask_app/config.py:15), HS256
+signed with JWT_SECRET. A repo-wide grep for revoke|blocklist|blacklist|token_version
+returns NOTHING.
+
+Why it matters: tokens are self-contained — nothing re-checks the password on a request —
+so changing a user's password does NOT invalidate their existing token. The only lever is
+rotating JWT_SECRET, which signs out every user at once. Any leaked token (pasted in chat,
+captured in a log, copied from DevTools) is live for up to 24 hours with no intervention
+possible.
+
+This is exactly what made the Aug 6 `cbui` incident unanswerable at the time: nothing could
+be done, and nothing recorded that. That token has long since expired on its own.
+
+Recommended: a `token_version` integer on `users`, included in the JWT payload and compared
+on decode. Bumping it kills that user's tokens only, and a password change can bump it
+automatically. Turns "wait it out" into an action.
+
+The trap: /auth/me and every @login_required route decode on each request, so the
+comparison needs the user row — measure the cost before adding a query per request.
+
+Verify: issue a token, bump token_version, confirm the token is rejected while another
+user's still works.""",
+    ),
 ]
 
 # ---- Jim's data / ops items. Same shape, different owner. -----------------------------
 TICKETS += [
-    dict(
-        n=13, type="error", priority="high",
-        title="SECURITY: rotate the cbui admin JWT pasted into a session on Aug 6 (open_items 3.4)",
-        body="""What's wrong: a JWT for user `cbui` (admin role) was pasted into a Claude Code session
-chat on Aug 6 2026.
-
-Evidence: recorded in the Aug 6 session log at the time, with the note that it was never
-used — direct Postgres access covered everything that session needed — and a standing
-recommendation to rotate it.
-
-Why it matters: an admin token in a chat transcript. Whether it was ever rotated is UNKNOWN;
-nothing records that it was.
-
-Recommended: rotate it. If tokens are short-lived and it has long expired, close this ticket
-saying so — the point is to stop carrying an open question.
-
-The trap: none. This is cheap either way.
-
-Verify: confirm the rotation, or confirm the expiry policy makes it moot, and record which.""",
-    ),
-    dict(
-        n=14, type="error", priority="high",
-        title="SECURITY: no .gitignore rule for the scripts that embed the Postgres password (open_items 3.5)",
-        body="""What's wrong: several diagnostic scripts embed the Azure Postgres password and
-per-developer paths, and are kept out of git BY HAND.
-
-Evidence: .gitignore has no rule covering them (re-verified Sep 11 2026). Affected:
-scripts/inv34_*.py, inv5*.py, fixB_verify.py, burton_*.py, pull_live_noi_requested.py.
-
-Why it matters: one `git add -A` commits a live database password to a GitHub repo. The Aug
-note already observed this 'keeps recurring'.
-
-Recommended: add a .gitignore rule for the specific filenames or a scripts/local_* prefix
-convention, and move the existing scripts to match it.
-
-The trap: several ARE committed and useful (the *_check.py guardrails). Do not blanket-ignore
-scripts/ — target the credential-bearing ones.
-
-Verify: `git check-ignore -v scripts/<name>.py` returns the rule for each; `git status` is
-clean with all of them present.""",
-    ),
     dict(
         n=15, type="error", priority="high",
         title="DATA: 101 rows carry Excel serials in EffectiveDate — $20.18M (open_items 3.1)",

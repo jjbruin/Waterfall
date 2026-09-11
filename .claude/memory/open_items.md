@@ -124,6 +124,47 @@ it does change how Pegasus's cap stack splits pref vs partner. See §2.6.
 
 ---
 
+### 1.9 A reset password is the literal string `password`, emailed in plaintext
+**Verified Sep 11:** `flask_app/auth/routes.py:358` — `temp_pw = "password"`, hardcoded.
+
+There is **no admin "set a password" endpoint**. The only admin path to reset someone is
+`POST /auth/users/<id>/send-welcome` (the "Send Welcome" button in Settings → Users), which
+sets every reset user to that same literal, flags `must_change_password`, and **emails the
+password in plaintext**.
+
+Why it matters: the value is identical for every user and every reset, so it is guessable
+by anyone who has ever been onboarded. `must_change_password` narrows the window to the
+user's next login — it does not close it, and the email persists in a mailbox indefinitely.
+
+Recommended: generate a random temporary password per reset, and prefer the existing
+`/auth/forgot-password` flow (a one-hour single-use token, no password in the email) as the
+default path for an existing user. `send-welcome` then only matters for genuine onboarding.
+
+The trap: `change_password(user_id, temp_pw, clear_must_change=False)` and the
+`must_change_password` UPDATE are two separate statements — if a random password is
+generated, make sure a failure between them cannot leave an account on an unknown password.
+
+### 1.10 A leaked JWT cannot be revoked — it is live for up to 24 hours
+**Verified Sep 11:** `JWT_EXPIRATION_HOURS = 24` (`flask_app/config.py:15`), HS256 signed
+with `JWT_SECRET`. A repo-wide grep for `revoke|blocklist|blacklist|token_version` returns
+**nothing**.
+
+Tokens are self-contained: nothing re-checks the password on a request. So **changing a
+user's password does NOT invalidate their existing token**, and there is no per-user way to
+kill one. The only lever is rotating `JWT_SECRET`, which signs everyone out at once.
+
+Why it matters: any leaked token — pasted in a chat, captured in a log, copied from
+DevTools — is valid for up to 24 hours with no way to intervene. This is exactly what made
+the Aug 6 `cbui` incident (§4) unanswerable at the time: nothing could be done, and nothing
+recorded that.
+
+Recommended: a `token_version` integer on `users`, included in the JWT payload and compared
+on decode. Bumping it invalidates that user's tokens only, and a password change can bump
+it automatically. Cheap, and it turns "wait it out" into an action.
+
+The trap: `/auth/me` and every `@login_required` route decode on each request, so the
+comparison needs the user row — check the cost before adding a query per request.
+
 ## 2. Decisions needed — blocked on a human, not on code
 
 ### 2.1 What metric is U/W ROE meant to be? — ANSWER THIS FIRST
@@ -204,17 +245,6 @@ Portfolio-wide only 3 of 83 deals are stale: JB Fair Park (30 months), Post Comm
 Root cause of the one deal that breaks the §1.6 pro-rate fix. Fixing the extract is the
 alternative to coding the guard.
 
-### 3.4 Rotate the `cbui` admin JWT
-A JWT for user `cbui` (admin) was pasted into a session chat on **Aug 6 2026**. The note
-says it was never used — direct PG access covered everything — and recommends rotating it.
-**Whether that rotation happened is unknown.** Confirm or rotate.
-
-### 3.5 No `.gitignore` rule for the password-bearing scripts
-**Verified Sep 11:** no rule covers them. `scripts/inv34_*.py`, `inv5*.py`, `fixB_verify.py`,
-`burton_*.py`, `pull_live_noi_requested.py` embed the Postgres password and per-developer
-paths, and are kept untracked **by hand**. The Aug note already flagged that this "keeps
-recurring." One rule removes the risk of an accidental `git add -A`.
-
 ### 3.6 One Pager snapshots frozen before the chart-window change
 They still hold the old sparse quarter arrays and would need backfilling to match what the
 live chart now renders.
@@ -237,6 +267,57 @@ co-terminous child loans would also collapse — correctly, but untested. Re-run
 ## 4. Resolved since the Aug 2026 notes — do NOT re-open
 
 Each verified fixed on Sep 11 2026 against the working tree.
+
+### The `wfadmin` Postgres password was public for five months — INCIDENT, closed Sep 11 2026
+This was carried as "no `.gitignore` rule for the password-bearing scripts", a risk to
+prevent. **It had already happened.** Recording it properly, because the ticket framing
+would have buried it.
+
+**What leaked:** the live `wfadmin` password, hardcoded in `scripts/fix_tables.py` and
+`scripts/migrate_to_postgres.py` (identical string, matching SHA-256). `wfadmin` is
+confirmed via Azure as the `administratorLogin` of `psql-waterfall-dev`, which had
+`publicNetworkAccess: Enabled` and a `0.0.0.0` firewall rule for Azure services.
+
+**For how long:** committed in `838c966` on **2026-04-10**, found **2026-09-11** — five
+months. `jjbruin/Waterfall` returns HTTP 200 to an unauthenticated request: the repo is
+**public**.
+
+**Done** (`3a2bfdf`, and the rotation): password rotated; container app moved to
+`DATABASE_URL=secretref:db-url` so it is no longer plaintext in the template (revision
+`v430`, verified — a login probe returns 401 from a real users-table query); both scripts
+now read `DATABASE_URL` from the environment and fail closed; `.gitignore` gained a
+`scripts/local_*` convention plus the named one-off diagnostics, deliberately NOT a blanket
+`scripts/` ignore since the committed `*_check.py` guardrails live there; and
+`scripts/hooks/pre-commit` now inspects staged **content** for a URI with an inline
+password, tested both directions.
+
+**The lesson, and why the hook is the real fix:** a `.gitignore` only protects files
+someone thought to name. Nobody named `fix_tables.py` — it looked like an ordinary
+migration script. Content checking catches the file nobody predicted, which is the only
+kind that gets through.
+
+**Still true, deliberately not "fixed":** the old password remains in git history forever.
+Rotation is what closed the exposure; rewriting history cannot un-leak five months of
+public readability. **Never verified:** whether anyone used the credential during that
+window. Postgres logs would show authentication attempts from unexpected IPs. "We rotated
+it" and "nothing happened" are different claims and only the first is supported.
+
+**Open, and larger than this incident:** the repo is public — an internal financial
+modeling app with deal vcodes, investor entity IDs and infrastructure names throughout.
+That is a decision, not a defect, and it is still Jim's to make.
+
+### The `cbui` admin JWT — expired on its own, nothing to rotate (closed Sep 11 2026)
+Carried as "rotate it, whether that happened is unknown." It could not have been rotated,
+and did not need to be.
+
+**Verified Sep 11:** `JWT_EXPIRATION_HOURS = 24` (`flask_app/config.py:15`). The token was
+pasted on **Aug 6 2026** — roughly five weeks before it was reviewed. It expired on Aug 7
+and has been inert since. No action was available or required.
+
+Note what this is NOT: a password change would not have helped. Tokens are self-contained
+and there is no revocation path — see §1.10, which is the durable finding this incident
+actually produced. The exposure window for any leaked token is up to 24 hours with no way
+to intervene, and that is worth fixing; this particular token is not.
 
 | Was open | Status |
 |---|---|
