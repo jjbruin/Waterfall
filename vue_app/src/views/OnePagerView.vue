@@ -95,6 +95,16 @@ const businessPlanComments = ref('')
 const accruedPrefComment = ref('')
 const peCapComment = ref('')
 
+// Live character count for the two comment boxes that have to fit one printed
+// page. SCREEN ONLY — the counter is editing furniture and must never reach an
+// investor document; see .char-counter and the @media print rule that hides it.
+// Grouped with a separator because these run past a thousand characters, which
+// is the range where the count actually matters.
+function charCount(s: string | null | undefined): string {
+  const n = (s ?? '').length
+  return `${n.toLocaleString('en-US')} character${n === 1 ? '' : 's'}`
+}
+
 function parseQuarter(q: string): [number, number] {
   const [yStr, qStr] = q.split('-')
   return [parseInt(yStr), parseInt(qStr.replace('Q', ''))]
@@ -598,16 +608,6 @@ function buildChartOption(cr: Record<string, any> | null) {
   const occ = (cr?.occupancy ?? []).map((v: number | null) => v != null ? +v.toFixed(1) : null)
   const noiAxis = noiAxisBounds(uwNoi, actualNoi, occ)
   return {
-    // No entry animation. ECharts grows bars and draws lines from zero over
-    // ~1s, and this chart is captured to PDF rather than watched: a print that
-    // lands mid-animation prints the axes, the gridlines and the value labels
-    // with NO BARS AND NO LINES, which looks like a real chart of a deal with
-    // no data instead of like a failure. Measured across the 61 printable
-    // deals it hit 8 of them, and re-rendering the same deal twice gave a
-    // different answer each time — so it is a race, and a race that silently
-    // empties an investor document is not one to leave to timing. A static
-    // report chart has nothing to animate anyway.
-    animation: false,
     title: { text: 'Physical Occupancy vs. NOI', subtext: '($ Millions)', left: 'center', top: 0,
       textStyle: { fontSize: 13, fontWeight: 'bold' }, subtextStyle: { fontSize: 11 } },
     tooltip: { trigger: 'axis' },
@@ -891,16 +891,7 @@ function printOnePager() {
               <td class="val right">{{ fmtPct(cap.pe_exposure_on_cap) }}</td>
             </tr>
             <tr>
-              <td class="lbl">Pref Equity capitalization:</td>
-              <!-- `rows="1"` with `overflow: hidden` shows exactly one line, so
-                   anything that wraps was not printed at all — 7 deals lose the
-                   tail of their ownership split, e.g. Nottingham Village's
-                   "KOC 44%, TIAA 41%, PSC 13%, Declaration 2%". Same print-only
-                   twin the Business Plan and the two comment blocks use. -->
-              <td class="val">
-                <textarea v-model="peCapComment" class="inline-comment print-hide" rows="1" placeholder="" spellcheck="true" lang="en" :readonly="commentsLocked"></textarea>
-                <div class="pecap-print-text print-only">{{ peCapComment }}</div>
-              </td>
+              <td class="lbl">Pref Equity capitalization:</td><td class="val"><textarea v-model="peCapComment" class="inline-comment" rows="1" placeholder="" spellcheck="true" lang="en" :readonly="commentsLocked"></textarea></td>
               <td class="lbl">P.E. Expos. on {{ cap.valuation_year ? cap.valuation_year.slice(-2) : '' }} Value:</td>
               <td></td><td class="val right">{{ fmtPct(cap.pe_exposure_on_value) }}</td>
             </tr>
@@ -937,14 +928,9 @@ function printOnePager() {
         <table class="comments-row-table">
           <tbody><tr>
             <td class="lbl" style="vertical-align: top; width: 80px;">Comments:</td>
-            <!-- A textarea does not grow to its content, so in print it shows
-                 only its `rows` and silently drops the rest — Dorsett Ridge lost
-                 the second half of a 458-character comment, and 33 of 45 deals
-                 carry more than three rows' worth. Same print-only twin the
-                 Business Plan has had all along. -->
             <td>
-              <textarea v-model="econComments" class="comment-input print-hide" rows="3" placeholder="Property performance comments..." spellcheck="true" lang="en" :readonly="commentsLocked"></textarea>
-              <div class="econ-print-text print-only">{{ econComments }}</div>
+              <textarea v-model="econComments" class="comment-input" rows="3" placeholder="Property performance comments..." spellcheck="true" lang="en" :readonly="commentsLocked"></textarea>
+              <div class="char-counter no-print">{{ charCount(econComments) }}</div>
             </td>
           </tr></tbody>
         </table>
@@ -974,10 +960,7 @@ function printOnePager() {
             <tr>
               <td class="lbl">Current Pref Equity Balance:</td><td class="val">{{ fmtMil0(pe.current_pe_balance) }}</td>
               <td class="lbl">Accrued Balance:</td><td class="val">{{ fmtMil0(pe.accrued_balance) }}</td>
-              <td colspan="2">
-                <textarea v-model="accruedPrefComment" class="comment-input small print-hide" rows="2" placeholder="Accrued pref comment..." spellcheck="true" lang="en" :readonly="commentsLocked"></textarea>
-                <div class="pref-print-text print-only">{{ accruedPrefComment }}</div>
-              </td>
+              <td colspan="2"><textarea v-model="accruedPrefComment" class="comment-input small" rows="2" placeholder="Accrued pref comment..." spellcheck="true" lang="en" :readonly="commentsLocked"></textarea></td>
             </tr>
           </tbody>
         </table>
@@ -986,6 +969,7 @@ function printOnePager() {
         <div class="section-header">BUSINESS PLAN &amp; UPDATES</div>
         <div class="bp-section">
           <textarea v-model="businessPlanComments" class="comment-input bp-input print-hide" rows="6" placeholder="Business plan and updates..." spellcheck="true" lang="en" :readonly="commentsLocked"></textarea>
+          <div class="char-counter no-print">{{ charCount(businessPlanComments) }}</div>
           <div class="bp-print-text print-only">{{ businessPlanComments }}</div>
         </div>
 
@@ -994,14 +978,7 @@ function printOnePager() {
           <!-- No v-if / no "no data" fallback: buildChartOption always returns
                a frame, and a deal with nothing to plot shows empty axes rather
                than a message where the chart should be. -->
-          <!-- The chart's size is set by this WRAPPER, not by the component.
-               <style> below is `scoped`, so a rule written against v-chart
-               compiles to `…[data-v-xxx]` and matches nothing — the scope
-               attribute does not reach inside another component. A plain div of
-               our own always carries it. See .op-chart-wrap. -->
-          <div class="op-chart-wrap">
-            <v-chart :option="chartOption" style="width: 100%; height: 300px;" autoresize />
-          </div>
+          <v-chart :option="chartOption" style="width: 100%; height: 300px;" autoresize />
         </div>
       </div>
       </template>
@@ -1169,9 +1146,7 @@ function printOnePager() {
           <!-- CHART -->
           <div class="chart-section">
             <!-- Same as single mode: always a frame, never a message. -->
-            <div class="op-chart-wrap">
-              <v-chart :option="buildChartOption(pg.chart)" style="width: 100%; height: 300px;" autoresize />
-            </div>
+            <v-chart :option="buildChartOption(pg.chart)" style="width: 100%; height: 300px;" autoresize />
           </div>
         </div>
 
@@ -1422,14 +1397,20 @@ function printOnePager() {
 .bp-input {
   min-height: 80px;
 }
-.bp-print-text,
-.econ-print-text,
-.pref-print-text,
-.pecap-print-text {
+.bp-print-text {
   display: none;
 }
 .print-only {
   display: none;
+}
+
+/* Live character count under the two comment boxes. Editing aid only. */
+.char-counter {
+  font-size: 9px;
+  color: #6b7280;
+  text-align: right;
+  margin-top: 1px;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Chart */
@@ -1439,79 +1420,6 @@ function printOnePager() {
   padding-top: 4px;
 }
 
-/* THE CHART BOX IS SIZED IN PAPER UNITS, ON SCREEN, ON PURPOSE.
-   ==========================================================================
-   `width: 7.5in` is the printable column exactly: a 8.5in sheet less the
-   0.5in side padding .one-pager-page sets for print. It is declared HERE,
-   outside `@media print`, because of how ECharts reaches paper:
-
-     the chart is a <canvas>. ECharts writes the canvas's pixel size from the
-     container it measures ON SCREEN, and Chrome runs no JS between applying
-     print CSS and painting the PDF. So the canvas arrives at the printer at
-     its SCREEN size. A print-only width would never be read.
-
-   Left to `width: 100%` the canvas took the screen sheet's ~904px (= 678pt)
-   into a 540pt column. Chrome's response to content wider than the paper is
-   not to clip it — it scales the ENTIRE DOCUMENT down to fit. Measured on all
-   61 printable deals: every one printed at 0.859, which put body text at
-   6.89pt, below the 8pt floor 62161a9 set deliberately, and shrank the chart
-   itself from 127.5pt to 109.5pt. Because the chart is pinned to the foot of
-   the sheet while the scaled-down text ended ~106pt higher, it also opened a
-   white band between narrative and chart of up to 298pt — which reads as "the
-   chart is too small above a big gap" and is really "the page is at 86%".
-
-   Sizing the box in inches makes the canvas the same width as the column it
-   will be printed into, so nothing overflows and no scaling is triggered.
-   `max-width: 100%` keeps a window narrower than 7.5in of sheet from
-   overflowing horizontally; such a window prints a narrower chart, but still
-   at 100% page scale.
-
-   NOT `:deep(canvas) { max-width: 100% }`, which was the obvious one-line fix.
-   That leaves ECharts rasterising at 904px and asks CSS to squeeze the bitmap
-   into 720px — every label and axis number in the chart shrinks by 20% and
-   softens. The floor rule is that nothing on this page is scaled; the chart is
-   drawn at the size it is printed. */
-.op-chart-wrap {
-  width: 7.5in;
-  max-width: 100%;
-}
-
-/* THE HEIGHT STAYS ON THE COMPONENT, IN PIXELS. Do not move it here and give
-   the chart `height: 100%` — that was tried and it renders a chart with axes,
-   gridlines and value labels but NO BARS AND NO LINES. The marks come out at
-   zero height while the labels still print their real values, so the chart
-   looks plausible at a glance and is empty. ECharts needs a definite pixel
-   height on the element it measures; a percentage against a wrapper resolves
-   too late for the series geometry.
-   300px is the size, and it is the size the chart had ORIGINALLY, before any
-   of the one-page work shrank it — 300px -> 170px in 62161a9, back to 180px in
-   5be654d once the page stopped being scaled, and now the whole way back.
-
-   OVERLAP IS THE ACCEPTED COST, AND IT IS NOT CONTENT LOSS. At 300px the
-   chart's top edge sits at 538.5pt, and 26 of the 61 printable deals carry a
-   narrative that reaches past it — Poplar Prairie by 123pt, Burton and 30
-   Bearfoot by 80pt. Every character still prints. The chart is out of flow
-   (see .chart-section) so it cannot push text off the page, and the z-index
-   pair — .bp-section 1 over .chart-section 0 — puts the WORDS on top, with the
-   chart showing through behind them. A reader loses some of the plot to
-   overlap; a reader loses no text. Anyone who needs the chart clear can drag
-   it in Acrobat.
-
-   THE ALTERNATIVE WAS WORSE AND IS THE REASON THIS IS DELIBERATE. Restoring
-   300px by reverting the print chain to 8d0ef6c also restores its
-   `.bp-section { overflow: hidden; flex: 1 1 auto; min-height: 0 }` inside a
-   fixed-height sheet, where the narrative is the only flexible item and is
-   silently DELETED to make room — measured on the real print path, Burton lost
-   208 characters and its last two lease-expiry lines with no marker, on 45 of
-   56 deals. A big chart over readable text beats a big chart over text that
-   was thrown away. Keep the out-of-flow positioning and the z-index pair: they
-   are what make this height safe rather than destructive.
-
-   The two sizing facts that still hold if this is ever tuned again: the chart
-   draws a full-width hairline ~3.8pt ABOVE its canvas, and that rule, not the
-   canvas edge, is the topmost thing it puts on the page; and H <= 188px is the
-   largest height at which nothing but Poplar Prairie touches it. */
-
 /* ============================================================
    PRINT STYLES
    ============================================================ */
@@ -1520,6 +1428,15 @@ function printOnePager() {
 
   .no-print, .print-hide { display: none !important; }
   .print-only { display: block !important; }
+
+  /* The character counters are an editing aid and must never appear on an
+     investor document. `.no-print` above already hides them; this rule names
+     the class explicitly so the intent survives someone refactoring that
+     shared selector, and so a print render that shows a counter points
+     straight at the cause. Asserted, not assumed —
+     scripts/onepager_char_counter_check.py greps the rendered PDF text of
+     every deal for the word "characters". */
+  .char-counter { display: none !important; }
 
   /* The page box (letter portrait, zero margin) is set ONCE globally in
      App.vue — see the note there. The 0.4in/0.5in padding below is this view's
@@ -1545,24 +1462,8 @@ function printOnePager() {
     margin-bottom: 0;
     display: flex;
     flex-direction: column;
-    /* EXACTLY one page, and nothing is clipped to achieve it.
-       ------------------------------------------------------------------
-       Three requirements that look contradictory: one page per deal, every
-       character rendered, and no second page. They are reconcilable because
-       the CHART is the only thing that does not fit — measured across all 45
-       narrative deals, the tallest TEXT on any of them ends at 664pt of the
-       734.4pt box (Poplar Prairie), so the words always fit on their own.
-       So the chart comes OUT of the flow (see .chart-section) and is pinned to
-       the foot of the sheet. Flowed content is then text only, which fits, so
-       the fixed height below can never spill onto a second page and never has
-       to clip anything to avoid one.
-       This replaces `min-height`, which was correct for "never lose a word" but
-       let the sheet grow to two pages when the chart could not fit. The earlier
-       `height` + `overflow: hidden` was the opposite error: one page, bought by
-       silently deleting the narrative. This is one page AND every word. */
-    position: relative;
-    height: calc(100vh - 0.8in);
-    overflow: visible;
+    height: calc(100vh - 0.8in); /* exactly one page minus top+bottom padding */
+    overflow: hidden;
   }
 
   .op-sheet.page-break {
@@ -1570,11 +1471,11 @@ function printOnePager() {
   }
 
   /* Print-only date/time in upper left */
-  .op-title { font-size: 16px; margin-bottom: 1px !important; padding-bottom: 2px !important; }
+  .op-title { font-size: 20px; margin-bottom: 1px !important; padding-bottom: 2px !important; }
 
   /* Uniform tight spacing between all sections */
   .section-header {
-    font-size: 11px;
+    font-size: 13px;
     padding: 2px 0 1px 0 !important;
     margin: 1px 0 1px 0 !important;
   }
@@ -1587,7 +1488,7 @@ function printOnePager() {
   .pe-table tr td[style*="height"] { height: 0px !important; padding: 0 !important; }
 
   .info-table td, .cap-table td, .perf-table th, .perf-table td, .pe-table td {
-    font-size: 10.7px;
+    font-size: 12.5px;
     padding: 0.5px 3px 0.5px 0;
   }
   .info-table, .pe-table { margin-bottom: 0 !important; }
@@ -1611,59 +1512,25 @@ function printOnePager() {
     padding: 0 !important;
     resize: none !important;
     background: transparent !important;
-    font-size: 10.7px !important;
+    font-size: 12.5px !important;
     overflow: visible !important;
     height: auto !important;
     min-height: 0 !important;
   }
 
-  /* Business plan: print all of it. It is narrative an asset manager wrote for
-     an investor, and dropping the end of it silently is worse than a second
-     page.
-     ------------------------------------------------------------------------
-     This block used to read "fill remaining space, clip if too long", and it
-     did the clipping with `flex: 1 1 auto; min-height: 0; overflow: hidden`
-     inside a sheet fixed at exactly one page. Two things made that far more
-     destructive than "if too long" suggests:
-       * the chart below is `flex-shrink: 0` at a fixed 300px, and everything
-         above is fixed too, so .bp-section was the ONLY flexible item and
-         absorbed the whole shortfall;
-       * `min-height: 0` let it shrink below its content, and `overflow:
-         hidden` then painted none of it.
-     The result was not a trimmed tail. Measured on the real print path, the
-     block collapsed to between zero and half a line on every deal that has a
-     narrative — Belleville's 292 characters printed nothing at all, and Flats
-     at Dorsett Ridge showed one horizontally-sliced line. 45 of 56 active
-     deals carry a narrative and all of it was missing from the paper.
-     `flex: 0 0 auto` stops it being shrunk below its content, and with the
-     sheet on min-height the page grows instead. */
+  /* Business plan: fill remaining space, clip if too long */
   .bp-section {
-    flex: 0 0 auto;
-    overflow: visible !important;
-    /* Above the out-of-flow chart, so an overlapping narrative stays legible. */
-    position: relative;
-    z-index: 1;
-  }
-  /* The print-only twins of the two textareas. 10.7px is 8pt exactly
-     (8 * 96/72), the legibility floor for body text on this page — nothing
-     here goes below it. */
-  .econ-print-text,
-  .pref-print-text,
-  .pecap-print-text {
-    display: block !important;
-    font-size: 10.7px !important;
-    font-family: inherit;
-    white-space: pre-wrap;
-    overflow: visible !important;
-    height: auto;
+    overflow: hidden !important;
+    flex: 1 1 auto;
+    min-height: 0;
   }
   .bp-print-text {
     display: block !important;
-    font-size: 10.7px !important;
+    font-size: 13px !important;
     font-family: inherit;
     white-space: pre-wrap;
-    overflow: visible !important;
-    height: auto;
+    overflow: hidden !important;
+    height: 100%;
   }
   .comment-text.bp-text {
     overflow: visible !important;
@@ -1671,55 +1538,16 @@ function printOnePager() {
     min-height: 0 !important;
   }
 
-  /* Chart anchored to bottom of page.
-     `margin-top: auto` still pins it to the foot of the sheet whenever the
-     content leaves free space; with a narrative now printing above it there
-     usually is none, and the chart moves to the second page instead.
-     NO EXTRA TOP PADDING HERE, and the reason is measured rather than assumed.
-     When the chart is pushed to a second page it lands ~3.7pt from the physical
-     paper edge, because the page box is `margin: 0` app-wide (App.vue) — a
-     non-zero page margin is what gives Chrome room to draw its own header and
-     footer, so continuation pages get no top margin of their own. A
-     `padding-top: 0.4in` here does fix that (measured: chart top moves 3.7pt ->
-     29.2pt, matching page 1) but it COSTS 28.8pt on page one, and page one has
-     only about 3pt of slack. It therefore pushed the chart onto a second page
-     for the 11 deals that have no narrative at all and were printing correctly
-     on one page. Protecting 11 working documents outweighs a 3.7pt offset that
-     is only a risk on a physical printer's unprintable strip, not in the PDF.
-     The real fix is a page-box margin for continuation pages, which conflicts
-     with the header suppression print_page_rule_check enforces — flagged, not
-     taken unilaterally. */
+  /* Chart anchored to bottom of page */
   .chart-section {
-    /* OUT OF FLOW, pinned to the foot of the sheet.
-       This is what makes "one page, nothing clipped" possible: the chart is
-       the only element that does not fit, so it stops competing for flow space
-       and the text — which always fits on its own — decides the page height.
-       A long narrative now OVERLAPS the chart instead of pushing it to a second
-       page or being cut. With the chart back at its original 300px that is 26
-       of the 61 printable deals, deepest at Poplar Prairie (123pt) — see the
-       note on .op-chart-wrap. Both are fully present in the PDF and the chart
-       can be dragged clear in Acrobat.
-       `margin-top: auto` is gone with the flow position; `break-inside` no
-       longer applies to an out-of-flow box and is dropped with it. */
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    /* Below the narrative in paint order, so where they overlap the WORDS stay
-       readable and the chart shows through behind them. Positioned elements
-       otherwise paint over in-flow content, which would hide exactly the three
-       lines this change exists to keep. */
-    z-index: 0;
+    break-inside: avoid;
+    flex-shrink: 0;
+    margin-top: auto;
   }
 
-  /* The guard that used to live here was
-         .chart-section canvas { max-width: 100% !important }
-     and it never ran. `<style scoped>` compiles it to
-     `.chart-section canvas[data-v-xxx]`, and the scope attribute reaches a
-     child component's ROOT element only — never the <canvas> inside it. So the
-     one rule written to stop the canvas overflowing the page matched nothing,
-     silently, for as long as it existed. The width is constrained at
-     .op-chart-wrap instead: our own element, so the scope attribute is on it.
-     Nothing is needed here. */
+  /* Force chart to print */
+  .chart-section canvas {
+    max-width: 100% !important;
+  }
 }
 </style>

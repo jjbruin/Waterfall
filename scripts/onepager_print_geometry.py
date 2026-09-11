@@ -184,6 +184,22 @@ def main() -> int:
     ap.add_argument("--deals",
                     default=os.path.join(HERE, "onepager_print_population.txt"))
     ap.add_argument("--only", default=None, help="comma-separated vcodes")
+    # WHICH PRINT LAYOUT IS IN FORCE. These are not styling preferences, they
+    # are two different contracts, and the same measurement is a pass under one
+    # and a failure under the other:
+    #   unclipped — the chart is out of flow and the canvas is capped at the
+    #     printable column, so the page must render at 100% and no text may be
+    #     dropped. Overflow shows as narrative overlapping the chart.
+    #   original  — the sheet is a fixed page with `overflow: hidden` and the
+    #     canvas is wider than the column, so the page IS scaled (~0.96-0.99)
+    #     and anything past the bottom IS clipped, by design. Asserting 100%
+    #     scale here would report the intended layout as broken.
+    # Text loss under `original` is expected and is not silently tolerated —
+    # it is measured per deal by scripts/onepager_overflow_report.py, which is
+    # the check that matters for that layout.
+    ap.add_argument("--layout", choices=("unclipped", "original"),
+                    default="unclipped",
+                    help="which print contract to assert against")
     # Overlap between the narrative and the chart is a DESIGN DECISION, not a
     # defect, and which deals may overlap depends on the chart height in force:
     #   * at 180px only Poplar Prairie reaches the chart, so naming it kept the
@@ -311,8 +327,14 @@ def main() -> int:
               + (f" — {', '.join(m['vcode'] for m in regressed)}"
                  if regressed else ""))
 
-    bad = ((len(one_page) != n) or (len(has_chart) != n) or missing
-           or (len(unscaled) != n) or (len(fits) != n) or unexpected)
+    # Always required, under either contract.
+    bad = (len(one_page) != n) or (len(has_chart) != n) or bool(missing)
+    if args.layout == "unclipped":
+        bad = bad or (len(unscaled) != n) or (len(fits) != n) or bool(unexpected)
+    else:
+        print("\n  layout=original: page scale and canvas width are REPORTED,"
+              "\n  not asserted — both are intended here. Run"
+              "\n  scripts/onepager_overflow_report.py for the text-loss check.")
     if args.compare:
         both = [m for m in rows if m.get("cmp")]
         bad = bad or any(not _covers(m["norm"], m["cmp"]["norm"]) for m in both)
