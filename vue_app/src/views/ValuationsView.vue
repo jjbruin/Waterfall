@@ -1533,6 +1533,29 @@ watch(selectedCycleId, () => {
                 {{ aiGenerating ? 'Regenerating...' : 'Regenerate' }}
               </button>
             </div>
+            <!-- An incomplete summary has to SAY it is incomplete. Two appraisals
+                 summarised by the same prompt came back with 13 sections and 6, and
+                 nothing on the page distinguished "this appraisal says less" from "the
+                 model returned less" — so the difference was found by comparing two
+                 deals by hand and reported as a broken feature. `sections_missing` is
+                 recomputed on read, so summaries generated before this existed are
+                 judged by the same rule rather than reading as complete. -->
+            <div v-if="aiSummary.summary?._meta?.sections_missing?.length"
+                 class="panel ai-incomplete no-print">
+              <strong>Incomplete extraction —
+                {{ aiSummary.summary._meta.sections_missing.length }} of
+                {{ aiSummary.summary._meta.sections_expected }} sections did not come
+                back:</strong>
+              {{ aiSummary.summary._meta.sections_missing.join(', ') }}.
+              <template v-if="aiSummary.summary._meta.retry_attempted">
+                A follow-up request was already made and
+                {{ aiSummary.summary._meta.sections_recovered?.length
+                     ? 'recovered ' + aiSummary.summary._meta.sections_recovered.join(', ')
+                     : 'did not recover them' }}.
+              </template>
+              Regenerate to try again — this usually reflects the model omitting
+              sections, not the appraisal lacking them.
+            </div>
 
             <div class="panel">
               <h3>Executive Summary</h3>
@@ -1920,6 +1943,17 @@ textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--color-border)
 .qa-answer .qa-meta { margin-bottom: 4px; }
 .qa-reply textarea { margin-bottom: 0; }
 .ai-meta-panel { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+/* Amber, not red: an incomplete extraction is a prompt to re-run, not an error. It must
+   still be impossible to read the summary without seeing it. */
+.ai-incomplete {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: #fff4e5;
+  border: 1px solid #f0c26b;
+  color: #6b4400;
+  font-size: 13px;
+  line-height: 1.5;
+}
 .ai-text { font-size: 13.5px; line-height: 1.55; margin: 4px 0; max-width: 90ch; white-space: pre-wrap; }
 .ai-facts { display: flex; flex-wrap: wrap; gap: 16px 24px; margin-top: 10px; font-size: 13.5px; }
 .ai-facts .fact { min-width: 110px; }

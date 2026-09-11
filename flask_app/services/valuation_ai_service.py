@@ -27,6 +27,43 @@ MODEL = "claude-sonnet-4-6"
 MAX_TEXT_CHARS = 350_000  # ~90k tokens of appraisal text, well inside context
 MIN_TEXT_CHARS = 2_000    # below this the PDF is almost certainly scanned
 
+#: Every section `_PROMPT` asks for. Nothing enforced this before, and a model that
+#: returned fewer sections was indistinguishable from an appraisal that had less in it.
+#:
+#: THAT IS NOT HYPOTHETICAL. The same prompt, unchanged since d6690d6, produced 13
+#: sections for Asbury Commons (2026-09-08) and only 6 for 30 Bearfoot (2026-08-31) —
+#: the latter silently missing in_place_income, market_overview, rent_and_leasing,
+#: positives, risks, extraordinary_assumptions and appraiser. Asset management compared
+#: the two, reasonably concluded the feature was inconsistent, and reported it as broken.
+#: It was not broken; it was unchecked.
+_EXPECTED_SECTIONS = (
+    "executive_summary", "property", "value_conclusion", "valuation_approach",
+    "key_assumptions", "in_place_income", "market_overview", "rent_and_leasing",
+    "positives", "risks", "extraordinary_assumptions", "appraiser",
+)
+
+#: A section may be legitimately empty — a clean appraisal has no extraordinary
+#: assumptions — so an empty list or dict COUNTS AS PRESENT. Only an absent key, or a
+#: null, is treated as not returned. Re-asking for a genuinely empty section would loop.
+def _missing_sections(summary: Dict[str, Any]) -> List[str]:
+    return [k for k in _EXPECTED_SECTIONS
+            if k not in summary or summary.get(k) is None]
+
+
+_RETRY_PROMPT = """Your previous response to this appraisal omitted some required
+sections. Return ONLY a JSON object (no markdown fences, no commentary) containing
+EXACTLY these keys and nothing else, using the same schema and the same source document:
+
+  {keys}
+
+If the appraisal genuinely does not address one of them, return it as an empty list []
+or empty object {{}} rather than omitting it — an omitted key is indistinguishable from
+one you were unable to find, and the two need different handling.
+
+Appraisal text follows.
+
+"""
+
 _PROMPT = """You are a real estate valuation analyst. The text of a third-party
 commercial real estate appraisal report follows. Condense it into a structured
 summary a Valuation Committee can read in a few minutes instead of the full
@@ -135,12 +172,52 @@ def generate_appraisal_summary(engine, record_id: int, username: str,
     response_text = message.content[0].text
 
     summary = _parse_json_object(response_text)
+
+    # WHAT CAME BACK IS CHECKED AGAINST WHAT WAS ASKED FOR. A model that drops sections
+    # on a sparser document looks exactly like a document with less in it, and the
+    # difference is the whole question when someone compares two appraisals.
+    missing = _missing_sections(summary)
+    recovered: List[str] = []
+    retried = False
+    if missing:
+        # ONE targeted re-ask, for the missing keys only — far cheaper and more reliable
+        # than re-running the whole extraction, since the document text is already in
+        # hand and the model is being asked a narrower question. A failure here is not
+        # fatal: the partial summary is still worth storing, and `_meta` will say what is
+        # absent so the page can offer a re-run rather than pretending it is complete.
+        retried = True
+        logger.warning("AI summary for record %s omitted %s — re-asking",
+                       record_id, ", ".join(missing))
+        try:
+            retry_msg = client.messages.create(
+                model=MODEL,
+                max_tokens=8192,
+                messages=[{"role": "user",
+                           "content": _RETRY_PROMPT.format(keys=", ".join(missing))
+                                      + pdf_text}],
+            )
+            patch = _parse_json_object(retry_msg.content[0].text)
+            for k in missing:
+                if k in patch and patch[k] is not None:
+                    summary[k] = patch[k]
+                    recovered.append(k)
+        except Exception as e:                       # noqa: BLE001 — see comment above
+            logger.warning("AI summary retry failed for record %s: %s", record_id, e)
+        missing = _missing_sections(summary)
+
     summary["_meta"] = {
         "source_document": filename,
         "source_doc_id": doc_id,
         "page_count": page_count,
         "text_truncated": truncated,
         "model": MODEL,
+        # Absent sections are named, not merely counted, so the page can say WHICH the
+        # appraisal has nothing for rather than leaving a reader to diff two summaries.
+        "sections_expected": len(_EXPECTED_SECTIONS),
+        "sections_missing": missing,
+        "retry_attempted": retried,
+        "sections_recovered": recovered,
+        "complete": not missing,
     }
 
     payload = json.dumps(summary)
@@ -177,6 +254,23 @@ def get_ai_summary(engine, record_id: int) -> Optional[Dict[str, Any]]:
         return None
 
     summary = json.loads(row[0])
+
+    # Completeness is derived ON READ, not just recorded at generation, so summaries
+    # stored BEFORE this check existed are judged by the same rule. Without this, the
+    # 30 Bearfoot summary of 2026-08-31 — 6 sections where the prompt asks for 12 —
+    # would keep reading as complete, which is exactly how it came to be reported as a
+    # broken feature. A stored `_meta` is trusted for the facts only generation knows
+    # (page count, truncation, retry), never for the verdict.
+    meta = summary.setdefault("_meta", {})
+    missing_now = _missing_sections(summary)
+    meta["sections_expected"] = len(_EXPECTED_SECTIONS)
+    meta["sections_missing"] = missing_now
+    meta["complete"] = not missing_now
+    meta.setdefault("retry_attempted", False)
+    meta.setdefault("sections_recovered", [])
+    # Named so a reader is told WHICH sections to expect back on a re-run.
+    meta["rerun_recommended"] = bool(missing_now)
+
     checks: List[Dict[str, Any]] = []
     if rec is not None:
         ka = summary.get("key_assumptions") or {}
