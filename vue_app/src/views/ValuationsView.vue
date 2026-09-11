@@ -3,6 +3,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '../api/client'
 import { useAuthStore } from '../stores/auth'
+import LineMappingPanel from '../components/common/LineMappingPanel.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -224,6 +225,15 @@ function closeRecord() {
   delete q.record
   router.replace({ query: q })
   loadDashboard()
+}
+
+const mappingSource = ref<'budget' | 'argus'>('budget')
+
+// A commit changes the very columns the comparison above is showing, so rebuild it
+// rather than leaving the analyst looking at the figures their import just replaced.
+async function onMappingCommitted() {
+  budgetReview.value = null
+  await loadBudgetReview()
 }
 
 async function loadBudgetReview() {
@@ -1388,6 +1398,22 @@ watch(selectedCycleId, () => {
               </div>
             </div>
 
+            <!-- Loading the two spreadsheets that FEED the comparison above. Same
+                 screen for both, because it is the same job. -->
+            <div class="panel no-print">
+              <div class="lm-tabs">
+                <button :class="{ active: mappingSource === 'budget' }"
+                        @click="mappingSource = 'budget'">Load Partner Budget</button>
+                <button :class="{ active: mappingSource === 'argus' }"
+                        @click="mappingSource = 'argus'">Review Argus Coding</button>
+              </div>
+              <LineMappingPanel :key="mappingSource"
+                                :record-id="selectedRecordId"
+                                :source="mappingSource"
+                                :editable="commentsEditable"
+                                @committed="onMappingCommitted" />
+            </div>
+
             <div class="panel">
               <h3>Analyst Commentary</h3>
               <textarea v-model="comments.budget_review" rows="5" :disabled="!commentsEditable"
@@ -1862,6 +1888,10 @@ h3 { font-size: 14px; margin: 0 0 10px; }
 .tabs button.active { color: var(--color-accent); border-bottom-color: var(--color-accent); font-weight: 600; }
 
 .tab-panel { display: flex; flex-direction: column; gap: 16px; }
+.lm-tabs { display: flex; gap: 6px; margin-bottom: 12px; border-bottom: 1px solid #e3e3e3; }
+.lm-tabs button { background: none; border: none; border-bottom: 2px solid transparent;
+  padding: 6px 12px; font-size: 13px; cursor: pointer; color: #666; }
+.lm-tabs button.active { color: #1a1a1a; font-weight: 600; border-bottom-color: #2c5aa0; }
 .panel { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 8px; padding: 16px; }
 .panel-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 @media (max-width: 1000px) { .panel-grid { grid-template-columns: 1fr; } }
