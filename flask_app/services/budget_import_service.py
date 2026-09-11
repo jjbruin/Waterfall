@@ -113,6 +113,67 @@ def account_choices(vcode: str, isbs_raw: pd.DataFrame,
     return out
 
 
+def category_choices(vcode: str, isbs_raw: pd.DataFrame,
+                     as_of: Optional[date] = None) -> List[Dict[str, Any]]:
+    """The CATEGORIES the budget comparison actually displays, each with its accounts.
+
+    A line is mapped to a category first — `Rental Income`, `Vacancy`, `Real Estate
+    Taxes` — because those are the ~20 rows `get_budget_review` renders from
+    `config.IS_ACCOUNTS`, and they are the vocabulary the analyst is already reading on
+    screen. Mapping to a bare account number asks them to translate in their head from a
+    169-item list into a row they cannot see.
+
+    An ACCOUNT is still required within the category, because the supplement stores
+    `vAccount` and every downstream consumer — NOI, FAD, DSCR, the waterfall — reads
+    individual accounts, not categories. It is defaulted to the account THIS DEAL used
+    most in the last 12 months, so the common case is one click and the precision is
+    kept.
+
+    Categories the deal has actually used come first, annotated with last year's figure,
+    so `Rental Income — 12mo, 5.3M` sits above one it has never touched. A deal with no
+    actuals still gets the full list, just unranked: an empty suggestion list is a reason
+    to show everything, not to block.
+    """
+    import config
+
+    used = {c["account"]: c for c in account_choices(vcode, isbs_raw, as_of)}
+    out: List[Dict[str, Any]] = []
+    for section, cats in config.IS_ACCOUNTS.items():
+        for cat, accts in cats.items():
+            rows = []
+            for a in accts:
+                u = used.get(a)
+                rows.append({
+                    "account": a,
+                    "description": u["description"] if u else "",
+                    "prior_total": u["prior_total"] if u else 0.0,
+                    "months": u["months"] if u else 0,
+                    # Sign this account behaves with FOR THIS DEAL, which pre-sets the
+                    # line's flip. Falls back to the section's convention when the deal
+                    # has no history for it — revenue negative, expense positive.
+                    "mri_sign": u["mri_sign"] if u else (-1 if section == "REVENUES" else 1),
+                    "used": bool(u),
+                })
+            rows.sort(key=lambda r: abs(r["prior_total"]), reverse=True)
+            cat_total = sum(r["prior_total"] for r in rows)
+            out.append({
+                "section": section,
+                "category": cat,
+                "accounts": rows,
+                # The deal's own most-used account in this category; falls back to the
+                # first account config lists, so a category is never un-defaultable.
+                "default_account": (rows[0]["account"] if rows and rows[0]["used"]
+                                    else (accts[0] if accts else None)),
+                "prior_total": cat_total,
+                "months": max((r["months"] for r in rows), default=0),
+                "used_by_deal": any(r["used"] for r in rows),
+                "below_the_line": section in ("DEBT_SERVICE", "OTHER_BTL"),
+            })
+    # Used categories first, then by size — the lines that matter are the big ones.
+    out.sort(key=lambda c: (not c["used_by_deal"], -abs(c["prior_total"])))
+    return out
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Reading the spreadsheet
 # ──────────────────────────────────────────────────────────────────────────────

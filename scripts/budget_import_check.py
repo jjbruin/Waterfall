@@ -168,7 +168,35 @@ def main() -> int:
         "account_not_budgeted" in codes, f"got {sorted(codes)}")
     chk("and none of that blocks the import", vr["can_import"] is True)
 
-    print("\n6. A wrong flip is caught by sign, not by prefix")
+    print("\n6. Category choices — the rows the comparison actually shows")
+    cats = svc.category_choices("P0000004", real)
+    chk("~27 categories, not 169 accounts", 20 <= len(cats) <= 40, f"got {len(cats)}")
+    chk("categories the deal uses come first", cats[0]["used_by_deal"] is True)
+    rent = next(c for c in cats if c["category"] == "Rental Income")
+    chk("Rental Income defaults to 4010, the account this deal used most",
+        rent["default_account"] == "4010", f"got {rent['default_account']}")
+    chk("its sign default is NEGATIVE, from the deal's own history",
+        next(a for a in rent["accounts"] if a["account"] == "4010")["mri_sign"] == -1)
+    unused = next(c for c in cats if not c["used_by_deal"])
+    chk("a category the deal has never used is still offered, with a default",
+        unused["default_account"] is not None, f"{unused['category']}")
+
+    print("\n7. A category and account that disagree BLOCK")
+    bad = dict(mapping)
+    bad[str(rows["Base Rental Revenue"])] = {"category": "Rental Income",
+                                             "account": "5090", "flip": True}
+    vb = val.validate(parsed, bad, "P0000004", real)
+    chk("5090 under Rental Income is refused",
+        any(b["code"] == "account_not_in_category" for b in vb["blocking"]),
+        f"{vb['blocking']}")
+    ok = dict(mapping)
+    ok[str(rows["Base Rental Revenue"])] = {"category": "Rental Income",
+                                            "account": "4012", "flip": True}
+    vo = val.validate(parsed, ok, "P0000004", real)
+    chk("a sibling account WITHIN the category is fine",
+        not any(b["code"] == "account_not_in_category" for b in vo["blocking"]))
+
+    print("\n8. A wrong flip is caught by sign, not by prefix")
     wrong = dict(mapping)
     wrong[str(rows["Base Rental Revenue"])] = {"account": "4010", "flip": False}
     vw = val.validate(parsed, wrong, "P0000004", real)
@@ -176,7 +204,7 @@ def main() -> int:
         any(w["code"] == "sign_opposite_prior" for w in vw["warnings"]),
         f"{sorted({w['code'] for w in vw['warnings']})}")
 
-    print("\n7. Commit REPLACES the same months and leaves other months alone")
+    print("\n9. Commit REPLACES the same months and leaves other months alone")
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
     eng = create_engine(f"sqlite:///{path}")

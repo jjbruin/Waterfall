@@ -92,6 +92,33 @@ def validate(parsed: Dict[str, Any], mapping: Dict[str, Any], vcode: str,
             else:
                 seen[k] = line["label"]
 
+    # A line carries BOTH a category (what the analyst picked, and the row it lands on in
+    # the comparison) and an account within it (what the supplement stores, and what NOI,
+    # FAD, DSCR and the waterfall actually read). If they disagree, the figure appears on
+    # a different row from the one the analyst chose — silently. Blocking, because there
+    # is no reading of it that is intended.
+    import config
+    cat_accounts = {cat: set(accts)
+                    for cats in config.IS_ACCOUNTS.values()
+                    for cat, accts in cats.items()}
+    for row_key, m in mapped.items():
+        cat = m.get("category")
+        if not cat:
+            continue
+        acct = str(m["account"]).strip()
+        valid = cat_accounts.get(cat)
+        if valid is None:
+            blocking.append({
+                "code": "unknown_category",
+                "message": f"'{cat}' is not a category on the budget comparison."})
+        elif acct not in valid:
+            line = by_row.get(int(row_key))
+            blocking.append({
+                "code": "account_not_in_category",
+                "message": (f"'{(line or {}).get('label', row_key)}' is mapped to "
+                            f"{cat} but account {acct}, which is not in that category "
+                            f"({', '.join(sorted(valid))}).")})
+
     n_periods = len(parsed.get("periods") or [])
     for row_key, m in mapped.items():
         line = by_row.get(int(row_key))
