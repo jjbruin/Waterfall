@@ -226,11 +226,40 @@ whether loading the missing actuals picks those months up. Do not "fix" it first
 
 ## 3. Data and operations — Jim
 
-### 3.1 101 rows carry Excel serials in `EffectiveDate` — $20.18M
-Values like `43402`, `43448` instead of dates; `to_datetime(errors='coerce')` → NaT. They
-are *included* in Total Cap (no filter) and *dropped* from PE Performance. Includes
+### 3.1 Excel serials in `EffectiveDate` — $20.18M, and the defect has changed shape
+Values like `43402`, `43448` instead of dates (they decode to 2018-10-29 and 2018-12-14);
+`to_datetime(errors='coerce')` → NaT. Originally 101 rows / $20.18M, including
 **Woodlands Square's entire $9.7M pref equity contribution** plus 91 Preferred Return
-distributions ($9.44M). **Source-data fix, not a code fix.**
+distributions ($9.44M).
+
+**NEEDS RE-MEASURING BEFORE ANY FIX — run `scripts/effectivedate_serial_check.py`.** Three
+things changed since the August finding and each moves the answer:
+
+1. **It is no longer an inconsistency. It is a silent omission.** In August the rows were
+   *included* in Total Cap (which had no date filter) and *dropped* from PE Performance
+   (which had one) — two figures on one page disagreeing. `9086f16` (v198) added the date
+   filter to the cap stack (`one_pager.py:878`), so **both paths now drop them**. That is
+   consistent, and it means the money is invisible everywhere rather than wrongly counted
+   in one place. Arguably worse: a disagreement is noticeable, a silent drop is not.
+2. **The local SQLite snapshot is CLEAN** — 11,886 rows, every `EffectiveDate` in
+   `YYYY-MM-DD`, zero parse failures (verified Sep 11 2026). The audit measured **live
+   Azure**, which is a different and more current dataset. So this may already be fixed
+   upstream, or it may be Azure-only. **Unknown until someone runs the check against
+   `DATABASE_URL`.**
+3. **`accounting` IS in `mri_service.QUERY_REGISTRY`** (verified Sep 11). "Refresh All Data
+   from MRI" overwrites the table, so **a fix applied to the database does not survive a
+   refresh.** This is the structural fact that decides the whole approach.
+
+**The trap, and why the original "fix the source data" instruction is right:** do not make
+the parser tolerate serials. `queries/accounting_feed.sql` selects `EffectiveDate` raw with
+no CAST, so the value arrives as MRI holds it — or as whatever exported it left behind.
+Excel serials appearing in a date column is the signature of a CSV that passed through
+Excel, which converts dates to serials on save. If that is the path, the corruption is in
+the transport and blessing it in the parser guarantees the next batch is silent too.
+
+Sequence: run the check against Azure → if the rows are gone, close this → if they are
+still there, establish whether MRI itself holds serials or the export introduces them,
+because that decides whether the fix is upstream or in the import path.
 
 ### 3.2 JB Fair Park balance-sheet backfill
 BS data stops 6/30/2025 while peers run to 6/30/2026, so `cap['debt']` reads a stale
