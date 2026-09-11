@@ -574,23 +574,34 @@ def publish_record(engine, record_id: int, data: dict, username: str) -> Dict[st
 
     published = {"valuations_row": True, "forecast_rows": 0}
     with engine.begin() as conn:
+        # EVERY mixed-case column here is DOUBLE-QUOTED, and must stay that way.
+        # PostgreSQL folds an unquoted identifier to lower case, while this table was
+        # created by pandas `to_sql`, which quotes — so the stored columns really are
+        # `dtValuation` and `vCode`, and unquoted SQL looks for `dtvaluation` and fails
+        # with "column does not exist". SQLite is case-insensitive and hides this
+        # completely, which is why publishing worked locally and had never once
+        # succeeded against Azure. Same rule CLAUDE.md records for iOrder / PropCode /
+        # FXRate on the prospective-loans tables.
+        #
         # Existing rows store dtValuation in mixed formats ('12/31/2025 0:00'
         # from MRI, ISO from prior publishes) — match by parsed date, delete
         # by the exact stored string.
         existing = conn.execute(text("""
-            SELECT dtValuation FROM valuations WHERE UPPER(vCode) = :v
+            SELECT "dtValuation" FROM valuations WHERE UPPER("vCode") = :v
         """), {"v": vcode.upper()}).fetchall()
         for (dt_str,) in existing:
             parsed = pd.to_datetime(dt_str, errors="coerce")
             if pd.notna(parsed) and parsed.date() == as_of.date():
                 conn.execute(text("""
-                    DELETE FROM valuations WHERE UPPER(vCode) = :v AND dtValuation = :d
+                    DELETE FROM valuations
+                     WHERE UPPER("vCode") = :v AND "dtValuation" = :d
                 """), {"v": vcode.upper(), "d": dt_str})
         conn.execute(text("""
             INSERT INTO valuations
-                (vCode, vPropertyName, dtValuation, vMethod, mAnnualNOI, fCapRate,
-                 nTermCapRate, nDiscountRateForEquityInterest, mIncomeCapConcludedValue,
-                 mDebtValue, mEquityValue, mMezzanineValue, nCostSaleRate)
+                ("vCode", "vPropertyName", "dtValuation", "vMethod", "mAnnualNOI",
+                 "fCapRate", "nTermCapRate", "nDiscountRateForEquityInterest",
+                 "mIncomeCapConcludedValue", "mDebtValue", "mEquityValue",
+                 "mMezzanineValue", "nCostSaleRate")
             VALUES (:v, :name, :d, :method, :noi, :cap, :tcap, :disc, :val, :debt,
                     :equity, :mezz, :cos)
         """), {
@@ -610,8 +621,11 @@ def publish_record(engine, record_id: int, data: dict, username: str) -> Dict[st
                 WHERE import_id = :iid AND vcode = :v AND coa_account IS NOT NULL
             """), {"iid": int(rec["argus_import_id"]), "v": vcode}).fetchall()
             if rows:
+                # Quoted for the same reason as the valuations block above — `forecasts`
+                # is also a pandas-created table with mixed-case columns, so unquoted
+                # SQL resolves to `vcode`/`vsource` on PostgreSQL and fails.
                 conn.execute(text("""
-                    DELETE FROM forecasts WHERE Vcode = :v AND vSource = :s
+                    DELETE FROM forecasts WHERE "Vcode" = :v AND "vSource" = :s
                 """), {"v": vcode, "s": vsource})
                 try:
                     from flask import current_app
@@ -621,7 +635,8 @@ def publish_record(engine, record_id: int, data: dict, username: str) -> Dict[st
                 for period_date, coa, amount_norm in rows:
                     dt = pd.Timestamp(period_date)
                     conn.execute(text("""
-                        INSERT INTO forecasts (Vcode, Date, vAccount, vSource, mAmount, Pro_Yr)
+                        INSERT INTO forecasts
+                            ("Vcode", "Date", "vAccount", "vSource", "mAmount", "Pro_Yr")
                         VALUES (:v, :d, :a, :s, :m, :p)
                     """), {
                         "v": vcode,
