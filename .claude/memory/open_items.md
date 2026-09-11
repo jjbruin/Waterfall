@@ -165,6 +165,81 @@ it automatically. Cheap, and it turns "wait it out" into an action.
 The trap: `/auth/me` and every `@login_required` route decode on each request, so the
 comparison needs the user row — check the cost before adding a query per request.
 
+### 1.11 An approved valuation gives no sign that it is still unpublished
+**Verified Sep 11 2026.** `committee_approve` sets `status='approved'` and freezes a
+snapshot. It does NOT write to `valuations` — that is `publish_record`, a separate step.
+Nothing in the UI says so. The status reads "approved", which sounds finished, and the
+figure silently never reaches the One Pager.
+
+Why it matters: valuations are annual and low-volume, so a record can sit
+approved-but-unpublished indefinitely with no signal. This cost a full afternoon on Sep 11
+— the record read `approved`, the One Pager kept showing the prior year, and nothing
+connected the two.
+
+Recommended: surface "approved, not published" on the cycle dashboard, and mark it on the
+record. Publishing automatically on final approval is the other option, but the separation
+looks deliberate — showing the gap is the safer change.
+
+The trap: `published_at` is the field that actually answers this, not `status`.
+
+### 1.12 `publish_record` can publish a NULL valuation
+**Verified Sep 11 2026.** The guard is `nav = get_nav(...)` then `if not nav: raise`. `nav`
+is a **dict**, which is truthy even when `nav["value"]` is `None` — so the insert writes
+`"val": nav.get("value")` as NULL and reports success.
+
+Why it matters: a published row with no concluded value is indistinguishable from a
+successful publish, and every consumer then falls back to the previous year (correctly —
+see §4, the blank-column fix). The publish "worked" and nothing changed.
+
+Recommended: refuse the publish when `nav.get("value")` is not a positive number, with the
+same message shape as the existing "Compute the NAV before publishing".
+
+The trap: `0` must be refused as well as `None` — a valuation of zero is not a
+measurement, which is the rule the rest of this file already applies.
+
+### 1.13 `valuation_records` has no structured cost basis
+**Verified Sep 11 2026.** The table holds `concluded_value` and a free-text
+`override_note`, and nothing else about how a cost-basis figure was built.
+
+Why it matters: Town Fair's 12/31/2025 value is 33,910,000 against an `Acquisition_Price`
+of 30,750,000 — a 10.3% gap that looks like a market write-up and is not one. "Cost" here
+means purchase + capital prefunded for improvements + closing costs + accrued pref through
+the reporting date. **Anyone reconciling the two hits that wall**, and the only thing
+standing between them and the wrong conclusion is whatever a human typed in the note. This
+file's author reached the wrong conclusion on exactly this and had to be corrected.
+
+Recommended: structured components on the record (purchase, improvements, closing costs,
+accrued pref), so a cost basis explains itself and the total is checkable.
+
+The trap: the free-text note is still worth keeping — the components will not cover every
+case.
+
+### 1.14 Pref Equity capitalization may truncate in print — UNCONFIRMED
+9 deals reportedly lose the tail of their ownership split in print: P0000006 prints "KOC
+43%, PSC 41%, Declaration" and drops "16%"; P0000081 drops "F&F 12%". Reported in
+`9eff832` as pre-existing and present in the 180px baseline.
+
+**Do not change print CSS until this is measured.** Two reasons to doubt it:
+
+1. `onepager_print_geometry.py:146` `_covers()` documents this exact case as a READING
+   ORDER artifact, naming "16%" specifically: *"a value that re-wraps onto its own line
+   moves in pdfplumber's reading ORDER … '16%' reads back as '%16' … an IDENTICAL
+   character count is what identifies it as reordering rather than loss."*
+2. Tracing the chain found no mechanism that would clip it: the textarea is genuinely
+   hidden (`.print-hide { display: none !important }`), the print twin has
+   `white-space: pre-wrap; overflow: visible; height: auto`, and the cell has no
+   `overflow: hidden`, no fixed row height and no `nowrap`. A table row grows to its
+   tallest cell.
+
+Settle it by printing P0000006 and looking at the cell, or by running the sweep (needs
+`WF_TOKEN`). If real, the likely fix is `table-layout: fixed` on `.cap-table` in print so
+the declared 18% is enforced and wrapping is predictable — with the sweep to confirm no
+other column regresses.
+
+*Jim's interim call (Sep 11 2026): the asset manager will abbreviate "Declaration" so the
+text fits. That removes the symptom on one deal; it does not answer whether the defect is
+real.*
+
 ## 2. Decisions needed — blocked on a human, not on code
 
 ### 2.1 What metric is U/W ROE meant to be? — ANSWER THIS FIRST
@@ -258,6 +333,41 @@ The trap: an empty log query reads like "nothing happened". It usually means the
 never collected. Check that a category is **enabled and flowing** before treating its
 silence as evidence.
 
+### 3.5 Five deals carry a valuation with NO cap rate on any row
+**Verified Sep 11 2026** after the blank-column fix (§4): P0000021 ($14.5M), P0000085
+($67.8M), P0000089 ($46.6M), P0000100 ($43.6M), P0000110 ($8.4M) still read a 0 cap rate,
+because no valuation row for those deals carries one at all.
+
+Why it matters: the Dashboard's weighted-average cap rate is
+`sum(cap_rate x valuation) / sum(valuation)`, so each of these puts its **full valuation
+into the denominator contributing nothing to the numerator**. $181M of valuation is
+currently diluting a reported KPI. This is a data gap, not a code one — the fallback has
+nowhere to fall back to.
+
+Recommended: fill in `fCapRate` for those five. Expect the portfolio figure to rise again
+when they land, as it did (+8.9 bps) when the six partial rows were fixed.
+
+### 3.9 No write path is exercised against PostgreSQL before it is needed
+**The process gap behind two of Sep 11's four deploys.** Both were invisible locally:
+
+* `v435` — unquoted mixed-case SQL. SQLite is case-insensitive, PostgreSQL is not, so the
+  valuation publish path had **never once succeeded against Azure** and looked tested.
+* `v436` — `refresh_table('valuations')` invalidated a key nothing reads. It returned
+  success. No error anywhere; a published figure simply never appeared.
+
+Each was hidden behind the one before it, and neither could be found without running the
+real path against the real database.
+
+Recommended: a smoke test that exercises the app's WRITE paths against a PostgreSQL
+instance — publish a valuation, save a waterfall, add a capital call — and asserts the
+change is visible on a subsequent read. Two guardrails now cover these specific classes
+(`scripts/sql_mixedcase_identifier_check.py`, `scripts/refresh_table_key_check.py`) and
+both fail when the bug is reintroduced, but they are static checks and cannot catch the
+next thing that only breaks on the real engine.
+
+The trap: "covered by tests" is not the same as "has ever run in production". The publish
+path had a service function, an endpoint, a UI button and a workflow around it.
+
 ### 3.6 One Pager snapshots frozen before the chart-window change
 They still hold the old sparse quarter arrays and would need backfilling to match what the
 live chart now renders.
@@ -280,6 +390,78 @@ co-terminous child loans would also collapse — correctly, but untested. Re-run
 ## 4. Resolved since the Aug 2026 notes — do NOT re-open
 
 Each verified fixed on Sep 11 2026 against the working tree.
+
+### A published valuation now actually appears — four defects, each hiding the next (Sep 11 2026)
+Publishing Town Fair's 12/31/2025 valuation took **four deploys**, because four separate
+defects sat in a line. Recorded together because the sequence is the lesson.
+
+| | |
+|---|---|
+| `v433` | The admin committee override existed only over the API — no button (`bc07e75` shipped the parameter, nothing could press it) |
+| `v434` | Gave it a button (`46b5649`), plus an amber "cast on behalf" chip so an overridden seat never reads as a normal approval |
+| `v435` | Unquoted mixed-case SQL (`776bdfc`) — publish had **never once succeeded on PostgreSQL** |
+| `v436` | `refresh_table('valuations')` invalidated a key nothing reads (`a043351`) — a SUCCESSFUL publish stayed invisible |
+
+**`v435`, the SQL.** PostgreSQL folds unquoted identifiers to lower case; the table was
+created by pandas `to_sql`, which quotes, so the columns really are `dtValuation`/`vCode`.
+Fixed on `valuations` AND on the `forecasts` block further down the same function, which
+would have been the next failure for any record with a linked Argus import. Guardrail:
+`scripts/sql_mixedcase_identifier_check.py`.
+
+**`v436`, the cache.** `refresh_table(name)` resolves `table_to_key.get(name, name)`. The
+cache holds valuations under `mri_val` and `"valuations"` was not in the map, so the
+invalidation wrote a key nothing reads and returned success. The row was correct in the
+database the whole time. Guardrail: `scripts/refresh_table_key_check.py`.
+
+**Both guardrails are proven to fail when the bug is reintroduced**, not merely to pass on
+a clean tree. `refresh_table_key_check` also flagged `forecasts` on its first run — a false
+positive, since forecasts are reassembled into `fc`; rather than exempt reassembled tables
+it now follows them to the key the reassembly writes and asserts that exists.
+
+**What stays open from this:** §1.11 (nothing shows an approved record is unpublished),
+§1.12 (a NULL value can still be published), §1.13 (no structured cost basis), §3.9 (no
+write path is exercised against PostgreSQL).
+
+### One Pager and cap-stack valuation selection — fixed Sep 11 2026
+Two sibling defects, same shape, found while tracing why Town Fair showed no 2025 value.
+
+**A blank column discarded a good valuation.** Both `one_pager.get_capitalization_stack`
+(`9d9e545`) and `compute.get_deal_capitalization` (`9d9fa1d`) took the newest valuation row
+unconditionally and fell back to `0.0` on a blank. Each field now falls back independently
+to the most recent row that carries it — the same thing
+`planned_loans.projected_cap_rate_at_date` already did.
+
+**Six deals were already wrong**, not hypothetically: P0000077's cap rate read 0 against a
+real 4.5% one row behind it, and five deals had a zeroed cost-of-sale. The portfolio
+weighted-average cap rate moved **5.7969% -> 5.8859% (+8.9 bps)** — the old figure was
+understated by a data gap, not a market view. Five deals still read 0 because no row has a
+cap rate at all; that is §3.5.
+
+**The valuation is now as of the report quarter** (`9d9e545`). Debt used `as_of_date=q_end`
+and equity filtered `EffectiveDate <= q_end`, but the valuation always took the newest row
+on file — so P.E. Exposure on Value was a ratio between two different dates. Measured
+across all 93 deals carrying valuations: **0 change at the current quarter**, 53 historical
+quarters corrected.
+
+Guardrails: `scripts/onepager_valuation_selection_check.py` (10),
+`scripts/capitalization_valuation_fields_check.py` (9).
+
+### Valuation committee: override recorded, requirement per-cycle (Sep 11 2026)
+Jim needed to correct a 2025 valuation when `president` and `ceo` are **held by nobody**.
+His design, adopted over the one first proposed: keep the control and record the exception,
+rather than narrow the committee.
+
+`committee_approve` takes `on_behalf_of`; each seat voted by a non-holder is written with
+`cast_on_behalf`, `cast_by_admin`, the admin's username and a **mandatory** reason, and the
+note carries `[CAST ON BEHALF OF <ROLE> BY ADMIN <user>]`. The UI shows those seats amber
+with a bullet — `• CEO (by jim)` — never the green tick of a role-holder's own vote.
+Expressly preferable to giving one person all three roles, which reaches the same outcome
+with a trail that shows three independent approvals. 22 checks.
+
+Also shipped and **inert unless set**: `valuation_cycles.required_roles` (`c4173e6`), a
+per-cycle subset that fails safe to the full committee on an empty, unknown or typo'd
+value. It is the tool for a POLICY change; the override is the tool for an EXCEPTION. 13
+checks.
 
 ### The `wfadmin` Postgres password was public for five months — INCIDENT, closed Sep 11 2026
 This was carried as "no `.gitignore` rule for the password-bearing scripts", a risk to

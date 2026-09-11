@@ -396,10 +396,155 @@ comparison needs the user row — measure the cost before adding a query per req
 Verify: issue a token, bump token_version, confirm the token is rejected while another
 user's still works.""",
     ),
+    dict(
+        n=22, type="error", priority="high",
+        title="An approved valuation gives no sign it is still unpublished (open_items 1.11)",
+        body="""What's wrong: committee_approve sets status='approved' and freezes a snapshot. It does
+NOT write to the valuations table — that is publish_record, a separate step. Nothing in the
+UI says so.
+
+Evidence: verified Sep 11 2026. The status reads "approved", which sounds finished, and the
+published figure silently never reaches the One Pager.
+
+Why it matters: valuations are annual and low-volume, so a record can sit
+approved-but-unpublished indefinitely with nothing flagging it. This cost a full afternoon
+on Sep 11 — the record read approved, the One Pager kept showing the prior year, and
+nothing connected the two.
+
+Recommended: surface "approved, not published" on the cycle dashboard and mark it on the
+record. Auto-publishing on final approval is the alternative, but the separation looks
+deliberate, so showing the gap is the safer change.
+
+The trap: `published_at` is the field that answers this, not `status`.
+
+Verify: an approved, unpublished record is visibly distinct from a published one without
+opening it.""",
+    ),
+    dict(
+        n=23, type="error", priority="medium",
+        title="publish_record can publish a NULL valuation and report success (open_items 1.12)",
+        body="""What's wrong: the guard is `nav = get_nav(...)` then `if not nav: raise`. `nav` is a DICT,
+which is truthy even when nav["value"] is None — so the insert writes NULL into
+mIncomeCapConcludedValue and the publish reports success.
+
+Evidence: flask_app/services/valuation_nav_service.py, publish_record (verified Sep 11 2026).
+
+Why it matters: a published row with no value is indistinguishable from a successful
+publish. Every consumer then correctly falls back to the previous year (see the
+blank-column fix), so the publish "worked" and nothing changed — which is a very expensive
+thing to debug.
+
+Recommended: refuse the publish when nav.get("value") is not a positive number, with the
+same message shape as the existing "Compute the NAV before publishing".
+
+The trap: 0 must be refused as well as None. A valuation of zero is not a measurement —
+that is the rule applied everywhere else in this queue.
+
+Verify: publishing a record whose NAV has no value raises instead of writing.""",
+    ),
+    dict(
+        n=24, type="improvement", priority="medium",
+        title="valuation_records has no structured cost basis (open_items 1.13)",
+        body="""What's wrong: the table holds concluded_value and a free-text override_note, and nothing
+else about how a cost-basis figure was built.
+
+Why it matters: Town Fair's 12/31/2025 value is 33,910,000 against an Acquisition_Price of
+30,750,000 — a 10.3% gap that LOOKS like a market write-up and is not one. "Cost" here
+means purchase + capital prefunded for improvements + closing costs + accrued pref through
+the reporting date. Anyone reconciling the two hits that wall, and the only thing standing
+between them and the wrong conclusion is whatever a human typed in the note. The author of
+this ticket reached the wrong conclusion on exactly this and had to be corrected.
+
+Recommended: structured components on the record (purchase, improvements, closing costs,
+accrued pref) so a cost basis explains itself and the total is checkable.
+
+The trap: keep the free-text note — the components will not cover every case.
+
+Verify: a cost-classified record shows its build-up without anyone having to ask.""",
+    ),
+    dict(
+        n=25, type="analysis", priority="low",
+        title="UNCONFIRMED: Pref Equity capitalization may truncate in print (open_items 1.14)",
+        body="""READ BEFORE CHANGING ANY PRINT CSS — this defect may not be real.
+
+What's reported: 9 deals lose the tail of their ownership split in print. P0000006 prints
+"KOC 43%, PSC 41%, Declaration" and drops "16%"; P0000081 drops "F&F 12%".
+
+Two reasons to doubt it:
+ (a) scripts/onepager_print_geometry.py:146 `_covers()` documents this EXACT case as a
+     reading-order artifact, naming "16%": "a value that re-wraps onto its own line moves
+     in pdfplumber's reading ORDER … '16%' reads back as '%16' … an IDENTICAL character
+     count is what identifies it as reordering rather than loss."
+ (b) Tracing the chain found NO mechanism that would clip it: the textarea is genuinely
+     hidden, the print twin has white-space: pre-wrap / overflow: visible / height: auto,
+     and the cell has no overflow:hidden, no fixed row height, no nowrap. A table row grows
+     to its tallest cell.
+
+Recommended: settle it first — print P0000006 and look at the cell, or run the print sweep
+(needs WF_TOKEN). Only then decide.
+
+The trap: if it IS real, the likely fix is `table-layout: fixed` on .cap-table in print so
+the declared 18% is enforced — but that changes every column on that table, so it needs the
+sweep to confirm nothing else regresses.
+
+Note: Jim's interim call was to have the asset manager abbreviate "Declaration" so it fits.
+That removes the symptom on one deal; it does not answer whether the defect is real.""",
+    ),
 ]
 
 # ---- Jim's data / ops items. Same shape, different owner. -----------------------------
 TICKETS += [
+    dict(
+        n=26, type="error", priority="high",
+        title="DATA: five deals have a valuation but NO cap rate on any row (open_items 3.5)",
+        body="""What's wrong: P0000021 ($14.5M), P0000085 ($67.8M), P0000089 ($46.6M), P0000100
+($43.6M) and P0000110 ($8.4M) read a 0 cap rate because no valuation row for them carries
+one at all.
+
+Evidence: measured Sep 11 2026, after the blank-column fix removed every case where a real
+cap rate existed on an older row. These five have nowhere to fall back to.
+
+Why it matters: the Dashboard's weighted-average cap rate is
+sum(cap_rate x valuation) / sum(valuation), so each of these puts its FULL valuation into
+the denominator contributing nothing to the numerator. $181M of valuation is diluting a
+reported KPI right now.
+
+Recommended: fill in fCapRate for the five. This is a data fix, not a code one.
+
+The trap: none — but expect the portfolio figure to RISE when they land, as it did
+(+8.9 bps, 5.7969% -> 5.8859%) when the six partial rows were corrected. That is the gap
+closing, not a market move.
+
+Verify: none of the five reads 0 afterwards, and the weighted average moves once.""",
+    ),
+    dict(
+        n=27, type="improvement", priority="high",
+        title="No write path is exercised against PostgreSQL before it is needed (open_items 3.9)",
+        body="""What's wrong: a process gap, and the cause of two of Sep 11's four deploys.
+
+Evidence — both were invisible locally:
+ * v435: unquoted mixed-case SQL. SQLite is case-insensitive, PostgreSQL is not, so the
+   valuation publish path had NEVER ONCE SUCCEEDED against Azure and looked tested.
+ * v436: refresh_table('valuations') invalidated a key nothing reads. It returned success.
+   No error anywhere; a published figure simply never appeared.
+
+Each was hidden behind the one before it, and neither was findable without running the real
+path against the real database.
+
+Why it matters: the publish path had a service function, an endpoint, a UI button and a
+whole workflow around it. "Covered" is not "has ever run in production".
+
+Recommended: a smoke test exercising the app's WRITE paths against a PostgreSQL instance —
+publish a valuation, save a waterfall, add a capital call — asserting each change is
+visible on a subsequent READ.
+
+The trap: two guardrails now cover these specific classes
+(scripts/sql_mixedcase_identifier_check.py, scripts/refresh_table_key_check.py) and both
+fail when the bug is reintroduced. They are STATIC checks and cannot catch the next thing
+that only breaks on the real engine.
+
+Verify: the smoke test fails if either Sep 11 bug is reintroduced.""",
+    ),
     dict(
         n=16, type="error", priority="medium",
         title="DATA: JB Fair Park balance sheet stops 6/30/2025; debt reads a 12/31/2022 row (open_items 3.2)",
