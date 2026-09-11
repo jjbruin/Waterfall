@@ -51,6 +51,30 @@ MAGNITUDE_LOW, MAGNITUDE_HIGH = 0.5, 2.0
 #: their presence is surfaced rather than assumed. Mirrors config.py.
 _BELOW_THE_LINE = {"5190", "7030", "7060", "7050"}
 
+#: Categories whose account list in `config.IS_ACCOUNTS` is not what a BUDGET should map
+#: to. Only one so far: `DEBT_SERVICE.Principal` is deliberately `[]` there, because for
+#: ACTUALS principal is derived from the balance-sheet balance change rather than read
+#: from an account — config says so in its own comment: "Computed separately: BS balance
+#: change for Actuals, 7060 for Budget". A budget has no balance sheet, so 7060 IS the
+#: budget's representation of principal, and without this the screen would offer a
+#: Principal category with no accounts in it: impossible to complete, and whatever the
+#: analyst picked would be refused as not-in-category.
+#:
+#: Overriding here rather than in `config.IS_ACCOUNTS` on purpose — adding 7060 there
+#: would change what the ACTUALS column displays for every deal, to fix an import screen.
+_CATEGORY_ACCOUNTS_FOR_BUDGET = {"Principal": ["7060"]}
+
+
+def category_accounts() -> Dict[str, List[str]]:
+    """{category: [accounts]} as the IMPORT should see it — config, plus the overrides
+    above. One definition, so the dropdown and the not-in-category check cannot drift."""
+    import config
+    out: Dict[str, List[str]] = {}
+    for cats in config.IS_ACCOUNTS.values():
+        for cat, accts in cats.items():
+            out[cat] = list(_CATEGORY_ACCOUNTS_FOR_BUDGET.get(cat, accts))
+    return out
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # What the analyst may map a line to
@@ -137,9 +161,11 @@ def category_choices(vcode: str, isbs_raw: pd.DataFrame,
     import config
 
     used = {c["account"]: c for c in account_choices(vcode, isbs_raw, as_of)}
+    overrides = category_accounts()
     out: List[Dict[str, Any]] = []
     for section, cats in config.IS_ACCOUNTS.items():
-        for cat, accts in cats.items():
+        for cat, config_accts in cats.items():
+            accts = overrides.get(cat, config_accts)
             rows = []
             for a in accts:
                 u = used.get(a)
@@ -178,9 +204,24 @@ def category_choices(vcode: str, isbs_raw: pd.DataFrame,
 # Reading the spreadsheet
 # ──────────────────────────────────────────────────────────────────────────────
 
+#: A row that is a SUBTOTAL of other rows on the same sheet. Importing one double-counts
+#: everything under it, silently — so anything that announces itself as a total is
+#: flagged, whatever it is a total OF. The earlier version required the total to be of a
+#: fixed vocabulary (revenue / income / expenses / NOI / EGI), which let
+#: "Total Capital Expenditures" through: the Argus keyword rules then matched
+#: "capital expenditure" and pre-filled it to 7050 alongside the real Tenant
+#: Improvements line, and only the duplicate-account check downstream stopped it.
+#:
+#: Over-flagging is cheap and under-flagging is not. A flagged row is still RETURNED and
+#: still mappable — the flag only means "do not pre-fill this, and leave it unticked" —
+#: so a sheet whose sole revenue line is literally called "Total Revenue" still works,
+#: it just needs one click.
 _TOTAL_ROW = re.compile(
-    r"^\s*(total\s+)?(revenue|income|expenses?|operating expenses?|"
-    r"net operating income|noi|egi|effective gross)\b", re.I)
+    r"^\s*(?:"
+    r"(?:sub)?total\b"                                    # Total …, Subtotal …
+    r"|(?:revenue|income|expenses?|operating expenses?"
+    r"|net operating income|noi|egi|effective gross)\b"
+    r")", re.I)
 
 
 def parse_budget_workbook(file_bytes: bytes, filename: str) -> Dict[str, Any]:

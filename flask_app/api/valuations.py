@@ -15,6 +15,10 @@ Endpoints (registered at /api/valuations):
     POST   /records/<id>/argus                    — import the valuation Argus export
     GET    /records/<id>/budget-review            — Review Form p.1 comparison
     GET    /records/<id>/balance-sheet            — Review Form p.2 data
+    GET    /records/<id>/mapping/categories       — the comparison's categories for this deal
+    POST   /records/<id>/mapping/parse            — read a budget or Argus file (multipart)
+    POST   /records/<id>/mapping/check            — validate + reconcile a mapping
+    POST   /records/<id>/mapping/commit           — write it (budget -> supplement, argus -> COA)
 """
 
 import logging
@@ -25,7 +29,7 @@ from flask import Blueprint, request, jsonify, g, send_file
 from flask_app.auth.routes import login_required, role_required
 from flask_app.db import get_engine
 from flask_app.serializers import safe_json
-from flask_app.services import data_service, valuation_service
+from flask_app.services import data_service, line_mapping_service, valuation_service
 
 logger = logging.getLogger(__name__)
 
@@ -659,4 +663,79 @@ def publish_record(record_id):
         return jsonify({"error": str(e)}), 400
     except Exception as e:
         logger.error(f"publish_record failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Line mapping — one flow for the two sources that feed the comparison ──────
+# The budget comparison is Estimate | Budget | Valuation. Budget is loaded from the
+# partner's workbook, Valuation from the appraiser's Argus download, and both are the
+# same job: assign somebody else's line names to our categories. Same endpoints, a
+# `source` discriminator, so the two screens behave identically.
+
+@valuations_bp.route("/records/<int:record_id>/mapping/categories", methods=["GET"])
+@login_required
+def mapping_categories(record_id):
+    try:
+        return jsonify(safe_json(line_mapping_service.categories(
+            get_engine(), record_id, data_service.get_data())))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"mapping_categories failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@valuations_bp.route("/records/<int:record_id>/mapping/parse", methods=["POST"])
+@login_required
+@role_required("admin", "analyst")
+def mapping_parse(record_id):
+    if "file" not in request.files or not request.files["file"].filename:
+        return jsonify({"error": "No file provided"}), 400
+    source = (request.form.get("source") or "budget").strip().lower()
+    f = request.files["file"]
+    try:
+        return jsonify(safe_json(line_mapping_service.parse(
+            get_engine(), record_id, source, f.read(), f.filename,
+            data_service.get_data())))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"mapping_parse failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@valuations_bp.route("/records/<int:record_id>/mapping/check", methods=["POST"])
+@login_required
+def mapping_check(record_id):
+    """Validation + reconciliation for the mapping as it stands. Called as the analyst
+    edits, so it takes the parsed payload back rather than re-reading the file."""
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify(safe_json(line_mapping_service.check(
+            get_engine(), record_id, (body.get("source") or "budget"),
+            body.get("parsed") or {}, body.get("mapping") or {},
+            data_service.get_data())))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"mapping_check failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@valuations_bp.route("/records/<int:record_id>/mapping/commit", methods=["POST"])
+@login_required
+@role_required("admin", "analyst")
+def mapping_commit(record_id):
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify(safe_json(line_mapping_service.commit(
+            get_engine(), record_id, (body.get("source") or "budget"),
+            body.get("parsed") or {}, body.get("mapping") or {},
+            _username(), data_service.get_data())))
+    except ValueError as e:
+        # Blocking validation and "no Argus import yet" both land here — they are the
+        # user's to fix, not server faults.
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"mapping_commit failed: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500

@@ -242,6 +242,26 @@ def main() -> int:
         n3 = c.execute(text(f'SELECT COUNT(*) FROM {svc.SUPPLEMENT_TABLE}')).scalar()
     chk("a second file for months OUTSIDE the range ADDS, it does not erase", n3 == 49, f"got {n3}")
 
+    # A check nobody can read is a check nobody reads. The first end-to-end run of the
+    # mapping API produced 12 identical blocking messages and 23 warnings for a 3-line
+    # file, because both of these were emitted per-month and per-account rather than
+    # per-problem. The COUNTS are the assertion here, not just the codes.
+    print("\n10. One message per PROBLEM, not per month or per account")
+    dupe_blocks = [b for b in vd["blocking"] if b["code"] == "duplicate_account_month"]
+    chk("a clash across 12 months is ONE block, not twelve", len(dupe_blocks) == 1,
+        f"got {len(dupe_blocks)}")
+    chk("and it says how many months it spans",
+        "12 month(s)" in dupe_blocks[0]["message"], dupe_blocks[0]["message"])
+
+    nb = [w for w in vr["warnings"] if w["code"] == "account_not_budgeted"]
+    chk("unbudgeted accounts are ONE warning", len(nb) == 1, f"got {len(nb)}")
+    chk("which names the count and keeps the per-account detail",
+        len(nb[0]["accounts"]) > 1
+        and str(len(nb[0]["accounts"])) in nb[0]["message"],
+        f"{len(nb[0].get('accounts', []))} / {nb[0]['message']}")
+    chk("the whole panel stays legible for a 4-line file",
+        len(vr["warnings"]) <= 12, f"got {len(vr['warnings'])} warnings")
+
     try:
         os.unlink(path)
     except Exception:

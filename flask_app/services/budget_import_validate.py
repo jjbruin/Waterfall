@@ -17,6 +17,7 @@ from typing import Any, Dict, List
 import pandas as pd
 from sqlalchemy import text
 
+from flask_app.services import budget_import_service as budget_service
 from flask_app.services.budget_import_service import (
     MAGNITUDE_HIGH, MAGNITUDE_LOW, SUPPLEMENT_TABLE, _BELOW_THE_LINE, account_choices,
 )
@@ -77,30 +78,41 @@ def validate(parsed: Dict[str, Any], mapping: Dict[str, Any], vcode: str,
 
     # The same account twice in one month cannot both be right — one would overwrite the
     # other's meaning and the total would silently double.
+    #
+    # REPORTED ONCE PER CLASH, not once per month. A 12-month file with two lines on the
+    # same account produced twelve identical blocking messages, which buries the one
+    # thing the analyst has to fix and makes a legible panel impossible.
     seen: Dict[tuple, str] = {}
+    clashes: Dict[tuple, Dict[str, Any]] = {}
     for row_key, m in mapped.items():
         line = by_row.get(int(row_key))
         if not line:
             continue
+        acct = str(m["account"]).strip()
         for period in line["amounts"]:
-            k = (str(m["account"]).strip(), period)
+            k = (acct, period)
             if k in seen:
-                blocking.append({
-                    "code": "duplicate_account_month",
-                    "message": (f"Account {k[0]} is mapped twice for {k[1]} — "
-                                f"'{seen[k]}' and '{line['label']}'.")})
+                pair = (acct, seen[k], line["label"])
+                c = clashes.setdefault(pair, {"months": 0})
+                c["months"] += 1
             else:
                 seen[k] = line["label"]
+    for (acct, first, second), info in clashes.items():
+        blocking.append({
+            "code": "duplicate_account_month",
+            "message": (f"'{first}' and '{second}' are both mapped to account {acct} — "
+                        f"they collide in {info['months']} month(s). One of them needs a "
+                        f"different account, or one should be left unmapped.")})
 
     # A line carries BOTH a category (what the analyst picked, and the row it lands on in
     # the comparison) and an account within it (what the supplement stores, and what NOI,
     # FAD, DSCR and the waterfall actually read). If they disagree, the figure appears on
     # a different row from the one the analyst chose — silently. Blocking, because there
     # is no reading of it that is intended.
-    import config
+    # From the SAME definition the dropdown is built from, so a category the screen
+    # offers can always be satisfied. See `_CATEGORY_ACCOUNTS_FOR_BUDGET`.
     cat_accounts = {cat: set(accts)
-                    for cats in config.IS_ACCOUNTS.values()
-                    for cat, accts in cats.items()}
+                    for cat, accts in budget_service.category_accounts().items()}
     for row_key, m in mapped.items():
         cat = m.get("category")
         if not cat:
@@ -131,14 +143,23 @@ def validate(parsed: Dict[str, Any], mapping: Dict[str, Any], vcode: str,
     prior = {c["account"]: c for c in account_choices(vcode, isbs_raw)}
     used = {str(m["account"]).strip() for m in mapped.values()}
 
-    # An account the deal used in the last 12 months with nothing budgeted against it.
-    for acct, info in prior.items():
-        if acct not in used:
-            warnings.append({
-                "code": "account_not_budgeted",
-                "message": (f"{acct} {info['description']} was used in the last 12 "
-                            f"months ({info['months']} mo, {info['prior_total']:,.0f}) "
-                            f"but nothing is mapped to it.")})
+    # Accounts the deal used in the last 12 months with nothing budgeted against them.
+    #
+    # ONE warning listing them, not one each. A deal with 17 used accounts and a 3-line
+    # file emitted fifteen near-identical lines, which is the same as emitting none. The
+    # per-account detail is kept in `accounts` so the screen can expand it on demand.
+    missing = [(a, prior[a]) for a in sorted(prior) if a not in used]
+    if missing:
+        preview = ", ".join(f"{a} {i['description']}" for a, i in missing[:4])
+        if len(missing) > 4:
+            preview += f", and {len(missing) - 4} more"
+        warnings.append({
+            "code": "account_not_budgeted",
+            "message": (f"{len(missing)} account(s) used in the last 12 months have "
+                        f"nothing mapped to them: {preview}."),
+            "accounts": [{"account": a, "description": i["description"],
+                          "months": i["months"], "prior_total": i["prior_total"]}
+                         for a, i in missing]})
 
     for row_key, m in mapped.items():
         line = by_row.get(int(row_key))
