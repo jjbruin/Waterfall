@@ -719,6 +719,14 @@ def refresh_table(table_name: str):
         "loans": "mri_loans_raw",
         "event_dates": "event_dates_raw",
         "inspection": "inspection_raw",
+        # The cache holds this under `mri_val`, not `valuations`. Without this line the
+        # fallback below refreshed a key called "valuations" that NOTHING READS, so
+        # `publish_record`'s invalidation was a silent no-op and a newly published
+        # valuation stayed invisible for the life of the process — the app kept serving
+        # the previous year's figure with no error anywhere. Any table whose cache key
+        # differs from its table name MUST be listed here; see
+        # scripts/refresh_table_key_check.py, which fails if one is not.
+        "valuations": "mri_val",
     }
     cache_key_name = table_to_key.get(table_name, table_name)
 
