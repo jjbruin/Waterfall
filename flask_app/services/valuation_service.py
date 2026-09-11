@@ -1026,6 +1026,35 @@ def get_budget_review(engine, record_id: int, data: dict) -> Dict[str, Any]:
         pv = _get_valuation_sum(argus_fc, bud_jan1.date(), bud_ref.date(), {"_": {"P": ["7060"]}})
         prin_v = abs(pv.get("_", {}).get("P", 0) or 0)
 
+    # --- Modeled debt service replaces the source figures, Budget and Valuation only ---
+    #
+    # The appraiser's Argus download is UNLEVERED, so int_v/prin_v above are 0 and the
+    # Valuation DSCR was blank. The partner's budget may carry debt service or may not,
+    # and when it does it is their amortization assumption rather than ours. Both are
+    # replaced from the deal's own loan terms — the same strip-and-replace compute.py
+    # already applies to the AM forecast.
+    #
+    # The ESTIMATE column is deliberately untouched: it means actuals plus budget for the
+    # rest of the year, and its interest is interest that was actually paid.
+    from flask_app.services import valuation_debt_service
+    modeled = valuation_debt_service.for_year(vcode, budget_year, data)
+    source_debt = {"interest_budget": int_b, "principal_budget": float(prin_b or 0),
+                   "interest_valuation": int_v, "principal_valuation": float(prin_v or 0)}
+    has_argus = argus_fc is not None and not argus_fc.empty
+    applied_to = []
+    if modeled["available"]:
+        int_b = modeled["interest"]
+        prin_b = modeled["principal"]
+        applied_to.append("budget")
+        # ONLY when there is an Argus forecast to lever. With no import the Valuation
+        # column is empty by design, and putting debt service against a zero NOI turns a
+        # blank DSCR into a hard 0.00 — a figure that reads as "this deal cannot cover
+        # its debt" when it actually means "no appraiser forecast has been loaded".
+        if has_argus:
+            int_v = modeled["interest"]
+            prin_v = modeled["principal"]
+            applied_to.append("valuation")
+
     _add_row("Interest Expense", int_e, int_b, int_v)
     _add_row("Principal Payments", float(prin_e or 0), float(prin_b or 0), float(prin_v or 0))
     ds = (int_e + (prin_e or 0), int_b + (prin_b or 0), int_v + (prin_v or 0))
@@ -1053,6 +1082,19 @@ def get_budget_review(engine, record_id: int, data: dict) -> Dict[str, Any]:
         "has_argus": argus_fc is not None and not argus_fc.empty,
         "last_actual_month": (pd.Timestamp(last_actual).strftime("%Y-%m-%d") if last_actual is not None else None),
         "rows": rows,
+        # What the reader needs to know about the two debt rows they are looking at:
+        # where they came from, what the file itself said, and anything that qualifies
+        # the model. Substituting a figure silently would be worse than not substituting.
+        "debt_service": {
+            "source": "modeled" if applied_to else "file",
+            "applies_to": applied_to,
+            "interest_account": valuation_debt_service.INTEREST_ACCOUNT,
+            "principal_account": valuation_debt_service.PRINCIPAL_ACCOUNT,
+            "loan_count": modeled["loan_count"],
+            "notes": modeled["notes"],
+            "as_stated_in_source": source_debt,
+            "monthly": modeled["rows"],
+        },
         "occupancy_trend": _occupancy_trend(data.get("occupancy_raw"), vcode, year),
     }
 

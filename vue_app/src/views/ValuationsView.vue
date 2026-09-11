@@ -1349,6 +1349,28 @@ watch(selectedCycleId, () => {
                   No Argus import linked — the Valuation column is empty until one is imported on the first tab.
                 </span>
               </p>
+              <!-- The debt rows are OURS, not the file's. Saying so is not optional:
+                   an appraiser's Argus download is unlevered and a partner's budget may
+                   carry its own assumption, so a reader who is not told will assume the
+                   figures came from the spreadsheet in front of them. -->
+              <p class="panel-note" v-if="budgetReview.debt_service?.source === 'modeled'">
+                <strong>Interest and Principal are modeled</strong> from this deal's
+                {{ budgetReview.debt_service.loan_count }} loan(s) — the same debt service
+                engine Deal Analysis and the waterfall use — and applied to the
+                {{ budgetReview.debt_service.applies_to.join(' and ') }}
+                column{{ budgetReview.debt_service.applies_to.length > 1 ? 's' : '' }}.
+                The Estimate column is left as reported.
+                <template v-if="budgetReview.debt_service.as_stated_in_source.interest_valuation === 0">
+                  The Argus download is unlevered, as Argus exports always are.
+                </template>
+                <span v-for="(n, i) in budgetReview.debt_service.notes" :key="i"
+                      class="warn-note"> {{ n }}</span>
+              </p>
+              <p class="panel-note warn-note"
+                 v-else-if="budgetReview.debt_service?.notes?.length">
+                Debt service is as stated in the source files —
+                {{ budgetReview.debt_service.notes.join(' ') }}
+              </p>
               <div class="table-scroll">
                 <table class="data-table budget-table">
                   <thead>
