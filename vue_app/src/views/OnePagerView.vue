@@ -598,6 +598,16 @@ function buildChartOption(cr: Record<string, any> | null) {
   const occ = (cr?.occupancy ?? []).map((v: number | null) => v != null ? +v.toFixed(1) : null)
   const noiAxis = noiAxisBounds(uwNoi, actualNoi, occ)
   return {
+    // No entry animation. ECharts grows bars and draws lines from zero over
+    // ~1s, and this chart is captured to PDF rather than watched: a print that
+    // lands mid-animation prints the axes, the gridlines and the value labels
+    // with NO BARS AND NO LINES, which looks like a real chart of a deal with
+    // no data instead of like a failure. Measured across the 61 printable
+    // deals it hit 8 of them, and re-rendering the same deal twice gave a
+    // different answer each time — so it is a race, and a race that silently
+    // empties an investor document is not one to leave to timing. A static
+    // report chart has nothing to animate anyway.
+    animation: false,
     title: { text: 'Physical Occupancy vs. NOI', subtext: '($ Millions)', left: 'center', top: 0,
       textStyle: { fontSize: 13, fontWeight: 'bold' }, subtextStyle: { fontSize: 11 } },
     tooltip: { trigger: 'axis' },
@@ -984,7 +994,14 @@ function printOnePager() {
           <!-- No v-if / no "no data" fallback: buildChartOption always returns
                a frame, and a deal with nothing to plot shows empty axes rather
                than a message where the chart should be. -->
-          <v-chart :option="chartOption" style="width: 100%; height: 170px;" autoresize />
+          <!-- The chart's size is set by this WRAPPER, not by the component.
+               <style> below is `scoped`, so a rule written against v-chart
+               compiles to `…[data-v-xxx]` and matches nothing — the scope
+               attribute does not reach inside another component. A plain div of
+               our own always carries it. See .op-chart-wrap. -->
+          <div class="op-chart-wrap">
+            <v-chart :option="chartOption" style="width: 100%; height: 180px;" autoresize />
+          </div>
         </div>
       </div>
       </template>
@@ -1152,7 +1169,9 @@ function printOnePager() {
           <!-- CHART -->
           <div class="chart-section">
             <!-- Same as single mode: always a frame, never a message. -->
-            <v-chart :option="buildChartOption(pg.chart)" style="width: 100%; height: 170px;" autoresize />
+            <div class="op-chart-wrap">
+              <v-chart :option="buildChartOption(pg.chart)" style="width: 100%; height: 180px;" autoresize />
+            </div>
           </div>
         </div>
 
@@ -1420,6 +1439,67 @@ function printOnePager() {
   padding-top: 4px;
 }
 
+/* THE CHART BOX IS SIZED IN PAPER UNITS, ON SCREEN, ON PURPOSE.
+   ==========================================================================
+   `width: 7.5in` is the printable column exactly: a 8.5in sheet less the
+   0.5in side padding .one-pager-page sets for print. It is declared HERE,
+   outside `@media print`, because of how ECharts reaches paper:
+
+     the chart is a <canvas>. ECharts writes the canvas's pixel size from the
+     container it measures ON SCREEN, and Chrome runs no JS between applying
+     print CSS and painting the PDF. So the canvas arrives at the printer at
+     its SCREEN size. A print-only width would never be read.
+
+   Left to `width: 100%` the canvas took the screen sheet's ~904px (= 678pt)
+   into a 540pt column. Chrome's response to content wider than the paper is
+   not to clip it — it scales the ENTIRE DOCUMENT down to fit. Measured on all
+   61 printable deals: every one printed at 0.859, which put body text at
+   6.89pt, below the 8pt floor 62161a9 set deliberately, and shrank the chart
+   itself from 127.5pt to 109.5pt. Because the chart is pinned to the foot of
+   the sheet while the scaled-down text ended ~106pt higher, it also opened a
+   white band between narrative and chart of up to 298pt — which reads as "the
+   chart is too small above a big gap" and is really "the page is at 86%".
+
+   Sizing the box in inches makes the canvas the same width as the column it
+   will be printed into, so nothing overflows and no scaling is triggered.
+   `max-width: 100%` keeps a window narrower than 7.5in of sheet from
+   overflowing horizontally; such a window prints a narrower chart, but still
+   at 100% page scale.
+
+   NOT `:deep(canvas) { max-width: 100% }`, which was the obvious one-line fix.
+   That leaves ECharts rasterising at 904px and asks CSS to squeeze the bitmap
+   into 720px — every label and axis number in the chart shrinks by 20% and
+   softens. The floor rule is that nothing on this page is scaled; the chart is
+   drawn at the size it is printed. */
+.op-chart-wrap {
+  width: 7.5in;
+  max-width: 100%;
+}
+
+/* THE HEIGHT STAYS ON THE COMPONENT, IN PIXELS. Do not move it here and give
+   the chart `height: 100%` — that was tried and it renders a chart with axes,
+   gridlines and value labels but NO BARS AND NO LINES. The marks come out at
+   zero height while the labels still print their real values, so the chart
+   looks plausible at a glance and is empty. ECharts needs a definite pixel
+   height on the element it measures; a percentage against a wrapper resolves
+   too late for the series geometry.
+   180px is the size, raised from 170px once the page stopped being scaled.
+   The ceiling is measured and the thing it is measured against is NOT the
+   chart image: .chart-section draws a full-width hairline rule ~3.8pt ABOVE
+   the canvas, and that rule is the topmost thing the chart puts on the page.
+   Sizing against the canvas instead gave 195px, which printed that rule
+   straight through the last line of Burton's narrative while every
+   image-based measurement still read "no collision".
+   The deepest narrative on any deal except Poplar Prairie ends at 618.7pt
+   (Burton and 30 Bearfoot, to the point), the sheet ends at 763.5pt, so the
+   rule clears the text while 763.5 - H - 3.8 >= 618.7, i.e. H <= 188px. 180px
+   leaves 6.1pt — over half a line of clearance on the two tightest deals.
+   Poplar Prairie is the documented exception and still overlaps by design.
+   The payoff is in plot area, which is what was actually short: the box grows
+   6% but the plot band inside it grows 14%, because the title, axis labels and
+   legend are fixed px and do not grow with the box. Together with the page no
+   longer being scaled, the plot band goes 45.4pt -> 60.8pt, up a third. */
+
 /* ============================================================
    PRINT STYLES
    ============================================================ */
@@ -1619,9 +1699,14 @@ function printOnePager() {
     z-index: 0;
   }
 
-  /* Force chart to print */
-  .chart-section canvas {
-    max-width: 100% !important;
-  }
+  /* The guard that used to live here was
+         .chart-section canvas { max-width: 100% !important }
+     and it never ran. `<style scoped>` compiles it to
+     `.chart-section canvas[data-v-xxx]`, and the scope attribute reaches a
+     child component's ROOT element only — never the <canvas> inside it. So the
+     one rule written to stop the canvas overflowing the page matched nothing,
+     silently, for as long as it existed. The width is constrained at
+     .op-chart-wrap instead: our own element, so the scope attribute is on it.
+     Nothing is needed here. */
 }
 </style>
