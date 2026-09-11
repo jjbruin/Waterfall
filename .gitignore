@@ -53,3 +53,23 @@ migrate_to_database.py
 
 # Portfolio Snapshot chart-check SVG output (scripts/snapshot_summary_charts_check.mjs)
 vue_app/.chartcheck/
+
+# Ad-hoc diagnostic scripts that hold credentials or per-developer paths.
+# A `wfadmin` Postgres password was committed in scripts/ on 2026-04-10 and stayed
+# readable in a PUBLIC repo for five months (rotated Sep 11 2026). Keeping these
+# untracked BY HAND is what failed; this is the rule that was missing.
+#
+# CONVENTION: name anything ad-hoc `scripts/local_*` and it is ignored automatically.
+# Do NOT blanket-ignore scripts/ — the committed *_check.py guardrails live there.
+scripts/local_*
+# The known one-off diagnostics from the Aug 2026 One Pager audit (they embed the PG
+# password and per-developer OneDrive paths; they live on developers' machines).
+scripts/inv1*.py
+scripts/inv2*.py
+scripts/inv34*.py
+scripts/inv5*.py
+scripts/fixB_verify.py
+scripts/burton_relmap.py
+scripts/burton_blastradius.py
+scripts/burton_loandump.py
+scripts/pull_live_noi_requested.py

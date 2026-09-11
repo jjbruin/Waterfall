@@ -1,0 +1,65 @@
+#!/bin/sh
+# Block a commit that contains a live credential.
+#
+# WHY THIS EXISTS: a `wfadmin` Postgres password was committed in
+# scripts/fix_tables.py and scripts/migrate_to_postgres.py on 2026-04-10 and stayed
+# readable in a PUBLIC GitHub repo for five months, until Sep 11 2026.
+#
+# The .gitignore rule added at the same time only protects files someone thought to
+# name. Nobody named fix_tables.py — it looked like an ordinary migration script. This
+# hook checks CONTENT, so it catches the file nobody predicted.
+#
+# INSTALL (once per clone):
+#     git config core.hooksPath scripts/hooks
+#
+# BYPASS, if you are certain a match is a placeholder:
+#     git commit --no-verify
+#
+# Exit 0 = allow, 1 = block.
+
+fail=0
+
+# Only inspect what is actually staged, and only added/changed lines.
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+[ -z "$staged" ] && exit 0
+
+for f in $staged; do
+    # Skip binaries and anything already gone.
+    [ -f "$f" ] || continue
+    git diff --cached --numstat -- "$f" | grep -q '^-' && continue
+
+    added=$(git diff --cached -U0 -- "$f" | grep '^+' | grep -v '^+++')
+    [ -z "$added" ] && continue
+
+    # A URI with an inline password: scheme://user:secret@host
+    # Placeholders are allowed through: PASS, PASSWORD, USER, YourPass, ***, <...>,
+    # {...}, $VAR, xxx, CHANGEME, and the literal 'pass'.
+    hits=$(printf '%s\n' "$added" \
+        | grep -E '://[A-Za-z0-9_.-]+:[^@[:space:]]+@' \
+        | grep -viE '://[A-Za-z0-9_.-]+:(\$|<|\{|\*|x{3,}|pass(word)?|yourpass|changeme|secret|user|placeholder|redacted)' )
+
+    if [ -n "$hits" ]; then
+        echo "BLOCKED: $f appears to add a connection string with a real password."
+        printf '%s\n' "$hits" | sed -E 's#(://[^:]+:)[^@]+(@)#\1********\2#' | sed 's/^/    /'
+        fail=1
+    fi
+
+    # Azure Postgres admin for this project, by name — belt and braces.
+    if printf '%s\n' "$added" | grep -qE 'wfadmin:[^@[:space:]]{8,}@'; then
+        echo "BLOCKED: $f adds a wfadmin credential."
+        fail=1
+    fi
+done
+
+if [ "$fail" -ne 0 ]; then
+    cat <<'MSG'
+
+Read the value from the environment instead — flask_app/config.py and
+scripts/event_dates_exit_probe.py show the pattern this repo already uses.
+
+If every match above is genuinely a placeholder:  git commit --no-verify
+MSG
+    exit 1
+fi
+
+exit 0

@@ -1,11 +1,28 @@
 """Migrate SQLite data to PostgreSQL."""
+import os
 import sqlite3
 import psycopg2
 import psycopg2.extras
 import time
 
-SQLITE_PATH = "C:/Users/jbruin/Documents/GitHub/waterfall-xirr/waterfall.db"
-PG_URL = "postgresql://wfadmin:Wf3d9097e0365c445456dcc52e!@psql-waterfall-dev.postgres.database.azure.com:5432/waterfall_xirr?sslmode=require"
+SQLITE_PATH = os.environ.get(
+    "SQLITE_PATH",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "waterfall.db"),
+)
+
+# NEVER hardcode this. The literal that used to sit here was the live `wfadmin`
+# password; it reached a PUBLIC repo on 2026-04-10 and stayed readable for five months
+# (rotated Sep 11 2026). Read it from the environment, the way flask_app/config.py and
+# scripts/event_dates_exit_probe.py already do.
+PG_URL = os.environ.get("DATABASE_URL")
+if not PG_URL:
+    raise SystemExit(
+        "DATABASE_URL is not set. Export it first, e.g.\n"
+        "  export DATABASE_URL='postgresql://USER:PASS@psql-waterfall-dev."
+        "postgres.database.azure.com:5432/waterfall_xirr?sslmode=require'"
+    )
+if PG_URL.startswith("postgres://"):
+    PG_URL = PG_URL.replace("postgres://", "postgresql://", 1)
 
 SKIP_TABLES = {"sqlite_sequence", "calculation_cache"}
 
