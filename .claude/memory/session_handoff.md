@@ -1,4 +1,4 @@
-# Session Handoff — through Sep 10 2026 (v428 live)
+# Session Handoff — through Sep 11 2026 (v429 live)
 
 Rolling handoff for the next session/developer. Update in place; keep only what is still
 live. Per-revision post-mortems live in `.claude/memory/deploy_history.md` (CLAUDE.md keeps
@@ -11,20 +11,27 @@ those was touched on Sep 10 and their state is unchanged — read that file for 
 durable defect list is carried forward here so it does not get lost behind an archive.
 
 ## Where things stand
-- **Live**: `v428` = `dfc38df`, healthy, clean boot, zero error lines.
-- **main == origin/main**, everything pushed. Tip is `608ca8b`.
-- **FIVE COMMITS ON MAIN ARE NOT IN THE LIVE IMAGE** (`git log dfc38df..main`). Only three
-  of them matter, and all three are Charlene's and investor-facing:
-  - `e5699c6` One Pager print: the Business Plan narrative is no longer thrown away
-  - `62161a9` One Pager print: the whole report on one page, at a legibility floor
-  - `948be26` One Pager print: always exactly one page, and never a lost word
-
-  The other two need no deploy: `608ca8b` is a read-only script, and `737ca65` is the docs
-  commit that records v428 and was necessarily made after the image was built.
-
-  The three print commits arrived on origin during the Sep 10 session and were rebased
-  past, not reviewed and not shipped. **They need the standing symptom-repair review before
-  anyone builds an image**, and they change what prints on an investor document.
+- **Live**: `v429` = `33a4bf5`, deployed Sep 11 2026, healthy, 100% traffic, HTTP 200.
+- **main == origin/main**, everything pushed.
+- **THE THREE ONE PAGER PRINT COMMITS ARE NOW LIVE.** They shipped in `v429` as ancestors
+  of the requested SHA, not because they were deployed deliberately: `e5699c6`,
+  `62161a9`, `948be26`. Also live now: `608ca8b` (the read-only ownership reconciliation
+  script) and `29a1463` (One Pager em dash + Pref Equity capitalization print fix).
+  **The Sep 10 handoff said these three "need the standing symptom-repair review before
+  anyone builds an image". That review did not happen** — the pre-build review covered
+  only `33a4bf5` and `29a1463`, the span against local HEAD. They are live and unreviewed,
+  and they change what prints on an investor document. **Not spot-checked on Azure** —
+  they were verified locally only.
+- **The delta that matters is against the RUNNING IMAGE, not local HEAD.** `v429` was
+  asked for as "deploy 33a4bf5" and shipped seven commits, because local main was two
+  behind origin and the live image was five behind that. Run
+  `git log <live-sha>..<target>` before every build and review the whole span; the
+  post-mortem in `deploy_history.md` records how this one was under-reported at the time.
+- **OPEN QUESTION FOR JIM (live, unanswered)**: `33a4bf5` moved the Portfolio Totals
+  "% of Pref" 75.53% -> 76.39% at 26Q2. Fund-group subtotals now tie to the 26Q1
+  baseline PDF exactly; the grand total deliberately does not, because the PDF computes
+  that one row on a basis it uses nowhere else. If the published total must read 68%,
+  that is a two-line exception still to be made.
 
 ## STANDING RULE — read before deploying anything
 CLAUDE.md "Deploying Changes" carries Jim's pre-deploy symptom-repair check.

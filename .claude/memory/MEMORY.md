@@ -2,7 +2,7 @@
 
 ## Topic Files
 - [azure_deployment.md](azure_deployment.md) — Azure infrastructure (VNet, NAT Gateway, VPN Gateway), deployment workflow
-- [deploy_history.md](deploy_history.md) — per-revision deploy post-mortems v425→v349, moved out of CLAUDE.md (which keeps the deploy rule + a one-line SHA index). Read before assuming a revision shipped what its SHA suggests.
+- [deploy_history.md](deploy_history.md) — per-revision deploy post-mortems v429→v349, moved out of CLAUDE.md (which keeps the deploy rule + a one-line SHA index). Read before assuming a revision shipped what its SHA suggests.
 - [review_workflow.md](review_workflow.md) — One Pager review/approval pipeline (tables, API, Vue, roles)
 - [dashboard_perf.md](dashboard_perf.md) — Dashboard loading optimization (prepare_cap_lookups, 3.7x speedup)
 - [isbs_split_migration.md](isbs_split_migration.md) — ISBS split into 6 tables by vSource

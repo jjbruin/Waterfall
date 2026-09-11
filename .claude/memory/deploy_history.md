@@ -12,6 +12,50 @@ part of the branch they came from.
 
 Newest first. Revisions absent from this file (`v396` and older, apart from the few
 noted) carry no recorded post-mortem; their SHAs are in the CLAUDE.md index.
+## v429 = `33a4bf5`
+
+Deployed Sep 11 2026, 12:49 UTC. Digest `sha256:e95be886…`, tag locked. Healthy,
+100% traffic, HTTP 200.
+
+**Asked for as "deploy 33a4bf5"; SEVEN commits went live, not one.** Local main was
+two behind origin at `3cbac29`, and the previously live image was `v428` = `dfc38df`,
+which was five behind *that*. The full delta (`git log dfc38df..33a4bf5`):
+
+- `33a4bf5` Snapshot Financial: "% of Pref" subtotal foots to its own row
+- `29a1463` One Pager: absent capitalisation is a dash; ownership split prints whole
+- `3cbac29` Handoff docs
+- `608ca8b` Ownership reconciliation report (read-only script)
+- `948be26` One Pager print: always exactly one page, and never a lost word
+- `62161a9` One Pager print: the whole report on one page, at a legibility floor
+- `e5699c6` One Pager print: the Business Plan narrative is no longer thrown away
+- `737ca65` Docs: deploy history through v428
+
+The last three are Charlene's investor-facing print commits that the Sep 10 handoff
+had flagged as "on main, not in the live image". They shipped here as ancestors of the
+requested SHA. **This is the lesson: the delta that matters is against the running
+image, not against local HEAD.** `git log <live-sha>..<target>` before every build —
+reviewing only the named commit reviews a fraction of what ships.
+
+**Reviewed for symptom repair before building** (`33a4bf5` and `29a1463` only, which is
+the gap above). Neither is one. `29a1463` replaces a `0.0` sentinel with `None` —
+the rule this file exists to enforce, applied correctly; verified `fmtPct` renders null
+as an em dash (OnePagerView.vue:376) and that `pe_exposure_on_cap` is absent from
+`_SUM_FIELDS`, reaching the payload only through `_num()`, which maps None to None.
+`33a4bf5` corrects a computation basis rather than overriding an output.
+
+**OPEN QUESTION FOR JIM, live and unanswered.** `33a4bf5` moves the Portfolio Totals
+"% of Pref" from 75.53% to 76.39% at 26Q2. Every fund-group subtotal now reproduces
+the 26Q1 baseline PDF exactly on the committed basis; the grand total does not, because
+the PDF computes that one row as Invested / Total Pref — a basis it uses there and
+nowhere else. The commit deliberately keeps the total on the same rule as the groups it
+sums rather than special-casing it. If the published total must match the PDF's 68%,
+that is a two-line exception still to be made.
+
+**Known, pre-existing, untouched**: the `portfolio_snapshot_financial.py` module
+self-test dies partway through with `KeyError ('PCITWES', '2026-Q1')`, so several
+checks — including "Un-funded = Commitment − Invested" and the two assertions
+`33a4bf5` adds — are not executing. Present on main before this change.
+
 
 ## v428 = `dfc38df`
 
