@@ -222,6 +222,44 @@ def ensure_valuation_tables(engine=None):
                 conn.execute(text(f"ALTER TABLE valuation_records ADD COLUMN {col} {col_type}"))
         except Exception:
             pass  # column already exists
+    # Per-cycle committee requirement. NULL means "all of COMMITTEE_ROLES", so every
+    # existing cycle keeps the full requirement and nothing changes by adding this.
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE valuation_cycles ADD COLUMN required_roles TEXT"))
+    except Exception:
+        pass  # column already exists
+
+
+def get_required_roles(engine, cycle_id: int) -> tuple:
+    """Which committee roles must approve a record in this cycle.
+
+    Defaults to the full COMMITTEE_ROLES. A cycle may narrow it — `required_roles` holds
+    a comma-separated subset — which is a DELIBERATE, RECORDED relaxation of a financial
+    control, not a convenience: a published valuation feeds the One Pager, the cap stack,
+    the Dashboard KPIs and NAV, and the committee sign-off is what makes it authoritative.
+
+    It lives on the cycle rather than in code so that it is scoped to one year, visible in
+    the data, reversible by a single UPDATE, and legible after the fact — a reader can see
+    what was required AT THE TIME a given record was approved. Changing the COMMITTEE_ROLES
+    constant instead would silently re-scope every past and future cycle.
+
+    An unknown or empty value falls back to the full committee: narrowing must be
+    explicit, and a typo must not quietly drop a requirement.
+    """
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT required_roles FROM valuation_cycles WHERE id = :i"),
+                {"i": cycle_id},
+            ).fetchone()
+    except Exception:
+        return tuple(COMMITTEE_ROLES)
+    if not row or not row[0]:
+        return tuple(COMMITTEE_ROLES)
+    wanted = tuple(r.strip().lower() for r in str(row[0]).split(",") if r.strip())
+    valid = tuple(r for r in wanted if r in COMMITTEE_ROLES)
+    return valid or tuple(COMMITTEE_ROLES)
 
 
 def _now() -> str:
@@ -1233,12 +1271,19 @@ def committee_approve(engine, record_id: int, member_roles: List[str], username:
 
     with engine.connect() as conn:
         row = conn.execute(
-            text("SELECT status FROM valuation_records WHERE id = :i"), {"i": record_id}
+            text("SELECT status, cycle_id FROM valuation_records WHERE id = :i"),
+            {"i": record_id},
         ).fetchone()
     if not row:
         raise ValueError(f"Valuation record {record_id} not found")
     if row[0] not in ("signed_off", "approved"):
         raise ValueError("The analyst must sign off before the committee approves")
+
+    # What this CYCLE requires, which may be narrower than the full committee. Note the
+    # gate above still admits any COMMITTEE_ROLES holder: a role that is not *required*
+    # may still approve, and that approval is still recorded. Narrowing changes what is
+    # sufficient, never who is permitted.
+    required = get_required_roles(engine, row[1])
 
     with engine.begin() as conn:
         for role in roles:
@@ -1256,7 +1301,7 @@ def committee_approve(engine, record_id: int, member_roles: List[str], username:
             WHERE record_id = :r AND active = 1 AND action = 'approve'
         """), {"r": record_id}).fetchall()}
 
-    fully_approved = all(r in approved_roles for r in COMMITTEE_ROLES)
+    fully_approved = all(r in approved_roles for r in required)
     if fully_approved and row[0] != "approved":
         with engine.begin() as conn:
             conn.execute(text("""
@@ -1268,7 +1313,11 @@ def committee_approve(engine, record_id: int, member_roles: List[str], username:
     return {
         "status": "approved" if fully_approved else "pending",
         "approved_roles": sorted(approved_roles),
-        "missing_roles": [r for r in COMMITTEE_ROLES if r not in approved_roles],
+        "missing_roles": [r for r in required if r not in approved_roles],
+        # Surfaced so a caller can see the requirement it was judged against rather than
+        # assuming the full committee. A narrowed cycle should be obvious in the response.
+        "required_roles": list(required),
+        "committee_narrowed": list(required) != list(COMMITTEE_ROLES),
     }
 
 
