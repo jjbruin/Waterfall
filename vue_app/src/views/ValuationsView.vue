@@ -516,6 +516,51 @@ async function approveRecord() {
   }
 }
 
+/** Seats still outstanding on this record — what an admin override would cover. */
+const outstandingSeats = computed<string[]>(() => {
+  const approved: string[] = record.value?.approval_state?.approved_roles || []
+  return COMMITTEE_ROLES.filter(r => !approved.includes(r))
+})
+
+/**
+ * Cast the outstanding committee votes as an ADMIN OVERRIDE.
+ *
+ * This exists because a seat can be vacant — nobody holds president or ceo — which
+ * leaves a cycle unclosable, and because a mis-entered valuation has to be correctable.
+ * It does NOT weaken the control: every seat voted this way is written with
+ * cast_on_behalf / cast_by_admin, under this user's name, with the reason below, so the
+ * record shows one person voting several seats rather than several members agreeing.
+ * The backend refuses it without a reason; the prompt here is not the enforcement.
+ */
+async function approveOnBehalf() {
+  if (!selectedRecordId.value) return
+  const seats = outstandingSeats.value
+  if (!seats.length) return
+  const reason = window.prompt(
+    `Cast the ${seats.join(' and ')} vote${seats.length > 1 ? 's' : ''} as an admin override.\n\n` +
+    `This is recorded against the approval under your name — the record will show that ` +
+    `you voted ${seats.length > 1 ? 'these seats' : 'this seat'}, not that ` +
+    `${seats.length > 1 ? 'their holders' : 'its holder'} approved.\n\n` +
+    `Reason (required):`, '')
+  if (reason === null) return
+  if (!reason.trim()) {
+    error.value = 'An admin override needs a reason — it is recorded against the approval.'
+    return
+  }
+  try {
+    const res = await api.post(
+      `/api/valuations/records/${selectedRecordId.value}/approve`,
+      { note: reason.trim(), on_behalf_of: seats })
+    saveMsg.value = res.data.status === 'approved'
+      ? `Approved — ${(res.data.cast_on_behalf_roles || []).join(', ')} cast by you as an override. You can now Publish.`
+      : `Approval recorded — still waiting on: ${(res.data.missing_roles || []).join(', ')}`
+    setTimeout(() => (saveMsg.value = ''), 8000)
+    await openRecord(selectedRecordId.value)
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
+  }
+}
+
 async function returnRecord() {
   if (!selectedRecordId.value) return
   const note = prompt('Return to the asset manager — what needs to change? (required)')
@@ -1025,9 +1070,22 @@ watch(selectedCycleId, () => {
         </div>
         <div class="header-controls" v-if="record">
           <div v-if="record.status === 'signed_off' || record.status === 'approved'" class="committee-chips">
+            <!-- A seat voted by someone who does not hold it reads differently: the tick
+                 becomes a bullet and the chip names who cast it. A chip that looked
+                 identical either way would undo the point of recording the override. -->
             <span v-for="role in COMMITTEE_ROLES" :key="role" class="role-chip"
-                  :class="{ done: record.approval_state?.approved_roles?.includes(role) }">
-              {{ record.approval_state?.approved_roles?.includes(role) ? '✓' : '○' }} {{ ROLE_LABELS[role] }}
+                  :class="{ done: record.approval_state?.approved_roles?.includes(role),
+                            'on-behalf': record.approval_state?.cast_on_behalf?.[role] }"
+                  :title="record.approval_state?.cast_on_behalf?.[role]
+                            ? 'Cast on behalf of ' + ROLE_LABELS[role] + ' by admin '
+                              + record.approval_state.cast_on_behalf[role]
+                            : ''">
+              {{ record.approval_state?.cast_on_behalf?.[role]
+                   ? '•' : (record.approval_state?.approved_roles?.includes(role) ? '✓' : '○') }}
+              {{ ROLE_LABELS[role] }}
+              <template v-if="record.approval_state?.cast_on_behalf?.[role]">
+                (by {{ record.approval_state.cast_on_behalf[role] }})
+              </template>
             </span>
           </div>
           <span class="status-badge" :class="statusBadge(record.status)">{{ STATUS_LABELS[record.status] || record.status }}</span>
@@ -1041,6 +1099,17 @@ watch(selectedCycleId, () => {
                         && !COMMITTEE_ROLES.every(r => !perms.committee_roles.includes(r) || record.approval_state?.approved_roles?.includes(r))"
                   class="btn-primary" @click="approveRecord">
             Approve
+          </button>
+          <!-- A seat can be VACANT — nobody holds president or ceo — which leaves a
+               cycle unclosable, and a mis-entered valuation has to be correctable. The
+               backend records every seat voted this way as an override under the admin's
+               own name with a mandatory reason, so this does not weaken the control, it
+               documents the exception. Without this button the capability existed only
+               over the API, which is how a record sat 'approved'-looking but pending. -->
+          <button v-if="auth.isAdmin && record.status === 'signed_off' && outstandingSeats.length"
+                  class="btn-secondary" @click="approveOnBehalf"
+                  :title="'Records the vote as cast by you on behalf of: ' + outstandingSeats.join(', ')">
+            Approve on behalf of {{ outstandingSeats.join(', ') }}
           </button>
           <button v-if="(perms.can_approve || perms.is_recorder) && (record.status === 'signed_off' || record.status === 'approved')"
                   class="btn-secondary" @click="returnRecord">
@@ -1831,6 +1900,13 @@ textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--color-border)
   background: #eeeeee; color: #777;
 }
 .role-chip.done { background: #e8f5e9; color: #2e7d32; }
+/* An overridden seat must not read as a normal approval at a glance. Amber, not the
+   green of a role-holder's own vote — the difference is the record. */
+.role-chip.on-behalf {
+  background: #fff4e5;
+  color: #8a5a00;
+  border: 1px solid #f0c26b;
+}
 .dir-up { color: #2e7d32; }
 .dir-down { color: #b3402f; }
 .qa-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }

@@ -623,10 +623,18 @@ def get_record(engine, record_id: int, data: dict) -> Dict[str, Any]:
     rec["questions"] = [_row_dict(q) for q in questions]
     rec["approvals"] = [_row_dict(a) for a in approvals]
     approved_roles = {a._mapping["member_role"] for a in approvals if a._mapping["action"] == "approve"}
+    # Which seats were voted by someone who does not hold them. Surfaced on the record,
+    # not just in the approve response, so the UI can mark them every time the record is
+    # opened — an override that is only visible at the moment it is cast is not a record.
+    _behalf = {a._mapping["member_role"]: a._mapping.get("username")
+               for a in approvals
+               if a._mapping["action"] == "approve" and a._mapping.get("cast_on_behalf")}
     rec["approval_state"] = {
         "approved_roles": sorted(approved_roles),
         "missing_roles": [r for r in COMMITTEE_ROLES if r not in approved_roles],
         "is_approved": rec.get("status") == "approved",
+        "cast_on_behalf": _behalf,
+        "has_admin_override": bool(_behalf),
     }
     rec["ai_summary_meta"] = _row_dict(ai_meta) if ai_meta else None
     rec["effective_classification"] = rec.get("classification_override") or rec.get("classification")
