@@ -153,16 +153,65 @@ premise. Both are required. When a commit is a symptom repair — even a well-re
 well-documented one — say so to Jim, with the affected deals and figures, and get his
 call BEFORE building the image. Deploy is not the place to discover the question.
 
-All deploys use Azure CLI (GitHub Actions secrets are not configured).
+#### Pre-flight — run this BEFORE `az acr build`, every time
+
+Step 0 below is not "check you are on the right commit". It is **establish what is
+actually shipping, and review all of it.** These four steps are the deploy; the `az`
+commands are just what you type afterwards.
+
+```bash
+# P1. What is live RIGHT NOW? The image tag is the SHA, so this answers it.
+az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 \
+  --query "[?properties.active].{name:name,image:properties.template.containers[0].image}" -o table
+
+# P2. What would ship? THE SPAN IS AGAINST THE LIVE IMAGE, NOT AGAINST LOCAL HEAD.
+git fetch origin
+git log --oneline <live-sha>..<target-sha>      # <live-sha> from P1
+
+# P3. The tree must be clean and at the target — ACR uploads the WORKING TREE, not a git ref.
+git rev-parse --short HEAD
+git status --porcelain                          # must be empty
+
+# P4. Read the diff of EVERY commit P2 listed, against the checklist above.
+git show <sha>                                  # for each one
+```
+
+**P2 is the step that gets skipped, and skipping it is how unreviewed code ships.**
+On `v429` (Sep 11 2026) the request was "deploy 33a4bf5". Local main was two commits
+behind origin, and the live image was five behind that — so **seven commits shipped, not
+one**, including three of Charlene's investor-facing One Pager print commits that the
+previous handoff had explicitly flagged as needing this review first. Only the two-commit
+local span was reviewed. Nothing broke, but nobody had looked.
+
+A commit is not exempt because someone else wrote it, because it is "only" a docs or
+script commit, or because it was already on main. If P2 lists it, it ships, and you own
+reviewing it.
+
+**If P2 lists anything you did not expect, stop and reconcile before building.** That is
+the signal, not a formality.
+
+Then: symptom repair found → tell Jim, with affected deals and figures, and get his call.
+Clean → build.
+
+All deploys use Azure CLI (GitHub Actions secrets are not configured). `.github/workflows/deploy.yml`
+exists but is **deliberately not wired up** — it triggers on push to main, which would ship
+code without this pre-flight, and it deploys `:latest`, which is untraceable. Do not enable it
+without changing both.
+
+**Who can deploy**: Jim, and Charlene (`cbui@peaceablestreet.com`) as of Sep 11 2026 —
+Contributor scoped to the registry `acrwaterfalldev` and the container app
+`app-waterfall-dev-v2` only, not the resource group. Note `AcrPush` is NOT sufficient for
+`az acr build`: it grants only `pull/read` and `push/write`, while the build needs
+`scheduleRun/action` and `listBuildSourceUploadUrl/action`.
 
 **Tag every image with the commit SHA it was built from, and deploy that tag — never `:latest`.**
 `:latest` is mutable, so a revision pointing at it cannot be traced back to a commit once the
 next build overwrites the tag. Deploy the SHA tag and the running revision names its own source.
 
 ```bash
-# 0. Build from a known commit — the ACR build uploads the local working tree, not a git ref
-git rev-parse --short HEAD          # confirm you are on the commit you intend to ship
-git status --porcelain              # must be empty, or the image contains uncommitted work
+# 0. Pre-flight P1-P4 above is done and clean. Do not start here.
+#    (P3 already proved HEAD is the target and the tree is clean — ACR uploads the
+#    WORKING TREE, not a git ref, so an unclean tree ships uncommitted work.)
 
 # 1. Build in ACR, tagged with the commit SHA (--no-logs avoids a unicode crash)
 SHA=$(git rev-parse --short HEAD)
