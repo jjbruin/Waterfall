@@ -473,6 +473,47 @@ def _append_isbs_supplements(assembled: pd.DataFrame, config: dict) -> pd.DataFr
             logger.info(f"ISBS appended {len(supp):,} rows from {table_name} (cols: {list(supp.columns)})")
         except Exception:
             pass  # table doesn't exist yet — not an error
+
+    # THE APP WINS WHERE BOTH EXIST. Supplements are appended, not merged, so once MRI
+    # loads an approved budget the same (vcode, dtEntry, vSource, vAccount) is present
+    # twice and every consumer double-counts it — an NOI that silently doubles is far
+    # worse than either version being wrong.
+    #
+    # The supplement is kept because THE APP IS WHERE THE WORK IS DONE (Jim, Sep 11
+    # 2026): a partner budget is imported here, questioned line by line against the
+    # appraiser's starting points, and re-imported until final. MRI receives it only
+    # after that. So where the two disagree, MRI is the older copy by construction.
+    #
+    # Dropped rows are counted, not silent — a large number means MRI has caught up and
+    # those supplement rows are candidates for retirement.
+    key = [c for c in ('vcode', 'dtEntry', 'vSource', 'vAccount') if c in assembled.columns]
+    if key and '_is_supplement' in assembled.columns:
+        assembled['_is_supplement'] = assembled['_is_supplement'].fillna(False)
+        is_supp = assembled['_is_supplement'].astype(bool)
+
+        # ONLY MRI ROWS THAT AN APP ROW ACTUALLY COVERS ARE DROPPED. It is tempting to
+        # write this as drop_duplicates(subset=key, keep='last') with supplements sorted
+        # last — that is wrong and was measured to be wrong: ISBS IS A JOURNAL, so one
+        # (vcode, dtEntry, vSource, vAccount) legitimately carries MANY rows which every
+        # consumer SUMS. On the live snapshot that formulation took isbs_raw from 797,660
+        # rows to 439,268, silently deleting 358,392 genuine MRI entries and roughly
+        # halving every NOI on the platform.
+        #
+        # So: build the set of keys the supplements cover, and remove MRI rows on those
+        # keys only. MRI-vs-MRI duplication is untouched because it is not duplication.
+        if is_supp.any():
+            supp_keys = set(map(tuple, assembled.loc[is_supp, key].astype(str).values))
+            if supp_keys:
+                mri_keys = pd.Series(
+                    list(map(tuple, assembled.loc[~is_supp, key].astype(str).values)),
+                    index=assembled.index[~is_supp])
+                shadowed_idx = mri_keys[mri_keys.isin(supp_keys)].index
+                if len(shadowed_idx):
+                    assembled = assembled.drop(index=shadowed_idx).reset_index(drop=True)
+                    logger.info(
+                        "ISBS: %d MRI row(s) on %d key(s) superseded by an app supplement "
+                        "— the app is the source while a budget is being vetted",
+                        len(shadowed_idx), len(supp_keys))
     return assembled
 
 
