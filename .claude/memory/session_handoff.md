@@ -1,4 +1,32 @@
-# Session Handoff — through Sep 11 2026 (v429 live)
+# Session Handoff — through Sep 11 2026 (v440 live)
+
+## Latest: v440 = `0ad313a` (Sep 11 2026, evening)
+The valuation section's budget work. **Read `open_items.md` §5 for the full picture** —
+asset management's six comments and what shipped against each.
+
+- **One line-mapping screen for both spreadsheet sources** — the partner's budget
+  workbook and the appraiser's Argus download, under Budget Review. Argus arrives
+  pre-filled from the keyword rules and every guess is tagged as one; that mapping had
+  been applied silently at import since it was written, which was AM's complaint.
+- **Modeled debt service in the Budget and Valuation columns.** An Argus download is
+  unlevered, so the Valuation DSCR was blank. Interest → **5190** (not the AM forecast's
+  7030 — see §5.8), balloons excluded, Estimate column untouched.
+- **`isbs_budget_is_supplements` is protected; the other four supplements are NOT.**
+  Protect what the app writes. Protecting `isbs_uw_supplements`, which has no app write
+  path, froze its 56 rows instead of protecting them — caught in the deploy pre-flight
+  for this revision, before the image was built.
+
+**Two things to pick up:**
+1. **§3.10 — the Azure app admin password was committed in plaintext** from Jul 13 to
+   Sep 11 2026 in `MEMORY.md`, the file every session reads first. Removed from the tree,
+   still in git history. **Jim: rotate it.** Second credential exposure in as many weeks.
+2. **§3.11 — `isbs_budget_is_supplements` has never been created on PostgreSQL.** The
+   first partner budget imported on Azure creates it. Same shape as the `v435` defect;
+   worth one small import before a cycle depends on it.
+
+---
+
+## Previously: v429
 
 Rolling handoff for the next session/developer. Update in place; keep only what is still
 live. Per-revision post-mortems live in `.claude/memory/deploy_history.md` (CLAUDE.md keeps

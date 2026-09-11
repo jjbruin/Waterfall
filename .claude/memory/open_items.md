@@ -385,6 +385,108 @@ collapse is independent of ISBS and holds either way. Also: the guardrail swept 
 co-terminous child loans would also collapse — correctly, but untested. Re-run
 `scripts/burton_loandump.py` against PG.
 
+### 3.10 The Azure app admin password was committed in plaintext for two months
+`.claude/memory/MEMORY.md:45` carried `admin / Qu@kers_12` from **Jul 13 2026**
+(`670902e`, "Share Claude Code memory files via repo") until it was removed on **Sep 11
+2026**. It sat in the file every session is instructed to read first, and in every clone
+of the repo.
+
+Same class as the `wfadmin` Postgres credential (§4, five months public). The line is
+gone from the working tree; **it is still in git history and cannot be removed from it
+without a rewrite, so the credential must be treated as exposed.**
+
+Owner: **Jim** — rotate the account password, and check the app's login audit for
+sign-ins that were not the team's. Whether it was ever used is not knowable from here,
+which is exactly what was true of `wfadmin`.
+
+Recommended, beyond rotating: the pre-commit hook at `scripts/hooks/pre-commit` blocks
+`://user:secret@` URLs but not a bare `user / password` line. Widening it is cheap.
+
+### 3.11 `isbs_budget_is_supplements` has never been created on PostgreSQL — the next 3.9
+The budget import creates its table on first write (`budget_import_validate._ensure_table`)
+and every column is double-quoted, which is exactly the defect `v435` shipped. But that
+code path **has only ever run against local SQLite.** The table does not exist on Azure
+and will be created by whoever imports the first partner budget.
+
+`scripts/sql_mixedcase_identifier_check.py` passes on it, but that is a static check —
+§3.9 is the standing lesson that a static check is not a run. Recommended: import one
+small budget on Azure and confirm the rows land and the comparison reads them, before the
+team relies on it. Cheap now, expensive during a valuation cycle.
+
+---
+
+## 5. Valuation section — asset management's six comments (Sep 11 2026)
+
+Feedback from AM on the first pass at the valuation section, with what shipped against
+each. Three are done and live in `v440`; the rest are here so they are not lost.
+
+### 5.1 Build out the NAV display — OPEN
+Design exists in `valuation_nav_module.md`. Not started.
+
+### 5.2 NOI basis in the summary chart — DECISION NEEDED (Jim)
+AM asked for either **2025 actual vs 2026 Projected YE**, or **2026 Projected YE vs 2027
+Budget**. These answer different questions — the first is "how did we do", the second is
+"what are we underwriting" — and the chart can only carry one as its default. Nothing to
+build until this is settled.
+
+### 5.3 Debt service and partnership costs in the Argus cashflow, automated
+**Debt service: DONE — `v440` (`01f9e47`).** An Argus download is unlevered, so the
+Valuation column showed 0 interest, 0 principal and a blank DSCR.
+`valuation_debt_service.py` builds the monthly schedule from the deal's own loan terms —
+the same engine behind Deal Analysis and the waterfall — and `get_budget_review`
+substitutes it into the **Budget and Valuation columns only**. The Estimate column is
+left alone: it means actuals, and its interest was actually paid. Balloons excluded,
+child-property loans included, "cannot model" returns unavailable with a reason rather
+than a zero. Guardrail `scripts/valuation_debt_service_check.py`, 34 checks.
+
+**Partnership costs: OPEN.** Accounts 5120/5130, below the line, not a debt-engine
+concern. They would come from the budget or from actuals; nothing built.
+
+### 5.4 A spot to load the budget with GL mapping — DONE, `v440`
+Budget Review tab → "Load Partner Budget". Excel in, category-then-account mapping,
+quality checks, writes `isbs_budget_is_supplements`. Re-importable until final: a commit
+replaces the same months rather than stacking revisions. See §5.9 for the MRI export,
+which is the part of Jim's original request that is NOT built.
+
+### 5.5 Cannot see or interact with code mapping for valuation — DONE, `v440`
+Budget Review tab → "Review Argus Coding". The 56 keyword rules in
+`argus_parser.ARGUS_COA_MAP` had always been applied silently at import; the same screen
+now shows each guess tagged "keyword guess" and lets the analyst change it before it
+feeds the Valuation column. Same component as 5.4 — `LineMappingPanel.vue`, one flow,
+`source` is the only difference.
+
+### 5.6 Extract key valuation assumptions — CLOSED, not a defect
+AM reported the 30 Bearfoot AI extraction "did not get the same details". Checking the
+records showed the extraction had not been run with the completeness check, not that it
+was broken. Completeness validation shipped (`valuation_ai_service._missing_sections`,
+one targeted re-ask, `scripts/valuation_ai_completeness_check.py`). Remaining action is
+to **show AM the AI tab** — a walkthrough, not a build.
+
+### 5.7 Prospective and refi loans are not in the valuation debt layer — OPEN
+`valuation_debt_service` models loans from `mri_loans_raw` only. A modeled refinance
+lives in `planned_loans.py` and is not consulted. Immaterial for a 12-month budget;
+material across an appraiser's ten-year horizon, which is where the Valuation column
+comes from. Same note applies to variable-rate loans, which `loans.py:123` models
+interest-only for their full term — the screen warns about this, it is not silent.
+
+### 5.8 Interest lands on 7030 in the AM forecast and 5190 in the valuation comparison
+`INTEREST_ACCTS = {7030, 5190}`, and `compute.py` writes `list(INTEREST_ACCTS)[0]`, which
+yields **7030**. The budget comparison reads `IS_ACCOUNTS['DEBT_SERVICE']['Interest']`,
+which is **`['5190']`**. So the two disagree about where modeled interest belongs.
+
+`v440` writes 5190 in the valuation section (Jim's call, Sep 11 2026) and deliberately
+left the AM forecast alone — changing which account it writes would move Property
+Financials rows on every deal, which is not a side effect to make while fixing a
+valuation screen. **The divergence is now intentional and documented, which is better
+than accidental, but it is still a divergence someone will trip over.** Worth settling
+deliberately. Note also that `list(a_set)[0]` is a fragile way to pick an account.
+
+### 5.9 Export `isbs_budget_is_supplements` to MRI — NOT STARTED
+The last step of Jim's original budget request: once a budget is final in the app, send
+the whole table to MRI to load. Nothing built. Note this is the reason the table is in
+`PROTECTED_TABLES` while the other four supplements are not — the app is its writer and,
+until this export exists, its only copy.
+
 ---
 
 ## 4. Resolved since the Aug 2026 notes — do NOT re-open

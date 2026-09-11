@@ -12,6 +12,54 @@ part of the branch they came from.
 
 Newest first. Revisions absent from this file (`v396` and older, apart from the few
 noted) carry no recorded post-mortem; their SHAs are in the CLAUDE.md index.
+## v440 = `0ad313a`
+
+Deployed Sep 11 2026, 23:05 UTC. Build `cah7`, 2m18s — a real build, not one of the
+5-second fast-fails. Tag locked. `RunningAtMaxScale`, 100% traffic, v439 deprovisioned.
+
+**Asked for as "deploy 01f9e47". EIGHT commits shipped, and the target moved.** The live
+image was `v439` = `e469d9b`; the span `e469d9b..01f9e47` was seven commits, four of them
+written earlier the same day and never reviewed against the deploy checklist.
+
+**P4 found a regression, and it was fixed before the image was built.** `8016874` had put
+all five ISBS supplement tables into `PROTECTED_TABLES`. That is right for
+`isbs_budget_is_supplements` — the app writes it and holds the only copy of a budget
+between import and approval — and wrong for the other four, whose ownership runs the
+other way: a CSV is their source of record and `to_sql(if_exists="replace")` is their
+*designed* refresh.
+
+`isbs_uw_supplements` has **no app write path at all**. Protecting it did not make its 56
+rows safe, it made them unchangeable — and those rows feed the One Pager's underwritten
+PE ROE through account 7073. CLAUDE.md documented the table as "importable via CSV
+upload"; that sentence had quietly become false. **Protection without a write path is a
+lockout, not a safeguard.** Jim's call: narrow it to the one table the app writes. That
+fix is `0ad313a`, which is what actually shipped — deploying the requested `01f9e47`
+would have shipped the lockout.
+
+The rest of the span was reviewed clean: `data_service`'s ISBS precedence block
+re-measured at **797,660 rows, unchanged** (the figure that matters, since an earlier
+`drop_duplicates` formulation of the same rule took it to 439,268), 21/21 on its
+guardrail; everything else new files, new endpoints, or the debt-service substitution
+built the same day.
+
+**What went live**: the shared budget/Argus line-mapping screen, and modeled debt service
+in the Budget and Valuation columns of the budget comparison. See `open_items.md` §5.
+
+**Verified on the live app** by busting `index.html` with both a `Cache-Control: no-cache`
+header and a `?cb=` query, then resolving the route chunk from *that* response —
+`ValuationsView-CYKSjhzs.js`, 75,888 bytes — and confirming the mapping tabs, the
+reconciliation panel, the "keyword guess" tags, the four `mapping/*` calls and both debt
+notes are present. That procedure exists because three "failed deploy" reports in this
+project were stale cached chunks, not failed deploys.
+
+Guardrails before build, all green: supplement precedence 19/19, budget import 42/42,
+line mapping 36/36, debt service 34/34, refresh-table keys 14/14, capital-call CRUD
+49/49, mixed-case SQL clean across 183 files. App boots at 360 routes.
+
+**Noted against myself**: `az acr build` ran twice — the second only to capture the run
+id, which the first invocation had already printed. Same source, no harm, a couple of
+wasted minutes of build agent. Read the output you already have.
+
 ## v429 = `33a4bf5`
 
 Deployed Sep 11 2026, 12:49 UTC. Digest `sha256:e95be886…`, tag locked. Healthy,

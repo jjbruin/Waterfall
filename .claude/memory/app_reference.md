@@ -231,6 +231,41 @@ Upstream waterfall analysis for any portfolio entity (generalized version of PSC
 - **Computation** — Button-gated. Runs deal-level waterfalls + recursive upstream waterfalls for the selected entity.
 - **Output** — Partner returns, deal detail drill-down, investor-level metrics.
 
+### 10b. Valuations
+Annual valuation cycle: records → sign-off → committee approval → publish. Vue:
+`ValuationsView.vue`. Flask: `valuations.py` + `valuation_service.py` (360 routes as of
+`v440`). Documented Sep 11 2026 — this section had been missing entirely.
+
+- **Cycle / record list** — filter by status, class, text. A record is one deal in one
+  cycle, carrying the appraiser's Argus import (`argus_import_id`) once linked.
+- **Assumptions tab** — entered valuation assumptions, and the linked Argus import.
+- **Budget Review tab** — the comparison this module exists for:
+  **Estimate | Budget | Valuation**, ~27 category rows from `config.IS_ACCOUNTS`, then
+  Interest / Principal / Total Debt Service / DSCR and the below-the-line block.
+  - *Estimate* = actuals through the last reported month + budget for the rest of the
+    cycle year. *Budget* = next year's budget (`isbs_budget_is` + the app's supplement).
+    *Valuation* = year 1 of the linked Argus forecast.
+  - **Line mapping panels** (`v440`) — two tabs on one shared component,
+    `LineMappingPanel.vue`: **Load Partner Budget** and **Review Argus Coding**. Upload →
+    per-line category dropdown (ranked by the deal's own usage) → account within it
+    (defaulted to the deal's most-used) → flip toggle → reconciliation panel
+    (stated vs computed revenue, expenses, NOI) → warnings → commit. Budget writes
+    `isbs_budget_is_supplements`; Argus writes COA overrides on its import. Committing
+    rebuilds the comparison above.
+  - **Debt service is modeled, not read from the files** (`v440`) — see the CLAUDE.md
+    section. Budget and Valuation columns only; the panel note says so, names the loan
+    count, and flags variable-rate loans.
+  - Occupancy trend strip + analyst commentary.
+- **Balance Sheet tab** — prior year end vs latest reported, with a note when the
+  requested as-of month is not yet in ISBS.
+- **Q&A / AI tabs** — appraisal upload and `claude-sonnet-4-6` extraction, reconciled
+  against the entered assumptions. Completeness validation (`_missing_sections`, one
+  targeted re-ask) added Sep 11 2026; an incomplete extraction says so on the panel.
+- **NAV tab** — see `valuation_nav_module.md`; largely unbuilt (`open_items.md` §5.1).
+- **Approval** — `president` / `ceo` / `cio` seats, per-cycle scope. An admin can
+  **approve on behalf of** an outstanding seat; the vote records who it was cast for
+  (amber chip on the UI). Publish writes `valuations` / `mri_val`.
+
 ### 11. New Business
 Deal pipeline, lease due diligence, and deal evaluation workspace under the "New Business" sidebar section.
 

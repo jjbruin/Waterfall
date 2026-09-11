@@ -452,6 +452,40 @@ several. Expandable box on Deal Analysis, directly above the Sale row.
 - **All three modes process in date order**: `pro_rata`/`fixed` remainders are runner events (`build_manual_parcel_events()` + `manual_events` on `run_interleaved_waterfalls`) — pref accrues to the parcel date on the pre-cut balance, then the return of capital reduces the pools, so pref for every later period accrues on the reduced capital, same as the `waterfall` mode.
 - **API**: `GET/POST /api/deals/<vcode>/parcel-sales`, `PUT/DELETE /api/deals/<vcode>/parcel-sales/<id>`, `GET /api/deals/<vcode>/parcel-sales/tenants`. Validation runs server-side on create and update; errors block the save, warnings do not.
 
+### Valuation Budget Comparison — loading it, and levering it
+The Budget Review tab's comparison is **Estimate | Budget | Valuation**. Two of those
+columns are loaded from somebody else's spreadsheet, and the debt rows are ours.
+
+- **One screen for both sources** (`LineMappingPanel.vue`, `line_mapping_service.py`,
+  four endpoints under `/api/valuations/records/<id>/mapping/`). `source` is `budget`
+  (partner's workbook → `isbs_budget_is_supplements` → Budget column) or `argus`
+  (appraiser's download → COA overrides via `argus_service.update_coa_mapping` →
+  Valuation column). Same job, same rules, same screen.
+- **Category first, then an account within it.** The categories are the ~27 rows the
+  comparison renders; a bare account number asks the analyst to translate from a
+  169-item list into a row they cannot see. The account is still required — the
+  supplement stores `vAccount` and NOI/FAD/DSCR/waterfall all read accounts — and
+  defaults to the one that deal used most in the last 12 months.
+- **The flip default is PER ACCOUNT, from the deal's own history**, never from the
+  4xxx/5xxx prefix: 4030 Residential Vacancy and 4042 Loss to Lease are 4xxx stored
+  POSITIVE, 5220 Other (Income) Expense is 5xxx stored NEGATIVE.
+- **Unmapped lines never block.** Spreadsheets carry subtotals and skipping them is
+  correct; `reconcile()` shows stated-vs-computed revenue, expense and NOI so the analyst
+  can tell a skipped subtotal from a missed line. Anything announcing itself as a total
+  is flagged and never pre-filled — "Total Capital Expenditures" matched the Argus
+  keyword rules and would have double-counted capex.
+- **Commit REPLACES, scoped to (vcode, the periods in THIS file)** — a budget is
+  re-imported until final and appending would stack every revision.
+- **Debt service is MODELED, Budget and Valuation columns only**
+  (`valuation_debt_service.py`). An Argus download is unlevered, so those columns showed
+  0 interest, 0 principal and a blank DSCR. Same strip-and-replace `compute.py` applies
+  to the AM forecast. **The Estimate column is never substituted** — it means actuals,
+  and its interest was actually paid. Levered only when an Argus forecast exists:
+  modeled debt over a zero NOI turns a blank DSCR into a hard `0.00`, which reads as
+  "cannot cover its debt" instead of "no forecast loaded".
+- **Interest goes to 5190 here, 7030 in the AM forecast** — see `open_items.md` §5.8.
+  Deliberate as of Sep 11 2026, not accidental, and still worth settling.
+
 ### Cap Rate at Sale / Refinance
 - **Source column**: `fCapRate` from `valuations` table (MRI_Val)
 - **Date column**: `dtValuation` — the date each cap rate was assessed
@@ -693,6 +727,12 @@ it; the sidebar map above is kept here as a quick orientation.
 - `build_pref_balance_detail()` - Per-investor pref accrual detail matching Excel PE_Pref_Balances (reports_service.py)
 - `get_deal_pe_investors()` - List PE investors for a deal from accounting (reports_service.py)
 - `generate_pref_balance_excel()` - Pref balance detail Excel with header + transaction table (reports_service.py)
+- `parse_budget_workbook()` - Partner budget Excel → lines × months, subtotal rows FLAGGED not dropped (budget_import_service.py)
+- `account_choices()` / `category_choices()` - The deal's own last-12-months accounts, and the ~27 comparison categories each with its accounts, ranked by the deal's usage with a default account (budget_import_service.py)
+- `category_accounts()` - {category: accounts} as the IMPORT sees it — config plus `_CATEGORY_ACCOUNTS_FOR_BUDGET`, so the dropdown and the not-in-category check cannot drift (budget_import_service.py)
+- `reconcile()` / `validate()` / `commit()` - Stated-vs-computed revenue/expense/NOI; blocking vs warnings; replace-by-(vcode, periods) write to `isbs_budget_is_supplements` (budget_import_validate.py)
+- `parse()` / `check()` / `commit()` - One line-mapping flow for `source` in ("budget", "argus"); Argus pre-fills from `argus_parser.map_to_coa` as a visible, editable suggestion, a budget never guesses (line_mapping_service.py)
+- `monthly_schedule()` / `for_year()` - Modeled interest (5190) and principal (7060) from the deal's own loan terms, balloons excluded, child-property loans included; returns unavailable-with-a-reason, never a zero (valuation_debt_service.py)
 - `create_request()` - Create a new user feedback request with reply token (feedback_service.py)
 - `list_requests()` - List requests with optional user/status/type filters (feedback_service.py)
 - `send_request_email()` - Send email to request submitter via SendGrid with reply link (feedback_service.py)

@@ -15,7 +15,7 @@
 - [portfolio_analysis.md](portfolio_analysis.md) — Portfolio Analysis tab (upstream entity analysis, actual/proposed modes)
 - [transfer_aware_returns.md](transfer_aware_returns.md) — Design doc: transfer-aware IRR/ROE/MOIC (scoped, not yet implemented)
 - [onepager_audit_q1_2026.md](onepager_audit_q1_2026.md) — Q1 2026 audit: Azure vs Excel One Pager (959 discrepancies, 7 code bugs, data gaps)
-- [session_handoff.md](session_handoff.md) — **CURRENT rolling handoff (Sep 10 2026, v428 live)**: the Brainerd/TIAA look-through defect (a 11/21/2024 transfer never recorded in MRI understates TIAA 63.142% vs 74.415% — root cause proved, data fix NOT made), the ownership reconciliation report and its queue, the Waterfall Setup fixes shipped in v426-v428, and FOUR COMMITS ON MAIN NOT IN THE LIVE IMAGE including three investor-facing One Pager print changes of Charlene's. Carries the durable defect list forward. Read this first.
+- [session_handoff.md](session_handoff.md) — **CURRENT rolling handoff (Sep 11 2026, v440 live)**: the valuation budget work (shared budget/Argus line mapping, modeled debt service), the app admin password exposed in git for two months and awaiting rotation, and `isbs_budget_is_supplements` never yet created on PostgreSQL. Older content below that, from Sep 10 / v428: the Brainerd/TIAA look-through defect (a 11/21/2024 transfer never recorded in MRI understates TIAA 63.142% vs 74.415% — root cause proved, data fix NOT made), the ownership reconciliation report and its queue, the Waterfall Setup fixes shipped in v426-v428, and FOUR COMMITS ON MAIN NOT IN THE LIVE IMAGE including three investor-facing One Pager print changes of Charlene's. Carries the durable defect list forward. Read this first.
 - [session_handoff_sep2.md](session_handoff_sep2.md) — Sep 2 2026 / v416 handoff, superseded but NOT stale: still the only record of TRACK 1 (investor groups around a deal / the KOC slice, Phase 0 done, Phases 1-4 open), TRACK 3 (the Sep 2 engine corrections — capital reversals, excess-CF pref, mid-month sale dates, terminal NOI window; start here if returns look wrong) and Charlene's stream v403-v416. None of it was touched on Sep 10.
 - [session_handoff_may7b.md](session_handoff_may7b.md) — Session handoff: pref accrual fix, combined table, TGA23 step deletion
 - [ai_assistant.md](ai_assistant.md) — Embedded AI assistant (Claude API, tools, streaming chat)
@@ -42,8 +42,12 @@
 - **vue_app/**: Vue 3 + Vite + Pinia + Vue Router + ECharts + AG Grid
 - **Core Python**: compute.py, waterfall.py, models.py, metrics.py, loaders.py, database.py, reporting.py, one_pager.py
 - Run Flask: `python -m flask_app.run` (port 5000); Vue: `cd vue_app && npm run dev` (port 5173, proxies /api to Flask)
-- **Azure admin**: admin / Qu@kers_12
-- **Local admin**: admin / admin
+- **Azure admin**: a real user account. NO PASSWORD IS RECORDED HERE — one was, in
+  plaintext, from Jul 13 to Sep 11 2026, in the file every session is instructed to read
+  first. Removed Sep 11 2026; **it is still in git history and must be treated as
+  exposed.** Same class as the `wfadmin` Postgres credential that sat public for five
+  months. Credentials belong in Azure secret refs, never in a tracked file.
+- **Local admin**: admin / admin — the LOCAL dev seed only; returns 401 against Azure.
 - **App URL**: https://app-waterfall-dev-v2.icyplant-026fb2db.eastus.azurecontainerapps.io
 - **Deploy**: `az acr build ... --no-logs .` then `az containerapp update ... -n app-waterfall-dev-v2 --revision-suffix vNN`
 
@@ -53,7 +57,14 @@
 - `prepare_cap_lookups()` — batch pre-computation for dashboard capitalization loop (3.7x faster)
 - `get_cached_caps_and_occ()` — shared caps/occ cache in `dashboard_service.py`, used by both Dashboard and Surveillance for identical KPIs (debt, occupancy). Eliminates redundant computation and double-counting of child property debt.
 - `run_interleaved_waterfalls()` — merges CF/Cap timelines chronologically with shared InvestorState
-- `PROTECTED_TABLES` = waterfalls, one_pager_comments, waterfall_audit, review_roles, review_submissions, review_notes, prospective_loans, prospective_loans_audit, planned_loans, sale_overrides, user_requests, user_request_messages, surveillance_comments, lease_reviews, lease_tenants, lease_documents, lease_rent_steps, lease_cotenancy, lease_cotenancy_refs, lease_exclusive_use, lease_options, lease_validation, prospect_deals, prospect_properties, prospect_entities, prospect_investors, prospect_assumptions, prospect_cashflows, prospect_activity
+- `PROTECTED_TABLES` — **read it from `database.py`, do not trust a list copied here**;
+  it has grown well past what this file used to enumerate (capital_calls, the lease_*,
+  prospect_*, argus_*, parcel_sales and valuation_* families, plus
+  `isbs_budget_is_supplements`). The rule it encodes: **protect a table if and only if
+  the APP writes it.** A protected table is refused by every CSV import path, so
+  protecting one whose only load path IS the CSV freezes it — that happened to
+  `isbs_uw_supplements` on Sep 11 2026 and was caught in a deploy pre-flight. See
+  `open_items.md` §3.10-§3.11 and the ISBS section of CLAUDE.md.
 
 ## MRI Data Refresh (May 2026)
 - **MRI Query Service**: `mri_service.py` + 7 API endpoints + Vue sidebar UI
