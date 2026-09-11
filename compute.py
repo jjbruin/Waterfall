@@ -359,23 +359,47 @@ def get_deal_capitalization(acct, inv, wf, mri_val, mri_loans, deal_vcode,
                     val_deal = val_deal.dropna(subset=['_dt_parsed'])
                     if not val_deal.empty:
                         val_deal = val_deal.sort_values('_dt_parsed', ascending=False)
-                latest = val_deal.iloc[0] if not val_deal.empty else None
-                if latest is not None:
-                    if 'mIncomeCapConcludedValue' in val_deal.columns:
-                        val = pd.to_numeric(
-                            str(latest['mIncomeCapConcludedValue']).replace(',', '').strip(),
-                            errors='coerce')
-                        cap_data['current_valuation'] = float(val) if pd.notna(val) else 0.0
-                    if 'fCapRate' in val_deal.columns:
-                        rate = pd.to_numeric(
-                            str(latest['fCapRate']).replace(',', '').strip(),
-                            errors='coerce')
-                        cap_data['cap_rate'] = float(rate) if pd.notna(rate) else 0.0
-                    if 'nCostSaleRate' in val_deal.columns:
-                        cos = pd.to_numeric(
-                            str(latest['nCostSaleRate']).replace(',', '').strip(),
-                            errors='coerce')
-                        cap_data['cost_of_sale'] = float(cos) if pd.notna(cos) else 0.0
+                # A BLANK IN ONE COLUMN MUST NOT ZERO THE FIGURE. This used to read all
+                # three fields off `iloc[0]` — the newest row — and fall back to 0.0 on a
+                # blank. A valuation row carrying only a concluded value therefore set
+                # `cap_rate` and `cost_of_sale` to 0 even though the previous row had
+                # both, and a 0 cap rate is not inert: the Dashboard's weighted average is
+                # sum(cap_rate x valuation) / sum(valuation), so the deal's full valuation
+                # lands in the denominator contributing nothing to the numerator. One
+                # partial row on a $33.9M deal moves the portfolio KPI by 7.4 bps.
+                #
+                # Each field now falls back independently to the most recent row that
+                # actually carries it, which is what `planned_loans.projected_cap_rate_at_date`
+                # already does for fCapRate (it dropna()s before taking the last value).
+                # Fields can therefore come from different valuation dates — deliberate:
+                # a stale-but-real cap rate is a better input than a fabricated zero, and
+                # the alternative is poisoning a portfolio KPI to preserve row coherence.
+                def _latest_value(col, positive_only):
+                    """Most recent usable value in `col` (rows are newest-first), else None.
+
+                    `positive_only` because a literal 0 is not the same thing in every
+                    column. A valuation of 0 and a cap rate of 0 are not measurements —
+                    they are the blank arriving as a number, and taking either would
+                    reintroduce the defect this block exists to fix. A cost-of-sale rate
+                    of 0 is unusual but expressible, so it is taken at face value.
+                    """
+                    if col not in val_deal.columns:
+                        return None
+                    parsed = pd.to_numeric(
+                        val_deal[col].astype(str).str.replace(',', '', regex=False).str.strip(),
+                        errors='coerce')
+                    parsed = parsed[parsed > 0] if positive_only else parsed.dropna()
+                    return float(parsed.iloc[0]) if not parsed.empty else None
+
+                if not val_deal.empty:
+                    for _col, _key, _pos in (
+                        ('mIncomeCapConcludedValue', 'current_valuation', True),
+                        ('fCapRate', 'cap_rate', True),
+                        ('nCostSaleRate', 'cost_of_sale', False),
+                    ):
+                        _v = _latest_value(_col, _pos)
+                        if _v is not None:
+                            cap_data[_key] = _v
 
         senior_exposure = cap_data['debt'] + cap_data['pref_equity']
         if cap_data['total_cap'] > 0:
