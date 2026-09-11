@@ -1000,7 +1000,7 @@ function printOnePager() {
                attribute does not reach inside another component. A plain div of
                our own always carries it. See .op-chart-wrap. -->
           <div class="op-chart-wrap">
-            <v-chart :option="chartOption" style="width: 100%; height: 180px;" autoresize />
+            <v-chart :option="chartOption" style="width: 100%; height: 300px;" autoresize />
           </div>
         </div>
       </div>
@@ -1170,7 +1170,7 @@ function printOnePager() {
           <div class="chart-section">
             <!-- Same as single mode: always a frame, never a message. -->
             <div class="op-chart-wrap">
-              <v-chart :option="buildChartOption(pg.chart)" style="width: 100%; height: 180px;" autoresize />
+              <v-chart :option="buildChartOption(pg.chart)" style="width: 100%; height: 300px;" autoresize />
             </div>
           </div>
         </div>
@@ -1483,22 +1483,34 @@ function printOnePager() {
    looks plausible at a glance and is empty. ECharts needs a definite pixel
    height on the element it measures; a percentage against a wrapper resolves
    too late for the series geometry.
-   180px is the size, raised from 170px once the page stopped being scaled.
-   The ceiling is measured and the thing it is measured against is NOT the
-   chart image: .chart-section draws a full-width hairline rule ~3.8pt ABOVE
-   the canvas, and that rule is the topmost thing the chart puts on the page.
-   Sizing against the canvas instead gave 195px, which printed that rule
-   straight through the last line of Burton's narrative while every
-   image-based measurement still read "no collision".
-   The deepest narrative on any deal except Poplar Prairie ends at 618.7pt
-   (Burton and 30 Bearfoot, to the point), the sheet ends at 763.5pt, so the
-   rule clears the text while 763.5 - H - 3.8 >= 618.7, i.e. H <= 188px. 180px
-   leaves 6.1pt — over half a line of clearance on the two tightest deals.
-   Poplar Prairie is the documented exception and still overlaps by design.
-   The payoff is in plot area, which is what was actually short: the box grows
-   6% but the plot band inside it grows 14%, because the title, axis labels and
-   legend are fixed px and do not grow with the box. Together with the page no
-   longer being scaled, the plot band goes 45.4pt -> 60.8pt, up a third. */
+   300px is the size, and it is the size the chart had ORIGINALLY, before any
+   of the one-page work shrank it — 300px -> 170px in 62161a9, back to 180px in
+   5be654d once the page stopped being scaled, and now the whole way back.
+
+   OVERLAP IS THE ACCEPTED COST, AND IT IS NOT CONTENT LOSS. At 300px the
+   chart's top edge sits at 538.5pt, and 26 of the 61 printable deals carry a
+   narrative that reaches past it — Poplar Prairie by 123pt, Burton and 30
+   Bearfoot by 80pt. Every character still prints. The chart is out of flow
+   (see .chart-section) so it cannot push text off the page, and the z-index
+   pair — .bp-section 1 over .chart-section 0 — puts the WORDS on top, with the
+   chart showing through behind them. A reader loses some of the plot to
+   overlap; a reader loses no text. Anyone who needs the chart clear can drag
+   it in Acrobat.
+
+   THE ALTERNATIVE WAS WORSE AND IS THE REASON THIS IS DELIBERATE. Restoring
+   300px by reverting the print chain to 8d0ef6c also restores its
+   `.bp-section { overflow: hidden; flex: 1 1 auto; min-height: 0 }` inside a
+   fixed-height sheet, where the narrative is the only flexible item and is
+   silently DELETED to make room — measured on the real print path, Burton lost
+   208 characters and its last two lease-expiry lines with no marker, on 45 of
+   56 deals. A big chart over readable text beats a big chart over text that
+   was thrown away. Keep the out-of-flow positioning and the z-index pair: they
+   are what make this height safe rather than destructive.
+
+   The two sizing facts that still hold if this is ever tuned again: the chart
+   draws a full-width hairline ~3.8pt ABOVE its canvas, and that rule, not the
+   canvas edge, is the topmost thing it puts on the page; and H <= 188px is the
+   largest height at which nothing but Poplar Prairie touches it. */
 
 /* ============================================================
    PRINT STYLES
@@ -1683,9 +1695,10 @@ function printOnePager() {
        the only element that does not fit, so it stops competing for flow space
        and the text — which always fits on its own — decides the page height.
        A long narrative now OVERLAPS the chart instead of pushing it to a second
-       page or being cut. Poplar Prairie is the only deal where that happens
-       today: its text ends 30pt into the chart's band. Both are fully present
-       in the PDF and the chart can be dragged clear in Acrobat.
+       page or being cut. With the chart back at its original 300px that is 26
+       of the 61 printable deals, deepest at Poplar Prairie (123pt) — see the
+       note on .op-chart-wrap. Both are fully present in the PDF and the chart
+       can be dragged clear in Acrobat.
        `margin-top: auto` is gone with the flow position; `break-inside` no
        longer applies to an out-of-flow box and is dropped with it. */
     position: absolute;
