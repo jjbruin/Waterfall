@@ -245,6 +245,25 @@ Portfolio-wide only 3 of 83 deals are stale: JB Fair Park (30 months), Post Comm
 Root cause of the one deal that breaks the §1.6 pro-rate fix. Fixing the extract is the
 alternative to coding the guard.
 
+### 3.4 Audit logging coverage on the rest of the infrastructure
+**Prompted by:** the Postgres server had `log_connections` on but three days of
+**undownloadable** log files and **no diagnostic settings at all** — so when it mattered
+(§4, the five-month credential exposure) there was nothing to read. Fixed for Postgres on
+Sep 11 2026; **nobody has checked whether the same is true elsewhere.**
+
+Not checked: the container app `app-waterfall-dev-v2`, the registry `acrwaterfalldev`
+(who pulled or pushed an image), the storage account, and the container app environment.
+Four Log Analytics workspaces exist in `rg-waterfall-dev` at 30-day retention, but they
+were created automatically by Container Apps — their existence is not evidence anything is
+being shipped to them.
+
+Recommended: `az monitor diagnostic-settings list` per resource, and wire anything
+security-relevant into the existing workspace the way `pg-logs` now is.
+
+The trap: an empty log query reads like "nothing happened". It usually means the log was
+never collected. Check that a category is **enabled and flowing** before treating its
+silence as evidence.
+
 ### 3.6 One Pager snapshots frozen before the chart-window change
 They still hold the old sparse quarter arrays and would need backfilling to match what the
 live chart now renders.
@@ -305,6 +324,42 @@ it" and "nothing happened" are different claims and only the first is supported.
 **Open, and larger than this incident:** the repo is public — an internal financial
 modeling app with deal vcodes, investor entity IDs and infrastructure names throughout.
 That is a decision, not a defect, and it is still Jim's to make.
+
+### Postgres had no usable log retention — fixed Sep 11 2026
+Asked of the credential incident above: did anyone actually use it during the five months?
+**The answer is unknown and unknowable**, and the reason is worth recording.
+
+What was found: `log_connections` and `log_disconnections` were **on**, so connections were
+being logged — but `logfiles.retention_days = 3`, `logfiles.download_enable = off`, and
+`az postgres flexible-server server-logs list` returned nothing. Diagnostic settings on the
+server were `[]`: logs had **never** been shipped to any of the four Log Analytics
+workspaces in the resource group (those exist only because Container Apps created them).
+Azure Activity Log caps at 90 days and covers control-plane operations, not database
+connections. Every retention mechanism was shorter than the five-month window, and the one
+with the longest retention was not connected to the database.
+
+Fixed: `logfiles.retention_days` 3 → **7**, and a `pg-logs` diagnostic setting now ships
+`PostgreSQLLogs` to `workspace-rgwaterfalldev5uCa` at **30-day** retention. Verified both.
+
+Query for authentication activity from here on:
+
+    AzureDiagnostics
+    | where Category == "PostgreSQLLogs"
+    | where Message contains "connection authorized" or Message contains "authentication failed"
+    | project TimeGenerated, Message
+    | order by TimeGenerated desc
+
+**This makes the NEXT window observable. It recovers nothing about the last one.** The only
+backward-looking check left is persistent artifacts — an unexpected login role, or a table
+owned by someone other than `wfadmin`:
+
+    SELECT rolname, rolsuper, rolcreaterole, rolcanlogin FROM pg_roles WHERE rolcanlogin ORDER BY rolname;
+    SELECT schemaname, tablename, tableowner FROM pg_tables
+     WHERE schemaname NOT IN ('pg_catalog','information_schema') AND tableowner <> 'wfadmin';
+
+Neither is conclusive — reading data leaves no trace — and **as of Sep 11 2026 neither had
+been run.** Whether the same logging gap exists on the container app, the registry and
+storage is open as §3.4.
 
 ### The `cbui` admin JWT — expired on its own, nothing to rotate (closed Sep 11 2026)
 Carried as "rotate it, whether that happened is unknown." It could not have been rotated,
