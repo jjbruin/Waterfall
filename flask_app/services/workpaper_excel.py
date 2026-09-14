@@ -32,6 +32,7 @@ from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+from flask_app.services import statement_service as ss
 from flask_app.services import workpaper_data as wd
 from flask_app.services import workpaper_service as ws
 
@@ -112,7 +113,7 @@ def build_package(package_id: int, engine=None) -> bytes:
 
     _cover(wb, used, pkg)
     _index(wb, used, pkg, detail, exhibits)
-    _statements(wb, used, entity, period_end, engine)
+    _financial_statements(wb, used, entity, period_end, engine)
     _trial_balance(wb, used, entity, period_end, engine)
     _gl_detail(wb, used, entity, period_end, engine)
     _account_summary(wb, used, entity, period_end, engine)
@@ -182,34 +183,85 @@ def _index(wb, used, pkg, detail, exhibits):
     s.column_dimensions["A"].width = 90
 
 
-def _statements(wb, used, entity, period_end, engine):
-    fs = wd.financial_statements(entity, period_end, engine=engine)
-    s = wb.create_sheet(_safe_title("Financial Statements", used))
-    s["A1"] = "Financial Statements"
-    s["A1"].font = TITLE
-    row = _provenance(s, 2,
-                      f"Trial balance through {fs['periods']['ytd_last']} folded through the "
-                      f"account-to-FS-line mapping (wp_fs_map).")
-    if not fs["statements"]:
-        s.cell(row=row, column=1,
-               value="No account mapping yet — map accounts to statement lines "
-                     "to populate this tab.").font = SUB
-        row += 2
-    for stmt, lines in fs["statements"].items():
-        s.cell(row=row, column=1, value=stmt).font = H1
+def _financial_statements(wb, used, entity, period_end, engine):
+    """Balance Sheet and Income Statement, from the statement engine.
+
+    The same call any entity's standalone statements come from -- the package
+    is one caller, not the owner, so a figure here cannot differ from the one
+    an auditor is shown elsewhere.
+    """
+    st = ss.build(entity, period_end, "both", engine=engine)
+
+    def sheet(title, block, value_label):
+        sh = wb.create_sheet(_safe_title(title, used))
+        sh["A1"] = title
+        sh["A1"].font = TITLE
+        r = _provenance(sh, 2,
+                        f"{entity} — period ended {period_end}. Built from gl_detail "
+                        f"through the account mapping; accounts are placed by GACC.TYPE. "
+                        f"Amounts are presented positive; the GL figure is beside each line.")
+        if not block or not block["sections"]:
+            sh.cell(row=r, column=1,
+                    value="No mapped accounts — map accounts to statement lines "
+                          "to populate this statement.").font = SUB
+            return sh, r + 2
+        for sec in block["sections"]:
+            sh.cell(row=r, column=1, value=sec["section"]).font = H1
+            r += 1
+            r = _table(sh, r, ["fs_line", "amount", "gl_amount"],
+                       [{"fs_line": l["fs_line"], "amount": l["amount"],
+                         "gl_amount": l["gl_amount"]} for l in sec["lines"]],
+                       money_cols=["amount", "gl_amount"])
+            c = sh.cell(row=r - 1, column=1, value=f"Total {sec['section']}")
+            c.font = Font(bold=True)
+            t = sh.cell(row=r - 1, column=2, value=sec["total"])
+            t.font = Font(bold=True)
+            t.number_format = MONEY
+            r += 1
+        return sh, r
+
+    bs = st.get("balance_sheet")
+    sh, r = sheet("Balance Sheet", bs, "closing")
+    if bs:
+        # The tie-out, printed. In GL signs a complete balance sheet nets to
+        # zero; whatever is left is what is unmapped or misclassified.
+        c = sh.cell(row=r, column=1,
+                    value="In balance" if bs["balanced"]
+                          else f"OUT OF BALANCE by {bs['out_of_balance']:,.2f} "
+                               f"— see unmapped accounts below")
+        c.font = Font(bold=True, color="2C7A3D" if bs["balanced"] else "B3261E")
+        r += 2
+        _exceptions(sh, r, st)
+
+    inc = st.get("income_statement")
+    sh2, r2 = sheet("Income Statement", inc, "ytd")
+    if inc:
+        c = sh2.cell(row=r2, column=1, value="Net income (loss)")
+        c.font = Font(bold=True)
+        v = sh2.cell(row=r2, column=2, value=inc["net_income"])
+        v.font = Font(bold=True)
+        v.number_format = MONEY
+
+
+def _exceptions(sh, row, st):
+    """Everything the statements could not place. Named, with totals."""
+    for label, rows, cols in (
+        (f"UNMAPPED — {len(st['unmapped'])} accounts, {st['unmapped_total']:,.2f} "
+         f"not on any statement line",
+         st["unmapped"], ["acctnum", "acctname", "statement", "closing"]),
+        (f"UNTYPED — {len(st['untyped'])} accounts with no usable GACC.TYPE",
+         st["untyped"], ["acctnum", "acctname", "type", "closing"]),
+        (f"CONFLICTS — {len(st['conflicts'])} accounts whose mapped section "
+         f"disagrees with GACC.TYPE",
+         st["conflicts"], ["acctnum", "acctname", "mapped_section",
+                           "gacc_type", "statement_by_type", "closing"]),
+    ):
+        if not rows:
+            continue
+        sh.cell(row=row, column=1, value=label).font = Font(bold=True, color="B3261E")
         row += 1
-        row = _table(s, row, ["fs_line", "ytd_change", "ytd_ending"],
-                     [{"fs_line": l["fs_line"], "ytd_change": l["ytd_change"],
-                       "ytd_ending": l["ytd_ending"]} for l in lines],
-                     money_cols=["ytd_change", "ytd_ending"])
-    if fs["unmapped"]:
-        # Named, not hidden. An unmapped account is the statement's error bar.
-        s.cell(row=row, column=1,
-               value=f"UNMAPPED ACCOUNTS — {len(fs['unmapped'])} accounts, "
-                     f"{fs['unmapped_total']:,.2f} not in any statement line above").font = H1
-        row += 1
-        row = _table(s, row, ["acctnum", "acctname", "ytd_ending"],
-                     fs["unmapped"], money_cols=["ytd_ending"])
+        row = _table(sh, row, cols, rows, money_cols=["closing"]) + 1
+    return row
 
 
 def _trial_balance(wb, used, entity, period_end, engine):

@@ -289,33 +289,8 @@ def commitment_rollforward(entityid: str, engine=None) -> List[dict]:
     return df[mask].to_dict("records")
 
 
-def financial_statements(entityid: str, period_end: str, bases: Optional[List[str]] = None,
-                         engine=None) -> Dict[str, Any]:
-    """Trial balance folded through the FS mapping.
-
-    Returns one section per statement, each a list of FS lines with their
-    contributing accounts. UNMAPPED ACCOUNTS ARE REPORTED, NOT DROPPED: a
-    statement that silently omits an account is the one error an auditor will
-    find and nobody else will.
-    """
-    tb = trial_balance(entityid, period_end, bases, engine)
-    rows = tb["rows"]
-    statements: Dict[str, Dict[str, Dict[str, Any]]] = {}
-    unmapped = []
-    for r in rows:
-        if not r["fs_line"]:
-            unmapped.append(r)
-            continue
-        stmt = r["fs_statement"] or "Unassigned statement"
-        line = statements.setdefault(stmt, {}).setdefault(
-            r["fs_line"], {"fs_line": r["fs_line"], "ytd_ending": 0.0,
-                           "ytd_change": 0.0, "accounts": []})
-        line["ytd_ending"] += r["ytd_ending"]
-        line["ytd_change"] += r["ytd_change"]
-        line["accounts"].append(r["acctnum"])
-    return {
-        "periods": tb["periods"],
-        "statements": {k: list(v.values()) for k, v in statements.items()},
-        "unmapped": unmapped,
-        "unmapped_total": sum(r["ytd_ending"] for r in unmapped),
-    }
+# financial_statements() lived here and folded the trial balance through the
+# mapping itself. It was removed on Sep 14 2026 when statement_service became
+# the engine: two functions producing "the balance sheet" is precisely the
+# drift that moving the mapping out of the workbooks was meant to end. Callers
+# use statement_service.build(entity, period_end).

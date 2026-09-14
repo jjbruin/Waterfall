@@ -227,7 +227,8 @@ def preview(package_id):
             "trial_balance": tb["rows"][:500],
             "trial_balance_rows": len(tb["rows"]),
             "unmapped_accounts": tb["unmapped"],
-            "financial_statements": wd.financial_statements(ent, pe),
+            "statements": __import__("flask_app.services.statement_service",
+                fromlist=["build"]).build(ent, pe),
             "ia_rollforward": wd.ia_rollforward(ent, pe),
         }))
     except Exception as e:
@@ -265,6 +266,39 @@ def put_fs_map():
         return jsonify(ws.set_fs_map(body.get("entries") or [], _user()))
     except Exception as e:
         return _fail(e, "set_fs_map")
+
+
+# ── Financial statements ─────────────────────────────────────────────────
+# Deliberately keyed by entity + period rather than by package: the same
+# engine serves a workpaper tab, a standalone entity statement, and whatever
+# consolidation comes later. A package is one caller, not the owner.
+
+@workpapers_bp.route("/statements", methods=["GET"])
+@login_required
+def statements():
+    from flask_app.services import statement_service as ss
+    entity = (request.args.get("entity") or "").strip()
+    period_end = (request.args.get("period_end") or "").strip()
+    if not entity or not period_end:
+        return jsonify({"error": "entity and period_end are required"}), 400
+    which = request.args.get("statement", "both")
+    bases = [b for b in (request.args.get("bases") or "").split(",") if b] or None
+    try:
+        return jsonify(safe_json(ss.build(entity, period_end, which, bases)))
+    except Exception as e:
+        return _fail(e, "statements", 500)
+
+
+@workpapers_bp.route("/fs-map/suggest", methods=["GET"])
+@login_required
+def suggest_mapping():
+    """Proposed account -> line mapping from each account's own name.
+    Suggestions only — nothing is applied until someone saves it."""
+    from flask_app.services import statement_service as ss
+    try:
+        return jsonify({"suggestions": ss.seed_mapping_from_names()})
+    except Exception as e:
+        return _fail(e, "suggest_mapping", 500)
 
 
 @workpapers_bp.route("/roles", methods=["GET"])
