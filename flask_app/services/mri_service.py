@@ -132,10 +132,18 @@ QUERY_REGISTRY = {
     # The feeds behind accounting's quarterly workpaper packages. Nothing in
     # the app read entity GL before these: ISBS is property statement data and
     # IA_* is investor activity, and neither can produce a trial balance.
-    "MRI_GL_Detail": {
+    #
+    # ORDER MATTERS, AND MRI_GL_Detail IS LAST ON PURPOSE. refresh_all() walks
+    # this dict in order, and import_query_to_database() holds the whole result
+    # in a DataFrame before writing it. GHIS is full company history, the
+    # container is 1 CPU / 2GB, and this query has never been run -- if it
+    # exhausts memory the worker dies, and a killed process is not an exception
+    # the per-query try/except can catch. Everything above it has already
+    # committed by then, and the three small ones here are already in.
+    "MRI_Entities": {
         "server": "pmx",
-        "target_table": "gl_detail",
-        "description": "Entity GL detail — JOURNAL (open) + GHIS (closed, incl. balance-forward), period >= 202401",
+        "target_table": "entities",
+        "description": "ENTITY master — every reporting entity by id and name",
     },
     "MRI_GL_Accounts": {
         "server": "pmx",
@@ -147,10 +155,10 @@ QUERY_REGISTRY = {
         "target_table": "ia_transactions",
         "description": "Investor activity as accounting sees it — all three IA tables unfiltered, both dates, names, accounting signs",
     },
-    "MRI_Entities": {
+    "MRI_GL_Detail": {
         "server": "pmx",
-        "target_table": "entities",
-        "description": "ENTITY master — every reporting entity by id and name",
+        "target_table": "gl_detail",
+        "description": "Entity GL detail — JOURNAL (open) + GHIS (closed, incl. balance-forward), period >= 202401. Runs LAST: never yet executed, and unbounded GHIS on a 2GB container is the one that could die.",
     },
 }
 
