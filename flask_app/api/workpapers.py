@@ -289,6 +289,34 @@ def statements():
         return _fail(e, "statements", 500)
 
 
+@workpapers_bp.route("/members-capital", methods=["GET"])
+@login_required
+def members_capital():
+    from flask_app.services import statement_service as ss
+    entity = (request.args.get("entity") or "").strip()
+    period_end = (request.args.get("period_end") or "").strip()
+    if not entity or not period_end:
+        return jsonify({"error": "entity and period_end are required"}), 400
+    try:
+        return jsonify(safe_json(ss.build_members_capital(entity, period_end)))
+    except Exception as e:
+        return _fail(e, "members_capital", 500)
+
+
+@workpapers_bp.route("/cash-flow", methods=["GET"])
+@login_required
+def cash_flow():
+    from flask_app.services import statement_service as ss
+    entity = (request.args.get("entity") or "").strip()
+    period_end = (request.args.get("period_end") or "").strip()
+    if not entity or not period_end:
+        return jsonify({"error": "entity and period_end are required"}), 400
+    try:
+        return jsonify(safe_json(ss.build_cash_flow(entity, period_end)))
+    except Exception as e:
+        return _fail(e, "cash_flow", 500)
+
+
 @workpapers_bp.route("/fs-map/suggest", methods=["GET"])
 @login_required
 def suggest_mapping():

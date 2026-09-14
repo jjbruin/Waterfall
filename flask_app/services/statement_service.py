@@ -27,8 +27,8 @@ equity at year end, so they have no opening balance to carry and it would be
 wrong to give them one. THIS IS WHY NEITHER STATEMENT NEEDS LAST QUARTER'S
 APPROVED WORKBOOK: the Balance Sheet's opening is the GL's own balance-forward
 row, and the Income Statement is a period statement with no opening at all.
-(Members' Capital and Cash Flow are the two that do reach back further -- they
-are not built here yet.)
+Members' Capital and Cash Flow are built below and reach further back, but
+still only into the GL and the IA subledger -- not into a prior workbook.
 
 THE MAPPING SAYS WHERE ON THE STATEMENT, NOT WHICH STATEMENT. If a mapping row
 claims a statement that disagrees with GACC.TYPE, the disagreement is reported
@@ -271,3 +271,244 @@ def seed_mapping_from_names(engine=None) -> List[dict]:
         props.append({"acctnum": acct, "acctname": name, "gacc_type": t,
                       "statement": section, "fs_line": line, "suggested": True})
     return props
+
+
+# ── Members' Capital ─────────────────────────────────────────────────────
+# Per member, from the IA subledger: the GL carries one equity balance for the
+# entity, the members' split lives in ia_transactions. Rows follow the example
+# package's own statement; the Typename -> row map below is the default, drawn
+# from the 28 types actually present in production, and is the first thing to
+# put in front of the CFO.
+
+MC_ROWS = [
+    "Capital contributions",
+    "Capital distributions",
+    "Net investment income (loss)",
+    "Management fee",
+    "Net realized gain (loss)",
+    "Net change in unrealized gain (loss)",
+    "Carried interest allocation",
+    "Unrealized carried interest allocation",
+    "Transfer of ownership",
+]
+
+MC_TYPENAME_ROW = {
+    "Income/Loss before Fees": "Net investment income (loss)",
+    "Management Fee": "Management fee",
+    "Realized Gain/Loss": "Net realized gain (loss)",
+    "Unrealized Gain/Loss": "Net change in unrealized gain (loss)",
+    "Realized Carried Interest Allocation": "Carried interest allocation",
+    "Unrealized Carried Interest Allocation": "Unrealized carried interest allocation",
+    "Transfer of Ownership - Capital": "Transfer of ownership",
+    "Transfer of Ownership - P&L": "Transfer of ownership",
+}
+
+
+def _mc_row(major_type: str, typename: str) -> str:
+    """Which movement row a transaction belongs on.
+
+    MajorType decides for contributions and distributions -- all nine
+    contribution types and all eleven distribution types are capital movement
+    whatever their sub-type. Only MajorType 'Other' needs the sub-type,
+    because that is where income, fees, gains and carried interest live.
+    Anything unrecognised lands on "Other movement" rather than being dropped.
+    """
+    mt = (major_type or "").strip()
+    if mt == "Contribution":
+        return "Capital contributions"
+    if mt == "Distribution":
+        return "Capital distributions"
+    return MC_TYPENAME_ROW.get((typename or "").strip(), "Other movement")
+
+
+def build_members_capital(entityid: str, period_end: str, engine=None) -> Dict[str, Any]:
+    """Statement of Changes in Members' Capital, per member.
+
+    Opening comes from the subledger itself -- every transaction before the
+    year start -- NOT from last quarter's workbook. The example package says
+    "Use Prior Quarter FS" because an accountant in Excel cannot query the
+    subledger; the app can.
+
+    TIE-OUT: the members' total must equal the entity's GL equity. The GL is
+    the control account and ia_transactions is the subledger; a difference
+    means one of the two is wrong, and it is reported rather than reconciled
+    away.
+    """
+    engine = engine or get_engine()
+    p = periods_for(period_end)
+    ent = entityid.strip().upper()
+    with engine.connect() as conn:
+        try:
+            ia = pd.read_sql(text("SELECT * FROM ia_transactions"), conn)
+        except Exception:
+            logger.warning("ia_transactions not loaded", exc_info=True)
+            return {"entity": entityid, "periods": p, "members": [], "rows": [],
+                    "note": "ia_transactions not loaded"}
+    if ia.empty:
+        return {"entity": entityid, "periods": p, "members": [], "rows": [],
+                "note": "No investor activity"}
+
+    ia["InvestmentID"] = ia["InvestmentID"].astype(str).str.strip().str.upper()
+    ia["Amount"] = pd.to_numeric(ia["Amount"], errors="coerce").fillna(0.0)
+    ia["TransactionDate"] = pd.to_datetime(ia["TransactionDate"], errors="coerce")
+    ia = ia[ia["InvestmentID"] == ent]
+    if ia.empty:
+        return {"entity": entityid, "periods": p, "members": [], "rows": [],
+                "note": "No investor activity for this entity"}
+
+    year_start = pd.Timestamp(p["year"], 1, 1)
+    cut = pd.Timestamp(p["period_end"])
+    ia = ia[ia["TransactionDate"] <= cut]
+    ia["row"] = [_mc_row(m, t) for m, t in zip(ia["MajorType"], ia["Typename"])]
+
+    members = (ia.groupby(["InvestorID", "InvestorName"], dropna=False)["Amount"]
+                 .sum().reset_index()[["InvestorID", "InvestorName"]]
+                 .to_dict("records"))
+
+    opening = ia[ia["TransactionDate"] < year_start].groupby("InvestorID")["Amount"].sum()
+    period = ia[ia["TransactionDate"] >= year_start]
+
+    rows = []
+    rows.append({"label": "Members' Capital, January 1, %d" % p["year"], "kind": "opening",
+                 "by_member": {m["InvestorID"]: float(opening.get(m["InvestorID"], 0.0))
+                               for m in members}})
+    present = [r for r in MC_ROWS + ["Other movement"]
+               if not period.empty and r in set(period["row"])]
+    for label in present:
+        sub = period[period["row"] == label].groupby("InvestorID")["Amount"].sum()
+        rows.append({"label": label, "kind": "movement",
+                     "by_member": {m["InvestorID"]: float(sub.get(m["InvestorID"], 0.0))
+                                   for m in members}})
+    closing = ia.groupby("InvestorID")["Amount"].sum()
+    rows.append({"label": "Members' Capital, %s" % p["period_end"], "kind": "closing",
+                 "by_member": {m["InvestorID"]: float(closing.get(m["InvestorID"], 0.0))
+                               for m in members}})
+    for r in rows:
+        r["total"] = sum(r["by_member"].values())
+
+    # Control-account tie-out against the GL's equity section.
+    gl_equity = None
+    try:
+        st = build(entityid, period_end, "balance_sheet", engine=engine)
+        bs = st.get("balance_sheet") or {}
+        sec = next((x for x in bs.get("sections", []) if x["section"] == "Members' Capital"), None)
+        if sec:
+            gl_equity = -sec["gl_total"]   # GL credit-negative -> positive capital
+    except Exception:
+        logger.warning("could not read GL equity for the tie-out", exc_info=True)
+
+    subledger_total = rows[-1]["total"]
+    return {
+        "entity": entityid, "periods": p, "members": members, "rows": rows,
+        "subledger_total": subledger_total,
+        "gl_equity": gl_equity,
+        "difference": None if gl_equity is None else subledger_total - gl_equity,
+        "ties": None if gl_equity is None else abs(subledger_total - gl_equity) < 0.01,
+    }
+
+
+# ── Cash Flow ────────────────────────────────────────────────────────────
+# Built on an identity, not on judgement. Every period's entries balance, so
+# the change in cash is exactly the negative of the change in everything else:
+#
+#     Delta cash = -SUM(Delta of every non-cash account)
+#
+# Each non-cash account therefore contributes (minus its movement) to cash, and
+# the only open question is WHICH ACTIVITY it is: operating, investing or
+# financing. That makes the statement a classification rather than a
+# reconstruction, and its total is arithmetically guaranteed to equal the
+# movement in the cash accounts. Which is exactly why the tie-out is worth
+# printing: if it fails, either the GL did not balance or an account went
+# unclassified, and both are worth knowing before anybody signs.
+
+CF_OPERATING, CF_INVESTING, CF_FINANCING = "Operating", "Investing", "Financing"
+
+
+def _cf_category(section, mapped):
+    """Where an account's movement belongs.
+
+    The mapping may say. Otherwise equity is financing and everything else is
+    operating. INVESTING IS NEVER GUESSED -- an account is investing only when
+    somebody says so, and every account that fell to the default is listed on
+    the statement so the gap is visible rather than implied.
+    """
+    if mapped in (CF_OPERATING, CF_INVESTING, CF_FINANCING):
+        return mapped
+    return CF_FINANCING if section == "Members' Capital" else CF_OPERATING
+
+
+def build_cash_flow(entityid: str, period_end: str, bases: Optional[List[str]] = None,
+                    engine=None) -> Dict[str, Any]:
+    """Statement of Cash Flows, indirect method, from account movements."""
+    engine = engine or get_engine()
+    bases = bases if bases is not None else DEFAULT_BASES
+    p = periods_for(period_end)
+    bal = _balances(entityid, period_end, bases, engine)
+    if bal.empty:
+        return {"entity": entityid, "periods": p, "sections": [],
+                "note": "No GL rows for this entity"}
+    types = account_types(engine)
+    mapping = _mapping(engine)
+
+    buckets = {CF_OPERATING: {}, CF_INVESTING: {}, CF_FINANCING: {}}
+    net_income = 0.0
+    cash_movement = 0.0
+    defaulted = []
+    unclassified = []
+
+    for _, r in bal.iterrows():
+        acct, ytd = r["ACCTNUM"], float(r["ytd"])
+        meta = types.get(acct)
+        if not meta:
+            unclassified.append({"acctnum": acct, "acctname": r["name"], "ytd": ytd})
+            continue
+        t = meta["type"]
+        if t == "C":
+            cash_movement += ytd
+            continue
+        if t == "I":
+            # Income accounts roll into one line: the period's result.
+            net_income += -ytd
+            continue
+        if t != "B":
+            unclassified.append({"acctnum": acct, "acctname": r["name"], "ytd": ytd})
+            continue
+
+        m = mapping.get(acct) or {}
+        section = (m.get("statement") or "").strip()
+        explicit = (m.get("cf_category") or "").strip() or None
+        cat = _cf_category(section, explicit)
+        if not explicit:
+            defaulted.append({"acctnum": acct, "acctname": r["name"],
+                              "section": section or None, "category": cat, "ytd": ytd})
+        line_name = m.get("fs_line") or r["name"]
+        line = buckets[cat].setdefault(line_name, {"fs_line": line_name, "amount": 0.0,
+                                                   "accounts": []})
+        line["amount"] += -ytd          # the account's contribution to cash
+        line["accounts"].append(acct)
+
+    sections = []
+    op_lines = [{"fs_line": "Net increase (decrease) in members' capital from operations",
+                 "amount": net_income, "accounts": []}]
+    op_lines += sorted(buckets[CF_OPERATING].values(), key=lambda l: l["fs_line"])
+    for name, lines in ((CF_OPERATING, op_lines),
+                        (CF_INVESTING, sorted(buckets[CF_INVESTING].values(),
+                                              key=lambda l: l["fs_line"])),
+                        (CF_FINANCING, sorted(buckets[CF_FINANCING].values(),
+                                              key=lambda l: l["fs_line"]))):
+        if not lines:
+            continue
+        sections.append({"section": "Cash flows from %s activities" % name.lower(),
+                         "category": name, "lines": lines,
+                         "total": sum(l["amount"] for l in lines)})
+
+    computed = sum(s["total"] for s in sections)
+    return {
+        "entity": entityid, "periods": p, "bases": bases, "sections": sections,
+        "net_change_computed": computed,
+        "net_change_actual": cash_movement,
+        "difference": computed - cash_movement,
+        "ties": abs(computed - cash_movement) < 0.01,
+        "defaulted_accounts": defaulted,
+        "unclassified": unclassified,
+    }

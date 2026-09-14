@@ -182,6 +182,7 @@ _DDL = [
         acctnum     TEXT NOT NULL,
         statement   TEXT,
         fs_line     TEXT,
+        cf_category TEXT,
         sort_order  INTEGER DEFAULT 0,
         updated_by  TEXT,
         updated_at  TEXT
@@ -206,6 +207,18 @@ def ensure_tables(engine=None):
     with engine.begin() as conn:
         for ddl in _DDL:
             conn.execute(text(ddl.format(pk=pk, blob=blob)))
+
+        # CREATE TABLE IF NOT EXISTS never alters an existing table, so a
+        # column added after a database was first built has to be added here
+        # or it is simply missing on every database but a fresh one.
+        for table, column, coltype in (("wp_fs_map", "cf_category", "TEXT"),):
+            try:
+                conn.execute(text(
+                    "SELECT %s FROM %s LIMIT 1" % (column, table)))
+            except Exception:
+                logger.info("adding %s.%s", table, column)
+                conn.execute(text(
+                    "ALTER TABLE %s ADD COLUMN %s %s" % (table, column, coltype)))
 
 
 def _now() -> str:
@@ -591,7 +604,7 @@ def get_fs_map(engine=None) -> List[dict]:
     ensure_tables(engine)
     with engine.connect() as conn:
         rows = conn.execute(text(
-            "SELECT acctnum, statement, fs_line, sort_order FROM wp_fs_map "
+            "SELECT acctnum, statement, fs_line, cf_category, sort_order FROM wp_fs_map "
             "ORDER BY statement, sort_order, acctnum")).mappings().all()
     return [dict(r) for r in rows]
 
@@ -607,9 +620,11 @@ def set_fs_map(entries: List[dict], username: str, engine=None) -> dict:
             if not acct:
                 continue
             conn.execute(text(
-                "INSERT INTO wp_fs_map (acctnum, statement, fs_line, sort_order, updated_by, updated_at) "
-                "VALUES (:a, :s, :l, :o, :u, :t)"),
+                "INSERT INTO wp_fs_map (acctnum, statement, fs_line, cf_category, "
+                "sort_order, updated_by, updated_at) "
+                "VALUES (:a, :s, :l, :c, :o, :u, :t)"),
                 {"a": acct, "s": (e.get("statement") or "").strip() or None,
                  "l": (e.get("fs_line") or "").strip() or None,
+                 "c": (e.get("cf_category") or "").strip() or None,
                  "o": e.get("sort_order", i), "u": username, "t": _now()})
     return {"status": "ok", "rows": len(entries)}

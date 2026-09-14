@@ -114,6 +114,8 @@ def build_package(package_id: int, engine=None) -> bytes:
     _cover(wb, used, pkg)
     _index(wb, used, pkg, detail, exhibits)
     _financial_statements(wb, used, entity, period_end, engine)
+    _members_capital(wb, used, entity, period_end, engine)
+    _cash_flow(wb, used, entity, period_end, engine)
     _trial_balance(wb, used, entity, period_end, engine)
     _gl_detail(wb, used, entity, period_end, engine)
     _account_summary(wb, used, entity, period_end, engine)
@@ -153,9 +155,10 @@ def _index(wb, used, pkg, detail, exhibits):
     s["A1"] = "Table of Contents"
     s["A1"].font = TITLE
     row = 3
-    for name in ("Financial Statements", "Trial Balance", "GL Detail",
-                 "Account Summary", "Investor Detail", "Investment Detail",
-                 "IA Rollforward", "Commitments"):
+    for name in ("Balance Sheet", "Income Statement", "Members Capital",
+                 "Cash Flow", "Trial Balance", "GL Detail", "Account Summary",
+                 "Investor Detail", "Investment Detail", "IA Rollforward",
+                 "Commitments"):
         s.cell(row=row, column=1, value=name)
         row += 1
     row += 1
@@ -262,6 +265,111 @@ def _exceptions(sh, row, st):
         row += 1
         row = _table(sh, row, cols, rows, money_cols=["closing"]) + 1
     return row
+
+
+def _members_capital(wb, used, entity, period_end, engine):
+    """Statement of Changes in Members' Capital, per member.
+
+    Columns are members, rows are movements — the layout the example package
+    uses. The opening column comes from the subledger, not from last quarter's
+    workbook, and the statement prints its own reconciliation to the GL.
+    """
+    mc = ss.build_members_capital(entity, period_end, engine=engine)
+    sh = wb.create_sheet(_safe_title("Members Capital", used))
+    sh["A1"] = "Statement of Changes in Members' Capital"
+    sh["A1"].font = TITLE
+    r = _provenance(sh, 2,
+                    f"{entity} — per member from ia_transactions, all major types "
+                    f"including non-cash. Opening is every transaction before "
+                    f"{mc['periods']['year']}-01-01, taken from the subledger itself.")
+    if not mc.get("members"):
+        sh.cell(row=r, column=1, value=mc.get("note", "No investor activity")).font = SUB
+        return
+
+    members = mc["members"]
+    cols = ["Movement"] + [m["InvestorName"] or m["InvestorID"] for m in members] + ["Total"]
+    rows = []
+    for row in mc["rows"]:
+        d = {"Movement": row["label"]}
+        for m in members:
+            d[m["InvestorName"] or m["InvestorID"]] = row["by_member"].get(m["InvestorID"], 0.0)
+        d["Total"] = row["total"]
+        rows.append(d)
+    r = _table(sh, r, cols, rows, money_cols=cols[1:])
+
+    # Subledger against control account. The GL holds ONE equity balance for
+    # the entity; this statement splits it by member. If the two disagree,
+    # one of them is wrong, and the statement says so rather than presenting
+    # a total nobody checked.
+    if mc.get("gl_equity") is not None:
+        ok = mc["ties"]
+        sh.cell(row=r, column=1, value="Subledger total").font = Font(bold=True)
+        sh.cell(row=r, column=2, value=mc["subledger_total"]).number_format = MONEY
+        sh.cell(row=r + 1, column=1, value="GL members' capital").font = Font(bold=True)
+        sh.cell(row=r + 1, column=2, value=mc["gl_equity"]).number_format = MONEY
+        c = sh.cell(row=r + 2, column=1,
+                    value="Ties to the GL" if ok
+                          else f"DOES NOT TIE to the GL by {mc['difference']:,.2f}")
+        c.font = Font(bold=True, color="2C7A3D" if ok else "B3261E")
+    else:
+        sh.cell(row=r, column=1,
+                value="No GL equity section mapped — the subledger cannot be "
+                      "reconciled to the control account.").font = SUB
+
+
+def _cash_flow(wb, used, entity, period_end, engine):
+    """Statement of Cash Flows, indirect, with the identity it rests on."""
+    cf = ss.build_cash_flow(entity, period_end, engine=engine)
+    sh = wb.create_sheet(_safe_title("Cash Flow", used))
+    sh["A1"] = "Statement of Cash Flows"
+    sh["A1"].font = TITLE
+    r = _provenance(sh, 2,
+                    f"{entity} — every period's entries balance, so the change in cash "
+                    f"is the negative of the change in every other account. Each line "
+                    f"is an account's movement, classified; the total is checked "
+                    f"against the cash accounts below.")
+    if not cf.get("sections"):
+        sh.cell(row=r, column=1, value=cf.get("note", "No GL rows")).font = SUB
+        return
+    for sec in cf["sections"]:
+        sh.cell(row=r, column=1, value=sec["section"]).font = H1
+        r += 1
+        r = _table(sh, r, ["fs_line", "amount"],
+                   [{"fs_line": l["fs_line"], "amount": l["amount"]} for l in sec["lines"]],
+                   money_cols=["amount"])
+        c = sh.cell(row=r - 1, column=1, value=f"Net cash from {sec['category'].lower()}")
+        c.font = Font(bold=True)
+        t = sh.cell(row=r - 1, column=2, value=sec["total"])
+        t.font = Font(bold=True)
+        t.number_format = MONEY
+        r += 1
+
+    for label, val in (("Net change in cash (computed)", cf["net_change_computed"]),
+                       ("Net change in cash (per the cash accounts)", cf["net_change_actual"])):
+        sh.cell(row=r, column=1, value=label).font = Font(bold=True)
+        sh.cell(row=r, column=2, value=val).number_format = MONEY
+        r += 1
+    ok = cf["ties"]
+    c = sh.cell(row=r, column=1,
+                value="Ties" if ok else f"DOES NOT TIE by {cf['difference']:,.2f}")
+    c.font = Font(bold=True, color="2C7A3D" if ok else "B3261E")
+    r += 2
+
+    if cf["defaulted_accounts"]:
+        sh.cell(row=r, column=1,
+                value=f"CLASSIFIED BY DEFAULT — {len(cf['defaulted_accounts'])} accounts "
+                      f"carry no explicit operating/investing/financing category"
+                ).font = Font(bold=True, color="8A5A00")
+        r += 1
+        r = _table(sh, r, ["acctnum", "acctname", "section", "category", "ytd"],
+                   cf["defaulted_accounts"], money_cols=["ytd"]) + 1
+    if cf["unclassified"]:
+        sh.cell(row=r, column=1,
+                value=f"UNCLASSIFIED — {len(cf['unclassified'])} accounts with no usable "
+                      f"GACC.TYPE, excluded from the statement"
+                ).font = Font(bold=True, color="B3261E")
+        r += 1
+        _table(sh, r, ["acctnum", "acctname", "ytd"], cf["unclassified"], money_cols=["ytd"])
 
 
 def _trial_balance(wb, used, entity, period_end, engine):
