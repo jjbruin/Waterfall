@@ -56,8 +56,8 @@ Zone A — deal-level capitalisation, NOT scaled
 
 Zone B — the four "TIAA Investment" columns, the ONLY scaled columns
     A DEAL WHOSE LOOK-THROUGH DOES NOT RESOLVE KEEPS ITS PLACE. All four cells
-    are withheld (the row carries ``ownership_unresolved`` and the UI labels
-    them), but the row sits in its ordinary fund block, under that block's
+    are withheld (the row carries ``ownership_unresolved``, and each of the four
+    prints an em dash), but the row sits in its ordinary fund block, under that block's
     subtotal, in name order. It used to be lifted out into a separate
     "Ownership % unavailable" list at the foot of the table, which put two
     ordinary PSC TGA 2024 LLC members — 45th & Main and Town Fair Tire
@@ -1286,11 +1286,13 @@ def assemble_financial(investor_code: str, quarter: str, *,
             "unfunded": unfunded,
             # THE FOUR ZONE B CELLS ARE WITHHELD, NOT ABSENT. Set from the same
             # condition that withholds them — a look-through of None — so the
-            # label and the blank can never disagree. The UI prints "withheld —
-            # ownership chain unresolved" across the four columns on a row that
-            # carries this, which is what the segregated block used to say; the
-            # row now says it in its normal place instead of being moved out of
-            # the fund to say it.
+            # flag and the blank can never disagree. The UI prints an em dash in
+            # each of the four columns (they are all None here, so its ordinary
+            # formatters do it), and the REASON rides on the row's `flags` as the
+            # `!` dot beside the deal name. It used to print the sentence
+            # "withheld — ownership chain unresolved" across a colspan="4" cell;
+            # that collapsed the grid on the row and had to be deleted by hand
+            # before the figures could be typed into the investor PDF.
             "ownership_unresolved": pct is None,
             "ownership_detail": entry.get("detail"),
             "ownership_via": entry.get("via"),
