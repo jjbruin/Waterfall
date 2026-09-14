@@ -188,6 +188,12 @@ _VALUATION_DDL = [
         UNIQUE(record_id, account)
     )
     """,
+    # RETIRED Sep 14 2026 and read by nothing. The NAV walk takes each step's
+    # citation from the waterfall setup's own vAmtType; this table's key,
+    # UNIQUE(vcode, wf_type, iorder), was not one step (P0000099 iOrder 5 holds
+    # three citations). Kept so the 7 rows on P0000004 are not destroyed by a
+    # deploy - they duplicate that deal's vAmtType exactly, so dropping the
+    # table is safe whenever someone wants the cleanup.
     """
     CREATE TABLE IF NOT EXISTS valuation_step_refs (
         id {pk},

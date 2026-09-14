@@ -83,7 +83,6 @@ const navLoading = ref(false)
 const navComputing = ref(false)
 const navSelectionsDirty = ref(false)
 const publishing = ref(false)
-const refDrafts = ref<Record<number, string>>({})
 
 const budgetReview = ref<any | null>(null)
 const budgetLoading = ref(false)
@@ -342,10 +341,6 @@ async function loadNav(force = false) {
     const res = await api.get(`/api/valuations/records/${selectedRecordId.value}/nav`)
     navData.value = res.data
     navSelectionsDirty.value = false
-    refDrafts.value = {}
-    for (const l of navData.value?.result?.walk || []) {
-      if (refDrafts.value[l.iorder] === undefined) refDrafts.value[l.iorder] = l.agreement_ref || ''
-    }
   } catch (e: any) {
     error.value = e.response?.data?.error || e.message
   } finally {
@@ -396,21 +391,6 @@ async function saveBsSelections(reload = true) {
   await api.put(`/api/valuations/records/${selectedRecordId.value}/bs-selections`, { selections })
   navSelectionsDirty.value = false
   if (reload) await loadNav(true)
-}
-
-async function saveStepRef(line: any) {
-  if (!navData.value) return
-  const ref_ = (refDrafts.value[line.iorder] || '').trim()
-  try {
-    await api.put('/api/valuations/step-refs', {
-      vcode: navData.value.inputs.vcode, iorder: line.iorder, agreement_ref: ref_,
-    })
-    for (const l of navData.value.result?.walk || []) {
-      if (l.iorder === line.iorder) l.agreement_ref = ref_
-    }
-  } catch (e: any) {
-    error.value = e.response?.data?.error || e.message
-  }
 }
 
 function downloadNavPackage() {
@@ -1747,12 +1727,12 @@ watch(selectedCycleId, () => {
                     </thead>
                     <tbody>
                       <tr v-for="(l, i) in navData.result.walk" :key="i">
-                        <td>
-                          <input v-if="canEdit" class="ref-input" v-model="refDrafts[l.iorder]"
-                                 :title="l.agreement_ref ? 'Agreement section for this step' : 'No section on this step - type one'"
-                                 placeholder="—" @change="saveStepRef(l)" />
-                          <span v-else>{{ l.agreement_ref }}</span>
-                        </td>
+                        <!-- Read-only, and from ONE place: the step's own vAmtType in
+                             Waterfall Setup. A wrong citation is fixed there, where it
+                             reaches this walk, the auditor package and the setup screen
+                             at once. The cell used to be an editable override keyed by
+                             iOrder, which is not one step - see _apply_refs. -->
+                        <td class="ref-cell">{{ l.agreement_ref || '—' }}</td>
                         <td>{{ l.recipient }}</td>
                         <td>{{ l.step }} <span class="qa-meta">{{ l.label }}</span></td>
                         <td class="num">{{ l.rate != null && (l.step === 'Pref' || l.step === 'IRR') ? fmtPct(l.rate) : '' }}</td>
@@ -2014,11 +1994,7 @@ textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--color-border)
 .ai-list li { margin: 4px 0; }
 
 /* phase 3 — NAV */
-.ref-input {
-  width: 72px; padding: 3px 6px; border: 1px solid var(--color-border);
-  border-radius: 4px; font-size: 12px; font-family: monospace;
-  background: var(--color-surface); color: var(--color-text);
-}
+.ref-cell { font-family: monospace; font-size: 12px; white-space: nowrap; }
 .line-excluded td { color: var(--color-text-secondary); }
 .line-excluded td.num { text-decoration: line-through; }
 

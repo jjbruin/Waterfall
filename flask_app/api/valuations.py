@@ -580,25 +580,6 @@ def compute_nav(record_id):
         return jsonify({"error": str(e)}), 500
 
 
-@valuations_bp.route("/step-refs", methods=["PUT"])
-@login_required
-@role_required("admin", "analyst")
-def set_step_ref():
-    from flask_app.services import valuation_nav_service
-    body = request.get_json(silent=True) or {}
-    vcode = body.get("vcode")
-    iorder = body.get("iorder")
-    if not vcode or iorder is None:
-        return jsonify({"error": "vcode and iorder are required"}), 400
-    try:
-        result = valuation_nav_service.set_step_ref(
-            get_engine(), str(vcode), int(iorder), body.get("agreement_ref", ""), _username())
-        return jsonify(result)
-    except Exception as e:
-        logger.error(f"set_step_ref failed: {e}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
-
-
 @valuations_bp.route("/records/<int:record_id>/nav-package", methods=["GET"])
 @login_required
 def nav_package(record_id):

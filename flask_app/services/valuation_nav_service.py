@@ -322,17 +322,8 @@ def _pref_walks(engine, data: dict, vcode: str, as_of: date,
     return walks
 
 
-def _step_refs(engine, vcode: str) -> Dict[int, str]:
-    with engine.connect() as conn:
-        rows = conn.execute(text("""
-            SELECT iorder, agreement_ref FROM valuation_step_refs
-            WHERE vcode = :v AND wf_type = :t
-        """), {"v": vcode, "t": CAP_WF}).fetchall()
-    return {int(r[0]): r[1] for r in rows if r[1]}
-
-
-def _apply_refs(refs: Dict[int, str], lines: List[dict]) -> List[dict]:
-    """The step's own vAmtType, verbatim; a manual override wins.
+def _apply_refs(lines: List[dict]) -> List[dict]:
+    """The step's own vAmtType, verbatim. ONE SOURCE, AND IT IS NOT HERE.
 
     The waterfall setup already records the agreement section per step in
     vAmtType ("8.2(a)", "6.03(c)"), so the NAV walk shows what the deal
@@ -340,13 +331,19 @@ def _apply_refs(refs: Dict[int, str], lines: List[dict]) -> List[dict]:
     label there instead ("ProRata", "EXP", "AM_FEE") and those print as they
     stand: on 30 of them - the fund-level entities, PPI27, PSC1, AMB23 - NO
     row is a section number, so filtering to "things shaped like a citation"
-    blanked the whole column and left nobody able to tell why. A label on
-    screen is a data question the analyst can answer in Waterfall Setup,
-    which is the one place the citation should be fixed.
+    blanked the whole column and left nobody able to tell why.
+
+    There was a per-step override table behind an editable cell here. It is
+    retired (Sep 14 2026). Its key, UNIQUE(vcode, wf_type, iorder), was not
+    one step: 5 of 689 Cap_WF (vcode, iOrder) groups carry two or three
+    citations - P0000099 iOrder 5 is 8.2(c), 8.2(d) AND 8.2(e) - so one typed
+    ref was read back by all of them. The 7 rows anyone ever typed, all on
+    P0000004, were character-identical to that deal's vAmtType: hand-copying
+    of data the app already held. A wrong citation is a data fix, in Waterfall
+    Setup, where it reaches every consumer at once.
     """
     for l in lines:
-        l["agreement_ref"] = (refs.get(int(l.get("iorder") or 0))
-                              or str(l.get("amt_type") or "").strip())
+        l["agreement_ref"] = str(l.get("amt_type") or "").strip()
     return lines
 
 
@@ -418,7 +415,6 @@ def compute_nav(engine, record_id: int, data: dict, username: str,
     allocs, end_states = run_waterfall(data.get("wf"), vcode, CAP_WF, period_cash,
                                        initial_states=states)
 
-    refs = _step_refs(engine, vcode)
     walk_lines = []
     remaining = max(0.0, net_proceeds)
     if allocs is not None and not getattr(allocs, "empty", True):
@@ -437,7 +433,7 @@ def compute_nav(engine, record_id: int, data: dict, username: str,
                 "remaining_after": remaining,
             })
 
-    _apply_refs(refs, walk_lines)
+    _apply_refs(walk_lines)
 
     psc_nav = sum(l["allocated"] for l in walk_lines if not l["recipient"].upper().startswith("OP"))
     op_nav = sum(l["allocated"] for l in walk_lines if l["recipient"].upper().startswith("OP"))
@@ -514,19 +510,17 @@ def compute_nav(engine, record_id: int, data: dict, username: str,
 def get_nav(engine, record_id: int) -> Optional[Dict[str, Any]]:
     with engine.connect() as conn:
         row = conn.execute(text("""
-            SELECT n.inputs_json, n.walk_json, n.net_proceeds, n.psc_nav, n.op_nav,
-                   n.computed_by, n.computed_at, r.vcode
-            FROM valuation_nav_results n
-            JOIN valuation_records r ON r.id = n.record_id
-            WHERE n.record_id = :r
+            SELECT inputs_json, walk_json, net_proceeds, psc_nav, op_nav,
+                   computed_by, computed_at
+            FROM valuation_nav_results WHERE record_id = :r
         """), {"r": record_id}).fetchone()
     if not row:
         return None
     inputs = json.loads(row[0]) if row[0] else {}
     walk = json.loads(row[1]) if row[1] else []
-    # Citations are resolved on read, not frozen into the saved walk, so an
-    # override typed after the NAV was computed shows without a recompute.
-    _apply_refs(_step_refs(engine, str(row[7])), walk)
+    # Resolved on read rather than frozen into the saved walk, so a citation
+    # corrected in Waterfall Setup shows without recomputing the NAV.
+    _apply_refs(walk)
     return {
         **inputs,
         "walk": walk,
@@ -550,25 +544,6 @@ def nav_results_for_cycle(engine, cycle_id: int) -> Dict[str, dict]:
             WHERE r.cycle_id = :c
         """), {"c": cycle_id}).fetchall()
     return {str(r[0]): {"psc_nav": r[1], "op_nav": r[2], "net_proceeds": r[3]} for r in rows}
-
-
-def set_step_ref(engine, vcode: str, iorder: int, agreement_ref: str,
-                 username: str) -> Dict[str, Any]:
-    """LLC agreement citation for a Cap_WF step (e.g. '8.2(a)'). Keyed by
-    (vcode, wf_type, iOrder) so it survives waterfall re-saves."""
-    from flask_app.services.valuation_service import ensure_valuation_tables
-    ensure_valuation_tables(engine)
-    with engine.begin() as conn:
-        result = conn.execute(text("""
-            UPDATE valuation_step_refs SET agreement_ref = :ref
-            WHERE vcode = :v AND wf_type = :t AND iorder = :o
-        """), {"ref": agreement_ref or None, "v": vcode, "t": CAP_WF, "o": int(iorder)})
-        if result.rowcount == 0:
-            conn.execute(text("""
-                INSERT INTO valuation_step_refs (vcode, wf_type, iorder, agreement_ref)
-                VALUES (:v, :t, :o, :ref)
-            """), {"v": vcode, "t": CAP_WF, "o": int(iorder), "ref": agreement_ref or None})
-    return {"status": "saved"}
 
 
 # ============================================================
@@ -891,11 +866,10 @@ def generate_nav_package(engine, record_id: int, data: dict) -> bytes:
     # ---------- LLC_Waterfall ----------
     ws4 = wb.create_sheet("LLC_Waterfall")
     ws4.cell(row=1, column=1, value=f"{prop_name} — Cap Waterfall (as modeled)").font = title_font
-    refs = _step_refs(engine, vcode)
     rr = _header_row(ws4, 3, ["Ref", "iOrder", "Recipient", "Step", "FXRate", "Rate", "Description"])
     for _, s in steps.iterrows():
         io = int(s["iOrder"]) if pd.notna(s.get("iOrder")) else 0
-        ws4.cell(row=rr, column=1, value=refs.get(io, ""))
+        ws4.cell(row=rr, column=1, value=str(s.get("vAmtType", "") or "").strip())
         ws4.cell(row=rr, column=2, value=io)
         ws4.cell(row=rr, column=3, value=str(s.get("PropCode", "")))
         ws4.cell(row=rr, column=4, value=str(s.get("vState", "")))

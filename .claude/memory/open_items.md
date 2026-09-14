@@ -240,34 +240,6 @@ other column regresses.
 text fits. That removes the symptom on one deal; it does not answer whether the defect is
 real.*
 
-### 1.15 A typed NAV step ref overrides every step sharing that iOrder — 5 deals
-`valuation_step_refs` is keyed `UNIQUE(vcode, wf_type, iorder)`, but an iOrder is not one
-step. In Cap_WF, **5 of 689 (vcode, iOrder) groups carry more than one citation**:
-
-| vcode | iOrder | citations on that iOrder |
-|---|---|---|
-| P0000033 | 2 | 8.2(b), 8.2(c) |
-| P0000061 | 2 | two |
-| P0000062 | 2 | two |
-| P0000099 | 5 | 8.2(c), 8.2(d), 8.2(e) |
-| P0000110 | 5 | three |
-
-On those rows a ref typed into one step is stored against the iOrder and read back by all
-of them. Since `v441` each step derives its own citation from `vAmtType`, so the rows are
-now RIGHT by default — which means one typed override there replaces two or three correct
-citations with one wrong one. Latent, not active: the only overrides that exist are
-P0000004's seven, and that deal is unambiguous.
-
-**Verify:** `select vcode,iOrder,count(distinct trim(vAmtType)) from waterfalls where
-vmisc='Cap_WF' group by 1,2 having count(distinct trim(vAmtType))>1`
-
-**Fix shape:** add `amt_type` to the table's key (`UNIQUE(vcode, wf_type, iorder,
-amt_type)`) and to `set_step_ref` / `_step_refs` / `_apply_refs`, plus the Vue draft key —
-`refDrafts` is keyed by `l.iorder` too, so today the input boxes on those rows also move
-together before anything is saved. Needs a migration on a PROTECTED table.
-
-**Owner:** unassigned. Found Sep 14 2026 while verifying `648e4e2`.
-
 ## 2. Decisions needed — blocked on a human, not on code
 
 ### 2.1 What metric is U/W ROE meant to be? — ANSWER THIS FIRST
@@ -520,6 +492,22 @@ until this export exists, its only copy.
 ## 4. Resolved since the Aug 2026 notes — do NOT re-open
 
 Each verified fixed on Sep 11 2026 against the working tree.
+
+### 1.15 A typed NAV step ref overrode every step sharing that iOrder — RESOLVED
+Filed and closed Sep 14 2026. `valuation_step_refs` was keyed
+`UNIQUE(vcode, wf_type, iorder)`, but an iOrder is not one step: 5 of 689 Cap_WF
+(vcode, iOrder) groups carry two or three citations — `P0000099` iOrder 5 is 8.2(c),
+8.2(d) AND 8.2(e) — so one typed ref was read back by all of them.
+
+Closed by retiring the override rather than re-keying it. The NAV walk takes each step's
+citation from the waterfall setup's own `vAmtType`, which is per row and cannot be
+ambiguous; the Ref cell is read-only and a wrong citation is fixed in Waterfall Setup,
+where it reaches the walk, the auditor package and the setup screen at once. Verified:
+those three P0000099 rows now render 8.2(c) / 8.2(d) / 8.2(e).
+
+The table is kept but read by nothing, so the 7 rows on `P0000004` are not destroyed by a
+deploy. They were character-identical to that deal's `vAmtType` — hand-copying of data the
+app already held — so dropping the table is safe whenever someone wants the cleanup.
 
 ### A published valuation now actually appears — four defects, each hiding the next (Sep 11 2026)
 Publishing Town Fair's 12/31/2025 valuation took **four deploys**, because four separate
