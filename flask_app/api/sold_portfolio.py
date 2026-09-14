@@ -6,7 +6,7 @@ import io
 from flask_app.auth.routes import login_required
 from flask_app.services import data_service
 from flask_app.services.sold_service import (
-    compute_all_sold_returns, build_deal_detail,
+    compute_all_sold_returns, sold_deals_excluded, build_deal_detail,
     generate_sold_excel, generate_detail_excel,
     get_sold_deals, compute_all_net_returns, generate_net_returns_excel,
 )
@@ -27,7 +27,7 @@ def summary():
     inv_sold = get_sold_deals(data["inv"])
 
     if inv_sold.empty:
-        return jsonify({"rows": [], "count": 0, "deal_names": []})
+        return jsonify({"rows": [], "count": 0, "deal_names": [], "excluded": []})
 
     returns_df = compute_all_sold_returns(inv_sold, data["acct"], data["inv"])
 
@@ -44,6 +44,9 @@ def summary():
         "rows": safe_json(df_to_records(returns_df)),
         "count": len(returns_df),
         "deal_names": deal_names,
+        # Deals labelled SOLD that produced no row. Normally empty; when it is
+        # not, the totals above are short by those deals and say so.
+        "excluded": sold_deals_excluded(inv_sold, data["acct"], data["inv"]),
     })
 
 

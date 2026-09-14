@@ -10,6 +10,7 @@ defineProps<{ embedded?: boolean }>()
 const dataStore = useDataStore()
 
 const summary = ref<any[]>([])
+const excluded = ref<any[]>([])
 const dealNames = ref<any[]>([])
 const loading = ref(false)
 const selectedDealVcode = ref('')
@@ -72,6 +73,7 @@ onMounted(async () => {
     const res = await api.get('/api/sold-portfolio/summary')
     summary.value = res.data.rows
     dealNames.value = res.data.deal_names || []
+    excluded.value = res.data.excluded || []
   } catch (e: any) {
     dataStore.addToast('Failed to load sold portfolio: ' + (e.response?.data?.error || e.message), 'error')
   } finally {
@@ -288,6 +290,20 @@ async function downloadDetailExcel() {
         </div>
         <button class="btn-add-override" @click="addExpenseOverride">+ Add Override</button>
       </div>
+    </div>
+
+    <!-- A deal labelled SOLD that produced no row. Normally nothing renders here.
+         When it does, the totals below are SHORT by those deals, and this is the
+         only place that says so - the report used to drop them in silence. -->
+    <div v-if="excluded.length" class="excluded-note">
+      <strong>{{ excluded.length }}</strong>
+      deal<span v-if="excluded.length > 1">s</span> labelled SOLD produced no row, so the
+      totals below exclude {{ excluded.length > 1 ? 'them' : 'it' }}:
+      <ul>
+        <li v-for="x in excluded" :key="x.vcode">
+          <strong>{{ x.name }}</strong> ({{ x.vcode }}) &mdash; {{ x.reason }}
+        </li>
+      </ul>
     </div>
 
     <!-- Summary Table -->
@@ -550,6 +566,12 @@ h3 { font-size: 16px; margin: 0 0 12px 0; }
 .btn-add-override:hover { text-decoration: underline; }
 
 /* Summary Table */
+.excluded-note {
+  margin: 12px 0; padding: 10px 14px; border-radius: 6px;
+  border: 1px solid #e0b44a; background: #fdf6e3; color: #6b4e00; font-size: 13px;
+}
+.excluded-note ul { margin: 6px 0 0; padding-left: 20px; }
+
 .summary-table-wrapper {
   overflow-x: auto;
 }

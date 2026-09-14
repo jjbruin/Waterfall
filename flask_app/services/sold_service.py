@@ -6,7 +6,7 @@ Extracts pure logic from sold_portfolio_ui.py (no Streamlit dependency).
 import pandas as pd
 import numpy as np
 import io
-from typing import Optional
+from typing import List, Optional
 
 from loaders import (normalize_accounting_feed, build_investmentid_to_vcode,
                      capital_after, capital_outstanding)
@@ -19,6 +19,35 @@ _sold_cache: dict = {}
 def clear_sold_cache():
     """Clear the sold portfolio returns cache."""
     _sold_cache.clear()
+
+
+def _match_deal_accounting(deal_row, acct, vcode_to_iids):
+    """This sold deal's accounting rows, or the reason it has none.
+
+    ONE definition of "matched", used by the report and by the exclusion list
+    below, so the two can never disagree about why a deal is absent.
+    Returns (rows, None) on a match and (None, reason) otherwise.
+    """
+    deal_vcode = str(deal_row.get("vcode", "")).strip()
+    deal_iids = set(vcode_to_iids.get(deal_vcode, []))
+    direct_iid = str(deal_row.get("InvestmentID", "") or "").strip()
+    if direct_iid and direct_iid.lower() != "nan":
+        deal_iids.add(direct_iid)
+
+    if not deal_iids:
+        return None, "no InvestmentID on the deal row"
+    if acct is None or acct.empty:
+        return None, "no accounting data loaded"
+
+    rows = acct[acct["InvestmentID"].isin(deal_iids)].copy()
+    if rows.empty:
+        ids = ", ".join(sorted(deal_iids))
+        return None, f"InvestmentID {ids} matches no accounting rows"
+
+    rows = rows[~rows["InvestorID"].str.upper().str.startswith("OP")].copy()
+    if rows.empty:
+        return None, "all accounting rows are Operating Partner"
+    return rows, None
 
 
 def compute_all_sold_returns(inv_sold: pd.DataFrame, acct: pd.DataFrame,
@@ -36,7 +65,7 @@ def compute_all_sold_returns(inv_sold: pd.DataFrame, acct: pd.DataFrame,
     sold_vcodes = sorted(inv_sold["vcode"].astype(str).tolist()) if not inv_sold.empty else []
     cache_key = "|".join(sold_vcodes)
     if cache_key in _sold_cache:
-        return _sold_cache[cache_key].copy()
+        return _sold_cache[cache_key][0].copy()
 
     if "is_contribution" not in acct.columns:
         acct = normalize_accounting_feed(acct)
@@ -47,6 +76,7 @@ def compute_all_sold_returns(inv_sold: pd.DataFrame, acct: pd.DataFrame,
         vcode_to_iids.setdefault(vc, []).append(iid)
 
     all_rows = []
+    skipped: List[dict] = []
     portfolio_cashflows = []
     portfolio_capital_events = []
     portfolio_cf_distributions = []
@@ -62,20 +92,11 @@ def compute_all_sold_returns(inv_sold: pd.DataFrame, acct: pd.DataFrame,
         acq_str = acq_date.strftime("%m/%d/%Y") if pd.notna(acq_date) else ""
         sale_str = sale_date.strftime("%m/%d/%Y") if pd.notna(sale_date) else ""
 
-        deal_iids = set(vcode_to_iids.get(deal_vcode, []))
-        direct_iid = str(deal_row.get("InvestmentID", "")).strip()
-        if direct_iid:
-            deal_iids.add(direct_iid)
-
-        if not deal_iids or acct is None or acct.empty:
-            continue
-
-        deal_acct = acct[acct["InvestmentID"].isin(deal_iids)].copy()
-        if deal_acct.empty:
-            continue
-
-        deal_acct = deal_acct[~deal_acct["InvestorID"].str.upper().str.startswith("OP")].copy()
-        if deal_acct.empty:
+        deal_acct, reason = _match_deal_accounting(deal_row, acct, vcode_to_iids)
+        if reason:
+            skipped.append({"vcode": deal_vcode, "name": deal_name,
+                            "investment_id": str(deal_row.get("InvestmentID", "") or "").strip(),
+                            "reason": reason})
             continue
 
         deal_acct["_investor_key"] = deal_acct["InvestorID"].str.upper()
@@ -97,6 +118,9 @@ def compute_all_sold_returns(inv_sold: pd.DataFrame, acct: pd.DataFrame,
             distribs += p_distribs
 
         if not pref_cashflows:
+            skipped.append({"vcode": deal_vcode, "name": deal_name,
+                            "investment_id": str(deal_row.get("InvestmentID", "") or "").strip(),
+                            "reason": "no preferred-equity cashflows"})
             continue
         irr_val = xirr(pref_cashflows) if len(pref_cashflows) >= 2 else None
 
@@ -123,6 +147,7 @@ def compute_all_sold_returns(inv_sold: pd.DataFrame, acct: pd.DataFrame,
         portfolio_cf_distributions.extend(pref_cf_distributions)
 
     if not all_rows:
+        _sold_cache[cache_key] = (pd.DataFrame(), skipped)
         return pd.DataFrame()
 
     # Weighted average hold period (weighted by contributions)
@@ -163,8 +188,32 @@ def compute_all_sold_returns(inv_sold: pd.DataFrame, acct: pd.DataFrame,
     })
 
     result = pd.DataFrame(all_rows)
-    _sold_cache[cache_key] = result
+    _sold_cache[cache_key] = (result, skipped)
     return result.copy()
+
+
+def sold_deals_excluded(inv_sold: pd.DataFrame, acct: pd.DataFrame,
+                        inv: pd.DataFrame) -> List[dict]:
+    """Deals labelled SOLD that produced NO row, and why.
+
+    A deal reaches the report by carrying SOLD in Sale_Status (column AA of
+    investment_map) and is then joined to accounting on InvestmentID. That
+    join used to fail SILENTLY: on Sep 14 2026 Village Square Apartments
+    (InvestmentID typed `VILLAGE`, MRI has `VILLAG`) and Jefferson Centura
+    (typed `ASTONC`, MRI has `JEFFRC`) had been absent for as long as anyone
+    could remember, and the portfolio total was running $19.7M light on
+    contributions and $43.4M on distributions with nothing on screen to say
+    so. InvestmentID is hand-maintained - MRI's IM does not carry it
+    (Prop_Info_Core.sql) - so a typo there is permanent and invisible.
+
+    An empty list is the healthy state. A deal genuinely without preferred
+    equity is listed too, with that as its reason: better a line saying
+    "no PE cashflows" than a deal that quietly is not there.
+    """
+    compute_all_sold_returns(inv_sold, acct, inv)  # cached; fills the exclusions
+    sold_vcodes = sorted(inv_sold["vcode"].astype(str).tolist()) if not inv_sold.empty else []
+    entry = _sold_cache.get("|".join(sold_vcodes))
+    return list(entry[1]) if entry else []
 
 
 def build_deal_detail(vcode: str, inv_sold: pd.DataFrame, acct: pd.DataFrame,
