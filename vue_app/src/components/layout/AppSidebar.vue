@@ -25,11 +25,13 @@ function toggleSection(key: string) {
 const amRoutes = ['/deal-analysis', '/property-financials', '/surveillance', '/valuations', '/one-pager', '/portfolio-snapshot', '/review-tracking', '/ownership', '/waterfall-setup', '/reports']
 const nbRoutes = ['/pipeline', '/prospect-analysis', '/lease-review', '/lease-risk-analysis']
 const dmRoutes = ['/data-explorer', '/settings']
+const acctRoutes = ['/workpapers']
 
 watch(() => route.path, (path) => {
   if (amRoutes.some(r => path.startsWith(r))) expandedSections.am = true
   if (nbRoutes.some(r => path.startsWith(r))) expandedSections.nb = true
   if (dmRoutes.some(r => path.startsWith(r))) expandedSections.dm = true
+  if (acctRoutes.some(r => path.startsWith(r))) expandedSections.acct = true
 }, { immediate: true })
 
 // MRI Data tools
@@ -547,9 +549,19 @@ function toggleCollapsed() {
         </div>
       </div>
 
-      <!-- Accounting (future) -->
+      <!-- Accounting -->
       <div class="nav-section">
-        <span class="nav-section-header future">Accounting</span>
+        <button
+          class="nav-section-header"
+          :class="{ expanded: expandedSections.acct }"
+          @click="toggleSection('acct')"
+        >
+          Accounting
+          <span class="chev">{{ expandedSections.acct ? '&#9662;' : '&#9656;' }}</span>
+        </button>
+        <div v-if="expandedSections.acct" class="nav-children">
+          <router-link to="/workpapers" class="nav-item">Workpaper Packages</router-link>
+        </div>
       </div>
 
       <!-- New Business -->

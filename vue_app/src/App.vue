@@ -71,8 +71,17 @@ body {
   min-height: 100vh;
 }
 
+/* min-width: 0 on both — a flex item defaults to min-width:auto, which means
+   it grows to its widest content instead of shrinking to the space available.
+   Without it a wide table stretches the whole shell and the BODY scrolls
+   sideways, carrying the sidebar's neighbours off screen, and any
+   `overflow-x: auto` wrapper inside is stretched too so it never scrolls.
+   Measured on Sep 14 2026: Data Explorer on gl_detail made the body 2601px
+   wide in a 1265px viewport. With this, wide content scrolls inside its own
+   container, which is what every such wrapper in the app already assumes. */
 .main-content {
   flex: 1;
+  min-width: 0;
   margin-left: var(--sidebar-width);
   display: flex;
   flex-direction: column;
@@ -82,6 +91,7 @@ body {
 .page-content {
   padding: 24px;
   flex: 1;
+  min-width: 0;
 }
 
 .login-layout {

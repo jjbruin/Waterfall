@@ -162,6 +162,9 @@ def create_app(config_name: str = None) -> Flask:
     from flask_app.api.valuations import valuations_bp
     app.register_blueprint(valuations_bp, url_prefix="/api/valuations")
 
+    from flask_app.api.workpapers import workpapers_bp
+    app.register_blueprint(workpapers_bp)
+
     # Health check
     @app.route("/health")
     def health():
