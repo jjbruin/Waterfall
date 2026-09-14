@@ -219,8 +219,43 @@ def build(entityid: str, period_end: str, statement: str = "both",
         "unmapped_total": sum(r["closing"] for r in unmapped),
     }
 
+    # The income statement is built even when only the balance sheet was
+    # asked for, because the balance sheet needs the period's result.
+    inc = render("income_statement", INCOME_SECTIONS, "ytd")
+    inc["net_income"] = -inc["gl_total"]
+
     if statement in ("both", "balance_sheet"):
         bs = render("balance_sheet", BALANCE_SHEET_SECTIONS, "closing")
+
+        # THE PERIOD'S RESULT BELONGS IN MEMBERS' CAPITAL, and the balance
+        # sheet does not balance without it. Income accounts are closed to
+        # equity at YEAR END, so at any date before that the equity accounts
+        # hold opening capital plus capital movements and NOT the year's
+        # profit or loss -- which is why every entity came out of balance by
+        # exactly its net income when the mapping was first applied
+        # (PPIECH -11,745.08, AMB6 -16,282.49, Sep 14 2026). The figure is the
+        # income statement's own total, so the two statements cannot disagree.
+        if abs(inc["gl_total"]) > 0.005:
+            period_line = {
+                "fs_line": "Net increase (decrease) in members' capital "
+                           "resulting from operations",
+                "amount": SECTION_SIGN["Members' Capital"] * inc["gl_total"],
+                "gl_amount": inc["gl_total"],
+                "accounts": [],
+                "from_income_statement": True,
+            }
+            sec = next((s for s in bs["sections"]
+                        if s["section"] == "Members' Capital"), None)
+            if sec is None:
+                sec = {"section": "Members' Capital",
+                       "presentation_sign": SECTION_SIGN["Members' Capital"],
+                       "lines": [], "total": 0.0, "gl_total": 0.0}
+                bs["sections"].append(sec)
+            sec["lines"].append(period_line)
+            sec["total"] += period_line["amount"]
+            sec["gl_total"] += period_line["gl_amount"]
+            bs["gl_total"] += period_line["gl_amount"]
+
         # THE TIE-OUT. In GL signs a complete balance sheet sums to zero:
         # debits and credits net. A non-zero total is the amount that is
         # unmapped, misclassified or genuinely out of balance -- it is the
@@ -230,8 +265,6 @@ def build(entityid: str, period_end: str, statement: str = "both",
         result["balance_sheet"] = bs
 
     if statement in ("both", "income_statement"):
-        inc = render("income_statement", INCOME_SECTIONS, "ytd")
-        inc["net_income"] = -inc["gl_total"]
         result["income_statement"] = inc
 
     return result
