@@ -240,6 +240,34 @@ other column regresses.
 text fits. That removes the symptom on one deal; it does not answer whether the defect is
 real.*
 
+### 1.15 A typed NAV step ref overrides every step sharing that iOrder — 5 deals
+`valuation_step_refs` is keyed `UNIQUE(vcode, wf_type, iorder)`, but an iOrder is not one
+step. In Cap_WF, **5 of 689 (vcode, iOrder) groups carry more than one citation**:
+
+| vcode | iOrder | citations on that iOrder |
+|---|---|---|
+| P0000033 | 2 | 8.2(b), 8.2(c) |
+| P0000061 | 2 | two |
+| P0000062 | 2 | two |
+| P0000099 | 5 | 8.2(c), 8.2(d), 8.2(e) |
+| P0000110 | 5 | three |
+
+On those rows a ref typed into one step is stored against the iOrder and read back by all
+of them. Since `v441` each step derives its own citation from `vAmtType`, so the rows are
+now RIGHT by default — which means one typed override there replaces two or three correct
+citations with one wrong one. Latent, not active: the only overrides that exist are
+P0000004's seven, and that deal is unambiguous.
+
+**Verify:** `select vcode,iOrder,count(distinct trim(vAmtType)) from waterfalls where
+vmisc='Cap_WF' group by 1,2 having count(distinct trim(vAmtType))>1`
+
+**Fix shape:** add `amt_type` to the table's key (`UNIQUE(vcode, wf_type, iorder,
+amt_type)`) and to `set_step_ref` / `_step_refs` / `_apply_refs`, plus the Vue draft key —
+`refDrafts` is keyed by `l.iorder` too, so today the input boxes on those rows also move
+together before anything is saved. Needs a migration on a PROTECTED table.
+
+**Owner:** unassigned. Found Sep 14 2026 while verifying `648e4e2`.
+
 ## 2. Decisions needed — blocked on a human, not on code
 
 ### 2.1 What metric is U/W ROE meant to be? — ANSWER THIS FIRST
