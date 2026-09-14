@@ -562,25 +562,74 @@ def build_schedule_of_investments(entityid: str, period_end: str,
     types = account_types(engine)
 
     # What this entity holds, and how much of it.
+    #
+    # MEMBERSHIP INTEREST IS DERIVED FROM COMMITTED AMOUNTS, not read from a
+    # stored percentage. Sep 14 2026: PPIECH's commitment to EASTCH is
+    # 29,390,000 of 44,085,000 committed in total -- 66.67%, which is the
+    # 0.6667 the example workbook's SOI carries. `relationships` says PPIECH
+    # holds 100% of EASTCH and the operating partner 0%, and `commitments`
+    # carries CapitalPercent 0.00 on both EASTCH rows. So on that investment
+    # the amounts were right and BOTH percentage fields were wrong or unset,
+    # while the amounts needed no maintenance to be correct.
+    #
+    # A stored percentage is right only once somebody fills it in and silently
+    # wrong until then. Deriving costs nothing where the field IS populated:
+    # the three commitments into PPIECH carry 15.31 / 16.64 / 68.05 and their
+    # implied shares match to the cent.
+    #
+    # BOTH FIGURES ARE REPORTED. Accounting is mid-update on this table, so a
+    # disagreement is news, not noise -- the statement shows the derived
+    # interest, the relationships figure beside it, and flags the line when
+    # they differ rather than quietly picking one.
     with engine.connect() as conn:
         try:
             rel = pd.read_sql(text("SELECT * FROM relationships"), conn)
         except Exception:
             logger.warning("relationships not loaded", exc_info=True)
             rel = pd.DataFrame()
-    holdings = []
+        try:
+            com = pd.read_sql(text("SELECT * FROM commitments"), conn)
+        except Exception:
+            logger.warning("commitments not loaded", exc_info=True)
+            com = pd.DataFrame()
+
+    rel_pct, rel_name = {}, {}
     if not rel.empty:
         for c in ("InvestmentID", "InvestorID"):
             rel[c] = rel[c].astype(str).str.strip().str.upper()
         held = rel[(rel["InvestorID"] == ent) & (rel["EndDate"].isna()
                    if "EndDate" in rel.columns else True)]
         for _, r in held.iterrows():
-            holdings.append({
-                "investment_id": r["InvestmentID"],
-                "name": str(r.get("Name") or "").strip() or r["InvestmentID"],
-                "ownership_pct": (float(r["OwnershipPct"])
-                                  if pd.notna(r.get("OwnershipPct")) else None),
-            })
+            rel_pct[r["InvestmentID"]] = (float(r["OwnershipPct"])
+                                          if pd.notna(r.get("OwnershipPct")) else None)
+            rel_name[r["InvestmentID"]] = str(r.get("Name") or "").strip() or None
+
+    derived_pct, committed = {}, {}
+    if not com.empty:
+        com["EntityID"] = com["EntityID"].astype(str).str.strip().str.upper()
+        com["InvestorID"] = com["InvestorID"].astype(str).str.strip().str.upper()
+        com["Amount"] = pd.to_numeric(com["Amount"], errors="coerce").fillna(0.0)
+        mine = com[com["InvestorID"] == ent]
+        for _, r in mine.iterrows():
+            inv_id = r["EntityID"]
+            total = com[com["EntityID"] == inv_id]["Amount"].sum()
+            derived_pct[inv_id] = (100.0 * r["Amount"] / total) if total else None
+            committed[inv_id] = float(r["Amount"])
+
+    holdings = []
+    for inv_id in sorted(set(rel_pct) | set(derived_pct)):
+        d, s = derived_pct.get(inv_id), rel_pct.get(inv_id)
+        holdings.append({
+            "investment_id": inv_id,
+            "name": rel_name.get(inv_id) or inv_id,
+            "ownership_pct": d if d is not None else s,
+            "ownership_pct_source": "commitments" if d is not None else "relationships",
+            "ownership_pct_derived": d,
+            "ownership_pct_relationships": s,
+            "committed_amount": committed.get(inv_id),
+            "ownership_disagrees": (d is not None and s is not None
+                                    and abs(d - s) > 0.01),
+        })
 
     # The investment accounts' balances, by related entity where tagged.
     with engine.connect() as conn:
@@ -631,10 +680,16 @@ def build_schedule_of_investments(entityid: str, period_end: str,
         cost = float(row["cost"])
         unreal = float(row["unrealized"])
         fv = cost + unreal
+        h = name_by_id.get(rltd, {}) if rltd else {}
         entry = {
             "related_entity": rltd or None,
-            "name": name_by_id.get(rltd, {}).get("name") if rltd else None,
-            "ownership_pct": name_by_id.get(rltd, {}).get("ownership_pct") if rltd else None,
+            "name": h.get("name"),
+            "ownership_pct": h.get("ownership_pct"),
+            "ownership_pct_source": h.get("ownership_pct_source"),
+            "ownership_pct_derived": h.get("ownership_pct_derived"),
+            "ownership_pct_relationships": h.get("ownership_pct_relationships"),
+            "committed_amount": h.get("committed_amount"),
+            "ownership_disagrees": h.get("ownership_disagrees", False),
             "cost": cost, "unrealized": unreal, "fair_value": fv,
             "realized": float(row["realized"]),
             "pct_of_members_capital": (fv / members_capital

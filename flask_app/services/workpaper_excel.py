@@ -287,19 +287,38 @@ def _schedule_of_investments(wb, used, entity, period_end, engine):
                 value=soi.get("note", "No investment balances for this entity")).font = SUB
         return
 
+    # Both figures, side by side. Membership interest is derived from
+    # committed amounts; the relationships percentage sits beside it because
+    # accounting is mid-update on that table and the two currently disagree on
+    # EASTCH (derived 66.67%, relationships 100%). Showing one and hiding the
+    # other would make a live data question invisible on a signed document.
     rows = [{
         "Name of Investment": l.get("name") or l.get("related_entity") or "—",
         "Membership Interest": (l["ownership_pct"] / 100.0
                                 if l.get("ownership_pct") is not None else None),
+        "Per relationships": (l["ownership_pct_relationships"] / 100.0
+                              if l.get("ownership_pct_relationships") is not None else None),
+        "Committed": l.get("committed_amount"),
         "Cost": l["cost"],
         "Fair Value": l["fair_value"],
         "Fair Value as % of Members' Capital": l.get("pct_of_members_capital"),
     } for l in lines]
     rows.append({"Name of Investment": "Total", "Membership Interest": None,
+                 "Per relationships": None, "Committed": None,
                  "Cost": soi["total_cost"], "Fair Value": soi["total_fair_value"],
                  "Fair Value as % of Members' Capital": None})
     r = _table(sh, r, list(rows[0].keys()), rows,
-               money_cols=["Cost", "Fair Value"])
+               money_cols=["Committed", "Cost", "Fair Value"])
+
+    disagree = [l for l in lines if l.get("ownership_disagrees")]
+    if disagree:
+        sh.cell(row=r, column=1,
+                value="MEMBERSHIP INTEREST DISAGREES with relationships on "
+                      + ", ".join(str(l.get("name") or l.get("related_entity"))
+                                  for l in disagree)
+                      + " — the figure shown is derived from committed amounts."
+                ).font = Font(bold=True, color="8A5A00")
+        r += 2
 
     ok = soi["ties"]
     c = sh.cell(row=r, column=1,
