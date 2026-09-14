@@ -212,6 +212,28 @@ def download_package(package_id):
         return _fail(e, "download_package", 500)
 
 
+@workpapers_bp.route("/packages/<int:package_id>/statements", methods=["GET"])
+@login_required
+def package_statements(package_id):
+    """Every drafted statement with its tie-out — the thing being validated."""
+    from flask_app.services import workpaper_workbench as wbench
+    try:
+        return jsonify(safe_json(wbench.statements_summary(package_id)))
+    except Exception as e:
+        return _fail(e, "package_statements", 500)
+
+
+@workpapers_bp.route("/packages/<int:package_id>/steps/<step_key>/evidence", methods=["GET"])
+@login_required
+def step_evidence(package_id, step_key):
+    """What the preparer needs in front of them to finish this step."""
+    from flask_app.services import workpaper_workbench as wbench
+    try:
+        return jsonify(safe_json(wbench.step_evidence(package_id, step_key)))
+    except Exception as e:
+        return _fail(e, "step_evidence", 500)
+
+
 @workpapers_bp.route("/packages/<int:package_id>/preview", methods=["GET"])
 @login_required
 def preview(package_id):

@@ -2,15 +2,18 @@
 /**
  * Accounting workpaper packages — the quarterly close.
  *
- * Two questions this screen has to answer at a glance, because they are the
- * ones asked in a close meeting:
- *   "where is every package right now?"   -> the tracker grid
- *   "what is late, and whose is it?"      -> overdue counts and the red cells
+ * THE STATEMENTS ARE THE PRODUCT; the checklist is how you get there. So the
+ * drafted statements sit at the top of a package with their tie-outs visible,
+ * and each carries a chip saying whether the system's own check passed. What
+ * the app is producing should be the first thing on screen, not something you
+ * find by downloading a workbook.
  *
- * The population is not editable here. An entity gets a package because
- * accounting tagged it ENTGRPID='REP' in MRI; Sync re-reads that tag rather
- * than offering an add button, so the app and MRI cannot disagree about who
- * is in scope.
+ * AND THE WORK HAPPENS WHERE THE EVIDENCE IS. Clicking a step loads exactly
+ * what that step asserts — its guidance, the checks the system can run, the
+ * accounts or figures behind it, and the exhibit slots it expects. A preparer
+ * should never have to leave the step to find out whether it is true. The
+ * step -> evidence mapping is accounting knowledge and lives on the server
+ * (workpaper_workbench.py), not here.
  */
 import { ref, computed, onMounted } from 'vue'
 import api from '../api/client'
@@ -26,8 +29,12 @@ const error = ref('')
 const msg = ref('')
 
 const detail = ref<any>(null)
-const detailLoading = ref(false)
-const preview = ref<any>(null)
+const statements = ref<any>(null)
+const openStatement = ref<string>('')
+const activeStep = ref<string>('')
+const evidence = ref<any>(null)
+const evidenceLoading = ref(false)
+
 const showNewCycle = ref(false)
 const newLabel = ref('')
 const newEnd = ref('')
@@ -36,6 +43,8 @@ const uploadCaption = ref('')
 const returnNote = ref('')
 
 const isAdmin = computed(() => auth.user?.role === 'admin')
+const STATEMENT_KEYS = ['balance_sheet', 'income_statement', 'soi',
+                        'members_capital', 'cash_flow']
 
 function flash(m: string) {
   msg.value = m
@@ -93,26 +102,48 @@ async function setDue(stepKey: string, due: string) {
 }
 
 async function openPackage(id: number) {
-  detailLoading.value = true
-  preview.value = null
+  detail.value = (await api.get(`/api/workpapers/packages/${id}`)).data
+  statements.value = null
+  evidence.value = null
+  activeStep.value = ''
+  loadStatements()
+  // Open on the first unfinished step: that is where the work is.
+  const next = detail.value.steps.find((s: any) => !s.done) || detail.value.steps[0]
+  if (next) selectStep(next.key)
+}
+
+async function loadStatements() {
+  if (!detail.value) return
   try {
-    detail.value = (await api.get(`/api/workpapers/packages/${id}`)).data
-  } finally {
-    detailLoading.value = false
+    statements.value = (await api.get(
+      `/api/workpapers/packages/${detail.value.package.id}/statements`)).data
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
   }
 }
 
-async function loadPreview() {
-  if (!detail.value) return
-  preview.value = (await api.get(
-    `/api/workpapers/packages/${detail.value.package.id}/preview`)).data
+async function selectStep(key: string) {
+  activeStep.value = key
+  evidenceLoading.value = true
+  evidence.value = null
+  try {
+    evidence.value = (await api.get(
+      `/api/workpapers/packages/${detail.value.package.id}/steps/${key}/evidence`)).data
+    const slots = evidence.value.exhibit_slots || []
+    if (slots.length) uploadSlot.value = slots[0]
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
+  } finally {
+    evidenceLoading.value = false
+  }
 }
 
 async function toggleStep(step: any) {
   await api.put(`/api/workpapers/packages/${detail.value.package.id}/steps`, {
     step_key: step.key, done: !step.done,
   })
-  await openPackage(detail.value.package.id)
+  const id = detail.value.package.id
+  detail.value = (await api.get(`/api/workpapers/packages/${id}`)).data
   await loadTracker()
 }
 
@@ -122,7 +153,8 @@ async function act(action: string) {
       action, note: returnNote.value,
     })
     returnNote.value = ''
-    await openPackage(detail.value.package.id)
+    const id = detail.value.package.id
+    detail.value = (await api.get(`/api/workpapers/packages/${id}`)).data
     await loadTracker()
     flash('Updated')
   } catch (e: any) {
@@ -142,7 +174,9 @@ async function uploadExhibit(ev: Event) {
       { headers: { 'Content-Type': 'multipart/form-data' } })
     uploadCaption.value = ''
     input.value = ''
-    await openPackage(detail.value.package.id)
+    const id = detail.value.package.id
+    detail.value = (await api.get(`/api/workpapers/packages/${id}`)).data
+    if (activeStep.value) await selectStep(activeStep.value)
     await loadTracker()
     flash('Exhibit attached')
   } catch (e: any) {
@@ -153,26 +187,42 @@ async function uploadExhibit(ev: Event) {
 async function removeExhibit(id: number) {
   if (!confirm('Remove this exhibit from the package?')) return
   await api.delete(`/api/workpapers/exhibits/${id}`)
-  await openPackage(detail.value.package.id)
+  const pid = detail.value.package.id
+  detail.value = (await api.get(`/api/workpapers/packages/${pid}`)).data
   await loadTracker()
 }
-
-function exhibitUrl(id: number) { return `/api/workpapers/exhibits/${id}` }
 
 async function downloadPackage(id: number, name: string) {
   const res = await api.get(`/api/workpapers/packages/${id}/download`, { responseType: 'blob' })
   const url = URL.createObjectURL(res.data)
   const a = document.createElement('a')
-  a.href = url
-  a.download = name
-  a.click()
+  a.href = url; a.download = name; a.click()
   URL.revokeObjectURL(url)
 }
+
+const exhibitUrl = (id: number) => `/api/workpapers/exhibits/${id}`
+const slotLabel = (key: string) =>
+  (detail.value?.slots || []).find((s: any) => s.key === key)?.label || key
 
 const stateClass = (s: string) => ({
   not_started: 'st-grey', in_progress: 'st-blue', submitted: 'st-amber',
   manager_approved: 'st-teal', cfo_approved: 'st-green', returned: 'st-red',
 } as Record<string, string>)[s] || 'st-grey'
+
+function fmt(v: any) {
+  if (v === null || v === undefined || v === '') return '—'
+  if (typeof v === 'number') return v.toLocaleString(undefined,
+    { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  return String(v)
+}
+
+// Exhibits relevant to the step in view, so the preparer attaches evidence
+// against the assertion rather than into a general pile.
+const stepExhibits = computed(() => {
+  const slots = evidence.value?.exhibit_slots || []
+  if (!slots.length || !detail.value) return []
+  return detail.value.exhibits.filter((e: any) => slots.includes(e.slot_key))
+})
 
 onMounted(loadCycles)
 </script>
@@ -217,7 +267,6 @@ onMounted(loadCycles)
         <strong>Sync entities</strong>; if none are, nothing is due.
       </div>
 
-      <!-- Tracker grid: entity x step -->
       <div v-else class="grid-wrap">
         <table class="grid">
           <thead>
@@ -237,7 +286,8 @@ onMounted(loadCycles)
             </tr>
           </thead>
           <tbody>
-            <tr v-for="p in tracker.packages" :key="p.id">
+            <tr v-for="p in tracker.packages" :key="p.id"
+                :class="{ open: detail?.package?.id === p.id }">
               <td class="sticky-l">
                 <button class="link" @click="openPackage(p.id)">{{ p.entityid }}</button>
                 <div class="ent-name">{{ p.entity_name }}</div>
@@ -260,7 +310,7 @@ onMounted(loadCycles)
       </div>
     </template>
 
-    <!-- Package detail -->
+    <!-- ── Package ─────────────────────────────────────────────────── -->
     <div v-if="detail" class="drawer">
       <div class="drawer-head">
         <div>
@@ -273,7 +323,6 @@ onMounted(loadCycles)
           </div>
         </div>
         <div class="head-actions">
-          <button class="btn" @click="loadPreview">Preview figures</button>
           <button class="btn primary"
                   @click="downloadPackage(detail.package.id,
                           `${detail.package.entityid} - WP - ${detail.package.period_end}.xlsx`)">
@@ -283,127 +332,212 @@ onMounted(loadCycles)
         </div>
       </div>
 
-      <div class="drawer-body">
-        <section>
-          <h3>Close checklist</h3>
-          <div v-for="s in detail.steps" :key="s.key" class="step-row" :class="{ late: s.overdue }">
-            <label>
-              <input type="checkbox" :checked="s.done" @change="toggleStep(s)" />
-              <span class="step-label">{{ s.label }}</span>
-            </label>
-            <span class="step-meta">
-              <span class="owner-tag">{{ s.owner }}</span>
-              <span v-if="s.due_date" :class="{ overdue: s.overdue }">due {{ s.due_date }}</span>
-              <span v-else class="muted">no deadline</span>
-              <span v-if="s.done" class="muted">· {{ s.completed_by }} {{ s.completed_at }}</span>
-            </span>
-          </div>
-        </section>
+      <!-- What the system is producing, first. -->
+      <section class="statements">
+        <div class="sec-head">
+          <h3>Drafted financial statements</h3>
+          <span class="muted small" v-if="statements">
+            <template v-if="statements.unmapped_count">
+              {{ statements.unmapped_count }} account(s) unmapped,
+              {{ fmt(statements.unmapped_total) }} not on any line
+            </template>
+            <template v-else>every account mapped to a statement line</template>
+          </span>
+        </div>
+        <div v-if="!statements" class="muted small">Building statements…</div>
+        <div v-else class="stmt-cards">
+          <button v-for="k in STATEMENT_KEYS" :key="k" class="stmt-card"
+                  :class="{ active: openStatement === k,
+                            ok: statements[k].ties === true,
+                            bad: statements[k].ties === false }"
+                  @click="openStatement = openStatement === k ? '' : k">
+            <div class="stmt-title">{{ statements[k].title }}</div>
+            <div class="stmt-tie">{{ statements[k].tie_label }}</div>
+          </button>
+        </div>
 
-        <section>
-          <h3>Supporting exhibits</h3>
-          <p class="muted small">
-            Attached here, placed in the workbook on download. Spreadsheets and CSVs
-            become tabs, images are embedded; anything else is listed on the Exhibits
-            tab and travels with the file.
-          </p>
-          <div class="upload">
-            <select v-model="uploadSlot" class="sel">
-              <option v-for="s in detail.slots" :key="s.key" :value="s.key">{{ s.label }}</option>
-            </select>
-            <input v-model="uploadCaption" placeholder="Caption (optional)" />
-            <input type="file" @change="uploadExhibit" />
-          </div>
-          <table v-if="detail.exhibits.length" class="mini">
-            <thead><tr><th>Slot</th><th>File</th><th class="num">KB</th><th>By</th><th></th></tr></thead>
+        <div v-if="openStatement && statements" class="stmt-body">
+          <!-- sectioned statements -->
+          <template v-if="statements[openStatement].sections">
+            <div v-for="sec in statements[openStatement].sections" :key="sec.section">
+              <h4>{{ sec.section }}</h4>
+              <table class="mini">
+                <tbody>
+                  <tr v-for="l in sec.lines" :key="l.fs_line">
+                    <td>{{ l.fs_line }}</td>
+                    <td class="num">{{ fmt(l.amount) }}</td>
+                  </tr>
+                  <tr class="tot"><td>Total {{ sec.section }}</td>
+                    <td class="num">{{ fmt(sec.total) }}</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </template>
+          <!-- schedule of investments -->
+          <table v-else-if="openStatement === 'soi'" class="mini">
+            <thead><tr><th>Investment</th><th class="num">Interest</th>
+              <th class="num">Per relationships</th><th class="num">Cost</th>
+              <th class="num">Fair value</th></tr></thead>
             <tbody>
-              <tr v-for="e in detail.exhibits" :key="e.id">
-                <td>{{ (detail.slots.find((s: any) => s.key === e.slot_key) || {}).label || e.slot_key }}</td>
-                <td><a :href="exhibitUrl(e.id)">{{ e.filename }}</a>
-                  <div v-if="e.caption" class="muted small">{{ e.caption }}</div></td>
-                <td class="num">{{ ((e.size_bytes || 0) / 1024).toFixed(1) }}</td>
-                <td>{{ e.uploaded_by }}</td>
-                <td><button class="link danger" @click="removeExhibit(e.id)">remove</button></td>
+              <tr v-for="l in statements.soi.lines" :key="l.related_entity"
+                  :class="{ warn: l.ownership_disagrees }">
+                <td>{{ l.name || l.related_entity }}</td>
+                <td class="num">{{ l.ownership_pct?.toFixed(4) }}%</td>
+                <td class="num">{{ l.ownership_pct_relationships?.toFixed(2) ?? '—' }}%</td>
+                <td class="num">{{ fmt(l.cost) }}</td>
+                <td class="num">{{ fmt(l.fair_value) }}</td>
               </tr>
             </tbody>
           </table>
-          <p v-else class="muted small">No exhibits attached yet.</p>
-        </section>
+          <!-- members' capital -->
+          <table v-else-if="openStatement === 'members_capital'" class="mini">
+            <thead><tr><th>Movement</th>
+              <th v-for="m in statements.members_capital.members" :key="m.InvestorID" class="num">
+                {{ m.InvestorName || m.InvestorID }}</th>
+              <th class="num">Total</th></tr></thead>
+            <tbody>
+              <tr v-for="(r, i) in statements.members_capital.rows" :key="i"
+                  :class="{ tot: r.kind !== 'movement' }">
+                <td>{{ r.label }}</td>
+                <td v-for="m in statements.members_capital.members" :key="m.InvestorID" class="num">
+                  {{ fmt(r.by_member[m.InvestorID]) }}</td>
+                <td class="num">{{ fmt(r.total) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
 
-        <section>
-          <h3>Approval</h3>
+      <!-- Checklist on the left, that step's evidence on the right. -->
+      <section class="work">
+        <div class="steps">
+          <h3>Close checklist</h3>
+          <button v-for="s in detail.steps" :key="s.key" class="step-row"
+                  :class="{ active: activeStep === s.key, late: s.overdue, done: s.done }"
+                  @click="selectStep(s.key)">
+            <span class="tick" :class="{ on: s.done }"
+                  @click.stop="toggleStep(s)"
+                  :title="s.done ? 'Mark not done' : 'Mark done'">{{ s.done ? '✓' : '' }}</span>
+            <span class="step-text">
+              <span class="step-label">{{ s.label }}</span>
+              <span class="step-meta">
+                <span class="owner-tag">{{ s.owner }}</span>
+                <span v-if="s.due_date" :class="{ overdue: s.overdue }">due {{ s.due_date }}</span>
+                <span v-else class="muted">no deadline</span>
+              </span>
+            </span>
+          </button>
+
+          <h3 style="margin-top:14px">Approval</h3>
           <div class="approve-row">
-            <button class="btn" @click="act('submit')">Submit for review</button>
-            <button class="btn" @click="act('approve_manager')">Manager approve</button>
-            <button class="btn" @click="act('approve_cfo')">CFO approve</button>
-            <button class="btn warn" @click="act('return_to_preparer')">Return to preparer</button>
-            <button v-if="isAdmin" class="btn" @click="act('reopen')">Reopen</button>
+            <button class="btn" @click="act('submit')">Submit</button>
+            <button class="btn" @click="act('approve_manager')">Manager</button>
+            <button class="btn" @click="act('approve_cfo')">CFO</button>
+            <button class="btn warn" @click="act('return_to_preparer')">Return</button>
           </div>
           <input v-model="returnNote" class="note-input"
-                 placeholder="Note — required when returning a package" />
-        </section>
+                 placeholder="Note — required when returning" />
+        </div>
 
-        <section v-if="preview">
-          <h3>Figures</h3>
-          <p class="muted small">
-            Trial balance through {{ preview.periods.ytd_last }} —
-            {{ preview.trial_balance_rows }} accounts,
-            <strong>{{ preview.unmapped_accounts.length }}</strong> not mapped to a
-            statement line.
-          </p>
-          <div class="table-scroll">
-          <table class="mini">
-            <thead><tr><th>Account</th><th>Name</th><th>FS line</th>
-              <th class="num">YTD beginning</th><th class="num">Change</th>
-              <th class="num">Ending</th></tr></thead>
-            <tbody>
-              <tr v-for="r in preview.trial_balance.slice(0, 40)" :key="r.acctnum"
-                  :class="{ unmapped: !r.fs_line }">
-                <td>{{ r.acctnum }}</td><td>{{ r.acctname }}</td>
-                <td>{{ r.fs_line || '— unmapped —' }}</td>
-                <td class="num">{{ r.ytd_beginning?.toLocaleString() }}</td>
-                <td class="num">{{ r.ytd_change?.toLocaleString() }}</td>
-                <td class="num">{{ r.ytd_ending?.toLocaleString() }}</td>
-              </tr>
-            </tbody>
-          </table>
-          </div>
-        </section>
+        <div class="evidence">
+          <div v-if="evidenceLoading" class="muted">Loading evidence…</div>
+          <template v-else-if="evidence">
+            <h3>{{ evidence.step.label }}</h3>
+            <p class="guidance">{{ evidence.guidance }}</p>
 
-        <section>
-          <h3>Activity</h3>
-          <div v-for="(e, i) in detail.events" :key="i" class="event">
-            <span class="muted">{{ e.created_at }}</span>
-            <strong>{{ e.action }}</strong>
-            <span v-if="e.from_state">{{ e.from_state }} → {{ e.to_state }}</span>
-            <span>· {{ e.actor }}</span>
-            <span v-if="e.note" class="note">“{{ e.note }}”</span>
-          </div>
-          <p v-if="!detail.events.length" class="muted small">Nothing recorded yet.</p>
-        </section>
-      </div>
+            <div v-if="evidence.checks.length" class="checks">
+              <div v-for="(c, i) in evidence.checks" :key="i" class="check" :class="c.status">
+                <span class="pill">{{ c.status === 'pass' ? '✓'
+                                    : c.status === 'fail' ? '!' : '·' }}</span>
+                <span class="c-label">{{ c.label }}</span>
+                <span class="c-value">{{ c.value }}</span>
+                <span v-if="c.detail" class="c-detail">{{ c.detail }}</span>
+              </div>
+            </div>
+
+            <div v-for="(t, i) in evidence.tables" :key="i" class="ev-table">
+              <h4>{{ t.title }}
+                <span class="muted small">{{ t.row_count }} row(s)</span>
+                <span v-if="t.note" class="muted small">· {{ t.note }}</span>
+              </h4>
+              <div class="table-scroll">
+                <table class="mini">
+                  <thead><tr><th v-for="c in t.columns" :key="c">{{ c }}</th></tr></thead>
+                  <tbody>
+                    <tr v-for="(r, j) in t.rows" :key="j">
+                      <td v-for="c in t.columns" :key="c"
+                          :class="{ num: typeof r[c] === 'number' }">{{ fmt(r[c]) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p v-if="t.truncated" class="muted small">
+                Showing the first {{ t.rows.length }} of {{ t.row_count }} — the full
+                set is in the downloaded package.
+              </p>
+            </div>
+
+            <!-- Attach evidence against the assertion being made. -->
+            <div v-if="evidence.exhibit_slots.length" class="ev-exhibits">
+              <h4>Supporting exhibits for this step</h4>
+              <div class="upload">
+                <select v-model="uploadSlot" class="sel">
+                  <option v-for="k in evidence.exhibit_slots" :key="k" :value="k">
+                    {{ slotLabel(k) }}</option>
+                </select>
+                <input v-model="uploadCaption" placeholder="Caption (optional)" />
+                <input type="file" @change="uploadExhibit" />
+              </div>
+              <table v-if="stepExhibits.length" class="mini">
+                <tbody>
+                  <tr v-for="e in stepExhibits" :key="e.id">
+                    <td>{{ slotLabel(e.slot_key) }}</td>
+                    <td><a :href="exhibitUrl(e.id)">{{ e.filename }}</a>
+                      <span v-if="e.caption" class="muted small"> · {{ e.caption }}</span></td>
+                    <td class="num">{{ ((e.size_bytes || 0) / 1024).toFixed(1) }} KB</td>
+                    <td><button class="link danger" @click="removeExhibit(e.id)">remove</button></td>
+                  </tr>
+                </tbody>
+              </table>
+              <p v-else class="muted small">Nothing attached for this step yet.</p>
+            </div>
+          </template>
+          <div v-else class="muted">Select a step to see what it needs.</div>
+        </div>
+      </section>
+
+      <section class="activity">
+        <h3>Activity</h3>
+        <div v-for="(e, i) in detail.events" :key="i" class="event">
+          <span class="muted">{{ e.created_at }}</span>
+          <strong>{{ e.action }}</strong>
+          <span v-if="e.from_state">{{ e.from_state }} → {{ e.to_state }}</span>
+          <span>· {{ e.actor }}</span>
+          <span v-if="e.note" class="note">“{{ e.note }}”</span>
+        </div>
+        <p v-if="!detail.events.length" class="muted small">Nothing recorded yet.</p>
+      </section>
     </div>
   </div>
 </template>
 
 <style scoped>
 /* min-width:0 because .page is a flex child: without it the page grows to the
-   widest table and the whole BODY scrolls sideways, dragging the drawer off
-   screen with it. With it, the grid scrolls inside .grid-wrap as intended. */
+   widest table and the whole BODY scrolls sideways. */
 .page { padding: 18px 22px; min-width: 0; max-width: 100%; }
 .page-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
 h1 { margin: 0; font-size: 22px; }
+h3 { margin: 0 0 8px; font-size: 14px; }
+h4 { margin: 12px 0 4px; font-size: 12.5px; font-weight: 600; }
 .subtitle { margin: 2px 0 0; color: var(--color-text-secondary); font-size: 13px; }
 .head-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.sel, input[type=date], input[type=text], .note-input, input:not([type]) {
+.sel, input[type=date], .note-input, input:not([type]) {
   padding: 5px 8px; border: 1px solid var(--color-border); border-radius: 4px;
-  background: var(--color-surface); color: var(--color-text); font-size: 13px;
-}
+  background: var(--color-surface); color: var(--color-text); font-size: 13px; }
 .btn { padding: 5px 12px; border: 1px solid var(--color-border); border-radius: 4px;
   background: var(--color-surface); color: var(--color-text); cursor: pointer; font-size: 13px; }
 .btn.primary { background: #1f3864; color: #fff; border-color: #1f3864; }
 .btn.warn { border-color: #c47b00; color: #8a5a00; }
-.btn:disabled { opacity: .5; cursor: default; }
 .new-cycle { display: flex; gap: 8px; align-items: center; margin: 12px 0; flex-wrap: wrap; }
 .hint { color: var(--color-text-secondary); font-size: 12px; }
 .banner { margin: 10px 0; padding: 8px 12px; border-radius: 5px; font-size: 13px; }
@@ -411,10 +545,12 @@ h1 { margin: 0; font-size: 22px; }
 .banner.err { background: #fdecea; border: 1px solid #e0a09a; color: #7a231b; }
 .placeholder { margin: 24px 0; color: var(--color-text-secondary); }
 
-.grid-wrap { overflow-x: auto; margin-top: 14px; border: 1px solid var(--color-border); border-radius: 6px; }
+.grid-wrap { overflow-x: auto; margin-top: 14px; border: 1px solid var(--color-border);
+  border-radius: 6px; }
 .grid { border-collapse: collapse; font-size: 12px; width: 100%; }
 .grid th, .grid td { border: 1px solid var(--color-border); padding: 5px 7px; vertical-align: top; }
 .grid thead th { background: #f4f6fa; position: sticky; top: 0; }
+.grid tr.open td { background: #eef3fb; }
 .sticky-l { position: sticky; left: 0; background: var(--color-surface); z-index: 2; min-width: 150px; }
 .step-col { min-width: 108px; }
 .step-name { font-weight: 600; }
@@ -443,30 +579,78 @@ h1 { margin: 0; font-size: 22px; }
 .drawer-head h2 { margin: 0; font-size: 17px; }
 .sub { color: var(--color-text-secondary); font-size: 12px; margin-top: 3px;
   display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.drawer-body { padding: 14px 16px; display: grid; gap: 20px; }
-section h3 { margin: 0 0 6px; font-size: 14px; }
-.step-row { display: flex; justify-content: space-between; gap: 12px; padding: 4px 6px;
-  border-bottom: 1px solid #f0f1f4; font-size: 13px; }
-.step-row.late { background: #fff7f6; }
-.step-label { margin-left: 6px; }
-.step-meta { display: flex; gap: 10px; align-items: center; font-size: 11.5px;
-  color: var(--color-text-secondary); }
+
+.statements { padding: 14px 16px; border-bottom: 1px solid var(--color-border);
+  background: #fafbfd; }
+.sec-head { display: flex; justify-content: space-between; align-items: baseline;
+  gap: 12px; flex-wrap: wrap; }
+.stmt-cards { display: flex; gap: 8px; flex-wrap: wrap; }
+.stmt-card { flex: 1 1 180px; text-align: left; padding: 8px 10px; cursor: pointer;
+  border: 1px solid var(--color-border); border-left: 4px solid #c9ced8;
+  border-radius: 5px; background: var(--color-surface); }
+.stmt-card.ok { border-left-color: #2c7a3d; }
+.stmt-card.bad { border-left-color: #b3261e; }
+.stmt-card.active { background: #eef3fb; }
+.stmt-title { font-weight: 600; font-size: 13px; }
+.stmt-tie { font-size: 11.5px; color: var(--color-text-secondary); margin-top: 2px; }
+.stmt-body { margin-top: 12px; background: var(--color-surface); padding: 10px 12px;
+  border: 1px solid var(--color-border); border-radius: 5px; }
+
+.work { display: grid; grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+  gap: 18px; padding: 14px 16px; }
+@media (max-width: 900px) { .work { grid-template-columns: 1fr; } }
+.steps { min-width: 0; }
+.step-row { display: flex; gap: 8px; align-items: flex-start; width: 100%; text-align: left;
+  padding: 6px 8px; border: 1px solid transparent; border-radius: 5px;
+  background: none; cursor: pointer; font-size: 13px; color: var(--color-text); }
+.step-row:hover { background: #f4f6fa; }
+.step-row.active { background: #eef3fb; border-color: #c3d3ea; }
+.step-row.late { box-shadow: inset 3px 0 0 #b3261e; }
+.step-row.done .step-label { color: var(--color-text-secondary); }
+.tick { flex: 0 0 auto; width: 16px; height: 16px; border: 1px solid var(--color-border);
+  border-radius: 3px; display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; margin-top: 1px; background: var(--color-surface); }
+.tick.on { background: #eaf6ec; border-color: #9ccfa6; color: #2c7a3d; }
+.step-text { display: flex; flex-direction: column; min-width: 0; }
+.step-meta { display: flex; gap: 8px; font-size: 11px; color: var(--color-text-secondary); }
 .owner-tag { text-transform: uppercase; font-size: 10px; background: #eceff3;
-  padding: 1px 5px; border-radius: 3px; }
+  padding: 0 4px; border-radius: 3px; }
 .overdue { color: #b3261e; font-weight: 600; }
-.muted { color: var(--color-text-secondary); }
-.small { font-size: 12px; }
-.upload { display: flex; gap: 8px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
-.table-scroll { overflow-x: auto; }
+
+.evidence { min-width: 0; }
+.guidance { margin: 0 0 10px; font-size: 13px; color: var(--color-text-secondary); }
+.checks { display: grid; gap: 4px; margin-bottom: 10px; }
+.check { display: flex; gap: 8px; align-items: baseline; font-size: 12.5px;
+  padding: 4px 8px; border-radius: 4px; background: #f4f6fa; }
+.check.pass { background: #eaf6ec; }
+.check.fail { background: #fdecea; }
+.check .pill { flex: 0 0 16px; text-align: center; font-weight: 700; }
+.check.pass .pill { color: #2c7a3d; }
+.check.fail .pill { color: #b3261e; }
+.c-label { flex: 1 1 auto; }
+.c-value { font-weight: 600; }
+.c-detail { color: var(--color-text-secondary); font-size: 11.5px; }
+
+.ev-table { margin-top: 10px; }
+.table-scroll { overflow-x: auto; max-height: 340px; overflow-y: auto; }
 .mini { width: 100%; border-collapse: collapse; font-size: 12px; }
-.mini th, .mini td { border-bottom: 1px solid var(--color-border); padding: 4px 6px; text-align: left; }
-.mini th.num, .mini td.num { text-align: right; }
-.mini tr.unmapped { background: #fff7f6; }
+.mini th, .mini td { border-bottom: 1px solid var(--color-border); padding: 3px 6px;
+  text-align: left; white-space: nowrap; }
+.mini thead th { position: sticky; top: 0; background: #f4f6fa; }
+.mini td.num, .mini th.num { text-align: right; }
+.mini tr.tot td { font-weight: 700; border-top: 1px solid var(--color-border); }
+.mini tr.warn { background: #fdf3e0; }
+.ev-exhibits { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--color-border); }
+.upload { display: flex; gap: 8px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
+
+.activity { padding: 12px 16px; border-top: 1px solid var(--color-border); }
+.event { font-size: 12px; padding: 2px 0; display: flex; gap: 8px; flex-wrap: wrap; }
+.event .note { font-style: italic; }
 .link { background: none; border: none; color: #1f3864; cursor: pointer; padding: 0;
   font-weight: 600; font-size: 12px; }
 .link.danger { color: #b3261e; font-weight: 400; }
-.approve-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.approve-row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
 .note-input { width: 100%; }
-.event { font-size: 12px; padding: 3px 0; display: flex; gap: 8px; flex-wrap: wrap; }
-.event .note { font-style: italic; }
+.muted { color: var(--color-text-secondary); }
+.small { font-size: 12px; }
 </style>
