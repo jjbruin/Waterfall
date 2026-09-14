@@ -1749,7 +1749,8 @@ watch(selectedCycleId, () => {
                       <tr v-for="(l, i) in navData.result.walk" :key="i">
                         <td>
                           <input v-if="canEdit" class="ref-input" v-model="refDrafts[l.iorder]"
-                                 placeholder="8.2(a)" @change="saveStepRef(l)" />
+                                 :title="l.agreement_ref ? 'Agreement section for this step' : 'No section on this step - type one'"
+                                 placeholder="—" @change="saveStepRef(l)" />
                           <span v-else>{{ l.agreement_ref }}</span>
                         </td>
                         <td>{{ l.recipient }}</td>

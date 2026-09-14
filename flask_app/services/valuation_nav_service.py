@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import date, datetime
 from io import BytesIO
 from typing import Any, Dict, List, Optional
@@ -331,6 +332,27 @@ def _step_refs(engine, vcode: str) -> Dict[int, str]:
     return {int(r[0]): r[1] for r in rows if r[1]}
 
 
+# The waterfall setup already carries the agreement citation per step, in
+# vAmtType ("8.2(a)", "6.03(c)", ...). Some deals use that column as a
+# grouping label instead ("ProRata", "AM_FEE", "Promote_Residual"), so only a
+# value shaped like a section number is shown as a citation - the rest stay
+# blank for the analyst to fill in.
+_SECTION_RE = re.compile(r"^\d+(?:\.\d+)*\s*(?:\([A-Za-z0-9]+\)\s*)*$")
+
+
+def _derived_ref(amt_type: Any) -> str:
+    s = str(amt_type or "").strip()
+    return s if s and _SECTION_RE.match(s) else ""
+
+
+def _apply_refs(refs: Dict[int, str], lines: List[dict]) -> List[dict]:
+    """Manual override wins; otherwise the step's own vAmtType citation."""
+    for l in lines:
+        l["agreement_ref"] = (refs.get(int(l.get("iorder") or 0))
+                              or _derived_ref(l.get("amt_type")))
+    return lines
+
+
 def compute_nav(engine, record_id: int, data: dict, username: str,
                 save: bool = True) -> Dict[str, Any]:
     """Run the liquidation walk and (optionally) persist the result."""
@@ -408,7 +430,8 @@ def compute_nav(engine, record_id: int, data: dict, username: str,
             remaining = float(a.get("RemainingAfter", remaining))
             walk_lines.append({
                 "iorder": int(a.get("iOrder", 0)),
-                "agreement_ref": refs.get(int(a.get("iOrder", 0)), ""),
+                "amt_type": str(a.get("vAmtType", "") or "").strip(),
+                "agreement_ref": "",
                 "recipient": str(a.get("PropCode", "")),
                 "step": str(a.get("vState", "")),
                 "label": str(a.get("vtranstype", "")),
@@ -416,6 +439,8 @@ def compute_nav(engine, record_id: int, data: dict, username: str,
                 "allocated": allocated,
                 "remaining_after": remaining,
             })
+
+    _apply_refs(refs, walk_lines)
 
     psc_nav = sum(l["allocated"] for l in walk_lines if not l["recipient"].upper().startswith("OP"))
     op_nav = sum(l["allocated"] for l in walk_lines if l["recipient"].upper().startswith("OP"))
@@ -492,16 +517,22 @@ def compute_nav(engine, record_id: int, data: dict, username: str,
 def get_nav(engine, record_id: int) -> Optional[Dict[str, Any]]:
     with engine.connect() as conn:
         row = conn.execute(text("""
-            SELECT inputs_json, walk_json, net_proceeds, psc_nav, op_nav,
-                   computed_by, computed_at
-            FROM valuation_nav_results WHERE record_id = :r
+            SELECT n.inputs_json, n.walk_json, n.net_proceeds, n.psc_nav, n.op_nav,
+                   n.computed_by, n.computed_at, r.vcode
+            FROM valuation_nav_results n
+            JOIN valuation_records r ON r.id = n.record_id
+            WHERE n.record_id = :r
         """), {"r": record_id}).fetchone()
     if not row:
         return None
     inputs = json.loads(row[0]) if row[0] else {}
+    walk = json.loads(row[1]) if row[1] else []
+    # Citations are resolved on read, not frozen into the saved walk, so an
+    # override typed after the NAV was computed shows without a recompute.
+    _apply_refs(_step_refs(engine, str(row[7])), walk)
     return {
         **inputs,
-        "walk": json.loads(row[1]) if row[1] else [],
+        "walk": walk,
         "net_proceeds": row[2],
         "psc_nav": row[3],
         "op_nav": row[4],
