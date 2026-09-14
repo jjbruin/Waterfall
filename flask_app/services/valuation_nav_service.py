@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from datetime import date, datetime
 from io import BytesIO
 from typing import Any, Dict, List, Optional
@@ -332,24 +331,22 @@ def _step_refs(engine, vcode: str) -> Dict[int, str]:
     return {int(r[0]): r[1] for r in rows if r[1]}
 
 
-# The waterfall setup already carries the agreement citation per step, in
-# vAmtType ("8.2(a)", "6.03(c)", ...). Some deals use that column as a
-# grouping label instead ("ProRata", "AM_FEE", "Promote_Residual"), so only a
-# value shaped like a section number is shown as a citation - the rest stay
-# blank for the analyst to fill in.
-_SECTION_RE = re.compile(r"^\d+(?:\.\d+)*\s*(?:\([A-Za-z0-9]+\)\s*)*$")
-
-
-def _derived_ref(amt_type: Any) -> str:
-    s = str(amt_type or "").strip()
-    return s if s and _SECTION_RE.match(s) else ""
-
-
 def _apply_refs(refs: Dict[int, str], lines: List[dict]) -> List[dict]:
-    """Manual override wins; otherwise the step's own vAmtType citation."""
+    """The step's own vAmtType, verbatim; a manual override wins.
+
+    The waterfall setup already records the agreement section per step in
+    vAmtType ("8.2(a)", "6.03(c)"), so the NAV walk shows what the deal
+    records and does not judge it. 33 of the 91 Cap_WF deals put a grouping
+    label there instead ("ProRata", "EXP", "AM_FEE") and those print as they
+    stand: on 30 of them - the fund-level entities, PPI27, PSC1, AMB23 - NO
+    row is a section number, so filtering to "things shaped like a citation"
+    blanked the whole column and left nobody able to tell why. A label on
+    screen is a data question the analyst can answer in Waterfall Setup,
+    which is the one place the citation should be fixed.
+    """
     for l in lines:
         l["agreement_ref"] = (refs.get(int(l.get("iorder") or 0))
-                              or _derived_ref(l.get("amt_type")))
+                              or str(l.get("amt_type") or "").strip())
     return lines
 
 
