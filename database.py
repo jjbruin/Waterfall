@@ -339,6 +339,26 @@ def ensure_pg_tables(engine):
     from sqlalchemy import text
 
     ddl_statements = [
+        # Progress of the background MRI refresh. ONE ROW (id = 1), rewritten
+        # as the job advances. In the database rather than in memory because a
+        # status poll must be answerable by whichever worker or replica takes
+        # it -- today there is one of each, and an in-memory dict would break
+        # silently the day that changes.
+        """
+        CREATE TABLE IF NOT EXISTS mri_refresh_status (
+            id              INTEGER PRIMARY KEY,
+            job_id          TEXT,
+            state           TEXT,
+            started_at      TEXT,
+            finished_at     TEXT,
+            started_by      TEXT,
+            current_query   TEXT,
+            completed       INTEGER,
+            total           INTEGER,
+            results_json    TEXT,
+            error           TEXT
+        )
+        """,
         """
         CREATE TABLE IF NOT EXISTS prospective_loans (
             id              SERIAL PRIMARY KEY,
@@ -659,6 +679,25 @@ def create_additional_tables(conn: sqlite3.Connection):
     These are for app-specific data like narratives, report templates, etc.
     """
     
+    # Background MRI refresh progress — one row (id 1). Mirrors the
+    # PostgreSQL DDL in ensure_pg_tables(); local dev needs it too or the
+    # status endpoint has nothing to read.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS mri_refresh_status (
+            id              INTEGER PRIMARY KEY,
+            job_id          TEXT,
+            state           TEXT,
+            started_at      TEXT,
+            finished_at     TEXT,
+            started_by      TEXT,
+            current_query   TEXT,
+            completed       INTEGER,
+            total           INTEGER,
+            results_json    TEXT,
+            error           TEXT
+        )
+    """)
+
     # Narratives table for report text sections
     conn.execute("""
         CREATE TABLE IF NOT EXISTS narratives (

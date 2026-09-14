@@ -7,10 +7,13 @@ Two workflows:
 Requires VPN connection to MRI SQL Server instances.
 """
 
+import json
 import logging
 import os
+import threading
 import time
-from datetime import datetime
+import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -544,18 +547,31 @@ def import_query_to_database(query_name: str, engine=None) -> dict:
     }
 
 
-def refresh_all(engine=None) -> dict:
+def refresh_all(engine=None, on_progress=None) -> dict:
     """Run all importable queries and refresh the app database.
 
     This is the admin "Refresh Data" action — replaces CSV upload entirely.
     Returns summary of all imports.
+
+    `on_progress(query_name, completed, total)` is called before each query so
+    a caller can publish progress; it must never raise into this loop.
     """
     results = {}
     total_t0 = time.time()
 
+    importable = [n for n, i in QUERY_REGISTRY.items() if i["target_table"]]
+    total = len(importable)
+    completed = 0
+
     for query_name, info in QUERY_REGISTRY.items():
         if not info["target_table"]:
             continue  # Skip download-only queries
+
+        if on_progress:
+            try:
+                on_progress(query_name, completed, total)
+            except Exception:
+                logger.warning("refresh progress callback failed", exc_info=True)
 
         try:
             result = import_query_to_database(query_name, engine=engine)
@@ -564,9 +580,155 @@ def refresh_all(engine=None) -> dict:
             logger.error(f"Failed to refresh '{query_name}': {e}")
             results[query_name] = {"query": query_name, "status": "error", "error": str(e)[:200]}
 
+        completed += 1
+
     total_elapsed = time.time() - total_t0
     return {
         "status": "ok",
         "elapsed_seconds": round(total_elapsed, 1),
         "queries": results,
     }
+
+
+# ── Background refresh ───────────────────────────────────────────────────
+# Refresh All outgrew the HTTP request. On Sep 14 2026 it took 281 seconds --
+# 19 queries, MRI_GL_Detail alone 31.7s to query and ~6s to write -- and the
+# Azure Container Apps ingress gives up at 240s and cannot be configured
+# higher. The browser got a 504 while the worker ran happily to completion and
+# logged a 200. A 504 that means "still working, probably fine" is worse than
+# no answer: the obvious response is to press the button again, and two
+# overlapping refreshes both DROP and rewrite the same tables.
+#
+# So the request starts a thread and returns immediately, and progress lives
+# in the mri_refresh_status table (one row, id 1) where any worker or replica
+# can read it. STALE_AFTER exists because a container restart mid-refresh
+# would otherwise leave the row saying "running" forever and lock out every
+# future refresh.
+
+STALE_AFTER = timedelta(minutes=45)
+
+
+def _status_row(engine):
+    import sqlalchemy as sa
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(sa.text("SELECT * FROM mri_refresh_status WHERE id = 1")).mappings().first()
+    except Exception:
+        # Table not created yet (first boot after this shipped). "No status"
+        # is the honest answer; raising here would turn the poll into a 500.
+        logger.warning("mri_refresh_status unreadable", exc_info=True)
+        return None
+    return dict(row) if row else None
+
+
+def _status_write(engine, **fields):
+    import sqlalchemy as sa
+    cols = ["job_id", "state", "started_at", "finished_at", "started_by",
+            "current_query", "completed", "total", "results_json", "error"]
+    data = {c: fields.get(c) for c in cols}
+    with engine.begin() as conn:
+        exists = conn.execute(sa.text("SELECT 1 FROM mri_refresh_status WHERE id = 1")).first()
+        if exists:
+            sets = ", ".join(f'{c} = :{c}' for c in cols if c in fields)
+            if sets:
+                conn.execute(sa.text(f"UPDATE mri_refresh_status SET {sets} WHERE id = 1"),
+                             {c: data[c] for c in cols if c in fields})
+        else:
+            conn.execute(sa.text(
+                "INSERT INTO mri_refresh_status (id, " + ", ".join(cols) + ") "
+                "VALUES (1, " + ", ".join(f":{c}" for c in cols) + ")"), data)
+
+
+def get_refresh_status(engine=None) -> dict:
+    """Current state of the background refresh, for polling."""
+    from flask_app.db import get_engine
+    engine = engine or get_engine()
+    row = _status_row(engine)
+    if not row:
+        return {"state": "idle"}
+
+    # A row still saying "running" long after it started means the container
+    # was restarted mid-job. Report it as such rather than blocking forever.
+    if row.get("state") == "running" and row.get("started_at"):
+        try:
+            started = datetime.fromisoformat(row["started_at"])
+            if datetime.utcnow() - started > STALE_AFTER:
+                row["state"] = "stale"
+        except ValueError:
+            pass
+
+    if row.get("results_json"):
+        try:
+            row["queries"] = json.loads(row["results_json"])
+        except ValueError:
+            row["queries"] = None
+    row.pop("results_json", None)
+    return row
+
+
+def refresh_all_async(app, username: str) -> dict:
+    """Start Refresh All in a background thread. Returns the initial status.
+
+    Refuses to start a second job while one is genuinely running -- two
+    concurrent refreshes DROP and rewrite the same tables.
+    """
+    from flask_app.db import get_engine
+
+    with app.app_context():
+        engine = get_engine()
+        current = get_refresh_status(engine)
+        if current.get("state") == "running":
+            return {**current, "started": False,
+                    "message": "A refresh is already running"}
+
+        job_id = uuid.uuid4().hex[:12]
+        total = len([n for n, i in QUERY_REGISTRY.items() if i["target_table"]])
+        _status_write(engine, job_id=job_id, state="running",
+                      started_at=datetime.utcnow().isoformat(),
+                      finished_at=None, started_by=username,
+                      current_query=None, completed=0, total=total,
+                      results_json=None, error=None)
+
+    def _run():
+        with app.app_context():
+            eng = get_engine()
+            try:
+                def progress(query_name, completed, total_):
+                    _status_write(eng, current_query=query_name,
+                                  completed=completed, total=total_)
+
+                results = refresh_all(on_progress=progress)
+
+                # Caches are cleared HERE, not in the route -- the route has
+                # already returned by the time the data changes.
+                _clear_all_caches()
+
+                _status_write(eng, state="done", current_query=None,
+                              completed=results.get("queries") and len(results["queries"]) or 0,
+                              finished_at=datetime.utcnow().isoformat(),
+                              results_json=json.dumps(results.get("queries", {}), default=str))
+                logger.info(f"Background MRI refresh {job_id} finished in "
+                            f"{results.get('elapsed_seconds')}s")
+            except Exception as e:
+                logger.error(f"Background MRI refresh {job_id} failed", exc_info=True)
+                _status_write(eng, state="error", error=str(e)[:500],
+                              finished_at=datetime.utcnow().isoformat())
+
+    threading.Thread(target=_run, name=f"mri-refresh-{job_id}", daemon=True).start()
+    return {"job_id": job_id, "state": "running", "total": total, "started": True}
+
+
+def _clear_all_caches():
+    """Every cache the refresh invalidates. Mirrors what the route used to do."""
+    from flask_app.services import data_service, compute_service
+    from flask_app.services.sold_service import clear_sold_cache
+    from flask_app.api.dashboard import clear_dashboard_cache
+    data_service.reload()
+    compute_service.clear_cache()
+    clear_sold_cache()
+    clear_dashboard_cache()
+    try:
+        from flask_app.services.psckoc_service import clear_cache as clear_psckoc
+        clear_psckoc()
+    except Exception:
+        logger.warning("psckoc cache clear failed", exc_info=True)

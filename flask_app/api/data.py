@@ -460,24 +460,35 @@ def mri_refresh_all():
     directly into the app's PostgreSQL database. Replaces CSV upload workflow.
     Clears all caches after import.
     """
-    from flask_app.services.mri_service import refresh_all
+    from flask_app.services.mri_service import refresh_all_async
+    from flask import current_app, g
 
     try:
-        results = refresh_all()
-
-        # Clear all caches after import
-        data_service.reload()
-        compute_service.clear_cache()
-        clear_sold_cache()
-        clear_dashboard_cache()
-        from flask_app.services.psckoc_service import clear_cache as clear_psckoc
-        clear_psckoc()
-
-        return jsonify(results)
+        # Starts a thread and returns at once. The whole job took 281s on
+        # Sep 14 2026 and the Container Apps ingress gives up at 240s and
+        # cannot be raised, so holding the request open returned a 504 for
+        # work that had actually succeeded. Progress is polled from
+        # /mri/refresh-status; the caches are cleared by the job itself,
+        # after the data changes -- doing it here would be too early.
+        username = (g.current_user or {}).get("username", "unknown")
+        status = refresh_all_async(current_app._get_current_object(), username)
+        return jsonify(status), 202
     except Exception as e:
         import logging, traceback
         logging.getLogger(__name__).error(f"MRI refresh_all failed:\n{traceback.format_exc()}")
         return jsonify({"error": f"Refresh failed: {str(e)[:300]}"}), 500
+
+
+@data_bp.route("/mri/refresh-status", methods=["GET"])
+@login_required
+@role_required("admin")
+def mri_refresh_status():
+    """Progress of the background refresh — state, current query, counts."""
+    from flask_app.services.mri_service import get_refresh_status
+    try:
+        return jsonify(get_refresh_status())
+    except Exception as e:
+        return jsonify({"error": str(e)[:300]}), 500
 
 
 @data_bp.route("/mri/refresh/<query_name>", methods=["POST"])

@@ -43,6 +43,7 @@ const mriLoading = ref(false)
 const mriRunning = ref<string | null>(null)
 const mriRefreshing = ref(false)
 const mriRefreshResults = ref<Record<string, any> | null>(null)
+const mriProgress = ref<string>('')
 const mriRunResult = ref<{ query: string; rows: number; csv_path?: string; elapsed_seconds: number } | null>(null)
 
 // Database tools
@@ -75,6 +76,7 @@ const monthEndOptions = (() => {
 
 onMounted(async () => {
   if (!auth.isAuthenticated) return
+  resumeMriRefreshIfRunning()
   await data.loadConfig()
   if (data.config) {
     localStartYear.value = data.config.start_year
@@ -237,26 +239,89 @@ async function handleMriDownload(queryName: string) {
   }
 }
 
+// The refresh RUNS IN THE BACKGROUND and is polled. It took 281s on
+// Sep 14 2026 and the Azure ingress gives up at 240s, so the old synchronous
+// call returned a 504 for a job that had actually succeeded -- which invites
+// pressing the button again, and two refreshes DROP and rewrite the same
+// tables at once. The POST now returns immediately; this polls until done.
+async function pollMriRefresh() {
+  const client = (await import('../../api/client')).default
+  while (true) {
+    await new Promise(r => setTimeout(r, 2500))
+    let st: any
+    try {
+      st = (await client.get('/api/data/mri/refresh-status')).data
+    } catch (e: any) {
+      data.addToast('Lost track of the MRI refresh: ' + (e.response?.data?.error || e.message), 'error')
+      mriRefreshing.value = false
+      mriProgress.value = ''
+      return
+    }
+
+    if (st.state === 'running') {
+      mriProgress.value = `${st.completed ?? 0} / ${st.total ?? '?'}` +
+        (st.current_query ? ` — ${st.current_query}` : '')
+      continue
+    }
+
+    mriRefreshing.value = false
+    mriProgress.value = ''
+
+    if (st.state === 'error') {
+      data.addToast('MRI refresh failed: ' + (st.error || 'unknown error'), 'error')
+      return
+    }
+    if (st.state === 'stale') {
+      // The container restarted mid-job; the row never got a finish.
+      data.addToast('MRI refresh did not report finishing — check the table row counts', 'error')
+      return
+    }
+
+    const queries = st.queries || {}
+    mriRefreshResults.value = queries
+    const ok = Object.values(queries).filter((r: any) => r.status === 'ok').length
+    const err = Object.values(queries).filter((r: any) => r.status === 'error').length
+    data.addToast(
+      `MRI refresh: ${ok} tables updated${err > 0 ? ', ' + err + ' errors' : ''}`,
+      err > 0 ? 'error' : 'success'
+    )
+    await data.loadDeals()
+    return
+  }
+}
+
 async function handleMriRefresh() {
   if (!confirm('Refresh ALL app data from MRI? This replaces current database tables.')) return
   mriRefreshing.value = true
   mriRefreshResults.value = null
+  mriProgress.value = 'starting...'
   try {
     const client = (await import('../../api/client')).default
     const res = await client.post('/api/data/mri/refresh', {})
-    mriRefreshResults.value = res.data.queries
-    const ok = Object.values(res.data.queries).filter((r: any) => r.status === 'ok').length
-    const err = Object.values(res.data.queries).filter((r: any) => r.status === 'error').length
-    data.addToast(
-      `MRI refresh: ${ok} tables updated in ${res.data.elapsed_seconds}s${err > 0 ? ', ' + err + ' errors' : ''}`,
-      err > 0 ? 'error' : 'success'
-    )
-    await data.loadDeals()
+    if (res.data.started === false) {
+      data.addToast('A refresh is already running — following it', 'info')
+    }
+    await pollMriRefresh()
   } catch (e: any) {
-    data.addToast('MRI refresh failed: ' + (e.response?.data?.error || e.message), 'error')
-  } finally {
     mriRefreshing.value = false
+    mriProgress.value = ''
+    data.addToast('MRI refresh failed to start: ' + (e.response?.data?.error || e.message), 'error')
   }
+}
+
+// A refresh started before a page reload (or in another tab) is still running
+// server-side; pick it up rather than showing an idle button.
+async function resumeMriRefreshIfRunning() {
+  if (auth.user?.role !== 'admin') return
+  try {
+    const client = (await import('../../api/client')).default
+    const st = (await client.get('/api/data/mri/refresh-status')).data
+    if (st.state === 'running') {
+      mriRefreshing.value = true
+      mriProgress.value = `${st.completed ?? 0} / ${st.total ?? '?'}`
+      pollMriRefresh()
+    }
+  } catch { /* status is a convenience; never block the sidebar on it */ }
 }
 
 async function handleMriRefreshSingle(queryName: string) {
@@ -603,7 +668,7 @@ function toggleCollapsed() {
                 @click="handleMriRefresh"
                 :disabled="mriRefreshing || mriRunning !== null"
               >
-                {{ mriRefreshing ? 'Refreshing all tables...' : 'Refresh All Data from MRI' }}
+                {{ mriRefreshing ? (mriProgress ? `Refreshing ${mriProgress}` : 'Refreshing all tables...') : 'Refresh All Data from MRI' }}
               </button>
             </div>
 
