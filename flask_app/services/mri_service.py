@@ -524,16 +524,23 @@ def import_query_to_database(query_name: str, engine=None) -> dict:
                 import_results[table_name] = {"rows": len(subset), "status": "ok"}
                 logger.info(f"  {table_name}: {len(subset):,} rows")
 
-            # isbs_interim_is_historical IS NOT OURS TO TOUCH. Pre-2025 actuals
-            # come from ISBS_Interim_IS_Historical.csv and MRI does not return
-            # them -- ISBS_Download is the current window only. This block used
-            # to DROP the table and recreate it empty on every successful
-            # refresh, reporting {"rows": 0, "status": "ok"}: a refresh silently
-            # destroyed years of history and said it had gone fine. It stood at
-            # 0 rows in production on Sep 14 2026.
+            # isbs_interim_is_historical IS NOT THIS IMPORT'S TO WRITE. Every
+            # Interim IS row MRI returns goes into isbs_interim_is above -- the
+            # whole history, 2018 onward, with no date filter. Nothing in the
+            # refresh populates this table; only split_isbs_table(), the
+            # one-time migration off the legacy monolithic isbs table, ever
+            # does. It is empty in production and normally stays that way.
             #
-            # Create it only when it does not exist, so a fresh database still
-            # gets the schema the loaders expect, and leave any rows alone.
+            # It still matters, because _ISBS_SPLIT in data_service
+            # concatenates it into isbs_raw: any rows placed here reach every
+            # ISBS consumer. This block used to DROP it and recreate it empty
+            # on every successful refresh while reporting
+            # {"rows": 0, "status": "ok"} -- an import that never happened,
+            # announced as a success, and a silent wipe of anything the
+            # migration had put there.
+            #
+            # Create it only when missing, so a fresh database still gets the
+            # schema the loaders expect, and leave any rows alone.
             existing = conn.execute(sa.text(
                 "SELECT COUNT(*) FROM information_schema.tables "
                 "WHERE table_name = 'isbs_interim_is_historical'"

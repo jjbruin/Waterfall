@@ -148,9 +148,16 @@ TABLE_DEFINITIONS = {
         'description': 'ISBS Actuals — YTD cumulative trial balance (2025+)',
         'key_columns': ['vcode', 'dtEntry', 'vAccount']
     },
+    # NOT a pre-2025 store, despite the name. isbs_interim_is holds the whole
+    # Interim IS history (2018 onward); the refresh applies no date filter. The
+    # date split exists only in split_isbs_table(), the one-time legacy
+    # migration. No ISBS_Interim_IS_Historical.csv has ever been imported — the
+    # filename below is the key an upload WOULD match, nothing more. Kept
+    # because _ISBS_SPLIT concatenates this table into isbs_raw, so rows placed
+    # here still reach every consumer.
     'isbs_interim_is_historical': {
         'csv': 'ISBS_Interim_IS_Historical.csv',
-        'description': 'ISBS Actuals — YTD cumulative trial balance (pre-2025)',
+        'description': 'ISBS Interim IS overflow — normally empty; isbs_interim_is holds the full history',
         'key_columns': ['vcode', 'dtEntry', 'vAccount']
     },
     'isbs_interim_bs': {

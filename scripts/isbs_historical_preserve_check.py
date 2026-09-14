@@ -1,8 +1,13 @@
 """An MRI refresh must not destroy isbs_interim_is_historical.
 
-Pre-2025 ISBS actuals come from ISBS_Interim_IS_Historical.csv. MRI does not
-return them -- ISBS_Download is the current window only -- so the app holds the
-only copy between uploads.
+The table is normally EMPTY and that is fine: every Interim IS row MRI returns
+goes into isbs_interim_is (the full history, 2018 onward -- the refresh applies
+no date filter, despite the names). Only split_isbs_table(), the one-time
+migration off the legacy monolithic isbs table, ever populates this one.
+
+It still has to be protected, because _ISBS_SPLIT in data_service concatenates
+it into isbs_raw -- rows placed here reach every ISBS consumer, and nothing
+else would put them back.
 
 Until Sep 14 2026 the ISBS import unconditionally did:
 
@@ -10,10 +15,10 @@ Until Sep 14 2026 the ISBS import unconditionally did:
     CREATE TABLE isbs_interim_is_historical (...)      -- empty
     import_results[...] = {"rows": 0, "status": "ok"}
 
-Every successful refresh wiped the history and reported that it had gone fine.
-It stood at 0 rows in production when this was found. The failure mode is the
-dangerous kind: no error, no warning, a green tick, and years of actuals gone
-until somebody noticed a chart starting in 2025.
+Every successful refresh wiped the table and reported an import that never
+happened. No error, no warning, a green tick. It was empty in production when
+this was found, so nothing was actually lost -- but the same code would have
+destroyed whatever the migration had put there, and said it went fine.
 
 Run:  python scripts/isbs_historical_preserve_check.py
 Exits non-zero if a refresh would destroy or alter the table.
@@ -72,8 +77,8 @@ def main() -> int:
         if set(after.get("vcode", [])) != set(before.get("vcode", [])):
             failures.append("contents changed")
         if reported.get("status") == "ok" and reported.get("rows") == 0 and len(before):
-            failures.append('reported {"rows": 0, "status": "ok"} over existing history '
-                            "-- the old wipe, reported as success")
+            failures.append('reported {"rows": 0, "status": "ok"} over existing rows '
+                            "-- the old wipe, announced as a successful import")
 
         # A database that has never loaded the CSV still needs the schema,
         # or the loaders fail on a missing table rather than an empty one.
@@ -92,7 +97,7 @@ def main() -> int:
         for f in failures:
             print(f"  - {f}")
         return 1
-    print("PASS - an ISBS refresh preserves the CSV-sourced history")
+    print("PASS - an ISBS refresh leaves isbs_interim_is_historical alone")
     return 0
 
 

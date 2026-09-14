@@ -529,8 +529,8 @@ MRI's query record limits make exporting the monolithic `ISBS_Download.csv` (800
 
 | Table | CSV Filename | vSource | Description |
 |-------|-------------|---------|-------------|
-| `isbs_interim_is` | `ISBS_Interim_IS.csv` | Interim IS | Actuals — YTD cumulative (2025+) |
-| `isbs_interim_is_historical` | `ISBS_Interim_IS_Historical.csv` | Interim IS | Actuals — YTD cumulative (pre-2025) |
+| `isbs_interim_is` | `ISBS_Interim_IS.csv` | Interim IS | Actuals — YTD cumulative. **ALL of it**, not just 2025+ — 2018-03-31 to 2026-08-31 as of Sep 14 2026 |
+| `isbs_interim_is_historical` | — (see below) | Interim IS | **Empty, and normally stays that way.** Extension point, not a second source |
 | `isbs_interim_bs` | `ISBS_Interim_BS.csv` | Interim BS | Balance Sheet |
 | `isbs_budget_is` | `ISBS_Budget_IS.csv` | Budget IS | Budget — periodic monthly |
 | `isbs_projected_is` | `ISBS_Projected_IS.csv` | Projected IS | Underwriting — YTD cumulative |
@@ -538,6 +538,19 @@ MRI's query record limits make exporting the monolithic `ISBS_Download.csv` (800
 | `isbs_uw_supplements` | `ISBS_UW_Supplements.csv` | Projected IS | Supplemental UW records (e.g. 7073 capital contributions) — importable via CSV upload, persists across MRI refreshes (not in QUERY_REGISTRY) |
 
 | `isbs_budget_is_supplements` | — (app-written) | Budget IS | Partner budgets imported and vetted in the valuation section, before MRI has them |
+
+- **`isbs_interim_is_historical` does NOT hold pre-2025 actuals** (corrected Sep 14
+  2026 — the earlier description here said it did, and sent a session hunting for data
+  that was never missing). The refresh's split branch sends EVERY `Interim IS` row to
+  `isbs_interim_is`; there is no date filter in that path. The 2025 cutoff exists only in
+  `split_isbs_table()`, the one-time migration off the legacy monolithic `isbs` table.
+  The `ISBS_Interim_IS_Historical.csv` name in `TABLE_DEFINITIONS` is a mapping with no
+  file and no import behind it.
+  **Keep the table anyway**: `_ISBS_SPLIT` in `data_service.py` concatenates it into
+  `isbs_raw`, so rows put there DO reach every ISBS consumer, and the legacy migration
+  still writes to it. It is a working extension point that happens to be empty — an
+  MRI refresh reports it as `preserved` rather than importing it (`mri_service.py`,
+  guardrail `scripts/isbs_historical_preserve_check.py`).
 
 - **Supplement ownership decides protection** (Sep 11 2026). `isbs_budget_is_supplements` is in `PROTECTED_TABLES` because the APP writes it and holds the only copy of a budget between import and approval. The other four supplements are **deliberately not protected**: a CSV is their source of record and `replace` is their designed refresh. Protecting `isbs_uw_supplements`, which has no app write path, briefly froze its 56 rows (they feed One Pager PE ROE via 7073) — protection without a write path is a lockout, not a safeguard. Guardrail: `scripts/isbs_supplement_precedence_check.py`.
 - **Where MRI and an app supplement share a key, the app wins** — `(vcode, dtEntry, vSource, vAccount)`. Written as "remove MRI rows whose key a supplement covers", NOT `drop_duplicates`: ISBS is a **journal**, one key legitimately carries many rows that consumers SUM, and the `drop_duplicates` formulation was measured taking `isbs_raw` from 797,660 to 439,268 rows.

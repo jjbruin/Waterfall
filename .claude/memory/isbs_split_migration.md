@@ -16,6 +16,16 @@ Split ISBS into 6 tables by vSource type:
 - `isbs_projected_is` ← ISBS_Projected_IS.csv (Underwriting)
 - `isbs_valuation_is` ← ISBS_Valuation_IS.csv (Valuation)
 
+> **Correction, Sep 14 2026 — the `isbs_interim_is_historical` line above is no longer
+> true, and misled a session into hunting for data that was never missing.** Direct MRI
+> access works now: `ISBS_Download` pulled 800K+ rows successfully today, so the refresh
+> is the live source rather than the per-table CSVs this plan assumed. In that path
+> EVERY `Interim IS` row lands in `isbs_interim_is` — no date filter — which is why it
+> holds 2018-03-31 to 2026-08-31, not "2025+". `isbs_interim_is_historical` is empty,
+> no `ISBS_Interim_IS_Historical.csv` has ever been imported, and the only thing that
+> ever writes it is `split_isbs_table()` here. It is still worth keeping: `_ISBS_SPLIT`
+> concatenates it into `isbs_raw`, so rows put there do reach every consumer.
+
 Architecture in place: TABLE_DEFINITIONS, _assemble_isbs(), indexes, cache invalidation, CSV upload auto-detection. Consumers unchanged — assembly restores vSource column.
 
 ## Next Step: Direct MRI Database Access (VPN pending May 2026)
