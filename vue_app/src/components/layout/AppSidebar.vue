@@ -400,7 +400,7 @@ function toggleCollapsed() {
 <template>
   <aside class="sidebar" :class="{ collapsed }">
     <div class="sidebar-header">
-      <h2 v-if="!collapsed">Waterfall XIRR</h2>
+      <h2 v-if="!collapsed">THE BORG</h2>
       <button class="toggle-btn" @click="toggleCollapsed()">
         {{ collapsed ? '>' : '<' }}
       </button>
