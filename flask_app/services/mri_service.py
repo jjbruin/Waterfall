@@ -524,11 +524,36 @@ def import_query_to_database(query_name: str, engine=None) -> dict:
                 import_results[table_name] = {"rows": len(subset), "status": "ok"}
                 logger.info(f"  {table_name}: {len(subset):,} rows")
 
-            # Ensure historical table exists
-            conn.execute(sa.text("DROP TABLE IF EXISTS isbs_interim_is_historical"))
-            cols_sql = ", ".join(f'"{c}" TEXT' for c in keep_cols)
-            conn.execute(sa.text(f"CREATE TABLE isbs_interim_is_historical ({cols_sql})"))
-            import_results["isbs_interim_is_historical"] = {"rows": 0, "status": "ok"}
+            # isbs_interim_is_historical IS NOT OURS TO TOUCH. Pre-2025 actuals
+            # come from ISBS_Interim_IS_Historical.csv and MRI does not return
+            # them -- ISBS_Download is the current window only. This block used
+            # to DROP the table and recreate it empty on every successful
+            # refresh, reporting {"rows": 0, "status": "ok"}: a refresh silently
+            # destroyed years of history and said it had gone fine. It stood at
+            # 0 rows in production on Sep 14 2026.
+            #
+            # Create it only when it does not exist, so a fresh database still
+            # gets the schema the loaders expect, and leave any rows alone.
+            existing = conn.execute(sa.text(
+                "SELECT COUNT(*) FROM information_schema.tables "
+                "WHERE table_name = 'isbs_interim_is_historical'"
+                if engine.dialect.name == "postgresql" else
+                "SELECT COUNT(*) FROM sqlite_master "
+                "WHERE type='table' AND name='isbs_interim_is_historical'"
+            )).scalar()
+            if existing:
+                kept = conn.execute(sa.text(
+                    "SELECT COUNT(*) FROM isbs_interim_is_historical")).scalar()
+                import_results["isbs_interim_is_historical"] = {
+                    "rows": kept, "status": "preserved"}
+                logger.info(f"  isbs_interim_is_historical: {kept:,} rows preserved "
+                            f"(CSV-sourced, not in MRI)")
+            else:
+                cols_sql = ", ".join(f'"{c}" TEXT' for c in keep_cols)
+                conn.execute(sa.text(f"CREATE TABLE isbs_interim_is_historical ({cols_sql})"))
+                import_results["isbs_interim_is_historical"] = {"rows": 0, "status": "created"}
+                logger.info("  isbs_interim_is_historical: created empty "
+                            "(load ISBS_Interim_IS_Historical.csv to populate)")
 
     else:
         # Standard single-table import
