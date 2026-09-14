@@ -58,6 +58,26 @@ TABLE_DEFINITIONS = {
         'description': 'Historical accounting transactions',
         'key_columns': ['InvestmentID', 'InvestorID', 'EffectiveDate']
     },
+    'gl_detail': {
+        'csv': 'MRI_GL_Detail.csv',
+        'description': 'Entity general ledger detail (JOURNAL + GHIS)',
+        'key_columns': ['ENTITYID', 'PERIOD', 'ACCTNUM', 'BASIS', 'ITEM']
+    },
+    'gl_accounts': {
+        'csv': 'MRI_GL_Accounts.csv',
+        'description': 'GL chart of accounts (GACC) — entity ledger, not the property COA',
+        'key_columns': ['ACCTNUM']
+    },
+    'ia_transactions': {
+        'csv': 'MRI_IA_Transactions.csv',
+        'description': 'Investor activity as accounting sees it (unfiltered, both dates, names)',
+        'key_columns': ['InvestmentID', 'InvestorID', 'TransactionDate', 'SubtypeUID']
+    },
+    'entities': {
+        'csv': 'MRI_Entities.csv',
+        'description': 'ENTITY master — reporting entities by id and name',
+        'key_columns': ['EntityID']
+    },
     'coa': {
         'csv': 'coa.csv',
         'description': 'Chart of accounts',

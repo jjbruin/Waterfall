@@ -127,6 +127,31 @@ QUERY_REGISTRY = {
         "target_table": "inspection",
         "description": "Construction draw inspection data for development deals",
     },
+
+    # ── Entity general ledger (Sep 14 2026) ──────────────────────────────
+    # The feeds behind accounting's quarterly workpaper packages. Nothing in
+    # the app read entity GL before these: ISBS is property statement data and
+    # IA_* is investor activity, and neither can produce a trial balance.
+    "MRI_GL_Detail": {
+        "server": "pmx",
+        "target_table": "gl_detail",
+        "description": "Entity GL detail — JOURNAL (open) + GHIS (closed, incl. balance-forward), period >= 202401",
+    },
+    "MRI_GL_Accounts": {
+        "server": "pmx",
+        "target_table": "gl_accounts",
+        "description": "GL chart of accounts (GACC) — the ENTITY chart, not the property COA",
+    },
+    "MRI_IA_Transactions": {
+        "server": "pmx",
+        "target_table": "ia_transactions",
+        "description": "Investor activity as accounting sees it — all three IA tables unfiltered, both dates, names, accounting signs",
+    },
+    "MRI_Entities": {
+        "server": "pmx",
+        "target_table": "entities",
+        "description": "ENTITY master — every reporting entity by id and name",
+    },
 }
 
 # Network folder paths (SharePoint-synced, configured via env vars)
