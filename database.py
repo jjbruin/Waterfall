@@ -78,6 +78,11 @@ TABLE_DEFINITIONS = {
         'description': 'ENTITY master — reporting entities by id and name',
         'key_columns': ['EntityID']
     },
+    'entity_groups': {
+        'csv': 'MRI_Entity_GroupID.csv',
+        'description': "Entity group membership — ENTGRPID 'REP' marks an entity requiring a workpaper package",
+        'key_columns': ['ENTITYID', 'ENTGRPID']
+    },
     'coa': {
         'csv': 'coa.csv',
         'description': 'Chart of accounts',

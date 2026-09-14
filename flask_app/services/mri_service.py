@@ -145,6 +145,11 @@ QUERY_REGISTRY = {
         "target_table": "entities",
         "description": "ENTITY master — every reporting entity by id and name",
     },
+    "MRI_Entity_GroupID": {
+        "server": "pmx",
+        "target_table": "entity_groups",
+        "description": "Entity group membership (ENTITYGRPD) — ENTGRPID 'REP' marks an entity that requires a workpaper package",
+    },
     "MRI_GL_Accounts": {
         "server": "pmx",
         "target_table": "gl_accounts",
