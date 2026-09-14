@@ -22,6 +22,7 @@ const router = useRouter()
 interface TableInfo { name: string; rows: number; description: string }
 
 const tables = ref<TableInfo[]>([])
+const loadingTables = ref(false)
 const selectedTable = ref('')
 const columns = ref<string[]>([])
 const rows = ref<Record<string, any>[]>([])
@@ -44,7 +45,8 @@ const filteredTables = computed(() => {
   )
 })
 
-onMounted(async () => {
+async function loadTables() {
+  loadingTables.value = true
   try {
     const res = await api.get('/api/data/tables')
     tables.value = (res.data.tables || []).sort((a: TableInfo, b: TableInfo) =>
@@ -52,7 +54,13 @@ onMounted(async () => {
     )
   } catch (e: any) {
     error.value = 'Failed to load tables'
+  } finally {
+    loadingTables.value = false
   }
+}
+
+onMounted(async () => {
+  await loadTables()
   // Auto-select from query param
   if (route.query.table) {
     selectedTable.value = route.query.table as string
@@ -184,11 +192,21 @@ function showAllColumns() {
     <div class="explorer-layout">
       <!-- Table selector panel -->
       <aside class="table-list-panel">
-        <input
-          v-model="tableSearch"
-          class="table-search"
-          placeholder="Search tables..."
-        />
+        <!-- The list is fetched on mount. An MRI refresh runs from the sidebar
+             and creates tables WITHOUT this view knowing, so a table loaded for
+             the first time while Data Explorer is open is simply absent until
+             something re-fetches. That cost a round of "the new tables aren't
+             there" on Sep 14 2026 when they were, in the database, all along. -->
+        <div class="table-search-row">
+          <input
+            v-model="tableSearch"
+            class="table-search"
+            placeholder="Search tables..."
+          />
+          <button class="table-refresh" :disabled="loadingTables"
+                  title="Re-read the table list — use after an MRI refresh creates new tables"
+                  @click="loadTables()">↻</button>
+        </div>
         <div class="table-list">
           <button
             v-for="t in filteredTables"
@@ -364,6 +382,15 @@ function showAllColumns() {
   border-radius: 6px;
   overflow: hidden;
 }
+.table-search-row { display: flex; gap: 6px; align-items: stretch; }
+.table-search-row .table-search { flex: 1; }
+.table-refresh {
+  flex: 0 0 auto; width: 30px; cursor: pointer; font-size: 14px; line-height: 1;
+  border: 1px solid var(--color-border); border-radius: 4px;
+  background: var(--color-surface); color: var(--color-text);
+}
+.table-refresh:disabled { opacity: 0.5; cursor: default; }
+
 .table-search {
   padding: 8px 10px;
   border: none;
