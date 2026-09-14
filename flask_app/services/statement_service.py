@@ -512,3 +512,162 @@ def build_cash_flow(entityid: str, period_end: str, bases: Optional[List[str]] =
         "defaulted_accounts": defaulted,
         "unclassified": unclassified,
     }
+
+
+# ── Schedule of Investments ──────────────────────────────────────────────
+# There is no special data path here, despite appearances. The example
+# package's SOI makes three Spreadsheet Server calls and every one is an
+# ordinary GL account balance -- MR14000001, MR14000002, MR14000003, LTD at
+# the period, same entity and basis as its Trial Balance tab. It fetched them
+# directly instead of referencing that tab: a spreadsheet convenience, not
+# another source. Cost = Purchase + Return of Capital; Fair Value = Cost +
+# Unrealized; % = Fair Value over members' capital.
+#
+# Two cells genuinely are not in the GL -- the investment's NAME and the
+# MEMBERSHIP INTEREST -- and both are in `relationships` (MRI_IA_Relationship),
+# which carries InvestmentID, InvestorID, OwnershipPct and Name.
+#
+# ROLES COME FROM MRI'S OWN ACCOUNT NAMES, not from hardcoded numbers. The
+# chart contains exactly one investment family and MRI names it
+# "Investment: <role>". Keying on the name rather than on MR14000001 means a
+# renumbered chart still works, and ANY "Investment:" account whose role is
+# not recognised is listed on the statement as unassigned rather than being
+# swallowed into a total.
+#
+# SPLITTING BY INVESTMENT. An entity holding several investments has its GL
+# lines tagged with RLTDENTITY, the related entity -- populated on 3,097 of
+# 4,409 investment rows portfolio-wide. Lines that carry it are attributed;
+# lines that do not are reported as unallocated rather than spread on a guess.
+
+SOI_ROLES = {
+    "investment: purchase": "cost",
+    "investment: return of capital": "cost",
+    "investment: unrealized gain/loss": "unrealized",
+    "investment: realized gain/loss": "realized",
+}
+
+
+def _soi_role(acctname: str) -> Optional[str]:
+    return SOI_ROLES.get((acctname or "").strip().lower())
+
+
+def build_schedule_of_investments(entityid: str, period_end: str,
+                                  bases: Optional[List[str]] = None,
+                                  engine=None) -> Dict[str, Any]:
+    """Schedule of Investments: cost, fair value and % of members' capital."""
+    engine = engine or get_engine()
+    bases = bases if bases is not None else DEFAULT_BASES
+    p = periods_for(period_end)
+    ent = entityid.strip().upper()
+    types = account_types(engine)
+
+    # What this entity holds, and how much of it.
+    with engine.connect() as conn:
+        try:
+            rel = pd.read_sql(text("SELECT * FROM relationships"), conn)
+        except Exception:
+            logger.warning("relationships not loaded", exc_info=True)
+            rel = pd.DataFrame()
+    holdings = []
+    if not rel.empty:
+        for c in ("InvestmentID", "InvestorID"):
+            rel[c] = rel[c].astype(str).str.strip().str.upper()
+        held = rel[(rel["InvestorID"] == ent) & (rel["EndDate"].isna()
+                   if "EndDate" in rel.columns else True)]
+        for _, r in held.iterrows():
+            holdings.append({
+                "investment_id": r["InvestmentID"],
+                "name": str(r.get("Name") or "").strip() or r["InvestmentID"],
+                "ownership_pct": (float(r["OwnershipPct"])
+                                  if pd.notna(r.get("OwnershipPct")) else None),
+            })
+
+    # The investment accounts' balances, by related entity where tagged.
+    with engine.connect() as conn:
+        gl = pd.read_sql(text(
+            'SELECT "ACCTNUM", "ACCTNAME", "PERIOD", "BALFOR", "BASIS", '
+            '"RLTDENTITY", "AMT" FROM gl_detail WHERE UPPER(TRIM("ENTITYID")) = :e'),
+            conn, params={"e": ent})
+    if gl.empty:
+        return {"entity": entityid, "periods": p, "lines": [], "holdings": holdings,
+                "note": "No GL rows for this entity"}
+    for c in ("ACCTNUM", "ACCTNAME", "PERIOD", "BALFOR", "BASIS"):
+        gl[c] = gl[c].astype(str).str.strip()
+    gl["RLTDENTITY"] = gl["RLTDENTITY"].astype(str).str.strip().str.upper()
+    gl.loc[gl["RLTDENTITY"].isin(("", "NONE", "NAN")), "RLTDENTITY"] = ""
+    gl["AMT"] = pd.to_numeric(gl["AMT"], errors="coerce").fillna(0.0)
+    if bases:
+        gl = gl[gl["BASIS"].isin(bases)]
+
+    gl["role"] = [_soi_role(n) for n in gl["ACCTNAME"]]
+    inv = gl[gl["ACCTNAME"].str.lower().str.startswith("investment:")]
+    unassigned = sorted({a for a, r in zip(inv["ACCTNUM"], inv["role"]) if r is None})
+
+    # Balance at the period end = the year's opening plus its activity.
+    inv = inv[(inv["PERIOD"] >= p["ytd_first"]) & (inv["PERIOD"] <= p["ytd_last"])]
+    opening = inv[(inv["BALFOR"] == "B") & (inv["PERIOD"] == p["ytd_first"])]
+    activity = inv[inv["BALFOR"] == "N"]
+    bal = pd.concat([opening, activity])
+    if bal.empty:
+        return {"entity": entityid, "periods": p, "lines": [], "holdings": holdings,
+                "unassigned_accounts": unassigned,
+                "note": "No investment account balances for this entity"}
+
+    by = bal.groupby(["RLTDENTITY", "role"])["AMT"].sum().unstack(fill_value=0.0)
+    for col in ("cost", "unrealized", "realized"):
+        if col not in by.columns:
+            by[col] = 0.0
+
+    members_capital = None
+    try:
+        mc = build_members_capital(entityid, period_end, engine=engine)
+        members_capital = mc.get("subledger_total")
+    except Exception:
+        logger.warning("members' capital unavailable for the SOI percentage", exc_info=True)
+
+    name_by_id = {h["investment_id"]: h for h in holdings}
+    lines, unallocated = [], None
+    for rltd, row in by.iterrows():
+        cost = float(row["cost"])
+        unreal = float(row["unrealized"])
+        fv = cost + unreal
+        entry = {
+            "related_entity": rltd or None,
+            "name": name_by_id.get(rltd, {}).get("name") if rltd else None,
+            "ownership_pct": name_by_id.get(rltd, {}).get("ownership_pct") if rltd else None,
+            "cost": cost, "unrealized": unreal, "fair_value": fv,
+            "realized": float(row["realized"]),
+            "pct_of_members_capital": (fv / members_capital
+                                       if members_capital else None),
+        }
+        if rltd:
+            lines.append(entry)
+        else:
+            unallocated = entry
+
+    # ONE INVESTMENT, NO TAG: attribute it rather than showing an anonymous
+    # line. An entity holding exactly one thing has no ambiguity to resolve;
+    # anything more and the untagged amount stays visibly unallocated.
+    if unallocated and not lines and len(holdings) == 1:
+        h = holdings[0]
+        unallocated.update({"related_entity": h["investment_id"], "name": h["name"],
+                            "ownership_pct": h["ownership_pct"],
+                            "attributed_by": "sole holding, GL rows carry no RLTDENTITY"})
+        lines, unallocated = [unallocated], None
+
+    total_fv = sum(l["fair_value"] for l in lines) + (unallocated["fair_value"]
+                                                      if unallocated else 0.0)
+    gl_total = float(by["cost"].sum() + by["unrealized"].sum())
+    return {
+        "entity": entityid, "periods": p, "bases": bases,
+        "holdings": holdings, "lines": lines,
+        "unallocated": unallocated,
+        "unassigned_accounts": unassigned,
+        "members_capital": members_capital,
+        "total_cost": sum(l["cost"] for l in lines) + (unallocated["cost"]
+                                                       if unallocated else 0.0),
+        "total_fair_value": total_fv,
+        "gl_investment_balance": gl_total,
+        "ties": abs(total_fv - gl_total) < 0.01,
+        "difference": total_fv - gl_total,
+    }

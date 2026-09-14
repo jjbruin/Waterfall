@@ -114,6 +114,7 @@ def build_package(package_id: int, engine=None) -> bytes:
     _cover(wb, used, pkg)
     _index(wb, used, pkg, detail, exhibits)
     _financial_statements(wb, used, entity, period_end, engine)
+    _schedule_of_investments(wb, used, entity, period_end, engine)
     _members_capital(wb, used, entity, period_end, engine)
     _cash_flow(wb, used, entity, period_end, engine)
     _trial_balance(wb, used, entity, period_end, engine)
@@ -155,7 +156,7 @@ def _index(wb, used, pkg, detail, exhibits):
     s["A1"] = "Table of Contents"
     s["A1"].font = TITLE
     row = 3
-    for name in ("Balance Sheet", "Income Statement", "Members Capital",
+    for name in ("Balance Sheet", "Income Statement", "SOI", "Members Capital",
                  "Cash Flow", "Trial Balance", "GL Detail", "Account Summary",
                  "Investor Detail", "Investment Detail", "IA Rollforward",
                  "Commitments"):
@@ -265,6 +266,54 @@ def _exceptions(sh, row, st):
         row += 1
         row = _table(sh, row, cols, rows, money_cols=["closing"]) + 1
     return row
+
+
+def _schedule_of_investments(wb, used, entity, period_end, engine):
+    """Schedule of Investments — cost, fair value, % of members' capital."""
+    soi = ss.build_schedule_of_investments(entity, period_end, engine=engine)
+    sh = wb.create_sheet(_safe_title("SOI", used))
+    sh["A1"] = "Schedule of Investments"
+    sh["A1"].font = TITLE
+    r = _provenance(sh, 2,
+                    f"{entity} — cost and fair value from the GL's investment accounts "
+                    f"(Purchase + Return of Capital, plus Unrealized). Name and "
+                    f"membership interest from relationships (MRI_IA_Relationship). "
+                    f"Percentage is fair value over members' capital.")
+    lines = list(soi.get("lines") or [])
+    if soi.get("unallocated"):
+        lines.append({**soi["unallocated"], "name": "Unallocated — GL rows carry no related entity"})
+    if not lines:
+        sh.cell(row=r, column=1,
+                value=soi.get("note", "No investment balances for this entity")).font = SUB
+        return
+
+    rows = [{
+        "Name of Investment": l.get("name") or l.get("related_entity") or "—",
+        "Membership Interest": (l["ownership_pct"] / 100.0
+                                if l.get("ownership_pct") is not None else None),
+        "Cost": l["cost"],
+        "Fair Value": l["fair_value"],
+        "Fair Value as % of Members' Capital": l.get("pct_of_members_capital"),
+    } for l in lines]
+    rows.append({"Name of Investment": "Total", "Membership Interest": None,
+                 "Cost": soi["total_cost"], "Fair Value": soi["total_fair_value"],
+                 "Fair Value as % of Members' Capital": None})
+    r = _table(sh, r, list(rows[0].keys()), rows,
+               money_cols=["Cost", "Fair Value"])
+
+    ok = soi["ties"]
+    c = sh.cell(row=r, column=1,
+                value="Ties to the GL investment accounts" if ok
+                      else f"DOES NOT TIE to the GL by {soi['difference']:,.2f}")
+    c.font = Font(bold=True, color="2C7A3D" if ok else "B3261E")
+    r += 2
+    if soi.get("unassigned_accounts"):
+        # An investment account whose role the engine does not recognise is
+        # named here rather than folded into a total nobody would question.
+        sh.cell(row=r, column=1,
+                value="UNRECOGNISED INVESTMENT ACCOUNTS — not included in cost or "
+                      "fair value: " + ", ".join(soi["unassigned_accounts"])
+                ).font = Font(bold=True, color="B3261E")
 
 
 def _members_capital(wb, used, entity, period_end, engine):

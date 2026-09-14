@@ -289,6 +289,20 @@ def statements():
         return _fail(e, "statements", 500)
 
 
+@workpapers_bp.route("/schedule-of-investments", methods=["GET"])
+@login_required
+def schedule_of_investments():
+    from flask_app.services import statement_service as ss
+    entity = (request.args.get("entity") or "").strip()
+    period_end = (request.args.get("period_end") or "").strip()
+    if not entity or not period_end:
+        return jsonify({"error": "entity and period_end are required"}), 400
+    try:
+        return jsonify(safe_json(ss.build_schedule_of_investments(entity, period_end)))
+    except Exception as e:
+        return _fail(e, "schedule_of_investments", 500)
+
+
 @workpapers_bp.route("/members-capital", methods=["GET"])
 @login_required
 def members_capital():
