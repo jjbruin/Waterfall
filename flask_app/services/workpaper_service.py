@@ -285,11 +285,87 @@ def create_cycle(period_label: str, period_end: str, username: str, engine=None)
     return {"id": cid, "period_label": period_label, "period_end": period_end}
 
 
+def validate_due_date(cycle_id: int, step_key: str, due_date: Optional[str],
+                      engine=None) -> List[str]:
+    """Check a proposed deadline. Raises on impossible; returns warnings.
+
+    REJECT WHAT CANNOT BE TRUE, WARN WHAT IS MERELY ODD. A date the CFO
+    cannot have meant is worse than no date: it renders overdue in red on
+    every package from the moment it is typed, and the grid stops meaning
+    anything. But a CFO who wants an unusual deadline is allowed to have one
+    -- the app is not the authority on how long a close takes.
+
+    Impossible, so refused:
+      * not a date at all
+      * before the period it closes had ended -- the case that prompted this,
+        a deadline of 2020-01-01 sitting on a period ended 2026-06-30
+        (Sep 14 2026)
+
+    Odd, so reported and saved anyway:
+      * more than a year after the period end
+      * out of sequence against the deadlines already set on other steps
+    """
+    if not due_date:
+        return []                      # clearing a deadline is always allowed
+
+    try:
+        due = date.fromisoformat(str(due_date).strip())
+    except ValueError:
+        raise ValueError(f"'{due_date}' is not a date (expected YYYY-MM-DD)")
+
+    engine = engine or get_engine()
+    with engine.connect() as conn:
+        end_raw = conn.execute(text(
+            "SELECT period_end FROM wp_cycles WHERE id = :c"),
+            {"c": cycle_id}).scalar()
+    if end_raw is None:
+        raise ValueError(f"No close cycle {cycle_id}")
+
+    try:
+        period_end = date.fromisoformat(str(end_raw)[:10])
+    except ValueError:
+        # A cycle whose own period_end is unreadable cannot anchor anything.
+        # Do not invent an anchor; let the deadline through unchecked.
+        return []
+
+    if due < period_end:
+        raise ValueError(
+            f"{due.isoformat()} is before the period it closes "
+            f"({period_end.isoformat()}). A close step cannot be due before "
+            f"the period has ended.")
+
+    warnings: List[str] = []
+    if (due - period_end).days > 365:
+        warnings.append(
+            f"{due.isoformat()} is {(due - period_end).days} days after the "
+            f"period end — check this is not a typo.")
+
+    order = {s["key"]: i for i, s in enumerate(STEP_TEMPLATE)}
+    for other in cycle_steps(cycle_id, engine=engine):
+        if other["key"] == step_key or not other.get("due_date"):
+            continue
+        try:
+            other_due = date.fromisoformat(str(other["due_date"])[:10])
+        except ValueError:
+            continue
+        earlier_step = order[step_key] < order[other["key"]]
+        if earlier_step and due > other_due:
+            warnings.append(
+                f"Due after '{other['label']}' ({other_due.isoformat()}), "
+                f"which comes later in the close.")
+        elif not earlier_step and due < other_due:
+            warnings.append(
+                f"Due before '{other['label']}' ({other_due.isoformat()}), "
+                f"which comes earlier in the close.")
+    return warnings
+
+
 def set_step_due_date(cycle_id: int, step_key: str, due_date: Optional[str],
                       username: str, engine=None) -> dict:
     if step_key not in STEP_KEYS:
         raise ValueError(f"Unknown step '{step_key}'")
     engine = engine or get_engine()
+    warnings = validate_due_date(cycle_id, step_key, due_date, engine=engine)
     with engine.begin() as conn:
         updated = conn.execute(text(
             "UPDATE wp_cycle_steps SET due_date = :d, updated_by = :u, updated_at = :n "
@@ -302,7 +378,7 @@ def set_step_due_date(cycle_id: int, step_key: str, due_date: Optional[str],
                 "VALUES (:c, :k, :d, :u, :n)"),
                 {"c": cycle_id, "k": step_key, "d": due_date or None,
                  "u": username, "n": _now()})
-    return {"status": "ok"}
+    return {"status": "ok", "warnings": warnings}
 
 
 def cycle_steps(cycle_id: int, engine=None) -> List[dict]:

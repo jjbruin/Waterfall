@@ -95,10 +95,22 @@ async function sync() {
 }
 
 async function setDue(stepKey: string, due: string) {
-  await api.put(`/api/workpapers/cycles/${cycleId.value}/steps`, {
-    step_key: stepKey, due_date: due || null,
-  })
+  let refusal = ''
+  let warnings: string[] = []
+  try {
+    const res = await api.put(`/api/workpapers/cycles/${cycleId.value}/steps`, {
+      step_key: stepKey, due_date: due || null,
+    })
+    warnings = res.data.warnings || []
+  } catch (e: any) {
+    refusal = e.response?.data?.error || e.message
+  }
+  // RELOAD FIRST, THEN SPEAK. The reload is what puts a refused field back to
+  // its stored value -- but it also clears `error` on entry, so a message set
+  // before it is wiped and the field just snaps back with no explanation.
   await loadTracker()
+  if (refusal) error.value = refusal
+  else if (warnings.length) flash(`Saved. ${warnings.join(' ')}`)
 }
 
 async function openPackage(id: number) {
