@@ -202,16 +202,33 @@ def _get_connection(server_key: str):
     import pyodbc
 
     server_info = MRI_SERVERS[server_key]
+
+    # `Connection Timeout` IS NOT AN ODBC KEYWORD. It belongs to ADO/OLE DB;
+    # ODBC Driver 18 rejects the whole string with 08001 "Invalid connection
+    # string attribute" BEFORE it attempts any network connection. So every
+    # MRI query failed identically whether or not the VPN was up, and the error
+    # read like a connectivity problem — which is how it survived: the VPN has
+    # its own troubles (see .claude/memory/vpn_tunnel_handoff.md) and absorbed
+    # the blame. Measured Sep 15 2026: removing this one clause changes the
+    # failure from "invalid attribute" to "cannot reach the server", i.e. from
+    # a string the driver will not parse to a string it parses and then acts on.
+    #
+    # The login timeout is a pyodbc.connect() argument, which is the supported
+    # way to set it and does the thing the clause was reaching for.
+    #
+    # PWD is brace-quoted. It was not the cause here, but an ODBC value
+    # containing ; } or leading/trailing spaces must be quoted or it truncates
+    # the string silently, and a password is exactly the field that acquires
+    # such a character on its next rotation.
     conn_str = (
         "DRIVER={ODBC Driver 18 for SQL Server};"
         f"SERVER={server_info['server']};"
         f"DATABASE={server_info['database']};"
         f"UID={MRI_USERNAME};"
-        f"PWD={MRI_PASSWORD};"
+        "PWD={" + MRI_PASSWORD.replace("}", "}}") + "};"
         "TrustServerCertificate=yes;"
-        "Connection Timeout=30;"
     )
-    return pyodbc.connect(conn_str)
+    return pyodbc.connect(conn_str, timeout=30)
 
 
 def _load_query_sql(query_name: str) -> str:
