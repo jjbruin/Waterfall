@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
@@ -285,6 +285,40 @@ def create_cycle(period_label: str, period_end: str, username: str, engine=None)
     return {"id": cid, "period_label": period_label, "period_end": period_end}
 
 
+def period_start(cycle_id: int, period_end: date, engine=None) -> date:
+    """The first day of the period this cycle closes.
+
+    The deadline check needs to know where the period BEGAN, not just where
+    it ended, so that a pre-close prep step ("bank statements requested")
+    can sit inside the period while a typo from six years ago still cannot.
+
+    Authoritative when it exists: the previous cycle's period_end. The
+    period being closed is everything after the last one was closed.
+    Otherwise infer from the calendar -- a period_end on a quarter end
+    starts that quarter, on any other month end starts that month. Failing
+    both, fall back to a year, which is wide enough never to refuse a real
+    deadline and narrow enough to still catch a wrong decade.
+    """
+    engine = engine or get_engine()
+    with engine.connect() as conn:
+        prior = conn.execute(text(
+            "SELECT MAX(period_end) FROM wp_cycles "
+            "WHERE period_end < :e AND id <> :c"),
+            {"e": period_end.isoformat(), "c": cycle_id}).scalar()
+    if prior:
+        try:
+            return date.fromisoformat(str(prior)[:10]) + timedelta(days=1)
+        except ValueError:
+            pass
+
+    next_day = period_end + timedelta(days=1)
+    if next_day.day == 1:                       # period_end is a month end
+        if period_end.month in (3, 6, 9, 12):   # ... and a quarter end
+            return date(period_end.year, period_end.month - 2, 1)
+        return date(period_end.year, period_end.month, 1)
+    return period_end - timedelta(days=365)
+
+
 def validate_due_date(cycle_id: int, step_key: str, due_date: Optional[str],
                       engine=None) -> List[str]:
     """Check a proposed deadline. Raises on impossible; returns warnings.
@@ -297,9 +331,13 @@ def validate_due_date(cycle_id: int, step_key: str, due_date: Optional[str],
 
     Impossible, so refused:
       * not a date at all
-      * before the period it closes had ended -- the case that prompted this,
-        a deadline of 2020-01-01 sitting on a period ended 2026-06-30
-        (Sep 14 2026)
+      * BEFORE THE PERIOD IT CLOSES BEGAN. The bound is the period start,
+        not the period end: a pre-close prep step -- bank statements
+        requested, confirmations sent -- is legitimately due before the
+        quarter closes, and an earlier version of this refused those
+        (relaxed Sep 15 2026 at Jim's instruction). What it still catches is
+        the case that prompted the rule: a deadline of 2020-01-01 sitting on
+        a period ended 2026-06-30.
 
     Odd, so reported and saved anyway:
       * more than a year after the period end
@@ -328,11 +366,13 @@ def validate_due_date(cycle_id: int, step_key: str, due_date: Optional[str],
         # Do not invent an anchor; let the deadline through unchecked.
         return []
 
-    if due < period_end:
+    start = period_start(cycle_id, period_end, engine=engine)
+    if due < start:
         raise ValueError(
             f"{due.isoformat()} is before the period it closes "
-            f"({period_end.isoformat()}). A close step cannot be due before "
-            f"the period has ended.")
+            f"({start.isoformat()} to {period_end.isoformat()}). A close "
+            f"step can be due inside the period or after it, but not before "
+            f"the period began.")
 
     warnings: List[str] = []
     if (due - period_end).days > 365:
