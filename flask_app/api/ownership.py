@@ -81,3 +81,35 @@ def upstream_analysis():
         return jsonify(result), 400
 
     return jsonify(safe_json(result))
+
+
+# ── Ownership chain from commitments (Investment Management) ────────────
+#
+# Separate from the endpoints above on purpose. Those walk `relationships`
+# and its stored OwnershipPct; these derive ownership from committed dollars
+# via ownership_chain_service, which is the source that proved correct when
+# the two disagreed. Both are kept because the older tree still backs the
+# waterfall-requirements analysis; see the chain service's docstring.
+
+@ownership_bp.route("/chain/investments", methods=["GET"])
+@login_required
+def chain_investments():
+    """The PE investment level — the left edge of the ownership tree."""
+    from flask_app.services.ownership_chain_service import list_pe_investments
+    try:
+        return jsonify(safe_json({"investments": list_pe_investments()}))
+    except Exception as e:
+        current_app.logger.exception("chain_investments failed")
+        return jsonify({"error": str(e)}), 500
+
+
+@ownership_bp.route("/chain/<investment_id>", methods=["GET"])
+@login_required
+def chain(investment_id):
+    """The full ownership chain above one PE investment, up to OWPSC."""
+    from flask_app.services.ownership_chain_service import build_chain
+    try:
+        return jsonify(safe_json(build_chain(investment_id)))
+    except Exception as e:
+        current_app.logger.exception("chain failed for %s", investment_id)
+        return jsonify({"error": str(e)}), 500

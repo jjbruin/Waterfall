@@ -22,7 +22,11 @@ function toggleSection(key: string) {
 }
 
 // Auto-expand section containing current route
-const amRoutes = ['/deal-analysis', '/property-financials', '/surveillance', '/valuations', '/one-pager', '/portfolio-snapshot', '/review-tracking', '/ownership', '/waterfall-setup', '/reports']
+const amRoutes = ['/deal-analysis', '/property-financials', '/surveillance', '/valuations', '/one-pager', '/portfolio-snapshot', '/review-tracking', '/waterfall-setup', '/reports']
+// Investment Management. Ownership moved here from Asset Management on
+// Sep 15 2026: the ownership chain is about who owns the investment, not
+// about operating the asset.
+const imRoutes = ['/ownership']
 const nbRoutes = ['/pipeline', '/prospect-analysis', '/lease-review', '/lease-risk-analysis']
 const dmRoutes = ['/data-explorer', '/settings']
 const acctRoutes = ['/workpapers']
@@ -32,6 +36,7 @@ watch(() => route.path, (path) => {
   if (nbRoutes.some(r => path.startsWith(r))) expandedSections.nb = true
   if (dmRoutes.some(r => path.startsWith(r))) expandedSections.dm = true
   if (acctRoutes.some(r => path.startsWith(r))) expandedSections.acct = true
+  if (imRoutes.some(r => path.startsWith(r))) expandedSections.im = true
 }, { immediate: true })
 
 // MRI Data tools
@@ -501,7 +506,6 @@ function toggleCollapsed() {
           <router-link to="/one-pager" class="nav-item" :class="{ active: route.path === '/one-pager' }">One Pager</router-link>
           <router-link to="/portfolio-snapshot" class="nav-item" :class="{ active: route.path === '/portfolio-snapshot' }">Portfolio Snapshot</router-link>
           <router-link to="/review-tracking" class="nav-item" :class="{ active: route.path === '/review-tracking' }">Review Tracking</router-link>
-          <router-link to="/ownership" class="nav-item" :class="{ active: route.path === '/ownership' }">Ownership</router-link>
           <router-link to="/waterfall-setup" class="nav-item" :class="{ active: route.path === '/waterfall-setup' }">Waterfall Setup</router-link>
 
           <!-- Report Settings — expandable config panel -->
@@ -582,9 +586,19 @@ function toggleCollapsed() {
         </div>
       </div>
 
-      <!-- Investment Management (future) -->
+      <!-- Investment Management -->
       <div class="nav-section">
-        <span class="nav-section-header future">Investment Management</span>
+        <button
+          class="nav-section-header"
+          :class="{ expanded: expandedSections.im }"
+          @click="toggleSection('im')"
+        >
+          Investment Management
+          <span class="section-chevron">{{ expandedSections.im ? '&#x25BE;' : '&#x25B8;' }}</span>
+        </button>
+        <div v-show="expandedSections.im" class="nav-section-body">
+          <router-link to="/ownership" class="nav-item" :class="{ active: route.path === '/ownership' }">Ownership</router-link>
+        </div>
       </div>
 
       <!-- Reports — standalone section-level link -->

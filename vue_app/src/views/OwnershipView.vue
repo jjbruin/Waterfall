@@ -1,384 +1,394 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
-import DataTable from '../components/common/DataTable.vue'
+/**
+ * Ownership — the chain above each preferred equity investment.
+ *
+ * Reads from /api/ownership/chain/*, which derives every share from committed
+ * dollars rather than a stored percentage. See ownership_chain_service.py for
+ * why: on the one investment where the two could be compared, the amounts were
+ * right and both percentage fields were wrong.
+ *
+ * The tree runs LEFT TO RIGHT: the investment sits on the left, its owners to
+ * its right, their owners further right, up to OWPSC. That orientation is the
+ * point — a level is a column, so an analyst scanning for "which levels still
+ * need a waterfall" reads down a column rather than chasing indentation.
+ */
+import { ref, computed, onMounted } from 'vue'
 import api from '../api/client'
 import { useDataStore } from '../stores/data'
 
 const dataStore = useDataStore()
 
-// Tree state
-const treeData = ref<any>(null)
-const treeLoading = ref(false)
+interface Node {
+  entity_id: string
+  name: string
+  level: number
+  committed: number
+  pct: number | null
+  pct_stated: number | null
+  pct_disagrees: boolean
+  commitment_count?: number
+  has_waterfall: boolean
+  step_count: number
+  waterfall_code: string
+  waterfall_url: string | null
+  terminal: boolean
+  truncated_reason?: string
+  owners: Node[]
+  vcode?: string
+  is_pe_investment?: boolean
+}
 
-// Entity selector
-const selectedEntity = ref('')
-const entityTree = ref<any>(null)
-const entityLoading = ref(false)
+interface Investment {
+  entity_id: string
+  name: string
+  vcode: string
+  portfolio: string
+  owner_count: number
+  total_committed: number
+  has_waterfall: boolean
+  step_count: number
+  waterfall_url: string | null
+}
 
-// Upstream analysis
-const distributionAmount = ref(100000)
-const upstreamResult = ref<any>(null)
-const upstreamLoading = ref(false)
-const upstreamError = ref('')
+const investments = ref<Investment[]>([])
+const listLoading = ref(false)
+const chainLoading = ref(false)
+const selected = ref<string | null>(null)
+const root = ref<Node | null>(null)
+const summary = ref<any>(null)
+const health = ref<any>(null)
+const filter = ref('')
+const onlyMissing = ref(false)
 
-// Entities for the selector (from tree nodes)
-const entities = computed(() => {
-  if (!treeData.value || !treeData.value.nodes) return []
-  return treeData.value.nodes
-    .map((n: any) => ({ id: n.entity_id, name: n.name || n.entity_id }))
-    .sort((a: any, b: any) => a.name.localeCompare(b.name))
+// Collapse state is per entity id. Everything starts open: this screen exists
+// to show what is missing, and a collapsed tree hides exactly that.
+const collapsed = ref<Record<string, boolean>>({})
+function toggle(id: string) {
+  collapsed.value[id] = !collapsed.value[id]
+}
+
+const shownInvestments = computed(() => {
+  const q = filter.value.trim().toLowerCase()
+  return investments.value.filter(i => {
+    if (onlyMissing.value && i.has_waterfall) return false
+    if (!q) return true
+    return (i.name || '').toLowerCase().includes(q)
+      || (i.entity_id || '').toLowerCase().includes(q)
+      || (i.vcode || '').toLowerCase().includes(q)
+  })
 })
 
-const requirementsData = ref<any[]>([])
-
-onMounted(async () => {
-  treeLoading.value = true
+async function loadInvestments() {
+  listLoading.value = true
   try {
-    const [treeRes, reqRes] = await Promise.all([
-      api.get('/api/ownership/tree'),
-      api.get('/api/ownership/requirements'),
-    ])
-    treeData.value = treeRes.data
-    requirementsData.value = reqRes.data.requirements || []
+    const res = await api.get('/api/ownership/chain/investments')
+    investments.value = res.data.investments || []
   } catch (e: any) {
-    dataStore.addToast('Failed to load ownership data: ' + (e.response?.data?.error || e.message), 'error')
+    dataStore.addToast(e.response?.data?.error || 'Failed to load investments', 'error')
   } finally {
-    treeLoading.value = false
+    listLoading.value = false
   }
+}
+
+async function loadChain(id: string) {
+  selected.value = id
+  chainLoading.value = true
+  root.value = null
+  try {
+    const res = await api.get(`/api/ownership/chain/${encodeURIComponent(id)}`)
+    root.value = res.data.root
+    summary.value = res.data.summary
+    health.value = res.data.data_health
+    collapsed.value = {}
+  } catch (e: any) {
+    dataStore.addToast(e.response?.data?.error || 'Failed to load ownership chain', 'error')
+  } finally {
+    chainLoading.value = false
+  }
+}
+
+/** Flatten the tree into columns, one per ownership level. */
+const columns = computed<Node[][]>(() => {
+  if (!root.value) return []
+  const cols: Node[][] = []
+  const walk = (n: Node, depth: number) => {
+    if (!cols[depth]) cols[depth] = []
+    cols[depth].push(n)
+    if (collapsed.value[n.entity_id]) return
+    for (const o of n.owners || []) walk(o, depth + 1)
+  }
+  walk(root.value, 0)
+  return cols
 })
 
-async function loadEntityTree() {
-  if (!selectedEntity.value) return
-  entityLoading.value = true
-  entityTree.value = null
-  upstreamResult.value = null
-  upstreamError.value = ''
-  try {
-    const res = await api.get(`/api/ownership/tree/${selectedEntity.value}`)
-    entityTree.value = res.data
-  } catch (e: any) {
-    dataStore.addToast('Failed to load entity tree: ' + (e.response?.data?.error || e.message), 'error')
-  } finally {
-    entityLoading.value = false
-  }
+function levelLabel(i: number): string {
+  if (i === 0) return 'Preferred equity investment'
+  return `Ownership level ${i}`
 }
 
-async function runUpstreamAnalysis() {
-  if (!selectedEntity.value) return
-  upstreamLoading.value = true
-  upstreamResult.value = null
-  upstreamError.value = ''
-  try {
-    const res = await api.post('/api/ownership/upstream-analysis', {
-      entity_id: selectedEntity.value,
-      distribution_amount: distributionAmount.value,
-    })
-    if (res.data.error) {
-      upstreamError.value = res.data.error
-    } else {
-      upstreamResult.value = res.data
-    }
-  } catch (e: any) {
-    upstreamError.value = e.response?.data?.error || 'Upstream analysis failed'
-  } finally {
-    upstreamLoading.value = false
-  }
+/** Total committed at a level — the figure that reveals a missing row. */
+function levelTotal(nodes: Node[]): number {
+  return nodes.reduce((s, n) => s + (n.committed || 0), 0)
 }
 
-// Table columns
-const requirementColumns = [
-  { key: 'entity_id', label: 'Entity ID' },
-  { key: 'entity_name', label: 'Entity Name' },
-  { key: 'num_investors', label: 'Investors', align: 'right' },
-  { key: 'deal_vcode', label: 'Deal Vcode' },
-]
-
-const dealAllocColumns = [
-  { key: 'PropCode', label: 'PropCode' },
-  { key: 'vState', label: 'vState' },
-  { key: 'Allocated', label: 'Allocated', format: 'currency2', align: 'right' },
-]
-
-const upstreamColumns = [
-  { key: 'Entity', label: 'Entity' },
-  { key: 'PropCode', label: 'PropCode' },
-  { key: 'vState', label: 'vState' },
-  { key: 'Allocated', label: 'Allocated', format: 'currency2', align: 'right' },
-  { key: 'Level', label: 'Level', align: 'right' },
-  { key: 'Path', label: 'Path' },
-]
-
-const beneficiaryColumns = [
-  { key: 'entity_id', label: 'Entity' },
-  { key: 'amount', label: 'Amount', format: 'currency2', align: 'right' },
-  { key: 'pct_of_total', label: '% of Total', format: 'percent', align: 'right' },
-]
-
-const investorColumns = [
-  { key: 'investor_id', label: 'Investor ID' },
-  { key: 'name', label: 'Name' },
-  { key: 'ownership_pct', label: 'Ownership %', format: 'percent', align: 'right' },
-]
-
-function fmtCur(v: any): string {
-  if (v == null) return '--'
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 0 }).format(v)
+function fmtMoney(v: number | null | undefined): string {
+  if (v === null || v === undefined) return '—'
+  if (v === 0) return '$0'
+  return '$' + Math.round(v).toLocaleString()
 }
+function fmtPct(v: number | null | undefined): string {
+  if (v === null || v === undefined) return '—'
+  return v.toFixed(2) + '%'
+}
+
+onMounted(loadInvestments)
 </script>
 
 <template>
   <div class="ownership">
-    <h2>Ownership & Partnerships</h2>
-
-    <!-- Overview -->
-    <div class="section">
-      <h3>Ownership Tree Overview</h3>
-      <div v-if="treeLoading" class="placeholder">Loading ownership data...</div>
-      <template v-else-if="treeData">
-        <div class="stats">
-          <span class="stat">Entities: <strong>{{ treeData.entity_count }}</strong></span>
-          <span class="stat">Relationships: <strong>{{ treeData.relationship_count }}</strong></span>
-        </div>
-      </template>
-    </div>
-
-    <!-- Waterfall Requirements -->
-    <div v-if="requirementsData.length" class="section">
-      <h3>Entities Needing Waterfalls ({{ requirementsData.length }})</h3>
-      <DataTable :columns="requirementColumns" :rows="requirementsData" />
-    </div>
-
-    <!-- Entity Explorer -->
-    <div class="section">
-      <h3>Entity Explorer</h3>
-      <div class="entity-controls">
-        <select v-model="selectedEntity" @change="loadEntityTree" class="entity-select">
-          <option value="">-- Select an entity --</option>
-          <option v-for="e in entities" :key="e.id" :value="e.id">
-            {{ e.name }} ({{ e.id }})
-          </option>
-        </select>
+    <header class="head">
+      <div>
+        <h2>Ownership</h2>
+        <p class="sub">
+          Who owns each preferred equity investment, level by level, up to OWPSC.
+          Shares are derived from committed dollars.
+        </p>
       </div>
-
-      <div v-if="entityLoading" class="placeholder">Loading entity tree...</div>
-
-      <template v-if="entityTree">
-        <!-- Entity Info -->
-        <div v-if="entityTree.entity_info" class="entity-info">
-          <span class="info-badge">{{ entityTree.entity_info.entity_id }}</span>
-          <span v-if="entityTree.entity_info.is_passthrough" class="info-tag passthrough">Passthrough</span>
-          <span v-if="entityTree.entity_info.needs_waterfall" class="info-tag needs-wf">Needs Waterfall</span>
-          <span class="info-detail">{{ entityTree.entity_info.investor_count }} investor(s)</span>
-        </div>
-
-        <!-- ASCII Tree -->
-        <div v-if="entityTree.tree_text" class="tree-text">
-          <pre>{{ entityTree.tree_text }}</pre>
-        </div>
-
-        <!-- Ultimate Investors -->
-        <div v-if="entityTree.ultimate_investors && entityTree.ultimate_investors.length">
-          <h4>Ultimate Investors</h4>
-          <DataTable :columns="investorColumns" :rows="entityTree.ultimate_investors" />
-        </div>
-      </template>
-    </div>
-
-    <!-- Upstream Analysis -->
-    <div class="section">
-      <h3>Upstream Analysis</h3>
-      <p class="section-desc">Run a test distribution through the entity's waterfall and trace cash flows upstream.</p>
-
-      <div class="upstream-controls">
-        <select v-model="selectedEntity" class="entity-select">
-          <option value="">-- Select an entity --</option>
-          <option v-for="e in entities" :key="e.id" :value="e.id">
-            {{ e.name }} ({{ e.id }})
-          </option>
-        </select>
-
-        <div class="amount-input">
-          <label>Distribution Amount ($)</label>
-          <input type="number" v-model.number="distributionAmount" min="0" step="10000" />
-        </div>
-
-        <button
-          class="btn-run"
-          @click="runUpstreamAnalysis"
-          :disabled="!selectedEntity || upstreamLoading"
-        >
-          {{ upstreamLoading ? 'Running...' : 'Run Upstream Analysis' }}
+      <div class="head-actions">
+        <button class="btn" @click="loadInvestments" :disabled="listLoading">
+          {{ listLoading ? 'Loading…' : 'Refresh' }}
         </button>
       </div>
+    </header>
 
-      <div v-if="upstreamError" class="error-msg">{{ upstreamError }}</div>
-
-      <template v-if="upstreamResult">
-        <div class="result-summary">
-          <span>Distribution: <strong>{{ fmtCur(upstreamResult.distribution_amount) }}</strong></span>
-          <span>Total Allocated: <strong>{{ fmtCur(upstreamResult.total_allocated) }}</strong></span>
+    <div class="layout">
+      <!-- Left: the PE investment level -->
+      <aside class="picker">
+        <div class="picker-controls">
+          <input v-model="filter" class="search" type="search" placeholder="Filter investments…" />
+          <label class="chk">
+            <input type="checkbox" v-model="onlyMissing" />
+            Missing waterfall only
+          </label>
+          <p class="count">
+            {{ shownInvestments.length }} of {{ investments.length }} investments
+          </p>
         </div>
 
-        <!-- Deal Allocations -->
-        <h4>Deal-Level Allocations</h4>
-        <DataTable :columns="dealAllocColumns" :rows="upstreamResult.deal_allocations" />
+        <div v-if="listLoading" class="muted pad">Loading investments…</div>
+        <ul v-else class="inv-list">
+          <li v-for="inv in shownInvestments" :key="inv.entity_id">
+            <button
+              class="inv"
+              :class="{ active: selected === inv.entity_id }"
+              @click="loadChain(inv.entity_id)"
+            >
+              <span class="inv-name">{{ inv.name }}</span>
+              <span class="inv-meta">
+                <code>{{ inv.entity_id }}</code>
+                <span class="dot" :class="inv.has_waterfall ? 'ok' : 'gap'"
+                      :title="inv.has_waterfall ? `${inv.step_count} waterfall steps` : 'No waterfall set up'"></span>
+              </span>
+              <span class="inv-sub">
+                {{ inv.owner_count }} owner{{ inv.owner_count === 1 ? '' : 's' }}
+                · {{ fmtMoney(inv.total_committed) }}
+              </span>
+            </button>
+          </li>
+          <li v-if="!shownInvestments.length" class="muted pad">Nothing matches.</li>
+        </ul>
+      </aside>
 
-        <!-- Terminal Beneficiaries -->
-        <h4>Terminal Beneficiaries</h4>
-        <DataTable :columns="beneficiaryColumns" :rows="upstreamResult.beneficiaries" />
-
-        <!-- Upstream Allocations -->
-        <div v-if="upstreamResult.upstream_allocations && upstreamResult.upstream_allocations.length">
-          <h4>Upstream Allocation Detail</h4>
-          <DataTable :columns="upstreamColumns" :rows="upstreamResult.upstream_allocations" />
+      <!-- Right: the horizontal chain -->
+      <section class="chain">
+        <div v-if="!selected" class="empty">
+          <p>Select an investment to see who owns it.</p>
         </div>
-      </template>
+        <div v-else-if="chainLoading" class="empty"><p>Building ownership chain…</p></div>
+
+        <template v-else-if="root">
+          <div class="chain-summary">
+            <div class="stat">
+              <span class="n">{{ summary?.entities_above ?? 0 }}</span>
+              <span class="l">entities above</span>
+            </div>
+            <div class="stat" :class="{ warn: (summary?.levels_missing_waterfall ?? 0) > 0 }">
+              <span class="n">{{ summary?.levels_missing_waterfall ?? 0 }}</span>
+              <span class="l">without a waterfall</span>
+            </div>
+            <div class="stat">
+              <span class="n">{{ summary?.max_depth_reached ?? 0 }}</span>
+              <span class="l">levels deep</span>
+            </div>
+          </div>
+
+          <div v-if="health?.notes?.length" class="notes">
+            <p class="notes-title">Check before building a waterfall on this split</p>
+            <ul><li v-for="(n, i) in health.notes" :key="i">{{ n }}</li></ul>
+          </div>
+
+          <div class="cols-scroll">
+            <div class="cols">
+              <div v-for="(col, i) in columns" :key="i" class="col">
+                <div class="col-head">
+                  <span class="col-label">{{ levelLabel(i) }}</span>
+                  <span class="col-total">{{ fmtMoney(levelTotal(col)) }}</span>
+                </div>
+
+                <div v-for="n in col" :key="n.entity_id + '-' + i" class="node"
+                     :class="{ pe: i === 0, terminal: n.terminal }">
+                  <div class="node-top">
+                    <button
+                      v-if="(n.owners || []).length"
+                      class="twist"
+                      @click="toggle(n.entity_id)"
+                      :aria-label="collapsed[n.entity_id] ? 'Expand owners' : 'Collapse owners'"
+                    >{{ collapsed[n.entity_id] ? '▸' : '▾' }}</button>
+                    <span v-else class="twist spacer"></span>
+                    <div class="node-id">
+                      <code>{{ n.entity_id }}</code>
+                      <span class="node-name">{{ n.name }}</span>
+                    </div>
+                  </div>
+
+                  <div class="node-figs">
+                    <span class="amt">{{ fmtMoney(n.committed) }}</span>
+                    <span v-if="n.pct !== null" class="pct">{{ fmtPct(n.pct) }}</span>
+                  </div>
+
+                  <p v-if="n.pct_disagrees" class="disagree">
+                    Stored {{ fmtPct(n.pct_stated) }} — likely a missing commitment row
+                  </p>
+
+                  <div class="node-wf">
+                    <span class="badge" :class="n.has_waterfall ? 'ok' : 'gap'">
+                      {{ n.has_waterfall ? `Waterfall · ${n.step_count} steps` : 'No waterfall' }}
+                    </span>
+                    <a v-if="n.waterfall_url" :href="n.waterfall_url" class="wf-link">
+                      {{ n.has_waterfall ? 'Open' : 'Set up' }} {{ n.waterfall_code }} →
+                    </a>
+                  </div>
+
+                  <p v-if="n.truncated_reason" class="trunc">{{ n.truncated_reason }}</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </template>
+      </section>
     </div>
   </div>
 </template>
 
 <style scoped>
-.ownership { padding: 0 0 40px 0; }
-h2 { font-size: 20px; margin-bottom: 16px; }
-h3 { font-size: 15px; margin: 0 0 12px 0; }
-h4 { font-size: 13px; margin: 16px 0 8px 0; font-weight: 600; }
+.ownership { padding: 20px; }
 
-.section {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  padding: 16px;
-  margin-bottom: 16px;
+.head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+h2 { margin: 0 0 4px; font-size: 20px; }
+.sub { margin: 0; color: #667; font-size: 13px; max-width: 70ch; }
+.btn {
+  padding: 7px 14px; border: 1px solid #ccd; background: #fff; border-radius: 6px;
+  cursor: pointer; font-size: 13px;
+}
+.btn:hover:not(:disabled) { background: #f5f7fa; }
+.btn:disabled { opacity: .6; cursor: default; }
+
+.layout { display: grid; grid-template-columns: 290px 1fr; gap: 18px; margin-top: 18px; align-items: start; }
+@media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+
+/* ── Investment picker ─────────────────────────────── */
+.picker { border: 1px solid #e2e6ee; border-radius: 8px; background: #fff; overflow: hidden; }
+.picker-controls { padding: 12px; border-bottom: 1px solid #eef1f5; display: flex; flex-direction: column; gap: 8px; }
+.search { padding: 7px 10px; border: 1px solid #ccd; border-radius: 6px; font-size: 13px; width: 100%; }
+.chk { font-size: 12.5px; color: #556; display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.count { margin: 0; font-size: 11.5px; color: #889; }
+
+.inv-list { list-style: none; margin: 0; padding: 0; max-height: 640px; overflow-y: auto; }
+.inv {
+  width: 100%; text-align: left; background: none; border: none;
+  border-bottom: 1px solid #f2f4f8; padding: 10px 12px; cursor: pointer;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.inv:hover { background: #f7f9fc; }
+.inv.active { background: #eef4ff; box-shadow: inset 3px 0 0 #1d4e7e; }
+.inv-name { font-size: 13px; font-weight: 600; color: #223; }
+.inv-meta { display: flex; align-items: center; gap: 7px; }
+.inv-meta code { font-size: 11px; color: #667; }
+.inv-sub { font-size: 11.5px; color: #889; }
+.dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.dot.ok { background: #2e7d32; }
+.dot.gap { background: #c77700; }
+
+/* ── Chain ─────────────────────────────────────────── */
+.chain { min-width: 0; }
+.empty { border: 1px dashed #d5dae5; border-radius: 8px; padding: 46px; text-align: center; color: #889; }
+.empty p { margin: 0; }
+
+.chain-summary { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.stat {
+  border: 1px solid #e2e6ee; border-radius: 8px; background: #fff;
+  padding: 10px 16px; min-width: 120px;
+}
+.stat.warn { border-color: #e8c07a; background: #fffaf0; }
+.stat .n { display: block; font-size: 22px; font-weight: 700; color: #223; font-variant-numeric: tabular-nums; }
+.stat .l { display: block; font-size: 11.5px; color: #778; margin-top: 2px; }
+
+.notes {
+  border-left: 3px solid #c77700; background: #fff8ec;
+  padding: 11px 14px; border-radius: 0 6px 6px 0; margin-bottom: 14px;
+}
+.notes-title { margin: 0 0 6px; font-size: 12px; font-weight: 700; color: #a35f00; text-transform: uppercase; letter-spacing: .04em; }
+.notes ul { margin: 0; padding-left: 18px; }
+.notes li { font-size: 12.5px; color: #664; margin-bottom: 4px; }
+
+.cols-scroll { overflow-x: auto; padding-bottom: 8px; }
+.cols { display: flex; gap: 14px; align-items: flex-start; min-width: min-content; }
+.col { min-width: 244px; max-width: 244px; display: flex; flex-direction: column; gap: 10px; }
+.col-head {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+  padding-bottom: 6px; border-bottom: 2px solid #dde3ec;
+}
+.col-label { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: #7a8394; }
+.col-total { font-size: 11px; color: #889; font-variant-numeric: tabular-nums; }
+
+.node {
+  border: 1px solid #e2e6ee; border-radius: 8px; background: #fff;
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 6px;
+}
+.node.pe { border-left: 3px solid #1d4e7e; }
+.node.terminal { background: #fafbfc; }
+
+.node-top { display: flex; align-items: flex-start; gap: 6px; }
+.twist {
+  background: none; border: none; cursor: pointer; padding: 0; width: 14px;
+  color: #7a8394; font-size: 11px; line-height: 1.5; flex-shrink: 0;
+}
+.twist.spacer { cursor: default; }
+.node-id { min-width: 0; }
+.node-id code { font-size: 11.5px; font-weight: 700; color: #1d4e7e; display: block; }
+.node-name { font-size: 12px; color: #556; display: block; word-break: break-word; }
+
+.node-figs { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding-left: 20px; }
+.amt { font-size: 13px; font-weight: 600; color: #223; font-variant-numeric: tabular-nums; }
+.pct { font-size: 13px; font-weight: 700; color: #1d4e7e; font-variant-numeric: tabular-nums; }
+
+.disagree {
+  margin: 0 0 0 20px; font-size: 11px; color: #a35f00;
+  background: #fff8ec; border-radius: 4px; padding: 3px 6px;
 }
 
-.section-desc {
-  font-size: 13px;
-  color: var(--color-text-secondary);
-  margin-bottom: 12px;
+.node-wf { display: flex; flex-direction: column; gap: 4px; padding-left: 20px; }
+.badge {
+  font-size: 10.5px; font-weight: 600; padding: 2px 7px; border-radius: 10px;
+  align-self: flex-start;
 }
+.badge.ok { background: #e8f5e9; color: #2e7d32; }
+.badge.gap { background: #fff3e0; color: #b25f00; }
+.wf-link { font-size: 11px; color: #1d4e7e; text-decoration: none; }
+.wf-link:hover { text-decoration: underline; }
 
-.placeholder {
-  color: var(--color-text-secondary);
-  font-style: italic;
-  text-align: center;
-  padding: 32px 0;
-}
+.trunc { margin: 0 0 0 20px; font-size: 11px; color: #99a; font-style: italic; }
 
-.stats { display: flex; gap: 24px; }
-.stat { font-size: 14px; color: var(--color-text-secondary); }
-.stat strong { color: var(--color-text); }
-
-.entity-controls { margin-bottom: 12px; }
-
-.entity-select {
-  padding: 8px 12px;
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
-  font-size: 14px;
-  min-width: 350px;
-}
-
-.entity-info {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-  flex-wrap: wrap;
-}
-
-.info-badge {
-  background: var(--color-accent);
-  color: white;
-  padding: 2px 10px;
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.info-tag {
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 500;
-}
-
-.info-tag.passthrough { background: #e8f5e9; color: #2e7d32; }
-.info-tag.needs-wf { background: #fff3e0; color: #e65100; }
-
-.info-detail {
-  font-size: 13px;
-  color: var(--color-text-secondary);
-}
-
-.tree-text {
-  background: #f8f9fa;
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
-  padding: 12px;
-  margin-bottom: 12px;
-  overflow-x: auto;
-}
-
-.tree-text pre {
-  margin: 0;
-  font-size: 12px;
-  line-height: 1.5;
-  white-space: pre;
-}
-
-.upstream-controls {
-  display: flex;
-  gap: 12px;
-  align-items: flex-end;
-  margin-bottom: 16px;
-  flex-wrap: wrap;
-}
-
-.amount-input {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.amount-input label {
-  font-size: 12px;
-  color: var(--color-text-secondary);
-}
-
-.amount-input input {
-  padding: 8px 12px;
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
-  font-size: 14px;
-  width: 160px;
-}
-
-.btn-run {
-  padding: 8px 20px;
-  background: var(--color-accent);
-  color: white;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 14px;
-}
-
-.btn-run:hover { background: #3a63ad; }
-.btn-run:disabled { opacity: 0.6; cursor: not-allowed; }
-
-.error-msg {
-  color: #d32f2f;
-  background: #ffebee;
-  padding: 8px 12px;
-  border-radius: 6px;
-  font-size: 13px;
-  margin-bottom: 12px;
-}
-
-.result-summary {
-  display: flex;
-  gap: 24px;
-  margin-bottom: 12px;
-  font-size: 14px;
-}
+.muted { color: #889; font-size: 13px; }
+.pad { padding: 14px; }
 </style>
