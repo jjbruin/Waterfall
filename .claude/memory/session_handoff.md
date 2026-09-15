@@ -109,12 +109,13 @@ auditor is shown elsewhere, because there is no second implementation.
    deployed and idle. Needs a CFO session. `MC_TYPENAME_ROW` (members' capital
    row routing) also wants accounting's eye before the first real package.
 
-3. **SendGrid's free plan lapsed** — all outbound mail has failed since ~Aug 1.
-   `/v3/user/credits` returns `total: 0, used: 0` with the reset frozen at
-   2026-08-01. `v451` made the failure legible (the invite still creates a
-   working account; the email is what fails). **Resolved in direction on Sep 15:
-   moving to Azure Communication Services** (`b72ea9b`) — see the Sep 15 section
-   below and `open_items.md` §3.12. Code is committed and inert until provisioned.
+3. **SendGrid's free plan lapsed** — **RESOLVED Sep 15 2026.** Moved to Azure
+   Communication Services; `v458` sends as `noreply@notify.peaceablestreet.com`
+   and a real email was delivered. What remains is not configuration: the
+   message was **junked by Avanan/Check Point**, the security gateway in front
+   of the tenant, and Exchange deferred to that verdict. `open_items.md` §3.12
+   has the header evidence and the two asks with IT. Also still open there: the
+   SendGrid API key was a plaintext env var and needs revoking.
 
 **Verified how**: both guardrails run clean
 (`scripts/statement_presentation_check.py`,

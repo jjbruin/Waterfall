@@ -463,61 +463,75 @@ and will be created by whoever imports the first partner budget.
 small budget on Azure and confirm the rows land and the comparison reads them, before the
 team relies on it. Cheap now, expensive during a valuation cycle.
 
-### 3.12 All outbound email has been failing since ~Aug 1 2026 — ACS not yet provisioned
-**Verified Sep 15 2026** from the production log: `SendGrid error 401 … {"message":"Maximum
-credits exceeded"}`. That wording reads as *you sent too much*; the account had sent
-nothing. `/v3/user/credits` returns `total: 0, used: 0` with the daily reset frozen at
-2026-08-01. **Twilio retired SendGrid's free plan in 2025 and ours lapsed** — the allowance
-is zero, not the usage. Nothing about the app, the key or the recipient is wrong.
+### 3.12 Email moved from SendGrid to Azure Communication Services — DONE, mail is JUNKED
+**Resolved Sep 15 2026, same day.** Outbound email had failed since ~Aug 1 with SendGrid's
+`Maximum credits exceeded` — wording that reads as *you sent too much* on an account that had
+sent nothing. `/v3/user/credits` returned `total: 0, used: 0` with the reset frozen at
+2026-08-01: **Twilio retired the free plan in 2025 and ours lapsed.** The allowance was zero,
+not the usage. Nothing about the app, the key or the recipient was ever wrong.
 
-Everything that emails is affected: welcome, password reset, password-changed confirmation,
-and feedback replies. `v451` made the failure legible (the invite still creates a working
-account; only the notification fails), and `b72ea9b` gives it somewhere to go.
+**What is live** (`v458`, a config-only revision on image `9db5923`):
 
-**Decided (Jim, Sep 15 2026): move to Azure Communication Services**, not Resend/Brevo — it
-bills to the subscription the app already runs in, at $0.00025/email, which at our volume is
-cents a year. **The code is LIVE as of `v456`/`v457` and still INERT**: with
-`ACS_CONNECTION_STRING` and `ACS_SENDER` unset, mail goes via SendGrid and still fails.
-Setting those two variables is a config revision, no rebuild — which is why it shipped ahead
-of the DNS.
+| | |
+|---|---|
+| `ecs-waterfall-dev` | Email Communication Service — owns the domain |
+| `acs-waterfall-dev` | Communication Services — owns the connection string |
+| `notify.peaceablestreet.com` | CustomerManaged; Domain/SPF/DKIM/DKIM2 all **Verified** |
+| sender | `noreply@notify.peaceablestreet.com`, display name "Waterfall XIRR" |
+| `ACS_CONNECTION_STRING` | container app **secret ref**, alongside `db-url` |
+| `ACS_SENDER` | plain env var |
 
-**Provisioned Sep 15 2026**: `ecs-waterfall-dev` (Email Communication Service),
-`acs-waterfall-dev` (Communication Services), the domain `notify.peaceablestreet.com`
-registered as `CustomerManaged`, and the `noreply` sender username created. **Blocked on DNS**
-— the request went to IT the same day; all four records are issued and unpublished.
-Verification states were all `NotStarted` at handoff.
+A real password-reset email was delivered and logged
+`Email sent to jbruin@peaceablestreet.com via ACS (Succeeded)` — `Succeeded` is ACS's
+terminal status, polled to completion, not merely accepted.
 
-**Remaining work is provisioning, not code.** Runbook (Sep 15 2026):
-<https://claude.ai/artifact/MZd8VHR5zgAFtue9yLKBDA>
+**THE REMAINING PROBLEM IS SPAM FILTERING, NOT CONFIGURATION.** The message landed in Junk.
+The headers settle where and why, and the answer is not Azure:
 
-- No Communication Services resource exists yet; the `communication` CLI extension is not installed.
-- **Send from a subdomain, `notify.peaceablestreet.com` — do NOT put these records on the root
-  domain.** ACS requires an **exact-match SPF record** and will not tolerate one carrying
-  several `include:` mechanisms. The root SPF is what all Microsoft 365 company mail depends
-  on; editing it to satisfy ACS risks silently breaking it. The subdomain has no SPF today, so
-  the exact value goes in cleanly and the root zone is never touched.
-- Four DNS records, all **additions** to the `peaceablestreet.com` zone, none modifying an
-  existing record: ownership TXT at `notify`; SPF TXT at `notify` =
-  `v=spf1 include:spf.protection.outlook.com -all`; two DKIM CNAMEs at
-  `selector{1,2}-azurecomm-prod-net._domainkey.notify`.
-- The SPF include really is `spf.protection.outlook.com` — ACS rides Exchange Online
-  infrastructure, so it is identical to M365's. It looks like a copy-paste error and is not.
-- Every record name carries the `.notify` suffix because the zone sits one level above the
-  sending subdomain. **A name without it lands on the root domain** — the exact outcome this
-  approach exists to prevent.
-- Two Azure resources are needed, not one: the Email Communication Service owns the domain,
-  the Communication Services resource owns the connection string. Easy to create one and
-  wonder why nothing sends.
-- Put the connection string in as a **secret ref**, matching the existing `db-url` secret —
-  not as a plain env var the way `SENDGRID_API_KEY` sits today.
+- Leaving Azure: **`spf=pass`, `dkim=pass`**.
+- At the gateway's own check (`mx.avanan.net`): **`spf=pass`, `dkim=pass`**.
+- At final delivery to M365: `spf=fail`, `dkim=fail (body hash did not verify)` — from IP
+  `35.174.145.124` = `us.cloud-sec-av.com` = **Avanan / Check Point**, the security gateway
+  in front of the tenant. It modified the body (breaking the DKIM body hash) and re-injected
+  from its own IP (which is not in our SPF). **That is an artifact of having a gateway, not a
+  misconfiguration** — and Microsoft compensated correctly, recovering the original results
+  from the ARC chain: `arc=pass`, `compauth=pass reason=130`.
 
-Owner: **Jim** (Azure) + whoever administers `peaceablestreet.com` DNS. Deploy `1e0ebad` and
-`b72ea9b` together *after* a real email lands — deploying first buys nothing on email.
+The junking came from Avanan itself: `X-CLOUD-SEC-AV-SPAM-LOW: true`, `X-CLOUD-SEC-AV-SCL:
+true`. Exchange then **deferred** to that verdict rather than filtering independently —
+`SCL:6`, `SFV:SKS` (filtering skipped), `CAT:SPM`, `RF:JunkEmail`.
+
+**So an Exchange-only allow rule cannot fix this.** Avanan is upstream and its verdict is
+what M365 obeyed. Requested from IT Sep 15 2026:
+
+1. Allow `notify.peaceablestreet.com` as a sender domain **in the Check Point/Avanan policy**.
+2. Add DMARC — `_dmarc.notify` TXT = `v=DMARC1; p=none; rua=mailto:dmarc@peaceablestreet.com`.
+   Microsoft logged `dmarc=none` and fell back to `bestguesspass`. This was deliberately left
+   out of the original DNS request to avoid a policy conversation delaying the four records
+   that unblocked sending; that was right for getting mail flowing and wrong for getting it
+   into inboxes. IT was also asked to report any existing `_dmarc.peaceablestreet.com`, since
+   a parent policy may already inherit down.
+
+**Still open, and Jim's:**
+
+- **Revoke the SendGrid API key.** It was stored as a PLAINTEXT env var (not a secret ref) and
+  was printed into a session transcript on Sep 15 by an `az containerapp show --query value`.
+  Low practical risk — the account cannot send — but it is a live credential in a transcript.
+- **Then remove `SENDGRID_API_KEY` and `SENDGRID_FROM` from the container app**, which deletes
+  the plaintext credential outright. Hold until ACS has carried real mail for a while: the
+  SendGrid path in `email_utils.py` is the rollback, and removing the vars is what disarms it.
 
 **Inbound is out of scope and still SendGrid.** Feedback replies use SendGrid Inbound Parse
 (`POST /api/feedback/inbound-email`), which needs an MX record. Whether that was ever
-configured is **unverified** — DNS lookups were blocked from the dev sandbox. If it is live,
-it needs re-pointing separately.
+configured is **unverified** — DNS lookups were blocked from the dev sandbox. If it is live it
+needs re-pointing separately, and it is not covered by anything above.
+
+**Runbook**, still accurate for a rebuild or a second domain:
+<https://claude.ai/artifact/MZd8VHR5zgAFtue9yLKBDA>. Two things it records that cost time:
+every ACS record name needs the `.notify` suffix because the zone sits one level above the
+sending subdomain (Azure prints them without it, assuming a delegated zone), and
+`az communication update --linked-domains` fails from Git Bash because MSYS rewrites the
+leading `/subscriptions/...` into a Windows path — `MSYS_NO_PATHCONV=1` fixes it.
 
 ### 3.13 The ownership tree is live and has never been read against MRI
 `v457`. Sidebar → Investment Management → Ownership. Derives each owner's share from the
