@@ -47,6 +47,14 @@ def source_from(rows):
     src.com, src.superseded_rows = _Source._current_only(com)
     src.names, src.deal_by_investment = {}, {}
     src.wf_codes, src.wf_step_counts = set(), {}
+    # Every attribute _owners_of reads. A fixture that constructs _Source by
+    # hand goes stale the moment the real __init__ grows a field -- which it
+    # just did, and the guardrail failed with AttributeError rather than
+    # testing anything.
+    src.balances = {}
+    src.load_errors = []
+    src.raw_commitment_rows = len(com)
+    src.commitment_columns = [str(c) for c in com.columns]
     return src
 
 
@@ -248,6 +256,22 @@ bare = _Source._canonicalise(pd.DataFrame([{"nothing": 1}]),
                              ("EntityID", "Amount"))
 check("EntityID" not in bare.columns,
       "_canonicalise invented an EntityID column out of nothing")
+
+# ── 8. The fixture carries everything _owners_of actually reads ──────────
+# This exists because the fixture DID go stale: `balances` was added to
+# _Source.__init__ and the guardrail died with AttributeError instead of
+# checking anything. A hand-built stand-in for a real object needs a test that
+# it is still a faithful stand-in.
+_probe = source_from([
+    {"EntityID": "DEALF", "InvestorID": "A", "Amount": 1_000_000,
+     "StartDate": "2024-01-01", "EndDate": None, "CapitalPercent": 0},
+])
+try:
+    got = _owners_of(_probe, "DEALF")
+    check(len(got) == 1 and "balance" in got[0],
+          "_owners_of no longer returns a balance, or the fixture cannot reach it")
+except AttributeError as e:
+    FAIL.append(f"the test fixture is missing an attribute _Source now has: {e}")
 
 if FAIL:
     print("FAIL")
