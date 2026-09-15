@@ -404,8 +404,29 @@ def _owners_of(src: _Source, entity_id: str) -> List[dict]:
 
 
 def _build_level(src: _Source, entity_id: str, depth: int,
-                 seen: Set[str]) -> List[dict]:
-    """Owners of `entity_id`, each with its own owners, recursively."""
+                 seen: Set[str], parent_eff: float = 1.0,
+                 parent_lt: Optional[float] = None,
+                 parent_lt_bal: Optional[float] = None) -> List[dict]:
+    """Owners of `entity_id`, each with its own owners, recursively.
+
+    TWO DIFFERENT DOLLAR FIGURES, AND CONFUSING THEM MISREPRESENTS THE DEAL.
+    ``committed`` is what this owner put into the entity DIRECTLY BELOW IT,
+    which above the first level is a commitment to a fund, not to this
+    property. Jim's example, Sep 15 2026: OWPSC's commitment to PSC3 may be
+    $64M, and none of that is its share of the $3M PPI27 committed to 30BEAR —
+    the $64M is spread across everything PSC3 holds. Printing it in this chain
+    reads as $64M sitting in 30BEAR.
+
+    ``look_through`` is the figure that belongs in a chain about one deal: this
+    owner's share OF THIS DEAL, the percentages multiplied down. The first
+    level is the anchor, because its commitment really is into the investment;
+    every level above is its parent's look-through times its own share.
+    ``effective_pct`` is the same thing as a percentage of the deal.
+
+    Both are carried and both are labelled. The direct figure is still the
+    right answer to "what did this entity commit to its subsidiary" — it is
+    only the wrong answer to "how much of this deal is theirs".
+    """
     if depth >= MAX_DEPTH:
         return []
 
@@ -414,7 +435,29 @@ def _build_level(src: _Source, entity_id: str, depth: int,
         eid = o["entity_id"]
         node = dict(o)
         node["level"] = depth + 1
+        # Which entity the direct commitment was INTO, so the card can say
+        # "$64,000,000 into PSC3" rather than leaving a number that looks like
+        # it belongs to this deal.
+        node["into_entity_id"] = entity_id
+        node["into_name"] = src.display_name(entity_id)
         node.update(_waterfall_status(src, eid))
+
+        share = (o["pct"] / 100.0) if o["pct"] is not None else None
+        if depth == 0:
+            # Level 1: the commitment IS into the investment, so it anchors
+            # every look-through above it.
+            node["effective_pct"] = o["pct"]
+            node["look_through"] = o["committed"]
+            node["look_through_balance"] = o["balance"]
+        else:
+            node["effective_pct"] = (parent_eff * share * 100.0
+                                     if share is not None else None)
+            node["look_through"] = (parent_lt * share
+                                    if share is not None and parent_lt is not None
+                                    else None)
+            node["look_through_balance"] = (
+                parent_lt_bal * share
+                if share is not None and parent_lt_bal is not None else None)
 
         if eid == TERMINAL_ENTITY:
             # Reported, with its waterfall status, but never expanded.
@@ -429,7 +472,11 @@ def _build_level(src: _Source, entity_id: str, depth: int,
             node["owners"] = []
             node["truncated_reason"] = "Already appears higher in this chain (circular ownership)."
         else:
-            node["owners"] = _build_level(src, eid, depth + 1, seen | {eid})
+            node["owners"] = _build_level(
+                src, eid, depth + 1, seen | {eid},
+                parent_eff=((node["effective_pct"] or 0.0) / 100.0),
+                parent_lt=node["look_through"],
+                parent_lt_bal=node["look_through_balance"])
             # NOTHING ABOVE IT MEANS IT IS THE TOP, NOT THAT SOMETHING IS
             # MISSING. Jim, Sep 15 2026: an entity with no owner above it is
             # the ultimate beneficial owner -- that record IS the owner. So it
@@ -506,6 +553,9 @@ def build_chain(investment_id: str, engine=None) -> dict:
         "portfolio": (deal or {}).get("portfolio"),
         "level": 0,
         "is_pe_investment": True,
+        "effective_pct": 100.0,
+        "look_through": sum(o["committed"] for o in owners),
+        "look_through_balance": None,
         "committed": sum(o["committed"] for o in owners),
         "pct": None,          # the root is not a share of anything
         "terminal": False,

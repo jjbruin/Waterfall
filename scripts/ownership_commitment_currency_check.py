@@ -273,6 +273,78 @@ try:
 except AttributeError as e:
     FAIL.append(f"the test fixture is missing an attribute _Source now has: {e}")
 
+# ── 9. LOOK-THROUGH: an upper-level commitment is not this deal's money ──
+# Jim, Sep 15 2026: OWPSC's commitment to PSC3 may be $64M and none of it is
+# its share of the $3M PPI27 put into 30BEAR -- the $64M is spread across
+# everything PSC3 holds. Printing it in a chain about one deal reads as $64M
+# sitting in that deal. `look_through` is the share OF THIS DEAL, the
+# percentages multiplied down, and `effective_pct` is the same as a percentage.
+import tempfile, os                                          # noqa: E402
+from sqlalchemy import create_engine                         # noqa: E402
+from flask_app.services.ownership_chain_service import build_chain  # noqa: E402
+
+_p = os.path.join(tempfile.gettempdir(), "own_lt_check.db")
+if os.path.exists(_p):
+    os.remove(_p)
+_e = create_engine("sqlite:///" + _p)
+pd.DataFrame([
+    (1, "30BEAR", "PPI27",    3_000_000, "2020-08-07", None),
+    (2, "30BEAR", "OPMCCORD", 2_000_000, "2020-08-07", None),
+    (3, "PPI27",  "PSC3",     6_000_000, "2020-01-01", None),
+    (4, "PPI27",  "OTHER",    2_000_000, "2020-01-01", None),
+    (5, "PSC3",   "OWPSC",   64_000_000, "2019-01-01", None),
+], columns=["CommitmentUID", "EntityID", "InvestorID", "Amount",
+            "StartDate", "EndDate"]).to_sql("commitments", _e, index=False)
+pd.DataFrame([("P0000001", "30BEAR", "30 Bearfoot", "")],
+             columns=["vcode", "InvestmentID", "Investment_Name",
+                      "Portfolio_Name"]).to_sql("deals", _e, index=False)
+pd.DataFrame([("X", "x", "Y")], columns=["ENTITYID", "NAME", "ACTIVE"]).to_sql(
+    "entities", _e, index=False)
+pd.DataFrame([("P0000001",)], columns=["vcode"]).to_sql("waterfalls", _e, index=False)
+# `accounting` is one of the five tables the service reads. Omitting it left a
+# stack trace in the output of a PASSING run, which is its own small defect: a
+# guardrail whose clean result looks like a failure stops being read.
+pd.DataFrame([("30BEAR", "PPI27", -1_000_000.0, "Contribution",
+               "Contribution: Investments")],
+             columns=["InvestmentID", "InvestorID", "Amt", "MajorType",
+                      "Typename"]).to_sql("accounting", _e, index=False)
+
+_ch = build_chain("30BEAR", engine=_e)
+_ppi = _ch["root"]["owners"][0]
+_psc3 = _ppi["owners"][0]
+_owpsc = _psc3["owners"][0]
+
+check(_ppi["entity_id"] == "PPI27" and _psc3["entity_id"] == "PSC3"
+      and _owpsc["entity_id"] == "OWPSC", "look-through fixture shape changed")
+
+# Level 1 anchors: its commitment really is into the investment.
+check(_ppi["look_through"] == 3_000_000,
+      "level 1 look-through is %r, expected its own 3,000,000" % _ppi["look_through"])
+check(abs(_ppi["effective_pct"] - 60.0) < 0.01,
+      "PPI27 effective share is %.2f%%, expected 60.00%%" % _ppi["effective_pct"])
+
+# 100% of PSC3 x 75% of PPI27 x 3,000,000
+check(_owpsc["committed"] == 64_000_000,
+      "the DIRECT commitment must still be reported unchanged")
+check(_owpsc["look_through"] == 2_250_000,
+      "OWPSC look-through is %r, expected 2,250,000 — the $64M into PSC3 is "
+      "not its share of this deal" % _owpsc["look_through"])
+check(abs(_owpsc["effective_pct"] - 45.0) < 0.01,
+      "OWPSC effective share is %.2f%%, expected 45.00%%" % _owpsc["effective_pct"])
+check(_owpsc["into_entity_id"] == "PSC3",
+      "the direct commitment must name the entity it went into")
+
+# The look-through is also the effective percentage of the deal's own total.
+_deal_total = _ch["root"]["look_through"]
+check(abs(_owpsc["look_through"] - _deal_total * _owpsc["effective_pct"] / 100.0) < 0.01,
+      "look-through dollars and effective percent disagree about the same deal")
+
+# Siblings at one level still sum to their parent's look-through.
+_sib = sum(o["look_through"] for o in _ppi["owners"])
+check(abs(_sib - _ppi["look_through"]) < 0.01,
+      "a level's look-through dollars (%s) do not sum to its parent's (%s)"
+      % (_sib, _ppi["look_through"]))
+
 if FAIL:
     print("FAIL")
     for m in FAIL:

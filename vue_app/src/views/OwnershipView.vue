@@ -36,6 +36,11 @@ interface Node {
   level: number
   committed: number
   balance: number | null
+  effective_pct: number | null
+  look_through: number | null
+  look_through_balance: number | null
+  into_entity_id?: string
+  into_name?: string
   ultimate_owner?: boolean
   pct: number | null
   pct_stated: number | null
@@ -465,24 +470,38 @@ watch([root, collapsed], () => nextTick(() => {
                   </div>
 
                   <div class="node-figs">
-                    <span class="amt">{{ fmtMoney(n.committed) }}</span>
-                    <span v-if="n.pct !== null" class="pct">{{ fmtPct(n.pct) }}</span>
+                    <span v-if="n.effective_pct !== null && i > 0" class="pct"
+                          :title="`Share of this deal, the ownership percentages multiplied down the chain`">
+                      {{ fmtPct(n.effective_pct) }}
+                      <em>of deal</em>
+                    </span>
+                    <span v-if="i > 1 && n.pct !== null" class="pct-par">
+                      {{ fmtPct(n.pct) }} of {{ n.into_entity_id }}
+                    </span>
                   </div>
                   <dl class="bal">
-                    <dt>{{ i === 0 ? 'committed in' : 'committed' }}</dt>
-                    <dd>{{ fmtMoney(n.committed) }}</dd>
-                    <!-- Only a commitment has a balance. The investment row's
-                         figure is the total committed INTO it, which is a sum of
-                         the column to its right, not a position of its own. -->
+                    <dt>{{ i === 0 ? 'committed in' : 'in this deal' }}</dt>
+                    <dd>{{ fmtMoney(i === 0 ? n.committed : n.look_through) }}</dd>
                     <template v-if="i > 0">
                       <dt>balance</dt>
-                      <dd :class="{ none: n.balance === null || n.balance === undefined,
-                                    neg: (n.balance ?? 0) < 0 }">
-                        {{ n.balance === null || n.balance === undefined
-                           ? 'no data' : fmtMoney(n.balance) }}
+                      <dd :class="{ none: n.look_through_balance === null
+                                          || n.look_through_balance === undefined,
+                                    neg: (n.look_through_balance ?? 0) < 0 }">
+                        {{ n.look_through_balance === null || n.look_through_balance === undefined
+                           ? 'no data' : fmtMoney(n.look_through_balance) }}
                       </dd>
                     </template>
                   </dl>
+
+                  <!-- The RAW commitment, shown only where it differs from the
+                       look-through — i.e. above the first level, where it is a
+                       commitment to a fund and not to this property. Jim's
+                       example: OWPSC's $64M into PSC3 is spread across
+                       everything PSC3 holds. -->
+                  <p v-if="i > 1 && n.committed !== n.look_through" class="direct">
+                    direct: {{ fmtMoney(n.committed) }} into {{ n.into_entity_id }}
+                    <span class="direct-note">— across all its holdings</span>
+                  </p>
 
                   <p v-if="n.since" class="since">
                     current since {{ n.since }}
@@ -707,7 +726,27 @@ h2 { margin: 0 0 4px; font-size: 20px; }
 
 .node-figs { display: flex; justify-content: flex-end; align-items: baseline; gap: 8px; padding-left: 20px; }
 .amt { display: none; }  /* the dl below carries it, labelled */
-.pct { font-size: 15px; font-weight: 700; color: #1d4e7e; font-variant-numeric: tabular-nums; }
+.pct {
+  font-size: 15px; font-weight: 700; color: #1d4e7e;
+  font-variant-numeric: tabular-nums;
+}
+.pct em {
+  font-style: normal; font-size: 9.5px; font-weight: 600; color: #7a8394;
+  letter-spacing: .05em; text-transform: uppercase; margin-left: 3px;
+}
+.pct-par {
+  font-size: 10.5px; color: #8a93a3; font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.node-figs { flex-wrap: wrap; row-gap: 2px; }
+
+/* The raw commitment, kept but visibly subordinate: it is the right answer to
+   a different question and must not be mistaken for this deal's number. */
+.direct {
+  margin: 4px 0 0 20px; font-size: 10.5px; color: #98a1ae;
+  font-variant-numeric: tabular-nums;
+}
+.direct-note { font-style: italic; }
 
 /* Committed vs balance. Two figures that are easy to confuse, so each is
    labelled and they line up on the decimal. */
