@@ -8,13 +8,43 @@ from flask import current_app
 log = logging.getLogger(__name__)
 
 
-def send_email(to: str, subject: str, html_body: str) -> bool:
-    """Send an email via SendGrid API. Returns True on success."""
+def _explain(status: int, body: str) -> str:
+    """Turn SendGrid's wording into something an admin can act on.
+
+    "Maximum credits exceeded" reads as "you have sent too much", and on
+    Sep 15 2026 that sent us looking at usage for an account that had sent
+    NOTHING: /v3/user/credits returned total 0, used 0, with the daily reset
+    stuck at 2026-08-01. The allowance itself was zero -- the free plan had
+    lapsed. The message has to say that, or the next person debugs the wrong
+    thing for an hour as well.
+    """
+    low = (body or "").lower()
+    if "maximum credits exceeded" in low:
+        return ("SendGrid reports no sending credits on the account. This is a "
+                "plan/billing issue at SendGrid, not a problem with the app or "
+                "the recipient — no email can be sent until the account has an "
+                "allowance again.")
+    if status in (401, 403):
+        return f"SendGrid rejected the API key ({status}). Check SENDGRID_API_KEY."
+    if status == 413:
+        return "The message was too large for SendGrid to accept."
+    detail = (body or "").strip()
+    return f"SendGrid returned {status}" + (f": {detail[:200]}" if detail else "")
+
+
+def send_email_result(to: str, subject: str, html_body: str) -> dict:
+    """Send via SendGrid and say WHY if it failed.
+
+    send_email() keeps its boolean contract for the callers that only branch
+    on success; anything that has to tell a human what went wrong uses this.
+    """
     api_key = current_app.config.get("SENDGRID_API_KEY", "")
     from_email = current_app.config.get("SENDGRID_FROM", "")
     if not api_key or not from_email:
         log.warning("SendGrid not configured — email to %s not sent: %s", to, subject)
-        return False
+        return {"ok": False, "status": None,
+                "reason": "Email is not configured on this deployment "
+                          "(SENDGRID_API_KEY / SENDGRID_FROM are not set)."}
 
     try:
         resp = requests.post(
@@ -33,14 +63,20 @@ def send_email(to: str, subject: str, html_body: str) -> bool:
         )
         if resp.status_code in (200, 202):
             log.info("Email sent to %s: %s", to, subject)
-            return True
-        else:
-            log.error("SendGrid error %s sending to %s: %s",
-                       resp.status_code, to, resp.text)
-            return False
+            return {"ok": True, "status": resp.status_code, "reason": None}
+        log.error("SendGrid error %s sending to %s: %s",
+                  resp.status_code, to, resp.text)
+        return {"ok": False, "status": resp.status_code,
+                "reason": _explain(resp.status_code, resp.text)}
     except Exception as e:
         log.error("Failed to send email to %s: %s", to, e)
-        return False
+        return {"ok": False, "status": None,
+                "reason": f"Could not reach SendGrid: {str(e)[:200]}"}
+
+
+def send_email(to: str, subject: str, html_body: str) -> bool:
+    """Send an email via SendGrid API. Returns True on success."""
+    return send_email_result(to, subject, html_body)["ok"]
 
 
 def send_password_reset_email(email: str, username: str, reset_token: str) -> bool:
@@ -73,8 +109,13 @@ def send_password_reset_email(email: str, username: str, reset_token: str) -> bo
     return send_email(email, "Waterfall XIRR — Password Reset", html)
 
 
-def send_welcome_email(email: str, username: str, temp_password: str) -> bool:
-    """Send a welcome email with login credentials."""
+def send_welcome_email(email: str, username: str, temp_password: str) -> dict:
+    """Send a welcome email with login credentials.
+
+    Returns the detailed result, not a bare bool: an admin who has just
+    created a user needs to be told WHY the mail did not go and that the
+    account works anyway.
+    """
     app_url = current_app.config.get("APP_URL", "")
     login_link = f"{app_url}/login"
 
@@ -114,7 +155,8 @@ def send_welcome_email(email: str, username: str, temp_password: str) -> bool:
         </p>
     </div>
     """
-    return send_email(email, "Welcome to Waterfall XIRR — Your Account Is Ready", html)
+    return send_email_result(
+        email, "Welcome to Waterfall XIRR — Your Account Is Ready", html)
 
 
 def send_password_changed_email(email: str, username: str) -> bool:

@@ -305,13 +305,22 @@ def create_new_user():
         return jsonify({"error": f"Username '{username}' already exists"}), 409
 
     email_sent = False
+    email_reason = None
     if send_welcome and email:
-        email_sent = send_welcome_email(email, username, password)
+        result = send_welcome_email(email, username, password)
+        email_sent = bool(result.get("ok"))
+        email_reason = result.get("reason")
 
+    # The user exists either way — 201 is correct, and the message says what
+    # to do when the notification did not go rather than implying the whole
+    # thing failed.
     msg = f"User '{username}' created"
     if send_welcome and email:
-        msg += " — welcome email sent" if email_sent else " — welcome email failed (check SMTP config)"
-    return jsonify({"user": user, "message": msg, "email_sent": email_sent}), 201
+        msg += (" — welcome email sent" if email_sent
+                else f" — but the welcome email could not be sent. {email_reason or ''} "
+                     f"Give them the username and password directly.")
+    return jsonify({"user": user, "message": msg, "email_sent": email_sent,
+                    "email_reason": email_reason}), 201
 
 
 @auth_bp.route("/users/<int:user_id>/role", methods=["PUT"])
@@ -363,11 +372,26 @@ def send_welcome(user_id):
             {"id": user_id},
         )
 
-    sent = send_welcome_email(email, user["username"], temp_pw)
-    if sent:
+    result = send_welcome_email(email, user["username"], temp_pw)
+    if result.get("ok"):
         return jsonify({"message": f"Welcome email sent to {email}"})
-    else:
-        return jsonify({"error": "Password reset but email failed to send (check SMTP config)"}), 500
+
+    # THE ACCOUNT IS USABLE EVEN WHEN THE EMAIL IS NOT SENT. The password was
+    # reset above, before the send was attempted, so the user can sign in
+    # right now — say so, and say why the mail failed. Returning a bare 500
+    # made an admin believe the whole invite had failed when only the
+    # notification had (Sep 15 2026), and the real reason sat in a log.
+    return jsonify({
+        "error": f"The account is ready but the welcome email could not be sent. "
+                 f"{result.get('reason', '')}",
+        "email_failed": True,
+        "reason": result.get("reason"),
+        "username": user["username"],
+        "temp_password": temp_pw,
+        "message": f"Give {user['username']} their username and the temporary "
+                   f"password '{temp_pw}' directly — they will be asked to "
+                   f"change it at first login.",
+    }), 502
 
 
 @auth_bp.route("/users/<int:user_id>/email", methods=["PUT"])

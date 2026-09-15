@@ -100,7 +100,17 @@ async function sendWelcome(userId: number, username: string) {
     dataStore.addToast(res.data.message, 'success')
     await auth.loadUsers()
   } catch (e: any) {
-    dataStore.addToast(e.response?.data?.error || 'Failed to send welcome email', 'error')
+    // A failed EMAIL is not a failed invite: the password is reset before the
+    // send is attempted, so the account works. Say that, and give the admin
+    // the credentials to pass on, instead of a bare "failed to send".
+    const d = e.response?.data
+    if (d?.email_failed) {
+      dataStore.addToast(
+        `${d.error} ${d.message}`.trim(), 'error')
+      await auth.loadUsers()
+    } else {
+      dataStore.addToast(d?.error || 'Failed to send welcome email', 'error')
+    }
   }
 }
 
