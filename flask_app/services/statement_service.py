@@ -759,3 +759,172 @@ def build_schedule_of_investments(entityid: str, period_end: str,
         "ties": abs(total_fv - gl_total) < 0.01,
         "difference": total_fv - gl_total,
     }
+
+
+# ── Consolidated mapping ─────────────────────────────────────────────────
+# seed_mapping_from_names() gives every account its own caption, which on the
+# real chart produced 361 statement lines: a balance sheet with 163 asset
+# lines is a trial balance with a title. A presentable statement needs the
+# accounts grouped, and the grouping should speak the vocabulary the reviewers
+# already use -- so the 56 lines accounting tags in the PPI Eastchase package
+# are the target, not captions invented here.
+#
+# Two passes:
+#   1. ACCOUNTING'S OWN TAG wins wherever it exists (192 accounts).
+#   2. Everything else is routed INTO THE SAME 56 LINES by name. The keywords
+#      below are drawn from those line names; nothing coins a new caption.
+#
+# WHAT WILL NOT ROUTE GOES TO "Other ...", VISIBLY. Every real statement has
+# an Other assets / Other expenses / Other income line and accounting's own
+# mapping uses all three -- 8, 17 and 6 accounts. An account landing there is
+# not hidden: consolidated_mapping() reports how many did and which, so the
+# CFO can pull the material ones out into lines of their own.
+
+# keyword -> canonical line. Order matters: the first match wins, so the more
+# specific phrases come first.
+_ROUTES = [
+    # assets
+    ("restricted cash", "Restricted cash"),
+    ("cash", "Cash and cash equivalents"),
+    ("due from manager", "Due from Manager"),
+    ("due from", "Due from affiliates"),
+    ("intercompany", "Due from affiliates"),
+    ("subscription receivable", "Subscription receivable"),
+    ("management fee receivable", "Management fee receivable"),
+    ("interest receivable", "Interest receivable"),
+    ("income receivable", "Income receivable"),
+    ("note receivable", "Note receivable"),
+    ("deal cost receivable", "Deal cost receivable"),
+    ("gst", "GST/HST receivable"),
+    ("receivable", "Accounts receivable"),
+    ("prepaid contribution", "Prepaid contribution"),
+    ("prepaid", "Prepaid expenses"),
+    ("investment: unrealized", "Investment unrealized gain/loss"),
+    ("investment", "Investment cost"),
+    # liabilities
+    ("due to manager", "Due to manager"),
+    ("due to", "Due to manager"),
+    ("accrued", "Accrued expenses"),
+    ("distribution payable", "Distribution payable"),
+    ("interest payable", "Interest payable"),
+    ("income tax payable", "Income tax payable"),
+    ("tax payable", "Income tax payable"),
+    ("note payable", "Note payable"),
+    ("line of credit", "Line of credit"),
+    ("payable", "Accounts payable"),
+    # members' capital
+    ("contribution", "Capital contributions"),
+    ("distribution", "Capital distributions"),
+    ("retained earnings", "Retained earnings"),
+    ("equity pickup", "Retained earnings"),
+    ("member", "Capital contributions"),
+    # income
+    ("management fee income", "Management fee income"),
+    ("transaction fee", "Transaction fee income"),
+    ("carried interest", "Carried interest income"),
+    ("kicker", "Kicker income"),
+    ("dividend", "Dividend income"),
+    ("interest income", "Interest income"),
+    ("investment income", "Investment income"),
+    ("unrealized", "Unrealized Gain/Loss"),
+    ("realized", "Realized Gain/Loss"),
+    # expenses
+    ("payroll", "Payroll and related expenses"),
+    ("salary", "Payroll and related expenses"),
+    ("professional", "Professional fees"),
+    ("legal", "Professional fees"),
+    ("audit", "Professional fees"),
+    ("accounting fee", "Professional fees"),
+    ("advisory", "Advisory fees"),
+    ("monitoring", "Monitoring fees"),
+    ("service fee", "Service fees"),
+    ("financing fee", "Financing fees"),
+    ("management fee", "Management fees"),
+    ("organizational", "Organizational costs"),
+    ("syndication", "Syndication costs"),
+    ("amortization", "Amortization expense"),
+    ("depreciation", "Depreciation expense"),
+    ("insurance", "Insurance expense"),
+    ("interest expense", "Interest expense"),
+    ("acquisition", "Acquisition expense"),
+    ("broken deal", "Broken deal expense"),
+    ("tax", "Tax expense"),
+]
+
+_OTHER_BY_SECTION = {
+    "Assets": "Other assets",
+    "Liabilities": "Other assets",          # replaced below by type check
+    "Members' Capital": "Capital contributions",
+    "Income": "Other income",
+    "Expenses": "Other expenses",
+}
+
+
+def _route(name: str) -> Optional[str]:
+    low = (name or "").strip().lower()
+    for kw, line in _ROUTES:
+        if kw in low:
+            return line
+    return None
+
+
+def consolidated_mapping(engine=None) -> List[dict]:
+    """Every account mapped to one of accounting's own 56 statement lines.
+
+    Returns the proposal; nothing is written. Each row says where its line
+    came from -- `accounting` for the 192 tagged in the example package,
+    `routed` for a name match into the same vocabulary, `other` for the ones
+    that fell to an Other line and are worth a second look.
+    """
+    from flask_app.services import fs_line_seed as seed
+
+    engine = engine or get_engine()
+    types = account_types(engine)
+    out: List[dict] = []
+    for acct, meta in sorted(types.items()):
+        t = meta["type"]
+        if t not in TYPE_STATEMENT:
+            continue          # L and M are roll-up headers, not statement lines
+        name = meta["name"]
+
+        line = seed.ACCOUNT_LINE.get(acct)
+        origin = "accounting" if line else None
+        if not line:
+            line = _route(name)
+            origin = "routed" if line else None
+
+        if line:
+            section = seed.LINE_SECTION.get(line)
+        else:
+            section = None
+
+        # A routed line has to belong to the statement MRI says the account is
+        # on. A "Management fees" expense caption on a balance-sheet account
+        # would be worse than no caption at all.
+        stmt = TYPE_STATEMENT[t]
+        valid = (BALANCE_SHEET_SECTIONS if stmt == "balance_sheet" else INCOME_SECTIONS)
+        if section not in valid:
+            section, line, origin = None, None, None
+
+        if not line:
+            # Fall back to the Other line for the statement this account is on.
+            if stmt == "income_statement":
+                low = name.lower()
+                section = ("Expenses" if any(w in low for w in
+                                             ("expense", "fee", "cost", "tax"))
+                           else "Income")
+                line = "Other expenses" if section == "Expenses" else "Other income"
+            else:
+                low = name.lower()
+                if any(w in low for w in ("payable", "accrued", "due to", "liabilit")):
+                    section, line = "Liabilities", "Accrued expenses"
+                elif any(w in low for w in ("capital", "member", "equity",
+                                            "retained", "distribution")):
+                    section, line = "Members' Capital", "Capital contributions"
+                else:
+                    section, line = "Assets", "Other assets"
+            origin = "other"
+
+        out.append({"acctnum": acct, "acctname": name, "gacc_type": t,
+                    "statement": section, "fs_line": line, "origin": origin})
+    return out

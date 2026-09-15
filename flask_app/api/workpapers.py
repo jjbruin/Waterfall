@@ -353,6 +353,24 @@ def cash_flow():
         return _fail(e, "cash_flow", 500)
 
 
+@workpapers_bp.route("/fs-map/consolidated", methods=["GET"])
+@login_required
+def consolidated_mapping():
+    """Every account mapped into accounting's own 56 statement lines."""
+    from flask_app.services import statement_service as ss
+    import collections
+    try:
+        rows = ss.consolidated_mapping()
+        return jsonify({
+            "mapping": rows,
+            "line_count": len({r["fs_line"] for r in rows}),
+            "by_origin": dict(collections.Counter(r["origin"] for r in rows)),
+            "by_section": dict(collections.Counter(r["statement"] for r in rows)),
+        })
+    except Exception as e:
+        return _fail(e, "consolidated_mapping", 500)
+
+
 @workpapers_bp.route("/fs-map/suggest", methods=["GET"])
 @login_required
 def suggest_mapping():
