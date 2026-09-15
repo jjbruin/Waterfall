@@ -248,6 +248,18 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v466` = `be27c1a` (an upper-level balance breakdown describes the owner's whole
+    position in the entity below, not this deal — dropped above level 1 and replaced
+    by the derivation)
+  - `v465` = `d693e24` (the commitment's date was sitting directly above the balance
+    and being read as the balance's as-of date; no date has ever touched that figure)
+  - `v464` = `89c77a9` (the balance shows its working — a breakdown by Typename, and
+    the `Capital` flag's answer for the same rows compared but never used)
+  - `v463` = `8a7bdca` (look-through: an upper-level commitment is not this deal's
+    money — OWPSC's $64M into PSC3 is not its share of the $3M in 30BEAR. Also the
+    MRI `Connection Timeout` fix, and Charlene's `ac68ffc`)
+  - `v462` = `c014922` (ownership connector arrows, capital balances, beneficial
+    owners, bounded scroll)
   - `v461` = `e62cc0b` (also carried Charlene's `836ca5f`, reviewed before building —
     a footing fix, not a symptom repair: $45.4M of Evergreen Plaza debt sat inside
     Portfolio Totals under no subtotal)

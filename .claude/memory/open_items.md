@@ -559,6 +559,80 @@ too tight.
 Owner: **Jim** — the check is reading a few deep chains against MRI. Nobody should set up a
 waterfall from this screen until that has happened once.
 
+**Updated through `v466` (Sep 15 2026 evening).** The tree reads real data now; getting
+there took four deploys and the sequence is the lesson:
+
+- `v461` — the table was loading 601 rows and the open-commitment test discarded every
+  one, because it matched a RENDERED null against a list of spellings and `pd.NA` renders
+  as `<NA>`. PostgreSQL produces pd.NA where SQLite produces None. See `deploy_history.md`
+  under v460 for the full post-mortem; the short version is that two fixes shipped on
+  reasoning first and neither was the bug.
+- `v462` — connector arrows (measured from the DOM, since the data does not know how the
+  browser laid out the cards), capital balances, beneficial owners, bounded scroll.
+- `v463` — **look-through**. An upper-level commitment is not this deal's money: OWPSC's
+  $64M into PSC3 is not its share of the $3M PPI27 put into 30BEAR. Every node carries
+  `look_through` and `effective_pct`, the percentages multiplied down from level 1. The
+  direct figure is kept, subordinate, naming the entity it went into.
+- `v466` — the same defect one layer down, which `v463` missed: the balance BREAKDOWN
+  still described the owner's whole relationship with the entity below. Dropped above
+  level 1 and replaced by the derivation.
+
+**The repeating shape, worth recognising before the next screen is built**: a figure that
+is correct about the relationship it was computed from, displayed in a context asking a
+different question. It appeared three times here — commitment dollars, balance dollars,
+balance breakdown — and each time it looked right and read wrong.
+
+Still unexercised: the OWPSC stop, chains deeper than three levels, the cycle guard, and
+performance at production size.
+
+### 3.14 The MRI SQL Server password is in the public repo — ROTATE
+**Found Sep 15 2026.** `flask_app/services/mri_service.py` hardcodes the MRI SQL Server
+password in plaintext, with the username `PSCVPN` and both server IPs. Committed
+**2026-05-05** in `08df897`, on `origin/main`, **public, four months**.
+
+This is the most serious of the three credential exposures found this session, by a
+distance. The others were a dev database (§3.10) and a dead SendGrid account (§3.12).
+This is read access to **MRI itself** — accounting, commitments, relationships, ISBS,
+valuations, loans, occupancy, tenants. The source of record.
+
+The VPN requirement limits reachability. It is not access control, and a credential in a
+public repo must be assumed compromised.
+
+Owner: **Jim.** Order matters:
+
+1. **Rotate `PSCVPN`** with whoever administers MRI.
+2. **Then** move it to `MRI_USERNAME` / `MRI_PASSWORD` env vars with a container-app
+   secret ref, matching `db-url` and `acs-connection-string`. Moving it first would only
+   relocate a credential that is already compromised.
+3. History cannot be scrubbed without a rewrite, so the old value stays exposed
+   regardless. Rotation is the only real fix.
+
+**All three exposures got through the same gap**: `scripts/hooks/pre-commit` blocks
+`://user:secret@` URLs but not a bare `NAME = "value"` assignment. Widening it is cheap
+and would have caught every one.
+
+### 3.15 The $1,347,797 that should be zero — 30BEAR / PPI27
+**Open Sep 15 2026.** Jim: 30BEAR had its equity fully returned before the sale, and the
+ownership tree shows PPI27 with a capital balance of $1,347,797.
+
+**Not reproducible locally**: the same rows net to EXACTLY 0.00 under both the
+`reports_service` classifier this column borrows AND the `Capital` flag — the two agree
+to the cent on that pair here. Whatever produces $1,347,797 is in rows this machine does
+not have.
+
+`v464` made the figure auditable rather than guessing again: clicking a level-1 balance
+opens a breakdown by Typename with each line's effect on capital outstanding, and the
+card compares (never uses) what the `Capital` flag gives for the same rows.
+
+**The hypothesis to test first, from BRECO's own breakdown**: `Contribution: Partnership
+Expenses` is flagged `Capital=Y` and matched by `"contrib" in MajorType`, but it is not
+equity and never returns as `Return of Capital`. It would leave exactly this kind of
+residue on a deal whose equity came back in full. If that is what the panel shows, this
+is **§1.7** (`"contrib" in MajorType` is over-broad) surfacing on a specific deal — not a
+new defect, and the fix belongs upstream in the shared rule, not in this column.
+
+Owner: **Jim** to read the breakdown; then whoever settles §1.7 / §2.3.
+
 ---
 
 ## 6. Accounting workpapers — the statement engine (Sep 14 2026)

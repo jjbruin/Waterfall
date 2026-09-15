@@ -1,4 +1,52 @@
-# Session Handoff — through Sep 15 2026 (v455 live)
+# Session Handoff — through Sep 15 2026 (v466 live)
+
+## Sep 15 2026, evening — THREE CREDENTIALS, and the ownership tree
+
+**`v466` = `be27c1a`.** Read `open_items.md` §3.14 before anything else.
+
+**THREE PLAINTEXT CREDENTIALS SURFACED IN ONE DAY, all through the same gap.**
+The pre-commit hook blocks `://user:secret@` URLs and not a bare
+`NAME = "value"` assignment, which is how every one of them got in.
+
+1. **The MRI SQL Server password** (§3.14) — `mri_service.py`, public on
+   `origin/main` since May 5 2026. Read access to the source of record. **The
+   urgent one.** Rotate, THEN move to a secret ref; the other order just
+   relocates a compromised value.
+2. **The SendGrid API key** (§3.12) — a plaintext env var on the container app,
+   printed into a session transcript by my own `--query value`. Dead account,
+   low practical risk, still a live credential.
+3. **The wfadmin Postgres password** (§3.10) — Charlene reported the cleanup as
+   incomplete; her specific finding was a FALSE POSITIVE (the literal
+   placeholder `<password>`) but the real credential is in public history from
+   April and whether the Sep 11 rotation covered it is still unanswered. The
+   hash check that settles it without exposing anything is in §3.10.
+
+**The MRI refresh was broken by one clause, not by the VPN.**
+`Connection Timeout=30;` is an ADO/OLE DB keyword; ODBC Driver 18 rejects the
+whole string with 08001 before touching the network. Every MRI query has failed
+identically since May 5 whether or not the tunnel was up — and 08001 is the
+same SQLSTATE a dead VPN produces, so it read as connectivity every time.
+Diagnosed by varying one clause at a time against the real driver. Fixed in
+`v463`; the VPN is separately down, so this removes one of two reasons.
+
+**The ownership tree** (§3.13) went from showing nothing to working, across four
+deploys. The defect that reached production was a rendered-string null test that
+missed `pd.NA` — PostgreSQL's flavour, which no three-row SQLite fixture can
+produce. `deploy_history.md` under v460 has the post-mortem and the three
+lessons; the most transferable is that when you cannot reproduce, instrumenting
+the running system beat three rounds of hypothesis.
+
+**One shape repeated three times** and is worth recognising early next time: a
+figure correct about the relationship it was computed from, shown in a context
+asking a different question. Commitment dollars, balance dollars, and the
+balance breakdown each looked right and read wrong.
+
+**Open and unanswered**: the $1,347,797 on 30BEAR/PPI27 (§3.15), whether "every
+sold deal" means 4 or 27 (`v459` note in CLAUDE.md), and Charlene's three
+guardrails that import an uncommitted `live_api` and therefore run for nobody.
+
+---
+
 
 ## Sep 15 2026 — email provider, app roles, ownership. LIVE at `v457`.
 
