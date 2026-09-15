@@ -1231,16 +1231,73 @@ def assemble_loan(investor_code: str, quarter: str, *,
         return row
 
     groups: dict[str, list] = {}
-    for group, items in (resolved.get("groups") or {}).items():
-        groups[group] = [build_row(e["vcode"], e["name"], resolve_strategy(e)[0],
-                                   sold=bool(e.get("kept_despite_sold")))
-                         for e in items]
 
-    flagged_rows = []
+    # AN UNRESOLVED OWNERSHIP % DOES NOT MOVE THE DEAL — the same rule the
+    # Financial subtab adopted in efb377d, applied here Sep 15 2026.
+    #
+    # Deals whose look-through does not resolve were printed under a separate
+    # "Ownership % unavailable" heading at the foot of the table. As on
+    # Operating, `scaled` is False here: Debt, LTV, DSCR and Debt Yield are
+    # facility- and property-level figures that do not depend on ownership, so
+    # the deal was moved out of its fund block over a percentage the page never
+    # applies.
+    #
+    # THE FOOTING COST WAS THE LARGEST OF THE THREE SUBTABS. A flagged row was
+    # excluded from `groups`, and therefore from every subtotal, while still
+    # counted in `total` below. Measured live at 26Q2: Evergreen Plaza's
+    # $45,394,000 of debt was inside Portfolio Totals (1,368,324,063.62) while
+    # the subtotals summed to 1,322,930,063.62 — a reader adding up the blocks
+    # was $45.4M short of the page's own total, with no row to explain it.
+    #
+    # `derived_group` comes from portfolio_snapshot_service, resolved through
+    # the same `_group_for` rule every other deal goes through. Only the row's
+    # POSITION changes; no metric is recomputed and nothing is fabricated.
+    unresolved_by_group: dict[str, list] = {}
+    unseated: list = []
     for f in (resolved.get("flagged") or []):
+        g = f.get("derived_group")
+        if g:
+            unresolved_by_group.setdefault(g, []).append(f)
+        else:
+            # No derivable first hop — kept in the old segregated list rather
+            # than dropped or guessed at, so it surfaces instead of vanishing.
+            unseated.append(f)
+
+    def _ownership_flags(entry: dict) -> list:
+        return [f"ownership {entry.get('reason', 'unavailable')}"]
+
+    def _seated(entry: dict):
+        row = build_row(entry["vcode"], entry["name"], resolve_strategy(entry)[0],
+                        sold=bool(entry.get("kept_despite_sold")),
+                        extra_flags=(_ownership_flags(entry)
+                                     if entry.get("derived_group") else None))
+        if entry.get("derived_group"):
+            # Marks WHY the row carries a flag, without `ownership_flagged`,
+            # which means "segregated" to every existing consumer.
+            row["ownership_unresolved"] = True
+        return row
+
+    for group, items in (resolved.get("groups") or {}).items():
+        # Same ordering the resolver uses inside a block, applied to the merged
+        # list so a seated row lands in its alphabetical place, not at the end.
+        entries = sorted(list(items) + unresolved_by_group.pop(group, []),
+                         key=lambda e: str(e.get("name") or "").lower())
+        groups[group] = [_seated(e) for e in entries]
+
+    # A block whose ONLY members are unresolved deals is still printed. No such
+    # block exists at 26Q2, but without this a fund whose entire set breaks
+    # would vanish from the page — the one failure this change must not add.
+    for group in list(unresolved_by_group):
+        entries = sorted(unresolved_by_group.pop(group),
+                         key=lambda e: str(e.get("name") or "").lower())
+        groups[group] = [_seated(e) for e in entries]
+
+    # Only a deal with no derivable group is left segregated now.
+    flagged_rows = []
+    for f in unseated:
         row = build_row(f["vcode"], f["name"], resolve_strategy(f)[0],
                         sold=bool(f.get("kept_despite_sold")),
-                        extra_flags=[f"ownership {f.get('reason', 'unavailable')}"])
+                        extra_flags=_ownership_flags(f))
         row["ownership_flagged"] = True
         flagged_rows.append(row)
 

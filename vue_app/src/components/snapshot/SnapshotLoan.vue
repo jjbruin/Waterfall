@@ -137,9 +137,15 @@ const allRows = computed(() => {
   for (const [g, rows] of Object.entries(groups.value)) {
     out.push({ group: g, rows: rows || [], subtotal: subtotals.value[g] || null })
   }
+  // A deal whose ownership % does not resolve now sits in its own fund block
+  // above, carrying the reason as a flag tooltip on its name — the backend
+  // seats it via `derived_group`. This block is what remains for a deal the
+  // backend could not place at all (no derivable first hop), so such a deal
+  // still appears instead of vanishing. Nothing renders here at 26Q2.
   if (flaggedRows.value.length) {
     out.push({
-      group: 'Ownership % unavailable', rows: flaggedRows.value, subtotal: null,
+      group: 'Ownership % unavailable — group could not be derived',
+      rows: flaggedRows.value, subtotal: null,
     })
   }
   return out
