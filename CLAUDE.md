@@ -241,6 +241,7 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v454` = `c0a53f2`
   - `v453` = `5274e83`
   - `v452` = `5323de3`
   - `v451` = `041827b`
