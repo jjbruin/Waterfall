@@ -39,6 +39,7 @@ interface Node {
   pct_stated: number | null
   pct_disagrees: boolean
   commitment_count?: number
+  since?: string | null
   has_waterfall: boolean
   step_count: number
   waterfall_code: string
@@ -360,6 +361,10 @@ onMounted(loadInvestments)
                     <span v-if="n.pct !== null" class="pct">{{ fmtPct(n.pct) }}</span>
                   </div>
 
+                  <p v-if="n.since" class="since">
+                    current since {{ n.since }}
+                  </p>
+
                   <p v-if="n.pct_disagrees" class="disagree">
                     Stored {{ fmtPct(n.pct_stated) }} — likely a missing commitment row
                   </p>
@@ -539,6 +544,8 @@ h2 { margin: 0 0 4px; font-size: 20px; }
 .node-figs { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding-left: 20px; }
 .amt { font-size: 13px; font-weight: 600; color: #223; font-variant-numeric: tabular-nums; }
 .pct { font-size: 13px; font-weight: 700; color: #1d4e7e; font-variant-numeric: tabular-nums; }
+
+.since { margin: 0 0 0 20px; font-size: 10.5px; color: #99a; }
 
 .disagree {
   margin: 0 0 0 20px; font-size: 11px; color: #a35f00;

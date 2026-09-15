@@ -84,7 +84,7 @@ class _Source:
                     self.com[c] = self.com[c].map(_norm)
             self.com["Amount"] = pd.to_numeric(
                 self.com.get("Amount"), errors="coerce").fillna(0.0)
-            self.com = self._open_only(self.com)
+            self.com, self.superseded_rows = self._current_only(self.com)
 
         # Entity id -> display name.
         self.names: Dict[str, str] = {}
@@ -133,19 +133,62 @@ class _Source:
         return None
 
     @staticmethod
-    def _open_only(com: pd.DataFrame) -> pd.DataFrame:
-        """Drop commitments that have already closed.
+    def _current_only(com: pd.DataFrame):
+        """Reduce the commitment history to the CURRENT commitment per pair.
 
-        A closed commitment is history, not ownership -- leaving it in would
-        both dilute the live owners and make the level's total committed
-        dollars disagree with the balance sheet. Rows with no EndDate are open,
-        which is the overwhelming majority.
+        COMMITMENTS ARE AN AMENDMENT HISTORY, NOT A LEDGER OF ADDITIONS. When a
+        commitment changes, the old row is closed with an EndDate and a new row
+        opens with a later StartDate. So the current commitment of an investor
+        into an entity is the amount on **the most recent StartDate that has no
+        EndDate** -- one row, not a total. (Jim, Sep 15 2026, reading the
+        deployed tree against MRI.)
+
+        The first version of this summed every row that had not yet ended,
+        which is wrong in both directions at once: an amended commitment was
+        counted once per amendment, inflating that investor, and because every
+        share is that investor's amount over the level's total, EVERY OTHER
+        owner at the level was correspondingly understated. The level still
+        summed to 100%, so nothing looked broken -- the same blind spot the
+        CapitalPercent cross-check exists for.
+
+        It also treated a row with a FUTURE EndDate as open. A dated end is a
+        dated end; the rule is "no ending date", not "not ended yet".
+
+        Rows sharing the same latest StartDate are summed, since two genuine
+        co-equal commitments starting the same day are one position. Returns
+        the reduced frame and the number of rows it set aside, so the caller
+        can say how much history was considered rather than silently dropping
+        it.
         """
-        if "EndDate" not in com.columns:
-            return com
-        end = pd.to_datetime(com["EndDate"], errors="coerce")
-        today = pd.Timestamp.today().normalize()
-        return com[end.isna() | (end > today)].copy()
+        if com.empty or "EntityID" not in com.columns:
+            return com, 0
+        before = len(com)
+
+        if "EndDate" in com.columns:
+            end = pd.to_datetime(com["EndDate"], errors="coerce")
+            # An unparseable EndDate is NOT treated as absent: it is a value
+            # somebody entered, and guessing it away would resurrect a closed
+            # commitment. Only a genuinely empty cell counts as open.
+            raw = com["EndDate"].astype(str).str.strip().str.lower()
+            blank = raw.isin(("", "none", "nan", "nat", "null"))
+            com = com[end.isna() & blank].copy()
+
+        if com.empty:
+            return com, before
+
+        if "StartDate" in com.columns:
+            com["_start"] = pd.to_datetime(com["StartDate"], errors="coerce")
+            # A row with no usable StartDate cannot lose a recency contest it
+            # was never in, so it sorts last -- but it still counts if it is
+            # the only row for the pair.
+            com["_rank"] = com["_start"].fillna(pd.Timestamp.min)
+            latest = com.groupby(["EntityID", "InvestorID"])["_rank"].transform("max")
+            com = com[com["_rank"] == latest].copy()
+            com.drop(columns=["_rank"], inplace=True)
+        else:
+            com["_start"] = pd.NaT
+
+        return com, before - len(com)
 
     def display_name(self, eid: str) -> str:
         """Best available name, never blank -- the id is the last resort."""
@@ -209,6 +252,15 @@ def _owners_of(src: _Source, entity_id: str) -> List[dict]:
         disagrees = (stated is not None and derived is not None
                      and abs(stated - derived) > 0.5)
 
+        # The date the current commitment took effect. Shown because the
+        # figure is "the amount on the latest open StartDate" -- without the
+        # date, a reader cannot tell which amendment they are looking at.
+        since = None
+        if "_start" in grp.columns:
+            s = grp["_start"].max()
+            if pd.notna(s):
+                since = s.date().isoformat()
+
         owners.append({
             "entity_id": investor_id,
             "name": src.display_name(investor_id),
@@ -217,6 +269,7 @@ def _owners_of(src: _Source, entity_id: str) -> List[dict]:
             "pct_stated": stated,
             "pct_disagrees": disagrees,
             "commitment_count": int(len(grp)),
+            "since": since,
         })
     owners.sort(key=lambda o: o["committed"], reverse=True)
     return owners
@@ -370,6 +423,7 @@ def _health(src: _Source, iid: str, owners: List[dict]) -> dict:
             f"on this split.")
     return {
         "commitment_rows": int(len(src.com)),
+        "superseded_rows": int(getattr(src, "superseded_rows", 0)),
         "entities_named": len(src.names),
         "disagreement_count": len(bad),
         "notes": notes,
