@@ -1,5 +1,44 @@
 # Session Handoff — through Sep 15 2026 (v455 live)
 
+## Sep 15 2026 (morning) — email provider, app roles, credential re-check
+**Two commits on main, NEITHER DEPLOYED.** `v455` is still live.
+
+  - `1e0ebad`  CFO / accounting manager / accountant roles + a real privilege hierarchy
+  - `b72ea9b`  send through Azure Communication Services when configured
+
+**Roles.** `role_required()` matched role strings exactly while the comment above
+`ROLES` claimed a hierarchy. That was harmless for viewer/analyst/admin — for those
+three, exact matching and a hierarchy agree — and would have stopped being harmless
+the moment a fourth role existed, since 104 endpoints name only `admin`/`analyst`.
+The three accounting roles sit at **analyst** level (Jim's call: every analytical and
+workpaper screen, but no user management, MRI refresh or CSV import). `WP_ROLE_FOR_LOGIN`
+lets a `cfo` login approve as CFO without a duplicate `wp_roles` row. Guardrail
+`scripts/role_hierarchy_check.py` fails 6 assertions against the previous commit.
+
+**Worth remembering from that change**: the first version computed its threshold with
+`min(role_level(r) for r in allowed_roles)`, and `role_level()` returns 0 for unknown
+names — so a decorator typo (`role_required("Admin")`) would have dropped the bar to 0
+and admitted **a viewer to an admin-only endpoint**. The exact-match code it replaced
+failed *closed* on that same typo. Verified by simulation, not reasoning, before the fix.
+A hierarchy that turns a harmless typo into a silent auth bypass is worse than the
+problem it solves — the guardrail now covers it.
+
+**Email.** See `open_items.md` §3.12. Decision made (ACS, not Resend/Brevo), code
+committed, **provisioning not started**. Runbook, including the four DNS records and
+why they must go on a subdomain rather than the root:
+<https://claude.ai/artifact/MZd8VHR5zgAFtue9yLKBDA>
+
+**Charlene's credential report was a false positive** — `azure-complete-setup.sh:40` is
+the literal placeholder `<password>`, not a credential. `open_items.md` §3.10 has the
+proof and, more usefully, the part that IS still open: whether the Sep 11 rotation
+actually changed the `wfadmin` password, with a hash check Jim can run without exposing
+the value. **Do not re-raise the setup-script finding.**
+
+**Not verified**: nothing in either commit has been exercised on Azure. The roles change
+in particular wants a real login per new role before anyone is assigned one — Jim has
+admin access and offered; it was not used this session.
+
+
 ## Latest: `v451`–`v455` (Sep 14–15 2026) — ACCOUNTING WORKPAPERS
 
 A new section of the app, built across two sessions. **Read
@@ -42,7 +81,9 @@ auditor is shown elsewhere, because there is no second implementation.
 3. **SendGrid's free plan lapsed** — all outbound mail has failed since ~Aug 1.
    `/v3/user/credits` returns `total: 0, used: 0` with the reset frozen at
    2026-08-01. `v451` made the failure legible (the invite still creates a
-   working account; the email is what fails) but the account fix is Jim's.
+   working account; the email is what fails). **Resolved in direction on Sep 15:
+   moving to Azure Communication Services** (`b72ea9b`) — see the Sep 15 section
+   below and `open_items.md` §3.12. Code is committed and inert until provisioned.
 
 **Verified how**: both guardrails run clean
 (`scripts/statement_presentation_check.py`,

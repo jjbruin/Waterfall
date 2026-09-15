@@ -87,7 +87,26 @@
 - **Current revision**: v235 (deployed Aug 12, 2026) — New Business Pipeline (Kanban + table + deal workspace), Lease Review Vue frontend, prospect property/entity data model
 - **Shared folders**: `DATA_DIR`, `QUERIES_DIR`, `DOWNLOADS_DIR` env vars (per-developer OneDrive paths)
 - **Shared memory**: `.claude/memory/` in repo (committed, shared via git). Auto-memory redirects here.
-- **Email**: SendGrid Web API v3 (replaces SMTP, blocked by O365 MFA). Env vars: `SENDGRID_API_KEY`, `SENDGRID_FROM`. Single Sender Verification on `jbruin@peaceablestreet.com`.
+- **Email**: TWO SENDERS, ONE CONTRACT (`flask_app/auth/email_utils.py`). `send_email_result()`
+  returns the same `{ok, status, reason}` whichever service carries the message, so no caller
+  knows which is in use. **Azure Communication Services wins when `ACS_CONNECTION_STRING` and
+  `ACS_SENDER` are both set**; SendGrid (`SENDGRID_API_KEY`, `SENDGRID_FROM`) is the fallback.
+  **SendGrid is dead as a sender**: Twilio retired the free plan in 2025, ours lapsed, and every
+  outbound email has failed since ~Aug 1 2026 with `Maximum credits exceeded` — an allowance of
+  zero, not usage (`/v3/user/credits` → `total: 0, used: 0`). Keeping both paths is deliberate:
+  the cutover is an env-var change and so is the rollback, neither needing a rebuild. Delete the
+  SendGrid path once ACS has carried real mail for a few weeks — see `open_items.md` §3.12.
+- **App roles**: `ROLE_LEVELS` in `flask_app/auth/routes.py` — viewer 0; analyst, accountant,
+  accounting_manager, cfo 1; admin 2. `role_required()` admits a role that is **named outright,
+  or at least as privileged as the lowest level the decorator names**. It used to match exactly
+  while its own comment claimed a hierarchy; that only mattered once a fourth role existed,
+  because 104 endpoints name only `admin`/`analyst`. **Only recognised names set the bar** —
+  `role_level()` returns 0 for anything unknown, so a decorator typo (`role_required("Admin")`)
+  would otherwise drop the requirement to 0 and admit a viewer to an admin-only endpoint.
+  `WP_ROLE_FOR_LOGIN` maps the three accounting logins onto the close chain (`accounting_manager`
+  → the chain's own name, `manager`), so the CFO login can approve as CFO without a duplicate
+  `wp_roles` row; `wp_roles` still admits anyone assigned there by name. Guardrail:
+  `scripts/role_hierarchy_check.py`. Shipped `1e0ebad`, Sep 15 2026 — **not yet deployed**.
 - See [azure_deployment.md](azure_deployment.md) for full resource list and commands
 
 ## Actuals Through Cutoff (Mar 2026)

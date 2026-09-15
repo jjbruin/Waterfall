@@ -144,6 +144,16 @@ The trap: `change_password(user_id, temp_pw, clear_must_change=False)` and the
 `must_change_password` UPDATE are two separate statements — if a random password is
 generated, make sure a failure between them cannot leave an account on an unknown password.
 
+**This is no longer hypothetical, and §3.12 makes it worse.** On Sep 15 2026 a new user
+(`jstewart`) was onboarded while SendGrid was dead. The reset ran — it happens *before* the
+send is attempted — so the account sat on the literal `password` from 09:26 until Jim
+delivered the credentials by hand through Outlook and the user logged in. That is the
+designed behaviour and the account was usable throughout, which is the point of the `v451`
+wording. But note the interaction: **while email is down, every onboarding leaves an account
+on the guessable literal for as long as it takes a human to make contact**, and the
+credentials then travel through ordinary mail rather than the app's own channel. Another
+reason to finish §3.12 rather than keep hand-delivering.
+
 ### 1.10 A leaked JWT cannot be revoked — it is live for up to 24 hours
 **Verified Sep 11:** `JWT_EXPIRATION_HOURS = 24` (`flask_app/config.py:15`), HS256 signed
 with `JWT_SECRET`. A repo-wide grep for `revoke|blocklist|blacklist|token_version` returns
@@ -402,6 +412,46 @@ which is exactly what was true of `wfadmin`.
 Recommended, beyond rotating: the pre-commit hook at `scripts/hooks/pre-commit` blocks
 `://user:secret@` URLs but not a bare `user / password` line. Widening it is cheap.
 
+**Re-checked Sep 15 2026, after Charlene reported the cleanup as incomplete.** Her
+specific finding — *"`scripts/azure-complete-setup.sh:40` still has a wfadmin password in
+a DATABASE_URL … a real 10-char credential (not a placeholder)"* — is a **FALSE POSITIVE,
+and should not be re-raised.** The value is the literal string `<password>`, angle
+brackets included, in a commented-out line. Confirmed by hash rather than by eye:
+`sha256("<password>")[:12] == dd81ca61fb57`, matching the file. It has been that
+placeholder in the only commit that ever touched the file. Nothing to remove, nothing to
+rotate. Her scanner appears to measure length and character classes without special-casing
+`<...>`; worth telling her, because it will keep firing.
+
+**What IS real, and what is still open.** Scanning every historical version of all three
+files from `838c966`:
+
+| File | In history | At HEAD |
+|---|---|---|
+| `azure-complete-setup.sh` | `<password>` placeholder only | clean, always was |
+| `fix_tables.py` | **real `wfadmin` password** (`sha256[:12] = 2c68d9574663`) | clean (`USER:PASS`) |
+| `migrate_to_postgres.py` | same real credential | clean (`USER:PASS`) |
+
+Removed in `3a2bfdf` (Sep 11, *"SECURITY: purge the committed wfadmin password"*), but
+`838c966` is **on `origin/main`**, so the credential is in public history permanently and
+removal from HEAD did nothing for it. Rotation is the only fix — which is what `v430` was
+doing when it moved `DATABASE_URL` to a secret ref.
+
+**The open question is whether that rotation actually changed the password.** Do not test
+a live credential to find out. Jim can settle it without exposing the value:
+
+```bash
+read -rsp 'current wfadmin password: ' PW; echo; printf '%s' "$PW" | sha256sum | cut -c1-12
+```
+
+`2c68d9574663` means the Apr 10 credential is **still live and public** — rotate that day.
+Anything else closes the incident. **Unanswered as of Sep 15 2026.**
+
+Charlene's structural point stands and is the durable lesson: the pre-commit hook only
+inspects *staged* lines, so it stops the next leak and can never see an existing one. A
+repo-wide scan of tracked content was run Sep 15 — **354 files, zero real secrets** (the
+one hit was a regex matching `token=')[1]?.split('` in `LoginView.vue:38`). That scan is
+not automated; re-run it by hand after any incident.
+
 ### 3.11 `isbs_budget_is_supplements` has never been created on PostgreSQL — the next 3.9
 The budget import creates its table on first write (`budget_import_validate._ensure_table`)
 and every column is double-quoted, which is exactly the defect `v435` shipped. But that
@@ -412,6 +462,54 @@ and will be created by whoever imports the first partner budget.
 §3.9 is the standing lesson that a static check is not a run. Recommended: import one
 small budget on Azure and confirm the rows land and the comparison reads them, before the
 team relies on it. Cheap now, expensive during a valuation cycle.
+
+### 3.12 All outbound email has been failing since ~Aug 1 2026 — ACS not yet provisioned
+**Verified Sep 15 2026** from the production log: `SendGrid error 401 … {"message":"Maximum
+credits exceeded"}`. That wording reads as *you sent too much*; the account had sent
+nothing. `/v3/user/credits` returns `total: 0, used: 0` with the daily reset frozen at
+2026-08-01. **Twilio retired SendGrid's free plan in 2025 and ours lapsed** — the allowance
+is zero, not the usage. Nothing about the app, the key or the recipient is wrong.
+
+Everything that emails is affected: welcome, password reset, password-changed confirmation,
+and feedback replies. `v451` made the failure legible (the invite still creates a working
+account; only the notification fails), and `b72ea9b` gives it somewhere to go.
+
+**Decided (Jim, Sep 15 2026): move to Azure Communication Services**, not Resend/Brevo — it
+bills to the subscription the app already runs in, at $0.00025/email, which at our volume is
+cents a year. Code is committed and **inert until provisioned**: with `ACS_CONNECTION_STRING`
+and `ACS_SENDER` unset, mail still goes via SendGrid and still fails.
+
+**Remaining work is provisioning, not code.** Runbook (Sep 15 2026):
+<https://claude.ai/artifact/MZd8VHR5zgAFtue9yLKBDA>
+
+- No Communication Services resource exists yet; the `communication` CLI extension is not installed.
+- **Send from a subdomain, `notify.peaceablestreet.com` — do NOT put these records on the root
+  domain.** ACS requires an **exact-match SPF record** and will not tolerate one carrying
+  several `include:` mechanisms. The root SPF is what all Microsoft 365 company mail depends
+  on; editing it to satisfy ACS risks silently breaking it. The subdomain has no SPF today, so
+  the exact value goes in cleanly and the root zone is never touched.
+- Four DNS records, all **additions** to the `peaceablestreet.com` zone, none modifying an
+  existing record: ownership TXT at `notify`; SPF TXT at `notify` =
+  `v=spf1 include:spf.protection.outlook.com -all`; two DKIM CNAMEs at
+  `selector{1,2}-azurecomm-prod-net._domainkey.notify`.
+- The SPF include really is `spf.protection.outlook.com` — ACS rides Exchange Online
+  infrastructure, so it is identical to M365's. It looks like a copy-paste error and is not.
+- Every record name carries the `.notify` suffix because the zone sits one level above the
+  sending subdomain. **A name without it lands on the root domain** — the exact outcome this
+  approach exists to prevent.
+- Two Azure resources are needed, not one: the Email Communication Service owns the domain,
+  the Communication Services resource owns the connection string. Easy to create one and
+  wonder why nothing sends.
+- Put the connection string in as a **secret ref**, matching the existing `db-url` secret —
+  not as a plain env var the way `SENDGRID_API_KEY` sits today.
+
+Owner: **Jim** (Azure) + whoever administers `peaceablestreet.com` DNS. Deploy `1e0ebad` and
+`b72ea9b` together *after* a real email lands — deploying first buys nothing on email.
+
+**Inbound is out of scope and still SendGrid.** Feedback replies use SendGrid Inbound Parse
+(`POST /api/feedback/inbound-email`), which needs an MX record. Whether that was ever
+configured is **unverified** — DNS lookups were blocked from the dev sandbox. If it is live,
+it needs re-pointing separately.
 
 ---
 
