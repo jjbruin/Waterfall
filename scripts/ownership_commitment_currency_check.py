@@ -347,6 +347,31 @@ check(abs(_sib - _ppi["look_through"]) < 0.01,
       "a level's look-through dollars (%s) do not sum to its parent's (%s)"
       % (_sib, _ppi["look_through"]))
 
+# ── 10. Upper levels carry NO raw accounting detail ──────────────────────
+# `balance_detail` and the Capital-flag comparison describe an owner's WHOLE
+# position in the entity below it -- BRECO's entire history with PSC3, spanning
+# everything PSC3 holds. Correct data, wrong question for a screen about one
+# deal, and Jim read it as 30BEAR's numbers. Above level 1 they are dropped and
+# the derivation replaces them.
+check(_ppi["level"] == 1 and _psc3["level"] == 2 and _owpsc["level"] == 3,
+      "look-through fixture levels changed")
+for _n in (_psc3, _owpsc):
+    check(_n.get("balance_detail") == [],
+          f"{_n['entity_id']} (level {_n['level']}) still carries a raw "
+          f"balance breakdown, which is about its relationship with "
+          f"{_n.get('into_entity_id')} and not about this deal")
+    check(_n.get("balance_disputed") is False and _n.get("balance_by_flag") is None,
+          f"{_n['entity_id']} still carries the Capital-flag comparison, which "
+          f"compares classifiers on a different relationship")
+    check("balance_from_parent" in _n and "balance_direct" in _n,
+          f"{_n['entity_id']} cannot show its derivation: balance_from_parent "
+          f"and balance_direct must both travel with it")
+
+# Level 1 KEEPS its breakdown — there the accounting really is this deal's.
+check(isinstance(_ppi.get("balance_detail"), list),
+      "level 1 lost its balance breakdown; that is the one level where the raw "
+      "accounting is about this deal")
+
 if FAIL:
     print("FAIL")
     for m in FAIL:

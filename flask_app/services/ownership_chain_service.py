@@ -497,6 +497,20 @@ def _build_level(src: _Source, entity_id: str, depth: int,
             node["look_through"] = o["committed"]
             node["look_through_balance"] = o["balance"]
         else:
+            # ABOVE LEVEL 1 THE RAW ACCOUNTING IS ABOUT A DIFFERENT
+            # RELATIONSHIP. `balance_detail` and the Capital-flag comparison
+            # describe this owner's WHOLE position in the entity below it --
+            # BRECO's entire history with PSC3, spanning everything PSC3 holds.
+            # Jim, Sep 15 2026: shown inside a screen about 30BEAR that "is
+            # mixing the whole relationship between BRECO and PSC3 with the
+            # 30BEAR info". True, and not answerable by a label: the figures
+            # are correct data for a question this screen is not asking. They
+            # are dropped, and the derivation below replaces them.
+            node["balance_detail"] = []
+            node["balance_disputed"] = False
+            node["balance_by_flag"] = None
+            node["balance_direct"] = o["balance"]
+            node["balance_from_parent"] = parent_lt_bal
             node["effective_pct"] = (parent_eff * share * 100.0
                                      if share is not None else None)
             node["look_through"] = (parent_lt * share

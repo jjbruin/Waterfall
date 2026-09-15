@@ -42,6 +42,9 @@ interface Node {
   balance_detail?: Array<{ typename: string; rows: number; effect: number }>
   balance_by_flag?: number | null
   balance_disputed?: boolean
+  balance_direct?: number | null
+  balance_from_parent?: number | null
+  into_pct?: number | null
   into_entity_id?: string
   into_name?: string
   ultimate_owner?: boolean
@@ -508,7 +511,7 @@ watch([root, collapsed], () => nextTick(() => {
                                           || n.look_through_balance === undefined,
                                     neg: (n.look_through_balance ?? 0) < 0,
                                     disputed: n.balance_disputed }">
-                        <button v-if="(n.balance_detail || []).length"
+                        <button v-if="(n.balance_detail || []).length || i > 1"
                                 class="bal-btn" type="button"
                                 @click="showBal = showBal === uidOf(n) ? null : uidOf(n)"
                                 :title="'What this balance is made of'">
@@ -526,7 +529,33 @@ watch([root, collapsed], () => nextTick(() => {
                   <!-- WHAT THE BALANCE IS MADE OF. Opened on demand, because a
                        figure nobody can take apart is a figure nobody can argue
                        with — and this one was wrong once already. -->
-                  <div v-if="showBal === uidOf(n) && (n.balance_detail || []).length"
+                  <!-- Above level 1 the raw accounting is about a different
+                       relationship, so the panel shows the DERIVATION into this
+                       deal instead of BRECO's whole history with PSC3. -->
+                  <div v-if="showBal === uidOf(n) && i > 1" class="bal-detail">
+                    <div class="bal-row">
+                      <span class="bal-t">{{ n.into_entity_id }} in this deal</span>
+                      <span class="bal-n">{{ fmtMoney(n.balance_from_parent) }}</span>
+                      <span class="bal-c"></span>
+                    </div>
+                    <div class="bal-row">
+                      <span class="bal-t">× {{ n.entity_id }} share of {{ n.into_entity_id }}</span>
+                      <span class="bal-n">{{ fmtPct(n.pct) }}</span>
+                      <span class="bal-c"></span>
+                    </div>
+                    <div class="bal-row total">
+                      <span class="bal-t">{{ n.entity_id }} in this deal</span>
+                      <span class="bal-n">{{ fmtMoney(n.look_through_balance) }}</span>
+                      <span class="bal-c"></span>
+                    </div>
+                    <p class="bal-note">
+                      {{ n.entity_id }}'s whole position in {{ n.into_entity_id }} is
+                      {{ fmtMoney(n.balance_direct) }}, spread across everything
+                      {{ n.into_entity_id }} holds. Only the share above belongs to this deal.
+                    </p>
+                  </div>
+
+                  <div v-if="showBal === uidOf(n) && i === 1 && (n.balance_detail || []).length"
                        class="bal-detail">
                     <div v-for="(d, k) in n.balance_detail" :key="k" class="bal-row">
                       <span class="bal-t">{{ d.typename }}</span>
@@ -829,6 +858,9 @@ h2 { margin: 0 0 4px; font-size: 20px; }
   margin: 6px 0 0; font-size: 10px; color: #a35f00; line-height: 1.45;
 }
 .bal-warn code { background: #fff4e0; padding: 0 3px; border-radius: 2px; }
+.bal-note {
+  margin: 6px 0 0; font-size: 10px; color: #8a93a3; line-height: 1.5;
+}
 
 /* Committed vs balance. Two figures that are easy to confuse, so each is
    labelled and they line up on the decimal. */
