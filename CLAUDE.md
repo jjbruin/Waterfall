@@ -248,6 +248,19 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v461` = `e62cc0b` (also carried Charlene's `836ca5f`, reviewed before building —
+    a footing fix, not a symptom repair: $45.4M of Evergreen Plaza debt sat inside
+    Portfolio Totals under no subtotal)
+  - `v460` = `ee1c61a` † (two fixes for the empty ownership tree, NEITHER of which was
+    the bug; its real contribution was making the health block report what ARRIVED
+    versus what SURVIVED, which is what diagnosed `v461`)
+  - `v459` = `78630d8` (carried Charlene's `ad55705`/`13e47c9` — Camarillo Village and
+    Outlook Nine Mile added to `KEEP_DESPITE_SOLD`. Per-deal hardcode, raised with Jim
+    before building, deployed on his call. The commit's stated rationale — "the page is
+    meant to carry every sold deal" — describes 4 of 27, and two DROPPED deals sold later
+    than two kept ones. Unresolved.)
+  - `v458` = `9db5923` (config-only roll: ACS email switched on — `ACS_CONNECTION_STRING`
+    as a secret ref and `ACS_SENDER` — same image as v457)
   - `v457` = `9db5923`
   - `v456` = `b00ed5d` (shipped SEVEN commits, not the two asked for — the live image was
     five behind origin/main. Pre-flight P2 caught it before the build; the five were

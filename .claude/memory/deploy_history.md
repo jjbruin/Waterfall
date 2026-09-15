@@ -12,6 +12,70 @@ part of the branch they came from.
 
 Newest first. Revisions absent from this file (`v396` and older, apart from the few
 noted) carry no recorded post-mortem; their SHAs are in the CLAUDE.md index.
+## v460 = `ee1c61a` — two fixes, neither of which was the bug
+
+Deployed Sep 15 2026. Build `cahv`, 2m11s. Tag locked. Healthy at 100% traffic.
+
+**THE MOST INSTRUCTIVE FAILURE OF THE DAY, and the fix is the least interesting
+part of it.**
+
+The ownership tree, live since `v457`, reported "No commitments recorded into
+this entity" for **every deal in the portfolio**. Jim could see 601 rows in the
+`commitments` table. The local database holds three rows and seven columns;
+production's is `select * from IA_Commitment` with every column MRI carries. So
+nothing local reproduced it, and nothing about the symptom said where to look.
+
+**I shipped two fixes on reasoning rather than evidence. Both were wrong.**
+
+- `v459`-era hypothesis: PostgreSQL folds unquoted identifiers to lower case, so
+  `EntityID` would be `entityid` on Azure and never match. Tested: a lowercase
+  table raises `AttributeError` on a numpy scalar and returns **HTTP 500**, not
+  an empty screen. Ruled out — but fixed anyway, because it is a real latent
+  defect, and CLAUDE.md already carries that warning for SQL identifiers.
+- Second hypothesis: `_read` swallowed every exception and returned an empty
+  frame, so a failed query rendered as "no commitments". Also real, also fixed,
+  also **not the bug** — the query was succeeding.
+
+**What actually diagnosed it was making the screen report its own state.** The
+only durable thing `v460` shipped was a health block carrying
+`commitment_rows_loaded` beside `commitment_rows`, the column names as read, and
+an explicit note when rows load and none survive. Jim read three lines off the
+screen:
+
+    The commitments table returned 601 rows and none survived filtering.
+
+That located the defect immediately, in a function I had already read four times
+without seeing it.
+
+**The bug.** The open-commitment test asked `astype(str)` what the cell LOOKED
+LIKE and matched the rendering against `("", "none", "nan", "nat", "null")`:
+
+| flavour | renders as | matched |
+|---|---|---|
+| `None` | `none` | yes |
+| `NaT` | `nat` | yes |
+| `nan` | `nan` | yes |
+| **`pd.NA`** | **`<NA>`** | **NO** |
+
+`pd.NA` is what PostgreSQL produces where SQLite produces `None`. Every row
+failed, the table emptied, and every local test passed. `.isna()` is the
+primitive that answers this for all five. Fixed in `v461` = `e62cc0b`.
+
+**Three transferable lessons.**
+
+1. **Never test a null by its rendering.** `astype(str)` plus a list of spellings
+   is a guess at an enumeration that pandas already answers exactly.
+2. **A fixture that cannot express the defect is not coverage.** Three SQLite
+   rows could not produce a `pd.NA`, a second open row for one pair, or a
+   timezone-aware timestamp. Everything the ownership tree shipped was "verified"
+   against that.
+3. **When you cannot reproduce, stop theorising and make the system report.**
+   Three rounds of hypothesis produced two wrong fixes; one round of asking the
+   running system what it saw produced the answer in a single message. Reach for
+   the instrument earlier than feels necessary.
+
+---
+
 ## v440 = `0ad313a`
 
 Deployed Sep 11 2026, 23:05 UTC. Build `cah7`, 2m18s — a real build, not one of the
