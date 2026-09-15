@@ -415,6 +415,40 @@ team relies on it. Cheap now, expensive during a valuation cycle.
 
 ---
 
+## 6. Accounting workpapers — the statement engine (Sep 14 2026)
+
+### 6.1 MR22000002 is tagged to the wrong side of the balance sheet — ASK ACCOUNTING
+
+The example PPI Eastchase package tags account `MR22000002`, named **Other
+Liabilities** in the MRI chart, to the asset caption **Due from Manager**. The
+app inherited that tagging with the rest of accounting's 192-account map.
+
+Harmless in the example workbook because the account is zero for PPIECH. It is
+not harmless generally: on AMB6 the same mapping puts **-629,125.04** into
+assets. The balance sheet still ties out — a negative asset and a positive
+liability net identically — so no tie-out can catch it. Only a reader can, and
+only if they notice a minus sign in a column of positives.
+
+What shipped meanwhile (`v452`, `5323de3`): `build()` returns
+`balance_sheet.sign_anomalies`, every line facing the wrong way for its
+section, with the accounts behind it. It reports; it does not resolve. Guessing
+at accounting's intent inside the app is how a wrong statement gets produced
+confidently.
+
+**Owner: Jim, to ask accounting.** Either the account's name is wrong or its FS
+tag is. When they answer, correct `ACCOUNT_LINE` in
+`flask_app/services/fs_line_seed.py` — not the statement output.
+
+### 6.2 The close cycle has never been created in production — OPEN
+
+`wp_roles` has no assignments, no close cycle exists, and the step owners and
+CFO deadlines are unset. The feature is deployed and idle until a CFO session
+walks through: assign roles, create the first cycle, set deadlines per step.
+`MC_TYPENAME_ROW` (members' capital row routing) also wants accounting's eye
+before the first real package goes out.
+
+---
+
 ## 5. Valuation section — asset management's six comments (Sep 11 2026)
 
 Feedback from AM on the first pass at the valuation section, with what shipped against
