@@ -127,6 +127,32 @@ def _balances(entityid: str, period_end: str, bases: List[str], engine) -> pd.Da
     return out.reset_index()
 
 
+def line_sort_key(section_names: List[str], line: dict):
+    """Where a line sits on the statement.
+
+    ORDER IS PART OF BEING A STATEMENT. A financial statement runs
+    most-liquid first -- cash, receivables, prepaids, investments, other --
+    not in whatever order the mapping happened to be written. The ranks live
+    in fs_line_seed.LINE_ORDER; a caption with no rank sorts after the ranked
+    ones, alphabetically, so adding a caption never disturbs the rest.
+    """
+    from flask_app.services import fs_line_seed as seed
+    section = line["section"]
+    return (section_names.index(section) if section in section_names else 99,
+            seed.LINE_ORDER.get(line["fs_line"], 9999), line["fs_line"])
+
+
+def is_dormant(line: dict) -> bool:
+    """No balance AND no movement -- nothing happened on this line.
+
+    Zero WITH movement is not dormant: a balance that went out and came back
+    is a fact about the period, and hiding it would make the statement
+    disagree with the trial balance behind it.
+    """
+    return (abs(line.get("closing", 0.0) or 0.0) < 0.005
+            and abs(line.get("ytd", 0.0) or 0.0) < 0.005)
+
+
 def build(entityid: str, period_end: str, statement: str = "both",
           bases: Optional[List[str]] = None, engine=None) -> Dict[str, Any]:
     """Balance Sheet and/or Income Statement for one entity and period."""
@@ -189,9 +215,7 @@ def build(entityid: str, period_end: str, statement: str = "both",
 
     def render(stmt_key: str, section_names: List[str], value_field: str) -> dict:
         lines = sorted(sections.get(stmt_key, {}).values(),
-                       key=lambda l: (section_names.index(l["section"])
-                                      if l["section"] in section_names else 99,
-                                      l["sort_order"], l["fs_line"]))
+                       key=lambda l: line_sort_key(section_names, l))
         out_sections = []
         for name in section_names:
             sec_lines = [l for l in lines if l["section"] == name]
@@ -203,10 +227,12 @@ def build(entityid: str, period_end: str, statement: str = "both",
                 "amount": sign * l[value_field],
                 "gl_amount": l[value_field],
                 "accounts": l["accounts"],
+                "dormant": is_dormant(l),
             } for l in sec_lines]
             out_sections.append({
                 "section": name, "presentation_sign": sign,
                 "lines": rendered,
+                "dormant_count": sum(1 for x in rendered if x["dormant"]),
                 "total": sum(x["amount"] for x in rendered),
                 "gl_total": sum(x["gl_amount"] for x in rendered),
             })

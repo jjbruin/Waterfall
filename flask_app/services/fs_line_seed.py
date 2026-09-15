@@ -16,6 +16,84 @@ been edited, because the mapping table is the live answer and this is only
 what it was seeded from.
 """
 
+# Statement order. A financial statement runs most-liquid first, not
+# alphabetically and not in account-number order -- cash, then receivables,
+# then prepaids, then investments, then everything else. Without this the
+# lines come out in whatever order the mapping happened to be written, which
+# reads as a trial balance even when the captions are right.
+#
+# A line absent here sorts after the ones listed, alphabetically, so adding a
+# caption never breaks the ordering -- it just lands at the end of its section
+# until somebody gives it a rank.
+LINE_ORDER = {
+    # Assets — most liquid first
+    'Cash and cash equivalents': 10,
+    'Restricted cash': 11,
+    'Accounts receivable': 20,
+    'Subscription receivable': 21,
+    'Income receivable': 22,
+    'Interest receivable': 23,
+    'Management fee receivable': 24,
+    'Deal cost receivable': 25,
+    'Note receivable': 26,
+    'GST/HST receivable': 27,
+    'Due from affiliates': 30,
+    'Due from Manager': 31,
+    'Due from manager': 32,
+    'Prepaid expenses': 40,
+    'Prepaid contribution': 41,
+    'Investment cost': 50,
+    'Investment unrealized gain/loss': 51,
+    'Other assets': 90,
+
+    # Liabilities
+    'Accounts payable': 110,
+    'Accrued expenses': 111,
+    'Due to manager': 120,
+    'Distribution payable': 130,
+    'Interest payable': 131,
+    'Income tax payable': 132,
+    'Note payable': 140,
+    'Line of credit': 141,
+
+    # Members' capital
+    'Capital contributions': 210,
+    'Capital distributions': 211,
+    'Retained earnings': 220,
+
+    # Income
+    'Investment income': 310,
+    'Interest income': 311,
+    'Dividend income': 312,
+    'Management fee income': 313,
+    'Transaction fee income': 314,
+    'Carried interest income': 315,
+    'Kicker income': 316,
+    'Realized Gain/Loss': 330,
+    'Unrealized Gain/Loss': 331,
+    'Other income': 390,
+
+    # Expenses
+    'Management fees': 410,
+    'Professional fees': 411,
+    'Advisory fees': 412,
+    'Monitoring fees': 413,
+    'Service fees': 414,
+    'Financing fees': 415,
+    'Payroll and related expenses': 420,
+    'Insurance expense': 430,
+    'Interest expense': 431,
+    'Tax expense': 432,
+    'Depreciation expense': 440,
+    'Amortization expense': 441,
+    'Acquisition expense': 450,
+    'Broken deal expense': 451,
+    'Organizational costs': 460,
+    'Syndication costs': 461,
+    'Other expenses': 490,
+}
+
+
 # line -> section
 LINE_SECTION = {
     'Accounts payable': 'Liabilities',

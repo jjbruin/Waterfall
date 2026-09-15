@@ -209,12 +209,19 @@ def _financial_statements(wb, used, entity, period_end, engine):
                     value="No mapped accounts — map accounts to statement lines "
                           "to populate this statement.").font = SUB
             return sh, r + 2
+        dormant_total = 0
         for sec in block["sections"]:
             sh.cell(row=r, column=1, value=sec["section"]).font = H1
             r += 1
+            # A line with no balance AND no movement is left off the printed
+            # statement -- a page of 0.00 rows reads as a trial balance. The
+            # count is stated below so nothing is silently absent, and a zero
+            # line that HAD movement still prints.
+            shown = [l for l in sec["lines"] if not l.get("dormant")]
+            dormant_total += len(sec["lines"]) - len(shown)
             r = _table(sh, r, ["fs_line", "amount", "gl_amount"],
                        [{"fs_line": l["fs_line"], "amount": l["amount"],
-                         "gl_amount": l["gl_amount"]} for l in sec["lines"]],
+                         "gl_amount": l["gl_amount"]} for l in shown],
                        money_cols=["amount", "gl_amount"])
             c = sh.cell(row=r - 1, column=1, value=f"Total {sec['section']}")
             c.font = Font(bold=True)
@@ -222,6 +229,12 @@ def _financial_statements(wb, used, entity, period_end, engine):
             t.font = Font(bold=True)
             t.number_format = MONEY
             r += 1
+        if dormant_total:
+            sh.cell(row=r, column=1,
+                    value=f"{dormant_total} line(s) with no balance and no movement "
+                          f"are not shown; they are on the Trial Balance tab."
+                    ).font = SUB
+            r += 2
         return sh, r
 
     bs = st.get("balance_sheet")

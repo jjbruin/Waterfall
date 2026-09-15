@@ -363,12 +363,18 @@ onMounted(loadCycles)
               <h4>{{ sec.section }}</h4>
               <table class="mini">
                 <tbody>
-                  <tr v-for="l in sec.lines" :key="l.fs_line">
+                  <!-- Dormant = no balance and no movement. Hidden here for
+                       the same reason the printed statement hides them; the
+                       count below keeps them from being silently absent. -->
+                  <tr v-for="l in sec.lines.filter((x: any) => !x.dormant)" :key="l.fs_line">
                     <td>{{ l.fs_line }}</td>
                     <td class="num">{{ fmt(l.amount) }}</td>
                   </tr>
                   <tr class="tot"><td>Total {{ sec.section }}</td>
                     <td class="num">{{ fmt(sec.total) }}</td></tr>
+                  <tr v-if="sec.dormant_count"><td colspan="2" class="muted small">
+                    {{ sec.dormant_count }} line(s) with no balance and no movement not shown
+                  </td></tr>
                 </tbody>
               </table>
             </div>
