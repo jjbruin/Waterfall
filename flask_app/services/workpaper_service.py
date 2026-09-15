@@ -245,8 +245,25 @@ def user_can(username: str, role: str, app_role: str = "", engine=None) -> bool:
     been assigned in yet -- an approval chain that cannot be exercised cannot
     be reviewed by the CFO either. Assign real people in wp_roles and the
     chain tightens on its own.
+
+    A LOGIN ROLE THAT NAMES A CLOSE-CYCLE ROLE IS ITSELF THE ASSIGNMENT. The
+    three accounting logins (accountant / accounting_manager / cfo) map onto
+    this chain, so giving somebody the CFO login is enough to let them approve
+    as CFO. Without this, an admin would have had to add the same person to
+    ``wp_roles`` by hand as well, and the likeliest outcome of two places
+    meaning the same thing is that one of them is forgotten -- at which point
+    the CFO holds a login called cfo and cannot sign anything.
+
+    ``wp_roles`` is unchanged and still authoritative for everyone assigned
+    there by name, which is what lets a person hold one of these roles without
+    holding the matching login.
     """
     if app_role == "admin":
+        return True
+    # Imported here: flask_app.auth.routes imports the app factory's world,
+    # and this module is loaded from it.
+    from flask_app.auth.routes import WP_ROLE_FOR_LOGIN
+    if WP_ROLE_FOR_LOGIN.get(app_role) == role:
         return True
     return username in get_roles(engine).get(role, [])
 

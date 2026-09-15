@@ -114,7 +114,23 @@ async function sendWelcome(userId: number, username: string) {
   }
 }
 
-const roleOptions = ['viewer', 'analyst', 'admin']
+// Order matches ROLE_LEVELS in flask_app/auth/routes.py: least privileged
+// first, with the three accounting roles sitting at analyst level.
+const roleOptions = ['viewer', 'analyst', 'accountant', 'accounting_manager', 'cfo', 'admin']
+
+// The stored role is a bare token ('accounting_manager'); the dropdown and
+// the badge should read the way a person would say it.
+const ROLE_LABELS: Record<string, string> = {
+  viewer: 'viewer',
+  analyst: 'analyst',
+  accountant: 'accountant',
+  accounting_manager: 'accounting manager',
+  cfo: 'CFO',
+  admin: 'admin',
+}
+function roleLabel(r: string): string {
+  return ROLE_LABELS[r] || r.replace(/_/g, ' ')
+}
 
 // ── Review Role Management ──────────────────────────────────
 interface ReviewRoleAssignment {
@@ -190,7 +206,7 @@ function formatReviewRole(role: string): string {
       </div>
       <div class="info-row">
         <span class="info-label">Role:</span>
-        <span class="role-badge" :class="auth.userRole">{{ auth.userRole }}</span>
+        <span class="role-badge" :class="auth.userRole">{{ roleLabel(auth.userRole) }}</span>
       </div>
     </div>
 
@@ -247,7 +263,7 @@ function formatReviewRole(role: string): string {
                   :disabled="u.id === auth.user?.id"
                   class="role-select"
                 >
-                  <option v-for="r in roleOptions" :key="r" :value="r">{{ r }}</option>
+                  <option v-for="r in roleOptions" :key="r" :value="r">{{ roleLabel(r) }}</option>
                 </select>
               </td>
               <td>
@@ -297,7 +313,7 @@ function formatReviewRole(role: string): string {
           <div class="form-row">
             <label>Role</label>
             <select v-model="newUserRole" class="role-select">
-              <option v-for="r in roleOptions" :key="r" :value="r">{{ r }}</option>
+              <option v-for="r in roleOptions" :key="r" :value="r">{{ roleLabel(r) }}</option>
             </select>
           </div>
           <div class="form-row checkbox-row">
@@ -331,6 +347,18 @@ function formatReviewRole(role: string): string {
           <div class="role-item">
             <span class="role-badge analyst">analyst</span>
             <span>Run computations, edit waterfalls, change report settings</span>
+          </div>
+          <div class="role-item">
+            <span class="role-badge accountant">accountant</span>
+            <span>Analyst access, plus prepares and signs off close workpapers</span>
+          </div>
+          <div class="role-item">
+            <span class="role-badge accounting_manager">accounting manager</span>
+            <span>Analyst access, plus reviews workpapers submitted by an accountant</span>
+          </div>
+          <div class="role-item">
+            <span class="role-badge cfo">CFO</span>
+            <span>Analyst access, plus final approval of close packages</span>
           </div>
           <div class="role-item">
             <span class="role-badge admin">admin</span>
@@ -575,6 +603,9 @@ h3 { font-size: 15px; margin: 0 0 12px 0; }
 
 .role-badge.viewer { background: #e3f2fd; color: #1565c0; }
 .role-badge.analyst { background: #e8f5e9; color: #2e7d32; }
+.role-badge.accountant,
+.role-badge.accounting_manager,
+.role-badge.cfo { background: #fff4e0; color: #b26a00; }
 .role-badge.admin { background: #fce4ec; color: #c62828; }
 
 .role-desc { display: flex; flex-direction: column; gap: 8px; }

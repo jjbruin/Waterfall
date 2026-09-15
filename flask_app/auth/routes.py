@@ -16,8 +16,53 @@ from flask_app.auth.email_utils import send_password_reset_email, send_password_
 
 auth_bp = Blueprint("auth", __name__)
 
-# ── Valid roles (ordered by privilege level) ──────────────────────────
-ROLES = ("viewer", "analyst", "admin")
+# ── Valid roles, and what each one is allowed to reach ────────────────
+#
+# THE COMMENT THAT USED TO SIT HERE SAID "ordered by privilege level" AND
+# ``role_required`` DID NOT IMPLEMENT ONE. It matched the role string exactly
+# against the decorator's list, so the ordering was a claim in a comment and
+# nothing else. That was harmless while the only roles were viewer/analyst/
+# admin -- every decorator names admin, or admin and analyst, so exact match
+# and a hierarchy agree. It stops being harmless the moment a fourth role
+# exists: 104 endpoints name only "admin" and "analyst", so a role added to
+# ROLES alone would produce a login that is refused by almost the whole
+# application, which is not what anybody means by adding a role.
+#
+# So the level is real now. A role reaches an endpoint when its level is at
+# least the LOWEST level the decorator names. For the three original roles
+# that is identical to the exact matching it replaces -- role_required("admin")
+# still refuses an analyst, role_required("admin", "analyst") still refuses a
+# viewer -- so no existing endpoint changes who may call it.
+#
+# The accounting roles sit at ANALYST level, deliberately: they need every
+# analytical and workpaper screen, and none of them should be able to create
+# users, refresh MRI or import CSVs. Those stay with admin. (Jim's call,
+# Sep 15 2026.)
+ROLE_LEVELS = {
+    "viewer": 0,
+    "analyst": 1,
+    "accountant": 1,
+    "accounting_manager": 1,
+    "cfo": 1,
+    "admin": 2,
+}
+ROLES = tuple(ROLE_LEVELS)
+
+# Login role -> the close-cycle role it may act as, so that giving someone the
+# CFO login is enough to let them approve as CFO. ``wp_roles`` still works and
+# still admits anyone assigned there by name; this only means the login role
+# no longer has to be duplicated into that table to mean anything. The
+# workpaper chain's own name for the middle role is "manager".
+WP_ROLE_FOR_LOGIN = {
+    "accountant": "accountant",
+    "accounting_manager": "manager",
+    "cfo": "cfo",
+}
+
+
+def role_level(role: str) -> int:
+    """Privilege level for a role; an unknown role gets the lowest."""
+    return ROLE_LEVELS.get(role, 0)
 
 
 def _create_token(user: dict) -> str:
@@ -70,7 +115,23 @@ def role_required(*allowed_roles):
         @wraps(f)
         def decorated(*args, **kwargs):
             user_role = g.current_user.get("role", "viewer")
-            if user_role not in allowed_roles:
+            # Named outright, or at least as privileged as the least
+            # privileged role the decorator names. See ROLE_LEVELS for why
+            # this is a level comparison and not the exact match it was.
+            #
+            # ONLY ROLES WE RECOGNISE SET THE BAR. A decorator naming a role
+            # that is not in ROLE_LEVELS -- a typo like role_required("Admin")
+            # -- must not lower it: role_level() returns 0 for anything
+            # unknown, so feeding that into min() would drop the requirement to
+            # 0 and admit every caller. The old exact matching failed CLOSED on
+            # that typo (nobody matched, so nobody got in) and this has to as
+            # well. Unknown names are dropped here, and a decorator naming
+            # nothing we recognise falls back to exact matching, which for an
+            # unrecognised name admits no one.
+            known = [role_level(r) for r in allowed_roles if r in ROLE_LEVELS]
+            required = min(known) if known else None
+            if user_role not in allowed_roles and (
+                    required is None or role_level(user_role) < required):
                 return jsonify({
                     "error": "Forbidden",
                     "message": f"Role '{user_role}' does not have access. Required: {', '.join(allowed_roles)}",

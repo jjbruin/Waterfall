@@ -27,7 +27,14 @@ export const useAuthStore = defineStore('auth', () => {
 
   const isAuthenticated = computed(() => !!token.value)
   const isAdmin = computed(() => user.value?.role === 'admin')
-  const isAnalyst = computed(() => user.value?.role === 'analyst' || user.value?.role === 'admin')
+
+  // Mirrors ROLE_LEVELS in flask_app/auth/routes.py. isAnalyst means "at least
+  // analyst", which is what every caller uses it for -- so the three accounting
+  // roles belong in it. If this list and the backend's ever disagree the screen
+  // hides a control the API would in fact have allowed, which is confusing but
+  // not a security hole: the backend decides, this only decides what is shown.
+  const ANALYST_OR_ABOVE = ['analyst', 'accountant', 'accounting_manager', 'cfo', 'admin']
+  const isAnalyst = computed(() => ANALYST_OR_ABOVE.includes(user.value?.role || ''))
   const userRole = computed(() => user.value?.role || 'viewer')
 
   // User management state (admin only)
