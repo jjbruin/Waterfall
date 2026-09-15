@@ -1,6 +1,71 @@
-# Session Handoff — through Sep 11 2026 (v440 live)
+# Session Handoff — through Sep 15 2026 (v455 live)
 
-## Latest: v440 = `0ad313a` (Sep 11 2026, evening)
+## Latest: `v451`–`v455` (Sep 14–15 2026) — ACCOUNTING WORKPAPERS
+
+A new section of the app, built across two sessions. **Read
+`accounting_workpapers.md` before touching any of it**; `open_items.md` §6 has what
+is still open.
+
+  - `v455` = `841e92b`  a pre-close step may be due before period end
+  - `v454` = `c0a53f2`  refuse a close deadline that cannot be true
+  - `v453` = `5274e83`  statement line order + dormant-line suppression
+  - `v452` = `5323de3`  flag a statement line facing the wrong way
+  - `v451` = `041827b`  say why an email failed, and that the account works anyway
+
+**What exists now.** Sidebar → Accounting → Workpaper Packages. A close cycle
+generates one package per entity tagged `ENTGRPID='REP'` in MRI. Each package
+carries five drafted statements with their tie-outs on screen, a 12-step
+checklist with CFO deadlines, step-scoped exhibit upload, an approval chain
+(accountant → manager → CFO) and a 17-tab download with the exhibits placed
+inside it.
+
+**The design decision that matters most**: the statements are ONE engine
+(`statement_service.py`) serving any entity, and the package is a caller rather
+than the owner. A figure in a downloaded workbook cannot differ from the one an
+auditor is shown elsewhere, because there is no second implementation.
+
+**Three things to pick up, in order:**
+
+1. **MR22000002 — with accounting, unanswered** (`open_items.md` §6.1). The
+   example package tags an account named "Other Liabilities" to the asset line
+   "Due from Manager". Zero for PPIECH, so harmless in the specimen; on AMB6 it
+   puts **-629,125.04** into assets. The balance sheet still ties out — a
+   negative asset and a positive liability net identically — so only
+   `sign_anomalies` catches it. **Fix `ACCOUNT_LINE` in `fs_line_seed.py` when
+   they answer, not the statement output.**
+
+2. **Nothing is set up in production** (`open_items.md` §6.2). No close cycle,
+   no `wp_roles` assignments, no step owners, no deadlines. The feature is
+   deployed and idle. Needs a CFO session. `MC_TYPENAME_ROW` (members' capital
+   row routing) also wants accounting's eye before the first real package.
+
+3. **SendGrid's free plan lapsed** — all outbound mail has failed since ~Aug 1.
+   `/v3/user/credits` returns `total: 0, used: 0` with the reset frozen at
+   2026-08-01. `v451` made the failure legible (the invite still creates a
+   working account; the email is what fails) but the account fix is Jim's.
+
+**Verified how**: both guardrails run clean
+(`scripts/statement_presentation_check.py`,
+`scripts/workpaper_deadline_check.py`, each of which fails against the commit
+before it), the deployed frontend chunk was fetched from production and
+confirmed to carry the change, and the tab was driven in the browser locally.
+**Not verified**: the rendered statements on the Azure instance — that needs a
+login.
+
+**Two things the browser found that unit checks could not**, worth remembering
+as a method rather than as facts:
+
+- A refused deadline was **silent**. `setDue` set `error`, then called
+  `loadTracker()`, which clears `error` on entry — so the field snapped back
+  with no explanation. Every unit check passed throughout.
+- The local statement fixture had **one line per section and no zero lines**, so
+  neither new presentation rule was visible until four fixture accounts were
+  seeded (and removed again). A green guardrail was not the same as having
+  looked.
+
+---
+
+## Previously: v440 = `0ad313a` (Sep 11 2026, evening)
 The valuation section's budget work. **Read `open_items.md` §5 for the full picture** —
 asset management's six comments and what shipped against each.
 

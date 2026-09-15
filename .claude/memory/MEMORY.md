@@ -2,6 +2,7 @@
 
 ## Topic Files
 - [open_items.md](open_items.md) — **THE LIVE WORK QUEUE.** Every open item from the Aug 2026 One Pager audit, re-verified against the tree on Sep 11 2026, with evidence, an owner and a verified-as-of date. Code gaps, decisions waiting on Charlene, data/ops items for Jim, and a "resolved — do not re-open" list. Start here, not in the session logs.
+- [accounting_workpapers.md](accounting_workpapers.md) — **THE ACCOUNTING WORKPAPERS + STATEMENT ENGINE** (built Sep 14–15 2026, live `v455`): one engine producing BS/IS/Members' Capital/Cash Flow/SOI for any entity, the five MRI queries behind it, accounting's own 56-caption vocabulary, the 12-step close workflow with CFO deadlines, and the 17-tab download. Read before touching anything under `/workpapers` or `statement_service.py`.
 - [session_log_aug2026.md](session_log_aug2026.md) — verbatim narrative of the Aug 5–13 2026 One Pager audit (the diagnostics and the numbers behind each conclusion). **Its "still open" lists are stale — use `open_items.md` for status.**
 - [app_reference.md](app_reference.md) — what each app tab displays, section by section, plus the AI Assistant's tools and endpoints. Split out of CLAUDE.md Sep 11 2026.
 - [ppi_ownership_waterfalls.md](ppi_ownership_waterfalls.md) — NB upstream investor-relationship waterfalls (AM fees, net-of-fee IRR promotes) reusing the PSCKOC engine; approved plan, phases 1-5
@@ -15,7 +16,7 @@
 - [portfolio_analysis.md](portfolio_analysis.md) — Portfolio Analysis tab (upstream entity analysis, actual/proposed modes)
 - [transfer_aware_returns.md](transfer_aware_returns.md) — Design doc: transfer-aware IRR/ROE/MOIC (scoped, not yet implemented)
 - [onepager_audit_q1_2026.md](onepager_audit_q1_2026.md) — Q1 2026 audit: Azure vs Excel One Pager (959 discrepancies, 7 code bugs, data gaps)
-- [session_handoff.md](session_handoff.md) — **CURRENT rolling handoff (Sep 11 2026, v440 live)**: the valuation budget work (shared budget/Argus line mapping, modeled debt service), the app admin password exposed in git for two months and awaiting rotation, and `isbs_budget_is_supplements` never yet created on PostgreSQL. Older content below that, from Sep 10 / v428: the Brainerd/TIAA look-through defect (a 11/21/2024 transfer never recorded in MRI understates TIAA 63.142% vs 74.415% — root cause proved, data fix NOT made), the ownership reconciliation report and its queue, the Waterfall Setup fixes shipped in v426-v428, and FOUR COMMITS ON MAIN NOT IN THE LIVE IMAGE including three investor-facing One Pager print changes of Charlene's. Carries the durable defect list forward. Read this first.
+- [session_handoff.md](session_handoff.md) — **CURRENT rolling handoff (Sep 15 2026, v455 live)**: the accounting workpapers section and its three open items (MR22000002 with accounting, nothing set up in production, SendGrid's plan lapsed). Below that, Sep 11 / v440: the valuation budget work (shared budget/Argus line mapping, modeled debt service), the app admin password exposed in git for two months and awaiting rotation, and `isbs_budget_is_supplements` never yet created on PostgreSQL. Older content below that, from Sep 10 / v428: the Brainerd/TIAA look-through defect (a 11/21/2024 transfer never recorded in MRI understates TIAA 63.142% vs 74.415% — root cause proved, data fix NOT made), the ownership reconciliation report and its queue, the Waterfall Setup fixes shipped in v426-v428, and FOUR COMMITS ON MAIN NOT IN THE LIVE IMAGE including three investor-facing One Pager print changes of Charlene's. Carries the durable defect list forward. Read this first.
 - [session_handoff_sep2.md](session_handoff_sep2.md) — Sep 2 2026 / v416 handoff, superseded but NOT stale: still the only record of TRACK 1 (investor groups around a deal / the KOC slice, Phase 0 done, Phases 1-4 open), TRACK 3 (the Sep 2 engine corrections — capital reversals, excess-CF pref, mid-month sale dates, terminal NOI window; start here if returns look wrong) and Charlene's stream v403-v416. None of it was touched on Sep 10.
 - [session_handoff_may7b.md](session_handoff_may7b.md) — Session handoff: pref accrual fix, combined table, TGA23 step deletion
 - [ai_assistant.md](ai_assistant.md) — Embedded AI assistant (Claude API, tools, streaming chat)
@@ -228,6 +229,27 @@ Three consecutive changes to which accounts sit in NOI. Read together — no sin
 - **Ground Leases/Escrows/Collateral**: Editable fields in surveillance_properties table. Ground leases: expiration + maturity urgency, annual rent, status. Escrows: Yes/No/Waived/Partial badges for tax/insurance/capex. Collateral: type, value, notes.
 - **Reporting completeness**: Latest reported period (M/YY) and missing count in trailing 12 months for Occupancy, Rent Roll (commercial only), Income Statement, Balance Sheet. Due date = month end + 30 days.
 - **DB tables**: `surveillance_properties` (editable fields with column migration), `insurance`, `surveillance_comments` (all in PROTECTED_TABLES)
+
+## Accounting Workpapers & Statement Engine (Sep 2026)
+Full detail in [accounting_workpapers.md](accounting_workpapers.md). The short version:
+
+- **One engine, many entities.** `statement_service.py` produces all five statements for
+  any entity/period; the workpaper package is a caller, not the owner. No second
+  implementation to drift.
+- **`ENTGRPID='REP'` in `entity_groups` defines the population** — accounting tags the
+  entities that need a package, the app does not decide.
+- **`MRI_GL_Detail` runs LAST in `QUERY_REGISTRY`** — unbounded GHIS on a 2GB container
+  can kill the worker, and a killed process is not a catchable exception.
+- **Never guess an account onto a statement.** Untyped and conflicting accounts are
+  reported, not resolved. Visibly missing beats silently wrong.
+- **The engine flags; consumers decide.** `dormant` and `sign_anomalies` are returned on
+  every build; suppression and presentation are the screen's and the workbook's call, so
+  a tie-out never changes because of how a page is printed.
+- **Deadlines: refuse what cannot be true, warn what is merely odd.** The lower bound is
+  the period START, not its end, so a pre-close prep step is allowed.
+
+Open: the MR22000002 tagging question is with accounting; no close cycle or role
+assignment exists in production yet. See `open_items.md` §6.
 
 ## Agreed Roadmap
 - ~~Purchase 2nd MRI VPN license → configure Azure VPN Gateway tunnel → enable MRI queries from Azure~~ DONE (Jun 24, 2026)

@@ -447,6 +447,26 @@ walks through: assign roles, create the first cycle, set deadlines per step.
 `MC_TYPENAME_ROW` (members' capital row routing) also wants accounting's eye
 before the first real package goes out.
 
+### 6.3 Close deadlines: two things the rule does not do — KNOWN, not defects
+
+`validate_due_date()` ships in `v455`. Two deliberate gaps, recorded so neither
+is rediscovered as a bug:
+
+**It is write-time only.** A deadline typed before the rule existed stays
+stored — the local fixture still carries `GL detail reviewed = 2020-01-01` on a
+period ended 2026-06-30. Correctable through the UI (clearing is always
+allowed), and production has no cycles yet, so no migration was written.
+`scripts/workpaper_deadline_check.py` prints a NOTE naming any it finds rather
+than letting a cycle look clean.
+
+**A pre-close deadline warns about sequence.** All 12 steps in `STEP_TEMPLATE`
+are post-close work, so a date inside the period is legitimately "before a step
+that comes earlier in the close". It saves; it just says so. If accounting adds
+a real prep step it belongs first in `STEP_TEMPLATE` and the warning stops.
+Not worth engineering for a step that does not exist.
+
+---
+
 ---
 
 ## 5. Valuation section — asset management's six comments (Sep 11 2026)

@@ -91,6 +91,12 @@ waterfall-xirr/
 │       ├── financials_service.py # Property Financials + One Pager data aggregation
 │       ├── feedback_service.py   # Feedback & request tracking (CRUD, email, export)
 │       ├── reports_service.py    # Report builders (projected returns, ROE summary, pref balance detail)
+│       ├── statement_service.py  # THE statement engine — BS, IS, Members' Capital, Cash Flow, SOI for any entity
+│       ├── fs_line_seed.py       # Accounting's own FS vocabulary: 192 accounts, 56 captions, 75 ranked
+│       ├── workpaper_service.py  # Close cycles, packages, steps, exhibits, approvals, deadlines
+│       ├── workpaper_data.py     # Trial balance, GL detail, IA/commitment rollforwards
+│       ├── workpaper_workbench.py # Step → evidence mapping (accounting knowledge, server-side)
+│       ├── workpaper_excel.py    # 17-tab downloadable package; exhibits placed, not attached
 │       ├── lease_review_service.py  # Lease review DD workflow, document upload, extraction, field resolution
 │       ├── prospect_service.py      # Pipeline prospect CRUD, lease review creation, deal evaluation
 │       ├── argus_service.py         # Argus Enterprise import, projection CRUD, forecast generation, NB→AM migration
@@ -116,6 +122,7 @@ waterfall-xirr/
 - **DOCUMENTATION.md** - Complete project documentation (setup, data files, concepts, troubleshooting)
 - **waterfall_setup_rules.txt** - Waterfall step configuration guide for deal modeling team
 - **typename_rules.txt** - Capital pool routing rules based on Typename field
+- **.claude/memory/accounting_workpapers.md** - The workpaper packages + statement engine: data, mapping, workflow, deadlines, the download (Sep 15 2026)
 - **.claude/memory/app_reference.md** - What each app tab displays + AI Assistant tools/endpoints (split out of this file Sep 11 2026)
 
 ## Running the Application
@@ -501,6 +508,46 @@ columns are loaded from somebody else's spreadsheet, and the debt rows are ours.
 - **Interest goes to 5190 here, 7030 in the AM forecast** — see `open_items.md` §5.8.
   Deliberate as of Sep 11 2026, not accidental, and still worth settling.
 
+### Accounting Workpapers & the Statement Engine
+**Full detail in `.claude/memory/accounting_workpapers.md`.** Live at `v455`.
+
+- **ONE ENGINE, MANY ENTITIES.** `statement_service.py` builds Balance Sheet, Income
+  Statement, Members' Capital, Cash Flow and Schedule of Investments for any entity and
+  period. The workpaper package is one caller, not the owner — so a figure in a
+  downloaded workbook cannot differ from the one shown anywhere else.
+- **The population is MRI's**: `entity_groups` (ENTITYGRPD) with `ENTGRPID='REP'`.
+- **Five MRI queries**: `MRI_Entities`, `MRI_Entity_GroupID`, `MRI_GL_Accounts`,
+  `MRI_IA_Transactions`, `MRI_GL_Detail`. **`MRI_GL_Detail` is LAST in `QUERY_REGISTRY`
+  on purpose** — unbounded GHIS on a 2GB container is the one that could kill the
+  worker, and a killed process is not an exception the per-query try/except can catch.
+  All five `.sql` files use `UNION ALL`, never `UNION`: the GL is a journal and one key
+  legitimately carries many rows that consumers SUM.
+- **Balance model**: `opening` = BALFOR 'B' at YYYY01, `YTD` = BALFOR 'N' rows,
+  `closing` = opening + YTD. `GACC.TYPE` B/C/I are statement accounts; L/M are roll-up
+  headers and are NOT lines.
+- **Accounts are never guessed onto a statement.** No GACC row, or a type outside
+  B/C/I → reported as `untyped`. A mapping naming a section that does not belong to the
+  statement its type implies → reported as a `conflict`. Visibly missing beats silently
+  wrong.
+- **THE PERIOD RESULT BELONGS IN MEMBERS' CAPITAL.** Income closes to equity at YEAR
+  END, so before then the equity accounts hold no profit and every entity came out of
+  balance by exactly its net income. `build()` carries the income statement's own total
+  across, so the two statements cannot disagree.
+- **A line facing the wrong way still balances** — a negative asset and a positive
+  liability net identically, so no tie-out can catch it. `balance_sheet.sign_anomalies`
+  reports them. Live case in `open_items.md` §6.1.
+- **The engine flags; it never drops.** `dormant` (no balance AND no movement) is
+  returned on every line and the screen and workbook suppress them, saying how many. A
+  zero line WITH movement is kept — hiding it would make the statement disagree with the
+  trial balance behind it.
+- **Deadlines: reject what cannot be true, warn what is merely odd.** Refused — not a
+  date, or earlier than the period BEGAN (`period_start()` derives the bound; a
+  pre-close prep step may be due inside the period). Warned but saved — over a year out,
+  or out of sequence. Clearing is always allowed. Write-time only: a bad deadline typed
+  before the rule stays stored.
+- **Guardrails**: `scripts/statement_presentation_check.py`,
+  `scripts/workpaper_deadline_check.py`.
+
 ### Cap Rate at Sale / Refinance
 - **Source column**: `fCapRate` from `valuations` table (MRI_Val)
 - **Date column**: `dtValuation` — the date each cap rate was assessed
@@ -630,7 +677,7 @@ The sidebar (`AppSidebar.vue`) is organized into major sections with expandable 
 |---------|------|----------|
 | **Dashboard** | Standalone link | `/dashboard` |
 | **Asset Management** | Expandable | Deal Analysis, Property Financials, Surveillance, One Pager, Review Tracking, Ownership, Waterfall Setup, Report Settings (expandable config panel) |
-| **Accounting** | Future (dimmed) | — |
+| **Accounting** | Expandable | Workpaper Packages |
 | **New Business** | Expandable | Pipeline, Deal Analysis, Lease Review, Lease Risk Analysis |
 | **Investment Management** | Future (dimmed) | — |
 | **Reports** | Standalone link | `/reports` (Projected Returns, ROE Summary, Pref Balance Detail, Sold Portfolio, PSCKOC, Portfolio Analysis) |
@@ -761,6 +808,14 @@ it; the sidebar map above is kept here as a quick orientation.
 - `reconcile()` / `validate()` / `commit()` - Stated-vs-computed revenue/expense/NOI; blocking vs warnings; replace-by-(vcode, periods) write to `isbs_budget_is_supplements` (budget_import_validate.py)
 - `parse()` / `check()` / `commit()` - One line-mapping flow for `source` in ("budget", "argus"); Argus pre-fills from `argus_parser.map_to_coa` as a visible, editable suggestion, a budget never guesses (line_mapping_service.py)
 - `monthly_schedule()` / `for_year()` - Modeled interest (5190) and principal (7060) from the deal's own loan terms, balloons excluded, child-property loans included; returns unavailable-with-a-reason, never a zero (valuation_debt_service.py)
+- `build()` - Balance Sheet + Income Statement for one entity/period, with tie-out, `sign_anomalies`, unmapped/untyped/conflicts (statement_service.py)
+- `build_members_capital()` / `build_cash_flow()` / `build_schedule_of_investments()` - The other three statements (statement_service.py)
+- `line_sort_key()` / `is_dormant()` - Statement order from `LINE_ORDER`; no-balance-and-no-movement flag (statement_service.py)
+- `consolidated_mapping()` / `seed_mapping_from_names()` - Proposed account → FS line mappings; proposals, never applied automatically (statement_service.py)
+- `create_cycle()` / `sync_packages()` - Close cycle + one package per REP entity (workpaper_service.py)
+- `validate_due_date()` / `period_start()` - Deadline rule and the period bound it uses (workpaper_service.py)
+- `step_evidence()` / `statements_summary()` - What a step asserts and how to verify it, server-side (workpaper_workbench.py)
+- `build_package()` - The 17-tab workbook; exhibits placed into it, not attached (workpaper_excel.py)
 - `create_request()` - Create a new user feedback request with reply token (feedback_service.py)
 - `list_requests()` - List requests with optional user/status/type filters (feedback_service.py)
 - `send_request_email()` - Send email to request submitter via SendGrid with reply link (feedback_service.py)
