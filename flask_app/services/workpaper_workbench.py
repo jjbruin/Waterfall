@@ -99,6 +99,13 @@ def step_evidence(package_id: int, step_key: str, engine=None) -> Dict[str, Any]
             _check("Every account carries a GACC type",
                    len(st.get("untyped", [])) == 0,
                    f"{len(st.get('untyped', []))} untyped"),
+            # Balances cannot catch a line facing the wrong way, so it is
+            # asked about separately.
+            _check("No line facing the wrong way",
+                   len((bs or {}).get("sign_anomalies", [])) == 0,
+                   f"{len((bs or {}).get('sign_anomalies', []))} line(s)",
+                   "; ".join(f"{a['fs_line']} {a['amount']:,.2f}"
+                             for a in (bs or {}).get("sign_anomalies", [])[:3])),
         ]
         out["tables"] = [
             _table("Trial balance", ["acctnum", "acctname", "fs_line",
@@ -250,6 +257,11 @@ def step_evidence(package_id: int, step_key: str, engine=None) -> Dict[str, Any]
             _check("No unmapped accounts", len(st.get("unmapped", [])) == 0,
                    f"{len(st.get('unmapped', []))} unmapped",
                    _money(st.get("unmapped_total"))),
+            _check("No line facing the wrong way",
+                   len(bs.get("sign_anomalies", [])) == 0,
+                   f"{len(bs.get('sign_anomalies', []))} line(s)",
+                   "; ".join(f"{a['fs_line']} {a['amount']:,.2f}"
+                             for a in bs.get("sign_anomalies", [])[:3])),
             _check("Net income", None, _money(inc.get("net_income"))),
         ]
         out["statements"] = ["balance_sheet", "income_statement", "soi",

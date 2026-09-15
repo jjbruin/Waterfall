@@ -262,6 +262,25 @@ def build(entityid: str, period_end: str, statement: str = "both",
         # statement's own error bar and is reported beside it, not hidden.
         bs["out_of_balance"] = bs["gl_total"]
         bs["balanced"] = abs(bs["gl_total"]) < 0.01
+
+        # A LINE FACING THE WRONG WAY IS A MAPPING ERROR, AND IT STILL
+        # BALANCES. A negative asset or a negative liability nets out
+        # correctly, so the tie-out cannot catch it -- only a reader can, and
+        # only if they notice a minus sign in a column of positives.
+        #
+        # The case that found this: the example package tags MR22000002,
+        # named "Other Liabilities", to the asset line "Due from Manager".
+        # Harmless in that workbook because the account is zero for PPIECH;
+        # on AMB6 the same mapping put -629,125.04 into assets. The app
+        # inherited accounting's own tagging error and had no way to say so.
+        bs["sign_anomalies"] = [
+            {"section": sec["section"], "fs_line": l["fs_line"],
+             "amount": l["amount"],
+             "accounts": [a["acctnum"] for a in l["accounts"]],
+             "account_names": [a["acctname"] for a in l["accounts"]]}
+            for sec in bs["sections"] for l in sec["lines"]
+            if l["amount"] < -0.005 and not l.get("from_income_statement")
+        ]
         result["balance_sheet"] = bs
 
     if statement in ("both", "income_statement"):
