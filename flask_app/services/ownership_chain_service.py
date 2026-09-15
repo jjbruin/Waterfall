@@ -221,19 +221,40 @@ class _Source:
         before = len(com)
 
         if "EndDate" in com.columns:
-            end = pd.to_datetime(com["EndDate"], errors="coerce")
-            # An unparseable EndDate is NOT treated as absent: it is a value
-            # somebody entered, and guessing it away would resurrect a closed
-            # commitment. Only a genuinely empty cell counts as open.
-            raw = com["EndDate"].astype(str).str.strip().str.lower()
-            blank = raw.isin(("", "none", "nan", "nat", "null"))
-            com = com[end.isna() & blank].copy()
+            # PANDAS' OWN NULL TEST, never a rendered string.
+            #
+            # This asked `astype(str)` what the cell looked like and matched
+            # the result against ("", "none", "nan", "nat", "null"). Four of
+            # the five flavours of null render into that list; `pd.NA` renders
+            # as "<NA>" and does not. PostgreSQL produces pd.NA where SQLite
+            # produces None, so on Azure EVERY row failed the test and all 601
+            # commitments were discarded, while every local test passed. The
+            # screen then reported "no commitments" for every deal in the
+            # portfolio. (Found Sep 15 2026, after two wrong fixes.)
+            #
+            # `.isna()` is the primitive that answers this question for all of
+            # them. The original intent survives unchanged: a non-null value
+            # that merely fails to parse is NOT absent -- somebody entered it,
+            # and guessing it away would resurrect a closed commitment -- and
+            # `.isna()` is False for exactly those.
+            com = com[com["EndDate"].isna()].copy()
 
         if com.empty:
             return com, before
 
         if "StartDate" in com.columns:
-            com["_start"] = pd.to_datetime(com["StartDate"], errors="coerce")
+            # Normalised to tz-NAIVE before anything compares them. PostgreSQL
+            # returns timestamptz and SQLite returns strings, and a frame
+            # carrying both kinds cannot be compared or filled without either
+            # raising or quietly never matching. `utc=True` puts every value on
+            # one clock; stripping the zone then makes it comparable to
+            # `Timestamp.min` below, which is naive.
+            st = pd.to_datetime(com["StartDate"], errors="coerce", utc=True)
+            try:
+                st = st.dt.tz_localize(None)
+            except (TypeError, AttributeError):
+                pass
+            com["_start"] = st
             # A row with no usable StartDate cannot lose a recency contest it
             # was never in, so it sorts last -- but it still counts if it is
             # the only row for the pair.

@@ -171,6 +171,53 @@ owners = _owners_of(src, "DEAL6")
 total = sum(x["pct"] for x in owners)
 check(abs(total - 100.0) < 0.001, "shares total %.4f%%, expected 100%%" % total)
 
+# ── 6b. EVERY FLAVOUR OF NULL COUNTS AS "no end date" ────────────────────
+# THE ONE THAT REACHED PRODUCTION. The open test used to render the cell with
+# astype(str) and match the result against ("", "none", "nan", "nat", "null").
+# pd.NA renders as "<NA>" and is not in that list -- and pd.NA is what
+# PostgreSQL produces where SQLite produces None. On Azure every one of 601
+# commitments failed the test, the table emptied, and the screen reported "no
+# commitments" for every deal in the portfolio while every local test passed.
+#
+# So this asserts the property, not the spelling: each null flavour, on its
+# own, must leave the row standing.
+for label, null in (("None", None), ("NaT", pd.NaT),
+                    ("float nan", float("nan")), ("pd.NA", pd.NA)):
+    src = source_from([
+        {"EntityID": "DEALN", "InvestorID": "ALPHA", "Amount": 1_000_000,
+         "StartDate": "2024-01-01", "EndDate": null, "CapitalPercent": 0},
+    ])
+    owners = _owners_of(src, "DEALN")
+    check(len(owners) == 1,
+          f"an EndDate of {label} dropped the row — it must read as 'no end "
+          f"date'. This is the defect that emptied the production table.")
+
+# A genuine end date still ends it, whichever flavour of null sits beside it.
+src = source_from([
+    {"EntityID": "DEALN2", "InvestorID": "A", "Amount": 1_000_000,
+     "StartDate": "2020-01-01", "EndDate": "2021-01-01", "CapitalPercent": 0},
+    {"EntityID": "DEALN2", "InvestorID": "B", "Amount": 4_000_000,
+     "StartDate": "2020-01-01", "EndDate": pd.NA, "CapitalPercent": 0},
+])
+o = by_id(_owners_of(src, "DEALN2"))
+check("A" not in o, "a dated EndDate no longer ends the commitment")
+check("B" in o and abs(o["B"]["pct"] - 100.0) < 0.01,
+      "the open commitment did not survive beside a closed one")
+
+# ── 6c. Timezone-aware StartDates, as PostgreSQL returns them ────────────
+# timestamptz arrives tz-aware; SQLite strings arrive naive. A frame carrying
+# either must still pick the latest row rather than raise or match nothing.
+src = source_from([
+    {"EntityID": "DEALTZ", "InvestorID": "A", "Amount": 1_000_000,
+     "StartDate": "2023-01-01T00:00:00+00:00", "EndDate": None, "CapitalPercent": 0},
+    {"EntityID": "DEALTZ", "InvestorID": "A", "Amount": 7_000_000,
+     "StartDate": "2024-06-01T00:00:00+00:00", "EndDate": None, "CapitalPercent": 0},
+])
+o = by_id(_owners_of(src, "DEALTZ"))
+check(o.get("A", {}).get("committed") == 7_000_000,
+      "tz-aware StartDates did not resolve to the latest row (got %s)"
+      % f"{o.get('A', {}).get('committed', 0):,.0f}")
+
 # ── 7. Column names are matched WITHOUT REGARD TO CASE ───────────────────
 # PostgreSQL folds unquoted identifiers to lower case; SQLite preserves them.
 # The same table is `EntityID` locally and `entityid` on Azure, and matching a
