@@ -486,10 +486,24 @@ watch([root, collapsed], () => nextTick(() => {
                     </span>
                   </div>
                   <dl class="bal">
-                    <dt>{{ i === 0 ? 'committed in' : 'in this deal' }}</dt>
+                    <dt>
+                      {{ i === 0 ? 'committed in' : 'in this deal' }}
+                      <!-- The date qualifies the COMMITMENT, not the balance:
+                           it is the StartDate of the commitment row in force,
+                           used to pick which row is current when an entity has
+                           several. It sat on its own line directly above the
+                           balance and was read as the balance's as-of date
+                           (Jim, Sep 15 2026), which it has never been. -->
+                      <em v-if="n.since" :title="`The commitment in force from ${n.since}. Not a balance date.`">
+                        as of {{ n.since }}
+                      </em>
+                    </dt>
                     <dd>{{ fmtMoney(i === 0 ? n.committed : n.look_through) }}</dd>
                     <template v-if="i > 0">
-                      <dt>balance</dt>
+                      <dt>
+                        balance
+                        <em title="Every capital contribution and return on record for this pair, with no date cutoff — a cumulative position, not a point in time.">today</em>
+                      </dt>
                       <dd :class="{ none: n.look_through_balance === null
                                           || n.look_through_balance === undefined,
                                     neg: (n.look_through_balance ?? 0) < 0,
@@ -543,9 +557,7 @@ watch([root, collapsed], () => nextTick(() => {
                     <span class="direct-note">— across all its holdings</span>
                   </p>
 
-                  <p v-if="n.since" class="since">
-                    current since {{ n.since }}
-                  </p>
+
 
                   <p v-if="n.pct_disagrees" class="disagree">
                     Stored {{ fmtPct(n.pct_stated) }} — likely a missing commitment row
@@ -839,7 +851,11 @@ h2 { margin: 0 0 4px; font-size: 20px; }
 .node.ubo { background: #fcfdfe; border-style: dashed; }
 .badge.ubo { background: #eef2f7; color: #4a5768; }
 
-.since { margin: 0 0 0 20px; font-size: 10.5px; color: #99a; }
+.bal dt em {
+  font-style: normal; text-transform: none; letter-spacing: 0;
+  color: #aab2bf; margin-left: 4px; font-size: 9px;
+  border-bottom: 1px dotted #ccd3dd; cursor: help;
+}
 
 .disagree {
   margin: 0 0 0 20px; font-size: 11px; color: #a35f00;
