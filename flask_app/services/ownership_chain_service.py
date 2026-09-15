@@ -71,24 +71,55 @@ class _Source:
 
     def __init__(self, engine=None):
         engine = engine or get_engine()
+        self.load_errors: List[str] = []
         with engine.connect() as conn:
             self.com = self._read(conn, "commitments")
             self.ent = self._read(conn, "entities")
             self.deals = self._read(conn, "deals")
             self.wf = self._read(conn, "waterfalls")
 
+        # WHAT ARRIVED, BEFORE ANYTHING IS DONE TO IT. Reported in the health
+        # block so "no commitments for this entity" can be told apart from "the
+        # table did not load" and from "the filter ate it" without a developer
+        # having to reproduce the database. Sep 15 2026: 601 rows were visibly
+        # present in production and the screen still said none, and none of the
+        # three hypotheses could be distinguished from the outside.
+        self.raw_commitment_rows = int(len(self.com))
+        self.commitment_columns = [str(c) for c in self.com.columns]
+        self.superseded_rows = 0
+
         # Commitments: the one table whose shape we depend on.
         if not self.com.empty:
+            # CASE-INSENSITIVE, because PostgreSQL folds unquoted identifiers to
+            # lower case and SQLite does not. The same table is `EntityID` here
+            # and `entityid` there, and matching one spelling silently produced
+            # either an empty screen or an AttributeError depending on which
+            # column happened to miss. CLAUDE.md carries the same warning for
+            # SQL identifiers; it applies just as much to DataFrame lookups.
+            self.com = self._canonicalise(self.com, (
+                "EntityID", "InvestorID", "Amount", "CapitalPercent",
+                "StartDate", "EndDate"))
             for c in ("EntityID", "InvestorID"):
                 if c in self.com.columns:
                     self.com[c] = self.com[c].map(_norm)
-            self.com["Amount"] = pd.to_numeric(
-                self.com.get("Amount"), errors="coerce").fillna(0.0)
+            if "Amount" in self.com.columns:
+                self.com["Amount"] = pd.to_numeric(
+                    self.com["Amount"], errors="coerce").fillna(0.0)
+            else:
+                self.load_errors.append(
+                    "commitments has no Amount column (found: "
+                    + ", ".join(self.commitment_columns[:12]) + ")")
+                self.com["Amount"] = 0.0
+            if "EntityID" not in self.com.columns:
+                self.load_errors.append(
+                    "commitments has no EntityID column (found: "
+                    + ", ".join(self.commitment_columns[:12]) + ")")
             self.com, self.superseded_rows = self._current_only(self.com)
 
         # Entity id -> display name.
         self.names: Dict[str, str] = {}
         if not self.ent.empty:
+            self.ent = self._canonicalise(self.ent, ("ENTITYID", "NAME"))
             idc = self._col(self.ent, "entityid")
             nmc = self._col(self.ent, "name")
             if idc and nmc:
@@ -98,6 +129,13 @@ class _Source:
         # Deal InvestmentID -> (vcode, investment name). This is the PE
         # investment level and the only level keyed by vcode.
         self.deal_by_investment: Dict[str, dict] = {}
+        if not self.deals.empty:
+            self.deals = self._canonicalise(self.deals, (
+                "InvestmentID", "vcode", "Investment_Name", "Portfolio_Name"))
+            if "InvestmentID" not in self.deals.columns:
+                self.load_errors.append(
+                    "deals has no InvestmentID column, so no PE investments "
+                    "can be listed")
         if not self.deals.empty and "InvestmentID" in self.deals.columns:
             for _, r in self.deals.iterrows():
                 iid = _norm(r.get("InvestmentID"))
@@ -112,18 +150,36 @@ class _Source:
         # Every code that has at least one waterfall row, deal or entity.
         self.wf_codes: Set[str] = set()
         self.wf_step_counts: Dict[str, int] = {}
+        if not self.wf.empty:
+            self.wf = self._canonicalise(self.wf, ("vcode",))
         if not self.wf.empty and "vcode" in self.wf.columns:
             codes = self.wf["vcode"].map(_norm)
             self.wf_step_counts = codes.value_counts().to_dict()
             self.wf_codes = {c for c in codes if c}
 
-    @staticmethod
-    def _read(conn, table) -> pd.DataFrame:
+    def _read(self, conn, table) -> pd.DataFrame:
+        """Load a table, RECORDING a failure rather than swallowing it.
+
+        This returned an empty frame on any exception and logged a warning
+        nobody reads. A failed load then rendered as "No commitments recorded
+        into this entity" -- the screen reporting a fact about the data when
+        the truth was that the query never ran. A missing table and an empty
+        one must not look the same to the reader.
+        """
         try:
             return pd.read_sql(text(f"SELECT * FROM {table}"), conn)
-        except Exception:
+        except Exception as e:
             logger.warning("ownership chain: %s not loaded", table, exc_info=True)
+            self.load_errors.append(f"{table} could not be read: {str(e)[:160]}")
             return pd.DataFrame()
+
+    @staticmethod
+    def _canonicalise(df: pd.DataFrame, wanted) -> pd.DataFrame:
+        """Rename columns to the spelling this module expects, ignoring case."""
+        lower = {str(c).lower(): c for c in df.columns}
+        ren = {lower[w.lower()]: w for w in wanted
+               if w.lower() in lower and lower[w.lower()] != w}
+        return df.rename(columns=ren) if ren else df
 
     @staticmethod
     def _col(df: pd.DataFrame, want: str) -> Optional[str]:
@@ -421,11 +477,28 @@ def _health(src: _Source, iid: str, owners: List[dict]) -> dict:
             f"usual cause is a commitment row missing from this entity, which makes "
             f"every remaining owner look larger. Confirm before setting up a waterfall "
             f"on this split.")
+    # LOUD ABOUT LOAD FAILURES. A table that did not load must never read as
+    # a table that was empty.
+    for err in getattr(src, "load_errors", []):
+        notes.append("DATA LOAD PROBLEM — " + err)
+
+    raw = int(getattr(src, "raw_commitment_rows", 0))
+    kept = int(len(src.com))
+    if raw and not kept:
+        notes.append(
+            f"The commitments table returned {raw} rows and none survived "
+            f"filtering to the current commitment. That is a defect in this "
+            f"screen, not a fact about the data.")
+
     return {
-        "commitment_rows": int(len(src.com)),
+        "commitment_rows": kept,
+        "commitment_rows_loaded": raw,
+        "commitment_columns": getattr(src, "commitment_columns", [])[:20],
         "superseded_rows": int(getattr(src, "superseded_rows", 0)),
+        "deals_with_investment_id": len(src.deal_by_investment),
         "entities_named": len(src.names),
         "disagreement_count": len(bad),
+        "load_errors": list(getattr(src, "load_errors", [])),
         "notes": notes,
     }
 

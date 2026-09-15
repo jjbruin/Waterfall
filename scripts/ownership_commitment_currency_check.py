@@ -171,6 +171,37 @@ owners = _owners_of(src, "DEAL6")
 total = sum(x["pct"] for x in owners)
 check(abs(total - 100.0) < 0.001, "shares total %.4f%%, expected 100%%" % total)
 
+# ── 7. Column names are matched WITHOUT REGARD TO CASE ───────────────────
+# PostgreSQL folds unquoted identifiers to lower case; SQLite preserves them.
+# The same table is `EntityID` locally and `entityid` on Azure, and matching a
+# single spelling meant the screen either reported "no commitments" or raised,
+# depending on which column happened to miss. Nothing local can catch that,
+# which is why it reached production.
+from flask_app.services.ownership_chain_service import _Source  # noqa: E402
+
+for spelling in ("EntityID", "entityid", "ENTITYID"):
+    df = pd.DataFrame([
+        {"CommitmentUID": 832, spelling: "30BEAR",
+         "InvestorID" if spelling == "EntityID" else "investorid": "PPI27",
+         "Amount" if spelling == "EntityID" else "amount": 3_000_000,
+         "CapitalPercent": 100, "StartDate": "2020-08-07T00:00:00",
+         "EndDate": None},
+    ])
+    out = _Source._canonicalise(df, ("EntityID", "InvestorID", "Amount",
+                                     "CapitalPercent", "StartDate", "EndDate"))
+    check("EntityID" in out.columns,
+          f"_canonicalise left {spelling!r} unresolved; PostgreSQL's lower-cased "
+          f"columns would not be found")
+    check("InvestorID" in out.columns and "Amount" in out.columns,
+          f"_canonicalise resolved the entity column for {spelling!r} but not "
+          f"its siblings")
+
+# It must not invent a column that genuinely is not there.
+bare = _Source._canonicalise(pd.DataFrame([{"nothing": 1}]),
+                             ("EntityID", "Amount"))
+check("EntityID" not in bare.columns,
+      "_canonicalise invented an EntityID column out of nothing")
+
 if FAIL:
     print("FAIL")
     for m in FAIL:
