@@ -52,6 +52,8 @@ def source_from(rows):
     # just did, and the guardrail failed with AttributeError rather than
     # testing anything.
     src.balances = {}
+    src.balance_detail = {}
+    src.balance_by_flag = {}
     src.load_errors = []
     src.raw_commitment_rows = len(com)
     src.commitment_columns = [str(c) for c in com.columns]

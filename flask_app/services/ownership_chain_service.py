@@ -164,6 +164,8 @@ class _Source:
         # apply to this column exactly as they apply to the reports, which is
         # the point: it moves when they move.
         self.balances: Dict[tuple, float] = {}
+        self.balance_detail: Dict[tuple, list] = {}
+        self.balance_by_flag: Dict[tuple, float] = {}
         if not self.acct.empty:
             self.acct = self._canonicalise(self.acct, (
                 "InvestmentID", "InvestorID", "Amt", "MajorType", "Typename"))
@@ -177,6 +179,17 @@ class _Source:
                     & (tname.str.contains("return of capital")
                        | tname.str.contains("realized gain")))
                 cap = a[touches].copy()
+
+                # The same rows as the `Capital` flag sees them, for comparison
+                # only -- never used as the figure.
+                flagged = None
+                if "Capital" in a.columns:
+                    flagged = a[a["Capital"].astype(str).str.strip().str.upper() == "Y"].copy()
+                    if not flagged.empty:
+                        flagged["Amt"] = pd.to_numeric(flagged["Amt"], errors="coerce").fillna(0.0)
+                        flagged["_e"] = flagged["InvestmentID"].map(_norm)
+                        flagged["_i"] = flagged["InvestorID"].map(_norm)
+
                 if not cap.empty:
                     cap["Amt"] = pd.to_numeric(cap["Amt"], errors="coerce").fillna(0.0)
                     cap["_e"] = cap["InvestmentID"].map(_norm)
@@ -186,6 +199,33 @@ class _Source:
                     # a real finding and the caller reports it.
                     for (e, i), grp in cap.groupby(["_e", "_i"], sort=False):
                         self.balances[(e, i)] = -float(grp["Amt"].sum())
+                        # WHAT THE NUMBER IS MADE OF, so a balance that looks
+                        # wrong can be argued with instead of guessed at. Jim,
+                        # Sep 15 2026: 30BEAR had its equity fully returned and
+                        # PPI27 still showed $1,347,797. Locally the same rows
+                        # net to exactly 0.00 under BOTH this classifier and
+                        # the Capital flag, so the difference is in rows this
+                        # machine does not have -- and no amount of reasoning
+                        # from here will name them. The breakdown travels with
+                        # the figure so the next person reads it instead.
+                        by = grp.groupby("Typename")["Amt"].agg(["count", "sum"])
+                        self.balance_detail[(e, i)] = [
+                            {"typename": str(t),
+                             "rows": int(r["count"]),
+                             # negated to match the balance's direction: a
+                             # positive line ADDS to capital outstanding
+                             "effect": -float(r["sum"])}
+                            for t, r in by.iterrows()
+                        ]
+                        # The Capital flag's answer for the same pair, when the
+                        # column exists. CLAUDE.md §2.3 has these two
+                        # classifiers $73.6M apart across the portfolio and the
+                        # question unsettled; where they agree the figure is
+                        # uncontested, and where they do not the screen should
+                        # say so rather than pick a winner silently.
+                        if flagged is not None:
+                            f = flagged[(flagged["_e"] == e) & (flagged["_i"] == i)]
+                            self.balance_by_flag[(e, i)] = -float(f["Amt"].sum())
             else:
                 self.load_errors.append(
                     "accounting is missing " + ", ".join(sorted(need - set(self.acct.columns)))
@@ -387,12 +427,19 @@ def _owners_of(src: _Source, entity_id: str) -> List[dict]:
         # the pair: a zero balance and no data are different facts and only one
         # of them means "fully returned".
         bal = src.balances.get((entity_id, investor_id))
+        bal_flag = src.balance_by_flag.get((entity_id, investor_id))
+        detail = src.balance_detail.get((entity_id, investor_id)) or []
 
         owners.append({
             "entity_id": investor_id,
             "name": src.display_name(investor_id),
             "committed": amt,
             "balance": bal,
+            "balance_detail": detail,
+            "balance_by_flag": bal_flag,
+            # The two classifiers disagreeing is news, not noise.
+            "balance_disputed": (bal is not None and bal_flag is not None
+                                 and abs(bal - bal_flag) > 1.0),
             "pct": derived,
             "pct_stated": stated,
             "pct_disagrees": disagrees,

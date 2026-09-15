@@ -39,6 +39,9 @@ interface Node {
   effective_pct: number | null
   look_through: number | null
   look_through_balance: number | null
+  balance_detail?: Array<{ typename: string; rows: number; effect: number }>
+  balance_by_flag?: number | null
+  balance_disputed?: boolean
   into_entity_id?: string
   into_name?: string
   ultimate_owner?: boolean
@@ -83,6 +86,9 @@ const onlyMissing = ref(false)
 // Collapse state is per entity id. Everything starts open: this screen exists
 // to show what is missing, and a collapsed tree hides exactly that.
 const collapsed = ref<Record<string, boolean>>({})
+// Which node's balance breakdown is open. One at a time: these are dense and
+// several open at once makes the columns jump.
+const showBal = ref<string | null>(null)
 function toggle(id: string) {
   collapsed.value[id] = !collapsed.value[id]
 }
@@ -486,12 +492,46 @@ watch([root, collapsed], () => nextTick(() => {
                       <dt>balance</dt>
                       <dd :class="{ none: n.look_through_balance === null
                                           || n.look_through_balance === undefined,
-                                    neg: (n.look_through_balance ?? 0) < 0 }">
-                        {{ n.look_through_balance === null || n.look_through_balance === undefined
-                           ? 'no data' : fmtMoney(n.look_through_balance) }}
+                                    neg: (n.look_through_balance ?? 0) < 0,
+                                    disputed: n.balance_disputed }">
+                        <button v-if="(n.balance_detail || []).length"
+                                class="bal-btn" type="button"
+                                @click="showBal = showBal === uidOf(n) ? null : uidOf(n)"
+                                :title="'What this balance is made of'">
+                          {{ fmtMoney(n.look_through_balance) }}
+                          <span class="caret">{{ showBal === uidOf(n) ? '▾' : '▸' }}</span>
+                        </button>
+                        <template v-else>
+                          {{ n.look_through_balance === null || n.look_through_balance === undefined
+                             ? 'no data' : fmtMoney(n.look_through_balance) }}
+                        </template>
                       </dd>
                     </template>
                   </dl>
+
+                  <!-- WHAT THE BALANCE IS MADE OF. Opened on demand, because a
+                       figure nobody can take apart is a figure nobody can argue
+                       with — and this one was wrong once already. -->
+                  <div v-if="showBal === uidOf(n) && (n.balance_detail || []).length"
+                       class="bal-detail">
+                    <div v-for="(d, k) in n.balance_detail" :key="k" class="bal-row">
+                      <span class="bal-t">{{ d.typename }}</span>
+                      <span class="bal-n" :class="{ neg: d.effect < 0 }">
+                        {{ fmtMoney(d.effect) }}
+                      </span>
+                      <span class="bal-c">{{ d.rows }}</span>
+                    </div>
+                    <div class="bal-row total">
+                      <span class="bal-t">direct balance</span>
+                      <span class="bal-n">{{ fmtMoney(n.balance) }}</span>
+                      <span class="bal-c"></span>
+                    </div>
+                    <p v-if="n.balance_disputed" class="bal-warn">
+                      The <code>Capital</code> flag gives {{ fmtMoney(n.balance_by_flag) }}
+                      for the same rows. The two classifiers disagree — see
+                      open_items §2.3.
+                    </p>
+                  </div>
 
                   <!-- The RAW commitment, shown only where it differs from the
                        look-through — i.e. above the first level, where it is a
@@ -747,6 +787,36 @@ h2 { margin: 0 0 4px; font-size: 20px; }
   font-variant-numeric: tabular-nums;
 }
 .direct-note { font-style: italic; }
+
+/* Balance breakdown */
+.bal-btn {
+  background: none; border: none; padding: 0; cursor: pointer;
+  font: inherit; color: inherit; font-variant-numeric: tabular-nums;
+  text-decoration: underline dotted #b9c2cf; text-underline-offset: 2px;
+}
+.bal-btn:hover { color: #1d4e7e; }
+.caret { font-size: 8px; color: #8a93a3; margin-left: 2px; }
+.bal dd.disputed { color: #a35f00; }
+
+.bal-detail {
+  margin: 5px 0 0 20px; padding: 7px 9px;
+  background: #fff; border: 1px solid #e2e6ee; border-radius: 4px;
+}
+.bal-row {
+  display: grid; grid-template-columns: 1fr auto 20px; gap: 8px;
+  font-size: 10.5px; line-height: 1.5;
+}
+.bal-row.total {
+  border-top: 1px solid #e2e6ee; margin-top: 3px; padding-top: 3px; font-weight: 700;
+}
+.bal-t { color: #556; }
+.bal-n { color: #223; font-variant-numeric: tabular-nums; text-align: right; }
+.bal-n.neg { color: #b3261e; }
+.bal-c { color: #a8b0bc; text-align: right; }
+.bal-warn {
+  margin: 6px 0 0; font-size: 10px; color: #a35f00; line-height: 1.45;
+}
+.bal-warn code { background: #fff4e0; padding: 0 3px; border-radius: 2px; }
 
 /* Committed vs balance. Two figures that are easy to confuse, so each is
    labelled and they line up on the decimal. */
