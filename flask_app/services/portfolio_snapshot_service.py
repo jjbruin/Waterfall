@@ -191,12 +191,31 @@ GROUP_OVERRIDES: dict[str, str] = {
 #: and the rebase is a measured no-op
 #: (``scripts/snapshot_kept_sold_stack_check.py``).
 #:
+#: Camarillo Village (PCAMARI) and Outlook Nine Mile (POUTLOO) join Sep 15 2026,
+#: on the same footing and for the same reason: both are sold, both were being
+#: dropped by ``is_sold_as_of``, and the page is meant to carry every sold deal
+#: rather than the two that happened to be named first. Nothing below is
+#: per-deal — they pick up the identical treatment through ``kept_despite_sold``
+#: (debt n/a via SOLD_NA_CELLS, the ``last_held_quarter`` rebase, the "(Sold)"
+#: label, and exclusion from the fund tally).
+#:
+#: ON THE VCODES, because there are two spaces and only one is right here:
+#: these are the DEAL-level codes, the same space PCITWES and P0000017 are in.
+#: ``scripts/noi_changed_quarters.py`` carries a property-level map that calls
+#: Camarillo ``P0000009`` and City West ``P0000011``; keying this set on those
+#: would match nothing and fail SILENTLY, since a vcode that is never sold is
+#: simply never consulted (see the ``is_sold_as_of`` gate in
+#: ``_classify_entities``). PCAMARI/POUTLOO are read off the InvestmentID->vCode
+#: pairing that returns PCITWES and P0000017 for the two deals already here.
+#:
 #: This is a per-deal exception, not a rule: "sold but still reported" is an
 #: editorial judgement with no field behind it. Should MRI ever carry a
 #: disposition-type or still-reporting flag, drive it off that and delete this.
 KEEP_DESPITE_SOLD: set[str] = {
     "PCITWES",        # City West — foreclosed 8/30/2025
     "P0000017",       # East Manchester — sold 6/25/2026
+    "PCAMARI",        # Camarillo Village — sold
+    "POUTLOO",        # Outlook Nine Mile — sold
 }
 # ══════════════════════════════════════════════════════════════════════════
 

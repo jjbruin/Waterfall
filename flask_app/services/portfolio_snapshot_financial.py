@@ -263,23 +263,30 @@ STANDING_FOOTNOTES: tuple = (
     # numbers, so a second note would print the same sentence twice under two
     # numbers. ``anchors`` (plural) puts one number on both property names;
     # ``anchor`` (singular) still works and is what the database rows use.
-    # CITY WEST ONLY. East Manchester was added to this note on Sep 2 2026 and
-    # removed the same day, at the author's decision, because the page had
-    # started contradicting itself: East Manchester's Net ROE is a cell the
+    # NOT EVERY KEPT-SOLD DEAL. East Manchester was added to this note on Sep 2
+    # 2026 and removed the same day, at the author's decision, because the page
+    # had started contradicting itself: East Manchester's Net ROE is a cell the
     # analyst types into and its ITD distributions are shown — that is the whole
     # reason its row is kept after the sale — so a footnote saying it is
     # excluded from ROE could not also be true.
     #
-    # City West stays. It was FORECLOSED, not sold: there is no ROE to report,
-    # its Net ROE renders n/a through its own PDF_NA_CELLS entry, and the two
-    # deals are not the same case even though both are in KEEP_DESPITE_SOLD.
+    # THE TEST IS WHETHER THE DEAL'S Net ROE IS SUPPRESSED, and the one place
+    # that decides it is ``PDF_NA_CELLS``. A deal belongs in this note when, and
+    # only when, its entry there carries ``net_roe`` — otherwise the page prints
+    # "excluded from ROE" above a ROE cell the analyst is expected to fill in.
+    # The guardrail below asserts exactly that correspondence, so the two cannot
+    # drift apart: adding a name here without suppressing the cell fails, and so
+    # does suppressing the cell without naming the deal.
     #
-    # ``anchors`` (plural) is kept rather than reverting to the singular
-    # ``anchor``: the multi-anchor path is exercised by other notes and by the
-    # guardrails, and a one-element tuple reads the same to compose_footnotes.
+    # City West was FORECLOSED, not sold: there is no ROE to report. Camarillo
+    # Village and Outlook Nine Mile join it Sep 15 2026 at the author's
+    # decision, on the same footing. East Manchester is deliberately absent.
     {"key": "roe_exclusion",
-     "anchors": (property_anchor("PCITWES"),),
-     "text": "City West is excluded from ROE calculations."},
+     "anchors": (property_anchor("PCITWES"),
+                 property_anchor("PCAMARI"),
+                 property_anchor("POUTLOO")),
+     "text": "City West, Camarillo Village and Outlook Nine Mile are excluded "
+             "from ROE calculations."},
 )
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -676,9 +683,22 @@ EXCLUDING_DEV_COLUMNS = ("total_commitment", "itd", "net_roe")
 #:
 #: Only `debt`. Its Net ROE is a real cell awaiting manual entry and must keep
 #: prompting as "pending entry".
+#: Camarillo Village and Outlook Nine Mile follow CITY WEST, not East Manchester
+#: (author's decision, Sep 15 2026): both are out of the ROE numbers, so Net ROE
+#: reads n/a here and both are named in the footnote below.
+#:
+#: ``net_roe`` ONLY — deliberately not ``debt``. Debt is already n/a on these
+#: rows through ``SOLD_NA_CELLS``, which fires on every kept-despite-sold row;
+#: ``_na_cells`` unions the two. City West lists ``debt`` here as well because
+#: its entry predates that rule and its balance is a real 0.0 that would print
+#: "$0.0", a case the sale-keyed rule does not cover. Repeating ``debt`` for
+#: these two would be a per-deal restatement of a rule that already holds, and
+#: would hide it if the rule were ever changed.
 PDF_NA_CELLS: dict[str, frozenset] = {
     "PCITWES": frozenset({"debt", "net_roe"}),      # City West
     "P0000066": frozenset({"debt"}),                # Pegasus Life Storage
+    "PCAMARI": frozenset({"net_roe"}),              # Camarillo Village
+    "POUTLOO": frozenset({"net_roe"}),              # Outlook Nine Mile
 }
 
 #: The columns that stop applying when a deal is reported AFTER its sale, i.e.
@@ -1870,18 +1890,37 @@ def _selftest():                                    # pragma: no cover
         and bool((out["footnote_marks"]["column"] or {}).get("debt")))
     chk("the ROE-exclusion footnote's number is on the PROPERTY, not a header",
         bool((out["footnote_marks"]["property"] or {}).get("PCITWES")))
-    # ONE note, TWO names, ONE number — see STANDING_FOOTNOTES.
+    # ONE note, N names, ONE number — see STANDING_FOOTNOTES.
+    #
+    # This block used to assert the note marked City West AND East Manchester.
+    # That was left behind by the Sep 2 2026 decision to take East Manchester
+    # OUT of the note (its Net ROE is an enterable cell, so the note would have
+    # contradicted the page) and has been stale ever since: main anchors
+    # PCITWES alone, so the assertion could only have failed. Replaced with the
+    # correspondence that actually matters, which no longer names any deal.
     roe_note = next((f_ for f_ in out["footnotes"]
                      if "excluded from ROE" in f_["text"]), None)
-    chk("the ROE-exclusion footnote marks City West AND East Manchester",
+    #: The deals whose Net ROE is genuinely suppressed — the single source the
+    #: note must agree with. See PDF_NA_CELLS.
+    roe_suppressed = {vc for vc, cells in PDF_NA_CELLS.items()
+                      if "net_roe" in cells}
+    chk("the ROE-exclusion footnote marks EXACTLY the deals whose Net ROE is "
+        "suppressed (PDF_NA_CELLS), no more and no fewer",
         bool(roe_note)
-        and (out["footnote_marks"]["property"] or {}).get("PCITWES")
-        == [roe_note["number"]]
-        and (out["footnote_marks"]["property"] or {}).get("P0000017")
-        == [roe_note["number"]])
-    chk("it names both deals in its text",
-        bool(roe_note) and "City West" in roe_note["text"]
-        and "East Manchester" in roe_note["text"])
+        and {vc for vc in flat
+             if (out["footnote_marks"]["property"] or {}).get(vc)
+             == [roe_note["number"]]}
+        == (roe_suppressed & set(flat)))
+    chk("it names each of those deals in its text",
+        bool(roe_note)
+        and all((flat[vc].get("name") or "") in roe_note["text"]
+                for vc in roe_suppressed & set(flat)))
+    chk("no deal with an ENTERABLE Net ROE is named by it — the East "
+        "Manchester contradiction cannot come back",
+        bool(roe_note)
+        and not any((out["footnote_marks"]["property"] or {}).get(vc)
+                    == [roe_note["number"]]
+                    for vc in flat if vc not in roe_suppressed))
     chk("it is ONE footnote, not two identical ones",
         sum(1 for f_ in out["footnotes"]
             if "excluded from ROE" in f_["text"]) == 1)
