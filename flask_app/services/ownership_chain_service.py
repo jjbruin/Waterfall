@@ -77,6 +77,7 @@ class _Source:
             self.ent = self._read(conn, "entities")
             self.deals = self._read(conn, "deals")
             self.wf = self._read(conn, "waterfalls")
+            self.acct = self._read(conn, "accounting")
 
         # WHAT ARRIVED, BEFORE ANYTHING IS DONE TO IT. Reported in the health
         # block so "no commitments for this entity" can be told apart from "the
@@ -146,6 +147,49 @@ class _Source:
                     "name": str(r.get("Investment_Name") or "").strip(),
                     "portfolio": str(r.get("Portfolio_Name") or "").strip(),
                 }
+
+        # ── Capital outstanding per (entity, investor) ──────────────────
+        #
+        # A commitment is what was PROMISED. The balance is what is actually
+        # outstanding against it, and the two answer different questions: a
+        # fully returned commitment still reads at its committed amount.
+        #
+        # THE CLASSIFIER IS BORROWED, NOT INVENTED. `reports_service` already
+        # decides which accounting rows touch capital, and `loaders.capital_after`
+        # already decides which way. CLAUDE.md §1.3 records that four different
+        # classifiers for this already exist on the same rows; a fifth written
+        # here would be the defect, not the feature. Both open questions about
+        # that rule -- §1.7 ("contrib" in MajorType is over-broad) and §2.3
+        # (the Capital flag vs the Typename rule, $73.6M apart) -- therefore
+        # apply to this column exactly as they apply to the reports, which is
+        # the point: it moves when they move.
+        self.balances: Dict[tuple, float] = {}
+        if not self.acct.empty:
+            self.acct = self._canonicalise(self.acct, (
+                "InvestmentID", "InvestorID", "Amt", "MajorType", "Typename"))
+            need = {"InvestmentID", "InvestorID", "Amt"}
+            if need.issubset(set(self.acct.columns)):
+                a = self.acct
+                major = a.get("MajorType", pd.Series("", index=a.index)).astype(str).str.lower()
+                tname = a.get("Typename", pd.Series("", index=a.index)).astype(str).str.lower()
+                touches = major.str.contains("contrib") | (
+                    major.str.contains("distri")
+                    & (tname.str.contains("return of capital")
+                       | tname.str.contains("realized gain")))
+                cap = a[touches].copy()
+                if not cap.empty:
+                    cap["Amt"] = pd.to_numeric(cap["Amt"], errors="coerce").fillna(0.0)
+                    cap["_e"] = cap["InvestmentID"].map(_norm)
+                    cap["_i"] = cap["InvestorID"].map(_norm)
+                    # capital_after(c, amt) == c - amt, so the balance is the
+                    # NEGATED sum. Not floored here: a negative running total is
+                    # a real finding and the caller reports it.
+                    for (e, i), grp in cap.groupby(["_e", "_i"], sort=False):
+                        self.balances[(e, i)] = -float(grp["Amt"].sum())
+            else:
+                self.load_errors.append(
+                    "accounting is missing " + ", ".join(sorted(need - set(self.acct.columns)))
+                    + " — capital balances cannot be shown")
 
         # Every code that has at least one waterfall row, deal or entity.
         self.wf_codes: Set[str] = set()
@@ -338,10 +382,17 @@ def _owners_of(src: _Source, entity_id: str) -> List[dict]:
             if pd.notna(s):
                 since = s.date().isoformat()
 
+        # What is actually outstanding against this commitment, as opposed to
+        # what was promised. None -- never 0.0 -- when the feed has no rows for
+        # the pair: a zero balance and no data are different facts and only one
+        # of them means "fully returned".
+        bal = src.balances.get((entity_id, investor_id))
+
         owners.append({
             "entity_id": investor_id,
             "name": src.display_name(investor_id),
             "committed": amt,
+            "balance": bal,
             "pct": derived,
             "pct_stated": stated,
             "pct_disagrees": disagrees,
@@ -378,20 +429,31 @@ def _build_level(src: _Source, entity_id: str, depth: int,
             node["owners"] = []
             node["truncated_reason"] = "Already appears higher in this chain (circular ownership)."
         else:
-            node["terminal"] = False
             node["owners"] = _build_level(src, eid, depth + 1, seen | {eid})
-            if not node["owners"] and depth + 1 < MAX_DEPTH:
-                node["truncated_reason"] = "No commitments recorded into this entity."
+            # NOTHING ABOVE IT MEANS IT IS THE TOP, NOT THAT SOMETHING IS
+            # MISSING. Jim, Sep 15 2026: an entity with no owner above it is
+            # the ultimate beneficial owner -- that record IS the owner. So it
+            # has no absent commitment and needs no waterfall, and reporting
+            # either as a gap sent the reader looking for data that does not
+            # exist and inflated the missing-waterfall count with rows that can
+            # never be filled.
+            node["terminal"] = not node["owners"]
+            node["ultimate_owner"] = not node["owners"]
         nodes.append(node)
     return nodes
 
 
 def _count(nodes: List[dict]) -> tuple:
-    """(entities, levels_missing_waterfall) across a subtree."""
+    """(entities, levels_missing_waterfall) across a subtree.
+
+    An ultimate beneficial owner is NOT counted as missing a waterfall. There
+    is nothing beneath it to distribute and no owners to distribute to, so a
+    waterfall there is not a gap somebody can close.
+    """
     n = missing = 0
     for x in nodes:
         n += 1
-        if not x["has_waterfall"]:
+        if not x["has_waterfall"] and not x.get("ultimate_owner"):
             missing += 1
         sub_n, sub_missing = _count(x.get("owners") or [])
         n += sub_n
@@ -451,7 +513,11 @@ def build_chain(investment_id: str, engine=None) -> dict:
         **_waterfall_status(src, wf_code),
     }
     if not owners:
-        root["truncated_reason"] = "No commitments recorded into this entity."
+        # At the PE investment level this is a real gap: an investment we hold
+        # must have been funded by somebody, so no commitments naming it is
+        # missing data rather than a beneficial owner.
+        root["truncated_reason"] = (
+            "No commitments name this investment as the invested entity.")
 
     return {
         "root": root,
@@ -481,7 +547,9 @@ def _health(src: _Source, iid: str, owners: List[dict]) -> dict:
     if src.com.empty:
         notes.append("The commitments table is empty; no ownership can be derived.")
     if not owners:
-        notes.append(f"No open commitments name {iid} as the invested entity.")
+        notes.append(f"No open commitments name {iid} as the invested entity. "
+                     f"An investment we hold should have been funded by somebody, "
+                     f"so this is missing data rather than a top of the chain.")
     zero = [o["entity_id"] for o in owners if o["committed"] == 0]
     if zero:
         notes.append("Zero-dollar commitment from " + ", ".join(zero)

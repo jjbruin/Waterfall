@@ -12,7 +12,7 @@
  * point — a level is a column, so an analyst scanning for "which levels still
  * need a waterfall" reads down a column rather than chasing indentation.
  */
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import DataTable from '../components/common/DataTable.vue'
 import api from '../api/client'
 import { useDataStore } from '../stores/data'
@@ -35,6 +35,8 @@ interface Node {
   name: string
   level: number
   committed: number
+  balance: number | null
+  ultimate_owner?: boolean
   pct: number | null
   pct_stated: number | null
   pct_disagrees: boolean
@@ -120,19 +122,90 @@ async function loadChain(id: string) {
   }
 }
 
-/** Flatten the tree into columns, one per ownership level. */
+/**
+ * Flatten the tree into columns, one per ownership level.
+ *
+ * Each node instance gets a UID rather than being keyed on entity_id: the same
+ * entity can own into more than one place and would otherwise collide, both in
+ * the v-for key and in the connector lines.
+ */
+const edges = ref<Array<{ from: string; to: string }>>([])
+
 const columns = computed<Node[][]>(() => {
   if (!root.value) return []
   const cols: Node[][] = []
-  const walk = (n: Node, depth: number) => {
+  const es: Array<{ from: string; to: string }> = []
+  const walk = (n: Node, depth: number, uid: string) => {
+    ;(n as any).__uid = uid
     if (!cols[depth]) cols[depth] = []
     cols[depth].push(n)
     if (collapsed.value[n.entity_id]) return
-    for (const o of n.owners || []) walk(o, depth + 1)
+    ;(n.owners || []).forEach((o, i) => {
+      const childUid = `${uid}/${o.entity_id}-${i}`
+      es.push({ from: uid, to: childUid })
+      walk(o, depth + 1, childUid)
+    })
   }
-  walk(root.value, 0)
+  walk(root.value, 0, root.value.entity_id)
+  edges.value = es
   return cols
 })
+
+function uidOf(n: Node): string {
+  return (n as any).__uid || n.entity_id
+}
+
+/**
+ * Connector lines.
+ *
+ * The columns pack each level top-to-bottom, so an owner is rarely level with
+ * the investment it owns into — by the third level the two can be hundreds of
+ * pixels apart and the reader has to guess. These are drawn from measured DOM
+ * positions rather than computed from the data, because the data does not know
+ * how the browser wrapped the cards.
+ */
+const linkPaths = ref<Array<{ d: string; unresolved: boolean }>>([])
+const svgBox = ref({ w: 0, h: 0 })
+const colsEl = ref<HTMLElement | null>(null)
+
+function drawLinks() {
+  const host = colsEl.value
+  if (!host || !root.value) { linkPaths.value = []; return }
+  const base = host.getBoundingClientRect()
+  svgBox.value = { w: host.scrollWidth, h: host.scrollHeight }
+
+  const box = (uid: string) => {
+    const el = host.querySelector(`[data-uid="${CSS.escape(uid)}"]`) as HTMLElement | null
+    if (!el) return null
+    const r = el.getBoundingClientRect()
+    return {
+      left: r.left - base.left, right: r.right - base.left,
+      mid: r.top - base.top + r.height / 2,
+    }
+  }
+
+  const out: Array<{ d: string; unresolved: boolean }> = []
+  for (const e of edges.value) {
+    const a = box(e.from), b = box(e.to)
+    if (!a || !b) continue
+    // Out of the owner's right edge, into the investment's left edge. The
+    // control points sit half the gap away so the curve leaves and arrives
+    // horizontally, which keeps the arrowhead readable when the two cards are
+    // far apart vertically.
+    const gap = Math.max(18, (b.left - a.right) / 2)
+    out.push({
+      d: `M ${a.right} ${a.mid} C ${a.right + gap} ${a.mid}, ${b.left - gap} ${b.mid}, ${b.left - 7} ${b.mid}`,
+      unresolved: false,
+    })
+  }
+  linkPaths.value = out
+}
+
+let redrawTimer: number | undefined
+function scheduleRedraw() {
+  window.clearTimeout(redrawTimer)
+  redrawTimer = window.setTimeout(drawLinks, 30)
+}
 
 function levelLabel(i: number): string {
   if (i === 0) return 'Preferred equity investment'
@@ -233,7 +306,28 @@ function fmtPct(v: number | null | undefined): string {
   return v.toFixed(2) + '%'
 }
 
-onMounted(loadInvestments)
+let ro: ResizeObserver | undefined
+onMounted(() => {
+  loadInvestments()
+  // The cards change height with their own content (a disagreement note adds a
+  // line), so a window listener alone is not enough — observe the container.
+  if (typeof ResizeObserver !== 'undefined' && colsEl.value) {
+    ro = new ResizeObserver(scheduleRedraw)
+    ro.observe(colsEl.value)
+  }
+  window.addEventListener('resize', scheduleRedraw)
+})
+onBeforeUnmount(() => {
+  ro?.disconnect()
+  window.removeEventListener('resize', scheduleRedraw)
+  window.clearTimeout(redrawTimer)
+})
+
+// Redraw after the DOM has the new cards, not before.
+watch([root, collapsed], () => nextTick(() => {
+  if (colsEl.value && ro) { ro.disconnect(); ro.observe(colsEl.value) }
+  drawLinks()
+}), { deep: true })
 </script>
 
 <template>
@@ -332,16 +426,30 @@ onMounted(loadInvestments)
             <ul><li v-for="(n, i) in health.notes" :key="i">{{ n }}</li></ul>
           </div>
 
-          <div class="cols-scroll">
-            <div class="cols">
+          <div class="cols-scroll" @scroll="scheduleRedraw">
+            <div class="cols" ref="colsEl">
+              <!-- Connectors. Behind the cards, never intercepting a click. -->
+              <svg class="links" :width="svgBox.w" :height="svgBox.h"
+                   :viewBox="`0 0 ${svgBox.w} ${svgBox.h}`" aria-hidden="true">
+                <defs>
+                  <marker id="own-arrow" viewBox="0 0 8 8" refX="7" refY="4"
+                          markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                    <path d="M 0 0 L 8 4 L 0 8 z" fill="#9fb0c4" />
+                  </marker>
+                </defs>
+                <path v-for="(p, i) in linkPaths" :key="i" :d="p.d"
+                      fill="none" stroke="#9fb0c4" stroke-width="1.5"
+                      marker-end="url(#own-arrow)" />
+              </svg>
               <div v-for="(col, i) in columns" :key="i" class="col">
                 <div class="col-head">
                   <span class="col-label">{{ levelLabel(i) }}</span>
                   <span class="col-total">{{ fmtMoney(levelTotal(col)) }}</span>
                 </div>
 
-                <div v-for="n in col" :key="n.entity_id + '-' + i" class="node"
-                     :class="{ pe: i === 0, terminal: n.terminal }">
+                <div v-for="n in col" :key="uidOf(n)" class="node"
+                     :data-uid="uidOf(n)"
+                     :class="{ pe: i === 0, terminal: n.terminal, ubo: n.ultimate_owner }">
                   <div class="node-top">
                     <button
                       v-if="(n.owners || []).length"
@@ -360,6 +468,21 @@ onMounted(loadInvestments)
                     <span class="amt">{{ fmtMoney(n.committed) }}</span>
                     <span v-if="n.pct !== null" class="pct">{{ fmtPct(n.pct) }}</span>
                   </div>
+                  <dl class="bal">
+                    <dt>{{ i === 0 ? 'committed in' : 'committed' }}</dt>
+                    <dd>{{ fmtMoney(n.committed) }}</dd>
+                    <!-- Only a commitment has a balance. The investment row's
+                         figure is the total committed INTO it, which is a sum of
+                         the column to its right, not a position of its own. -->
+                    <template v-if="i > 0">
+                      <dt>balance</dt>
+                      <dd :class="{ none: n.balance === null || n.balance === undefined,
+                                    neg: (n.balance ?? 0) < 0 }">
+                        {{ n.balance === null || n.balance === undefined
+                           ? 'no data' : fmtMoney(n.balance) }}
+                      </dd>
+                    </template>
+                  </dl>
 
                   <p v-if="n.since" class="since">
                     current since {{ n.since }}
@@ -370,10 +493,14 @@ onMounted(loadInvestments)
                   </p>
 
                   <div class="node-wf">
-                    <span class="badge" :class="n.has_waterfall ? 'ok' : 'gap'">
-                      {{ n.has_waterfall ? `Waterfall · ${n.step_count} steps` : 'No waterfall' }}
+                    <span class="badge"
+                          :class="n.has_waterfall ? 'ok' : (n.ultimate_owner ? 'ubo' : 'gap')">
+                      {{ n.has_waterfall
+                        ? `Waterfall · ${n.step_count} steps`
+                        : (n.ultimate_owner ? 'Beneficial owner' : 'No waterfall') }}
                     </span>
-                    <a v-if="n.waterfall_url" :href="n.waterfall_url" class="wf-link">
+                    <a v-if="n.waterfall_url && !(n.ultimate_owner && !n.has_waterfall)"
+                       :href="n.waterfall_url" class="wf-link">
                       {{ n.has_waterfall ? 'Open' : 'Set up' }} {{ n.waterfall_code }} →
                     </a>
                   </div>
@@ -514,12 +641,49 @@ h2 { margin: 0 0 4px; font-size: 20px; }
 .notes ul { margin: 0; padding-left: 18px; }
 .notes li { font-size: 12.5px; color: #664; margin-bottom: 4px; }
 
-.cols-scroll { overflow-x: auto; padding-bottom: 8px; }
-.cols { display: flex; gap: 14px; align-items: flex-start; min-width: min-content; }
+/* BOTH AXES, BOUNDED, WITH THE SCROLLBARS VISIBLE.
+   A deep chain runs off the right and a wide level runs off the bottom, and an
+   overlay scrollbar that only appears mid-gesture gives no hint either exists.
+   Capping the height also keeps the level headings on screen (they are sticky
+   below) instead of scrolling away with the page. */
+.cols-scroll {
+  overflow: auto;
+  max-height: min(72vh, 780px);
+  padding-bottom: 8px;
+  border: 1px solid #e8ecf3;
+  border-radius: 8px;
+  background:
+    linear-gradient(to right, #fff 30%, rgba(255,255,255,0)) left center,
+    linear-gradient(to left, #fff 30%, rgba(255,255,255,0)) right center,
+    radial-gradient(farthest-side at 0% 50%, rgba(31,45,61,.14), transparent) left center,
+    radial-gradient(farthest-side at 100% 50%, rgba(31,45,61,.14), transparent) right center;
+  background-repeat: no-repeat;
+  background-size: 34px 100%, 34px 100%, 12px 100%, 12px 100%;
+  background-attachment: local, local, scroll, scroll;
+  scrollbar-width: thin;
+  scrollbar-color: #b6c0ce #eef1f6;
+}
+.cols-scroll::-webkit-scrollbar { width: 12px; height: 12px; }
+.cols-scroll::-webkit-scrollbar-track { background: #eef1f6; border-radius: 6px; }
+.cols-scroll::-webkit-scrollbar-thumb {
+  background: #b6c0ce; border-radius: 6px; border: 3px solid #eef1f6;
+}
+.cols-scroll::-webkit-scrollbar-thumb:hover { background: #93a1b3; }
+.cols-scroll::-webkit-scrollbar-corner { background: #eef1f6; }
+.cols {
+  display: flex; gap: 40px; align-items: flex-start; min-width: min-content;
+  position: relative;   /* the connector svg is positioned against this */
+  padding: 12px 14px;
+}
+
+/* Connectors sit behind the cards and never take a click. */
+.links { position: absolute; inset: 0; pointer-events: none; z-index: 0; overflow: visible; }
+.node { position: relative; z-index: 1; }
 .col { min-width: 244px; max-width: 244px; display: flex; flex-direction: column; gap: 10px; }
 .col-head {
   display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
-  padding-bottom: 6px; border-bottom: 2px solid #dde3ec;
+  padding: 2px 0 6px; border-bottom: 2px solid #dde3ec;
+  position: sticky; top: 0; z-index: 2; background: #fff;
 }
 .col-label { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: #7a8394; }
 .col-total { font-size: 11px; color: #889; font-variant-numeric: tabular-nums; }
@@ -541,9 +705,30 @@ h2 { margin: 0 0 4px; font-size: 20px; }
 .node-id code { font-size: 11.5px; font-weight: 700; color: #1d4e7e; display: block; }
 .node-name { font-size: 12px; color: #556; display: block; word-break: break-word; }
 
-.node-figs { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding-left: 20px; }
-.amt { font-size: 13px; font-weight: 600; color: #223; font-variant-numeric: tabular-nums; }
-.pct { font-size: 13px; font-weight: 700; color: #1d4e7e; font-variant-numeric: tabular-nums; }
+.node-figs { display: flex; justify-content: flex-end; align-items: baseline; gap: 8px; padding-left: 20px; }
+.amt { display: none; }  /* the dl below carries it, labelled */
+.pct { font-size: 15px; font-weight: 700; color: #1d4e7e; font-variant-numeric: tabular-nums; }
+
+/* Committed vs balance. Two figures that are easy to confuse, so each is
+   labelled and they line up on the decimal. */
+.bal {
+  display: grid; grid-template-columns: auto 1fr; gap: 1px 10px;
+  margin: 0 0 0 20px; padding: 5px 8px;
+  background: #f7f9fc; border-radius: 4px;
+}
+.bal dt {
+  font-size: 9.5px; letter-spacing: .06em; text-transform: uppercase;
+  color: #8a93a3; align-self: center;
+}
+.bal dd {
+  margin: 0; text-align: right; font-size: 12.5px; font-weight: 600;
+  color: #223; font-variant-numeric: tabular-nums;
+}
+.bal dd.none { color: #a0a7b4; font-weight: 400; font-style: italic; }
+.bal dd.neg { color: #b3261e; }
+
+.node.ubo { background: #fcfdfe; border-style: dashed; }
+.badge.ubo { background: #eef2f7; color: #4a5768; }
 
 .since { margin: 0 0 0 20px; font-size: 10.5px; color: #99a; }
 
