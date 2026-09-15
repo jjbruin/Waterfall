@@ -21,7 +21,12 @@ class Config:
     # CORS
     CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "http://localhost:5173").split(",")
 
-    # Email / SendGrid
+    # Email. Azure Communication Services is the sender when it is configured,
+    # SendGrid otherwise -- see flask_app/auth/email_utils.py. Keeping both
+    # means the cutover is an env-var change and the rollback is the same
+    # change backwards, with no redeploy either way.
+    ACS_CONNECTION_STRING = os.environ.get("ACS_CONNECTION_STRING", "")
+    ACS_SENDER = os.environ.get("ACS_SENDER", "")
     SENDGRID_API_KEY = os.environ.get("SENDGRID_API_KEY", "")
     SENDGRID_FROM = os.environ.get("SENDGRID_FROM", "")
     APP_URL = os.environ.get("APP_URL", "https://app-waterfall-dev-v2.icyplant-026fb2db.eastus.azurecontainerapps.io")

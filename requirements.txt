@@ -24,6 +24,10 @@ PyMuPDF>=1.25
 
 # HTTP / email
 requests>=2.32
+# Azure Communication Services email. The SDK rather than raw REST
+# because ACS authenticates with an HMAC-signed request, and a signing
+# bug fails as a bare 401 -- indistinguishable from a bad key.
+azure-communication-email>=1.0
 
 # AI assistant
 anthropic>=0.109
