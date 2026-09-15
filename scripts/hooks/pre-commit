@@ -9,15 +9,63 @@
 # name. Nobody named fix_tables.py — it looked like an ordinary migration script. This
 # hook checks CONTENT, so it catches the file nobody predicted.
 #
+# WIDENED Sep 15 2026, after THREE more credentials surfaced in a single day and not
+# one of them was URI-shaped:
+#
+#   * the MRI SQL Server password  — MRI_PASSWORD = "..." in mri_service.py, public
+#     on origin/main since 2026-05-05, read access to the source of record
+#   * the SendGrid API key         — a plaintext container-app env var
+#   * the app admin password       — `admin / Qu@kers_12` in a memory file
+#
+# The original rule looked only for scheme://user:secret@host, so every one of them
+# walked straight past it. It now also catches a bare `NAME = "value"` assignment whose
+# NAME says secret, and token formats that are self-identifying whatever they are called.
+#
+# WHAT IT STILL CANNOT DO: it inspects only STAGED, ADDED lines. It stops the next leak
+# and can never see one already committed. Run a repo-wide scan of tracked content after
+# any incident — see open_items.md §3.10.
+#
 # INSTALL (once per clone):
 #     git config core.hooksPath scripts/hooks
 #
 # BYPASS, if you are certain a match is a placeholder:
 #     git commit --no-verify
 #
+# SELF-TEST:
+#     .venv/Scripts/python.exe scripts/precommit_secret_check.py
+#
 # Exit 0 = allow, 1 = block.
 
 fail=0
+
+# Values that are obviously not secrets. Applied to every rule, so a placeholder
+# never has to be bypassed by hand. Deliberately generous: a hook that cries wolf
+# gets --no-verify'd reflexively, and then it protects nothing.
+PLACEHOLDER='(^|["'"'"'=:[:space:]])(<|\{\{|\$|%|os\.environ|getenv|process\.env|secretref:|your|my_|example|sample|dummy|placeholder|redacted|changeme|change_me|todo|fixme|none|null|n/a|test|fake|xxx|\*\*\*)'
+
+# A token that identifies itself by shape, whatever variable it is assigned to.
+SELF_IDENTIFYING='(SG\.[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{16,}|\bAKIA[0-9A-Z]{16}\b|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|xox[baprs]-[A-Za-z0-9-]{10,}|AccountKey=[A-Za-z0-9+/]{40,}|accesskey=[A-Za-z0-9+/]{30,})'
+
+# A name that says "this is a secret", assigned a literal.
+#   MRI_PASSWORD = "..."      PWD: '...'      api_key="..."
+SECRET_ASSIGN='[A-Za-z_][A-Za-z0-9_]*(pass|passwd|password|pwd|secret|token|apikey|api_key|accesskey|access_key|client_secret|credential)[A-Za-z0-9_]*[[:space:]]*[:=][[:space:]]*["'"'"'][^"'"'"']{6,}["'"'"']'
+
+# `user / password` on one line, the shape the admin credential took in a doc.
+# A space is required EACH SIDE of the slash: without that this matched the path
+# `admin/passwords-policy.md`, and a hook that fires on a filename is a hook that
+# gets bypassed by reflex.
+PAIR_FORM='\b(admin|administrator|root|sa|sysadmin|[a-z]+admin)[[:space:]]+/[[:space:]]+[^[:space:]/]{6,}'
+
+# Whatever is printed must not contain the secret. Three forms to cover: a URI,
+# a quoted literal, and `user / secret` — which the first two both miss, so the
+# pair rule echoed its own finding back in full.
+mask() { sed -E 's#(://[^:]+:)[^@]+(@)#\1********\2#; s#(["'"'"'])[^"'"'"']{6,}(["'"'"'])#\1********\2#g; s#([[:space:]]/[[:space:]])[^[:space:]]{4,}#\1********#g'; }
+
+report() {
+    echo "BLOCKED: $1"
+    printf '%s\n' "$2" | mask | cut -c1-160 | sed 's/^/    /'
+    fail=1
+}
 
 # Only inspect what is actually staged, and only added/changed lines.
 staged=$(git diff --cached --name-only --diff-filter=ACM)
@@ -28,34 +76,53 @@ for f in $staged; do
     [ -f "$f" ] || continue
     git diff --cached --numstat -- "$f" | grep -q '^-' && continue
 
+    # The self-test's own fixtures are examples of what to catch, by design.
+    case "$f" in
+        scripts/precommit_secret_check.py) continue ;;
+        scripts/hooks/pre-commit) continue ;;
+    esac
+
     added=$(git diff --cached -U0 -- "$f" | grep '^+' | grep -v '^+++')
     [ -z "$added" ] && continue
 
-    # A URI with an inline password: scheme://user:secret@host
-    # Placeholders are allowed through: PASS, PASSWORD, USER, YourPass, ***, <...>,
-    # {...}, $VAR, xxx, CHANGEME, and the literal 'pass'.
+    # 1. A URI with an inline password: scheme://user:secret@host
     hits=$(printf '%s\n' "$added" \
         | grep -E '://[A-Za-z0-9_.-]+:[^@[:space:]]+@' \
-        | grep -viE '://[A-Za-z0-9_.-]+:(\$|<|\{|\*|x{3,}|pass(word)?|yourpass|changeme|secret|user|placeholder|redacted)' )
+        | grep -viE '://[A-Za-z0-9_.-]+:(\$|<|\{|\*|x{3,}|pass(word)?|yourpass|changeme|secret|user|placeholder|redacted)')
+    [ -n "$hits" ] && report "$f adds a connection string with a real password." "$hits"
 
-    if [ -n "$hits" ]; then
-        echo "BLOCKED: $f appears to add a connection string with a real password."
-        printf '%s\n' "$hits" | sed -E 's#(://[^:]+:)[^@]+(@)#\1********\2#' | sed 's/^/    /'
-        fail=1
-    fi
+    # 2. A secret-sounding name assigned a literal.
+    hits=$(printf '%s\n' "$added" | grep -iE "$SECRET_ASSIGN" | grep -viE "$PLACEHOLDER")
+    [ -n "$hits" ] && report "$f assigns a literal to a secret-named variable." "$hits"
 
-    # Azure Postgres admin for this project, by name — belt and braces.
-    if printf '%s\n' "$added" | grep -qE 'wfadmin:[^@[:space:]]{8,}@'; then
-        echo "BLOCKED: $f adds a wfadmin credential."
-        fail=1
-    fi
+    # 3. A token that identifies itself by shape.
+    hits=$(printf '%s\n' "$added" | grep -E "$SELF_IDENTIFYING")
+    [ -n "$hits" ] && report "$f adds something shaped like a live API token." "$hits"
+
+    # 4. `admin / password` on one line.
+    hits=$(printf '%s\n' "$added" | grep -iE "$PAIR_FORM" | grep -viE "$PLACEHOLDER")
+    [ -n "$hits" ] && report "$f adds a username / password pair." "$hits"
+
+    # 5. Azure Postgres admin for this project, by name — belt and braces.
+    #    THE PLACEHOLDER FILTER APPLIES HERE TOO. Without it this blocked
+    #    `wfadmin:<password>@` in azure-complete-setup.sh — the literal
+    #    placeholder that was reported as a live credential on Sep 15 2026 and
+    #    is not one. A rule that blocks the documented example is a rule that
+    #    teaches people to bypass it.
+    hits=$(printf '%s\n' "$added" | grep -E 'wfadmin:[^@[:space:]]{8,}@' \
+        | grep -viE 'wfadmin:(\$|<|\{|%|\*|x{3,}|pass(word)?|changeme|placeholder|redacted|your)')
+    [ -n "$hits" ] && report "$f adds a wfadmin credential." "$hits"
 done
 
 if [ "$fail" -ne 0 ]; then
     cat <<'MSG'
 
-Read the value from the environment instead — flask_app/config.py and
-scripts/event_dates_exit_probe.py show the pattern this repo already uses.
+Read the value from the environment instead — flask_app/config.py shows the
+pattern this repo already uses, and the container app carries `db-url` and
+`acs-connection-string` as secret refs.
+
+A credential that has ALREADY been committed is not fixed by removing it: git
+history keeps it and the value must be rotated. See open_items.md §3.10/§3.14.
 
 If every match above is genuinely a placeholder:  git commit --no-verify
 MSG
