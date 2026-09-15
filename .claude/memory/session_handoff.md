@@ -1,10 +1,41 @@
 # Session Handoff — through Sep 15 2026 (v455 live)
 
-## Sep 15 2026 (morning) — email provider, app roles, credential re-check
-**Two commits on main, NEITHER DEPLOYED.** `v455` is still live.
+## Sep 15 2026 — email provider, app roles, ownership. LIVE at `v457`.
 
-  - `1e0ebad`  CFO / accounting manager / accountant roles + a real privilege hierarchy
+  - `v457` = `9db5923`  ownership: the CURRENT commitment, not the sum of open ones
+  - `v456` = `b00ed5d`  roles, ACS email, ownership rebuilt (seven commits — see below)
+
+  - `9db5923`  ownership: current commitment = latest open StartDate, one row
+  - `b00ed5d`  ownership: upstream analysis restored as a second tab
+  - `01777cf`  ownership: the commitment chain above each PE investment
+  - `07fd035`  memory
   - `b72ea9b`  send through Azure Communication Services when configured
+  - `1e0ebad`  CFO / accounting manager / accountant roles + a real privilege hierarchy
+
+**`v456` shipped seven commits when two were asked for** — the live image was five
+behind `origin/main`. Pre-flight P2 caught it *before* the build, which is the whole
+reason that step exists; the five were reviewed and the two docs commits verified to
+touch no runtime file. The `v429` post-mortem said this would happen again, and it did.
+
+**THE OWNERSHIP DEFECT IS THE LESSON FROM THIS SESSION.** `01777cf` derived each
+owner's share by summing every commitment row that had not yet ended. The current
+commitment is **one row** — the latest `StartDate` with no `EndDate` — because MRI does
+not reliably close the superseded row, so several rows for the same pair sit open at
+once. Summing inflated the amended owner AND understated every other owner at the
+level, since each share is that owner's amount over the level total. **The level still
+summed to 100%, so nothing looked wrong.** Jim found it by reading the deployed tree
+against MRI; no check would have.
+
+Two things worth carrying forward from how it was fixed:
+
+- **My first regression test could not fail against the bug.** I closed the superseded
+  rows with past EndDates, which the broken filter already removed, so both scenarios
+  passed against the broken code. Always run a new guardrail against the commit before
+  the fix and confirm it FAILS — `scripts/ownership_commitment_currency_check.py` does,
+  on the all-open-rows and future-EndDate cases.
+- **The local database cannot produce this shape at all** — three commitment rows, all
+  open, one per pair. Everything in `01777cf` was "verified" against that. A fixture that
+  cannot express the defect is not coverage.
 
 **Roles.** `role_required()` matched role strings exactly while the comment above
 `ROLES` claimed a hierarchy. That was harmless for viewer/analyst/admin — for those

@@ -476,8 +476,16 @@ account; only the notification fails), and `b72ea9b` gives it somewhere to go.
 
 **Decided (Jim, Sep 15 2026): move to Azure Communication Services**, not Resend/Brevo — it
 bills to the subscription the app already runs in, at $0.00025/email, which at our volume is
-cents a year. Code is committed and **inert until provisioned**: with `ACS_CONNECTION_STRING`
-and `ACS_SENDER` unset, mail still goes via SendGrid and still fails.
+cents a year. **The code is LIVE as of `v456`/`v457` and still INERT**: with
+`ACS_CONNECTION_STRING` and `ACS_SENDER` unset, mail goes via SendGrid and still fails.
+Setting those two variables is a config revision, no rebuild — which is why it shipped ahead
+of the DNS.
+
+**Provisioned Sep 15 2026**: `ecs-waterfall-dev` (Email Communication Service),
+`acs-waterfall-dev` (Communication Services), the domain `notify.peaceablestreet.com`
+registered as `CustomerManaged`, and the `noreply` sender username created. **Blocked on DNS**
+— the request went to IT the same day; all four records are issued and unpublished.
+Verification states were all `NotStarted` at handoff.
 
 **Remaining work is provisioning, not code.** Runbook (Sep 15 2026):
 <https://claude.ai/artifact/MZd8VHR5zgAFtue9yLKBDA>
@@ -510,6 +518,32 @@ Owner: **Jim** (Azure) + whoever administers `peaceablestreet.com` DNS. Deploy `
 (`POST /api/feedback/inbound-email`), which needs an MX record. Whether that was ever
 configured is **unverified** — DNS lookups were blocked from the dev sandbox. If it is live,
 it needs re-pointing separately.
+
+### 3.13 The ownership tree is live and has never been read against MRI
+`v457`. Sidebar → Investment Management → Ownership. Derives each owner's share from the
+**current** commitment — the latest `StartDate` with no `EndDate`, one row — walking up from
+`deals.InvestmentID` to OWPSC, with waterfall status and a setup link at every level.
+
+**One defect has already been found this way and fixed** (`9db5923`, see the handoff): the
+first version summed every not-yet-ended row, which inflated any amended owner and
+understated everyone else at that level while still totalling 100%. Jim found it by reading
+the deployed tree against MRI. Assume there are more.
+
+Specifically never exercised, because the local database holds three commitment rows:
+
+- The **OWPSC stop**. The code handles it; no local data reaches it.
+- **Chains deeper than three levels**, and the cycle guard.
+- **Performance** across 101 investments at production table sizes.
+- Whether **`deals.InvestmentID` is the right starting set**. Strong inference — EASTCH is
+  one, PPIECH is not — but an inference.
+
+Two things to read on real data: `superseded_rows` in the health block should be non-zero if
+amendments exist, and the amber `CapitalPercent` disagreement flags should be RARE. If they
+light up broadly, either commitments have real gaps worth chasing or the 0.5pp tolerance is
+too tight.
+
+Owner: **Jim** — the check is reading a few deep chains against MRI. Nobody should set up a
+waterfall from this screen until that has happened once.
 
 ---
 
