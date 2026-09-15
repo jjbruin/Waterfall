@@ -13,10 +13,22 @@
  * need a waterfall" reads down a column rather than chasing indentation.
  */
 import { ref, computed, onMounted } from 'vue'
+import DataTable from '../components/common/DataTable.vue'
 import api from '../api/client'
 import { useDataStore } from '../stores/data'
 
 const dataStore = useDataStore()
+
+// Two tabs, two different sources, deliberately.
+//
+// "chain" derives ownership from committed dollars (ownership_chain_service).
+// "upstream" runs a test distribution through the waterfalls and traces the
+// cash, and reads `relationships` via the older /tree endpoints. They are not
+// redundant: the first answers "who owns this and is the waterfall built", the
+// second answers "if we distribute, where does the money actually land". Where
+// the two sources disagree the chain tab flags it, which is the honest
+// treatment while accounting is mid-update on the commitments table.
+const tab = ref<'chain' | 'upstream'>('chain')
 
 interface Node {
   entity_id: string
@@ -131,6 +143,85 @@ function levelTotal(nodes: Node[]): number {
   return nodes.reduce((s, n) => s + (n.committed || 0), 0)
 }
 
+/* ── Upstream analysis (second tab) ──────────────────────────────────
+ *
+ * Restored Sep 15 2026 after the chain rebuild replaced the whole view and
+ * dropped it. The endpoints had never gone away; only the way in had.
+ *
+ * Its entity list and tree come from /api/ownership/tree, loaded the first
+ * time this tab is opened rather than on mount — it walks the full
+ * relationship graph, and the chain tab should not wait for it.
+ */
+const upstreamReady = ref(false)
+const treeData = ref<any>(null)
+const treeLoading = ref(false)
+const selectedEntity = ref('')
+const distributionAmount = ref(100000)
+const upstreamResult = ref<any>(null)
+const upstreamLoading = ref(false)
+const upstreamError = ref('')
+
+const entities = computed(() => {
+  if (!treeData.value?.nodes) return []
+  return treeData.value.nodes
+    .map((n: any) => ({ id: n.entity_id, name: n.name || n.entity_id }))
+    .sort((a: any, b: any) => a.name.localeCompare(b.name))
+})
+
+async function openUpstream() {
+  tab.value = 'upstream'
+  if (upstreamReady.value || treeLoading.value) return
+  treeLoading.value = true
+  try {
+    const res = await api.get('/api/ownership/tree')
+    treeData.value = res.data
+    upstreamReady.value = true
+  } catch (e: any) {
+    dataStore.addToast(
+      'Failed to load the entity list: ' + (e.response?.data?.error || e.message), 'error')
+  } finally {
+    treeLoading.value = false
+  }
+}
+
+async function runUpstreamAnalysis() {
+  if (!selectedEntity.value) return
+  upstreamLoading.value = true
+  upstreamResult.value = null
+  upstreamError.value = ''
+  try {
+    const res = await api.post('/api/ownership/upstream-analysis', {
+      entity_id: selectedEntity.value,
+      distribution_amount: distributionAmount.value,
+    })
+    if (res.data.error) upstreamError.value = res.data.error
+    else upstreamResult.value = res.data
+  } catch (e: any) {
+    upstreamError.value = e.response?.data?.error || 'Upstream analysis failed'
+  } finally {
+    upstreamLoading.value = false
+  }
+}
+
+const dealAllocColumns = [
+  { key: 'PropCode', label: 'PropCode' },
+  { key: 'vState', label: 'vState' },
+  { key: 'Allocated', label: 'Allocated', format: 'currency2', align: 'right' },
+]
+const beneficiaryColumns = [
+  { key: 'entity_id', label: 'Entity' },
+  { key: 'amount', label: 'Amount', format: 'currency2', align: 'right' },
+  { key: 'pct_of_total', label: '% of Total', format: 'percent', align: 'right' },
+]
+const upstreamColumns = [
+  { key: 'Entity', label: 'Entity' },
+  { key: 'PropCode', label: 'PropCode' },
+  { key: 'vState', label: 'vState' },
+  { key: 'Allocated', label: 'Allocated', format: 'currency2', align: 'right' },
+  { key: 'Level', label: 'Level', align: 'right' },
+  { key: 'Path', label: 'Path' },
+]
+
 function fmtMoney(v: number | null | undefined): string {
   if (v === null || v === undefined) return '—'
   if (v === 0) return '$0'
@@ -155,13 +246,26 @@ onMounted(loadInvestments)
         </p>
       </div>
       <div class="head-actions">
-        <button class="btn" @click="loadInvestments" :disabled="listLoading">
+        <button v-if="tab === 'chain'" class="btn" @click="loadInvestments" :disabled="listLoading">
           {{ listLoading ? 'Loading…' : 'Refresh' }}
         </button>
       </div>
     </header>
 
-    <div class="layout">
+    <nav class="tabs" role="tablist">
+      <button
+        class="tab" :class="{ active: tab === 'chain' }"
+        role="tab" :aria-selected="tab === 'chain'"
+        @click="tab = 'chain'"
+      >Ownership chain</button>
+      <button
+        class="tab" :class="{ active: tab === 'upstream' }"
+        role="tab" :aria-selected="tab === 'upstream'"
+        @click="openUpstream"
+      >Upstream analysis</button>
+    </nav>
+
+    <div v-show="tab === 'chain'" class="layout">
       <!-- Left: the PE investment level -->
       <aside class="picker">
         <div class="picker-controls">
@@ -277,6 +381,70 @@ onMounted(loadInvestments)
         </template>
       </section>
     </div>
+
+    <!-- Upstream analysis -->
+    <div v-show="tab === 'upstream'" class="upstream">
+      <p class="sub">
+        Run a test distribution through an entity's waterfall and trace where the cash
+        actually lands. Ownership here comes from the relationships feed, not from
+        committed dollars — see the chain tab for where the two disagree.
+      </p>
+
+      <div v-if="treeLoading" class="empty"><p>Loading entities…</p></div>
+
+      <template v-else>
+        <div class="up-controls">
+          <label class="fld">
+            <span>Entity</span>
+            <select v-model="selectedEntity">
+              <option value="">— Select an entity —</option>
+              <option v-for="e in entities" :key="e.id" :value="e.id">
+                {{ e.name }} ({{ e.id }})
+              </option>
+            </select>
+          </label>
+          <label class="fld">
+            <span>Distribution amount ($)</span>
+            <input type="number" v-model.number="distributionAmount" min="0" step="10000" />
+          </label>
+          <button
+            class="btn primary"
+            @click="runUpstreamAnalysis"
+            :disabled="!selectedEntity || upstreamLoading"
+          >{{ upstreamLoading ? 'Running…' : 'Run analysis' }}</button>
+        </div>
+
+        <div v-if="upstreamError" class="err">{{ upstreamError }}</div>
+
+        <div v-else-if="!upstreamResult" class="empty">
+          <p>Pick an entity and an amount, then run the analysis.</p>
+        </div>
+
+        <template v-else>
+          <div class="chain-summary">
+            <div class="stat">
+              <span class="n">{{ fmtMoney(upstreamResult.distribution_amount) }}</span>
+              <span class="l">distributed</span>
+            </div>
+            <div class="stat">
+              <span class="n">{{ fmtMoney(upstreamResult.total_allocated) }}</span>
+              <span class="l">total allocated</span>
+            </div>
+          </div>
+
+          <h3 class="up-h">Deal-level allocations</h3>
+          <DataTable :columns="dealAllocColumns" :rows="upstreamResult.deal_allocations || []" />
+
+          <h3 class="up-h">Terminal beneficiaries</h3>
+          <DataTable :columns="beneficiaryColumns" :rows="upstreamResult.beneficiaries || []" />
+
+          <template v-if="upstreamResult.upstream_allocations?.length">
+            <h3 class="up-h">Upstream allocation detail</h3>
+            <DataTable :columns="upstreamColumns" :rows="upstreamResult.upstream_allocations" />
+          </template>
+        </template>
+      </template>
+    </div>
   </div>
 </template>
 
@@ -391,4 +559,36 @@ h2 { margin: 0 0 4px; font-size: 20px; }
 
 .muted { color: #889; font-size: 13px; }
 .pad { padding: 14px; }
+
+/* ── Tabs ──────────────────────────────────────────── */
+.tabs { display: flex; gap: 2px; margin-top: 16px; border-bottom: 1px solid #dde3ec; }
+.tab {
+  background: none; border: none; cursor: pointer;
+  padding: 9px 16px; font-size: 13px; font-weight: 600; color: #7a8394;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.tab:hover { color: #445; }
+.tab.active { color: #1d4e7e; border-bottom-color: #1d4e7e; }
+
+/* ── Upstream analysis ─────────────────────────────── */
+.upstream { margin-top: 18px; }
+.upstream > .sub { margin-bottom: 16px; }
+.up-controls {
+  display: flex; gap: 14px; align-items: flex-end; flex-wrap: wrap;
+  border: 1px solid #e2e6ee; border-radius: 8px; background: #fff;
+  padding: 14px; margin-bottom: 16px;
+}
+.fld { display: flex; flex-direction: column; gap: 4px; }
+.fld span { font-size: 11.5px; font-weight: 600; color: #7a8394; text-transform: uppercase; letter-spacing: .04em; }
+.fld select, .fld input {
+  padding: 7px 10px; border: 1px solid #ccd; border-radius: 6px; font-size: 13px;
+  min-width: 190px;
+}
+.btn.primary { background: #1d4e7e; color: #fff; border-color: #1d4e7e; }
+.btn.primary:hover:not(:disabled) { background: #17405f; }
+.err {
+  border-left: 3px solid #c62828; background: #fdecea; color: #8d2019;
+  padding: 11px 14px; border-radius: 0 6px 6px 0; font-size: 13px; margin-bottom: 14px;
+}
+.up-h { font-size: 13px; font-weight: 700; color: #445; margin: 20px 0 8px; }
 </style>
