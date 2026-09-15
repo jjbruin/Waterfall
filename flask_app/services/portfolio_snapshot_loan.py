@@ -1149,6 +1149,14 @@ def assemble_loan(investor_code: str, quarter: str, *,
             "debt_yield_ytd_annualised": dy_ytd,
             "debt_yield_basis": "single-quarter Interim IS NOI x 4 / debt",
             "kept_despite_sold": bool(sold),
+            # The SAME field name and the SAME literal the Financial subtab
+            # emits, so a sold deal cannot be labelled one way on one page and
+            # another way on the next. The row already knew it was sold —
+            # `kept_despite_sold` above has been correct all along — but never
+            # published a label, so City West, East Manchester, Camarillo
+            # Village and Outlook Nine Mile all rendered here as ordinary rows
+            # with nothing marking them sold. See portfolio_snapshot_financial.
+            "sold_label": "(Sold)" if sold else None,
             "loan_count": terms["loan_count"],
             "rate": terms["rate"],
             # Rate and Maturity stay REAL for a dev deal — only the three ratio

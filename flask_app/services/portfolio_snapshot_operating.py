@@ -637,7 +637,8 @@ def assemble_operating(investor_code: str, quarter: str, *,
             "insufficient_history": 0, "temp_suppressed": 0}
 
     def build_row(vcode: str, name: str, strategy: str,
-                  extra_flags: Optional[list] = None) -> dict:
+                  extra_flags: Optional[list] = None,
+                  sold: bool = False) -> dict:
         flags = list(extra_flags or [])
         dev = is_dev_deal(strategy)
         occ = {"at_close": None, "uw_ye": None, "projected_ye": None,
@@ -780,6 +781,14 @@ def assemble_operating(investor_code: str, quarter: str, *,
         return {
             "vcode": vcode, "name": name,
             "strategy": strategy,
+            # The SAME field names and the SAME literal the Financial subtab
+            # emits, so a sold deal cannot be labelled one way on one page and
+            # another way on the next. Neither field existed here before, so
+            # City West, East Manchester, Camarillo Village and Outlook Nine
+            # Mile all rendered as ordinary rows with nothing marking them
+            # sold. See portfolio_snapshot_financial.
+            "kept_despite_sold": bool(sold),
+            "sold_label": "(Sold)" if sold else None,
             "is_dev": dev,
             # Which columns the dev rule withheld, and which a TEMPORARY
             # exception let through. Surfaced so the report itself can mark the
@@ -863,7 +872,8 @@ def assemble_operating(investor_code: str, quarter: str, *,
     def _seated(entry: dict):
         row = build_row(entry["vcode"], entry["name"], resolve_strategy(entry)[0],
                         extra_flags=(_ownership_flags(entry)
-                                     if entry.get("derived_group") else None))
+                                     if entry.get("derived_group") else None),
+                        sold=bool(entry.get("kept_despite_sold")))
         if entry.get("derived_group"):
             # Marks WHY the row carries a flag, without `ownership_flagged`,
             # which means "segregated" to every existing consumer.
@@ -889,7 +899,8 @@ def assemble_operating(investor_code: str, quarter: str, *,
     flagged_rows = []
     for f in unseated:
         row = build_row(f["vcode"], f["name"], resolve_strategy(f)[0],
-                        extra_flags=_ownership_flags(f))
+                        extra_flags=_ownership_flags(f),
+                        sold=bool(f.get("kept_despite_sold")))
         row["ownership_flagged"] = True
         flagged_rows.append(row)
 

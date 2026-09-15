@@ -137,7 +137,16 @@ const allRows = computed(() => {
             <tr class="grouprow"><td class="sticky-l" colspan="8">{{ blk.group }}</td></tr>
             <tr v-for="r in blk.rows" :key="r.vcode">
               <td class="sticky-l">
-                {{ r.name }}
+                <!-- `&nbsp;` INSIDE the span, and the span jammed against the
+                     name with no whitespace before it. Both halves matter, and
+                     they are the same rule SnapshotFinancial follows:
+                     Vue's compiler strips whitespace at the START of an
+                     element's children, so a plain leading space never reaches
+                     the browser (that is what printed "East Manchester(Sold)");
+                     but whitespace BETWEEN elements condenses to one space, so
+                     putting this span on its own line would render TWO spaces —
+                     the condensed one plus the character. -->
+                {{ r.name }}<span v-if="r.sold_label" class="sold">&nbsp;{{ r.sold_label }}</span>
                 <span v-if="r.is_dev" class="tag">Dev</span>
                 <!--
                   A non-dev row reading n/a in every column needs to say why,
@@ -343,6 +352,13 @@ table.grid th.r { text-align: right; }
 }
 .cmt textarea[readonly] { background: #fafafa; color: var(--color-text-secondary); }
 .cmt-text { font-size: 12px; line-height: 1.35; white-space: pre-wrap; }
+
+/* The "(Sold)" label after a sold deal's name. IDENTICAL to
+   SnapshotFinancial's rule, deliberately: the same deal must not read
+   differently from one subtab to the next. NO margin — the `&nbsp;` in the
+   template is a real character, so it survives into the printed PDF's text
+   layer and into copy/paste, which a margin would not. */
+.sold { font-style: italic; color: var(--color-text-secondary); }
 
 .tag {
   font-size: 9px;

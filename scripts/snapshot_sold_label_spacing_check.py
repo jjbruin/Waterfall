@@ -33,7 +33,28 @@ except Exception:
     pass
 
 ROOT = Path(__file__).resolve().parent.parent
-SRC = ROOT / "vue_app" / "src" / "components" / "snapshot" / "SnapshotFinancial.vue"
+SNAP = ROOT / "vue_app" / "src" / "components" / "snapshot"
+
+#: Every component that renders the label, and how many `.sold` sites it has.
+#:
+#: THIS USED TO BE SnapshotFinancial ALONE, and that is exactly why the defect
+#: it now catches survived: Financial was the only subtab that emitted
+#: `sold_label` at all, so a check scoped to Financial passed 6/6 while City
+#: West, East Manchester, Camarillo Village and Outlook Nine Mile rendered on
+#: Operating and Loan as ordinary rows with nothing marking them sold. A
+#: spacing check over one file cannot see a label that is missing from another.
+#:
+#: Financial has two sites — the deal rows and the ownership-unresolved rows.
+#: Operating and Loan have one each; their unresolved rows render through the
+#: same `blk.rows` loop, so one site covers both.
+#:
+#: Summary is deliberately absent: it does not list deals individually, so it
+#: has no name cell to label. Add it here the moment that changes.
+COMPONENTS = {
+    "SnapshotFinancial.vue": 2,
+    "SnapshotOperating.vue": 1,
+    "SnapshotLoan.vue": 1,
+}
 DIST = ROOT / "vue_app" / "dist" / "assets"
 
 _checks = []
@@ -49,30 +70,55 @@ def chk(label, ok, detail=""):
 print("Portfolio Snapshot: '(Sold)' label spacing")
 print()
 
-text = SRC.read_text(encoding="utf-8").replace("\r\n", "\n")
-
-# Match the TEMPLATE only, with comments removed. Both blocks below quote the
-# old `<span class="sold"> {{ ... }}` markup while explaining why it was wrong,
-# and a naive search over the whole file counts those as live sites and fails.
-# print_page_rule_check had the same bug against a comment mentioning @page.
-tmpl = text.split("\n<style", 1)[0]
-tmpl = re.sub(r"<!--.*?-->", "", tmpl, flags=re.S)
-tmpl = re.sub(r"/\*.*?\*/", "", tmpl, flags=re.S)
-
 print("source")
-sites = re.findall(r'class="sold">(.{0,8}?)\{\{', tmpl)
-chk("every .sold span was found", len(sites) == 2,
-    f"found {len(sites)} (deal rows + the ownership-unresolved rows)")
-chk("each one starts with &nbsp;, not a plain space",
-    all(s == "&nbsp;" for s in sites), f"prefixes: {sites!r}")
-chk("no .sold span still relies on a plain leading space",
-    ' class="sold"> {{' not in tmpl)
-# A margin would be the other way to draw the gap, and would put no character
-# in the PDF's text layer. If someone adds one later, this says so out loud.
-sold_rule = re.search(r"\.sold \{([^}]*)\}", text)
-chk("the .sold rule adds no margin (the character does the work)",
-    sold_rule is not None and "margin" not in sold_rule.group(1),
-    (sold_rule.group(1).strip() if sold_rule else "rule not found"))
+for fname, expected in COMPONENTS.items():
+    path = SNAP / fname
+    text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+
+    # Match the TEMPLATE only, with comments removed. Several blocks quote the
+    # old `<span class="sold"> {{ ... }}` markup while explaining why it was
+    # wrong, and a naive search over the whole file counts those as live sites
+    # and fails. print_page_rule_check had the same bug against a comment
+    # mentioning @page.
+    tmpl = text.split("\n<style", 1)[0]
+    tmpl = re.sub(r"<!--.*?-->", "", tmpl, flags=re.S)
+    tmpl = re.sub(r"/\*.*?\*/", "", tmpl, flags=re.S)
+
+    sites = re.findall(r'class="sold">(.{0,8}?)\{\{', tmpl)
+    chk(f"{fname}: every .sold span was found", len(sites) == expected,
+        f"found {len(sites)}, expected {expected}")
+    chk(f"{fname}: each one starts with &nbsp;, not a plain space",
+        sites and all(s == "&nbsp;" for s in sites), f"prefixes: {sites!r}")
+    chk(f"{fname}: no .sold span still relies on a plain leading space",
+        ' class="sold"> {{' not in tmpl)
+
+    # The OTHER half of the separator rule, and the one a character alone does
+    # not cover. Vue strips whitespace at the START of an element's children —
+    # which is why the &nbsp; is needed — but whitespace BETWEEN elements
+    # CONDENSES TO ONE SPACE. So a `.sold` span placed on its own line after
+    # the name renders TWO separators, the condensed space plus the character.
+    # The span must be jammed against `{{ r.name }}` with nothing between.
+    chk(f"{fname}: the span is jammed against the name (no double space)",
+        not re.search(r"\}\}\s*\n\s*<span[^>]*class=\"sold\"", tmpl),
+        "a newline before the span condenses to a space, doubling the gap")
+
+    # A margin would be the other way to draw the gap, and would put no
+    # character in the PDF's text layer. If someone adds one later, say so.
+    sold_rule = re.search(r"\.sold \{([^}]*)\}", text)
+    chk(f"{fname}: the .sold rule adds no margin (the character does the work)",
+        sold_rule is not None and "margin" not in sold_rule.group(1),
+        (sold_rule.group(1).strip() if sold_rule else "rule not found"))
+
+# The footnote marker is a SUPERSCRIPT reference and sits tight against the
+# name — "City West⁽²⁾ (Sold)", not "City West (2) (Sold)". That is how the
+# reference document sets it, and 7bc8d5f deliberately left it alone while
+# fixing `.sold`. Asserted so a later "fix" to the spacing has to argue with
+# this line rather than silently change the published convention.
+fin = (SNAP / "SnapshotFinancial.vue").read_text(encoding="utf-8")
+fin_tmpl = re.sub(r"<!--.*?-->", "", fin.split("\n<style", 1)[0], flags=re.S)
+chk("the footnote marker stays tight against the name (superscript convention)",
+    not re.search(r"\}\}\s+<span[^>]*class=\"fnmark\"", fin_tmpl),
+    "reference document sets a superscript reference against the word")
 
 print()
 print("build")
