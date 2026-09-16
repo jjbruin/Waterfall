@@ -248,6 +248,24 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v479` = `4908fc7` (Charlene: the snapshot's ownership graph is read AS OF THE
+    QUARTER. `_is_open` was date-blind — ANY EndDate meant closed — so a relationship
+    closing at any point AFTER a quarter retroactively removed its deal from that
+    quarter's report, and the nearer a report was re-run to the present the more
+    history it lost. JB Fair Park vanished from 26Q2 entirely: not sold, not
+    unacquired, in no exclusion bucket, just gone, because `PPI32 -> JBFAIR` ends
+    2026-07-29 and 26Q2 ends 2026-06-30. Verified on production before and after:
+    restored at 25Q4/26Q1/26Q2, correctly still absent at 26Q3. The change is
+    STRICTLY ADDITIVE — measured against the live feed, 0 of 765 edges that were
+    kept are now dropped and exactly 1 is restored. The four ownership cells stay
+    BLANK because both JBFAIR owners are recorded at 0%; that is an MRI data gap and
+    filling it would be inventing TIAA's stake in a $77M deal.
+    OPEN BOUNDARY QUESTION, not introduced here: the gate is strict (`ended > q_end`),
+    so an edge ending exactly ON a quarter end counts as closed for that quarter.
+    87 of the 188 ended edges land on a quarter end, and `AMB6 <- PSC1` ends
+    2026-06-30 — 26Q2's own quarter end. It was closed under the old gate too, so
+    nothing regressed, but whether EndDate is the last live day or the first dead
+    one has never been settled.)
   - `v478` = `1618e78` (Charlene: the Financial print table was 0.224in wider than
     the sheet — `white-space: nowrap` makes `width: 100%` a floor, not a ceiling, and
     11 columns overflowed where 8 did not, cutting Net ROE at the margin. Cell padding
