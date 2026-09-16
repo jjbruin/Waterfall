@@ -909,6 +909,22 @@ def apply_parcel_income_loss(fc, losses, debug_msgs=None, detail_out=None):
     return out
 
 
+def _loan_maturity_gap(loan_sched, mri_loans_raw, vcode, sale_date, debug_msgs):
+    """Never let this stop a deal computing -- it is a diagnostic, not a figure.
+
+    A deal that fails to load because its warning could not be produced is a
+    worse outcome than the warning being missing, so the failure is recorded and
+    swallowed.
+    """
+    try:
+        import loan_maturity
+        return loan_maturity.detect(loan_sched, mri_loans_raw, vcode, sale_date)
+    except Exception as e:                                  # pragma: no cover
+        if debug_msgs is not None:
+            debug_msgs.append(f"Loan maturity check failed: {e}")
+        return {"has_gap": False, "loans": [], "error": str(e)[:200]}
+
+
 def compute_deal_analysis(
     deal_vcode, deal_investment_id, sale_date_raw,
     inv, wf, acct, fc, coa,
@@ -1941,6 +1957,17 @@ def compute_deal_analysis(
         'sale_dbg': sale_dbg,
         'sale_me': sale_me,
         'debug_msgs': debug_msgs,
+        # A LOAN THAT MATURES BEFORE THE DEAL SELLS leaves every month between
+        # the two carrying no debt service, because the amortization schedule
+        # simply ends. The forecast then distributes cash the lender would have
+        # taken, and the balance stops being anywhere. Reported as structured
+        # data rather than appended to `debug_msgs`, which nothing renders.
+        #
+        # It does NOT extend the loan. Exercising an extension is a business
+        # decision with covenant conditions attached, and assuming it would
+        # swap one invented answer for another.
+        'loan_maturity_gap': _loan_maturity_gap(
+            loan_sched, mri_loans_raw, deal_vcode, sale_date, debug_msgs),
         'capital_calls': capital_calls,
         'seed_states': seed_states,
         'wf_steps': wf_steps,

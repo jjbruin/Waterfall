@@ -139,6 +139,11 @@ def compute_deal():
         "partner_results": safe_json(result.get("partner_results", [])),
         "deal_summary": safe_json(result.get("deal_summary", {})),
         "debug_msgs": result.get("debug_msgs", []),
+        # ON THE COMPUTE RESPONSE, not on the debt-service one. The Debt Service
+        # section is collapsed by default, and a warning that a loan matures
+        # before the deal sells is exactly the thing nobody went looking for --
+        # putting it behind a click would repeat the failure it reports.
+        "loan_maturity_gap": safe_json(result.get("loan_maturity_gap")),
         "refi_dbg": safe_json(result.get("refi_dbg")),
         "refi_capital_call_required": result.get("refi_capital_call_required", False),
         "refi_capital_call_amount": result.get("refi_capital_call_amount", 0),

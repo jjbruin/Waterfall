@@ -172,6 +172,9 @@ export const useDealsStore = defineStore('deals', () => {
   const partnerResults = ref<Record<string, PartnerResult[]>>({})
   const dealSummaries = ref<Record<string, DealSummary>>({})
   const debugMsgs = ref<Record<string, string[]>>({})
+  // A loan maturing before the deal sells. Held per vcode beside the other
+  // per-deal state so it survives switching deals, same as the rest.
+  const maturityGap = ref<Record<string, any>>({})
 
   // Lazy-loaded sections (keyed by vcode)
   const headers = ref<Record<string, DealHeader>>({})
@@ -202,6 +205,7 @@ export const useDealsStore = defineStore('deals', () => {
   // Computed
   const currentPartners = computed(() => partnerResults.value[currentVcode.value] || [])
   const currentSummary = computed(() => dealSummaries.value[currentVcode.value] || null)
+  const currentMaturityGap = computed(() => maturityGap.value[currentVcode.value] || null)
   const currentHeader = computed(() => headers.value[currentVcode.value] || null)
   const currentForecast = computed(() => forecasts.value[currentVcode.value] || null)
   const currentDebt = computed(() => debtService.value[currentVcode.value] || null)
@@ -302,6 +306,7 @@ export const useDealsStore = defineStore('deals', () => {
       partnerResults.value[vcode] = compRes.data.partner_results
       dealSummaries.value[vcode] = compRes.data.deal_summary
       debugMsgs.value[vcode] = compRes.data.debug_msgs || []
+      maturityGap.value[vcode] = compRes.data.loan_maturity_gap || null
       headers.value[vcode] = compRes.data.header || {}
 
       // Store refi info
@@ -502,6 +507,7 @@ export const useDealsStore = defineStore('deals', () => {
     contractSalePrice, sellingCostOverride, sellingCostType, saleOverrideSaved, saleDateOverride,
     // Computed
     currentPartners, currentSummary, currentHeader, currentForecast,
+    maturityGap, currentMaturityGap,
     currentDebt, currentCash, currentCapCalls, currentXirr,
     currentRoe, currentMoic, currentDebugMsgs, hasResult,
     currentProspectiveLoans, currentRawCapitalCalls,

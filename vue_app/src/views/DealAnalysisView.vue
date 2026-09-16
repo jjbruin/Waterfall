@@ -1247,6 +1247,80 @@ watch(parcelOpen, (open) => {
       </div>
 
       <!-- ============================================================ -->
+      <!-- A loan that matures before the deal sells                     -->
+      <!-- ============================================================ -->
+      <!-- ABOVE THE SECTIONS AND NOT INSIDE ONE. The sections are collapsed by
+           default and this is precisely the thing nobody went looking for:
+           Waters Creek's schedule stopped at 2026-11-30 against a 2027-04-30
+           sale and no figure on the page looked wrong. Jim, Sep 16 2026: "the
+           forecast simply stopped paying debt service at loan maturity without
+           prompting us to address the loan extension". -->
+      <div v-if="deals.currentMaturityGap?.has_gap" class="maturity-gap">
+        <div class="mg-head">
+          <span class="mg-badge">Loan matures before sale</span>
+          <span class="mg-sale">sale {{ deals.currentMaturityGap.sale_date }}</span>
+        </div>
+        <p class="mg-headline">{{ deals.currentMaturityGap.headline }}</p>
+        <table class="mg-table">
+          <thead>
+            <tr>
+              <th>Loan</th><th>Schedule ends</th><th>Maturity</th>
+              <th class="r">Balance</th><th class="r">Months</th>
+              <th class="r">Interest not charged</th>
+              <th>Extension options</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="l in deals.currentMaturityGap.loans" :key="l.loan_id || 'x'">
+              <td>{{ l.loan_id || '—' }}</td>
+              <td>{{ l.schedule_ends }}</td>
+              <td>
+                {{ l.maturity }}
+                <span v-if="l.maturity_disagrees_with_schedule" class="mg-note"
+                      title="MRI's maturity date and the modelled schedule's last
+                             period are not the same day. Both are shown; neither
+                             is silently preferred.">±</span>
+              </td>
+              <td class="r">{{ fmtInt(l.balance_outstanding) }}</td>
+              <td class="r">{{ l.months_unmodelled }}</td>
+              <td class="r">
+                {{ l.interest_unmodelled_estimate != null
+                     ? fmtInt(l.interest_unmodelled_estimate) : '—' }}
+                <span class="mg-est">est</span>
+              </td>
+              <td>
+                <template v-if="l.extension.reaches_sale_date">
+                  <b>{{ l.extension.raw }}</b> —
+                  {{ l.extension.options_needed_to_reach_sale }} of them reaches
+                  {{ l.extension.maturity_if_exercised }}
+                </template>
+                <template v-else-if="l.extension.parsed && l.extension.count">
+                  <b>{{ l.extension.raw }}</b> — fully exercised only reaches
+                  {{ l.extension.maturity_if_exercised }}
+                </template>
+                <template v-else-if="l.extension.raw">
+                  <b>{{ l.extension.raw }}</b> — could not be read
+                </template>
+                <template v-else>none recorded</template>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="mg-cov" v-for="l in deals.currentMaturityGap.loans" :key="'c' + (l.loan_id || 'x')">
+          <span class="mg-cov-label">Covenants on loan {{ l.loan_id }}:</span>
+          <span v-for="(v, k) in l.covenants" :key="k" class="mg-chip"
+                :class="{ blank: v == null }">
+            {{ k }} {{ v == null ? '—' : v }}
+          </span>
+        </div>
+        <p class="mg-foot">
+          The forecast is shown as it computes. Nothing here assumes an extension
+          is exercised — the interest above is <em>not</em> added back, because
+          taking an extension is a decision with covenant conditions attached.
+        </p>
+      </div>
+
+      <!-- ============================================================ -->
       <!-- Refinance / New Loan -->
       <!-- ============================================================ -->
       <div class="section expandable" :class="{ open: expanded.refi }">
@@ -2691,5 +2765,40 @@ watch(parcelOpen, (open) => {
 .tenant-sf, .tenant-rent, .tenant-end {
   text-align: right; font-variant-numeric: tabular-nums; color: #5a6675;
 }
-</style>
 
+/* A loan maturing before the sale. Loud on purpose: the failure it reports is
+   that nothing on the page looked wrong. */
+.maturity-gap {
+  border: 1px solid #e0b877; border-left: 4px solid #d9a441;
+  background: #fdf8ef; border-radius: 6px;
+  padding: 14px 16px; margin: 0 0 18px;
+}
+.mg-head { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+.mg-badge {
+  background: #d9a441; color: #fff; font-size: 11px; font-weight: 700;
+  padding: 2px 9px; border-radius: 10px; letter-spacing: .02em;
+}
+.mg-sale { font-size: 11px; color: #8a6d35; }
+.mg-headline { margin: 0 0 12px; font-size: 13px; line-height: 1.5; color: #4a3d20; }
+.mg-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.mg-table th {
+  text-align: left; font-weight: 600; color: #7a6535; padding: 4px 8px;
+  border-bottom: 1px solid #e6d6b4; white-space: nowrap;
+}
+.mg-table td { padding: 4px 8px; border-bottom: 1px solid #f0e6d2; }
+.mg-table .r { text-align: right; }
+.mg-est {
+  font-size: 9.5px; color: #a08a55; text-transform: uppercase;
+  margin-left: 4px; letter-spacing: .03em;
+}
+.mg-note { color: #b4232a; font-weight: 700; cursor: help; }
+.mg-cov { margin-top: 10px; font-size: 11px; color: #6b5a30; }
+.mg-cov-label { font-weight: 600; margin-right: 6px; }
+.mg-chip {
+  display: inline-block; background: #fff; border: 1px solid #e6d6b4;
+  border-radius: 3px; padding: 1px 7px; margin: 2px 4px 2px 0;
+}
+.mg-chip.blank { color: #b3a68a; }
+.mg-foot { margin: 10px 0 0; font-size: 11px; color: #8a6d35; line-height: 1.5; }
+
+</style>
