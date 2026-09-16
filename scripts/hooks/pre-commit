@@ -54,7 +54,16 @@ SECRET_ASSIGN='[A-Za-z_][A-Za-z0-9_]*(pass|passwd|password|pwd|secret|token|apik
 # A space is required EACH SIDE of the slash: without that this matched the path
 # `admin/passwords-policy.md`, and a hook that fires on a filename is a hook that
 # gets bypassed by reflex.
-PAIR_FORM='\b(admin|administrator|root|sa|sysadmin|[a-z]+admin)[[:space:]]+/[[:space:]]+[^[:space:]/]{6,}'
+# THE SECRET OPERAND MUST BE UNQUOTED. A credential written in prose is bare --
+# `admin / hunter2` in a note, a ticket or a handover -- while a quoted string
+# after a slash is a pathlib join. `root` is in the alternation as a database
+# superuser, and it is also what every script in this repo calls its repository
+# root, so `(root / "flask_app" / "api" / "workpapers.py")` was blocked as a
+# credential pair (Sep 16 2026, on a guardrail commit of this hook's own).
+# Requiring the secret to be unquoted separates the two without weakening the
+# prose case, which is the case this rule exists for -- rules 1, 2, 3 and 5
+# already cover a credential written as code.
+PAIR_FORM='\b(admin|administrator|root|sa|sysadmin|[a-z]+admin)[[:space:]]+/[[:space:]]+[^[:space:]/"'"'"'][^[:space:]/]{5,}'
 
 # Whatever is printed must not contain the secret. Three forms to cover: a URI,
 # a quoted literal, and `user / secret` — which the first two both miss, so the

@@ -14,12 +14,37 @@
  * should never have to leave the step to find out whether it is true. The
  * step -> evidence mapping is accounting knowledge and lives on the server
  * (workpaper_workbench.py), not here.
+ *
+ * TWO TABS, BECAUSE THEY ARE TWO JOBS. Production tracking is the CFO's view
+ * ACROSS every reporting entity -- his order, his target dates, who prepared
+ * and who signed. The workbench is ONE entity's package. They were on one
+ * screen, so the cross-entity grid and the single-package drawer competed for
+ * it and neither got the room. Jim, Sep 16 2026: "separating the production
+ * tracking from the individual package workbench".
+ *
+ * The tracker replicates `2Q26 - PSC Reporting Checklist & Calendar.xlsx`,
+ * which is what the CFO runs the close from today.
  */
 import { ref, computed, onMounted } from 'vue'
 import api from '../api/client'
 import { useAuthStore } from '../stores/auth'
 
 const auth = useAuthStore()
+
+// Production tracking, or one entity's package. The tracker opens first: it is
+// the screen that answers "where is the close", which is the question asked
+// most often and by the most people.
+const tab = ref<'tracker' | 'workbench'>('tracker')
+
+// The CFO's grid. Separate from `tracker` below, which is the older
+// per-package STEP checklist and still backs the workbench's progress figures.
+const sched = ref<any>(null)
+const schedLoading = ref(false)
+// Group the rows by the property/portfolio column, the way the spreadsheet
+// does. Off by default: the CFO's own order is the point, and grouping
+// overrides it.
+const groupByProperty = ref(false)
+const carryFrom = ref<number | null>(null)
 
 const cycles = ref<any[]>([])
 const cycleId = ref<number | null>(null)
@@ -42,7 +67,14 @@ const uploadSlot = ref('other')
 const uploadCaption = ref('')
 const returnNote = ref('')
 
-const isAdmin = computed(() => auth.user?.role === 'admin')
+// THE ACCOUNTING SECTION IS THE CFO'S, so the gate is not "is this an admin".
+// Gating the CFO's own columns -- his order, his target dates -- on `admin`
+// hid them from the one person they belong to, while the API would have
+// accepted his writes: the buttons simply were not rendered. Jim, Sep 16 2026:
+// "give the cfo control of syncing entities and starting a new close cycle and
+// everything else in the accounting section going forward."
+const canManageClose = computed(
+  () => ['admin', 'cfo'].includes(auth.user?.role || ''))
 const STATEMENT_KEYS = ['balance_sheet', 'income_statement', 'soi',
                         'members_capital', 'cash_flow']
 
@@ -55,8 +87,116 @@ async function loadCycles() {
   const res = await api.get('/api/workpapers/cycles')
   cycles.value = res.data.cycles || []
   if (!cycleId.value && cycles.value.length) cycleId.value = cycles.value[0].id
-  if (cycleId.value) await loadTracker()
+  if (cycleId.value) { await loadTracker(); await loadSchedule() }
 }
+
+async function loadSchedule() {
+  if (!cycleId.value) return
+  schedLoading.value = true
+  error.value = ''
+  try {
+    sched.value = (await api.get(
+      `/api/workpapers/cycles/${cycleId.value}/schedule`)).data
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
+  } finally {
+    schedLoading.value = false
+  }
+}
+
+/** Every write goes through here so one failure cannot leave the grid showing
+ *  a value the server rejected. On success the row is reloaded from the server
+ *  rather than patched locally — `overdue` and `out_of_sequence` are computed
+ *  there, and a locally-patched cell would show a stale flag beside a fresh
+ *  value, which is the worst of both. */
+async function schedWrite(url: string, body: any, ok: string) {
+  try {
+    const res = await api.put(url, body)
+    if (res.data?.error) { error.value = res.data.error; return false }
+    await loadSchedule()
+    if (ok) flash(ok)
+    return true
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
+    return false
+  }
+}
+
+const setOrder = (pid: number, v: string) =>
+  schedWrite(`/api/workpapers/packages/${pid}/schedule/order`, { order: v }, '')
+const setPreparer = (pid: number, v: string) =>
+  schedWrite(`/api/workpapers/packages/${pid}/schedule/preparer`, { preparer: v }, '')
+const setProperty = (pid: number, v: string) =>
+  schedWrite(`/api/workpapers/packages/${pid}/schedule/property`, { property_name: v }, '')
+const setTarget = (pid: number, deliverable: string, v: string) =>
+  schedWrite(`/api/workpapers/packages/${pid}/schedule/target`,
+             { deliverable, target_date: v }, '')
+
+/** A sign-off is two fields — WHO and WHEN — and the spreadsheet keeps them in
+ *  one cell ("KH 7/7/26"). Kept apart here: a name and a date sorted, filtered
+ *  and validated as free text is how the spreadsheet ended up with three date
+ *  formats in one column. */
+function signoff(pid: number, deliverable: string, stage: string,
+                 by: string | null, on: string | null) {
+  return schedWrite(`/api/workpapers/packages/${pid}/schedule/signoff`,
+                    { deliverable, stage, signed_by: by, signed_on: on }, '')
+}
+
+/** Sign as the current user, today — the common case, one click. */
+function signNow(pid: number, deliverable: string, stage: string) {
+  const who = (auth.user?.username || '').slice(0, 3).toUpperCase()
+  return signoff(pid, deliverable, stage, who,
+                 new Date().toISOString().slice(0, 10))
+}
+
+async function renumber() {
+  if (!cycleId.value) return
+  try {
+    const r = await api.post(
+      `/api/workpapers/cycles/${cycleId.value}/schedule/renumber`, {})
+    await loadSchedule()
+    flash(`Renumbered ${r.data.renumbered} rows 1-${r.data.renumbered}, in the order shown.`)
+  } catch (e: any) { error.value = e.response?.data?.error || e.message }
+}
+
+async function carryForward() {
+  if (!cycleId.value || !carryFrom.value) return
+  try {
+    const r = await api.post(
+      `/api/workpapers/cycles/${cycleId.value}/schedule/carry-forward`,
+      { from_cycle_id: carryFrom.value })
+    await loadSchedule()
+    const miss = (r.data.not_in_source || []).length
+    flash(`Order, preparer and property copied onto ${r.data.applied} rows.` +
+          (miss ? ` ${miss} entity(ies) are new this quarter and still need placing.` : ''))
+  } catch (e: any) { error.value = e.response?.data?.error || e.message }
+}
+
+/** Rows as rendered: the server's order, optionally broken into property
+ *  groups. Grouping preserves the CFO's order WITHIN each group and orders the
+ *  groups by their first row, so turning it on never reshuffles his sequence. */
+const schedGroups = computed(() => {
+  const rows = sched.value?.rows || []
+  if (!groupByProperty.value) return [{ name: '', rows }]
+  const out: any[] = []
+  const idx: Record<string, number> = {}
+  for (const r of rows) {
+    const k = r.property_name || '(no property)'
+    if (idx[k] === undefined) { idx[k] = out.length; out.push({ name: k, rows: [] }) }
+    out[idx[k]].rows.push(r)
+  }
+  return out
+})
+
+const schedTotals = computed(() => {
+  const rows = sched.value?.rows || []
+  const cells = rows.reduce((a: number, r: any) => a + r.cell_count, 0)
+  const done = rows.reduce((a: number, r: any) => a + r.signed_count, 0)
+  const late = rows.reduce(
+    (a: number, r: any) => a + r.deliverables.filter((d: any) => d.overdue).length, 0)
+  return { rows: rows.length, cells, done, late,
+           pct: cells ? Math.round((100 * done) / cells) : 0 }
+})
 
 async function loadTracker() {
   if (!cycleId.value) return
@@ -113,7 +253,36 @@ async function setDue(stepKey: string, due: string) {
   else if (warnings.length) flash(`Saved. ${warnings.join(' ')}`)
 }
 
+/** The picker's value arrives from a <select>, so it is a string. */
+function onPickEntity(v: string) {
+  if (!v) { detail.value = null; return }
+  openPackage(Number(v))
+}
+
+/** Where the open package sits in the TRACKER's order, or -1. Drives prev/next
+ *  so an accountant can work the CFO's sequence straight down without going
+ *  back to the grid between each one. */
+const benchIndex = computed(() => {
+  const rows = sched.value?.rows || []
+  const id = detail.value?.package?.id
+  return id == null ? -1 : rows.findIndex((r: any) => r.package_id === id)
+})
+const hasPrev = computed(() => benchIndex.value > 0)
+const hasNext = computed(() => {
+  const n = (sched.value?.rows || []).length
+  return benchIndex.value >= 0 && benchIndex.value < n - 1
+})
+function prevEntity() {
+  if (hasPrev.value) openPackage(sched.value.rows[benchIndex.value - 1].package_id)
+}
+function nextEntity() {
+  if (hasNext.value) openPackage(sched.value.rows[benchIndex.value + 1].package_id)
+}
+
 async function openPackage(id: number) {
+  // Selecting an entity IS switching to the workbench. Leaving the tab alone
+  // would load a package the user cannot see and look like nothing happened.
+  tab.value = 'workbench'
   detail.value = (await api.get(`/api/workpapers/packages/${id}`)).data
   statements.value = null
   evidence.value = null
@@ -254,8 +423,8 @@ onMounted(loadCycles)
             {{ c.period_label }} — {{ c.period_end }}
           </option>
         </select>
-        <button v-if="isAdmin" class="btn" @click="sync" :disabled="!cycleId">Sync entities</button>
-        <button v-if="isAdmin" class="btn primary" @click="showNewCycle = !showNewCycle">
+        <button v-if="canManageClose" class="btn" @click="sync" :disabled="!cycleId">Sync entities</button>
+        <button v-if="canManageClose" class="btn primary" @click="showNewCycle = !showNewCycle">
           New close cycle
         </button>
       </div>
@@ -269,60 +438,204 @@ onMounted(loadCycles)
         empty deadline for each step of the close.</span>
     </div>
 
+    <nav class="tabs" role="tablist">
+      <button class="tab" :class="{ active: tab === 'tracker' }" role="tab"
+              :aria-selected="tab === 'tracker'" @click="tab = 'tracker'">
+        Production tracker
+      </button>
+      <button class="tab" :class="{ active: tab === 'workbench' }" role="tab"
+              :aria-selected="tab === 'workbench'" @click="tab = 'workbench'">
+        Package workbench
+        <span v-if="detail" class="tab-sub">{{ detail.package.entityid }}</span>
+      </button>
+    </nav>
+
     <div v-if="msg" class="banner ok">{{ msg }}</div>
     <div v-if="error" class="banner err">{{ error }}</div>
-    <div v-if="loading" class="placeholder">Loading…</div>
 
-    <template v-if="tracker && !loading">
-      <div v-if="!tracker.packages.length" class="placeholder">
-        No packages in this cycle. If entities are tagged REP in MRI, press
-        <strong>Sync entities</strong>; if none are, nothing is due.
+    <!-- ── Tab 1: production tracker ───────────────────── -->
+    <div v-show="tab === 'tracker'" class="tracker-tab">
+      <div v-if="schedLoading" class="placeholder">Loading the tracker…</div>
+
+      <template v-else-if="sched && !sched.error">
+        <div class="sched-bar">
+          <div class="sched-stat">
+            <b>{{ schedTotals.rows }}</b> reporting entities
+          </div>
+          <div class="sched-stat">
+            <b>{{ schedTotals.done }}</b> of {{ schedTotals.cells }} sign-offs
+            <span class="muted">({{ schedTotals.pct }}%)</span>
+          </div>
+          <div class="sched-stat" :class="{ bad: schedTotals.late }">
+            <b>{{ schedTotals.late }}</b> past target
+          </div>
+          <label class="chk">
+            <input type="checkbox" v-model="groupByProperty" />
+            Group by property
+          </label>
+          <div class="spacer" />
+          <template v-if="canManageClose">
+            <select v-model.number="carryFrom" class="sel sm">
+              <option :value="null">Carry forward from…</option>
+              <option v-for="c in cycles.filter(c => c.id !== cycleId)"
+                      :key="c.id" :value="c.id">{{ c.period_label }}</option>
+            </select>
+            <button class="btn" :disabled="!carryFrom" @click="carryForward"
+                    title="Copies the order, preparer and property only — never
+                           a sign-off or a target date, which are facts about
+                           their own quarter.">Carry forward</button>
+            <button class="btn" @click="renumber"
+                    title="Rewrites the order as 1..n in the order shown, so a
+                           row can be inserted between two others again.">
+              Renumber 1-n
+            </button>
+          </template>
+        </div>
+
+        <!-- What the grid cannot show by being correct: rows nobody has placed,
+             an ambiguous order, and a sign-off recorded ahead of its turn. -->
+        <div v-if="sched.diagnostics.unordered_count" class="note">
+          <b>{{ sched.diagnostics.unordered_count }}</b> entit{{ sched.diagnostics.unordered_count === 1 ? 'y has' : 'ies have' }}
+          no order yet and sort to the bottom:
+          <span class="muted">{{ sched.diagnostics.unordered.join(', ') }}</span>
+        </div>
+        <div v-for="d in sched.diagnostics.duplicate_orders" :key="d.order" class="note">
+          Order <b>{{ d.order }}</b> is used by {{ d.entities.join(' and ') }} —
+          their sequence falls back to name.
+        </div>
+        <div v-if="sched.diagnostics.out_of_sequence_rows.length" class="note warn">
+          Signed ahead of turn:
+          <span v-for="r in sched.diagnostics.out_of_sequence_rows" :key="r.entityid" class="oos">
+            {{ r.entityid }} ({{ r.cells.join('; ') }})
+          </span>
+          <div class="muted">Recorded, not refused — a correction gets re-signed
+            out of order routinely.</div>
+        </div>
+
+        <div v-if="!sched.rows.length" class="placeholder">
+          No packages in this cycle. If entities are tagged REP in MRI, press
+          <strong>Sync entities</strong>; if none are, nothing is due.
+        </div>
+
+        <div v-else class="grid-wrap sched-wrap">
+          <table class="grid sched">
+            <thead>
+              <tr>
+                <th class="sticky-l ord" rowspan="2" title="The CFO's order. Type a number; the grid sorts by it.">#</th>
+                <th class="sticky-e" rowspan="2">Entity</th>
+                <th rowspan="2">Property</th>
+                <th rowspan="2" title="Initials of the assigned accountant">Prep</th>
+                <th v-for="d in sched.deliverables" :key="d.key"
+                    :colspan="d.stages.length + 1" class="grp" :title="d.note">
+                  {{ d.label }}
+                </th>
+              </tr>
+              <tr>
+                <template v-for="d in sched.deliverables" :key="d.key">
+                  <th class="tgt-h" title="Target date the CFO set for this deliverable">Target</th>
+                  <th v-for="st in d.stages" :key="st.key" class="stg-h">
+                    <div>{{ st.label }}</div>
+                    <div class="owner">{{ st.owner }}</div>
+                  </th>
+                </template>
+              </tr>
+            </thead>
+            <tbody v-for="g in schedGroups" :key="g.name || '_'">
+              <tr v-if="g.name" class="grp-row">
+                <td :colspan="4 + sched.deliverables.reduce((a: number, d: any) => a + d.stages.length + 1, 0)">
+                  {{ g.name }}
+                </td>
+              </tr>
+              <tr v-for="r in g.rows" :key="r.package_id"
+                  :class="{ open: detail?.package?.id === r.package_id }">
+                <td class="sticky-l ord">
+                  <input v-if="canManageClose" class="ord-in" type="number" min="0"
+                         :value="r.sort_order ?? ''"
+                         @change="setOrder(r.package_id, ($event.target as HTMLInputElement).value)" />
+                  <span v-else>{{ r.sort_order ?? '—' }}</span>
+                </td>
+                <td class="sticky-e">
+                  <button class="link" @click="openPackage(r.package_id)">{{ r.entityid }}</button>
+                  <div class="ent-name">{{ r.entity_name }}</div>
+                </td>
+                <td class="prop">
+                  <input v-if="canManageClose" class="txt-in" :value="r.property_name || ''"
+                         placeholder="—"
+                         @change="setProperty(r.package_id, ($event.target as HTMLInputElement).value)" />
+                  <span v-else>{{ r.property_name || '—' }}</span>
+                </td>
+                <td class="prep">
+                  <input v-if="canManageClose" class="ini-in" :value="r.preparer || ''"
+                         placeholder="—" maxlength="4"
+                         @change="setPreparer(r.package_id, ($event.target as HTMLInputElement).value)" />
+                  <span v-else>{{ r.preparer || '—' }}</span>
+                </td>
+                <template v-for="d in r.deliverables" :key="d.key">
+                  <td class="tgt" :class="{ late: d.overdue, ok: d.complete }">
+                    <input v-if="canManageClose" class="date-in" type="date"
+                           :value="d.target_date || ''"
+                           @change="setTarget(r.package_id, d.key, ($event.target as HTMLInputElement).value)" />
+                    <span v-else>{{ d.target_date || '—' }}</span>
+                  </td>
+                  <td v-for="st in d.stages" :key="st.key" class="sign"
+                      :class="{ signed: st.signed }">
+                    <template v-if="st.signed">
+                      <div class="who">{{ st.signed_by || '—' }}</div>
+                      <div class="when">{{ st.signed_on || '' }}</div>
+                      <button class="x" title="Clear this sign-off"
+                              @click="signoff(r.package_id, d.key, st.key, '', '')">×</button>
+                    </template>
+                    <button v-else class="sign-btn"
+                            :title="`Sign ${d.label} — ${st.label} as ${st.owner}, dated today`"
+                            @click="signNow(r.package_id, d.key, st.key)">+</button>
+                  </td>
+                </template>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="legend">
+          Each sign-off records the initials typed and the date, and the account
+          that saved it. <b>+</b> signs as you, today; click the <b>×</b> on a
+          signed cell to clear it.
+        </p>
+      </template>
+    </div>
+
+    <!-- == Tab 2: one entity's package =============================== -->
+    <div v-show="tab === 'workbench'" class="bench-tab">
+      <!-- THE ENTITY PICKER IS THE TAB'S OWN CONTROL, not a row click on
+           another screen. An accountant works one entity at a time and should
+           not have to find it in a 58-row grid first. Jim, Sep 16 2026:
+           "Accountants should be able to select the reporting entity that they
+           want to work on with a dropdown at the top of the workbench tab."
+           Options come from the tracker's own rows, so the picker carries the
+           CFO's order and each entity's progress with it. -->
+      <div class="bench-pick">
+        <label>Reporting entity</label>
+        <select class="sel wide"
+                :value="detail?.package?.id ?? ''"
+                @change="onPickEntity(($event.target as HTMLSelectElement).value)">
+          <option value="">- select an entity -</option>
+          <option v-for="r in (sched?.rows || [])" :key="r.package_id"
+                  :value="r.package_id">
+            {{ r.sort_order != null ? r.sort_order + '. ' : '' }}{{ r.entityid }}
+            - {{ r.entity_name }} ({{ r.signed_count }}/{{ r.cell_count }} signed)
+          </option>
+        </select>
+        <button v-if="detail" class="btn nav" @click="prevEntity" :disabled="!hasPrev"
+                title="Previous entity in the tracker's order">&lsaquo;</button>
+        <button v-if="detail" class="btn nav" @click="nextEntity" :disabled="!hasNext"
+                title="Next entity in the tracker's order">&rsaquo;</button>
+        <span v-if="!sched || !sched.rows || !sched.rows.length" class="muted">
+          No entities in this cycle yet - press <b>Sync entities</b>.
+        </span>
       </div>
 
-      <div v-else class="grid-wrap">
-        <table class="grid">
-          <thead>
-            <tr>
-              <th class="sticky-l">Entity</th>
-              <th>Status</th>
-              <th class="num">Progress</th>
-              <th class="num">Exhibits</th>
-              <th v-for="s in tracker.steps" :key="s.key" class="step-col" :title="s.label">
-                <div class="step-name">{{ s.label }}</div>
-                <div class="step-owner">{{ s.owner }}</div>
-                <input v-if="isAdmin" class="due" type="date" :value="s.due_date || ''"
-                       @change="setDue(s.key, ($event.target as HTMLInputElement).value)"
-                       title="CFO deadline for this step" />
-                <div v-else class="due-ro">{{ s.due_date || '—' }}</div>
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="p in tracker.packages" :key="p.id"
-                :class="{ open: detail?.package?.id === p.id }">
-              <td class="sticky-l">
-                <button class="link" @click="openPackage(p.id)">{{ p.entityid }}</button>
-                <div class="ent-name">{{ p.entity_name }}</div>
-              </td>
-              <td><span class="chip" :class="stateClass(p.state)">{{ p.state_label }}</span></td>
-              <td class="num">
-                {{ p.steps_complete }}/{{ p.steps_total }}
-                <div class="bar"><i :style="{ width: (100 * p.steps_complete / p.steps_total) + '%' }" /></div>
-              </td>
-              <td class="num">{{ p.exhibit_count }}</td>
-              <td v-for="s in p.steps" :key="s.key" class="cell"
-                  :class="{ done: s.done, late: s.overdue }"
-                  :title="s.done ? `${s.completed_by} — ${s.completed_at}`
-                                 : (s.due_date ? `due ${s.due_date}` : 'no deadline set')">
-                {{ s.done ? '✓' : (s.overdue ? '!' : '') }}
-              </td>
-            </tr>
-          </tbody>
-        </table>
+      <div v-if="!detail" class="placeholder">
+        Pick a reporting entity above to open its package.
       </div>
-    </template>
 
-    <!-- ── Package ─────────────────────────────────────────────────── -->
     <div v-if="detail" class="drawer">
       <div class="drawer-head">
         <div>
@@ -340,7 +653,7 @@ onMounted(loadCycles)
                           `${detail.package.entityid} - WP - ${detail.package.period_end}.xlsx`)">
             Download package
           </button>
-          <button class="btn" @click="detail = null">Close</button>
+          <button class="btn" @click="tab = 'tracker'">Back to tracker</button>
         </div>
       </div>
 
@@ -536,6 +849,7 @@ onMounted(loadCycles)
         <p v-if="!detail.events.length" class="muted small">Nothing recorded yet.</p>
       </section>
     </div>
+    </div>
   </div>
 </template>
 
@@ -671,4 +985,107 @@ h4 { margin: 12px 0 4px; font-size: 12.5px; font-weight: 600; }
 .note-input { width: 100%; }
 .muted { color: var(--color-text-secondary); }
 .small { font-size: 12px; }
+
+/* == Tabs, tracker, workbench picker ============================== */
+.tabs { display: flex; gap: 2px; margin-top: 16px; border-bottom: 1px solid #dde3ec; }
+.tab {
+  background: none; border: none; cursor: pointer;
+  padding: 9px 16px; font-size: 13px; font-weight: 600; color: #7a8394;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.tab.active { color: #1d4e7e; border-bottom-color: #1d4e7e; }
+.tab-sub { font-weight: 500; color: #9aa3b2; margin-left: 6px; font-size: 11px; }
+
+.tracker-tab, .bench-tab { margin-top: 14px; }
+
+.sched-bar {
+  display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+  border: 1px solid #e2e6ee; border-radius: 8px; background: #fff;
+  padding: 10px 14px; margin-bottom: 12px; font-size: 12px;
+}
+.sched-bar .spacer { flex: 1 1 auto; }
+.sched-stat b { font-size: 15px; color: #1d4e7e; }
+.sched-stat.bad b { color: #b4232a; }
+.sched-bar .chk { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.sel.sm { font-size: 12px; padding: 4px 6px; }
+.sel.wide { min-width: 460px; }
+
+.note {
+  font-size: 12px; color: #5a6475; background: #f7f9fc;
+  border-left: 3px solid #c8d2e0; padding: 7px 12px; margin-bottom: 8px;
+  border-radius: 0 4px 4px 0;
+}
+.note.warn { border-left-color: #d9a441; background: #fdf8ef; }
+.note .oos { display: inline-block; margin-right: 12px; }
+.note .muted { color: #8a93a4; margin-top: 3px; }
+
+/* The grid is wide by construction - 4 fixed columns plus 4 deliverables of
+   target + stages. It scrolls in both directions with the order and the entity
+   pinned, because those two are what tells you which row you are reading. */
+.sched-wrap { max-height: 70vh; overflow: auto; }
+table.grid.sched { font-size: 11.5px; border-collapse: separate; border-spacing: 0; }
+table.grid.sched th, table.grid.sched td {
+  border-bottom: 1px solid #edf0f5; padding: 3px 6px; white-space: nowrap;
+}
+table.grid.sched thead th {
+  position: sticky; background: #f4f6fa; z-index: 3;
+  border-bottom: 1px solid #dde3ec;
+}
+table.grid.sched thead tr:first-child th { top: 0; }
+table.grid.sched thead tr:nth-child(2) th { top: 34px; }
+th.grp {
+  text-align: center; font-size: 11px; letter-spacing: .02em;
+  border-left: 2px solid #dde3ec !important;
+}
+th.stg-h, th.tgt-h { font-weight: 600; font-size: 10.5px; text-align: center; }
+th.tgt-h { border-left: 2px solid #dde3ec !important; }
+th .owner { font-weight: 500; color: #9aa3b2; font-size: 9.5px; }
+.sticky-l { position: sticky; left: 0; background: #fff; z-index: 2; }
+.sticky-e { position: sticky; left: 46px; background: #fff; z-index: 2; }
+thead .sticky-l, thead .sticky-e { z-index: 4; background: #f4f6fa; }
+td.ord, th.ord { width: 46px; text-align: center; }
+.grp-row td {
+  background: #eef2f8; font-weight: 700; color: #33415a;
+  font-size: 11px; padding: 4px 8px !important;
+}
+.ord-in { width: 38px; text-align: center; }
+.txt-in { width: 118px; }
+.ini-in { width: 40px; text-align: center; text-transform: uppercase; }
+.date-in { width: 112px; }
+.ord-in, .txt-in, .ini-in, .date-in {
+  border: 1px solid transparent; background: transparent; border-radius: 3px;
+  padding: 2px 4px; font: inherit; color: inherit;
+}
+.ord-in:hover, .txt-in:hover, .ini-in:hover, .date-in:hover { border-color: #dde3ec; }
+.ord-in:focus, .txt-in:focus, .ini-in:focus, .date-in:focus {
+  border-color: #1d4e7e; background: #fff; outline: none;
+}
+td.tgt { border-left: 2px solid #edf0f5; text-align: center; }
+td.tgt.late { background: #fdecec; }
+td.tgt.ok { background: #f2f9f3; }
+td.sign { text-align: center; position: relative; min-width: 62px; }
+td.sign.signed { background: #f2f9f3; }
+td.sign .who { font-weight: 700; color: #2c6e3f; }
+td.sign .when { color: #7a8394; font-size: 10px; }
+.sign-btn {
+  border: 1px dashed #ccd4e0; background: none; color: #aab3c2;
+  border-radius: 3px; width: 20px; height: 18px; line-height: 1; cursor: pointer;
+}
+.sign-btn:hover { border-color: #1d4e7e; color: #1d4e7e; background: #eef4fb; }
+td.sign .x {
+  position: absolute; top: 1px; right: 2px; border: none; background: none;
+  color: #c3ccd9; cursor: pointer; font-size: 11px; line-height: 1; padding: 0;
+}
+td.sign:hover .x { color: #b4232a; }
+.legend { font-size: 11px; color: #8a93a4; margin-top: 8px; }
+
+.bench-pick {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  border: 1px solid #e2e6ee; border-radius: 8px; background: #fff;
+  padding: 12px 14px; margin-bottom: 14px;
+}
+.bench-pick label { font-size: 12px; font-weight: 600; color: #5a6475; }
+.btn.nav { padding: 4px 10px; font-size: 14px; line-height: 1; }
+.bench-tab .drawer { margin-top: 0; }
+
 </style>

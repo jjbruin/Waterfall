@@ -16,6 +16,21 @@ from flask_app.serializers import safe_json
 from flask_app.services import workpaper_service as ws
 from flask_app.services import workpaper_data as wd
 from flask_app.services import workpaper_excel as wx
+from flask_app.services import workpaper_tracker as wt
+
+# THE ACCOUNTING SECTION IS THE CFO'S. Jim, Sep 16 2026: "give the cfo control
+# of syncing entities and starting a new close cycle and everything else in the
+# accounting section going forward." Every write below that was `("admin",
+# "analyst")` now names `cfo` as well.
+#
+# ONE THING TO KNOW ABOUT WHAT THAT DOES. `role_required` is LEVEL-based: it
+# takes the lowest level among the roles it is given and admits anyone at or
+# above it. `cfo`, `analyst`, `accountant` and `accounting_manager` are all
+# level 1, so naming `cfo` here grants the CFO and continues to admit the other
+# three -- it cannot express "the CFO but not an accountant". That suits a
+# grant, which is what was asked. If the accounting section should be closed to
+# analysts rather than merely opened to the CFO, that is a different change and
+# needs saying: see ROLE_LEVELS in flask_app/auth/routes.py.
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +66,7 @@ def list_cycles():
 
 @workpapers_bp.route("/cycles", methods=["POST"])
 @login_required
-@role_required("admin", "analyst")
+@role_required("admin", "cfo", "analyst")
 def create_cycle():
     body = request.get_json(silent=True) or {}
     label = (body.get("period_label") or "").strip()
@@ -66,7 +81,7 @@ def create_cycle():
 
 @workpapers_bp.route("/cycles/<int:cycle_id>/steps", methods=["PUT"])
 @login_required
-@role_required("admin", "analyst")
+@role_required("admin", "cfo", "analyst")
 def set_due_date(cycle_id):
     """The CFO's deadline for one step of the close."""
     body = request.get_json(silent=True) or {}
@@ -79,7 +94,7 @@ def set_due_date(cycle_id):
 
 @workpapers_bp.route("/cycles/<int:cycle_id>/sync", methods=["POST"])
 @login_required
-@role_required("admin", "analyst")
+@role_required("admin", "cfo", "analyst")
 def sync(cycle_id):
     """Create packages for any REP entity that has none in this cycle."""
     try:
@@ -95,6 +110,116 @@ def tracker(cycle_id):
         return jsonify(safe_json(ws.tracker(cycle_id)))
     except Exception as e:
         return _fail(e, "tracker", 500)
+
+
+# -- The close schedule: the CFO's tracker across every entity ------------
+#
+# Distinct from `/tracker` above, which is the per-package STEP checklist. This
+# is the grid the CFO keeps in the reporting calendar workbook: one row per
+# reporting entity, his order, his target dates, and a sign-off per stage.
+#
+# Reads are open to any signed-in user; accounting has to be able to see where
+# the close stands. Writes divide in two:
+#   * ORDER, TARGET DATES, RENUMBER and CARRY FORWARD are the CFO's arrangement
+#     of the quarter, gated like the other cycle-level settings above.
+#   * A SIGN-OFF is open to any signed-in user, because the preparer, the
+#     manager and the CFO each record their own, and every one stores the name
+#     typed into it as well as the account that saved it.
+
+@workpapers_bp.route("/cycles/<int:cycle_id>/schedule", methods=["GET"])
+@login_required
+def schedule(cycle_id):
+    try:
+        return jsonify(safe_json(wt.grid(cycle_id)))
+    except Exception as e:
+        return _fail(e, "schedule", 500)
+
+
+@workpapers_bp.route("/packages/<int:package_id>/schedule/order", methods=["PUT"])
+@login_required
+@role_required("admin", "cfo", "analyst")
+def schedule_order(package_id):
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify(wt.set_order(package_id, body.get("order"), _user()))
+    except Exception as e:
+        return _fail(e, "schedule_order")
+
+
+@workpapers_bp.route("/packages/<int:package_id>/schedule/target", methods=["PUT"])
+@login_required
+@role_required("admin", "cfo", "analyst")
+def schedule_target(package_id):
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify(wt.set_target(package_id, body.get("deliverable", ""),
+                                     body.get("target_date"), _user()))
+    except Exception as e:
+        return _fail(e, "schedule_target")
+
+
+@workpapers_bp.route("/packages/<int:package_id>/schedule/signoff", methods=["PUT"])
+@login_required
+def schedule_signoff(package_id):
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify(wt.set_signoff(
+            package_id, body.get("deliverable", ""), body.get("stage", ""),
+            body.get("signed_by"), body.get("signed_on"),
+            body.get("note"), _user()))
+    except Exception as e:
+        return _fail(e, "schedule_signoff")
+
+
+@workpapers_bp.route("/packages/<int:package_id>/schedule/preparer", methods=["PUT"])
+@login_required
+@role_required("admin", "cfo", "analyst")
+def schedule_preparer(package_id):
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify(wt.set_preparer(package_id, body.get("preparer"), _user()))
+    except Exception as e:
+        return _fail(e, "schedule_preparer")
+
+
+@workpapers_bp.route("/packages/<int:package_id>/schedule/property", methods=["PUT"])
+@login_required
+@role_required("admin", "cfo", "analyst")
+def schedule_property(package_id):
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify(wt.set_property(package_id, body.get("property_name"),
+                                       _user()))
+    except Exception as e:
+        return _fail(e, "schedule_property")
+
+
+@workpapers_bp.route("/cycles/<int:cycle_id>/schedule/renumber", methods=["POST"])
+@login_required
+@role_required("admin", "cfo", "analyst")
+def schedule_renumber(cycle_id):
+    try:
+        return jsonify(wt.renumber(cycle_id, _user()))
+    except Exception as e:
+        return _fail(e, "schedule_renumber")
+
+
+@workpapers_bp.route("/cycles/<int:cycle_id>/schedule/carry-forward",
+                     methods=["POST"])
+@login_required
+@role_required("admin", "cfo", "analyst")
+def schedule_carry_forward(cycle_id):
+    """Bring the PREVIOUS quarter's order, preparers and properties forward.
+
+    Never the sign-offs or the target dates -- those are facts about a quarter
+    and copying them would assert work that has not been done.
+    """
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify(wt.carry_forward(int(body.get("from_cycle_id") or 0),
+                                        cycle_id, _user()))
+    except Exception as e:
+        return _fail(e, "schedule_carry_forward")
 
 
 # ── Packages ─────────────────────────────────────────────────────────────
@@ -281,7 +406,7 @@ def get_fs_map():
 
 @workpapers_bp.route("/fs-map", methods=["PUT"])
 @login_required
-@role_required("admin", "analyst")
+@role_required("admin", "cfo", "analyst")
 def put_fs_map():
     body = request.get_json(silent=True) or {}
     try:
