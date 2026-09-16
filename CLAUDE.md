@@ -248,6 +248,33 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v480` = `5325f44` (Accounting Workpapers split into two tabs: a production
+    TRACKER across every reporting entity and the single-entity WORKBENCH, which
+    now has its own entity dropdown. The tracker replicates the CFO's reporting
+    calendar — his order number (rows he has not placed sort to the BOTTOM), the
+    preparer's initials, and per deliverable a target date and its sign-offs,
+    14 cells per entity. Stages are per deliverable: three for workpapers, FS and
+    capital accounts, FIVE for investor delivery, because the FS and the capital
+    accounts are posted and checked separately. Carry-forward moves the
+    ARRANGEMENT and never the approvals. A date is parsed or refused, never
+    guessed; sequence is reported, not enforced; clearing deletes the row.
+    THE ACCOUNTING SECTION IS NOW THE CFO'S — the API gate was ("admin",
+    "analyst") and the SCREEN gated on `admin`, and the screen is what actually
+    locked him out. Ten endpoints name `cfo`; note `role_required` is
+    level-based, so that grants the CFO and keeps admitting analysts.
+    THE STATEMENT TABS PRINT LIKE THE DELIVERED PACKAGE, transcribed from
+    `PPI Eastchase (TX) LLC - WP - 06.30.2026.xlsx` — margins, centring, Arial 11,
+    column widths, the five-line page header and footer pages 1-5. The print
+    RANGE is computed rather than copied (58 entities do not share a row count)
+    and starts at row 4, so the workpaper title and provenance note stay on
+    screen and off the printed statement.
+    SHIPPED DDL: two new tables plus `sort_order`/`property_name` on
+    `wp_packages`, created on first request. Verified on production PostgreSQL
+    after deploy — both tables present, both columns added, tracker returns all
+    58 REP entities. Population is the REP TAG, not the spreadsheet (Jim's call);
+    all 58 start unordered and say so.
+    Guardrails: `workpaper_tracker_check.py` (43) and `workpaper_print_check.py`
+    (77, and it builds a real package and reads the workbook back).)
   - `v479` = `4908fc7` (Charlene: the snapshot's ownership graph is read AS OF THE
     QUARTER. `_is_open` was date-blind — ANY EndDate meant closed — so a relationship
     closing at any point AFTER a quarter retroactively removed its deal from that
