@@ -105,6 +105,51 @@ def main() -> int:
     print("Each of these conjures or destroys cash in any upstream trace that")
     print("passes through it — Upstream Analysis, Portfolio Analysis, PPI")
     print("upstream and PSCKOC alike. Fixing the feed fixes all four.")
+
+    # ── Optional: trace ONE deal's chain and say which of the above it hits ──
+    #
+    # A list of 31 broken entities does not tell an analyst why THEIR deal is
+    # wrong. Given a starting entity this walks the ownership upward and marks
+    # every level that fails to close, which is the question actually being
+    # asked when a distribution does not reconcile.
+    if len(sys.argv) > 1:
+        start = [a.strip().upper() for a in sys.argv[1:]]
+        inv_col = lower.get("investorid")
+        broken = {r["_e"]: r["sum"] for _, r in bad.iterrows()}
+        print()
+        print("=== chain from %s ===" % ", ".join(start))
+        seen, frontier, hits = set(), list(start), []
+        while frontier:
+            e = frontier.pop(0)
+            if e in seen:
+                continue
+            seen.add(e)
+            kids = df[df["_e"] == e]
+            if kids.empty:
+                continue
+            total = kids["_p"].sum()
+            flag = ""
+            if abs(total - 100.0) > TOL:
+                flag = "   <<<< DOES NOT CLOSE"
+                hits.append((e, total))
+            print("  %-12s sum %8.2f%%  (%d owners)%s" % (e, total, len(kids), flag))
+            for _, k in kids.iterrows():
+                oid = str(k[inv_col]).strip().upper() if inv_col else "?"
+                print("      -> %-12s %8.2f%%" % (oid, k["_p"]))
+                frontier.append(oid)
+        print()
+        if hits:
+            factor = 1.0
+            for _, t in hits:
+                factor *= (t / 100.0)
+            print("  Levels in this chain that do not close: %s" % ", ".join(
+                "%s at %.2f%%" % (e, t) for e, t in hits))
+            print("  Compounded through the chain, $100,000 becomes $%s." % (
+                "{:,.2f}".format(100_000.0 * factor)))
+            print("  (Exact only if ALL the cash takes the broken path; a split")
+            print("   sends part of it elsewhere and lands between the two.)")
+        else:
+            print("  Every level in this chain closes to 100%.")
     return 0
 
 
