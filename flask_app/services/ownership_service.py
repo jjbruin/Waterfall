@@ -395,8 +395,8 @@ def run_upstream_analysis(entity_id: str, distribution_amount: float,
     # them "now", so the balances were wrong in a way no label explained. Jim,
     # Sep 16 2026: the Pref Balance Detail report gives OPELAN 3,165,389 as of
     # 2026-09-16 and this screen was reporting 3,053,820. Seeding at the same
-    # date closes all but $6,605 of that; see `pref_convention_note` below for
-    # what the remainder is.
+    # date is necessary but not sufficient: the balances themselves now come
+    # from the Pref Balance Detail report, which is the vetted calculation.
     as_of_date = as_of or date.today()
     test_cash = pd.DataFrame([{
         "event_date": as_of_date,
@@ -449,6 +449,57 @@ def run_upstream_analysis(entity_id: str, distribution_amount: float,
         seeded_note = ("No accounting data was available, so the split below starts "
                        "from zero and IGNORES accrued pref and capital outstanding — "
                        "treat it as illustrative only.")
+
+    # ── THE VETTED PREF BALANCE, NOT A SECOND OPINION ───────────────────
+    #
+    # `seed_states_from_accounting` accrues pref its own way. The Pref Balance
+    # Detail report accrues it another way, and THAT is the calculation the firm
+    # has built and vetted. Running both and reporting the difference -- which
+    # is what this did -- produces two numbers for one fact and asks the reader
+    # to arbitrate. Jim, twice: "why are you trying to recreate a calculation
+    # engine that we have already built and vetted? Can't we rely on what we
+    # have built?"
+    #
+    # So the vetted figure is written INTO the state the waterfall starts from.
+    # The engine then splits cash against the same balance the report shows, and
+    # there is one number on the screen instead of two and a footnote.
+    pref_source = "waterfall seeding"
+    if acct is not None and not acct.empty and seed_states:
+        try:
+            from flask_app.services.reports_service import build_pref_balance_detail
+            for pc, st in seed_states.items():
+                try:
+                    detail = build_pref_balance_detail(
+                        str(entity_id), pc, as_of_date, acct, inv, deal_wf_steps)
+                except Exception:
+                    logger.warning("pref detail failed for %s/%s", entity_id, pc,
+                                   exc_info=True)
+                    continue
+                vetted = (detail or {}).get("header", {}).get("accrued_pref")
+                if vetted is None:
+                    continue
+                # Replace, not add. Every tier is zeroed first so the vetted
+                # total cannot be double-counted against what seeding accrued.
+                #
+                # THREE BUCKETS, NOT TWO. `total_pref_balance` also sums
+                # `pref_accrued_prior_year`, the 45-day grace bucket, which is
+                # NOT a declared PrefTier field — it is attached dynamically and
+                # read back with getattr. Zeroing only the two declared fields
+                # left it standing: P0000008/PPI38 then showed 373,035.83 where
+                # the report said 277,786.51, the 95,249.32 difference being
+                # exactly that bucket. A field that exists only when something
+                # has set it is invisible to anyone reading the dataclass.
+                for pool in st.pools.values():
+                    for t in pool.pref_tiers:
+                        t.pref_unpaid_compounded = 0.0
+                        t.pref_accrued_current_year = 0.0
+                        if hasattr(t, "pref_accrued_prior_year"):
+                            t.pref_accrued_prior_year = 0.0
+                st.pref_unpaid_compounded = float(vetted)
+            pref_source = "Pref Balance Detail report"
+        except Exception:
+            logger.warning("pref balance detail unavailable for %s", entity_id,
+                           exc_info=True)
 
     # SNAPSHOT THE OPENING BALANCES BEFORE RUNNING. `run_waterfall` mutates the
     # InvestorState objects it is handed, in place, so reading `seed_states`
@@ -540,24 +591,9 @@ def run_upstream_analysis(entity_id: str, distribution_amount: float,
         "wf_type": wf_type,
         "wf_label": _wf_label(wf_type),
         "as_of": as_of_date.isoformat(),
-        # THE TWO ENGINES USE DIFFERENT DAY COUNTS, and the difference is real
-        # rather than a rounding artefact. The waterfall accrues Act/365 Fixed
-        # (waterfall.py:260); the Pref Balance Detail report accrues Act/Act,
-        # 366 in a leap year (reports_service.py:925). On ASCENT at 2026-09-16
-        # that is about $6,600 on OPELAN, ~0.2%.
-        #
-        # The waterfall's own convention is used, because it is the engine
-        # actually splitting the cash and substituting a figure from elsewhere
-        # would make the arithmetic on screen not add up. The difference is
-        # REPORTED instead, which is this codebase's standing posture where two
-        # sources disagree -- see statement_service and the ownership tree's
-        # CapitalPercent check.
-        "pref_convention_note": (
-            "Pref here accrues Act/365 Fixed, the convention the waterfall "
-            "engine uses to split the cash. The Pref Balance Detail report "
-            "accrues Act/Act (366 in a leap year), so its balances run slightly "
-            "higher — about 0.2% on a 2026 date. Neither is a rounding error in "
-            "the other."),
+        # Where the pref balances came from, named on the screen so nobody has
+        # to wonder whether this agrees with the report. It IS the report.
+        "pref_source": pref_source,
         "seeded_from_accounting": not seeded_note,
         "seeding_warning": seeded_note,
         # What the waterfall STARTED from, so a reader can see the accrued pref
