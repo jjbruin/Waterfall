@@ -118,6 +118,29 @@ def _num(v):
         return None
 
 
+def _maturity_of(rl: dict):
+    """The loan's maturity date, which is NOT in ``dtMaturity``.
+
+    MRI carries the date in ``dtEvent`` on the row whose ``vDateType`` is
+    "Maturity". Measured on production Sep 16 2026: ``dtMaturity`` is empty on
+    all 91 loan rows, while ``dtEvent`` is populated on all 91 and on all 83 of
+    the Maturity rows. Jefferson Waters Creek's is 2026-12-05 there, the date
+    the deal team quotes.
+
+    Reading ``dtMaturity`` therefore found nothing for every loan in the
+    portfolio and fell back to the schedule's last period -- which is close
+    enough to look right, and wrong enough to compute an extension from the
+    wrong base date. ``dtMaturity`` is still read second in case it is ever
+    populated; the fallback to the schedule stays last.
+    """
+    vdt = str(rl.get("vdatetype") or "").strip().lower()
+    if vdt == "maturity":
+        d = _as_date(rl.get("dtevent"))
+        if d:
+            return d
+    return _as_date(rl.get("dtmaturity")) or _as_date(rl.get("dtevent"))
+
+
 def detect(loan_sched, loans_raw, vcode: str, sale_date) -> dict:
     """Loans on this deal that mature before it sells.
 
@@ -187,7 +210,7 @@ def detect(loan_sched, loans_raw, vcode: str, sale_date) -> dict:
             row = lr.iloc[0].to_dict()
         rl = {str(k).lower(): v for k, v in row.items()}
 
-        maturity = _as_date(rl.get("dtmaturity")) or last_date
+        maturity = _maturity_of(rl) or last_date
         ext = parse_extension_options(rl.get("extensionoptions"))
 
         # How many of the options it would take to reach the sale -- usually

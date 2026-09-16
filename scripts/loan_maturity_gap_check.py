@@ -44,11 +44,22 @@ def _sched(end="2026-11-30", start="2026-01-31", balance=51667000.0,
 
 
 def _loans(ext="2x12", maturity="2026-12-05"):
+    """The PRODUCTION shape, which is not the obvious one.
+
+    `dtMaturity` is EMPTY on all 91 loan rows; the date lives in `dtEvent` on
+    the row whose `vDateType` is "Maturity". A fixture that put the date in
+    `dtMaturity` would pass while the real data produced nothing -- the stale
+    fixture trap, testing a column that never carries a value.
+
+    Covenants are as they stand after the Sep 16 2026 corrections: nRequiredDCR
+    and nDY are now blank, nReqDSR 1.10 and nLTV 0.55 remain.
+    """
     import pandas as pd
     return pd.DataFrame([{
-        "vCode": "P0000078", "LoanID": "298", "dtMaturity": maturity,
-        "ExtensionOptions": ext, "nRequiredDCR": 1.35, "nReqDSR": 1.10,
-        "nLTV": 0.55, "nDY": 0.90, "nRequiredLTV": None, "nRequiredDY": None}])
+        "vCode": "P0000078", "LoanID": "298",
+        "vDateType": "Maturity", "dtEvent": maturity, "dtMaturity": None,
+        "ExtensionOptions": ext, "nRequiredDCR": None, "nReqDSR": 1.10,
+        "nLTV": 0.55, "nDY": None, "nRequiredLTV": None, "nRequiredDY": None}])
 
 
 def main() -> int:
@@ -140,15 +151,49 @@ def main() -> int:
         set(c) == {"required_dcr", "req_dsr", "ltv", "required_ltv",
                    "debt_yield", "required_debt_yield"}, str(sorted(c)))
     chk("values are unchanged from MRI",
-        c["required_dcr"] == 1.35 and c["req_dsr"] == 1.10
-        and c["ltv"] == 0.55, str(c))
-    chk("an absent covenant stays None rather than becoming zero",
-        c["required_ltv"] is None and c["required_debt_yield"] is None)
+        c["req_dsr"] == 1.10 and c["ltv"] == 0.55, str(c))
+    # nRequiredDCR and nDY were cleared in MRI on Sep 16 2026 after this screen
+    # surfaced them. A blank covenant must stay blank: 0.0 would read as "no
+    # coverage required", which is the opposite of "not specified".
+    chk("a cleared covenant stays None rather than becoming zero",
+        c["required_dcr"] is None and c["debt_yield"] is None
+        and c["required_ltv"] is None and c["required_debt_yield"] is None,
+        str(c))
     # Which field is the EXTENSION test and which is the ongoing one is an open
     # question for the deal team -- 1.35 ongoing against 1.10 to extend is
     # backwards from the usual. Nothing here decides it.
     chk("no covenant is evaluated or ranked here",
         not any(k in L for k in ("covenant_pass", "binding", "required_paydown")))
+
+    # ---- 4b. the maturity date is not where it looks ------------------
+    #
+    # `dtMaturity` is empty on all 91 production loan rows; the date is in
+    # `dtEvent` on the Maturity row. Reading the obvious column found nothing
+    # for EVERY loan and fell back to the schedule's last period -- close enough
+    # to look right, wrong enough to compute an extension from the wrong base.
+    print("\n4b. Where the maturity date lives")
+    chk("maturity is read from dtEvent on the Maturity row",
+        L["maturity"] == "2026-12-05", L["maturity"])
+    chk("and it is NOT the schedule's last period",
+        L["maturity"] != L["schedule_ends"]
+        and L["maturity_disagrees_with_schedule"] is True)
+    chk("so the extension is measured from the maturity, not the schedule",
+        L["extension"]["maturity_if_exercised"] == "2027-12-05",
+        str(L["extension"]))
+    import pandas as _pd
+    only_dtm = _pd.DataFrame([{
+        "vCode": "P0000078", "LoanID": "298", "vDateType": "Maturity",
+        "dtEvent": None, "dtMaturity": "2026-12-05", "ExtensionOptions": "2x12"}])
+    r_dtm = lm.detect(_sched(), only_dtm, "P0000078", "2027-04-30")
+    chk("dtMaturity is still honoured if it is ever populated",
+        r_dtm["loans"][0]["maturity"] == "2026-12-05")
+    no_date = _pd.DataFrame([{
+        "vCode": "P0000078", "LoanID": "298", "vDateType": "Maturity",
+        "dtEvent": None, "dtMaturity": None, "ExtensionOptions": "2x12"}])
+    r_nd = lm.detect(_sched(), no_date, "P0000078", "2027-04-30")
+    chk("with no date at all it falls back to the schedule and says they agree",
+        r_nd["loans"][0]["maturity"] == "2026-11-30"
+        and r_nd["loans"][0]["maturity_disagrees_with_schedule"] is False)
 
     # ---- 5. the engine never fails because of this -------------------
     print("\n5. It is a diagnostic, not a figure")
