@@ -180,12 +180,11 @@ def check_separators() -> None:
 def check_pages(pdf_path: str, payload_dir: str = "") -> None:
     print("\n4. Financial, Operating and Loan each print to ONE page")
     try:
-        import pdfplumber
+        pages = _pdf_text(pdf_path)
     except ImportError:
-        chk("pdfplumber available", False, "pip install pdfplumber")
+        chk("a PDF reader is available", False,
+            "pip install pymupdf   (or pdfplumber)")
         return
-    with pdfplumber.open(pdf_path) as pdf:
-        pages = [(p.extract_text() or "") for p in pdf.pages]
 
     chk("the document is 4 pages — Summary + one per subtab",
         len(pages) == 4, f"got {len(pages)}")
@@ -216,56 +215,232 @@ def check_pages(pdf_path: str, payload_dir: str = "") -> None:
             not missing, "missing: " + ", ".join(missing[:5]))
 
 
-def check_fonts(pdf_path: str) -> None:
-    """Comment and manual-input cells print in the table's own font and size.
+def _pdf_text(pdf_path: str) -> list:
+    """The text of each page, through whichever PDF reader is installed.
 
-    Measured off the PDF, not asserted off the CSS: a `<textarea>`, an `<input>`
-    and a `<span class="cmt-text">` each reach their type size by a different
-    route, and only the rendered document proves all three landed in the same
-    place.
-
-    Two causes were fixed: form controls do not inherit font-family or
-    font-size from their container (the UA gives them ~13.3px against a 7.5px
-    table), and `.cmt-text` — the READ-ONLY rendering the print view actually
-    uses — hardcodes 12px.
+    Same reason as ``_pdf_chars``: this check is the one that answers the
+    question the work order asks — does each subtab fit on one page — and it
+    was skipping on any machine without pdfplumber, which includes this repo's
+    own environment.
     """
-    print("\n5. Comment and input cells print at the table's size")
+    try:
+        import fitz
+    except ImportError:
+        fitz = None
+    if fitz is not None:
+        return [page.get_text() for page in fitz.open(pdf_path)]
+    import pdfplumber                                   # noqa: F401
+    with pdfplumber.open(pdf_path) as pdf:
+        return [(p.extract_text() or "") for p in pdf.pages]
+
+
+def _pdf_chars(pdf_path: str) -> list:
+    """Per page, ``[(char, size, fontname)]`` in reading order.
+
+    Reads through PyMuPDF or pdfplumber, whichever is installed. This used to
+    require pdfplumber alone and simply reported itself unavailable without it,
+    which is a check that does not run — and a check that does not run is worth
+    less than no check, because the suite still prints a line for it.
+    """
+    try:
+        import fitz
+    except ImportError:
+        fitz = None
+    if fitz is not None:
+        out = []
+        for page in fitz.open(pdf_path):
+            chars = []
+            for b in page.get_text("dict")["blocks"]:
+                if b["type"] != 0:
+                    continue
+                for line in b["lines"]:
+                    for s in line["spans"]:
+                        size = round(s["size"], 1)
+                        font = s["font"].split("+")[-1]
+                        chars.extend((c, size, font) for c in s["text"])
+            out.append(chars)
+        return out
+    import pdfplumber                                   # noqa: F401
+    with pdfplumber.open(pdf_path) as pdf:
+        return [[(c["text"], round(c["size"], 1),
+                  c["fontname"].split("+")[-1]) for c in pg.chars]
+                for pg in pdf.pages]
+
+
+def _pdf_prose(pdf_path: str, page_index: int, header: str) -> list:
+    """``[(text, size, font)]`` for the spans in the COMMENT COLUMN of one page.
+
+    Located by the column's own header rather than by a phrase from the data:
+    the comment wording changes every quarter, so a hardcoded probe
+    ("Occupancy held at") stops being on the page and the check SKIPS —
+    printing a line and asserting nothing. Both comment probes were skipping on
+    live 26Q2 when this was rewritten.
+
+    Anchoring on the header also keeps the page's other prose out. Selecting
+    "any long run of words" instead pulled in the subtitle above the table
+    (8.25pt) and the Loan tab's italic excluding-development footnote below it,
+    and reported three different comment sizes on a page that has one.
+    """
+    spans = _page_spans(pdf_path, page_index)
+    if not spans:
+        return []
+    head = next((s for s in spans
+                 if header.lower() in s["text"].strip().lower()), None)
+    if head is None:
+        return []
+    x0, y_head = head["x0"] - 2, head["y1"]
+    out = []
+    for s in spans:
+        t = s["text"].strip()
+        if s["x0"] < x0 or s["y0"] < y_head:
+            continue                      # left of the column, or above it
+        if "italic" in s["font"].lower():
+            continue                      # the tfoot footnote, not a comment
+        if len(t) >= 20 and t.count(" ") >= 2:
+            out.append((t, round(s["size"], 1), s["font"].split("+")[-1]))
+    return out
+
+
+def _page_spans(pdf_path: str, page_index: int) -> list:
+    """``[{text, size, font, x0, y0, y1}]`` for one page, from either reader.
+
+    Both backends are implemented because the two machines that run this do not
+    agree: the repo's ``.venv`` carries pdfplumber and not PyMuPDF, and a bare
+    system interpreter here carried PyMuPDF and not pdfplumber. A helper that
+    knew only one of them made the comment checks report "no prose found" —
+    a FAIL that says the document is wrong when it is the probe that is missing.
+    """
+    try:
+        import fitz
+    except ImportError:
+        fitz = None
+    if fitz is not None:
+        page = fitz.open(pdf_path)[page_index]
+        return [{"text": s["text"], "size": s["size"],
+                 "font": s["font"].split("+")[-1],
+                 "x0": s["bbox"][0], "y0": s["bbox"][1], "y1": s["bbox"][3]}
+                for b in page.get_text("dict")["blocks"] if b["type"] == 0
+                for line in b["lines"] for s in line["spans"]
+                if s["text"].strip()]
     try:
         import pdfplumber
     except ImportError:
-        chk("pdfplumber available", False, "pip install pdfplumber")
+        return []
+    # pdfplumber gives characters, not spans. Group them into runs sharing a
+    # baseline, a size and a font — which is what a span is.
+    with pdfplumber.open(pdf_path) as pdf:
+        chars = pdf.pages[page_index].chars
+        runs, cur = [], None
+        for c in chars:
+            key = (round(c["top"], 1), round(c["size"], 1), c["fontname"])
+            if cur is None or cur["key"] != key or c["x0"] - cur["x1"] > 3:
+                cur = {"key": key, "text": c["text"], "size": c["size"],
+                       "font": c["fontname"].split("+")[-1],
+                       "x0": c["x0"], "x1": c["x1"],
+                       "y0": c["top"], "y1": c["bottom"]}
+                runs.append(cur)
+            else:
+                cur["text"] += c["text"]
+                cur["x1"] = c["x1"]
+        return [r for r in runs if r["text"].strip()]
+
+
+def check_fonts(pdf_path: str) -> None:
+    """Manual-input cells print at the table's size; comments one step below it.
+
+    Measured off the PDF, not asserted off the CSS: a `<textarea>`, an `<input>`
+    and a `<span class="cmt-text">` each reach their type size by a different
+    route, and only the rendered document proves where each one landed.
+
+    THE TWO CATEGORIES ARE NOT THE SAME, and this check used to require both to
+    equal the table:
+
+      * a MANUAL FIGURE is a figure. It sits in a column of figures and must be
+        indistinguishable from the computed ones beside it — exactly equal.
+      * a COMMENT is prose about a row, and prints at 7px against the table's
+        8px, deliberately. It is what sets the Operating page's height: on live
+        26Q2 the comment column wrapped 50 of 55 rows onto a second line and the
+        page ran 1.13in over a single sheet. Shrinking the prose bought the page
+        back; shrinking the figures would not have been enough.
+
+    The regressions this was written for are still caught, because both were
+    LARGER than the table, not smaller: form controls do not inherit font-size
+    from their container (the UA gives them ~13.3px), and `.cmt-text` hardcodes
+    12px. A comment is required to be smaller than the figures but within one
+    step of them, so 12px fails and so would an illegible 4px.
+    """
+    print("\n5. Manual figures print at the table's size, comments just below")
+    try:
+        pages = _pdf_chars(pdf_path)
+    except ImportError:
+        chk("a PDF reader is available", False,
+            "pip install pymupdf   (or pdfplumber)")
         return
 
-    def sizes_for(pg, phrase):
-        chars = pg.chars
-        txt = "".join(c["text"] for c in chars)
+    def sizes_for(chars, phrase):
+        txt = "".join(c[0] for c in chars)
         i = txt.find(phrase)
         if i < 0:
             return None
-        return sorted({(round(c["size"], 1), c["fontname"].split("+")[-1])
-                       for c in chars[i:i + len(phrase)]})
+        return sorted({(c[1], c[2]) for c in chars[i:i + len(phrase)]})
 
-    with pdfplumber.open(pdf_path) as pdf:
-        pages = pdf.pages
-        # Anchor: an ordinary deal-name cell on each page is the size everything
-        # else must match.
-        for idx, label, probes in (
-            (1, "Financial", ("5.87M", "4.4%")),
-            (2, "Operating", ("Occupancy held at",)),
-            (3, "Loan", ("Fixed through 2029",)),
-        ):
-            anchor = sizes_for(pages[idx], "Evergreen Plaza")
-            if not anchor:
-                chk(f"{label}: anchor cell found", False,
-                    "no 'Evergreen Plaza' row on this page")
+    #: A comment prints at 7px where the table is 8px. Bounded rather than
+    #: pinned to 0.875 exactly, so a future half-step does not fail the suite
+    #: while still refusing 12px above and anything unreadable below.
+    COMMENT_RATIO = (0.80, 0.95)
+
+    # Anchor: an ordinary deal-name cell on each page is the size the figures
+    # must match and the comments are measured against.
+    for idx, label, figures, comments in (
+        (1, "Financial", ("5.87M", "4.4%"), ()),
+        # Operating and Loan carry the comment column. The Financial page is
+        # NOT probed for prose: its footnote block is prose at the same 7px by
+        # design, and it is not a comment.
+        (2, "Operating", (), "Operating comment"),
+        (3, "Loan", (), "Loan comment"),
+    ):
+        if idx >= len(pages):
+            chk(f"{label}: page {idx} exists", False,
+                f"the document has {len(pages)} pages")
+            continue
+        anchor = sizes_for(pages[idx], "Evergreen Plaza")
+        if not anchor:
+            chk(f"{label}: anchor cell found", False,
+                "no 'Evergreen Plaza' row on this page")
+            continue
+        for probe in figures:
+            got = sizes_for(pages[idx], probe)
+            if got is None:
+                print(f"      (skipped {label} {probe!r} — not on the page)")
                 continue
-            for probe in probes:
-                got = sizes_for(pages[idx], probe)
-                if got is None:
-                    print(f"      (skipped {label} {probe!r} — not on the page)")
-                    continue
-                chk(f"{label}: {probe!r} matches an ordinary cell",
-                    got == anchor, f"{got} against anchor {anchor}")
+            chk(f"{label}: manual figure {probe!r} matches an ordinary cell",
+                got == anchor, f"{got} against anchor {anchor}")
+        if not comments:
+            continue
+        prose = _pdf_prose(pdf_path, idx, comments)
+        a_size = anchor[0][0]
+        # Vacuity guard. Every quarter has comments on these two pages; none
+        # found means the detector broke, not that the page is clean. `chk`
+        # here returns None, so it cannot gate the rest — the condition is
+        # tested separately.
+        found = len(prose) >= 3
+        chk(f"{label}: comment prose found on the page ({len(prose)} runs)",
+            found, "" if found else "no prose runs detected — that is the "
+                                    "probe failing, not the document")
+        if not found:
+            continue
+        sizes = sorted({s for _, s, _ in prose})
+        ratios = [s / a_size for s in sizes] if a_size else [0]
+        chk(f"{label}: every comment prints at ONE size",
+            len(sizes) == 1, f"sizes found: {sizes}")
+        chk(f"{label}: comments print below the figures, within one step",
+            all(COMMENT_RATIO[0] <= r <= COMMENT_RATIO[1] for r in ratios),
+            f"{sizes}pt against {a_size}pt anchor "
+            f"(ratios {[round(r, 3) for r in ratios]}, want {COMMENT_RATIO})")
+        chk(f"{label}: comments are in the table's own typeface",
+            {f for _, _, f in prose} == {f for _, f in anchor},
+            f"{sorted({f for _, _, f in prose})} against "
+            f"{sorted({f for _, f in anchor})}")
 
 
 if __name__ == "__main__":

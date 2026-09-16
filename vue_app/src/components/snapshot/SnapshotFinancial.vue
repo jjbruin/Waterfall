@@ -746,11 +746,19 @@ tfoot tr:not(:first-child) td { border-top: none; }
   /* This block competes with deal rows for the same inches: it sits under a
      table that runs the height of the page, and at its screen size it needed
      1.08in against the 0.88in left over — which is what pushed a three-line
-     note onto a fifth sheet of its own. Roughly 0.45in here. */
+     note onto a fifth sheet of its own. Roughly 0.45in here.
+
+     THE `.fnlist` RULES ARE NOT HERE — they are in the print block at the FOOT
+     of this stylesheet, and they have to be. `.fnlist` and `.fnlist li` are
+     declared further down (below `.fnedit`), and a media query adds no
+     specificity: at equal specificity the LATER rule wins, so a 7px declared
+     here lost to the 12px declared there and the footnotes printed at their
+     screen size for as long as this block has existed. `.footnotes` and
+     `.footnotes h4` survive here only because their base rules sit ABOVE this
+     point. Measured on live 26Q2: h4 printed at 8.5px as intended, the list at
+     12px, and the block ran 1.86in against the 0.45in this comment claims. */
   .footnotes { padding: 3px 6px; margin-top: 4px; }
   .footnotes h4 { font-size: 8.5px; margin: 0 0 2px 0; }
-  .fnlist { font-size: 7px; }
-  .fnlist li { padding: 0; line-height: 1.25; }
 }
 /* An editable footnote is a borderless input so the list reads as text, not
    as a form: the analyst clicks the words and types. It gains a rule only on
@@ -831,5 +839,53 @@ tfoot tr:not(:first-child) td { border-top: none; }
   .footnotes { break-inside: avoid; border: 1px solid #ccc; }
   .numinput { border: none; background: transparent !important; padding: 0; }
   table.grid { font-size: 10px; }
+
+  /* ---- the footnote list, sized for paper ----
+     DECLARED HERE, AFTER `.fnlist`'s base rules, and that placement is the
+     whole fix. These were in the print block up beside `.footnotes`, where
+     they were dead: `.fnlist { font-size: 12px }` is declared below `.fnedit`,
+     later in the same stylesheet, and at equal specificity the later rule
+     wins whether or not the earlier one is inside a media query. Moving them
+     down here is what makes them apply. Do not move them back up.
+
+     7px matches the size the document already gives its secondary text — the
+     Loan tab's excluding-development footnote, and the comment column. */
+  /* 1.05 is the leading the print view already pins the deal rows to, and for
+     the same reason: at these sizes leading, not type size, is what sets the
+     pitch. The block is five lines deep, so every 0.05 of it is worth 0.007in
+     of a page that finishes with hundredths to spare. */
+  .fnlist { font-size: 7px; line-height: 1.05; }
+  .fnlist li { padding: 0; line-height: 1.05; }
+
+  /* The column gap between the table and this block. 14px is right on screen
+     and is 0.146in on paper — a tenth of what the block itself needs, spent on
+     white space, and the single largest item left once the list was sized.
+     Measured: with the list at 7px in three columns the block came to 0.67in
+     against 0.65in of page, and this gap was the difference. */
+  .fin { gap: 2px; }
+
+  /* THREE COLUMNS, because the sheet is LANDSCAPE. A footnote is about 110
+     characters, which sets to ~2.2in at 7px; one per full 10in line leaves
+     three quarters of the measure empty and spends 0.09in of a page that has
+     0.65in to give. Eight of them do not fit in one column at any legible
+     size — that is arithmetic, not preference — so the width the orientation
+     already bought is what pays for them. Reading order is down each column in
+     turn, the convention for numbered notes.
+
+     Two columns was measured first and missed by 0.04in: four rows of notes
+     plus the heading came to 0.69in against the 0.61in between the table's last
+     row and the foot of the page. Three brings it to three rows. The margin is
+     small either way, which is why the box below is tightened as well.
+
+     `break-inside: avoid` on the li keeps a note from splitting across the
+     column gap; the `avoid` on `.footnotes` above keeps the block whole. */
+  .fnlist { column-count: 3; column-gap: 14px; }
+  .fnlist li { break-inside: avoid; page-break-inside: avoid; }
+
+  /* The card becomes a rule and a caption on paper. 12px of padding and a
+     rounded 1px border is screen furniture; here each 1px of it is competing
+     with the deal rows above for the same page. Border kept — it separates the
+     notes from the table — but drawn tight. */
+  .footnotes { padding: 1px 6px; margin-top: 0; border-radius: 0; }
 }
 </style>

@@ -472,6 +472,19 @@ onMounted(async () => {
   :deep(.cmt-text) {
     font: inherit !important;
     line-height: 1.25 !important;
+    /* 7px, a step below the 8px the figures print at, and the same size the
+       document gives its other secondary text (the Loan tab's excluding-
+       development footnote, the Financial footnote list).
+
+       THE COMMENT COLUMN IS WHAT SETS THE OPERATING PAGE'S HEIGHT, which is
+       not obvious from looking at it. Measured on live 26Q2: 55 rows carried 96
+       text baselines, so 50 of them were a comment wrapping to a second line,
+       and a wrapped row costs 16.5pt against a single row's 9.0pt. The table
+       needed 8.97in of a 7.84in page — the deals themselves account for only
+       6.75in of that. Shrinking the prose is what buys the page back; shrinking
+       the figures would not have been enough and would have cost legibility
+       where it matters most. The deal rows stay at 8px. */
+    font-size: 7px !important;
   }
 
   :deep(textarea), :deep(input) {
