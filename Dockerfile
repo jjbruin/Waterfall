@@ -37,6 +37,20 @@ COPY flask_app/ flask_app/
 # MRI SQL query files (for data refresh from Azure)
 COPY queries/ queries/
 
+# Guardrails and diagnostics.
+#
+# These were never in the image, so NOTHING in scripts/ could be run against
+# production — not a guardrail, not a diagnostic. Found Sep 16 2026 trying to
+# run ownership_pct_closure_check.py against the live database to find which
+# entity's ownership percentages sum to 123%: the only copy of that data is in
+# production, and the only tool for reading it was on a laptop.
+#
+# They are small, pure-Python and imported by nothing the app serves, so they
+# cost a few KB of layer and buy `az containerapp exec ... python scripts/<x>.py`
+# against real data. That is the difference between a check that runs where the
+# fixtures are and one that runs where the problem is.
+COPY scripts/ scripts/
+
 # Vue built assets
 COPY --from=frontend-build /build/dist/ static/
 
