@@ -248,6 +248,15 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v478` = `1618e78` (Charlene: the Financial print table was 0.224in wider than
+    the sheet — `white-space: nowrap` makes `width: 100%` a floor, not a ceiling, and
+    11 columns overflowed where 8 did not, cutting Net ROE at the margin. Cell padding
+    5px→4px pays for it exactly (11 x 2 x 1px = 0.229in). Also the TIAA band rule,
+    which was printing across the whole row rather than under its four columns:
+    `.spanrow th` had always been outranked by `table.grid th`. She MEASURED the
+    brief's third item and rejected it — the left margin was never clipped, and
+    shifting right would have worsened the real overflow. New `check_margins`
+    guardrail: horizontal fit had no check, which is how this went unnoticed.)
   - `v477` = `8455d58` (ownership chain: a deal's waterfall may be filed under the
     property code OR the InvestmentID — 3rd Ave's six steps are under `3RDAVE` and
     `P3RDAVE` has none, so the screen called it unconfigured and linked to a code
