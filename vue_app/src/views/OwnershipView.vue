@@ -677,6 +677,11 @@ watch([root, collapsed], () => nextTick(() => {
               <span class="n">{{ fmtMoney(upstreamResult.distribution_amount) }}</span>
               <span class="l">{{ upstreamResult.wf_label }} distribution</span>
             </div>
+            <div class="stat"
+                 :class="{ warn: (upstreamResult.reconciliation_errors || []).length }">
+              <span class="n">{{ fmtMoney(upstreamResult.deal_allocated_total) }}</span>
+              <span class="l">allocated by the steps</span>
+            </div>
             <div class="stat">
               <span class="n">{{ fmtMoney(upstreamResult.total_allocated) }}</span>
               <span class="l">total allocated</span>
@@ -709,6 +714,14 @@ watch([root, collapsed], () => nextTick(() => {
             {{ upstreamResult.seeding_warning }}
           </div>
 
+          <!-- A waterfall cannot distribute more than it has. If the arithmetic
+               does not close, say so loudly rather than let a reader discover
+               it by adding up a column. -->
+          <div v-for="(m, i) in upstreamResult.reconciliation_errors || []"
+               :key="'recon' + i" class="err recon">
+            <strong>Does not reconcile.</strong> {{ m }}
+          </div>
+
           <h3 class="up-h">Deal-level allocations</h3>
           <DataTable :columns="dealAllocColumns" :rows="upstreamResult.deal_allocations || []" />
 
@@ -732,6 +745,15 @@ watch([root, collapsed], () => nextTick(() => {
 
           <template v-if="upstreamResult.upstream_allocations?.length">
             <h3 class="up-h">Upstream allocation detail</h3>
+            <p class="not-summable">
+              {{ upstreamResult.upstream_not_summable }}
+            </p>
+            <div v-if="(upstreamResult.upstream_total_by_level || []).length"
+                 class="level-totals">
+              <span v-for="l in upstreamResult.upstream_total_by_level" :key="l.level">
+                Level {{ l.level }}: <b>{{ fmtMoney(l.allocated) }}</b>
+              </span>
+            </div>
             <DataTable :columns="upstreamColumns" :rows="upstreamResult.upstream_allocations" />
           </template>
         </template>
@@ -1030,6 +1052,18 @@ fieldset.kind label {
   margin-left: 2px; background: #fff3e0; padding: 1px 3px; border-radius: 2px;
   vertical-align: super;
 }
+.err.recon { border-left-color: #b3261e; background: #fdecea; }
+.not-summable {
+  margin: 0 0 6px; font-size: 11.5px; color: #7a6a52; line-height: 1.5;
+  background: #fffaf0; border-left: 3px solid #e8c07a; padding: 7px 10px;
+  border-radius: 0 4px 4px 0; max-width: 82ch;
+}
+.level-totals {
+  display: flex; gap: 16px; flex-wrap: wrap; margin: 0 0 8px;
+  font-size: 11.5px; color: #556;
+}
+.level-totals b { font-variant-numeric: tabular-nums; color: #223; }
+
 .opening { margin-top: 4px; }
 .opening .ben-head, .opening .ben-row { grid-template-columns: 1fr 170px 170px; }
 .opening-note { margin: 6px 0 0; font-size: 11px; color: #8a93a3; }

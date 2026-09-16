@@ -586,8 +586,56 @@ def run_upstream_analysis(entity_id: str, distribution_amount: float,
         beneficiary_totals, upstream_rows, crossed_fund_investors(),
         entity_id, distribution_amount)
 
+    # ── RECONCILE. A WATERFALL CANNOT DISTRIBUTE MORE THAN IT HAS. ──────
+    #
+    # Jim, Sep 16 2026: "How can we allocate $123,179 when the cash flow
+    # distribution was only $100,000." It does not reproduce on this database --
+    # every amount tried here sums to the cent -- so rather than guess, the
+    # figures now check themselves and say so on screen when they do not.
+    #
+    # THE UPSTREAM DETAIL IS NOT SUMMABLE AND NEVER WAS. It records the same
+    # dollar at EVERY level it passes through: a $100,000 distribution to PPIAS
+    # appears once as the deal allocation and again as PPIAS's terminal receipt,
+    # so the column totals $200,000 on a two-level chain and more on a deeper
+    # one. That is the table doing its job -- tracing a path -- and a reader
+    # summing it is not making a mistake so much as being invited into one. It
+    # is now labelled, and its own per-level totals are given.
+    deal_total = float(sum(r["Allocated"] for r in deal_alloc_rows))
+    ben_total = float(sum(b["amount"] for b in beneficiaries))
+    tol = max(0.01, abs(distribution_amount) * 1e-9)
+    recon = []
+    if abs(deal_total - distribution_amount) > tol:
+        recon.append(
+            f"The deal-level steps allocate {deal_total:,.2f} from a "
+            f"{distribution_amount:,.2f} distribution — a difference of "
+            f"{deal_total - distribution_amount:,.2f}. A waterfall cannot "
+            f"distribute more than it has, so this is a defect in the split, "
+            f"not a rounding artefact.")
+    if abs(ben_total - distribution_amount) > tol:
+        recon.append(
+            f"The beneficial owners receive {ben_total:,.2f} in total against a "
+            f"{distribution_amount:,.2f} distribution — a difference of "
+            f"{ben_total - distribution_amount:,.2f}. Every dollar leaving the "
+            f"deal should arrive exactly once.")
+
+    # Per LEVEL the upstream detail must also reconcile; the flat list must not.
+    by_level = {}
+    for r in upstream_rows:
+        by_level.setdefault(r.get("Level", 0), 0.0)
+        by_level[r.get("Level", 0)] += float(r.get("Allocated", 0.0))
+
     return {
         "success": True,
+        "reconciliation_errors": recon,
+        "deal_allocated_total": deal_total,
+        "beneficiary_total": ben_total,
+        "upstream_total_by_level": [{"level": k, "allocated": v}
+                                    for k, v in sorted(by_level.items())],
+        "upstream_not_summable": (
+            "This table records the same dollar at every level it passes "
+            "through, so the Allocated column does not total the distribution "
+            "and is not meant to. Each LEVEL sums to it; see the per-level "
+            "totals."),
         "wf_type": wf_type,
         "wf_label": _wf_label(wf_type),
         "as_of": as_of_date.isoformat(),

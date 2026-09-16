@@ -65,6 +65,34 @@ with app.app_context():
             continue
         tested += 1
 
+        # A WATERFALL CANNOT DISTRIBUTE MORE THAN IT HAS. Jim, Sep 16 2026:
+        # "How can we allocate $123,179 when the cash flow distribution was only
+        # $100,000." It does not reproduce on this database, so the property is
+        # asserted directly across every deal and amount this check reaches.
+        for amt in (100_000.0, 5_000_000.0, 25_000_000.0):
+            rr = OS.run_upstream_analysis(
+                entity_id=vcode, distribution_amount=amt,
+                relationships_raw=data.get("relationships_raw"), wf=wf, inv=inv,
+                wf_type="CF_WF", acct=acct, as_of=AS_OF)
+            if rr.get("error"):
+                continue
+            check(not rr.get("reconciliation_errors"),
+                  f"{vcode} @ {amt:,.0f}: " + "; ".join(rr.get("reconciliation_errors") or []))
+            dealt = float(rr.get("deal_allocated_total") or 0.0)
+            check(abs(dealt - amt) < 0.01,
+                  f"{vcode} @ {amt:,.0f}: the steps allocate {dealt:,.2f} — "
+                  f"{dealt - amt:+,.2f} against what was distributed")
+            bent = float(rr.get("beneficiary_total") or 0.0)
+            check(abs(bent - amt) < 0.01,
+                  f"{vcode} @ {amt:,.0f}: beneficial owners receive {bent:,.2f} — "
+                  f"{bent - amt:+,.2f}; every dollar must arrive exactly once")
+            # Each LEVEL of the upstream detail reconciles; the flat list does
+            # not, and must not be expected to.
+            for lv in rr.get("upstream_total_by_level") or []:
+                check(abs(float(lv["allocated"]) - amt) < 0.01,
+                      f"{vcode} @ {amt:,.0f}: upstream level {lv['level']} totals "
+                      f"{float(lv['allocated']):,.2f}, not the distribution")
+
         check(res.get("pref_source") == "Pref Balance Detail report",
               f"{vcode}: pref_source is {res.get('pref_source')!r} — the screen "
               f"is not taking its balances from the vetted report")
