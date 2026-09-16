@@ -330,13 +330,44 @@ def get_investor_name(code: str,
 
 # ── Ownership graph ───────────────────────────────────────────────────────
 
-def _is_open(value) -> bool:
-    """True when an EndDate means 'still current'."""
+def _is_open(value, as_of=None) -> bool:
+    """True when an EndDate means the edge was live.
+
+    WITHOUT ``as_of`` this is date-blind: any EndDate at all means closed. That
+    is the historical behaviour and is kept for callers that have no reporting
+    date — ``scripts/ownership_reconciliation.py`` builds its own graph.
+
+    WITH ``as_of`` — a quarter end — an edge counts when it ended AFTER that
+    date, because it was live throughout the quarter being reported. Every other
+    window in this module is already "as of the quarter": ``is_acquired_as_of``
+    and ``is_sold_as_of`` both take ``q_end``, and the docstring on
+    ``resolve_investor_deals`` says both gates run before classification. The
+    ownership graph was the one window that did not, so a relationship closing
+    at any point after a quarter retroactively removed its deal from that
+    quarter's report.
+
+    JB Fair Park is exactly this. ``PPI32 -> JBFAIR`` carries EndDate
+    2026-07-29; at 26Q2's quarter end of 2026-06-30 it was live, and TIAA held
+    the deal through PPI32 at 85%. Date-blind, the edge was dropped, PPI32 had
+    no remaining children, and the walk never reached JBFAIR at all — so the
+    deal appeared in no group AND in no exclusion bucket. Measured across
+    25Q2-26Q3 it is the ONLY deal this changes, and 26Q3 is correctly
+    unaffected: by then the edge really had closed.
+    """
     if value is None:
         return True
     if isinstance(value, float) and pd.isna(value):
         return True
-    return str(value).strip() in ("", "nan", "None", "NaT", "NaN")
+    if str(value).strip() in ("", "nan", "None", "NaT", "NaN"):
+        return True
+    if as_of is None:
+        return False
+    ended = pd.to_datetime(value, errors="coerce")
+    if pd.isna(ended):
+        # An EndDate that will not parse is not evidence the edge closed. Same
+        # rule as the acquisition gate, which fails OPEN on a missing date.
+        return True
+    return ended.date() > as_of
 
 
 class _Graph:
@@ -346,7 +377,10 @@ class _Graph:
     walk downward, and *all* owners of a node to normalise a hop.
     """
 
-    def __init__(self, relationships: pd.DataFrame):
+    def __init__(self, relationships: pd.DataFrame, as_of=None):
+        #: The reporting date edges are judged against. None keeps the
+        #: date-blind behaviour for callers with no quarter — see `_is_open`.
+        self.as_of = as_of
         self.children: dict[str, list[tuple[str, float]]] = {}
         self.owners: dict[str, list[tuple[str, float]]] = {}
         if relationships is None or getattr(relationships, "empty", True):
@@ -367,7 +401,7 @@ class _Graph:
             d = row._asdict() if hasattr(row, "_asdict") else None
             if d is None:
                 continue
-            if c_end and not _is_open(d.get(c_end)):
+            if c_end and not _is_open(d.get(c_end), as_of):
                 continue
             investee = str(d.get(c_inv) or "").strip().upper()
             investor = str(d.get(c_own) or "").strip().upper()
@@ -418,7 +452,7 @@ class _Graph:
 
 def lookthrough_pct(deal_iid: str, investor_code: str,
                     relationships: pd.DataFrame = None,
-                    graph: "_Graph" = None) -> dict:
+                    graph: "_Graph" = None, as_of=None) -> dict:
     """Look-through ownership of one deal by one investor.
 
     The product of the normalised ownership % at every hop, summed over every
@@ -455,7 +489,7 @@ def lookthrough_pct(deal_iid: str, investor_code: str,
     are recorded at 0% — 34 of 35 TGAM deals at 26Q2 — so this distinction bites
     only where the ownership feed carries a real OP percentage.
     """
-    g = graph if graph is not None else _Graph(relationships)
+    g = graph if graph is not None else _Graph(relationships, as_of)
     target = str(deal_iid or "").strip().upper()
     investor = str(investor_code or "").strip().upper()
     routes: list[dict] = []
@@ -772,19 +806,38 @@ def resolve_investor_deals(investor_code: str, quarter: str,
     ``excluded_children`` so nothing is ever dropped silently.
     """
     q_end = _quarter_end(quarter)
-    graph = _Graph(relationships)
+    # AS OF THE QUARTER, not as of today. See `_is_open`.
+    graph = _Graph(relationships, as_of=q_end)
     deals = _deal_index(inv)
     investor = str(investor_code or "").strip().upper()
 
     # 1. every route from the investor to every reachable deal, keyed on vcode
     routes_by_deal: dict[str, list] = {}
     broken_raw: list[dict] = []
+    #: Deals the traversal never reached at all — no route to the investor, and
+    #: no partial chain either. Recorded rather than dropped: this function's
+    #: own docstring promises nothing is dropped silently, and until JB Fair
+    #: Park this was the one path that broke that promise. A deal lands here
+    #: when the walk stops before it (an intermediate held at 0%, or an edge
+    #: judged closed), which is indistinguishable from "not this investor's
+    #: deal" unless it is written down.
+    #:
+    #: MOST ENTRIES ARE ORDINARY. The deals frame is every deal in the system,
+    #: so every other investor's deals are unreachable from this one and belong
+    #: here. It is a haystack, not an error list — but a deal that goes missing
+    #: is now IN it rather than nowhere.
+    unreachable: list[dict] = []
     for vc, m in deals.items():
         res = lookthrough_pct(m["iid"], investor, graph=graph)
         if res["routes"]:
             routes_by_deal[vc] = res["routes"]
         elif res["broken"]:
             broken_raw.append({"vcode": vc, "detail": res["broken"][0]})
+        else:
+            unreachable.append({"vcode": m["vcode"], "name": m["name"],
+                                "iid": m["iid"],
+                                "reason": "no ownership route from "
+                                          f"{investor} as of {q_end}"})
 
     # 2. child properties out first, explicitly on Property_Count == 0. Not left
     #    to the accident that child edges happen to be 0% (Brainerd, Town Fair)
@@ -1035,6 +1088,12 @@ def resolve_investor_deals(investor_code: str, quarter: str,
             "deal_count": sum(len(v) for v in ordered.values()),
             "group_count": len(ordered),
             "excluded_not_acquired_count": len(excluded_not_acquired),
+            # Count only — the list is every deal in the system this investor
+            # does not hold, and would swamp the payload. `unreachable_sample`
+            # carries enough to recognise a deal that should not be in it.
+            "unreachable_count": len(unreachable),
+            "unreachable_sample": sorted(unreachable,
+                                         key=lambda e: e["vcode"])[:40],
             "acquisition_date_missing": acquisition_date_missing,
             "fund_entities": sorted(e for e, f in is_fund.items() if f),
             "spv_entities": sorted(e for e, f in is_fund.items() if not f),
