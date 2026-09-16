@@ -35,6 +35,7 @@ from openpyxl.utils import get_column_letter
 from flask_app.services import statement_service as ss
 from flask_app.services import workpaper_data as wd
 from flask_app.services import workpaper_service as ws
+from flask_app.services import workpaper_print as wpp
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,18 @@ def build_package(package_id: int, engine=None) -> bytes:
     _capital_activity(wb, used, entity, period_end, engine)
     _exhibits(wb, used, exhibits)
     _signoffs(wb, used, detail)
+
+    # THE STATEMENT TABS ARE THE DELIVERED PRODUCT, so they carry the print
+    # setup of a real delivered package rather than whatever Excel defaults to:
+    # `PPI Eastchase (TX) LLC - WP - 06.30.2026.xlsx`. Applied here, once, after
+    # the sheets exist -- the builders stay about figures and know nothing about
+    # margins. Every other tab is a workpaper and is deliberately left alone.
+    ent_name = pkg.get("entity_name") or entity
+    for title in wpp.SHEETS:
+        if title in wb.sheetnames:
+            sh = wb[title]
+            wpp.style_body(sh)
+            wpp.apply(sh, title, ent_name, period_end)
 
     buf = io.BytesIO()
     wb.save(buf)
