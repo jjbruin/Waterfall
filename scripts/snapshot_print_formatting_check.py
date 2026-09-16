@@ -195,6 +195,8 @@ def check_pages(pdf_path: str, payload_dir: str = "") -> None:
         chk(f"{tab} occupies exactly one page", len(hits) == 1,
             f"found on page(s) {hits}")
 
+    check_margins(pdf_path)
+
     if not payload_dir:
         print("      (pass a payload dir to also check no row was clipped)")
         return
@@ -213,6 +215,123 @@ def check_pages(pdf_path: str, payload_dir: str = "") -> None:
                    if r["name"].split("(")[0].strip()[:18] not in txt]
         chk(f"{tab}: all {len(rows)} deals are on the page",
             not missing, "missing: " + ", ".join(missing[:5]))
+
+
+#: The .print-page padding box, in inches, on the landscape sheet: an 11.00in
+#: page with 0.5in of side padding. Anything drawn outside it is past the margin.
+PRINT_BOX = (0.50, 10.50)
+
+#: The Financial band spans FOUR columns — % of Pref, Invested, Un-funded, Total
+#: Commitment — not the deal-level cap stack to its left. See the `span-tiaa`
+#: cell in SnapshotFinancial.vue.
+TIAA_BAND_COLUMNS = 4
+
+
+def _rule_segments(pdf_path: str, page_index: int) -> list:
+    """``[(y0, x0, x1, fill)]`` for the thin rules drawn on one page, in inches.
+
+    Borders are vector strokes and thin filled rectangles, not text, so nothing
+    in the text layer can answer whether a table fits or where a rule runs. Fat
+    rectangles — page and cell backgrounds — are filtered out by the dimension
+    test, which is what keeps the full-page background from reading as a rule
+    spanning 0.00 to 11.00in.
+    """
+    try:
+        import fitz
+    except ImportError:
+        fitz = None
+    if fitz is not None:
+        page = fitz.open(pdf_path)[page_index]
+        out = []
+        for d in page.get_drawings():
+            for it in d["items"]:
+                if it[0] == "re":
+                    r = it[1]
+                    thin = (r.height <= 1.6 and r.width > 6) or \
+                           (r.width <= 1.6 and r.height > 6)
+                    if thin:
+                        out.append((r.y0 / 72, r.x0 / 72, r.x1 / 72,
+                                    d.get("fill")))
+                elif it[0] == "l":
+                    p1, p2 = it[1], it[2]
+                    out.append((min(p1.y, p2.y) / 72, min(p1.x, p2.x) / 72,
+                                max(p1.x, p2.x) / 72, d.get("color")))
+        return out
+    # pdfplumber backend. The repo's .venv carries this and not PyMuPDF, so a
+    # fitz-only helper made every check here report "needs pymupdf" — five FAILs
+    # that say nothing about the document. Same mistake as _pdf_prose's.
+    try:
+        import pdfplumber
+    except ImportError:
+        return []
+    with pdfplumber.open(pdf_path) as pdf:
+        page = pdf.pages[page_index]
+        out = []
+        for r in list(page.rects) + list(page.lines):
+            w = abs(r["x1"] - r["x0"])
+            h = abs(r["bottom"] - r["top"])
+            if not ((h <= 1.6 and w > 6) or (w <= 1.6 and h > 6)):
+                continue
+            col = r.get("non_stroking_color") or r.get("stroking_color")
+            if isinstance(col, (int, float)):
+                col = (col, col, col)
+            out.append((r["top"] / 72, r["x0"] / 72, r["x1"] / 72, col))
+        return out
+
+
+def check_margins(pdf_path: str) -> None:
+    """Every table fits INSIDE the page margin, and the band rule marks its band.
+
+    Vertical fit had a check (``check_pages``); horizontal fit had none, and
+    that is what let the Financial table run past the right margin unnoticed.
+    `table.grid` sets ``white-space: nowrap``, so ``width: 100%`` is a floor and
+    not a ceiling: add a column, or a longer header, and the table simply grows
+    out of the page. Measured on live 26Q2 before the fix it was 10.224in inside
+    a 10.000in box, and the Net ROE column's right border was off the sheet.
+
+    The band rule is here rather than with the border checks because it is the
+    same failure in a different direction: a rule that runs the full width of
+    the row says nothing about which columns are TIAA's.
+    """
+    print("\n4b. Tables fit the page WIDTH, and the TIAA band rule marks it")
+    lo, hi = PRINT_BOX
+    for idx, label in ((1, "Financial"), (2, "Operating"), (3, "Loan")):
+        segs = _rule_segments(pdf_path, idx)
+        if not segs:
+            chk(f"{label}: rules readable (needs pymupdf)", False)
+            continue
+        x0 = min(s[1] for s in segs)
+        x1 = max(s[2] for s in segs)
+        chk(f"{label}: table is inside the {lo}–{hi}in printable box",
+            x0 >= lo - 0.01 and x1 <= hi + 0.01,
+            f"drawn {x0:.3f}..{x1:.3f}in (width {x1 - x0:.3f}in)")
+
+    # The band row's bottom rule must cover the band and NOTHING else. Before
+    # the fix it ran 0.510..10.729in — the full table — because
+    # `.spanrow th { border-bottom: none }` lost on specificity to
+    # `table.grid th` and every empty cell drew the ordinary header underline.
+    segs = _rule_segments(pdf_path, 1)
+    # Horizontal only. The column separators are vertical rules ~0.007in wide
+    # whose top edge falls in the same y range, and counting them made this read
+    # 14 segments on a row that has at most a handful.
+    band = [s for s in segs if 0.80 < s[0] < 0.88 and (s[2] - s[1]) > 0.05]
+    dark = [s for s in band if s[3] and s[3][0] < 0.6]
+    light = [s for s in band if not (s[3] and s[3][0] < 0.6)]
+    chk("Financial: the TIAA band carries its own rule",
+        bool(dark), f"{len(band)} segments on the band row, none of them dark")
+    chk(f"Financial: the band rule spans its {TIAA_BAND_COLUMNS} columns",
+        len(dark) == TIAA_BAND_COLUMNS,
+        f"{len(dark)} dark segment(s): "
+        + ", ".join(f"{d[1]:.2f}..{d[2]:.2f}in" for d in dark))
+    # `not light` is trivially true when nothing was read at all, which is how
+    # this passed while the three checks above it were failing for want of a
+    # PDF reader. It only means anything once the band has been found.
+    chk("Financial: no rule under the REST of the band row — it would read as "
+        "a full-width line, not a group marker",
+        bool(band) and not light,
+        ("no band row found — the probe, not the document" if not band else
+         "light segments at " + ", ".join(f"{s[1]:.2f}..{s[2]:.2f}in"
+                                          for s in light[:4])))
 
 
 def _pdf_text(pdf_path: str) -> list:

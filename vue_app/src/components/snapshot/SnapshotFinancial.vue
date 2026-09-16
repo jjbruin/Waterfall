@@ -600,7 +600,19 @@ table.grid th.r { text-align: right; }
 
 /* "TIAA Investment" band — centred over its four columns with the PDF's rule
    under the label only, not across the whole row. */
-.spanrow th { padding: 3px 8px 1px 8px; border-bottom: none; background: #fafafa; }
+/* `table.grid tr.spanrow th`, not `.spanrow th`. The band's whole point is that
+   a rule under it says WHICH columns are TIAA's; a rule running the full width
+   of the row says nothing. `border-bottom: none` here was dead — `table.grid th`
+   (element-class-element) outranks `.spanrow th` (class-element) at equal
+   weight, so every empty cell in the band row drew the ordinary header
+   underline and the band read as a continuous line with a darker patch in the
+   middle. Same defect as the footnote list's print size, same file, same cause:
+   a later or stronger selector quietly winning. */
+table.grid tr.spanrow th {
+  padding: 3px 8px 1px 8px;
+  border-bottom: none;
+  background: #fafafa;
+}
 /* `table.grid th` sets text-align: left and is element+class, so it outranked a
    bare `.span-tiaa`; the band label rendered left-aligned over its four columns
    instead of centred above them. Matching the selector's specificity fixes it. */

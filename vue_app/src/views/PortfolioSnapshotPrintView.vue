@@ -341,10 +341,27 @@ onMounted(async () => {
    0.157in it was at 9.5px. Pinning it to 1.05 drops the pitch to ~0.12in and
    BUYS BACK the type size: 9px here prints larger than 8px did with default
    leading, on a shorter table. Vertical padding is minimal for the same
-   reason; horizontal padding is generous because width is what landscape
-   bought. */
+   reason; horizontal padding was generous because width is what landscape
+   bought — until Financial stopped fitting in it.
+
+   5px WAS TOO GENEROUS BY EXACTLY ONE PIXEL. Financial has 11 columns against
+   Operating's and Loan's 8, and `table.grid` sets `white-space: nowrap`, so the
+   table cannot compress: its min-content width is the sum of its cells, and
+   `width: 100%` is a floor rather than a ceiling. Measured on live 26Q2 it came
+   to 10.224in inside a 10.000in printable box and simply hung over the right
+   edge — the Net ROE column's right border fell outside the page margin and its
+   figures were cut. Operating and Loan measured 9.990in and were unaffected,
+   which is why this reads as a Financial problem and is not one.
+
+   11 columns x 2 sides x 1px = 22px = 0.229in at 96dpi, against a 0.224in
+   overflow. The arithmetic is the reason for the change, not taste. It costs no
+   height, which matters: the Financial page finishes with 0.067in to spare.
+
+   Applied to all three tables rather than to Financial alone. Operating and
+   Loan are under their width, so `width: 100%` simply redistributes what this
+   frees back into their columns and neither moves. */
 :deep(table.grid th), :deep(table.grid td) {
-  padding: 0.5px 5px !important;
+  padding: 0.5px 4px !important;
   line-height: 1.05 !important;
 }
 /* Uncapped from 1.5in. The cap existed only because a portrait measure could
