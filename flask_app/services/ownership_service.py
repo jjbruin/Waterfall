@@ -351,7 +351,8 @@ def run_upstream_analysis(entity_id: str, distribution_amount: float,
                           inv: pd.DataFrame,
                           wf_type: str = "CF_WF",
                           acct: pd.DataFrame = None,
-                          actuals_through=None) -> dict:
+                          actuals_through=None,
+                          as_of=None) -> dict:
     """Run upstream waterfall analysis for an entity.
 
     Runs the entity's waterfall with the given distribution amount, then traces
@@ -387,8 +388,18 @@ def run_upstream_analysis(entity_id: str, distribution_amount: float,
         p = pd.to_numeric(test_wf["nPercent"], errors="coerce").fillna(0.0)
         test_wf["nPercent_dec"] = np.where(p > 1.0, p / 100.0, p)
 
+    # THE DATE THE DISTRIBUTION HAPPENS, which decides how much pref has
+    # accrued by the time it is paid. This was hardcoded to date(2025, 12, 31)
+    # -- a date in the past, unrelated to anything the user asked about -- while
+    # the states were seeded at ACTUALS_THROUGH. Two different dates, neither of
+    # them "now", so the balances were wrong in a way no label explained. Jim,
+    # Sep 16 2026: the Pref Balance Detail report gives OPELAN 3,165,389 as of
+    # 2026-09-16 and this screen was reporting 3,053,820. Seeding at the same
+    # date closes all but $6,605 of that; see `pref_convention_note` below for
+    # what the remainder is.
+    as_of_date = as_of or date.today()
     test_cash = pd.DataFrame([{
-        "event_date": date(2025, 12, 31),
+        "event_date": as_of_date,
         "cash_available": distribution_amount,
     }])
 
@@ -422,9 +433,13 @@ def run_upstream_analysis(entity_id: str, distribution_amount: float,
             except Exception:
                 logger.warning("upstream: child vcodes unavailable for %s",
                                entity_id, exc_info=True)
+            # Seed to the DISTRIBUTION date. `actuals_through` is the
+            # actuals/forecast boundary for the projection engine and is not a
+            # statement about how much pref is owed today; using it here stopped
+            # the accrual two months early.
             seed_states = seed_states_from_accounting(
                 acct, inv, deal_wf_steps, str(entity_id),
-                cutoff_date=actuals_through, child_vcodes=child_vcodes)
+                cutoff_date=as_of_date, child_vcodes=child_vcodes)
         except Exception as e:
             logger.warning("upstream: seeding failed for %s", entity_id, exc_info=True)
             seeded_note = (f"Could not seed from accounting ({str(e)[:120]}). The "
@@ -524,6 +539,25 @@ def run_upstream_analysis(entity_id: str, distribution_amount: float,
         "success": True,
         "wf_type": wf_type,
         "wf_label": _wf_label(wf_type),
+        "as_of": as_of_date.isoformat(),
+        # THE TWO ENGINES USE DIFFERENT DAY COUNTS, and the difference is real
+        # rather than a rounding artefact. The waterfall accrues Act/365 Fixed
+        # (waterfall.py:260); the Pref Balance Detail report accrues Act/Act,
+        # 366 in a leap year (reports_service.py:925). On ASCENT at 2026-09-16
+        # that is about $6,600 on OPELAN, ~0.2%.
+        #
+        # The waterfall's own convention is used, because it is the engine
+        # actually splitting the cash and substituting a figure from elsewhere
+        # would make the arithmetic on screen not add up. The difference is
+        # REPORTED instead, which is this codebase's standing posture where two
+        # sources disagree -- see statement_service and the ownership tree's
+        # CapitalPercent check.
+        "pref_convention_note": (
+            "Pref here accrues Act/365 Fixed, the convention the waterfall "
+            "engine uses to split the cash. The Pref Balance Detail report "
+            "accrues Act/Act (366 in a leap year), so its balances run slightly "
+            "higher — about 0.2% on a 2026 date. Neither is a rounding error in "
+            "the other."),
         "seeded_from_accounting": not seeded_note,
         "seeding_warning": seeded_note,
         # What the waterfall STARTED from, so a reader can see the accrued pref

@@ -225,6 +225,30 @@ if hasattr(OS, "describe_step"):
     check(bare.startswith("Return initial capital"),
           "a step with no live figures lost its generic description")
 
+# ── 12. The distribution date is real, not a constant from the past ──────
+# It was hardcoded to date(2025, 12, 31) while the states were seeded at
+# ACTUALS_THROUGH -- two different dates, neither of them "now" -- so the pref
+# balances were stale in a way no label explained. Jim, Sep 16 2026: the Pref
+# Balance Detail report gave OPELAN 3,165,389 as of that date and this screen
+# reported 3,053,820. Seeding and running at the same, current date closes all
+# but $6,605 of it, which is the Act/365-vs-Act/Act convention difference.
+check("date(2025, 12, 31)" not in live,
+      "the distribution date is hardcoded to 2025-12-31 again; pref accrues to "
+      "a date in the past and every balance is stale")
+check("as_of" in inspect.signature(OS.run_upstream_analysis).parameters,
+      "run_upstream_analysis no longer takes as_of, so the caller cannot say "
+      "when the distribution happens")
+check("as_of_date = as_of or date.today()" in live,
+      "the distribution date no longer defaults to today")
+check("cutoff_date=as_of_date" in live,
+      "the states are seeded at a different date from the one the waterfall "
+      "runs at — the two must agree or the opening balances describe a "
+      "different moment than the split does")
+check("cutoff_date=actuals_through" not in live,
+      "seeding is back on ACTUALS_THROUGH, which is the actuals/forecast "
+      "boundary for the projection engine and not a statement about how much "
+      "pref is owed today")
+
 if FAIL:
     print("FAIL")
     for m in FAIL:

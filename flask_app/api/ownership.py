@@ -1,5 +1,7 @@
 """Ownership API — tree visualization, waterfall requirements, upstream analysis."""
 
+from datetime import datetime
+
 from flask import Blueprint, request, jsonify, current_app
 
 from flask_app.auth.routes import login_required
@@ -73,6 +75,17 @@ def upstream_analysis():
     if wf_type not in ("CF_WF", "Cap_WF"):
         return jsonify({"error": f"wf_type must be CF_WF or Cap_WF, not {wf_type!r}"}), 400
 
+    # The date the distribution is assumed to happen. It decides how much pref
+    # has accrued by then, so it is the user's to set; today is the default
+    # because "what if we distributed now" is the question this screen answers.
+    as_of = None
+    raw_as_of = str(body.get("as_of", "") or "").strip()
+    if raw_as_of:
+        try:
+            as_of = datetime.strptime(raw_as_of, "%Y-%m-%d").date()
+        except ValueError:
+            return jsonify({"error": f"as_of must be YYYY-MM-DD, not {raw_as_of!r}"}), 400
+
     if not entity_id:
         return jsonify({"error": "entity_id is required"}), 400
 
@@ -88,6 +101,7 @@ def upstream_analysis():
         # from zero and ignores every accrued pref balance on the deal.
         acct=data.get("acct"),
         actuals_through=current_app.config.get("ACTUALS_THROUGH"),
+        as_of=as_of,
     )
 
     if "error" in result:
