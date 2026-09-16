@@ -173,6 +173,58 @@ for v in ("Pref", "Initial", "Add", "Tag", "Share", "IRR", "Amt",
     check(OS.vstate_description(v), f"vState {v!r} has no description; the "
                                     f"Waterfall Setup screen documents all 12")
 
+# ── 10. Opening balances are snapshotted BEFORE the waterfall runs ───────
+# `run_waterfall` mutates the InvestorState objects it is handed, IN PLACE, so
+# reading seed_states afterwards yields CLOSING balances. Measured on ASCENT
+# with $5,000,000: OPELAN opened at 3,053,820 of accrued pref, was paid
+# 1,288,011, and the post-run read reported 1,765,809 — the difference —
+# labelled "accrued and unpaid before this distribution". A figure that
+# silently changed meaning mid-waterfall.
+_i_snapshot = live.find("opening = {")
+_i_run = live.find("run_waterfall(")
+check(_i_snapshot != -1,
+      "the opening-balance snapshot is gone; balances read after the run are "
+      "CLOSING balances, whatever they are labelled")
+check(_i_snapshot != -1 and _i_run != -1 and _i_snapshot < _i_run,
+      "the opening balances are captured AFTER run_waterfall, which mutates the "
+      "states in place — they are closing balances wearing an opening label")
+check("for k, v in opening.items()" in live or "opening.items()" in live,
+      "opening_pref no longer derives from the pre-run snapshot")
+# Reading seed_states BEFORE the run is the snapshot and is correct; reading it
+# AFTER yields closing balances. So the test is positional, not a ban.
+_after_run = live[_i_run:] if _i_run != -1 else ""
+check("seed_states.items()" not in _after_run,
+      "seed_states is iterated AFTER run_waterfall, which mutates it in place — "
+      "those are closing balances however they are labelled")
+
+# ── 11. Step descriptions carry the live figures ─────────────────────────
+check(hasattr(OS, "describe_step"), "describe_step is gone")
+if hasattr(OS, "describe_step"):
+    d = OS.describe_step({"vState": "Pref", "PropCode": "PPIAS", "nPercent": 0.08},
+                         {"PPIAS": 2_711_989.13})
+    check("8.00%" in d, "a Pref step does not show its annual rate")
+    check("$2,711,989" in d, "a Pref step does not show the accrued balance")
+    check("before this distribution" in d,
+          "the pref balance is not labelled as the opening figure, so a reader "
+          "cannot tell whether it is before or after the step is paid")
+
+    sh = OS.describe_step({"vState": "Share", "PropCode": "OPELAN", "FXRate": 0.35})
+    check("35.00%" in sh, "a Share step does not show its residual percentage")
+    tg = OS.describe_step({"vState": "Tag", "PropCode": "OPELAN", "FXRate": 0.2596})
+    check("25.96%" in tg, "a Tag step does not show its proportional share")
+
+    # AMFee's nPercent_dec is documented as wrong for AMFee. A missing figure
+    # beats a plausible wrong one.
+    am = OS.describe_step({"vState": "AMFee", "PropCode": "PSC", "nPercent": 0.95})
+    check("95.00%" not in am and "0.95%" not in am,
+          "an AMFee rate is being shown from nPercent_dec, which the engine "
+          "documents as wrong for AMFee (0.95 meaning 0.95%% read as 95%%)")
+
+    # No figures available -> the generic gloss, not an empty cell.
+    bare = OS.describe_step({"vState": "Initial", "PropCode": "X"})
+    check(bare.startswith("Return initial capital"),
+          "a step with no live figures lost its generic description")
+
 if FAIL:
     print("FAIL")
     for m in FAIL:

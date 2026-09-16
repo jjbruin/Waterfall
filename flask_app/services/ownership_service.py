@@ -168,6 +168,79 @@ def vstate_description(vstate: str) -> str:
     return VSTATE_DESCRIPTIONS.get(str(vstate).strip(), "")
 
 
+def _pct(v) -> str:
+    """A stored fraction as a percentage. FXRate and nPercent_dec are both
+    fractions -- FXRate is used as ``level_available * FXRate`` and nPercent
+    arrives already normalised by nPercent_dec."""
+    try:
+        return f"{float(v) * 100:.2f}%"
+    except (TypeError, ValueError):
+        return ""
+
+
+def _money(v) -> str:
+    try:
+        return "${:,.0f}".format(float(v))
+    except (TypeError, ValueError):
+        return ""
+
+
+def describe_step(row: dict, opening_pref: dict = None) -> str:
+    """What this step does, WITH the figures it will actually use.
+
+    The generic gloss alone ("nPercent = annual rate") tells a reader what the
+    field means and not what it says. Jim, Sep 16 2026: show the current accrued
+    pref rate and balance on the pref steps and the residual sharing percentage
+    on the sharing steps, so the split can be read without opening Waterfall
+    Setup beside it.
+
+    ``opening_pref`` is the balance the waterfall STARTS from, per PropCode --
+    the figure that determines what the first dollars go to. It is labelled as
+    opening because the running balance falls as the step is paid, and a number
+    that silently meant something else mid-waterfall would be worse than none.
+    """
+    vs = str(row.get("vState", "")).strip()
+    pc = str(row.get("PropCode", "")).strip()
+    generic = VSTATE_DESCRIPTIONS.get(vs, "")
+    facts = []
+
+    fx = row.get("FXRate")
+    npc = row.get("nPercent")
+
+    if vs == "Pref":
+        if npc:
+            facts.append(f"{_pct(npc)} annual")
+        bal = (opening_pref or {}).get(pc)
+        if bal:
+            facts.append(f"{_money(bal)} accrued and unpaid at {pc} before this distribution")
+    elif vs in ("Share", "Tag"):
+        if fx:
+            facts.append(f"{_pct(fx)} of the residual to {pc}")
+    elif vs == "IRR":
+        if npc:
+            facts.append(f"target {_pct(npc)} IRR")
+        if fx:
+            facts.append(f"{_pct(fx)} share once the hurdle is met")
+    elif vs == "Promote":
+        if fx:
+            facts.append(f"{_pct(fx)} carry share")
+        if npc:
+            facts.append(f"target {_pct(npc)} carry")
+    elif vs in ("Def_Int", "Def&Int", "Default"):
+        if npc:
+            facts.append(f"{_pct(npc)} default interest")
+    elif vs == "AMFee":
+        # nPercent_dec is WRONG for AMFee -- the engine notes that it keeps
+        # values <= 1.0 as-is, reading 0.95 (meaning 0.95%) as 95%. Rather than
+        # reproduce that correction here and risk the two drifting, the rate is
+        # not shown at all. A missing figure beats a plausible wrong one.
+        pass
+
+    if not facts:
+        return generic
+    return "; ".join(facts) + (" — " + generic if generic else "")
+
+
 def _wf_label(wf_type: str) -> str:
     """The waterfall's name as a person says it."""
     return {"CF_WF": "Cash Flow", "Cap_WF": "Capital",
@@ -362,6 +435,18 @@ def run_upstream_analysis(entity_id: str, distribution_amount: float,
                        "from zero and IGNORES accrued pref and capital outstanding — "
                        "treat it as illustrative only.")
 
+    # SNAPSHOT THE OPENING BALANCES BEFORE RUNNING. `run_waterfall` mutates the
+    # InvestorState objects it is handed, in place, so reading `seed_states`
+    # afterwards gives CLOSING balances. Measured on ASCENT with $5,000,000:
+    # OPELAN opened at 3,053,820 of accrued pref, was paid 1,288,011, and the
+    # post-run read said 1,765,809 -- the difference, labelled "accrued and
+    # unpaid before this distribution". A figure that silently changed meaning
+    # mid-waterfall, which is exactly what describe_step's own docstring warns
+    # against; the warning was written and the bug shipped in the same commit.
+    opening = {k: {"capital_outstanding": float(v.total_capital_outstanding or 0.0),
+                   "accrued_pref": float(v.total_pref_balance or 0.0)}
+               for k, v in seed_states.items()}
+
     try:
         alloc, states = run_waterfall(
             wf_steps=test_wf,
@@ -396,16 +481,19 @@ def run_upstream_analysis(entity_id: str, distribution_amount: float,
         return {"error": f"Upstream waterfall failed: {e}"}
 
     # Build serializable results
+    # From the pre-run snapshot, not from seed_states, which the run mutated.
+    opening_pref = {k: v["accrued_pref"] for k, v in opening.items()}
+
     deal_alloc_rows = []
     for _, row in alloc.iterrows():
-        vs = str(row.get("vState", ""))
+        r = row.to_dict()
         deal_alloc_rows.append({
-            "iOrder": int(row["iOrder"]) if "iOrder" in row.index
-                      and pd.notna(row.get("iOrder")) else None,
-            "PropCode": str(row.get("PropCode", "")),
-            "vState": vs,
-            "step_description": vstate_description(vs),
-            "Allocated": float(row.get("Allocated", 0)),
+            "iOrder": int(r["iOrder"]) if r.get("iOrder") is not None
+                      and pd.notna(r.get("iOrder")) else None,
+            "PropCode": str(r.get("PropCode", "")),
+            "vState": str(r.get("vState", "")),
+            "step_description": describe_step(r, opening_pref),
+            "Allocated": float(r.get("Allocated", 0)),
         })
 
     upstream_rows = []
@@ -449,11 +537,9 @@ def run_upstream_analysis(entity_id: str, distribution_amount: float,
         # accrued pref" on a screen whose entire purpose is showing that pref
         # gets paid first. A silent default is worse than an AttributeError.
         "opening_states": [
-            {"entity_id": k,
-             "capital_outstanding": float(v.total_capital_outstanding or 0.0),
-             "accrued_pref": float(v.total_pref_balance or 0.0)}
-            for k, v in sorted(seed_states.items())
-            if (v.total_capital_outstanding or v.total_pref_balance)
+            {"entity_id": k, **v}
+            for k, v in sorted(opening.items())
+            if (v["capital_outstanding"] or v["accrued_pref"])
         ],
         "estimate_footnote": footnote,
         "distribution_amount": distribution_amount,
