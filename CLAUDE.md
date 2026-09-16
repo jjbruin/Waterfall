@@ -248,6 +248,31 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v477` = `8455d58` (ownership chain: a deal's waterfall may be filed under the
+    property code OR the InvestmentID — 3rd Ave's six steps are under `3RDAVE` and
+    `P3RDAVE` has none, so the screen called it unconfigured and linked to a code
+    nothing is filed under. Also the waterfall-setup deep link, which never read
+    `route.query.vcode`, and 28 child properties of multi-property deals dropped
+    from the PE investment list. Carried Charlene's `2b987e1`, reviewed before
+    building — it REMOVES two vcodes from a suppression list, the opposite of a
+    symptom repair, and moves the investor-facing footnote with them.)
+  - `v476` = `e9630b6` (diagnostic: trace one deal chain and name the level that breaks)
+  - `v475` = `60b88dd` (diagnostic: read one table, not the whole data layer — the
+    937,650-row assembly could not survive the 2GB container it was diagnosing)
+  - `v474` = `ae7bb29` (Dockerfile ships `scripts/`. NOTHING in that directory had
+    ever been in the image, so no guardrail and no diagnostic could run against
+    production — the only copy of the data — until this.)
+  - `v473` = `25de795` (Charlene: snapshot print, each subtab back to one page at 37 deals)
+  - `v472` = `f3ec22b` (upstream analysis reconciles out loud: beneficiaries receiving
+    123,179.36 against a 100,000.00 distribution now SAYS so rather than printing it)
+  - `v471` = `2e2548e` (the pref balance comes from the vetted Pref Balance Detail
+    report. Jim, twice: "why are you trying to recreate a calculation engine that we
+    have already built and vetted?" Two numbers for one fact was the defect.)
+  - `v470` = `ad773ce` (pref accrues to the distribution date, not to two stale ones)
+  - `v469` = `bdc7229` (the live figures — pref rates, balances, residual shares — in
+    the step descriptions, so a step says what it did rather than what it is)
+  - `v468` = `ad6e8b6` (upstream analysis seeds the EXISTING engine via
+    `seed_states_from_accounting` instead of starting every investor from zero)
   - `v467` = `1845dc8` (upstream analysis: the Deal Analysis deal list, a Cash Flow vs
     Capital choice — it was hardcoded to `CF_WF` at both levels, so a sale ran as an
     operating distribution — and an estimate footnote on beneficiaries reached through a
