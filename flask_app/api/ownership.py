@@ -65,6 +65,14 @@ def upstream_analysis():
     entity_id = body.get("entity_id", "")
     distribution_amount = float(body.get("distribution_amount", 100000))
 
+    # The caller says whether this is operating cash or a capital event. The
+    # two run different waterfalls and only one reduces capital outstanding, so
+    # defaulting silently would model a sale as an operating distribution. The
+    # literals match `vmisc` in the waterfalls table exactly.
+    wf_type = str(body.get("wf_type", "CF_WF")).strip()
+    if wf_type not in ("CF_WF", "Cap_WF"):
+        return jsonify({"error": f"wf_type must be CF_WF or Cap_WF, not {wf_type!r}"}), 400
+
     if not entity_id:
         return jsonify({"error": "entity_id is required"}), 400
 
@@ -75,6 +83,7 @@ def upstream_analysis():
         relationships_raw=data["relationships_raw"],
         wf=data["wf"],
         inv=data["inv"],
+        wf_type=wf_type,
     )
 
     if "error" in result:

@@ -245,15 +245,27 @@ const treeData = ref<any>(null)
 const treeLoading = ref(false)
 const selectedEntity = ref('')
 const distributionAmount = ref(100000)
+// Operating cash or a capital event. The two run DIFFERENT waterfalls and only
+// the second reduces capital outstanding, so this was never a detail the screen
+// could pick on the user's behalf — it was hardcoded to CF_WF and a sale came
+// out modelled as an operating distribution.
+const wfType = ref<'CF_WF' | 'Cap_WF'>('CF_WF')
 const upstreamResult = ref<any>(null)
 const upstreamLoading = ref(false)
 const upstreamError = ref('')
 
+/**
+ * THE SAME LIST DEAL ANALYSIS USES — `data.deals`, keyed by vcode.
+ *
+ * It used to be built from the relationship tree's own nodes, which is a
+ * different population in a different order and included upstream entities
+ * nobody runs a distribution against. An analyst moving between the two screens
+ * had to translate. (Jim, Sep 15 2026.)
+ */
 const entities = computed(() => {
-  if (!treeData.value?.nodes) return []
-  return treeData.value.nodes
-    .map((n: any) => ({ id: n.entity_id, name: n.name || n.entity_id }))
-    .sort((a: any, b: any) => a.name.localeCompare(b.name))
+  return (dataStore.deals || [])
+    .map((d: any) => ({ id: d.vcode, name: d.Investment_Name || d.vcode }))
+    .sort((a: any, b: any) => String(a.name).localeCompare(String(b.name)))
 })
 
 async function openUpstream() {
@@ -261,12 +273,11 @@ async function openUpstream() {
   if (upstreamReady.value || treeLoading.value) return
   treeLoading.value = true
   try {
-    const res = await api.get('/api/ownership/tree')
-    treeData.value = res.data
+    if (!(dataStore.deals || []).length) await dataStore.loadDeals()
     upstreamReady.value = true
   } catch (e: any) {
     dataStore.addToast(
-      'Failed to load the entity list: ' + (e.response?.data?.error || e.message), 'error')
+      'Failed to load the deal list: ' + (e.response?.data?.error || e.message), 'error')
   } finally {
     treeLoading.value = false
   }
@@ -281,6 +292,7 @@ async function runUpstreamAnalysis() {
     const res = await api.post('/api/ownership/upstream-analysis', {
       entity_id: selectedEntity.value,
       distribution_amount: distributionAmount.value,
+      wf_type: wfType.value,
     })
     if (res.data.error) upstreamError.value = res.data.error
     else upstreamResult.value = res.data
@@ -639,6 +651,11 @@ watch([root, collapsed], () => nextTick(() => {
             <span>Distribution amount ($)</span>
             <input type="number" v-model.number="distributionAmount" min="0" step="10000" />
           </label>
+          <fieldset class="fld kind">
+            <legend>Distribution type</legend>
+            <label><input type="radio" value="CF_WF" v-model="wfType" /> Cash flow</label>
+            <label><input type="radio" value="Cap_WF" v-model="wfType" /> Capital</label>
+          </fieldset>
           <button
             class="btn primary"
             @click="runUpstreamAnalysis"
@@ -656,7 +673,7 @@ watch([root, collapsed], () => nextTick(() => {
           <div class="chain-summary">
             <div class="stat">
               <span class="n">{{ fmtMoney(upstreamResult.distribution_amount) }}</span>
-              <span class="l">distributed</span>
+              <span class="l">{{ upstreamResult.wf_label }} distribution</span>
             </div>
             <div class="stat">
               <span class="n">{{ fmtMoney(upstreamResult.total_allocated) }}</span>
@@ -667,8 +684,23 @@ watch([root, collapsed], () => nextTick(() => {
           <h3 class="up-h">Deal-level allocations</h3>
           <DataTable :columns="dealAllocColumns" :rows="upstreamResult.deal_allocations || []" />
 
-          <h3 class="up-h">Terminal beneficiaries</h3>
-          <DataTable :columns="beneficiaryColumns" :rows="upstreamResult.beneficiaries || []" />
+          <h3 class="up-h">Beneficial owners</h3>
+          <div class="ben-table">
+            <div class="ben-head">
+              <span>Entity</span><span>Amount</span><span>% of total</span>
+            </div>
+            <div v-for="b in upstreamResult.beneficiaries || []" :key="b.entity_id"
+                 class="ben-row" :class="{ est: b.is_estimate }">
+              <span class="ben-e">
+                {{ b.entity_id }}<sup v-if="b.is_estimate" class="est-mark">est</sup>
+              </span>
+              <span class="ben-a">{{ fmtMoney(b.amount) }}</span>
+              <span class="ben-p">{{ fmtPct((b.pct_of_total || 0) * 100) }}</span>
+            </div>
+          </div>
+          <p v-if="upstreamResult.estimate_footnote" class="est-note">
+            <sup class="est-mark">est</sup> {{ upstreamResult.estimate_footnote }}
+          </p>
 
           <template v-if="upstreamResult.upstream_allocations?.length">
             <h3 class="up-h">Upstream allocation detail</h3>
@@ -940,4 +972,39 @@ h2 { margin: 0 0 4px; font-size: 20px; }
   padding: 11px 14px; border-radius: 0 6px 6px 0; font-size: 13px; margin-bottom: 14px;
 }
 .up-h { font-size: 13px; font-weight: 700; color: #445; margin: 20px 0 8px; }
+
+fieldset.kind { border: none; margin: 0; padding: 0; }
+fieldset.kind legend {
+  font-size: 11.5px; font-weight: 600; color: #7a8394;
+  text-transform: uppercase; letter-spacing: .04em; padding: 0 0 4px;
+}
+fieldset.kind label {
+  font-size: 13px; color: #334; margin-right: 12px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 4px;
+}
+
+.ben-table { border: 1px solid #e2e6ee; border-radius: 6px; overflow: hidden; background: #fff; }
+.ben-head, .ben-row {
+  display: grid; grid-template-columns: 1fr 140px 90px; gap: 10px;
+  padding: 7px 12px; align-items: baseline;
+}
+.ben-head {
+  background: #f3f5f9; font-size: 10.5px; font-weight: 700; color: #7a8394;
+  text-transform: uppercase; letter-spacing: .05em;
+}
+.ben-head span:not(:first-child), .ben-a, .ben-p { text-align: right; }
+.ben-row { border-top: 1px solid #eef1f5; font-size: 13px; }
+.ben-row.est { background: #fffaf0; }
+.ben-a, .ben-p { font-variant-numeric: tabular-nums; }
+.ben-e { font-weight: 600; color: #223; }
+.est-mark {
+  font-size: 8.5px; font-weight: 700; color: #b25f00; letter-spacing: .04em;
+  margin-left: 2px; background: #fff3e0; padding: 1px 3px; border-radius: 2px;
+  vertical-align: super;
+}
+.est-note {
+  margin: 8px 0 0; font-size: 11.5px; color: #7a6a52; line-height: 1.55;
+  max-width: 78ch; background: #fffaf0; border-left: 3px solid #e8c07a;
+  padding: 8px 11px; border-radius: 0 4px 4px 0;
+}
 </style>

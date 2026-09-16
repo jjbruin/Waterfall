@@ -139,15 +139,127 @@ def get_waterfall_requirements(relationships_raw: pd.DataFrame,
     ]
 
 
+def _wf_label(wf_type: str) -> str:
+    """The waterfall's name as a person says it."""
+    return {"CF_WF": "Cash Flow", "Cap_WF": "Capital",
+            "Promote_WF": "Promote"}.get(wf_type, wf_type)
+
+
+def crossed_fund_investors(min_assets: int = 2) -> dict:
+    """Entities that invest into more than one thing, and what.
+
+    Used to qualify an upstream result. A distribution traced to a beneficiary
+    that sits above a MULTI-ASSET fund is an estimate of this property's
+    contribution, not a payable amount: the fund's actual distribution depends
+    on every investment crossed inside it, and a loss elsewhere can consume a
+    gain here before any of it reaches the owner.
+
+    Read from `commitments` rather than `relationships`, because a commitment is
+    the record of money actually promised into a vehicle -- see
+    ownership_chain_service for why that source is preferred where the two
+    disagree.
+    """
+    out = {}
+    try:
+        from flask_app.db import get_engine
+        from sqlalchemy import text as _text
+        with get_engine().connect() as conn:
+            com = pd.read_sql(_text("SELECT * FROM commitments"), conn)
+    except Exception:
+        logger.warning("crossed_fund_investors: commitments not loaded", exc_info=True)
+        return out
+    if com.empty:
+        return out
+
+    lower = {str(c).lower(): c for c in com.columns}
+    ent, inv_c = lower.get("entityid"), lower.get("investorid")
+    end = lower.get("enddate")
+    if not ent or not inv_c:
+        return out
+    if end:
+        com = com[com[end].isna()]
+    com = com.assign(
+        _e=com[ent].astype(str).str.strip().str.upper(),
+        _i=com[inv_c].astype(str).str.strip().str.upper())
+    for investor, grp in com.groupby("_i"):
+        held = sorted({e for e in grp["_e"] if e})
+        if len(held) >= min_assets:
+            out[investor] = held
+    return out
+
+
+def qualify_beneficiaries(beneficiary_totals: dict, upstream_rows: list,
+                          crossed: dict, deal_entity: str,
+                          distribution_amount: float):
+    """Mark the beneficiaries whose figure is an estimate, and word the note.
+
+    A beneficiary reached THROUGH a multi-asset fund has not been told what it
+    will receive. The fund distributes on its own performance across every
+    investment crossed inside it, so this property's contribution can be offset
+    by another's before any cash arrives. That belongs on the row, not in a
+    caption somebody scrolls past.
+
+    Extracted from ``run_upstream_analysis`` so it can be tested without the
+    waterfall machinery: the local database has three commitment rows and no
+    fund holding two assets, so this branch could not otherwise be exercised at
+    all before it shipped.
+    """
+    deal_up = str(deal_entity).strip().upper()
+
+    # Every entity seen on any path that ENDS at a given beneficiary.
+    paths_by_beneficiary = {}
+    for r in upstream_rows:
+        chain = [x.strip().upper()
+                 for x in str(r.get("Path", "")).split("->") if x.strip()]
+        if chain:
+            paths_by_beneficiary.setdefault(chain[-1], set()).update(chain)
+
+    out = []
+    for bid, amt in sorted(beneficiary_totals.items(), key=lambda x: -x[1]):
+        seen = paths_by_beneficiary.get(str(bid).strip().upper(), set())
+        # The deal itself is not a fund holding several assets, whatever else
+        # it happens to invest in; excluding it stops every row being flagged.
+        funds = sorted({e for e in seen if e in crossed and e != deal_up})
+        out.append({
+            "entity_id": bid,
+            "amount": amt,
+            "pct_of_total": amt / distribution_amount if distribution_amount > 0 else 0,
+            "is_estimate": bool(funds),
+            "crossed_funds": [{"entity_id": f, "asset_count": len(crossed[f])}
+                              for f in funds],
+        })
+
+    note = None
+    if any(b["is_estimate"] for b in out):
+        named = sorted({f["entity_id"] for b in out for f in b["crossed_funds"]})
+        note = (
+            "Marked rows are reached through "
+            + ", ".join(named)
+            + (", which invest" if len(named) > 1 else ", which invests")
+            + " in more than one asset. Those amounts are an ESTIMATE of this "
+              "property's contribution to the fund. The actual distribution "
+              "depends on the performance of all crossed investments in the "
+              "fund, and a result elsewhere can offset this one before any cash "
+              "reaches the owner.")
+    return out, note
+
+
 def run_upstream_analysis(entity_id: str, distribution_amount: float,
                           relationships_raw: pd.DataFrame, wf: pd.DataFrame,
-                          inv: pd.DataFrame) -> dict:
+                          inv: pd.DataFrame,
+                          wf_type: str = "CF_WF") -> dict:
     """Run upstream waterfall analysis for an entity.
 
-    Runs the entity's CF waterfall with the given distribution amount,
-    then traces cash flows upstream through the ownership chain.
+    Runs the entity's waterfall with the given distribution amount, then traces
+    cash flows upstream through the ownership chain to the beneficial owners.
 
-    Returns dict with allocation results, terminal beneficiaries, etc.
+    ``wf_type`` MUST BE THE CALLER'S CHOICE, NOT A DEFAULT NOBODY SEES. It was
+    hardcoded to "CF_WF" at both levels, so a sale or refinancing -- which runs
+    the Capital waterfall and REDUCES capital outstanding -- was silently
+    modelled as an operating distribution, which does not. The two produce
+    different splits from the same dollar, and nothing on screen said which had
+    been used. The literal is `Cap_WF`, matching the `vmisc` values in the
+    table; `run_waterfall` compares it exactly and keys `is_cap_wf` off it.
     """
     from waterfall import run_waterfall, run_recursive_upstream_waterfalls
     from loaders import load_waterfalls
@@ -179,15 +291,16 @@ def run_upstream_analysis(entity_id: str, distribution_amount: float,
         alloc, states = run_waterfall(
             wf_steps=test_wf,
             vcode=entity_id,
-            wf_name="CF_WF",
+            wf_name=wf_type,
             period_cash=test_cash,
             initial_states={},
         )
     except Exception as e:
-        return {"error": f"Deal waterfall failed: {e}"}
+        return {"error": f"{_wf_label(wf_type)} waterfall failed: {e}"}
 
     if alloc.empty:
-        return {"error": "Deal waterfall produced no allocations"}
+        return {"error": f"The {_wf_label(wf_type)} waterfall for {entity_id} "
+                          f"produced no allocations. Is one set up for it?"}
 
     # Run upstream waterfalls
     try:
@@ -198,7 +311,7 @@ def run_upstream_analysis(entity_id: str, distribution_amount: float,
                 deal_allocations=alloc,
                 wf_steps=wf_steps,
                 relationships=relationships,
-                wf_type="CF_WF",
+                wf_type=wf_type,
                 amfee_exclusions=_excl,
             )
     except Exception as e:
@@ -225,18 +338,23 @@ def run_upstream_analysis(entity_id: str, distribution_amount: float,
                 "Path": str(row.get("Path", "")),
             })
 
-    # Terminal beneficiaries
-    beneficiaries = []
-    if beneficiary_totals:
-        for bid, amt in sorted(beneficiary_totals.items(), key=lambda x: -x[1]):
-            beneficiaries.append({
-                "entity_id": bid,
-                "amount": amt,
-                "pct_of_total": amt / distribution_amount if distribution_amount > 0 else 0,
-            })
+    # ── Terminal beneficiaries, and whether their figure is an estimate ──
+    #
+    # A beneficiary reached THROUGH a multi-asset fund has not been told what it
+    # will receive. The fund distributes on its own performance across every
+    # investment crossed inside it, so this property's contribution can be
+    # offset by another's before anything reaches the owner. The number is a
+    # contribution estimate and must say so on the row, not in a caption
+    # somebody scrolls past.
+    beneficiaries, footnote = qualify_beneficiaries(
+        beneficiary_totals, upstream_rows, crossed_fund_investors(),
+        entity_id, distribution_amount)
 
     return {
         "success": True,
+        "wf_type": wf_type,
+        "wf_label": _wf_label(wf_type),
+        "estimate_footnote": footnote,
         "distribution_amount": distribution_amount,
         "deal_allocations": deal_alloc_rows,
         "upstream_allocations": upstream_rows,
