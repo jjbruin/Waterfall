@@ -39,12 +39,27 @@ TOL = 0.01   # percentage points
 
 
 def main() -> int:
-    from flask_app import create_app
-    from flask_app.services import data_service
+    # READ THE ONE TABLE, not the whole data layer. `data_service.get_data()`
+    # assembles 937,650 ISBS rows among much else; inside the 2GB production
+    # container that is enough to swallow the run before this prints a line
+    # (measured Sep 16 2026). A diagnostic that cannot survive the environment
+    # it diagnoses is not a diagnostic.
+    # The engine is built from DATABASE_URL directly rather than through
+    # flask_app.db.get_engine(), which requires an application context. Running
+    # inside the container this reads the SAME secret the app reads, so the
+    # credential is never handled here or seen anywhere outside the container.
+    import os
+    from sqlalchemy import create_engine, text
 
-    app = create_app()
-    with app.app_context():
-        rel = data_service.get_data().get("relationships_raw")
+    url = os.environ.get("DATABASE_URL") or "sqlite:///waterfall.db"
+    where = "PostgreSQL" if url.startswith(("postgres", "postgresql")) else "SQLite"
+    print(f"Reading `relationships` from {where}.")
+    try:
+        with create_engine(url).connect() as conn:
+            rel = pd.read_sql(text("SELECT * FROM relationships"), conn)
+    except Exception as e:
+        print(f"Could not read `relationships`: {str(e)[:200]}")
+        return 0
 
     if rel is None or rel.empty:
         print("No relationship data in this database — nothing to check.")
