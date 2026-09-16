@@ -571,10 +571,26 @@ onMounted(async () => {
   /* ---- small auto-written notes beside the figures ----
      Text the app composes to explain a row, as opposed to data or an authored
      footnote: the deal counts appended to the Financial excluding-development
-     label, and the Loan tab's "summary ratios already exclude..." aside. Both
-     read as clutter next to the numbers on paper and neither is on the
+     label. It reads as clutter next to the numbers on paper and is not on the
      reference document. The labels and every figure stay. */
   :deep(.exdev-n) { display: none !important; }
-  :deep(tfoot .note) { display: none !important; }
+
+  /* NOT hidden: `tfoot .note`, the Loan tab's excluding-development footnote.
+     It was in the list above until its wording was corrected, and hiding it
+     was right for the wording it then had — "summary ratios already exclude
+     the development deals, they carry no value to weight" described OUR
+     mechanism, which is an annotation and does not belong on the document.
+
+     The sentence there now is the reference page's own: PDF page 4 footnotes
+     "Summary level performance metrics (LTV, DSCR, and Debt Yield) exclude the
+     development deals", quoted in portfolio_snapshot_loan.py above
+     EXCLUDING_DEV_LABEL. Suppressing it left the printed Loan page missing a
+     published footnote — the one thing this block's own rationale ("neither is
+     on the reference document") said it was avoiding.
+
+     The test is authorship, not appearance: text transcribed from the
+     published page prints, text the app composes to explain itself does not.
+     `snapshot_print_markers_check.py` asserts this one survives, alongside
+     `.fnmark` and `.sold`, so a later tidy-up cannot sweep it back in. */
 }
 </style>

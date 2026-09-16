@@ -51,7 +51,20 @@ ANNOTATION_BASES = ("tag", "warn-dot", "star")
 #: ``sold`` is the "(Sold)" after City West's and East Manchester's names. It is
 #: deliberately NOT a `.tag`: the pills are suppressed above, and a deal
 #: reported after its disposition has to say so on the printed page too.
-MUST_SURVIVE = ("fnmark", "sold")
+#:
+#: ``note`` is the Loan tab's excluding-development footnote. It WAS suppressed,
+#: correctly, while its wording was our own mechanism note; the sentence there
+#: now is transcribed from PDF page 4, so it is document content and the printed
+#: page was missing a published footnote for as long as the rule stood. The test
+#: is authorship, not appearance — which is exactly the judgement a later tidy-up
+#: sweeping "small italic notes" into the hide list would not make.
+MUST_SURVIVE = ("fnmark", "sold", "note")
+
+#: The published sentence, from PDF page 4. Quoted in
+#: ``portfolio_snapshot_loan.py`` above ``EXCLUDING_DEV_LABEL`` as well; this is
+#: the rendered half. Line breaks in the template collapse to single spaces.
+PUBLISHED_EXDEV_NOTE = ("Summary level performance metrics (LTV, DSCR, and "
+                        "Debt Yield) exclude the development deals.")
 
 CHECKS: list = []
 
@@ -137,6 +150,29 @@ def main() -> int:
     for cls in MUST_SURVIVE:
         chk(f".{cls} survives print — it is document content, not an "
             f"annotation", cls not in hidden)
+
+    # Same vacuity guard for the Loan footnote, plus the part that actually
+    # matters: WHICH sentence it carries. "It survives print" is worth nothing
+    # if what survives is a mechanism note — that is the state this replaced,
+    # and the reason the rule hiding it looked reasonable for as long as it did.
+    #
+    # Comments stripped first: the template and the print view both QUOTE the
+    # superseded wording to explain why it is gone, and a raw substring search
+    # would read that prose as the live text.
+    loan = read(os.path.join(SNAP, "SnapshotLoan.vue"))
+    # rfind for the CLOSING tag. The subtab wraps each fund block in its own
+    # <template v-for>, so `find("</template>")` stops at the first inner one —
+    # 5.7KB in, with the tfoot this is checking another 5KB past it. The slice
+    # then looked empty of a footnote that was plainly there.
+    loan_tmpl = loan[loan.find("<template>"):loan.rfind("</template>")]
+    loan_code = re.sub(r"<!--.*?-->", " ", loan_tmpl, flags=re.S)
+    loan_text = re.sub(r"\s+", " ", loan_code)
+    chk("the excluding-development footnote is rendered on the Loan subtab",
+        'class="note"' in loan_code)
+    chk("it carries the PDF's published sentence, not a mechanism note",
+        PUBLISHED_EXDEV_NOTE in loan_text)
+    chk("the superseded mechanism wording is gone from the rendered text",
+        "carry no value to weight" not in loan_text)
 
     # The footnote marker must actually be rendered somewhere, or "it survives
     # print" is vacuously true.

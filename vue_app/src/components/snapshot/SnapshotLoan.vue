@@ -402,9 +402,22 @@ function debtCell(r: any): unknown {
             </td>
             <td></td><td></td>
             <td class="r num">{{ fmtM(exDevTotal.debt) }}</td>
+            <!--
+              THE REFERENCE PAGE'S OWN FOOTNOTE, transcribed verbatim from PDF
+              page 4 — see the note above EXCLUDING_DEV_LABEL in
+              portfolio_snapshot_loan.py, which quotes the same sentence.
+
+              It replaced a mechanism note ("they carry no value to weight")
+              that explained HOW the exclusion happens rather than stating it.
+              That wording was ours, so it was suppressed in print as an
+              analyst annotation and the printed Loan page carried no footnote
+              at all — while the published page it reproduces carries this one.
+              Published text prints; our own asides do not. The distinction is
+              the whole reason this now reads as it does.
+            -->
             <td colspan="4" class="note">
-              summary ratios already exclude the development deals — they carry no
-              value to weight
+              Summary level performance metrics (LTV, DSCR, and Debt Yield) exclude
+              the development deals.
             </td>
           </tr>
         </tfoot>
@@ -607,5 +620,12 @@ tfoot .note {
   }
   td.manual { background: transparent; }
   table.grid { font-size: 10px; }
+  /* The excluding-development footnote, at the size the Financial subtab
+     prints ITS footnote list (`.fnlist`, 7px). Stated explicitly because
+     `.note` carries its own 10px, which beats the 8px the print view forces
+     onto `table.grid` by inheritance: left alone, the footnote would print
+     LARGER than the deal rows it sits under. Subordinate to the figures is
+     the whole visual point of a footnote. */
+  tfoot .note { font-size: 7px; }
 }
 </style>
