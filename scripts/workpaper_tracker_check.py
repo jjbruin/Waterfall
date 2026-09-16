@@ -46,21 +46,43 @@ def main() -> int:
         keys = [d["key"] for d in wt.DELIVERABLES]
         chk("four deliverables, in sign-off order",
             keys == ["workpapers", "financial_statements",
-                     "capital_accounts", "investment_cafe"], str(keys))
+                     "capital_accounts", "investor_delivery"], str(keys))
+        # NAMED FOR THE ACT, NOT THE VENDOR. The key is stored on every tracker
+        # cell, so a portal's product name in it becomes a migration the day we
+        # deliver through anything else.
+        chk("the delivery deliverable is not keyed to a vendor",
+            "investment_cafe" not in keys and
+            dict((d["key"], d) for d in wt.DELIVERABLES)
+                ["investor_delivery"].get("channel") == "Investment Cafe")
         for k in ("workpapers", "financial_statements", "capital_accounts"):
             chk("%s runs Prepared -> Mgr -> CFO" % k,
                 [s["key"] for s in dict(
                     (d["key"], d) for d in wt.DELIVERABLES)[k]["stages"]]
                 == ["prepared", "review_1", "review_2"])
-        cafe = dict((d["key"], d) for d in wt.DELIVERABLES)["investment_cafe"]
+        cafe = dict((d["key"], d) for d in wt.DELIVERABLES)["investor_delivery"]
         # FIVE, not three. The FS and the capital account statements are posted
         # and checked separately before the quarter is released; squeezing that
         # into the generic three-column group would discard two columns that
         # the CFO's own sheet carries.
-        chk("Investment Cafe keeps all five of its columns",
+        chk("investor delivery keeps all five of its columns",
             [s["key"] for s in cafe["stages"]]
             == ["fs_posted", "fs_reviewed", "cas_posted", "cas_reviewed",
                 "released"], str([s["key"] for s in cafe["stages"]]))
+
+        # ---- 1b. the population is the REP tag -----------------------------
+        #
+        # Jim, Sep 16 2026: "the population should be driven by the REP tag, not
+        # the spreadsheet I provided." So the check is that ONE place reads the
+        # population and it reads the tag -- an entity tagged REP has to appear
+        # whether or not anyone remembered to put it on a checklist, which is
+        # exactly what the spreadsheet cannot catch.
+        print("\n1b. Population")
+        import inspect as _i
+        src = _i.getsource(ws.sync_packages)
+        chk("sync_packages selects on the REP tag", "REP" in src)
+        chk("and the tracker derives its rows from packages, not a list",
+            "wp_packages" in _i.getsource(wt.grid)
+            and "55" not in _i.getsource(wt.grid))
 
         # ---- 2. dates: parsed, or refused. Never guessed. ------------------
         print("\n2. Date handling")

@@ -3,9 +3,18 @@
 WHAT THIS IS, AND WHAT IT IS NOT. ``workpaper_service`` owns a PACKAGE -- one
 entity's workbook, its steps, its exhibits, its state machine. This module owns
 the CFO's view ACROSS entities: the grid he keeps today in
-``2Q26 - PSC Reporting Checklist & Calendar.xlsx``, tab "Reporting Calendar".
-Fifty-five rows, one per reporting entity, and for each a target date, a
-preparer's initials, and a set of sign-offs per deliverable.
+``2Q26 - PSC Reporting Checklist & Calendar.xlsx``, tab "Reporting Calendar" --
+a target date, a preparer's initials, and a set of sign-offs per deliverable.
+
+THE POPULATION IS THE `REP` TAG, NOT THAT SPREADSHEET. Jim, Sep 16 2026: "the
+population should be driven by the REP tag, not the spreadsheet I provided."
+MRI tags 58 entities REP and the 2Q26 sheet carries 55 rows; four tagged
+entities are absent from it (INVCW, NOTTNV, PEGASU, TGACW) and one of its rows,
+"Various / PSC Investee Fund LLC - All", is a roll-up rather than an entity.
+Those are not discrepancies to reconcile -- the tag decides, so an entity tagged
+REP appears whether or not anybody remembered to add a row for it, which is the
+failure the spreadsheet has no way to catch. `workpaper_service.sync_packages`
+is the one place the population is read.
 
 They are deliberately separate tables. The workbench's ``wp_package_steps`` is a
 checklist of things to DO inside one workbook; a tracker cell is a record of a
@@ -84,13 +93,20 @@ DELIVERABLES = (
             {"key": "review_2", "label": "Reviewed", "owner": "CFO"},
         ),
     },
+    # NAMED FOR THE ACT, NOT THE VENDOR. This was keyed `investment_cafe` --
+    # a portal's product name welded into the schema, the API and every stored
+    # row. Investment Cafe is the CHANNEL we deliver through today; the
+    # deliverable is getting finished statements to investors. Renamed before
+    # anything was deployed, because the key is stored on every tracker cell
+    # and changing it later is a migration rather than an edit.
     {
-        "key": "investment_cafe",
-        "label": "Investment Cafe",
-        "note": ("The investor portal. Posting is still done IN Cafe and this "
-                 "records that it happened. Handing the statements over "
-                 "directly would need an integration with that system, which "
-                 "does not exist yet."),
+        "key": "investor_delivery",
+        "label": "Investor Delivery",
+        "channel": "Investment Cafe",
+        "note": ("Posting happens IN Investment Cafe and this records that it "
+                 "did. The goal is for the app to produce the finished PDF "
+                 "and deliver it -- one entity, a batch, or a link handed to "
+                 "the portal. See DELIVERY_GOAL below."),
         "stages": (
             {"key": "fs_posted", "label": "FS Posted", "owner": "Preparer"},
             {"key": "fs_reviewed", "label": "Reviewed", "owner": "Acctg Mgr"},
@@ -100,6 +116,60 @@ DELIVERABLES = (
         ),
     },
 )
+
+#: WHERE THIS IS GOING, so that what gets built next does not have to undo what
+#: is here. Jim, Sep 16 2026: "our goal is to deliver finished and
+#: professionally formatted financial statements by pdf either individually, in
+#: batches, or by direct link to the portal."
+#:
+#: BORROW THE ONE PAGER'S BATCH PDF. It already does two of those three modes,
+#: and the split is the part worth copying (Jim, Sep 16 2026: "we have a pdf
+#: reporting function within the one pager that handles individual and
+#: batches"):
+#:
+#:   * SERVER assembles MANY entities in one request.
+#:     `POST /api/financials/one-pager/batch` takes a list of vcodes and returns
+#:     `pages: [{vcode, data, chart, error?}]`. Note the per-entity `error`: one
+#:     deal that fails to compute does not take the batch down with it, which at
+#:     58 entities is the difference between a usable run and an all-or-nothing
+#:     one.
+#:   * CLIENT renders them stacked, one sheet per entity with
+#:     `page-break-after: always` between them under `@media print`, and a single
+#:     `window.print()` produces the whole batch as one PDF.
+#:
+#: So "individually" and "in batches" are already solved problems here, and the
+#: statements have the same shape: `statement_service.build()` is per entity and
+#: period, exactly like `get_one_pager_data`.
+#:
+#: THE ONE MODE NEITHER PATTERN COVERS is the portal link, because that needs a
+#: file the SERVER produced and can address, and both paths end at a browser
+#: print dialog. That is the only piece the integration actually adds -- and it
+#: is a reason to keep the formatting in a print VIEW rather than in a Python
+#: PDF library, since a headless browser can later drive the same view
+#: server-side. One renderer, three modes; two of them working today.
+#:
+#: AND "PROFESSIONALLY FORMATTED" HAS A TEST. `scripts/snapshot_print_formatting_
+#: check.py` reads the produced PDF's drawing operators to assert margins and
+#: page counts -- borders are vector, so the text layer cannot answer either
+#: question. At 58 entities that check is what keeps a table from growing off
+#: the sheet unnoticed, which is exactly what happened to the snapshot's
+#: Financial tab on Sep 16 2026.
+#:
+#: WHAT THAT MEANS FOR THIS MODULE, and why it is shaped as it is:
+#:   * the deliverable is keyed `investor_delivery`, not for a portal, so a
+#:     second channel does not need a second deliverable;
+#:   * its stages already separate the FINANCIAL STATEMENTS from the CAPITAL
+#:     ACCOUNT STATEMENTS, which is what a batch would render per entity;
+#:   * `released` is the single point at which a quarter is investor-visible,
+#:     which is the event a portal hand-off would hang from.
+#: Nothing here renders a PDF yet, deliberately -- the integration is a future
+#: project and this only keeps the road to it open.
+DELIVERY_GOAL = (
+    "Finished, professionally formatted statements delivered as PDF: one "
+    "entity at a time, a batch across entities, or a link handed to the "
+    "investor portal. Individual and batch follow the One Pager's pattern -- a "
+    "server-side batch endpoint plus a print view with page breaks. Only the "
+    "portal link needs machinery that does not exist yet.")
 
 DELIVERABLE_KEYS = tuple(d["key"] for d in DELIVERABLES)
 STAGES_BY_DELIVERABLE = {
