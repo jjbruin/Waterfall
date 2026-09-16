@@ -278,15 +278,20 @@ STANDING_FOOTNOTES: tuple = (
     # drift apart: adding a name here without suppressing the cell fails, and so
     # does suppressing the cell without naming the deal.
     #
-    # City West was FORECLOSED, not sold: there is no ROE to report. Camarillo
-    # Village and Outlook Nine Mile join it Sep 15 2026 at the author's
-    # decision, on the same footing. East Manchester is deliberately absent.
+    # City West was FORECLOSED, not sold: there is no ROE to report, which is
+    # what the reference PDF's own footnote (2) says.
+    #
+    # Camarillo Village and Outlook Nine Mile were named here from Sep 15 2026
+    # and were removed Sep 16, with their ``PDF_NA_CELLS`` entries. Both are
+    # ordinary sales with a realised return, so their Net ROE is now an
+    # enterable cell — and the moment it is, this note saying they are excluded
+    # from ROE is false on the page that prints it. Exactly the East Manchester
+    # contradiction, two weeks later and with two more deals.
+    #
+    # East Manchester is deliberately absent, and always was.
     {"key": "roe_exclusion",
-     "anchors": (property_anchor("PCITWES"),
-                 property_anchor("PCAMARI"),
-                 property_anchor("POUTLOO")),
-     "text": "City West, Camarillo Village and Outlook Nine Mile are excluded "
-             "from ROE calculations."},
+     "anchors": (property_anchor("PCITWES"),),
+     "text": "City West is excluded from ROE calculations."},
 )
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -683,22 +688,33 @@ EXCLUDING_DEV_COLUMNS = ("total_commitment", "itd", "net_roe")
 #:
 #: Only `debt`. Its Net ROE is a real cell awaiting manual entry and must keep
 #: prompting as "pending entry".
-#: Camarillo Village and Outlook Nine Mile follow CITY WEST, not East Manchester
-#: (author's decision, Sep 15 2026): both are out of the ROE numbers, so Net ROE
-#: reads n/a here and both are named in the footnote below.
 #:
-#: ``net_roe`` ONLY — deliberately not ``debt``. Debt is already n/a on these
-#: rows through ``SOLD_NA_CELLS``, which fires on every kept-despite-sold row;
-#: ``_na_cells`` unions the two. City West lists ``debt`` here as well because
-#: its entry predates that rule and its balance is a real 0.0 that would print
-#: "$0.0", a case the sale-keyed rule does not cover. Repeating ``debt`` for
-#: these two would be a per-deal restatement of a rule that already holds, and
-#: would hide it if the rule were ever changed.
+#: CAMARILLO VILLAGE AND OUTLOOK NINE MILE ARE NOT HERE, as of Sep 16 2026.
+#:
+#: They were added Sep 15 2026 with ``net_roe`` n/a, following City West. That
+#: put them on the FORECLOSURE footing, and only City West was foreclosed. Both
+#: of these are ordinary sales, and an ordinary sale is the East Manchester
+#: case: the realised return is exactly what keeping the row is FOR, so Net ROE
+#: and ITD have to stay cells the analyst can type into. Listing a vcode here
+#: does not merely print "n/a" — the assembly publishes the resolved set as
+#: ``pdf_na_cells`` and the UI renders those inputs ``readonly``, so there was
+#: no way to enter the figure at all.
+#:
+#: The distinction this file now draws is between a deal with NO ROE TO REPORT
+#: and a deal whose ROE has not been TYPED YET. City West is the first: the
+#: asset went to the lender, there is no realised return, and the reference PDF
+#: says so in its own footnote. The other three are the second, and "pending
+#: entry" is the correct thing for them to read.
+#:
+#: The ROE-exclusion footnote below was narrowed back to City West in the same
+#: change, and it had to be: a page that prints "Camarillo Village is excluded
+#: from ROE calculations" above a cell prompting for Camarillo Village's ROE
+#: contradicts itself. That is the identical defect the East Manchester entry
+#: caused on Sep 2 2026, and the self-test at the foot of this file asserts the
+#: correspondence in both directions so it cannot return a third time.
 PDF_NA_CELLS: dict[str, frozenset] = {
-    "PCITWES": frozenset({"debt", "net_roe"}),      # City West
+    "PCITWES": frozenset({"debt", "net_roe"}),      # City West — foreclosed
     "P0000066": frozenset({"debt"}),                # Pegasus Life Storage
-    "PCAMARI": frozenset({"net_roe"}),              # Camarillo Village
-    "POUTLOO": frozenset({"net_roe"}),              # Outlook Nine Mile
 }
 
 #: The columns that stop applying when a deal is reported AFTER its sale, i.e.

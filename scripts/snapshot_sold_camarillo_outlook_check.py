@@ -26,9 +26,16 @@ purely additive.
 
 THE FIX. Both vcodes join ``KEEP_DESPITE_SOLD``. Every downstream rule already
 keys on the derived ``kept_despite_sold`` flag rather than on a vcode, so they
-inherit the treatment whole. ROE follows CITY WEST rather than East Manchester
-(author's decision, Sep 15 2026): ``net_roe`` n/a via ``PDF_NA_CELLS``, both
-deals named in the ROE-exclusion footnote.
+inherit the treatment whole.
+
+ROE FOLLOWS EAST MANCHESTER, NOT CITY WEST (corrected Sep 16 2026). It followed
+City West for one day. City West was FORECLOSED — no realised return, and the
+reference PDF excludes it by name — while these two are ordinary sales whose
+realised return is the reason the rows are kept at all. Their ``PDF_NA_CELLS``
+entries are gone, so ``net_roe`` and ``itd`` are enterable, and the
+ROE-exclusion footnote is back to City West alone. Leaving them in that
+footnote while their ROE cell prompts for entry is the East Manchester
+contradiction of Sep 2 2026, which ``PDF_NA_CELLS`` has now caused twice.
 
 THE VCODE TRAP THIS SCRIPT ALSO PINS. Each of these deals has TWO roster rows:
 a deal-level one (PCAMARI / POUTLOO / PCITWES) carrying InvestmentID,
@@ -67,8 +74,14 @@ SOLD = {
 }
 
 #: The sold deals whose Net ROE is suppressed, i.e. that belong in the
-#: ROE-exclusion footnote. East Manchester is deliberately NOT here.
-ROE_EXCLUDED = {"PCITWES", "PCAMARI", "POUTLOO"}
+#: ROE-exclusion footnote. ONLY the foreclosure.
+#:
+#: Camarillo Village and Outlook Nine Mile were here from Sep 15 2026 and came
+#: out again Sep 16. Being kept on the page after a sale is not what suppresses
+#: a ROE — having no realised return is, and only City West qualifies. The two
+#: of them are ordinary sales on the East Manchester footing, which is also
+#: deliberately not here and never was.
+ROE_EXCLUDED = {"PCITWES"}
 
 #: Property-level twins that must never be used as keys. See the module note.
 DECOYS = {"P0000009": "Camarillo Village", "P0000034": "Outlook Nine Mile",
