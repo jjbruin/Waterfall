@@ -607,9 +607,26 @@ Owner: **Jim.** Order matters:
 3. History cannot be scrubbed without a rewrite, so the old value stays exposed
    regardless. Rotation is the only real fix.
 
-**All three exposures got through the same gap**: `scripts/hooks/pre-commit` blocks
-`://user:secret@` URLs but not a bare `NAME = "value"` assignment. Widening it is cheap
-and would have caught every one.
+**All three exposures got through the same gap**: `scripts/hooks/pre-commit` blocked
+`://user:secret@` URLs and not a bare `NAME = "value"` assignment.
+
+**The hook was widened Sep 15 2026 (`eaff54f`) and this is verified, not assumed**:
+replaying `08df897`'s `mri_service.py` verbatim — the real file, the real credential —
+now exits 1 with `MRI_PASSWORD = "********"`. Five rules: the URI form, a secret-named
+variable assigned a literal, self-identifying tokens (SendGrid, Anthropic, AWS, GitHub,
+Slack, Azure AccountKey), a `user / password` pair, and the wfadmin name-match.
+`scripts/precommit_secret_check.py` runs the real hook against a scratch repo with
+synthetic secrets and NINE legitimate idioms from this codebase, because a hook that
+cries wolf gets `--no-verify`'d by reflex. It caught three false positives of mine before
+they shipped, one of which blocked `wfadmin:<password>@` — the very placeholder line
+reported as a live credential that morning.
+
+**It changes nothing about the three already committed.** The hook reads only staged,
+added lines: it stops the next leak and can never see an existing one. All three still
+need rotating.
+
+**It only protects clones that have run** `git config core.hooksPath scripts/hooks`.
+Worth confirming Charlene has.
 
 ### 3.15 The $1,347,797 that should be zero — 30BEAR / PPI27
 **Open Sep 15 2026.** Jim: 30BEAR had its equity fully returned before the sale, and the

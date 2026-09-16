@@ -248,6 +248,10 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v467` = `1845dc8` (upstream analysis: the Deal Analysis deal list, a Cash Flow vs
+    Capital choice — it was hardcoded to `CF_WF` at both levels, so a sale ran as an
+    operating distribution — and an estimate footnote on beneficiaries reached through a
+    multi-asset fund. Also carried `eaff54f`, the widened pre-commit hook.)
   - `v466` = `be27c1a` (an upper-level balance breakdown describes the owner's whole
     position in the entity below, not this deal — dropped above level 1 and replaced
     by the derivation)

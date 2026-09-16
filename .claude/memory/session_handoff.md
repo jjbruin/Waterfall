@@ -41,6 +41,22 @@ figure correct about the relationship it was computed from, shown in a context
 asking a different question. Commitment dollars, balance dollars, and the
 balance breakdown each looked right and read wrong.
 
+**Two latent defects found by building on top of old code, both now fixed and
+neither reported by anyone** — worth noting as a pattern, since both had been
+live for months and produced plausible-looking output the whole time:
+
+- `run_upstream_analysis` hardcoded `wf_type="CF_WF"` at BOTH levels, so a sale
+  or refinancing ran the operating waterfall instead of the Capital one. Same
+  dollar, different split, capital outstanding not reduced, and nothing on
+  screen naming which had run. Fixed in `v467`; the type is now the caller's and
+  an invalid value is refused rather than defaulted.
+- `Connection Timeout=30` in the MRI connection string (above). Four months.
+
+Both share a shape: a wrong value that the surrounding code accepts without
+complaint, so the only symptom is output that looks reasonable. Neither a test
+nor a reviewer would have caught them; both turned up because somebody built on
+the code and had to read it.
+
 **Open and unanswered**: the $1,347,797 on 30BEAR/PPI27 (§3.15), whether "every
 sold deal" means 4 or 27 (`v459` note in CLAUDE.md), and Charlene's three
 guardrails that import an uncommitted `live_api` and therefore run for nobody.
