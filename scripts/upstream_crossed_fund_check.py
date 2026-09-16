@@ -112,6 +112,67 @@ check(OS._wf_label("CAP_WF") == "CAP_WF",
       "'CAP_WF' is being treated as a known type; the table's value is 'Cap_WF' "
       "and run_waterfall matches it exactly")
 
+# ── 8. THE WATERFALL IS SEEDED FROM ACCOUNTING ───────────────────────────
+# It ran with `initial_states={}` -- from zero, no capital outstanding and NO
+# ACCRUED PREF -- so the first dollar was split as though nothing had ever been
+# owed. Jim, on Ascent on Steamboat: the allocation "is not taking into account
+# that there is an accrued pref balance that will get paid with the first
+# available cash flow before the OPLEAN entity is entitled to receive its
+# accrued pref". He also asked whether a new waterfall was needed. It was not:
+# the engine was always right, the caller handed it an empty starting state.
+check("initial_states=seed_states" in live,
+      "run_upstream_analysis no longer passes seeded states — it is back to "
+      "splitting the first dollar as if no pref had ever accrued")
+check("initial_states={}" not in live,
+      "run_upstream_analysis passes an empty starting state again")
+check("seed_states_from_accounting(" in live,
+      "seeding no longer goes through seed_states_from_accounting, the function "
+      "compute.py uses; a second way to build opening state is a second answer")
+check("build_amfee_exclusions(acct" in live,
+      "AMFee exclusions are back to {}, which excludes nothing and overcharges "
+      "the fee")
+check("acct" in inspect.signature(OS.run_upstream_analysis).parameters,
+      "run_upstream_analysis no longer accepts accounting, so it cannot seed")
+
+# The opening balances must be read from the ACROSS-ALL-POOLS properties.
+# `accrued_pref` is not an InvestorState attribute: asking for it with a
+# getattr default returned 0.0 and every row read "no accrued pref" on a screen
+# whose whole purpose is showing that pref is paid first.
+from models import InvestorState  # noqa: E402
+check(not hasattr(InvestorState("x"), "accrued_pref"),
+      "InvestorState now HAS accrued_pref — check which property the opening "
+      "balances read, the guard below assumes it does not exist")
+check("total_pref_balance" in live and "total_capital_outstanding" in live,
+      "opening balances are not read from the total_ properties, so they miss "
+      "every pool but 'initial'")
+check("getattr(v, \"accrued_pref\"" not in live,
+      "opening balances ask for a property InvestorState does not have; the "
+      "getattr default silently reports zero accrued pref")
+
+# ── 9. Step descriptions match the Waterfall Setup vocabulary ────────────
+# Guarded, so a missing function is REPORTED alongside everything else rather
+# than aborting the run with an AttributeError. A guardrail that dies part-way
+# tells you one thing is wrong; one that finishes tells you all of them.
+if not hasattr(OS, "vstate_description"):
+    FAIL.append("ownership_service has no vstate_description, so the upstream "
+                "screen cannot show the step meanings the Waterfall Setup "
+                "screen documents")
+    print("FAIL")
+    for m in FAIL:
+        print("  -", m)
+    sys.exit(1)
+
+check(OS.vstate_description("Pref").startswith("Pay accrued preferred return"),
+      "the Pref description no longer matches the Waterfall Setup reference")
+check(OS.vstate_description("AMFee").startswith("Post-distribution AM fee"),
+      "the AMFee description no longer matches the Waterfall Setup reference")
+check(OS.vstate_description("Nonsense") == "",
+      "an unknown vState must return empty, not a guess")
+for v in ("Pref", "Initial", "Add", "Tag", "Share", "IRR", "Amt",
+          "Def&Int", "Def_Int", "Default", "AMFee", "Promote"):
+    check(OS.vstate_description(v), f"vState {v!r} has no description; the "
+                                    f"Waterfall Setup screen documents all 12")
+
 if FAIL:
     print("FAIL")
     for m in FAIL:

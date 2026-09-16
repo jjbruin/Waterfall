@@ -3,8 +3,11 @@
 Wraps ownership_tree.py functionality (no Streamlit dependency).
 """
 
+import logging
 import pandas as pd
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from ownership_tree import (
     build_ownership_tree, load_relationships, visualize_ownership_tree,
@@ -139,6 +142,32 @@ def get_waterfall_requirements(relationships_raw: pd.DataFrame,
     ]
 
 
+#: What each waterfall step DOES, in the words the Waterfall Setup screen uses.
+#:
+#: Lifted verbatim from the vState Reference table in WaterfallSetupView.vue so
+#: the two cannot drift: an analyst reading "Pref" on one screen and a different
+#: gloss on another has to work out whether they mean the same thing. They do.
+VSTATE_DESCRIPTIONS = {
+    "Pref":     "Pay accrued preferred return. nPercent = annual rate. Accrues daily Act/365.",
+    "Initial":  "Return initial capital. Cap_WF reduces capital; CF_WF skips.",
+    "Add":      "Route to capital pool per vtranstype. Independent cap/tracking.",
+    "Tag":      "Proportional follower of lead step at same iOrder. No pool routing.",
+    "Share":    "Residual distribution. FXRate = sharing percentage.",
+    "IRR":      "IRR-targeted distribution (hurdle gate). nPercent = target IRR.",
+    "Amt":      "Fixed-amount distribution. mAmount = dollar amount per period.",
+    "Def&Int":  "Default interest + principal. CF_WF: interest only; Cap_WF: both.",
+    "Def_Int":  "Default interest only. Does not reduce capital.",
+    "Default":  "Default principal return. Reduces capital_outstanding.",
+    "AMFee":    "Post-distribution AM fee. Deducts from source (vNotes), pays to PropCode. Pool-neutral.",
+    "Promote":  "Cumulative catch-up. FXRate = carry share, nPercent = target carry %.",
+}
+
+
+def vstate_description(vstate: str) -> str:
+    """The step's meaning, or the raw value when it is one we do not know."""
+    return VSTATE_DESCRIPTIONS.get(str(vstate).strip(), "")
+
+
 def _wf_label(wf_type: str) -> str:
     """The waterfall's name as a person says it."""
     return {"CF_WF": "Cash Flow", "Cap_WF": "Capital",
@@ -247,7 +276,9 @@ def qualify_beneficiaries(beneficiary_totals: dict, upstream_rows: list,
 def run_upstream_analysis(entity_id: str, distribution_amount: float,
                           relationships_raw: pd.DataFrame, wf: pd.DataFrame,
                           inv: pd.DataFrame,
-                          wf_type: str = "CF_WF") -> dict:
+                          wf_type: str = "CF_WF",
+                          acct: pd.DataFrame = None,
+                          actuals_through=None) -> dict:
     """Run upstream waterfall analysis for an entity.
 
     Runs the entity's waterfall with the given distribution amount, then traces
@@ -261,7 +292,8 @@ def run_upstream_analysis(entity_id: str, distribution_amount: float,
     been used. The literal is `Cap_WF`, matching the `vmisc` values in the
     table; `run_waterfall` compares it exactly and keys `is_cap_wf` off it.
     """
-    from waterfall import run_waterfall, run_recursive_upstream_waterfalls
+    from waterfall import (run_waterfall, run_recursive_upstream_waterfalls,
+                           seed_states_from_accounting)
     from loaders import load_waterfalls
     from datetime import date
     import numpy as np
@@ -287,13 +319,56 @@ def run_upstream_analysis(entity_id: str, distribution_amount: float,
         "cash_available": distribution_amount,
     }])
 
+    # ── SEED FROM ACCOUNTING. THIS IS THE WHOLE POINT. ──────────────────
+    #
+    # This ran with `initial_states={}` -- a waterfall starting from zero, with
+    # no capital outstanding and NO ACCRUED PREF. So the first dollar was split
+    # as though nothing had ever been owed, and a partner sitting on years of
+    # unpaid pref was shown taking its residual share alongside everyone else.
+    # Jim, on Ascent on Steamboat: the deal-level allocation "is not taking into
+    # account that there is an accrued pref balance that will get paid with the
+    # first available cash flow before the OPLEAN entity is entitled to receive
+    # its accrued pref".
+    #
+    # He also asked whether a new waterfall was needed. It is not, and none is
+    # written here: `seed_states_from_accounting` is the SAME function
+    # compute.py calls at compute.py:1871, given the same arguments in the same
+    # order, and `build_amfee_exclusions` is the same one the engine uses. The
+    # difference between this screen and Deal Analysis was never the engine --
+    # it was that this caller handed the engine an empty starting state and the
+    # engine faithfully computed from it.
+    deal_wf_steps = wf_steps[wf_steps["vcode"] == str(entity_id)]
+    seed_states = {}
+    seeded_note = None
+    if acct is not None and not acct.empty:
+        try:
+            child_vcodes = None
+            try:
+                from consolidation import get_property_vcodes_for_deal
+                child_vcodes = get_property_vcodes_for_deal(inv, str(entity_id))
+            except Exception:
+                logger.warning("upstream: child vcodes unavailable for %s",
+                               entity_id, exc_info=True)
+            seed_states = seed_states_from_accounting(
+                acct, inv, deal_wf_steps, str(entity_id),
+                cutoff_date=actuals_through, child_vcodes=child_vcodes)
+        except Exception as e:
+            logger.warning("upstream: seeding failed for %s", entity_id, exc_info=True)
+            seeded_note = (f"Could not seed from accounting ({str(e)[:120]}). The "
+                           f"split below starts from zero and IGNORES accrued pref "
+                           f"and capital outstanding — treat it as illustrative only.")
+    else:
+        seeded_note = ("No accounting data was available, so the split below starts "
+                       "from zero and IGNORES accrued pref and capital outstanding — "
+                       "treat it as illustrative only.")
+
     try:
         alloc, states = run_waterfall(
             wf_steps=test_wf,
             vcode=entity_id,
             wf_name=wf_type,
             period_cash=test_cash,
-            initial_states={},
+            initial_states=seed_states,
         )
     except Exception as e:
         return {"error": f"{_wf_label(wf_type)} waterfall failed: {e}"}
@@ -305,7 +380,10 @@ def run_upstream_analysis(entity_id: str, distribution_amount: float,
     # Run upstream waterfalls
     try:
         from waterfall import build_amfee_exclusions
-        _excl = {}  # No accounting data available in test analysis
+        # The engine's own exclusions, not an empty dict. An AMFee step reads
+        # net capital by (InvestmentID, InvestorID) to decide what to exclude
+        # from its base; with {} it excluded nothing and overcharged the fee.
+        _excl = build_amfee_exclusions(acct, relationships)
         upstream_alloc, entity_states, beneficiary_totals = \
             run_recursive_upstream_waterfalls(
                 deal_allocations=alloc,
@@ -320,9 +398,13 @@ def run_upstream_analysis(entity_id: str, distribution_amount: float,
     # Build serializable results
     deal_alloc_rows = []
     for _, row in alloc.iterrows():
+        vs = str(row.get("vState", ""))
         deal_alloc_rows.append({
+            "iOrder": int(row["iOrder"]) if "iOrder" in row.index
+                      and pd.notna(row.get("iOrder")) else None,
             "PropCode": str(row.get("PropCode", "")),
-            "vState": str(row.get("vState", "")),
+            "vState": vs,
+            "step_description": vstate_description(vs),
             "Allocated": float(row.get("Allocated", 0)),
         })
 
@@ -354,6 +436,25 @@ def run_upstream_analysis(entity_id: str, distribution_amount: float,
         "success": True,
         "wf_type": wf_type,
         "wf_label": _wf_label(wf_type),
+        "seeded_from_accounting": not seeded_note,
+        "seeding_warning": seeded_note,
+        # What the waterfall STARTED from, so a reader can see the accrued pref
+        # that the first dollars go to before anyone reaches their residual.
+        # `total_` — ACROSS ALL POOLS, not just "initial". An investor can hold
+        # initial, additional, special and operating capital, each with its own
+        # pref tiers, and the bare properties read only the initial pool.
+        #
+        # The first version asked for `accrued_pref`, which InvestorState does
+        # not have: getattr's default returned 0.0 and every row read "no
+        # accrued pref" on a screen whose entire purpose is showing that pref
+        # gets paid first. A silent default is worse than an AttributeError.
+        "opening_states": [
+            {"entity_id": k,
+             "capital_outstanding": float(v.total_capital_outstanding or 0.0),
+             "accrued_pref": float(v.total_pref_balance or 0.0)}
+            for k, v in sorted(seed_states.items())
+            if (v.total_capital_outstanding or v.total_pref_balance)
+        ],
         "estimate_footnote": footnote,
         "distribution_amount": distribution_amount,
         "deal_allocations": deal_alloc_rows,

@@ -84,6 +84,10 @@ def upstream_analysis():
         wf=data["wf"],
         inv=data["inv"],
         wf_type=wf_type,
+        # The accounting the engine seeds from. Without it the waterfall starts
+        # from zero and ignores every accrued pref balance on the deal.
+        acct=data.get("acct"),
+        actuals_through=current_app.config.get("ACTUALS_THROUGH"),
     )
 
     if "error" in result:

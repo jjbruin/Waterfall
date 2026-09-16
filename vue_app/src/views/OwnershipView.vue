@@ -304,8 +304,10 @@ async function runUpstreamAnalysis() {
 }
 
 const dealAllocColumns = [
+  { key: 'iOrder', label: 'Step', align: 'right' },
   { key: 'PropCode', label: 'PropCode' },
   { key: 'vState', label: 'vState' },
+  { key: 'step_description', label: 'What the step does' },
   { key: 'Allocated', label: 'Allocated', format: 'currency2', align: 'right' },
 ]
 const beneficiaryColumns = [
@@ -681,6 +683,32 @@ watch([root, collapsed], () => nextTick(() => {
             </div>
           </div>
 
+          <!-- WHAT THE WATERFALL STARTED FROM. Without this the deal-level
+               split looks arbitrary: the first dollars go to accrued pref, and
+               a reader who cannot see the balances cannot tell why one partner
+               takes everything before another takes anything. -->
+          <div v-if="(upstreamResult.opening_states || []).length" class="opening">
+            <h3 class="up-h">Opening balances the waterfall starts from</h3>
+            <div class="ben-table">
+              <div class="ben-head">
+                <span>Entity</span><span>Capital outstanding</span><span>Accrued pref</span>
+              </div>
+              <div v-for="o in upstreamResult.opening_states" :key="o.entity_id" class="ben-row">
+                <span class="ben-e">{{ o.entity_id }}</span>
+                <span class="ben-a">{{ fmtMoney(o.capital_outstanding) }}</span>
+                <span class="ben-a">{{ fmtMoney(o.accrued_pref) }}</span>
+              </div>
+            </div>
+            <p class="opening-note">
+              Seeded from accounting by the same engine Deal Analysis uses, through
+              <code>seed_states_from_accounting</code>.
+            </p>
+          </div>
+
+          <div v-if="upstreamResult.seeding_warning" class="err">
+            {{ upstreamResult.seeding_warning }}
+          </div>
+
           <h3 class="up-h">Deal-level allocations</h3>
           <DataTable :columns="dealAllocColumns" :rows="upstreamResult.deal_allocations || []" />
 
@@ -1002,6 +1030,13 @@ fieldset.kind label {
   margin-left: 2px; background: #fff3e0; padding: 1px 3px; border-radius: 2px;
   vertical-align: super;
 }
+.opening { margin-top: 4px; }
+.opening .ben-head, .opening .ben-row { grid-template-columns: 1fr 170px 170px; }
+.opening-note { margin: 6px 0 0; font-size: 11px; color: #8a93a3; }
+.opening-note code {
+  background: #eef1f6; padding: 1px 4px; border-radius: 2px; font-size: 10.5px;
+}
+
 .est-note {
   margin: 8px 0 0; font-size: 11.5px; color: #7a6a52; line-height: 1.55;
   max-width: 78ch; background: #fffaf0; border-left: 3px solid #e8c07a;
