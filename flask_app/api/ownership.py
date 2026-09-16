@@ -122,9 +122,12 @@ def upstream_analysis():
 @login_required
 def chain_investments():
     """The PE investment level — the left edge of the ownership tree."""
-    from flask_app.services.ownership_chain_service import list_pe_investments
+    from flask_app.services.ownership_chain_service import pe_investments
     try:
-        return jsonify(safe_json({"investments": list_pe_investments()}))
+        # `excluded_children` rides along so the screen can SAY that a building
+        # of a multi-property deal was left out, rather than the analyst
+        # wondering where Brainerd's nine buildings went.
+        return jsonify(safe_json(pe_investments()))
     except Exception as e:
         current_app.logger.exception("chain_investments failed")
         return jsonify({"error": str(e)}), 500

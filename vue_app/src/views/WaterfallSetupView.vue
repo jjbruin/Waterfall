@@ -1,12 +1,21 @@
 <script setup lang="ts">
 import { onMounted, ref, computed, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { useWaterfallStore } from '../stores/waterfall'
 import type { WaterfallStep } from '../stores/waterfall'
 import WaterfallEditor from '../components/waterfall/WaterfallEditor.vue'
 
 const wf = useWaterfallStore()
+const route = useRoute()
 
 const selectedEntity = ref('')
+// An entity reached by deep link that the dropdown does not carry. The list is
+// built from `relationships`; the ownership chain is built from `commitments`,
+// and the two populations are not the same — 24 of the 104 codes the chain
+// links to are absent here, EVERY one of them a "no waterfall" entity, which is
+// precisely when the "Set up X" link is offered. Without this the select has no
+// option to hold the value and silently shows nothing.
+const adhocEntity = ref<{ vcode: string; label: string } | null>(null)
 const activeTab = ref<'CF_WF' | 'Cap_WF'>('CF_WF')
 const showGuidance = ref(false)
 const copySourceVcode = ref('')
@@ -18,6 +27,11 @@ const capDraft = ref<WaterfallStep[]>([])
 
 onMounted(async () => {
   await wf.loadEntities()
+  // Arriving from the ownership chain's "Set up <code>" link. Jim, Sep 16 2026:
+  // it "brought me to the waterfall setup page but did not select the entity" —
+  // nothing here ever read the query string.
+  const q = String(route.query.vcode || '').trim()
+  if (q) await selectEntity(q)
 })
 
 // Sync store steps to drafts when entity loads
@@ -49,12 +63,35 @@ const investorList = computed(() => {
 // ── Entity Selection ─────────────────────────────────────────────────────
 
 async function onEntitySelect(event: Event) {
-  const vcode = (event.target as HTMLSelectElement).value
-  selectedEntity.value = vcode
+  await selectEntity((event.target as HTMLSelectElement).value)
+}
+
+async function selectEntity(vcode: string) {
   clearStatus()
-  if (vcode) {
-    await wf.loadSteps(vcode)
+  adhocEntity.value = null
+  selectedEntity.value = vcode
+  if (!vcode) return
+
+  // Case-insensitively match the dropdown so a link carrying `3rdave` still
+  // lands on `3RDAVE`, and adopt the list's own spelling once matched.
+  const match = wf.entities.find(
+    (e) => String(e.vcode).toUpperCase() === vcode.toUpperCase(),
+  )
+  if (match) {
+    selectedEntity.value = match.vcode
+  } else {
+    // Not in the list — carry it as its own option rather than dropping it,
+    // and SAY SO. The steps endpoint accepts any code, so the page works; what
+    // the analyst must not do is assume a blank list means a blank waterfall.
+    adhocEntity.value = { vcode, label: `${vcode} (not in the entity list)` }
+    setStatus(
+      'info',
+      `${vcode} is not in the entity list, which is built from the ` +
+        `relationships feed. It was reached from the ownership chain, which ` +
+        `is built from commitments. Its waterfall can still be set up here.`,
+    )
   }
+  await wf.loadSteps(selectedEntity.value)
 }
 
 // ── Draft Updates ────────────────────────────────────────────────────────
@@ -201,6 +238,9 @@ function fmtPct(v: number): string {
         <label>Entity:</label>
         <select @change="onEntitySelect" :value="selectedEntity" class="entity-select">
           <option value="">-- Select entity --</option>
+          <option v-if="adhocEntity" :value="adhocEntity.vcode">
+            {{ adhocEntity.label }}
+          </option>
           <option v-for="e in wf.entities" :key="e.vcode" :value="e.vcode">
             {{ e.label }}
           </option>

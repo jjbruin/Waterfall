@@ -27,11 +27,13 @@ find the rows whose EntityID is that entity, and the InvestorIDs are its
 owners.
 
 WHERE THE WATERFALL LIVES. Both deal-level and upstream waterfalls sit in the
-same ``waterfalls`` table keyed by ``vcode`` -- but the key differs by level.
-A deal's waterfall is keyed by its PROPERTY code (P0000085), while an upstream
-entity's is keyed by the ENTITY id (PPIECH, AMB23, OWPSC). Level 0 therefore
-looks itself up by vcode and every level above it by entity id. Getting this
-backwards would report every deal as having no waterfall.
+same ``waterfalls`` table keyed by ``vcode``. An upstream entity's is keyed by
+the ENTITY id (PPIECH, AMB23, OWPSC). A DEAL's may be keyed by either its
+property code or its InvestmentID, and which one varies by deal: EASTCH is
+filed under P0000085, 3rd Ave under `3RDAVE` with nothing under `P3RDAVE`, and
+45th & Main under BOTH `P0000089` and `45MAIN`. Level 0 therefore looks under
+both and uses whichever is populated. Assuming the property code alone reported
+3rd Ave as having no waterfall when it has six steps (Jim, Sep 16 2026).
 """
 
 from __future__ import annotations
@@ -569,19 +571,71 @@ def _count(nodes: List[dict]) -> tuple:
     return n, missing
 
 
+def _child_properties(src: _Source) -> Dict[str, str]:
+    """Child properties of multi-property deals -> their parent's name.
+
+    A deal's children are the rows whose ``Portfolio_Name`` equals this deal's
+    ``Investment_Name`` -- the same rule ``consolidation.get_property_vcodes_
+    for_deal`` uses, applied here in one pass instead of per deal.
+
+    They are NINE Brainerd buildings, SIX Town Fair Tire stores, and the rest of
+    Giant 7, Berger Pittsburgh and OREI: 27 of the 101 rows this list returned.
+    Preferred equity is held at the DEAL, so a building is not a PE investment
+    and never has an ownership chain of its own -- confirmed rather than
+    assumed, below. Jim, Sep 16 2026: "I am also seeing children of multi
+    property deals appearing in the ownership chain list."
+    """
+    by_name: Dict[str, Set[str]] = {}
+    for iid, d in src.deal_by_investment.items():
+        nm = _norm(d.get("name"))
+        if nm:
+            by_name.setdefault(nm, set()).add(iid)
+    kids: Dict[str, str] = {}
+    for iid, d in src.deal_by_investment.items():
+        pn = _norm(d.get("portfolio"))
+        # A deal naming ITSELF as its portfolio is its own parent, not a child.
+        if pn and pn in by_name and iid not in by_name[pn]:
+            kids[iid] = (d.get("portfolio") or "").strip()
+    return kids
+
+
 def list_pe_investments(engine=None) -> List[dict]:
+    """The PE investment rows alone. See :func:`pe_investments` for the rest."""
+    return pe_investments(engine)["investments"]
+
+
+def pe_investments(engine=None) -> dict:
     """The PE investment level -- one row per deal, the left edge of the tree.
 
     Every deal with an InvestmentID is listed, including those with no
     commitments recorded. A deal missing from this list because it has no
     ownership data would be invisible exactly when somebody most needs to
     notice it, so ``owner_count`` reports 0 instead.
+
+    THE ONE EXCLUSION is a child property of a multi-property deal, and only
+    when it has NO COMMITMENTS OF ITS OWN. The qualifier is the whole point: if
+    preferred equity is ever committed directly into a building, that building
+    IS a PE investment whatever its Portfolio_Name says, and dropping it on a
+    naming rule would hide a real position. None of the 27 children found
+    locally carry a commitment -- and neither do their five parents -- so this
+    removes noise and no data. The count is returned rather than silently
+    applied; a list that shrinks without saying so is its own defect.
     """
     src = _Source(engine)
-    out = []
+    kids = _child_properties(src)
+    out, excluded = [], []
     for iid, d in src.deal_by_investment.items():
         owners = _owners_of(src, iid)
-        wf = _waterfall_status(src, d["vcode"] or iid)
+        if iid in kids and not owners:
+            excluded.append({"entity_id": iid,
+                             "name": d["name"] or src.display_name(iid),
+                             "parent_deal": kids[iid]})
+            continue
+        # Same either-key resolution as build_chain; see there for why.
+        _bv = _waterfall_status(src, d["vcode"]) if d["vcode"] else {"step_count": 0}
+        _bi = _waterfall_status(src, iid)
+        wf = _bv if _bv.get("step_count") else (
+            _bi if _bi.get("step_count") else _waterfall_status(src, d["vcode"] or iid))
         out.append({
             "entity_id": iid,
             "name": d["name"] or src.display_name(iid),
@@ -589,10 +643,14 @@ def list_pe_investments(engine=None) -> List[dict]:
             "portfolio": d["portfolio"],
             "owner_count": len(owners),
             "total_committed": sum(o["committed"] for o in owners),
+            # A child WITH commitments is kept and labelled, so the row is
+            # read as part of a larger deal rather than as a standalone one.
+            "parent_deal": kids.get(iid) or None,
             **wf,
         })
     out.sort(key=lambda r: (r["name"] or r["entity_id"]).lower())
-    return out
+    excluded.sort(key=lambda r: (r["name"] or r["entity_id"]).lower())
+    return {"investments": out, "excluded_children": excluded}
 
 
 def build_chain(investment_id: str, engine=None) -> dict:
@@ -601,9 +659,28 @@ def build_chain(investment_id: str, engine=None) -> dict:
     iid = _norm(investment_id)
     deal = src.deal_by_investment.get(iid)
 
-    # Level 0 is keyed by VCODE, every level above it by entity id. See the
-    # module docstring -- reversing this reports every deal as unconfigured.
-    wf_code = (deal or {}).get("vcode") or iid
+    # LEVEL 0 IS KEYED BY EITHER, AND WHICH ONE VARIES BY DEAL.
+    #
+    # This assumed the property code. That holds for EASTCH (P0000085, 12 steps)
+    # and NOT for 3rd Ave, whose waterfall lives under the InvestmentID
+    # `3RDAVE` (6 steps) while `P3RDAVE` has none. The screen therefore told Jim
+    # that 3rd Ave had no waterfall when it has one, and offered to "Set up
+    # P3RDAVE" — a code nothing is filed under. 45th & Main carries seventeen
+    # steps under BOTH `P0000089` and `45MAIN`.
+    #
+    # So look under both and use whichever is actually populated, preferring the
+    # vcode when they both are. A deal filed under two codes is reported rather
+    # than silently halved: two sets of steps for one deal is a data question
+    # nobody has been asked.
+    vc = (deal or {}).get("vcode") or ""
+    by_vcode = _waterfall_status(src, vc) if vc else {"step_count": 0}
+    by_iid = _waterfall_status(src, iid)
+    if by_vcode.get("step_count"):
+        wf_code = vc
+    elif by_iid.get("step_count"):
+        wf_code = iid
+    else:
+        wf_code = vc or iid
     owners = _build_level(src, iid, 0, {iid})
     entities, missing = _count(owners)
 
@@ -623,6 +700,13 @@ def build_chain(investment_id: str, engine=None) -> dict:
         "owners": owners,
         **_waterfall_status(src, wf_code),
     }
+    if (by_vcode.get("step_count") and by_iid.get("step_count")
+            and vc.upper() != iid.upper()):
+        root["duplicate_waterfall"] = (
+            f"Steps are filed under BOTH {vc} ({by_vcode['step_count']}) and "
+            f"{iid} ({by_iid['step_count']}). Only {wf_code} is used here; the "
+            f"other is not merged and may be stale.")
+
     if not owners:
         # At the PE investment level this is a real gap: an investment we hold
         # must have been funded by somebody, so no commitments naming it is

@@ -77,6 +77,11 @@ interface Investment {
 }
 
 const investments = ref<Investment[]>([])
+// Buildings of a multi-property deal, left out of the list above. Named rather
+// than merely counted: a list that quietly drops 27 of 101 rows is indis-
+// tinguishable from one that failed to load them.
+const excludedChildren = ref<{ entity_id: string; name: string; parent_deal: string }[]>([])
+const showExcluded = ref(false)
 const listLoading = ref(false)
 const chainLoading = ref(false)
 const selected = ref<string | null>(null)
@@ -112,6 +117,7 @@ async function loadInvestments() {
   try {
     const res = await api.get('/api/ownership/chain/investments')
     investments.value = res.data.investments || []
+    excludedChildren.value = res.data.excluded_children || []
   } catch (e: any) {
     dataStore.addToast(e.response?.data?.error || 'Failed to load investments', 'error')
   } finally {
@@ -400,6 +406,22 @@ watch([root, collapsed], () => nextTick(() => {
           <p class="count">
             {{ shownInvestments.length }} of {{ investments.length }} investments
           </p>
+          <p v-if="excludedChildren.length" class="count excluded-note">
+            <button class="linkish" @click="showExcluded = !showExcluded">
+              {{ showExcluded ? '▾' : '▸' }}
+              {{ excludedChildren.length }} child properties not listed
+            </button>
+          </p>
+          <ul v-if="showExcluded" class="excluded-list">
+            <li v-for="c in excludedChildren" :key="c.entity_id">
+              {{ c.name }} <span class="muted">— part of {{ c.parent_deal }}</span>
+            </li>
+            <li class="muted note">
+              Preferred equity is committed to the deal, not to a building, so
+              these carry no commitments of their own. One that did would be
+              listed above.
+            </li>
+          </ul>
         </div>
 
         <div v-if="listLoading" class="muted pad">Loading investments…</div>
@@ -763,6 +785,19 @@ watch([root, collapsed], () => nextTick(() => {
 </template>
 
 <style scoped>
+.excluded-note { margin-top: 2px; }
+.linkish {
+  background: none; border: none; padding: 0; cursor: pointer;
+  color: var(--text-muted, #6b7280); font-size: inherit; text-align: left;
+}
+.linkish:hover { text-decoration: underline; }
+.excluded-list {
+  list-style: none; margin: 4px 0 0; padding: 0 0 0 12px;
+  font-size: 11px; color: var(--text-muted, #6b7280);
+  max-height: 180px; overflow-y: auto;
+}
+.excluded-list li { padding: 1px 0; }
+.excluded-list .note { padding-top: 6px; font-style: italic; }
 .ownership { padding: 20px; }
 
 .head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
