@@ -96,13 +96,41 @@ function shownLines(block: any) {
   })).filter((sec: any) => sec.lines.length)
 }
 
+/** THREE SHAPES, NOT ONE. The balance sheet, income statement and cash flow
+ *  come back as `sections`; the schedule of investments as `lines`; members'
+ *  capital as `rows` x `members`. The first version of this view rendered only
+ *  `sections`, so SOI and Members' Capital printed a header over an empty table
+ *  — present, titled, and blank (Jim, Sep 17 2026). Each shape now has its own
+ *  renderer, and this decides which. */
+function shapeOf(key: string) {
+  if (key === 'soi') return 'soi'
+  if (key === 'members_capital') return 'members'
+  return 'sections'
+}
+
+function soiLines(b: any) {
+  const out = [...(b?.lines || [])]
+  if (b?.unallocated) {
+    out.push({ ...b.unallocated,
+               name: 'Unallocated — GL rows carry no related entity' })
+  }
+  return out
+}
+
 function hasContent(page: any, key: string) {
   const b = page?.[key]
   if (!b) return false
-  if (b.sections) return shownLines(b).length > 0
-  if (Array.isArray(b.lines)) return b.lines.length > 0
-  if (Array.isArray(b.rows)) return b.rows.length > 0
-  return false
+  const shape = shapeOf(key)
+  if (shape === 'soi') return soiLines(b).length > 0
+  if (shape === 'members') return (b.rows || []).length > 0
+       && (b.members || []).length > 0
+  return shownLines(b).length > 0
+}
+
+const pct = (v: any) => {
+  if (v == null || v === '') return ''
+  const n = Number(v)
+  return isFinite(n) ? `${(n * 100).toFixed(2)}%` : ''
 }
 
 /** Flattened page list: every (entity, statement) pair that has something to
@@ -192,7 +220,69 @@ onMounted(load)
             <div class="fs-period">{{ periodPhrase(periodEnd, s.st.dated) }}</div>
           </header>
 
-          <table class="fs">
+          <!-- SCHEDULE OF INVESTMENTS. The workpaper shows the membership
+               interest from commitments beside the one from `relationships`,
+               because the two disagree while accounting is mid-update. That
+               reconciliation is not an investor's business and is not printed
+               here; it stays in the workbook where it can be resolved. -->
+          <table v-if="shapeOf(s.st.key) === 'soi'" class="fs fs-wide">
+            <thead>
+              <tr>
+                <th class="l">Name of Investment</th>
+                <th>Membership Interest</th>
+                <th>Cost</th>
+                <th>Fair Value</th>
+                <th>% of Members' Capital</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(l, li) in soiLines(s.page[s.st.key])" :key="li">
+                <td class="fs-line">{{ l.name || l.related_entity || '—' }}</td>
+                <td class="fs-amt">
+                  {{ l.ownership_pct != null ? l.ownership_pct.toFixed(2) + '%' : '' }}
+                </td>
+                <td class="fs-amt">{{ money(l.cost) }}</td>
+                <td class="fs-amt">{{ money(l.fair_value) }}</td>
+                <td class="fs-amt">{{ pct(l.pct_of_members_capital) }}</td>
+              </tr>
+              <tr class="fs-total">
+                <td class="fs-line">Total</td>
+                <td class="fs-amt"></td>
+                <td class="fs-amt">{{ money(s.page[s.st.key].total_cost) }}</td>
+                <td class="fs-amt">{{ money(s.page[s.st.key].total_fair_value) }}</td>
+                <td class="fs-amt"></td>
+              </tr>
+            </tbody>
+          </table>
+
+          <!-- STATEMENT OF CHANGES IN MEMBERS' CAPITAL: a matrix, one column
+               per member and a total, which is why it could never render
+               through the sectioned path. -->
+          <table v-else-if="shapeOf(s.st.key) === 'members'" class="fs fs-wide">
+            <thead>
+              <tr>
+                <th class="l"></th>
+                <th v-for="m in s.page[s.st.key].members" :key="m.InvestorID">
+                  {{ m.InvestorName || m.InvestorID }}
+                </th>
+                <th>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(row, ri) in s.page[s.st.key].rows" :key="ri"
+                  :class="{ 'fs-total': row.kind === 'closing',
+                            'fs-sec': row.kind === 'opening' }">
+                <td class="fs-line">{{ row.label }}</td>
+                <td v-for="m in s.page[s.st.key].members" :key="m.InvestorID"
+                    class="fs-amt">
+                  {{ money((row.by_member || {})[m.InvestorID]) }}
+                </td>
+                <td class="fs-amt">{{ money(row.total) }}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <table v-else class="fs">
             <tbody>
               <template v-for="sec in shownLines(s.page[s.st.key])" :key="sec.section">
                 <tr class="fs-sec"><td colspan="2">{{ sec.section }}</td></tr>
@@ -267,6 +357,14 @@ table.fs td { padding: 2px 0; vertical-align: bottom; }
   border-bottom: 3px double #000; padding-top: 3px;
 }
 .fs-total.fs-grand td { padding-top: 10px; }
+table.fs thead th {
+  font-weight: 700; text-align: right; padding: 0 0 4px 6px;
+  border-bottom: 1px solid #000; white-space: nowrap;
+}
+table.fs thead th.l { text-align: left; padding-left: 0; }
+table.fs.fs-wide { font-size: 9.5pt; }
+table.fs.fs-wide .fs-amt { width: auto; padding-left: 10px; }
+table.fs.fs-wide .fs-line { padding-left: 0; }
 .fs-fail { margin-top: 40px; text-align: center; }
 .fs-fail-why { color: #666; font-size: 9pt; }
 .fs-foot {

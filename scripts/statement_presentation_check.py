@@ -158,6 +158,36 @@ check("and compares it to the movement the cash accounts show",
 check("net income has nothing to compare against, so ties is None",
       bool(_inc and _inc["footing"]["ties"] is None))
 
+print("The printed statements render EVERY shape, not just sections")
+# THE DEFECT THIS PINS. The print view rendered `sections` only, so the schedule
+# of investments and members' capital printed a header over an empty table --
+# present, titled and blank (Jim, Sep 17 2026). Three shapes come out of this
+# engine and each needs its own renderer:
+#     sections   balance sheet, income statement, cash flow
+#     lines      schedule of investments
+#     rows x members   statement of changes in members' capital
+with create_app().app_context():
+    _mc = ss.build_members_capital("PPIECH", "2026-06-30")
+    _soi = ss.build_schedule_of_investments("PPIECH", "2026-06-30")
+check("members' capital is rows x members, not sections",
+      "sections" not in _mc and isinstance(_mc.get("rows"), list)
+      and isinstance(_mc.get("members"), list))
+check("the schedule of investments is lines, not sections",
+      "sections" not in _soi and "lines" in _soi)
+# The field names the view reads, against the ones the engine emits. A rename on
+# either side prints blanks rather than failing, which is why this is asserted.
+if _mc.get("rows") and _mc.get("members"):
+    _r, _m = _mc["rows"][0], _mc["members"][0]
+    check("a members' capital row carries label/by_member/total",
+          {"label", "by_member", "total"} <= set(_r))
+    check("and a member carries InvestorID, which by_member is keyed on",
+          "InvestorID" in _m and _m["InvestorID"] in _r["by_member"])
+_prt = open("vue_app/src/views/StatementsPrintView.vue", encoding="utf-8").read()
+check("the print view branches on shape", "shapeOf(" in _prt)
+check("it has a schedule-of-investments renderer", "soiLines(" in _prt)
+check("it has a members' capital renderer", "by_member" in _prt)
+check("and it reads the member key the engine emits", "InvestorID" in _prt)
+
 print()
 if failures:
     print(f"FAILED: {len(failures)} check(s): {failures}")
