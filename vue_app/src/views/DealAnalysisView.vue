@@ -556,6 +556,47 @@ async function downloadExcel(url: string, filename: string) {
 // Sale Override
 // ============================================================
 
+// ── Extension covenant what-if ───────────────────────────────────────────
+// Seeded from MRI, changed from there, and NEVER stored: a proposed covenant is
+// a negotiating position, and writing it onto the deal would make the next
+// reader think the lender had agreed to it.
+const extOverride = ref<Record<string, Record<string, number | string>>>({})
+const extTest = ref<Record<string, any>>({})
+const extBusy = ref<string | null>(null)
+
+const covKey = (k: string) =>
+  k === 'dscr' ? 'min_dscr' : k === 'ltv' ? 'max_ltv' : 'min_debt_yield'
+
+function setCov(loanId: string, key: string, v: string) {
+  if (!extOverride.value[loanId]) extOverride.value[loanId] = {}
+  extOverride.value[loanId][key] = v
+}
+
+function resetCov(loanId: string) {
+  delete extOverride.value[loanId]
+  delete extTest.value[loanId]
+}
+
+async function runExtTest(loanId: string) {
+  const vc = deals.currentVcode
+  if (!vc) return
+  extBusy.value = loanId
+  try {
+    const res = await api.post(`/api/deals/${vc}/extension-test`, {
+      loan_id: loanId, overrides: extOverride.value[loanId] || {},
+    })
+    const row = (res.data.loans || []).find((x: any) => String(x.loan_id) === String(loanId))
+    if (row?.test) extTest.value[loanId] = row.test
+  } catch (e: any) {
+    // Surfaced rather than swallowed — a failed what-if must not leave the
+    // previous answer on screen looking like the new one.
+    delete extTest.value[loanId]
+    alert(e.response?.data?.error || e.message)
+  } finally {
+    extBusy.value = null
+  }
+}
+
 const sellingCostTypeLocal = ref('pct')
 
 const saleOverrideDisplay = computed(() => {
@@ -1313,10 +1354,65 @@ watch(parcelOpen, (open) => {
             {{ k }} {{ v == null ? '—' : v }}
           </span>
         </div>
+        <!-- THE EXTENSION TEST, seeded from MRI and negotiable from there. -->
+        <div v-for="l in deals.currentMaturityGap.loans" :key="'x' + (l.loan_id || 'x')"
+             class="mg-ext">
+          <template v-if="l.extension_test && l.extension_test.available">
+            <div class="mg-ext-head">
+              <b>Extension test — loan {{ l.loan_id }}</b>
+              <span class="mg-ext-sub">
+                NOI {{ fmtInt(l.extension_test.noi) }} for the 12 months from
+                {{ l.extension_test.test_date }}, at
+                {{ (l.extension_test.rate * 100).toFixed(2) }}% derived
+              </span>
+            </div>
+            <table class="mg-table">
+              <thead>
+                <tr><th>Test</th><th class="r">Value</th><th class="r">Supports</th>
+                    <th>Source</th><th></th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="c in (extTest[l.loan_id]?.constraints || l.extension_test.constraints)"
+                    :key="c.key" :class="{ bind: c.key === (extTest[l.loan_id]?.binding || l.extension_test.binding) }">
+                  <td>{{ c.label }}</td>
+                  <td class="r">
+                    <input class="cov-in" type="number" step="0.01"
+                           :value="extOverride[l.loan_id]?.[covKey(c.key)] ?? c.test"
+                           @change="setCov(l.loan_id, covKey(c.key), ($event.target as HTMLInputElement).value)" />
+                  </td>
+                  <td class="r">{{ c.max_balance != null ? fmtInt(c.max_balance) : '—' }}</td>
+                  <td :class="{ prop: c.source === 'proposed' }">{{ c.source || '—' }}</td>
+                  <td>{{ c.key === (extTest[l.loan_id]?.binding || l.extension_test.binding) ? 'binding' : '' }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <p class="mg-ext-result">
+              {{ (extTest[l.loan_id] || l.extension_test).headline }}
+            </p>
+            <div class="mg-ext-actions">
+              <button class="btn-sm" @click="runExtTest(l.loan_id)"
+                      :disabled="extBusy === l.loan_id">
+                {{ extBusy === l.loan_id ? 'Testing…' : 'Test these covenants' }}
+              </button>
+              <button v-if="extTest[l.loan_id]" class="btn-sm ghost"
+                      @click="resetCov(l.loan_id)">Back to MRI</button>
+              <span class="mg-ext-note">
+                Proposals are not saved — they are a negotiating position, not a
+                fact about the loan.
+              </span>
+            </div>
+          </template>
+          <p v-else-if="l.extension_test" class="mg-ext-unavail">
+            <b>Extension test unavailable for loan {{ l.loan_id }}.</b>
+            {{ l.extension_test.reason }}
+          </p>
+        </div>
+
         <p class="mg-foot">
           The forecast is shown as it computes. Nothing here assumes an extension
           is exercised — the interest above is <em>not</em> added back, because
           taking an extension is a decision with covenant conditions attached.
+          A required paydown is reported, never applied.
         </p>
       </div>
 
@@ -2800,5 +2896,31 @@ watch(parcelOpen, (open) => {
 }
 .mg-chip.blank { color: #b3a68a; }
 .mg-foot { margin: 10px 0 0; font-size: 11px; color: #8a6d35; line-height: 1.5; }
+
+
+.mg-ext { margin-top: 14px; border-top: 1px solid #e6d6b4; padding-top: 12px; }
+.mg-ext-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.mg-ext-head b { font-size: 12px; color: #4a3d20; }
+.mg-ext-sub { font-size: 11px; color: #8a6d35; }
+.mg-table tr.bind td { background: #fbf1dd; font-weight: 600; }
+.cov-in {
+  width: 74px; text-align: right; font: inherit; padding: 1px 4px;
+  border: 1px solid #e0cfa8; border-radius: 3px; background: #fff;
+}
+.cov-in:focus { border-color: #d9a441; outline: none; }
+td.prop { color: #b4232a; font-weight: 600; }
+.mg-ext-result {
+  margin: 10px 0 8px; font-size: 12.5px; line-height: 1.5; color: #4a3d20;
+  background: #fff; border: 1px solid #e6d6b4; border-radius: 4px; padding: 8px 10px;
+}
+.mg-ext-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.btn-sm {
+  font-size: 11px; padding: 3px 10px; border-radius: 4px; cursor: pointer;
+  border: 1px solid #d9a441; background: #d9a441; color: #fff; font-weight: 600;
+}
+.btn-sm.ghost { background: #fff; color: #8a6d35; border-color: #e0cfa8; }
+.btn-sm:disabled { opacity: .6; cursor: default; }
+.mg-ext-note { font-size: 10.5px; color: #a08a55; }
+.mg-ext-unavail { font-size: 12px; color: #6b5a30; margin: 8px 0 0; }
 
 </style>

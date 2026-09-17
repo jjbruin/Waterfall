@@ -909,20 +909,37 @@ def apply_parcel_income_loss(fc, losses, debug_msgs=None, detail_out=None):
     return out
 
 
-def _loan_maturity_gap(loan_sched, mri_loans_raw, vcode, sale_date, debug_msgs):
+def _loan_maturity_gap(loan_sched, mri_loans_raw, vcode, sale_date, debug_msgs,
+                       fc_deal_full=None, mri_val=None):
     """Never let this stop a deal computing -- it is a diagnostic, not a figure.
 
     A deal that fails to load because its warning could not be produced is a
     worse outcome than the warning being missing, so the failure is recorded and
     swallowed.
+
+    The EXTENSION TEST runs here too, seeded from MRI's own covenants and with no
+    overrides: that is the lender's position, which is where a negotiation
+    starts. Proposed changes come in through the what-if endpoint and are never
+    stored on the deal.
     """
     try:
         import loan_maturity
-        return loan_maturity.detect(loan_sched, mri_loans_raw, vcode, sale_date)
+        gap = loan_maturity.detect(loan_sched, mri_loans_raw, vcode, sale_date)
     except Exception as e:                                  # pragma: no cover
         if debug_msgs is not None:
             debug_msgs.append(f"Loan maturity check failed: {e}")
         return {"has_gap": False, "loans": [], "error": str(e)[:200]}
+
+    if gap.get("has_gap") and fc_deal_full is not None:
+        try:
+            import loan_extension
+            for l in gap["loans"]:
+                l["extension_test"] = loan_extension.test(
+                    l, fc_deal_full, mri_val, vcode, loan_sched)
+        except Exception as e:                              # pragma: no cover
+            if debug_msgs is not None:
+                debug_msgs.append(f"Extension test failed: {e}")
+    return gap
 
 
 def compute_deal_analysis(
@@ -1967,7 +1984,8 @@ def compute_deal_analysis(
         # decision with covenant conditions attached, and assuming it would
         # swap one invented answer for another.
         'loan_maturity_gap': _loan_maturity_gap(
-            loan_sched, mri_loans_raw, deal_vcode, sale_date, debug_msgs),
+            loan_sched, mri_loans_raw, deal_vcode, sale_date, debug_msgs,
+            fc_deal_full, mri_val),
         'capital_calls': capital_calls,
         'seed_states': seed_states,
         'wf_steps': wf_steps,

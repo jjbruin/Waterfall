@@ -335,6 +335,55 @@ def debt_service(vcode):
     }))
 
 
+@deals_bp.route("/<vcode>/extension-test", methods=["POST"])
+@login_required
+def extension_test(vcode):
+    """What-if on the extension covenants: start at MRI, change from there.
+
+    Jim, Sep 16 2026: "consider the scenario where we are negotiating potential
+    changes to the existing covenants. We would like to model beginning with the
+    existing covenant and then making changes from there."
+
+    NOTHING IS STORED. The proposal is a negotiating position, not a fact about
+    the loan, and writing it onto the deal would make the next reader think the
+    lender had agreed to it. Each returned test says whether its value came from
+    MRI or was proposed.
+
+    Body: { overrides: { min_dscr, max_ltv, min_debt_yield }, loan_id? }
+    """
+    import loan_extension
+    body = request.get_json(silent=True) or {}
+    overrides = body.get("overrides") or {}
+    want = str(body.get("loan_id") or "").strip()
+    try:
+        result = _get_result(vcode)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    gap = result.get("loan_maturity_gap") or {}
+    if not gap.get("has_gap"):
+        return jsonify({"error": "No loan on this deal matures before it sells."}), 400
+
+    # RE-SOLVED FROM THE BASELINE'S OWN INPUTS, not recomputed from the
+    # forecast. The only thing that moves between the two answers is the
+    # covenant being negotiated; recomputing NOI here could land on a slightly
+    # different figure and the analyst would be comparing two numbers that
+    # differ for a reason nobody intended. It also means this endpoint needs no
+    # data load at all.
+    out = []
+    for l in gap.get("loans", []):
+        if want and str(l.get("loan_id")) != want:
+            continue
+        out.append({
+            "loan_id": l.get("loan_id"),
+            "baseline": l.get("extension_test"),
+            "test": loan_extension.resolve(
+                l.get("extension_test"), overrides, l),
+        })
+    return jsonify(safe_json({"vcode": vcode, "loans": out,
+                              "overrides_applied": overrides}))
+
+
 # ============================================================
 # Cash management
 # ============================================================
