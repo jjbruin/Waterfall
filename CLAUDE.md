@@ -249,6 +249,46 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v492` = `8fc4947` (TREASURY PRODUCES THE TWO MRI UPLOAD FILES. The
+    contract was read off the files MRI ACCEPTED, not from a specification:
+    the August GL upload is 49 lines summing to 0.00, its 24 MR10005000 lines
+    equal the bank's own net movement of -560,022.54, and its 13 MR31000001
+    lines and the 13-row IA sample both total 12,580.47. One coded
+    distribution produces BOTH a GL line and an IA row.
+    A FOURTH TAB codes the month, one row per bank transaction — measured, not
+    assumed: all thirteen investor distributions arrive as INDIVIDUAL bank
+    debits (285.92 seven times, 571.84 twice), so naming an account per line is
+    the common case and the split proposal is offered per row for the other.
+    THE CASH SIDE IS NEVER TYPED: each transaction becomes its own cash line at
+    the amount the bank reported and the accountant supplies the offset, so the
+    entry balances BY CONSTRUCTION and a partly coded month cannot produce a
+    file. Verified end to end: 24 transactions -> 48 lines, balances, cash side
+    ties to the bank.
+    THE SPLIT IS COMPUTED FROM COMMITMENT AMOUNTS, NOT THE STORED PERCENTAGES,
+    and the difference is not academic. AMB6's CapitalPercent is 4dp and sums
+    to 99.9999; allocating by it lands three cents over and is wrong on 5 of 13
+    investors. Allocating by the amounts over their base of 11,000,000
+    reproduces all thirteen to the cent. It reads `commitments`, NOT
+    `relationships` — AMB6 has 15 relationship rows for 13 investors, PSC1
+    twice (one a closed 100% ending 2026-06-30) and PSCMAN at 0%. Verified on
+    production against the real commitments: matches the accountant's file
+    exactly, ties, nothing excluded, no drift. It is a PROPOSAL and editable
+    (Jim: "compute it and show it as an editable proposal").
+    THE IA FILE IS WRITTEN INTO A COPY OF MRI'S OWN TEMPLATE. Column 12 of
+    `Transaction Values` is "Number of Shares" and its header cell is BLANK;
+    pandas calls it `Unnamed: 11` and a rebuilt workbook would write that into
+    a header MRI parses.
+    PRE-FLIGHT P4 CAUGHT THE TEMPLATE NOT SHIPPING. `.gitignore` blocks *.xlsx
+    and *.csv, so the vendored templates were never committed and
+    `build_ia_xlsx` would have raised in the container. The guardrail had
+    passed on an untracked file present in the working tree — present locally
+    is not shipped — and now asserts git tracking. Both files verified to carry
+    no entity data before the narrow ignore exception was added.
+    Guardrail `treasury_upload_check.py` (58; 26 on production where the real
+    files and git are absent) REBUILDS BOTH ACCEPTED FILES FROM THEIR OWN
+    CONTENTS AND ASSERTS BYTE-IDENTICAL OUTPUT — a format check written from a
+    specification proves only that the code agrees with itself. It caught the
+    amount formatting: the accepted file writes 13313.8, not 13313.80.)
   - `v491` = `33b04e7` (THE ORDER NUMBER IS THE CFO'S, and so are the two
     buttons that rewrite the same column. The order cell is
     `PUT /schedule/order`, but `renumber` rewrites the whole column and
