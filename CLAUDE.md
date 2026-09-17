@@ -248,6 +248,55 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v489` = `ce80ba5` (TREASURY HAS A SCREEN, and the accounting section is
+    accounting's to edit.
+    THREE TABS under Accounting: accounts, import, reconciliation. The accounts
+    tab shows CURRENT LEDGER — the last closed ending plus everything imported
+    since, saying which period it came from and what date it runs through — and
+    leaves CURRENT AVAILABLE BLANK, with the reason on the screen. Available is
+    ledger less holds, float and pending debits, which exist only at the bank
+    and appear nowhere in an activity export; filling that column would be
+    inventing the one number a treasurer acts on. An account with nothing
+    closed has NO ledger figure rather than 0.00.
+    A NEW GUARDRAIL FOR THE API-TO-SCREEN SEAM, which the service's own 51
+    checks structurally cannot see: a field read by the wrong name renders as a
+    blank cell with no error and no log, and it happened three times while the
+    view was written (`opening`/`opening_balance`, `net_movement`/
+    `bank_movement`, `imported`/`inserted`). It found three defects, all fixed
+    before shipping — a non-export file reported as "0 transactions imported"
+    (a refusal dressed as a no-op; the column check now runs BEFORE the row
+    count), an unmapped account returning empty lists so the screen could not
+    show what HAD come through, and imports open to viewers.
+    ACCESS: `role_required` compares LEVELS and analyst sits at level 1 with
+    every accounting role, so no naming of roles could exclude analysts.
+    `roles_exactly(*ACCOUNTING_ROLES)` checks membership instead — accountant,
+    accounting_manager, cfo, admin. Jim's own day-to-day login is an analyst
+    one and is now read-only here (Jim, Sep 17 2026).
+    SIX WRITES HAD NO ROLE CHECK AT ALL — transition, assign, exhibit upload,
+    exhibit DELETE, schedule signoff, steps. Any signed-in user, viewers
+    included, could delete a workpaper exhibit or sign off a tracker cell.
+    Found by ENUMERATING the section's routes from the app; the previous check
+    grepped for a decorator's text, which is blind to a route that never had
+    one. Verified on production: 25 writes, analyst refused on all 25, viewer
+    refused on all 25, all four accounting roles admitted.
+    STARTING A CLOSE CYCLE IS NARROWER STILL — `CLOSE_CYCLE_ROLES` = admin +
+    cfo, one endpoint. Syncing entities into an existing cycle stays with the
+    team (Jim: "starting a close cycle should belong to the CFO anyone on the
+    accounting team can sync entities"). Checked in BOTH directions on
+    production, and the accountants checked to STILL be able to sync.
+    THE SCREENS WERE WRONG THE OTHER WAY: `['admin', 'cfo']` locked out the
+    accountants who prepare the close — v480's mistake, one role over. Both
+    views read `auth.canEditAccounting` now, and the guardrail compares the Vue
+    list to the Python one by name so they cannot drift.
+    Guardrails: `accounting_access_check.py` (29), `treasury_api_check.py` (37),
+    `treasury_reconciliation_check.py` (51). First two verified on production.)
+  - `v488` = `492fe04` (treasury service only, inert — no endpoint, no screen.
+    The bank side of the close: PNC activity and statement parsing, the
+    three-way tie, carry-forward, and the matcher. Measured from the real
+    August AMB6 files before any code was written — beginning 571,750.04, net
+    movement -560,022.54, computed ending 11,727.50 ties to the statement, and
+    MRI's September reconciliation opens at the same figure. 24 bank
+    transactions pair 1:1 with 24 GL cash lines.)
   - `v487` = `6b30f20` (a name an EARLIER fill wrote gets its basis back.
     Deploying v486 exposed this at once: 23 of 58 rows had a property and no
     basis, because the column did not exist when they were written — so they

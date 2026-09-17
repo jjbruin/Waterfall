@@ -177,6 +177,15 @@ def main():
         client.get("/api/treasury/accounts").status_code == 401)
 
     print("\n5. The screen agrees with the server")
+    # THE CONTAINER SHIPS THE BUILT BUNDLE, NOT THE SOURCE, so these checks
+    # cannot run on production and must SKIP rather than crash -- a guardrail
+    # that dies where the real data lives is a guardrail that never runs there,
+    # and sections 1-4 above are exactly the ones worth running against it.
+    _src = Path(__file__).resolve().parent.parent / "vue_app" / "src"
+    if not (_src / "stores" / "auth.ts").exists():
+        print("   (Vue source not present -- screen checks skipped; they run "
+              "wherever the repo is checked out)")
+        return _report()
     # The screen deciding differently from the API is how the CFO was locked
     # out of his own section in v480 -- the API would have taken his writes and
     # the buttons were simply not rendered. So the Vue list is compared to the
@@ -214,6 +223,10 @@ def main():
     chk("Sync entities is still on the team's gate",
         'v-if="canManageClose"' in wp and "@click=\"sync\"" in wp)
 
+    return _report()
+
+
+def _report():
     print("\n%d checks, %d failed." % (len(_passed) + len(_failed), len(_failed)))
     if _failed:
         for f in _failed:
@@ -221,7 +234,8 @@ def main():
         return 1
     print("Every write in the accounting section is closed to analysts and\n"
           "viewers and open to the four accounting roles, enumerated from the\n"
-          "app rather than from a list kept by hand.")
+          "app rather than from a list kept by hand. Starting a close cycle is\n"
+          "the CFO's alone, checked in both directions.")
     return 0
 
 
