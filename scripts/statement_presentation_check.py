@@ -96,6 +96,51 @@ check("workbook states the count", "are not shown" in excel)
 check("screen filters dormant", "!x.dormant" in vue)
 check("screen states the count", "dormant_count" in vue)
 
+print("The balance sheet foots to something a reader can check")
+# Jim, Sep 17 2026: a bolded total of liabilities and members' capital, below
+# members' capital, so it can be read straight against total assets. Computed in
+# the ENGINE so the screen, the workbook and the printed statement cannot
+# disagree; each consumer only renders it.
+# This file otherwise tests pure functions and needs no app context; the
+# footing is computed from the GL, so this one section does.
+_bs = None
+try:
+    from flask_app import create_app
+    with create_app().app_context():
+        _bs = ss.build("PPIECH", "2026-06-30", "balance_sheet").get("balance_sheet")
+except Exception as _e:
+    print("   (no database available: %s)" % str(_e)[:60])
+if not _bs:
+    print("   (no balance sheet in this database -- footing checks skipped)")
+else:
+    _lc = _bs.get("liabilities_and_capital")
+    check("the footing exists", bool(_lc))
+    if _lc:
+        _tot = {x["section"]: x["total"] for x in _bs["sections"]}
+        check("it is liabilities plus members' capital, nothing else",
+              abs(_lc["amount"] - (_tot.get("Liabilities", 0.0)
+                                   + _tot.get("Members' Capital", 0.0))) < 0.01)
+        # It must NOT be a section: anything summing `sections` would count it
+        # twice, including the tie-out computed immediately after it.
+        check("it is not added to sections",
+              all(x["section"] != _lc["label"] for x in _bs["sections"]))
+        # The footing and the existing tie-out are two independent routes to the
+        # same imbalance, so they have to agree in magnitude.
+        check("it agrees with the tie-out already reported",
+              _lc["difference"] is None or _bs.get("out_of_balance") is None
+              or abs(abs(_lc["difference"]) - abs(_bs["out_of_balance"])) < 0.02)
+        # "ties" must never be asserted when there is nothing to tie TO.
+        check("ties_to_assets is None when there are no assets, never True",
+              _lc["total_assets"] is not None or _lc["ties_to_assets"] is None)
+
+print("Every consumer renders the footing")
+_excel = open("flask_app/services/workpaper_excel.py", encoding="utf-8").read()
+_vue = open("vue_app/src/views/WorkpapersView.vue", encoding="utf-8").read()
+_prt = open("vue_app/src/views/StatementsPrintView.vue", encoding="utf-8").read()
+check("workbook renders it", "liabilities_and_capital" in _excel)
+check("workbench renders it", "liabilities_and_capital" in _vue)
+check("printed statement renders it", "liabilities_and_capital" in _prt)
+
 print()
 if failures:
     print(f"FAILED: {len(failures)} check(s): {failures}")

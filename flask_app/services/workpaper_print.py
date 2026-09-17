@@ -239,8 +239,26 @@ def apply(sheet, key: str, entity_name: str = "", period_end=None,
     po.horizontalCentered = spec["centre"] == "horizontal"
     po.verticalCentered = spec["centre"] == "vertical"
 
-    for col, w in spec.get("widths", {}).items():
-        sheet.column_dimensions[col].width = w
+    # COLUMN WIDTHS ARE DELIBERATELY NOT SET HERE ANY MORE.
+    #
+    # They were, from the reference workbook, and it made the statements
+    # illegible (Jim, Sep 17 2026: "Column widths and spacing are making the
+    # reports illegible"). Two compounding mistakes:
+    #
+    #   1. THE LAYOUTS ARE NOT THE SAME. Eastchase uses column A as a narrow
+    #      indent and B for the line label; the generated statements put the
+    #      label in A. So `A = 4.3` — an indent — was applied to the label
+    #      column, and `B = 61.6` — a label column — to the amounts. The Income
+    #      Statement got A = 2.4.
+    #   2. IT OVERWROTE A BETTER ANSWER. `workpaper_excel._table` already sizes
+    #      every column to the widest value in it, and `apply()` runs after the
+    #      sheets are built, so the measured widths were replaced by transcribed
+    #      ones that did not correspond to the same columns.
+    #
+    # Everything else here IS layout-independent — margins, centring, the page
+    # header, the footer, orientation, fit-to-page — and stays. Widths are the
+    # one part of that workbook that cannot be copied across without copying its
+    # column layout too, which is a different piece of work.
 
     # THE RANGE IS COMPUTED, THE COLUMN SPAN IS THE REFERENCE'S. A fixed A1:C25
     # would cut a longer statement off and print blank rows under a shorter one;

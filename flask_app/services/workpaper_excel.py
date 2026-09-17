@@ -253,6 +253,28 @@ def _financial_statements(wb, used, entity, period_end, engine):
     bs = st.get("balance_sheet")
     sh, r = sheet("Balance Sheet", bs, "closing")
     if bs:
+        # THE FOOTING, formatted as the section totals are. Computed in the
+        # statement engine so this workbook cannot disagree with the screen.
+        lc = bs.get("liabilities_and_capital")
+        if lc:
+            c = sh.cell(row=r, column=1, value=lc["label"])
+            c.font = Font(bold=True)
+            t = sh.cell(row=r, column=2, value=lc["amount"])
+            t.font = Font(bold=True)
+            t.number_format = MONEY
+            r += 1
+            if lc.get("ties_to_assets") is False:
+                sh.cell(row=r, column=1,
+                        value="Does not tie to total assets of %s - a difference "
+                              "of %s." % (f"{lc['total_assets']:,.2f}",
+                                          f"{lc['difference']:,.2f}")).font = SUB
+                r += 1
+            elif lc.get("ties_to_assets"):
+                sh.cell(row=r, column=1,
+                        value="Ties to total assets of %s."
+                              % f"{lc['total_assets']:,.2f}").font = SUB
+                r += 1
+            r += 1
         # The tie-out, printed. In GL signs a complete balance sheet nets to
         # zero; whatever is left is what is unmapped or misclassified.
         c = sh.cell(row=r, column=1,

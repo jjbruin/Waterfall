@@ -107,6 +107,15 @@ const routes = [
     component: () => import('../views/WorkpapersView.vue'),
   },
   {
+    // Investor-ready statements, one entity or a batch. Its own route rather
+    // than a panel, because printing a document should not also print whatever
+    // screen it was launched from — the same reason the snapshot and the One
+    // Pager have print routes of their own.
+    path: '/workpapers/print',
+    name: 'StatementsPrint',
+    component: () => import('../views/StatementsPrintView.vue'),
+  },
+  {
     path: '/data-explorer',
     name: 'Data Explorer',
     component: () => import('../views/DataExplorerView.vue'),

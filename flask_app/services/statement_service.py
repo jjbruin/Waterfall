@@ -282,6 +282,38 @@ def build(entityid: str, period_end: str, statement: str = "both",
             sec["gl_total"] += period_line["gl_amount"]
             bs["gl_total"] += period_line["gl_amount"]
 
+        # THE FOOTING A READER ACTUALLY CHECKS: liabilities plus members'
+        # capital, against total assets. Jim, Sep 17 2026: "provide a Bolded
+        # Total of the Total Liabilities and Total Member's Capital just below
+        # Total Member's Capital so the user can quickly see this ties to the
+        # total assets."
+        #
+        # COMPUTED HERE, IN THE ENGINE, so the workbench, the downloaded
+        # workbook and the printed statement cannot disagree about it -- the
+        # same reason every other figure on this statement is computed here.
+        # It is a derived TOTAL and not a section: adding it to `sections`
+        # would double-count it for anything that sums them, including the
+        # tie-out immediately below.
+        _sec_total = {s["section"]: s["total"] for s in bs["sections"]}
+        _assets = _sec_total.get("Assets")
+        _liab = _sec_total.get("Liabilities")
+        _cap = _sec_total.get("Members' Capital")
+        if _liab is not None or _cap is not None:
+            _lc = (_liab or 0.0) + (_cap or 0.0)
+            bs["liabilities_and_capital"] = {
+                "label": "Total Liabilities and Members' Capital",
+                "amount": _lc,
+                # The comparison the row exists to let a reader make, made for
+                # them. None when there are no assets to compare against --
+                # never 0.0, which would read as "it ties".
+                "total_assets": _assets,
+                "ties_to_assets": (None if _assets is None
+                                   else abs(_lc - _assets) < 0.01),
+                "difference": (None if _assets is None else _lc - _assets),
+            }
+        else:
+            bs["liabilities_and_capital"] = None
+
         # THE TIE-OUT. In GL signs a complete balance sheet sums to zero:
         # debits and credits net. A non-zero total is the amount that is
         # unmapped, misclassified or genuinely out of balance -- it is the

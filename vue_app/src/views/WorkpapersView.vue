@@ -180,6 +180,18 @@ function signNow(pid: number, deliverable: string, stage: string) {
                  new Date().toISOString().slice(0, 10))
 }
 
+/** One entity, or the whole cycle in the CFO's order. Opens the print view in
+ *  a new tab so the close screen is not replaced by a document. */
+function printStatements(entityId?: string) {
+  if (!cycleId.value) return
+  const q = new URLSearchParams()
+  if (entityId) q.set('entities', entityId)
+  else q.set('cycle_id', String(cycleId.value))
+  const pe = sched.value?.cycle?.period_end
+  if (pe) q.set('period_end', String(pe))
+  window.open(`/workpapers/print?${q.toString()}`, '_blank')
+}
+
 async function renumber() {
   if (!cycleId.value) return
   try {
@@ -505,6 +517,11 @@ onMounted(loadCycles)
             Group by property
           </label>
           <div class="spacer" />
+          <button class="btn" @click="printStatements()"
+                  title="Opens every entity's statements in this cycle, in your
+                         order, as one printable document.">
+            Print statements
+          </button>
           <template v-if="canManageClose">
             <select v-model.number="carryFrom" class="sel sm">
               <option :value="null">Carry forward from…</option>
@@ -704,6 +721,10 @@ onMounted(loadCycles)
                           `${detail.package.entityid} - WP - ${detail.package.period_end}.xlsx`)">
             Download package
           </button>
+          <button class="btn"
+                  @click="printStatements(detail.package.entityid)">
+            Print statements
+          </button>
           <button class="btn" @click="tab = 'tracker'">Back to tracker</button>
         </div>
       </div>
@@ -754,6 +775,35 @@ onMounted(loadCycles)
                 </tbody>
               </table>
             </div>
+            <!-- THE FOOTING A READER CHECKS: liabilities plus members' capital
+                 against total assets. Formatted as the section totals are, and
+                 it says whether it ties rather than leaving the reader to
+                 subtract two numbers that are 30 lines apart. -->
+            <table v-if="statements[openStatement].liabilities_and_capital"
+                   class="mini lc-foot">
+              <tbody>
+                <tr class="tot grand">
+                  <td>{{ statements[openStatement].liabilities_and_capital.label }}</td>
+                  <td class="num">
+                    {{ fmt(statements[openStatement].liabilities_and_capital.amount) }}
+                  </td>
+                </tr>
+                <tr v-if="statements[openStatement].liabilities_and_capital.ties_to_assets === false">
+                  <td colspan="2" class="muted small warn">
+                    Does not tie to total assets of
+                    {{ fmt(statements[openStatement].liabilities_and_capital.total_assets) }}
+                    — a difference of
+                    {{ fmt(statements[openStatement].liabilities_and_capital.difference) }}.
+                  </td>
+                </tr>
+                <tr v-else-if="statements[openStatement].liabilities_and_capital.ties_to_assets">
+                  <td colspan="2" class="muted small">
+                    Ties to total assets of
+                    {{ fmt(statements[openStatement].liabilities_and_capital.total_assets) }}.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
           </template>
           <!-- schedule of investments -->
           <table v-else-if="openStatement === 'soi'" class="mini">
@@ -1164,5 +1214,13 @@ td.sign .x:hover { color: #b4232a; }
 .bench-pick label { font-size: 12px; font-weight: 600; color: #5a6475; }
 .btn.nav { padding: 4px 10px; font-size: 14px; line-height: 1; }
 .bench-tab .drawer { margin-top: 0; }
+
+
+.lc-foot { margin-top: 10px; }
+.lc-foot .tot.grand td {
+  border-top: 1px solid #33415a; border-bottom: 3px double #33415a;
+  font-weight: 700; padding-top: 4px;
+}
+.small.warn { color: #b4232a; }
 
 </style>

@@ -112,6 +112,87 @@ def tracker(cycle_id):
         return _fail(e, "tracker", 500)
 
 
+@workpapers_bp.route("/statements/batch", methods=["POST"])
+@login_required
+def statements_batch():
+    """Every statement for one entity or for many, in a single request.
+
+    THE SHAPE IS THE ONE PAGER'S, deliberately (Jim, Sep 16 2026: "we have a pdf
+    reporting function within the one pager that handles individual and
+    batches"). The server assembles the whole batch and the client stacks the
+    pages with a page break between them, so one print produces one PDF whether
+    it is one entity or fifty-eight.
+
+    PER-ENTITY `error`, WHICH IS THE PART THAT MATTERS AT THIS SCALE. One entity
+    whose statements fail to build must not take the other fifty-seven with it;
+    it comes back as a page carrying its reason, and the batch still prints.
+
+    Body: { entity_ids: [...], period_end: "2026-06-30", cycle_id?: n }
+    Passing `cycle_id` and no `entity_ids` prints the whole cycle in the CFO's
+    own tracker order, which is the order the close is worked in.
+    """
+    from flask_app.services import statement_service as ss
+    body = request.get_json(silent=True) or {}
+    period_end = (body.get("period_end") or "").strip()
+    ids = [str(x).strip().upper() for x in (body.get("entity_ids") or []) if str(x).strip()]
+    cycle_id = body.get("cycle_id")
+
+    if cycle_id and not ids:
+        try:
+            g = wt.grid(int(cycle_id))
+            if g.get("error"):
+                return jsonify({"error": g["error"]}), 400
+            ids = [r["entityid"] for r in g["rows"]]
+            period_end = period_end or (g.get("cycle") or {}).get("period_end") or ""
+        except Exception as e:
+            return _fail(e, "statements_batch cycle", 400)
+
+    if not ids:
+        return jsonify({"error": "entity_ids or cycle_id is required"}), 400
+    if not period_end:
+        return jsonify({"error": "period_end is required"}), 400
+
+    engine = get_engine()
+    names = {}
+    try:
+        import pandas as pd
+        import sqlalchemy as sa
+        with engine.connect() as conn:
+            ent = pd.read_sql(sa.text("SELECT * FROM entities"), conn)
+        em = {str(c).lower(): c for c in ent.columns}
+        if em.get("entityid") and em.get("name"):
+            names = {str(r[em["entityid"]]).strip().upper(): str(r[em["name"]]).strip()
+                     for _, r in ent.iterrows()}
+    except Exception:
+        names = {}
+
+    pages = []
+    for eid in ids:
+        page = {"entityid": eid, "name": names.get(eid) or eid}
+        try:
+            both = ss.build(eid, period_end, "both", engine=engine)
+            page["balance_sheet"] = both.get("balance_sheet")
+            page["income_statement"] = both.get("income_statement")
+            page["note"] = both.get("note")
+            page["members_capital"] = ss.build_members_capital(
+                eid, period_end, engine=engine)
+            page["cash_flow"] = ss.build_cash_flow(eid, period_end, engine=engine)
+            page["soi"] = ss.build_schedule_of_investments(
+                eid, period_end, engine=engine)
+        except Exception as e:
+            # Recorded on the page, not raised. See the docstring.
+            logger.exception("statements_batch failed for %s", eid)
+            page["error"] = str(e)[:300]
+        pages.append(page)
+
+    return jsonify(safe_json({
+        "period_end": period_end,
+        "count": len(pages),
+        "failed": sum(1 for p in pages if p.get("error")),
+        "pages": pages,
+    }))
+
+
 @workpapers_bp.route("/preparers", methods=["GET"])
 @login_required
 def preparers():
