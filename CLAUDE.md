@@ -248,6 +248,27 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v487` = `6b30f20` (a name an EARLIER fill wrote gets its basis back.
+    Deploying v486 exposed this at once: 23 of 58 rows had a property and no
+    basis, because the column did not exist when they were written — so they
+    read as values somebody typed, which is the precise confusion the basis was
+    added to prevent, and it was wrong on more rows than the new hop had just
+    filled. Annotated ONLY where the stored name is identical to what the walk
+    produces; a name the CFO has since edited differs and keeps its silence.
+    Production after: one hop 21, two hops 17, typed/unmarked 2, blank 18 = 58.)
+  - `v486` = `92cb04a` (the Property column walks commitments TWO levels, and
+    every inferred name says how it was reached. Measured before building: one
+    hop leaves 35 of 58 blank, two leaves 18, and six of the seven new names
+    match the CFO's own sheet exactly. THE SEVENTH IS WRONG AND IS WHY THE BASIS
+    EXISTS — TGA6 is a fund that happens to reach one deal at two levels, so it
+    resolves to "Presidential Arms JV" where his sheet says "Various". No
+    cleverer rule fixes that, so the mitigation is telling the reader: the row
+    shows the basis, the name renders in italic with a superscript hop count,
+    and typing over it clears the marker because then it is his decision.
+    Breadth first, so the basis reports the SHALLOWEST level a deal was found
+    at; visited nodes are never re-queued, so a cycle cannot walk forever.
+    `property_basis` is a new column: a sentence when inferred, NULL when typed.
+    Guardrail 67 -> 71 checks.)
   - `v485` = `5fe16b7` (the printed Schedule of Investments and Statement of
     Changes in Members' Capital were blank. THREE SHAPES come out of the
     statement engine — `sections` for the balance sheet, income statement and
