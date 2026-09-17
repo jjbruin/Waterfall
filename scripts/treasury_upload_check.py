@@ -142,6 +142,20 @@ def main():
     print("\n5. The IA workbook is MRI's template, not a rebuild")
     chk("the template is vendored into the repo", tu.IA_TEMPLATE.exists(),
         str(tu.IA_TEMPLATE))
+    # PRESENT ON DISK IS NOT THE SAME AS SHIPPED. `.gitignore` blocks *.xlsx
+    # and *.csv ("Never commit financial data"), so the vendored templates were
+    # silently untracked -- this check passed locally on a file that would not
+    # have existed in the container, and build_ia_xlsx would have raised there.
+    # Caught in pre-flight; asserted here so it cannot recur.
+    import subprocess
+    try:
+        tracked = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", str(tu.IA_TEMPLATE)],
+            capture_output=True, cwd=str(tu.IA_TEMPLATE.parents[2]))
+        chk("and it is TRACKED BY GIT, so it reaches the container",
+            tracked.returncode == 0, tracked.stderr.decode()[:90])
+    except FileNotFoundError:
+        print("   (git not available -- tracking check skipped)")
     if tu.IA_TEMPLATE.exists():
         import openpyxl
         data = tu.build_ia_xlsx(_fixture_ia(), gl_lines=[

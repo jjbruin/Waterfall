@@ -6,6 +6,14 @@
 !package-lock.json
 !tsconfig*.json
 data/
+
+# MRI's own BLANK upload templates, vendored so the app can write into a copy
+# of them rather than rebuild them -- the IA workbook's column 12 header is
+# empty and cannot be reproduced from column names. Verified to carry NO entity
+# data: headers, and MRI's validation Guide sheet. They are a dependency, not a
+# spreadsheet of financial data, which is what the rules above are for.
+!flask_app/mri_templates/*.xlsx
+!flask_app/mri_templates/*.csv
 .DS_Store
 
 # Database files (too large for git, contain sensitive data)
