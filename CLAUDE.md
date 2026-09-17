@@ -248,6 +248,34 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v484` = `a08a608` (THREE THINGS on the statements.
+    (1) THE DOWNLOADED WORKBOOK WAS ILLEGIBLE AND IT WAS v480'S FAULT — the
+    Eastchase column widths were applied to statements with a DIFFERENT layout
+    (Eastchase indents in A and labels in B; the generated statements label in
+    A), so `A = 4.3` landed on the label column and the Income Statement got
+    2.4. Worse, `_table` had already measured every column to its content and
+    `apply()` ran afterwards, overwriting a correct answer with a wrong one.
+    Widths are no longer set from the reference; margins, centring, header,
+    footer and fit-to-page stay, being layout-independent. Verified on
+    production: Balance Sheet now A=42.0/B=20.0/C=21.0.
+    (2) PRINTED STATEMENTS, INDIVIDUAL AND BATCH, on the One Pager's pattern as
+    Jim asked — `POST /api/workpapers/statements/batch` assembles server side,
+    `/workpapers/print` stacks the pages, one `window.print()` yields one PDF for
+    one entity or 58. Entry points on the tracker toolbar (whole cycle, CFO's
+    order) and in the workbench head. PER-ENTITY `error`: one failure prints a
+    notice instead of silently dropping an entity from the batch.
+    (3) EVERY STATEMENT FOOTS, from ONE shape. Jim asked for the balance sheet's
+    liabilities-plus-capital total, then net income, then the net change in
+    cash. The last two ALREADY EXISTED in the engine and simply were not
+    rendered on screen. Rather than three bespoke blocks in three consumers,
+    `footing = {label, amount, compare_label, compare_amount, ties, difference}`
+    covers all of them and a fourth statement gets it free. `ties` is None when
+    there is nothing to compare against — never False, never True. The printed
+    statement shows the figure only; the reconciliation note stays on the
+    workbench and in the workbook where it can be acted on.
+    Verified on production PPIECH: balance sheet foots to 33,378,047.84 and TIES
+    to total assets; net income -11,745.08; cash flow ties at 0.
+    Guardrail: statement_presentation_check.py extended.)
   - `v483` = `5215888` (the tracker header stops covering the first data row —
     reported twice, because the first fix did not work. It was sticky PER ROW,
     row 2 pinned at an offset that must equal row 1's height: hardcoded 34px,
