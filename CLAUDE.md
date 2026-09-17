@@ -249,6 +249,31 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v491` = `33b04e7` (THE ORDER NUMBER IS THE CFO'S, and so are the two
+    buttons that rewrite the same column. The order cell is
+    `PUT /schedule/order`, but `renumber` rewrites the whole column and
+    `carry-forward` writes `sort_order` for every row of the next cycle —
+    gating the cell alone leaves the rule defeated by clicking a different
+    button. Carry-forward also moves the preparer and property, which are the
+    team's; it is included because laying out the next cycle is the CFO's act,
+    not because those fields are his. `Fill properties` is deliberately NOT
+    included and was lifted out of the same toolbar block rather than dragged
+    along with its neighbours.
+    `CLOSE_CYCLE_ROLES` -> `CLOSE_PLAN_ROLES`: after three passes the gate is
+    no longer about cycles but about when the close opens, when each thing is
+    due, and what order entities are worked in. No alias left behind.
+    Dead `setDue()` deleted (19 lines, unreferenced since the two-tab split).
+    THE ENDPOINT STAYS GATED — still reachable over HTTP, and a rule covering
+    only the routes that happen to have a button breaks the next time somebody
+    adds one. The guardrail asserts the function is gone so it cannot return.
+    Verified on production: cfo may use the order cell, renumber and carry
+    forward; accountant may use none of the three, and may still sync, sign
+    off, name a preparer, set a property and fill properties in bulk.
+    accounting_access_check 40 -> 54 (41 on production; the screen checks read
+    Vue source the image does not ship and skip with a reason).
+    Also carried the documentation commits: new `.claude/memory/treasury.md`,
+    the access model in `accounting_workpapers.md`, `open_items.md` §7 (six
+    items, each with an owner), and the handoff retitled through Sep 17.)
   - `v490` = `1496daa` (DEADLINES ARE THE CFO'S; signing off against one is
     not. Jim: "deadlines should be CFO only too."
     TWO ENDPOINTS, AND THE ONE I HAD FLAGGED WAS THE DEAD ONE.
