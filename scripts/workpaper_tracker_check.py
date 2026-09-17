@@ -344,6 +344,32 @@ def main() -> int:
             set(wt.derive_properties(engine=eng, max_hops=1))
             <= set(wt.derive_properties(engine=eng, max_hops=2)))
 
+        # A VALUE AN EARLIER RUN WROTE, before the basis column existed, reads
+        # as one somebody typed. Annotated only when the stored name is
+        # IDENTICAL to what the walk produces, so an edited name keeps its
+        # silence and stays the CFO's.
+        if target is not None:
+            wt.apply_derived_properties(cid, overwrite=True, engine=eng)
+            with eng.begin() as _c:
+                _c.execute(text("UPDATE wp_packages SET property_basis = NULL "
+                                " WHERE id = :i"), {"i": target})
+            _before = _row(wt.grid(cid, eng), target)
+            _res = wt.apply_derived_properties(cid, engine=eng)
+            _after = _row(wt.grid(cid, eng), target)
+            chk("a name an earlier run wrote gets its basis back",
+                _before.get("property_basis") is None
+                and bool(_after.get("property_basis")), str(_res))
+            chk("and the name itself is untouched",
+                _after["property_name"] == _before["property_name"])
+            chk("the run reports how many it annotated", _res.get("annotated", 0) >= 1)
+            # An edited name must NOT be annotated: it is a decision, not a walk.
+            wt.set_property(target, "Something The CFO Typed", "check", engine=eng)
+            wt.apply_derived_properties(cid, engine=eng)
+            _edited = _row(wt.grid(cid, eng), target)
+            chk("a name that differs from the derivation stays unannotated",
+                _edited["property_name"] == "Something The CFO Typed"
+                and _edited.get("property_basis") is None)
+
         if target is not None:
             wt.apply_derived_properties(cid, overwrite=True, engine=eng)
             row_i = _row(wt.grid(cid, eng), target)

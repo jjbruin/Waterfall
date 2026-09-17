@@ -112,6 +112,7 @@ async function fillProperties() {
     await loadSchedule()
     flash(`Filled ${r.data.filled} propert${r.data.filled === 1 ? 'y' : 'ies'} from the deals.` +
       (r.data.kept_existing ? ` ${r.data.kept_existing} already had a value and were left alone.` : '') +
+      (r.data.annotated ? ` ${r.data.annotated} already-filled row(s) now show how they were derived.` : '') +
       (r.data.unresolved_count ? ` ${r.data.unresolved_count} could not be resolved.` : '') +
       ' Inferred names are marked — a superscript 2 means it was reached two levels down and is worth a glance.')
   } catch (e: any) { error.value = e.response?.data?.error || e.message }

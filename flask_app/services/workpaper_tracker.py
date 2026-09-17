@@ -915,18 +915,34 @@ def apply_derived_properties(cycle_id: int, overwrite: bool = False,
     engine = engine or get_engine()
     ensure_tracker_tables(engine)
     derived = derive_properties(engine)
-    filled, skipped, unresolved = 0, 0, []
+    filled, skipped, annotated, unresolved = 0, 0, 0, []
     with engine.begin() as conn:
         rows = conn.execute(text(
-            "SELECT id, entityid, property_name FROM wp_packages "
-            " WHERE cycle_id = :c"), {"c": cycle_id}).fetchall()
-        for pid, eid, existing in rows:
+            "SELECT id, entityid, property_name, property_basis "
+            "  FROM wp_packages WHERE cycle_id = :c"), {"c": cycle_id}).fetchall()
+        for pid, eid, existing, basis in rows:
             d = derived.get(str(eid).strip().upper())
             if not d:
                 unresolved.append(eid)
                 continue
             if existing and str(existing).strip() and not overwrite:
                 skipped += 1
+                # A NAME THIS RUN WOULD HAVE PRODUCED ANYWAY, carrying no
+                # basis, was written by an EARLIER run -- before the basis
+                # column existed. Left alone it reads as a value somebody
+                # typed, which is the precise confusion the basis exists to
+                # prevent, and it would be wrong on 23 of 58 rows.
+                #
+                # Annotated only when the stored name is IDENTICAL to what the
+                # walk produces: the value does not change, only the account of
+                # how it got there. A name the CFO has since edited differs, so
+                # it keeps its silence and stays his.
+                if (not basis and str(existing).strip()
+                        == str(d["property_name"]).strip()):
+                    conn.execute(text(
+                        "UPDATE wp_packages SET property_basis = :b "
+                        " WHERE id = :id"), {"b": d.get("basis"), "id": pid})
+                    annotated += 1
                 continue
             conn.execute(text(
                 "UPDATE wp_packages SET property_name = :n, property_basis = :b "
@@ -934,5 +950,7 @@ def apply_derived_properties(cycle_id: int, overwrite: bool = False,
                 {"n": d["property_name"], "b": d.get("basis"), "id": pid})
             filled += 1
     return {"ok": True, "filled": filled, "kept_existing": skipped,
+            # Values an earlier run had written that now carry their basis.
+            "annotated": annotated,
             "unresolved": sorted(unresolved),
             "unresolved_count": len(unresolved)}
