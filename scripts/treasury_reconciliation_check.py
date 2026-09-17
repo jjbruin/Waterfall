@@ -479,6 +479,50 @@ def _seed_section(ts, eng, acct, real):
     chk("and the refusal says why, not just no",
         "hide any break" in (r2.get("error") or ""), str(r2)[:110])
 
+    # THE MASK IS NOT ALWAYS A TAIL, and reading it as one was wrong on five of
+    # Jim's six June statements that carried real balances. `790-XXXXX55` hides
+    # the MIDDLE digits: taking "the last four visible digits" gives 790 + 55 ->
+    # `79055` -> `9055`, an account that does not exist, while the real account
+    # 7900021255 was registered all along.
+    chk("a middle-masked number becomes a whole-number pattern",
+        ts._mask_pattern("790-XXXXX55").pattern == r"^790\d{5}55$",
+        ts._mask_pattern("790-XXXXX55").pattern)
+    chk("and it matches the real account",
+        bool(ts._mask_pattern("790-XXXXX55").match("7900021255")))
+    chk("but not one that merely ends in 55",
+        not ts._mask_pattern("790-XXXXX55").match("8612199055"))
+    chk("a front-masked number still works",
+        bool(ts._mask_pattern("XX-XXXX-5765").match("8514245765")))
+    chk("and is anchored, so a longer number does not match",
+        not ts._mask_pattern("XX-XXXX-5765").match("18514245765"))
+    chk("a mask with no digits at all is refused",
+        ts._mask_pattern("XX-XXXX-") is None)
+
+    # Registering an account by hand, for one PNC will not serve activity for.
+    ts.create_account("9999000111", entityid="ZZTEST",
+                      gl_cash_account="MR10005000", user="check", engine=eng)
+    chk("an account can be registered by hand",
+        any(a["account_number"] == "9999000111" for a in ts.accounts(eng)))
+    chk("registering it twice is refused rather than duplicated",
+        "already registered" in str(ts.create_account(
+            "9999000111", user="check", engine=eng).get("error")))
+    # THE NUMBER IS NEVER INFERRED. A masked statement number is not an account
+    # number, and accepting one would create an account that real activity can
+    # never join.
+    chk("a masked number is refused as an account number",
+        bool(ts.create_account("XX-XXXX-7891", user="check",
+                               engine=eng).get("error")))
+    chk("an unknown cash account is refused here too",
+        bool(ts.create_account("9999000222", gl_cash_account="MR99999999",
+                               user="check", engine=eng).get("error")))
+    chk("a hand-registered account defaults to the generic cash account",
+        [a for a in ts.accounts(eng)
+         if a["account_number"] == "9999000111"][0]["gl_cash_account"]
+        == ts.DEFAULT_CASH_ACCOUNT)
+    with eng.begin() as c:
+        c.execute(_t("DELETE FROM tr_accounts WHERE account_number "
+                     "IN ('9999000111','9999000222')"))
+
     # Routing a masked statement number to an account.
     m = ts.match_account_by_suffix("XX-XXXX-" + acct[-4:], eng)
     chk("a masked statement number routes to its account",
@@ -490,8 +534,10 @@ def _seed_section(ts, eng, acct, real):
 
     # AMBIGUITY IS REFUSED, NOT RESOLVED. All fifty of today's accounts have
     # unique last-four, but that is a fact about today's accounts.
-    twin = acct[:-4] + acct[-4:]
-    alt = "99" + acct[-4:]
+    # A GENUINE COLLISION now needs the same LENGTH as well as the same visible
+    # digits, because the pattern is anchored to the whole number. That is the
+    # point -- it is why 8612199055 no longer collides with 790-XXXXX55.
+    alt = "9999" + acct[-6:]
     ts.set_account(alt, entityid="X", engine=eng)
     with eng.begin() as c:
         c.execute(_t("INSERT INTO tr_accounts (account_number, gl_cash_account,"

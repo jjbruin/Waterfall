@@ -479,3 +479,25 @@ def seed_from_statement():
         out.append(row)
     return jsonify(safe_json({"seeded": seeded, "period": period,
                               "count": len(out), "results": out}))
+
+
+@treasury_bp.route("/accounts", methods=["POST"])
+@login_required
+@roles_exactly(*ACCOUNTING_ROLES)
+def create_account():
+    """Register an account by hand, for one PNC will not serve activity for.
+
+    The full number is required and never inferred from the statement's mask —
+    see the service note.
+    """
+    body = request.get_json(silent=True) or {}
+    try:
+        res = ts.create_account(
+            (body.get("account_number") or "").strip(),
+            entityid=(body.get("entityid") or ""),
+            gl_cash_account=(body.get("gl_cash_account") or ""),
+            account_name=(body.get("account_name") or ""),
+            user=_user())
+    except Exception as e:
+        return _fail(e, "create_account", 500)
+    return (jsonify(res), 400) if res.get("error") else jsonify(res)

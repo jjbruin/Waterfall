@@ -463,6 +463,54 @@ def import_statement(parsed: dict, account_number: str, engine=None) -> dict:
             "ending_balance": parsed.get("ending_balance")}
 
 
+
+def create_account(account_number: str, entityid: str = "",
+                   gl_cash_account: str = "", account_name: str = "",
+                   user: str = "", engine=None) -> dict:
+    """Register a bank account by hand.
+
+    An account normally registers itself the first time its activity is
+    imported. That is not enough when PNC will only serve 90 days of activity
+    and an account has been quiet longer than that: its June statement shows a
+    real balance -- PPI Life Storage NY holds 119,701.35 -- but there is no
+    transaction anywhere to introduce it.
+
+    THE FULL ACCOUNT NUMBER IS REQUIRED AND IS NOT INFERRED. The statement
+    prints a mask (`XX-XXXX-7891`) and several of these accounts sit in obvious
+    number ranges, so guessing the hidden digits would usually work and would
+    occasionally be wrong -- and a wrong account number silently splits one
+    account into two the moment real activity arrives under the true number.
+    """
+    engine = engine or get_engine()
+    ensure_tables(engine)
+    acct = _clean(account_number)
+    if not acct:
+        return {"error": "An account number is required."}
+    if not acct.isdigit():
+        return {"error": "%r is not an account number: digits only, exactly as "
+                         "PNC exports it." % account_number}
+    if gl_cash_account and gl_cash_account not in CASH_ACCOUNTS:
+        return {"error": "%s is not one of the cash accounts: %s"
+                         % (gl_cash_account, ", ".join(CASH_ACCOUNTS))}
+    now = datetime.utcnow().isoformat(timespec="seconds")
+    with engine.begin() as conn:
+        seen = conn.execute(text(
+            "SELECT account_number FROM tr_accounts WHERE account_number = :a"),
+            {"a": acct}).fetchone()
+        if seen:
+            return {"error": "%s is already registered." % acct,
+                    "account_number": acct}
+        conn.execute(text(
+            "INSERT INTO tr_accounts (account_number, bank_id, account_name, "
+            " entityid, gl_cash_account, active, updated_by, updated_at) "
+            "VALUES (:a, NULL, :n, :e, :g, 1, :u, :t)"),
+            {"a": acct, "n": (account_name or "").strip() or None,
+             "e": (str(entityid).strip().upper() or None),
+             "g": gl_cash_account or DEFAULT_CASH_ACCOUNT,
+             "u": user, "t": now})
+    return {"ok": True, "account_number": acct,
+            "gl_cash_account": gl_cash_account or DEFAULT_CASH_ACCOUNT}
+
 def set_account(account_number, entityid=None, gl_cash_account=None,
                 active=None, user: str = "", engine=None) -> dict:
     """Map a bank account to an entity and to its GL cash account."""
@@ -716,23 +764,52 @@ def match_account_by_suffix(suffix: str, engine=None):
     """
     engine = engine or get_engine()
     ensure_tables(engine)
-    digits = "".join(ch for ch in str(suffix or "") if ch.isdigit())
-    if len(digits) < 4:
+    rx = _mask_pattern(suffix)
+    if rx is None:
         return {"error": "No account digits could be read from the statement."}
-    tail = digits[-4:]
     with engine.connect() as conn:
-        rows = [r[0] for r in conn.execute(text(
+        rows = [str(r[0]).strip() for r in conn.execute(text(
             "SELECT account_number FROM tr_accounts")).fetchall()]
-    hits = [a for a in rows if str(a).strip().endswith(tail)]
+    hits = [a for a in rows if rx.match(a)]
     if not hits:
-        return {"error": "No imported account ends in %s. Import that "
-                         "account's activity first." % tail, "suffix": tail}
+        return {"error": "No imported account matches %s. Import that "
+                         "account's activity first, or add the account."
+                         % suffix, "suffix": suffix}
     if len(hits) > 1:
-        return {"error": "More than one account ends in %s (%s), so this "
+        return {"error": "More than one account matches %s (%s), so this "
                          "statement cannot be routed automatically. File it "
                          "against the account by hand."
-                         % (tail, ", ".join(sorted(hits))), "suffix": tail}
-    return {"account_number": hits[0], "suffix": tail}
+                         % (suffix, ", ".join(sorted(hits))), "suffix": suffix}
+    return {"account_number": hits[0], "suffix": suffix}
+
+
+def _mask_pattern(suffix):
+    r"""Turn PNC's masked number into a pattern for the WHOLE account number.
+
+    THE MASK IS NOT ALWAYS A TAIL. `XX-XXXX-5765` hides the front, but
+    `790-XXXXX55` hides the MIDDLE -- and reading "the last four visible
+    digits" off that gives `790` + `55` = `79055` -> `9055`, an account that
+    does not exist. Five of Jim's six June statements with real balances were
+    reported as unknown accounts for exactly that reason; every one of them was
+    already registered.
+
+    So the mask is read as what it is: each run of X is that many unknown
+    digits, each printed digit is itself, and the whole thing must match the
+    whole account number. `790-XXXXX55` becomes `^790\d{5}55$`, which picks
+    7900021255 and nothing else.
+    """
+    import re as _re
+    t = str(suffix or "")
+    if not any(c.isdigit() for c in t):
+        return None
+    parts = []
+    for run in _re.findall(r"[Xx]+|\d+|[^Xx\d]+", t):
+        if run[0] in "Xx":
+            parts.append(r"\d{%d}" % len(run))
+        elif run[0].isdigit():
+            parts.append(_re.escape(run))
+        # Separators (dashes, spaces) are formatting and carry no digits.
+    return _re.compile("^" + "".join(parts) + "$")
 
 
 def seed_from_statement(account_number: str, period: str, user: str = "",

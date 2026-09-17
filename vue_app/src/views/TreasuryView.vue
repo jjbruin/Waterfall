@@ -432,6 +432,30 @@ async function seedAll() {
 
 // Only the ones that could NOT be seeded are worth reading — the successes are
 // visible as balances on the accounts table.
+// An account PNC will not serve activity for. It normally registers itself on
+// the first activity import, which is no help when the account has been quiet
+// longer than PNC's 90-day window and its statement still shows real money.
+// THE FULL NUMBER IS TYPED, never taken from the statement's mask: several of
+// these sit in obvious number ranges, so guessing would usually work and would
+// occasionally split one account into two.
+const newAcct = ref({ account_number: '', entityid: '', account_name: '',
+                      gl_cash_account: '' })
+const showAdd = ref(false)
+
+async function addAccount() {
+  try {
+    const { data } = await api.post('/api/treasury/accounts', {
+      ...newAcct.value,
+      gl_cash_account: newAcct.value.gl_cash_account || defaultCash.value })
+    if (data.error) { error.value = data.error; return }
+    flash(`${data.account_number} registered.`)
+    newAcct.value = { account_number: '', entityid: '', account_name: '',
+                      gl_cash_account: '' }
+    showAdd.value = false
+    await loadAccounts()
+  } catch (e) { fail(e, 'Registering the account') }
+}
+
 const seedProblems = computed(
   () => (seedRes.value?.results || []).filter((r: any) => r.error))
 
@@ -553,6 +577,29 @@ onMounted(loadAccounts)
              it carries its own arithmetic check, and it stays traceable to a
              named file. Refused once a period has actually been reconciled —
              re-basing then would hide a break rather than reveal one. -->
+        <div v-if="canManage" class="seed add-acct">
+          <button class="btn" @click="showAdd = !showAdd">
+            {{ showAdd ? 'Cancel' : 'Add an account' }}
+          </button>
+          <template v-if="showAdd">
+            <input v-model="newAcct.account_number" class="mini"
+                   placeholder="full account number" />
+            <input v-model="newAcct.entityid" class="mini" placeholder="ENTITYID" />
+            <input v-model="newAcct.account_name" class="mini" placeholder="name" />
+            <select v-model="newAcct.gl_cash_account" class="mini">
+              <option value="">{{ defaultCash }} (default)</option>
+              <option v-for="c in cashAccounts" :key="c" :value="c">{{ c }}</option>
+            </select>
+            <button class="btn primary" :disabled="!newAcct.account_number"
+                    @click="addAccount">Register</button>
+            <span class="hint">
+              For an account PNC will not serve activity for. Type the full
+              number as PNC exports it — the statement only prints a mask, and
+              a guessed number splits the account in two later.
+            </span>
+          </template>
+        </div>
+
         <div v-if="canManage" class="seed">
           <span class="hint">
             Open each account's chain from the prior month's filed statement.
