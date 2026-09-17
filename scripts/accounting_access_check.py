@@ -40,10 +40,11 @@ WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 OPEN_POSTS = {"/api/workpapers/statements/batch"}
 
 #: Writes that are NARROWER than the section rule, with the roles that may do
-#: them. The CFO sets the frame of the close -- when it opens and when things
-#: are due -- and the team works inside it. Jim, Sep 17 2026: "starting a close
-#: cycle should belong to the CFO anyone on the accounting team can sync
-#: entities", then "deadlines should be CFO only too".
+#: them. The CFO sets the PLAN of the close -- when it opens, when each thing
+#: is due, and the order entities are worked in -- and the team works inside
+#: it. Jim, Sep 17 2026, in three passes: "starting a close cycle should belong
+#: to the CFO anyone on the accounting team can sync entities", then "deadlines
+#: should be CFO only too", then "order number should be CFO only too".
 NARROWER = {
     ("POST", "/api/workpapers/cycles"): ("admin", "cfo"),
     # "deadlines should be CFO only too" (Jim, Sep 17 2026). Both of them: the
@@ -52,6 +53,15 @@ NARROWER = {
     ("PUT", "/api/workpapers/packages/<int:package_id>/schedule/target"):
         ("admin", "cfo"),
     ("PUT", "/api/workpapers/cycles/<int:cycle_id>/steps"): ("admin", "cfo"),
+    # "order number should be CFO only too" (Jim, Sep 17 2026) -- and the two
+    # buttons that rewrite the same column with it, or the rule is defeated by
+    # clicking a different one.
+    ("PUT", "/api/workpapers/packages/<int:package_id>/schedule/order"):
+        ("admin", "cfo"),
+    ("POST", "/api/workpapers/cycles/<int:cycle_id>/schedule/renumber"):
+        ("admin", "cfo"),
+    ("POST", "/api/workpapers/cycles/<int:cycle_id>/schedule/carry-forward"):
+        ("admin", "cfo"),
 }
 
 
@@ -79,7 +89,7 @@ def _sample_path(rule):
 
 def main():
     from flask_app import create_app
-    from flask_app.auth.routes import (ACCOUNTING_ROLES, CLOSE_CYCLE_ROLES,
+    from flask_app.auth.routes import (ACCOUNTING_ROLES, CLOSE_PLAN_ROLES,
                                        ROLE_LEVELS)
 
     app = create_app()
@@ -180,6 +190,18 @@ def main():
         chk("%s may set a target date" % role, _call("PUT", TGT, role) != 403)
     for role in ("accountant", "accounting_manager"):
         chk("%s may NOT set a target date" % role, _call("PUT", TGT, role) == 403)
+    # The ORDER NUMBER, and every route that writes the same column.
+    for label, method, path in (
+            ("the order cell", "PUT",
+             "/api/workpapers/packages/1/schedule/order"),
+            ("renumber", "POST",
+             "/api/workpapers/cycles/1/schedule/renumber"),
+            ("carry forward", "POST",
+             "/api/workpapers/cycles/1/schedule/carry-forward")):
+        chk("cfo may use %s" % label, _call(method, path, "cfo") != 403)
+        chk("accountant may NOT use %s" % label,
+            _call(method, path, "accountant") == 403)
+
     STEP_DUE = "/api/workpapers/cycles/1/steps"
     chk("the per-step deadline follows the same rule",
         _call("PUT", STEP_DUE, "cfo") != 403
@@ -198,6 +220,12 @@ def main():
                   role) != 403)
         chk("%s may still name a preparer" % role,
             _call("PUT", "/api/workpapers/packages/1/schedule/preparer",
+                  role) != 403)
+        chk("%s may still set a property" % role,
+            _call("PUT", "/api/workpapers/packages/1/schedule/property",
+                  role) != 403)
+        chk("%s may still fill the Property column in bulk" % role,
+            _call("POST", "/api/workpapers/cycles/1/schedule/properties",
                   role) != 403)
 
     print("\n4. Reads stay open")
@@ -235,11 +263,11 @@ def main():
         "vue=%s server=%s" % (sorted(vue_roles), sorted(ACCOUNTING_ROLES)))
 
     cyc_line = next((l for l in store.splitlines()
-                     if "const CLOSE_CYCLE_ROLES" in l), "")
+                     if "const CLOSE_PLAN_ROLES" in l), "")
     vue_cyc = {w.strip().strip("'\"") for w in
                cyc_line.split("[", 1)[-1].split("]")[0].split(",") if w.strip()}
-    chk("and the same close-cycle roles", vue_cyc == set(CLOSE_CYCLE_ROLES),
-        "vue=%s server=%s" % (sorted(vue_cyc), sorted(CLOSE_CYCLE_ROLES)))
+    chk("and the same close-plan roles", vue_cyc == set(CLOSE_PLAN_ROLES),
+        "vue=%s server=%s" % (sorted(vue_cyc), sorted(CLOSE_PLAN_ROLES)))
 
     for view in ("WorkpapersView.vue", "TreasuryView.vue"):
         src = (Path(__file__).resolve().parent.parent / "vue_app" / "src" /
@@ -251,15 +279,23 @@ def main():
     wp = (Path(__file__).resolve().parent.parent / "vue_app" / "src" /
           "views" / "WorkpapersView.vue").read_text(encoding="utf-8")
     chk("the New close cycle button is on the narrower gate",
-        'v-if="canSetDates" class="btn primary"' in wp)
+        'v-if="canSetPlan" class="btn primary"' in wp)
     chk("and so is the form it opens, not just the button",
-        'v-if="showNewCycle && canSetDates"' in wp)
+        'v-if="showNewCycle && canSetPlan"' in wp)
     chk("Sync entities is still on the team's gate",
         'v-if="canManageClose"' in wp and "@click=\"sync\"" in wp)
+    chk("the order input is on the CFO's gate",
+        'v-if="canSetPlan" class="ord-in"' in wp)
+    chk("Renumber and Carry forward are with it",
+        'v-if="canSetPlan"' in wp and "@click=\"renumber\"" in wp)
+    chk("but Fill properties is not -- it writes the Property column, "
+        "which is the team's",
+        'v-if="canManageClose" class="btn" @click="fillProperties"' in wp)
+    chk("and the dead setDue() is gone", "setDue" not in wp)
     chk("the target-date input is on the CFO's gate",
-        'v-if="canSetDates" class="date-in"' in wp)
+        'v-if="canSetPlan" class="date-in"' in wp)
     chk("and the sign-off cells beside it are not",
-        'v-if="canSetDates"' not in wp.split("class=\"sign\"")[1][:900])
+        'v-if="canSetPlan"' not in wp.split("class=\"sign\"")[1][:900])
 
     return _report()
 
@@ -272,8 +308,9 @@ def _report():
         return 1
     print("Every write in the accounting section is closed to analysts and\n"
           "viewers and open to the four accounting roles, enumerated from the\n"
-          "app rather than from a list kept by hand. Opening a cycle and\n"
-          "setting deadlines are the CFO's alone; syncing, naming a preparer\n"
+          "app rather than from a list kept by hand. The PLAN of the close --\n"
+          "when it opens, when things are due, what order they are worked in --\n"
+          "is the CFO's alone; syncing, naming a preparer, setting a property\n"
           "and signing off stay with the team. Both directions, every time.")
     return 0
 

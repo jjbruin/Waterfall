@@ -84,7 +84,7 @@ const returnNote = ref('')
 const canManageClose = computed(() => auth.canEditAccounting)
 // Narrower than working in the close: opening a cycle and setting the dates
 // the close is measured against are the CFO's.
-const canSetDates = computed(() => auth.canSetCloseDates)
+const canSetPlan = computed(() => auth.canSetClosePlan)
 const STATEMENT_KEYS = ['balance_sheet', 'income_statement', 'soi',
                         'members_capital', 'cash_flow']
 
@@ -288,24 +288,6 @@ async function sync() {
   flash(`${res.data.created} package(s) added — ${res.data.rep_entities} entities tagged REP`)
 }
 
-async function setDue(stepKey: string, due: string) {
-  let refusal = ''
-  let warnings: string[] = []
-  try {
-    const res = await api.put(`/api/workpapers/cycles/${cycleId.value}/steps`, {
-      step_key: stepKey, due_date: due || null,
-    })
-    warnings = res.data.warnings || []
-  } catch (e: any) {
-    refusal = e.response?.data?.error || e.message
-  }
-  // RELOAD FIRST, THEN SPEAK. The reload is what puts a refused field back to
-  // its stored value -- but it also clears `error` on entry, so a message set
-  // before it is wiped and the field just snaps back with no explanation.
-  await loadTracker()
-  if (refusal) error.value = refusal
-  else if (warnings.length) flash(`Saved. ${warnings.join(' ')}`)
-}
 
 /** The picker's value arrives from a <select>, so it is a string. */
 function onPickEntity(v: string) {
@@ -478,13 +460,13 @@ onMounted(loadCycles)
           </option>
         </select>
         <button v-if="canManageClose" class="btn" @click="sync" :disabled="!cycleId">Sync entities</button>
-        <button v-if="canSetDates" class="btn primary" @click="showNewCycle = !showNewCycle">
+        <button v-if="canSetPlan" class="btn primary" @click="showNewCycle = !showNewCycle">
           New close cycle
         </button>
       </div>
     </div>
 
-    <div v-if="showNewCycle && canSetDates" class="new-cycle">
+    <div v-if="showNewCycle && canSetPlan" class="new-cycle">
       <input v-model="newLabel" placeholder="Label, e.g. Q2 2026" />
       <input v-model="newEnd" type="date" />
       <button class="btn primary" @click="createCycle">Create</button>
@@ -533,7 +515,11 @@ onMounted(loadCycles)
                          order, as one printable document.">
             Print statements
           </button>
-          <template v-if="canManageClose">
+          <!-- The PLAN is the CFO's: carrying an arrangement forward and
+               renumbering both rewrite the order column. Filling the Property
+               column is ordinary preparation and stays with the team, so this
+               block is split rather than gated as one. -->
+          <template v-if="canSetPlan">
             <select v-model.number="carryFrom" class="sel sm">
               <option :value="null">Carry forward from…</option>
               <option v-for="c in cycles.filter(c => c.id !== cycleId)"
@@ -543,17 +529,17 @@ onMounted(loadCycles)
                     title="Copies the order, preparer and property only — never
                            a sign-off or a target date, which are facts about
                            their own quarter.">Carry forward</button>
-            <button class="btn" @click="fillProperties"
-                    title="Reads the deal each entity holds and fills the Property
-                           column. A value already typed is left alone.">
-              Fill properties
-            </button>
             <button class="btn" @click="renumber"
                     title="Rewrites the order as 1..n in the order shown, so a
                            row can be inserted between two others again.">
               Renumber 1-n
             </button>
           </template>
+          <button v-if="canManageClose" class="btn" @click="fillProperties"
+                  title="Reads the deal each entity holds and fills the Property
+                         column. A value already typed is left alone.">
+            Fill properties
+          </button>
         </div>
 
         <!-- What the grid cannot show by being correct: rows nobody has placed,
@@ -613,7 +599,7 @@ onMounted(loadCycles)
               <tr v-for="r in g.rows" :key="r.package_id"
                   :class="{ open: detail?.package?.id === r.package_id }">
                 <td class="sticky-l ord">
-                  <input v-if="canManageClose" class="ord-in" type="number" min="0"
+                  <input v-if="canSetPlan" class="ord-in" type="number" min="0"
                          :value="r.sort_order ?? ''"
                          @change="setOrder(r.package_id, ($event.target as HTMLInputElement).value)" />
                   <span v-else>{{ r.sort_order ?? '—' }}</span>
@@ -661,7 +647,7 @@ onMounted(loadCycles)
                     <!-- The DATE is the CFO's; the sign-off cells beside it
                          are the team's. They record work against the deadline,
                          they do not move it. -->
-                    <input v-if="canSetDates" class="date-in" type="date"
+                    <input v-if="canSetPlan" class="date-in" type="date"
                            :value="d.target_date || ''"
                            @change="setTarget(r.package_id, d.key, ($event.target as HTMLInputElement).value)" />
                     <span v-else>{{ d.target_date || '—' }}</span>

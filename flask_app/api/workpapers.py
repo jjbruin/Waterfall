@@ -10,7 +10,7 @@ import logging
 from flask import Blueprint, g, jsonify, request, send_file
 from io import BytesIO
 
-from flask_app.auth.routes import (ACCOUNTING_ROLES, CLOSE_CYCLE_ROLES,
+from flask_app.auth.routes import (ACCOUNTING_ROLES, CLOSE_PLAN_ROLES,
                                    login_required, roles_exactly)
 from flask_app.db import get_engine
 from flask_app.serializers import safe_json
@@ -69,7 +69,7 @@ def list_cycles():
 
 @workpapers_bp.route("/cycles", methods=["POST"])
 @login_required
-@roles_exactly(*CLOSE_CYCLE_ROLES)
+@roles_exactly(*CLOSE_PLAN_ROLES)
 def create_cycle():
     # NARROWER THAN THE REST OF THE SECTION, on purpose. Jim, Sep 17 2026:
     # "starting a close cycle should belong to the CFO, anyone on the
@@ -88,16 +88,16 @@ def create_cycle():
 
 @workpapers_bp.route("/cycles/<int:cycle_id>/steps", methods=["PUT"])
 @login_required
-@roles_exactly(*CLOSE_CYCLE_ROLES)
+@roles_exactly(*CLOSE_PLAN_ROLES)
 def set_due_date(cycle_id):
     """The CFO's deadline for one step of the close.
 
     NO SCREEN CALLS THIS as of Sep 17 2026 -- the two-tab split replaced the
     per-step deadline UI with the tracker's per-deliverable target dates, and
-    `setDue()` in WorkpapersView.vue is left over and unreferenced. Gated with
-    the target date anyway: it is the same decision, it is still reachable, and
-    a rule that covers only the endpoint that happens to have a button is a
-    rule that breaks the next time somebody adds one.
+    the `setDue()` left over in WorkpapersView.vue was deleted on Jim's
+    instruction. Gated with the target date anyway: it is the same decision, it
+    is still reachable over HTTP, and a rule that covers only the endpoint that
+    happens to have a button breaks the next time somebody adds one.
     """
     body = request.get_json(silent=True) or {}
     try:
@@ -284,8 +284,11 @@ def schedule(cycle_id):
 
 @workpapers_bp.route("/packages/<int:package_id>/schedule/order", methods=["PUT"])
 @login_required
-@roles_exactly(*ACCOUNTING_ROLES)
+@roles_exactly(*CLOSE_PLAN_ROLES)
 def schedule_order(package_id):
+    # THE CFO'S ORDER NUMBER (Jim, Sep 17 2026: "order number should be
+    # CFO only too"). It was his own request at the start of the tracker:
+    # he decides which entity is worked first.
     body = request.get_json(silent=True) or {}
     try:
         return jsonify(wt.set_order(package_id, body.get("order"), _user()))
@@ -295,7 +298,7 @@ def schedule_order(package_id):
 
 @workpapers_bp.route("/packages/<int:package_id>/schedule/target", methods=["PUT"])
 @login_required
-@roles_exactly(*CLOSE_CYCLE_ROLES)
+@roles_exactly(*CLOSE_PLAN_ROLES)
 def schedule_target(package_id):
     # THE DEADLINE ON THE TRACKER, and the CFO's alone (Jim, Sep 17 2026:
     # "deadlines should be CFO only too"). The sign-offs beside it are the
@@ -347,8 +350,11 @@ def schedule_property(package_id):
 
 @workpapers_bp.route("/cycles/<int:cycle_id>/schedule/renumber", methods=["POST"])
 @login_required
-@roles_exactly(*ACCOUNTING_ROLES)
+@roles_exactly(*CLOSE_PLAN_ROLES)
 def schedule_renumber(cycle_id):
+    # Rewrites `sort_order` across the cycle, so it is the order number by
+    # another name and follows it. Gating the cell but not this would let
+    # the rule be defeated by clicking a different button.
     try:
         return jsonify(wt.renumber(cycle_id, _user()))
     except Exception as e:
@@ -358,8 +364,11 @@ def schedule_renumber(cycle_id):
 @workpapers_bp.route("/cycles/<int:cycle_id>/schedule/carry-forward",
                      methods=["POST"])
 @login_required
-@roles_exactly(*ACCOUNTING_ROLES)
+@roles_exactly(*CLOSE_PLAN_ROLES)
 def schedule_carry_forward(cycle_id):
+    # Writes `sort_order` too. It also moves the preparer and property,
+    # which are the team's -- it is here because laying out the next
+    # cycle is the CFO's act, not because those fields are his.
     """Bring the PREVIOUS quarter's order, preparers and properties forward.
 
     Never the sign-offs or the target dates -- those are facts about a quarter

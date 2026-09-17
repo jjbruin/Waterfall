@@ -48,14 +48,15 @@ export const useAuthStore = defineStore('auth', () => {
   const canEditAccounting = computed(
     () => ACCOUNTING_ROLES.includes(user.value?.role || ''))
 
-  // Mirrors CLOSE_CYCLE_ROLES. The CFO sets the frame of the close -- opening
-  // a cycle, and the dates everything is measured against. The team works
-  // inside it: syncing entities, naming preparers, signing off (Jim, Sep 17
-  // 2026: "starting a close cycle should belong to the CFO anyone on the
-  // accounting team can sync entities", then "deadlines should be CFO only").
-  const CLOSE_CYCLE_ROLES = ['admin', 'cfo']
-  const canSetCloseDates = computed(
-    () => CLOSE_CYCLE_ROLES.includes(user.value?.role || ''))
+  // Mirrors CLOSE_PLAN_ROLES. The CFO sets the PLAN of the close -- when it
+  // opens, when each thing is due, and the order entities are worked in.
+  // The team works inside it: syncing, naming preparers, setting a
+  // property, signing off. Jim, Sep 17 2026, in three passes: cycles,
+  // then "deadlines should be CFO only too", then "order number should be
+  // CFO only too".
+  const CLOSE_PLAN_ROLES = ['admin', 'cfo']
+  const canSetClosePlan = computed(
+    () => CLOSE_PLAN_ROLES.includes(user.value?.role || ''))
 
   // User management state (admin only)
   const users = ref<ManagedUser[]>([])
@@ -176,7 +177,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   return {
     user, token, isAuthenticated, isAdmin, isAnalyst, userRole,
-    canEditAccounting, canSetCloseDates,
+    canEditAccounting, canSetClosePlan,
     mustChangePassword, pendingUsername,
     users, usersLoading,
     login, fetchMe, logout, changePassword,

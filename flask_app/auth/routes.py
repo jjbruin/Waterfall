@@ -75,17 +75,27 @@ def role_level(role: str) -> int:
 #: day-to-day login is an analyst one and he wants it READ-ONLY here.
 ACCOUNTING_ROLES = ("admin", "cfo", "accounting_manager", "accountant")
 
-#: Narrower still: SETTING THE FRAME OF THE CLOSE -- opening a cycle, and the
-#: dates everything else is measured against. Jim, Sep 17 2026: "starting a
-#: close cycle should belong to the CFO anyone on the accounting team can sync
-#: entities", then "deadlines should be CFO only too".
+#: Narrower still: THE PLAN OF THE CLOSE -- when it opens, when each thing is
+#: due, and the order the entities are worked in. Jim, Sep 17 2026, in three
+#: passes: "starting a close cycle should belong to the CFO anyone on the
+#: accounting team can sync entities", then "deadlines should be CFO only too",
+#: then "order number should be CFO only too".
 #:
-#: The line this draws: the CFO decides WHEN the close is due; the team records
-#: what they have DONE against it. So target dates and step deadlines are here,
-#: while syncing entities, naming a preparer and signing a deliverable off stay
-#: with ACCOUNTING_ROLES. `admin` is here for the same reason it is above: so
-#: Jim can unstick it.
-CLOSE_CYCLE_ROLES = ("admin", "cfo")
+#: THE LINE: the CFO decides WHEN and IN WHAT ORDER; the team records what they
+#: have DONE against that. So cycle creation, target dates, step deadlines, the
+#: order number, renumbering and carry-forward are here, while syncing
+#: entities, naming a preparer, setting a property and signing a deliverable
+#: off stay with ACCOUNTING_ROLES.
+#:
+#: Renumber and carry-forward are here because they WRITE `sort_order`. A rule
+#: that covered the order cell but not the two buttons that rewrite the same
+#: column would be defeated by clicking a different button, which is not a
+#: rule. Carry-forward also moves the preparer and property, which are the
+#: team's -- it is included because the act of laying out the next cycle is the
+#: CFO's, not because those fields are.
+#:
+#: `admin` is here for the same reason it is above: so Jim can unstick it.
+CLOSE_PLAN_ROLES = ("admin", "cfo")
 
 
 def roles_exactly(*allowed_roles):
