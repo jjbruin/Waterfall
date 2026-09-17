@@ -218,6 +218,102 @@ def main() -> int:
                    for d in r["deliverables"] if d["target_date"]]
         chk("NO target date carried either", not targets, str(targets[:4]))
 
+        # ---- 10. who can be assigned --------------------------------
+        #
+        # The dropdown replaced a free-text box, so the failure that matters is
+        # it being EMPTY of the people who do the work. Measured Sep 17 2026:
+        # every account was `analyst` or `admin` and the close is prepared by
+        # KH, NL and RE. Jim is adding accounting roles; until then the list has
+        # to keep working from the other two sources.
+        print("\n10. Preparers")
+        wt.add_preparer("ZZQ", "Check Person", "accountant", engine=eng)
+        people = wt.list_preparers(engine=eng)
+        inis = [x["initials"] for x in people]
+        chk("a maintained preparer appears", "ZZQ" in inis, str(inis[:8]))
+        got = [x for x in people if x["initials"] == "ZZQ"][0]
+        chk("with the name and role recorded",
+            got["name"] == "Check Person" and got["wp_role"] == "accountant")
+        chk("an unknown role is refused",
+            "error" in wt.add_preparer("ZZR", None, "chief wizard", engine=eng))
+        chk("initials are required",
+            "error" in wt.add_preparer("  ", engine=eng))
+        # AN ASSIGNMENT ALREADY ON A PACKAGE MUST STAY SELECTABLE, or the CFO
+        # opens the screen and cannot re-pick his own entry.
+        if pkgs:
+            wt.set_preparer(pid, "QQX", "check", engine=eng)
+            after = [x["initials"] for x in wt.list_preparers(engine=eng)]
+            chk("initials already assigned stay in the list", "QQX" in after,
+                str(after[:8]))
+            src = [x for x in wt.list_preparers(engine=eng)
+                   if x["initials"] == "QQX"][0]["source"]
+            chk("and are marked as coming from use, not from the list",
+                src == "in use", src)
+            wt.set_preparer(pid, None, "check", engine=eng)
+        chk("a username yields two-letter initials as a SEED only",
+            wt._initials_from("jstewart") == "JS"
+            and wt._initials_from("j.smith") == "JS")
+        # Two people whose usernames give the same letters are two people.
+        chk("the role list is the accounting roles, including the CFO",
+            set(wt.PREPARER_ROLES) == {"accountant", "accounting_manager", "cfo"})
+        wt.remove_preparer("ZZQ", engine=eng)
+        chk("removing deactivates rather than deletes, so signed work resolves",
+            "ZZQ" not in [x["initials"] for x in wt.list_preparers(engine=eng)]
+            and "ZZQ" in [x["initials"] for x in
+                          wt.list_preparers(engine=eng, include_inactive=True)])
+
+        # ---- 11. the property column --------------------------------
+        #
+        # Jim, Sep 17 2026: "import the associated deal name in the Property
+        # column." One rule cannot cover 58 entities, so what matters is that it
+        # declines rather than guesses.
+        print("\n11. Property from the deals")
+        derived = wt.derive_properties(engine=eng)
+        chk("derivation returns a mapping", isinstance(derived, dict))
+        for k, v in derived.items():
+            chk_once = v.get("property_name")
+            if not chk_once:
+                chk("%s has a name or is absent" % k, False)
+                break
+        else:
+            chk("every derived entry carries a name and a basis",
+                all(v.get("property_name") and v.get("basis")
+                    for v in derived.values()))
+        many = [v for v in derived.values() if v["basis"].endswith("deals")]
+        chk("an entity holding several deals reads 'Various', the CFO's own word",
+            all(v["property_name"] == "Various" for v in many), str(many[:2]))
+        # THE ONE THAT WOULD BE SILENT IF WRONG: a typed value must survive.
+        #
+        # It has to be tested on a row that HAS a derived value to overwrite.
+        # Typed onto an unresolved row the check passes vacuously — the row is
+        # skipped for having no derivation, not protected for having a value —
+        # which is exactly how it passed the first time it was written.
+        target = None
+        for r in wt.grid(cid, eng)["rows"]:
+            if str(r["entityid"]).strip().upper() in derived:
+                target = r["package_id"]
+                break
+        if target is not None:
+            wt.set_property(target, "Management Company", "check", engine=eng)
+            res = wt.apply_derived_properties(cid, overwrite=False, engine=eng)
+            row = _row(wt.grid(cid, eng), target)
+            chk("a typed property is not overwritten by a derived one",
+                row["property_name"] == "Management Company",
+                str(row["property_name"]))
+            chk("and the run reports what it left alone",
+                res["kept_existing"] >= 1, str(res))
+            # overwrite=True is the deliberate act, and it must actually work.
+            res2 = wt.apply_derived_properties(cid, overwrite=True, engine=eng)
+            row2 = _row(wt.grid(cid, eng), target)
+            chk("overwrite=True does replace it when asked",
+                row2["property_name"] != "Management Company",
+                "%s (%s)" % (row2["property_name"], res2))
+        else:
+            chk("a package with a derivable property exists to test against",
+                False, "no scratch package resolves to a deal")
+        res3 = wt.apply_derived_properties(cid, engine=eng)
+        chk("entities it could not resolve are named, not silently skipped",
+            "unresolved" in res3 and "unresolved_count" in res3)
+
         _drop(eng, cid)
         _drop(eng, nid)
 

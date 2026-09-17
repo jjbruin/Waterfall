@@ -112,6 +112,57 @@ def tracker(cycle_id):
         return _fail(e, "tracker", 500)
 
 
+@workpapers_bp.route("/preparers", methods=["GET"])
+@login_required
+def preparers():
+    """Who can be assigned. See `wp_preparers` for why this is not `users`."""
+    try:
+        return jsonify(safe_json({"preparers": wt.list_preparers()}))
+    except Exception as e:
+        return _fail(e, "preparers", 500)
+
+
+@workpapers_bp.route("/preparers", methods=["POST"])
+@login_required
+@role_required("admin", "cfo", "analyst")
+def add_preparer():
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify(wt.add_preparer(
+            body.get("initials"), body.get("name"),
+            body.get("wp_role"), body.get("username")))
+    except Exception as e:
+        return _fail(e, "add_preparer")
+
+
+@workpapers_bp.route("/preparers/<initials>", methods=["DELETE"])
+@login_required
+@role_required("admin", "cfo", "analyst")
+def drop_preparer(initials):
+    try:
+        return jsonify(wt.remove_preparer(initials))
+    except Exception as e:
+        return _fail(e, "remove_preparer")
+
+
+@workpapers_bp.route("/cycles/<int:cycle_id>/schedule/properties",
+                     methods=["POST"])
+@login_required
+@role_required("admin", "cfo", "analyst")
+def schedule_properties(cycle_id):
+    """Fill the Property column from the deal each entity holds.
+
+    Never overwrites a typed value unless asked: a value the CFO typed is a
+    decision and a derived one is a guess.
+    """
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify(safe_json(wt.apply_derived_properties(
+            cycle_id, bool(body.get("overwrite")))))
+    except Exception as e:
+        return _fail(e, "schedule_properties")
+
+
 # -- The close schedule: the CFO's tracker across every entity ------------
 #
 # Distinct from `/tracker` above, which is the per-package STEP checklist. This

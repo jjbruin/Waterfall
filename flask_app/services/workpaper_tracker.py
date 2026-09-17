@@ -53,6 +53,7 @@ import logging
 from datetime import datetime
 from typing import Dict, List, Optional
 
+import pandas as pd
 from sqlalchemy import text
 
 from flask_app.db import get_engine
@@ -182,6 +183,27 @@ _ORDERED_CELLS = tuple(
 
 
 _DDL = [
+    # WHO MAY BE ASSIGNED AS PREPARER OR REVIEWER.
+    #
+    # Not derived from `users`: measured Sep 17 2026, every account is `analyst`
+    # or `admin` and NONE carries an accounting role, while the close is
+    # actually prepared by KH, NL and RE -- initials matching no account at all.
+    # A dropdown built from `users` would have been empty of the people who do
+    # the work, which is worse than the free-text box it replaces.
+    #
+    # So the list is maintained here and OPTIONALLY linked to an account by
+    # `username`. When those people get accounts the link closes the gap without
+    # the assignments having to be redone.
+    """
+    CREATE TABLE IF NOT EXISTS wp_preparers (
+        id        {pk},
+        initials  TEXT NOT NULL,
+        name      TEXT,
+        wp_role   TEXT,
+        username  TEXT,
+        active    INTEGER DEFAULT 1
+    )
+    """,
     # One row per (package, deliverable, stage). ABSENT means not signed -- never
     # a row carrying a null date, so "not signed" and "signed, date unknown"
     # cannot be confused by any reader.
@@ -625,3 +647,241 @@ def carry_forward(from_cycle_id: int, to_cycle_id: int,
             # An entity in the new cycle that the old one did not have is new
             # to the population, and the CFO has to place it himself.
             "not_in_source": sorted(missing)}
+
+
+# ---------------------------------------------------------------- people
+
+#: The roles a close assignment can carry. `cfo` is here because the CFO signs
+#: the second review and is assignable like anyone else.
+PREPARER_ROLES = ("accountant", "accounting_manager", "cfo")
+
+
+def _initials_from(username: str, email: str = "") -> str:
+    """``jstewart`` -> ``JS``.
+
+    A guess, and only ever a SEED for a list the CFO edits -- never a value
+    written onto a package. Two letters from a username is right often enough to
+    save typing and wrong often enough that it must not be authoritative.
+    """
+    u = (username or "").strip()
+    if not u:
+        u = (email or "").split("@")[0]
+    if not u:
+        return ""
+    if "." in u:
+        a, b = u.split(".", 1)
+        return (a[:1] + b[:1]).upper()
+    return (u[:2]).upper() if len(u) > 1 else u[:1].upper()
+
+
+def list_preparers(engine=None, include_inactive: bool = False) -> List[dict]:
+    """Everyone assignable to a close, from three sources that have to agree.
+
+    THE USER LIST IS THE PRIMARY SOURCE. Jim is adding the accountants and the
+    accounting manager to it (Sep 17 2026); anyone whose role is in
+    :data:`PREPARER_ROLES` appears here automatically, so the dropdown fills as
+    soon as those accounts exist and nobody has to maintain a second list.
+
+    `wp_preparers` remains for two things a user list cannot do: someone who
+    prepares but has no account yet, and CORRECTING the initials guessed from a
+    username -- a row linked by `username` overrides the guess without changing
+    the account.
+
+    And anyone ALREADY assigned on a package is included whatever their origin.
+    Initials typed before this list existed must not vanish from the dropdown,
+    or the CFO opens the screen to find his own assignments unselectable.
+
+    COLLISIONS ARE REPORTED, NOT MERGED. Two people whose usernames give the
+    same two letters are two people; silently folding them together would put
+    one person's initials against the other's work. Each entry carries `clash`
+    so the screen can show the name beside the initials.
+    """
+    engine = engine or get_engine()
+    ensure_tracker_tables(engine)
+
+    by_initials: Dict[str, dict] = {}
+    order: List[str] = []
+
+    def put(entry):
+        key = str(entry["initials"]).strip().upper()
+        if not key:
+            return
+        if key in by_initials:
+            prior = by_initials[key]
+            # An explicit wp_preparers row outranks a guess from a username.
+            if entry["source"] == "list" and prior["source"] == "user":
+                entry["clash"] = prior.get("clash") or []
+                by_initials[key] = entry
+            else:
+                prior.setdefault("clash", []).append(
+                    entry.get("name") or entry.get("username") or key)
+            return
+        by_initials[key] = entry
+        order.append(key)
+
+    # 1. accounts carrying an accounting role
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text(
+                "SELECT username, email, role FROM users")).fetchall()
+        for uname, email, role in rows:
+            if str(role or "").strip().lower() not in PREPARER_ROLES:
+                continue
+            put({"id": None, "initials": _initials_from(uname, email),
+                 "name": uname, "username": uname,
+                 "wp_role": str(role).strip().lower(), "active": True,
+                 "source": "user"})
+    except Exception as e:                                  # pragma: no cover
+        logger.warning("list_preparers could not read users: %s", e)
+
+    # 2. the maintained list, which may correct or extend the above
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT id, initials, name, wp_role, username, active "
+            "  FROM wp_preparers")).fetchall()
+    for r in rows:
+        if not (include_inactive or r[5]):
+            continue
+        put({"id": r[0], "initials": r[1], "name": r[2], "wp_role": r[3],
+             "username": r[4], "active": bool(r[5]), "source": "list"})
+
+    # 3. anyone already assigned
+    with engine.connect() as conn:
+        used = {str(r[0]).strip().upper()
+                for r in conn.execute(text(
+                    "SELECT DISTINCT preparer FROM wp_packages "
+                    " WHERE preparer IS NOT NULL AND preparer <> ''")).fetchall()
+                if r[0]}
+    for ini in sorted(used - set(by_initials)):
+        put({"id": None, "initials": ini, "name": None, "wp_role": None,
+             "username": None, "active": True, "source": "in use"})
+
+    out = [by_initials[k] for k in order]
+    out.sort(key=lambda p: (p["initials"] or "").upper())
+    return out
+
+
+def add_preparer(initials, name=None, wp_role=None, username=None,
+                 engine=None) -> dict:
+    ini = (str(initials or "").strip().upper())[:6]
+    if not ini:
+        return {"error": "Initials are required."}
+    if wp_role and wp_role not in PREPARER_ROLES:
+        return {"error": "Unknown role %r." % wp_role}
+    engine = engine or get_engine()
+    ensure_tracker_tables(engine)
+    with engine.begin() as conn:
+        dup = conn.execute(text(
+            "SELECT id FROM wp_preparers WHERE UPPER(initials) = :i"),
+            {"i": ini}).fetchone()
+        if dup:
+            conn.execute(text(
+                "UPDATE wp_preparers SET name = :n, wp_role = :r, "
+                "       username = :u, active = 1 WHERE id = :id"),
+                {"n": name, "r": wp_role, "u": username, "id": dup[0]})
+            return {"ok": True, "initials": ini, "updated": True}
+        conn.execute(text(
+            "INSERT INTO wp_preparers (initials, name, wp_role, username, active) "
+            "VALUES (:i, :n, :r, :u, 1)"),
+            {"i": ini, "n": name, "r": wp_role, "u": username})
+    return {"ok": True, "initials": ini}
+
+
+def remove_preparer(initials, engine=None) -> dict:
+    """Deactivates rather than deletes: a name already on a signed-off package
+    has to keep resolving."""
+    engine = engine or get_engine()
+    ensure_tracker_tables(engine)
+    with engine.begin() as conn:
+        conn.execute(text(
+            "UPDATE wp_preparers SET active = 0 WHERE UPPER(initials) = :i"),
+            {"i": str(initials or "").strip().upper()})
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------- property
+
+def derive_properties(engine=None) -> Dict[str, dict]:
+    """Entity -> the deal it reports on, from ``commitments``.
+
+    Jim, Sep 17 2026: "import the associated deal name in the Property column."
+
+    ONE RULE CANNOT COVER ALL 58, and pretending otherwise would put a confident
+    wrong name on a statement package. Measured on production:
+
+      * exactly one commitment resolving to a deal -> that deal's name
+        (PPI35 -> Belleville Self Storage, PPI24 -> Giant 7);
+      * several -> "Various", which is the CFO's own spelling on his sheet
+        (OWPSC holds 3, PSC3 holds 23);
+      * one commitment into another ENTITY rather than a deal (KCREIT, PIGIPA,
+        AMB6), or none at all (NOTTNV, itself deal-level) -> nothing, left for
+        the CFO to type.
+
+    The field stays editable in every case: his sheet carries curated values
+    like "Management Company" that no rule would ever produce.
+    """
+    engine = engine or get_engine()
+    out: Dict[str, dict] = {}
+    try:
+        with engine.connect() as conn:
+            com = pd.read_sql(text("SELECT * FROM commitments"), conn)
+            dl = pd.read_sql(text("SELECT * FROM deals"), conn)
+    except Exception as e:
+        logger.warning("derive_properties failed: %s", e)
+        return out
+    if com.empty or dl.empty:
+        return out
+    cm = {str(c).lower(): c for c in com.columns}
+    dm = {str(c).lower(): c for c in dl.columns}
+    if not (cm.get("investorid") and cm.get("entityid")
+            and dm.get("investmentid") and dm.get("investment_name")):
+        return out
+    if cm.get("enddate"):
+        com = com[com[cm["enddate"]].isna()]
+    com = com.assign(
+        _inv=com[cm["investorid"]].astype(str).str.strip().str.upper(),
+        _ent=com[cm["entityid"]].astype(str).str.strip().str.upper())
+    names = dl.set_index(
+        dl[dm["investmentid"]].astype(str).str.strip().str.upper()
+    )[dm["investment_name"]].to_dict()
+    for inv, grp in com.groupby("_inv"):
+        held = sorted({e for e in grp["_ent"] if names.get(e)})
+        if len(held) == 1:
+            out[inv] = {"property_name": str(names[held[0]]).strip(),
+                        "basis": "the one deal it holds"}
+        elif len(held) > 1:
+            out[inv] = {"property_name": "Various",
+                        "basis": "%d deals" % len(held)}
+    return out
+
+
+def apply_derived_properties(cycle_id: int, overwrite: bool = False,
+                             engine=None) -> dict:
+    """Fill the Property column from the deals, leaving typed values alone.
+
+    ``overwrite`` is False by default because a value the CFO typed is a
+    decision and a derived one is a guess; the guess never wins.
+    """
+    engine = engine or get_engine()
+    ensure_tracker_tables(engine)
+    derived = derive_properties(engine)
+    filled, skipped, unresolved = 0, 0, []
+    with engine.begin() as conn:
+        rows = conn.execute(text(
+            "SELECT id, entityid, property_name FROM wp_packages "
+            " WHERE cycle_id = :c"), {"c": cycle_id}).fetchall()
+        for pid, eid, existing in rows:
+            d = derived.get(str(eid).strip().upper())
+            if not d:
+                unresolved.append(eid)
+                continue
+            if existing and str(existing).strip() and not overwrite:
+                skipped += 1
+                continue
+            conn.execute(text(
+                "UPDATE wp_packages SET property_name = :n WHERE id = :id"),
+                {"n": d["property_name"], "id": pid})
+            filled += 1
+    return {"ok": True, "filled": filled, "kept_existing": skipped,
+            "unresolved": sorted(unresolved),
+            "unresolved_count": len(unresolved)}

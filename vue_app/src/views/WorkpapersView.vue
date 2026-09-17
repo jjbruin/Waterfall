@@ -25,7 +25,7 @@
  * The tracker replicates `2Q26 - PSC Reporting Checklist & Calendar.xlsx`,
  * which is what the CFO runs the close from today.
  */
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import api from '../api/client'
 import { useAuthStore } from '../stores/auth'
 
@@ -45,6 +45,16 @@ const schedLoading = ref(false)
 // overrides it.
 const groupByProperty = ref(false)
 const carryFrom = ref<number | null>(null)
+// Who can be assigned. Sourced from accounts carrying an accounting role, so
+// the list fills itself as those accounts are created.
+const preparers = ref<any[]>([])
+// THE SECOND HEADER ROW'S OFFSET IS MEASURED, NOT ASSUMED. It was pinned at a
+// hardcoded 34px; the first row is not 34px tall at every font size or zoom, so
+// the second row sat too low and covered the first data row (Jim, Sep 17 2026:
+// "The header is overlapping the first row of data"). Measured after mount and
+// on resize, it cannot drift again.
+const hdrRow1 = ref<HTMLElement | null>(null)
+const hdrOffset = ref(34)
 
 const cycles = ref<any[]>([])
 const cycleId = ref<number | null>(null)
@@ -88,6 +98,32 @@ async function loadCycles() {
   cycles.value = res.data.cycles || []
   if (!cycleId.value && cycles.value.length) cycleId.value = cycles.value[0].id
   if (cycleId.value) { await loadTracker(); await loadSchedule() }
+  await loadPreparers()
+}
+
+async function loadPreparers() {
+  try {
+    preparers.value = (await api.get('/api/workpapers/preparers')).data.preparers || []
+  } catch { preparers.value = [] }
+}
+
+/** Fill the Property column from the deal each entity holds. Never overwrites
+ *  a typed value — a value the CFO typed is a decision, a derived one a guess. */
+async function fillProperties() {
+  if (!cycleId.value) return
+  try {
+    const r = await api.post(
+      `/api/workpapers/cycles/${cycleId.value}/schedule/properties`, {})
+    await loadSchedule()
+    flash(`Filled ${r.data.filled} propert${r.data.filled === 1 ? 'y' : 'ies'} from the deals.` +
+      (r.data.kept_existing ? ` ${r.data.kept_existing} already had a value and were left alone.` : '') +
+      (r.data.unresolved_count ? ` ${r.data.unresolved_count} could not be resolved to a single deal.` : ''))
+  } catch (e: any) { error.value = e.response?.data?.error || e.message }
+}
+
+function measureHeader() {
+  const h = hdrRow1.value?.getBoundingClientRect().height
+  if (h && h > 0) hdrOffset.value = Math.round(h)
 }
 
 async function loadSchedule() {
@@ -97,6 +133,8 @@ async function loadSchedule() {
   try {
     sched.value = (await api.get(
       `/api/workpapers/cycles/${cycleId.value}/schedule`)).data
+    await nextTick()
+    measureHeader()
   } catch (e: any) {
     error.value = e.response?.data?.error || e.message
   } finally {
@@ -124,6 +162,13 @@ async function schedWrite(url: string, body: any, ok: string) {
 
 const setOrder = (pid: number, v: string) =>
   schedWrite(`/api/workpapers/packages/${pid}/schedule/order`, { order: v }, '')
+function preparerName(ini: string | null) {
+  if (!ini) return ''
+  const p = preparers.value.find(
+    (x: any) => String(x.initials).toUpperCase() === String(ini).toUpperCase())
+  return p?.name ? `${p.initials} — ${p.name}` : String(ini)
+}
+
 const setPreparer = (pid: number, v: string) =>
   schedWrite(`/api/workpapers/packages/${pid}/schedule/preparer`, { preparer: v }, '')
 const setProperty = (pid: number, v: string) =>
@@ -484,6 +529,11 @@ onMounted(loadCycles)
                     title="Copies the order, preparer and property only — never
                            a sign-off or a target date, which are facts about
                            their own quarter.">Carry forward</button>
+            <button class="btn" @click="fillProperties"
+                    title="Reads the deal each entity holds and fills the Property
+                           column. A value already typed is left alone.">
+              Fill properties
+            </button>
             <button class="btn" @click="renumber"
                     title="Rewrites the order as 1..n in the order shown, so a
                            row can be inserted between two others again.">
@@ -519,8 +569,8 @@ onMounted(loadCycles)
 
         <div v-else class="grid-wrap sched-wrap">
           <table class="grid sched">
-            <thead>
-              <tr>
+            <thead :style="{ '--hdr1': hdrOffset + 'px' }">
+              <tr ref="hdrRow1">
                 <th class="sticky-l ord" rowspan="2" title="The CFO's order. Type a number; the grid sorts by it.">#</th>
                 <th class="sticky-e" rowspan="2">Entity</th>
                 <th rowspan="2">Property</th>
@@ -564,10 +614,18 @@ onMounted(loadCycles)
                          @change="setProperty(r.package_id, ($event.target as HTMLInputElement).value)" />
                   <span v-else>{{ r.property_name || '—' }}</span>
                 </td>
+                <!-- INITIALS ONLY in this column, which is why the name lives
+                     in the option text and the title rather than the cell. -->
                 <td class="prep">
-                  <input v-if="canManageClose" class="ini-in" :value="r.preparer || ''"
-                         placeholder="—" maxlength="4"
-                         @change="setPreparer(r.package_id, ($event.target as HTMLInputElement).value)" />
+                  <select v-if="canManageClose" class="ini-sel"
+                          :value="r.preparer || ''"
+                          :title="preparerName(r.preparer)"
+                          @change="setPreparer(r.package_id, ($event.target as HTMLSelectElement).value)">
+                    <option value="">—</option>
+                    <option v-for="pp in preparers" :key="pp.initials" :value="pp.initials">
+                      {{ pp.initials }}{{ pp.name ? ' — ' + pp.name : '' }}
+                    </option>
+                  </select>
                   <span v-else>{{ r.preparer || '—' }}</span>
                 </td>
                 <template v-for="d in r.deliverables" :key="d.key">
@@ -579,11 +637,18 @@ onMounted(loadCycles)
                   </td>
                   <td v-for="st in d.stages" :key="st.key" class="sign"
                       :class="{ signed: st.signed }">
+                    <!-- THE DATE ONLY. The column header already says whose
+                         signature this is — Preparer, Acctg Mgr, CFO — so
+                         repeating the initials in every cell says it twice
+                         (Jim, Sep 17 2026). Who signed is still RECORDED and is
+                         on the tooltip; it is the display that was redundant. -->
                     <template v-if="st.signed">
-                      <div class="who">{{ st.signed_by || '—' }}</div>
-                      <div class="when">{{ st.signed_on || '' }}</div>
+                      <div class="when"
+                           :title="(st.signed_by ? st.signed_by + ' — ' : '') + (st.signed_on || '')">
+                        {{ st.signed_on || '—' }}
+                      </div>
                       <button class="x" title="Clear this sign-off"
-                              @click="signoff(r.package_id, d.key, st.key, '', '')">×</button>
+                              @click.stop="signoff(r.package_id, d.key, st.key, '', '')">×</button>
                     </template>
                     <button v-else class="sign-btn"
                             :title="`Sign ${d.label} — ${st.label} as ${st.owner}, dated today`"
@@ -1032,7 +1097,8 @@ table.grid.sched thead th {
   border-bottom: 1px solid #dde3ec;
 }
 table.grid.sched thead tr:first-child th { top: 0; }
-table.grid.sched thead tr:nth-child(2) th { top: 34px; }
+/* MEASURED, not guessed — see `hdrOffset`. */
+table.grid.sched thead tr:nth-child(2) th { top: var(--hdr1, 34px); }
 th.grp {
   text-align: center; font-size: 11px; letter-spacing: .02em;
   border-left: 2px solid #dde3ec !important;
@@ -1041,16 +1107,29 @@ th.stg-h, th.tgt-h { font-weight: 600; font-size: 10.5px; text-align: center; }
 th.tgt-h { border-left: 2px solid #dde3ec !important; }
 th .owner { font-weight: 500; color: #9aa3b2; font-size: 9.5px; }
 .sticky-l { position: sticky; left: 0; background: #fff; z-index: 2; }
-.sticky-e { position: sticky; left: 46px; background: #fff; z-index: 2; }
+.sticky-e { position: sticky; left: 40px; background: #fff; z-index: 2; }
 thead .sticky-l, thead .sticky-e { z-index: 4; background: #f4f6fa; }
-td.ord, th.ord { width: 46px; text-align: center; }
+/* Wide enough for four digits and no wider: 11.5px digits are ~7px each, so
+   28px of glyph plus the input's own padding. Was 46px and looked like a column
+   with nothing in it (Jim, Sep 17 2026). */
+td.ord, th.ord {
+  width: 40px; min-width: 40px; max-width: 40px; text-align: center;
+}
 .grp-row td {
   background: #eef2f8; font-weight: 700; color: #33415a;
   font-size: 11px; padding: 4px 8px !important;
 }
-.ord-in { width: 38px; text-align: center; }
+.ord-in { width: 32px; text-align: center; -moz-appearance: textfield; }
+.ord-in::-webkit-outer-spin-button,
+.ord-in::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .txt-in { width: 118px; }
-.ini-in { width: 40px; text-align: center; text-transform: uppercase; }
+.ini-sel {
+  width: 52px; font: inherit; padding: 1px 2px; text-align: center;
+  border: 1px solid transparent; background: transparent; border-radius: 3px;
+  color: inherit;
+}
+.ini-sel:hover { border-color: #dde3ec; }
+.ini-sel:focus { border-color: #1d4e7e; background: #fff; outline: none; }
 .date-in { width: 112px; }
 .ord-in, .txt-in, .ini-in, .date-in {
   border: 1px solid transparent; background: transparent; border-radius: 3px;
@@ -1065,18 +1144,18 @@ td.tgt.late { background: #fdecec; }
 td.tgt.ok { background: #f2f9f3; }
 td.sign { text-align: center; position: relative; min-width: 62px; }
 td.sign.signed { background: #f2f9f3; }
-td.sign .who { font-weight: 700; color: #2c6e3f; }
-td.sign .when { color: #7a8394; font-size: 10px; }
+td.sign .when { color: #2c6e3f; font-weight: 600; font-size: 10.5px; }
 .sign-btn {
   border: 1px dashed #ccd4e0; background: none; color: #aab3c2;
   border-radius: 3px; width: 20px; height: 18px; line-height: 1; cursor: pointer;
 }
 .sign-btn:hover { border-color: #1d4e7e; color: #1d4e7e; background: #eef4fb; }
 td.sign .x {
-  position: absolute; top: 1px; right: 2px; border: none; background: none;
-  color: #c3ccd9; cursor: pointer; font-size: 11px; line-height: 1; padding: 0;
+  position: absolute; top: 0; right: 1px; border: none; background: none;
+  color: #7aa98a; cursor: pointer; font-size: 13px; line-height: 1;
+  padding: 0 2px; font-weight: 700;
 }
-td.sign:hover .x { color: #b4232a; }
+td.sign .x:hover { color: #b4232a; }
 .legend { font-size: 11px; color: #8a93a4; margin-top: 8px; }
 
 .bench-pick {
