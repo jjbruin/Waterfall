@@ -136,6 +136,54 @@ def main() -> int:
             str(st["period_end"]))
     else:
         print("   (statement not present -- skipped)")
+    # A ZERO-BALANCE ACCOUNT PRINTS `.00`, NOT `0.00`. Measured against the 64
+    # real June 2026 statements: this one detail refused 46 of them, including
+    # statements carrying real amounts, because a single `.00` anywhere in the
+    # four-figure row broke the whole line. 14 filed before the fix, 45 after.
+    z = ts.parse_statement_text(
+        "Account Number: XX-XXXX-4178\n"
+        "For the period 06/16/2026 to 06/30/2026\n"
+        "Balance Summary\n"
+        "Beginning Deposits and Checks and Ending\n"
+        "balance other credits other debits balance\n"
+        ".00 .00 .00 .00\n", source_file="zero.pdf")
+    chk("a zero-balance statement reads as 0.00, not as a refusal",
+        not z.get("error") and z["ending_balance"] == 0.0, str(z)[:110])
+    chk("and it still foots", z.get("internally_consistent") is True)
+    # The commoner case: real money with a zero in one column.
+    mixed = ts.parse_statement_text(
+        "Account Number: XX-XXXX-9221\n"
+        "balance other credits other debits balance\n"
+        "30,832.24 .00 11,712.76 19,119.48\n", source_file="mixed.pdf")
+    chk("a row mixing real amounts with .00 reads all four",
+        mixed["beginning_balance"] == 30832.24
+        and mixed["ending_balance"] == 19119.48, str(mixed)[:110])
+
+    # PNC writes an overdraft with a TRAILING minus. Read as positive it would
+    # be a wrong balance rather than a refusal, which is the worse failure.
+    chk("a trailing minus is read as negative", ts._money("1,234.56-") == -1234.56)
+    chk("and an ordinary figure is unaffected",
+        ts._money("571,750.04") == 571750.04)
+    chk("`.00` parses as zero", ts._money(".00") == 0.0)
+
+    # THE FOUR FIGURES COME FROM UNDER THE SUMMARY HEADER. Loosening the number
+    # pattern made more lines matchable, so "the first four money figures in
+    # the document" stopped being safe -- a totals block further up could win.
+    anchored = ts.parse_statement_text(
+        "Some Total 1.00 2.00 3.00 4.00\n"
+        "balance other credits other debits balance\n"
+        "100.00 50.00 25.00 125.00\n", source_file="anchor.pdf")
+    chk("an earlier four-figure row does not win over the summary",
+        anchored["beginning_balance"] == 100.0
+        and anchored["ending_balance"] == 125.0, str(anchored)[:110])
+
+    # A statement from a DIFFERENT BANK is refused rather than half-read. One
+    # of the 64 June files is a Wells Fargo statement.
+    wf = ts.parse_statement_text(
+        "Account Number: 5825-5092\nWells Fargo\n", source_file="wf.pdf")
+    chk("a non-PNC statement is refused, not half-read",
+        bool(wf.get("error")) and wf["ending_balance"] is None)
+
     # A scanned statement must say so rather than return zeros.
     blank = ts.parse_statement_text("", source_file="scan.pdf")
     chk("a scanned statement is refused, not read as zero",

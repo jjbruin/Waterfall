@@ -292,8 +292,37 @@ def parse_activity(df: pd.DataFrame, source_file: str = "") -> dict:
     return {"rows": rows, "skipped": skipped, "accounts": accounts}
 
 
-_BAL_LINE = re.compile(
-    r"([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})")
+#: One money figure as PNC prints it. THE INTEGER PART IS OPTIONAL: a
+#: zero-balance account prints `.00`, not `0.00`, and 46 of the 64 June 2026
+#: statements were refused because of it -- including ones carrying real
+#: amounts, since a single `.00` anywhere in the row broke the whole line.
+#: A TRAILING MINUS is PNC's overdraft notation and must be read, or a negative
+#: balance parses as positive and the account reconciles to the wrong sign.
+_MONEY = r"(-?[\d,]*\.\d{2}-?)"
+_BAL_LINE = re.compile(r"%s\s+%s\s+%s\s+%s" % (_MONEY, _MONEY, _MONEY, _MONEY))
+#: The summary's own header, so the four figures are read from the row BELOW it
+#: rather than from the first four money figures anywhere in the document.
+_BAL_HEADER = re.compile(r"other\s+debits\s+balance", re.I)
+
+
+def _money(v) -> Optional[float]:
+    """A statement figure, including PNC's trailing-minus overdraft notation.
+
+    Kept separate from `_num` deliberately: the ACTIVITY export carries its
+    sign in a Credit/Debit column and never a trailing minus, so teaching the
+    shared parser to strip one would widen it for no reason and quietly accept
+    a malformed amount there.
+    """
+    if v is None:
+        return None
+    t = str(v).strip()
+    neg = t.endswith("-")
+    if neg:
+        t = t[:-1].strip()
+    n = _num(t)
+    if n is None:
+        return None
+    return -abs(n) if neg else n
 _PERIOD = re.compile(r"period\s+(\d{2}/\d{2}/\d{4})\s+to\s+(\d{2}/\d{2}/\d{4})",
                      re.I)
 _ACCT = re.compile(r"Account\s+Number:\s*([X\-\d]+)", re.I)
@@ -327,12 +356,18 @@ def parse_statement_text(txt: str, source_file: str = "") -> dict:
     a = _ACCT.search(txt)
     if a:
         out["account_suffix"] = a.group(1).strip()
-    b = _BAL_LINE.search(txt)
+    # ANCHORED TO THE SUMMARY HEADER when there is one. Loosening the number
+    # pattern to accept `.00` makes more lines matchable, so "the first four
+    # money figures in the document" stopped being a safe rule -- a total block
+    # further up could win. Falls back to the whole text for any layout that
+    # does not carry the header.
+    h = _BAL_HEADER.search(txt)
+    b = _BAL_LINE.search(txt, h.end()) if h else _BAL_LINE.search(txt)
     if b:
-        out["beginning_balance"] = _num(b.group(1))
-        out["credits_total"] = _num(b.group(2))
-        out["debits_total"] = _num(b.group(3))
-        out["ending_balance"] = _num(b.group(4))
+        out["beginning_balance"] = _money(b.group(1))
+        out["credits_total"] = _money(b.group(2))
+        out["debits_total"] = _money(b.group(3))
+        out["ending_balance"] = _money(b.group(4))
         # The statement's own four figures have to agree before any of them is
         # trusted; a mis-parse usually shows up here first.
         beg, cr, db, end = (out["beginning_balance"], out["credits_total"],
