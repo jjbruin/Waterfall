@@ -248,6 +248,38 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v482` = `11f9ca8` (Two things. DEAL ANALYSIS: the extension test — what
+    paydown would clear the covenant, and what if it is negotiated. `nReqDSR` is
+    the EXTENSION test and `nRequiredDCR` the ongoing covenant (Jim, Sep 17
+    2026); they are both ratios in the same units, so testing the wrong one
+    answers a different question. Reuses `planned_loans`' own primitives rather
+    than re-deriving a constraint. Seeded from MRI, editable, NEVER stored — a
+    proposed covenant is a negotiating position. The what-if re-solves from the
+    baseline's own NOI/rate/cap rate, so only the covenant moves between two
+    answers; it also needs no data load, since `fc_deal_full` and `mri_val` are
+    NOT on the cached result. Reports a paydown, applies nothing.
+    TRACKER, from Jim's screenshot: # column 46px -> 40px; the second header row
+    was pinned at a hardcoded `top:34px` and covered the first data row, now
+    MEASURED after render and on resize; the clear × was #c3ccd9 on pale green
+    and only coloured on hover, so it could not be found — now green-on-green
+    13px bold; the date cells no longer repeat the initials, since the column
+    header already names the approval level (the signer is still recorded and is
+    on the tooltip); Property imports the deal name via commitments; Prep is a
+    dropdown showing initials only.
+    THE DROPDOWN READS THE USER LIST. I reported that no account carried an
+    accounting role while the close is prepared by KH/NL/RE, so a users-sourced
+    dropdown would have been empty of the people doing the work; Jim added the
+    accounts mid-build. Verified on production: regolf -> RE
+    (accounting_manager), kherrmannn -> KH (accountant), jstewart -> JS (cfo) —
+    exactly his spreadsheet's initials, no collisions.
+    PROPERTY DECLINES RATHER THAN GUESSES: measured on production, 23 of 58
+    filled and 35 unresolved — the funds and holdings that commit into another
+    ENTITY rather than a deal (AMB6, KCREIT, OWPSC, PCBLE…) plus deal-level ones
+    like NOTTNV. A typed value is never overwritten. Resolving the rest needs a
+    second hop through the ownership chain; not built.
+    Guardrails: `workpaper_tracker_check.py` now 59 (one of the new checks was
+    passing VACUOUSLY — it tested overwrite-protection on a row with nothing to
+    overwrite) and `loan_extension_check.py` 31.)
   - `v481` = `516ffd6` (Deal Analysis now SAYS when a loan matures before the deal
     sells. The amortization schedule ends at maturity, so every month between it
     and the sale carried no debt service and the balance stopped being anywhere —
