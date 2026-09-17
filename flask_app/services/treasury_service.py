@@ -116,6 +116,20 @@ _DDL = [
         imported_at       TEXT
     )
     """,
+    # Pairings an accountant made by hand. Honoured before any automatic
+    # match and never re-decided: they looked at both sides, the matcher only
+    # looked at the amount.
+    """
+    CREATE TABLE IF NOT EXISTS tr_matches (
+        id             {pk},
+        account_number TEXT NOT NULL,
+        period         TEXT NOT NULL,
+        bank_id        INTEGER NOT NULL,
+        gl_item        TEXT,
+        matched_by     TEXT,
+        matched_at     TEXT
+    )
+    """,
     # A closed period's computed ending, which becomes the next period's
     # opening. Written when a period is reconciled.
     """
@@ -671,3 +685,257 @@ def _m(v) -> str:
         return "{:,.2f}".format(float(v))
     except (TypeError, ValueError):
         return "-"
+
+
+# ------------------------------------------------------------------ matching
+
+#: How far apart a bank date and a GL entry date may be and still be the same
+#: transaction. A wire posts the day it is sent; a cheque clears days later.
+#: Beyond this the pairing is still OFFERED but flagged, never silently made.
+NEAR_DAYS = 5
+
+
+def _gl_cash_lines(entityid: str, gl_account: str, period: str,
+                   engine) -> pd.DataFrame:
+    """The ledger's own cash-account entries for the period.
+
+    BALFOR 'B' rows are balance-forward carriers, not entries -- including them
+    would put a year's opening balance into a list of transactions to match.
+    """
+    try:
+        with engine.connect() as conn:
+            gl = pd.read_sql(text(
+                'SELECT "ENTRDATE", "ACCTNUM", "ITEM", "REF", "DESCRPN", '
+                '       "AMT", "BALFOR", "PERIOD", "ENTITYID" '
+                '  FROM gl_detail '
+                ' WHERE UPPER(TRIM("ENTITYID")) = :e '
+                '   AND UPPER(TRIM("ACCTNUM")) = :a '
+                '   AND TRIM("PERIOD") = :p'),
+                conn, params={"e": (entityid or "").strip().upper(),
+                              "a": (gl_account or "").strip().upper(),
+                              "p": str(period).strip()})
+    except Exception as e:
+        logger.warning("gl cash lines unavailable: %s", e)
+        return pd.DataFrame()
+    if gl.empty:
+        return gl
+    gl = gl[gl["BALFOR"].astype(str).str.strip().str.upper() != "B"].copy()
+    gl["_amt"] = pd.to_numeric(gl["AMT"], errors="coerce").fillna(0.0)
+    gl["_date"] = gl["ENTRDATE"].map(_iso)
+    return gl
+
+
+def _days_apart(a: Optional[str], b: Optional[str]) -> Optional[int]:
+    if not a or not b:
+        return None
+    try:
+        return abs((date.fromisoformat(a) - date.fromisoformat(b)).days)
+    except ValueError:
+        return None
+
+
+def match(account_number: str, period: str, engine=None) -> dict:
+    """Pair bank transactions with the ledger's cash entries for a period.
+
+    PAIRED, NOT SET-COMPARED. August 2026 carries the amount 285.92 seven
+    times; comparing sets of amounts would call all seven matched the moment
+    one was. Items are consumed as they are used, so seven bank lines need
+    seven ledger lines.
+
+    WITHIN AN AMOUNT, THE NEAREST DATE WINS, and a pairing further apart than
+    `NEAR_DAYS` is still offered but flagged -- a cheque takes days to clear and
+    that is normal, while a month apart usually means the wrong pair.
+
+    WHAT IS LEFT OVER IS THE RECONCILIATION. Ledger entries with no bank line
+    are deposits in transit or outstanding payments; bank lines with no ledger
+    entry are activity not yet recorded. Those two lists ARE the reconciling
+    items -- the September screenshot's 510,000.00 is four ledger deposits the
+    bank had not yet seen -- so they are returned in full rather than counted.
+
+    Nothing here writes a journal entry or decides an offset.
+    """
+    engine = engine or get_engine()
+    ensure_tables(engine)
+    acct = str(account_number).strip()
+    like = "%s-%s%%" % (period[:4], period[4:])
+
+    with engine.connect() as conn:
+        bank = pd.read_sql(text(
+            "SELECT id, as_of_date, amount, direction, signed_amount, "
+            "       reference, description, transaction_type "
+            "  FROM tr_activity WHERE account_number = :a "
+            "   AND as_of_date LIKE :p ORDER BY as_of_date, id"),
+            conn, params={"a": acct, "p": like})
+        meta = conn.execute(text(
+            "SELECT entityid, gl_cash_account FROM tr_accounts "
+            " WHERE account_number = :a"), {"a": acct}).fetchone()
+        manual = {r[0]: r[1] for r in conn.execute(text(
+            "SELECT bank_id, gl_item FROM tr_matches "
+            " WHERE account_number = :a AND period = :p"),
+            {"a": acct, "p": period}).fetchall()}
+
+    entityid = meta[0] if meta else None
+    gl_account = (meta[1] if meta else None) or DEFAULT_CASH_ACCOUNT
+    out = {"account_number": acct, "period": period, "entityid": entityid,
+           "gl_cash_account": gl_account, "matched": [], "bank_only": [],
+           "gl_only": [], "ambiguous": 0, "manual_count": len(manual)}
+
+    if not entityid:
+        out["error"] = ("This bank account is not mapped to an entity, so "
+                        "there is no ledger to match against.")
+        return out
+
+    gl = _gl_cash_lines(entityid, gl_account, period, engine)
+    if gl.empty:
+        out["error"] = ("No %s entries for %s in period %s. Either the GL feed "
+                        "has not been refreshed or this account posts elsewhere."
+                        % (gl_account, entityid, period))
+        out["bank_only"] = [_bank_row(r) for _, r in bank.iterrows()]
+        return out
+
+    # Manual pairings are honoured first and never re-decided.
+    used_gl, matched = set(), []
+    gl_by_item = {str(r["ITEM"]).strip(): r for _, r in gl.iterrows()}
+    for bid, item in manual.items():
+        row = bank[bank["id"] == bid]
+        g = gl_by_item.get(str(item).strip())
+        if row.empty or g is None:
+            continue
+        used_gl.add(str(item).strip())
+        matched.append(_pair(row.iloc[0], g, manual=True))
+    done_bank = {m["bank_id"] for m in matched}
+
+    # Then automatic pairing, amount group by amount group.
+    by_amount = {}
+    for _, g in gl.iterrows():
+        if str(g["ITEM"]).strip() in used_gl:
+            continue
+        by_amount.setdefault(round(float(g["_amt"]), 2), []).append(g)
+
+    ambiguous = 0
+    for _, b in bank.iterrows():
+        if b["id"] in done_bank:
+            continue
+        amt = round(float(b["signed_amount"]), 2)
+        cands = by_amount.get(amt) or []
+        if not cands:
+            continue
+        if len(cands) > 1:
+            ambiguous += 1
+        # Nearest entry date wins; an undated candidate sorts last rather than
+        # being treated as a perfect match.
+        cands.sort(key=lambda g: (_days_apart(b["as_of_date"], g["_date"])
+                                  if _days_apart(b["as_of_date"], g["_date"])
+                                  is not None else 9999))
+        g = cands.pop(0)
+        matched.append(_pair(b, g, manual=False))
+        used_gl.add(str(g["ITEM"]).strip())
+
+    paired_bank = {m["bank_id"] for m in matched}
+    out["matched"] = matched
+    out["ambiguous"] = ambiguous
+    out["bank_only"] = [_bank_row(r) for _, r in bank.iterrows()
+                        if r["id"] not in paired_bank]
+    out["gl_only"] = [_gl_row(g) for _, g in gl.iterrows()
+                      if str(g["ITEM"]).strip() not in used_gl]
+
+    out["bank_total"] = float(bank["signed_amount"].sum()) if not bank.empty else 0.0
+    out["gl_total"] = float(gl["_amt"].sum())
+    out["difference"] = out["bank_total"] - out["gl_total"]
+    out["ties"] = abs(out["difference"]) < 0.01
+    # Named the way an accountant names them, because that is what they are.
+    out["deposits_in_transit"] = sum(r["amount"] for r in out["gl_only"]
+                                     if r["amount"] > 0)
+    out["outstanding_payments"] = sum(r["amount"] for r in out["gl_only"]
+                                      if r["amount"] < 0)
+    out["unrecorded_on_the_ledger"] = sum(r["signed_amount"]
+                                          for r in out["bank_only"])
+    out["headline"] = _match_headline(out)
+    return out
+
+
+def _pair(b, g, manual: bool) -> dict:
+    d = _days_apart(b["as_of_date"], g["_date"])
+    return {
+        "bank_id": int(b["id"]),
+        "bank_date": b["as_of_date"],
+        "bank_amount": float(b["signed_amount"]),
+        "bank_description": (b["description"] or "")[:160],
+        "gl_item": str(g["ITEM"]).strip(),
+        "gl_date": g["_date"],
+        "gl_amount": float(g["_amt"]),
+        "gl_description": str(g["DESCRPN"] or "")[:160],
+        "gl_ref": str(g["REF"] or "").strip(),
+        "days_apart": d,
+        # Offered, not hidden: a pair this far apart is usually the wrong pair.
+        "far_apart": (d is not None and d > NEAR_DAYS),
+        "manual": manual,
+    }
+
+
+def _bank_row(r) -> dict:
+    return {"bank_id": int(r["id"]), "date": r["as_of_date"],
+            "amount": float(r["amount"]), "direction": r["direction"],
+            "signed_amount": float(r["signed_amount"]),
+            "reference": r["reference"],
+            "transaction_type": r["transaction_type"],
+            "description": (r["description"] or "")[:200]}
+
+
+def _gl_row(g) -> dict:
+    return {"gl_item": str(g["ITEM"]).strip(), "date": g["_date"],
+            "amount": float(g["_amt"]), "ref": str(g["REF"] or "").strip(),
+            "description": str(g["DESCRPN"] or "")[:200],
+            # An accountant reads these as two different things.
+            "kind": "deposit in transit" if float(g["_amt"]) > 0
+                    else "outstanding payment"}
+
+
+def _match_headline(o: dict) -> str:
+    parts = ["%d of %d bank items matched to the ledger."
+             % (len(o["matched"]), len(o["matched"]) + len(o["bank_only"]))]
+    if o["ties"]:
+        parts.append("The totals agree.")
+    else:
+        parts.append("The totals differ by %s." % _m(o["difference"]))
+    if o["gl_only"]:
+        parts.append("%d ledger entr%s not on the bank: %s of deposits in "
+                     "transit and %s of outstanding payments."
+                     % (len(o["gl_only"]),
+                        "y is" if len(o["gl_only"]) == 1 else "ies are",
+                        _m(o["deposits_in_transit"]),
+                        _m(abs(o["outstanding_payments"]))))
+    if o["bank_only"]:
+        parts.append("%d bank item%s not on the ledger, netting %s."
+                     % (len(o["bank_only"]), "" if len(o["bank_only"]) == 1
+                        else "s", _m(o["unrecorded_on_the_ledger"])))
+    if o["ambiguous"]:
+        parts.append("%d had more than one candidate at the same amount and "
+                     "were paired on the nearest date." % o["ambiguous"])
+    return " ".join(parts)
+
+
+def set_match(account_number: str, period: str, bank_id: int, gl_item,
+              user: str = "", engine=None) -> dict:
+    """Pin a pairing by hand, or remove one when `gl_item` is empty.
+
+    A manual pairing is honoured before any automatic one and is never
+    re-decided, because the accountant looked at both sides and the matcher
+    only looked at the amount.
+    """
+    engine = engine or get_engine()
+    ensure_tables(engine)
+    now = datetime.utcnow().isoformat(timespec="seconds")
+    item = (str(gl_item).strip() if gl_item is not None else "")
+    with engine.begin() as conn:
+        conn.execute(text(
+            "DELETE FROM tr_matches WHERE account_number = :a AND period = :p "
+            "  AND bank_id = :b"),
+            {"a": account_number, "p": period, "b": int(bank_id)})
+        if item:
+            conn.execute(text(
+                "INSERT INTO tr_matches (account_number, period, bank_id, "
+                " gl_item, matched_by, matched_at) VALUES (:a,:p,:b,:i,:u,:t)"),
+                {"a": account_number, "p": period, "b": int(bank_id),
+                 "i": item, "u": user, "t": now})
+    return {"ok": True, "bank_id": int(bank_id), "gl_item": item or None}

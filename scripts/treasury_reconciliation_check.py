@@ -219,12 +219,119 @@ def main() -> int:
             abs((ts.reconcile(acct, "202609", engine=eng)["computed_ending"]
                  or 0) - (nxt["opening"] or 0)) < 0.01)
 
-        for t in ("tr_activity", "tr_statements", "tr_periods", "tr_accounts"):
+        _match_section(ts, eng, rows, real)
+
+        for t in ("tr_activity", "tr_statements", "tr_periods", "tr_accounts",
+                  "tr_matches"):
             with eng.begin() as c:
                 c.execute(text("DELETE FROM %s WHERE account_number = :a" % t),
                           {"a": acct})
 
     return _report()
+
+
+# ---- 5. matching bank items to the ledger --------------------------
+#
+# Uses the GL upload's own MR10005000 lines as the ledger side, because that is
+# exactly what `gl_detail` holds once the entry is posted.
+def _seed_gl(eng, entityid, acct, period):
+    """Put the GL upload's cash lines into gl_detail as the ledger side."""
+    import pandas as pd
+    from sqlalchemy import text as _t
+    if not GL.exists():
+        return 0
+    gl = pd.read_csv(GL).dropna(how="all")
+    gl = gl[gl["AcctNum"] == acct]
+    with eng.begin() as c:
+        c.execute(_t('DELETE FROM gl_detail WHERE "ENTITYID" = :e'),
+                  {"e": entityid})
+        for i, r in gl.reset_index(drop=True).iterrows():
+            d = str(r["ENTRDATE"])
+            c.execute(_t(
+                'INSERT INTO gl_detail ("ENTITYID","PERIOD","ENTRDATE",'
+                '"ACCTNAME","ACCTNUM","BASIS","BALFOR","ITEM","REF","DESCRPN",'
+                '"SEGMENTID","RLTDENTITY","RLTDENTITY_NAME","AMT") VALUES '
+                '(:e,:p,:d,:an,:a,:b,:bf,:i,:rf,:ds,NULL,NULL,NULL,:amt)'),
+                {"e": entityid, "p": period, "d": d, "an": "Cash",
+                 "a": acct, "b": "B", "bf": "N", "i": "IT%04d" % i,
+                 "rf": "JE", "ds": str(r["Descrpn"])[:200],
+                 "amt": float(r["Amount"])})
+    return len(gl)
+
+
+def _match_section(ts, eng, rows, real):
+    from sqlalchemy import text as _t
+    acct_no = AUG["account"]
+    print("\n5. Matching bank items to the ledger")
+    if not real:
+        print("   (real files not present -- skipped)")
+        return
+    n = _seed_gl(eng, "AMB6", "MR10005000", "202608")
+    chk("the ledger's cash lines are available", n == 24, str(n))
+    ts.import_activity(rows, eng)
+    ts.set_account(acct_no, entityid="AMB6", gl_cash_account="MR10005000",
+                   user="check", engine=eng)
+
+    m = ts.match(acct_no, "202608", eng)
+    chk("no error", not m.get("error"), str(m.get("error"))[:90])
+    # PAIRED, NOT SET-COMPARED: 285.92 appears seven times in August. A set
+    # comparison would call all seven matched the moment one was.
+    chk("all 24 bank items pair with 24 ledger entries",
+        len(m["matched"]) == 24, str(len(m["matched"])))
+    chk("nothing is left on either side",
+        not m["bank_only"] and not m["gl_only"],
+        "bank_only=%d gl_only=%d" % (len(m["bank_only"]), len(m["gl_only"])))
+    chk("the totals agree", m["ties"] is True, str(m.get("difference")))
+    chk("repeated amounts are consumed, not reused",
+        len({p["gl_item"] for p in m["matched"]}) == 24)
+    chk("and the repeats were noticed as ambiguous", m["ambiguous"] > 0,
+        str(m["ambiguous"]))
+
+    # ---- deposits in transit, which is September's real case ----
+    # Drop two bank credits: the ledger has them, the bank has not seen them.
+    with eng.begin() as c:
+        ids = [r[0] for r in c.execute(_t(
+            "SELECT id FROM tr_activity WHERE account_number = :a "
+            "  AND direction = 'credit' ORDER BY amount DESC LIMIT 2"),
+            {"a": acct_no}).fetchall()]
+        for i in ids:
+            c.execute(_t("DELETE FROM tr_activity WHERE id = :i"), {"i": i})
+    m2 = ts.match(acct_no, "202608", eng)
+    chk("ledger entries the bank has not seen are left over",
+        len(m2["gl_only"]) == 2, str(len(m2["gl_only"])))
+    chk("and are named deposits in transit",
+        all(g["kind"] == "deposit in transit" for g in m2["gl_only"]),
+        str([g["kind"] for g in m2["gl_only"]]))
+    chk("the difference equals what is outstanding",
+        abs(m2["difference"] + m2["deposits_in_transit"]) < 0.01,
+        "%s vs %s" % (m2["difference"], m2["deposits_in_transit"]))
+    chk("the headline says so in an accountant's words",
+        "deposits in transit" in m2["headline"], m2["headline"][:110])
+
+    # ---- a manual pairing outranks the matcher ----
+    m3 = ts.match(acct_no, "202608", eng)
+    if m3["bank_only"] and m3["gl_only"]:
+        b = m3["bank_only"][0]["bank_id"]
+        g = m3["gl_only"][0]["gl_item"]
+        ts.set_match(acct_no, "202608", b, g, "check", eng)
+        m4 = ts.match(acct_no, "202608", eng)
+        chk("a hand-made pairing is honoured even across amounts",
+            any(p["bank_id"] == b and p["gl_item"] == g and p["manual"]
+                for p in m4["matched"]))
+        ts.set_match(acct_no, "202608", b, None, "check", eng)
+        m5 = ts.match(acct_no, "202608", eng)
+        chk("and can be removed again",
+            not any(p["bank_id"] == b and p["manual"] for p in m5["matched"]))
+
+    # An unmapped account cannot be matched, and says why rather than
+    # returning an empty result that looks reconciled.
+    ts.set_account(acct_no, entityid="", engine=eng)
+    m6 = ts.match(acct_no, "202608", eng)
+    chk("an unmapped account explains itself",
+        bool(m6.get("error")) and "not mapped" in m6["error"], str(m6.get("error"))[:70])
+    ts.set_account(acct_no, entityid="AMB6", engine=eng)
+    with eng.begin() as c:
+        c.execute(_t('DELETE FROM gl_detail WHERE "ENTITYID" = :e'), {"e": "AMB6"})
 
 
 def _report():
