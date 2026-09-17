@@ -102,6 +102,8 @@ async function loadPreparers() {
 
 /** Fill the Property column from the deal each entity holds. Never overwrites
  *  a typed value — a value the CFO typed is a decision, a derived one a guess. */
+/** Fill the Property column by walking commitments. Never overwrites a typed
+ *  value, and every value it does write says how it was reached. */
 async function fillProperties() {
   if (!cycleId.value) return
   try {
@@ -110,7 +112,8 @@ async function fillProperties() {
     await loadSchedule()
     flash(`Filled ${r.data.filled} propert${r.data.filled === 1 ? 'y' : 'ies'} from the deals.` +
       (r.data.kept_existing ? ` ${r.data.kept_existing} already had a value and were left alone.` : '') +
-      (r.data.unresolved_count ? ` ${r.data.unresolved_count} could not be resolved to a single deal.` : ''))
+      (r.data.unresolved_count ? ` ${r.data.unresolved_count} could not be resolved.` : '') +
+      ' Inferred names are marked — a superscript 2 means it was reached two levels down and is worth a glance.')
   } catch (e: any) { error.value = e.response?.data?.error || e.message }
 }
 
@@ -611,11 +614,25 @@ onMounted(loadCycles)
                   <button class="link" @click="openPackage(r.package_id)">{{ r.entityid }}</button>
                   <div class="ent-name">{{ r.entity_name }}</div>
                 </td>
-                <td class="prop">
+                <!-- A DERIVED PROPERTY SAYS SO. The name is a starting point
+                     reached by walking commitments, and at two levels it can be
+                     confidently wrong — TGA6 is a fund that happens to reach one
+                     deal, so it comes back as that deal where the CFO's sheet
+                     says "Various". The marker is how a reader tells an
+                     inference from a decision; typing over it clears the
+                     marker, because then it is his. -->
+                <td class="prop" :class="{ inferred: r.property_basis }">
                   <input v-if="canManageClose" class="txt-in" :value="r.property_name || ''"
                          placeholder="—"
+                         :title="r.property_basis
+                                 ? 'Inferred: ' + r.property_basis + '. Type over it to make it yours.'
+                                 : ''"
                          @change="setProperty(r.package_id, ($event.target as HTMLInputElement).value)" />
                   <span v-else>{{ r.property_name || '—' }}</span>
+                  <span v-if="r.property_basis" class="inf-mark"
+                        :title="'Inferred: ' + r.property_basis">
+                    {{ r.property_basis.includes('levels down') ? '²' : '¹' }}
+                  </span>
                 </td>
                 <!-- INITIALS ONLY in this column, which is why the name lives
                      in the option text and the title rather than the cell. -->
@@ -1221,5 +1238,12 @@ td.sign .x:hover { color: #b4232a; }
   font-weight: 700; padding-top: 4px;
 }
 .small.warn { color: #b4232a; }
+
+
+td.prop.inferred .txt-in { color: #5a6475; font-style: italic; }
+.inf-mark {
+  color: #8a6d35; font-weight: 700; font-size: 11px; cursor: help;
+  margin-left: 1px; vertical-align: super;
+}
 
 </style>

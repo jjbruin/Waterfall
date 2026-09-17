@@ -261,7 +261,10 @@ def ensure_tracker_tables(engine=None) -> None:
     # but a fresh one. Same trap `workpaper_service.ensure_tables` documents.
     for table, column, coltype in (
             ("wp_packages", "sort_order", "INTEGER"),
-            ("wp_packages", "property_name", "TEXT")):
+            ("wp_packages", "property_name", "TEXT"),
+            # HOW the property was arrived at, so an inferred name is never
+            # mistaken for a recorded one. NULL means a person typed it.
+            ("wp_packages", "property_basis", "TEXT")):
         try:
             with engine.begin() as c2:
                 c2.execute(text(
@@ -362,7 +365,7 @@ def grid(cycle_id: int, engine=None) -> dict:
 
         pkgs = conn.execute(text(
             "SELECT id, entityid, entity_name, state, preparer, reviewer, "
-            "       sort_order, property_name "
+            "       sort_order, property_name, property_basis "
             "  FROM wp_packages WHERE cycle_id = :cid"),
             {"cid": cycle_id}).fetchall()
         cells = _cells_for_cycle(conn, cycle_id)
@@ -418,6 +421,8 @@ def grid(cycle_id: int, engine=None) -> dict:
             "reviewer": p[5],
             "sort_order": p[6],
             "property_name": p[7],
+            # NULL when a person typed it; a sentence when the app inferred it.
+            "property_basis": p[8],
             "deliverables": deliverables,
             "signed_count": signed_total,
             "cell_count": len(_ORDERED_CELLS),
@@ -605,10 +610,14 @@ def set_property(package_id: int, name, user: str = "", engine=None) -> dict:
     ensure_tracker_tables(engine)
     val = (str(name).strip() if name is not None else "") or None
     with engine.begin() as conn:
+        # THE BASIS IS CLEARED when a person types the value. It describes how
+        # the app INFERRED a name; leaving it attached to something the CFO
+        # typed would credit his decision to a walk of the commitments table.
         conn.execute(text(
-            "UPDATE wp_packages SET property_name = :n WHERE id = :pid"),
+            "UPDATE wp_packages SET property_name = :n, property_basis = NULL "
+            " WHERE id = :pid"),
             {"n": val, "pid": package_id})
-    return {"ok": True, "property_name": val}
+    return {"ok": True, "property_name": val, "property_basis": None}
 
 
 def carry_forward(from_cycle_id: int, to_cycle_id: int,
@@ -624,8 +633,8 @@ def carry_forward(from_cycle_id: int, to_cycle_id: int,
     ensure_tracker_tables(engine)
     with engine.connect() as conn:
         src = conn.execute(text(
-            "SELECT entityid, sort_order, preparer, property_name "
-            "  FROM wp_packages WHERE cycle_id = :cid"),
+            "SELECT entityid, sort_order, preparer, property_name, "
+            "       property_basis FROM wp_packages WHERE cycle_id = :cid"),
             {"cid": from_cycle_id}).fetchall()
         dst = conn.execute(text(
             "SELECT id, entityid FROM wp_packages WHERE cycle_id = :cid"),
@@ -640,8 +649,9 @@ def carry_forward(from_cycle_id: int, to_cycle_id: int,
                 continue
             conn.execute(text(
                 "UPDATE wp_packages SET sort_order = :o, preparer = :p, "
-                "       property_name = :n WHERE id = :pid"),
-                {"o": r[1], "p": r[2], "n": r[3], "pid": pid})
+                "       property_name = :n, property_basis = :b "
+                " WHERE id = :pid"),
+                {"o": r[1], "p": r[2], "n": r[3], "b": r[4], "pid": pid})
             applied += 1
     return {"ok": True, "applied": applied,
             # An entity in the new cycle that the old one did not have is new
@@ -801,24 +811,33 @@ def remove_preparer(initials, engine=None) -> dict:
 
 # ---------------------------------------------------------------- property
 
-def derive_properties(engine=None) -> Dict[str, dict]:
-    """Entity -> the deal it reports on, from ``commitments``.
+def derive_properties(engine=None, max_hops: int = 2) -> Dict[str, dict]:
+    """Entity -> the deal it reports on, walking ``commitments`` up to N levels.
 
-    Jim, Sep 17 2026: "import the associated deal name in the Property column."
+    Jim, Sep 17 2026: "import the associated deal name in the Property column"
+    and then, once the first hop was measured, "build hop 2 with the basis
+    visible."
 
-    ONE RULE CANNOT COVER ALL 58, and pretending otherwise would put a confident
-    wrong name on a statement package. Measured on production:
+    WHY MORE THAN ONE HOP. Most reporting entities do not commit into a deal;
+    they commit into another entity that does. Measured on production, one hop
+    leaves 35 of the 58 blank and two hops leaves 18 -- and six of the seven new
+    names match the CFO's own spreadsheet exactly (INVBPS -> Brainerd Place,
+    INVGAT and PIG2PA -> The Gathering, PPIPIT -> Berger Pittsburgh, TGAAS ->
+    Ascent, TGANOT -> Nottingham Village).
 
-      * exactly one commitment resolving to a deal -> that deal's name
-        (PPI35 -> Belleville Self Storage, PPI24 -> Giant 7);
-      * several -> "Various", which is the CFO's own spelling on his sheet
-        (OWPSC holds 3, PSC3 holds 23);
-      * one commitment into another ENTITY rather than a deal (KCREIT, PIGIPA,
-        AMB6), or none at all (NOTTNV, itself deal-level) -> nothing, left for
-        the CFO to type.
+    WHY THE BASIS IS RETURNED WITH IT, AND WHY THAT MATTERS MORE AT TWO HOPS
+    THAN AT ONE. The seventh new name is wrong: TGA6 is a fund, and at two
+    levels exactly one deal happens to be reachable, so it comes back as
+    "Presidential Arms JV" where the CFO's sheet says "Various". The walk cannot
+    tell a single-purpose chain from a fund that happens to have one reachable
+    holding. So every derived value says how it was reached, the screen shows
+    it, and the field stays editable -- the answer is a starting point that
+    declares itself, not a fact.
 
-    The field stays editable in every case: his sheet carries curated values
-    like "Management Company" that no rule would ever produce.
+    Three outcomes, unchanged in spirit from one hop:
+      * exactly one deal reachable  -> that deal's name
+      * several                     -> "Various", the CFO's own spelling
+      * none                        -> absent, left for him to type
     """
     engine = engine or get_engine()
     out: Dict[str, dict] = {}
@@ -844,14 +863,45 @@ def derive_properties(engine=None) -> Dict[str, dict]:
     names = dl.set_index(
         dl[dm["investmentid"]].astype(str).str.strip().str.upper()
     )[dm["investment_name"]].to_dict()
-    for inv, grp in com.groupby("_inv"):
-        held = sorted({e for e in grp["_ent"] if names.get(e)})
-        if len(held) == 1:
-            out[inv] = {"property_name": str(names[held[0]]).strip(),
-                        "basis": "the one deal it holds"}
-        elif len(held) > 1:
+    holdings = com.groupby("_inv")["_ent"].apply(list).to_dict()
+
+    def reach(start: str):
+        """Deals reachable from `start`, and the fewest hops that found one.
+
+        Breadth first, so `depth` is the SHALLOWEST level at which this entity
+        touches a deal -- which is what the basis should report. A cycle in the
+        data would otherwise walk forever, so visited nodes are never re-queued.
+        """
+        seen = {start}
+        found: Dict[str, int] = {}
+        frontier = [(start, 0)]
+        while frontier:
+            node, depth = frontier.pop(0)
+            if depth >= max_hops:
+                continue
+            for ent in holdings.get(node, []):
+                if names.get(ent):
+                    found.setdefault(ent, depth + 1)
+                elif ent not in seen:
+                    seen.add(ent)
+                    frontier.append((ent, depth + 1))
+        return found
+
+    for inv in holdings:
+        found = reach(inv)
+        if not found:
+            continue
+        hops = min(found.values())
+        via = "" if hops <= 1 else ", %d levels down" % hops
+        if len(found) == 1:
+            deal = next(iter(found))
+            out[inv] = {"property_name": str(names[deal]).strip(),
+                        "hops": hops,
+                        "basis": "the one deal it holds" + via}
+        else:
             out[inv] = {"property_name": "Various",
-                        "basis": "%d deals" % len(held)}
+                        "hops": hops,
+                        "basis": "%d deals%s" % (len(found), via)}
     return out
 
 
@@ -879,8 +929,9 @@ def apply_derived_properties(cycle_id: int, overwrite: bool = False,
                 skipped += 1
                 continue
             conn.execute(text(
-                "UPDATE wp_packages SET property_name = :n WHERE id = :id"),
-                {"n": d["property_name"], "id": pid})
+                "UPDATE wp_packages SET property_name = :n, property_basis = :b "
+                " WHERE id = :id"),
+                {"n": d["property_name"], "b": d.get("basis"), "id": pid})
             filled += 1
     return {"ok": True, "filled": filled, "kept_existing": skipped,
             "unresolved": sorted(unresolved),

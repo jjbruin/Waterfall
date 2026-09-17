@@ -314,6 +314,50 @@ def main() -> int:
         chk("entities it could not resolve are named, not silently skipped",
             "unresolved" in res3 and "unresolved_count" in res3)
 
+        # ---- 11b. two hops, and the basis that makes them safe ---------
+        #
+        # Jim, Sep 17 2026: "build hop 2 with the basis visible." The second hop
+        # halves the blanks and can be CONFIDENTLY WRONG — TGA6 is a fund that
+        # happens to reach exactly one deal at two levels, so it resolves to
+        # that deal where his sheet says "Various". The walk cannot tell a
+        # single-purpose chain from a fund with one reachable holding, so what
+        # makes it safe is that every value declares how it was reached.
+        print("\n11b. Two hops")
+        d1 = wt.derive_properties(engine=eng, max_hops=1)
+        d2 = wt.derive_properties(engine=eng, max_hops=2)
+        chk("two hops never resolves fewer than one",
+            set(d1) <= set(d2), "%d vs %d" % (len(d1), len(d2)))
+        chk("every derived value carries a basis and a hop count",
+            all(v.get("basis") and v.get("hops") for v in d2.values()))
+        chk("a one-hop answer does not claim to be deeper",
+            all("levels down" not in v["basis"]
+                for v in d2.values() if v["hops"] == 1))
+        deep = [v for v in d2.values() if v["hops"] > 1]
+        chk("a deeper answer says how deep",
+            all("levels down" in v["basis"] for v in deep),
+            str([v["basis"] for v in deep[:3]]))
+        # Shallowest wins: an entity reaching a deal directly must not be
+        # described as two levels away just because it also reaches one there.
+        chk("the basis reports the SHALLOWEST level a deal was found at",
+            all(v["hops"] == d1[k]["hops"] for k, v in d2.items() if k in d1))
+        chk("the walk stops at max_hops",
+            set(wt.derive_properties(engine=eng, max_hops=1))
+            <= set(wt.derive_properties(engine=eng, max_hops=2)))
+
+        if target is not None:
+            wt.apply_derived_properties(cid, overwrite=True, engine=eng)
+            row_i = _row(wt.grid(cid, eng), target)
+            chk("a filled property carries its basis onto the row",
+                bool(row_i.get("property_basis")), str(row_i.get("property_basis")))
+            # TYPING OVER IT CLEARS THE BASIS. Leaving it attached would credit
+            # the CFO's decision to a walk of the commitments table.
+            wt.set_property(target, "Management Company", "check", engine=eng)
+            row_t = _row(wt.grid(cid, eng), target)
+            chk("typing a property clears the basis",
+                row_t["property_name"] == "Management Company"
+                and row_t.get("property_basis") is None,
+                str(row_t.get("property_basis")))
+
         _drop(eng, cid)
         _drop(eng, nid)
 
