@@ -249,6 +249,32 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v494` = `d72c46b` (THE STATEMENT'S MASK IS NOT ALWAYS A TAIL. Jim asked
+    me to add the six accounts holding real money that PNC would not serve
+    activity for. FIVE OF THEM DID NOT NEED ADDING — they were registered all
+    along and the matching was wrong. `XX-XXXX-5765` hides the FRONT of the
+    number; `790-XXXXX55` hides the MIDDLE, and reading "the last four visible
+    digits" off the second gives 790 + 55 -> `79055` -> `9055`, an account that
+    exists nowhere, while the real 7900021255 sat untouched. It reported them
+    as unknown accounts, so the cause looked like missing data rather than a
+    bad heuristic — the kind of error that gets "fixed" by entering data that
+    was never missing.
+    The mask is now read as what it is: each run of X is that many unknown
+    digits, each printed digit is itself, and the pattern matches the WHOLE
+    number. `790-XXXXX55` -> `^790\d{5}55$`. Being anchored also makes it
+    STRICTER than before, so the guardrail's ambiguity fixture needed a genuine
+    same-length twin to still test anything. Against the 64 real June
+    statements: 45 filed before, 50 after.
+    ONE account is genuinely missing (PPI Life Storage NY, 119,701.35), so
+    `create_account` registers one by hand — nothing could before, since
+    accounts only ever self-registered from an activity import, which is no
+    help for an account quiet longer than PNC's 90-day window. THE FULL NUMBER
+    IS TYPED AND NEVER INFERRED: several of these sit in obvious number ranges
+    so guessing would usually work and would occasionally split one account in
+    two the moment real activity arrived under the true number. A masked number
+    is refused as input.
+    Still not filing, all benign: twelve 0.00 dormant accounts and one WELLS
+    FARGO statement in the PNC folder. Guardrail 69 -> 80 (54 on production).)
   - `v493` = `cab414c` (STATEMENTS IN BULK, AND A PARSER BUG THE REAL FILES
     FOUND. Jim asked whether to type fifty 6/30 opening balances or read them
     off the June statements; the statements win, being an external authority
