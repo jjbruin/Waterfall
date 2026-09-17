@@ -248,6 +248,19 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v483` = `5215888` (the tracker header stops covering the first data row —
+    reported twice, because the first fix did not work. It was sticky PER ROW,
+    row 2 pinned at an offset that must equal row 1's height: hardcoded 34px,
+    then measured at runtime, and the overlap survived both. Measured in a
+    standalone repro of the exact markup served through the dev server: row 1 is
+    22px and row 2 is 34px, so the 34px fallback sat twelve pixels too low. The
+    measurement was arithmetically right and simply never reached the CSS
+    variable. Fixed by deleting the arithmetic — `thead { position: sticky }`
+    sticks both rows as one block, so they cannot be mispositioned relative to
+    each other at any font size or zoom, with no JavaScript. Verified on BOTH
+    axes in a second repro carrying the left-pinned columns, since nested sticky
+    is where this would break: at rest thead.bottom 63 = firstRow.top 63, flush.
+    Not verified against the running app — that needs a login.)
   - `v482` = `11f9ca8` (Two things. DEAL ANALYSIS: the extension test — what
     paydown would clear the covenant, and what if it is negotiated. `nReqDSR` is
     the EXTENSION test and `nRequiredDCR` the ongoing covenant (Jim, Sep 17
