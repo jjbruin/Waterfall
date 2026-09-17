@@ -25,7 +25,7 @@
  * The tracker replicates `2Q26 - PSC Reporting Checklist & Calendar.xlsx`,
  * which is what the CFO runs the close from today.
  */
-import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import api from '../api/client'
 import { useAuthStore } from '../stores/auth'
 
@@ -48,13 +48,6 @@ const carryFrom = ref<number | null>(null)
 // Who can be assigned. Sourced from accounts carrying an accounting role, so
 // the list fills itself as those accounts are created.
 const preparers = ref<any[]>([])
-// THE SECOND HEADER ROW'S OFFSET IS MEASURED, NOT ASSUMED. It was pinned at a
-// hardcoded 34px; the first row is not 34px tall at every font size or zoom, so
-// the second row sat too low and covered the first data row (Jim, Sep 17 2026:
-// "The header is overlapping the first row of data"). Measured after mount and
-// on resize, it cannot drift again.
-const hdrRow1 = ref<HTMLElement | null>(null)
-const hdrOffset = ref(34)
 
 const cycles = ref<any[]>([])
 const cycleId = ref<number | null>(null)
@@ -121,11 +114,6 @@ async function fillProperties() {
   } catch (e: any) { error.value = e.response?.data?.error || e.message }
 }
 
-function measureHeader() {
-  const h = hdrRow1.value?.getBoundingClientRect().height
-  if (h && h > 0) hdrOffset.value = Math.round(h)
-}
-
 async function loadSchedule() {
   if (!cycleId.value) return
   schedLoading.value = true
@@ -133,8 +121,6 @@ async function loadSchedule() {
   try {
     sched.value = (await api.get(
       `/api/workpapers/cycles/${cycleId.value}/schedule`)).data
-    await nextTick()
-    measureHeader()
   } catch (e: any) {
     error.value = e.response?.data?.error || e.message
   } finally {
@@ -569,8 +555,8 @@ onMounted(loadCycles)
 
         <div v-else class="grid-wrap sched-wrap">
           <table class="grid sched">
-            <thead :style="{ '--hdr1': hdrOffset + 'px' }">
-              <tr ref="hdrRow1">
+            <thead>
+              <tr>
                 <th class="sticky-l ord" rowspan="2" title="The CFO's order. Type a number; the grid sorts by it.">#</th>
                 <th class="sticky-e" rowspan="2">Entity</th>
                 <th rowspan="2">Property</th>
@@ -1092,13 +1078,21 @@ table.grid.sched { font-size: 11.5px; border-collapse: separate; border-spacing:
 table.grid.sched th, table.grid.sched td {
   border-bottom: 1px solid #edf0f5; padding: 3px 6px; white-space: nowrap;
 }
+/* THE WHOLE THEAD STICKS AS ONE BLOCK.
+   It used to be per-row: row 1 at `top: 0` and row 2 at a second offset that
+   had to equal row 1's height. That offset was first hardcoded at 34px and then
+   measured at runtime, and BOTH were wrong — measured in a standalone repro of
+   this exact markup, row 1 is 22px and row 2 is 34px, so the 34px fallback put
+   row 2 twelve pixels too low, over the first data row. Jim reported the
+   overlap twice, the second time after the "fix".
+   Sticking the thead removes the arithmetic instead of correcting it: two rows
+   that move together cannot be mispositioned relative to each other, at any
+   font size or zoom, with no JavaScript. */
+table.grid.sched thead { position: sticky; top: 0; z-index: 3; }
 table.grid.sched thead th {
-  position: sticky; background: #f4f6fa; z-index: 3;
+  background: #f4f6fa;
   border-bottom: 1px solid #dde3ec;
 }
-table.grid.sched thead tr:first-child th { top: 0; }
-/* MEASURED, not guessed — see `hdrOffset`. */
-table.grid.sched thead tr:nth-child(2) th { top: var(--hdr1, 34px); }
 th.grp {
   text-align: center; font-size: 11px; letter-spacing: .02em;
   border-left: 2px solid #dde3ec !important;
@@ -1108,7 +1102,11 @@ th.tgt-h { border-left: 2px solid #dde3ec !important; }
 th .owner { font-weight: 500; color: #9aa3b2; font-size: 9.5px; }
 .sticky-l { position: sticky; left: 0; background: #fff; z-index: 2; }
 .sticky-e { position: sticky; left: 40px; background: #fff; z-index: 2; }
-thead .sticky-l, thead .sticky-e { z-index: 4; background: #f4f6fa; }
+thead .sticky-l, thead .sticky-e {
+  position: sticky; z-index: 4; background: #f4f6fa;
+}
+thead .sticky-l { left: 0; }
+thead .sticky-e { left: 40px; }
 /* Wide enough for four digits and no wider: 11.5px digits are ~7px each, so
    28px of glyph plus the input's own padding. Was 46px and looked like a column
    with nothing in it (Jim, Sep 17 2026). */
