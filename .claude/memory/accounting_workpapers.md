@@ -177,6 +177,51 @@ provenance is "the app produced it" is not reviewable.
 
 ---
 
+## Who may edit any of this (Sep 17 2026)
+
+**Two gates, both MEMBERSHIP checks, both in `flask_app/auth/routes.py`.**
+
+| | Who |
+|---|---|
+| `ACCOUNTING_ROLES` — edit anything in the section | admin, cfo, accounting_manager, accountant |
+| `CLOSE_PLAN_ROLES` — the plan of the close | admin, cfo |
+| read | everyone signed in |
+
+`CLOSE_PLAN_ROLES` covers **when the close opens, when each thing is due, and
+what order entities are worked in**: `POST /cycles`, `PUT /cycles/<id>/steps`,
+`PUT /packages/<id>/schedule/target`, `PUT /packages/<id>/schedule/order`,
+`POST /schedule/renumber`, `POST /schedule/carry-forward`. The team records what
+it has DONE against that plan — syncing entities, naming a preparer, setting a
+property, filling properties in bulk, and every sign-off.
+
+Renumber and carry-forward are in the narrower gate **because they write
+`sort_order`**. A rule covering the order cell but not the two buttons that
+rewrite the same column is defeated by clicking a different button.
+
+**WHY `roles_exactly` AND NOT `role_required`.** `role_required` compares
+LEVELS, and `analyst`, `accountant`, `accounting_manager` and `cfo` are ALL
+level 1 — so any level-based gate naming one of them admits all four. Jim's own
+day-to-day login is an analyst one and he wants it read-only here (Sep 17 2026),
+which levels cannot express. `roles_exactly` checks the name and fails closed on
+an unknown one.
+
+**THE SCREEN AND THE SERVER MUST AGREE.** `v480` gated the screen on `admin`
+while the API would have accepted the CFO's writes, so the buttons simply were
+not rendered — indistinguishable, to the person using it, from having no access.
+Then the fix went one role too far: `['admin', 'cfo']` locked out the
+accountants who prepare the close. Both views now read `auth.canEditAccounting`
+/ `auth.canSetClosePlan` from the store, and the guardrail compares the Vue
+lists to the Python ones **by name**.
+
+**`scripts/accounting_access_check.py` (54) ENUMERATES THE SECTION'S ROUTES FROM
+THE APP** and calls each as each role. The check it replaced grepped for a
+decorator's exact text, which proves a string is present and is blind to a route
+that never had one — that blindness was hiding **six writes with no role check
+at all**, including exhibit deletion and tracker sign-off, reachable by any
+signed-in user including viewers. Every narrowing is asserted in BOTH
+directions, because a rule tested only in the refusing direction is satisfied by
+locking everyone out, which here would stop the close.
+
 ## Not done yet
 
 See `open_items.md` §6. In short: the MR22000002 tagging question is with

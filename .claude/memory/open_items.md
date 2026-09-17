@@ -652,6 +652,74 @@ Owner: **Jim** to read the breakdown; then whoever settles §1.7 / §2.3.
 
 ---
 
+## 7. Treasury and accounting access (Sep 17 2026)
+
+### 7.1 The PNC connection — not built, and it needs Jim's banker
+
+`v488`–`v490` shipped the bank side reading **files**: a PNC activity CSV and a
+statement PDF, imported by hand. The automated feed is the next phase and is
+blocked on PNC, not on code.
+
+Researched Sep 17 2026:
+- **PINACLE Connect** has a fixed ERP connector list; this app is not on it.
+- **developer.pnc.com** offers OAuth 2.0 + mTLS APIs, gated behind a
+  Relationship Manager / Treasury Management Officer conversation.
+- **BAI2 over SFTP** is the fallback and is how most firms this size do it.
+
+**No screen-scraping of PINACLE.** Credentials stay with PNC's own mechanism.
+
+**Owner: Jim.** A TMO email was offered and not requested. Until then the
+import tab is the feed, and it works.
+
+### 7.2 `current_available` is `None` until that connection exists
+
+Deliberate, not a gap, but it will be asked about. Available is ledger less
+holds, float and pending debits, which exist only at the bank. The column is on
+the accounts tab with the reason printed under it. **Do not fill it with the
+ledger figure** — guardrail `treasury_api_check.py` asserts it stays `None`.
+
+### 7.3 GL and IA upload templates — Phase 3, waiting on the templates
+
+The accountant's coding has to come out as the MRI upload templates. Jim has
+them ("I can provide the journal entry templates that upload the entries into
+MRI when you need them") and the blank + August-AMB6 examples of both were
+attached Sep 17 2026. **Nothing in treasury posts to MRI today.**
+
+### 7.4 Six accounting writes had NO role check — FIXED, and worth knowing why
+
+`v490`. `transition`, `assign`, exhibit upload, **exhibit DELETE**, schedule
+signoff and step writes were `@login_required` only: any signed-in user,
+**viewers included**, could delete a workpaper exhibit or sign off a tracker
+cell.
+
+They survived a guardrail that had been reporting green, because that check
+grepped for a decorator's exact text. **A string that is absent looks exactly
+like a rule that does not apply.** Found by rewriting the check to enumerate the
+section's routes from the Flask app and call each one as each role.
+
+**The lesson generalises:** any access rule asserted by reading source text is
+blind to the routes that never had the text. `scripts/accounting_access_check.py`
+is the pattern to copy — it covers new endpoints the day they are written.
+
+### 7.5 The role model cannot express "the CFO but not an accountant" by level
+
+`ROLE_LEVELS` puts `analyst`, `accountant`, `accounting_manager` and `cfo` all
+at level 1. `role_required` is a level comparison, so naming any one of them
+admits all four. The accounting section now uses `roles_exactly` (membership).
+
+**Still true everywhere else in the app.** 104 endpoints use `role_required`. If
+a future rule needs to separate two level-1 roles outside accounting, it needs
+`roles_exactly` too — the decorator's wording will otherwise read as a
+restriction that is not there.
+
+### 7.6 Deadline validation is write-time only — unchanged, restated
+
+`validate_due_date()` runs when a deadline is written. A bad deadline stored
+before the rule existed stays stored. Now that deadlines are CFO-only, fewer
+people can introduce one, but nothing sweeps the existing rows.
+
+---
+
 ## 6. Accounting workpapers — the statement engine (Sep 14 2026)
 
 ### 6.1 MR22000002 is tagged to the wrong side of the balance sheet — ASK ACCOUNTING

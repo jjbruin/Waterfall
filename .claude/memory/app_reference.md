@@ -266,6 +266,36 @@ Annual valuation cycle: records → sign-off → committee approval → publish.
   **approve on behalf of** an outstanding seat; the vote records who it was cast for
   (amber chip on the UI). Publish writes `valuations` / `mri_val`.
 
+### 10c. Accounting — Workpaper Packages
+Two tabs. **Production tracker**: every REP entity, the CFO's order number, the
+preparer's initials, and per deliverable a target date and its sign-offs (14
+cells per entity). **Package workbench**: one entity, with its drafted
+statements at the top and the step -> evidence mapping below. Full detail in
+`accounting_workpapers.md`.
+
+*Who can change what* — reads are open to everyone; editing is
+`ACCOUNTING_ROLES` (admin, cfo, accounting_manager, accountant); the **order
+number, target dates, Renumber, Carry forward and New close cycle** are
+`CLOSE_PLAN_ROLES` (admin, cfo). An analyst sees the whole section read-only.
+
+### 10d. Accounting — Treasury
+Under Accounting, at `/treasury`. Three tabs; full detail in `treasury.md`.
+
+- **Accounts** — every bank account, its entity and GL cash account (default
+  `MR10005000`), **current ledger** carried from the last close, and **current
+  available**, which is deliberately BLANK with the reason shown: it is a bank
+  fact absent from any export and arrives with the PNC connection.
+- **Import** — the PNC activity CSV and the statement PDF. Re-importing the same
+  export adds nothing; rows that could not be read are listed, not logged; a file
+  that is not an export is refused rather than reported as "0 imported".
+- **Reconciliation** — opening + bank movement against the statement AND against
+  the ledger, **each leg separately**, then the matcher: what paired, what is a
+  deposit in transit or an outstanding payment, and what the bank has that the
+  ledger does not. Hand-pairing outranks the matcher. Closing a period records
+  its computed ending, which becomes the next period's opening.
+
+Nothing here posts to MRI; the GL/IA upload templates are the next phase.
+
 ### 11. New Business
 Deal pipeline, lease due diligence, and deal evaluation workspace under the "New Business" sidebar section.
 

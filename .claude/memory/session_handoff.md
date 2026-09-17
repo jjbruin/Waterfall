@@ -1,4 +1,79 @@
-# Session Handoff — through Sep 15 2026 (v466 live)
+# Session Handoff — through Sep 17 2026 (v490 live)
+
+## Sep 17 2026 — TREASURY, and who owns the accounting section
+
+**`v488` = `492fe04`, `v489` = `ce80ba5`, `v490` = `1496daa`.**
+`426633b` is committed and NOT deployed (the order-number gate).
+
+Topic files: **`treasury.md`** (new — the module in full) and
+`accounting_workpapers.md` (a new "Who may edit any of this" section).
+Open items: **`open_items.md` §7**.
+
+### Treasury is live at `/treasury`
+
+Three tabs — accounts, import, reconciliation. Built from Jim's real August
+AMB6 files, and the figures were measured before any code was written:
+
+```
+beginning (PNC statement)   571,750.04
+net movement (PNC export)  -560,022.54
+computed ending              11,727.50
+ending (PNC statement)       11,727.50   ties
+MRI's September opens at     11,727.50   carries forward
+```
+
+**`current_available` is `None` and the screen says why.** Available is ledger
+less holds, float and pending debits — bank facts absent from any export. Do not
+be tempted to fill that column; a guardrail asserts it stays empty. Current
+ledger IS shown, carried from the last close, and says which period it came from.
+
+The PNC API is **not** built — §7.1, blocked on Jim's banker, no screen-scraping.
+GL/IA upload templates are Phase 3 — nothing here posts to MRI.
+
+### The thing worth carrying forward: how the access bug was found
+
+Jim asked for accounting to be editable only by accounting. Two discoveries:
+
+1. **`role_required` compares LEVELS, and analyst/accountant/accounting_manager/
+   cfo are all level 1.** No arrangement of role names could exclude analysts.
+   Needed a membership check (`roles_exactly`). This is still true everywhere
+   else in the app — §7.5.
+
+2. **Six accounting writes had NO role check at all**, including exhibit
+   DELETE and tracker sign-off, reachable by any signed-in user. They had
+   survived a green guardrail because that guardrail **grepped for a
+   decorator's text**. A string that is absent looks exactly like a rule that
+   does not apply. Rewriting it to **enumerate routes from the Flask app** and
+   call each as each role found them immediately — §7.4. Copy that pattern.
+
+### Two gates now
+
+| | Who |
+|---|---|
+| `ACCOUNTING_ROLES` — edit anything in the section | admin, cfo, accounting_manager, accountant |
+| `CLOSE_PLAN_ROLES` — when the close opens, when things are due, what order | admin, cfo |
+| read | everyone signed in |
+
+Renumber and carry-forward sit in the narrower gate **because they write
+`sort_order`** — gating the order cell alone would be defeated by a different
+button. Fill properties does NOT, because it writes only the Property column.
+
+**Assert every narrowing in BOTH directions.** A rule tested only in the
+refusing direction is satisfied by locking everyone out — which here would stop
+the close. The screen was wrong in exactly that way twice: `v480` hid controls
+from the CFO whose writes the API would have taken, and its fix then locked out
+the accountants.
+
+### Recurring mechanical trap, wasted time three times today
+
+Writing Python through a bash heredoc **collapses a backslash-n inside a string
+literal into a real newline**, producing `print("` followed by an actual line
+break — a syntax error, and only at parse time. Quoting the heredoc (`<<'EOF'`)
+does not prevent it. Use the Write/Edit tools for any content containing escape
+sequences.
+
+This note is itself an example: the first attempt to write this paragraph
+through a heredoc was mangled by the behaviour it describes.
 
 ## Sep 15 2026, evening — THREE CREDENTIALS, and the ownership tree
 

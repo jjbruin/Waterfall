@@ -124,6 +124,7 @@ waterfall-xirr/
 - **typename_rules.txt** - Capital pool routing rules based on Typename field
 - **.claude/memory/accounting_workpapers.md** - The workpaper packages + statement engine: data, mapping, workflow, deadlines, the download (Sep 15 2026)
 - **.claude/memory/app_reference.md** - What each app tab displays + AI Assistant tools/endpoints (split out of this file Sep 11 2026)
+- **.claude/memory/treasury.md** - The bank side of the close: PNC import, the three-way tie, the matcher, what `current_available` cannot say (Sep 17 2026)
 
 ## Running the Application
 
@@ -878,6 +879,60 @@ columns are loaded from somebody else's spreadsheet, and the debt rows are ours.
   before the rule stays stored.
 - **Guardrails**: `scripts/statement_presentation_check.py`,
   `scripts/workpaper_deadline_check.py`.
+
+### Who may edit the Accounting section
+**Full detail in `.claude/memory/accounting_workpapers.md`.** Live at `v490`.
+
+| Gate | Who | What |
+|---|---|---|
+| `ACCOUNTING_ROLES` | admin, cfo, accounting_manager, accountant | every write in `/api/workpapers` and `/api/treasury` |
+| `CLOSE_PLAN_ROLES` | admin, cfo | when the close opens, when things are due, what order entities are worked in |
+| — | everyone signed in | reads |
+
+- **`roles_exactly`, NOT `role_required`.** `role_required` compares LEVELS and
+  `analyst`, `accountant`, `accounting_manager` and `cfo` are ALL level 1 — so any
+  level gate naming one admits all four, and no arrangement of names excludes
+  analysts. Jim's day-to-day login is an analyst one and is read-only here. The
+  rest of the app (104 endpoints) still uses `role_required`; if a rule ever needs
+  to separate two level-1 roles elsewhere, it needs `roles_exactly` too.
+- **`CLOSE_PLAN_ROLES` includes renumber and carry-forward because they write
+  `sort_order`.** A rule covering the order cell but not the buttons that rewrite
+  the same column is defeated by clicking a different button. `Fill properties`
+  is deliberately NOT included — it writes only the Property column.
+- **The screen must agree with the server, and has been wrong BOTH ways.** `v480`
+  gated the screen on `admin` while the API would have taken the CFO's writes, so
+  the buttons were simply not rendered; the fix then went one role too far and
+  locked out the accountants. Views read `auth.canEditAccounting` /
+  `auth.canSetClosePlan`; the guardrail compares the Vue lists to the Python ones
+  by name.
+- **`scripts/accounting_access_check.py` (54) ENUMERATES ROUTES FROM THE APP** and
+  calls each as each role, so a new endpoint is covered the day it is written. The
+  check it replaced grepped for a decorator's text and was therefore blind to
+  **six writes that had no gate at all** — including exhibit DELETE and tracker
+  sign-off, reachable by any signed-in user. Every narrowing is asserted in BOTH
+  directions: a rule tested only in the refusing direction is satisfied by
+  locking everyone out.
+
+### Treasury — the bank side of the close
+**Full detail in `.claude/memory/treasury.md`.** Live at `v490`, screen `/treasury`.
+
+- **Three tabs**: accounts, import (PNC activity CSV + statement PDF),
+  reconciliation (the three-way tie, the matcher, the reconciling items).
+- **`current_ledger` is CARRIED** from the last closed period plus activity since,
+  and says which period and through what date. **`current_available` is `None`** —
+  it is ledger less holds, float and pending debits, which exist only at the bank.
+  Never fill it from the ledger; a guardrail asserts it stays empty.
+- **Each leg of the tie is reported separately** (statement, ledger). Which leg
+  disagrees is the only thing the difference is for. `ties_to_statement` is `None`
+  with no statement filed, never `False`.
+- **The matcher PAIRS, it does not set-compare** — August carries `285.92` seven
+  times. What is left over IS the reconciliation: deposits in transit, outstanding
+  payments, activity not yet recorded. A manual pairing outranks the matcher.
+- **`MR10005000` is the default cash account**; four others in a dropdown, anything
+  else refused. An account registers itself on first import, before it is mapped.
+- **A file that is not an activity export is REFUSED**, not reported as "0
+  imported" — the column check runs before the row count.
+- **Nothing here posts to MRI.** GL/IA upload templates are the next phase.
 
 ### Cap Rate at Sale / Refinance
 - **Source column**: `fCapRate` from `valuations` table (MRI_Val)
