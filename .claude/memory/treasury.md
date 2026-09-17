@@ -1,6 +1,7 @@
 # Treasury — the bank side of the close
 
-**Live at `v490`.** Screen at `/treasury`, under Accounting. Service
+**Live at `v491`; the journal entry tab is committed and not yet deployed.**
+Screen at `/treasury`, under Accounting. Service
 `flask_app/services/treasury_service.py`, API `flask_app/api/treasury.py`, view
 `vue_app/src/views/TreasuryView.vue`.
 
@@ -18,11 +19,12 @@ MRI's September reconciliation opens   11,727.50   carries forward
 ```
 24 bank transactions pair 1:1 against 24 GL cash lines.
 
-## The three tabs
+## The four tabs
 
 **Accounts** — every account, its entity, its GL cash account, and its position.
 **Import** — the PNC activity CSV and the statement PDF.
 **Reconciliation** — the three-way tie, the matcher, and the reconciling items.
+**Journal entry** — code the month, get the GL and IA upload files.
 
 ## What the accounts tab can and cannot say
 
