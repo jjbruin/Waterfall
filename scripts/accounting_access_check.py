@@ -37,7 +37,13 @@ WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 #: is a quirk of shape, not of intent: a batch print sends a list of entities in
 #: a body because the list is too long for a query string, and it changes
 #: nothing.
-OPEN_POSTS = {"/api/workpapers/statements/batch"}
+OPEN_POSTS = {
+    "/api/workpapers/statements/batch",
+    # Same reason: the coded lines are POSTed because they are a list, and the
+    # endpoint only totals them and says whether they balance. It stores
+    # nothing. The two endpoints that produce the actual FILES are gated.
+    "/api/treasury/upload/preview",
+}
 
 #: Writes that are NARROWER than the section rule, with the roles that may do
 #: them. The CFO sets the PLAN of the close -- when it opens, when each thing

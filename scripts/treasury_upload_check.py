@@ -230,6 +230,66 @@ def main():
                                      for x in ia["InvestorID"]],
         str(list(back["InvestorID"])[:4]))
 
+    # ---- 7. the proposed split ------------------------------------
+    print("\n7. The proposed investor split")
+    # AMB6's real commitments, from production. The base is 11,000,000.
+    AMB6 = {"PSC1": 4700000, "CCGSI": 2250000, "IREP": 1000000,
+            "CWSPART": 500000, "JJCI": 500000, "ATLAS": 300000,
+            "CLWI": 250000, "ITHI": 250000, "ANCORA": 250000,
+            "BATTEN": 250000, "SHEIRA": 250000, "FXCHI": 250000,
+            "DBH": 250000}
+    got = tu.allocate(AUG["ia_total"], AMB6)
+    by = {r["investorid"]: r["amount"] for r in got["rows"]}
+    want = {str(r["InvestorID"]).strip().upper(): round(float(r["Amount"]), 2)
+            for _, r in ia.iterrows()}
+    chk("allocating from commitment AMOUNTS reproduces the accountant's own "
+        "file, all 13 to the cent",
+        by == want,
+        str({k: (by.get(k), want[k]) for k in want if by.get(k) != want[k]}))
+    chk("and the allocation ties to the control total exactly",
+        got["ties"] and abs(got["allocated"] - AUG["ia_total"]) < 0.005,
+        str(got["allocated"]))
+
+    # THE REASON THE BASIS IS AMOUNTS AND NOT THE STORED PERCENTAGES. This is
+    # the check that would fail if somebody "simplified" it back.
+    PCT = {"PSC1": 42.7273, "CCGSI": 20.4545, "IREP": 9.0909,
+           "CWSPART": 4.5455, "JJCI": 4.5455, "ATLAS": 2.7273,
+           "CLWI": 2.2727, "ITHI": 2.2727, "ANCORA": 2.2727,
+           "BATTEN": 2.2727, "SHEIRA": 2.2727, "FXCHI": 2.2727,
+           "DBH": 2.2727}
+    chk("the stored percentages do NOT sum to 100 (they are a rounded view)",
+        abs(sum(PCT.values()) - 100) > 0.00005,
+        "%.6f" % sum(PCT.values()))
+    from decimal import Decimal, ROUND_HALF_UP
+    naive = {k: float(Decimal(str(AUG["ia_total"] * v / 100)).quantize(
+        Decimal("0.01"), ROUND_HALF_UP)) for k, v in PCT.items()}
+    wrong = sum(1 for k in want if abs(naive[k] - want[k]) > 0.004)
+    chk("and allocating by them instead would be wrong on 5 investors and "
+        "3 cents over, which is why the basis is amounts",
+        wrong == 5 and abs(sum(naive.values()) - AUG["ia_total"] - 0.03) < 0.005,
+        "wrong=%d sum=%.2f" % (wrong, sum(naive.values())))
+
+    print("\n8. The allocator never loses or invents a cent")
+    # A total that does not divide evenly is where a naive split leaks.
+    odd = tu.allocate(100.00, {"A": 1, "B": 1, "C": 1})
+    chk("100.00 three ways still sums to 100.00",
+        abs(odd["allocated"] - 100.00) < 0.005,
+        str([r["amount"] for r in odd["rows"]]))
+    chk("and the leftover cent is PLACED, not dropped",
+        odd["rounding_cents_placed"] != 0
+        and sum(r["rounding_cents"] for r in odd["rows"]) == odd["rounding_cents_placed"])
+    neg = tu.allocate(-560022.54, AMB6)
+    chk("a negative total splits and ties too",
+        abs(neg["allocated"] + 560022.54) < 0.005, str(neg["allocated"]))
+    chk("the same inputs always give the same file",
+        [r["amount"] for r in tu.allocate(100.00, {"A": 1, "B": 1, "C": 1})["rows"]]
+        == [r["amount"] for r in odd["rows"]])
+    chk("nothing to split by is refused, not returned empty",
+        bool(tu.allocate(100, {"A": 0})["error"]))
+    chk("each row shows its share and any rounding applied to it",
+        all({"share_pct", "rounding_cents", "weight"} <= set(r)
+            for r in got["rows"]))
+
     # The whole point, in one figure: what the accountant sees before
     # downloading either file.
     s = tu.summarise(lines, ia_rows=rows, cash_account=AUG["cash_account"],

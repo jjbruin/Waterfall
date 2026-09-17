@@ -18,7 +18,7 @@ as every accounting role and a level comparison cannot exclude it.
 import io
 import logging
 
-from flask import Blueprint, g, jsonify, request
+from flask import Blueprint, Response, g, jsonify, request
 
 from flask_app.auth.routes import (ACCOUNTING_ROLES, login_required,
                                    roles_exactly)
@@ -203,3 +203,98 @@ def seed_opening():
             body.get("amount"), _user()))
     except Exception as e:
         return _fail(e, "seed_opening")
+
+
+# ------------------------------------------------- the MRI upload files
+#
+# STATELESS ON PURPOSE. The accountant's coding lives on the screen until they
+# download; nothing is stored, because a half-coded journal entry is a draft,
+# not a record. What IS stored is the reconciliation it was built from.
+
+@treasury_bp.route("/split", methods=["GET"])
+@login_required
+def split():
+    """Propose how a distribution divides between investors.
+
+    A PROPOSAL, not an answer (Jim, Sep 17 2026: "compute it and show it as an
+    editable proposal"). Computed from commitment AMOUNTS -- see
+    `treasury_upload.SPLIT_BASIS` for why not the stored percentages.
+    """
+    from flask_app.services import treasury_upload as tu
+    amount = request.args.get("amount")
+    try:
+        amt = float(amount)
+    except (TypeError, ValueError):
+        return jsonify({"error": "A numeric amount is required."}), 400
+    try:
+        return jsonify(safe_json(tu.propose_investor_split(
+            (request.args.get("entityid") or "").strip(), amt,
+            as_of=(request.args.get("as_of") or "").strip())))
+    except Exception as e:
+        return _fail(e, "split", 500)
+
+
+@treasury_bp.route("/upload/gl", methods=["POST"])
+@login_required
+@roles_exactly(*ACCOUNTING_ROLES)
+def upload_gl():
+    """The GL journal entry, as the CSV MRI's uploader takes."""
+    from flask_app.services import treasury_upload as tu
+    body = request.get_json(silent=True) or {}
+    lines = body.get("lines") or []
+    v = tu.validate_gl(lines)
+    if v["errors"]:
+        # The refusal carries the whole validation, so the screen can show
+        # every problem at once rather than one per attempt.
+        return jsonify({"error": v["errors"][0], "validation": safe_json(v)}), 400
+    try:
+        text = tu.build_gl_csv(lines)
+    except Exception as e:
+        return _fail(e, "upload_gl")
+    name = "%s %s GL Upload.csv" % (v.get("entityid") or "GL",
+                                    v.get("period") or "")
+    return Response(text, mimetype="text/csv", headers={
+        "Content-Disposition": 'attachment; filename="%s"' % name.strip()})
+
+
+@treasury_bp.route("/upload/ia", methods=["POST"])
+@login_required
+@roles_exactly(*ACCOUNTING_ROLES)
+def upload_ia():
+    """The investor transactions, in a copy of MRI's own template."""
+    from flask_app.services import treasury_upload as tu
+    body = request.get_json(silent=True) or {}
+    rows = body.get("rows") or []
+    lines = body.get("lines")
+    acct = (body.get("ia_account") or "").strip()
+    v = tu.validate_ia(rows, gl_lines=lines, ia_account=acct)
+    if v["errors"]:
+        return jsonify({"error": v["errors"][0], "validation": safe_json(v)}), 400
+    try:
+        data = tu.build_ia_xlsx(rows, gl_lines=lines, ia_account=acct)
+    except Exception as e:
+        return _fail(e, "upload_ia")
+    name = "%s IA Upload.xlsx" % (rows[0].get("investmentid") or "IA")
+    return Response(data, mimetype=(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        headers={"Content-Disposition": 'attachment; filename="%s"' % name})
+
+
+@treasury_bp.route("/upload/preview", methods=["POST"])
+@login_required
+def upload_preview():
+    """What the accountant sees BEFORE downloading either file.
+
+    The three figures that made the August set verifiable: the entry balances,
+    its cash lines equal the bank's movement, and the investor rows tie to the
+    GL account they mirror.
+    """
+    from flask_app.services import treasury_upload as tu
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify(safe_json(tu.summarise(
+            body.get("lines") or [], ia_rows=body.get("rows"),
+            cash_account=(body.get("cash_account") or ts.DEFAULT_CASH_ACCOUNT),
+            ia_account=(body.get("ia_account") or ""))))
+    except Exception as e:
+        return _fail(e, "upload_preview", 500)

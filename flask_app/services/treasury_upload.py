@@ -413,3 +413,159 @@ def summarise(gl_lines, ia_rows=None, cash_account: str = "",
         out["errors"] += iv["errors"]
         out["warnings"] += iv["warnings"]
     return out
+
+
+# ------------------------------------------- proposing the investor split
+
+#: Where a split comes from. COMMITMENT AMOUNTS, not the stored
+#: `CapitalPercent`, and the difference is not academic:
+#:
+#: AMB6's percentages are held to four decimals and sum to 99.9999. Allocating
+#: August's 12,580.47 by them lands on 12,580.50 -- three cents over the control
+#: total -- and disagrees with the accountant's own file on 5 of 13 investors.
+#: Allocating by the commitment amounts over their exact base (11,000,000)
+#: reproduces all thirteen to the cent and ties with no remainder. The
+#: percentages are a rounded VIEW of the amounts; the amounts are the fact.
+SPLIT_BASIS = "commitment amounts"
+
+
+def allocate(total, weights: dict) -> dict:
+    """Split `total` across `weights` so the parts sum EXACTLY to the total.
+
+    Largest-remainder: allocate each share down to the cent, then hand the
+    leftover cents out to whoever was rounded down hardest. A split that does
+    not add up to its own control total cannot be uploaded -- the IA file has to
+    tie to the journal entry -- so the remainder is placed deliberately and
+    REPORTED, never left to fall where floating point puts it.
+    """
+    from decimal import Decimal, ROUND_DOWN
+
+    total = Decimal(str(round(float(total), 2)))
+    w = {k: Decimal(str(v)) for k, v in weights.items()
+         if v is not None and Decimal(str(v)) > 0}
+    if not w:
+        return {"error": "There is nothing to split by: no investor carries a "
+                         "positive share.", "rows": []}
+    base = sum(w.values())
+
+    exact, floor_, rows = {}, {}, []
+    for k, v in w.items():
+        e = total * v / base
+        exact[k] = e
+        floor_[k] = e.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+
+    remainder = total - sum(floor_.values())
+    cents = int((remainder / Decimal("0.01")).to_integral_value())
+    # Whoever lost the most to rounding gets the first cent back. Ties break on
+    # the investor id so the same inputs always give the same file.
+    order = sorted(w, key=lambda k: (-(exact[k] - floor_[k]), k))
+    bump = {k: 0 for k in w}
+    for i in range(abs(cents)):
+        k = order[i % len(order)]
+        bump[k] += 1 if cents > 0 else -1
+
+    for k in sorted(w, key=lambda k: (-exact[k], k)):
+        amt = floor_[k] + Decimal(bump[k]) * Decimal("0.01")
+        rows.append({
+            "investorid": k,
+            "amount": float(amt),
+            "weight": float(w[k]),
+            "share_pct": float(round(w[k] / base * 100, 6)),
+            # Shown so a reader can see the allocation was not silently nudged.
+            "rounding_cents": bump[k],
+        })
+    allocated = sum(Decimal(str(r["amount"])) for r in rows)
+    return {"rows": rows, "total": float(total), "allocated": float(allocated),
+            "ties": allocated == total, "base": float(base),
+            "rounding_cents_placed": cents, "basis": SPLIT_BASIS}
+
+
+def propose_investor_split(entityid: str, amount, as_of: str = "",
+                           engine=None) -> dict:
+    """A PROPOSAL for how a distribution splits, for the accountant to edit.
+
+    Jim, Sep 17 2026: "compute it and show it as an editable proposal."
+
+    It is a proposal and not an answer because a journal entry is signed by a
+    person. The numbers, the basis and each investor's share are returned so the
+    proposal can be checked rather than trusted.
+
+    READS `commitments`, NOT `relationships`. AMB6 has FIFTEEN relationship rows
+    for thirteen investors: PSC1 appears twice -- once at a closed 100% that
+    ended 2026-06-30, before the restructure -- and PSCMAN sits at 0%. Summing
+    that column would double one investor and invent a fourteenth. The
+    commitments table carries exactly the thirteen, with the amounts behind the
+    percentages.
+    """
+    import pandas as pd
+    import sqlalchemy as sa
+    from flask_app.db import get_engine
+
+    engine = engine or get_engine()
+    eid = str(entityid or "").strip().upper()
+    if not eid:
+        return {"error": "No entity was given.", "rows": []}
+    try:
+        with engine.connect() as conn:
+            com = pd.read_sql(sa.text(
+                'SELECT "InvestorID", "Amount", "CapitalPercent", "StartDate", '
+                '       "EndDate" FROM commitments '
+                ' WHERE UPPER(TRIM("EntityID")) = :e'), conn, params={"e": eid})
+    except Exception as e:
+        logger.warning("commitments unavailable for %s: %s", eid, e)
+        return {"error": "The commitments table could not be read: %s"
+                         % str(e)[:140], "rows": []}
+
+    if com.empty:
+        return {"error": "No commitments are recorded for %s, so there is "
+                         "nothing to split by. Enter the investor amounts by "
+                         "hand." % eid, "rows": []}
+
+    com["InvestorID"] = com["InvestorID"].astype(str).str.strip().str.upper()
+    dropped = []
+    if as_of:
+        # A commitment that ended before the distribution date is not an owner
+        # on that date. Reported, because "why is this investor missing" is the
+        # first question a proposal has to answer.
+        ends = pd.to_datetime(com["EndDate"], errors="coerce")
+        closed = ends.notna() & (ends < pd.Timestamp(as_of))
+        dropped = sorted(com.loc[closed, "InvestorID"].tolist())
+        com = com[~closed]
+
+    weights = {}
+    for _, r in com.iterrows():
+        a = _num(r["Amount"])
+        if a and a > 0:
+            weights[r["InvestorID"]] = weights.get(r["InvestorID"], 0.0) + a
+
+    zero = sorted(set(com["InvestorID"]) - set(weights))
+    out = allocate(amount, weights)
+    if out.get("error"):
+        return {**out, "entityid": eid}
+
+    out["entityid"] = eid
+    out["investor_count"] = len(out["rows"])
+    out["excluded_closed"] = dropped
+    # An investor recorded at zero is carried as a NOTE rather than a row: they
+    # are on the deal and not in this distribution, and silence would read as
+    # the app having forgotten them.
+    out["zero_weight"] = zero
+    out["editable"] = True
+    out["note"] = (
+        "Proposed from %d commitment%s totalling %s, allocated to the cent. "
+        "Edit any amount; the total must stay %s."
+        % (out["investor_count"], "" if out["investor_count"] == 1 else "s",
+           "{:,.0f}".format(out["base"]), "{:,.2f}".format(out["total"])))
+
+    # The stored percentage is a rounded view of the amount. Where the two
+    # disagree by more than rounding, that is a data question and it is raised.
+    drift = []
+    for _, r in com.iterrows():
+        stored = _num(r["CapitalPercent"])
+        row = next((x for x in out["rows"]
+                    if x["investorid"] == r["InvestorID"]), None)
+        if stored and row and abs(stored - row["share_pct"]) > 0.01:
+            drift.append("%s: commitment implies %.4f%%, CapitalPercent says "
+                         "%.4f%%" % (r["InvestorID"], row["share_pct"], stored))
+    out["percent_drift"] = drift
+    return out
