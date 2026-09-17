@@ -248,6 +248,29 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v490` = `1496daa` (DEADLINES ARE THE CFO'S; signing off against one is
+    not. Jim: "deadlines should be CFO only too."
+    TWO ENDPOINTS, AND THE ONE I HAD FLAGGED WAS THE DEAD ONE.
+    `PUT /cycles/<id>/steps` has no caller — the two-tab split replaced the
+    per-step deadline UI with the tracker's per-deliverable target dates, and
+    `setDue()` in WorkpapersView.vue is unreferenced leftovers. The deadline an
+    accountant sees and edits is `PUT /packages/<id>/schedule/target`. Gating
+    only the endpoint I had named would have satisfied the request and changed
+    nothing on screen. Both now use `CLOSE_CYCLE_ROLES`.
+    THE LINE: the CFO decides WHEN a deliverable is due; the team records what
+    was DONE against it. The target-date cell and its three sign-off cells are
+    adjacent columns of one tracker row and belong to different people, so the
+    guardrail asserts BOTH halves — accountants refused on target dates, and
+    still able to sign off, name a preparer and sync. A rule checked only in
+    the refusing direction is satisfied by locking everyone out, which here
+    would have stopped the close.
+    Verified on production: cfo/admin may set a target date, accountant and
+    accounting_manager may not, and both may still sign off, name preparers and
+    sync. accounting_access_check 29 -> 40 (31 on production; the nine screen
+    checks read Vue source, which the image does not ship, and now SKIP with a
+    reason instead of crashing — at v489 they killed the run after the useful
+    sections had already passed).
+    Still the team's: the order number, renumber and carry-forward.)
   - `v489` = `ce80ba5` (TREASURY HAS A SCREEN, and the accounting section is
     accounting's to edit.
     THREE TABS under Accounting: accounts, import, reconciliation. The accounts
