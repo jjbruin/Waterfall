@@ -107,11 +107,54 @@ still carries the bank side, so "map this account first" is actionable.
   was being written (`opening`/`opening_balance`, `net_movement`/
   `bank_movement`, `imported`/`inserted`) and found three real defects.
 
+## The journal entry tab — coding the month
+
+Fourth tab. One row per bank transaction, which is how a month is actually
+coded: measured from the real August file, all thirteen investor distributions
+arrive as **individual bank debits** (285.92 seven times, 571.84 twice), so the
+common case is naming an account per line, not splitting a lump.
+
+**THE CASH SIDE IS NEVER TYPED.** Each bank transaction becomes its own cash
+line at the amount the bank reported; the accountant supplies only the OFFSET.
+The entry therefore balances **by construction** rather than by arithmetic, and
+a coded month cannot silently disagree with the bank. A partly coded month does
+not balance, which is what keeps the download disabled.
+
+**The split proposal is per row, for the other case** — one payment covering
+several investors. Basis is `SPLIT_BASIS`: commitment AMOUNTS, not the stored
+`CapitalPercent`. See below; this is the part most likely to be "simplified"
+back by someone who has not measured it.
+
+Downloads: `/upload/gl` (CSV) and `/upload/ia` (the template copy), both gated
+to `ACCOUNTING_ROLES`. `/upload/preview` is open — it totals what is on screen
+and says whether it balances, storing nothing. **Nothing is saved**: a
+half-coded journal entry is a draft, not a record.
+
+## Why the split uses commitment amounts
+
+`CapitalPercent` is held to four decimals and, for AMB6, sums to **99.9999**.
+
+| basis | result |
+|---|---|
+| stored percentages | 12,580.50 — three cents over, wrong on **5 of 13** investors |
+| commitment amounts over their base of 11,000,000 | **all thirteen to the cent, ties exactly** |
+
+The percentages are a rounded VIEW of the amounts; the amounts are the fact.
+`treasury_upload_check.py` asserts the percentage basis *would* be wrong on
+exactly five, so the shortcut cannot be reintroduced quietly.
+
+**It reads `commitments`, not `relationships`.** AMB6 has FIFTEEN relationship
+rows for thirteen investors — PSC1 appears twice, once at a closed 100% that
+ended 2026-06-30 before the restructure, and PSCMAN sits at 0%. Summing that
+column doubles one investor and invents a fourteenth.
+
+`allocate()` floors every share then hands leftover cents to whoever was
+rounded down hardest, ties broken on investor id so the same inputs always give
+the same file. The remainder is placed deliberately and reported per row.
+
 ## Not done yet
 
-1. **GL and IA upload template generation** from the accountant's coding. Jim
-   has the templates and will supply them. Nothing here posts to MRI.
-2. **Statements as workpaper exhibits** — attach the imported PDF to the
+1. **Statements as workpaper exhibits** — attach the imported PDF to the
    related workpaper.
 3. **The automated PNC feed.** Researched Sep 17 2026: PINACLE Connect has a
    fixed ERP connector list; `developer.pnc.com` offers OAuth 2.0 + mTLS APIs

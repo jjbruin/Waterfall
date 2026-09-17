@@ -298,3 +298,77 @@ def upload_preview():
             ia_account=(body.get("ia_account") or ""))))
     except Exception as e:
         return _fail(e, "upload_preview", 500)
+
+
+@treasury_bp.route("/activity", methods=["GET"])
+@login_required
+def activity():
+    """The imported bank transactions for one account and period.
+
+    The coding tab's own list. `/match` also carries bank rows, but it refuses
+    when the account is unmapped or the GL feed is empty -- coding has to be
+    possible before either is true.
+    """
+    import pandas as pd
+    from sqlalchemy import text
+    from flask_app.db import get_engine
+    acct = (request.args.get("account_number") or "").strip()
+    period = (request.args.get("period") or "").strip()
+    if not acct or len(period) != 6:
+        return jsonify({"error": "account_number and a YYYYMM period are "
+                                 "required."}), 400
+    try:
+        eng = get_engine()
+        ts.ensure_tables(eng)
+        with eng.connect() as conn:
+            df = pd.read_sql(text(
+                "SELECT id, as_of_date, amount, direction, signed_amount, "
+                "       reference, description, transaction_type "
+                "  FROM tr_activity WHERE account_number = :a "
+                "   AND as_of_date LIKE :p ORDER BY as_of_date, id"),
+                conn, params={"a": acct, "p": "%s-%s%%" % (period[:4], period[4:])})
+            meta = conn.execute(text(
+                "SELECT entityid, gl_cash_account FROM tr_accounts "
+                " WHERE account_number = :a"), {"a": acct}).fetchone()
+    except Exception as e:
+        return _fail(e, "activity", 500)
+    return jsonify(safe_json({
+        "account_number": acct, "period": period,
+        "entityid": (meta[0] if meta else None),
+        "gl_cash_account": ((meta[1] if meta else None)
+                            or ts.DEFAULT_CASH_ACCOUNT),
+        "transactions": df.to_dict("records"),
+        "count": int(len(df)),
+        "net": (float(df["signed_amount"].sum()) if len(df) else 0.0),
+    }))
+
+
+@treasury_bp.route("/accounts-list", methods=["GET"])
+@login_required
+def gl_accounts():
+    """MRI's chart of accounts, for the offset dropdown.
+
+    Returned with the TYPE so the screen can say what an account is. Empty with
+    a reason rather than an error when the chart has not been loaded -- the
+    accountant can still type an account number.
+    """
+    import pandas as pd
+    from sqlalchemy import text
+    from flask_app.db import get_engine
+    try:
+        with get_engine().connect() as conn:
+            df = pd.read_sql(text(
+                'SELECT "ACCTNUM", "ACCTNAME", "TYPE" FROM gl_accounts '
+                ' ORDER BY "ACCTNUM"'), conn)
+    except Exception as e:
+        logger.warning("gl_accounts unavailable: %s", e)
+        return jsonify({"accounts": [], "note":
+                        "MRI's chart of accounts has not been loaded, so there "
+                        "is no list to choose from. Account numbers can still "
+                        "be typed."})
+    return jsonify(safe_json({
+        "accounts": [{"acctnum": str(r["ACCTNUM"]).strip(),
+                      "name": str(r["ACCTNAME"] or "").strip(),
+                      "type": str(r["TYPE"] or "").strip()}
+                     for _, r in df.iterrows()],
+        "count": int(len(df))}))

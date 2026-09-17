@@ -29,7 +29,7 @@ const auth = useAuthStore()
 // cannot change it.
 const canManage = computed(() => auth.canEditAccounting)
 
-const tab = ref<'accounts' | 'import' | 'reconcile'>('accounts')
+const tab = ref<'accounts' | 'import' | 'reconcile' | 'journal'>('accounts')
 const msg = ref('')
 const error = ref('')
 const busy = ref(false)
@@ -191,6 +191,202 @@ async function seed() {
   } catch (e) { fail(e, 'Seeding the opening balance') }
 }
 
+// ── The journal entry tab ────────────────────────────────────────────
+//
+// ONE ROW PER BANK TRANSACTION, because that is how the month is actually
+// coded. Measured from the real August file: all thirteen investor
+// distributions arrive as INDIVIDUAL bank debits — 285.92 seven times, 571.84
+// twice — so the common case is naming an account (and an investor) per line,
+// not splitting a lump. The split proposal is for the other case, where one
+// payment covers several investors, and it is offered per row rather than
+// imposed on the month.
+//
+// THE CASH SIDE IS NEVER TYPED. Each bank transaction is its own cash line at
+// the amount the bank reported; the accountant supplies the OFFSET. That is
+// what makes the entry balance by construction rather than by arithmetic, and
+// it is why a coded month cannot silently disagree with the bank.
+const coded = ref<any[]>([])
+const glAccounts = ref<any[]>([])
+const accountsNote = ref('')
+const journalLoading = ref(false)
+const preview = ref<any>(null)
+const splitFor = ref<number | null>(null)
+const splitRes = ref<any>(null)
+
+const codedCount = computed(
+  () => coded.value.filter(r => r.acctnum || (r.split && r.split.length)).length)
+
+const entityOf = computed(() => {
+  const a = accounts.value.find(x => x.account_number === selected.value)
+  return a?.entityid || ''
+})
+const cashAccountOf = computed(() => {
+  const a = accounts.value.find(x => x.account_number === selected.value)
+  return a?.gl_cash_account || defaultCash.value
+})
+
+async function openJournal() {
+  tab.value = 'journal'
+  if (!coded.value.length) await loadJournal()
+}
+
+async function loadJournal() {
+  if (!selected.value) return
+  journalLoading.value = true
+  preview.value = null
+  try {
+    const { data } = await api.get('/api/treasury/activity', {
+      params: { account_number: selected.value, period: period.value } })
+    coded.value = (data.transactions || []).map((t: any) => ({
+      ...t, acctnum: '', descrpn: t.description || '', investorid: '',
+      split: null,
+    }))
+    if (!glAccounts.value.length) {
+      const a = await api.get('/api/treasury/accounts-list')
+      glAccounts.value = a.data.accounts || []
+      accountsNote.value = a.data.note || ''
+    }
+    await refreshPreview()
+  } catch (e) { fail(e, 'Loading the month to code') } finally {
+    journalLoading.value = false
+  }
+}
+
+// The GL lines, derived — never stored half-finished. The cash line carries the
+// bank's own signed amount; the offset is its mirror, so every fully coded
+// transaction nets to zero and the entry balances by construction.
+function glLines() {
+  const out: any[] = []
+  const eid = entityOf.value
+  const cash = cashAccountOf.value
+  for (const r of coded.value) {
+    const parts = (r.split && r.split.length)
+      ? r.split
+      : (r.acctnum ? [{ acctnum: r.acctnum, amount: -r.signed_amount,
+                        investorid: r.investorid }] : [])
+    if (!parts.length) continue
+    out.push({ entityid: eid, acctnum: cash, amount: r.signed_amount,
+               descrpn: r.descrpn, period: period.value, basis: 'B',
+               entrdate: r.as_of_date })
+    for (const p of parts) {
+      out.push({ entityid: eid, acctnum: p.acctnum, amount: p.amount,
+                 descrpn: p.descrpn || r.descrpn, period: period.value,
+                 basis: 'B', entrdate: r.as_of_date })
+    }
+  }
+  return out
+}
+
+// An IA row for every coded part that names an investor. One coded
+// distribution produces both a GL line and an IA row — that is the relationship
+// the August files showed, and it is built here rather than kept in two places.
+function iaRows() {
+  const out: any[] = []
+  for (const r of coded.value) {
+    const parts = (r.split && r.split.length)
+      ? r.split
+      : (r.investorid ? [{ acctnum: r.acctnum, amount: -r.signed_amount,
+                           investorid: r.investorid }] : [])
+    for (const p of parts) {
+      if (!p.investorid) continue
+      out.push({
+        transaction_type: 'Distribution',
+        sub_type: r.sub_type || 'Distribution: Income',
+        amount: Math.abs(p.amount), investmentid: entityOf.value,
+        investorid: p.investorid, transaction_date: r.as_of_date,
+        effective_date: r.as_of_date,
+      })
+    }
+  }
+  return out
+}
+
+const iaAccount = computed(() => {
+  // Whichever account the investor rows were coded to. Read from the coding
+  // rather than configured, so the tie is against what was actually used.
+  for (const r of coded.value) {
+    const parts = (r.split && r.split.length) ? r.split : [r]
+    for (const p of parts) if (p.investorid && p.acctnum) return p.acctnum
+  }
+  return ''
+})
+
+async function refreshPreview() {
+  try {
+    const { data } = await api.post('/api/treasury/upload/preview', {
+      lines: glLines(), rows: iaRows(),
+      cash_account: cashAccountOf.value, ia_account: iaAccount.value })
+    preview.value = data
+  } catch (e) { fail(e, 'Checking the entry') }
+}
+
+async function proposeSplit(idx: number) {
+  const r = coded.value[idx]
+  splitFor.value = idx
+  splitRes.value = null
+  try {
+    const { data } = await api.get('/api/treasury/split', {
+      params: { entityid: entityOf.value, amount: Math.abs(r.signed_amount),
+                as_of: r.as_of_date } })
+    if (data.error) { error.value = data.error; return }
+    // Signed to the side the bank moved: a payment out credits each investor's
+    // GL line positive against the negative cash line.
+    const sign = r.signed_amount < 0 ? 1 : -1
+    splitRes.value = {
+      ...data,
+      rows: data.rows.map((x: any) => ({ ...x, amount: x.amount * sign,
+                                         acctnum: r.acctnum || '' })),
+    }
+  } catch (e) { fail(e, 'Proposing the split') }
+}
+
+function applySplit() {
+  if (splitFor.value === null || !splitRes.value) return
+  coded.value[splitFor.value].split = splitRes.value.rows.map((r: any) => ({
+    acctnum: r.acctnum, amount: Number(r.amount), investorid: r.investorid,
+  }))
+  splitFor.value = null
+  splitRes.value = null
+  refreshPreview()
+}
+
+function clearSplit(idx: number) {
+  coded.value[idx].split = null
+  refreshPreview()
+}
+
+const splitTotal = computed(() => (splitRes.value?.rows || [])
+  .reduce((a: number, r: any) => a + Number(r.amount || 0), 0))
+
+async function download(kind: 'gl' | 'ia') {
+  try {
+    const body: any = kind === 'gl'
+      ? { lines: glLines() }
+      : { rows: iaRows(), lines: glLines(), ia_account: iaAccount.value }
+    const res = await api.post('/api/treasury/upload/' + kind, body,
+                               { responseType: 'blob' })
+    const url = URL.createObjectURL(new Blob([res.data]))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = entityOf.value + ' ' + period.value +
+      (kind === 'gl' ? ' GL Upload.csv' : ' IA Upload.xlsx')
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (e: any) {
+    // A blob error body has to be read back as text before it means anything;
+    // otherwise a refusal that names the problem renders as "[object Blob]".
+    if (e?.response?.data instanceof Blob) {
+      try {
+        const t = JSON.parse(await e.response.data.text())
+        error.value = t.error || 'The file could not be built.'
+        setTimeout(() => (error.value = ''), 9000)
+        return
+      } catch { /* fall through to the generic message */ }
+    }
+    fail(e, 'Building the file')
+  }
+}
+
 onMounted(loadAccounts)
 </script>
 
@@ -227,6 +423,12 @@ onMounted(loadAccounts)
               :aria-selected="tab === 'reconcile'" @click="tab = 'reconcile'">
         Reconciliation
         <span class="tab-sub">{{ period }}</span>
+      </button>
+      <button class="tab" :class="{ active: tab === 'journal' }" role="tab"
+              :aria-selected="tab === 'journal'" @click="openJournal">
+        Journal entry
+        <span v-if="coded.length" class="tab-sub">
+          {{ codedCount }}/{{ coded.length }}</span>
       </button>
     </nav>
 
@@ -551,6 +753,189 @@ onMounted(loadAccounts)
         </template>
       </template>
     </div>
+
+    <!-- ── Tab 4: the journal entry ────────────────────── -->
+    <div v-show="tab === 'journal'" class="tab-body">
+      <div class="recon-bar">
+        <span class="mono">{{ selected || 'no account selected' }}</span>
+        <span class="sep">·</span>
+        <span>{{ period }}</span>
+        <span v-if="entityOf" class="sep">·</span>
+        <span v-if="entityOf" class="mono">{{ entityOf }}</span>
+        <button class="btn" :disabled="!selected || journalLoading"
+                @click="loadJournal">Load the month</button>
+        <span class="spacer"></span>
+        <template v-if="canManage">
+          <button class="btn" :disabled="!preview || !preview.balanced"
+                  :title="preview && !preview.balanced
+                          ? 'The entry does not balance yet.' : ''"
+                  @click="download('gl')">Download GL</button>
+          <button class="btn"
+                  :disabled="!preview || !preview.ia_row_count
+                             || preview.ia_ties === false"
+                  @click="download('ia')">Download IA</button>
+        </template>
+      </div>
+
+      <div v-if="journalLoading" class="placeholder">Loading the month…</div>
+      <div v-else-if="!coded.length" class="placeholder">
+        No imported transactions for {{ period }}. Import the PNC activity
+        export first.
+      </div>
+
+      <template v-else>
+        <!-- The three figures that make the entry checkable, before either
+             file is downloaded. Same three the August files were proved on. -->
+        <div v-if="preview" class="headline"
+             :class="{ ok: preview.balanced && preview.ia_ties !== false,
+                       warn: !preview.balanced }">
+          <b>{{ codedCount }}</b> of <b>{{ coded.length }}</b> transactions
+          coded.
+          The entry
+          <template v-if="preview.balanced"><b>balances</b></template>
+          <template v-else>is out by
+            <b class="err-text">{{ money(preview.total) }}</b></template>.
+          Cash lines total {{ money(preview.cash_total) }}
+          <span v-if="preview.ia_row_count">
+            · {{ preview.ia_row_count }} investor rows totalling
+            {{ money(preview.ia_total) }},
+            <span v-if="preview.ia_ties">which tie to the ledger</span>
+            <span v-else class="err-text">which do NOT tie
+              ({{ money(preview.ia_difference) }} out)</span></span>
+        </div>
+
+        <p v-if="accountsNote" class="hint">{{ accountsNote }}</p>
+
+        <div class="grid-wrap">
+          <table class="grid">
+            <thead>
+              <tr>
+                <th class="l">Date</th>
+                <th class="l">Description</th>
+                <th class="r">Amount</th>
+                <th class="l">Offset account</th>
+                <th class="l">Investor</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <template v-for="(r, i) in coded" :key="r.id">
+                <tr :class="{ done: r.acctnum || (r.split && r.split.length) }">
+                  <td class="l">{{ r.as_of_date }}</td>
+                  <td class="l">
+                    <input v-if="canManage" v-model="r.descrpn" class="desc-in"
+                           @change="refreshPreview" />
+                    <span v-else>{{ r.descrpn }}</span>
+                  </td>
+                  <td class="r num">{{ money(r.signed_amount) }}</td>
+                  <td class="l">
+                    <template v-if="r.split && r.split.length">
+                      <span class="why">split {{ r.split.length }} ways</span>
+                    </template>
+                    <template v-else-if="canManage">
+                      <input v-model="r.acctnum" class="acct-in" list="gl-accts"
+                             placeholder="MR…" @change="refreshPreview" />
+                    </template>
+                    <span v-else class="mono">{{ r.acctnum || '—' }}</span>
+                  </td>
+                  <td class="l">
+                    <input v-if="canManage && !(r.split && r.split.length)"
+                           v-model="r.investorid" class="inv-in"
+                           placeholder="optional" @change="refreshPreview" />
+                    <span v-else class="why">
+                      {{ (r.split && r.split.length) ? 'per split' : (r.investorid || '—') }}
+                    </span>
+                  </td>
+                  <td class="r">
+                    <button v-if="canManage && !(r.split && r.split.length)"
+                            class="btn xs" @click="proposeSplit(i)"
+                            title="Propose how this payment divides between the
+                                   investors, from their commitments.">
+                      Split…
+                    </button>
+                    <button v-if="canManage && r.split && r.split.length"
+                            class="btn xs" @click="clearSplit(i)">Clear split</button>
+                  </td>
+                </tr>
+                <!-- A split is shown in full under its own transaction; it is
+                     the thing a reviewer will want to check line by line. -->
+                <tr v-if="r.split && r.split.length" class="split-rows">
+                  <td colspan="6">
+                    <span v-for="p in r.split" :key="p.investorid" class="chip">
+                      {{ p.investorid }} {{ money(p.amount) }}
+                    </span>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+
+        <datalist id="gl-accts">
+          <option v-for="a in glAccounts" :key="a.acctnum" :value="a.acctnum">
+            {{ a.name }}
+          </option>
+        </datalist>
+
+        <!-- The proposal, editable before it is applied. -->
+        <div v-if="splitRes" class="split-panel">
+          <h3>Proposed split</h3>
+          <p class="hint">{{ splitRes.note }}</p>
+          <p v-if="splitRes.excluded_closed && splitRes.excluded_closed.length"
+             class="hint">
+            Excluded, their commitment having ended before this date:
+            {{ splitRes.excluded_closed.join(', ') }}
+          </p>
+          <p v-if="splitRes.zero_weight && splitRes.zero_weight.length"
+             class="hint">
+            On the deal but recorded at zero, so not allocated any of it:
+            {{ splitRes.zero_weight.join(', ') }}
+          </p>
+          <p v-for="d in (splitRes.percent_drift || [])" :key="d"
+             class="hint err-text">{{ d }}</p>
+          <table class="mini-table">
+            <thead>
+              <tr><th class="l">Investor</th><th class="r">Share</th>
+                  <th class="r">Amount</th><th class="l">Account</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="row in splitRes.rows" :key="row.investorid">
+                <td class="l mono">{{ row.investorid }}</td>
+                <td class="r num">{{ row.share_pct.toFixed(4) }}%<span
+                  v-if="row.rounding_cents" class="why"> (+{{ row.rounding_cents }}c)</span></td>
+                <td class="r"><input v-model.number="row.amount"
+                                     class="amt-in num" /></td>
+                <td class="l"><input v-model="row.acctnum" class="acct-in"
+                                     list="gl-accts" placeholder="MR…" /></td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="pair-bar">
+            <span class="hint">
+              Totals {{ money(splitTotal) }} against
+              {{ money(splitRes.total) }} to allocate.
+            </span>
+            <button class="btn primary" @click="applySplit">Apply</button>
+            <button class="btn" @click="splitFor = null; splitRes = null">
+              Cancel
+            </button>
+          </div>
+        </div>
+
+        <ul v-if="preview && preview.errors && preview.errors.length"
+            class="skipped">
+          <li v-for="(e, i) in preview.errors" :key="i">{{ e }}</li>
+        </ul>
+
+        <p class="footnote">
+          The cash side is never typed: each bank transaction becomes its own
+          cash line at the amount the bank reported, and you supply the offset —
+          so the entry balances by construction rather than by arithmetic.
+          Nothing here is saved and nothing posts to MRI; the two files are
+          produced for you to upload.
+        </p>
+      </template>
+    </div>
   </div>
 </template>
 
@@ -648,4 +1033,25 @@ h3 { margin: 0 0 6px; font-size: 14px; }
 .chip { display: inline-block; padding: 1px 6px; border-radius: 9px; font-size: 10px;
   background: #e8f0f9; color: #1d4e7e; margin-right: 5px; }
 .chip.warn { background: #fdf4e6; color: #8a5a00; }
+
+/* the journal entry tab */
+.desc-in { width: 100%; min-width: 180px; padding: 2px 6px; font-size: 11.5px;
+  border: 1px solid var(--color-border); border-radius: 3px;
+  background: var(--color-surface); color: var(--color-text); }
+.acct-in { width: 110px; padding: 2px 6px; font-size: 11.5px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  border: 1px solid var(--color-border); border-radius: 3px;
+  background: var(--color-surface); color: var(--color-text); }
+.inv-in { width: 86px; padding: 2px 6px; font-size: 11.5px;
+  border: 1px solid var(--color-border); border-radius: 3px;
+  background: var(--color-surface); color: var(--color-text); }
+.amt-in { width: 96px; padding: 2px 6px; font-size: 11.5px; text-align: right;
+  border: 1px solid var(--color-border); border-radius: 3px;
+  background: var(--color-surface); color: var(--color-text); }
+/* A coded row is marked down the side, not filled in — fifty filled rows is a
+   wall, and the eye wants the UNcoded ones. */
+.grid tbody tr.done td:first-child { box-shadow: inset 3px 0 0 #9ccfa6; }
+.split-rows td { background: #fafbfd; padding-top: 2px; padding-bottom: 6px; }
+.split-panel { margin-top: 14px; border: 1px solid #e2e6ee; border-radius: 8px;
+  background: var(--color-surface); padding: 14px 16px; max-width: 760px; }
 </style>

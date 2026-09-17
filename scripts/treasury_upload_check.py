@@ -296,6 +296,52 @@ def main():
                      ia_account=AUG["ia_account"])
     chk("the summary reports a clean August", s["balanced"] and s["ia_ties"]
         and not s["errors"], str(s.get("errors"))[:110])
+    # ---- 9. coding a real month, end to end -----------------------
+    print("\n9. Coding the real August month, the way the screen does")
+    # THE SCREEN'S OWN CONSTRUCTION RULE, mirrored here: one cash line at the
+    # amount the bank reported, one offset line that mirrors it. The rule is
+    # what makes the entry balance BY CONSTRUCTION rather than by arithmetic,
+    # so it is the rule that is worth pinning -- the TypeScript that applies it
+    # cannot be run from here, but if this invariant ever stops holding the
+    # screen's output stops balancing too.
+    from flask_app.services import treasury_service as _ts
+    act = DOCS / "AMB6 August 2026 Bank Activities.csv"
+    if not act.exists():
+        print("   (the bank export is not on this machine -- skipped)")
+        return _report()
+    bank = _ts.parse_activity(pd.read_csv(act))["rows"]
+    chk("the month's 24 bank transactions parse", len(bank) == AUG["cash_rows"],
+        str(len(bank)))
+
+    coded = []
+    for r in bank:
+        coded.append({"entityid": "AMB6", "acctnum": AUG["cash_account"],
+                      "amount": r["signed_amount"],
+                      "descrpn": r["description"] or "coded",
+                      "period": "202608", "basis": "B",
+                      "entrdate": r["as_of_date"]})
+        coded.append({"entityid": "AMB6", "acctnum": AUG["ia_account"],
+                      "amount": -r["signed_amount"],
+                      "descrpn": r["description"] or "coded",
+                      "period": "202608", "basis": "B",
+                      "entrdate": r["as_of_date"]})
+    cv = tu.validate_gl(coded)
+    chk("a fully coded month balances without anyone adding anything up",
+        cv["balanced"], str(cv["total"]))
+    cs = tu.summarise(coded, cash_account=AUG["cash_account"])
+    chk("its cash side still equals the bank's own movement",
+        abs(cs["cash_total"] - AUG["cash_total"]) < 0.01, str(cs["cash_total"]))
+    chk("one cash line per bank transaction, no more and no fewer",
+        cs["cash_line_count"] == AUG["cash_rows"], str(cs["cash_line_count"]))
+    chk("and the file builds", bool(tu.build_gl_csv(coded)))
+
+    # A PARTLY coded month must NOT balance -- it is the half-finished state
+    # the screen has to keep the download disabled for.
+    half = coded[:-1]
+    chk("leaving one transaction uncoded leaves the entry out of balance, "
+        "which is what keeps the download disabled",
+        not tu.validate_gl(half)["balanced"])
+
     return _report()
 
 
