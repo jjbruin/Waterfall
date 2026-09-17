@@ -248,6 +248,36 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v481` = `516ffd6` (Deal Analysis now SAYS when a loan matures before the deal
+    sells. The amortization schedule ends at maturity, so every month between it
+    and the sale carried no debt service and the balance stopped being anywhere —
+    and nothing said so. Jefferson Waters Creek against a manually entered
+    2027-04-30 sale: schedule ends 2026-11-30, maturity 2026-12-05, $51,667,000
+    outstanding, ~$318,673/month, five months, **~$1.59M of interest never
+    charged** — distributable cash overstated by about that much. Verified on
+    production after deploy.
+    IT DOES NOT EXTEND THE LOAN. MRI records `ExtensionOptions = '2x12'` and one
+    of those two options would carry the maturity to 2027-12-05, past the sale —
+    so closing the gap automatically would have been easy and wrong. Exercising
+    an extension is a business decision with covenant conditions attached; the
+    interest is reported and NOT added back. Purely additive: the forecast, the
+    schedules and the waterfall are unchanged.
+    Placed ABOVE the sections rather than inside Debt Service, which is collapsed
+    by default — hiding the warning behind a click would repeat the failure it
+    reports. `debug_msgs` was not an option: the engine returns it and
+    DealAnalysisView renders it nowhere.
+    ALSO FIXES A BUG IN ITSELF, found checking Jim's covenant corrections:
+    `dtMaturity` is EMPTY on all 91 production loan rows and the date lives in
+    `dtEvent` on the `vDateType='Maturity'` row. Reading the obvious column found
+    nothing for every loan and fell back to the schedule's last period — close
+    enough to look right, wrong enough to compute the extension from the wrong
+    base date. The guardrail had passed 31/31 against it because the fixture put
+    the date in a column that never carries one.
+    Guardrail: `loan_maturity_gap_check.py`, 36 checks, pure fixtures — it checks
+    the two OPPOSITE failures, staying silent and quietly extending the loan.
+    STILL OPEN: `nReqDSR` 1.10 and `nLTV` 0.55 are the only covenants left after
+    the corrections; whether 1.10 is the extension test or the ongoing one has
+    not been settled, and solve-for-paydown needs that answer first.)
   - `v480` = `5325f44` (Accounting Workpapers split into two tabs: a production
     TRACKER across every reporting entity and the single-entity WORKBENCH, which
     now has its own entity dropdown. The tracker replicates the CFO's reporting
