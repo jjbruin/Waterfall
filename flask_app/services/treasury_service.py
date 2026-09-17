@@ -666,6 +666,99 @@ def seed_opening(account_number: str, period: str, amount, user: str = "",
     return {"ok": True, "seeded_period": prev, "amount": amt}
 
 
+
+# ------------------------------------ starting the chain from a statement
+
+def match_account_by_suffix(suffix: str, engine=None):
+    """Which known account a statement's masked number refers to.
+
+    PNC prints only the last four digits (``XX-XXXX-5765``), so that is all
+    there is to route on. Measured across the 50 accounts in the September
+    90-day export, all fifty last-four groups are unique -- but that is a fact
+    about today's accounts, not a guarantee, so an AMBIGUOUS suffix is refused
+    rather than resolved by picking one. A statement filed against the wrong
+    account would corrupt a reconciliation silently.
+    """
+    engine = engine or get_engine()
+    ensure_tables(engine)
+    digits = "".join(ch for ch in str(suffix or "") if ch.isdigit())
+    if len(digits) < 4:
+        return {"error": "No account digits could be read from the statement."}
+    tail = digits[-4:]
+    with engine.connect() as conn:
+        rows = [r[0] for r in conn.execute(text(
+            "SELECT account_number FROM tr_accounts")).fetchall()]
+    hits = [a for a in rows if str(a).strip().endswith(tail)]
+    if not hits:
+        return {"error": "No imported account ends in %s. Import that "
+                         "account's activity first." % tail, "suffix": tail}
+    if len(hits) > 1:
+        return {"error": "More than one account ends in %s (%s), so this "
+                         "statement cannot be routed automatically. File it "
+                         "against the account by hand."
+                         % (tail, ", ".join(sorted(hits))), "suffix": tail}
+    return {"account_number": hits[0], "suffix": tail}
+
+
+def seed_from_statement(account_number: str, period: str, user: str = "",
+                        engine=None) -> dict:
+    """Open the chain from the PRIOR period's filed statement.
+
+    Jim, Sep 17 2026, asking whether to type fifty opening balances or read
+    them off the June statements. The statement is the better source: it is an
+    external authority, it carries its own arithmetic check, and the figure
+    stays traceable to a named file instead of to somebody's typing.
+
+    THIS IS NOT THE SAME AS RE-BASING. `opening_balance()` deliberately never
+    reads a statement -- it carries the prior period's computed ending, so a
+    break in the chain shows up as a difference instead of being papered over.
+    Starting the chain is the one case where a statement IS the right source,
+    because there is nothing behind it to contradict. So this refuses the
+    moment a real close exists, and the distinction is the whole point of the
+    function.
+    """
+    engine = engine or get_engine()
+    ensure_tables(engine)
+    acct = str(account_number).strip()
+    prev = prior_period(period)
+    if not prev:
+        return {"error": "%r is not a period like 202607." % period}
+
+    with engine.connect() as conn:
+        closed = conn.execute(text(
+            "SELECT period, status FROM tr_periods "
+            " WHERE account_number = :a AND computed_ending IS NOT NULL "
+            "   AND status = 'closed' ORDER BY period"),
+            {"a": acct}).fetchall()
+        st = conn.execute(text(
+            "SELECT ending_balance, period_end, source_file FROM tr_statements "
+            " WHERE account_number = :a AND period_end LIKE :p "
+            " ORDER BY id DESC"),
+            {"a": acct, "p": "%s-%s%%" % (prev[:4], prev[4:])}).fetchone()
+
+    if closed:
+        return {"error": "This account already has a reconciled period (%s), "
+                         "so its opening is carried forward rather than seeded. "
+                         "Seeding now would hide any break in the chain."
+                         % closed[0][0]}
+    if not st or st[0] is None:
+        return {"error": "No statement is on file for %s. Import that month's "
+                         "statement PDF first, then seed from it." % prev}
+
+    res = seed_opening(acct, period, float(st[0]), user, engine)
+    if res.get("error"):
+        return res
+    # The note is the audit trail: it names the file the figure came from, so
+    # the starting point can be checked years later without asking anybody.
+    note = ("opening from the %s statement ending %s (%s)"
+            % (prev, st[1], (st[2] or "statement")[:120]))
+    with engine.begin() as conn:
+        conn.execute(text(
+            "UPDATE tr_periods SET note = :n WHERE account_number = :a "
+            "  AND period = :p"), {"n": note, "a": acct, "p": prev})
+    return {**res, "source": note, "statement_ending": float(st[0]),
+            "period_end": st[1]}
+
 def accounts(engine=None):
     """Every known bank account, with the latest period it has been closed at."""
     engine = engine or get_engine()

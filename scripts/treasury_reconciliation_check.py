@@ -221,6 +221,7 @@ def main() -> int:
 
         _match_section(ts, eng, rows, real)
         _position_section(ts, eng, acct, real)
+        _seed_section(ts, eng, acct, real)
 
         for t in ("tr_activity", "tr_statements", "tr_periods", "tr_accounts",
                   "tr_matches"):
@@ -377,6 +378,83 @@ def _position_section(ts, eng, acct, real):
         abs(p2["current_ledger"] - 521727.50) < 0.01, str(p2["current_ledger"]))
     chk("the position says which date it runs through",
         p2["activity_through"] == "2026-09-03", str(p2["activity_through"]))
+
+
+# ---- 7. starting the chain from a statement ------------------------
+#
+# Jim asked whether to type fifty opening balances or read them off the June
+# statements. The statement is the better source, but ONLY for the first
+# period: taking one later would re-base the chain and hide a break, which is
+# the exact thing `opening_balance` refuses to do. Both halves are checked.
+def _seed_section(ts, eng, acct, real):
+    from sqlalchemy import text as _t
+    print("\n7. Starting the chain from a statement")
+
+    ts.set_account(acct, entityid="AMB6", gl_cash_account="MR10005000",
+                   user="check", engine=eng)
+
+    # No statement on file for the prior month -> refused, and it says which
+    # month to file.
+    with eng.begin() as c:
+        c.execute(_t("DELETE FROM tr_statements WHERE account_number = :a"),
+                  {"a": acct})
+        c.execute(_t("DELETE FROM tr_periods WHERE account_number = :a"),
+                  {"a": acct})
+    r = ts.seed_from_statement(acct, "202608", "check", eng)
+    chk("with no statement on file, seeding is refused",
+        bool(r.get("error")) and "202607" in r["error"], str(r)[:100])
+
+    # File a July statement, then seed August from it.
+    ts.import_statement({"beginning_balance": 100.0, "ending_balance": 571750.04,
+                         "credits_total": 0.0, "debits_total": 0.0,
+                         "period_start": "2026-07-01", "period_end": "2026-07-31",
+                         "source_file": "july.pdf", "internally_consistent": True},
+                        acct, eng)
+    r = ts.seed_from_statement(acct, "202608", "check", eng)
+    chk("with one on file, August opens at the July statement's ENDING balance",
+        not r.get("error") and abs(r["amount"] - 571750.04) < 0.01, str(r)[:110])
+    chk("and the note names the file it came from, not 'by hand'",
+        "july.pdf" in (r.get("source") or ""), str(r.get("source"))[:90])
+    op = ts.opening_balance(acct, "202608", eng)
+    chk("the ordinary opening lookup now finds it",
+        abs((op.get("opening") or 0) - 571750.04) < 0.01, str(op)[:100])
+
+    # THE HALF THAT MATTERS: once a period is genuinely reconciled, seeding is
+    # refused. Re-basing on a statement would paper over a broken chain.
+    with eng.begin() as c:
+        c.execute(_t("UPDATE tr_periods SET status = 'closed' "
+                     " WHERE account_number = :a"), {"a": acct})
+    r2 = ts.seed_from_statement(acct, "202609", "check", eng)
+    chk("once a period is RECONCILED, seeding is refused",
+        bool(r2.get("error")) and "carried forward" in r2["error"],
+        str(r2)[:110])
+    chk("and the refusal says why, not just no",
+        "hide any break" in (r2.get("error") or ""), str(r2)[:110])
+
+    # Routing a masked statement number to an account.
+    m = ts.match_account_by_suffix("XX-XXXX-" + acct[-4:], eng)
+    chk("a masked statement number routes to its account",
+        m.get("account_number") == acct, str(m)[:90])
+    chk("an unknown suffix is refused with the digits it looked for",
+        "9999" in str(ts.match_account_by_suffix("XX-XXXX-9999", eng)), "")
+    chk("too few digits is refused rather than guessed",
+        bool(ts.match_account_by_suffix("XX-X", eng).get("error")))
+
+    # AMBIGUITY IS REFUSED, NOT RESOLVED. All fifty of today's accounts have
+    # unique last-four, but that is a fact about today's accounts.
+    twin = acct[:-4] + acct[-4:]
+    alt = "99" + acct[-4:]
+    ts.set_account(alt, entityid="X", engine=eng)
+    with eng.begin() as c:
+        c.execute(_t("INSERT INTO tr_accounts (account_number, gl_cash_account,"
+                     " active) VALUES (:a, :g, 1)"),
+                  {"a": alt, "g": "MR10005000"})
+    m2 = ts.match_account_by_suffix("XX-XXXX-" + acct[-4:], eng)
+    chk("two accounts sharing a suffix is REFUSED, not resolved by picking one",
+        bool(m2.get("error")) and "More than one" in m2["error"], str(m2)[:100])
+    with eng.begin() as c:
+        c.execute(_t("DELETE FROM tr_accounts WHERE account_number = :a"),
+                  {"a": alt})
 
 
 def _report():

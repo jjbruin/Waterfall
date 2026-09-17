@@ -372,3 +372,110 @@ def gl_accounts():
                       "type": str(r["TYPE"] or "").strip()}
                      for _, r in df.iterrows()],
         "count": int(len(df))}))
+
+
+@treasury_bp.route("/import/statements", methods=["POST"])
+@login_required
+@roles_exactly(*ACCOUNTING_ROLES)
+def import_statements():
+    """Several statement PDFs at once, each routed to its own account.
+
+    PNC prints a MASKED account number (``XX-XXXX-5765``), so the last four
+    digits are all there is to route on. Across the 50 accounts in the
+    September export all fifty last-four groups are unique, but the service
+    refuses an ambiguous suffix rather than picking one -- a statement filed
+    against the wrong account corrupts a reconciliation silently.
+
+    EVERY FILE GETS ITS OWN RESULT. One unreadable PDF must not take the other
+    forty-nine with it, and "which ones did not land" is the only question
+    worth asking after a bulk import.
+    """
+    from flask_app.services import treasury_service as _ts
+    files = request.files.getlist("files") or []
+    if not files:
+        return jsonify({"error": "No files were sent."}), 400
+    if len(files) > 200:
+        return jsonify({"error": "Too many files in one go (limit 200)."}), 400
+
+    try:
+        import pdfplumber
+    except Exception as e:
+        return _fail(e, "pdfplumber", 500)
+
+    results, filed, skipped = [], 0, 0
+    for f in files:
+        name = f.filename or "(unnamed)"
+        row = {"file": name}
+        try:
+            raw = f.read(MAX_UPLOAD_BYTES + 1)
+            if len(raw) > MAX_UPLOAD_BYTES:
+                row["error"] = "Larger than 25MB."
+                results.append(row); skipped += 1; continue
+            with pdfplumber.open(io.BytesIO(raw)) as pdf:
+                txt = "\n".join((p.extract_text() or "") for p in pdf.pages)
+        except Exception as e:
+            row["error"] = "Could not open the PDF: %s" % str(e)[:120]
+            results.append(row); skipped += 1; continue
+
+        parsed = _ts.parse_statement_text(txt, source_file=name)
+        row["period_end"] = parsed.get("period_end")
+        row["ending_balance"] = parsed.get("ending_balance")
+        row["suffix"] = parsed.get("account_suffix")
+
+        hit = _ts.match_account_by_suffix(parsed.get("account_suffix"))
+        if hit.get("error"):
+            row["error"] = hit["error"]
+            results.append(row); skipped += 1; continue
+        row["account_number"] = hit["account_number"]
+
+        res = _ts.import_statement(parsed, hit["account_number"])
+        if res.get("error"):
+            row["error"] = res["error"]
+            skipped += 1
+        else:
+            row["filed"] = True
+            filed += 1
+        results.append(row)
+
+    return jsonify(safe_json({
+        "filed": filed, "skipped": skipped, "count": len(files),
+        "results": results}))
+
+
+@treasury_bp.route("/seed-from-statement", methods=["POST"])
+@login_required
+@roles_exactly(*ACCOUNTING_ROLES)
+def seed_from_statement():
+    """Open an account's chain from the prior month's filed statement.
+
+    Refused once a period has actually been reconciled -- see the service note.
+    With `all: true`, does it for every account that can be seeded and reports
+    the ones that cannot, which is the point of doing fifty at once.
+    """
+    from flask_app.services import treasury_service as _ts
+    body = request.get_json(silent=True) or {}
+    period = (body.get("period") or "").strip()
+    if len(period) != 6 or not period.isdigit():
+        return jsonify({"error": "A period like 202607 is required."}), 400
+
+    if not body.get("all"):
+        acct = (body.get("account_number") or "").strip()
+        if not acct:
+            return jsonify({"error": "account_number is required."}), 400
+        return jsonify(safe_json(
+            _ts.seed_from_statement(acct, period, _user())))
+
+    out, seeded = [], 0
+    for a in _ts.accounts():
+        r = _ts.seed_from_statement(a["account_number"], period, _user())
+        row = {"account_number": a["account_number"],
+               "entityid": a.get("entityid")}
+        if r.get("error"):
+            row["error"] = r["error"]
+        else:
+            row["opening"] = r.get("amount")
+            row["source"] = r.get("source")
+            seeded += 1
+        out.append(row)
+    return jsonify(safe_json({"seeded": seeded, "period": period,
+                              "count": len(out), "results": out}))

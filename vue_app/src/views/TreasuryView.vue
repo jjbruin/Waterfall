@@ -387,6 +387,54 @@ async function download(kind: 'gl' | 'ia') {
   }
 }
 
+// ── Statements in bulk, and opening the chain from them ──────────────
+//
+// Fifty accounts need fifty opening balances. Typing them is fifty chances to
+// transpose a digit and leaves a figure nobody can trace; the statement is an
+// external authority that carries its own arithmetic check. PNC prints a
+// MASKED number (XX-XXXX-5765), so routing is on the last four — unique across
+// all fifty of today's accounts, and an ambiguous suffix is refused rather
+// than resolved.
+const stmtFiles = ref<File[]>([])
+const stmtBatch = ref<any>(null)
+const seedPeriod = ref('202607')
+const seedRes = ref<any>(null)
+
+async function uploadStatements() {
+  if (!stmtFiles.value.length) return
+  busy.value = true
+  stmtBatch.value = null
+  try {
+    const fd = new FormData()
+    for (const f of stmtFiles.value) fd.append('files', f)
+    const { data } = await api.post('/api/treasury/import/statements', fd)
+    stmtBatch.value = data
+    flash(`${data.filed} statements filed, ${data.skipped} not.`)
+    await loadAccounts()
+  } catch (e) { fail(e, 'Importing the statements') } finally {
+    busy.value = false
+  }
+}
+
+async function seedAll() {
+  busy.value = true
+  seedRes.value = null
+  try {
+    const { data } = await api.post('/api/treasury/seed-from-statement', {
+      period: seedPeriod.value, all: true })
+    seedRes.value = data
+    flash(`${data.seeded} of ${data.count} accounts opened at ${seedPeriod.value}.`)
+    await loadAccounts()
+  } catch (e) { fail(e, 'Seeding the openings') } finally {
+    busy.value = false
+  }
+}
+
+// Only the ones that could NOT be seeded are worth reading — the successes are
+// visible as balances on the accounts table.
+const seedProblems = computed(
+  () => (seedRes.value?.results || []).filter((r: any) => r.error))
+
 onMounted(loadAccounts)
 </script>
 
@@ -500,6 +548,31 @@ onMounted(loadAccounts)
           </table>
         </div>
 
+        <!-- Opening the chain. The figure comes from the prior month's
+             STATEMENT rather than being typed: it is an external authority,
+             it carries its own arithmetic check, and it stays traceable to a
+             named file. Refused once a period has actually been reconciled —
+             re-basing then would hide a break rather than reveal one. -->
+        <div v-if="canManage" class="seed">
+          <span class="hint">
+            Open each account's chain from the prior month's filed statement.
+            Seeds only accounts that have nothing reconciled yet.
+          </span>
+          <input v-model="seedPeriod" class="mini" placeholder="202607" />
+          <button class="btn" :disabled="busy" @click="seedAll">
+            Seed openings from statements
+          </button>
+          <template v-if="seedRes">
+            <span class="chip">{{ seedRes.seeded }} of {{ seedRes.count }} opened</span>
+            <ul v-if="seedProblems.length" class="skipped">
+              <li v-for="(r, i) in seedProblems" :key="i">
+                <span class="mono">{{ r.account_number }}</span>
+                <span v-if="r.entityid"> ({{ r.entityid }})</span> — {{ r.error }}
+              </li>
+            </ul>
+          </template>
+        </div>
+
         <p class="footnote">
           <b>Current ledger</b> is carried forward from the last closed period
           plus every transaction imported since — a position computed from what
@@ -573,6 +646,40 @@ onMounted(loadAccounts)
                   <td class="r num">{{ money(lastStatement.parsed.beginning_balance) }}</td></tr>
               <tr><td>Ending balance</td>
                   <td class="r num">{{ money(lastStatement.parsed.ending_balance) }}</td></tr>
+            </table>
+          </div>
+        </section>
+
+        <section class="card">
+          <h3>Statements in bulk</h3>
+          <p class="hint">
+            Several statement PDFs at once. Each is routed to its own account by
+            the masked number PNC prints on it, so they do not have to be filed
+            one at a time. A statement that cannot be read, or whose number
+            matches no imported account, is listed rather than dropped.
+          </p>
+          <input type="file" accept=".pdf" multiple
+                 @change="stmtFiles = Array.from(($event.target as HTMLInputElement).files || [])" />
+          <button class="btn primary" :disabled="!stmtFiles.length || busy"
+                  @click="uploadStatements">
+            Import {{ stmtFiles.length || '' }} statements
+          </button>
+
+          <div v-if="stmtBatch" class="result">
+            <div>
+              <b>{{ stmtBatch.filed }}</b> filed,
+              <b>{{ stmtBatch.skipped }}</b> not, of
+              {{ stmtBatch.count }}.
+            </div>
+            <table class="mini-table" v-if="stmtBatch.results">
+              <tr v-for="(r, i) in stmtBatch.results" :key="i"
+                  :class="{ far: r.error }">
+                <td class="l ellip">{{ r.file }}</td>
+                <td class="l mono">{{ r.account_number || r.suffix || '—' }}</td>
+                <td class="l">{{ r.period_end || '' }}</td>
+                <td class="r num">{{ r.ending_balance == null ? '' : money(r.ending_balance) }}</td>
+                <td class="l why">{{ r.error || 'filed' }}</td>
+              </tr>
             </table>
           </div>
         </section>
