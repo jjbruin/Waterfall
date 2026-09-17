@@ -678,12 +678,54 @@ holds, float and pending debits, which exist only at the bank. The column is on
 the accounts tab with the reason printed under it. **Do not fill it with the
 ledger figure** — guardrail `treasury_api_check.py` asserts it stays `None`.
 
-### 7.3 GL and IA upload templates — Phase 3, waiting on the templates
+### 7.3 GL and IA upload files — WRITERS BUILT; the coding screen is what is left
 
-The accountant's coding has to come out as the MRI upload templates. Jim has
-them ("I can provide the journal entry templates that upload the entries into
-MRI when you need them") and the blank + August-AMB6 examples of both were
-attached Sep 17 2026. **Nothing in treasury posts to MRI today.**
+**Correction, Sep 17 2026:** an earlier version of this item said the templates
+were outstanding. They were not — Jim supplied all four with the August batch
+(blank GL, blank IA, and the filled AMB6 August examples of each), and the
+reconciliation guardrail had been reading one of them the whole time.
+
+`flask_app/services/treasury_upload.py` writes both files. The contract, read
+off the accepted August files rather than from a specification:
+
+```
+GL upload, all lines          49 rows   sums to      0.00   a balanced JE
+GL cash lines MR10005000      24 rows        -560,022.54    = the bank's own
+                                                              net movement
+GL distributions MR31000001   13 rows          12,580.47
+IA upload                     13 rows          12,580.47    the same thirteen
+```
+
+One coded distribution produces BOTH a GL line and an IA row; the GL line's
+description names the investor whose ID the IA row carries.
+
+**The IA file is written into a COPY of MRI's own template**, vendored at
+`flask_app/mri_templates/`. Column 12 of `Transaction Values` is "Number of
+Shares" and **its header cell is blank** in MRI's template — pandas reads it as
+`Unnamed: 11`, and a workbook rebuilt from column names would write that string
+into a header MRI parses. Copying also keeps the Guide sheet, so the file still
+explains its own rules.
+
+Refused, not repaired: an unbalanced entry, a zero amount, a period that is not
+YYYYMM, a transaction type MRI's Guide disallows (its *Validation* column is
+narrower than its *Available Values* column), and an IA total that does not tie
+to the GL lines it mirrors.
+
+Guardrail `scripts/treasury_upload_check.py` (41) **rebuilds both accepted
+files from their own contents and asserts the result is byte-identical.** A
+format check written from a specification proves only that the code agrees with
+itself.
+
+**STILL OPEN — the coding screen.** Nothing yet turns a reconciled bank
+transaction into a coded GL line: the accountant needs to assign the offset
+account per transaction. **Open question for Jim:** for a distribution, does the
+investor split get TYPED, or COMPUTED from the ownership the app already holds
+(commitments/relationships)? The August file splits 12,580.47 across 13
+investors, and the app can derive that — but deriving it silently would put the
+app's arithmetic into a journal entry somebody signs. Not guessed.
+
+**Nothing in treasury posts to MRI, and nothing here will** — this produces two
+files a person uploads.
 
 ### 7.4 Six accounting writes had NO role check — FIXED, and worth knowing why
 
