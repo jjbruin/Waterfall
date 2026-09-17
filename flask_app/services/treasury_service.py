@@ -228,15 +228,25 @@ def parse_activity(df: pd.DataFrame, source_file: str = "") -> dict:
     Returns the rows plus what could NOT be read, because a transaction dropped
     silently is a reconciliation that ties for the wrong reason.
     """
-    if df is None or df.empty:
-        return {"rows": [], "skipped": [], "accounts": []}
+    if df is None:
+        return {"rows": [], "skipped": [], "accounts": [],
+                "error": "Nothing could be read from this file."}
+    # THE COLUMNS ARE CHECKED BEFORE THE ROW COUNT, deliberately. A file that
+    # is not an activity export at all often parses into an empty frame, and
+    # short-circuiting on `df.empty` first reported it as "0 transactions
+    # imported" -- a refusal dressed up as a successful no-op. An export with
+    # the right columns and no rows is a different thing and is still fine.
     cols = {str(c).strip().lower(): c for c in df.columns}
     need = ("asofdate", "accountnumber", "amount", "credit/debit")
     missing = [n for n in need if n not in cols]
     if missing:
         return {"rows": [], "skipped": [],
                 "error": "Not a PNC activity export: missing %s. Found: %s"
-                         % (", ".join(missing), ", ".join(list(df.columns)[:10]))}
+                         % (", ".join(missing),
+                            ", ".join(str(c) for c in list(df.columns)[:10])
+                            or "no columns at all")}
+    if df.empty:
+        return {"rows": [], "skipped": [], "accounts": []}
 
     rows, skipped = [], []
     for i, r in df.iterrows():
@@ -671,13 +681,80 @@ def accounts(engine=None):
                 "  FROM tr_periods WHERE computed_ending IS NOT NULL "
                 " ORDER BY period")).fetchall():
             last[a] = (p, c)
-    return [{"account_number": r[0], "bank_id": r[1], "account_name": r[2],
-             "entityid": r[3],
-             "gl_cash_account": r[4] or DEFAULT_CASH_ACCOUNT,
-             "active": bool(r[5]),
-             "last_period": last.get(r[0], (None, None))[0],
-             "last_balance": last.get(r[0], (None, None))[1]}
-            for r in rows]
+        # Activity rolled up by month, so the position below can be carried
+        # forward from the last close without reading every transaction.
+        by_month = {}
+        for a, ym, net, n, through in conn.execute(text(
+                "SELECT account_number, SUBSTR(as_of_date, 1, 7) AS ym, "
+                "       SUM(signed_amount), COUNT(*), MAX(as_of_date) "
+                "  FROM tr_activity WHERE as_of_date IS NOT NULL "
+                " GROUP BY account_number, SUBSTR(as_of_date, 1, 7)")).fetchall():
+            by_month.setdefault(a, []).append((ym, float(net or 0.0), int(n),
+                                               through))
+
+    out = []
+    for r in rows:
+        acct = r[0]
+        period, balance = last.get(acct, (None, None))
+        row = {"account_number": acct, "bank_id": r[1], "account_name": r[2],
+               "entityid": r[3],
+               "gl_cash_account": r[4] or DEFAULT_CASH_ACCOUNT,
+               "active": bool(r[5]),
+               "last_period": period,
+               "last_balance": (float(balance) if balance is not None else None)}
+        row.update(_position(period, balance, by_month.get(acct, [])))
+        out.append(row)
+    return out
+
+
+def _position(last_period, last_balance, months) -> dict:
+    """What we can honestly say the account holds right now.
+
+    CURRENT LEDGER is carried the same way the opening balance is: the last
+    closed ending plus every imported transaction dated after it. It is a
+    computed position from what we hold, NOT a reading of PNC's ledger balance,
+    and it says which date it runs through so nobody reads a stale import as
+    today's cash.
+
+    CURRENT AVAILABLE IS NOT DERIVABLE AND IS RETURNED AS None. Available is
+    ledger less holds, float and pending debits -- facts that exist only at the
+    bank and never appear in an activity export. Showing the ledger figure in
+    an available column would be inventing the one number a treasurer acts on.
+    It arrives when the PNC connection does.
+    """
+    ym = ("%s-%s" % (last_period[:4], last_period[4:])) if last_period else None
+    after = [m for m in months if ym is None or m[0] > ym]
+    net = sum(m[1] for m in after)
+    txns = sum(m[2] for m in after)
+    through = max([m[3] for m in after if m[3]], default=None)
+    pos = {
+        "activity_since_close": (net if after else 0.0),
+        "transactions_since_close": txns,
+        "activity_through": through,
+        "unclosed_months": sorted(m[0] for m in after),
+        "current_available": None,
+        "available_reason": ("Available balance is held only at the bank -- it "
+                             "is the ledger less holds, float and pending "
+                             "debits, none of which appear in an activity "
+                             "export. It arrives with the PNC connection."),
+    }
+    if last_balance is None:
+        pos["current_ledger"] = None
+        pos["ledger_reason"] = (
+            "No period has been closed for this account yet, so there is "
+            "nothing to carry forward. Seed the opening balance for its first "
+            "month and reconcile it." if not months else
+            "Activity has been imported but no period has been closed, so "
+            "there is no balance to carry it forward from.")
+    else:
+        pos["current_ledger"] = float(last_balance) + net
+        pos["ledger_reason"] = (
+            "Closed %s at %s%s." % (
+                last_period, _m(last_balance),
+                (", plus %d transaction%s through %s netting %s"
+                 % (txns, "" if txns == 1 else "s", through, _m(net)))
+                if txns else ", with no activity imported since"))
+    return pos
 
 
 def _m(v) -> str:
@@ -783,6 +860,11 @@ def match(account_number: str, period: str, engine=None) -> dict:
     if not entityid:
         out["error"] = ("This bank account is not mapped to an entity, so "
                         "there is no ledger to match against.")
+        # The bank side is still known, and showing it is what makes the
+        # refusal actionable: the accountant can see what came through the
+        # account while being told which mapping is missing. Same reason the
+        # no-GL-feed branch below carries it.
+        out["bank_only"] = [_bank_row(r) for _, r in bank.iterrows()]
         return out
 
     gl = _gl_cash_lines(entityid, gl_account, period, engine)

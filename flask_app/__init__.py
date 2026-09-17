@@ -165,6 +165,9 @@ def create_app(config_name: str = None) -> Flask:
     from flask_app.api.workpapers import workpapers_bp
     app.register_blueprint(workpapers_bp)
 
+    from flask_app.api.treasury import treasury_bp
+    app.register_blueprint(treasury_bp)
+
     # Health check
     @app.route("/health")
     def health():

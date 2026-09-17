@@ -936,7 +936,7 @@ The sidebar (`AppSidebar.vue`) is organized into major sections with expandable 
 |---------|------|----------|
 | **Dashboard** | Standalone link | `/dashboard` |
 | **Asset Management** | Expandable | Deal Analysis, Property Financials, Surveillance, One Pager, Review Tracking, Ownership, Waterfall Setup, Report Settings (expandable config panel) |
-| **Accounting** | Expandable | Workpaper Packages |
+| **Accounting** | Expandable | Workpaper Packages, Treasury |
 | **New Business** | Expandable | Pipeline, Deal Analysis, Lease Review, Lease Risk Analysis |
 | **Investment Management** | Future (dimmed) | — |
 | **Reports** | Standalone link | `/reports` (Projected Returns, ROE Summary, Pref Balance Detail, Sold Portfolio, PSCKOC, Portfolio Analysis) |

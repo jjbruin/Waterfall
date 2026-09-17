@@ -220,6 +220,7 @@ def main() -> int:
                  or 0) - (nxt["opening"] or 0)) < 0.01)
 
         _match_section(ts, eng, rows, real)
+        _position_section(ts, eng, acct, real)
 
         for t in ("tr_activity", "tr_statements", "tr_periods", "tr_accounts",
                   "tr_matches"):
@@ -332,6 +333,50 @@ def _match_section(ts, eng, rows, real):
     ts.set_account(acct_no, entityid="AMB6", engine=eng)
     with eng.begin() as c:
         c.execute(_t('DELETE FROM gl_detail WHERE "ENTITYID" = :e'), {"e": "AMB6"})
+
+
+# ---- 6. the position shown on the accounts tab ---------------------
+#
+# Jim asked this tab for "the list of accounts, current ledger and current
+# available". Ledger we can carry; available exists only at the bank. The
+# checks below exist to stop a later change from quietly filling that column
+# with the ledger figure, which is the one number a treasurer would act on.
+def _position_section(ts, eng, acct, real):
+    print("\n6. The accounts tab position")
+    a = [x for x in ts.accounts(eng) if x["account_number"] == acct][0]
+    chk("available is not known, and is None rather than a number",
+        a["current_available"] is None)
+    chk("and it says why", "only at the bank" in a["available_reason"])
+    chk("ledger is not the available figure dressed up",
+        a["current_ledger"] != a["current_available"]
+        or a["current_ledger"] is None)
+    if real:
+        # August is closed at this point; September holds no activity.
+        chk("the ledger carries the last close forward",
+            abs(a["current_ledger"] - AUG["ending"]) < 0.01,
+            str(a["current_ledger"]))
+        chk("and names the period it was carried from",
+            "202608" in a["ledger_reason"], a["ledger_reason"][:90])
+
+    # An account with activity but nothing closed has no ledger position, and
+    # must not report 0.00 -- a real zero balance and an unknown one are not
+    # the same fact.
+    p = ts._position(None, None, [("2026-08", -560022.54, 24, "2026-08-29")])
+    chk("no close means no ledger figure, not zero", p["current_ledger"] is None)
+    chk("and the reason names the missing close",
+        "no period has been closed" in p["ledger_reason"].lower(),
+        p["ledger_reason"][:80])
+    chk("the months awaiting a close are listed",
+        p["unclosed_months"] == ["2026-08"], str(p["unclosed_months"]))
+
+    # A close followed by later activity moves the position.
+    p2 = ts._position("202608", 11727.50,
+                      [("2026-08", -560022.54, 24, "2026-08-29"),
+                       ("2026-09", 510000.00, 4, "2026-09-03")])
+    chk("activity after the close is added, and earlier activity is not",
+        abs(p2["current_ledger"] - 521727.50) < 0.01, str(p2["current_ledger"]))
+    chk("the position says which date it runs through",
+        p2["activity_through"] == "2026-09-03", str(p2["activity_through"]))
 
 
 def _report():
