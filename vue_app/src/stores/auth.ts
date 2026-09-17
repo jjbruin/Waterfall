@@ -48,6 +48,12 @@ export const useAuthStore = defineStore('auth', () => {
   const canEditAccounting = computed(
     () => ACCOUNTING_ROLES.includes(user.value?.role || ''))
 
+  // Mirrors CLOSE_CYCLE_ROLES. Starting a close cycle is the CFO's; syncing
+  // entities into one that exists is the team's (Jim, Sep 17 2026).
+  const CLOSE_CYCLE_ROLES = ['admin', 'cfo']
+  const canStartCloseCycle = computed(
+    () => CLOSE_CYCLE_ROLES.includes(user.value?.role || ''))
+
   // User management state (admin only)
   const users = ref<ManagedUser[]>([])
   const usersLoading = ref(false)
@@ -167,7 +173,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   return {
     user, token, isAuthenticated, isAdmin, isAnalyst, userRole,
-    canEditAccounting,
+    canEditAccounting, canStartCloseCycle,
     mustChangePassword, pendingUsername,
     users, usersLoading,
     login, fetchMe, logout, changePassword,

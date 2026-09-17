@@ -10,8 +10,8 @@ import logging
 from flask import Blueprint, g, jsonify, request, send_file
 from io import BytesIO
 
-from flask_app.auth.routes import (ACCOUNTING_ROLES, login_required,
-                                   roles_exactly)
+from flask_app.auth.routes import (ACCOUNTING_ROLES, CLOSE_CYCLE_ROLES,
+                                   login_required, roles_exactly)
 from flask_app.db import get_engine
 from flask_app.serializers import safe_json
 from flask_app.services import workpaper_service as ws
@@ -69,8 +69,12 @@ def list_cycles():
 
 @workpapers_bp.route("/cycles", methods=["POST"])
 @login_required
-@roles_exactly(*ACCOUNTING_ROLES)
+@roles_exactly(*CLOSE_CYCLE_ROLES)
 def create_cycle():
+    # NARROWER THAN THE REST OF THE SECTION, on purpose. Jim, Sep 17 2026:
+    # "starting a close cycle should belong to the CFO, anyone on the
+    # accounting team can sync entities." Opening a cycle decides the period
+    # the firm reports on; syncing entities into one is preparation.
     body = request.get_json(silent=True) or {}
     label = (body.get("period_label") or "").strip()
     end = (body.get("period_end") or "").strip()

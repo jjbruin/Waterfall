@@ -39,6 +39,11 @@ WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 #: nothing.
 OPEN_POSTS = {"/api/workpapers/statements/batch"}
 
+#: Writes that are NARROWER than the section rule, with the roles that may do
+#: them. Jim, Sep 17 2026: "starting a close cycle should belong to the CFO,
+#: anyone on the accounting team can sync entities."
+NARROWER = {("POST", "/api/workpapers/cycles"): ("admin", "cfo")}
+
 
 def chk(label, cond, detail=""):
     (_passed if cond else _failed).append(label)
@@ -64,7 +69,8 @@ def _sample_path(rule):
 
 def main():
     from flask_app import create_app
-    from flask_app.auth.routes import ACCOUNTING_ROLES, ROLE_LEVELS
+    from flask_app.auth.routes import (ACCOUNTING_ROLES, CLOSE_CYCLE_ROLES,
+                                       ROLE_LEVELS)
 
     app = create_app()
     client = app.test_client()
@@ -127,11 +133,38 @@ def main():
         h = {"Authorization": "Bearer %s" % _token(app, role)}
         blocked = []
         for method, pattern, path in writes:
+            # A route in NARROWER is allowed to refuse this role -- that is the
+            # point of it being there. It gets its own checks below.
+            allowed_here = NARROWER.get((method, pattern))
+            if allowed_here and role not in allowed_here:
+                continue
             if client.open(path, method=method, headers=h,
                            json={}).status_code == 403:
                 blocked.append("%s %s" % (method, pattern))
         chk("%s is not blocked by the gate anywhere" % role, not blocked,
             "; ".join(blocked[:4]))
+
+    print("\n3b. Starting a close cycle is narrower than the rest")
+    # Checked in BOTH directions. A rule that only ever refuses is satisfied by
+    # refusing everyone, and a rule that only ever admits is satisfied by a gate
+    # that does nothing.
+    def _post_cycle(role, body=None):
+        return client.post("/api/workpapers/cycles", json=(body or {}),
+                           headers={"Authorization": "Bearer %s"
+                                                     % _token(app, role)}
+                           ).status_code
+    for role in ("cfo", "admin"):
+        chk("%s may start a close cycle" % role, _post_cycle(role) != 403)
+    for role in ("accountant", "accounting_manager"):
+        chk("%s may NOT start a close cycle" % role, _post_cycle(role) == 403)
+    # ...but the same people must still be able to do the ordinary preparation,
+    # or the split has just moved the lockout rather than removed it.
+    for role in ("accountant", "accounting_manager"):
+        chk("%s may still sync entities into a cycle" % role,
+            client.post("/api/workpapers/cycles/1/sync",
+                        headers={"Authorization": "Bearer %s"
+                                                  % _token(app, role)}
+                        ).status_code != 403)
 
     print("\n4. Reads stay open")
     reads = [(str(r), _sample_path(r)) for r in app.url_map.iter_rules()
@@ -158,12 +191,28 @@ def main():
         vue_roles == set(ACCOUNTING_ROLES),
         "vue=%s server=%s" % (sorted(vue_roles), sorted(ACCOUNTING_ROLES)))
 
+    cyc_line = next((l for l in store.splitlines()
+                     if "const CLOSE_CYCLE_ROLES" in l), "")
+    vue_cyc = {w.strip().strip("'\"") for w in
+               cyc_line.split("[", 1)[-1].split("]")[0].split(",") if w.strip()}
+    chk("and the same close-cycle roles", vue_cyc == set(CLOSE_CYCLE_ROLES),
+        "vue=%s server=%s" % (sorted(vue_cyc), sorted(CLOSE_CYCLE_ROLES)))
+
     for view in ("WorkpapersView.vue", "TreasuryView.vue"):
         src = (Path(__file__).resolve().parent.parent / "vue_app" / "src" /
                "views" / view).read_text(encoding="utf-8")
         chk("%s reads the shared gate rather than its own list" % view,
             "auth.canEditAccounting" in src
             and "['admin', 'cfo'].includes" not in src)
+
+    wp = (Path(__file__).resolve().parent.parent / "vue_app" / "src" /
+          "views" / "WorkpapersView.vue").read_text(encoding="utf-8")
+    chk("the New close cycle button is on the narrower gate",
+        'v-if="canStartCycle" class="btn primary"' in wp)
+    chk("and so is the form it opens, not just the button",
+        'v-if="showNewCycle && canStartCycle"' in wp)
+    chk("Sync entities is still on the team's gate",
+        'v-if="canManageClose"' in wp and "@click=\"sync\"" in wp)
 
     print("\n%d checks, %d failed." % (len(_passed) + len(_failed), len(_failed)))
     if _failed:

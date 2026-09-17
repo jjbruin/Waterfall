@@ -82,6 +82,8 @@ const returnNote = ref('')
 // mistake as v480's, where the SCREEN was the thing keeping the CFO out while
 // the API would have accepted his writes.
 const canManageClose = computed(() => auth.canEditAccounting)
+// Starting a cycle is narrower than working in one: the CFO's.
+const canStartCycle = computed(() => auth.canStartCloseCycle)
 const STATEMENT_KEYS = ['balance_sheet', 'income_statement', 'soi',
                         'members_capital', 'cash_flow']
 
@@ -475,13 +477,13 @@ onMounted(loadCycles)
           </option>
         </select>
         <button v-if="canManageClose" class="btn" @click="sync" :disabled="!cycleId">Sync entities</button>
-        <button v-if="canManageClose" class="btn primary" @click="showNewCycle = !showNewCycle">
+        <button v-if="canStartCycle" class="btn primary" @click="showNewCycle = !showNewCycle">
           New close cycle
         </button>
       </div>
     </div>
 
-    <div v-if="showNewCycle" class="new-cycle">
+    <div v-if="showNewCycle && canStartCycle" class="new-cycle">
       <input v-model="newLabel" placeholder="Label, e.g. Q2 2026" />
       <input v-model="newEnd" type="date" />
       <button class="btn primary" @click="createCycle">Create</button>
