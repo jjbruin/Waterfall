@@ -9,9 +9,11 @@ and the import panel read `imported`/`duplicates` when it returns
 a figure quietly missing from a reconciliation. So the field names the template
 reads are asserted here, by name, against a live response.
 
-It also checks the gate. The accounting section is the CFO's; importing a bank
-export is the accountant's daily work and is deliberately NOT gated, while
-mapping an account or closing a period is.
+It also checks that an ACCOUNTANT can run a whole month end to end -- import,
+reconcile, pair, close -- because the section-wide rule is "only accounting may
+edit" and it would be easy to satisfy that by admitting nobody useful. Who is
+REFUSED is enumerated across every accounting route in
+scripts/accounting_access_check.py.
 
 AUTHENTICATION: this mints its own JWT with the app's local dev secret. It never
 reads, types or stores a password, and it is a test harness, not a login.
@@ -276,10 +278,9 @@ def main():
         for f in _failed:
             print("  FAILED: %s" % f)
         return 1
-    print("The screen's field names are asserted against live responses. The\n"
-          "gate admits every accounting role and refuses viewers; it cannot\n"
-          "single the CFO out, because the role model puts him on the same\n"
-          "level as the accountants.")
+    print("The screen's field names are asserted against live responses, and\n"
+          "an accountant can run the whole month: import, reconcile, pair and\n"
+          "close. See accounting_access_check.py for the section-wide gate.")
     return 0
 
 

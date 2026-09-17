@@ -110,8 +110,13 @@ try:
         _bs = ss.build("PPIECH", "2026-06-30", "balance_sheet").get("balance_sheet")
 except Exception as _e:
     print("   (no database available: %s)" % str(_e)[:60])
-if not _bs:
-    print("   (no balance sheet in this database -- footing checks skipped)")
+if not (_bs or {}).get("sections"):
+    # `_bs` is a dict even when the entity has no GL rows at this date, so
+    # testing it for truth passes a statement with nothing in it straight into
+    # checks that then fail for lack of data. A local database without PPIECH's
+    # GL reported a missing footing as a defect; production has the data and
+    # foots to 33,378,047.84. Skipping is honest here, failing was not.
+    print("   (no balance sheet data in this database -- footing checks skipped)")
 else:
     _lc = _bs.get("footing")
     check("the footing exists", bool(_lc))

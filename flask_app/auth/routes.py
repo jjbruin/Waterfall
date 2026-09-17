@@ -65,6 +65,49 @@ def role_level(role: str) -> int:
     return ROLE_LEVELS.get(role, 0)
 
 
+#: Who may CHANGE anything in the accounting section. Jim, Sep 17 2026:
+#: "Only the accountants, accounting manager, and cfo should be able to edit
+#: anything in the accounting section of the app generally. Me as admin, can
+#: edit only so I can help them get something fixed while we are building and
+#: testing the model."
+#:
+#: `analyst` is deliberately absent, and that is the whole point: Jim's own
+#: day-to-day login is an analyst one and he wants it READ-ONLY here.
+ACCOUNTING_ROLES = ("admin", "cfo", "accounting_manager", "accountant")
+
+
+def roles_exactly(*allowed_roles):
+    """Decorator: the caller's role must be one of these BY NAME.
+
+    NOT `role_required`, which compares LEVELS. analyst, accountant,
+    accounting_manager and cfo are all level 1, so a level comparison naming
+    any of them admits all four and cannot express "the accounting roles but
+    not an analyst". That is exactly what the accounting section needs, so this
+    checks membership instead.
+
+    Fails CLOSED on an unknown name: a role that is not in the list is refused,
+    including a typo in the list itself, which then admits nobody rather than
+    everybody.
+    """
+    allowed = frozenset(allowed_roles)
+
+    def decorator(f):
+        @wraps(f)
+        def decorated(*args, **kwargs):
+            user_role = (getattr(g, "current_user", None) or {}).get(
+                "role", "viewer")
+            if user_role not in allowed:
+                return jsonify({
+                    "error": "Forbidden",
+                    "message": "Role '%s' has read-only access here. "
+                               "Editing is limited to: %s."
+                               % (user_role, ", ".join(sorted(allowed))),
+                }), 403
+            return f(*args, **kwargs)
+        return decorated
+    return decorator
+
+
 def _create_token(user: dict) -> str:
     """Create a JWT for the given user."""
     exp = datetime.now(timezone.utc) + timedelta(

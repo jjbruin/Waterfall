@@ -24,10 +24,10 @@ import api from '../api/client'
 import { useAuthStore } from '../stores/auth'
 
 const auth = useAuthStore()
-// The accounting section is the CFO's (Sep 16 2026). Mapping an account to an
-// entity and closing a period change the arrangement; importing does not.
-const canManage = computed(
-  () => ['admin', 'cfo'].includes(auth.user?.role || ''))
+// Editing anywhere in accounting is the accounting roles' (Jim, Sep 17 2026),
+// mirrored from ACCOUNTING_ROLES on the server. An analyst sees this screen and
+// cannot change it.
+const canManage = computed(() => auth.canEditAccounting)
 
 const tab = ref<'accounts' | 'import' | 'reconcile'>('accounts')
 const msg = ref('')
@@ -312,7 +312,11 @@ onMounted(loadAccounts)
 
     <!-- ── Tab 2: import ───────────────────────────────── -->
     <div v-show="tab === 'import'" class="tab-body">
-      <div class="cards">
+      <p v-if="!canManage" class="placeholder">
+        Importing is limited to accounting. You can see everything that has been
+        imported on the Accounts and Reconciliation tabs.
+      </p>
+      <div v-else class="cards">
         <section class="card">
           <h3>Activity export (CSV)</h3>
           <p class="hint">
@@ -467,7 +471,7 @@ onMounted(loadAccounts)
                   On the ledger, not yet on the bank. These are the reconciling
                   items.
                 </p>
-                <table class="mini-table pick">
+                <table class="mini-table" :class="{ pick: canManage }">
                   <tr v-for="g in matchRes.gl_only" :key="g.gl_item"
                       :class="{ picked: pickGl === g.gl_item }"
                       @click="pickGl = (pickGl === g.gl_item ? '' : g.gl_item)">
@@ -489,7 +493,7 @@ onMounted(loadAccounts)
                   On the bank, not yet on the ledger — each needs an entry or a
                   pairing.
                 </p>
-                <table class="mini-table pick">
+                <table class="mini-table" :class="{ pick: canManage }">
                   <tr v-for="b in matchRes.bank_only" :key="b.bank_id"
                       :class="{ picked: pickBank === b.bank_id }"
                       @click="pickBank = (pickBank === b.bank_id ? null : b.bank_id)">
@@ -505,7 +509,7 @@ onMounted(loadAccounts)
               </section>
             </div>
 
-            <div v-if="!matchRes.error" class="pair-bar">
+            <div v-if="!matchRes.error && canManage" class="pair-bar">
               <span class="hint">
                 Pick one from each side to pair them by hand. A pairing you make
                 is honoured before the matcher's own and is never re-decided.
@@ -536,7 +540,7 @@ onMounted(loadAccounts)
                       <span v-if="m.manual" class="chip">by hand</span>
                       <span v-if="m.far_apart" class="chip warn"
                             :title="`${m.days_apart} days apart`">{{ m.days_apart }}d</span>
-                      <button v-if="m.manual" class="btn xs"
+                      <button v-if="m.manual && canManage" class="btn xs"
                               @click="unpair(m.bank_id)">Unpair</button>
                     </td>
                   </tr>

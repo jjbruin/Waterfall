@@ -10,7 +10,8 @@ import logging
 from flask import Blueprint, g, jsonify, request, send_file
 from io import BytesIO
 
-from flask_app.auth.routes import login_required, role_required
+from flask_app.auth.routes import (ACCOUNTING_ROLES, login_required,
+                                   roles_exactly)
 from flask_app.db import get_engine
 from flask_app.serializers import safe_json
 from flask_app.services import workpaper_service as ws
@@ -18,19 +19,21 @@ from flask_app.services import workpaper_data as wd
 from flask_app.services import workpaper_excel as wx
 from flask_app.services import workpaper_tracker as wt
 
-# THE ACCOUNTING SECTION IS THE CFO'S. Jim, Sep 16 2026: "give the cfo control
-# of syncing entities and starting a new close cycle and everything else in the
-# accounting section going forward." Every write below that was `("admin",
-# "analyst")` now names `cfo` as well.
+# THE ACCOUNTING SECTION BELONGS TO ACCOUNTING. Jim, Sep 17 2026: "Only the
+# accountants, accounting manager, and cfo should be able to edit anything in
+# the accounting section of the app generally. Me as admin, can edit only so I
+# can help them get something fixed while we are building and testing the
+# model."
 #
-# ONE THING TO KNOW ABOUT WHAT THAT DOES. `role_required` is LEVEL-based: it
-# takes the lowest level among the roles it is given and admits anyone at or
-# above it. `cfo`, `analyst`, `accountant` and `accounting_manager` are all
-# level 1, so naming `cfo` here grants the CFO and continues to admit the other
-# three -- it cannot express "the CFO but not an accountant". That suits a
-# grant, which is what was asked. If the accounting section should be closed to
-# analysts rather than merely opened to the CFO, that is a different change and
-# needs saying: see ROLE_LEVELS in flask_app/auth/routes.py.
+# SO THE GATE IS MEMBERSHIP, NOT LEVEL. `role_required` compares LEVELS, and
+# analyst, accountant, accounting_manager and cfo are all level 1 -- a level
+# comparison naming any one of them admits all four. That was fine while the
+# job was GRANTING the CFO access (Sep 16); it cannot express "not an analyst",
+# which is what is wanted now, and Jim's own day-to-day login is an analyst one
+# he wants read-only here. `roles_exactly` checks the name.
+#
+# Reads stay open to every signed-in user: accounting has to be visible to the
+# people who depend on it without being editable by them.
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +69,7 @@ def list_cycles():
 
 @workpapers_bp.route("/cycles", methods=["POST"])
 @login_required
-@role_required("admin", "cfo", "analyst")
+@roles_exactly(*ACCOUNTING_ROLES)
 def create_cycle():
     body = request.get_json(silent=True) or {}
     label = (body.get("period_label") or "").strip()
@@ -81,7 +84,7 @@ def create_cycle():
 
 @workpapers_bp.route("/cycles/<int:cycle_id>/steps", methods=["PUT"])
 @login_required
-@role_required("admin", "cfo", "analyst")
+@roles_exactly(*ACCOUNTING_ROLES)
 def set_due_date(cycle_id):
     """The CFO's deadline for one step of the close."""
     body = request.get_json(silent=True) or {}
@@ -94,7 +97,7 @@ def set_due_date(cycle_id):
 
 @workpapers_bp.route("/cycles/<int:cycle_id>/sync", methods=["POST"])
 @login_required
-@role_required("admin", "cfo", "analyst")
+@roles_exactly(*ACCOUNTING_ROLES)
 def sync(cycle_id):
     """Create packages for any REP entity that has none in this cycle."""
     try:
@@ -205,7 +208,7 @@ def preparers():
 
 @workpapers_bp.route("/preparers", methods=["POST"])
 @login_required
-@role_required("admin", "cfo", "analyst")
+@roles_exactly(*ACCOUNTING_ROLES)
 def add_preparer():
     body = request.get_json(silent=True) or {}
     try:
@@ -218,7 +221,7 @@ def add_preparer():
 
 @workpapers_bp.route("/preparers/<initials>", methods=["DELETE"])
 @login_required
-@role_required("admin", "cfo", "analyst")
+@roles_exactly(*ACCOUNTING_ROLES)
 def drop_preparer(initials):
     try:
         return jsonify(wt.remove_preparer(initials))
@@ -229,7 +232,7 @@ def drop_preparer(initials):
 @workpapers_bp.route("/cycles/<int:cycle_id>/schedule/properties",
                      methods=["POST"])
 @login_required
-@role_required("admin", "cfo", "analyst")
+@roles_exactly(*ACCOUNTING_ROLES)
 def schedule_properties(cycle_id):
     """Fill the Property column from the deal each entity holds.
 
@@ -269,7 +272,7 @@ def schedule(cycle_id):
 
 @workpapers_bp.route("/packages/<int:package_id>/schedule/order", methods=["PUT"])
 @login_required
-@role_required("admin", "cfo", "analyst")
+@roles_exactly(*ACCOUNTING_ROLES)
 def schedule_order(package_id):
     body = request.get_json(silent=True) or {}
     try:
@@ -280,7 +283,7 @@ def schedule_order(package_id):
 
 @workpapers_bp.route("/packages/<int:package_id>/schedule/target", methods=["PUT"])
 @login_required
-@role_required("admin", "cfo", "analyst")
+@roles_exactly(*ACCOUNTING_ROLES)
 def schedule_target(package_id):
     body = request.get_json(silent=True) or {}
     try:
@@ -292,6 +295,7 @@ def schedule_target(package_id):
 
 @workpapers_bp.route("/packages/<int:package_id>/schedule/signoff", methods=["PUT"])
 @login_required
+@roles_exactly(*ACCOUNTING_ROLES)
 def schedule_signoff(package_id):
     body = request.get_json(silent=True) or {}
     try:
@@ -305,7 +309,7 @@ def schedule_signoff(package_id):
 
 @workpapers_bp.route("/packages/<int:package_id>/schedule/preparer", methods=["PUT"])
 @login_required
-@role_required("admin", "cfo", "analyst")
+@roles_exactly(*ACCOUNTING_ROLES)
 def schedule_preparer(package_id):
     body = request.get_json(silent=True) or {}
     try:
@@ -316,7 +320,7 @@ def schedule_preparer(package_id):
 
 @workpapers_bp.route("/packages/<int:package_id>/schedule/property", methods=["PUT"])
 @login_required
-@role_required("admin", "cfo", "analyst")
+@roles_exactly(*ACCOUNTING_ROLES)
 def schedule_property(package_id):
     body = request.get_json(silent=True) or {}
     try:
@@ -328,7 +332,7 @@ def schedule_property(package_id):
 
 @workpapers_bp.route("/cycles/<int:cycle_id>/schedule/renumber", methods=["POST"])
 @login_required
-@role_required("admin", "cfo", "analyst")
+@roles_exactly(*ACCOUNTING_ROLES)
 def schedule_renumber(cycle_id):
     try:
         return jsonify(wt.renumber(cycle_id, _user()))
@@ -339,7 +343,7 @@ def schedule_renumber(cycle_id):
 @workpapers_bp.route("/cycles/<int:cycle_id>/schedule/carry-forward",
                      methods=["POST"])
 @login_required
-@role_required("admin", "cfo", "analyst")
+@roles_exactly(*ACCOUNTING_ROLES)
 def schedule_carry_forward(cycle_id):
     """Bring the PREVIOUS quarter's order, preparers and properties forward.
 
@@ -367,6 +371,7 @@ def package(package_id):
 
 @workpapers_bp.route("/packages/<int:package_id>/steps", methods=["PUT"])
 @login_required
+@roles_exactly(*ACCOUNTING_ROLES)
 def set_step(package_id):
     body = request.get_json(silent=True) or {}
     try:
@@ -379,6 +384,10 @@ def set_step(package_id):
 
 @workpapers_bp.route("/packages/<int:package_id>/transition", methods=["POST"])
 @login_required
+@roles_exactly(*ACCOUNTING_ROLES)
+# The approval CHAIN still checks who may take this action (ws.transition
+# raises PermissionError). This gate is the outer one: you must be in
+# accounting at all before the chain is asked which step is yours.
 def transition(package_id):
     body = request.get_json(silent=True) or {}
     try:
@@ -392,6 +401,7 @@ def transition(package_id):
 
 @workpapers_bp.route("/packages/<int:package_id>/assign", methods=["PUT"])
 @login_required
+@roles_exactly(*ACCOUNTING_ROLES)
 def assign(package_id):
     body = request.get_json(silent=True) or {}
     import sqlalchemy as sa
@@ -411,6 +421,7 @@ def assign(package_id):
 
 @workpapers_bp.route("/packages/<int:package_id>/exhibits", methods=["POST"])
 @login_required
+@roles_exactly(*ACCOUNTING_ROLES)
 def upload_exhibit(package_id):
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
@@ -445,6 +456,7 @@ def download_exhibit(exhibit_id):
 
 @workpapers_bp.route("/exhibits/<int:exhibit_id>", methods=["DELETE"])
 @login_required
+@roles_exactly(*ACCOUNTING_ROLES)
 def delete_exhibit(exhibit_id):
     try:
         return jsonify(ws.delete_exhibit(exhibit_id, _user()))
@@ -538,7 +550,7 @@ def get_fs_map():
 
 @workpapers_bp.route("/fs-map", methods=["PUT"])
 @login_required
-@role_required("admin", "cfo", "analyst")
+@roles_exactly(*ACCOUNTING_ROLES)
 def put_fs_map():
     body = request.get_json(silent=True) or {}
     try:

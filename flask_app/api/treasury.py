@@ -10,18 +10,18 @@ a bank export is the accountant's daily work and it is not destructive:
 activity is identified by a row hash, so re-importing the same file adds
 nothing. A viewer is still refused -- read-only should mean read-only.
 
-A NOTE ON WHAT THIS GATE CAN EXPRESS. `role_required` compares LEVELS, and
-analyst, accountant, accounting_manager and cfo are all level 1. Naming
-("admin", "cfo", "analyst") therefore admits every accounting role and excludes
-viewers. It cannot single the CFO out, and no arrangement of names would make
-it; separating him would take a change to the role model itself.
+WHO MAY EDIT: `ACCOUNTING_ROLES` -- accountant, accounting_manager, cfo, and
+admin so Jim can fix something while this is being built. Checked BY NAME
+(`roles_exactly`) rather than by level, because analyst sits at the same level
+as every accounting role and a level comparison cannot exclude it.
 """
 import io
 import logging
 
 from flask import Blueprint, g, jsonify, request
 
-from flask_app.auth.routes import login_required, role_required
+from flask_app.auth.routes import (ACCOUNTING_ROLES, login_required,
+                                   roles_exactly)
 from flask_app.serializers import safe_json
 from flask_app.services import treasury_service as ts
 
@@ -56,7 +56,7 @@ def accounts():
 
 @treasury_bp.route("/accounts/<account_number>", methods=["PUT"])
 @login_required
-@role_required("admin", "cfo", "analyst")
+@roles_exactly(*ACCOUNTING_ROLES)
 def update_account(account_number):
     body = request.get_json(silent=True) or {}
     try:
@@ -72,7 +72,7 @@ def update_account(account_number):
 
 @treasury_bp.route("/import/activity", methods=["POST"])
 @login_required
-@role_required("admin", "cfo", "analyst")
+@roles_exactly(*ACCOUNTING_ROLES)
 def import_activity():
     """A PNC activity export. Re-importing the same file adds nothing."""
     import pandas as pd
@@ -103,7 +103,7 @@ def import_activity():
 
 @treasury_bp.route("/import/statement", methods=["POST"])
 @login_required
-@role_required("admin", "cfo", "analyst")
+@roles_exactly(*ACCOUNTING_ROLES)
 def import_statement():
     """A PNC statement PDF, for its beginning and ending balances."""
     f = request.files.get("file")
@@ -162,7 +162,7 @@ def match():
 
 @treasury_bp.route("/match", methods=["PUT"])
 @login_required
-@role_required("admin", "cfo", "analyst")
+@roles_exactly(*ACCOUNTING_ROLES)
 def set_match():
     """Pin a pairing by hand, or clear one with a null gl_item."""
     body = request.get_json(silent=True) or {}
@@ -178,7 +178,7 @@ def set_match():
 
 @treasury_bp.route("/close", methods=["POST"])
 @login_required
-@role_required("admin", "cfo", "analyst")
+@roles_exactly(*ACCOUNTING_ROLES)
 def close():
     """Record a period's computed ending so the next opens from it."""
     body = request.get_json(silent=True) or {}
@@ -192,7 +192,7 @@ def close():
 
 @treasury_bp.route("/seed-opening", methods=["POST"])
 @login_required
-@role_required("admin", "cfo", "analyst")
+@roles_exactly(*ACCOUNTING_ROLES)
 def seed_opening():
     """Start the chain for an account's first period."""
     body = request.get_json(silent=True) or {}

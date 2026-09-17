@@ -394,23 +394,30 @@ def main() -> int:
         # would have taken his writes, but the buttons were never rendered. So
         # this checks both sides, because passing one proves nothing.
         print("\n9. Who can run the close")
+        # WHO IS REFUSED IS CHECKED IN scripts/accounting_access_check.py, by
+        # enumerating every route in the section from the app and calling each
+        # one as each role. These checks used to grep for a decorator's exact
+        # text, which proved only that a string was present -- and it missed six
+        # writes that had no gate at all, including exhibit deletion, because a
+        # string that is absent looks the same as a rule that does not apply.
+        # What is left here is the shape of the gate, which is what this file is
+        # about.
         import pathlib as _pl
-        from flask_app.auth.routes import role_level, ROLE_LEVELS
-
-        def admits(allowed, role):
-            known = [role_level(r) for r in allowed if r in ROLE_LEVELS]
-            need = min(known) if known else None
-            return not (role not in allowed
-                        and (need is None or role_level(role) < need))
+        from flask_app.auth.routes import ACCOUNTING_ROLES, ROLE_LEVELS
 
         root = _pl.Path(__file__).resolve().parents[1]
         api = (root / "flask_app" / "api" / "workpapers.py").read_text(encoding="utf-8")
         chk("no accounting endpoint is still gated without the CFO",
             '@role_required("admin", "analyst")' not in api)
-        gates = api.count('@role_required("admin", "cfo", "analyst")')
-        chk("every accounting write names the CFO", gates >= 10, "found %d" % gates)
-        chk("a CFO is admitted", admits(("admin", "cfo", "analyst"), "cfo"))
-        chk("a viewer is not", not admits(("admin", "cfo", "analyst"), "viewer"))
+        chk("the CFO can edit the close", "cfo" in ACCOUNTING_ROLES)
+        chk("so can the accountants who prepare it",
+            "accountant" in ACCOUNTING_ROLES
+            and "accounting_manager" in ACCOUNTING_ROLES)
+        # The whole reason the gate is membership rather than level.
+        chk("an analyst cannot, although the level model would have let them",
+            "analyst" not in ACCOUNTING_ROLES
+            and ROLE_LEVELS["analyst"] == ROLE_LEVELS["cfo"])
+        chk("a viewer cannot", "viewer" not in ACCOUNTING_ROLES)
 
         view = (root / "vue_app" / "src" / "views"
                 / "WorkpapersView.vue").read_text(encoding="utf-8")
@@ -418,8 +425,9 @@ def main() -> int:
         # is indistinguishable, to the person using it, from having no access.
         chk("the screen gates on running the close, not on being an admin",
             "isAdmin" not in view and "canManageClose" in view)
-        chk("and the CFO is in that gate",
-            "['admin', 'cfo'].includes" in view)
+        chk("and it reads the shared gate rather than a list of its own",
+            "auth.canEditAccounting" in view
+            and "['admin', 'cfo'].includes" not in view)
 
     return _report()
 

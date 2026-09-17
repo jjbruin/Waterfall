@@ -76,8 +76,12 @@ const returnNote = ref('')
 // accepted his writes: the buttons simply were not rendered. Jim, Sep 16 2026:
 // "give the cfo control of syncing entities and starting a new close cycle and
 // everything else in the accounting section going forward."
-const canManageClose = computed(
-  () => ['admin', 'cfo'].includes(auth.user?.role || ''))
+// ONE DEFINITION, in the auth store, mirroring ACCOUNTING_ROLES on the server.
+// It was ['admin', 'cfo'] here, which locked out the accountants and the
+// accounting manager who actually prepare the close -- the same class of
+// mistake as v480's, where the SCREEN was the thing keeping the CFO out while
+// the API would have accepted his writes.
+const canManageClose = computed(() => auth.canEditAccounting)
 const STATEMENT_KEYS = ['balance_sheet', 'income_statement', 'soi',
                         'members_capital', 'cash_flow']
 

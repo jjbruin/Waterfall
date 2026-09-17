@@ -37,6 +37,17 @@ export const useAuthStore = defineStore('auth', () => {
   const isAnalyst = computed(() => ANALYST_OR_ABOVE.includes(user.value?.role || ''))
   const userRole = computed(() => user.value?.role || 'viewer')
 
+  // Mirrors ACCOUNTING_ROLES in flask_app/auth/routes.py, and it is a
+  // MEMBERSHIP list, not a level. Jim, Sep 17 2026: "Only the accountants,
+  // accounting manager, and cfo should be able to edit anything in the
+  // accounting section of the app generally. Me as admin, can edit only so I
+  // can help them get something fixed while we are building and testing the
+  // model." An analyst is deliberately NOT here -- note it IS in
+  // ANALYST_OR_ABOVE above, so the two lists differ on purpose.
+  const ACCOUNTING_ROLES = ['admin', 'cfo', 'accounting_manager', 'accountant']
+  const canEditAccounting = computed(
+    () => ACCOUNTING_ROLES.includes(user.value?.role || ''))
+
   // User management state (admin only)
   const users = ref<ManagedUser[]>([])
   const usersLoading = ref(false)
@@ -156,6 +167,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   return {
     user, token, isAuthenticated, isAdmin, isAnalyst, userRole,
+    canEditAccounting,
     mustChangePassword, pendingUsername,
     users, usersLoading,
     login, fetchMe, logout, changePassword,
