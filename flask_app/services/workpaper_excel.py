@@ -97,6 +97,42 @@ def _table(sheet, row: int, columns: List[str], rows: List[dict],
     return row + 1
 
 
+def _footing_rows(sheet, row: int, block) -> int:
+    """A statement's closing line, formatted as its section totals are.
+
+    One helper for all three because the engine gives them one shape: the
+    balance sheet's liabilities and members' capital, the income statement's net
+    income, the cash flow's net change in cash. Where the engine had something
+    to compare against, the comparison is stated underneath — this is a
+    workpaper, and a figure that does not tie is the reason somebody opens one.
+    """
+    f = (block or {}).get("footing")
+    if not f:
+        return row
+    c = sheet.cell(row=row, column=1, value=f["label"])
+    c.font = Font(bold=True)
+    t = sheet.cell(row=row, column=2, value=f["amount"])
+    t.font = Font(bold=True)
+    t.number_format = MONEY
+    row += 1
+    if f.get("ties") is not None:
+        ok = bool(f["ties"])
+        note = sheet.cell(
+            row=row, column=1,
+            value=("Ties to %s of %s." if ok else
+                   "DOES NOT TIE to %s of %s - a difference of %s.")
+                  % ((str(f.get("compare_label") or "").lower(),
+                      f"{f['compare_amount']:,.2f}") if ok else
+                     (str(f.get("compare_label") or "").lower(),
+                      f"{f['compare_amount']:,.2f}",
+                      f"{f['difference']:,.2f}")))
+        # Coloured, as the hand-rolled cash-flow block was: in a workpaper the
+        # thing a reviewer is scanning for is the one that did NOT tie.
+        note.font = Font(bold=True, color="2C7A3D" if ok else "B3261E")
+        row += 1
+    return row + 1
+
+
 def build_package(package_id: int, engine=None) -> bytes:
     """Assemble the workbook for one package."""
     from flask_app.db import get_engine
@@ -253,28 +289,7 @@ def _financial_statements(wb, used, entity, period_end, engine):
     bs = st.get("balance_sheet")
     sh, r = sheet("Balance Sheet", bs, "closing")
     if bs:
-        # THE FOOTING, formatted as the section totals are. Computed in the
-        # statement engine so this workbook cannot disagree with the screen.
-        lc = bs.get("liabilities_and_capital")
-        if lc:
-            c = sh.cell(row=r, column=1, value=lc["label"])
-            c.font = Font(bold=True)
-            t = sh.cell(row=r, column=2, value=lc["amount"])
-            t.font = Font(bold=True)
-            t.number_format = MONEY
-            r += 1
-            if lc.get("ties_to_assets") is False:
-                sh.cell(row=r, column=1,
-                        value="Does not tie to total assets of %s - a difference "
-                              "of %s." % (f"{lc['total_assets']:,.2f}",
-                                          f"{lc['difference']:,.2f}")).font = SUB
-                r += 1
-            elif lc.get("ties_to_assets"):
-                sh.cell(row=r, column=1,
-                        value="Ties to total assets of %s."
-                              % f"{lc['total_assets']:,.2f}").font = SUB
-                r += 1
-            r += 1
+        r = _footing_rows(sh, r, bs)
         # The tie-out, printed. In GL signs a complete balance sheet nets to
         # zero; whatever is left is what is unmapped or misclassified.
         c = sh.cell(row=r, column=1,
@@ -288,11 +303,10 @@ def _financial_statements(wb, used, entity, period_end, engine):
     inc = st.get("income_statement")
     sh2, r2 = sheet("Income Statement", inc, "ytd")
     if inc:
-        c = sh2.cell(row=r2, column=1, value="Net income (loss)")
-        c.font = Font(bold=True)
-        v = sh2.cell(row=r2, column=2, value=inc["net_income"])
-        v.font = Font(bold=True)
-        v.number_format = MONEY
+        # The same helper the balance sheet and the cash flow use. It said
+        # "Net income (loss)" here and nothing at all on the screen, so the two
+        # could drift; now one wording comes from the engine.
+        r2 = _footing_rows(sh2, r2, inc)
 
 
 def _exceptions(sh, row, st):
@@ -460,16 +474,7 @@ def _cash_flow(wb, used, entity, period_end, engine):
         t.number_format = MONEY
         r += 1
 
-    for label, val in (("Net change in cash (computed)", cf["net_change_computed"]),
-                       ("Net change in cash (per the cash accounts)", cf["net_change_actual"])):
-        sh.cell(row=r, column=1, value=label).font = Font(bold=True)
-        sh.cell(row=r, column=2, value=val).number_format = MONEY
-        r += 1
-    ok = cf["ties"]
-    c = sh.cell(row=r, column=1,
-                value="Ties" if ok else f"DOES NOT TIE by {cf['difference']:,.2f}")
-    c.font = Font(bold=True, color="2C7A3D" if ok else "B3261E")
-    r += 2
+    r = _footing_rows(sh, r, cf)
 
     if cf["defaulted_accounts"]:
         sh.cell(row=r, column=1,

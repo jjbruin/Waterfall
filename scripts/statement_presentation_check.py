@@ -113,7 +113,7 @@ except Exception as _e:
 if not _bs:
     print("   (no balance sheet in this database -- footing checks skipped)")
 else:
-    _lc = _bs.get("liabilities_and_capital")
+    _lc = _bs.get("footing")
     check("the footing exists", bool(_lc))
     if _lc:
         _tot = {x["section"]: x["total"] for x in _bs["sections"]}
@@ -130,16 +130,33 @@ else:
               _lc["difference"] is None or _bs.get("out_of_balance") is None
               or abs(abs(_lc["difference"]) - abs(_bs["out_of_balance"])) < 0.02)
         # "ties" must never be asserted when there is nothing to tie TO.
-        check("ties_to_assets is None when there are no assets, never True",
-              _lc["total_assets"] is not None or _lc["ties_to_assets"] is None)
+        check("ties is None when there is nothing to compare, never True",
+              _lc["compare_amount"] is not None or _lc["ties"] is None)
 
 print("Every consumer renders the footing")
 _excel = open("flask_app/services/workpaper_excel.py", encoding="utf-8").read()
 _vue = open("vue_app/src/views/WorkpapersView.vue", encoding="utf-8").read()
 _prt = open("vue_app/src/views/StatementsPrintView.vue", encoding="utf-8").read()
-check("workbook renders it", "liabilities_and_capital" in _excel)
-check("workbench renders it", "liabilities_and_capital" in _vue)
-check("printed statement renders it", "liabilities_and_capital" in _prt)
+check("workbook renders it", "_footing_rows" in _excel)
+check("workbench renders it", ".footing" in _vue)
+check("printed statement renders it", ".footing" in _prt)
+# ONE SHAPE FOR ALL THREE STATEMENTS, so a fourth gets the treatment free and
+# no consumer carries a special case per statement.
+with create_app().app_context():
+    _inc = ss.build("PPIECH", "2026-06-30", "both").get("income_statement")
+    _cf = ss.build_cash_flow("PPIECH", "2026-06-30")
+check("the income statement foots to net income",
+      bool(_inc and _inc.get("footing")
+           and "Net income" in _inc["footing"]["label"]
+           and abs(_inc["footing"]["amount"] - _inc["net_income"]) < 0.01))
+check("the cash flow foots to the net change in cash",
+      bool(_cf and _cf.get("footing")
+           and "Net increase" in _cf["footing"]["label"]
+           and abs(_cf["footing"]["amount"] - _cf["net_change_computed"]) < 0.01))
+check("and compares it to the movement the cash accounts show",
+      bool(_cf and _cf["footing"]["compare_amount"] == _cf["net_change_actual"]))
+check("net income has nothing to compare against, so ties is None",
+      bool(_inc and _inc["footing"]["ties"] is None))
 
 print()
 if failures:

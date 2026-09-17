@@ -153,6 +153,31 @@ def is_dormant(line: dict) -> bool:
             and abs(line.get("ytd", 0.0) or 0.0) < 0.005)
 
 
+def _footing(label: str, amount: float, compare_label: str = None,
+             compare_amount=None) -> dict:
+    """The closing line a reader checks, in one shape for every statement.
+
+    Every statement ends with a figure somebody scans for: liabilities and
+    members' capital against total assets, net income under expenses, the net
+    change in cash against the change the balance sheet shows. Giving them one
+    shape means the screen, the workbook and the printed statement each render
+    ONE thing rather than three special cases, and a fourth statement gets the
+    treatment for free.
+
+    ``ties`` is None when there is nothing to compare against -- never False,
+    which would read as "it does not tie", and never True, which would assert
+    agreement with a figure that does not exist.
+    """
+    ties = None
+    diff = None
+    if compare_amount is not None:
+        diff = amount - compare_amount
+        ties = abs(diff) < 0.01
+    return {"label": label, "amount": amount,
+            "compare_label": compare_label, "compare_amount": compare_amount,
+            "ties": ties, "difference": diff}
+
+
 def build(entityid: str, period_end: str, statement: str = "both",
           bases: Optional[List[str]] = None, engine=None) -> Dict[str, Any]:
     """Balance Sheet and/or Income Statement for one entity and period."""
@@ -249,6 +274,9 @@ def build(entityid: str, period_end: str, statement: str = "both",
     # asked for, because the balance sheet needs the period's result.
     inc = render("income_statement", INCOME_SECTIONS, "ytd")
     inc["net_income"] = -inc["gl_total"]
+    # The line every reader looks for, and it was computed and then not shown
+    # anywhere (Jim, Sep 17 2026). Nothing new is derived here.
+    inc["footing"] = _footing("Net income (loss)", inc["net_income"])
 
     if statement in ("both", "balance_sheet"):
         bs = render("balance_sheet", BALANCE_SHEET_SECTIONS, "closing")
@@ -299,20 +327,12 @@ def build(entityid: str, period_end: str, statement: str = "both",
         _liab = _sec_total.get("Liabilities")
         _cap = _sec_total.get("Members' Capital")
         if _liab is not None or _cap is not None:
-            _lc = (_liab or 0.0) + (_cap or 0.0)
-            bs["liabilities_and_capital"] = {
-                "label": "Total Liabilities and Members' Capital",
-                "amount": _lc,
-                # The comparison the row exists to let a reader make, made for
-                # them. None when there are no assets to compare against --
-                # never 0.0, which would read as "it ties".
-                "total_assets": _assets,
-                "ties_to_assets": (None if _assets is None
-                                   else abs(_lc - _assets) < 0.01),
-                "difference": (None if _assets is None else _lc - _assets),
-            }
+            bs["footing"] = _footing(
+                "Total Liabilities and Members' Capital",
+                (_liab or 0.0) + (_cap or 0.0),
+                compare_label="Total assets", compare_amount=_assets)
         else:
-            bs["liabilities_and_capital"] = None
+            bs["footing"] = None
 
         # THE TIE-OUT. In GL signs a complete balance sheet sums to zero:
         # debits and credits net. A non-zero total is the amount that is
@@ -619,6 +639,15 @@ def build_cash_flow(entityid: str, period_end: str, bases: Optional[List[str]] =
         "net_change_actual": cash_movement,
         "difference": computed - cash_movement,
         "ties": abs(computed - cash_movement) < 0.01,
+        # Same three fields as every other statement's closing line, so one
+        # renderer covers all of them. The COMPARISON here is the movement the
+        # cash accounts actually show, which is what makes the statement worth
+        # reading: a cash flow that does not reconcile to the cash balance is
+        # the one thing a reader must not have to work out for themselves.
+        "footing": _footing(
+            "Net increase (decrease) in cash", computed,
+            compare_label="Change in cash per the balance sheet",
+            compare_amount=cash_movement),
         "defaulted_accounts": defaulted,
         "unclassified": unclassified,
     }

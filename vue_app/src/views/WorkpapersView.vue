@@ -775,31 +775,30 @@ onMounted(loadCycles)
                 </tbody>
               </table>
             </div>
-            <!-- THE FOOTING A READER CHECKS: liabilities plus members' capital
-                 against total assets. Formatted as the section totals are, and
-                 it says whether it ties rather than leaving the reader to
-                 subtract two numbers that are 30 lines apart. -->
-            <table v-if="statements[openStatement].liabilities_and_capital"
-                   class="mini lc-foot">
+            <!-- THE CLOSING LINE, whichever statement this is: liabilities
+                 and members' capital against total assets, net income under
+                 expenses, or the net change in cash against the balance
+                 sheet's own movement. One block because the engine gives all
+                 three the same shape. Where there is something to compare
+                 against, it says whether it ties rather than leaving a reader
+                 to subtract two numbers thirty lines apart. -->
+            <table v-if="statements[openStatement].footing" class="mini lc-foot">
               <tbody>
                 <tr class="tot grand">
-                  <td>{{ statements[openStatement].liabilities_and_capital.label }}</td>
-                  <td class="num">
-                    {{ fmt(statements[openStatement].liabilities_and_capital.amount) }}
-                  </td>
+                  <td>{{ statements[openStatement].footing.label }}</td>
+                  <td class="num">{{ fmt(statements[openStatement].footing.amount) }}</td>
                 </tr>
-                <tr v-if="statements[openStatement].liabilities_and_capital.ties_to_assets === false">
+                <tr v-if="statements[openStatement].footing.ties === false">
                   <td colspan="2" class="muted small warn">
-                    Does not tie to total assets of
-                    {{ fmt(statements[openStatement].liabilities_and_capital.total_assets) }}
-                    — a difference of
-                    {{ fmt(statements[openStatement].liabilities_and_capital.difference) }}.
+                    Does not tie to {{ statements[openStatement].footing.compare_label.toLowerCase() }}
+                    of {{ fmt(statements[openStatement].footing.compare_amount) }}
+                    — a difference of {{ fmt(statements[openStatement].footing.difference) }}.
                   </td>
                 </tr>
-                <tr v-else-if="statements[openStatement].liabilities_and_capital.ties_to_assets">
+                <tr v-else-if="statements[openStatement].footing.ties">
                   <td colspan="2" class="muted small">
-                    Ties to total assets of
-                    {{ fmt(statements[openStatement].liabilities_and_capital.total_assets) }}.
+                    Ties to {{ statements[openStatement].footing.compare_label.toLowerCase() }}
+                    of {{ fmt(statements[openStatement].footing.compare_amount) }}.
                   </td>
                 </tr>
               </tbody>

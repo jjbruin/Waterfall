@@ -205,15 +205,14 @@ onMounted(load)
                   <td class="fs-amt">{{ money(sec.total) }}</td>
                 </tr>
               </template>
-              <!-- The footing a reader checks, on the balance sheet only. -->
-              <tr v-if="s.st.key === 'balance_sheet' && s.page.balance_sheet?.liabilities_and_capital"
-                  class="fs-total fs-grand">
-                <td class="fs-line">
-                  {{ s.page.balance_sheet.liabilities_and_capital.label }}
-                </td>
-                <td class="fs-amt">
-                  {{ money(s.page.balance_sheet.liabilities_and_capital.amount) }}
-                </td>
+              <!-- The closing line, whichever statement this is. The
+                   reconciliation note is NOT printed: an investor document
+                   states the figure, and a statement that does not tie is a
+                   matter for the close, not for the reader. It is on the
+                   workbench and in the workbook, where it can be acted on. -->
+              <tr v-if="s.page[s.st.key]?.footing" class="fs-total fs-grand">
+                <td class="fs-line">{{ s.page[s.st.key].footing.label }}</td>
+                <td class="fs-amt">{{ money(s.page[s.st.key].footing.amount) }}</td>
               </tr>
             </tbody>
           </table>
