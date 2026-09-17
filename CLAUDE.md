@@ -248,6 +248,29 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v485` = `5fe16b7` (the printed Schedule of Investments and Statement of
+    Changes in Members' Capital were blank. THREE SHAPES come out of the
+    statement engine — `sections` for the balance sheet, income statement and
+    cash flow; `lines` for the SOI; `rows` x `members` for members' capital —
+    and the print view rendered only the first. `hasContent` accepted all three,
+    so both statements passed the test for having something to say, got a page
+    and a title, then met a table body that could only walk `sections`. A titled
+    empty page is worse than an omitted one: it reads as "this entity has no
+    investments" rather than "this view cannot draw them". Each shape now has
+    its own renderer.
+    VERIFIED THROUGH THE ACTUAL TEMPLATE EXPRESSIONS on the real PPIECH payload
+    in a browser rather than asserted — members=2, rows=3, 9 of 9 amount cells
+    populated. SOI field names taken from `workpaper_excel`, which is shipping
+    code reading the same object, since PPIECH has no SOI lines locally.
+    Confirmed on production afterwards: of 14 entities checked, 14 have members'
+    capital data and 12 have SOI data — so this was blanking real content on
+    nearly every entity.
+    The investor version omits the SOI's membership-interest reconciliation
+    (commitments vs `relationships`, which disagree while accounting is
+    mid-update); that stays in the workbook where it can be resolved.
+    Guardrail asserts the engine's shapes AND that the view reads the keys the
+    engine emits — this failure is silent on both sides, since a renamed field
+    prints blanks rather than raising.)
   - `v484` = `a08a608` (THREE THINGS on the statements.
     (1) THE DOWNLOADED WORKBOOK WAS ILLEGIBLE AND IT WAS v480'S FAULT — the
     Eastchase column widths were applied to statements with a DIFFERENT layout
