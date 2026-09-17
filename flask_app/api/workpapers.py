@@ -88,9 +88,17 @@ def create_cycle():
 
 @workpapers_bp.route("/cycles/<int:cycle_id>/steps", methods=["PUT"])
 @login_required
-@roles_exactly(*ACCOUNTING_ROLES)
+@roles_exactly(*CLOSE_CYCLE_ROLES)
 def set_due_date(cycle_id):
-    """The CFO's deadline for one step of the close."""
+    """The CFO's deadline for one step of the close.
+
+    NO SCREEN CALLS THIS as of Sep 17 2026 -- the two-tab split replaced the
+    per-step deadline UI with the tracker's per-deliverable target dates, and
+    `setDue()` in WorkpapersView.vue is left over and unreferenced. Gated with
+    the target date anyway: it is the same decision, it is still reachable, and
+    a rule that covers only the endpoint that happens to have a button is a
+    rule that breaks the next time somebody adds one.
+    """
     body = request.get_json(silent=True) or {}
     try:
         return jsonify(ws.set_step_due_date(
@@ -287,8 +295,11 @@ def schedule_order(package_id):
 
 @workpapers_bp.route("/packages/<int:package_id>/schedule/target", methods=["PUT"])
 @login_required
-@roles_exactly(*ACCOUNTING_ROLES)
+@roles_exactly(*CLOSE_CYCLE_ROLES)
 def schedule_target(package_id):
+    # THE DEADLINE ON THE TRACKER, and the CFO's alone (Jim, Sep 17 2026:
+    # "deadlines should be CFO only too"). The sign-offs beside it are the
+    # team's: they record what was done against the date, they do not set it.
     body = request.get_json(silent=True) or {}
     try:
         return jsonify(wt.set_target(package_id, body.get("deliverable", ""),

@@ -82,8 +82,9 @@ const returnNote = ref('')
 // mistake as v480's, where the SCREEN was the thing keeping the CFO out while
 // the API would have accepted his writes.
 const canManageClose = computed(() => auth.canEditAccounting)
-// Starting a cycle is narrower than working in one: the CFO's.
-const canStartCycle = computed(() => auth.canStartCloseCycle)
+// Narrower than working in the close: opening a cycle and setting the dates
+// the close is measured against are the CFO's.
+const canSetDates = computed(() => auth.canSetCloseDates)
 const STATEMENT_KEYS = ['balance_sheet', 'income_statement', 'soi',
                         'members_capital', 'cash_flow']
 
@@ -477,13 +478,13 @@ onMounted(loadCycles)
           </option>
         </select>
         <button v-if="canManageClose" class="btn" @click="sync" :disabled="!cycleId">Sync entities</button>
-        <button v-if="canStartCycle" class="btn primary" @click="showNewCycle = !showNewCycle">
+        <button v-if="canSetDates" class="btn primary" @click="showNewCycle = !showNewCycle">
           New close cycle
         </button>
       </div>
     </div>
 
-    <div v-if="showNewCycle && canStartCycle" class="new-cycle">
+    <div v-if="showNewCycle && canSetDates" class="new-cycle">
       <input v-model="newLabel" placeholder="Label, e.g. Q2 2026" />
       <input v-model="newEnd" type="date" />
       <button class="btn primary" @click="createCycle">Create</button>
@@ -657,7 +658,10 @@ onMounted(loadCycles)
                 </td>
                 <template v-for="d in r.deliverables" :key="d.key">
                   <td class="tgt" :class="{ late: d.overdue, ok: d.complete }">
-                    <input v-if="canManageClose" class="date-in" type="date"
+                    <!-- The DATE is the CFO's; the sign-off cells beside it
+                         are the team's. They record work against the deadline,
+                         they do not move it. -->
+                    <input v-if="canSetDates" class="date-in" type="date"
                            :value="d.target_date || ''"
                            @change="setTarget(r.package_id, d.key, ($event.target as HTMLInputElement).value)" />
                     <span v-else>{{ d.target_date || '—' }}</span>

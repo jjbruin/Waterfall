@@ -40,9 +40,19 @@ WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 OPEN_POSTS = {"/api/workpapers/statements/batch"}
 
 #: Writes that are NARROWER than the section rule, with the roles that may do
-#: them. Jim, Sep 17 2026: "starting a close cycle should belong to the CFO,
-#: anyone on the accounting team can sync entities."
-NARROWER = {("POST", "/api/workpapers/cycles"): ("admin", "cfo")}
+#: them. The CFO sets the frame of the close -- when it opens and when things
+#: are due -- and the team works inside it. Jim, Sep 17 2026: "starting a close
+#: cycle should belong to the CFO anyone on the accounting team can sync
+#: entities", then "deadlines should be CFO only too".
+NARROWER = {
+    ("POST", "/api/workpapers/cycles"): ("admin", "cfo"),
+    # "deadlines should be CFO only too" (Jim, Sep 17 2026). Both of them: the
+    # tracker's target date, which is the one an accountant sees, and the
+    # per-step due date, which currently has no caller but is the same decision.
+    ("PUT", "/api/workpapers/packages/<int:package_id>/schedule/target"):
+        ("admin", "cfo"),
+    ("PUT", "/api/workpapers/cycles/<int:cycle_id>/steps"): ("admin", "cfo"),
+}
 
 
 def chk(label, cond, detail=""):
@@ -144,7 +154,7 @@ def main():
         chk("%s is not blocked by the gate anywhere" % role, not blocked,
             "; ".join(blocked[:4]))
 
-    print("\n3b. Starting a close cycle is narrower than the rest")
+    print("\n3b. The CFO sets the frame; the team works inside it")
     # Checked in BOTH directions. A rule that only ever refuses is satisfied by
     # refusing everyone, and a rule that only ever admits is satisfied by a gate
     # that does nothing.
@@ -157,14 +167,38 @@ def main():
         chk("%s may start a close cycle" % role, _post_cycle(role) != 403)
     for role in ("accountant", "accounting_manager"):
         chk("%s may NOT start a close cycle" % role, _post_cycle(role) == 403)
+    def _call(method, path, role, **kw):
+        return client.open(path, method=method, json=kw.get("json", {}),
+                           headers={"Authorization": "Bearer %s"
+                                                     % _token(app, role)}
+                           ).status_code
+
+    # The DEADLINE: the tracker's target date is the one an accountant sees, so
+    # it is the one that matters. Both directions again.
+    TGT = "/api/workpapers/packages/1/schedule/target"
+    for role in ("cfo", "admin"):
+        chk("%s may set a target date" % role, _call("PUT", TGT, role) != 403)
+    for role in ("accountant", "accounting_manager"):
+        chk("%s may NOT set a target date" % role, _call("PUT", TGT, role) == 403)
+    STEP_DUE = "/api/workpapers/cycles/1/steps"
+    chk("the per-step deadline follows the same rule",
+        _call("PUT", STEP_DUE, "cfo") != 403
+        and _call("PUT", STEP_DUE, "accountant") == 403)
+
     # ...but the same people must still be able to do the ordinary preparation,
-    # or the split has just moved the lockout rather than removed it.
+    # or the split has just moved the lockout rather than removed it. THIS IS
+    # THE HALF THAT CATCHES OVER-TIGHTENING: signing off against a deadline is
+    # not the same act as setting one, and the two live in adjacent cells of
+    # the same table.
     for role in ("accountant", "accounting_manager"):
         chk("%s may still sync entities into a cycle" % role,
-            client.post("/api/workpapers/cycles/1/sync",
-                        headers={"Authorization": "Bearer %s"
-                                                  % _token(app, role)}
-                        ).status_code != 403)
+            _call("POST", "/api/workpapers/cycles/1/sync", role) != 403)
+        chk("%s may still sign off against a deadline" % role,
+            _call("PUT", "/api/workpapers/packages/1/schedule/signoff",
+                  role) != 403)
+        chk("%s may still name a preparer" % role,
+            _call("PUT", "/api/workpapers/packages/1/schedule/preparer",
+                  role) != 403)
 
     print("\n4. Reads stay open")
     reads = [(str(r), _sample_path(r)) for r in app.url_map.iter_rules()
@@ -217,11 +251,15 @@ def main():
     wp = (Path(__file__).resolve().parent.parent / "vue_app" / "src" /
           "views" / "WorkpapersView.vue").read_text(encoding="utf-8")
     chk("the New close cycle button is on the narrower gate",
-        'v-if="canStartCycle" class="btn primary"' in wp)
+        'v-if="canSetDates" class="btn primary"' in wp)
     chk("and so is the form it opens, not just the button",
-        'v-if="showNewCycle && canStartCycle"' in wp)
+        'v-if="showNewCycle && canSetDates"' in wp)
     chk("Sync entities is still on the team's gate",
         'v-if="canManageClose"' in wp and "@click=\"sync\"" in wp)
+    chk("the target-date input is on the CFO's gate",
+        'v-if="canSetDates" class="date-in"' in wp)
+    chk("and the sign-off cells beside it are not",
+        'v-if="canSetDates"' not in wp.split("class=\"sign\"")[1][:900])
 
     return _report()
 
@@ -234,8 +272,9 @@ def _report():
         return 1
     print("Every write in the accounting section is closed to analysts and\n"
           "viewers and open to the four accounting roles, enumerated from the\n"
-          "app rather than from a list kept by hand. Starting a close cycle is\n"
-          "the CFO's alone, checked in both directions.")
+          "app rather than from a list kept by hand. Opening a cycle and\n"
+          "setting deadlines are the CFO's alone; syncing, naming a preparer\n"
+          "and signing off stay with the team. Both directions, every time.")
     return 0
 
 

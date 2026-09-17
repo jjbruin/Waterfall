@@ -48,10 +48,13 @@ export const useAuthStore = defineStore('auth', () => {
   const canEditAccounting = computed(
     () => ACCOUNTING_ROLES.includes(user.value?.role || ''))
 
-  // Mirrors CLOSE_CYCLE_ROLES. Starting a close cycle is the CFO's; syncing
-  // entities into one that exists is the team's (Jim, Sep 17 2026).
+  // Mirrors CLOSE_CYCLE_ROLES. The CFO sets the frame of the close -- opening
+  // a cycle, and the dates everything is measured against. The team works
+  // inside it: syncing entities, naming preparers, signing off (Jim, Sep 17
+  // 2026: "starting a close cycle should belong to the CFO anyone on the
+  // accounting team can sync entities", then "deadlines should be CFO only").
   const CLOSE_CYCLE_ROLES = ['admin', 'cfo']
-  const canStartCloseCycle = computed(
+  const canSetCloseDates = computed(
     () => CLOSE_CYCLE_ROLES.includes(user.value?.role || ''))
 
   // User management state (admin only)
@@ -173,7 +176,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   return {
     user, token, isAuthenticated, isAdmin, isAnalyst, userRole,
-    canEditAccounting, canStartCloseCycle,
+    canEditAccounting, canSetCloseDates,
     mustChangePassword, pendingUsername,
     users, usersLoading,
     login, fetchMe, logout, changePassword,

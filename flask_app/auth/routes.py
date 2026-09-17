@@ -75,12 +75,16 @@ def role_level(role: str) -> int:
 #: day-to-day login is an analyst one and he wants it READ-ONLY here.
 ACCOUNTING_ROLES = ("admin", "cfo", "accounting_manager", "accountant")
 
-#: Narrower still: STARTING a close cycle. Jim, Sep 17 2026: "starting a close
-#: cycle should belong to the CFO, anyone on the accounting team can sync
-#: entities." Opening a cycle sets the period the whole firm then reports on,
-#: and it is not undone by editing something — syncing entities into a cycle
-#: that already exists is ordinary preparation and stays with the team.
-#: `admin` is here for the same reason it is above: so Jim can unstick it.
+#: Narrower still: SETTING THE FRAME OF THE CLOSE -- opening a cycle, and the
+#: dates everything else is measured against. Jim, Sep 17 2026: "starting a
+#: close cycle should belong to the CFO anyone on the accounting team can sync
+#: entities", then "deadlines should be CFO only too".
+#:
+#: The line this draws: the CFO decides WHEN the close is due; the team records
+#: what they have DONE against it. So target dates and step deadlines are here,
+#: while syncing entities, naming a preparer and signing a deliverable off stay
+#: with ACCOUNTING_ROLES. `admin` is here for the same reason it is above: so
+#: Jim can unstick it.
 CLOSE_CYCLE_ROLES = ("admin", "cfo")
 
 
