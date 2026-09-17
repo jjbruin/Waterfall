@@ -249,6 +249,44 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v493` = `cab414c` (STATEMENTS IN BULK, AND A PARSER BUG THE REAL FILES
+    FOUND. Jim asked whether to type fifty 6/30 opening balances or read them
+    off the June statements; the statements win, being an external authority
+    carrying their own arithmetic check and staying traceable to a named file.
+    TESTED AGAINST THE 64 REAL JUNE STATEMENTS BEFORE HE RELIED ON IT, and 50
+    would not have filed. 46 of those failed on ONE detail: PNC prints a zero
+    balance as `.00`, with no leading digit, and the money pattern required
+    one. It threw out rows carrying REAL amounts too — `30,832.24 .00
+    11,712.76 19,119.48` was refused for the single `.00` in the credits
+    column. 14 filed before, 45 after. It failed the SAFE way, refusing rather
+    than inventing a balance, but it would have blocked most of the seeding
+    and looked like "PNC layouts vary" rather than a one-character regex.
+    Also: a TRAILING MINUS is PNC's overdraft notation, read as positive it
+    gives a wrong balance rather than a refusal, so statement figures go
+    through `_money` — kept separate from `_num` because the ACTIVITY export
+    carries its sign in a Credit/Debit column and never a trailing minus. And
+    the four figures are now read from UNDER THE SUMMARY HEADER, because
+    loosening the pattern made "the first four money figures in the document"
+    unsafe.
+    SEEDING IS NOT RE-BASING, and that distinction is the whole function.
+    `opening_balance()` never reads a statement — it carries the prior close,
+    so a break surfaces as a difference instead of being papered over.
+    Starting the chain is the one case where a statement IS the right source,
+    so `seed_from_statement` REFUSES once a period has actually been
+    reconciled, and says why. The note it writes names the source file.
+    BULK IMPORT ROUTES BY THE MASKED NUMBER `XX-XXXX-5765` — the parser always
+    extracted it and nothing used it. All 50 last-four groups are unique in
+    today's accounts, but that is a fact and not a guarantee, so an AMBIGUOUS
+    suffix is REFUSED rather than resolved by picking one. Every file gets its
+    own result row.
+    Of the 19 June statements still not filing: 18 are accounts with a
+    statement but NO activity in the 90-day export, so they never registered —
+    a registration gap, not a parse gap, and six hold real money (141,522.90,
+    119,701.35, 15,530.09, 6,587.72, 5,015.92, 592.33). The 19th is a WELLS
+    FARGO statement sitting in the PNC folder; refusing it is correct.
+    Guardrail 51 -> 69 (43 on production), pinning the zero balance, the mixed
+    row, the trailing minus, the header anchoring, the non-PNC refusal, and
+    both halves of the seeding rule.)
   - `v492` = `8fc4947` (TREASURY PRODUCES THE TWO MRI UPLOAD FILES. The
     contract was read off the files MRI ACCEPTED, not from a specification:
     the August GL upload is 49 lines summing to 0.00, its 24 MR10005000 lines
