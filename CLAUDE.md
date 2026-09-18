@@ -249,6 +249,31 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v501` = `ec6dda2` (A ROW READ AS "NO LEASE" STOPS BEING A TENANT. Jim:
+    three records checked off as No lease, still in the Market at Poplar
+    roster. They are the building banner and the two subtotal rows, left over
+    from an import predating the phantom-row fix — his figures give it away,
+    $259,324 annual at $1.13/SF is the old monthly-read-as-annual number.
+    Reading them took them out of the PROJECTION, which is what the reading was
+    built to do, and nothing else moved:
+    THE ROSTER showed every tenant regardless of its reading — a row read as
+    not a tenant has no business in the tenant list. THE HEADLINE TOTALS summed
+    every row with no status filter, so each subtotal row added the property's
+    whole 229,722 SF a second and third time; GLA read three times the real
+    figure and the reading did not correct it.
+    The roster now hides a No lease row, says how many it hides, and offers
+    Show them — HIDDEN, NEVER DELETED, because the reading is reversible and
+    the row is still there to be read differently. A VACATED tenant still
+    shows: we hold a lease for them and it has to stay reachable; it is only
+    out of the projection.
+    TOTALS ARE RECOMPUTED ON THE DISPOSITION, not just at the next import — a
+    reading that does not move the number on screen looks like it did nothing,
+    which is how both of the last two reports started. The call returns the
+    corrected totals with it.
+    Verified against his exact state: seeded the three debris rows, read them
+    through the API, GLA back to 660,140 with the rows still present and marked.
+    Guardrail 127 -> 134, pinning the defect in BOTH directions — an unread
+    subtotal row does inflate the headline, and reading it takes it back out.)
   - `v500` = `c84127d` (A MAPPING IN PROGRESS IS KEPT. Asset management: "How
     do you save mapping adjustments? I don't see a save button, and when the
     page refreshed my mapping work was gone." Both halves were true and a THIRD
