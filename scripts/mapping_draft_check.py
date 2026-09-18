@@ -200,6 +200,146 @@ else:
           'Could not save your mapping' in vue)
     check('there is a way to start over', 'discardDraft' in vue)
 
+section('Reading a stated account number is not guessing')
+
+import io as _io  # noqa: E402
+import datetime as _dt  # noqa: E402
+import openpyxl as _xl  # noqa: E402
+
+from flask_app.services import budget_import_service as _B  # noqa: E402
+
+
+def _jack_workbook(with_acct_col=True):
+    """Jack's layout: Account Name in A, Account Number in B, months across."""
+    wb = _xl.Workbook()
+    ws = wb.active
+    if with_acct_col:
+        ws.append(['Account', 'Account', None, None, None, None])
+        ws.append(['Name', 'Number'] + [_dt.datetime(2026, m, 1) for m in range(1, 5)])
+    else:
+        ws.append(['Account', None, None, None, None])
+        ws.append(['Name'] + [_dt.datetime(2026, m, 1) for m in range(1, 5)])
+    rows = [('Base Rent - 4010', 4010, 370871, 372268, 372546, 374607),
+            ('CAM Reimb - 4090', 4090, 43934, 43934, 67927, 43934),
+            ('Management Fees - 5040', 5040, 21875, 21875, 21875, 21875),
+            ('Some Unnumbered Line', None, 100, 100, 100, 100),
+            ('Total Revenue', None, 540179, 541576, 628127, 543915)]
+    for r in rows:
+        ws.append(list(r) if with_acct_col else [r[0]] + list(r[2:]))
+    buf = _io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+_p = _B.parse_budget_workbook(_jack_workbook(), 'partner budget.xlsx')
+_by = {l['label']: l for l in _p['lines']}
+check('the account-number column is found by its header',
+      _p['account_column'] == 1, str(_p['account_column']))
+check('an account stated in its own column is read',
+      _by['Base Rent - 4010']['stated_account'] == '4010')
+check('an account stated on the end of the label is read',
+      _B._account_from([], None, 'CAM Reimb - 4090') == '4090')
+check('a line with no account number gets none, rather than a guess',
+      _by['Some Unnumbered Line']['stated_account'] is None)
+check('the count of stated accounts is reported', _p['stated_account_count'] == 3,
+      str(_p['stated_account_count']))
+
+# No account COLUMN, but the numbers are still on the labels -- which is the other
+# half of Jack's file, and reading them is still reading.
+_p2 = _B.parse_budget_workbook(_jack_workbook(with_acct_col=False), 'labels only.xlsx')
+check('with no account column, the number on the label is still read',
+      [l['stated_account'] for l in _p2['lines']][:3] == ['4010', '4090', '5040'],
+      str([l['stated_account'] for l in _p2['lines']]))
+
+# Nothing stated anywhere: nothing pre-filled. This is the case the "never guess" rule
+# governs, and it must still hold.
+_ws = _xl.Workbook().active
+_wb3 = _xl.Workbook()
+_ws3 = _wb3.active
+_ws3.append(['Account', None, None, None, None])
+_ws3.append(['Name'] + [_dt.datetime(2026, m, 1) for m in range(1, 5)])
+for _r in [('Base Rent', 1, 2, 3, 4), ('CAM Reimbursement', 5, 6, 7, 8)]:
+    _ws3.append(list(_r))
+_b3 = _io.BytesIO()
+_wb3.save(_b3)
+_p3 = _B.parse_budget_workbook(_b3.getvalue(), 'nothing stated.xlsx')
+check('a sheet stating no account numbers anywhere pre-fills nothing',
+      all(l['stated_account'] is None for l in _p3['lines'])
+      and _p3['stated_account_count'] == 0,
+      str([l['stated_account'] for l in _p3['lines']]))
+check('"Account Name" is not mistaken for an account-number column',
+      not _B._ACCT_HEADER_RE.search('Account Name'))
+check('a year or a suite number is not read as an account',
+      _B._account_from([], None, 'Suite 101') is None
+      and _B._account_from([], None, 'Rent 2026') is None)
+# A month amount and an account number are both 3-6 digits. A January figure of
+# 370,871 read as account 370871 is the kind of thing that maps silently and wrongly.
+check('a month column is never taken for the account column, whatever its header says',
+      _B._find_account_column(
+          [['Account', 'Account'], ['Name', 'Number'], ['Base Rent', 370871]],
+          1, 0, {1}) is None)
+
+
+section('The chart of accounts in statement order')
+
+_coa = _B.chart_of_accounts()
+_titles = [x['title'] for x in _coa['sections']]
+check('sections run revenue, opex, debt service, below the line, capex',
+      _titles == ['Revenue', 'Operating expenses', 'Debt service',
+                  'Other below the line', 'Capital expenditure'], str(_titles))
+check('NOI is struck after operating expenses',
+      next(x['subtotal_after'] for x in _coa['sections']
+           if x['title'] == 'Operating expenses') == 'Net operating income (NOI)')
+check('every category carries accounts',
+      all(c['category'] and c['accounts']
+          for x in _coa['sections'] for c in x['categories']))
+check('the whole chart is there', _coa['account_count'] >= 70, str(_coa['account_count']))
+check('capex is included even though it is not an income statement line',
+      any(x['key'] == 'CAPEX' for x in _coa['sections']))
+
+
+section('The partnership line is proposed, never injected')
+
+_proposed = L.proposed_lines(None, 1, 'argus',
+                             {'periods': ['2026-01-31'] * 12, 'lines': []})
+check('an Argus import is offered the partnership line', len(_proposed) == 1)
+check('...at the house default of $20,000 to 5130',
+      _proposed[0]['account'] == '5130' and _proposed[0]['amount'] == 20000.0,
+      str(_proposed[0]['amount']))
+check('...priced over the months the file covers, not always a full year',
+      L.proposed_lines(None, 1, 'argus',
+                       {'periods': ['x'] * 6, 'lines': []})[0]['amount'] == 10000.0)
+check('a file that already carries 5130 is not offered it again',
+      L.proposed_lines(None, 1, 'argus',
+                       {'periods': ['x'] * 12,
+                        'lines': [{'label': 'Partnership - 5130'}]}) == [])
+check('a budget is not offered it at all',
+      L.proposed_lines(None, 1, 'budget', {'periods': [], 'lines': []}) == [])
+
+
+section('The screen shows where each pre-fill came from')
+
+try:
+    with open(VIEW, encoding='utf-8') as fh:
+        vue2 = fh.read()
+except OSError:
+    skip('provenance is shown per line', 'Vue source not present')
+else:
+    check('a stated account is labelled as read from the file',
+          'from_file' in vue2 and 'from the file' in vue2)
+    check('a prior mapping is labelled as such',
+          'from_history' in vue2 and 'as mapped before' in vue2)
+    check('a keyword match is still labelled a guess', 'keyword guess' in vue2)
+    check('the account column can offer the whole chart',
+          'showFullCoa' in vue2 and 'Whole chart of accounts' in vue2)
+    check('picking an account fills in its category', 'owning?.category' in vue2)
+    check('unnumbered rows can be hidden, with a count',
+          'onlyNumbered' in vue2 and 'unnumberedCount' in vue2)
+    check('the chart of accounts opens beside the work', 'toggleCoa' in vue2)
+    check('the partnership line is a tick box, off by default',
+          'acceptedProposals' in vue2 and 'toggleProposal' in vue2)
+
+
 print(f'\n{len(PASS)} passed, {len(FAIL)} failed, {len(SKIP)} skipped')
 if FAIL:
     print('FAILED:')

@@ -19,6 +19,10 @@ Endpoints (registered at /api/valuations):
     POST   /records/<id>/mapping/parse            — read a budget or Argus file (multipart)
     POST   /records/<id>/mapping/check            — validate + reconcile a mapping
     POST   /records/<id>/mapping/commit           — write it (budget -> supplement, argus -> COA)
+    GET    /records/<id>/mapping/draft            — a mapping in progress, or one already applied
+    PUT    /records/<id>/mapping/draft            — store a mapping in progress
+    DELETE /records/<id>/mapping/draft            — discard it
+    GET    /chart-of-accounts                     — the COA in statement order
 """
 
 import logging
@@ -652,6 +656,29 @@ def publish_record(record_id):
 # partner's workbook, Valuation from the appraiser's Argus download, and both are the
 # same job: assign somebody else's line names to our categories. Same endpoints, a
 # `source` discriminator, so the two screens behave identically.
+
+@valuations_bp.route("/chart-of-accounts", methods=["GET"])
+@login_required
+def chart_of_accounts():
+    """Peaceable's chart of accounts in statement order.
+
+    Asset management: "can we view Peaceable's global chart of accounts somewhere in
+    the app, laid out in financial statement form? Seeing it in statement order would
+    tell us which accounts are income, opex, below the line expense, capex, etc., which
+    is what we're missing when we map."
+
+    Optional ?vcode= marks which accounts that deal actually uses.
+    """
+    from flask_app.services import budget_import_service as budget
+
+    vcode = (request.args.get("vcode") or "").strip() or None
+    try:
+        isbs = data_service.get_data().get("isbs_raw") if vcode else None
+        return jsonify(safe_json(budget.chart_of_accounts(vcode, isbs)))
+    except Exception as e:
+        logger.error(f"chart_of_accounts failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
 
 @valuations_bp.route("/records/<int:record_id>/mapping/categories", methods=["GET"])
 @login_required

@@ -130,6 +130,118 @@ def discard_draft(engine, record_id: int, source: str) -> Dict[str, Any]:
     return {'status': 'discarded', 'removed': int(n or 0)}
 
 
+# Partnership costs are layered in by hand after the appraiser's Argus arrives, because
+# an Argus download has no such line. Asset management asked for a $20K/year default to
+# GL 5130.
+#
+# Offered as a PROPOSED LINE the analyst adds, never injected. Automating it would put
+# $20,000 into every valuation that nobody typed and nobody can see -- the same class of
+# invisible assumption this whole screen exists to remove. It arrives visible, priced,
+# editable and refusable.
+PARTNERSHIP_DEFAULT = {
+    "account": "5130",
+    "category": "Partnership Expenses",
+    "annual_amount": 20000.0,
+    "label": "Partnership costs (house default)",
+    "why": "Layered in by hand historically; an Argus download carries no such line.",
+}
+
+
+def proposed_lines(engine, record_id: int, source: str,
+                   parsed: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Lines we suggest ADDING, which the spreadsheet does not carry.
+
+    Only ever a suggestion with a price on it. Nothing is added unless the analyst
+    says so, and if the file already carries the account the suggestion is withheld
+    rather than doubling it.
+    """
+    out: List[Dict[str, Any]] = []
+    if source != "argus":
+        return out
+
+    already = any(str(l.get("stated_account") or "") == PARTNERSHIP_DEFAULT["account"]
+                  or PARTNERSHIP_DEFAULT["account"] in str(l.get("label") or "")
+                  for l in parsed.get("lines", []))
+    if already:
+        return out
+
+    months = len(parsed.get("periods") or []) or 12
+    out.append({
+        **PARTNERSHIP_DEFAULT,
+        "months": months,
+        # Priced over the periods the file actually covers, so a part-year Argus does
+        # not silently get a full year of cost.
+        "amount": round(PARTNERSHIP_DEFAULT["annual_amount"] * months / 12.0, 2),
+    })
+    return out
+
+
+def _norm_label(label: str) -> str:
+    """Compare line names on their words alone.
+
+    EXACT text after case and spacing, never fuzzy. A near-match is a guess, and the
+    whole point of showing history is that it is a decision somebody actually made.
+    """
+    return ' '.join(str(label or '').strip().lower().split())
+
+
+def _mapping_history(engine, labels: List[str], vcode: str) -> Dict[str, Dict[str, Any]]:
+    """How each of these line names was mapped before, and where.
+
+    Asset management: "it's hard to select by category and then see which GL codes are
+    available, and we end up guessing which category maps to which account code... we
+    want to line it up with how they've been mapped in the past."
+
+    That is not a request to guess. A prior mapping is a recorded human decision, so it
+    is evidence: shown with the deal it came from and when, and preferred from THIS
+    deal's own history before anyone else's.
+
+    Read from `argus_cashflows`, where every mapped Argus line already carries
+    (line_item, coa_account, category, vcode), and from mappings committed through this
+    screen. A name nobody has mapped simply gets nothing.
+    """
+    from sqlalchemy import bindparam
+
+    wanted = {_norm_label(l) for l in labels if str(l or '').strip()}
+    if not wanted:
+        return {}
+
+    out: Dict[str, Dict[str, Any]] = {}
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text("""
+                SELECT line_item, coa_account, category, vcode, MAX(created_at) AS seen,
+                       COUNT(*) AS n
+                  FROM argus_cashflows
+                 WHERE coa_account IS NOT NULL
+                 GROUP BY line_item, coa_account, category, vcode
+            """)).fetchall()
+    except Exception as e:
+        logger.info("No mapping history available: %s", e)
+        return {}
+
+    for line_item, acct, cat, rv, seen, n in rows:
+        key = _norm_label(line_item)
+        if key not in wanted:
+            continue
+        cand = {
+            'account': str(int(acct)) if acct is not None else None,
+            'category': cat,
+            'vcode': rv,
+            'last_seen': str(seen) if seen else None,
+            'times': int(n or 0),
+            'same_deal': (rv or '').upper() == (vcode or '').upper(),
+        }
+        prev = out.get(key)
+        # This deal's own history wins; otherwise the most recently used mapping.
+        if (prev is None
+                or (cand['same_deal'] and not prev['same_deal'])
+                or (cand['same_deal'] == prev['same_deal']
+                    and (cand['last_seen'] or '') > (prev['last_seen'] or ''))):
+            out[key] = cand
+    return out
+
+
 def record_vcode(engine, record_id: int) -> str:
     with engine.connect() as conn:
         row = conn.execute(
@@ -171,6 +283,7 @@ def parse(engine, record_id: int, source: str, file_bytes: bytes, filename: str,
     by_cat = {c["category"]: c for c in cats}
 
     suggested: Dict[str, Dict[str, Any]] = {}
+    unknown_accounts: List[Dict[str, Any]] = []
     if source == "argus":
         from argus_parser import map_to_coa
         for line in parsed["lines"]:
@@ -201,12 +314,71 @@ def parse(engine, record_id: int, source: str, file_bytes: bytes, filename: str,
                 "from_keywords": True,
             }
 
+    # A budget line that STATES our account number is pre-filled from it. This is not
+    # the guess the flow refuses to make: 4090 in the partner's own "Account Number"
+    # column, or on the end of "CAM Reimb - 4090", is our code written down, and
+    # reading it is reading, not inferring. The screen marks where each pre-fill came
+    # from so the analyst can see the difference.
+    for line in parsed["lines"]:
+        key = str(line["row"])
+        if key in suggested or line["looks_like_total"]:
+            continue
+        acct = line.get("stated_account")
+        if not acct:
+            continue
+        owning = next((c["category"] for c in cats
+                       if any(a["account"] == acct for a in c["accounts"])), None)
+        if not owning:
+            # The sheet names an account we do not carry. Saying so beats silently
+            # dropping it, so it is reported and the line is left for the analyst.
+            unknown_accounts.append({"row": line["row"], "label": line["label"],
+                                     "account": acct})
+            continue
+        default_sign = next(
+            (a["mri_sign"] for a in by_cat.get(owning, {}).get("accounts", [])
+             if a["account"] == acct), 1)
+        suggested[key] = {
+            "category": owning,
+            "account": acct,
+            "flip": bool(line["total"]) and ((line["total"] > 0) != (default_sign > 0)),
+            "from_file": True,
+        }
+
+    # How this exact line name was mapped before. A recorded human decision, not a
+    # keyword rule — which is what asset management actually asked for when they said
+    # they were struggling to identify the right account numbers.
+    history = _mapping_history(engine, [l["label"] for l in parsed["lines"]], vcode)
+    for line in parsed["lines"]:
+        key = str(line["row"])
+        prior = history.get(_norm_label(line["label"]))
+        if not prior:
+            continue
+        if key not in suggested and not line["looks_like_total"]:
+            owning = next((c["category"] for c in cats
+                           if any(a["account"] == prior["account"] for a in c["accounts"])),
+                          None)
+            if owning:
+                default_sign = next(
+                    (a["mri_sign"] for a in by_cat.get(owning, {}).get("accounts", [])
+                     if a["account"] == prior["account"]), 1)
+                suggested[key] = {
+                    "category": owning,
+                    "account": prior["account"],
+                    "flip": bool(line["total"]) and (
+                        (line["total"] > 0) != (default_sign > 0)),
+                    "from_history": True,
+                }
+        line["prior_mapping"] = prior
+
     return {
         "source": source,
         "vcode": vcode,
         **parsed,
         "suggested": suggested,
         "suggested_count": len(suggested),
+        "unknown_accounts": unknown_accounts,
+        "history_count": sum(1 for l in parsed["lines"] if l.get("prior_mapping")),
+        "proposed_lines": proposed_lines(engine, record_id, source, parsed),
         "categories": cats,
     }
 

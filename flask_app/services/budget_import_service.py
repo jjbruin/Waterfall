@@ -137,6 +137,75 @@ def account_choices(vcode: str, isbs_raw: pd.DataFrame,
     return out
 
 
+# The statement each section belongs to, and where the subtotals fall. IS_ACCOUNTS is
+# already in statement order; this names what that order MEANS, which is the part asset
+# management said was missing: "seeing it in statement order would tell us which
+# accounts are income, opex, below the line expense, capex".
+_COA_SECTIONS = [
+    ("REVENUES", "Revenue", "Income — what the property bills"),
+    ("EXPENSES", "Operating expenses", "Deducted from revenue to reach NOI"),
+    ("DEBT_SERVICE", "Debt service", "Below NOI — interest and principal"),
+    ("OTHER_BTL", "Other below the line", "Outside NOI by policy"),
+]
+_COA_SUBTOTAL_AFTER = {"EXPENSES": "Net operating income (NOI)"}
+
+
+def chart_of_accounts(vcode: Optional[str] = None,
+                      isbs_raw: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
+    """Peaceable's chart of accounts, laid out the way a statement reads.
+
+    Answers "which accounts are income, opex, below the line, capex" without anyone
+    having to open config.py. When a deal is named, each account also carries whether
+    that deal has used it recently, so a mapper can tell a live account from a dormant
+    one.
+    """
+    import config
+
+    used = {}
+    if vcode is not None and isbs_raw is not None:
+        try:
+            used = {c["account"]: c for c in account_choices(vcode, isbs_raw)}
+        except Exception as e:                       # a deal with no history is fine
+            logger.info("No account history for %s: %s", vcode, e)
+
+    overrides = category_accounts()
+    sections = []
+    seen = set()
+    for key, title, note in _COA_SECTIONS:
+        cats = []
+        for cat, config_accts in config.IS_ACCOUNTS.get(key, {}).items():
+            accts = overrides.get(cat, config_accts)
+            rows = []
+            for a in accts:
+                a = str(a)
+                seen.add(a)
+                u = used.get(a)
+                rows.append({"account": a,
+                             "description": (u or {}).get("description", ""),
+                             "used_by_deal": bool(u),
+                             "prior_total": (u or {}).get("prior_total")})
+            cats.append({"category": cat, "accounts": rows})
+        sections.append({"key": key, "title": title, "note": note,
+                         "categories": cats,
+                         "subtotal_after": _COA_SUBTOTAL_AFTER.get(key)})
+
+    # CapEx is not in IS_ACCOUNTS because it is not an income-statement line, but it is
+    # exactly one of the buckets asset management asked to be able to see.
+    capex = [{"account": str(a), "description": (used.get(str(a)) or {}).get("description", ""),
+              "used_by_deal": str(a) in used, "prior_total": (used.get(str(a)) or {}).get("prior_total")}
+             for a in sorted(config.CAPEX_ACCTS)]
+    if capex:
+        sections.append({"key": "CAPEX", "title": "Capital expenditure",
+                         "note": "Not an income statement line; funded from reserves",
+                         "categories": [{"category": "Capital Expenditure", "accounts": capex}],
+                         "subtotal_after": None})
+        seen.update(a["account"] for a in capex)
+
+    return {"vcode": vcode, "sections": sections,
+            "account_count": len(seen),
+            "ranked_for_deal": bool(used)}
+
+
 def category_choices(vcode: str, isbs_raw: pd.DataFrame,
                      as_of: Optional[date] = None) -> List[Dict[str, Any]]:
     """The CATEGORIES the budget comparison actually displays, each with its accounts.
@@ -224,6 +293,62 @@ _TOTAL_ROW = re.compile(
     r")", re.I)
 
 
+# An account number the SHEET states. Reading one is not guessing: 4090 in the
+# partner's own "Account Number" column, or on the end of "CAM Reimb - 4090", is our
+# code, written down. That is categorically different from inferring an account from
+# the words "CAM Reimb", which is the guess this import refuses to make.
+_ACCT_HEADER_RE = re.compile(
+    r'(?i)\b(acct|account|gl)\b.*\b(number|num|no|code|#)\b'
+    r'|\b(acct|account|gl)\s*#')
+# 3+ digits, so a year, a month number or a floor does not read as an account.
+_ACCT_IN_LABEL_RE = re.compile(r'[-–—:]\s*(\d{3,6})\s*$')
+_ACCT_VALUE_RE = re.compile(r'^\s*(\d{3,6})(\.0+)?\s*$')
+
+
+def _find_account_column(body: List[list], date_row: int, label_col: int,
+                        period_cols: Optional[set] = None) -> Optional[int]:
+    """The column holding our account numbers, if the sheet has one.
+
+    Looked for by HEADER first ("Account Number", "PSC Acct Number", "GL Code"), then
+    confirmed by content, so a column of years or unit numbers cannot pass as accounts.
+
+    A MONTH COLUMN IS NEVER A CANDIDATE, whatever its header says. An account number
+    and a monthly amount are both 3-6 digits -- a January figure of 370,871 reads as an
+    account number on its own -- so the only reliable separator is that the month
+    columns are already known, and they are excluded rather than argued with.
+    """
+    header_rows = body[max(0, date_row - 3):date_row + 1]
+    candidates = []
+    width = max((len(r) for r in body[:date_row + 6]), default=0)
+    for col in range(width):
+        if col == label_col or (period_cols and col in period_cols):
+            continue
+        header = ' '.join(str(r[col]) for r in header_rows
+                          if col < len(r) and r[col] is not None)
+        if header and _ACCT_HEADER_RE.search(header):
+            candidates.append(col)
+    # Confirm on the body: most populated cells must look like an account number.
+    for col in candidates:
+        vals = [r[col] for r in body[date_row + 1:] if col < len(r) and r[col] is not None]
+        vals = [v for v in vals if str(v).strip()]
+        if not vals:
+            continue
+        hits = sum(1 for v in vals if _ACCT_VALUE_RE.match(str(v).strip()))
+        if hits >= max(1, int(0.6 * len(vals))):
+            return col
+    return None
+
+
+def _account_from(row_vals: list, acct_col: Optional[int], label: str) -> Optional[str]:
+    """This row's stated account number: its own column first, then the label's tail."""
+    if acct_col is not None and acct_col < len(row_vals):
+        v = row_vals[acct_col]
+        if v is not None and _ACCT_VALUE_RE.match(str(v).strip()):
+            return _ACCT_VALUE_RE.match(str(v).strip()).group(1)
+    m = _ACCT_IN_LABEL_RE.search(label or '')
+    return m.group(1) if m else None
+
+
 def parse_budget_workbook(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     """Every labelled row x every month column, plus any totals the sheet states.
 
@@ -270,6 +395,9 @@ def parse_budget_workbook(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     body = [list(r) for r in ws.iter_rows(values_only=True)]
     wb.close()
 
+    acct_col = _find_account_column(body, date_row, label_col,
+                                    {p["col"] for p in periods})
+
     lines: List[Dict[str, Any]] = []
     for r in range(date_row + 1, len(body)):
         row_vals = body[r]
@@ -277,6 +405,7 @@ def parse_budget_workbook(file_bytes: bytes, filename: str) -> Dict[str, Any]:
         if label is None or not str(label).strip():
             continue
         label = str(label).strip()
+        stated_account = _account_from(row_vals, acct_col, label)
         amounts: Dict[str, float] = {}
         for p in periods:
             if p["col"] >= len(row_vals):
@@ -293,6 +422,9 @@ def parse_budget_workbook(file_bytes: bytes, filename: str) -> Dict[str, Any]:
             "total": round(sum(amounts.values()), 2),
             "months": len(amounts),
             "looks_like_total": bool(_TOTAL_ROW.match(label)),
+            # What the SHEET says this account is, if it says anything. The screen
+            # pre-fills from this and marks it as coming from the file.
+            "stated_account": stated_account,
         })
 
     return {
@@ -301,6 +433,8 @@ def parse_budget_workbook(file_bytes: bytes, filename: str) -> Dict[str, Any]:
         "periods": [p["period"] for p in periods],
         "lines": lines,
         "stated_totals": _stated_totals(lines),
+        "account_column": acct_col,
+        "stated_account_count": sum(1 for l in lines if l.get("stated_account")),
     }
 
 

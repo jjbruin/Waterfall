@@ -50,7 +50,23 @@
           <strong>check them</strong>, they are a guess.
         </span>
         <span v-else-if="source === 'budget'">
-          Nothing is pre-filled: a partner's wording is their own, so every line is yours to assign.
+          <template v-if="parsed.stated_account_count">
+            {{ parsed.stated_account_count }} line(s) carry an account number in the
+            spreadsheet and are filled in from it — that is read, not guessed.
+          </template>
+          <template v-if="parsed.history_count">
+            {{ parsed.history_count }} line(s) have been mapped before and show what was
+            chosen last time.
+          </template>
+          <template v-if="!parsed.stated_account_count && !parsed.history_count">
+            Nothing is pre-filled: this sheet states no account numbers and none of these
+            lines has been mapped before, so every line is yours to assign.
+          </template>
+        </span>
+        <span v-if="parsed.unknown_accounts && parsed.unknown_accounts.length" class="warn-note">
+          {{ parsed.unknown_accounts.length }} line(s) name an account we do not carry
+          ({{ parsed.unknown_accounts.map(u => u.account).join(', ') }}) — left for you
+          rather than dropped.
         </span>
         <span v-if="!cats.has_history" class="warn-note">
           This deal has no recent actuals, so the list is not ranked and there are no defaults from history.
@@ -58,6 +74,72 @@
       </p>
 
       <!-- ── Step 2: the mapping ───────────────────────────────────────── -->
+      <div class="lm-coa-toggle no-print">
+        <button class="btn-secondary lm-coa-btn" @click="toggleCoa">
+          {{ coaOpen ? 'Hide the chart of accounts' : 'Show the chart of accounts' }}
+        </button>
+        <!-- Asked for as "only pick up rows with a 3+ digit acct number, so we're not
+             pulling in blank rows". Offered rather than imposed: a sheet with no
+             account numbers at all would show nothing, and the count says what is
+             being held back so it is never a silent drop. -->
+        <label v-if="parsed.stated_account_count">
+          <input type="checkbox" v-model="onlyNumbered" />
+          Only show lines with an account number
+          <span class="lm-note-inline">({{ unnumberedCount }} hidden)</span>
+        </label>
+        <label>
+          <input type="checkbox" v-model="showFullCoa" />
+          Offer the whole chart of accounts in the Account column
+        </label>
+        <span class="lm-note-inline">
+          Off, each row offers only its category's accounts. On, you can pick any
+          account and the category fills itself in.
+        </span>
+      </div>
+      <!-- Suggested, priced, and off until ticked. Automating it would put $20,000
+           into every valuation that nobody typed and nobody can see. -->
+      <div v-if="parsed.proposed_lines && parsed.proposed_lines.length" class="lm-proposed">
+        <strong>Lines we suggest adding</strong>
+        <div v-for="pl in parsed.proposed_lines" :key="pl.account" class="lm-proposed-row">
+          <label>
+            <input type="checkbox" :disabled="!editable"
+                   :checked="!!acceptedProposals[pl.account]"
+                   @change="toggleProposal(pl, $event.target.checked)" />
+            {{ pl.label }} — {{ pl.account }} {{ pl.category }},
+            {{ fmtCurrency(pl.amount) }} over {{ pl.months }} month(s)
+          </label>
+          <span class="lm-note-inline">{{ pl.why }}</span>
+          <input v-if="acceptedProposals[pl.account]" type="number" class="lm-proposed-amt"
+                 :value="acceptedProposals[pl.account].amount" :disabled="!editable"
+                 @change="setProposalAmount(pl, $event.target.value)" />
+        </div>
+      </div>
+
+      <!-- The chart in statement order, beside the work rather than in another tab:
+           the question "is this income, opex, below the line or capex" comes up while
+           mapping, not before it. -->
+      <div v-if="coaOpen" class="lm-coa">
+        <div v-if="coaLoading" class="loading-text">Loading the chart of accounts...</div>
+        <template v-else>
+          <p class="lm-note">
+            {{ coa.account_count }} accounts in statement order.
+            <template v-if="coa.ranked_for_deal">
+              Accounts this deal has used recently are marked.
+            </template>
+          </p>
+          <div v-for="sec in coa.sections" :key="sec.key" class="lm-coa-sec">
+            <h5>{{ sec.title }} <span class="lm-note-inline">{{ sec.note }}</span></h5>
+            <div v-for="c in sec.categories" :key="c.category" class="lm-coa-cat">
+              <span class="lm-coa-catname">{{ c.category }}</span>
+              <span v-for="a in c.accounts" :key="a.account" class="lm-coa-acct"
+                    :class="{ 'lm-coa-used': a.used_by_deal }"
+                    :title="a.description || ''">{{ a.account }}</span>
+            </div>
+            <div v-if="sec.subtotal_after" class="lm-coa-sub">= {{ sec.subtotal_after }}</div>
+          </div>
+        </template>
+      </div>
+
       <div class="table-scroll">
         <table class="data-table lm-table">
           <thead>
@@ -71,12 +153,28 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="line in parsed.lines" :key="line.row"
+            <tr v-for="line in visibleLines" :key="line.row"
                 :class="{ 'lm-subtotal': line.looks_like_total, 'lm-mapped': !!m(line.row).account }">
               <td>
                 {{ line.label }}
                 <span v-if="line.looks_like_total" class="lm-tag">subtotal</span>
                 <span v-if="m(line.row).from_keywords" class="lm-tag lm-guess">keyword guess</span>
+                <!-- Where a pre-fill came from decides how much to trust it. An
+                     account number the sheet states is a fact; a prior mapping is a
+                     decision somebody made; a keyword match is a guess. -->
+                <span v-if="m(line.row).from_file" class="lm-tag lm-stated"
+                      title="The account number is in the spreadsheet — read, not inferred">
+                  acct {{ line.stated_account }} from the file
+                </span>
+                <span v-if="m(line.row).from_history" class="lm-tag lm-prior"
+                      title="Mapped this way before">as mapped before</span>
+                <span v-if="line.prior_mapping && !m(line.row).from_history"
+                      class="lm-prior-note"
+                      :title="'Last mapped ' + (line.prior_mapping.last_seen || '')">
+                  last time: {{ line.prior_mapping.account }}
+                  <template v-if="line.prior_mapping.category">({{ line.prior_mapping.category }})</template>
+                  <template v-if="!line.prior_mapping.same_deal">on {{ line.prior_mapping.vcode }}</template>
+                </span>
                 <span v-if="line.months < parsed.periods.length" class="lm-tag lm-partial">
                   {{ line.months }} of {{ parsed.periods.length }} mo
                 </span>
@@ -98,12 +196,26 @@
                   </optgroup>
                 </select>
               </td>
+              <!-- Either way round. Picking a category narrows the accounts; picking
+                   an account from the whole chart fills the category in. Asset
+                   management: "it's hard to select by category and then see which GL
+                   codes are available, and we end up guessing which category maps to
+                   which account code." -->
               <td>
-                <select :value="m(line.row).account || ''" :disabled="!editable || !m(line.row).category"
+                <select :value="m(line.row).account || ''" :disabled="!editable"
                         @change="setAccount(line.row, $event.target.value)">
-                  <option v-for="a in accountsFor(m(line.row).category)" :key="a.account" :value="a.account">
-                    {{ a.account }} {{ a.description || '' }}{{ a.used ? '' : '  (not used recently)' }}
-                  </option>
+                  <option value="">— pick an account —</option>
+                  <optgroup v-if="m(line.row).category"
+                            :label="'In ' + m(line.row).category">
+                    <option v-for="a in accountsFor(m(line.row).category)" :key="a.account" :value="a.account">
+                      {{ a.account }} {{ a.description || '' }}{{ a.used ? '' : '  (not used recently)' }}
+                    </option>
+                  </optgroup>
+                  <optgroup v-if="showFullCoa" label="Whole chart of accounts">
+                    <option v-for="a in allAccounts" :key="'all-' + a.account" :value="a.account">
+                      {{ a.account }} {{ a.description || '' }} — {{ a.category }}
+                    </option>
+                  </optgroup>
                 </select>
               </td>
               <td class="ctr">
@@ -283,6 +395,64 @@ const commitLabel = computed(() => props.source === 'argus'
   ? 'Save and apply to the Valuation column'
   : 'Save and import into the Budget column')
 
+const showFullCoa = ref(false)
+const onlyNumbered = ref(false)
+const acceptedProposals = ref({})
+
+function toggleProposal(pl, on) {
+  const next = { ...acceptedProposals.value }
+  if (on) next[pl.account] = { ...pl }
+  else delete next[pl.account]
+  acceptedProposals.value = next
+  runCheck()
+}
+function setProposalAmount(pl, v) {
+  const amt = Number(v)
+  if (!isFinite(amt)) return
+  acceptedProposals.value = {
+    ...acceptedProposals.value,
+    [pl.account]: { ...acceptedProposals.value[pl.account], amount: amt },
+  }
+  runCheck()
+}
+
+const coaOpen = ref(false)
+const coaLoading = ref(false)
+const coa = ref({ sections: [], account_count: 0 })
+
+async function toggleCoa() {
+  coaOpen.value = !coaOpen.value
+  if (!coaOpen.value || coa.value.sections.length) return
+  coaLoading.value = true
+  try {
+    const res = await api.get('/api/valuations/chart-of-accounts',
+      { params: parsed.value?.vcode ? { vcode: parsed.value.vcode } : {} })
+    coa.value = res.data
+  } catch { coaOpen.value = false }
+  finally { coaLoading.value = false }
+}
+
+const visibleLines = computed(() => {
+  const all = parsed.value?.lines || []
+  return onlyNumbered.value ? all.filter(l => l.stated_account) : all
+})
+const unnumberedCount = computed(() =>
+  (parsed.value?.lines || []).filter(l => !l.stated_account).length)
+
+// Every account in the chart, each carrying the category that owns it, sorted by
+// number — which is the order the accountants think in and the order Jack reads them
+// off his spreadsheet.
+const allAccounts = computed(() => {
+  const out = []
+  for (const c of cats.value.categories || []) {
+    for (const a of c.accounts || []) {
+      out.push({ ...a, category: c.category })
+    }
+  }
+  out.sort((x, y) => String(x.account).localeCompare(String(y.account)))
+  return out
+})
+
 const usedCats = computed(() => (cats.value.categories || []).filter(c => c.used_by_deal))
 const unusedCats = computed(() => (cats.value.categories || []).filter(c => !c.used_by_deal))
 const reconRows = computed(() => check.value?.reconciliation?.rows || [])
@@ -317,9 +487,18 @@ function setCategory(row, name) {
 function setAccount(row, acct) {
   const key = String(row)
   const cur = m(row)
+  if (!acct) {
+    delete mapping.value[key]
+    mapping.value = { ...mapping.value }
+    return void runCheck()
+  }
+  // An account chosen from the whole chart brings its category with it, so the two
+  // columns cannot end up disagreeing about where the line lands.
+  const owning = allAccounts.value.find(a => String(a.account) === String(acct))
+  const category = cur.category || owning?.category || null
   mapping.value = {
     ...mapping.value,
-    [key]: { ...cur, account: acct, flip: defaultFlip(row, cur.category, acct) },
+    [key]: { ...cur, category, account: acct, flip: defaultFlip(row, category, acct) },
   }
   runCheck()
 }
@@ -515,6 +694,44 @@ onMounted(() => { if (props.recordId) loadDraft() })
 
 <style scoped>
 .line-mapping { display: flex; flex-direction: column; gap: 14px; }
+.lm-coa-toggle {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  font-size: 0.8rem; padding: 6px 0;
+}
+.lm-coa-toggle label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.lm-note-inline { color: #777; font-size: 0.76rem; }
+.lm-coa-btn { font-size: 0.78rem; padding: 3px 10px; }
+.lm-proposed {
+  border: 1px solid #e0a800; background: #fff8e5; border-radius: 4px;
+  padding: 8px 12px; margin-bottom: 10px; font-size: 0.82rem;
+}
+.lm-proposed-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
+.lm-proposed-row label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.lm-proposed-amt { width: 110px; padding: 2px 6px; font-size: 0.8rem; }
+.lm-coa {
+  border: 1px solid #d7e3ee; background: #f7fbff; border-radius: 4px;
+  padding: 10px 14px; margin-bottom: 10px;
+}
+.lm-coa-sec { margin-bottom: 10px; }
+.lm-coa-sec h5 {
+  margin: 0 0 4px; font-size: 0.82rem; color: #1F4E79;
+  border-bottom: 1px solid #d7e3ee; padding-bottom: 2px;
+}
+.lm-coa-cat { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px; padding: 2px 0; }
+.lm-coa-catname { font-size: 0.78rem; min-width: 210px; color: #333; }
+.lm-coa-acct {
+  font-size: 0.72rem; font-family: ui-monospace, Menlo, Consolas, monospace;
+  background: #fff; border: 1px solid #dde5ee; border-radius: 3px; padding: 0 5px;
+  color: #666;
+}
+.lm-coa-used { background: #e6f4ea; border-color: #9ed3b0; color: #1e7a3c; font-weight: 600; }
+.lm-coa-sub {
+  font-size: 0.8rem; font-weight: 600; color: #1F4E79;
+  border-top: 2px solid #1F4E79; padding-top: 3px; margin-top: 4px;
+}
+.lm-stated { background: #e6f4ea; color: #1e7a3c; }
+.lm-prior { background: #eef5fc; color: #14507a; }
+.lm-prior-note { font-size: 0.72rem; color: #777; margin-left: 6px; font-style: italic; }
 .lm-resumed {
   display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
   font-size: 0.82rem; color: #14507a; background: #eef5fc;
