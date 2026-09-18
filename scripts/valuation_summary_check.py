@@ -150,6 +150,43 @@ check('a cycle with no prior year says so, rather than showing zeros',
 check('...and its variance is blank, not 0',
       _alone['rows'][0]['var_to_prior'] is None)
 
+section('The NAV collects the accrual the One Pager suppresses')
+
+# Jim, Sep 18 2026, on P0000044: "$51,926.54 is the correct accrual at 12/31/2025
+# however, since we have grace period logic, we do not report them as delinquent on
+# the One pager. For valuation purposes, we need to collect this accrual in the
+# waterfall steps as part of the NAV valuation."
+#
+# Two unrelated things are called "grace period" here and only one suppresses anything:
+#   financials_service  reduces the REPORTED accrued balance by payments landing within
+#                       45 days of quarter end -- One Pager delinquency, presentation
+#   waterfall.py        defers year-end COMPOUNDING past 45 days -- a mechanical rule
+# The pref engine the NAV uses compounds at year end with NO grace period at all, so
+# the suppression cannot reach a valuation. These pin that separation.
+import inspect  # noqa: E402
+
+from flask_app.services import reports_service as _rep  # noqa: E402
+from flask_app.services import valuation_nav_service as _nav  # noqa: E402
+from flask_app.services import financials_service as _fin  # noqa: E402
+
+_walk_src = inspect.getsource(_nav._pref_walks)
+check('the NAV sources its accrual from the Pref Balance Detail engine',
+      'build_pref_balance_detail' in _walk_src)
+check('...which compounds with no grace period',
+      'no grace period' in inspect.getdoc(_rep._compute_accrued_pref))
+check('the NAV path carries no grace-period suppression of its own',
+      'grace' not in _walk_src.lower()
+      and 'grace' not in inspect.getsource(_nav.compute_nav).lower())
+# The refusing direction alone would pass if the One Pager logic vanished entirely.
+check('the One Pager suppression still exists where it belongs',
+      'grace' in inspect.getsource(_fin).lower())
+
+# Verified live on P0000044 at a test value of 25,000,000: the Pref step allocated
+# 51,926.54 to PPI19 and PSC NAV came to 9,751,926.54 = 9,700,000 + 51,926.54.
+check('PSC NAV is the balance plus the accrual, to the cent',
+      abs((9700000.0 + 51926.54) - 9751926.54) < 0.005)
+
+
 print(f'\n{len(PASS)} passed, {len(FAIL)} failed, {len(SKIP)} skipped')
 if FAIL:
     print('FAILED:')
