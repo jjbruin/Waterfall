@@ -300,6 +300,49 @@ const savingDisposition = ref<number | null>(null)
 const dispositionError = ref<Record<number, string>>({})
 const localDispositions = ref<Record<number, string>>({})
 
+// Bulk: a review can throw off dozens of findings, and most of them usually get
+// the same reading. Pick the many, then correct the few.
+const selectedFindings = ref<number[]>([])
+const bulkSaving = ref(false)
+const bulkError = ref('')
+
+const findingIds = computed<number[]>(() =>
+  (mergeReport.value?.not_in_upload_tenants || [])
+    .map((t: any) => t.id).filter((id: any) => id != null))
+const allFindingsSelected = computed(() =>
+  findingIds.value.length > 0 &&
+  selectedFindings.value.length === findingIds.value.length)
+
+function toggleAllFindings(on: boolean) {
+  selectedFindings.value = on ? [...findingIds.value] : []
+}
+function toggleFinding(id: number, on: boolean) {
+  const set = new Set(selectedFindings.value)
+  on ? set.add(id) : set.delete(id)
+  selectedFindings.value = [...set]
+}
+
+async function setDispositionBulk(status: string) {
+  if (!selectedFindings.value.length || !selectedReviewId.value) return
+  bulkSaving.value = true
+  bulkError.value = ''
+  try {
+    const res = await api.put(
+      `/api/lease-review/reviews/${selectedReviewId.value}/tenants/dispositions`,
+      { tenant_ids: selectedFindings.value, status }
+    )
+    for (const id of res.data.tenant_ids || selectedFindings.value) {
+      localDispositions.value[id] = status
+    }
+    selectedFindings.value = []
+    await loadReview(selectedReviewId.value!)
+  } catch (e: any) {
+    bulkError.value = e.response?.data?.error || 'Could not apply'
+  } finally {
+    bulkSaving.value = false
+  }
+}
+
 function dispositionOf(t: any): string {
   if (t?.id != null && localDispositions.value[t.id]) return localDispositions.value[t.id]
   const row = tenants.value.find((x: any) => x.id === t?.id)
@@ -1159,12 +1202,37 @@ function statusClass(s: string): string {
               Leases stay on file either way. Only <em>On the rent roll</em> is counted
               in the projection.
             </p>
+            <div class="disp-bulk">
+              <label class="disp-bulk-all">
+                <input type="checkbox" :checked="allFindingsSelected"
+                  @change="toggleAllFindings(($event.target as HTMLInputElement).checked)" />
+                Select all {{ findingIds.length }}
+              </label>
+              <template v-if="selectedFindings.length">
+                <span class="disp-bulk-count">{{ selectedFindings.length }} selected —
+                  read them all as:</span>
+                <button v-for="opt in dispositionOptions" :key="opt.value"
+                  class="btn-xs disp-btn" :disabled="bulkSaving"
+                  :title="opt.meaning" @click="setDispositionBulk(opt.value)">
+                  {{ opt.label }}
+                </button>
+                <button class="btn-xs disp-btn" :disabled="bulkSaving"
+                  @click="selectedFindings = []">Clear</button>
+              </template>
+              <span v-if="bulkSaving" class="disp-bulk-count">applying…</span>
+              <span v-if="bulkError" class="disp-err">{{ bulkError }}</span>
+            </div>
             <table class="data-table compact disp-table">
               <thead>
-                <tr><th>Tenant</th><th>Suite</th><th>Reading</th></tr>
+                <tr><th class="disp-check"></th><th>Tenant</th><th>Suite</th><th>Reading</th></tr>
               </thead>
               <tbody>
                 <tr v-for="t in mergeReport.not_in_upload_tenants" :key="t.id ?? t.suite">
+                  <td class="disp-check">
+                    <input type="checkbox" :disabled="!t.id"
+                      :checked="selectedFindings.includes(t.id)"
+                      @change="toggleFinding(t.id, ($event.target as HTMLInputElement).checked)" />
+                  </td>
                   <td class="tenant-name" :title="t.tenant"><span class="tname">{{ t.tenant }}</span></td>
                   <td class="nowrap-cell">{{ t.suite }}</td>
                   <td class="nowrap-cell">
@@ -1855,6 +1923,15 @@ function statusClass(s: string): string {
 .disp-btn.disp-on { background: #1F4E79; border-color: #1F4E79; color: #fff; font-weight: 600; }
 .disp-err { color: #c0392b; font-size: 0.74rem; margin-left: 0.4rem; }
 .disp-select { font-size: 0.76rem; }
+.disp-bulk {
+  display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+  padding: 0.4rem 0.6rem; margin-top: 0.25rem;
+  background: #eef5fc; border-left: 3px solid #1a73e8; border-radius: 3px;
+  font-size: 0.8rem;
+}
+.disp-bulk-all { display: flex; align-items: center; gap: 0.35rem; cursor: pointer; }
+.disp-bulk-count { color: #14507a; font-weight: 500; }
+.disp-check { width: 28px; text-align: center; }
 /* A reading other than "on the rent roll" means the row is out of the projection,
    so it should not look like the rows that are in it. */
 .disp-select.disp-off { background: #fff6e5; border-color: #e0a800; color: #7a5c00; }

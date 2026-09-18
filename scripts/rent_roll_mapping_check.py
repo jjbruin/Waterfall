@@ -381,6 +381,51 @@ check('a dispositioned tenant is listed with what is attached to it',
       str(_listed))
 check('the merge finding carries the tenant id, so it can be dispositioned',
       "'id': ex['id']" in _svc)
+
+# --- Bulk: the same reading for many, applied as one transaction ---------------
+LRS.set_tenant_disposition(_eng2, _rid2, _gone, 'active')
+_res = LRS.set_tenant_dispositions(_eng2, _rid2, [_keep, _gone], 'vacated')
+check('bulk applies the reading to every tenant named',
+      _res['updated'] == 2 and _projected_ids() == set(), str(_projected_ids()))
+check('bulk keeps every record it touched',
+      _counts(_gone) == (1, 1, 1), str(_counts(_gone)))
+
+LRS.set_tenant_dispositions(_eng2, _rid2, [_keep, _gone], 'active')
+check('bulk is reversible', {_keep, _gone} <= _projected_ids())
+
+# A partly applied bulk action is worse than a refused one: nothing on screen
+# would say which half took. One bad id must change nothing at all.
+_before_status = None
+with _eng2.connect() as _c:
+    _before_status = _c.execute(_text(
+        "SELECT tenant_status FROM lease_tenants WHERE id=:t"), {'t': _keep}).scalar()
+try:
+    LRS.set_tenant_dispositions(_eng2, _rid2, [_keep, 999999], 'vacated')
+    check('a tenant from outside the review is refused', False)
+except ValueError as e:
+    check('a tenant from outside the review is refused', 'not in review' in str(e))
+with _eng2.connect() as _c:
+    _after_status = _c.execute(_text(
+        "SELECT tenant_status FROM lease_tenants WHERE id=:t"), {'t': _keep}).scalar()
+check('...and the valid tenants in that call were NOT changed either',
+      _after_status == _before_status, f'{_before_status} -> {_after_status}')
+check('...so the good tenant is still projected', _keep in _projected_ids())
+
+try:
+    LRS.set_tenant_dispositions(_eng2, _rid2, [], 'vacated')
+    check('an empty selection is refused', False)
+except ValueError as e:
+    check('an empty selection is refused', 'No tenants' in str(e))
+try:
+    LRS.set_tenant_dispositions(_eng2, _rid2, [_keep], 'deleted')
+    check('bulk refuses a non-disposition status too', False)
+except ValueError as e:
+    check('bulk refuses a non-disposition status too', 'Unknown disposition' in str(e))
+
+check('the screen offers select-all and a bulk apply',
+      'toggleAllFindings' in _view and 'setDispositionBulk' in _view)
+check('bulk goes in one request, not one per tenant',
+      'tenants/dispositions' in _view and 'tenant_ids' in _view)
 check('the screen offers the three readings',
       all(v in _view for v in ("'active'", "'vacated'", "'disregarded'")))
 

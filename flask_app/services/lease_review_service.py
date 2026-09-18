@@ -5962,6 +5962,58 @@ def set_tenant_disposition(engine, review_id: int, tenant_id: int,
             'meaning': TENANT_DISPOSITIONS[status]}
 
 
+def set_tenant_dispositions(engine, review_id: int, tenant_ids: List[int],
+                            status: str, note: Optional[str] = None,
+                            set_by: str = 'analyst') -> Dict[str, Any]:
+    """Give the same reading to many tenants at once.
+
+    A review can throw off dozens of findings and reading them one at a time is the
+    same click forty-six times. This is the same operation as
+    ``set_tenant_disposition``, applied as ONE transaction.
+
+    Every id is checked against the review BEFORE anything is written, so a bad id
+    in the middle of a list cannot leave half the tenants moved and half not -- a
+    partly applied bulk action is worse than a refused one, because nothing on the
+    screen would say which half took.
+    """
+    from sqlalchemy import bindparam, text
+
+    if status not in TENANT_DISPOSITIONS:
+        raise ValueError(
+            f"Unknown disposition '{status}'. Expected one of: "
+            + ', '.join(sorted(TENANT_DISPOSITIONS)))
+    ids = sorted({int(t) for t in (tenant_ids or [])})
+    if not ids:
+        raise ValueError('No tenants given.')
+
+    with engine.begin() as conn:
+        found = {r[0] for r in conn.execute(
+            text("SELECT id FROM lease_tenants WHERE review_id = :rid AND id IN :ids")
+            .bindparams(bindparam('ids', expanding=True)),
+            {'rid': review_id, 'ids': ids}).fetchall()}
+        missing = [i for i in ids if i not in found]
+        if missing:
+            raise ValueError(
+                f"These tenants are not in review {review_id}: {missing}. "
+                "Nothing was changed.")
+
+        params = {'st': status, 'ids': ids}
+        sql = ("UPDATE lease_tenants SET tenant_status = :st, "
+               "updated_at = CURRENT_TIMESTAMP")
+        if note is not None:
+            sql += ", analyst_notes = :note"
+            params['note'] = note
+        conn.execute(
+            text(sql + " WHERE id IN :ids").bindparams(
+                bindparam('ids', expanding=True)), params)
+
+    logger.info("Review %s: %d tenants -> %s by %s",
+                review_id, len(ids), status, set_by)
+    return {'status': 'updated', 'tenant_status': status,
+            'updated': len(ids), 'tenant_ids': ids,
+            'meaning': TENANT_DISPOSITIONS[status]}
+
+
 def get_tenant_dispositions(engine, review_id: int) -> List[Dict[str, Any]]:
     """Tenants whose status is not 'active', with what is attached to each.
 

@@ -281,6 +281,38 @@ def set_disposition(review_id, tenant_id):
         return jsonify({'error': str(e)}), 500
 
 
+@lease_review_bp.route('/reviews/<int:review_id>/tenants/dispositions',
+                       methods=['PUT'])
+@login_required
+@role_required('admin', 'analyst')
+def set_dispositions_bulk(review_id):
+    """Give the same reading to many tenants at once.
+
+    Body: { "tenant_ids": [1,2,3], "status": "vacated", "note": "..." }
+
+    All or nothing: if any id does not belong to this review, nothing is changed.
+    """
+    from flask_app.services.lease_review_service import set_tenant_dispositions
+
+    data = request.json or {}
+    status = (data.get('status') or '').strip()
+    ids = data.get('tenant_ids') or []
+    if not status:
+        return jsonify({'error': 'status is required'}), 400
+    if not isinstance(ids, list) or not ids:
+        return jsonify({'error': 'tenant_ids must be a non-empty list'}), 400
+    try:
+        return jsonify(set_tenant_dispositions(
+            get_engine(), review_id, ids, status,
+            note=data.get('note'),
+            set_by=g.current_user.get('username', 'unknown')))
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"Bulk disposition error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
 @lease_review_bp.route('/reviews/<int:review_id>/dispositions', methods=['GET'])
 @login_required
 def list_dispositions(review_id):
