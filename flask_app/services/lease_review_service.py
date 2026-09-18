@@ -1115,6 +1115,88 @@ def parse_rent_roll_flexible(file_obj, filename: str = '') -> pd.DataFrame:
     return pd.DataFrame(result_rows)
 
 
+def _tenant_child_tables(conn) -> List[Tuple[str, str]]:
+    """(table, column) for every foreign key into lease_tenants, from the catalog.
+
+    Asked of the live database rather than maintained by hand, because a hand-kept
+    list is exactly what went stale: five tables had been added since it was written
+    and a replace-import hit a ForeignKeyViolation on any review that used them.
+
+    The COLUMN is read too, not assumed to be tenant_id -- lease_market_assumptions
+    references lease_tenants under a different name, so assuming would trade one
+    error for another.
+    """
+    from sqlalchemy import text
+
+    dialect = conn.engine.dialect.name
+    try:
+        if dialect == 'postgresql':
+            rows = conn.execute(text("""
+                SELECT tc.table_name, kcu.column_name
+                  FROM information_schema.table_constraints tc
+                  JOIN information_schema.key_column_usage kcu
+                    ON tc.constraint_name = kcu.constraint_name
+                   AND tc.table_schema = kcu.table_schema
+                  JOIN information_schema.constraint_column_usage ccu
+                    ON tc.constraint_name = ccu.constraint_name
+                   AND tc.table_schema = ccu.table_schema
+                 WHERE tc.constraint_type = 'FOREIGN KEY'
+                   AND ccu.table_name = 'lease_tenants'
+                   AND tc.table_name <> 'lease_tenants'
+            """)).fetchall()
+            return [(r[0], r[1]) for r in rows]
+        # SQLite: walk each table's declared foreign keys.
+        names = [r[0] for r in conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type='table'")).fetchall()]
+        out = []
+        for t in names:
+            if t == 'lease_tenants':
+                continue
+            for fk in conn.execute(text(f'PRAGMA foreign_key_list("{t}")')).fetchall():
+                if fk[2] == 'lease_tenants':
+                    out.append((t, fk[3]))
+        return out
+    except Exception as e:
+        logger.warning("Could not enumerate lease_tenants children (%s)", e)
+        return []
+
+
+# The children known at the time of writing. The catalog is authoritative and will
+# also find tables added later, but it is UNIONed with this rather than trusted
+# alone: SQLite strips REFERENCES from the DDL entirely (see _pg_to_sqlite), so the
+# catalog is empty there, and a PostgreSQL catalog read could be partial. Deleting
+# from a table that has no matching rows costs nothing; missing one costs an import.
+_KNOWN_TENANT_CHILDREN = [
+    'lease_rent_steps', 'lease_options', 'lease_exclusive_use', 'lease_validation',
+    'lease_abstract_sections', 'lease_tenant_sales', 'lease_field_resolutions',
+]
+
+
+def _clear_tenant_children(conn, review_id: int) -> None:
+    """Delete everything hanging off a review's tenants, before deleting the tenants.
+
+    Tables that do not exist are skipped by asking the inspector, NOT by catching
+    the error: a blanket try/except here silently swallowed every delete when this
+    function could not resolve `text`, and the only visible symptom was orphaned
+    rows on SQLite and the original ForeignKeyViolation on PostgreSQL. A delete
+    that fails for any other reason must raise.
+    """
+    from sqlalchemy import inspect as sa_inspect, text
+
+    targets = dict.fromkeys(_KNOWN_TENANT_CHILDREN, 'tenant_id')
+    for table, col in _tenant_child_tables(conn):
+        targets[table] = col
+    present = set(sa_inspect(conn).get_table_names())
+    for table, col in targets.items():
+        if table not in present:
+            logger.info("No %s table; nothing to clear", table)
+            continue
+        conn.execute(text(
+            f'DELETE FROM {table} WHERE "{col}" IN '
+            "(SELECT id FROM lease_tenants WHERE review_id = :rid)"),
+            {'rid': review_id})
+
+
 def import_rent_roll_to_review(engine, review_id: int, rr_df: pd.DataFrame) -> int:
     """Import parsed rent roll data into an existing lease review.
 
@@ -1156,15 +1238,15 @@ def import_rent_roll_to_review(engine, review_id: int, rr_df: pd.DataFrame) -> i
             "DELETE FROM lease_cotenancy WHERE review_id = :rid"), {'rid': review_id})
         conn.execute(text(
             "DELETE FROM lease_documents WHERE review_id = :rid"), {'rid': review_id})
-        conn.execute(text(
-            "DELETE FROM lease_rent_steps WHERE tenant_id IN "
-            "(SELECT id FROM lease_tenants WHERE review_id = :rid)"), {'rid': review_id})
-        conn.execute(text(
-            "DELETE FROM lease_options WHERE tenant_id IN "
-            "(SELECT id FROM lease_tenants WHERE review_id = :rid)"), {'rid': review_id})
-        conn.execute(text(
-            "DELETE FROM lease_exclusive_use WHERE tenant_id IN "
-            "(SELECT id FROM lease_tenants WHERE review_id = :rid)"), {'rid': review_id})
+        # Clear everything hanging off these tenants BEFORE deleting them. The list
+        # used to be typed out by hand and covered 5 of the 10 child tables, so a
+        # replace-import of any review carrying tenant sales, an abstract, a
+        # validation row, a market assumption or an analyst field resolution died on
+        # a ForeignKeyViolation. It only ever showed up on PostgreSQL -- SQLite does
+        # not enforce foreign keys unless asked, so local dev never saw it.
+        # Read from the database's own catalog rather than a list that drifts every
+        # time a table is added.
+        _clear_tenant_children(conn, review_id)
         conn.execute(text(
             "DELETE FROM lease_tenants WHERE review_id = :rid"), {'rid': review_id})
 

@@ -69,6 +69,11 @@ ALL_ROLES = [ROLE_IGNORE] + IDENTITY_ROLES + MONEY_ROLES
 # Roles that may be assigned to at most one column. Recoveries are deliberately NOT
 # here -- three separate recovery columns is the normal case and the bug this fixes.
 SINGLE_ROLES = set(IDENTITY_ROLES) | {ROLE_DEPOSIT}
+# In a one-row-per-tenant file, base rent may come from ONE column: a second is
+# the same money restated per area or per month and would be summed on top.
+# (The stacked layout is different -- distinct charge labels under one tenant are
+# genuinely separate charges -- so this applies to the columnar path only.)
+COLUMNAR_SINGLE_ROLES = SINGLE_ROLES | {ROLE_BASE_RENT}
 
 # --- How to read a money figure. The period is the half the header cannot tell us. ---
 BASIS_MONTHLY = 'monthly_amount'
@@ -144,9 +149,19 @@ _RECOVERY_EXCLUDE = [
 _BASE_RENT_PATTERNS = [
     r'base\s*rent', r'minimum\s*(monthly\s*)?rent', r'\bmin\s*rent',
     r'scheduled\s*base', r'potential\s*base', r'contract\s*rent',
-    r'^\s*rent\s*$', r'current\s*rent', r'actual\s*rent',
+    r'current\s*rent', r'actual\s*rent',
+    # A bare \brent\b, so "Monthly Rent" and "Annual Rent" are recognised. The
+    # earlier ^rent$ matched only a column called exactly "Rent", which is why
+    # the Windsor/Argus shape proposed no base rent at all.
+    r'\brent\b',
 ]
-_BASE_RENT_EXCLUDE = ['market', 'expected', 'increase', 'recover', 'psf', 'per sf']
+_BASE_RENT_EXCLUDE = [
+    'market', 'expected', 'increase', 'recover', 'reimburs',
+    # Per-area columns restate the same rent; taking one as the base rent
+    # column and the per-area one as another would double it.
+    'psf', 'per sf', '/sf', 'per area', 'rate',
+    'percentage', 'turnover', 'free', 'abatement', 'misc', 'total',
+]
 
 _MISC_PATTERNS = [
     r'\bmisc', r'other\s*charge', r'non[\s\-]*recoverable', r'utilit',
@@ -165,6 +180,18 @@ def _norm(s: Any) -> str:
 
 def _matches(text: str, patterns: List[str]) -> bool:
     return any(re.search(p, text) for p in patterns)
+
+
+def _is_tenant_name(val: Any) -> bool:
+    """A usable tenant name: present, and not a figure that drifted into the column."""
+    s = str(val or '').strip()
+    if not s or s.lower() in ('nan', 'none', 'nat'):
+        return False
+    try:
+        float(s.replace(',', ''))
+        return False
+    except ValueError:
+        return True
 
 
 def is_total_row(name: Any) -> bool:
@@ -309,6 +336,25 @@ def _propose_role(label: str, kind: str) -> str:
     return ROLE_IGNORE
 
 
+# A base rent column restated four ways -- amount and per-area, monthly and
+# annual -- is normal (the Argus/Windsor shape prints all four). Exactly one may
+# be the base rent column; the rest are the same money and would double it.
+# Amounts outrank rates because the file's own totals are struck on amounts.
+_BASIS_RANK = {
+    BASIS_ANNUAL: 0, BASIS_MONTHLY: 1, BASIS_ANNUAL_PSF: 2, BASIS_MONTHLY_PSF: 3,
+    None: 4,
+}
+
+
+def _best_base_rent(entries: List[Dict[str, Any]]) -> Optional[str]:
+    """Pick the one base rent column to propose, preferring a stated annual amount."""
+    cands = [e for e in entries if e['proposed_role'] == ROLE_BASE_RENT]
+    if not cands:
+        return None
+    return sorted(cands, key=lambda e: (_BASIS_RANK.get(e['proposed_basis'], 4),
+                                        e['index']))[0]['key']
+
+
 def _column_kind(values: List[Any]) -> str:
     """Classify a column from its values, so an empty header cannot mislabel it."""
     seen = [v for v in values if v is not None and str(v).strip() not in ('', 'nan')]
@@ -329,12 +375,20 @@ def _column_kind(values: List[Any]) -> str:
 # ---------------------------------------------------------------------------
 
 def _scan_columnar(df_raw: pd.DataFrame) -> Dict[str, Any]:
-    # Which column names the tenant? Needed to spot subtotal rows before sampling.
+    # Which column names the tenant? Needed to spot subtotal rows before sampling,
+    # and it must be the SAME column the import will use -- Windsor's tenant column
+    # is called "Lease", so resolving it by keyword alone picked "Property" here and
+    # the mapped column there, and the two disagreed about which rows were totals.
     name_col = None
     for c in df_raw.columns:
         if _propose_role(c, _column_kind(list(df_raw[c].head(30)))) == ROLE_TENANT:
             name_col = c
             break
+    if name_col is None:                       # the Argus/Windsor "Lease" column
+        for c in df_raw.columns:
+            if _norm(c) == 'lease' and _column_kind(list(df_raw[c].head(30))) == 'text':
+                name_col = c
+                break
     if name_col is None:
         for c in df_raw.columns:
             if _column_kind(list(df_raw[c].head(30))) == 'text':
@@ -360,6 +414,11 @@ def _scan_columnar(df_raw: pd.DataFrame) -> Dict[str, Any]:
     data_idx = [i for i in df_raw.index
                 if i not in set(total_idx) and i not in set(banner_idx)]
     body = df_raw.loc[data_idx]
+    # The count on screen must be the count that imports. apply_mapping also drops
+    # blank and purely numeric names, so the scan has to drop them here too or it
+    # promises 53 tenants and delivers 49.
+    if name_col is not None:
+        body = body[body[name_col].map(_is_tenant_name)]
 
     columns = []
     claimed = set()
@@ -392,9 +451,28 @@ def _scan_columnar(df_raw: pd.DataFrame) -> Dict[str, Any]:
         }
         columns.append(entry)
 
+    # Of the base rent restatements, keep one and demote the rest. Two columns
+    # both marked base rent would be SUMMED, doubling the rent.
+    keep = _best_base_rent(columns)
+    restated = []
+    for e in columns:
+        if e['proposed_role'] == ROLE_BASE_RENT and e['key'] != keep:
+            restated.append(e['label'])
+            e['proposed_role'] = ROLE_IGNORE
+            e['proposed_basis'] = None
+            e['needs_basis'] = False
+
+    # No tenant column by keyword: the Argus/Windsor export calls it "Lease".
+    if not any(e['proposed_role'] == ROLE_TENANT for e in columns):
+        for e in columns:
+            if _norm(e['label']) == 'lease' and e['kind'] == 'text':
+                e['proposed_role'] = ROLE_TENANT
+                break
+
     return {
         'layout': 'columnar',
         'columns': columns,
+        'restated_base_rent': restated,
         'row_count': len(body),
         'excluded_rows': [
             {'index': int(i), 'name': str(df_raw.at[i, name_col]),
@@ -700,6 +778,10 @@ def _scan_warnings(out: Dict[str, Any], entries: List[Dict[str, Any]]) -> List[s
     if len(recs) > 1:
         warns.append(f'{len(recs)} recovery columns proposed: {", ".join(recs)}. '
                      'All of them will be summed.')
+    if out.get('restated_base_rent'):
+        warns.append(
+            'These restate the same rent and are left out so it is not counted '
+            'twice: ' + ', '.join(out['restated_base_rent']))
     if out['unanswered']:
         warns.append(
             'These columns do not say whether they are monthly or annual, so the '
@@ -747,10 +829,14 @@ def _validate_mapping(mapping: Dict[str, Any], keys: List[str]) -> None:
     unknown = [k for k in assigned if k not in keys]
     if unknown:
         raise ValueError(f'Mapping names columns that are not in the file: {unknown}')
-    for role in SINGLE_ROLES:
+    for role in COLUMNAR_SINGLE_ROLES:
         hits = [k for k, r in roles.items() if r == role]
         if len(hits) > 1:
             raise ValueError(
+                f'{ROLE_LABELS[role]} is mapped to more than one column: {hits}. '
+                'Columns restating the same figure per area or per month would be '
+                'summed on top of each other.'
+                if role == ROLE_BASE_RENT else
                 f'{ROLE_LABELS[role]} is mapped to more than one column: {hits}')
     if not any(r == ROLE_TENANT for r in roles.values()):
         raise ValueError('No column is mapped to the tenant name.')
@@ -847,18 +933,14 @@ def _apply_columnar(df_raw: pd.DataFrame,
     for i, r in df_raw.iterrows():
         raw_name = r.get(name_col)
         name = str(raw_name or '').strip()
-        if not name or name.lower() in ('nan', 'none'):
+        # Same test the scan counted with, so the tenant count on screen is the
+        # tenant count that imports.
+        if not _is_tenant_name(raw_name):
             continue
         if (is_total_row(name) or _BANNER_HINT_RE.search(name)
                 or _is_banner_row(r, numeric_cols, date_cols)):
             report['excluded'].append(name)
             continue
-        try:                              # a purely numeric "name" is summary data
-            float(name.replace(',', ''))
-            report['excluded'].append(name)
-            continue
-        except ValueError:
-            pass
 
         row = _blank_row()
         row['tenant_name'] = name

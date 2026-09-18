@@ -16,7 +16,6 @@ from flask_app.services.lease_review_service import (
     get_cotenancy_matrix,
     get_scenario_analysis,
     generate_lease_review_excel,
-    parse_rent_roll_flexible,
     import_rent_roll_to_review,
     create_review_manual,
     merge_rent_roll_to_review,
@@ -201,14 +200,22 @@ def create_manual_review():
 @login_required
 @role_required('admin', 'analyst')
 def upload_rent_roll(review_id):
-    """Upload a rent roll Excel/CSV file to populate tenants for a review.
+    """Replace a review's tenants from a rent roll, using the mapping rules.
 
-    Accepts multipart/form-data with a 'file' field.
-    Replaces any existing tenants in the review.
+    Kept for callers outside the app. It no longer uses keyword matching alone: it
+    runs the same scan the screen does and imports the PROPOSAL, refusing when the
+    file leaves anything genuinely ambiguous. Removing the button was not enough --
+    the route is reachable on its own, and the 12x monthly/annual misread was
+    exactly the kind of thing that passed silently through it.
     """
+    return _import_by_proposal(review_id, mode='replace')
+
+
+def _import_by_proposal(review_id, mode):
+    from flask_app.services import rent_roll_mapping
+
     if 'file' not in request.files:
         return jsonify({'error': 'No file provided'}), 400
-
     file = request.files['file']
     if not file.filename:
         return jsonify({'error': 'Empty filename'}), 400
@@ -218,11 +225,27 @@ def upload_rent_roll(review_id):
 
     try:
         file_bytes = file.read()
-        rr_df = parse_rent_roll_flexible(file_bytes, file.filename)
-        count = import_rent_roll_to_review(engine, review_id, rr_df)
+        scanned = rent_roll_mapping.scan(file_bytes, file.filename)
+        if scanned.get('unanswered'):
+            # No human here to answer, and guessing the period is the defect this
+            # replaced. Refuse and name the columns, rather than pick.
+            return jsonify({'error':
+                'This file does not say whether these columns are monthly or '
+                'annual: ' + ', '.join(scanned['unanswered']) +
+                '. Import it from the Lease Review screen, where the period can '
+                'be set.', 'unanswered': scanned['unanswered']}), 400
+        rr_df, report = rent_roll_mapping.apply_mapping(
+            file_bytes, file.filename, scanned['mapping'])
+        if mode == 'replace':
+            count = import_rent_roll_to_review(engine, review_id, rr_df)
+            result = {'status': 'imported', 'tenant_count': count}
+        else:
+            result = {'status': 'merged', **merge_rent_roll_to_review(
+                engine, review_id, rr_df,
+                source_label=request.form.get('source_label', 'seller_rent_roll'))}
         return jsonify({
-            'status': 'imported',
-            'tenant_count': count,
+            **result,
+            'mapping_report': report,
             'total_gla': float(rr_df['square_feet'].sum()),
             'total_annual_rent': float(rr_df['annual_rent'].sum()),
         })
@@ -318,6 +341,15 @@ def commit_rent_roll(review_id):
         return jsonify({'error': str(e)}), 400
     except Exception as e:
         logger.error(f"Rent roll commit error: {e}", exc_info=True)
+        # A replace has to delete the existing tenants, and other records point at
+        # them. If any are still held, say what actually happened and name the way
+        # out -- a raw constraint name tells the analyst nothing.
+        if 'ForeignKeyViolation' in str(e) or 'IntegrityError' in type(e).__name__:
+            return jsonify({'error':
+                'Replace could not remove the existing tenants because other '
+                'records (tenant sales, abstracts, validations) still reference '
+                'them. Use "Merge into existing tenants" instead — it updates the '
+                'figures in place and keeps that work.'}), 409
         return jsonify({'error': str(e)}), 500
 
 
@@ -703,34 +735,13 @@ def view_document(review_id, doc_id):
 @login_required
 @role_required('admin', 'analyst')
 def merge_rent_roll(review_id):
-    """Non-destructive rent roll import — merges into existing tenants.
+    """Merge a rent roll into a review's existing tenants, using the mapping rules.
 
-    Fuzzy-matches by (suite, tenant_name). Updates matched tenants without
-    touching extraction data. Adds new tenants. Flags missing tenants.
+    Same story as upload_rent_roll: kept for callers outside the app, but it now
+    runs the scan and imports the proposal rather than matching on keywords, and
+    refuses a file whose charge period is not stated.
     """
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file provided'}), 400
-
-    file = request.files['file']
-    if not file.filename:
-        return jsonify({'error': 'Empty filename'}), 400
-
-    engine = get_engine()
-    ensure_lease_tables(engine)
-
-    try:
-        file_bytes = file.read()
-        rr_df = parse_rent_roll_flexible(file_bytes, file.filename)
-        report = merge_rent_roll_to_review(
-            engine, review_id, rr_df,
-            source_label=request.form.get('source_label', 'seller_rent_roll'),
-        )
-        return jsonify({'status': 'merged', **report})
-    except ValueError as e:
-        return jsonify({'error': str(e)}), 400
-    except Exception as e:
-        logger.error(f"Rent roll merge error: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+    return _import_by_proposal(review_id, mode='merge')
 
 
 @lease_review_bp.route('/reviews/<int:review_id>/upload-documents', methods=['POST'])

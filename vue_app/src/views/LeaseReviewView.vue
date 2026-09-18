@@ -57,8 +57,6 @@ const prospectProperties = ref<any[]>([])
 const selectedProspectPropId = ref<number | null>(null)
 
 // Rent roll upload / merge
-const uploadingRentRoll = ref(false)
-const mergingRentRoll = ref(false)
 const uploadMessage = ref('')
 const mergeReport = ref<any>(null)
 
@@ -386,64 +384,7 @@ function cancelScan() {
   scanFile.value = null
 }
 
-// Destructive rent roll upload (original)
-async function onRentRollUpload(event: Event) {
-  const input = event.target as HTMLInputElement
-  if (!input.files?.length || !selectedReviewId.value) return
 
-  const file = input.files[0]
-  const formData = new FormData()
-  formData.append('file', file)
-
-  uploadingRentRoll.value = true
-  uploadMessage.value = ''
-  try {
-    const res = await api.post(
-      `/api/lease-review/reviews/${selectedReviewId.value}/upload-rent-roll`,
-      formData,
-      { headers: { 'Content-Type': 'multipart/form-data' } }
-    )
-    uploadMessage.value = `Imported ${res.data.tenant_count} tenants (${(res.data.total_gla || 0).toLocaleString()} SF)`
-    await loadReview(selectedReviewId.value!)
-  } catch (e: any) {
-    uploadMessage.value = ''
-    console.error('Upload error', e)
-    alert(e.response?.data?.error || 'Failed to upload rent roll')
-  } finally {
-    uploadingRentRoll.value = false
-    input.value = ''
-  }
-}
-
-// Non-destructive rent roll merge
-async function onRentRollMerge(event: Event) {
-  const input = event.target as HTMLInputElement
-  if (!input.files?.length || !selectedReviewId.value) return
-
-  const file = input.files[0]
-  const formData = new FormData()
-  formData.append('file', file)
-
-  mergingRentRoll.value = true
-  mergeReport.value = null
-  uploadMessage.value = ''
-  try {
-    const res = await api.post(
-      `/api/lease-review/reviews/${selectedReviewId.value}/merge-rent-roll`,
-      formData,
-      { headers: { 'Content-Type': 'multipart/form-data' } }
-    )
-    mergeReport.value = res.data
-    uploadMessage.value = `Merged: ${res.data.matched} updated, ${res.data.added} added, ${res.data.not_in_upload} not in upload`
-    await loadReview(selectedReviewId.value!)
-  } catch (e: any) {
-    console.error('Merge error', e)
-    alert(e.response?.data?.error || 'Failed to merge rent roll')
-  } finally {
-    mergingRentRoll.value = false
-    input.value = ''
-  }
-}
 
 // Sales import
 async function onSalesUpload(event: Event) {
@@ -1024,20 +965,13 @@ function statusClass(s: string): string {
         <h2>Import Seller's Rent Roll</h2>
         <p class="subtitle">Upload the rent roll received from the operating partner. Use <strong>Import (Merge)</strong> to safely update existing data, or <strong>Replace All</strong> to start fresh.</p>
 
+        <!-- One way in. Merge vs replace is chosen on the confirmation panel, after
+             the columns have been seen, rather than by picking a button before the
+             file has even been read. -->
         <div class="upload-actions">
           <label class="btn-primary btn-upload-label">
             {{ scanning ? 'Reading file...' : 'Select Rent Roll...' }}
             <input type="file" accept=".xlsx,.xls,.csv,.pdf" @change="onRentRollScan" :disabled="scanning" hidden />
-          </label>
-
-          <label class="btn-secondary btn-upload-label">
-            {{ mergingRentRoll ? 'Merging...' : 'Quick Merge (no mapping)' }}
-            <input type="file" accept=".xlsx,.xls,.csv,.pdf" @change="onRentRollMerge" :disabled="mergingRentRoll" hidden />
-          </label>
-
-          <label class="btn-secondary btn-upload-label">
-            {{ uploadingRentRoll ? 'Replacing...' : 'Replace All (Destructive)' }}
-            <input type="file" accept=".xlsx,.xls,.csv,.pdf" @change="onRentRollUpload" :disabled="uploadingRentRoll" hidden />
           </label>
         </div>
 

@@ -252,6 +252,104 @@ check('a charge line is not mistaken for page furniture',
       not M._PAGE_FURNITURE_RE.search('cam recoveries $1,385.64 $1.39'))
 
 
+section('The count on screen is the count that imports')
+
+# The scan promised 53 tenants and the import delivered 49, because the scan
+# resolved the tenant column by keyword ("Property") while the import used the
+# mapped one ("Lease"), so the two disagreed about which rows were subtotals.
+_sc = M.scan(blob, 'fixture.xlsx')
+_mp = {'roles': dict(_sc['mapping']['roles']),
+       'bases': dict.fromkeys(['Base Rent', 'CAM', 'Insurance', 'Tax'], M.BASIS_MONTHLY)}
+_df, _ = M.apply_mapping(blob, 'fixture.xlsx', _mp)
+check('scan row_count equals the number of rows imported',
+      _sc['row_count'] == len(_df), f"scan={_sc['row_count']} imported={len(_df)}")
+
+
+section('Replace must clear what points at the tenants')
+
+# Production hit ForeignKeyViolation on lease_tenant_sales: the delete list was
+# typed by hand and covered 5 of 10 child tables. It only ever failed on
+# PostgreSQL -- the SQLite DDL strips REFERENCES, so local dev cannot see it.
+from flask_app.services import lease_review_service as LRS  # noqa: E402
+
+known = set(LRS._KNOWN_TENANT_CHILDREN)
+import re as _re2
+_src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         'flask_app', 'services', 'lease_review_service.py'),
+            encoding='utf-8').read()
+
+
+def _ddl_blocks(src):
+    """Each CREATE TABLE body, matched on parentheses.
+
+    Slicing to the next CREATE TABLE instead runs past the last one and swept in
+    half the module -- which is how this check first "found" an FK on
+    lease_market_assumptions that does not exist.
+    """
+    for m in _re2.finditer(r'CREATE TABLE IF NOT EXISTS (\w+)\s*\(', src):
+        i = src.index('(', m.end() - 1)
+        depth = 0
+        for j in range(i, len(src)):
+            if src[j] == '(':
+                depth += 1
+            elif src[j] == ')':
+                depth -= 1
+                if depth == 0:
+                    yield m.group(1), src[i:j + 1]
+                    break
+
+
+declared = {n for n, b in _ddl_blocks(_src) if 'REFERENCES lease_tenants(id)' in b}
+check('the DDL scan finds the child tables it should',
+      len(declared) >= 9, f'{len(declared)} found: {sorted(declared)}')
+# lease_documents and lease_cotenancy are cleared by review_id, before this runs.
+by_review = {'lease_documents', 'lease_cotenancy'}
+missing = declared - known - by_review
+check('every table declaring an FK to lease_tenants is cleared before the delete',
+      not missing, f'not covered: {sorted(missing)}')
+check('the known list is not itself stale', len(known) >= 7, str(len(known)))
+check('children are also read from the live catalog, not only the list',
+      callable(getattr(LRS, '_tenant_child_tables', None)))
+check('the FK column name is read too, not assumed to be tenant_id',
+      'fk[3]' in _src or 'kcu.column_name' in _src)
+
+# Asserting the list exists proves nothing: the first version of this fix could
+# not resolve `text`, so EVERY delete threw, a blanket except swallowed it, and
+# the rows were silently left behind. Run the clear against a real database and
+# look at what is actually gone.
+import sqlalchemy as _sa  # noqa: E402
+from sqlalchemy import text as _text  # noqa: E402
+
+_eng = _sa.create_engine('sqlite:///:memory:')
+LRS.ensure_lease_tables(_eng)
+LRS.ensure_resolution_table(_eng)
+with _eng.begin() as _c:
+    _rid = _c.execute(_text(
+        "INSERT INTO lease_reviews (property_name) VALUES ('T') RETURNING id")).scalar()
+    _tid = _c.execute(_text(
+        "INSERT INTO lease_tenants (review_id, tenant_name, suite) "
+        "VALUES (:r,'Alpha','100') RETURNING id"), {'r': _rid}).scalar()
+    _c.execute(_text("INSERT INTO lease_tenant_sales (tenant_id, review_id, year, "
+                     "sales_amount) VALUES (:t,:r,2025,500000)"),
+               {'t': _tid, 'r': _rid})
+    _c.execute(_text("INSERT INTO lease_abstract_sections (tenant_id, section_key, "
+                     "section_title, content) VALUES (:t,'cam','CAM','x')"), {'t': _tid})
+    _c.execute(_text("INSERT INTO lease_field_resolutions (tenant_id, field_name, "
+                     "resolved_value, resolved_by) VALUES (:t,'annual_rent','1','x')"),
+               {'t': _tid})
+with _eng.begin() as _c:
+    _before = {t: _c.execute(_text(f'SELECT COUNT(*) FROM {t}')).scalar()
+               for t in ('lease_tenant_sales', 'lease_abstract_sections',
+                         'lease_field_resolutions')}
+    LRS._clear_tenant_children(_c, _rid)
+    _after = {t: _c.execute(_text(f'SELECT COUNT(*) FROM {t}')).scalar()
+              for t in _before}
+check('the clear actually runs — dependent rows were there beforehand',
+      all(v == 1 for v in _before.values()), str(_before))
+check('and they are gone afterwards, leaving no orphans',
+      all(v == 0 for v in _after.values()), str(_after))
+
+
 section('Roster layout — a clipped name must still be readable')
 
 VIEW = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
