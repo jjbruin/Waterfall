@@ -249,6 +249,18 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v498` = `bc4ac18` (ONE READING FOR MANY FINDINGS. Jim asked for the bulk
+    action after seeing that 46 findings meant 46 clicks. Select all, or pick
+    the many and correct the few; ONE PUT for the whole selection, verified in
+    the browser against the real 46-finding case.
+    ALL OR NOTHING: every id is checked against the review BEFORE anything is
+    written, so one bad id cannot leave half the tenants moved and half not — a
+    partly applied bulk action is worse than a refused one because nothing on
+    screen would say which half took. The guardrail asserts not just that the
+    bad id is refused but that the VALID tenants in the same call were left
+    alone and are still projected. The selection clears once applied, so a
+    second click cannot re-apply to a set the analyst thinks is dealt with.
+    Guardrail 111 -> 121.)
   - `v497` = `89ea195` (THE RENT ROLL IS CHECKED AGAINST THE LEASES, NOT THE
     OTHER WAY ROUND. Jim: "If there is no lease to support a tenant listed in
     the rent roll we are more likely to disregard the rent roll entry. If we
