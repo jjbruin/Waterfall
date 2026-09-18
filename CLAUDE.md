@@ -249,6 +249,43 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v497` = `89ea195` (THE RENT ROLL IS CHECKED AGAINST THE LEASES, NOT THE
+    OTHER WAY ROUND. Jim: "If there is no lease to support a tenant listed in
+    the rent roll we are more likely to disregard the rent roll entry. If we
+    have valid leases for legitimate space we will likely be looking to add
+    that lease to the rent roll than delete the lease from our records." And:
+    lease uploads may hold leases for tenants who have VACATED, which do not
+    belong in the projection.
+    THAT INVERTS THE PREMISE THE IMPORT WAS BUILT ON. The leases are the
+    authority and the rent roll is what is being validated, so a tenant missing
+    from a later rent roll is a FINDING ABOUT THE RENT ROLL — not a cue to
+    delete the tenant and the abstract built from its lease. I was part-way
+    through making replace "safer" by carrying work across; that was still the
+    wrong premise and was reverted rather than finished.
+    THE IMPORT NO LONGER DELETES ANYTHING. Merge only; replace is gone from the
+    screen AND from every route, because removing a button is not enough when
+    the route is reachable alone. Nothing in `api/lease_review.py` calls
+    `import_rent_roll_to_review`, and merge itself contains no DELETE.
+    DISPOSITION is what makes the finding actionable — three readings: on the
+    rent roll (projected), vacated (lease stays on file, not projected), no
+    lease (not projected). Set from the findings list at the moment the
+    disagreement surfaces, and from a Reading column on the roster so it stays
+    visible and reversible.
+    VERIFIED ON A REAL PROJECTION, not by reading the status column back:
+    marking a tenant vacated takes the run 48 suites -> 47, and afterwards the
+    tenant row, its lease PDF and its abstract are all still there. The
+    guardrail asserts BOTH halves — out of the projection AND records kept —
+    since either passing alone would be worse than useless.
+    `is_vacant` and `tenant_status` are DIFFERENT AXES and are not conflated:
+    is_vacant = the suite is empty per the rent roll; tenant_status 'vacated' =
+    we hold a lease for a tenant who has left. Confirmed live: vacated with
+    is_vacant still 0.
+    FOUND ON THE WAY: `rent_per_sf` is read by `get_resolved_tenants` and
+    written by every import path but was in NEITHER the CREATE TABLE nor any
+    migration. Existing databases carry it from an older schema so nothing was
+    broken, but a genuinely fresh one would have failed with "no such column"
+    the first time anyone opened a projection. Added as a migration — which is
+    also what made the projection fixture buildable. Guardrail 97 -> 111.)
   - `v496` = `b1b0f5b` (ONE WAY IN, AND REPLACE CLEARS WHAT POINTS AT THE
     TENANTS. Jim's re-import of Market at Poplar failed on production with a
     ForeignKeyViolation on `lease_tenant_sales`. The mapping was fine; the
