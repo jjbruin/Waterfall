@@ -249,6 +249,35 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v500` = `c84127d` (A MAPPING IN PROGRESS IS KEPT. Asset management: "How
+    do you save mapping adjustments? I don't see a save button, and when the
+    page refreshed my mapping work was gone." Both halves were true and a THIRD
+    was waiting. The mapping lived only in browser memory between parse and
+    commit and NONE of the four endpoints read one back — so a refresh threw
+    away twenty minutes of judgement, and re-opening after a SUCCESSFUL import
+    showed an empty page, which reads exactly like losing it. The one button on
+    the screen said "Apply mapping to the Valuation column", which is why it
+    was not found when looking for a save button.
+    SAVED AS THE ANALYST WORKS, NOT ON A BUTTON. Every category, account or
+    flip change already triggers a validation round trip; the save rides along,
+    debounced 700ms and sequenced so a slow reply cannot report a stale state.
+    Asking someone to remember to save twenty minutes of judgement is asking
+    them to lose it once.
+    THE PARSED FILE IS STORED WITH THE MAPPING — without it, resuming means
+    hunting down the partner's spreadsheet again, which is most of the friction
+    the draft removes. An upload is stored immediately, before any mapping.
+    A COMMITTED MAPPING IS KEPT AND MARKED APPLIED rather than cleared;
+    clearing on success is what made a successful import look like lost work.
+    Editing puts it back to a draft. Drafts are per record AND per source.
+    New table `valuation_mapping_drafts`, created by the existing idempotent
+    `ensure_valuation_tables` — which `list_cycles` calls, so it exists the
+    moment anyone opens Valuations.
+    Verified through the running app, not only the service: 20 of 65 lines
+    mapped, refreshed, got them back with the file; one more edit took the
+    stored count 20 -> 21 with the indicator confirming.
+    Guardrail `mapping_draft_check.py` (29), which caught a bug in itself —
+    Flask registers one rule per view function, so keying them by path reported
+    two of the three methods missing.)
   - `v499` = `3c045aa` (A FINDING THAT HAS BEEN READ STOPS ASKING. Jim: three
     records where selecting "No lease" did nothing. IT WAS NOT DOING NOTHING —
     `merge_rent_roll_to_review` lists every tenant absent from the upload
