@@ -987,8 +987,8 @@ function statusClass(s: string): string {
             </h3>
             <div class="map-actions">
               <select v-model="scanMode" class="map-select">
-                <option value="merge">Merge into existing tenants</option>
-                <option value="replace">Replace all tenants</option>
+                <option value="merge">Merge into existing tenants (keeps sales, abstracts)</option>
+                <option value="replace">Replace all tenants (discards sales, abstracts)</option>
               </select>
               <button class="btn-primary" :disabled="committing || unansweredPeriods.length > 0"
                 @click="commitRentRoll">
