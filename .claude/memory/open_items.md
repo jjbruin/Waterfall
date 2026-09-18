@@ -926,6 +926,34 @@ the whole table to MRI to load. Nothing built. Note this is the reason the table
 `PROTECTED_TABLES` while the other four supplements are not — the app is its writer and,
 until this export exists, its only copy.
 
+### 5.10 Jack Day's valuation list (Sep 17 2026) — EIGHT DONE, THE TWO SCREENS OPEN
+Nine asks from asset management, shipped in `v500`–`v502`.
+
+**Done and live:** the mapping draft that survives a reload (`v500`); the account number
+READ FROM THE FILE rather than guessed, with a "as mapped before" column showing how the
+same label was coded on this deal previously; the whole chart of accounts in statement
+order in the dropdown; the 3+ digit row filter; the $20K partnership expense as a
+VISIBLE proposed line to GL 5130, pro-rated by months and withheld when the file already
+carries 5130 — a proposal the analyst accepts, never a silent injection; the debt service
+question answered (already modelled, §5.3); portfolio groups LABELLED BY JACK rather than
+inferred.
+
+**OPEN — the two summary report screens.** `valuation_summary_service.py` is written and
+tested (`pref_summary` / `valuation_summary`, grouping, sections, the endpoints under
+`/api/valuations/cycles/<id>/summary/<kind>`, guardrail `valuation_summary_check.py`, 46
+checks). **No Vue exists.** Until it does, the two tabs Jack asked for are reachable only
+by calling the API.
+
+Note two defects this work found, both fixed: the PSC and OP pref sides were being
+SUMMED (5,746,667 read as 9,469,999), and a cycle's `as_of` is stored as TEXT, so passing
+it to the pref walk failed every date comparison and returned `0.00` — wrong on 7 of 8
+deals, in the direction that reads as "no accrual yet" rather than as an error.
+
+**Known gap, not a defect:** on local data 40 of 84 valuation records produce no pref
+figure — 32 have no Cap_WF waterfall configured and 8 have no PSC pref steps. The
+summary reports this rather than printing a zero. Whether those 40 should have a
+waterfall is a data question for the valuation cycle, not a code one.
+
 ---
 
 ## 4. Resolved since the Aug 2026 notes — do NOT re-open

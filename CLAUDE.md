@@ -249,6 +249,45 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v502` = `0d9eaee` (AN UNMATCHED LEASE FILE CAN BE DEALT WITH, and a
+    NOT NULL that would have refused the whole upload. Jim: the analyst deletes
+    the files belonging to former leases and the section clears. Assign was
+    already there; delete was not, so the section could only ever grow and a
+    review carrying old leases had no way back to a clean state.
+    `delete_documents` is ALL-OR-NOTHING AND SCOPED TO THE REVIEW — a doc id
+    from another review is refused rather than quietly skipped, and it returns
+    the file NAMES removed, because "2 documents deleted" is not something an
+    analyst can check. Two-step confirm in the UI; nothing deletes on a single
+    click.
+    THE LATENT BUG IS THE BIGGER HALF. `lease_documents.tenant_id` was declared
+    `NOT NULL` while the multi-file upload writes NULL for exactly the unmatched
+    files this feature exists to manage — so on a FRESH database the whole
+    upload raises, not just the unmatched rows. It never surfaced because every
+    live database predates the NOT NULL. DDL now nullable, plus
+    `_relax_document_tenant_null()` at the START of `ensure_lease_tables`:
+    PostgreSQL does `ALTER COLUMN tenant_id DROP NOT NULL`; SQLite has no such
+    statement, so it drops and rebuilds ONLY when the table is empty, and I
+    verified the destructive branch is unreachable on PostgreSQL before
+    shipping. Production logs after deploy carry no migration error.
+    VERIFIED END TO END IN THE RUNNING APP, not asserted: 3 unmatched files
+    seeded, 1 assigned to a current tenant, the other 2 selected and deleted
+    behind the confirm, section gone, the assigned amendment still there.
+    ALSO CARRIED, all reviewed under P4: Jack Day's valuation list — the
+    mapping draft that survives a reload (`d2c8ce0`, `18de4cd`, `815b049`,
+    `1d99bce`), the account number READ FROM THE FILE rather than guessed, the
+    whole-COA dropdown in statement order, the 3+ digit row filter, the $20K
+    partnership expense as a VISIBLE proposed line to 5130 rather than a silent
+    injection, the two portfolio summary tabs assembled from the Pref Balance
+    Detail engine, and portfolio groups LABELLED BY JACK rather than inferred —
+    a derived rule got 10 of 11 right and was wrong on three, which is exactly
+    the kind of nearly-right that never gets checked.
+    TWO DEFECTS THE SUMMARY WORK FOUND IN PASSING: the PSC and OP pref sides
+    were being SUMMED (5,746,667 became 9,469,999), and a cycle's `as_of` is
+    stored as TEXT, so passing it to the pref walk failed every date comparison
+    and returned `0.00` — wrong on 7 of 8 deals, and wrong in the direction that
+    looks like "no accrual yet" rather than an error. Guardrails 144 / 57 / 46.
+    STILL TO BUILD: the two summary SCREENS. Service, grouping, sections and
+    endpoints are done and tested; the Vue is not written.)
   - `v501` = `ec6dda2` (A ROW READ AS "NO LEASE" STOPS BEING A TENANT. Jim:
     three records checked off as No lease, still in the Market at Poplar
     roster. They are the building banner and the two subtotal rows, left over
