@@ -249,6 +249,93 @@ check('a group with nothing to sum totals None, not 0',
       _empty['totals']['v'] is None, str(_empty['totals']['v']))
 
 
+
+section('The deal is named, not just coded')
+
+# `Investment_Name` is the deals table's own name column. Naming a column that does not
+# exist does not raise -- the fallback prints the vcode on every row, and a summary of
+# 84 deals none of which is named reads as a data problem rather than a lookup bug.
+# Found on screen, not in a test, which is why it is pinned here.
+import pandas as pd  # noqa: E402
+
+_inv = pd.DataFrame([
+    {'vcode': 'P0000001', 'InvestmentID': '30BEAR', 'Investment_Name': '30 Bearfoot',
+     'Portfolio_Name': None},
+])
+_n = S._names({'inv': _inv})
+check('the name comes from Investment_Name',
+      _n['P0000001']['name'] == '30 Bearfoot', str(_n['P0000001']['name']))
+check('...and the InvestmentID is carried too',
+      _n['P0000001']['investment_id'] == '30BEAR')
+check('a deals table with no name column does not crash the tab',
+      S._names({'inv': pd.DataFrame([{'vcode': 'P1'}])})['P1']['name'] == 'P1')
+check('no deals table at all is survivable', S._names({}) == {})
+
+
+section('The screen reads the keys the service emits')
+
+# THIS SEAM IS SILENT ON BOTH SIDES. A field read by the wrong name renders as an empty
+# cell -- no error, no console warning, no log line -- so the tab looks like it has no
+# data rather than like it has a bug. The same failure cost three blank columns on the
+# Treasury screen (v489). The service is the authority; the view must not invent names.
+_VIEW = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                     'vue_app', 'src', 'views', 'ValuationsView.vue')
+
+if not os.path.exists(_VIEW):
+    skip('the screen reads the keys the service emits',
+         'Vue source is not in the container image')
+else:
+    _src = open(_VIEW, encoding='utf-8').read()
+
+    # Every key the two payloads carry, that the template is expected to render.
+    _ROW_KEYS_PREF = ['pref_balance', 'pref_accrued', 'pref_with_accrual', 'pref_nav',
+                      'prior_pref_nav', 'var_to_prior', 'pref_source', 'pref_note',
+                      'nav_computed', 'vcode', 'name']
+    _ROW_KEYS_VAL = ['prior_method', 'method', 'prior_cap_rate', 'cap_rate',
+                     'prior_exit_cap', 'exit_cap', 'prior_discount', 'discount',
+                     'direct_cap_noi', 'prior_value', 'value', 'var_to_prior_value',
+                     'prior_debt', 'debt', 'prior_net_proceeds', 'net_proceeds',
+                     'var_to_prior_proceeds']
+    _TOP_KEYS = ['title', 'current_year', 'prior_year', 'rows', 'sections',
+                 'group_labels', 'ungrouped', 'missing_nav', 'no_prior_cycle']
+    _SEC_KEYS = ['label', 'labelled', 'rows', 'count', 'totals', 'missing_counts']
+
+    for k in _ROW_KEYS_PREF + _ROW_KEYS_VAL:
+        check(f'the pref/valuation row key `{k}` is read on screen',
+              ('r.' + k) in _src or ('.' + k + ' ') in _src)
+    for k in _TOP_KEYS:
+        check(f'the payload key `{k}` is read on screen', ('summaryTab.' + k) in _src)
+    for k in _SEC_KEYS:
+        check(f'the section key `{k}` is read on screen', ('section.' + k) in _src)
+
+    # ...and the reverse: the view must not read a key the service never emits, which
+    # is the same blank cell seen from the other side. SCOPED TO THE SUMMARY BLOCK --
+    # this one screen also renders the records list, the committee tables and the
+    # budget review, all of which bind their own `r.`, and an allowlist big enough to
+    # cover them would eventually excuse a genuine typo.
+    import re  # noqa: E402
+    _MARK = "Portfolio summary tabs (Jack Day"
+    check('the summary block can be located in the view', _MARK in _src)
+    _block = _src[_src.index(_MARK):_src.index('class="summary-legend"')]
+    _emitted = set(_ROW_KEYS_PREF) | set(_ROW_KEYS_VAL) | {
+        'group_label', 'investment_id', 'portfolio', 'record_id'}
+    _read = set(re.findall(r'\br\.([a-z_][a-z0-9_]*)\b', _block))
+    _unknown = sorted(_read - _emitted)
+    check('the screen reads no summary key the service does not emit',
+          not _unknown, ', '.join(_unknown) or 'none')
+    check('...and the scoping did not make that check vacuous',
+          len(_read) >= 20, f'{len(_read)} row keys bound in the block')
+
+    # The grouping controls are the analyst's; the API gates them the same way.
+    check('the grouping bar is gated on the same permission as the rest of the screen',
+          'v-if="canEdit" class="group-bar' in _src)
+    check('a subtotal on screen says how many rows it skipped',
+          'missing_counts.pref_balance' in _src and 'missing_counts.value' in _src)
+    check('an empty label offers to CLEAR the grouping rather than doing nothing',
+          "'Apply group' : 'Clear grouping'" in _src
+          or "? 'Apply group'" in _src and "'Clear grouping'" in _src)
+
+
 print(f'\n{len(PASS)} passed, {len(FAIL)} failed, {len(SKIP)} skipped')
 if FAIL:
     print('FAILED:')

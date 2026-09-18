@@ -212,7 +212,12 @@ def _names(data: dict) -> Dict[str, Dict[str, Any]]:
     vc = cols.get("vcode")
     if not vc:
         return out
-    name_col = cols.get("deal_name") or cols.get("property_name") or cols.get("name")
+    # `Investment_Name` is the deals table's own name column and what every other
+    # consumer reads -- valuation_service, the reports, the dashboard. Naming a column
+    # that does not exist does not raise: the fallback quietly prints the vcode on all
+    # 84 rows, which reads as a report about deals nobody has named.
+    name_col = (cols.get("investment_name") or cols.get("deal_name")
+                or cols.get("property_name") or cols.get("name"))
     port_col = cols.get("portfolio_name")
     inv_col = cols.get("investmentid")
     for _, row in inv.iterrows():

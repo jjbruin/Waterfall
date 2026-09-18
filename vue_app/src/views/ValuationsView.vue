@@ -62,7 +62,7 @@ const saveMsg = ref('')
 const perms = ref<{ committee_roles: string[]; can_approve: boolean; is_recorder: boolean }>({
   committee_roles: [], can_approve: false, is_recorder: false,
 })
-const viewMode = ref<'records' | 'committee'>('records')
+const viewMode = ref<'records' | 'committee' | 'pref' | 'valuation'>('records')
 const committee = ref<any | null>(null)
 const committeeLoading = ref(false)
 const newQuestion = ref('')
@@ -446,7 +446,121 @@ async function loadCommittee(force = false) {
   }
 }
 
-watch(viewMode, (m) => { if (m === 'committee') loadCommittee() })
+watch(viewMode, (m) => {
+  if (m === 'committee') loadCommittee()
+  if (m === 'pref' || m === 'valuation') loadSummary()
+})
+
+// ------------------------------------------------------------
+// The two portfolio summary tabs (Jack Day's 2025_Val_Summary_1 / _2)
+//
+// Nothing here calculates. The service assembles figures that already exist --
+// concluded values and rates the analyst entered, and pref balances from the Pref
+// Balance Detail engine -- and this renders them. A figure that is not there renders
+// as a dash carrying its reason, never as a zero.
+// ------------------------------------------------------------
+const summaryTab = ref<any | null>(null)
+const summaryLoading = ref(false)
+const summarySelected = ref<Set<string>>(new Set())
+const groupLabelDraft = ref('')
+const groupBusy = ref(false)
+const showSummaryNotes = ref(false)
+
+const summaryKind = computed(() =>
+  viewMode.value === 'pref' ? 'pref' : viewMode.value === 'valuation' ? 'valuation' : null)
+
+async function loadSummary(force = false) {
+  const kind = summaryKind.value
+  if (!selectedCycleId.value || !kind) return
+  if (!force && summaryTab.value?.tab === (kind === 'pref' ? 'pref_summary' : 'valuation_summary')) return
+  summaryLoading.value = true
+  summarySelected.value = new Set()
+  try {
+    const res = await api.get(`/api/valuations/cycles/${selectedCycleId.value}/summary/${kind}`)
+    summaryTab.value = res.data
+  } catch (e: any) {
+    summaryTab.value = null
+    error.value = e.response?.data?.error || e.message
+  } finally {
+    summaryLoading.value = false
+  }
+}
+
+function toggleSummaryRow(vcode: string) {
+  const s = new Set(summarySelected.value)
+  s.has(vcode) ? s.delete(vcode) : s.add(vcode)
+  summarySelected.value = s
+}
+function toggleSummarySection(section: any) {
+  const codes = section.rows.map((r: any) => r.vcode)
+  const s = new Set(summarySelected.value)
+  const allIn = codes.every((c: string) => s.has(c))
+  codes.forEach((c: string) => (allIn ? s.delete(c) : s.add(c)))
+  summarySelected.value = s
+}
+function sectionAllSelected(section: any): boolean {
+  return section.rows.length > 0 &&
+    section.rows.every((r: any) => summarySelected.value.has(r.vcode))
+}
+
+// Applying an EMPTY label clears the grouping, which is why the button says so rather
+// than being disabled -- ungrouping is a deliberate act, not a failure to type.
+async function applyGroup() {
+  if (!selectedCycleId.value || !summarySelected.value.size) return
+  groupBusy.value = true
+  try {
+    const res = await api.put(`/api/valuations/cycles/${selectedCycleId.value}/groups`, {
+      vcodes: Array.from(summarySelected.value),
+      label: groupLabelDraft.value,
+    })
+    saveMsg.value = res.data.label
+      ? `${res.data.updated} deal${res.data.updated === 1 ? '' : 's'} moved to "${res.data.label}".`
+      : `Grouping cleared on ${res.data.updated} deal${res.data.updated === 1 ? '' : 's'}.`
+    setTimeout(() => (saveMsg.value = ''), 4000)
+    await loadSummary(true)
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
+  } finally {
+    groupBusy.value = false
+  }
+}
+
+async function carryForwardGroups() {
+  if (!selectedCycleId.value) return
+  groupBusy.value = true
+  try {
+    const res = await api.post(`/api/valuations/cycles/${selectedCycleId.value}/groups/carry-forward`)
+    saveMsg.value = res.data.updated
+      ? `Carried ${res.data.updated} grouping${res.data.updated === 1 ? '' : 's'} forward from ${res.data.from_year}.`
+      : (res.data.status === 'no prior cycle'
+          ? 'There is no prior cycle to carry groups from.'
+          : 'Nothing to carry forward — every deal already has a group.')
+    setTimeout(() => (saveMsg.value = ''), 5000)
+    await loadSummary(true)
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
+  } finally {
+    groupBusy.value = false
+  }
+}
+
+// How many rows on this tab have no pref figure, and why. Shown as a line the reader
+// can expand: a tab that is 40/84 blank should say so at the top rather than leave
+// somebody counting dashes.
+const prefGaps = computed(() => {
+  const rows = summaryTab.value?.rows || []
+  const counts: Record<string, number> = {}
+  for (const r of rows) {
+    if (r.pref_balance === null && r.pref_accrued === null && r.pref_note) {
+      counts[r.pref_note] = (counts[r.pref_note] || 0) + 1
+    }
+  }
+  return Object.entries(counts).sort((a, b) => b[1] - a[1])
+})
+const prefGapTotal = computed(() => prefGaps.value.reduce((n, [, c]) => n + c, 0))
+
+function printSummary() { window.print() }
+
 
 async function askQuestion() {
   if (!selectedRecordId.value || !newQuestion.value.trim()) return
@@ -827,8 +941,10 @@ onMounted(async () => {
 watch(selectedCycleId, () => {
   router.replace({ query: { ...route.query, cycle: String(selectedCycleId.value) } })
   committee.value = null
+  summaryTab.value = null
   loadDashboard()
   if (viewMode.value === 'committee') loadCommittee(true)
+  if (viewMode.value === 'pref' || viewMode.value === 'valuation') loadSummary(true)
 })
 </script>
 
@@ -848,6 +964,8 @@ watch(selectedCycleId, () => {
           <div class="view-toggle">
             <button :class="{ active: viewMode === 'records' }" @click="viewMode = 'records'">Records</button>
             <button :class="{ active: viewMode === 'committee' }" @click="viewMode = 'committee'">Committee Summary</button>
+            <button :class="{ active: viewMode === 'pref' }" @click="viewMode = 'pref'">Pref Summary</button>
+            <button :class="{ active: viewMode === 'valuation' }" @click="viewMode = 'valuation'">Valuation Summary</button>
           </div>
           <select v-model.number="selectedCycleId" class="cycle-select">
             <option v-for="c in cycles" :key="c.id" :value="c.id">
@@ -953,7 +1071,7 @@ watch(selectedCycleId, () => {
         </template>
 
         <!-- ===== Committee Summary view ===== -->
-        <template v-else>
+        <template v-else-if="viewMode === 'committee'">
           <div class="committee-actions no-print">
             <button class="btn-secondary" @click="downloadCommitteeExcel">Download Committee Workbook</button>
             <button class="btn-secondary" @click="downloadCyclePackages">Download NAV Packages (zip)</button>
@@ -1043,6 +1161,243 @@ watch(selectedCycleId, () => {
                   </tbody>
                 </table>
               </div>
+            </div>
+          </template>
+        </template>
+
+        <!-- ===== Portfolio summary tabs (Jack Day's two Excel tabs) ===== -->
+        <template v-else>
+          <div v-if="summaryLoading" class="loading-text">Building the summary...</div>
+          <template v-else-if="summaryTab">
+            <div class="summary-head">
+              <div>
+                <h3 class="summary-title">{{ summaryTab.title }}</h3>
+                <div class="summary-sub">
+                  {{ summaryTab.tab === 'pref_summary'
+                       ? 'Pref balance, accrual and the pref NAV'
+                       : 'Method, rates, value, debt and net proceeds' }},
+                  {{ summaryTab.current_year }}
+                  <template v-if="summaryTab.prior_year">against {{ summaryTab.prior_year }}</template>
+                </div>
+              </div>
+              <button class="btn-secondary no-print" @click="printSummary">Print</button>
+            </div>
+
+            <!-- A prior year that does not exist is stated once, at the top. Every
+                 prior-year column below then reads as a dash for a reason the reader
+                 has already been given, rather than looking like missing data. -->
+            <div v-if="summaryTab.no_prior_cycle" class="summary-notice">
+              There is no {{ summaryTab.current_year - 1 }} cycle in the app, so every
+              prior-year column is blank. This is the first cycle, not missing data.
+            </div>
+
+            <div v-if="prefGapTotal" class="summary-notice no-print">
+              <button class="btn-link" @click="showSummaryNotes = !showSummaryNotes">
+                {{ showSummaryNotes ? '&#9662;' : '&#9656;' }}
+                {{ prefGapTotal }} of {{ summaryTab.rows.length }} deals have no pref figure
+              </button>
+              <div v-if="showSummaryNotes" class="gap-list">
+                <div v-for="[note, n] in prefGaps" :key="note">{{ n }} &mdash; {{ note }}</div>
+                <div class="gap-foot">
+                  These rows show a dash and contribute nothing to a subtotal. They are
+                  not zero.
+                </div>
+              </div>
+            </div>
+
+            <!-- Grouping. The sections are asset management's own, so they are typed
+                 here rather than derived from funding dates: a rule tested against
+                 their workbook got 10 of 11 right and put three deals in the wrong
+                 section, where a subtotal looks perfectly reasonable and is wrong. -->
+            <div v-if="canEdit" class="group-bar no-print">
+              <span class="group-count">{{ summarySelected.size }} selected</span>
+              <input v-model="groupLabelDraft" class="group-input" list="group-label-options"
+                     placeholder="Portfolio group (e.g. Legacy Assets)" />
+              <datalist id="group-label-options">
+                <option v-for="g in summaryTab.group_labels" :key="g" :value="g" />
+              </datalist>
+              <button class="btn-primary" :disabled="!summarySelected.size || groupBusy"
+                      @click="applyGroup">
+                {{ groupLabelDraft.trim() ? 'Apply group' : 'Clear grouping' }}
+              </button>
+              <button class="btn-secondary" :disabled="groupBusy" @click="carryForwardGroups"
+                      title="Copies last year's grouping onto any deal not already grouped this cycle. It never overwrites a group set here.">
+                Carry forward last year's groups
+              </button>
+              <span v-if="summaryTab.ungrouped.length" class="group-note">
+                {{ summaryTab.ungrouped.length }} not yet grouped
+              </span>
+            </div>
+
+            <!-- ---------- Tab 1: pref ---------- -->
+            <div v-if="summaryTab.tab === 'pref_summary'" class="table-scroll">
+              <table class="data-table summary-table">
+                <thead>
+                  <tr>
+                    <th class="tick no-print"></th>
+                    <th>Deal</th>
+                    <th class="num">Pref Balance</th>
+                    <th class="num">Accrued Pref</th>
+                    <th class="num">Balance w/ Accrual</th>
+                    <th class="num">Pref NAV {{ summaryTab.current_year }}</th>
+                    <th class="num">Pref NAV {{ summaryTab.prior_year ?? '&mdash;' }}</th>
+                    <th class="num">Variance</th>
+                  </tr>
+                </thead>
+                <tbody v-for="section in summaryTab.sections" :key="section.label">
+                  <tr class="section-row">
+                    <td class="tick no-print">
+                      <input type="checkbox" v-if="canEdit" :checked="sectionAllSelected(section)"
+                             @change="toggleSummarySection(section)" />
+                    </td>
+                    <td colspan="7" :class="{ unlabelled: !section.labelled }">
+                      {{ section.label }}
+                      <span class="section-count">{{ section.count }} deal{{ section.count === 1 ? '' : 's' }}</span>
+                    </td>
+                  </tr>
+                  <tr v-for="r in section.rows" :key="r.vcode" class="summary-row">
+                    <td class="tick no-print">
+                      <input type="checkbox" v-if="canEdit" :checked="summarySelected.has(r.vcode)"
+                             @change="toggleSummaryRow(r.vcode)" />
+                    </td>
+                    <td class="deal-name">
+                      <span class="row-link" @click="openRecord(records.find(x => x.vcode === r.vcode)?.id || 0)">
+                        {{ r.name }}
+                      </span>
+                      <span class="vcode-tag">{{ r.vcode }}</span>
+                    </td>
+                    <td class="num" :title="r.pref_source || r.pref_note || ''">
+                      {{ fmtCurrency(r.pref_balance) }}
+                    </td>
+                    <td class="num" :title="r.pref_source || r.pref_note || ''">
+                      {{ fmtCurrency(r.pref_accrued) }}
+                    </td>
+                    <td class="num">{{ fmtCurrency(r.pref_with_accrual) }}</td>
+                    <td class="num" :title="r.nav_computed ? '' : 'NAV not yet run for this deal'">
+                      {{ fmtCurrency(r.pref_nav) }}
+                    </td>
+                    <td class="num">{{ fmtCurrency(r.prior_pref_nav) }}</td>
+                    <td class="num" :class="{ pos: (r.var_to_prior ?? 0) > 0, neg: (r.var_to_prior ?? 0) < 0 }">
+                      {{ fmtCurrency(r.var_to_prior) }}
+                    </td>
+                  </tr>
+                  <tr class="subtotal-row">
+                    <td class="tick no-print"></td>
+                    <td>
+                      Total &mdash; {{ section.label }}
+                      <!-- A subtotal that silently treated a missing deal as zero would
+                           understate the group and look complete doing it. -->
+                      <span v-if="section.missing_counts.pref_balance" class="skip-note">
+                        {{ section.missing_counts.pref_balance }} of {{ section.count }} without a pref figure
+                      </span>
+                    </td>
+                    <td class="num">{{ fmtCurrency(section.totals.pref_balance) }}</td>
+                    <td class="num">{{ fmtCurrency(section.totals.pref_accrued) }}</td>
+                    <td class="num">{{ fmtCurrency(section.totals.pref_with_accrual) }}</td>
+                    <td class="num">{{ fmtCurrency(section.totals.pref_nav) }}</td>
+                    <td class="num">{{ fmtCurrency(section.totals.prior_pref_nav) }}</td>
+                    <td class="num">{{ fmtCurrency(section.totals.var_to_prior) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- ---------- Tab 2: valuation ---------- -->
+            <div v-else class="table-scroll">
+              <table class="data-table summary-table">
+                <thead>
+                  <tr>
+                    <th class="tick no-print"></th>
+                    <th>Deal</th>
+                    <th>Method {{ summaryTab.prior_year ?? '' }} &rarr; {{ summaryTab.current_year }}</th>
+                    <th class="num">Cap Rate</th>
+                    <th class="num">Exit Cap</th>
+                    <th class="num">Discount</th>
+                    <th class="num">Direct Cap NOI</th>
+                    <th class="num">Value {{ summaryTab.prior_year ?? '&mdash;' }}</th>
+                    <th class="num">Value {{ summaryTab.current_year }}</th>
+                    <th class="num">Variance</th>
+                    <th class="num">Debt {{ summaryTab.prior_year ?? '&mdash;' }}</th>
+                    <th class="num">Debt {{ summaryTab.current_year }}</th>
+                    <th class="num">Net Proceeds {{ summaryTab.prior_year ?? '&mdash;' }}</th>
+                    <th class="num">Net Proceeds {{ summaryTab.current_year }}</th>
+                    <th class="num">Variance</th>
+                  </tr>
+                </thead>
+                <tbody v-for="section in summaryTab.sections" :key="section.label">
+                  <tr class="section-row">
+                    <td class="tick no-print">
+                      <input type="checkbox" v-if="canEdit" :checked="sectionAllSelected(section)"
+                             @change="toggleSummarySection(section)" />
+                    </td>
+                    <td colspan="14" :class="{ unlabelled: !section.labelled }">
+                      {{ section.label }}
+                      <span class="section-count">{{ section.count }} deal{{ section.count === 1 ? '' : 's' }}</span>
+                    </td>
+                  </tr>
+                  <tr v-for="r in section.rows" :key="r.vcode" class="summary-row">
+                    <td class="tick no-print">
+                      <input type="checkbox" v-if="canEdit" :checked="summarySelected.has(r.vcode)"
+                             @change="toggleSummaryRow(r.vcode)" />
+                    </td>
+                    <td class="deal-name">
+                      <span class="row-link" @click="openRecord(records.find(x => x.vcode === r.vcode)?.id || 0)">
+                        {{ r.name }}
+                      </span>
+                      <span class="vcode-tag">{{ r.vcode }}</span>
+                    </td>
+                    <td class="method-cell">{{ r.prior_method || '&mdash;' }} &rarr; {{ r.method || '&mdash;' }}</td>
+                    <td class="num">{{ fmtPct(r.prior_cap_rate) }} &rarr; {{ fmtPct(r.cap_rate) }}</td>
+                    <td class="num">{{ fmtPct(r.prior_exit_cap) }} &rarr; {{ fmtPct(r.exit_cap) }}</td>
+                    <td class="num">{{ fmtPct(r.prior_discount) }} &rarr; {{ fmtPct(r.discount) }}</td>
+                    <td class="num">{{ fmtCurrency(r.direct_cap_noi) }}</td>
+                    <td class="num">{{ fmtCurrency(r.prior_value) }}</td>
+                    <td class="num">{{ fmtCurrency(r.value) }}</td>
+                    <td class="num" :class="{ pos: (r.var_to_prior_value ?? 0) > 0, neg: (r.var_to_prior_value ?? 0) < 0 }">
+                      {{ fmtCurrency(r.var_to_prior_value) }}
+                    </td>
+                    <td class="num">{{ fmtCurrency(r.prior_debt) }}</td>
+                    <td class="num">{{ fmtCurrency(r.debt) }}</td>
+                    <td class="num">{{ fmtCurrency(r.prior_net_proceeds) }}</td>
+                    <td class="num" :title="r.nav_computed ? '' : 'NAV not yet run for this deal'">
+                      {{ fmtCurrency(r.net_proceeds) }}
+                    </td>
+                    <td class="num" :class="{ pos: (r.var_to_prior_proceeds ?? 0) > 0, neg: (r.var_to_prior_proceeds ?? 0) < 0 }">
+                      {{ fmtCurrency(r.var_to_prior_proceeds) }}
+                    </td>
+                  </tr>
+                  <tr class="subtotal-row">
+                    <td class="tick no-print"></td>
+                    <td colspan="5">
+                      Total &mdash; {{ section.label }}
+                      <span v-if="section.missing_counts.value" class="skip-note">
+                        {{ section.missing_counts.value }} of {{ section.count }} without a concluded value
+                      </span>
+                    </td>
+                    <td class="num">{{ fmtCurrency(section.totals.direct_cap_noi) }}</td>
+                    <td class="num">{{ fmtCurrency(section.totals.prior_value) }}</td>
+                    <td class="num">{{ fmtCurrency(section.totals.value) }}</td>
+                    <td class="num">{{ fmtCurrency(section.totals.var_to_prior_value) }}</td>
+                    <td class="num">{{ fmtCurrency(section.totals.prior_debt) }}</td>
+                    <td class="num">{{ fmtCurrency(section.totals.debt) }}</td>
+                    <td class="num">{{ fmtCurrency(section.totals.prior_net_proceeds) }}</td>
+                    <td class="num">{{ fmtCurrency(section.totals.net_proceeds) }}</td>
+                    <td class="num">{{ fmtCurrency(section.totals.var_to_prior_proceeds) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="summary-legend">
+              <strong>Where these figures come from.</strong>
+              Pref balances and accruals are the Pref Balance Detail report's own numbers,
+              through the same engine &mdash; nothing on this page recalculates one.
+              Values, rates and methods are what the analyst concluded on each record.
+              Net proceeds and NAV come from the NAV run.
+              <span v-if="summaryTab.missing_nav.length">
+                {{ summaryTab.missing_nav.length }} of {{ summaryTab.rows.length }} deals
+                have no NAV run yet; those columns are blank rather than zero.
+              </span>
             </div>
           </template>
         </template>
@@ -2010,6 +2365,53 @@ textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--color-border)
 .checks-list { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
 .check-row { display: flex; gap: 10px; align-items: baseline; font-size: 13px; }
 .check-row .mini-badge { flex: none; min-width: 40px; text-align: center; }
+
+/* ---- portfolio summary tabs ---- */
+.summary-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; }
+.summary-title { margin: 0; font-size: 16px; }
+.summary-sub { font-size: 12px; color: var(--color-text-secondary); margin-top: 2px; }
+.summary-notice {
+  background: var(--color-surface); border: 1px solid var(--color-border);
+  border-radius: 6px; padding: 8px 12px; margin-bottom: 10px; font-size: 12.5px;
+}
+.gap-list { margin-top: 8px; display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; }
+.gap-foot { color: var(--color-text-secondary); margin-top: 4px; }
+.group-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 12px; margin-bottom: 10px;
+  background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 6px;
+}
+.group-count { font-size: 12px; color: var(--color-text-secondary); min-width: 78px; }
+.group-input { padding: 5px 8px; border: 1px solid var(--color-border); border-radius: 4px; font-size: 13px; min-width: 230px; }
+.group-note { font-size: 12px; color: var(--color-text-secondary); }
+
+.summary-table td.tick, .summary-table th.tick { width: 26px; padding-left: 6px; padding-right: 0; }
+.summary-table .section-row td {
+  background: var(--color-surface); font-weight: 600; font-size: 12.5px;
+  border-top: 2px solid var(--color-border); border-bottom: 1px solid var(--color-border);
+}
+/* An unlabelled section is NAMED rather than left blank, and reads differently from a
+   real group, so nobody mistakes "Not yet grouped" for a grouping decision. */
+.summary-table .section-row td.unlabelled { font-style: italic; color: var(--color-text-secondary); }
+.section-count { font-weight: 400; color: var(--color-text-secondary); margin-left: 8px; font-size: 11.5px; }
+.summary-table .subtotal-row td {
+  font-weight: 600; border-top: 1px solid var(--color-border);
+  border-bottom: 2px solid var(--color-border); background: var(--color-surface);
+}
+.skip-note { font-weight: 400; font-style: italic; color: var(--color-text-secondary); margin-left: 8px; font-size: 11.5px; }
+.summary-table .method-cell { font-size: 12px; white-space: nowrap; }
+/* 76 of 84 rows wrapped to two lines, and the NAME was never the cause -- the
+   widest is 123px in a 146px column. It is the vcode tag after it that does not
+   fit, so the column is widened to hold both rather than the name truncated.
+   The table already scrolls horizontally, so the wider column costs nothing. */
+.summary-table td.deal-name { min-width: 210px; white-space: nowrap; }
+.row-link { cursor: pointer; }
+.row-link:hover { text-decoration: underline; }
+.summary-legend {
+  margin-top: 14px; padding: 10px 12px; font-size: 12px; line-height: 1.5;
+  color: var(--color-text-secondary);
+  background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 6px;
+}
 
 /* print */
 @media print {
