@@ -805,7 +805,20 @@ async function setTenantApproval(tid: number, status: string) {
 }
 
 // Computed
-const occupiedTenants = computed(() => tenants.value.filter(t => !t.is_vacant))
+// A row read as "No lease" is not a tenant, so it does not belong in the tenant
+// roster. Reported by asset management: three leftover rows -- the building banner and
+// two subtotal rows from an import that predates the phantom-row fix -- were checked
+// off as No lease and kept appearing anyway.
+//
+// A VACATED tenant still shows. We hold a lease for them and that lease has to stay
+// reachable; it is simply out of the projection. The two readings mean different
+// things and the roster treats them differently.
+const disregardedTenants = computed(() =>
+  tenants.value.filter(t => t.tenant_status === 'disregarded'))
+const showDisregarded = ref(false)
+
+const occupiedTenants = computed(() => tenants.value.filter(t =>
+  !t.is_vacant && (showDisregarded.value || t.tenant_status !== 'disregarded')))
 const vacantSuites = computed(() => tenants.value.filter(t => t.is_vacant))
 const materialTenants = computed(() => occupiedTenants.value.filter(t => t.is_material))
 const cotenancyTenants = computed(() => occupiedTenants.value.filter(t => t.has_cotenancy))
@@ -1275,6 +1288,16 @@ function statusClass(s: string): string {
         <!-- Tenant roster preview -->
         <div v-if="tenants.length" style="margin-top: 1.5rem">
           <h3>Current Tenant Roster ({{ occupiedTenants.length }} tenants)</h3>
+          <!-- Hidden, not deleted: the reading is reversible and the rows are still
+               here to be read differently. -->
+          <p v-if="disregardedTenants.length" class="roster-hidden">
+            {{ disregardedTenants.length }} row(s) read as <strong>No lease</strong>
+            {{ showDisregarded ? 'are shown below' : 'are hidden' }} and excluded from
+            the totals.
+            <button class="btn-xs disp-btn" @click="showDisregarded = !showDisregarded">
+              {{ showDisregarded ? 'Hide them' : 'Show them' }}
+            </button>
+          </p>
           <div class="table-scroll">
             <table class="data-table compact">
               <thead>
@@ -1931,6 +1954,11 @@ function statusClass(s: string): string {
    "N630, N640-A" were the only rows left at double height once the tenant name
    was capped; neither reads better broken across two lines. */
 .nowrap-cell { white-space: nowrap; }
+.roster-hidden {
+  font-size: 0.8rem; color: #7a5c00; background: #fff8e5;
+  border-left: 3px solid #e0a800; padding: 6px 10px; border-radius: 3px;
+  margin: 0.25rem 0 0.6rem; display: flex; align-items: center; gap: 8px;
+}
 
 /* Tenant disposition — the reading, not the rent roll's own vacancy flag */
 .disp-help { font-size: 0.78rem; color: #666; margin: 0.15rem 0 0.5rem; }

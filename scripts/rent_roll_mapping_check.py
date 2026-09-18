@@ -334,6 +334,12 @@ def _projected_ids():
     return {s.get('tenant_id') for s in p['suites'].values()}
 
 
+def _tenant_exists(eng, tid):
+    with eng.connect() as c:
+        return c.execute(_text("SELECT COUNT(*) FROM lease_tenants WHERE id=:t"),
+                         {'t': tid}).scalar() == 1
+
+
 def _counts(tid):
     with _eng2.connect() as c:
         return (
@@ -458,6 +464,39 @@ check('after reading them all, a re-import leaves nothing outstanding',
       not _still_pending, str(_still_pending))
 check('the screen hides a finding once it is read',
       'pendingFindings' in _view and 'addressedFindings' in _view)
+
+# --- A row read as not-a-tenant stops counting as one -------------------------
+# Three leftover rows from an import predating the phantom-row fix -- the building
+# banner and two subtotals -- were read as "No lease" and kept appearing in the
+# roster. Worse, each subtotal carried 229,722 SF, so the review's headline GLA
+# counted the whole property three times over.
+_head = LRS.refresh_review_totals(_eng2, _rid2)
+_before_gla = _head['total_gla']
+with _eng2.begin() as _c:
+    _junk = _c.execute(_text(
+        "INSERT INTO lease_tenants (review_id, tenant_name, suite, square_feet, "
+        "annual_rent) VALUES (:r,'Sub-total for Building: 925','',229722,259324) "
+        "RETURNING id"), {'r': _rid2}).scalar()
+_with_junk = LRS.refresh_review_totals(_eng2, _rid2)
+check('an unread subtotal row does inflate the headline GLA',
+      _with_junk['total_gla'] == _before_gla + 229722,
+      f"{_before_gla} -> {_with_junk['total_gla']}")
+
+_res = LRS.set_tenant_disposition(_eng2, _rid2, _junk, 'disregarded')
+_after = LRS.refresh_review_totals(_eng2, _rid2)
+check('reading it as No lease takes it back out of the GLA',
+      _after['total_gla'] == _before_gla, f"{_after['total_gla']} vs {_before_gla}")
+check('...and out of the rent', _after['total_annual_rent'] == _head['total_annual_rent'])
+check('...and out of the tenant count',
+      _after['total_tenants'] == _head['total_tenants'])
+# The reading has to move the number in the SAME call, or it looks like it did nothing.
+check('the disposition call itself returns the corrected totals',
+      _res.get('total_gla') == _before_gla, str(_res.get('total_gla')))
+check('the row itself is kept, not deleted', _tenant_exists(_eng2, _junk))
+check('the roster hides a No lease row but keeps a vacated one visible',
+      'disregardedTenants' in _view
+      and "t.tenant_status !== 'disregarded'" in _view
+      and 'showDisregarded' in _view)
 check('the findings box is driven by what is still outstanding',
       'v-if="pendingFindings.length"' in _view)
 check('bulk goes in one request, not one per tenant',

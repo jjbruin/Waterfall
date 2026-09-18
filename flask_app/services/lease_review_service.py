@@ -1514,11 +1514,17 @@ def merge_rent_roll_to_review(
                                       'tenant_status': ex['status']})
 
         # Update review totals from current state
+        # Rows the analyst has read as not-a-tenant must not count toward the
+        # review's headline figures. A leftover "Sub-total for Building" row carrying
+        # 229,722 SF added the whole property's area a second time, and a second one
+        # for the grand total added it a third.
         totals = conn.execute(text("""
             SELECT COALESCE(SUM(square_feet), 0),
                    COALESCE(SUM(annual_rent), 0),
                    COUNT(*)
-            FROM lease_tenants WHERE review_id = :rid
+            FROM lease_tenants
+            WHERE review_id = :rid
+              AND COALESCE(tenant_status, 'active') = 'active'
         """), {'rid': review_id}).fetchone()
 
         conn.execute(text("""
@@ -5937,6 +5943,37 @@ TENANT_DISPOSITIONS = {
 TENANT_STATUSES = set(TENANT_DISPOSITIONS) | {'deleted', 'replaced'}
 
 
+def refresh_review_totals(engine, review_id: int) -> Dict[str, float]:
+    """Recompute a review's headline GLA, rent and tenant count from live tenants.
+
+    Only rows still read as 'active' count. Anything the analyst has read as vacated
+    or as not-a-tenant is excluded, which is the whole point of having read it.
+
+    Called after a disposition as well as after an import: marking a row as not a
+    tenant has to move the number on the screen, or the reading looks like it did
+    nothing -- which is exactly how this was reported.
+    """
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        t = conn.execute(text("""
+            SELECT COALESCE(SUM(square_feet), 0),
+                   COALESCE(SUM(annual_rent), 0),
+                   COUNT(*)
+              FROM lease_tenants
+             WHERE review_id = :rid
+               AND COALESCE(tenant_status, 'active') = 'active'
+        """), {'rid': review_id}).fetchone()
+        conn.execute(text("""
+            UPDATE lease_reviews
+               SET total_gla = :gla, total_annual_rent = :rent,
+                   total_tenants = :cnt, updated_at = CURRENT_TIMESTAMP
+             WHERE id = :rid
+        """), {'gla': t[0], 'rent': t[1], 'cnt': t[2], 'rid': review_id})
+    return {'total_gla': float(t[0] or 0), 'total_annual_rent': float(t[1] or 0),
+            'total_tenants': int(t[2] or 0)}
+
+
 def set_tenant_disposition(engine, review_id: int, tenant_id: int,
                            status: str, note: Optional[str] = None,
                            set_by: str = 'analyst') -> Dict[str, Any]:
@@ -5963,9 +6000,10 @@ def set_tenant_disposition(engine, review_id: int, tenant_id: int,
             params['note'] = note
         conn.execute(text(sql + " WHERE id = :tid"), params)
 
+    totals = refresh_review_totals(engine, review_id)
     logger.info("Review %s tenant %s -> %s by %s", review_id, tenant_id, status, set_by)
     return {'status': 'updated', 'tenant_status': status,
-            'meaning': TENANT_DISPOSITIONS[status]}
+            'meaning': TENANT_DISPOSITIONS[status], **totals}
 
 
 def set_tenant_dispositions(engine, review_id: int, tenant_ids: List[int],
@@ -6013,11 +6051,12 @@ def set_tenant_dispositions(engine, review_id: int, tenant_ids: List[int],
             text(sql + " WHERE id IN :ids").bindparams(
                 bindparam('ids', expanding=True)), params)
 
+    totals = refresh_review_totals(engine, review_id)
     logger.info("Review %s: %d tenants -> %s by %s",
                 review_id, len(ids), status, set_by)
     return {'status': 'updated', 'tenant_status': status,
             'updated': len(ids), 'tenant_ids': ids,
-            'meaning': TENANT_DISPOSITIONS[status]}
+            'meaning': TENANT_DISPOSITIONS[status], **totals}
 
 
 def get_tenant_dispositions(engine, review_id: int) -> List[Dict[str, Any]]:
