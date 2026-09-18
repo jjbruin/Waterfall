@@ -306,9 +306,27 @@ const selectedFindings = ref<number[]>([])
 const bulkSaving = ref(false)
 const bulkError = ref('')
 
+// Read once, gone. A finding is outstanding only while nobody has given it a
+// reading: either the analyst just did (addressedFindings), or it was settled in an
+// earlier run and came back carrying its status. Re-listing a settled tenant is what
+// made clicking its reading look like it did nothing — the reading was already set.
+const addressedFindings = ref<number[]>([])
+
+const pendingFindings = computed<any[]>(() =>
+  (mergeReport.value?.not_in_upload_tenants || []).filter((t: any) =>
+    !addressedFindings.value.includes(t.id) &&
+    (t.tenant_status || 'active') === 'active'))
+
+const settledFindingCount = computed(() =>
+  (mergeReport.value?.not_in_upload_tenants || []).length - pendingFindings.value.length)
+
 const findingIds = computed<number[]>(() =>
-  (mergeReport.value?.not_in_upload_tenants || [])
-    .map((t: any) => t.id).filter((id: any) => id != null))
+  pendingFindings.value.map((t: any) => t.id).filter((id: any) => id != null))
+
+function markAddressed(ids: number[]) {
+  addressedFindings.value = [...new Set([...addressedFindings.value, ...ids])]
+  selectedFindings.value = selectedFindings.value.filter(id => !ids.includes(id))
+}
 const allFindingsSelected = computed(() =>
   findingIds.value.length > 0 &&
   selectedFindings.value.length === findingIds.value.length)
@@ -331,9 +349,9 @@ async function setDispositionBulk(status: string) {
       `/api/lease-review/reviews/${selectedReviewId.value}/tenants/dispositions`,
       { tenant_ids: selectedFindings.value, status }
     )
-    for (const id of res.data.tenant_ids || selectedFindings.value) {
-      localDispositions.value[id] = status
-    }
+    const done = res.data.tenant_ids || selectedFindings.value
+    for (const id of done) localDispositions.value[id] = status
+    markAddressed(done)
     selectedFindings.value = []
     await loadReview(selectedReviewId.value!)
   } catch (e: any) {
@@ -359,6 +377,7 @@ async function setDisposition(t: any, status: string) {
       { status }
     )
     localDispositions.value[t.id] = status
+    markAddressed([t.id])
     await loadReview(selectedReviewId.value!)
   } catch (e: any) {
     dispositionError.value[t.id] = e.response?.data?.error || 'Could not save'
@@ -445,6 +464,8 @@ async function commitRentRoll() {
     )
     mapReport.value = res.data
     mergeReport.value = res.data.status === 'merged' ? res.data : null
+    addressedFindings.value = []
+    selectedFindings.value = []
     uploadMessage.value =
       `${res.data.status === 'merged' ? 'Merged' : 'Imported'} — ` +
       `${(res.data.total_gla || 0).toLocaleString()} SF, ` +
@@ -1191,12 +1212,13 @@ function statusClass(s: string): string {
           <div class="merge-stats">
             <span class="badge badge-extracted">{{ mergeReport.matched }} updated</span>
             <span class="badge badge-match">{{ mergeReport.added }} added</span>
-            <span v-if="mergeReport.not_in_upload" class="badge badge-minor">{{ mergeReport.not_in_upload }} not in upload</span>
+            <span v-if="pendingFindings.length" class="badge badge-minor">{{ pendingFindings.length }} to read</span>
+            <span v-if="settledFindingCount" class="badge badge-match">{{ settledFindingCount }} read</span>
           </div>
           <!-- These are the rows where a lease we hold disagrees with the rent roll.
                Nothing was deleted; each one needs a reading, and that reading is what
                decides whether it belongs in the projection. -->
-          <div v-if="mergeReport.not_in_upload_tenants?.length" class="merge-missing">
+          <div v-if="pendingFindings.length" class="merge-missing">
             <strong>In our records but not on this rent roll — how should each be read?</strong>
             <p class="disp-help">
               Leases stay on file either way. Only <em>On the rent roll</em> is counted
@@ -1227,7 +1249,7 @@ function statusClass(s: string): string {
                 <tr><th class="disp-check"></th><th>Tenant</th><th>Suite</th><th>Reading</th></tr>
               </thead>
               <tbody>
-                <tr v-for="t in mergeReport.not_in_upload_tenants" :key="t.id ?? t.suite">
+                <tr v-for="t in pendingFindings" :key="t.id ?? t.suite">
                   <td class="disp-check">
                     <input type="checkbox" :disabled="!t.id"
                       :checked="selectedFindings.includes(t.id)"

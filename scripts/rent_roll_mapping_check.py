@@ -424,6 +424,42 @@ except ValueError as e:
 
 check('the screen offers select-all and a bulk apply',
       'toggleAllFindings' in _view and 'setDispositionBulk' in _view)
+
+# --- A finding that has been read does not come back asking again -------------
+# Clicking a reading on a tenant that already had it did nothing visible, because a
+# re-import re-listed every settled tenant as a fresh finding and the button was
+# already lit. The status has to travel with the finding for the screen to tell a
+# settled row from an outstanding one.
+_rr = LRS.merge_rent_roll_to_review(_eng2, _rid2, pd.DataFrame([{
+    'tenant_name': 'Someone Else', 'suite': '999', 'square_feet': 100,
+    'annual_rent': 1000, 'monthly_rent': 83.3, 'rent_per_sf_year': 10,
+    'rent_per_sf_month': 0.83, 'annual_recoveries_per_sf': 0, 'annual_misc_per_sf': 0,
+    'security_deposit': 0, 'lease_start': '2026-01-01', 'lease_end': '2030-12-31',
+    'lease_type': 'retail', 'term_months': 0, 'is_vacant': False}]))
+_f = _rr['not_in_upload_tenants']
+check('every finding carries a tenant id', all(t.get('id') for t in _f), str(_f[:2]))
+check('every finding carries its current status',
+      all('tenant_status' in t for t in _f), str(_f[:2]))
+check('a tenant not yet read is reported as active',
+      any(t['tenant_status'] == 'active' for t in _f), str([t['tenant_status'] for t in _f]))
+
+# Read them all, re-run the same import, and nothing should still be outstanding.
+LRS.set_tenant_dispositions(
+    _eng2, _rid2, [t['id'] for t in _f], 'disregarded')
+_rr2 = LRS.merge_rent_roll_to_review(_eng2, _rid2, pd.DataFrame([{
+    'tenant_name': 'Someone Else', 'suite': '999', 'square_feet': 100,
+    'annual_rent': 1000, 'monthly_rent': 83.3, 'rent_per_sf_year': 10,
+    'rent_per_sf_month': 0.83, 'annual_recoveries_per_sf': 0, 'annual_misc_per_sf': 0,
+    'security_deposit': 0, 'lease_start': '2026-01-01', 'lease_end': '2030-12-31',
+    'lease_type': 'retail', 'term_months': 0, 'is_vacant': False}]))
+_still_pending = [t for t in _rr2['not_in_upload_tenants']
+                  if (t.get('tenant_status') or 'active') == 'active']
+check('after reading them all, a re-import leaves nothing outstanding',
+      not _still_pending, str(_still_pending))
+check('the screen hides a finding once it is read',
+      'pendingFindings' in _view and 'addressedFindings' in _view)
+check('the findings box is driven by what is still outstanding',
+      'v-if="pendingFindings.length"' in _view)
 check('bulk goes in one request, not one per tenant',
       'tenants/dispositions' in _view and 'tenant_ids' in _view)
 check('the screen offers the three readings',

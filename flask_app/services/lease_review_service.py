@@ -1400,11 +1400,12 @@ def merge_rent_roll_to_review(
 
         # Load existing tenants
         existing = conn.execute(text("""
-            SELECT id, tenant_name, suite FROM lease_tenants
+            SELECT id, tenant_name, suite, tenant_status FROM lease_tenants
             WHERE review_id = :rid
         """), {'rid': review_id}).fetchall()
 
-        existing_list = [{'id': r[0], 'name': r[1], 'suite': r[2]} for r in existing]
+        existing_list = [{'id': r[0], 'name': r[1], 'suite': r[2],
+                          'status': r[3] or 'active'} for r in existing]
 
         matched_ids = set()
         matched_count = 0
@@ -1504,8 +1505,13 @@ def merge_rent_roll_to_review(
                 # The id travels with the finding so the analyst can disposition it
                 # from the merge report -- these are the rows where a lease we hold
                 # disagrees with the rent roll, and that is the moment to say why.
+                # The STATUS travels too: a tenant already read as vacated or
+                # disregarded in an earlier run is settled, and re-listing it as a
+                # fresh finding is why clicking its reading again appeared to do
+                # nothing -- the reading was already set.
                 not_in_upload.append({'id': ex['id'], 'tenant': ex['name'],
-                                      'suite': ex['suite']})
+                                      'suite': ex['suite'],
+                                      'tenant_status': ex['status']})
 
         # Update review totals from current state
         totals = conn.execute(text("""
