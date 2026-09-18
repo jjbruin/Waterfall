@@ -22,6 +22,7 @@ Endpoints (registered at /api/valuations):
     GET    /records/<id>/mapping/draft            — a mapping in progress, or one already applied
     PUT    /records/<id>/mapping/draft            — store a mapping in progress
     DELETE /records/<id>/mapping/draft            — discard it
+    GET    /cycles/<id>/summary/<pref|valuation>   — the two portfolio summary tabs
     GET    /chart-of-accounts                     — the COA in statement order
 """
 
@@ -656,6 +657,27 @@ def publish_record(record_id):
 # partner's workbook, Valuation from the appraiser's Argus download, and both are the
 # same job: assign somebody else's line names to our categories. Same endpoints, a
 # `source` discriminator, so the two screens behave identically.
+
+@valuations_bp.route("/cycles/<int:cycle_id>/summary/<kind>", methods=["GET"])
+@login_required
+def cycle_summary(cycle_id, kind):
+    """The two portfolio summary tabs, current cycle against the prior year.
+
+    kind = "pref" (2025_Val_Summary_1) | "valuation" (2025_Val_Summary_2)
+    """
+    from flask_app.services import valuation_summary_service as summary
+
+    if kind not in ("pref", "valuation"):
+        return jsonify({"error": "kind must be 'pref' or 'valuation'"}), 400
+    try:
+        fn = summary.pref_summary if kind == "pref" else summary.valuation_summary
+        return jsonify(safe_json(fn(get_engine(), cycle_id, data_service.get_data())))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    except Exception as e:
+        logger.error(f"cycle_summary failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
 
 @valuations_bp.route("/chart-of-accounts", methods=["GET"])
 @login_required
