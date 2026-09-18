@@ -926,7 +926,7 @@ the whole table to MRI to load. Nothing built. Note this is the reason the table
 `PROTECTED_TABLES` while the other four supplements are not — the app is its writer and,
 until this export exists, its only copy.
 
-### 5.10 Jack Day's valuation list (Sep 17 2026) — EIGHT DONE, THE TWO SCREENS OPEN
+### 5.10 Jack Day's valuation list (Sep 17 2026) — ALL NINE BUILT, THE SCREENS NOT YET DEPLOYED
 Nine asks from asset management, shipped in `v500`–`v502`.
 
 **Done and live:** the mapping draft that survives a reload (`v500`); the account number
@@ -938,11 +938,26 @@ carries 5130 — a proposal the analyst accepts, never a silent injection; the d
 question answered (already modelled, §5.3); portfolio groups LABELLED BY JACK rather than
 inferred.
 
-**OPEN — the two summary report screens.** `valuation_summary_service.py` is written and
-tested (`pref_summary` / `valuation_summary`, grouping, sections, the endpoints under
-`/api/valuations/cycles/<id>/summary/<kind>`, guardrail `valuation_summary_check.py`, 46
-checks). **No Vue exists.** Until it does, the two tabs Jack asked for are reachable only
-by calling the API.
+**BUILT, NOT DEPLOYED — the two summary report screens** (`f151e5a`, Sep 18 2026).
+Two entries beside Records and Committee Summary. **Delete this paragraph when they
+ship.** Verified in the running app, not asserted: subtotals tie to the rendered rows to
+the dollar, sectioning 84 deals into two groups leaves the subtotals summing to the
+original total exactly, and the grouping round-trips through the real controls.
+
+Two defects the screens exposed, both fixed in the same commit:
+
+* **The deal was never named.** `_names` looked for `deal_name` / `property_name` /
+  `name`; the deals table calls it `Investment_Name`. A missing column does not raise,
+  so every row fell through to the vcode and the report read as one about deals nobody
+  had named. Found on screen — no test would have caught it, because the fallback is
+  a legitimate code path.
+* **`prior_debt` was emitted and never rendered.** Value and net proceeds each had a
+  prior-year column; debt did not, so the comparison tab had no comparison on that row.
+  Found by the new API-to-screen seam check, not by looking.
+
+Guardrail 46 → 99, with a seam section scoped to the summary block and PROVED
+non-vacuous: a key typo inside the block fails it, the same typo elsewhere on the screen
+does not.
 
 Note two defects this work found, both fixed: the PSC and OP pref sides were being
 SUMMED (5,746,667 read as 9,469,999), and a cycle's `as_of` is stored as TEXT, so passing
@@ -950,9 +965,21 @@ it to the pref walk failed every date comparison and returned `0.00` — wrong o
 deals, in the direction that reads as "no accrual yet" rather than as an error.
 
 **Known gap, not a defect:** on local data 40 of 84 valuation records produce no pref
-figure — 32 have no Cap_WF waterfall configured and 8 have no PSC pref steps. The
-summary reports this rather than printing a zero. Whether those 40 should have a
-waterfall is a data question for the valuation cycle, not a code one.
+figure — 32 have no Cap_WF waterfall configured and 8 have no PSC pref steps. The tab
+says so at the top, broken down by reason, rather than printing a zero or leaving
+somebody counting dashes. Whether those 40 should have a waterfall is a data question
+for the valuation cycle, not a code one. **Not yet measured on production**, where more
+waterfalls may be configured than in local dev.
+
+**The Committee tab answers the same question a different way, and agrees.**
+`get_committee_summary`'s Analysis 1 reaches the pref balance through
+`reports_service.build_roe_summary_row`; the summary tab goes through
+`valuation_nav_service._pref_walks` → `build_pref_balance_detail`. Measured Sep 18 2026
+on the 2025 cycle: of the 56 deals both cover, **43 agree to within $1 and none
+disagree**. The committee path answers 3 more (P0000003, P0000033, P0000087) because it
+does not require a Cap_WF waterfall. Two paths to one fact is the shape of a future
+disagreement even when today's answers match — worth collapsing onto the vetted engine,
+but not urgent while they agree. Owner: unassigned.
 
 ---
 
