@@ -204,6 +204,25 @@ _VALUATION_DDL = [
         UNIQUE(vcode, wf_type, iorder)
     )
     """,
+    # A mapping in progress. Assigning 65 partner line names to our categories is
+    # twenty minutes of judgement that lived only in the browser: a refresh, a stray
+    # navigation or a closed laptop lost all of it, and re-opening the screen after a
+    # commit showed nothing either. This is where that work lives now.
+    """
+    CREATE TABLE IF NOT EXISTS valuation_mapping_drafts (
+        id {pk},
+        record_id INTEGER NOT NULL,
+        source TEXT NOT NULL,
+        filename TEXT,
+        parsed_json TEXT,
+        mapping_json TEXT,
+        status TEXT NOT NULL DEFAULT 'draft',
+        committed_at TIMESTAMP,
+        updated_by TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(record_id, source)
+    )
+    """,
     "CREATE INDEX IF NOT EXISTS idx_valuation_records_cycle ON valuation_records(cycle_id)",
     "CREATE INDEX IF NOT EXISTS idx_valuation_documents_record ON valuation_documents(record_id)",
     "CREATE INDEX IF NOT EXISTS idx_valuation_questions_record ON valuation_questions(record_id)",

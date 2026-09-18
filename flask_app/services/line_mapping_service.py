@@ -26,10 +26,108 @@ from sqlalchemy import text
 
 from flask_app.services import budget_import_service as budget
 from flask_app.services import budget_import_validate as validate_mod
+from flask_app.services import valuation_service
 
 logger = logging.getLogger(__name__)
 
 SOURCES = ("budget", "argus")
+
+
+def save_draft(engine, record_id: int, source: str, filename: str,
+               parsed: Dict[str, Any], mapping: Dict[str, Any],
+               username: str) -> Dict[str, Any]:
+    """Store a mapping in progress, so closing the tab does not throw it away.
+
+    Written on every change, not on a button. Assigning sixty-five partner line names
+    to our categories is twenty minutes of judgement, and asking someone to remember
+    to save it is asking them to lose it once.
+
+    The PARSED file is stored alongside the mapping. Without it, resuming would mean
+    hunting down the original spreadsheet and uploading it again, which is most of the
+    friction the draft is meant to remove.
+    """
+    import json
+    if source not in SOURCES:
+        raise ValueError(f"Unknown source '{source}'. Expected one of: {SOURCES}")
+
+    valuation_service.ensure_valuation_tables(engine)
+    payload = {
+        'rid': record_id, 'src': source, 'fn': filename or '',
+        'p': json.dumps(parsed or {}), 'm': json.dumps(mapping or {}),
+        'u': username or '',
+    }
+    with engine.begin() as conn:
+        updated = conn.execute(text("""
+            UPDATE valuation_mapping_drafts
+               SET filename = :fn, parsed_json = :p, mapping_json = :m,
+                   status = 'draft', committed_at = NULL,
+                   updated_by = :u, updated_at = CURRENT_TIMESTAMP
+             WHERE record_id = :rid AND source = :src
+        """), payload).rowcount
+        if not updated:
+            conn.execute(text("""
+                INSERT INTO valuation_mapping_drafts
+                    (record_id, source, filename, parsed_json, mapping_json,
+                     status, updated_by)
+                VALUES (:rid, :src, :fn, :p, :m, 'draft', :u)
+            """), payload)
+    return {'status': 'saved', 'record_id': record_id, 'source': source}
+
+
+def get_draft(engine, record_id: int, source: str) -> Optional[Dict[str, Any]]:
+    """The stored mapping for this record and source, or None.
+
+    Returns a COMMITTED one too, flagged as such. Re-opening the screen after applying
+    a mapping used to show an empty page, which reads exactly like the work was lost.
+    """
+    import json
+    valuation_service.ensure_valuation_tables(engine)
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT filename, parsed_json, mapping_json, status,
+                   committed_at, updated_by, updated_at
+              FROM valuation_mapping_drafts
+             WHERE record_id = :rid AND source = :src
+        """), {'rid': record_id, 'src': source}).fetchone()
+    if not row:
+        return None
+    try:
+        parsed = json.loads(row[1] or '{}')
+        mapping = json.loads(row[2] or '{}')
+    except ValueError:
+        # A draft we cannot read is not a draft. Say so rather than half-restoring.
+        logger.warning("Unreadable mapping draft for record %s/%s", record_id, source)
+        return None
+    return {
+        'filename': row[0], 'parsed': parsed, 'mapping': mapping,
+        'status': row[3] or 'draft', 'committed_at': str(row[4]) if row[4] else None,
+        'updated_by': row[5], 'updated_at': str(row[6]) if row[6] else None,
+        'line_count': len(parsed.get('lines') or []),
+        'mapped_count': sum(1 for v in mapping.values() if (v or {}).get('category')),
+    }
+
+
+def mark_draft_committed(engine, record_id: int, source: str) -> None:
+    """Flag the stored mapping as applied, keeping it readable.
+
+    Deleting it on commit would empty the screen again the moment the work succeeded.
+    """
+    with engine.begin() as conn:
+        conn.execute(text("""
+            UPDATE valuation_mapping_drafts
+               SET status = 'committed', committed_at = CURRENT_TIMESTAMP
+             WHERE record_id = :rid AND source = :src
+        """), {'rid': record_id, 'src': source})
+
+
+def discard_draft(engine, record_id: int, source: str) -> Dict[str, Any]:
+    """Throw the stored mapping away, when the analyst says to start over."""
+    with engine.begin() as conn:
+        n = conn.execute(text("""
+            DELETE FROM valuation_mapping_drafts
+             WHERE record_id = :rid AND source = :src
+        """), {'rid': record_id, 'src': source}).rowcount
+    return {'status': 'discarded', 'removed': int(n or 0)}
 
 
 def record_vcode(engine, record_id: int) -> str:
@@ -151,6 +249,17 @@ def commit(engine, record_id: int, source: str, parsed: Dict[str, Any],
         res = _commit_argus(engine, record_id, parsed, mapping, username)
     res["source"] = source
     res["warnings"] = gate["warnings"]
+    # Keep the mapping readable after it has been applied. Clearing it here would
+    # empty the screen at the moment the work succeeded, which is what made a
+    # successful commit look like lost work.
+    try:
+        save_draft(engine, record_id, source, parsed.get("filename") or "",
+                   parsed, mapping, username)
+        mark_draft_committed(engine, record_id, source)
+    except Exception as e:
+        # The write that matters already happened; failing to record the draft must
+        # not turn a successful import into an error.
+        logger.warning("Could not record mapping draft after commit: %s", e)
     return res
 
 

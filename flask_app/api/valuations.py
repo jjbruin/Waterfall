@@ -703,6 +703,55 @@ def mapping_check(record_id):
         return jsonify({"error": str(e)}), 500
 
 
+@valuations_bp.route("/records/<int:record_id>/mapping/draft", methods=["GET"])
+@login_required
+def mapping_draft_get(record_id):
+    """The stored mapping for this record and source, or null.
+
+    Includes one already applied, flagged `status: committed` — re-opening the screen
+    after a successful import used to show an empty page, which reads like lost work.
+    """
+    source = (request.args.get("source") or "budget").strip().lower()
+    try:
+        return jsonify(safe_json(
+            line_mapping_service.get_draft(get_engine(), record_id, source)))
+    except Exception as e:
+        logger.error(f"mapping_draft_get failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@valuations_bp.route("/records/<int:record_id>/mapping/draft", methods=["PUT"])
+@login_required
+@role_required("admin", "analyst")
+def mapping_draft_put(record_id):
+    """Store a mapping in progress. Called as the analyst works, not on a button."""
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify(safe_json(line_mapping_service.save_draft(
+            get_engine(), record_id, (body.get("source") or "budget"),
+            body.get("filename") or "", body.get("parsed") or {},
+            body.get("mapping") or {}, _username())))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"mapping_draft_put failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@valuations_bp.route("/records/<int:record_id>/mapping/draft", methods=["DELETE"])
+@login_required
+@role_required("admin", "analyst")
+def mapping_draft_delete(record_id):
+    """Discard the stored mapping, when the analyst chooses to start over."""
+    source = (request.args.get("source") or "budget").strip().lower()
+    try:
+        return jsonify(safe_json(
+            line_mapping_service.discard_draft(get_engine(), record_id, source)))
+    except Exception as e:
+        logger.error(f"mapping_draft_delete failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
 @valuations_bp.route("/records/<int:record_id>/mapping/commit", methods=["POST"])
 @login_required
 @role_required("admin", "analyst")

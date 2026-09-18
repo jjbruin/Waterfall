@@ -18,7 +18,28 @@
     </div>
 
     <div v-if="parsing" class="loading-text">Reading the spreadsheet...</div>
+    <div v-if="loadingDraft" class="loading-text">Looking for saved mapping work...</div>
     <div v-if="error" class="lm-error">{{ error }}</div>
+
+    <!-- Your work is here. It was not, and that was the complaint. -->
+    <div v-if="draftLoaded" class="lm-resumed">
+      <template v-if="draftLoaded.status === 'committed'">
+        <strong>Applied mapping.</strong>
+        {{ draftLoaded.mapped_count }} of {{ draftLoaded.line_count }} line(s) mapped
+        from <em>{{ draftLoaded.filename }}</em><template v-if="draftLoaded.updated_by">,
+        by {{ draftLoaded.updated_by }}</template>. Change anything and apply again to
+        replace it.
+      </template>
+      <template v-else>
+        <strong>Picked up where you left off.</strong>
+        {{ draftLoaded.mapped_count }} of {{ draftLoaded.line_count }} line(s) mapped
+        from <em>{{ draftLoaded.filename }}</em><template v-if="draftLoaded.updated_at">,
+        saved {{ draftLoaded.updated_at }}</template>. Nothing has been imported yet.
+      </template>
+      <button class="lm-discard no-print" :disabled="!editable" @click="discardDraft">
+        Start over
+      </button>
+    </div>
 
     <template v-if="parsed">
       <p class="lm-note">
@@ -167,6 +188,16 @@
         <button class="btn-primary" :disabled="!canCommit" @click="doCommit">
           {{ committing ? 'Importing...' : commitLabel }}
         </button>
+        <span class="lm-draft-state" :class="'lm-draft-' + (draftState || 'idle')">
+          <template v-if="draftState === 'saving'">Saving your mapping...</template>
+          <template v-else-if="draftState === 'saved'">
+            Mapping saved{{ draftSavedAt ? ' at ' + draftSavedAt : '' }} — it will be
+            here if you come back.
+          </template>
+          <template v-else-if="draftState === 'error'">
+            Could not save your mapping. Your work is still on screen — do not refresh.
+          </template>
+        </span>
         <span v-if="check && !check.can_import" class="lm-blocked-note">
           Resolve the {{ check.blocking.length }} blocking item(s) above first.
         </span>
@@ -207,7 +238,7 @@
  * stores vAccount and NOI, FAD, DSCR and the waterfall all read individual accounts —
  * it defaults to the one this deal used most, so the common case is one click.
  */
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import api from '@/api/client'
 
 const props = defineProps({
@@ -228,6 +259,14 @@ const checking = ref(false)
 const committing = ref(false)
 const open = ref({})
 
+// Draft state. The mapping used to live only here, so a refresh threw away twenty
+// minutes of judgement and re-opening after a successful import showed a blank page.
+const draftState = ref('')          // '' | 'saving' | 'saved' | 'error'
+const draftSavedAt = ref('')
+const draftLoaded = ref(null)       // the stored mapping this screen resumed
+const loadingDraft = ref(false)
+const uploadedName = ref('')
+
 const title = computed(() => props.source === 'argus'
   ? "Appraiser's Argus cash flow"
   : "Partner's monthly budget")
@@ -238,9 +277,11 @@ const blurb = computed(() => props.source === 'argus'
   : 'Load the budget the partner sent. It feeds the Budget column, and re-importing '
     + 'replaces it, so you can keep loading revisions until the version is final.')
 
+// It IS the save, and it did not say so: asset management reported not finding a save
+// button on a screen whose only button was this one.
 const commitLabel = computed(() => props.source === 'argus'
-  ? 'Apply mapping to the Valuation column'
-  : 'Import into the Budget column')
+  ? 'Save and apply to the Valuation column'
+  : 'Save and import into the Budget column')
 
 const usedCats = computed(() => (cats.value.categories || []).filter(c => c.used_by_deal))
 const unusedCats = computed(() => (cats.value.categories || []).filter(c => !c.used_by_deal))
@@ -320,8 +361,13 @@ async function onFile(e) {
     // Argus pre-fills; a budget starts empty. Either way the analyst sees it before
     // anything is written — which is the whole point of this screen existing.
     mapping.value = { ...(res.data.suggested || {}) }
+    uploadedName.value = file.name || ''
+    draftLoaded.value = null
     await loadCategories()
     await runCheck()
+    // Store it immediately: an upload followed by a refresh should not mean
+    // hunting down the spreadsheet again.
+    await saveDraft()
   } catch (err) {
     error.value = err.response?.data?.error || 'Could not read that file.'
     parsed.value = null
@@ -339,9 +385,72 @@ async function loadCategories() {
   } catch { /* parse already returned the list; the ranking is the only thing lost */ }
 }
 
+// Saved as the analyst works, not on a button: asking someone to remember to save
+// twenty minutes of judgement is asking them to lose it once. Debounced so a burst of
+// edits is one write, and sequenced so a slow reply cannot report a stale state.
+let draftTimer = null
+let draftSeq = 0
+function scheduleDraftSave() {
+  if (!props.editable || !parsed.value) return
+  clearTimeout(draftTimer)
+  draftState.value = 'saving'
+  draftTimer = setTimeout(saveDraft, 700)
+}
+
+async function saveDraft() {
+  if (!parsed.value) return
+  const seq = ++draftSeq
+  try {
+    await api.put(`/api/valuations/records/${props.recordId}/mapping/draft`, {
+      source: props.source,
+      filename: parsed.value.filename || uploadedName.value || '',
+      parsed: parsed.value,
+      mapping: mapping.value,
+    })
+    if (seq === draftSeq) {
+      draftState.value = 'saved'
+      draftSavedAt.value = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+    }
+  } catch {
+    // Never block the analyst on this; say it plainly and keep their work on screen.
+    if (seq === draftSeq) draftState.value = 'error'
+  }
+}
+
+async function loadDraft() {
+  loadingDraft.value = true
+  draftLoaded.value = null
+  try {
+    const res = await api.get(
+      `/api/valuations/records/${props.recordId}/mapping/draft`,
+      { params: { source: props.source } })
+    const d = res.data
+    if (d && d.parsed && (d.parsed.lines || []).length) {
+      parsed.value = d.parsed
+      mapping.value = { ...(d.mapping || {}) }
+      draftLoaded.value = d
+      uploadedName.value = d.filename || ''
+      await loadCategories()
+      await runCheck()
+    }
+  } catch { /* nothing stored, or unreadable — the screen simply starts empty */ }
+  finally { loadingDraft.value = false }
+}
+
+async function discardDraft() {
+  try {
+    await api.delete(`/api/valuations/records/${props.recordId}/mapping/draft`,
+      { params: { source: props.source } })
+  } catch { /* a draft we cannot delete is not worth blocking on */ }
+  parsed.value = null; mapping.value = {}; check.value = null
+  result.value = null; draftLoaded.value = null; uploadedName.value = ''
+  draftState.value = ''; draftSavedAt.value = ''
+}
+
 let checkSeq = 0
 async function runCheck() {
   if (!parsed.value) return
+  scheduleDraftSave()
   const seq = ++checkSeq
   checking.value = true
   try {
@@ -366,6 +475,8 @@ async function doCommit() {
       `/api/valuations/records/${props.recordId}/mapping/commit`,
       { source: props.source, parsed: parsed.value, mapping: mapping.value })
     result.value = res.data
+    draftState.value = 'saved'
+    if (draftLoaded.value) draftLoaded.value.status = 'committed'
     emit('committed', res.data)
   } catch (err) {
     error.value = err.response?.data?.error || 'Import failed.'
@@ -389,15 +500,35 @@ function fmtPeriod(p) {
   return isNaN(d) ? p : d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
 }
 
-// Switching records must not leave the previous deal's file on screen.
-watch(() => props.recordId, () => {
+// Switching records must not leave the previous deal's file on screen -- and the new
+// record's stored mapping should come up in its place, not a blank page.
+watch(() => [props.recordId, props.source], () => {
   parsed.value = null; mapping.value = {}; check.value = null
   result.value = null; error.value = ''
+  draftLoaded.value = null; draftState.value = ''; draftSavedAt.value = ''
+  uploadedName.value = ''
+  if (props.recordId) loadDraft()
 })
+
+onMounted(() => { if (props.recordId) loadDraft() })
 </script>
 
 <style scoped>
 .line-mapping { display: flex; flex-direction: column; gap: 14px; }
+.lm-resumed {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  font-size: 0.82rem; color: #14507a; background: #eef5fc;
+  border-left: 3px solid #1a73e8; padding: 8px 12px; border-radius: 3px;
+}
+.lm-discard {
+  margin-left: auto; border: 1px solid #c3ccd9; background: #fff; color: #444;
+  padding: 2px 10px; border-radius: 3px; font-size: 0.76rem; cursor: pointer;
+}
+.lm-discard:hover:not(:disabled) { background: #fff1f0; border-color: #c0392b; color: #8a1c14; }
+.lm-draft-state { font-size: 0.78rem; margin-left: 10px; }
+.lm-draft-saving { color: #888; }
+.lm-draft-saved { color: #1e7a3c; }
+.lm-draft-error { color: #c0392b; font-weight: 600; }
 .lm-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
 .lm-head h4 { margin: 0 0 4px; }
 .lm-note { font-size: 12px; color: #666; margin: 4px 0; line-height: 1.5; }
