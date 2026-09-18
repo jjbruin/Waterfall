@@ -652,6 +652,69 @@ Owner: **Jim** to read the breakdown; then whoever settles §1.7 / §2.3.
 
 ---
 
+## 8. One number, one engine — the sweep (Sep 18 2026)
+
+Jim's standing instruction is in `CLAUDE.md` under **ONE NUMBER, ONE ENGINE**. Two
+duplicates were collapsed the same day (`accrued pref`, `net proceeds`). These three
+were found in the same sweep and deliberately **not** changed, because each needs a
+decision or data this environment cannot supply. Each one is a place where two parts
+of the app can print different numbers for the same fact.
+
+### 8.1 Capital balance: one floored, one not — DECISION NEEDED (Jim)
+Both paths accumulate identically (`funded - roc` is arithmetically the same running
+total `loaders.capital_after` produces). They differ only in what they do when the
+running total ends **below zero**:
+
+* **ROE Summary** `Current Balance` prints the raw running total, which can be negative.
+* **Pref Balance Detail / valuation tabs** print `capital_outstanding(running)`, i.e.
+  `max(0, running)`.
+
+Measured at 2025-12-31: of 68 deals both price, **53 agree and 15 differ** — in every
+one of the 15 the ROE Summary shows a negative balance where the walk shows 0.00. The
+largest are PWILLOW −8,044,374.08, POUTLOO −8,008,062.00, P3RDAVE −6,777,786.00,
+PLANCS1 −6,329,063.10, PCAMARI −5,091,231.39. All 15 are property-level vcodes.
+
+A negative balance arises because `realized gain` is accumulated into return of capital
+alongside actual return of capital, so a sold deal returns more than it contributed.
+`capital_after`'s docstring is explicit that this is intended and that **callers should
+report the below-zero case rather than absorb it** — the walk currently absorbs it by
+flooring, and the ROE Summary shows it raw. Neither reports it.
+
+**The question for Jim:** is a below-zero running balance a finding to surface (a deal
+that returned more capital than it took), or is `realized gain` simply misfiled as
+return of capital in the ledger? The answer decides whether both paths floor, both
+report, or the classification changes. Do not pick one silently — it moves a
+user-facing balance on 15 deals.
+
+### 8.2 Debt: two implementations, UNMEASURED
+* `compute.get_isbs_debt_balance(isbs_raw, vcode, as_of)` — Dashboard, Deal Analysis,
+  One Pager cap stack, Committee Summary's Debt column.
+* `valuation_nav_service._bs_snapshot` summed over `DEBT_BS_ACCTS` — the NAV, and so
+  the Debt column on the valuation summary tab.
+
+Both read ISBS Interim BS and the same `DEBT_BS_ACCTS`, by different code. The NAV path
+also consolidates **child vcodes** and snapshots at the record's `as_of`; the other
+takes a single vcode and, when called without a date, the most recent period. Those are
+real behavioural differences, not just duplication.
+
+**Not measured**, and the reason matters: the local `waterfall.db` carries **61 rows** of
+`isbs_raw` in total, one of them Interim BS. Both paths return nothing for all 128 deals
+locally, so a local comparison proves nothing. This needs
+`scripts/` run against production (the image ships `scripts/` since `v474`). Until then,
+treat the two Debt columns as potentially different numbers.
+
+### 8.3 Prior-year figures: two SOURCES (not two engines)
+The Committee Summary reads last year from MRI's `valuations` feed (`_prior_rows`, using
+`mIncomeCapConcludedValue`, `mDebtValue`, `mMezzanineValue`). The valuation summary tabs
+read last year from **the prior cycle's own `valuation_records`**. These should be the
+same fact — the app publishes its concluded values to MRI — but they are two reads of
+two stores, and nothing reconciles them.
+
+**Not measured:** there is only one cycle (2025) in local data, so there is no prior
+cycle to compare against. Needs production, and probably needs Jim to say which is the
+source of record for a prior year once a cycle has been published.
+
+
 ## 7. Treasury and accounting access (Sep 17 2026)
 
 ### 7.1 The PNC connection — not built, and it needs Jim's banker

@@ -1098,6 +1098,61 @@ cd vue_app && npm run dev        # Frontend on http://localhost:5173
 
 ## Key Concepts
 
+### ONE NUMBER, ONE ENGINE
+
+**Jim's standing instruction, Sep 18 2026:** "We should not have conflicting
+calculation results. It will cause doubt in the accuracy of the entire work. Make
+sure the vetted calculation engines are used consistently and we do not have
+separate calculation engines for the same number. The only differences in results
+should come from changes in time frames or projections that we are running through
+the engines. The calculations should be reliable."
+
+Before writing any calculation, find out whether the app already answers it. If it
+does, **call that engine** — do not re-derive, do not "simplify for this screen", do
+not write a fallback that computes it a cheaper way. A date, a horizon or a scenario
+is a parameter; the arithmetic is not.
+
+**The vetted engines, and what they own:**
+
+| Number | Engine | Reached by |
+|---|---|---|
+| Accrued pref, pref balance | `reports_service.build_pref_balance_detail` | `reports_service.deal_accrued_pref` for a deal total; `valuation_nav_service._pref_walks` per investor |
+| Deal projection, waterfall, XIRR/ROE/MOIC | `compute.compute_deal_analysis` | `compute_service.get_cached_deal_result` |
+| NAV, net proceeds | `valuation_nav_service.compute_nav` | stored in `valuation_nav_results` |
+| Modeled debt service | `valuation_debt_service.monthly_schedule` | Budget/Valuation columns |
+| Statements | `statement_service.build` + siblings | workpapers, print, Excel |
+
+**Why this is not a style preference.** "Accrued pref" had two implementations in
+ONE FILE. `_compute_accrued_pref` (ROE Summary, Committee Summary) and
+`build_pref_balance_detail` (everything else) walked the same ledger at the same
+rate and disagreed on **34 of the 68 deals both could price**, with the ROE path
+**$633,807.54 low** in aggregate at 2025-12-31. The cause: it accrued `cur -> 31 Dec`,
+compounded, then resumed at `1 Jan`, so **31 Dec -> 1 Jan was never accrued** — one
+lost day per year end, always short, worse the older the deal. On P0000031 it gave
+26,489.03 where Jim's own workbook says 37,394.57.
+
+It never looked wrong. A slightly low accrual is still a plausible accrual. **That
+is the whole danger: a second implementation is most dangerous when it is nearly
+right**, because nothing on screen and nothing in the logs distinguishes it from
+the answer.
+
+**A "temporary estimate" is a second engine.** The Committee tab's Net Proceeds
+column fell back to `value - debt` when the NAV had not been run — scaffolding from
+before the NAV engine existed, left in after it shipped. The NAV walk runs the
+deal's waterfall; value-less-debt ignores it. One column, two calculations, nothing
+saying which. Removed: unavailable now reads as unavailable.
+
+**Guardrail: `scripts/one_engine_per_number_check.py`.** It asserts the deleted
+engine cannot return, that every consumer reaches the identical figure, and that
+only the as-of date moves the answer. Add a row to the table above and a check here
+whenever a new engine takes ownership of a number.
+
+**When you find a duplicate: measure both across every deal before changing either.**
+Which one is right is a question for the data, not for whichever is newer. Report the
+count that disagree and the aggregate delta to Jim, and say which figures of his the
+candidate reproduces.
+
+
 ### Acquisition Date
 - **Derived from accounting feed**: `min(EffectiveDate)` per `InvestmentID` from the accounting table, mapped to vcode via investment map
 - **Enriched at load time**: `data_service.py:load_all()` overwrites `Acquisition_Date` in `inv` DataFrame after loading both `inv` and `acct`. Also re-applied in `refresh_table()` when the deals table is refreshed.

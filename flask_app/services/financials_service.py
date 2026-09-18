@@ -1399,14 +1399,18 @@ def _enrich_pe_from_deal_result(pe: dict, vcode: str, data: dict, quarter_str: s
 
 def _compute_accrued_from_pref_detail(vcode: str, data: dict, quarter_str: str,
                                        seed_states: dict) -> float | None:
-    """Compute total accrued pref using the authoritative Pref Balance Detail engine.
+    """Total accrued pref for the One Pager, at the quarter end.
 
-    Sums accrued_pref from build_pref_balance_detail() across all PE investors.
-    Returns None if calculation fails (caller should fall back to seed_states).
+    The summation itself lives in `reports_service.deal_accrued_pref` -- one engine,
+    one place. This function is the One Pager's ADAPTER to it: it turns a quarter
+    string into a report date and keeps the caller's fallback to `seed_states` when
+    there is nothing to compute. It deliberately holds no arithmetic of its own.
+
+    Returns None on any failure, so the caller falls back rather than printing a zero.
     """
     import logging
     from one_pager import quarter_to_date_range
-    from flask_app.services.reports_service import build_pref_balance_detail, get_deal_pe_investors
+    from flask_app.services.reports_service import deal_accrued_pref
 
     log = logging.getLogger(__name__)
     try:
@@ -1421,33 +1425,8 @@ def _compute_accrued_from_pref_detail(vcode: str, data: dict, quarter_str: str,
         if acct is None or inv_map is None:
             return None
 
-        # Get PE investors (non-OP) for this deal
-        pe_investors = get_deal_pe_investors(vcode, acct, inv_map)
-        if not pe_investors:
-            return None
-
-        total_accrued = 0.0
-        # build_pref_balance_detail() matches InvestorID case-insensitively, so
-        # two casings of one investor would each return the full ledger and be
-        # summed twice.  get_deal_pe_investors() already collapses them; this
-        # guard keeps the invariant local to the summation that depends on it.
-        seen_investors: set[str] = set()
-        for inv_info in pe_investors:
-            investor_id = inv_info["investor_id"]
-            if investor_id.upper().startswith("OP"):
-                continue
-            if investor_id.upper() in seen_investors:
-                continue
-            seen_investors.add(investor_id.upper())
-            detail = build_pref_balance_detail(
-                vcode, investor_id, report_date, acct, inv_map, wf_steps=wf_steps,
-            )
-            header = detail.get("header", {})
-            accrued = header.get("accrued_pref", 0.0)
-            # accrued_pref from the detail report is negative (credit convention)
-            total_accrued += abs(accrued)
-
-        return total_accrued
+        return deal_accrued_pref(vcode, report_date, acct, inv_map,
+                                 wf_steps=wf_steps)
 
     except Exception as e:
         log.warning("Pref detail calculation failed for %s, falling back: %s", vcode, e)

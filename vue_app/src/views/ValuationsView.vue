@@ -1129,7 +1129,7 @@ watch(selectedCycleId, () => {
                       <th class="num">NOI</th>
                       <th class="num">Prior Value</th><th class="num">Value</th>
                       <th class="num">Var</th><th class="num">Var %</th>
-                      <th class="num">Debt</th><th class="num">Net Proceeds (est)</th>
+                      <th class="num">Debt</th><th class="num">Net Proceeds</th>
                       <th></th>
                     </tr>
                   </thead>
@@ -1152,7 +1152,12 @@ watch(selectedCycleId, () => {
                       <td class="num" :class="{ pos: (r.value_var ?? 0) > 0, neg: (r.value_var ?? 0) < 0 }">{{ fmtCurrency(r.value_var) }}</td>
                       <td class="num" :class="{ pos: (r.value_var ?? 0) > 0, neg: (r.value_var ?? 0) < 0 }">{{ fmtPct(r.value_var_pct) }}</td>
                       <td class="num">{{ fmtCurrency(r.debt) }}</td>
-                      <td class="num">{{ fmtCurrency(r.net_proceeds) }}</td>
+                      <!-- Blank means the NAV has not been run. It used to fall back
+                           to value-less-debt, which is a different calculation wearing
+                           the same column heading. -->
+                      <td class="num" :title="r.has_nav ? '' : 'NAV not yet run for this deal'">
+                        {{ fmtCurrency(r.net_proceeds) }}
+                      </td>
                       <td>
                         <span v-if="r.direction === 'Up'" class="dir-up">&#9650;</span>
                         <span v-else-if="r.direction === 'Down'" class="dir-down">&#9660;</span>

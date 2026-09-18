@@ -172,8 +172,36 @@ from flask_app.services import financials_service as _fin  # noqa: E402
 _walk_src = inspect.getsource(_nav._pref_walks)
 check('the NAV sources its accrual from the Pref Balance Detail engine',
       'build_pref_balance_detail' in _walk_src)
-check('...which compounds with no grace period',
-      'no grace period' in inspect.getdoc(_rep._compute_accrued_pref))
+# This used to read a docstring -- and it read the docstring of the WRONG function.
+# `_compute_accrued_pref` was a SECOND pref engine that the NAV never called, so the
+# check described one implementation while claiming to cover another; it would have
+# gone on passing while the engine the NAV actually uses changed underneath it. That
+# engine is gone (see `scripts/one_engine_per_number_check.py`), and the property is
+# now asserted on the real one, by behaviour: compounding at the year end with no
+# grace period means year two accrues on principal PLUS year one's accrual.
+import pandas as _pd  # noqa: E402
+from datetime import date as _date  # noqa: E402
+
+_CAP, _RATE = 1_000_000.0, 0.10
+_A = _pd.DataFrame([{
+    'InvestmentID': 'IGRACE', 'InvestorID': 'PPIGRACE',
+    'EffectiveDate': _date(2024, 1, 1), 'MajorType': 'Contribution',
+    'TypeName': 'Capital Contribution', 'Amt': -_CAP, 'TypeID': 1001}])
+_I = _pd.DataFrame([{'vcode': 'PGRACE', 'InvestmentID': 'IGRACE',
+                     'Investment_Name': 'Grace Fixture'}])
+_W = _pd.DataFrame([{'vcode': 'PGRACE', 'vState': 'Pref', 'PropCode': 'PPIGRACE',
+                     'nPercent_dec': _RATE, 'iOrder': 1}])
+_two_yr = abs(float((_rep.build_pref_balance_detail(
+    'PGRACE', 'PPIGRACE', _date(2025, 12, 31), _A, _I, wf_steps=_W)
+    .get('header') or {}).get('accrued_pref') or 0.0))
+_simple = _CAP * _RATE * 2                      # no compounding at all
+_compounded = _CAP * ((1 + _RATE) ** 2 - 1)     # compounded once at 31 Dec 2024
+check('...which compounds at the year end rather than running simple',
+      abs(_two_yr - _compounded) < abs(_two_yr - _simple),
+      f'{_two_yr:,.2f}; simple {_simple:,.2f}, compounded {_compounded:,.2f}')
+check('...with no grace period deferring that compounding',
+      _two_yr > _simple + (_CAP * _RATE * _RATE * 0.5),
+      f'{_two_yr:,.2f} vs simple {_simple:,.2f}')
 check('the NAV path carries no grace-period suppression of its own',
       'grace' not in _walk_src.lower()
       and 'grace' not in inspect.getsource(_nav.compute_nav).lower())

@@ -1629,10 +1629,16 @@ def get_committee_summary(engine, cycle_id: int, data: dict) -> Dict[str, Any]:
             "value_var_pct": (value_var / prior_value) if value_var is not None and prior_value else None,
             "prior_debt": p.get("debt"), "debt": cur_debt,
             "prior_net_proceeds": (p.get("value") - p.get("debt")) if p.get("value") and p.get("debt") is not None else None,
-            # Full NAV net proceeds when computed; simple value-less-debt estimate otherwise
+            # NET PROCEEDS COMES FROM THE NAV ENGINE OR NOT AT ALL. This column used to
+            # fall back to `value - debt` when the NAV had not been run -- scaffolding
+            # from before the NAV engine existed, left behind after it shipped. The two
+            # are not the same number: the NAV walk runs the deal's waterfall, and
+            # value-less-debt ignores it entirely, so one column carried two different
+            # calculations with nothing on screen saying which. Unavailable now reads as
+            # unavailable (Jim, Sep 18 2026: "We should not have conflicting calculation
+            # results").
             "net_proceeds": nav_by_vcode.get(vcode, {}).get("net_proceeds")
-                if vcode in nav_by_vcode
-                else ((cur_value - cur_debt) if cur_value is not None and cur_debt is not None else None),
+                if vcode in nav_by_vcode else None,
             "has_nav": vcode in nav_by_vcode,
             "direction": ("Up" if value_var > 0 else "Down") if value_var else None,
             "cap_delta": cap_delta,

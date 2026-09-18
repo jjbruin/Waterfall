@@ -256,131 +256,62 @@ def generate_returns_excel(df: pd.DataFrame) -> bytes:
 # ROE Summary Report
 # ---------------------------------------------------------------------------
 
-def _compute_accrued_pref(deal_acct: pd.DataFrame, report_date: date,
-                          pref_rates: dict) -> float:
-    """Compute total accrued (unpaid) pref across all PE investors through report_date.
+def deal_accrued_pref(
+    vcode: str,
+    report_date: date,
+    acct: pd.DataFrame,
+    inv_map: pd.DataFrame,
+    wf_steps: Optional[pd.DataFrame] = None,
+) -> Optional[float]:
+    """Total accrued (unpaid) pref for a deal at a date. THE answer, one engine.
 
-    Walks accounting chronologically per investor, accrues pref daily on capital
-    balance at the waterfall pref rate, reduces accrued by pref payments (TypeID 1019)
-    and excess CF distributions. Compounds at year-end (always, no grace period).
-    Uses Act/Act day count convention (366 for leap years).
+    Delegates to `build_pref_balance_detail` -- the vetted Pref Balance Detail engine --
+    and sums the PE investors. Every consumer of "what pref has accrued" goes through
+    here: the ROE Summary, the One Pager, the Committee Summary, the valuation tabs.
+
+    THIS REPLACED A SECOND IMPLEMENTATION, and the two did not agree. `_compute_accrued_pref`
+    walked the same ledger at the same rate and produced a different number on 34 of the
+    68 deals that both could answer, understating the total by $633,808 at 2025-12-31.
+    The cause was a lost day at every year end: it accrued `cur -> 31 Dec`, compounded,
+    then resumed at `1 Jan`, so 31 Dec -> 1 Jan was never accrued. One day per year end,
+    always short, and worse the older the deal -- P0000068 lost about $102,000 over nine
+    year ends. It never looked wrong, because a slightly low accrual is still a plausible
+    accrual.
+
+    Jim, Sep 18 2026: "We should not have conflicting calculation results. It will cause
+    doubt in the accuracy of the entire work... The only differences in results should
+    come from changes in time frames or projections that we are running through the
+    engines." So the date is a parameter and the arithmetic is not.
+
+    Returns None when the deal has no PE investors or nothing can be computed -- never
+    0.0, which is indistinguishable from a deal whose pref is genuinely current.
     """
-    from loaders import capital_after, capital_outstanding
-    if not pref_rates:
-        return 0.0
+    investors = get_deal_pe_investors(vcode, acct, inv_map) or []
+    if not investors:
+        return None
 
-    total_accrued = 0.0
-
-    for investor_id, grp in deal_acct.groupby("InvestorID"):
-        if investor_id.upper().startswith("OP"):
+    total = 0.0
+    answered = False
+    # `build_pref_balance_detail` matches InvestorID case-INSENSITIVELY, so two casings
+    # of one investor would each return the whole ledger and be summed twice.
+    seen: set[str] = set()
+    for info in investors:
+        investor_id = str(info.get("investor_id", "")).strip()
+        if not investor_id or investor_id.upper().startswith("OP"):
             continue
-        pref_rate = pref_rates.get(investor_id, 0.0)
-        if pref_rate <= 0:
+        if investor_id.upper() in seen:
             continue
+        seen.add(investor_id.upper())
+        detail = build_pref_balance_detail(
+            vcode, investor_id, report_date, acct, inv_map, wf_steps=wf_steps)
+        accrued = (detail.get("header") or {}).get("accrued_pref")
+        if accrued is None:
+            continue
+        # The detail report carries accrued pref in credit convention (negative).
+        total += abs(float(accrued))
+        answered = True
 
-        rows = grp.sort_values("EffectiveDate")
-        capital = 0.0
-        pref_compounded = 0.0
-        pref_cy = 0.0
-        prev_date = None
-
-        # Detect TypeID column
-        has_typeid = "TypeID" in rows.columns
-
-        for _, r in rows.iterrows():
-            if r.get("is_commitment", False):
-                continue
-            evt_date = r["EffectiveDate"].date() if pd.notna(r["EffectiveDate"]) else None
-            if evt_date is None:
-                continue
-            amt = float(r["Amt"])
-            major = r["MajorType"].lower()
-            tname = r["TypeName"].lower()
-            type_id = None
-            if has_typeid:
-                try:
-                    type_id = float(r.get("TypeID", 0))
-                except (ValueError, TypeError):
-                    pass
-
-            # Accrue pref from prev_date to this event (Act/Act)
-            if prev_date is not None and capital > 0 and evt_date > prev_date:
-                cur = prev_date
-                while cur < evt_date:
-                    year_end = date(cur.year, 12, 31)
-                    next_stop = min(evt_date, year_end)
-                    days = (next_stop - cur).days
-                    if days > 0:
-                        diy = _days_in_year(cur.year)
-                        base = max(0.0, capital + pref_compounded)
-                        pref_cy += base * pref_rate * (days / diy)
-                    if next_stop == year_end and next_stop < evt_date:
-                        # Always compound at year-end
-                        pref_compounded += pref_cy
-                        pref_cy = 0.0
-                        cur = date(cur.year + 1, 1, 1)
-                    else:
-                        break
-
-            # Apply pref payment (TypeID 1019 = Preferred Return distribution)
-            is_pref_payment = (type_id == 1019.0)
-            if not is_pref_payment:
-                is_pref_payment = "preferred return" in tname or "pref return" in tname
-            if is_pref_payment and "distri" in major:
-                payment = abs(amt)
-                if pref_compounded > 0:
-                    pay = min(payment, pref_compounded)
-                    pref_compounded -= pay
-                    payment -= pay
-                if pref_cy > 0 and payment > 0:
-                    pay = min(payment, pref_cy)
-                    pref_cy -= pay
-
-            # Excess CF also reduces accrued pref
-            is_excess_cf = "excess cash" in tname or type_id == 1020.0
-            if is_excess_cf and "distri" in major and (pref_compounded + pref_cy) > 0:
-                payment = abs(amt)
-                if pref_compounded > 0:
-                    pay = min(payment, pref_compounded)
-                    pref_compounded -= pay
-                    payment -= pay
-                if pref_cy > 0 and payment > 0:
-                    pay = min(payment, pref_cy)
-                    pref_cy -= pay
-
-            # Update capital balance. The TYPE decides whether the row touches
-            # capital, the AMOUNT'S SIGN decides which way — see capital_after
-            # in loaders. abs() here applied a reversal in the same direction
-            # as the entry it reverses.
-            touches_capital = ("contrib" in major) or (
-                "distri" in major
-                and ("return of capital" in tname or "realized gain" in tname))
-            if touches_capital:
-                capital = capital_after(capital, amt)
-
-            prev_date = evt_date
-
-        # Accrue from last transaction to report_date (Act/Act)
-        if prev_date is not None and capital > 0 and report_date > prev_date:
-            cur = prev_date
-            while cur < report_date:
-                year_end = date(cur.year, 12, 31)
-                next_stop = min(report_date, year_end)
-                days = (next_stop - cur).days
-                if days > 0:
-                    diy = _days_in_year(cur.year)
-                    base = max(0.0, capital + pref_compounded)
-                    pref_cy += base * pref_rate * (days / diy)
-                if next_stop == year_end and next_stop < report_date:
-                    pref_compounded += pref_cy
-                    pref_cy = 0.0
-                    cur = date(cur.year + 1, 1, 1)
-                else:
-                    break
-
-        total_accrued += pref_compounded + pref_cy
-
-    return total_accrued
+    return total if answered else None
 
 
 def build_roe_summary_row(
@@ -472,19 +403,14 @@ def build_roe_summary_row(
 
     current_balance = funded - roc
 
-    # Compute accrued pref directly from accounting + waterfall pref rates
-    pref_rates = {}
-    if wf_steps is not None and not wf_steps.empty:
-        wf_deal = wf_steps[wf_steps["vcode"] == vcode_str] if "vcode" in wf_steps.columns else wf_steps
-        pref_rows = wf_deal[wf_deal["vState"] == "Pref"] if "vState" in wf_deal.columns else pd.DataFrame()
-        rate_col = "nPercent_dec" if "nPercent_dec" in pref_rows.columns else "nPercent"
-        for _, pr in pref_rows.iterrows():
-            pc = str(pr.get("PropCode", "")).strip()
-            r = float(pr[rate_col]) if pd.notna(pr.get(rate_col)) else 0.0
-            if pc and r > 0 and pc not in pref_rates:
-                pref_rates[pc] = r
-
-    accrued = _compute_accrued_pref(deal_acct, report_date, pref_rates)
+    # Accrued pref comes from the one engine, never re-derived here. The rate
+    # priority (deal_terms.pe_coupon, then the waterfall Pref step) lives inside it,
+    # so the ROE Summary cannot end up on a different rate than the Pref Balance
+    # Detail report for the same investor.
+    accrued = deal_accrued_pref(vcode_str, report_date, acct, inv_map,
+                                wf_steps=wf_steps)
+    if accrued is None:
+        accrued = 0.0
 
     # ---- U/W ROE to Date (ISBS Projected IS only — no actual accounting) ----
     # 7073: positive = contribution, negative = return of capital
