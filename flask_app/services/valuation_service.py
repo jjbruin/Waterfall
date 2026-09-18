@@ -247,6 +247,17 @@ def ensure_valuation_tables(engine=None):
                 conn.execute(text(f"ALTER TABLE valuation_records ADD COLUMN {col} {col_type}"))
         except Exception:
             pass  # column already exists
+    # How asset management groups the portfolio on the summary tabs -- Legacy Assets,
+    # PSC III Portfolio, 2025 Deals. Jack labels these (Jim, Sep 18 2026): a derived
+    # rule was tested against his own workbook and got 10 of 11 legacy deals right
+    # while disagreeing on three, and a wrong group produces a subtotal that looks
+    # right. The proposal carries forward from last year's label instead.
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE valuation_records ADD COLUMN group_label TEXT"))
+    except Exception:
+        pass  # column already exists
+
     # Per-cycle committee requirement. NULL means "all of COMMITTEE_ROLES", so every
     # existing cycle keeps the full requirement and nothing changes by adding this.
     try:

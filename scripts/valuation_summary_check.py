@@ -187,6 +187,68 @@ check('PSC NAV is the balance plus the accrual, to the cent',
       abs((9700000.0 + 51926.54) - 9751926.54) < 0.005)
 
 
+section('The groups are labelled, not inferred')
+
+# Jim, Sep 18 2026: "Allow Jack to label the groups". A rule derived from funding dates
+# WAS tried first -- legacy = pref equity outside PSCKOC funded before the first PSC3
+# deal -- and tested against asset management's own workbook: 10 of 11 legacy deals
+# right, disagreeing on three. A deal in the wrong section produces a subtotal that
+# looks perfectly reasonable and is wrong, so it is labelled by hand and carried
+# forward instead.
+
+S.set_group_label(eng, cur, ['P0000004'], 'Legacy Assets')
+_p = S.pref_summary(eng, cur, {})
+check('a label lands on the record', _p['rows'][0]['group_label'] == 'Legacy Assets')
+check('the label sections the report',
+      [x['label'] for x in _p['sections']] == ['Legacy Assets'],
+      str([x['label'] for x in _p['sections']]))
+check('labels in use are offered, so groups are picked not retyped',
+      'Legacy Assets' in _p['group_labels'])
+
+S.set_group_label(eng, cur, ['P0000004'], '')
+_p = S.pref_summary(eng, cur, {})
+check('an empty label clears the grouping',
+      _p['rows'][0]['group_label'] is None)
+check('ungrouped rows are named, not left blank',
+      _p['sections'][0]['label'] == 'Not yet grouped'
+      and _p['sections'][0]['labelled'] is False)
+check('...and are listed so they can be found',
+      _p['ungrouped'] == ['P0000004'], str(_p['ungrouped']))
+
+try:
+    S.set_group_label(eng, cur, [], 'Legacy Assets')
+    check('labelling nothing is refused', False)
+except ValueError as e:
+    check('labelling nothing is refused', 'No deals' in str(e))
+
+# Carry forward is the labour saver: the groups are stable year to year.
+S.set_group_label(eng, old, ['P0000004'], 'Legacy Assets')
+res = S.carry_forward_groups(eng, cur)
+check('last year\'s grouping carries forward', res['updated'] == 1, str(res))
+check('...onto the right rows',
+      S.pref_summary(eng, cur, {})['rows'][0]['group_label'] == 'Legacy Assets')
+
+S.set_group_label(eng, cur, ['P0000004'], 'Something Else')
+res2 = S.carry_forward_groups(eng, cur)
+check('a label set on THIS cycle outranks last year\'s', res2['updated'] == 0,
+      str(res2))
+check('...and is left alone',
+      S.pref_summary(eng, cur, {})['rows'][0]['group_label'] == 'Something Else')
+
+
+section('A subtotal never treats a missing figure as zero')
+
+_sec = S._sections(
+    [{'group_label': 'G', 'v': 100.0}, {'group_label': 'G', 'v': None},
+     {'group_label': 'G', 'v': 50.0}], ['v'])[0]
+check('the subtotal sums only what is there', _sec['totals']['v'] == 150.0,
+      str(_sec['totals']['v']))
+check('...and says how many it skipped', _sec['missing_counts']['v'] == 1)
+_empty = S._sections([{'group_label': 'G', 'v': None}], ['v'])[0]
+check('a group with nothing to sum totals None, not 0',
+      _empty['totals']['v'] is None, str(_empty['totals']['v']))
+
+
 print(f'\n{len(PASS)} passed, {len(FAIL)} failed, {len(SKIP)} skipped')
 if FAIL:
     print('FAILED:')

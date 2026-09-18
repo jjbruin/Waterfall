@@ -46,9 +46,72 @@ from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 logger = logging.getLogger(__name__)
+
+
+def set_group_label(engine, cycle_id: int, vcodes: List[str],
+                    label: Optional[str]) -> Dict[str, Any]:
+    """Put these deals in a group, or clear it when `label` is empty.
+
+    The groups are asset management's, not the app's. A rule derived from funding
+    dates was tested against their own workbook and got 10 of 11 legacy deals right
+    while disagreeing on three -- and a deal in the wrong section produces a subtotal
+    that looks perfectly reasonable and is wrong. So it is labelled, not inferred.
+    """
+    if not vcodes:
+        raise ValueError("No deals given.")
+    label = (label or "").strip() or None
+    with engine.begin() as conn:
+        n = conn.execute(text("""
+            UPDATE valuation_records SET group_label = :g, updated_at = CURRENT_TIMESTAMP
+             WHERE cycle_id = :c AND vcode IN :v
+        """).bindparams(bindparam("v", expanding=True)),
+            {"g": label, "c": cycle_id, "v": list(vcodes)}).rowcount
+    return {"status": "updated", "label": label, "updated": int(n or 0)}
+
+
+def group_labels(engine, cycle_id: int) -> List[str]:
+    """The labels already in use on this cycle or the one before it.
+
+    Offered so a group is picked rather than retyped -- "PSC III Portfolio" and
+    "PSC 3 Portfolio" would section the report twice.
+    """
+    cyc = _cycles(engine, cycle_id)
+    ids = [cyc["current"]["id"]] + ([cyc["prior"]["id"]] if cyc["prior"] else [])
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT DISTINCT group_label FROM valuation_records
+             WHERE cycle_id IN :c AND group_label IS NOT NULL AND group_label <> ''
+             ORDER BY group_label
+        """).bindparams(bindparam("c", expanding=True)), {"c": ids}).fetchall()
+    return [r[0] for r in rows]
+
+
+def carry_forward_groups(engine, cycle_id: int) -> Dict[str, Any]:
+    """Copy last year's grouping onto this cycle, for deals not already labelled.
+
+    Groups are stable year to year, so this is the labour saver. It never overwrites a
+    label already set on this cycle -- a decision made here outranks last year's.
+    """
+    cyc = _cycles(engine, cycle_id)
+    if not cyc["prior"]:
+        return {"status": "no prior cycle", "updated": 0}
+    with engine.begin() as conn:
+        prior = {str(r[0]): r[1] for r in conn.execute(text("""
+            SELECT vcode, group_label FROM valuation_records
+             WHERE cycle_id = :c AND group_label IS NOT NULL AND group_label <> ''
+        """), {"c": cyc["prior"]["id"]}).fetchall()}
+        n = 0
+        for vcode, label in prior.items():
+            n += conn.execute(text("""
+                UPDATE valuation_records SET group_label = :g
+                 WHERE cycle_id = :c AND vcode = :v
+                   AND (group_label IS NULL OR group_label = '')
+            """), {"g": label, "c": cycle_id, "v": vcode}).rowcount
+    return {"status": "carried forward", "updated": int(n),
+            "from_year": cyc["prior"]["year"]}
 
 
 def _cycles(engine, cycle_id: int) -> Dict[str, Any]:
@@ -80,7 +143,7 @@ def _records(engine, cycle_id: int, data: Optional[dict] = None,
         rows = conn.execute(text("""
             SELECT r.id, r.vcode, r.method, r.concluded_value, r.cap_rate,
                    r.term_cap_rate, r.discount_rate, r.direct_cap_noi,
-                   r.classification, r.status,
+                   r.classification, r.status, r.group_label,
                    n.net_proceeds, n.psc_nav, n.op_nav, n.inputs_json, n.computed_at
               FROM valuation_records r
               LEFT JOIN valuation_nav_results n ON n.record_id = r.id
@@ -93,9 +156,9 @@ def _records(engine, cycle_id: int, data: Optional[dict] = None,
         op_balance = op_accrued = None
         pref_source = None
         debt = None
-        if r[13]:
+        if r[14]:
             try:
-                inp = json.loads(r[13])
+                inp = json.loads(r[14])
                 debt = inp.get("debt")
                 split = _split_pref(inp.get("pref") or {})
                 pref_balance = split["pref_balance"]
@@ -118,12 +181,12 @@ def _records(engine, cycle_id: int, data: Optional[dict] = None,
             "record_id": r[0], "vcode": str(r[1]), "method": r[2],
             "concluded_value": r[3], "cap_rate": r[4], "term_cap_rate": r[5],
             "discount_rate": r[6], "direct_cap_noi": r[7],
-            "classification": r[8], "status": r[9],
-            "net_proceeds": r[10], "psc_nav": r[11], "op_nav": r[12],
+            "classification": r[8], "status": r[9], "group_label": r[10],
+            "net_proceeds": r[11], "psc_nav": r[12], "op_nav": r[13],
             "pref_balance": pref_balance, "pref_accrued": pref_accrued,
             "pref_source": pref_source, "pref_note": pref_note,
             "op_balance": op_balance, "op_accrued": op_accrued, "debt": debt,
-            "nav_computed": r[14] is not None,
+            "nav_computed": r[15] is not None,
         }
     return out
 
@@ -252,6 +315,47 @@ def _assemble(engine, cycle_id: int, data: dict) -> Dict[str, Any]:
     return {"cycles": cyc, "current": cur, "prior": prior, "names": names}
 
 
+def _sections(rows: List[Dict[str, Any]], money_keys: List[str]) -> List[Dict[str, Any]]:
+    """Group the rows by their label and subtotal each group.
+
+    A subtotal sums only the figures that are THERE. A row whose NAV has not been run
+    contributes nothing rather than a zero, and the section says how many it skipped --
+    a subtotal that quietly treated a missing deal as zero would understate the group
+    and look complete doing it.
+    """
+    order: List[Optional[str]] = []
+    buckets: Dict[Optional[str], List[Dict[str, Any]]] = {}
+    for r in rows:
+        key = r.get("group_label") or None
+        if key not in buckets:
+            buckets[key] = []
+            order.append(key)
+    for r in rows:
+        buckets[r.get("group_label") or None].append(r)
+
+    # Unlabelled sits last, and is named rather than left blank so nobody mistakes it
+    # for a group of its own.
+    order.sort(key=lambda k: (k is None, (k or "").lower()))
+
+    out = []
+    for key in order:
+        items = buckets[key]
+        totals, missing = {}, {}
+        for mk in money_keys:
+            vals = [x[mk] for x in items if x.get(mk) is not None]
+            totals[mk] = sum(vals) if vals else None
+            missing[mk] = len(items) - len(vals)
+        out.append({
+            "label": key or "Not yet grouped",
+            "labelled": key is not None,
+            "rows": items,
+            "count": len(items),
+            "totals": totals,
+            "missing_counts": missing,
+        })
+    return out
+
+
 def pref_summary(engine, cycle_id: int, data: dict) -> Dict[str, Any]:
     """Tab 1: pref balance, accrual, and the pref NAV against last year.
 
@@ -271,6 +375,7 @@ def pref_summary(engine, cycle_id: int, data: dict) -> Dict[str, Any]:
             "investment_id": meta.get("investment_id"),
             "name": meta.get("name") or vcode,
             "portfolio": meta.get("portfolio"),
+            "group_label": rec.get("group_label"),
             "pref_balance": bal,
             "pref_accrued": acc,
             "pref_with_accrual": (None if bal is None and acc is None
@@ -288,6 +393,11 @@ def pref_summary(engine, cycle_id: int, data: dict) -> Dict[str, Any]:
         "current_year": cy["year"],
         "prior_year": py["year"] if py else None,
         "rows": rows,
+        "sections": _sections(rows, ["pref_balance", "pref_accrued",
+                                     "pref_with_accrual", "pref_nav",
+                                     "prior_pref_nav", "var_to_prior"]),
+        "group_labels": group_labels(engine, cycle_id),
+        "ungrouped": [r["vcode"] for r in rows if not r.get("group_label")],
         "missing_nav": [r["vcode"] for r in rows if not r["nav_computed"]],
         "no_prior_cycle": py is None,
     }
@@ -307,6 +417,7 @@ def valuation_summary(engine, cycle_id: int, data: dict) -> Dict[str, Any]:
             "investment_id": meta.get("investment_id"),
             "name": meta.get("name") or vcode,
             "portfolio": meta.get("portfolio"),
+            "group_label": rec.get("group_label"),
             "prior_method": p.get("method"), "method": rec["method"],
             "prior_cap_rate": p.get("cap_rate"), "cap_rate": rec["cap_rate"],
             "prior_exit_cap": p.get("term_cap_rate"), "exit_cap": rec["term_cap_rate"],
@@ -329,6 +440,12 @@ def valuation_summary(engine, cycle_id: int, data: dict) -> Dict[str, Any]:
         "current_year": cy["year"],
         "prior_year": py["year"] if py else None,
         "rows": rows,
+        "sections": _sections(rows, ["value", "prior_value", "var_to_prior_value",
+                                     "debt", "prior_debt", "net_proceeds",
+                                     "prior_net_proceeds", "var_to_prior_proceeds",
+                                     "direct_cap_noi"]),
+        "group_labels": group_labels(engine, cycle_id),
+        "ungrouped": [r["vcode"] for r in rows if not r.get("group_label")],
         "missing_nav": [r["vcode"] for r in rows if not r["nav_computed"]],
         "no_prior_cycle": py is None,
     }

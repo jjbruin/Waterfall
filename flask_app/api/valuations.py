@@ -23,6 +23,8 @@ Endpoints (registered at /api/valuations):
     PUT    /records/<id>/mapping/draft            — store a mapping in progress
     DELETE /records/<id>/mapping/draft            — discard it
     GET    /cycles/<id>/summary/<pref|valuation>   — the two portfolio summary tabs
+    PUT    /cycles/<id>/groups                    — label deals into a portfolio group
+    POST   /cycles/<id>/groups/carry-forward      — copy last year's grouping
     GET    /chart-of-accounts                     — the COA in statement order
 """
 
@@ -676,6 +678,47 @@ def cycle_summary(cycle_id, kind):
         return jsonify({"error": str(e)}), 404
     except Exception as e:
         logger.error(f"cycle_summary failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@valuations_bp.route("/cycles/<int:cycle_id>/groups", methods=["PUT"])
+@login_required
+@role_required("admin", "analyst")
+def set_group(cycle_id):
+    """Put deals in a portfolio group, or clear it.
+
+    Body: { "vcodes": ["P0000010", ...], "label": "Legacy Assets" }
+    An empty label clears the grouping.
+    """
+    from flask_app.services import valuation_summary_service as summary
+
+    body = request.get_json(silent=True) or {}
+    vcodes = body.get("vcodes") or []
+    if not isinstance(vcodes, list) or not vcodes:
+        return jsonify({"error": "vcodes must be a non-empty list"}), 400
+    try:
+        return jsonify(safe_json(summary.set_group_label(
+            get_engine(), cycle_id, vcodes, body.get("label"))))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"set_group failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@valuations_bp.route("/cycles/<int:cycle_id>/groups/carry-forward", methods=["POST"])
+@login_required
+@role_required("admin", "analyst")
+def carry_forward_groups(cycle_id):
+    """Copy last year's grouping onto this cycle, leaving anything already set alone."""
+    from flask_app.services import valuation_summary_service as summary
+
+    try:
+        return jsonify(safe_json(summary.carry_forward_groups(get_engine(), cycle_id)))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    except Exception as e:
+        logger.error(f"carry_forward_groups failed: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 
