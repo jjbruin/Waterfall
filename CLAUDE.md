@@ -249,6 +249,25 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v499` = `3c045aa` (A FINDING THAT HAS BEEN READ STOPS ASKING. Jim: three
+    records where selecting "No lease" did nothing. IT WAS NOT DOING NOTHING —
+    `merge_rent_roll_to_review` lists every tenant absent from the upload
+    REGARDLESS of whether it already carries a reading, so a re-import re-listed
+    tenants settled in an earlier run. Their button was already lit, the PUT
+    re-set a value that was already set, and the only feedback was a highlight
+    that did not change. Reproduced locally: request fires, 200 back, row
+    identical before and after — the hardest kind of bug to see, because every
+    part of it worked.
+    The status now travels with the finding, so the screen can tell a settled
+    row from an outstanding one and a re-import stops asking about tenants
+    already read.
+    Plus what Jim asked for: a reading removes its row, and the box goes when
+    nothing is outstanding. Measured through the real 46-finding case — 46 to 45
+    to 44 read one at a time, bulk clearing the remaining 43, box gone, and a
+    fresh import of the same file leaving it gone. The badge counts what is
+    still to read, not what the merge first found. A new import clears the
+    addressed set. Guardrail 121 -> 127, including the round trip: read every
+    finding, re-import, assert nothing outstanding.)
   - `v498` = `bc4ac18` (ONE READING FOR MANY FINDINGS. Jim asked for the bulk
     action after seeing that 46 findings meant 46 clicks. Select all, or pick
     the many and correct the few; ONE PUT for the whole selection, verified in
