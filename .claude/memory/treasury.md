@@ -1,7 +1,6 @@
 # Treasury — the bank side of the close
 
-**Live at `v491`; the journal entry tab is committed and not yet deployed.**
-Screen at `/treasury`, under Accounting. Service
+**Live at `v494`.** Screen at `/treasury`, under Accounting. Service
 `flask_app/services/treasury_service.py`, API `flask_app/api/treasury.py`, view
 `vue_app/src/views/TreasuryView.vue`.
 
@@ -22,7 +21,7 @@ MRI's September reconciliation opens   11,727.50   carries forward
 ## The four tabs
 
 **Accounts** — every account, its entity, its GL cash account, and its position.
-**Import** — the PNC activity CSV and the statement PDF.
+**Import** — the PNC activity CSV, one statement PDF, or a whole folder of them.
 **Reconciliation** — the three-way tie, the matcher, and the reconciling items.
 **Journal entry** — code the month, get the GL and IA upload files.
 
@@ -99,9 +98,14 @@ still carries the bank side, so "map this account first" is actionable.
 
 ## Guardrails
 
-- `scripts/treasury_reconciliation_check.py` — 51 locally against the real
-  files, 17 on production where those files are absent (the file-dependent
+- `scripts/treasury_reconciliation_check.py` — 80 locally against the real
+  files, 54 on production where those files are absent (the file-dependent
   sections skip by design).
+- `scripts/treasury_upload_check.py` — 58. **Rebuilds both accepted MRI
+  upload files from their own contents and asserts byte-identical output.**
+  A format check written from a specification proves only that the code
+  agrees with itself; this one caught the amount formatting (`13313.8`, not
+  `13313.80`).
 - `scripts/treasury_api_check.py` — 37. **Asserts every field name the screen
   reads against a live response.** This exists because the service's own checks
   structurally cannot see that seam: a field read by the wrong name renders as a
@@ -153,6 +157,71 @@ column doubles one investor and invents a fourteenth.
 `allocate()` floors every share then hands leftover cents to whoever was
 rounded down hardest, ties broken on investor id so the same inputs always give
 the same file. The remainder is placed deliberately and reported per row.
+
+## Statements in bulk, and starting the chain from them
+
+Jim, Sep 17 2026, asking whether to type fifty 6/30 opening balances or read
+them off the June statements. **The statements win**: an external authority,
+carrying their own arithmetic check, and the figure stays traceable to a named
+file instead of to somebody's typing.
+
+**SEEDING IS NOT RE-BASING**, and that distinction is the whole of
+`seed_from_statement`. `opening_balance()` never reads a statement — it carries
+the prior close, so a break surfaces as a difference instead of being papered
+over. Starting the chain is the one case where a statement IS the right source,
+because there is nothing behind it to contradict. So it **refuses the moment a
+period has actually been reconciled**, and says why. The note it writes names
+the source file, replacing "opening balance entered by hand".
+
+Seed **202607**, not 202606: the 90-day activity export opens 6/22, so June can
+never be reconciled from it, while July and August are complete.
+
+### The mask is not always a tail
+
+PNC prints a masked account number and it is the ONLY routing key a statement
+carries. `XX-XXXX-5765` hides the FRONT; **`790-XXXXX55` hides the MIDDLE.**
+Reading "the last four visible digits" off the second gives `790` + `55` ->
+`79055` -> `9055`, an account that exists nowhere — while the real 7900021255
+sits in the table untouched. That reported five of Jim's June statements as
+unknown accounts, so the cause looked like missing data rather than a bad
+heuristic: the kind of error that gets "fixed" by entering data that was never
+missing, creating duplicates.
+
+`_mask_pattern` reads the mask as what it is — each run of X is that many
+unknown digits, each printed digit is itself, matched against the WHOLE number.
+`790-XXXXX55` -> `^790\d{5}55$`. Being anchored also makes it stricter than a
+tail match, so 8612199055 cannot collide with it. An **ambiguous** mask is
+refused rather than resolved by picking one.
+
+### A zero balance prints `.00`
+
+Tested against the 64 real June 2026 statements before Jim relied on any of it.
+**50 would not have filed, and 46 of those failed on one character**: PNC writes
+a zero balance as `.00`, with no leading digit, and the money pattern required
+one. It threw out rows carrying real amounts too — `30,832.24 .00 11,712.76
+19,119.48` was refused for the single `.00` in the credits column.
+
+14 filed before the fix, 45 after, 50 once the mask bug went too.
+
+Also fixed there: a **trailing minus** is PNC's overdraft notation, and read as
+positive it gives a WRONG balance rather than a refusal, so statement figures go
+through `_money` — kept separate from `_num` because the activity export carries
+its sign in a Credit/Debit column and never a trailing minus. And the four
+figures are now read from **under the summary header**, because loosening the
+number pattern made "the first four money figures in the document" unsafe.
+
+### Registering an account by hand
+
+`create_account`. An account normally registers itself on its first activity
+import, which is no help when **PNC will not serve activity beyond 90 days** and
+an account has been quiet longer: its June statement shows real money and no
+transaction anywhere introduces it.
+
+**THE FULL NUMBER IS TYPED AND NEVER INFERRED.** The statement prints only a
+mask and several of these sit in obvious number ranges, so guessing the hidden
+digits would usually work and would occasionally be wrong — and a wrong number
+silently splits one account in two the moment real activity arrives under the
+true one. A masked number is refused as input.
 
 ## Not done yet
 

@@ -1043,10 +1043,12 @@ columns are loaded from somebody else's spreadsheet, and the debt rows are ours.
   locking everyone out.
 
 ### Treasury — the bank side of the close
-**Full detail in `.claude/memory/treasury.md`.** Live at `v490`, screen `/treasury`.
+**Full detail in `.claude/memory/treasury.md`.** Live at `v494`, screen `/treasury`.
 
-- **Three tabs**: accounts, import (PNC activity CSV + statement PDF),
-  reconciliation (the three-way tie, the matcher, the reconciling items).
+- **Four tabs**: accounts; import (PNC activity CSV, one statement PDF, or a
+  whole folder of them); reconciliation (the three-way tie, the matcher, the
+  reconciling items); journal entry (code the month, download the GL and IA
+  upload files).
 - **`current_ledger` is CARRIED** from the last closed period plus activity since,
   and says which period and through what date. **`current_available` is `None`** —
   it is ledger less holds, float and pending debits, which exist only at the bank.
@@ -1061,7 +1063,24 @@ columns are loaded from somebody else's spreadsheet, and the debt rows are ours.
   else refused. An account registers itself on first import, before it is mapped.
 - **A file that is not an activity export is REFUSED**, not reported as "0
   imported" — the column check runs before the row count.
-- **Nothing here posts to MRI.** GL/IA upload templates are the next phase.
+- **A statement's masked number is read as a PATTERN, not a tail.**
+  `XX-XXXX-5765` hides the front; `790-XXXXX55` hides the MIDDLE, and taking the
+  last four visible digits off it yields an account that exists nowhere. An
+  ambiguous mask is refused rather than resolved by picking one.
+- **A zero balance prints `.00`** in a PNC statement, with no leading digit. It
+  refused 46 of the 64 real June statements before this was fixed — including
+  rows carrying real amounts. A trailing minus is overdraft notation and must be
+  read, or a negative balance parses as positive.
+- **SEEDING IS NOT RE-BASING.** `opening_balance()` never reads a statement;
+  `seed_from_statement` exists only to START a chain and refuses once any period
+  has been reconciled.
+- **The cash side of a journal entry is never typed** — each bank transaction
+  becomes its own cash line at the bank's own amount, so the entry balances by
+  construction and a partly coded month cannot produce a file.
+- **The investor split is computed from commitment AMOUNTS**, not the stored
+  `CapitalPercent`, which is 4dp and sums to 99.9999 — allocating by it is wrong
+  on 5 of 13 investors for AMB6.
+- **Nothing here posts to MRI**; it produces the two files a person uploads.
 
 ### Cap Rate at Sale / Refinance
 - **Source column**: `fCapRate` from `valuations` table (MRI_Val)

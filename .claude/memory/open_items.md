@@ -678,7 +678,7 @@ holds, float and pending debits, which exist only at the bank. The column is on
 the accounts tab with the reason printed under it. **Do not fill it with the
 ledger figure** — guardrail `treasury_api_check.py` asserts it stays `None`.
 
-### 7.3 GL and IA upload files — WRITERS BUILT; the coding screen is what is left
+### 7.3 GL and IA upload files — DONE (v492), including the coding screen
 
 **Correction, Sep 17 2026:** an earlier version of this item said the templates
 were outstanding. They were not — Jim supplied all four with the August batch
@@ -716,16 +716,54 @@ files from their own contents and asserts the result is byte-identical.** A
 format check written from a specification proves only that the code agrees with
 itself.
 
-**STILL OPEN — the coding screen.** Nothing yet turns a reconciled bank
-transaction into a coded GL line: the accountant needs to assign the offset
-account per transaction. **Open question for Jim:** for a distribution, does the
-investor split get TYPED, or COMPUTED from the ownership the app already holds
-(commitments/relationships)? The August file splits 12,580.47 across 13
-investors, and the app can derive that — but deriving it silently would put the
-app's arithmetic into a journal entry somebody signs. Not guessed.
+**The coding screen shipped in `v492`** as Treasury's fourth tab. One row per
+bank transaction; the cash side is never typed, so the entry balances by
+construction and a partly coded month cannot produce a file. The investor split
+is COMPUTED and shown as an editable proposal (Jim: "compute it and show it as
+an editable proposal"), from commitment AMOUNTS — see `treasury.md` for why the
+stored percentages are wrong on 5 of 13 investors.
 
 **Nothing in treasury posts to MRI, and nothing here will** — this produces two
 files a person uploads.
+
+### 7.7 One bank account still needs its number — Jim
+
+**PPI Life Storage NY LLC holds 119,701.35** at 6/30/2026 and has had no
+activity in PNC's 90-day window, so it never registered and its June statement
+cannot file. `create_account` (v494) registers one by hand, but **the full
+account number has to come from PINACLE** — the statement prints only
+`XX-XXXX-7891`, and the form refuses a masked number because a guessed one
+silently splits the account in two the moment real activity arrives.
+
+Twelve further June statements are for accounts in the same position but holding
+**0.00**, so nothing is lost by leaving them until they transact.
+
+**Owner: Jim.** One number, typed on the Accounts tab.
+
+### 7.8 Bank-account to cash-account mapping — Jim
+
+All 50 accounts are mapped to an entity (Jim, Sep 17 2026) but every one still
+sits on the `MR10005000` default. Two groups need changing before their
+reconciliations can match:
+
+- **The three CAD accounts** (`7900016982`, `7900017029`, `7900021255`) belong
+  on `MR10006000` — *Cash - Canada (PNC)*. On the USD default the matcher looks
+  in the wrong ledger account and finds nothing.
+- **PPI2, PSS1 and PIG5 hold two bank accounts each.** Left both on the default,
+  the matcher pairs both months' bank lines against the same GL account.
+
+Not a defect — the default is right for the single-account majority, which is
+why Jim chose it. Context: `MR10001000` *Cash - Operating* appears in the GL for
+44 entity/account pairs and is a DIFFERENT BANK, correctly absent from the PNC
+dropdown, so ledger cash activity with no PNC counterpart is expected.
+
+### 7.9 A Wells Fargo statement sits in the PNC folder
+
+`30 June 2026 Peaceable Street Capital LLC Wells...` (`5825-5092`) is in
+`Bank Statements6.2026`. The parser refuses it, which is correct — it is
+a different bank with a different layout. Noted so it is not mistaken for a
+parser gap. **No action unless Wells Fargo accounts need reconciling too**, which
+would be a separate parser.
 
 ### 7.4 Six accounting writes had NO role check — FIXED, and worth knowing why
 

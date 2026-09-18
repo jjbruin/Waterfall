@@ -1,9 +1,70 @@
-# Session Handoff — through Sep 17 2026 (v490 live)
+# Session Handoff — through Sep 18 2026 (v494 live)
+
+## Sep 17-18 2026 — TREASURY END TO END, and three bugs the real files found
+
+**`v492` = `8fc4947`, `v493` = `cab414c`, `v494` = `d72c46b`.**
+Topic file: **`treasury.md`**. Open items: **`open_items.md` §7**.
+
+The whole chain is live: import the PNC activity export, reconcile it against
+the statement and the ledger, code the month, download the GL and IA upload
+files. Nothing posts to MRI — it produces two files a person uploads.
+
+### The part worth carrying forward: real files found three bugs a spec could not
+
+Every one of these was found by running the code against Jim's ACTUAL files
+before he relied on it, and every one would have looked like somebody else's
+problem:
+
+1. **`.00`** — PNC prints a zero balance with no leading digit. 46 of his 64
+   June statements were refused, including rows carrying real money, because
+   one column held `.00`. It looked like "PNC layouts vary".
+2. **The mask is not always a tail.** `XX-XXXX-5765` hides the front,
+   `790-XXXXX55` hides the MIDDLE. Reading the last four visible digits off the
+   second gives an account that exists nowhere, so five REGISTERED accounts were
+   reported as unknown. **That is the dangerous shape** — it invites you to
+   "fix" it by entering data that was never missing, creating duplicates.
+3. **The vendored MRI template was never committed** — `.gitignore` blocks
+   `*.xlsx`. Pre-flight P4 caught it; the guardrail had passed on an untracked
+   file sitting in the working tree. **Present locally is not shipped.**
+
+The pattern: assert against an artefact the real system ACCEPTED, not against a
+description of one. `treasury_upload_check.py` rebuilds both accepted MRI upload
+files from their own contents and demands byte-identical output.
+
+### Two rules in the module that look like details and are not
+
+**Seeding is not re-basing.** `opening_balance()` never reads a statement; it
+carries the prior close, so a break surfaces as a difference instead of being
+hidden. `seed_from_statement` exists only to START the chain and refuses once
+anything is reconciled.
+
+**The cash side is never typed.** Each bank transaction becomes its own GL cash
+line at the amount the bank reported; the accountant supplies only the offset.
+The entry balances BY CONSTRUCTION, and a partly coded month cannot produce a
+file — no separate rule that could drift from it.
+
+### What Jim needs to do next, in order
+
+1. Import the 90-day activity export (50 accounts register themselves).
+2. Drop the `06.2026` statement folder into the bulk card — 50 of 64 file.
+3. **Seed openings at `202607`** — not 202606; the export opens 6/22 so June can
+   never be reconciled, while July and August are complete.
+4. Set the three CAD accounts to `MR10006000`, and give PPI2/PSS1/PIG5's second
+   accounts their own cash accounts (§7.8).
+5. Type the one missing account number for PPI Life Storage NY (§7.7).
+6. Reconcile July.
+
+### Watch out: that OneDrive folder is Files On-Demand
+
+Reading the statement folder directly from the command line pulls each PDF from
+the cloud — read times climbed 0.0s to 3.1s and then stalled. Parsing itself is
+0.03s per file. Uploading through the browser is unaffected. If it needs reading
+locally again, "Always keep on this device" first.
 
 ## Sep 17 2026 — TREASURY, and who owns the accounting section
 
 **`v488` = `492fe04`, `v489` = `ce80ba5`, `v490` = `1496daa`.**
-`426633b` is committed and NOT deployed (the order-number gate).
+(`426633b`, the order-number gate, shipped in `v491` — see the entry above.)
 
 Topic files: **`treasury.md`** (new — the module in full) and
 `accounting_workpapers.md` (a new "Who may edit any of this" section).

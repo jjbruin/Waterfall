@@ -279,7 +279,7 @@ number, target dates, Renumber, Carry forward and New close cycle** are
 `CLOSE_PLAN_ROLES` (admin, cfo). An analyst sees the whole section read-only.
 
 ### 10d. Accounting — Treasury
-Under Accounting, at `/treasury`. Three tabs; full detail in `treasury.md`.
+Under Accounting, at `/treasury`. Four tabs; full detail in `treasury.md`.
 
 - **Accounts** — every bank account, its entity and GL cash account (default
   `MR10005000`), **current ledger** carried from the last close, and **current
@@ -294,7 +294,15 @@ Under Accounting, at `/treasury`. Three tabs; full detail in `treasury.md`.
   ledger does not. Hand-pairing outranks the matcher. Closing a period records
   its computed ending, which becomes the next period's opening.
 
-Nothing here posts to MRI; the GL/IA upload templates are the next phase.
+- **Journal entry** — code the month, one row per bank transaction. The cash
+  side is never typed: each transaction becomes its own GL cash line at the
+  bank's own amount and the accountant supplies only the offset, so the entry
+  balances by construction and a partly coded month cannot produce a file. For a
+  distribution, the investor split is **computed and shown as an editable
+  proposal** from commitment amounts. Downloads the GL upload CSV and the IA
+  upload workbook, the latter written into a copy of MRI's own template.
+
+Nothing here posts to MRI; it produces the two files a person uploads.
 
 ### 11. New Business
 Deal pipeline, lease due diligence, and deal evaluation workspace under the "New Business" sidebar section.
