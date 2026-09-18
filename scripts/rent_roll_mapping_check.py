@@ -697,6 +697,87 @@ else:
           all(not s.strip().startswith('1 ') for s in d['suite']),
           str([s for s in d['suite'] if s.strip().startswith('1 ')][:3]))
 
+section('Unmatched lease files can be assigned or deleted')
+
+# Jim, Sep 18 2026: "add the ability to delete or assign the unmatched lease files in
+# the uploaded documents section... The analyst will delete the files related to former
+# leases and the section should be cleared."
+#
+# Assign already existed; delete did not, so the only way to empty the list was to
+# assign a former tenant's lease to somebody it does not belong to.
+#
+# FOUND WHILE BUILDING IT: lease_documents.tenant_id was declared NOT NULL while the
+# upload path deliberately writes NULL for a file that matched no tenant. On a table
+# created from that DDL the INSERT raises and takes the WHOLE multi-file upload with
+# it. Only databases predating the constraint ever worked, which is why it was never
+# seen.
+import sqlalchemy as _sa2  # noqa: E402
+from sqlalchemy import inspect as _inspect, text as _t2  # noqa: E402
+
+from flask_app.services import lease_review_service as _LR  # noqa: E402
+
+_e = _sa2.create_engine('sqlite:///:memory:')
+_LR.ensure_lease_tables(_e)
+with _e.connect() as _c:
+    _col = next(x for x in _inspect(_c).get_columns('lease_documents')
+                if x['name'] == 'tenant_id')
+check('a fresh database accepts an unassigned document', _col['nullable'] is True)
+
+with _e.begin() as _c:
+    _rid = _c.execute(_t2("INSERT INTO lease_reviews (property_name) VALUES ('T') "
+                          "RETURNING id")).scalar()
+    _oth = _c.execute(_t2("INSERT INTO lease_reviews (property_name) VALUES ('O') "
+                          "RETURNING id")).scalar()
+    _tid = _c.execute(_t2("INSERT INTO lease_tenants (review_id, tenant_name, suite) "
+                          "VALUES (:r,'Alpha','100') RETURNING id"),
+                      {'r': _rid}).scalar()
+    for _fn in ('Former Tenant Lease.pdf', 'Old Lease 2019.pdf', 'Alpha Lease.pdf'):
+        _c.execute(_t2("INSERT INTO lease_documents (review_id, tenant_id, filename, "
+                       "doc_type) VALUES (:r,NULL,:f,'Original Lease')"),
+                   {'r': _rid, 'f': _fn})
+    _foreign = _c.execute(_t2("INSERT INTO lease_documents (review_id, tenant_id, "
+                              "filename, doc_type) VALUES (:r,NULL,'Not Mine.pdf','L') "
+                              "RETURNING id"), {'r': _oth}).scalar()
+
+check('unmatched files are listed for the analyst',
+      len(_LR.get_unmatched_documents(_e, _rid)) == 3)
+
+_un = _LR.get_unmatched_documents(_e, _rid)
+_alpha = next(d for d in _un if d['filename'] == 'Alpha Lease.pdf')
+_LR.assign_document_to_tenant(_e, _rid, _alpha['id'], _tid)
+check('assigning one takes it off the list',
+      len(_LR.get_unmatched_documents(_e, _rid)) == 2)
+
+_rest = [d['id'] for d in _LR.get_unmatched_documents(_e, _rid)]
+_res = _LR.delete_documents(_e, _rid, _rest)
+check('the former-lease files can be deleted', _res['removed'] == 2, str(_res['removed']))
+check('...and the section clears', _LR.get_unmatched_documents(_e, _rid) == [])
+check('...naming what went, so the act is reviewable',
+      sorted(d['filename'] for d in _res['documents'])
+      == ['Former Tenant Lease.pdf', 'Old Lease 2019.pdf'],
+      str(sorted(d['filename'] for d in _res['documents'])))
+with _e.connect() as _c:
+    _left = _c.execute(_t2("SELECT COUNT(*) FROM lease_documents WHERE review_id=:r"),
+                       {'r': _rid}).scalar()
+check('the ASSIGNED lease is not swept up with them', _left == 1, str(_left))
+
+try:
+    _LR.delete_documents(_e, _rid, [_foreign])
+    check("another review's document cannot be deleted through this one", False)
+except ValueError as e:
+    check("another review's document cannot be deleted through this one",
+          'not in review' in str(e))
+with _e.connect() as _c:
+    check('...and it is still there',
+          _c.execute(_t2("SELECT COUNT(*) FROM lease_documents WHERE review_id=:r"),
+                     {'r': _oth}).scalar() == 1)
+try:
+    _LR.delete_documents(_e, _rid, [])
+    check('deleting nothing is refused', False)
+except ValueError as e:
+    check('deleting nothing is refused', 'No documents' in str(e))
+
+
 print(f'\n{len(PASS)} passed, {len(FAIL)} failed, {len(SKIP)} skipped')
 if FAIL:
     print('FAILED:')

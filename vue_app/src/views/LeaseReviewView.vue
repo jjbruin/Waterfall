@@ -686,6 +686,46 @@ async function loadUnmatchedDocs() {
   } catch { unmatchedDocs.value = [] }
 }
 
+// Deleting the leases of tenants who have gone is how the unmatched pile actually
+// clears. Selection + one confirm, because it is the bulk case: assigning a former
+// tenant's lease to a current one just to empty the list would be worse than leaving it.
+const selectedDocs = ref<number[]>([])
+const deletingDocs = ref(false)
+const confirmDeleteDocs = ref(false)
+
+const allDocsSelected = computed(() =>
+  unmatchedDocs.value.length > 0 &&
+  selectedDocs.value.length === unmatchedDocs.value.length)
+
+function toggleAllDocs(on: boolean) {
+  selectedDocs.value = on ? unmatchedDocs.value.map(d => d.id) : []
+}
+function toggleDoc(id: number, on: boolean) {
+  const set = new Set(selectedDocs.value)
+  on ? set.add(id) : set.delete(id)
+  selectedDocs.value = [...set]
+}
+
+async function deleteDocs(ids: number[]) {
+  if (!ids.length || !selectedReviewId.value) return
+  deletingDocs.value = true
+  try {
+    const res = await api.delete(
+      `/api/lease-review/reviews/${selectedReviewId.value}/documents`,
+      { data: { doc_ids: ids } })
+    const gone = new Set((res.data.documents || []).map((d: any) => d.id))
+    unmatchedDocs.value = unmatchedDocs.value.filter(d => !gone.has(d.id))
+    selectedDocs.value = selectedDocs.value.filter(id => !gone.has(id))
+    confirmDeleteDocs.value = false
+    docUploadReport.value = null
+    await loadReview(selectedReviewId.value!)
+  } catch (e: any) {
+    alert('Could not delete: ' + (e.response?.data?.error || e.message))
+  } finally {
+    deletingDocs.value = false
+  }
+}
+
 async function assignDoc(docId: number) {
   const tenantId = unmatchedAssignments.value[docId]
   if (!tenantId || !selectedReviewId.value) return
@@ -1404,14 +1444,46 @@ function statusClass(s: string): string {
         <!-- Unmatched documents — manual tenant assignment -->
         <div v-if="unmatchedDocs.length" style="margin-top: 1.5rem">
           <h3 style="color: #C00000">Unmatched Documents ({{ unmatchedDocs.length }})</h3>
-          <p class="subtitle">These documents could not be auto-matched to a tenant. Select the correct tenant for each.</p>
+          <p class="subtitle">
+            These could not be matched to a tenant. Assign the ones that belong to a
+            current tenant; delete the rest — a lease for a tenant who has gone belongs
+            nowhere, and assigning it to somebody else to clear the list is worse than
+            leaving it.
+          </p>
+          <div class="doc-bulk">
+            <label class="doc-bulk-all">
+              <input type="checkbox" :checked="allDocsSelected"
+                @change="toggleAllDocs(($event.target as HTMLInputElement).checked)" />
+              Select all {{ unmatchedDocs.length }}
+            </label>
+            <template v-if="selectedDocs.length">
+              <span class="doc-bulk-count">{{ selectedDocs.length }} selected</span>
+              <button v-if="!confirmDeleteDocs" class="btn-xs doc-del"
+                :disabled="deletingDocs" @click="confirmDeleteDocs = true">
+                Delete selected
+              </button>
+              <template v-else>
+                <span class="doc-warn">Delete {{ selectedDocs.length }} file(s)? This cannot be undone.</span>
+                <button class="btn-xs doc-del-yes" :disabled="deletingDocs"
+                  @click="deleteDocs(selectedDocs)">
+                  {{ deletingDocs ? 'Deleting...' : 'Yes, delete' }}
+                </button>
+                <button class="btn-xs" :disabled="deletingDocs"
+                  @click="confirmDeleteDocs = false">Cancel</button>
+              </template>
+            </template>
+          </div>
           <div class="table-scroll">
             <table class="data-table compact">
               <thead>
-                <tr><th>Filename</th><th>Type</th><th>Assign to Tenant</th><th class="c">Action</th></tr>
+                <tr><th class="disp-check"></th><th>Filename</th><th>Type</th><th>Assign to Tenant</th><th class="c">Action</th></tr>
               </thead>
               <tbody>
                 <tr v-for="d in unmatchedDocs" :key="d.id">
+                  <td class="disp-check">
+                    <input type="checkbox" :checked="selectedDocs.includes(d.id)"
+                      @change="toggleDoc(d.id, ($event.target as HTMLInputElement).checked)" />
+                  </td>
                   <td style="font-size: 0.85rem">{{ d.filename }}</td>
                   <td>{{ d.doc_type }}</td>
                   <td>
@@ -1424,6 +1496,8 @@ function statusClass(s: string): string {
                   </td>
                   <td class="c">
                     <button class="btn-primary" style="padding: 0.2rem 0.6rem; font-size: 0.8rem" @click="assignDoc(d.id)" :disabled="!unmatchedAssignments[d.id]">Assign</button>
+                    <button class="btn-xs doc-del" style="margin-left: 4px"
+                      :disabled="deletingDocs" @click="deleteDocs([d.id])">Delete</button>
                   </td>
                 </tr>
               </tbody>
@@ -1954,6 +2028,23 @@ function statusClass(s: string): string {
    "N630, N640-A" were the only rows left at double height once the tenant name
    was capped; neither reads better broken across two lines. */
 .nowrap-cell { white-space: nowrap; }
+.doc-bulk {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 6px 10px; margin: 0.35rem 0 0.6rem; font-size: 0.82rem;
+  background: #fff1f0; border-left: 3px solid #C00000; border-radius: 3px;
+}
+.doc-bulk-all { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.doc-bulk-count { color: #8a1c14; font-weight: 500; }
+.doc-warn { color: #8a1c14; font-weight: 600; }
+.doc-del {
+  border: 1px solid #c3ccd9; background: #fff; color: #8a1c14;
+  padding: 2px 8px; border-radius: 3px; cursor: pointer; font-size: 0.74rem;
+}
+.doc-del:hover:not(:disabled) { background: #fff1f0; border-color: #C00000; }
+.doc-del-yes {
+  border: 1px solid #C00000; background: #C00000; color: #fff;
+  padding: 2px 10px; border-radius: 3px; cursor: pointer; font-size: 0.74rem; font-weight: 600;
+}
 .roster-hidden {
   font-size: 0.8rem; color: #7a5c00; background: #fff8e5;
   border-left: 3px solid #e0a800; padding: 6px 10px; border-radius: 3px;

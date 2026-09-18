@@ -944,6 +944,34 @@ def list_unmatched_documents(review_id):
     return jsonify({'documents': docs})
 
 
+@lease_review_bp.route('/reviews/<int:review_id>/documents', methods=['DELETE'])
+@login_required
+@role_required('admin', 'analyst')
+def delete_documents_endpoint(review_id):
+    """Delete uploaded documents.
+
+    Body: { "doc_ids": [1, 2, 3] }
+
+    The unmatched pile is mostly leases for tenants who have gone. Assigning one of
+    those to a current tenant to clear the list would be worse than leaving it there,
+    so they can be deleted instead. All or nothing: a document id from another review
+    deletes nothing.
+    """
+    from flask_app.services.lease_review_service import delete_documents
+
+    data = request.json or {}
+    ids = data.get('doc_ids') or []
+    if not isinstance(ids, list) or not ids:
+        return jsonify({'error': 'doc_ids must be a non-empty list'}), 400
+    try:
+        return jsonify(delete_documents(get_engine(), review_id, ids))
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"Document delete error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
 @lease_review_bp.route('/reviews/<int:review_id>/documents/<int:doc_id>/assign-tenant', methods=['POST'])
 @login_required
 @role_required('admin', 'analyst')

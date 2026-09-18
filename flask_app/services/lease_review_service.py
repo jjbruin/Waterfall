@@ -124,7 +124,13 @@ LEASE_DDL_PG = [
     """
     CREATE TABLE IF NOT EXISTS lease_documents (
         id              SERIAL PRIMARY KEY,
-        tenant_id       INTEGER NOT NULL REFERENCES lease_tenants(id),
+        tenant_id       INTEGER REFERENCES lease_tenants(id),
+        -- NULL on purpose: a document that matched no tenant is stored
+        -- unassigned so the analyst can assign or delete it. The column was
+        -- NOT NULL while the upload path wrote NULL into it, so on a table
+        -- created from this DDL the whole multi-file upload raised as soon as
+        -- one file failed to match. Only databases predating the constraint
+        -- worked, which is why it was never seen.
         review_id       INTEGER NOT NULL REFERENCES lease_reviews(id),
         filename        TEXT NOT NULL,
         file_path       TEXT,
@@ -372,6 +378,9 @@ def _migrate_nullable(engine, table: str, column: str):
 def ensure_lease_tables(engine):
     """Create lease review tables and migrate missing columns."""
     from sqlalchemy import text, inspect
+    # Before the CREATEs, so an empty table carrying the old NOT NULL is dropped and
+    # rebuilt from the corrected DDL in this same call rather than the next one.
+    _relax_document_tenant_null(engine)
     with engine.connect() as conn:
         # Detect dialect for correct DDL
         dialect = engine.dialect.name
@@ -1120,6 +1129,44 @@ def parse_rent_roll_flexible(file_obj, filename: str = '') -> pd.DataFrame:
     return pd.DataFrame(result_rows)
 
 
+def _relax_document_tenant_null(engine):
+    """Let lease_documents.tenant_id be NULL, as the upload path requires.
+
+    An unmatched document is stored unassigned. The column was declared NOT NULL, so a
+    database created from that DDL rejects the insert and takes the whole upload with
+    it. Existing databases predate the constraint and are unaffected either way.
+    """
+    from sqlalchemy import inspect as sa_inspect, text
+
+    try:
+        with engine.begin() as conn:
+            insp = sa_inspect(conn)
+            if 'lease_documents' not in insp.get_table_names():
+                return
+            col = next((c for c in insp.get_columns('lease_documents')
+                        if c['name'] == 'tenant_id'), None)
+            if col is None or col.get('nullable', True):
+                return
+            if engine.dialect.name == 'postgresql':
+                conn.execute(text(
+                    "ALTER TABLE lease_documents ALTER COLUMN tenant_id DROP NOT NULL"))
+                logger.info("lease_documents.tenant_id is now nullable")
+                return
+            # SQLite cannot drop a NOT NULL in place. Rebuilding is only safe on an
+            # empty table, and a dev database with documents in it keeps the old
+            # constraint rather than being rewritten underneath itself.
+            n = conn.execute(text("SELECT COUNT(*) FROM lease_documents")).scalar()
+            if n:
+                logger.warning(
+                    "lease_documents.tenant_id is NOT NULL and the table has %s row(s); "
+                    "unmatched uploads will fail until it is rebuilt by hand", n)
+                return
+            conn.execute(text("DROP TABLE lease_documents"))
+            logger.info("Rebuilt empty lease_documents so unmatched uploads can store")
+    except Exception as e:
+        logger.warning("Could not relax lease_documents.tenant_id: %s", e)
+
+
 def _tenant_child_tables(conn) -> List[Tuple[str, str]]:
     """(table, column) for every foreign key into lease_tenants, from the catalog.
 
@@ -1724,6 +1771,50 @@ def _match_file_to_tenant(
                 best_len = len(tname)
 
     return best_match
+
+
+def delete_documents(engine, review_id: int,
+                     doc_ids: List[int]) -> Dict[str, Any]:
+    """Remove uploaded documents from a review.
+
+    The unmatched pile is mostly leases for tenants who have gone -- the analyst reads
+    each one, assigns the ones that belong to a current tenant and deletes the rest,
+    and the section should then be empty. Without a delete the only way to clear it was
+    to assign a former tenant's lease to somebody it does not belong to, which is worse
+    than leaving it.
+
+    Returns what was removed, by name, so the act is reviewable afterwards rather than
+    just a count.
+    """
+    from sqlalchemy import bindparam, text
+
+    ids = sorted({int(d) for d in (doc_ids or [])})
+    if not ids:
+        raise ValueError("No documents given.")
+
+    with engine.begin() as conn:
+        # Named before they go, and checked against THIS review: a document id from
+        # another review must not be deletable through this one.
+        rows = conn.execute(text("""
+            SELECT id, filename, tenant_id FROM lease_documents
+             WHERE review_id = :rid AND id IN :ids
+        """).bindparams(bindparam("ids", expanding=True)),
+            {"rid": review_id, "ids": ids}).fetchall()
+        found = {int(r[0]) for r in rows}
+        missing = [i for i in ids if i not in found]
+        if missing:
+            raise ValueError(
+                f"These documents are not in review {review_id}: {missing}. "
+                "Nothing was deleted.")
+
+        conn.execute(text("DELETE FROM lease_documents WHERE id IN :ids")
+                     .bindparams(bindparam("ids", expanding=True)), {"ids": ids})
+
+    removed = [{"id": int(r[0]), "filename": r[1],
+                "was_assigned": r[2] is not None} for r in rows]
+    logger.info("Review %s: deleted %d document(s): %s", review_id, len(removed),
+                ", ".join(d["filename"] for d in removed))
+    return {"status": "deleted", "removed": len(removed), "documents": removed}
 
 
 def get_unmatched_documents(engine, review_id: int) -> List[Dict[str, Any]]:
