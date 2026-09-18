@@ -265,6 +265,126 @@ check('scan row_count equals the number of rows imported',
       _sc['row_count'] == len(_df), f"scan={_sc['row_count']} imported={len(_df)}")
 
 
+section('No import route may delete a tenant')
+
+# The leases are the authority in a lease review and the rent roll is what is being
+# checked against them. A tenant we hold a lease for, absent from a later rent roll,
+# is a finding about the rent roll -- and may simply have vacated, in which case the
+# lease stays on file and comes out of the projection instead. Either way the import
+# must not delete it, and must not delete the abstract built from that lease.
+_api = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         'flask_app', 'api', 'lease_review.py'), encoding='utf-8').read()
+check('no rent roll route calls the destructive import',
+      'import_rent_roll_to_review' not in _api)
+check('the rent roll routes merge',
+      _api.count('merge_rent_roll_to_review') >= 2)
+check('no replace/destructive mode is offered over HTTP',
+      "'replace'" not in _api and '"replace"' not in _api)
+
+_view = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          'vue_app', 'src', 'views', 'LeaseReviewView.vue'),
+             encoding='utf-8').read()
+check('the screen offers no replace mode either',
+      'scanMode' not in _view and 'Replace all tenants' not in _view)
+_svc = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         'flask_app', 'services', 'lease_review_service.py'),
+            encoding='utf-8').read()
+_mi = _svc.index('def merge_rent_roll_to_review')
+_mj = _svc.index('\ndef ', _mi + 10)
+check('merge itself contains no DELETE', 'DELETE' not in _svc[_mi:_mj])
+
+
+section('Disposition — a reading, not a deletion')
+
+# The three readings after checking the rent roll against the leases. A vacated
+# tenant must come OUT of the projection and KEEP its lease: half of that is not
+# good enough, so both halves are asserted, on a real projection rather than by
+# inspecting the status column.
+import sqlalchemy as _sa  # noqa: E402
+from sqlalchemy import text as _text  # noqa: E402
+
+from flask_app.services import lease_review_service as LRS  # noqa: E402
+
+_eng2 = _sa.create_engine('sqlite:///:memory:')
+LRS.ensure_lease_tables(_eng2)
+LRS.ensure_resolution_table(_eng2)
+with _eng2.begin() as _c:
+    _rid2 = _c.execute(_text("INSERT INTO lease_reviews (property_name) "
+                             "VALUES ('T') RETURNING id")).scalar()
+    _keep = _c.execute(_text(
+        "INSERT INTO lease_tenants (review_id, tenant_name, suite, square_feet, "
+        "annual_rent, lease_start, lease_end, lease_type) VALUES "
+        "(:r,'Stays','100',1000,50000,'2020-01-01','2030-12-31','retail') "
+        "RETURNING id"), {'r': _rid2}).scalar()
+    _gone = _c.execute(_text(
+        "INSERT INTO lease_tenants (review_id, tenant_name, suite, square_feet, "
+        "annual_rent, lease_start, lease_end, lease_type) VALUES "
+        "(:r,'Left','200',2000,80000,'2020-01-01','2030-12-31','retail') "
+        "RETURNING id"), {'r': _rid2}).scalar()
+    _c.execute(_text("INSERT INTO lease_documents (review_id, tenant_id, filename, "
+                     "doc_type) VALUES (:r,:t,'Lease.pdf','Original Lease')"),
+               {'r': _rid2, 't': _gone})
+    _c.execute(_text("INSERT INTO lease_abstract_sections (tenant_id, section_key, "
+                     "section_title, content) VALUES (:t,'cam','CAM','pro rata')"),
+               {'t': _gone})
+
+
+def _projected_ids():
+    p = LRS.generate_projected_cash_flow(_eng2, _rid2, '2026-01-01', '2026-12-31')
+    return {s.get('tenant_id') for s in p['suites'].values()}
+
+
+def _counts(tid):
+    with _eng2.connect() as c:
+        return (
+            c.execute(_text("SELECT COUNT(*) FROM lease_tenants WHERE id=:t"),
+                      {'t': tid}).scalar(),
+            c.execute(_text("SELECT COUNT(*) FROM lease_documents WHERE tenant_id=:t"),
+                      {'t': tid}).scalar(),
+            c.execute(_text("SELECT COUNT(*) FROM lease_abstract_sections "
+                            "WHERE tenant_id=:t"), {'t': tid}).scalar())
+
+
+check('both tenants are projected before any reading is set',
+      {_keep, _gone} <= _projected_ids(), str(_projected_ids()))
+
+LRS.set_tenant_disposition(_eng2, _rid2, _gone, 'vacated', note='lease on file')
+_row, _docs, _abs = _counts(_gone)
+check('a vacated tenant leaves the projection',
+      _gone not in _projected_ids(), str(_projected_ids()))
+check('...and the tenant record itself is kept', _row == 1)
+check('...and its lease document is kept', _docs == 1)
+check('...and the abstract built from that lease is kept', _abs == 1)
+check('the tenant that stayed is still projected', _keep in _projected_ids())
+
+LRS.set_tenant_disposition(_eng2, _rid2, _gone, 'disregarded')
+check('a rent roll entry with no lease is also out of the projection',
+      _gone not in _projected_ids())
+check('...and still keeps its records', _counts(_gone) == (1, 1, 1), str(_counts(_gone)))
+
+LRS.set_tenant_disposition(_eng2, _rid2, _gone, 'active')
+check('the reading is reversible — back in the projection',
+      _gone in _projected_ids())
+
+try:
+    LRS.set_tenant_disposition(_eng2, _rid2, _gone, 'deleted')
+    check('a non-disposition status is refused', False)
+except ValueError as e:
+    check('a non-disposition status is refused', 'Unknown disposition' in str(e))
+
+_listed = LRS.get_tenant_dispositions(_eng2, _rid2)
+check('an active tenant is not listed as dispositioned', _listed == [], str(_listed))
+LRS.set_tenant_disposition(_eng2, _rid2, _gone, 'vacated')
+_listed = LRS.get_tenant_dispositions(_eng2, _rid2)
+check('a dispositioned tenant is listed with what is attached to it',
+      len(_listed) == 1 and _listed[0]['attached'].get('documents') == 1,
+      str(_listed))
+check('the merge finding carries the tenant id, so it can be dispositioned',
+      "'id': ex['id']" in _svc)
+check('the screen offers the three readings',
+      all(v in _view for v in ("'active'", "'vacated'", "'disregarded'")))
+
+
 section('Replace must clear what points at the tenants')
 
 # Production hit ForeignKeyViolation on lease_tenant_sales: the delete list was

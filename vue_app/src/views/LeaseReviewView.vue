@@ -284,6 +284,46 @@ async function createNewReview() {
   }
 }
 
+// --- Tenant disposition -------------------------------------------------------
+// After the rent roll is checked against the leases, a tenant row means one of
+// three things. None of them deletes the record: the lease and the abstract built
+// from it stay on file, and only the reading changes whether it is projected.
+const dispositionOptions = [
+  { value: 'active', label: 'On the rent roll',
+    meaning: 'Supported by a lease and on the rent roll — counted in the projection.' },
+  { value: 'vacated', label: 'Vacated',
+    meaning: 'Tenant has left. The lease stays on file; not counted in the projection.' },
+  { value: 'disregarded', label: 'No lease',
+    meaning: 'Rent roll entry with no lease to support it — not counted in the projection.' },
+]
+const savingDisposition = ref<number | null>(null)
+const dispositionError = ref<Record<number, string>>({})
+const localDispositions = ref<Record<number, string>>({})
+
+function dispositionOf(t: any): string {
+  if (t?.id != null && localDispositions.value[t.id]) return localDispositions.value[t.id]
+  const row = tenants.value.find((x: any) => x.id === t?.id)
+  return row?.tenant_status || 'active'
+}
+
+async function setDisposition(t: any, status: string) {
+  if (!t?.id || !selectedReviewId.value) return
+  savingDisposition.value = t.id
+  delete dispositionError.value[t.id]
+  try {
+    await api.put(
+      `/api/lease-review/reviews/${selectedReviewId.value}/tenants/${t.id}/disposition`,
+      { status }
+    )
+    localDispositions.value[t.id] = status
+    await loadReview(selectedReviewId.value!)
+  } catch (e: any) {
+    dispositionError.value[t.id] = e.response?.data?.error || 'Could not save'
+  } finally {
+    savingDisposition.value = null
+  }
+}
+
 // --- Rent roll column mapping -------------------------------------------------
 // The file is scanned first and nothing is written until the analyst has said which
 // columns are recoveries and whether each charge is monthly or annual. Neither is
@@ -291,7 +331,7 @@ async function createNewReview() {
 // three separate columns, and its "Base Rent" is a monthly figure.
 const scanResult = ref<any>(null)
 const scanFile = ref<File | null>(null)
-const scanMode = ref<'merge' | 'replace'>('merge')
+
 const scanning = ref(false)
 const committing = ref(false)
 const mapReport = ref<any>(null)
@@ -353,7 +393,6 @@ async function commitRentRoll() {
   const formData = new FormData()
   formData.append('file', scanFile.value)
   formData.append('mapping', JSON.stringify(scanResult.value.mapping))
-  formData.append('mode', scanMode.value)
 
   committing.value = true
   try {
@@ -963,7 +1002,12 @@ function statusClass(s: string): string {
       <!-- STEP 2: Import Rent Roll -->
       <div v-if="activeStep === 'rent_roll'" class="step-content">
         <h2>Import Seller's Rent Roll</h2>
-        <p class="subtitle">Upload the rent roll received from the operating partner. Use <strong>Import (Merge)</strong> to safely update existing data, or <strong>Replace All</strong> to start fresh.</p>
+        <p class="subtitle">
+          Upload the rent roll received from the operating partner. You confirm the
+          columns before anything is written, and the import never deletes a tenant —
+          the leases are the record, so a tenant the rent roll no longer lists is
+          reported for a reading rather than removed.
+        </p>
 
         <!-- One way in. Merge vs replace is chosen on the confirmation panel, after
              the columns have been seen, rather than by picking a button before the
@@ -985,11 +1029,13 @@ function statusClass(s: string): string {
                 · {{ scanResult.row_count }} tenant rows
               </span>
             </h3>
+            <!-- No destructive mode. The leases are the authority here and the rent
+                 roll is what is being checked against them, so a tenant we hold a
+                 lease for that is missing from a later rent roll is a finding about
+                 the rent roll -- not a reason to delete the tenant and the abstract
+                 built from its lease. Removing a tenant stays a deliberate, one-at-
+                 a-time act. -->
             <div class="map-actions">
-              <select v-model="scanMode" class="map-select">
-                <option value="merge">Merge into existing tenants (keeps sales, abstracts)</option>
-                <option value="replace">Replace all tenants (discards sales, abstracts)</option>
-              </select>
               <button class="btn-primary" :disabled="committing || unansweredPeriods.length > 0"
                 @click="commitRentRoll">
                 {{ committing ? 'Importing...' : 'Import' }}
@@ -1104,13 +1150,35 @@ function statusClass(s: string): string {
             <span class="badge badge-match">{{ mergeReport.added }} added</span>
             <span v-if="mergeReport.not_in_upload" class="badge badge-minor">{{ mergeReport.not_in_upload }} not in upload</span>
           </div>
+          <!-- These are the rows where a lease we hold disagrees with the rent roll.
+               Nothing was deleted; each one needs a reading, and that reading is what
+               decides whether it belongs in the projection. -->
           <div v-if="mergeReport.not_in_upload_tenants?.length" class="merge-missing">
-            <strong>Tenants not in uploaded rent roll:</strong>
-            <ul>
-              <li v-for="t in mergeReport.not_in_upload_tenants" :key="t.suite">
-                {{ t.tenant }} ({{ t.suite }})
-              </li>
-            </ul>
+            <strong>In our records but not on this rent roll — how should each be read?</strong>
+            <p class="disp-help">
+              Leases stay on file either way. Only <em>On the rent roll</em> is counted
+              in the projection.
+            </p>
+            <table class="data-table compact disp-table">
+              <thead>
+                <tr><th>Tenant</th><th>Suite</th><th>Reading</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="t in mergeReport.not_in_upload_tenants" :key="t.id ?? t.suite">
+                  <td class="tenant-name" :title="t.tenant"><span class="tname">{{ t.tenant }}</span></td>
+                  <td class="nowrap-cell">{{ t.suite }}</td>
+                  <td class="nowrap-cell">
+                    <button v-for="opt in dispositionOptions" :key="opt.value"
+                      class="btn-xs disp-btn"
+                      :class="{ 'disp-on': (dispositionOf(t) === opt.value) }"
+                      :disabled="!t.id || savingDisposition === t.id"
+                      :title="opt.meaning"
+                      @click="setDisposition(t, opt.value)">{{ opt.label }}</button>
+                    <span v-if="dispositionError[t.id]" class="disp-err">{{ dispositionError[t.id] }}</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </div>
 
@@ -1129,6 +1197,7 @@ function statusClass(s: string): string {
                   <th class="r">Recoveries $/SF</th><th class="r">Misc $/SF</th>
                   <th class="r">Annual Sales</th><th class="r">Sales $/SF</th>
                   <th class="r">Occ. Cost</th>
+                  <th>Reading</th>
                   <th>Source</th>
                 </tr>
               </thead>
@@ -1161,6 +1230,16 @@ function statusClass(s: string): string {
                   </td>
                   <td class="r">{{ tenantSalesPerSF(t) != null ? fmtPerSF(tenantSalesPerSF(t)) : '\u2014' }}</td>
                   <td class="r">{{ tenantOccCost(t) }}</td>
+                  <td class="nowrap-cell">
+                    <select class="map-select disp-select"
+                      :class="{ 'disp-off': (t.tenant_status || 'active') !== 'active' }"
+                      :value="t.tenant_status || 'active'"
+                      :disabled="savingDisposition === t.id"
+                      @change="setDisposition(t, ($event.target as HTMLSelectElement).value)">
+                      <option v-for="opt in dispositionOptions" :key="opt.value"
+                        :value="opt.value">{{ opt.label }}</option>
+                    </select>
+                  </td>
                   <td><span class="badge badge-pending">{{ t.rent_roll_source || 'original' }}</span></td>
                 </tr>
               </tbody>
@@ -1762,6 +1841,23 @@ function statusClass(s: string): string {
    "N630, N640-A" were the only rows left at double height once the tenant name
    was capped; neither reads better broken across two lines. */
 .nowrap-cell { white-space: nowrap; }
+
+/* Tenant disposition — the reading, not the rent roll's own vacancy flag */
+.disp-help { font-size: 0.78rem; color: #666; margin: 0.15rem 0 0.5rem; }
+.disp-table { margin-top: 0.25rem; background: #fff; }
+.disp-btn {
+  border: 1px solid #c3ccd9; background: #fff; color: #444;
+  padding: 2px 8px; margin-right: 4px; border-radius: 3px;
+  font-size: 0.74rem; cursor: pointer;
+}
+.disp-btn:hover:not(:disabled) { background: #eef5fc; border-color: #1a73e8; }
+.disp-btn:disabled { opacity: 0.5; cursor: default; }
+.disp-btn.disp-on { background: #1F4E79; border-color: #1F4E79; color: #fff; font-weight: 600; }
+.disp-err { color: #c0392b; font-size: 0.74rem; margin-left: 0.4rem; }
+.disp-select { font-size: 0.76rem; }
+/* A reading other than "on the rent roll" means the row is out of the projection,
+   so it should not look like the rows that are in it. */
+.disp-select.disp-off { background: #fff6e5; border-color: #e0a800; color: #7a5c00; }
 .map-label { font-weight: 500; }
 .editable-cell { cursor: pointer; }
 .editable-cell:hover { background: #e8f0fe; }

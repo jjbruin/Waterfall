@@ -419,6 +419,11 @@ def ensure_lease_tables(engine):
     _migrate_add_column(engine, 'lease_tenants', 'analyst_notes', 'TEXT')
 
     # Rent roll extended columns on lease_tenants
+    # rent_per_sf is read by get_resolved_tenants and written by every import path,
+    # but it was in neither the CREATE TABLE nor any migration -- existing databases
+    # carry it from an older schema, so only a genuinely fresh one would have failed,
+    # with "no such column: rent_per_sf" out of the projection and the risk grid.
+    _migrate_add_column(engine, 'lease_tenants', 'rent_per_sf', 'DOUBLE PRECISION')
     _migrate_add_column(engine, 'lease_tenants', 'monthly_rent_per_sf', 'DOUBLE PRECISION')
     _migrate_add_column(engine, 'lease_tenants', 'annual_rent_per_sf', 'DOUBLE PRECISION')
     _migrate_add_column(engine, 'lease_tenants', 'annual_recoveries_per_sf', 'DOUBLE PRECISION')
@@ -1496,7 +1501,11 @@ def merge_rent_roll_to_review(
         not_in_upload = []
         for ex in existing_list:
             if ex['id'] not in matched_ids:
-                not_in_upload.append({'tenant': ex['name'], 'suite': ex['suite']})
+                # The id travels with the finding so the analyst can disposition it
+                # from the merge report -- these are the rows where a lease we hold
+                # disagrees with the rent roll, and that is the moment to say why.
+                not_in_upload.append({'id': ex['id'], 'tenant': ex['name'],
+                                      'suite': ex['suite']})
 
         # Update review totals from current state
         totals = conn.execute(text("""
@@ -5902,6 +5911,101 @@ def delete_tenant(engine, review_id: int, tenant_id: int) -> Dict[str, Any]:
             WHERE id = :tid
         """), {'tid': tenant_id})
     return {'status': 'deleted', 'tenant_id': tenant_id}
+
+
+# What a tenant row means once the rent roll has been checked against the leases.
+# The leases are the authority; the rent roll is what is being validated, so a
+# disagreement between them is a finding with three possible dispositions -- and
+# none of them is "delete the record", because the lease and the abstract built
+# from it are the expensive part of the review and stay on file either way.
+TENANT_DISPOSITIONS = {
+    'active': 'On the rent roll and supported by a lease — counted in the projection.',
+    'vacated': 'Tenant has left. The lease stays on file; not counted in the '
+               'projection.',
+    'disregarded': 'Rent roll entry with no lease to support it — not counted in '
+                   'the projection.',
+}
+# 'deleted' and 'replaced' are set by the soft-delete and succession paths and are
+# not analyst dispositions; they are listed here so callers can reason about the
+# whole vocabulary. Everything downstream includes ONLY 'active'.
+TENANT_STATUSES = set(TENANT_DISPOSITIONS) | {'deleted', 'replaced'}
+
+
+def set_tenant_disposition(engine, review_id: int, tenant_id: int,
+                           status: str, note: Optional[str] = None,
+                           set_by: str = 'analyst') -> Dict[str, Any]:
+    """Record what a tenant row means, without removing it or its lease.
+
+    Only the status moves. The lease documents, the abstract, the extraction and
+    the tenant sales are untouched, which is the whole point: a tenant that has
+    vacated still has a lease we hold and may need to read again.
+    """
+    from sqlalchemy import text
+
+    if status not in TENANT_DISPOSITIONS:
+        raise ValueError(
+            f"Unknown disposition '{status}'. Expected one of: "
+            + ', '.join(sorted(TENANT_DISPOSITIONS)))
+
+    with engine.begin() as conn:
+        _verify_tenant_in_review(conn, review_id, tenant_id)
+        params = {'st': status, 'tid': tenant_id}
+        sql = ("UPDATE lease_tenants SET tenant_status = :st, "
+               "updated_at = CURRENT_TIMESTAMP")
+        if note is not None:
+            sql += ", analyst_notes = :note"
+            params['note'] = note
+        conn.execute(text(sql + " WHERE id = :tid"), params)
+
+    logger.info("Review %s tenant %s -> %s by %s", review_id, tenant_id, status, set_by)
+    return {'status': 'updated', 'tenant_status': status,
+            'meaning': TENANT_DISPOSITIONS[status]}
+
+
+def get_tenant_dispositions(engine, review_id: int) -> List[Dict[str, Any]]:
+    """Tenants whose status is not 'active', with what is attached to each.
+
+    A vacated tenant that turns out to still hold three lease documents is worth
+    seeing before anyone decides the record is disposable.
+    """
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT id, tenant_name, suite, tenant_status, analyst_notes
+            FROM lease_tenants
+            WHERE review_id = :rid
+              AND tenant_status IS NOT NULL AND tenant_status <> 'active'
+            ORDER BY tenant_name
+        """), {'rid': review_id}).fetchall()
+        out = []
+        for r in rows:
+            out.append({
+                'id': r[0], 'tenant_name': r[1], 'suite': r[2],
+                'tenant_status': r[3], 'analyst_notes': r[4],
+                'attached': _tenant_work_summary(conn, r[0]),
+            })
+    return out
+
+
+def _tenant_work_summary(conn, tenant_id: int) -> Dict[str, int]:
+    """Count the due diligence records attached to one tenant."""
+    from sqlalchemy import inspect as sa_inspect, text
+
+    present = set(sa_inspect(conn).get_table_names())
+    out: Dict[str, int] = {}
+    for table, label in (('lease_documents', 'documents'),
+                         ('lease_abstract_sections', 'abstract_sections'),
+                         ('lease_tenant_sales', 'sales_years'),
+                         ('lease_options', 'options'),
+                         ('lease_field_resolutions', 'resolutions')):
+        if table not in present:
+            continue
+        n = conn.execute(text(f'SELECT COUNT(*) FROM {table} WHERE tenant_id = :t'),
+                         {'t': tenant_id}).scalar()
+        if n:
+            out[label] = int(n)
+    return out
 
 
 def mark_tenant_vacant(

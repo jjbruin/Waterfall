@@ -16,7 +16,6 @@ from flask_app.services.lease_review_service import (
     get_cotenancy_matrix,
     get_scenario_analysis,
     generate_lease_review_excel,
-    import_rent_roll_to_review,
     create_review_manual,
     merge_rent_roll_to_review,
     upload_documents_to_review,
@@ -208,10 +207,10 @@ def upload_rent_roll(review_id):
     the route is reachable on its own, and the 12x monthly/annual misread was
     exactly the kind of thing that passed silently through it.
     """
-    return _import_by_proposal(review_id, mode='replace')
+    return _import_by_proposal(review_id)
 
 
-def _import_by_proposal(review_id, mode):
+def _import_by_proposal(review_id):
     from flask_app.services import rent_roll_mapping
 
     if 'file' not in request.files:
@@ -236,13 +235,9 @@ def _import_by_proposal(review_id, mode):
                 'be set.', 'unanswered': scanned['unanswered']}), 400
         rr_df, report = rent_roll_mapping.apply_mapping(
             file_bytes, file.filename, scanned['mapping'])
-        if mode == 'replace':
-            count = import_rent_roll_to_review(engine, review_id, rr_df)
-            result = {'status': 'imported', 'tenant_count': count}
-        else:
-            result = {'status': 'merged', **merge_rent_roll_to_review(
-                engine, review_id, rr_df,
-                source_label=request.form.get('source_label', 'seller_rent_roll'))}
+        result = {'status': 'merged', **merge_rent_roll_to_review(
+            engine, review_id, rr_df,
+            source_label=request.form.get('source_label', 'seller_rent_roll'))}
         return jsonify({
             **result,
             'mapping_report': report,
@@ -253,6 +248,53 @@ def _import_by_proposal(review_id, mode):
         return jsonify({'error': str(e)}), 400
     except Exception as e:
         logger.error(f"Rent roll upload error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/tenants/<int:tenant_id>/disposition',
+                       methods=['PUT'])
+@login_required
+@role_required('admin', 'analyst')
+def set_disposition(review_id, tenant_id):
+    """Record what a tenant row means after checking the rent roll against the leases.
+
+    Body: { "status": "active" | "vacated" | "disregarded", "note": "..." }
+
+    Nothing is deleted. A vacated tenant keeps its lease documents and its abstract
+    and simply stops being counted in the projection.
+    """
+    from flask_app.services.lease_review_service import set_tenant_disposition
+
+    data = request.json or {}
+    status = (data.get('status') or '').strip()
+    if not status:
+        return jsonify({'error': 'status is required'}), 400
+    try:
+        return jsonify(set_tenant_disposition(
+            get_engine(), review_id, tenant_id, status,
+            note=data.get('note'),
+            set_by=g.current_user.get('username', 'unknown')))
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"Disposition error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/dispositions', methods=['GET'])
+@login_required
+def list_dispositions(review_id):
+    """Tenants set to something other than active, and what is attached to each."""
+    from flask_app.services.lease_review_service import (
+        get_tenant_dispositions, TENANT_DISPOSITIONS)
+    try:
+        return jsonify({
+            'tenants': get_tenant_dispositions(get_engine(), review_id),
+            'options': [{'value': k, 'meaning': v}
+                        for k, v in TENANT_DISPOSITIONS.items()],
+        })
+    except Exception as e:
+        logger.error(f"Dispositions error: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 
@@ -292,7 +334,13 @@ def commit_rent_roll(review_id):
     The file is posted again rather than held between the two calls, so a scan that
     is never confirmed leaves nothing behind on the server.
 
-    Form fields: file, mapping (JSON), mode ('merge' | 'replace').
+    Form fields: file, mapping (JSON).
+
+    Always a merge. Nothing here deletes a tenant: the leases are the authority in
+    a lease review and the rent roll is what is being checked against them, so a
+    tenant we hold a lease for that is absent from a later rent roll is a finding
+    about the rent roll, not a cue to delete the tenant and the abstract built from
+    its lease. Removing a tenant stays a deliberate, one-at-a-time act.
     """
     import json as _json
     from flask_app.services import rent_roll_mapping
@@ -310,25 +358,16 @@ def commit_rent_roll(review_id):
     if not mapping.get('roles'):
         return jsonify({'error': 'mapping.roles is required'}), 400
 
-    mode = (request.form.get('mode') or 'merge').lower()
-    if mode not in ('merge', 'replace'):
-        return jsonify({'error': "mode must be 'merge' or 'replace'"}), 400
-
     engine = get_engine()
     ensure_lease_tables(engine)
 
     try:
         rr_df, report = rent_roll_mapping.apply_mapping(
             file.read(), file.filename, mapping)
-        if mode == 'replace':
-            count = import_rent_roll_to_review(engine, review_id, rr_df)
-            result = {'status': 'imported', 'tenant_count': count}
-        else:
-            merged = merge_rent_roll_to_review(
-                engine, review_id, rr_df,
-                source_label=request.form.get('source_label', 'seller_rent_roll'),
-            )
-            result = {'status': 'merged', **merged}
+        result = {'status': 'merged', **merge_rent_roll_to_review(
+            engine, review_id, rr_df,
+            source_label=request.form.get('source_label', 'seller_rent_roll'),
+        )}
         return jsonify({
             **result,
             'mapping_report': report,
@@ -341,15 +380,6 @@ def commit_rent_roll(review_id):
         return jsonify({'error': str(e)}), 400
     except Exception as e:
         logger.error(f"Rent roll commit error: {e}", exc_info=True)
-        # A replace has to delete the existing tenants, and other records point at
-        # them. If any are still held, say what actually happened and name the way
-        # out -- a raw constraint name tells the analyst nothing.
-        if 'ForeignKeyViolation' in str(e) or 'IntegrityError' in type(e).__name__:
-            return jsonify({'error':
-                'Replace could not remove the existing tenants because other '
-                'records (tenant sales, abstracts, validations) still reference '
-                'them. Use "Merge into existing tenants" instead — it updates the '
-                'figures in place and keeps that work.'}), 409
         return jsonify({'error': str(e)}), 500
 
 
@@ -379,7 +409,8 @@ def get_review(review_id):
                    extraction_status, approval_status, analyst_notes,
                    rent_roll_source,
                    monthly_rent_per_sf, annual_rent_per_sf,
-                   annual_recoveries_per_sf, annual_misc_per_sf
+                   annual_recoveries_per_sf, annual_misc_per_sf,
+                   tenant_status
             FROM lease_tenants
             WHERE review_id = :rid
             ORDER BY suite
@@ -421,6 +452,7 @@ def get_review(review_id):
             'annual_rent_per_sf': t[21],
             'annual_recoveries_per_sf': t[22],
             'annual_misc_per_sf': t[23],
+            'tenant_status': t[24] or 'active',
             'documents': doc_map.get(t[0], {'total': 0, 'extracted': 0}),
         } for t in tenants],
     })
@@ -741,7 +773,7 @@ def merge_rent_roll(review_id):
     runs the scan and imports the proposal rather than matching on keywords, and
     refuses a file whose charge period is not stated.
     """
-    return _import_by_proposal(review_id, mode='merge')
+    return _import_by_proposal(review_id)
 
 
 @lease_review_bp.route('/reviews/<int:review_id>/upload-documents', methods=['POST'])
