@@ -249,6 +249,54 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v495` = `423daa5` (THE RENT ROLL STOPS GUESSING, AND THE RECOVERY COLUMNS
+    WERE THE SMALLER HALF. Jim reported that Market at Poplar imported CAM but
+    not Insurance or Tax — `_find_col` returns the FIRST match and stops, so CAM
+    came in alone at 34% of the recovery, and Property Tax by itself
+    (37,884/mo) is bigger than CAM (22,574/mo). The bigger defect was next to
+    it: "Base Rent" in that file is a MONTHLY column carrying no qualifier, and
+    `annual_rent`'s keyword list reads "base rent" as annual, so EVERY RENT
+    LANDED 12x LOW — Patton Computers at $1.83/SF/yr against a real $22.00.
+    Three non-tenant rows imported as tenants as well (the building banner,
+    "Sub-total for Building: 925", "Grand Total for Report"), adding 459,444
+    phantom SF against a real 228,122; the old skip list matched 'grand total'
+    EXACTLY, so the actual row walked past it.
+    NEITHER QUESTION IS ANSWERABLE FROM A HEADER, so neither is guessed now.
+    `scan()` describes the file and proposes; `apply_mapping()` loads only what
+    the analyst confirmed. `_propose_basis` returns None rather than picking,
+    and a charge with no stated period REFUSES to import until answered —
+    that refusal IS the feature. Recoveries are many-to-one by design.
+    TWO LAYOUTS, because the same property arrives in both. The MRI "Master
+    Rent Roll" PDF prints charges as ROWS under each tenant and the old parser
+    refused it outright ("Cannot find tenant name column"); the analyst
+    classifies charge LABELS there, same screen. THE REAL PDF FOUND THREE
+    PARSE BUGS FIXTURES WOULD NOT HAVE: `round(top,0)` split a line at a 0.24pt
+    boundary so a `* Tenant Total *` lost its own amounts; the running page
+    header cleared the current tenant, dropping every charge for the two blocks
+    straddling a page break; and the building totals block read as tenant
+    charges.
+    BOTH FILES TIE TO THEIR OWN STATED TOTALS, which is the only check that
+    proves the chain rather than its parts — Excel to its subtotal row
+    (3,111,887.88 rent / 786,698.28 recoveries / 229,722 SF), PDF to its
+    building total (3,045,529.32 / 782,590.20), all 33 tenant blocks
+    reconciling to their printed tenant total, and 32 of 33 suites agreeing
+    across the two formats (the 33rd went vacant between the two dates).
+    Verified end to end through the running app, not asserted.
+    THE LEGACY KEYWORD PATH IS UNCHANGED and still reachable as "Quick Merge"
+    and "Replace All" — so the 12x hazard is still one wrong button away for a
+    file of this shape. Deliberate (Argus and Windsor rely on it) and open.
+    ROSTER LAYOUT: 44 of 44 rows ran over one line and "Republic Finance #289"
+    took three. Tenant name fixed at 190px, clipped, full name on hover —
+    measured across all 77 names in both rosters, 70 fit whole and 220px would
+    have gained exactly one more. Table height 2,250px -> 1,370. Dates get
+    nowrap as a LATENT hazard, not a reproduced one: at the widths tested the
+    "Lease End" header's own nowrap already held the column at 82px.
+    Guardrail `rent_roll_mapping_check.py` (80) caught a bug of mine before it
+    shipped — a tenant named "Total Wine & More" was being thrown out as a
+    subtotal row, which is why every narrowing is asserted in both directions.
+    Carried two undeployed docs commits, `84715dc` and `05ee17e`; P2 listed
+    them, both are `.claude/memory/` + `CLAUDE.md` and the Dockerfile copies
+    neither into the image.)
   - `v494` = `d72c46b` (THE STATEMENT'S MASK IS NOT ALWAYS A TAIL. Jim asked
     me to add the six accounts holding real money that PNC would not serve
     activity for. FIVE OF THEM DID NOT NEED ADDING — they were registered all
