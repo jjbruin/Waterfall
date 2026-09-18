@@ -249,6 +249,50 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v496` = `b1b0f5b` (ONE WAY IN, AND REPLACE CLEARS WHAT POINTS AT THE
+    TENANTS. Jim's re-import of Market at Poplar failed on production with a
+    ForeignKeyViolation on `lease_tenant_sales`. The mapping was fine; the
+    REPLACE was not. Deleting a review's tenants means clearing everything
+    referencing them first, and that list was typed by hand covering 5 of the 9
+    child tables — so ANY review carrying tenant sales, an abstract, a
+    validation row or an analyst resolution could not be replaced at all. IT
+    COULD ONLY EVER FAIL ON POSTGRESQL: `_pg_to_sqlite` strips REFERENCES from
+    the DDL, so SQLite declares no foreign keys and local dev cannot reproduce
+    it even with `PRAGMA foreign_keys=ON`. Read from the catalog now, UNIONed
+    with a known list because neither alone suffices, and the FK COLUMN is read
+    rather than assumed to be `tenant_id`.
+    THE FIRST VERSION OF THAT FIX WAS WORSE THAN THE BUG, AND THE GUARDRAIL
+    MISSED IT because it asserted the list existed instead of running the
+    clear. The helpers are module level and `text` is imported inside each of
+    the sixty functions that use it, so every DELETE raised NameError, a
+    blanket try/except swallowed all of them, and the only symptom was orphaned
+    rows on SQLite and the same ForeignKeyViolation on PostgreSQL. Missing
+    tables are skipped by asking the inspector; anything else raises. The check
+    now seeds three kinds of dependent row, runs the clear and asserts they
+    were there before and gone after. A replace that still cannot proceed
+    returns 409 naming merge, not a constraint name.
+    ONE WAY IN (Jim: "route everything through the scan"). The two bypass
+    buttons are gone; merge-vs-replace is chosen on the confirmation panel
+    after the columns have been seen. Removing buttons was NOT enough — both
+    routes are reachable alone, so `upload-rent-roll` and `merge-rent-roll` run
+    the same scan and import its PROPOSAL, refusing a file whose charge period
+    is unstated rather than guessing. `parse_rent_roll_flexible` is no longer
+    reached from any route.
+    THAT FORCED THE PROPOSALS TO GET BETTER, and finding out cost a
+    measurement: routing Windsor through the scan proposed NO tenant name and
+    NO base rent. `_BASE_RENT_PATTERNS` matched only a column called exactly
+    "Rent", so "Monthly Rent"/"Annual Rent" matched nothing, and the
+    Argus/Windsor export names its tenant column "Lease". Per-area and
+    per-month restatements are demoted to Ignore with a warning — two columns
+    both marked base rent would be SUMMED. Windsor now imports with no manual
+    input and reproduces the legacy parser to the dollar (49 rows, 660,140 SF,
+    $7,203,596).
+    Also: the scan promised 53 tenants and delivered 49, because scan and
+    import resolved the tenant column differently and disagreed about which
+    rows were subtotals. One shared test now, asserted equal.
+    REPLACE NOW SUCCEEDS WHERE IT USED TO ERROR, so it removes the sales and
+    abstracts it could not remove before; the dropdown says so at the moment
+    the choice is made. Guardrail 80 -> 92.)
   - `v495` = `423daa5` (THE RENT ROLL STOPS GUESSING, AND THE RECOVERY COLUMNS
     WERE THE SMALLER HALF. Jim reported that Market at Poplar imported CAM but
     not Insurance or Tax — `_find_col` returns the FIRST match and stops, so CAM
