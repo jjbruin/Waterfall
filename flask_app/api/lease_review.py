@@ -233,6 +233,94 @@ def upload_rent_roll(review_id):
         return jsonify({'error': str(e)}), 500
 
 
+@lease_review_bp.route('/reviews/<int:review_id>/rent-roll/scan', methods=['POST'])
+@login_required
+@role_required('admin', 'analyst')
+def scan_rent_roll(review_id):
+    """Describe an uploaded rent roll so the analyst can classify it. Writes nothing.
+
+    Returns every column (or, for a stacked PDF, every charge label) with the role
+    and period this proposes, plus the columns whose period the file does not state.
+    The analyst answers those, then posts the file again to .../rent-roll/commit.
+    """
+    from flask_app.services import rent_roll_mapping
+
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file provided'}), 400
+    file = request.files['file']
+    if not file.filename:
+        return jsonify({'error': 'Empty filename'}), 400
+
+    try:
+        return jsonify(rent_roll_mapping.scan(file.read(), file.filename))
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"Rent roll scan error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/rent-roll/commit', methods=['POST'])
+@login_required
+@role_required('admin', 'analyst')
+def commit_rent_roll(review_id):
+    """Import a rent roll using the mapping the analyst confirmed.
+
+    The file is posted again rather than held between the two calls, so a scan that
+    is never confirmed leaves nothing behind on the server.
+
+    Form fields: file, mapping (JSON), mode ('merge' | 'replace').
+    """
+    import json as _json
+    from flask_app.services import rent_roll_mapping
+
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file provided'}), 400
+    file = request.files['file']
+    if not file.filename:
+        return jsonify({'error': 'Empty filename'}), 400
+
+    try:
+        mapping = _json.loads(request.form.get('mapping') or '{}')
+    except ValueError:
+        return jsonify({'error': 'mapping is not valid JSON'}), 400
+    if not mapping.get('roles'):
+        return jsonify({'error': 'mapping.roles is required'}), 400
+
+    mode = (request.form.get('mode') or 'merge').lower()
+    if mode not in ('merge', 'replace'):
+        return jsonify({'error': "mode must be 'merge' or 'replace'"}), 400
+
+    engine = get_engine()
+    ensure_lease_tables(engine)
+
+    try:
+        rr_df, report = rent_roll_mapping.apply_mapping(
+            file.read(), file.filename, mapping)
+        if mode == 'replace':
+            count = import_rent_roll_to_review(engine, review_id, rr_df)
+            result = {'status': 'imported', 'tenant_count': count}
+        else:
+            merged = merge_rent_roll_to_review(
+                engine, review_id, rr_df,
+                source_label=request.form.get('source_label', 'seller_rent_roll'),
+            )
+            result = {'status': 'merged', **merged}
+        return jsonify({
+            **result,
+            'mapping_report': report,
+            'total_gla': float(rr_df['square_feet'].sum()),
+            'total_annual_rent': float(rr_df['annual_rent'].sum()),
+            'total_annual_recoveries': float(
+                (rr_df['annual_recoveries_per_sf'] * rr_df['square_feet']).sum()),
+        })
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"Rent roll commit error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
 @lease_review_bp.route('/reviews/<int:review_id>', methods=['GET'])
 @login_required
 def get_review(review_id):

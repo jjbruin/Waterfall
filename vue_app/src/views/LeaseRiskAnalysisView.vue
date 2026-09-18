@@ -878,11 +878,11 @@ onMounted(() => {
                     </span>
                     <span v-if="t.resolutions?.rent_per_sf" class="resolution-badge">R</span>
                   </td>
-                  <td :class="{ 'has-resolution': t.resolutions?.lease_start }">
+                  <td class="date-cell" :class="{ 'has-resolution': t.resolutions?.lease_start }">
                     <span @dblclick="startEdit(t.id, 'lease_start', t.lease_start)">{{ fmtDate(t.lease_start) }}</span>
                     <span v-if="t.resolutions?.lease_start" class="resolution-badge">R</span>
                   </td>
-                  <td :class="{ 'has-resolution': t.resolutions?.lease_end }">
+                  <td class="date-cell" :class="{ 'has-resolution': t.resolutions?.lease_end }">
                     <span @dblclick="startEdit(t.id, 'lease_end', t.lease_end)">{{ fmtDate(t.lease_end) }}</span>
                     <span v-if="t.resolutions?.lease_end" class="resolution-badge">R</span>
                   </td>
@@ -1675,6 +1675,9 @@ onMounted(() => {
 .role-unknown { background: #eee; color: #888; }
 .src-cell { font-size: 0.75rem; color: #666; }
 .wrap-cell { max-width: 300px; word-wrap: break-word; white-space: normal; }
+/* ISO dates offer a break opportunity at each hyphen, so a narrow column
+   splits 2028-05-31 over two lines and doubles the row height. */
+.date-cell { white-space: nowrap; }
 tr.vacant { opacity: 0.5; }
 tr.resolved { background: #f0faf0; }
 tr.highlight td { background: #fff3cd; }

@@ -286,6 +286,106 @@ async function createNewReview() {
   }
 }
 
+// --- Rent roll column mapping -------------------------------------------------
+// The file is scanned first and nothing is written until the analyst has said which
+// columns are recoveries and whether each charge is monthly or annual. Neither is
+// answerable from the header text: Market at Poplar prints CAM, Insurance and Tax as
+// three separate columns, and its "Base Rent" is a monthly figure.
+const scanResult = ref<any>(null)
+const scanFile = ref<File | null>(null)
+const scanMode = ref<'merge' | 'replace'>('merge')
+const scanning = ref(false)
+const committing = ref(false)
+const mapReport = ref<any>(null)
+
+const scanEntries = computed<any[]>(() =>
+  scanResult.value ? (scanResult.value.columns || scanResult.value.charges || []) : []
+)
+// Every periodic charge needs a period before the import can run.
+const unansweredPeriods = computed<string[]>(() => {
+  if (!scanResult.value) return []
+  const periodic = ['base_rent', 'recovery', 'misc']
+  return scanEntries.value
+    .filter(e => periodic.includes(scanResult.value.mapping.roles[e.key]))
+    .filter(e => !scanResult.value.mapping.bases[e.key])
+    .map(e => e.label)
+})
+const mappedRecoveries = computed<string[]>(() =>
+  scanEntries.value
+    .filter(e => scanResult.value?.mapping.roles[e.key] === 'recovery')
+    .map(e => e.label)
+)
+function needsPeriod(key: string): boolean {
+  return ['base_rent', 'recovery', 'misc'].includes(scanResult.value?.mapping.roles[key])
+}
+function onRoleChange(key: string) {
+  // Dropping a column from a periodic role retires the period question with it.
+  if (!needsPeriod(key)) delete scanResult.value.mapping.bases[key]
+}
+
+async function onRentRollScan(event: Event) {
+  const input = event.target as HTMLInputElement
+  if (!input.files?.length || !selectedReviewId.value) return
+  const file = input.files[0]
+  const formData = new FormData()
+  formData.append('file', file)
+
+  scanning.value = true
+  scanResult.value = null
+  mapReport.value = null
+  uploadMessage.value = ''
+  try {
+    const res = await api.post(
+      `/api/lease-review/reviews/${selectedReviewId.value}/rent-roll/scan`,
+      formData, { headers: { 'Content-Type': 'multipart/form-data' } }
+    )
+    scanResult.value = res.data
+    scanFile.value = file
+  } catch (e: any) {
+    console.error('Scan error', e)
+    alert(e.response?.data?.error || 'Could not read that rent roll')
+  } finally {
+    scanning.value = false
+    input.value = ''
+  }
+}
+
+async function commitRentRoll() {
+  if (!scanFile.value || !selectedReviewId.value) return
+  const formData = new FormData()
+  formData.append('file', scanFile.value)
+  formData.append('mapping', JSON.stringify(scanResult.value.mapping))
+  formData.append('mode', scanMode.value)
+
+  committing.value = true
+  try {
+    const res = await api.post(
+      `/api/lease-review/reviews/${selectedReviewId.value}/rent-roll/commit`,
+      formData, { headers: { 'Content-Type': 'multipart/form-data' } }
+    )
+    mapReport.value = res.data
+    mergeReport.value = res.data.status === 'merged' ? res.data : null
+    uploadMessage.value =
+      `${res.data.status === 'merged' ? 'Merged' : 'Imported'} — ` +
+      `${(res.data.total_gla || 0).toLocaleString()} SF, ` +
+      `$${Math.round(res.data.total_annual_rent || 0).toLocaleString()} annual rent, ` +
+      `$${Math.round(res.data.total_annual_recoveries || 0).toLocaleString()} recoveries`
+    scanResult.value = null
+    scanFile.value = null
+    await loadReview(selectedReviewId.value!)
+  } catch (e: any) {
+    console.error('Commit error', e)
+    alert(e.response?.data?.error || 'Failed to import rent roll')
+  } finally {
+    committing.value = false
+  }
+}
+
+function cancelScan() {
+  scanResult.value = null
+  scanFile.value = null
+}
+
 // Destructive rent roll upload (original)
 async function onRentRollUpload(event: Event) {
   const input = event.target as HTMLInputElement
@@ -926,7 +1026,12 @@ function statusClass(s: string): string {
 
         <div class="upload-actions">
           <label class="btn-primary btn-upload-label">
-            {{ mergingRentRoll ? 'Merging...' : 'Import Rent Roll (Merge)' }}
+            {{ scanning ? 'Reading file...' : 'Select Rent Roll...' }}
+            <input type="file" accept=".xlsx,.xls,.csv,.pdf" @change="onRentRollScan" :disabled="scanning" hidden />
+          </label>
+
+          <label class="btn-secondary btn-upload-label">
+            {{ mergingRentRoll ? 'Merging...' : 'Quick Merge (no mapping)' }}
             <input type="file" accept=".xlsx,.xls,.csv,.pdf" @change="onRentRollMerge" :disabled="mergingRentRoll" hidden />
           </label>
 
@@ -934,6 +1039,117 @@ function statusClass(s: string): string {
             {{ uploadingRentRoll ? 'Replacing...' : 'Replace All (Destructive)' }}
             <input type="file" accept=".xlsx,.xls,.csv,.pdf" @change="onRentRollUpload" :disabled="uploadingRentRoll" hidden />
           </label>
+        </div>
+
+        <!-- Column mapping — confirm before anything is written -->
+        <div v-if="scanResult" class="map-panel">
+          <div class="map-head">
+            <h3>
+              Confirm the columns
+              <span class="map-sub">
+                {{ scanResult.layout === 'stacked' ? 'stacked layout — one line per charge' : 'one row per tenant' }}
+                · {{ scanResult.row_count }} tenant rows
+              </span>
+            </h3>
+            <div class="map-actions">
+              <select v-model="scanMode" class="map-select">
+                <option value="merge">Merge into existing tenants</option>
+                <option value="replace">Replace all tenants</option>
+              </select>
+              <button class="btn-primary" :disabled="committing || unansweredPeriods.length > 0"
+                @click="commitRentRoll">
+                {{ committing ? 'Importing...' : 'Import' }}
+              </button>
+              <button class="btn-secondary" @click="cancelScan" :disabled="committing">Cancel</button>
+            </div>
+          </div>
+
+          <div v-if="scanResult.warnings?.length" class="map-warnings">
+            <div v-for="w in scanResult.warnings" :key="w">{{ w }}</div>
+          </div>
+          <div v-if="unansweredPeriods.length" class="map-blocker">
+            The file does not say whether these are monthly or annual amounts — set each
+            one before importing: <strong>{{ unansweredPeriods.join(', ') }}</strong>
+          </div>
+          <div v-if="mappedRecoveries.length > 1" class="map-note">
+            {{ mappedRecoveries.length }} recovery columns will be summed:
+            <strong>{{ mappedRecoveries.join(' + ') }}</strong>
+          </div>
+
+          <div class="table-scroll">
+            <table class="data-table compact">
+              <thead>
+                <tr>
+                  <th>{{ scanResult.layout === 'stacked' ? 'Charge' : 'Column' }}</th>
+                  <th>Sample values</th>
+                  <th>Treat as</th>
+                  <th>Monthly or annual</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="e in scanEntries" :key="e.key"
+                  :class="{ 'map-row-off': scanResult.mapping.roles[e.key] === 'ignore' }">
+                  <td class="map-label">
+                    {{ e.label }}
+                    <span v-if="e.count" class="map-count">{{ e.count }} rows</span>
+                  </td>
+                  <td class="map-samples">{{ (e.samples || []).join('  ·  ') }}</td>
+                  <td>
+                    <select v-model="scanResult.mapping.roles[e.key]" class="map-select"
+                      @change="onRoleChange(e.key)">
+                      <option v-for="o in scanResult.role_options" :key="o.value" :value="o.value">
+                        {{ o.label }}
+                      </option>
+                    </select>
+                  </td>
+                  <td>
+                    <select v-if="needsPeriod(e.key)" v-model="scanResult.mapping.bases[e.key]"
+                      class="map-select" :class="{ 'map-missing': !scanResult.mapping.bases[e.key] }">
+                      <option :value="undefined">— pick one —</option>
+                      <option v-for="o in scanResult.basis_options" :key="o.value" :value="o.value">
+                        {{ o.label }}
+                      </option>
+                    </select>
+                    <span v-else class="map-na">—</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div v-if="scanResult.excluded_rows?.length" class="map-excluded">
+            <strong>Excluded as non-tenant rows:</strong>
+            <span v-for="x in scanResult.excluded_rows" :key="x.index">
+              {{ x.name }} <em>({{ x.reason }})</em>;
+            </span>
+          </div>
+          <div v-if="scanResult.skipped" class="map-excluded">
+            <strong>Also skipped:</strong>
+            {{ scanResult.skipped.increase }} future rent increases,
+            {{ scanResult.skipped.vacant }} vacant units kept as vacant.
+          </div>
+        </div>
+
+        <!-- What the last mapped import actually did -->
+        <div v-if="mapReport?.mapping_report" class="map-report">
+          <h3>Import Applied</h3>
+          <div class="map-report-row">
+            <strong>Base rent:</strong>
+            {{ (mapReport.mapping_report.base_rent_columns || mapReport.mapping_report.base_rent_charges || []).join(', ') || '—' }}
+          </div>
+          <div class="map-report-row">
+            <strong>Recoveries:</strong>
+            {{ (mapReport.mapping_report.recovery_columns || mapReport.mapping_report.recovery_charges || []).join(' + ') || '—' }}
+          </div>
+          <div v-if="mapReport.mapping_report.excluded?.length" class="map-report-row">
+            <strong>Rows excluded:</strong> {{ mapReport.mapping_report.excluded.join('; ') }}
+          </div>
+          <div v-if="mapReport.mapping_report.tie_out?.length" class="map-report-row map-blocker">
+            <strong>Charges do not add to the stated tenant total:</strong>
+            <span v-for="t in mapReport.mapping_report.tie_out" :key="t.tenant">
+              {{ t.tenant }} (stated {{ t.stated }}, summed {{ t.summed }});
+            </span>
+          </div>
         </div>
 
         <div style="margin-top: 0.75rem">
@@ -984,12 +1200,12 @@ function statusClass(s: string): string {
               </thead>
               <tbody>
                 <tr v-for="t in occupiedTenants" :key="t.id">
-                  <td class="tenant-name">{{ t.tenant_name }}</td>
-                  <td>{{ t.suite }}</td>
+                  <td class="tenant-name" :title="t.tenant_name"><span class="tname">{{ t.tenant_name }}</span></td>
+                  <td class="nowrap-cell">{{ t.suite }}</td>
                   <td class="r">{{ fmtSF(t.square_feet) }}</td>
-                  <td>{{ t.lease_type || '\u2014' }}</td>
-                  <td>{{ fmtDate(t.lease_start) }}</td>
-                  <td>{{ fmtDate(t.lease_end) }}</td>
+                  <td class="nowrap-cell">{{ t.lease_type || '\u2014' }}</td>
+                  <td class="date-cell">{{ fmtDate(t.lease_start) }}</td>
+                  <td class="date-cell">{{ fmtDate(t.lease_end) }}</td>
                   <td class="r">{{ t.term_months || '\u2014' }}</td>
                   <td class="r">{{ fmtCurrency(t.monthly_rent) }}</td>
                   <td class="r">{{ fmtPerSF(t.monthly_rent_per_sf) }}</td>
@@ -1102,7 +1318,7 @@ function statusClass(s: string): string {
               </thead>
               <tbody>
                 <tr v-for="t in occupiedTenants" :key="t.id" @click="toggleTenantDocs(t.id)" style="cursor:pointer">
-                  <td class="tenant-name">{{ t.tenant_name }}</td>
+                  <td class="tenant-name" :title="t.tenant_name"><span class="tname">{{ t.tenant_name }}</span></td>
                   <td>{{ t.suite }}</td>
                   <td class="c">{{ t.documents.total }}</td>
                   <td class="c">{{ t.documents.extracted }}</td>
@@ -1255,7 +1471,7 @@ function statusClass(s: string): string {
             <tbody>
               <tr v-for="t in occupiedTenants" :key="t.id"
                   :class="{ 'row-approved': t.approval_status === 'approved', 'row-flagged': t.approval_status === 'flagged' }">
-                <td class="tenant-name">{{ t.tenant_name }}</td>
+                <td class="tenant-name" :title="t.tenant_name"><span class="tname">{{ t.tenant_name }}</span></td>
                 <td>{{ t.suite }}</td>
                 <td class="r">{{ fmtSF(t.square_feet) }}</td>
                 <td class="r">{{ fmtCurrency(t.annual_rent) }}</td>
@@ -1321,7 +1537,7 @@ function statusClass(s: string): string {
               </thead>
               <tbody>
                 <tr v-for="c in cotenancy.clauses" :key="c.tenant_name" :class="{ 'row-uncurable': !c.is_curable }">
-                  <td class="tenant-name">{{ c.tenant_name }}</td>
+                  <td class="tenant-name" :title="c.tenant_name"><span class="tname">{{ c.tenant_name }}</span></td>
                   <td>{{ c.suite }}</td>
                   <td class="r">{{ fmtCurrency(c.annual_rent) }}</td>
                   <td class="wrap">{{ c.trigger_description || '\u2014' }}</td>
@@ -1558,8 +1774,61 @@ function statusClass(s: string): string {
 .data-table.compact td { padding: 0.3rem 0.5rem; }
 .r { text-align: right; }
 .c { text-align: center; }
+/* ISO dates offer a break opportunity at each hyphen, so a narrow column
+   splits 2028-05-31 over two lines and doubles the row height. */
+.date-cell { white-space: nowrap; }
+
+/* Rent roll column mapping */
+.map-panel {
+  margin-top: 1.25rem; border: 1px solid #1F4E79; border-radius: 6px;
+  padding: 1rem; background: #fbfcfe;
+}
+.map-head { display: flex; justify-content: space-between; align-items: flex-start;
+  gap: 1rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
+.map-head h3 { margin: 0; }
+.map-sub { display: block; font-weight: 400; font-size: 0.8rem; color: #666; }
+.map-actions { display: flex; gap: 0.5rem; align-items: center; }
+.map-select { padding: 3px 6px; font-size: 0.8rem; border: 1px solid #c3ccd9;
+  border-radius: 3px; background: #fff; }
+.map-select.map-missing { border-color: #c0392b; background: #fff5f4; }
+.map-warnings { font-size: 0.82rem; color: #7a5c00; background: #fff8e5;
+  border-left: 3px solid #e0a800; padding: 0.5rem 0.75rem; margin-bottom: 0.5rem; }
+.map-blocker { font-size: 0.82rem; color: #8a1c14; background: #fff1f0;
+  border-left: 3px solid #c0392b; padding: 0.5rem 0.75rem; margin-bottom: 0.5rem; }
+.map-note { font-size: 0.82rem; color: #14507a; background: #eef5fc;
+  border-left: 3px solid #1a73e8; padding: 0.5rem 0.75rem; margin-bottom: 0.5rem; }
+.map-row-off { opacity: 0.5; }
+.map-samples { font-size: 0.78rem; color: #555; }
+.map-count { font-size: 0.72rem; color: #888; font-weight: 400; margin-left: 0.4rem; }
+.map-na { color: #bbb; }
+.map-excluded { font-size: 0.78rem; color: #666; margin-top: 0.6rem; }
+.map-report { margin-top: 1rem; border: 1px solid #d7e3ee; border-radius: 6px;
+  padding: 0.75rem 1rem; background: #f7fbff; }
+.map-report h3 { margin: 0 0 0.5rem; font-size: 0.95rem; }
+.map-report-row { font-size: 0.82rem; margin-bottom: 0.25rem; }
 .wrap { max-width: 220px; white-space: normal; word-break: break-word; }
-.tenant-name { font-weight: 500; }
+/* Tenant names are the tallest thing in the roster — "Republic Finance #289" wraps
+   to three lines and takes the whole row with it. Fixed width, clipped with an
+   ellipsis: the identifying part of a retail name is the front of it, so
+   "DSW Designer Shoe Warehouse #29460" still reads as DSW. Full name on hover.
+   max-width alone is advisory under table-layout:auto, so the width is set
+   outright and the cell is a block to make overflow apply. */
+.tenant-name { font-weight: 500; max-width: 190px; }
+/* The clip lives on an inner block, not the td: max-width on a table-cell is
+   advisory under table-layout:auto, and display:block on a td would drop it out
+   of the row. */
+.tenant-name .tname {
+  display: block;
+  max-width: 190px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* Short identifier fields. "Specialty Lease" and a two-suite tenant like
+   "N630, N640-A" were the only rows left at double height once the tenant name
+   was capped; neither reads better broken across two lines. */
+.nowrap-cell { white-space: nowrap; }
+.map-label { font-weight: 500; }
 .editable-cell { cursor: pointer; }
 .editable-cell:hover { background: #e8f0fe; }
 .inline-edit {

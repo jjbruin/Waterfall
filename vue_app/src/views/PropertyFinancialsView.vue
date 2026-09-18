@@ -617,8 +617,8 @@ async function downloadExcel(section: string) {
                     :class="{ 'vacant-row': t.is_vacant, 'expiring-row': t.expiring_soon }">
                     <td>{{ t.tenant_name }}</td>
                     <td class="right">{{ fmtNumber(t.sf_leased) }}</td>
-                    <td>{{ fmtDate(t.lease_start) }}</td>
-                    <td>{{ fmtDate(t.lease_end) }}</td>
+                    <td class="date-cell">{{ fmtDate(t.lease_start) }}</td>
+                    <td class="date-cell">{{ fmtDate(t.lease_end) }}</td>
                     <td class="right">{{ fmtCurrency(t.annual_rent) }}</td>
                     <td class="right">{{ fmtCurrency2(t.rpsf) }}</td>
                     <td class="right">{{ fmtPct(t.pct_gla) }}</td>
@@ -715,6 +715,9 @@ async function downloadExcel(section: string) {
 .fin-table td { padding: 6px 12px; border-bottom: 1px solid var(--color-border); }
 .fin-table .right { text-align: right; }
 .fin-table th.right { text-align: right; }
+/* ISO dates offer a break opportunity at each hyphen, so a narrow column
+   splits 2028-05-31 over two lines and doubles the row height. */
+.date-cell { white-space: nowrap; }
 .fin-table tbody tr:hover { background: #f0f4f8; }
 .header-row { background: #f8fafc; }
 .header-row td { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: 0.3px; color: var(--color-text-secondary); }

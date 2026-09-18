@@ -739,15 +739,13 @@ def _parse_pdf_rent_roll(file_obj) -> pd.DataFrame:
     return best_df
 
 
-def parse_rent_roll_flexible(file_obj, filename: str = '') -> pd.DataFrame:
-    """Parse an uploaded rent roll from Excel, CSV, or PDF using flexible column matching.
+def read_rent_roll_table(file_obj, filename: str = '') -> pd.DataFrame:
+    """Read an uploaded rent roll into a raw DataFrame of header + data rows.
 
-    Handles Argus-format rent rolls, generic Excel exports, CSVs, and PDF tables.
-    Returns a DataFrame with standardized columns matching parse_rent_roll output.
-
-    Column matching is fuzzy — looks for keywords in header row:
-      tenant/name, suite/unit, sf/area/sqft, start, end/expir,
-      base rent/annual rent, monthly rent, lease type/status, deposit
+    Locates the header row (Argus two-row headers, MRI multi-row sub-headers),
+    deduplicates column names and drops empty rows. It does NOT interpret any
+    column -- that is the caller's job, whether by keyword (parse_rent_roll_flexible)
+    or by analyst mapping (rent_roll_mapping.scan).
     """
     import io
 
@@ -910,6 +908,20 @@ def parse_rent_roll_flexible(file_obj, filename: str = '') -> pd.DataFrame:
 
     # Drop fully empty rows
     df_raw = df_raw.dropna(how='all').reset_index(drop=True)
+    return df_raw
+
+
+def parse_rent_roll_flexible(file_obj, filename: str = '') -> pd.DataFrame:
+    """Parse an uploaded rent roll from Excel, CSV, or PDF using flexible column matching.
+
+    Handles Argus-format rent rolls, generic Excel exports, CSVs, and PDF tables.
+    Returns a DataFrame with standardized columns matching parse_rent_roll output.
+
+    Column matching is fuzzy — looks for keywords in header row:
+      tenant/name, suite/unit, sf/area/sqft, start, end/expir,
+      base rent/annual rent, monthly rent, lease type/status, deposit
+    """
+    df_raw = read_rent_roll_table(file_obj, filename)
 
     # Fuzzy column matching — normalise newlines in headers to spaces
     col_map = {}
