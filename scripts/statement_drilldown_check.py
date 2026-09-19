@@ -339,6 +339,33 @@ check('a missing column comes back EMPTY, not as the column name',
 check('...and it is not the literal string either',
       not any(r['ENTRDATE'] == 'ENTRDATE' for r in _dd['rows']))
 
+
+# ===========================================================================
+section('The drilldown is a POST but writes nothing')
+
+# It POSTs because the line's account list goes in a body, so
+# `accounting_access_check` counts it as a write and its OPEN_POSTS entry says
+# otherwise. That entry is a CLAIM; this is the evidence for it.
+_ro_src = (inspect.getsource(S.drilldown)
+           + inspect.getsource(S._gl_for_entity)
+           + inspect.getsource(S.select_measure_rows))
+for _verb in ('INSERT', 'UPDATE', 'DELETE', 'DROP', 'ALTER'):
+    check(f'the drilldown path contains no {_verb}',
+          _verb not in _ro_src.upper())
+check('...and does not commit', 'commit(' not in _ro_src)
+
+_api = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    'flask_app', 'api', 'workpapers.py')
+_asrc = open(_api, encoding='utf-8').read()
+_i = _asrc.index('def statement_drilldown()')
+_body = _asrc[_i:_asrc.index('@workpapers_bp.route', _i)]
+check('...and neither does its endpoint',
+      not any(v in _body.upper() for v in ('INSERT', 'UPDATE', 'DELETE')))
+check('...which is why it is an OPEN_POST rather than gated',
+      '/api/workpapers/statements/drilldown' in
+      open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'accounting_access_check.py'), encoding='utf-8').read())
+
 print(f'\n{len(PASS)} passed, {len(FAIL)} failed, {len(SKIP)} skipped')
 if FAIL:
     print('FAILED:')

@@ -43,6 +43,11 @@ OPEN_POSTS = {
     # endpoint only totals them and says whether they balance. It stores
     # nothing. The two endpoints that produce the actual FILES are gated.
     "/api/treasury/upload/preview",
+    # Same again: the statement drilldown POSTs because it sends the line's list
+    # of accounts in a body. It SELECTs GL rows and returns them; it writes
+    # nothing. Reads in this section are open, and this is a read of the same
+    # figures the statement above it already shows.
+    "/api/workpapers/statements/drilldown",
 }
 
 #: Writes that are NARROWER than the section rule, with the roles that may do

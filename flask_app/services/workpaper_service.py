@@ -742,10 +742,42 @@ def get_fs_map(engine=None) -> List[dict]:
     return [dict(r) for r in rows]
 
 
-def set_fs_map(entries: List[dict], username: str, engine=None) -> dict:
-    """Replace the mapping wholesale. It is one small edited table, not a feed."""
+def set_fs_map(entries: List[dict], username: str, engine=None,
+               allow_empty: bool = False) -> dict:
+    """Replace the mapping wholesale. It is one small edited table, not a feed.
+
+    AN EMPTY REPLACE IS REFUSED. This deletes every row before inserting, and the
+    endpoint passed `body.get("entries") or []` -- so a PUT that carried no entries,
+    for any reason, wiped the whole mapping and returned `{"status": "ok"}`. With no
+    mapping every account falls to `unmapped`, so EVERY STATEMENT FOR EVERY ENTITY
+    renders empty while the API still answers 200. That is what happened on
+    production on Sep 19 2026 (`wp_fs_map` found at 0 rows, 583 accounts in
+    `gl_accounts`, 79,074 GL rows); the statements simply stopped appearing on the
+    workbench and nothing anywhere said why.
+
+    Clearing it deliberately is still possible with `allow_empty`, because "we are
+    starting the mapping again" is a real thing to want -- it just cannot happen by
+    a request arriving malformed.
+    """
     engine = engine or get_engine()
     ensure_tables(engine)
+
+    usable = [e for e in (entries or [])
+              if str((e or {}).get("acctnum") or "").strip()]
+    if not usable and not allow_empty:
+        existing = 0
+        try:
+            with engine.connect() as conn:
+                existing = conn.execute(
+                    text("SELECT COUNT(*) FROM wp_fs_map")).scalar() or 0
+        except Exception:
+            pass
+        raise ValueError(
+            f"Refusing to replace the FS mapping with nothing: the request carried "
+            f"no usable entries and {existing} would be deleted. Every statement "
+            f"renders empty without a mapping. Pass allow_empty to clear it on "
+            f"purpose.")
+
     with engine.begin() as conn:
         conn.execute(text("DELETE FROM wp_fs_map"))
         for i, e in enumerate(entries):

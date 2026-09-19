@@ -611,9 +611,18 @@ def get_fs_map():
 @login_required
 @roles_exactly(*ACCOUNTING_ROLES)
 def put_fs_map():
+    """Replace the FS mapping.
+
+    `allow_empty` must be sent DELIBERATELY to clear it. Without that a request
+    arriving with no entries wiped the whole mapping and answered 200, which takes
+    every statement for every entity down while nothing says why.
+    """
     body = request.get_json(silent=True) or {}
     try:
-        return jsonify(ws.set_fs_map(body.get("entries") or [], _user()))
+        return jsonify(ws.set_fs_map(body.get("entries") or [], _user(),
+                                     allow_empty=bool(body.get("allow_empty"))))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         return _fail(e, "set_fs_map")
 
