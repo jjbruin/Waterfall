@@ -253,6 +253,62 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v506` = `2f462e9` (THE FS MAPPING CANNOT BE LOST THE WAY IT WAS, and the
+    statements are back.
+    THE INCIDENT. Jim: after refreshing the app and running MRI_GL_Detail, the
+    financial statements stopped appearing on the workbench. `wp_fs_map` was
+    found at **0 rows** against 583 accounts in `gl_accounts` and 79,074 GL rows
+    over 207 entities. With no mapping every account falls to `unmapped`, so
+    every statement for every entity renders EMPTY WHILE THE API STILL ANSWERS
+    200 — the logs show `GET /packages/28/statements` returning 200 in 2,712
+    bytes. No error anywhere, and the damage invisible until somebody opens a
+    statement.
+    MY FIRST HYPOTHESIS WAS WRONG AND IS RECORDED AS SUCH. I thought v505's
+    wider balance query had hit a column the refresh did not bring, which fails
+    on PostgreSQL only. The logs said 200, not 500, and all fourteen columns
+    were present. `6fcb576` still ships because the landmine is real —
+    `_balances` had been widened from the six columns a BALANCE needs to the
+    thirteen a DRILLDOWN wants, and SQLite treats a double-quoted identifier
+    matching no column as a STRING LITERAL while PostgreSQL raises, so a
+    missing column would have been production-only and locally unreproducible,
+    the v496 shape. The balance query is back to its six; the drilldown asks for
+    the rest intersected with what the table HAS, and a missing one renders
+    blank rather than as the word ENTRDATE in the date column.
+    THE ACTUAL CAUSE IS A DESTRUCTIVE DEFAULT. `set_fs_map` deletes every row
+    before inserting and `put_fs_map` passed `body.get("entries") or []`, so a
+    PUT carrying no entries wiped the mapping and returned
+    `{"status": "ok", "rows": 0}`. It is the only code path that empties the
+    table. An empty replace is now REFUSED, naming how many rows it would have
+    deleted; `allow_empty` still clears it on purpose, because "start the
+    mapping again" is a real thing to want; the endpoint returns 400.
+    `wp_fs_map` joins PROTECTED_TABLES on the same rule as
+    `isbs_budget_is_supplements` — the app is its writer and holds the only
+    copy. Checked against the `isbs_uw_supplements` lesson before adding it:
+    this one HAS an app write path, so protection is a safeguard and not a
+    lockout. It is not currently a CSV target, so today it is belt and braces.
+    RESTORED, AND PROVABLY THE ORIGINAL. Jim asked whether the map came from the
+    sample workpaper package. `fs_line_seed`'s docstring says it is the FS
+    Tagging column of `PPI Eastchase (TX) LLC - WP - 06.30.2026.xlsx`;
+    re-extracting that column from the file he reattached gives 192 accounts and
+    56 captions MATCHING THE SEED EXACTLY — zero in one and not the other, zero
+    captions that disagree. 553 rows written from `consolidated_mapping()`: 190
+    `accounting`, 161 `routed`, 202 `other`, covering all 411 accounts that
+    appear in `gl_detail`.
+    THE FIGURES ARE THE EVIDENCE IT IS THE ORIGINAL: PPIECH, PPI35 and AMB6 all
+    build with zero unmapped and all three BALANCE, and PPIECH's net income
+    comes back at -11,745.08 with AMB6's at -16,282.49 — the exact figures
+    recorded in CLAUDE.md when the engine was first built at `v455`.
+    Verified again after this deploy: 553 rows, protected True, both entities
+    balanced with the same net income, and an empty replace refused with nothing
+    deleted.
+    Guardrail `statement_drilldown_check` 32 -> 60, and it also proves the
+    drilldown really is read-only (no INSERT/UPDATE/DELETE/DROP/ALTER/commit
+    anywhere in its path), which is what its OPEN_POSTS entry claims —
+    `accounting_access_check` had gone 2/54 red at v505 because the drilldown
+    POSTs, and is back to 54/0.
+    OPEN: 202 of the 553 are `other`, a fallback caption rather than
+    accounting's tag, and the origin is NOT stored in `wp_fs_map` so the screen
+    cannot say which. See `open_items.md`.)
   - `v505` = `36a26d9` (CLICK A STATEMENT FIGURE, SEE THE ENTRIES BEHIND IT.
     The CFO, Sep 19 2026 via Jim, on the workbench financial statements.
     IT DOES NOT RE-QUERY. `_balances` — which builds every statement — already

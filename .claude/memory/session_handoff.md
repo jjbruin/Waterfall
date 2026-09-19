@@ -1,4 +1,4 @@
-# Session Handoff — through Sep 19 2026 (v505 live)
+# Session Handoff — through Sep 19 2026 (v506 live)
 
 ## Sep 18-19 2026 — ONE NUMBER ONE ENGINE, the lease rent in force, and the CFO's query tool
 
@@ -71,6 +71,32 @@ New business via Jim, Sep 19. Two asks, and a worse defect underneath them.
   own figure**. The rent roll was checked against whichever lease number already
   agreed with it — **it could not report a mismatch**. A validation that always
   passes is worse than none, because it reads as confirmation.
+
+### The FS mapping was empty, and the statements went with it (`v506`)
+
+Jim: after a refresh the statements stopped appearing. **`wp_fs_map` was at 0 rows**
+against 583 accounts and 79,074 GL rows. No mapping means every account is
+`unmapped`, so every statement for every entity renders empty **while the API still
+answers 200** — the logs showed 200 in 2,712 bytes, not a 500.
+
+**I was wrong first.** I thought v505's wider balance query had hit a missing column.
+The logs said 200 and all fourteen columns were there. Worth keeping the habit that
+caught it: the log line discriminated between the two candidates in one glance,
+because they fail differently (500 vs an empty 200).
+
+**The cause was a destructive default**: `set_fs_map` deletes before inserting and
+the endpoint passed `entries or []`, so a PUT carrying nothing wiped it and answered
+`{status: ok}`. Now refused; `allow_empty` clears it deliberately.
+`wp_fs_map` is in PROTECTED_TABLES — checked against the `isbs_uw_supplements`
+lesson first: it HAS an app write path, so protection is a safeguard not a lockout.
+
+**Restored and proved.** `fs_line_seed` really is the FS Tagging column of the PPI
+Eastchase 06.30.2026 package — re-extracted from the file, 192 accounts and 56
+captions, exact match. 553 rows restored; PPIECH and AMB6 balance with net income
+-11,745.08 and -16,282.49, the same figures recorded at `v455`.
+
+Open: 202 of the 553 are a fallback caption and nothing records which
+(`open_items.md` §10).
 
 ### Statement drilldown on the workbench (`v505`)
 

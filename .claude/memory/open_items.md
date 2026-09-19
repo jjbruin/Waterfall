@@ -652,6 +652,55 @@ Owner: **Jim** to read the breakdown; then whoever settles §1.7 / §2.3.
 
 ---
 
+## 10. The FS mapping incident (Sep 19 2026) — one item still open
+
+Fixed and deployed at `v506`. The full account is in the deploy history; this is
+what is left.
+
+### 10.1 202 of the 553 restored mappings are a FALLBACK caption — ACCOUNTING TO REVIEW
+The restore wrote `consolidated_mapping()`: **190 `accounting`** (the PPI Eastchase
+package's own FS Tagging), **161 `routed`** (name-matched into the same 56 captions)
+and **202 `other`** — accounts that matched nothing and fell to *Other assets*,
+*Other income* or *Other expenses*.
+
+The 202 are right to within "this is an asset"; they are not right to the caption.
+On a statement they read as one large Other line per section, which is a real
+presentation problem and not a wrong total.
+
+**The origin is NOT stored.** `wp_fs_map` holds acctnum / statement / fs_line /
+cf_category / sort_order / updated_by / updated_at — so nothing on the mapping
+screen can say which 202 to look at, and the reviewer faces all 553.
+
+Adding an `origin` column turns "review 553" into "review 202". One migration, one
+column written by `set_fs_map` from the proposal, one badge on the screen. Not done:
+it is beyond what Jim asked for and it changes a table that had just been lost.
+Owner: unassigned.
+
+### 10.2 wp_fs_map has no history, so a bad edit is unrecoverable — OPEN
+`set_fs_map` replaces wholesale. It now refuses an EMPTY replace, but a replace with
+553 *wrong* rows is accepted and the previous mapping is gone with no way back —
+there is no audit table, unlike `waterfall_audit` and `prospective_loans_audit`
+which exist for exactly this shape of edit.
+
+The restore was only possible because the seed is checked into the repo and matches
+the specimen workbook exactly. A mapping the CFO had since hand-tuned would not have
+been recoverable at all.
+
+`wp_fs_map` is small (553 rows) and edited rarely, so keeping every version is cheap.
+Owner: unassigned.
+
+### 10.3 Nothing tells anyone the mapping is empty — OPEN
+The engine behaved correctly throughout: no mapping, so every account is `unmapped`,
+so no lines. `build()` returns `unmapped` and `unmapped_total` and the workbench has
+always shown them. But an entity with **zero** mapped accounts renders as a statement
+with no lines rather than as a statement that cannot be drawn, and the count that
+would have explained it sits in a payload nobody reads when the page looks empty.
+
+A statement with no lines AND a non-empty `unmapped` list should say so on its face:
+"no accounts are mapped to this statement — N accounts are unmapped". That single
+sentence would have turned a diagnosis into a glance. Owner: unassigned.
+
+
 ## 9. Lease review and the GL / IA query tool (Sep 19 2026)
 
 Shipped in `v503` and `v504`. What is left, with an owner on each.
