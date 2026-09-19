@@ -19,6 +19,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
+from flask_app.services.lease_terms import (
+    amendment_ordinal, order_lease_documents, resolve_rent_steps,
+    rent_psf_for, annual_rent_from, step_in_force_at,
+    parse_relative_period, month_to_date,
+)
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -63,11 +69,15 @@ def classify_document(filename: str) -> str:
 
 
 def parse_doc_date(filename: str) -> Optional[str]:
-    """Extract date from filename like '2024.03.28_Bealls-Lease.pdf'."""
-    m = re.match(r'(\d{4})[.\-](\d{2})[.\-](\d{2})', filename)
-    if m:
-        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
-    return None
+    """Extract a date from a filename, wherever in the name it appears.
+
+    This used to anchor at the START, so only `2024.03.28_Bealls-Lease.pdf` matched
+    and `Hobby Lobby - 2019.04.02 Fourth Amendment.pdf` came back undated -- which
+    then made the consolidation order fall back to upload order. The reader lives in
+    `lease_terms` so the classifier, the upload and the guardrail share one.
+    """
+    from flask_app.services.lease_terms import parse_doc_date_anywhere
+    return parse_doc_date_anywhere(filename)
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +120,8 @@ LEASE_DDL_PG = [
         annual_recoveries_per_sf DOUBLE PRECISION,
         annual_misc_per_sf DOUBLE PRECISION,
         annual_sales_override DOUBLE PRECISION,
+        -- The date the lease's month-based rent periods are counted from.
+        rent_commencement TEXT,
         security_deposit DOUBLE PRECISION,
         is_vacant       BOOLEAN DEFAULT FALSE,
         is_material     BOOLEAN DEFAULT FALSE,
@@ -133,6 +145,10 @@ LEASE_DDL_PG = [
         -- worked, which is why it was never seen.
         review_id       INTEGER NOT NULL REFERENCES lease_reviews(id),
         filename        TEXT NOT NULL,
+        -- Which amendment this is, read from the filename. Consolidation layers
+        -- later documents over earlier ones, so the order has to be knowable even
+        -- when no filename carries a date.
+        doc_ordinal     INTEGER,
         file_path       TEXT,
         doc_type        TEXT,
         doc_date        TEXT,
@@ -147,6 +163,12 @@ LEASE_DDL_PG = [
         id              SERIAL PRIMARY KEY,
         tenant_id       INTEGER NOT NULL REFERENCES lease_tenants(id),
         effective_date  TEXT,
+        -- A lease often states a step as a period of the TERM ("Months 1-12")
+        -- rather than a date. Kept as its own fields and resolved against the
+        -- tenant's rent commencement date; the basis records which it was.
+        period_start_month INTEGER,
+        period_end_month   INTEGER,
+        effective_date_basis TEXT,
         monthly_rent    DOUBLE PRECISION,
         annual_rent     DOUBLE PRECISION,
         rent_per_sf     DOUBLE PRECISION,
@@ -443,6 +465,28 @@ def ensure_lease_tables(engine):
     _migrate_add_column(engine, 'lease_options', 'option_start', 'TEXT')
     _migrate_add_column(engine, 'lease_options', 'option_end', 'TEXT')
 
+    # A rent step stated as a PERIOD OF THE TERM rather than a date. New business,
+    # Sep 19 2026: "a lease may not specify exact dates and instead reference a
+    # specific month of the lease term (e.g., Months 1-12)". There was nowhere to put
+    # that, so the extraction had to force it into `effective_date` as text, and the
+    # validation then could not date it. `effective_date_basis` says whether a date
+    # was stated in the lease or computed from rent commencement, so a reader can
+    # tell the lease's own date from ours.
+    _migrate_add_column(engine, 'lease_rent_steps', 'period_start_month', 'INTEGER')
+    _migrate_add_column(engine, 'lease_rent_steps', 'period_end_month', 'INTEGER')
+    _migrate_add_column(engine, 'lease_rent_steps', 'effective_date_basis', 'TEXT')
+
+    # The date the months are counted from. Extracted and merged all along, but it
+    # lived only inside `extraction_json`, so nothing could resolve a step against it
+    # without parsing the blob.
+    _migrate_add_column(engine, 'lease_tenants', 'rent_commencement', 'TEXT')
+
+    # Which amendment a document is. `DOC_TYPE_PATTERNS` already matched
+    # "(first|second|...|fourth) amendment" and threw the capture away, so a folder
+    # whose filenames state the sequence in plain text was consolidated in upload
+    # order.
+    _migrate_add_column(engine, 'lease_documents', 'doc_ordinal', 'INTEGER')
+
     # Exclusive use: review_id so rows survive a tenant rebuild, clause_role to
     # separate a tenant's own exclusive from a restriction it is subject to,
     # and carve_outs for the existing-tenant exceptions that decide whether a
@@ -634,26 +678,25 @@ def parse_rent_roll(file_path: str) -> pd.DataFrame:
         annual_misc_per_sf = to_float(ws.cell(r, 14).value)
         security_deposit = to_float(ws.cell(r, 15).value)
 
-        # Derive missing gross/per-SF values from what's provided
-        if sf and sf > 0:
-            if annual_rent and not annual_rent_per_sf:
-                annual_rent_per_sf = annual_rent / sf
-            elif annual_rent_per_sf and not annual_rent:
-                annual_rent = annual_rent_per_sf * sf
-            if monthly_rent and not monthly_rent_per_sf:
-                monthly_rent_per_sf = monthly_rent / sf
-            elif monthly_rent_per_sf and not monthly_rent:
-                monthly_rent = monthly_rent_per_sf * sf
+        # Fill in what the file did not state. A per-SF figure the FILE gives is
+        # kept as given; anything we derive goes through the one definition.
+        if monthly_rent_per_sf and not monthly_rent and sf and sf > 0:
+            monthly_rent = monthly_rent_per_sf * sf
+        if annual_rent_per_sf and not annual_rent and sf and sf > 0:
+            annual_rent = annual_rent_per_sf * sf
         # Cross-derive monthly/annual when one is missing
         if annual_rent and not monthly_rent:
             monthly_rent = annual_rent / 12
         elif monthly_rent and not annual_rent:
             annual_rent = monthly_rent * 12
-        if sf and sf > 0:
-            if annual_rent and not annual_rent_per_sf:
-                annual_rent_per_sf = annual_rent / sf
-            if monthly_rent and not monthly_rent_per_sf:
-                monthly_rent_per_sf = monthly_rent / sf
+        # RENT PSF IS TAKEN ON ANNUAL RENT (new business, Sep 19 2026). A MONTHLY
+        # per-SF figure is never derived -- only carried when the file states one.
+        # Dividing a monthly rent by SF yields a plausible number a twelfth of the
+        # right one, which is the 12x error v495 shipped from this same importer.
+        if not annual_rent_per_sf:
+            annual_rent_per_sf = rent_psf_for(
+                annual_rent=annual_rent, monthly_rent=monthly_rent,
+                square_feet=sf)[0]
 
         rows.append({
             'property_code': str(col1).strip(),
@@ -1079,25 +1122,20 @@ def parse_rent_roll_flexible(file_obj, filename: str = '') -> pd.DataFrame:
         ann_rec_psf = _safe_float(row.get(col_map.get('annual_recoveries_per_sf', ''), 0))
         ann_misc_psf = _safe_float(row.get(col_map.get('annual_misc_per_sf', ''), 0))
 
-        # Derive missing gross/per-SF values
-        if sf > 0:
-            if ann_rent and not ann_rent_psf:
-                ann_rent_psf = ann_rent / sf
-            elif ann_rent_psf and not ann_rent:
-                ann_rent = ann_rent_psf * sf
-            if mon_rent and not mon_rent_psf:
-                mon_rent_psf = mon_rent / sf
-            elif mon_rent_psf and not mon_rent:
-                mon_rent = mon_rent_psf * sf
+        # Same rule as the template reader above: a stated per-SF figure is kept,
+        # a derived one is ANNUAL rent over SF and never monthly.
+        if mon_rent_psf and not mon_rent and sf > 0:
+            mon_rent = mon_rent_psf * sf
+        if ann_rent_psf and not ann_rent and sf > 0:
+            ann_rent = ann_rent_psf * sf
         if ann_rent > 0 and mon_rent == 0:
             mon_rent = ann_rent / 12
         elif mon_rent > 0 and ann_rent == 0:
             ann_rent = mon_rent * 12
-        if sf > 0:
-            if ann_rent and not ann_rent_psf:
-                ann_rent_psf = ann_rent / sf
-            if mon_rent and not mon_rent_psf:
-                mon_rent_psf = mon_rent / sf
+        if not ann_rent_psf:
+            ann_rent_psf = rent_psf_for(
+                annual_rent=ann_rent, monthly_rent=mon_rent,
+                square_feet=sf)[0] or 0
 
         result_rows.append({
             'tenant_name': tname,
@@ -1656,6 +1694,9 @@ def upload_documents_to_review(
             # Classify document type
             doc_type = classify_document(filename)
             doc_date = parse_doc_date(filename)
+            # The amendment number, so consolidation can order a folder whose
+            # filenames carry the sequence but no dates.
+            doc_ordinal = amendment_ordinal(filename)
 
             # Fuzzy-match to tenant by filename + optional folder hint
             folder_hint = (folder_hints[i]
@@ -1670,12 +1711,14 @@ def upload_documents_to_review(
                 conn.execute(text("""
                     INSERT INTO lease_documents
                         (tenant_id, review_id, filename, doc_type, doc_date,
+                         doc_ordinal,
                          extraction_status, file_hash, uploaded_by, file_data)
-                    VALUES (NULL, :rid, :fn, :dt, :dd,
+                    VALUES (NULL, :rid, :fn, :dt, :dd, :do,
                             'pending', :fh, :ub, :fd)
                 """), {
                     'rid': review_id,
                     'fn': filename, 'dt': doc_type, 'dd': doc_date,
+                    'do': doc_ordinal,
                     'fh': file_hash, 'ub': uploaded_by, 'fd': file_bytes,
                 })
                 existing_hashes.add(file_hash)
@@ -1689,12 +1732,14 @@ def upload_documents_to_review(
             conn.execute(text("""
                 INSERT INTO lease_documents
                     (tenant_id, review_id, filename, doc_type, doc_date,
+                     doc_ordinal,
                      extraction_status, file_hash, uploaded_by, file_data)
-                VALUES (:tid, :rid, :fn, :dt, :dd,
+                VALUES (:tid, :rid, :fn, :dt, :dd, :do,
                         'pending', :fh, :ub, :fd)
             """), {
                 'tid': tenant_id, 'rid': review_id,
                 'fn': filename, 'dt': doc_type, 'dd': doc_date,
+                'do': doc_ordinal,
                 'fh': file_hash, 'ub': uploaded_by, 'fd': file_bytes,
             })
             existing_hashes.add(file_hash)
@@ -2173,7 +2218,7 @@ Return a JSON object with these fields (use null for fields not found):
   "lease_expiration": "YYYY-MM-DD",
   "holdover_rate": "...",
   "rent_steps": [
-    {{"effective_date": "YYYY-MM-DD", "monthly_rent": number, "annual_rent": number, "rent_per_sf": number}}
+    {{"effective_date": "YYYY-MM-DD or null", "period_start_month": number or null, "period_end_month": number or null, "period": "verbatim text if stated as a period, e.g. Months 1-12", "monthly_rent": number, "annual_rent": number, "rent_per_sf": number}}
   ],
   "escalation_structure": "fixed $ / fixed % / CPI / other",
   "security_deposit": number,
@@ -2267,6 +2312,16 @@ Return a JSON object with these fields (use null for fields not found):
 
 IMPORTANT:
 - Extract rent steps from the rent schedule if present
+- A RENT STEP IS OFTEN STATED AS A PERIOD OF THE TERM RATHER THAN A DATE -- "Months
+  1-12", "Months 13-24", "Lease Year 3". When it is, put the numbers in
+  period_start_month / period_end_month, copy the wording into "period", and leave
+  effective_date NULL. DO NOT convert it to a date yourself and DO NOT put the words
+  into effective_date. The application resolves the period against the Rent
+  Commencement Date, which the lease you are reading may not even contain -- a later
+  commencement letter often carries it. A date guessed here silently overrides the
+  real one. Month 1 is the month rent commences.
+- rent_commencement is the date RENT begins, which is frequently NOT the lease
+  commencement date. Return it whenever the document states or confirms it.
 - For amendments, only return CHANGED fields; unchanged fields should be null
 - Dates must be YYYY-MM-DD format
 - Dollar amounts should be numbers (no $ signs)
@@ -2492,12 +2547,13 @@ def ingest_property(
                 conn.execute(text("""
                     INSERT INTO lease_documents
                         (tenant_id, review_id, filename, file_path,
-                         doc_type, doc_date)
-                    VALUES (:tid, :rid, :fn, :fp, :dt, :dd)
+                         doc_type, doc_date, doc_ordinal)
+                    VALUES (:tid, :rid, :fn, :fp, :dt, :dd, :do)
                 """), {
                     'tid': tenant_id, 'rid': review_id,
                     'fn': doc['filename'], 'fp': doc['path'],
                     'dt': doc['doc_type'], 'dd': doc['doc_date'],
+                    'do': amendment_ordinal(doc['filename']),
                 })
 
         conn.commit()
@@ -2776,26 +2832,57 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None,
                         # Store rent steps (with dedup)
                         if terms.get('rent_steps'):
                             for step in terms['rent_steps']:
-                                # Dedup: skip if (tenant_id, effective_date) already exists
+                                start_m = _to_number(step.get('period_start_month'))
+                                if start_m is None:
+                                    rel = parse_relative_period(
+                                        step.get('period')
+                                        or step.get('effective_date'))
+                                    start_m = rel[0] if rel else None
+                                end_m = _to_number(step.get('period_end_month'))
+                                # A date field holding "Lease Year 7" is not a date.
+                                # Storing it made `effective_date <= :rrd` compare
+                                # text, which is how the validation ended up guessing.
+                                ed = step.get('effective_date')
+                                if ed and not re.match(r'^\d{4}-\d{2}-\d{2}', str(ed)):
+                                    ed = None
+
+                                # DEDUP ON THE PERIOD AS WELL AS THE DATE. The old
+                                # check was `effective_date = :ed`, and in SQL
+                                # `NULL = NULL` is not true -- so every undated step
+                                # was re-inserted on every extraction run, and a
+                                # lease stating its rent as months of the term
+                                # accumulated a duplicate set each time.
                                 dup = conn.execute(sql_text("""
                                     SELECT id FROM lease_rent_steps
-                                    WHERE tenant_id = :tid AND effective_date = :ed
+                                    WHERE tenant_id = :tid
+                                      AND ((:ed IS NOT NULL AND effective_date = :ed)
+                                        OR (:ed IS NULL AND :psm IS NOT NULL
+                                            AND period_start_month = :psm)
+                                        OR (:ed IS NULL AND :psm IS NULL
+                                            AND effective_date IS NULL
+                                            AND period_start_month IS NULL
+                                            AND source_doc = :sd))
                                     LIMIT 1
                                 """), {
-                                    'tid': tenant_id,
-                                    'ed': step.get('effective_date'),
+                                    'tid': tenant_id, 'ed': ed,
+                                    'psm': int(start_m) if start_m else None,
+                                    'sd': doc[2],
                                 }).fetchone()
                                 if dup:
                                     continue
                                 conn.execute(sql_text("""
                                     INSERT INTO lease_rent_steps
                                         (tenant_id, effective_date,
+                                         period_start_month, period_end_month,
                                          monthly_rent, annual_rent,
                                          rent_per_sf, source_doc)
-                                    VALUES (:tid, :ed, :mr, :ar, :rpsf, :sd)
+                                    VALUES (:tid, :ed, :psm, :pem,
+                                            :mr, :ar, :rpsf, :sd)
                                 """), {
                                     'tid': tenant_id,
-                                    'ed': step.get('effective_date'),
+                                    'ed': ed,
+                                    'psm': int(start_m) if start_m else None,
+                                    'pem': int(end_m) if end_m else None,
                                     'mr': _to_number(step.get('monthly_rent')),
                                     'ar': _to_number(step.get('annual_rent')),
                                     'rpsf': _to_number(step.get('rent_per_sf')),
@@ -3125,43 +3212,92 @@ def consolidate_tenant_extractions(
     from sqlalchemy import text
 
     with engine.connect() as conn:
-        docs = conn.execute(text("""
-            SELECT id, doc_type, doc_date, extraction_json
+        rows = conn.execute(text("""
+            SELECT id, doc_type, doc_date, extraction_json, filename, doc_ordinal
             FROM lease_documents
             WHERE tenant_id = :tid
               AND extraction_status = 'extracted'
               AND extraction_json IS NOT NULL
-            ORDER BY
-                CASE WHEN doc_type = 'Original Lease' THEN 0 ELSE 1 END,
-                doc_date ASC NULLS LAST
         """), {'tid': tenant_id}).fetchall()
 
-        if not docs:
+        if not rows:
             return None
 
-        # Start with first document (should be Original Lease)
+        # ORDER IS THE WHOLE POINT. Each document is layered over the one before, so
+        # applying the First Amendment after the Fourth silently reinstates rent the
+        # Fourth superseded. This used to sort by `doc_date ASC NULLS LAST`, and
+        # `parse_doc_date` only matched a date at the START of the filename -- so a
+        # folder of "First/Second/Third/Fourth Amendment.pdf" had no dates at all and
+        # fell through to upload order. New business asked for exactly this case:
+        # "the Hobby Lobby lease should analyze the most recent lease amendment
+        # (4th Amendment)".
+        docs = [{'id': r[0], 'doc_type': r[1], 'doc_date': r[2],
+                 'extraction_json': r[3], 'filename': r[4],
+                 'ordinal': r[5] if r[5] is not None
+                 else amendment_ordinal(r[4] or '')}
+                for r in rows]
+        docs, order_notes = order_lease_documents(docs)
+
         consolidated = {}
+        applied = []
         for doc in docs:
             try:
-                terms = json.loads(doc[3])
+                terms = json.loads(doc['extraction_json'])
                 if isinstance(terms, dict):
                     if not consolidated:
                         consolidated = copy.deepcopy(terms)
                     else:
                         consolidated = _merge_extraction_terms(consolidated, terms)
+                    applied.append(doc['filename'])
             except (json.JSONDecodeError, TypeError):
                 continue
 
         if not consolidated:
             return None
 
-        # Store consolidated terms on tenant
+        # The reader has to be able to see WHICH document had the last word, and to
+        # be told when the order could not be established rather than assuming it was.
+        consolidated['_documents_applied'] = applied
+        consolidated['_governing_document'] = applied[-1] if applied else None
+        if order_notes:
+            consolidated['_order_notes'] = order_notes
+
+        # THE RENT COMMENCEMENT DATE COMES OUT OF THE BLOB. It was extracted and
+        # merged all along but lived only inside `extraction_json`, so nothing could
+        # resolve a "Months 1-12" rent step against it without parsing JSON. It is
+        # written from the CONSOLIDATED terms, so a commencement letter or a later
+        # amendment that states it beats the original lease's estimate.
+        rc = consolidated.get('rent_commencement')
+        if rc and not re.match(r'^\d{4}-\d{2}-\d{2}', str(rc)):
+            rc = None     # a date field holding prose is not a date
+
         conn.execute(text("""
             UPDATE lease_tenants
             SET extraction_json = :ej,
+                rent_commencement = COALESCE(:rc, rent_commencement),
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = :tid
-        """), {'tid': tenant_id, 'ej': json.dumps(consolidated)})
+        """), {'tid': tenant_id, 'ej': json.dumps(consolidated), 'rc': rc})
+
+        # Now that the commencement date is known, date the steps that were stored as
+        # months of the term. Resolution is recomputed rather than trusted, because a
+        # later document can change the commencement date and move every step with it.
+        if rc:
+            steps = conn.execute(text("""
+                SELECT id, period_start_month FROM lease_rent_steps
+                WHERE tenant_id = :tid AND period_start_month IS NOT NULL
+            """), {'tid': tenant_id}).fetchall()
+            for sid, psm in steps:
+                d = month_to_date(rc, int(psm))
+                if d:
+                    conn.execute(text("""
+                        UPDATE lease_rent_steps
+                        SET effective_date = :ed,
+                            effective_date_basis = :b
+                        WHERE id = :sid
+                    """), {'sid': sid, 'ed': d.isoformat(),
+                             'b': f'month {int(psm)} of the term'})
+
         conn.commit()
 
         logger.info(f"Consolidated {len(docs)} extractions for tenant {tenant_id}")
@@ -3324,54 +3460,74 @@ def validate_rent_roll(
             rr_rpsf = t[8]
             extraction_status = t[11]
 
-            # --- Find the correct rent step from lease (ground truth) ---
-            # Strategy: find the step effective on the rent roll date.
-            # Many extracted steps have non-date effective_dates (e.g.
-            # "Lease Year 7", "Rent Commencement Date"), so we need
-            # a fallback when date-based matching fails.
+            # --- The rent the LEASE says is in force on the rent roll date ---
+            #
+            # THIS REPLACED A GUESS THAT COULD NOT FAIL. When a step's date would not
+            # resolve, the old code picked the step whose annual rent was CLOSEST to
+            # the rent roll's own figure -- so the rent roll was checked against
+            # whichever lease number already agreed with it, and a rent roll carrying
+            # a wrong rent selected the step that matched and reported agreement.
+            # A validation that cannot report a mismatch is worse than none, because
+            # it is read as confirmation.
+            #
+            # Dates resolve now because a step stated as "Months 1-12" is stored as a
+            # period and placed against the tenant's rent commencement date (new
+            # business, Sep 19 2026). Where it still cannot be resolved, the answer is
+            # that we do not know which rent applies -- reported, not guessed.
+            step_rows = conn.execute(text("""
+                SELECT effective_date, monthly_rent, annual_rent, rent_per_sf,
+                       period_start_month, period_end_month, effective_date_basis
+                FROM lease_rent_steps
+                WHERE tenant_id = :tid
+            """), {'tid': tenant_id}).fetchall()
+
+            rent_commencement = conn.execute(text("""
+                SELECT rent_commencement FROM lease_tenants WHERE id = :tid
+            """), {'tid': tenant_id}).scalar()
+
+            steps = [{
+                'effective_date': r[0], 'monthly_rent': r[1], 'annual_rent': r[2],
+                'rent_per_sf': r[3], 'period_start_month': r[4],
+                'period_end_month': r[5], 'effective_date_basis': r[6],
+            } for r in step_rows]
+
+            resolved_steps, step_notes = resolve_rent_steps(
+                steps, rent_commencement, square_feet=rr_sf)
+            in_force, step_basis = step_in_force_at(resolved_steps, rr_date)
+
             current_step = None
+            step_date = None
             step_match_method = None
+            if in_force:
+                current_step = (
+                    in_force.get('effective_date'),
+                    in_force.get('monthly_rent'),
+                    in_force.get('annual_rent'),
+                    in_force.get('rent_per_sf'),
+                )
+                step_date = in_force.get('effective_date')
+                step_match_method = (in_force.get('effective_date_basis')
+                                     or 'stated')
 
-            # 1. Try date-based match: step effective on or before RR date
-            if rr_date:
-                current_step = conn.execute(text("""
-                    SELECT effective_date, monthly_rent, annual_rent, rent_per_sf
-                    FROM lease_rent_steps
-                    WHERE tenant_id = :tid
-                    AND effective_date <= :rrd
-                    AND effective_date LIKE '____-%'
-                    ORDER BY effective_date DESC
-                    LIMIT 1
-                """), {'tid': tenant_id, 'rrd': rr_date}).fetchone()
-                if current_step:
-                    step_match_method = 'date'
-
-            # 2. Fallback: find the step whose annual rent is closest
-            #    to the rent roll amount (best match by value)
-            if not current_step and rr_annual:
-                all_steps = conn.execute(text("""
-                    SELECT effective_date, monthly_rent, annual_rent, rent_per_sf
-                    FROM lease_rent_steps
-                    WHERE tenant_id = :tid AND annual_rent IS NOT NULL
-                """), {'tid': tenant_id}).fetchall()
-                if all_steps:
-                    best = min(all_steps, key=lambda s: abs(
-                        (float(s[2]) if s[2] else 0) - float(rr_annual)
-                    ))
-                    current_step = best
-                    step_match_method = 'closest_rent'
-
-            # 3. Last fallback: any step at all
-            if not current_step:
-                current_step = conn.execute(text("""
-                    SELECT effective_date, monthly_rent, annual_rent, rent_per_sf
-                    FROM lease_rent_steps
-                    WHERE tenant_id = :tid
-                    ORDER BY effective_date DESC
-                    LIMIT 1
-                """), {'tid': tenant_id}).fetchone()
-                if current_step:
-                    step_match_method = 'fallback'
+            # A tenant whose rent cannot be placed on the calendar is a FINDING about
+            # the lease, recorded as such rather than left as a silent pass.
+            if steps and not in_force:
+                reason = step_basis or (
+                    '; '.join(step_notes) if step_notes
+                    else 'No rent step could be dated from this lease.')
+                conn.execute(text("""
+                    INSERT INTO lease_validation
+                        (tenant_id, field_name, source_type,
+                         seller_value, lease_value, status, source_doc, notes)
+                    VALUES (:tid, 'rent_step_in_force', 'rent_roll',
+                            :sv, NULL, 'review', 'rent_roll', :notes)
+                """), {
+                    'tid': tenant_id,
+                    'sv': str(rr_annual) if rr_annual is not None else None,
+                    'notes': ('The rent in force at the rent roll date could not be '
+                              'determined from the lease, so the rent figures below '
+                              'are not validated. ' + reason),
+                })
 
             # Get extraction JSON for date/SF comparisons
             ext = {}
@@ -3415,7 +3571,8 @@ def validate_rent_roll(
 
                 for field, seller_val, lease_val, status in rr_validations:
                     if field.startswith(('monthly', 'annual', 'rent_per')):
-                        note = f"Step {step_date} (matched by {step_match_method})"
+                        note = (f"Lease rent step effective {step_date} "
+                                f"({step_match_method}).")
                     else:
                         note = None
                     conn.execute(text("""

@@ -584,7 +584,10 @@ def get_prospect_tenants(engine, vcode: str,
         if key in seen:
             return
         seen.add(key)
-        rpsf = (rent / sf) if rent and sf else None
+        # `rent` here is the ANNUAL rent, so this is the same definition as
+        # `lease_terms.annual_rent_psf`; routed through it so there is one.
+        from flask_app.services.lease_terms import annual_rent_psf
+        rpsf = annual_rent_psf(rent, sf)
         out.append({
             'tenant_name': name, 'sf_leased': sf, 'annual_rent': rent,
             'rent_per_sf': rpsf,

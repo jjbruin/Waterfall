@@ -1626,7 +1626,7 @@ function statusClass(s: string): string {
           <div class="table-scroll">
             <table class="data-table compact">
               <thead>
-                <tr><th>Tenant</th><th>Suite</th><th>Source</th><th>Field</th><th class="r">Seller</th><th class="r">Lease</th><th class="c">Status</th></tr>
+                <tr><th>Tenant</th><th>Suite</th><th>Source</th><th>Field</th><th class="r">Seller</th><th class="r">Lease</th><th class="c">Status</th><th>Basis</th></tr>
               </thead>
               <tbody>
                 <tr v-for="(v, i) in validation" :key="i" :class="statusClass(v.status)">
@@ -1637,6 +1637,12 @@ function statusClass(s: string): string {
                   <td class="r">{{ v.seller_value ?? '\u2014' }}</td>
                   <td class="r">{{ v.lease_value ?? '\u2014' }}</td>
                   <td class="c"><span :class="'badge badge-' + v.status">{{ v.status }}</span></td>
+                  <!-- The note says WHICH rent step the lease figure came from and
+                       how it was dated, and for a tenant whose rent cannot be placed
+                       on the calendar it is the entire finding. The column existed in
+                       the API all along and was never rendered, so a row reading
+                       "rent_step_in_force / review" said nothing. -->
+                  <td class="basis-cell">{{ v.notes ?? '' }}</td>
                 </tr>
               </tbody>
             </table>
@@ -1972,6 +1978,12 @@ function statusClass(s: string): string {
 }
 .data-table tbody tr:hover { background: #f5f8fc; }
 .data-table.compact td { padding: 0.3rem 0.5rem; }
+/* The basis is a sentence, not a value. Capped so one long note cannot push the
+   figures off the table, with the whole thing on hover. */
+.basis-cell {
+  max-width: 320px; font-size: 11.5px; color: var(--color-text-secondary);
+  white-space: normal; line-height: 1.35;
+}
 .r { text-align: right; }
 .c { text-align: center; }
 /* ISO dates offer a break opportunity at each hyphen, so a narrow column
