@@ -249,6 +249,64 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v504` = `93ce506` (THE CFO'S GL / IA QUERY, as a screen. His workbook
+    `GL & IA Queries with Filters - 09182026.xlsx` carries the two Spreadsheet
+    Server queries and what he needs to vary: GL — multiple entities, change
+    period, select account(s), export; IA — multiple investment IDs, multiple
+    investor IDs, select date, MajorType(s), SubType(s), export.
+    NOT A SECOND COPY OF HIS SQL. `queries/MRI_GL_Detail.sql` ALREADY IS his GL
+    query — its own header says "the Spreadsheet Server NEW JOURNAL query
+    one-for-one, with the &SPARM smart parameters removed" — and
+    `MRI_IA_Transactions.sql` is the IA one. Both import into `gl_detail` and
+    `ia_transactions`. So the ask was to put the parameters BACK against the
+    copy we already hold, not to paste the SQL in again (Jim: "since we are
+    already pulling these tables into our database we can have the query hit our
+    tables"). A second copy would be a second engine for the same numbers.
+    NO USER INPUT IS CONCATENATED INTO SQL. Every filter is a bound parameter,
+    every IN list an expanding bindparam, and `date_field` — the one filter that
+    names a COLUMN — is matched against a fixed set before it can reach the
+    query. The guardrail asserts a value carrying SQL matches NOTHING rather
+    than everything, and that the table is still there afterwards.
+    SEVERAL ENTITIES AND SEVERAL ACCOUNTS IN ONE QUERY (Jim's follow-up). It
+    already worked; a native `<select multiple>` needs ctrl-click and nothing
+    said so, which is the clearest evidence the control was answering the wrong
+    question. Replaced with checkbox lists carrying a search, a count and Select
+    all / Clear, in a reusable `MultiPicker`. The search matches the NAME as
+    well as the code, because an accountant looks for "Eastchase" and not
+    "PPIECH". Proved through the real checkboxes in the running app, and pinned:
+    one entity plus one account passing proves nothing, since a bug collapsing
+    either list to its first element satisfies both single-value checks — the
+    check asserts 2 entities x 2 accounts returns exactly those four pairs.
+    WHAT IT SAYS WHEN IT CANNOT ANSWER is most of the design. A truncated grid
+    says so AND totals the WHOLE match, not the rows on screen — totalling the
+    visible page would make a truncated result look complete and be wrong, with
+    nothing saying which. A period before `202401` returns nothing and NAMES THE
+    IMPORT BOUND as the reason, because an empty grid otherwise reads as "no
+    activity". Freshness is "when the last MRI refresh finished", worded as the
+    refresh and not the table because `mri_refresh_status` holds one row for the
+    whole job; unknown when none has completed, never a guess. A table that was
+    never imported says which MRI query to run. Sub types carry their major
+    type, so Return of Capital under Distribution cannot be picked as though it
+    were the Contribution one.
+    The export is NOT capped at the screen's row limit — getting every row is
+    the reason to export — and the workbook records the filters that produced
+    it, since these get mailed around and an unlabelled grid cannot be checked
+    or repeated.
+    Sidebar: Accounting > GL / IA Query, at the bottom as asked, with the route
+    added to `acctRoutes` so the section opens when reached directly.
+    Purely additive — no DDL, no change to any existing computation; three lines
+    of wiring plus new files. Reads are open to any signed-in user, matching the
+    rest of the accounting section; flagged to Jim that this is a wider read
+    (bulk entity GL) than one entity's statement and one decorator narrows it.
+    HIS FILE IS TRUNCATED: the third branch of the IA query (non-cash
+    transactions) is cut off mid-statement at 124 characters in row 49 of the
+    workbook. Our import covers non-cash, so the tool does too, but if he pasted
+    from a longer original something else may have been lost — raised with Jim.
+    AND THE DATE BOUND DIFFERS ON PURPOSE: his query is `contributiondate <
+    date`, strictly before; the tool's To date is INCLUSIVE, stated on screen,
+    because "to 6/30" excluding 6/30 surprises people. Set To one day earlier to
+    tie to his sheet exactly.
+    Guardrail `gl_ia_query_check.py` (94) against a real database.)
   - `v503` = `2bb9138` (ONE NUMBER, ONE ENGINE — and two places that were
     answering the same question twice.
     ACCRUED PREF HAD TWO IMPLEMENTATIONS IN ONE FILE. Jim: "We should not have
