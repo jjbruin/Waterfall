@@ -25,7 +25,7 @@
  * The tracker replicates `2Q26 - PSC Reporting Checklist & Calendar.xlsx`,
  * which is what the CFO runs the close from today.
  */
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import api from '../api/client'
 import { useAuthStore } from '../stores/auth'
 
@@ -59,6 +59,46 @@ const msg = ref('')
 const detail = ref<any>(null)
 const statements = ref<any>(null)
 const openStatement = ref<string>('')
+
+// ---- drilldown: the GL entries behind a figure ----------------------------
+const drill = ref<any | null>(null)
+const drillData = ref<any | null>(null)
+const drillLoading = ref(false)
+const drillError = ref<string | null>(null)
+
+const drillTies = computed(() => {
+  if (!drill.value || !drillData.value) return true
+  return Math.abs((drillData.value.presented_total || 0) - (drill.value.amount || 0)) < 0.005
+})
+
+async function openDrill(line: any, sec: any) {
+  // The LINE carries its own accounts and measure; the screen passes them back
+  // rather than working out what composes a line, which is how a drilldown ends
+  // up showing the right rows for the wrong question.
+  drill.value = { fs_line: line.fs_line, amount: line.amount,
+                  measure: line.measure }
+  drillData.value = null
+  drillError.value = null
+  drillLoading.value = true
+  try {
+    const res = await api.post('/api/workpapers/statements/drilldown', {
+      entity: statements.value?.entity,
+      period_end: statements.value?.period_end,
+      accounts: (line.accounts || []).map((a: any) => a.acctnum),
+      measure: line.measure || 'closing',
+      presentation_sign: sec?.presentation_sign ?? 1,
+    })
+    drillData.value = res.data
+  } catch (e: any) {
+    drillError.value = e.response?.data?.error || e.message
+  } finally {
+    drillLoading.value = false
+  }
+}
+
+// A drawer belongs to the figure it was opened from. Leaving it up while the
+// statement or the entity changes would show one line's entries under another's.
+watch(openStatement, () => { drill.value = null })
 const activeStep = ref<string>('')
 const evidence = ref<any>(null)
 const evidenceLoading = ref(false)
@@ -779,7 +819,17 @@ onMounted(loadCycles)
                        count below keeps them from being silently absent. -->
                   <tr v-for="l in sec.lines.filter((x: any) => !x.dormant)" :key="l.fs_line">
                     <td>{{ l.fs_line }}</td>
-                    <td class="num">{{ fmt(l.amount) }}</td>
+                    <!-- Click the figure to see the GL entries behind it (the CFO,
+                         Sep 19 2026). The line carries its own accounts and its own
+                         measure, so the screen never works out what composes a line
+                         and cannot get it wrong. A line with no accounts is not
+                         clickable rather than opening an empty drawer. -->
+                    <td class="num">
+                      <button v-if="(l.accounts || []).length" class="drill-btn"
+                              :title="'Show the ' + (l.measure || '') + ' entries behind this figure'"
+                              @click="openDrill(l, sec)">{{ fmt(l.amount) }}</button>
+                      <span v-else>{{ fmt(l.amount) }}</span>
+                    </td>
                   </tr>
                   <tr class="tot"><td>Total {{ sec.section }}</td>
                     <td class="num">{{ fmt(sec.total) }}</td></tr>
@@ -796,6 +846,72 @@ onMounted(loadCycles)
                  three the same shape. Where there is something to compare
                  against, it says whether it ties rather than leaving a reader
                  to subtract two numbers thirty lines apart. -->
+            <!-- ===== drilldown ===== -->
+            <div v-if="drill" class="drill">
+              <div class="drill-head">
+                <div>
+                  <strong>{{ drill.fs_line }}</strong>
+                  <span class="muted small"> — {{ drill.measure }} entries</span>
+                </div>
+                <button class="btn-secondary" @click="drill = null">Close</button>
+              </div>
+
+              <div v-if="drillLoading" class="muted small">Loading entries…</div>
+              <div v-else-if="drillError" class="drill-warn">{{ drillError }}</div>
+              <template v-else-if="drillData">
+                <!-- WHETHER IT ADDS UP IS THE FIRST THING SHOWN. A drilldown whose
+                     rows do not sum to the figure makes a correct statement look
+                     wrong, so it is stated rather than left to be checked by eye. -->
+                <div class="drill-tie" :class="{ bad: !drillTies }">
+                  {{ drillData.row_count }} entr{{ drillData.row_count === 1 ? 'y' : 'ies' }}
+                  totalling {{ fmt(drillData.presented_total) }}
+                  <template v-if="drillTies">— ties to the {{ fmt(drill.amount) }} on the statement.</template>
+                  <template v-else>
+                    — the statement shows {{ fmt(drill.amount) }}, a difference of
+                    {{ fmt((drill.amount || 0) - (drillData.presented_total || 0)) }}.
+                    Treat the statement as the figure and raise this.
+                  </template>
+                </div>
+                <div v-if="drillData.note" class="muted small">{{ drillData.note }}</div>
+
+                <div v-if="drillData.rows.length" class="table-scroll">
+                  <table class="mini drill-table">
+                    <thead>
+                      <tr>
+                        <th>Period</th><th>Date</th><th>Account</th><th>Name</th>
+                        <th>Bal/Fwd</th><th>Item</th><th>Ref</th><th>Description</th>
+                        <th>Related</th><th class="num">Amount</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(r, i) in drillData.rows" :key="i">
+                        <td>{{ r.PERIOD }}</td>
+                        <td>{{ String(r.ENTRDATE || '').slice(0, 10) }}</td>
+                        <td>{{ r.ACCTNUM }}</td>
+                        <td>{{ r.ACCTNAME }}</td>
+                        <!-- A balance-forward row is not an entry somebody posted
+                             this year; saying so stops it being hunted for. -->
+                        <td>{{ r.BALFOR === 'B' ? 'B/fwd' : '' }}</td>
+                        <td>{{ r.ITEM }}</td>
+                        <td>{{ r.REF }}</td>
+                        <td>{{ r.DESCRPN }}</td>
+                        <td>{{ r.RLTDENTITY_NAME || r.RLTDENTITY || '' }}</td>
+                        <td class="num">{{ fmt(r.AMT) }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div class="muted small">
+                  Accounts: {{ (drillData.accounts || []).join(', ') }} ·
+                  bases {{ (drillData.bases || []).join(', ') }}
+                  <template v-if="drillData.presentation_sign === -1">
+                    · shown with the statement's sign; the GL total is
+                    {{ fmt(drillData.total) }}
+                  </template>
+                </div>
+              </template>
+            </div>
+
             <table v-if="statements[openStatement].footing" class="mini lc-foot">
               <tbody>
                 <tr class="tot grand">
@@ -1243,4 +1359,28 @@ td.prop.inferred .txt-in { color: #5a6475; font-style: italic; }
   margin-left: 1px; vertical-align: super;
 }
 
+
+/* ---- drilldown ---- */
+.drill-btn {
+  border: none; background: none; padding: 0; cursor: pointer; font: inherit;
+  color: var(--color-primary, #2f6f4f); text-decoration: underline dotted;
+  font-variant-numeric: tabular-nums;
+}
+.drill-btn:hover { text-decoration: underline; }
+.drill {
+  margin-top: 14px; padding: 12px; border: 1px solid var(--color-border);
+  border-radius: 8px; background: var(--color-surface);
+}
+.drill-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.drill-tie {
+  margin: 8px 0; padding: 6px 10px; border-radius: 5px; font-size: 12.5px;
+  background: rgba(47, 111, 79, 0.12);
+}
+.drill-tie.bad { background: #fdeaea; color: #8a1f1f; }
+.drill-warn {
+  margin: 8px 0; padding: 6px 10px; border-radius: 5px; font-size: 12.5px;
+  background: #fdeaea; color: #8a1f1f;
+}
+.drill-table th { font-size: 10.5px; text-transform: uppercase; white-space: nowrap; }
+.drill-table td { white-space: nowrap; font-size: 12px; }
 </style>

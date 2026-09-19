@@ -516,6 +516,41 @@ def package_statements(package_id):
         return _fail(e, "package_statements", 500)
 
 
+@workpapers_bp.route("/statements/drilldown", methods=["POST"])
+@login_required
+def statement_drilldown():
+    """The GL entries behind a figure on a statement.
+
+    The CFO asked to click any number on the workbench statements and see what is
+    behind it. The caller passes the LINE'S OWN `accounts` list, which `build()`
+    already carries on every line, so the screen never has to work out what composes
+    a line and cannot get it wrong.
+
+    Body: {entity, period_end, accounts: [...], measure, bases}
+    `measure` is opening / ytd / qtd / closing — the column that was clicked.
+
+    Read-only, like every other read in the accounting section.
+    """
+    from flask_app.services import statement_service as ss
+
+    body = request.get_json(silent=True) or {}
+    entity = (body.get("entity") or "").strip()
+    period_end = (body.get("period_end") or "").strip()
+    if not entity or not period_end:
+        return jsonify({"error": "entity and period_end are required"}), 400
+    try:
+        return jsonify(safe_json(ss.drilldown(
+            entity, period_end,
+            accounts=body.get("accounts") or [],
+            measure=(body.get("measure") or "closing"),
+            bases=body.get("bases"),
+        )))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return _fail(e, "statement_drilldown", 500)
+
+
 @workpapers_bp.route("/packages/<int:package_id>/steps/<step_key>/evidence", methods=["GET"])
 @login_required
 def step_evidence(package_id, step_key):

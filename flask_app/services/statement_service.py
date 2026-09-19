@@ -94,12 +94,20 @@ def _mapping(engine=None) -> Dict[str, dict]:
         return {}
 
 
-def _balances(entityid: str, period_end: str, bases: List[str], engine) -> pd.DataFrame:
-    """Per account: opening, YTD activity, closing, QTD activity."""
-    p = periods_for(period_end)
+# The measures a statement figure can be, and which GL rows compose each. ONE
+# definition, used to build the statement AND to drill into it -- see
+# `select_measure_rows`. If the two selected rows differently, the entries behind a
+# number would not add up to it, which is the only thing a drilldown has to do.
+MEASURES = ("opening", "ytd", "qtd", "closing")
+
+
+def _gl_for_entity(entityid: str, bases: List[str], engine) -> pd.DataFrame:
+    """Every GL row for one entity on the given bases, normalised."""
     with engine.connect() as conn:
         gl = pd.read_sql(text(
-            'SELECT "ACCTNUM", "ACCTNAME", "PERIOD", "BALFOR", "BASIS", "AMT" '
+            'SELECT "ACCTNUM", "ACCTNAME", "PERIOD", "ENTRDATE", "BALFOR", '
+            '"BASIS", "ITEM", "REF", "DESCRPN", "SEGMENTID", "RLTDENTITY", '
+            '"RLTDENTITY_NAME", "AMT" '
             'FROM gl_detail WHERE UPPER(TRIM("ENTITYID")) = :e'),
             conn, params={"e": entityid.strip().upper()})
     if gl.empty:
@@ -109,13 +117,51 @@ def _balances(entityid: str, period_end: str, bases: List[str], engine) -> pd.Da
     gl["AMT"] = pd.to_numeric(gl["AMT"], errors="coerce").fillna(0.0)
     if bases:
         gl = gl[gl["BASIS"].isin(bases)]
+    return gl
+
+
+def select_measure_rows(gl: pd.DataFrame, p: Dict[str, Any],
+                        measure: str) -> pd.DataFrame:
+    """The GL rows that compose one measure. THE definition, used by both callers.
+
+    opening   the balance-forward row at the first period of the year (BALFOR 'B')
+    ytd       every normal entry from the start of the year to the period end
+    qtd       the same, narrowed to the quarter
+    closing   opening + ytd, so BOTH sets of rows
+
+    `closing` really is the union: a closing balance is the year's opening plus its
+    activity, and a drilldown that showed only the activity would not add up to the
+    figure it was opened from.
+    """
+    if gl.empty:
+        return gl
+    if measure not in MEASURES:
+        raise ValueError(f"Unknown measure {measure!r}. Expected one of {list(MEASURES)}.")
+
+    in_year = gl[(gl["PERIOD"] >= p["ytd_first"]) & (gl["PERIOD"] <= p["ytd_last"])]
+    opening = in_year[(in_year["BALFOR"] == "B") & (in_year["PERIOD"] == p["ytd_first"])]
+    activity = in_year[in_year["BALFOR"] == "N"]
+
+    if measure == "opening":
+        return opening
+    if measure == "ytd":
+        return activity
+    if measure == "qtd":
+        return activity[(activity["PERIOD"] >= p["qtd_first"])
+                        & (activity["PERIOD"] <= p["qtd_last"])]
+    return pd.concat([opening, activity]) if len(opening) or len(activity) else opening
+
+
+def _balances(entityid: str, period_end: str, bases: List[str], engine) -> pd.DataFrame:
+    """Per account: opening, YTD activity, closing, QTD activity."""
+    p = periods_for(period_end)
+    gl = _gl_for_entity(entityid, bases, engine)
     if gl.empty:
         return gl
 
-    ytd = gl[(gl["PERIOD"] >= p["ytd_first"]) & (gl["PERIOD"] <= p["ytd_last"])]
-    opening = ytd[(ytd["BALFOR"] == "B") & (ytd["PERIOD"] == p["ytd_first"])]
-    activity = ytd[ytd["BALFOR"] == "N"]
-    qtd = activity[(activity["PERIOD"] >= p["qtd_first"]) & (activity["PERIOD"] <= p["qtd_last"])]
+    opening = select_measure_rows(gl, p, "opening")
+    activity = select_measure_rows(gl, p, "ytd")
+    qtd = select_measure_rows(gl, p, "qtd")
 
     out = pd.DataFrame({
         "opening": opening.groupby("ACCTNUM")["AMT"].sum(),
@@ -125,6 +171,66 @@ def _balances(entityid: str, period_end: str, bases: List[str], engine) -> pd.Da
     out["closing"] = out["opening"] + out["ytd"]
     out["name"] = gl.groupby("ACCTNUM")["ACCTNAME"].first()
     return out.reset_index()
+
+
+def drilldown(entityid: str, period_end: str, accounts: List[str],
+              measure: str = "closing", bases: Optional[List[str]] = None,
+              presentation_sign: int = 1, engine=None) -> Dict[str, Any]:
+    """The GL entries behind a figure on a statement.
+
+    The CFO asked to click any number on the workbench statements and see what is
+    behind it. `accounts` is the line's own `accounts` list, which `build()` already
+    carries on every line, so the caller never has to work out what composes a line.
+
+    IT RECONCILES BY CONSTRUCTION. The rows come from `select_measure_rows`, the same
+    function `_balances` uses to build the figure, so the entries add up to the number
+    they were opened from. `ties` says so explicitly and `difference` is the gap --
+    both reported rather than assumed, because a drilldown whose rows do not sum to
+    the figure is worse than none: it makes a correct statement look wrong.
+    """
+    engine = engine or get_engine()
+    bases = bases if bases is not None else DEFAULT_BASES
+    p = periods_for(period_end)
+    wanted = {str(a).strip() for a in (accounts or []) if str(a).strip()}
+
+    if not wanted:
+        return {"entity": entityid, "periods": p, "bases": bases,
+                "measure": measure, "accounts": [], "rows": [], "total": None,
+                "presentation_sign": presentation_sign, "presented_total": None,
+                "note": "No accounts were given, so there is nothing to show."}
+
+    gl = _gl_for_entity(entityid, bases, engine)
+    if gl.empty:
+        return {"entity": entityid, "periods": p, "bases": bases,
+                "measure": measure, "accounts": sorted(wanted), "rows": [],
+                "total": None,
+                "presentation_sign": presentation_sign, "presented_total": None,
+                "note": f"No GL rows for {entityid} on bases {', '.join(bases)}."}
+
+    rows = select_measure_rows(gl, p, measure)
+    rows = rows[rows["ACCTNUM"].isin(wanted)]
+    rows = rows.sort_values(["ACCTNUM", "PERIOD", "ENTRDATE", "ITEM"],
+                            na_position="last")
+
+    total = float(rows["AMT"].sum()) if len(rows) else 0.0
+
+    # THE FIGURE ON SCREEN MAY BE SIGNED. `render()` applies a presentation sign per
+    # section, so a liability shown as 5,000 is -5,000 in the GL. The entries sum to
+    # the GL amount; the caller passes the sign it displayed and gets back the same
+    # number it is showing, so a correct drilldown cannot look off by a sign.
+    presented = total * presentation_sign if presentation_sign else total
+    return {
+        "entity": entityid,
+        "periods": p,
+        "bases": bases,
+        "measure": measure,
+        "accounts": sorted(wanted),
+        "rows": rows.where(pd.notna(rows), None).to_dict(orient="records"),
+        "row_count": int(len(rows)),
+        "total": total,
+        "presentation_sign": presentation_sign,
+        "presented_total": presented,
+    }
 
 
 def line_sort_key(section_names: List[str], line: dict):
@@ -253,6 +359,11 @@ def build(entityid: str, period_end: str, statement: str = "both",
                 "gl_amount": l[value_field],
                 "accounts": l["accounts"],
                 "dormant": is_dormant(l),
+                # WHICH MEASURE THIS FIGURE IS. The balance sheet shows closing and
+                # the income statement shows YTD, and a drilldown has to ask for the
+                # same one or it returns the right rows for the wrong question. The
+                # line says so rather than the screen inferring it from context.
+                "measure": value_field,
             } for l in sec_lines]
             out_sections.append({
                 "section": name, "presentation_sign": sign,
@@ -262,6 +373,7 @@ def build(entityid: str, period_end: str, statement: str = "both",
                 "gl_total": sum(x["gl_amount"] for x in rendered),
             })
         return {"sections": out_sections,
+                "measure": value_field,
                 "gl_total": sum(s["gl_total"] for s in out_sections)}
 
     result: Dict[str, Any] = {
@@ -290,12 +402,22 @@ def build(entityid: str, period_end: str, statement: str = "both",
         # (PPIECH -11,745.08, AMB6 -16,282.49, Sep 14 2026). The figure is the
         # income statement's own total, so the two statements cannot disagree.
         if abs(inc["gl_total"]) > 0.005:
+            # DRILLING INTO THIS LINE MUST REACH THE INCOME ACCOUNTS. It is the
+            # only figure on the balance sheet with no balance-sheet accounts of
+            # its own -- it IS the income statement's total, carried across. It
+            # therefore carries the income statement's accounts and ITS measure
+            # (ytd, not closing), so clicking it shows the entries that actually
+            # produced it rather than nothing at all.
+            income_accounts = [a for sec_ in (inc.get("sections") or [])
+                               for l in (sec_.get("lines") or [])
+                               for a in (l.get("accounts") or [])]
             period_line = {
                 "fs_line": "Net increase (decrease) in members' capital "
                            "resulting from operations",
                 "amount": SECTION_SIGN["Members' Capital"] * inc["gl_total"],
                 "gl_amount": inc["gl_total"],
-                "accounts": [],
+                "accounts": income_accounts,
+                "measure": inc.get("measure", "ytd"),
                 "from_income_statement": True,
             }
             sec = next((s for s in bs["sections"]
