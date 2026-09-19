@@ -249,6 +249,89 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v503` = `2bb9138` (ONE NUMBER, ONE ENGINE — and two places that were
+    answering the same question twice.
+    ACCRUED PREF HAD TWO IMPLEMENTATIONS IN ONE FILE. Jim: "We should not have
+    conflicting calculation results. It will cause doubt in the accuracy of the
+    entire work... The only differences in results should come from changes in
+    time frames or projections that we are running through the engines."
+    `_compute_accrued_pref` (ROE Summary, Committee Summary) and
+    `build_pref_balance_detail` (Pref Balance Detail, One Pager, Ownership, NAV,
+    valuation tabs) walked the SAME ledger at the SAME rate and disagreed on 34
+    of the 68 deals both could price, the ROE path $633,807.54 LOW in aggregate
+    at 2025-12-31.
+    THE CAUSE WAS A LOST DAY AT EVERY YEAR END: it accrued `cur -> 31 Dec`,
+    compounded, then resumed at `1 Jan`, so 31 Dec -> 1 Jan was never accrued.
+    One day per year end, always short, worse the older the deal — P0000068 lost
+    about $102,000 over nine of them. It never looked wrong, because a slightly
+    low accrual is still a plausible accrual. That is why a second
+    implementation is most dangerous when it is NEARLY right.
+    WHICH ONE WAS CORRECT WAS SETTLED BY JIM'S OWN FIGURES, not by which was
+    newer: the vetted walk gives P0000044 51,926.54 and P0000031 37,394.57,
+    exactly as he stated them on Sep 17; the other gave 26,489.03 for P0000031.
+    `deal_accrued_pref` is now the single way to ask; the One Pager's helper
+    became an ADAPTER to it rather than a third copy. Verified through the
+    running endpoint before deploy: all three consumers return one figure on all
+    68 deals, 0 disagree. THIS RAISES REPORTED ACCRUED PREF ON 34 DEALS — Jim
+    was given the count, the delta and the worked examples and said deploy.
+    A "TEMPORARY ESTIMATE" IS A SECOND ENGINE. The Committee tab's Net Proceeds
+    fell back to `value - debt` when no NAV had run — scaffolding from before
+    the NAV engine, left in after it shipped. The NAV walk runs the deal's
+    waterfall; value-less-debt ignores it. Removed; a blank now means no NAV.
+    A GUARDRAIL WAS POINTED AT THE WRONG ENGINE — it asserted "no grace period"
+    against the DELETED function's docstring while claiming to describe the one
+    the NAV uses, so it would have kept passing while the real engine drifted.
+    Now proven behaviourally. New `one_engine_per_number_check.py` (26); the
+    rule and a table of which engine owns which number are in CLAUDE.md.
+
+    THE RENT IN FORCE IS RESOLVED, NOT GUESSED (new business via Jim, Sep 19).
+    Rent PSF is taken on ANNUAL rent over SF, one definition, reached by both
+    rent-roll readers and the parcel roster; a monthly rent is ANNUALISED before
+    dividing, never divided as-is, which is the 12x error v495 already shipped
+    once from this importer. A stated per-SF figure is still kept as stated.
+    THE MOST RECENT AMENDMENT NOW GOVERNS. Consolidation layers each document
+    over the one before, ordered `doc_date ASC NULLS LAST`, and `parse_doc_date`
+    only matched a date at the START of a filename — so a folder of "First /
+    Second / Third / Fourth Amendment.pdf" had NO dates at all and fell through
+    to UPLOAD ORDER. The guardrail fixture reproduces it: the amendments applied
+    4, 1, 3, 2, so the First Amendment's superseded rent overwrote the Fourth's.
+    The ordinal was already matched by `DOC_TYPE_PATTERNS` and thrown away.
+    "MONTHS 1-12" IS PLACED AGAINST THE RENT COMMENCEMENT DATE. There was
+    nowhere to store a period, so the extraction had to force it into
+    `effective_date` as text, which then compared as text. Now proper columns,
+    and `rent_commencement` is lifted out of `extraction_json` onto the tenant.
+    Month 1 begins ON rent commencement, so month N is the ANNIVERSARY.
+    THE DEFECT NEITHER ASK NAMED: when a step would not resolve, the validation
+    picked the step whose annual rent was CLOSEST to the rent roll's own figure
+    — the rent roll checked against whichever lease number already agreed with
+    it. It could not report a mismatch, and a validation that always passes is
+    worse than none because it reads as confirmation. Gone.
+    Also: the step dedup keyed on `effective_date = :ed`, and `NULL = NULL` is
+    not true in SQL, so every undated step was re-inserted on every extraction
+    run. And the validation table gained a Basis column — the note naming which
+    step and how it was dated was in the API payload all along, never rendered.
+    Guardrail `lease_terms_check.py` (129) drives the SHIPPING paths against a
+    real database: a fresh schema, then an EXISTING one migrated with rows in
+    it, including a legacy step stored as "Lease Year 7" in the date field,
+    which still resolves without a backfill. Production logs after deploy carry
+    "Lease review tables ensured" and no migration error.
+
+    ALSO CARRIED: the two portfolio summary SCREENS (`f151e5a`) closing Jack
+    Day's list, where two more defects surfaced — the deal was never named
+    (`_names` looked for `deal_name`; the table calls it `Investment_Name`, and
+    a missing column does not raise, so all 84 rows printed the vcode twice),
+    and `prior_debt` was emitted and never rendered, so the comparison tab had
+    no comparison on that row. Plus two docs commits, `74f1b0f` and `fcee772`,
+    both `.claude/memory/` + `CLAUDE.md`, neither copied into the image.
+
+    NOT VERIFIED ON PRODUCTION: the pref figures themselves. Checking them needs
+    a real login, and `admin/admin` is local-only. Verified instead before
+    deploy against the running local endpoint on all 68 deals, and after deploy:
+    root 200, routes present and gated, migrations clean, bundles carrying the
+    new UI, "Net Proceeds (est)" gone. Also unmeasured: how many real lease
+    amendments carry neither a date nor a number — there are no lease documents
+    in local data and the production read was refused. That is the population
+    where the order is still best-effort, and it is reported per tenant.)
   - `v502` = `0d9eaee` (AN UNMATCHED LEASE FILE CAN BE DEALT WITH, and a
     NOT NULL that would have refused the whole upload. Jim: the analyst deletes
     the files belonging to former leases and the section clears. Assign was

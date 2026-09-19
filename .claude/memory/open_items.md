@@ -654,6 +654,13 @@ Owner: **Jim** to read the breakdown; then whoever settles §1.7 / §2.3.
 
 ## 8. One number, one engine — the sweep (Sep 18 2026)
 
+**Two of the duplicates found in this sweep shipped in `v503`** — accrued pref
+(the ROE Summary and Committee Summary were on a second implementation that
+lost a day at every year end) and the Committee tab's `value - debt` net
+proceeds estimate. The standing rule is in `CLAUDE.md` under **ONE NUMBER, ONE
+ENGINE**, enforced by `scripts/one_engine_per_number_check.py`. The three below
+are still open.
+
 Jim's standing instruction is in `CLAUDE.md` under **ONE NUMBER, ONE ENGINE**. Two
 duplicates were collapsed the same day (`accrued pref`, `net proceeds`). These three
 were found in the same sweep and deliberately **not** changed, because each needs a
@@ -989,7 +996,7 @@ the whole table to MRI to load. Nothing built. Note this is the reason the table
 `PROTECTED_TABLES` while the other four supplements are not — the app is its writer and,
 until this export exists, its only copy.
 
-### 5.10 Jack Day's valuation list (Sep 17 2026) — ALL NINE BUILT, THE SCREENS NOT YET DEPLOYED
+### 5.10 Jack Day's valuation list (Sep 17 2026) — DONE, live at `v503`
 Nine asks from asset management, shipped in `v500`–`v502`.
 
 **Done and live:** the mapping draft that survives a reload (`v500`); the account number
@@ -1001,31 +1008,21 @@ carries 5130 — a proposal the analyst accepts, never a silent injection; the d
 question answered (already modelled, §5.3); portfolio groups LABELLED BY JACK rather than
 inferred.
 
-**BUILT, NOT DEPLOYED — the two summary report screens** (`f151e5a`, Sep 18 2026).
-Two entries beside Records and Committee Summary. **Delete this paragraph when they
-ship.** Verified in the running app, not asserted: subtotals tie to the rendered rows to
-the dollar, sectioning 84 deals into two groups leaves the subtotals summing to the
-original total exactly, and the grouping round-trips through the real controls.
+**The two summary report screens** shipped in `v503` (`f151e5a`). Two entries beside
+Records and Committee Summary, subtotals tying to the rendered rows, grouping
+round-tripped through the real controls.
 
 Two defects the screens exposed, both fixed in the same commit:
 
 * **The deal was never named.** `_names` looked for `deal_name` / `property_name` /
   `name`; the deals table calls it `Investment_Name`. A missing column does not raise,
-  so every row fell through to the vcode and the report read as one about deals nobody
-  had named. Found on screen — no test would have caught it, because the fallback is
-  a legitimate code path.
-* **`prior_debt` was emitted and never rendered.** Value and net proceeds each had a
-  prior-year column; debt did not, so the comparison tab had no comparison on that row.
-  Found by the new API-to-screen seam check, not by looking.
+  so every row fell through to the vcode. Found on screen — no test would have caught
+  it, because the fallback is a legitimate code path.
+* **`prior_debt` was emitted and never rendered**, so the comparison tab had no
+  comparison on the debt row. Found by the API-to-screen seam check, not by looking.
 
-Guardrail 46 → 99, with a seam section scoped to the summary block and PROVED
-non-vacuous: a key typo inside the block fails it, the same typo elsewhere on the screen
-does not.
-
-Note two defects this work found, both fixed: the PSC and OP pref sides were being
-SUMMED (5,746,667 read as 9,469,999), and a cycle's `as_of` is stored as TEXT, so passing
-it to the pref walk failed every date comparison and returned `0.00` — wrong on 7 of 8
-deals, in the direction that reads as "no accrual yet" rather than as an error.
+Guardrail 46 → 100, with a seam section scoped to the summary block and PROVED
+non-vacuous: a key typo inside the block fails it, the same typo elsewhere does not.
 
 **Known gap, not a defect:** on local data 40 of 84 valuation records produce no pref
 figure — 32 have no Cap_WF waterfall configured and 8 have no PSC pref steps. The tab
