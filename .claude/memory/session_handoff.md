@@ -1,8 +1,17 @@
-# Session Handoff — through Sep 19 2026 (v507 live)
+# Session Handoff — through Sep 19 2026 (v508 live)
 
 ## Sep 19 2026 — A STATEMENT WITH NO ACCOUNT IS HELD, and the June load still has not happened
 
-**`v507` = `b1d9197`.** Open items: **`open_items.md` §7.9**.
+**`v507` = `b1d9197`, `v508` = `b75cf92`.** Open items: **`open_items.md` §7.9**.
+
+**`v508` moved the seeding into the load** (Jim: "shouldn't the seeding process
+be integrated into loading the statements function?"), after he hit the `0 of 49`
+above. Filing a statement now opens that account's chain, so step 3 below is gone;
+an account already carrying its balances forward is left alone and its statement
+simply kept. It also LISTED the filed statements — the PDFs had been stored since
+v507 and nothing linked them once a statement left the held list — and stopped the
+accounts tab calling a seeded period "closed", which would have been wrong on all
+49 rows the moment the June folder landed.
 
 ### Read this before touching treasury: production has ZERO statements
 
@@ -25,9 +34,9 @@ The order, and it cannot be reordered:
    Fargo statement sitting in the PNC folder).
 2. **Answer the 14 held** — the new prompt on the Import tab. Each links its PDF,
    which is the only place the full number is printed.
-3. **Seed openings at `202607`** — not 202606. The activity export opens 6/22, so
-   June can never be reconciled; July and August are complete.
-4. Reconcile July.
+3. Reconcile **July** — not June: the activity export opens 6/22, so June can
+   never be reconciled; July and August are complete. (Seeding at `202607` is no
+   longer a step; filing does it.)
 
 ### What `v507` built, and the part worth carrying
 

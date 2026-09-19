@@ -253,6 +253,60 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v508` = `b75cf92` (FILING A STATEMENT OPENS THE CHAIN, and the statements
+    can be called up. Jim, Sep 19 2026, after "Seed openings from statements"
+    returned `0 of 49 opened`: "Shouldn't the seeding process be integrated
+    into loading the statements function? If the account does not need a seed
+    because reconciled balances are carried forward, the process should simply
+    save the statement file in its place and make it readily available when
+    called by the accountant." Right on both halves, and the plumbing was
+    already there.
+    THE SEED IS NOT A SECOND ENGINE: `import_statement` CALLS
+    `seed_from_statement` rather than computing an opening itself, so "seeding
+    is not re-basing" stays enforced in exactly one place. An account with a
+    reconciled period is left alone and the refusal comes back as
+    `seed_skipped`, not an error — the statement IS filed, and needing no seed
+    is not a failure. Each statement opens its OWN following month, so a folder
+    of several months carries no ordering dependence and no month can be opened
+    twice from different files. A real close outranks a seed automatically: the
+    seed is stored as a `seeded` row and `opening_balance` reads the prior
+    period's `computed_ending`, so reconciling that month replaces it.
+    A SEEDED PERIOD WAS NEVER CLOSED, and the accounts tab said "Closed 202606
+    at 119,701.35" of one. Wrong before, and wrong on EVERY row once filing
+    opens a chain for all 49 accounts at once — the kind of claim that gets
+    believed because it is everywhere. `last_status` is carried and it now
+    reads "Opened at ... from the 202606 statement, nothing reconciled yet",
+    with the column labelled Chain starts / last closed.
+    THE STATEMENTS ARE LISTED (`GET /api/treasury/statements`, panel at the
+    foot of the Accounts tab, filterable by account). The PDF had been kept
+    since v507 and NOTHING LISTED IT — the only route to one was the
+    held-statement prompt, which empties the moment the statement is placed.
+    Stored and unreachable is not kept. `has_file` is per row, because a
+    statement filed before the bytes were kept still has correct balances.
+    FOUND ON THE WAY: the single-file import route never stored the PDF at all
+    while the bulk one did; and re-importing a file stored a SECOND statement
+    row, so re-running a folder left two statements for one month with nothing
+    saying which is read. Guarded on (account, period_end, source_file) and
+    reported as `already_filed` rather than silently skipped.
+    VERIFIED END TO END THROUGH THE REAL ROUTES with the real PPI Life Storage
+    June PDF, not a fixture: filed=1 opened=1, 202607 opens at 119,701.35,
+    listed, and the PDF served from the page at 188,234 bytes byte-identical to
+    the file on disk. Then a period closed and the same statement re-filed: it
+    files, opens NOTHING, and the closed figure is untouched. Screen read back
+    in the browser.
+    Guardrail `treasury_seed_on_import_check.py` (29), asserted in BOTH
+    directions — a check written only in the seeding direction is satisfied by
+    seeding everything, which is the one outcome the rule exists to prevent.
+    PROVED NON-VACUOUS by injecting each defect: turning the seed off fails 4
+    checks, removing the reconciled-account guard fails 5 and overwrites a
+    closed 10,000.00 with 88,888.88. `treasury_api_check` 43 -> 46 with the new
+    panel's field names and `last_status`.
+    Production after deploy: 29/29 and 46/46 in the container, the API check
+    cleaning up after itself (49 accounts and 716 activity rows unchanged, 0
+    statements), `wp_fs_map` still 553. Carried the docs commit `0874af2`;
+    P2 listed it, `.claude/memory/` and `CLAUDE.md` are in no Dockerfile COPY.
+    STILL NOT DONE: the June load itself — 49 file, 14 held, 1 refused. Now two
+    steps, not three: upload the folder, answer the 14.)
   - `v507` = `b1d9197` (A STATEMENT WITH NO ACCOUNT IS HELD AND ASKED ABOUT, and
     the PDF is kept. Two asks from Jim, Sep 19 2026.
     "FOR THE STATEMENTS WITHOUT A PRODUCTION ACCOUNT, CREATE A RECORD AND PROMPT
@@ -1652,7 +1706,7 @@ columns are loaded from somebody else's spreadsheet, and the debt rows are ours.
   locking everyone out.
 
 ### Treasury — the bank side of the close
-**Full detail in `.claude/memory/treasury.md`.** Live at `v507`, screen `/treasury`.
+**Full detail in `.claude/memory/treasury.md`.** Live at `v508`, screen `/treasury`.
 
 - **Four tabs**: accounts; import (PNC activity CSV, one statement PDF, or a
   whole folder of them); reconciliation (the three-way tie, the matcher, the
