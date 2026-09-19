@@ -302,6 +302,13 @@ Under Accounting, at `/treasury`. Four tabs; full detail in `treasury.md`.
   proposal** from commitment amounts. Downloads the GL upload CSV and the IA
   upload workbook, the latter written into a copy of MRI's own template.
 
+**Statements waiting for an account number** (`v507`) sit on the Import tab: the
+ones that parsed but whose account is not registered. Each row carries the masked
+number, the balance, the entity name off the filename and a link to the PDF — which
+is the only place the full number is written. Typing it validates against the mask,
+registers the account and files the statement; later pulls then route by themselves.
+Every statement PDF is stored and openable from the screen.
+
 Nothing here posts to MRI; it produces the two files a person uploads.
 
 ### 10e. Accounting — GL / IA Query

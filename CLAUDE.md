@@ -253,6 +253,60 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v507` = `b1d9197` (A STATEMENT WITH NO ACCOUNT IS HELD AND ASKED ABOUT, and
+    the PDF is kept. Two asks from Jim, Sep 19 2026.
+    "FOR THE STATEMENTS WITHOUT A PRODUCTION ACCOUNT, CREATE A RECORD AND PROMPT
+    THE USER TO FIND AND INPUT THE ACCOUNT NUMBER FOR FUTURE MATCHING OF THE
+    DATA PULLS." An account registers itself from an activity import and PNC
+    serves only 90 days, so an account quiet longer than that has a statement
+    showing real money and no transaction anywhere to introduce it. MEASURED ON
+    THE REAL FOLDER before building: uploading `2026\06.2026` files 49 of 64, 14
+    are held and 1 is refused (a WELLS FARGO statement in the PNC folder, which
+    is correct). Twelve of the 14 are 0.00 but TWO HOLD MONEY — PPI Life Storage
+    NY 119,701.35 and PSC Ambassadors Fund TGA VI 629,125.04.
+    The old behaviour parsed them correctly, said so in a result row, and kept
+    NOTHING, so the reading had to be found again by hand. They now go to
+    `tr_pending_statements` with everything that was read, and the import
+    reports them as HELD rather than skipped.
+    THE MASK IS WHY THE HOLD IS WORTH ANYTHING. A typed number is checked
+    against it — `XX-XXXX-7891` says ten digits ending 7891 — so a number that
+    does not fit is REFUSED. Without that a mistyped digit registers a
+    plausible-looking new account, the statement files against it, and when the
+    real account arrives under its true number the balance is split across two
+    records with nothing saying so. Resolving creates the account, files the
+    statement, and every later pull for it routes by itself, which is the point
+    of asking. A separate table on purpose: a reconciliation must never pick up
+    a statement that has not been placed against a real account.
+    "GIVE THE ACCOUNTANTS THE ABILITY TO PULL UP A COPY OF THE STATEMENT." The
+    PDF was never kept — only the parsed balances and a filename. `file_data`
+    now holds it on both tables, added BY MIGRATION as well as DDL because
+    production already has these tables and CREATE TABLE IF NOT EXISTS would not
+    have touched them (verified after deploy: both columns present). It carries
+    across when a held statement is placed rather than being left on the pending
+    row. A statement imported before this says so plainly instead of 404ing.
+    For a held statement, opening the PDF is not a convenience — it is the ONLY
+    place the full account number is written, so it is how the question gets
+    answered.
+    ALL SIX `tr_*` TABLES JOIN PROTECTED_TABLES, on the same rule as `wp_fs_map`
+    and the budget supplement: the app is the writer and holds the only copy,
+    and none comes from a CSV feed. `tr_periods` matters most — it is the
+    reconciliation CHAIN, each closed period's ending becoming the next one's
+    opening, so losing it loses the thread rather than a report. Checked against
+    the `isbs_uw_supplements` lesson first: protection without a write path is a
+    lockout, and all six are app-written, so the guardrail asserts BOTH the
+    membership AND the write path.
+    VERIFIED AGAINST A REAL STATEMENT, not a fixture — the PPI Life Storage June
+    PDF: parses at 119,701.35, is held, appears in the prompt with its balance
+    and the entity name off the filename, re-importing does not duplicate the
+    question, the PDF opens while pending, 9999999999 is REFUSED for not fitting
+    the mask with nothing registered, 8517897891 is accepted, the account
+    appears, the statement files with its balance, the PDF comes with it, and a
+    later statement for that account routes automatically.
+    Guardrail `treasury_pending_check.py` (34), which SKIPS with a reason where
+    the real PDF is absent so it still runs in the container.
+    Production after deploy: both `file_data` columns present, all six tables
+    protected, `wp_fs_map` still at its restored 553 rows, 49 accounts and 716
+    activity rows untouched, 0 statements — the June load has not been done yet.)
   - `v506` = `2f462e9` (THE FS MAPPING CANNOT BE LOST THE WAY IT WAS, and the
     statements are back.
     THE INCIDENT. Jim: after refreshing the app and running MRI_GL_Detail, the
@@ -1598,7 +1652,7 @@ columns are loaded from somebody else's spreadsheet, and the debt rows are ours.
   locking everyone out.
 
 ### Treasury — the bank side of the close
-**Full detail in `.claude/memory/treasury.md`.** Live at `v494`, screen `/treasury`.
+**Full detail in `.claude/memory/treasury.md`.** Live at `v507`, screen `/treasury`.
 
 - **Four tabs**: accounts; import (PNC activity CSV, one statement PDF, or a
   whole folder of them); reconciliation (the three-way tie, the matcher, the
@@ -1635,6 +1689,25 @@ columns are loaded from somebody else's spreadsheet, and the debt rows are ours.
 - **The investor split is computed from commitment AMOUNTS**, not the stored
   `CapitalPercent`, which is 4dp and sums to 99.9999 — allocating by it is wrong
   on 5 of 13 investors for AMB6.
+- **A statement whose account is NOT REGISTERED is HELD, not refused** (`v507`).
+  An account registers itself from an activity import and PNC serves only 90 days, so
+  one quiet longer than that has a statement showing real money and no transaction to
+  introduce it. Held in `tr_pending_statements` with everything that was read; the
+  import reports them as *held*, and the Import tab lists them with a box for the
+  number. **Measured on the real folder: `2026\06.2026` files 49 of 64, holds 14, and
+  refuses 1** (a Wells Fargo statement in the PNC folder). Two of the 14 hold money.
+- **A typed account number is CHECKED AGAINST THE MASK.** `XX-XXXX-7891` says ten
+  digits ending 7891, so a number that does not fit is refused. Without that a
+  mistyped digit registers a plausible new account, the statement files against it,
+  and the real account later arrives under its true number with the balance split
+  across two records and nothing saying so. Resolving registers the account and files
+  the statement, after which every later pull routes by itself.
+- **The statement PDF is kept** (`tr_statements.file_data`, `v507`) and openable from
+  the screen. For a held statement that is not a convenience: the PDF is the only
+  place the full number is written. One imported before this says so rather than 404.
+- **All six `tr_*` tables are in `PROTECTED_TABLES`.** `tr_periods` is the
+  reconciliation CHAIN — each closed period's ending is the next one's opening — so
+  losing it loses the thread, not a report.
 - **Nothing here posts to MRI**; it produces the two files a person uploads.
 
 ### GL / IA Query — the CFO's Spreadsheet Server filters
@@ -1962,6 +2035,9 @@ it; the sidebar map above is kept here as a quick orientation.
 - `validate_due_date()` / `period_start()` - Deadline rule and the period bound it uses (workpaper_service.py)
 - `step_evidence()` / `statements_summary()` - What a step asserts and how to verify it, server-side (workpaper_workbench.py)
 - `build_package()` - The 17-tab workbook; exhibits placed into it, not attached (workpaper_excel.py)
+- `hold_unmatched_statement()` / `pending_statements()` / `resolve_pending_statement()` - A statement whose account is unknown is kept and asked about; the typed number is validated against the printed mask (treasury_service.py)
+- `statement_file()` - The stored PDF for one statement, filed or pending (treasury_service.py)
+- `select_measure_rows()` / `drilldown()` - Which GL rows compose a statement figure, and the entries behind it; ONE definition shared with `_balances` so they cannot disagree (statement_service.py)
 - `annual_rent_psf()` / `rent_psf_for()` - Rent PSF on ANNUAL rent over SF, never monthly; returns the basis with the figure (lease_terms.py)
 - `amendment_ordinal()` / `order_lease_documents()` - Which amendment a document is, and the order they are layered in; reports when the order cannot be established (lease_terms.py)
 - `parse_relative_period()` / `month_to_date()` / `resolve_rent_steps()` - "Months 1-12" placed against the rent commencement date; month 1 begins ON it, so month N is the anniversary (lease_terms.py)

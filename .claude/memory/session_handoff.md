@@ -1,4 +1,69 @@
-# Session Handoff — through Sep 19 2026 (v506 live)
+# Session Handoff — through Sep 19 2026 (v507 live)
+
+## Sep 19 2026 — A STATEMENT WITH NO ACCOUNT IS HELD, and the June load still has not happened
+
+**`v507` = `b1d9197`.** Open items: **`open_items.md` §7.9**.
+
+### Read this before touching treasury: production has ZERO statements
+
+Checked on `v507` against the live database: **49 accounts, 716 activity rows,
+0 statements, 0 periods, 0 matches.** Jim's recollection that "we uploaded all
+the june 30, 2026 statements" is of the `v493`/`v494` work, where the 64 real
+June PDFs were parsed **locally** to prove the parser — that is where "45 filed
+before, 50 after" came from. Nothing was ever uploaded to the app.
+
+So **Seed openings from statements** correctly returns `0 of 49 opened`, every
+line saying *"No statement is on file for 202606"*. That is the seeder working:
+it reads a filed statement and refuses to invent an opening balance. Jim hit
+this on Sep 19 and read it as a failure; it is the feature.
+
+The order, and it cannot be reordered:
+
+1. **Import tab → the bulk card** → the 64 PDFs in
+   `OneDrive/Documents/2026/06.2026`. 12 MB total, well under the 50 MB request
+   cap and the 200-file limit. **49 file, 14 are held, 1 is refused** (a Wells
+   Fargo statement sitting in the PNC folder).
+2. **Answer the 14 held** — the new prompt on the Import tab. Each links its PDF,
+   which is the only place the full number is printed.
+3. **Seed openings at `202607`** — not 202606. The activity export opens 6/22, so
+   June can never be reconciled; July and August are complete.
+4. Reconcile July.
+
+### What `v507` built, and the part worth carrying
+
+Jim: *"for the statements without a production account, I would like you to
+create a record and prompt the user to find and input the account number for
+future matching of the data pulls."* And: *"give the accountants the ability to
+pull up a copy of the statement from the treasury screen."*
+
+**An account registers itself only from an activity import, and PNC serves 90
+days.** An account quiet longer than that has a statement showing real money and
+no transaction anywhere to introduce it — a REGISTRATION gap, not a parse gap.
+The parser reads all 14 correctly, `790-XXXXX47` included. The old behaviour
+parsed them, said so in a result row, and **kept nothing**.
+
+**The mask check is what makes the hold worth anything.** A typed number is
+matched against the printed pattern — `XX-XXXX-7891` says ten digits ending 7891
+— and refused if it does not fit. Without that, one transposed digit registers a
+plausible new account, the statement files against it, and when the real account
+later arrives under its true number the balance is split across two records with
+nothing saying so. That failure is silent and permanent; the refusal is neither.
+
+**Verified against a real PDF, not a fixture** — PPI Life Storage June: parses at
+119,701.35, held, prompt shows it, re-import does not duplicate the question, the
+PDF opens while pending, `9999999999` refused with nothing registered,
+`8517897891` accepted, account created, statement filed with its balance and its
+PDF, and a later statement for it routes by itself.
+
+**All six `tr_*` tables joined `PROTECTED_TABLES`** on the `wp_fs_map` rule: the
+app is the writer and holds the only copy. `tr_periods` is the reconciliation
+CHAIN — each closed period's ending becomes the next one's opening — so losing it
+loses the thread, not a report. Checked against the `isbs_uw_supplements` lesson
+first (protection without a write path is a lockout); the guardrail asserts BOTH
+the membership and the write path.
+
+Guardrail: `scripts/treasury_pending_check.py` (34), which SKIPS with a reason
+where the real PDF is absent so it still runs in the container.
 
 ## Sep 18-19 2026 — ONE NUMBER ONE ENGINE, the lease rent in force, and the CFO's query tool
 

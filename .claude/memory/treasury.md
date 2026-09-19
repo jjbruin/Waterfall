@@ -1,8 +1,13 @@
 # Treasury — the bank side of the close
 
-**Live at `v494`.** Screen at `/treasury`, under Accounting. Service
+**Live at `v507`.** Screen at `/treasury`, under Accounting. Service
 `flask_app/services/treasury_service.py`, API `flask_app/api/treasury.py`, view
 `vue_app/src/views/TreasuryView.vue`.
+
+> **Production holds 49 accounts, 716 activity rows and ZERO statements** as of
+> Sep 19 2026. Nothing is reconciled and no opening has been seeded, so the
+> seeder refusing with *"no statement is on file"* is correct, not broken. See
+> **Nothing has been loaded on production yet**, below.
 
 Built Sep 17 2026 from Jim's real August AMB6 files: a PNC statement PDF, a PNC
 activity CSV export, MRI's bank reconciliation screen, and the GL/IA upload
@@ -157,6 +162,80 @@ column doubles one investor and invents a fourteenth.
 `allocate()` floors every share then hands leftover cents to whoever was
 rounded down hardest, ties broken on investor id so the same inputs always give
 the same file. The remainder is placed deliberately and reported per row.
+
+## Nothing has been loaded on production yet (Sep 19 2026)
+
+**Check this before assuming otherwise.** As of `v507` production holds 49 accounts
+and 716 activity rows, and **0 statements, 0 periods**. The 64 June 2026 statements
+were parsed against the real files during the `v493`/`v494` work to prove the parser
+— that is where "45 filed before, 50 after" came from — but they were never uploaded.
+No opening balance has been seeded anywhere.
+
+The files are in `OneDrive/Documents/2026`, one folder per month, `03.2026` through
+`08.2026` — 373 statements. Pre-flight measured against the real folder and the 49
+registered accounts:
+
+| `06.2026` (64 PDFs) | |
+|---|---|
+| file | **49** — 32 with a balance, 17 dormant at 0.00 |
+| held for an account number | **14** |
+| refused (a Wells Fargo statement in the PNC folder) | 1 |
+| failing their own arithmetic check | **0** |
+
+Total ending balance across the 49: **$32,450,887.35**. Two of the 14 held hold real
+money: PPI Life Storage NY 119,701.35 and PSC Ambassadors Fund TGA VI 629,125.04.
+
+The order is: upload `06.2026` → answer the 14 held → **Seed all** for `202607`.
+
+## A statement whose account is not registered
+
+Built `v507` on Jim's instruction: "create a record and prompt the user to find and
+input the account number for future matching of the data pulls."
+
+- An account registers itself from an activity import, and PNC serves only **90
+  days**. An account quiet longer than that has a statement showing real money and
+  no transaction anywhere to introduce it. That is a REGISTRATION gap, not a parse
+  gap — the parser reads all 14 correctly, including `790-XXXXX47`, the middle-mask
+  case from `v494`.
+- The old behaviour parsed them, said so in a result row, and **kept nothing**, so
+  the reading had to be found again by hand. They now go to
+  `tr_pending_statements` with everything that was read, and the bulk import counts
+  them as **held** rather than skipped.
+- **The typed number is checked against the mask.** `XX-XXXX-7891` says ten digits
+  ending 7891. A number that does not fit is refused — without that, a mistyped
+  digit registers a plausible new account, the statement files against it, and when
+  the real account arrives under its true number the balance is split across two
+  records with nothing saying so.
+- Resolving registers the account, files the statement and carries the PDF across.
+  **Every later pull for that account then routes by itself**, which is the point of
+  asking once.
+- A separate table on purpose: a reconciliation must never pick up a statement that
+  has not been placed against a real account. The resolved row is KEPT, showing who
+  placed it and when.
+
+## The statement PDF is kept
+
+`tr_statements.file_data` and the pending equivalent, added `v507` by **migration as
+well as DDL** — production already had these tables, and `CREATE TABLE IF NOT EXISTS`
+would not have touched them.
+
+For a held statement, opening the PDF is not a convenience: **it is the only place
+the full account number is written**, so it is how the question gets answered. A
+statement imported before this says so plainly rather than 404ing; its balances are
+still right.
+
+## Protection
+
+All six `tr_*` tables are in `PROTECTED_TABLES` (`v507`), on the same rule as
+`wp_fs_map` and the budget supplement: the app is the writer and holds the only copy,
+and none comes from a CSV feed. **`tr_periods` matters most** — it is the
+reconciliation chain, each closed period's ending becoming the next one's opening, so
+losing it loses the thread rather than a report.
+
+Checked against the `isbs_uw_supplements` lesson before adding them: protection
+without a write path is a lockout, not a safeguard. All six are app-written, and the
+guardrail asserts BOTH the membership and the write path so a future table cannot be
+protected into uselessness.
 
 ## Statements in bulk, and starting the chain from them
 

@@ -856,7 +856,7 @@ cycle to compare against. Needs production, and probably needs Jim to say which 
 source of record for a prior year once a cycle has been published.
 
 
-## 7. Treasury and accounting access (Sep 17 2026)
+## 7. Treasury and accounting access (Sep 17 2026, updated Sep 19)
 
 ### 7.1 The PNC connection — not built, and it needs Jim's banker
 
@@ -942,7 +942,17 @@ silently splits the account in two the moment real activity arrives.
 Twelve further June statements are for accounts in the same position but holding
 **0.00**, so nothing is lost by leaving them until they transact.
 
-**Owner: Jim.** One number, typed on the Accounts tab.
+Since `v507` the statement is no longer merely refused: it is **held** in
+`tr_pending_statements` with everything that was read, and the Import tab lists
+it with its balance and a link to the PDF — which is where the full number is
+printed. Typing the number there validates it against the mask, registers the
+account, files the statement and routes every later pull for it.
+
+**The thirteen others are held the same way**; twelve are 0.00 and one, **PSC
+Ambassadors Fund TGA VI, holds 629,125.04**, so two of the fourteen hold real
+money, not one.
+
+**Owner: Jim.** Fourteen numbers, typed on the Import tab once §7.10 is done.
 
 ### 7.8 Bank-account to cash-account mapping — Jim
 
@@ -968,6 +978,36 @@ dropdown, so ledger cash activity with no PNC counterpart is expected.
 a different bank with a different layout. Noted so it is not mistaken for a
 parser gap. **No action unless Wells Fargo accounts need reconciling too**, which
 would be a separate parser.
+
+### 7.10 NOTHING HAS BEEN LOADED INTO TREASURY ON PRODUCTION — Jim, two clicks
+
+**Read this before diagnosing anything in treasury.** Checked against the live
+database at `v507` (Sep 19 2026): **49 accounts, 716 activity rows, 0 statements,
+0 periods, 0 matches.**
+
+The 64 June 2026 statements were parsed **locally** during the `v493`/`v494` work
+to prove the parser — that is where "45 filed before, 50 after" came from. They
+were never uploaded to the app. Jim recalls uploading them; the database does not.
+
+**Consequence, and it has already been hit.** *Seed openings from statements*
+returns `0 of 49 opened`, every line reading *"No statement is on file for
+202606."* That is the seeder working correctly — it reads a filed statement and
+will not invent an opening balance — but it reads like a failure.
+
+**The order, and it cannot be reordered:**
+
+1. Import tab, bulk card → the 64 PDFs in `OneDrive/Documents/2026/06.2026`.
+   12 MB total, inside the 50 MB request cap and the 200-file limit.
+   Measured against the real folder and the 49 registered accounts:
+   **49 file** (32 with a balance, 17 dormant at 0.00), **14 held**, **1 refused**
+   (§7.9, the Wells Fargo statement). Total filed ending balance
+   **$32,450,887.35**. None fails its own arithmetic check.
+2. Answer the 14 held (§7.7).
+3. **Seed openings at `202607`**, not 202606 — the activity export opens 6/22, so
+   June can never be reconciled; July and August are complete.
+4. Reconcile July.
+
+**Owner: Jim.** No code is needed for any of it.
 
 ### 7.4 Six accounting writes had NO role check — FIXED, and worth knowing why
 
