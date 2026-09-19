@@ -1002,10 +1002,11 @@ will not invent an opening balance — but it reads like a failure.
    **49 file** (32 with a balance, 17 dormant at 0.00), **14 held**, **1 refused**
    (§7.9, the Wells Fargo statement). Total filed ending balance
    **$32,450,887.35**. None fails its own arithmetic check.
-2. Answer the 14 held (§7.7).
-3. **Seed openings at `202607`**, not 202606 — the activity export opens 6/22, so
-   June can never be reconciled; July and August are complete.
-4. Reconcile July.
+   **Since `v508` this also opens each account at `202607`** — seeding is part of
+   filing, so there is no separate step and no way to do one without the other.
+2. Answer the 14 held (§7.7). Resolving one files it, which opens its chain too.
+3. Reconcile July. (Not June: the activity export opens 6/22, so June can never
+   be reconciled; July and August are complete.)
 
 **Owner: Jim.** No code is needed for any of it.
 

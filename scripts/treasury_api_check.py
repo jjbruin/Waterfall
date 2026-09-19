@@ -46,7 +46,8 @@ def _token(app, role, username="check"):
 ACCOUNT_FIELDS = [
     "account_number", "account_name", "entityid", "gl_cash_account",
     "current_ledger", "current_available", "ledger_reason", "available_reason",
-    "last_period", "last_balance", "unclosed_months", "activity_through",
+    "last_period", "last_status", "last_balance", "unclosed_months",
+    "activity_through",
 ]
 TIE_FIELDS = [
     "headline", "opening_balance", "opening_source", "bank_movement",
@@ -64,6 +65,12 @@ PAIR_FIELDS = ["bank_id", "bank_date", "bank_description", "bank_amount",
                "days_apart"]
 IMPORT_FIELDS = ["inserted", "already_held", "accounts", "skipped",
                  "skipped_count"]
+#: The statements-on-file panel. A statement is no use stored if the screen
+#: cannot name it, so these are asserted like every other seam here.
+STATEMENT_FIELDS = ["id", "account_number", "account_name", "entityid",
+                    "period_start", "period_end", "beginning_balance",
+                    "ending_balance", "source_file", "imported_at", "period",
+                    "has_file"]
 
 
 def _missing(payload, fields):
@@ -262,6 +269,49 @@ def main():
         "missing" in (bad.get_json().get("error") or "").lower(),
         str(bad.get_json())[:120])
 
+    print("\n7. Filing a statement opens the chain, and lists it")
+    # Jim, Sep 19 2026: seeding belongs in the load, and a statement should be
+    # reachable afterwards. Both are asserted over HTTP here; the service-level
+    # rules, including the refusal to re-base a reconciled account, are in
+    # scripts/treasury_seed_on_import_check.py.
+    st = {"period_start": "2026-06-01", "period_end": "2026-06-30",
+          "beginning_balance": 1000.00, "ending_balance": 2500.00,
+          "credits_total": 1500.00, "debits_total": 0.0,
+          "source_file": "api-check-june.pdf", "internally_consistent": True}
+    # ACCT has been reconciled and CLOSED by the sections above, so it is the
+    # account that must be left alone. A fresh one covers the opening case --
+    # both directions, since seeding everything would satisfy one of them.
+    FRESH = ACCT[:-1] + "9"
+    with app.app_context():
+        ts.create_account(FRESH, entityid="TRCHK", user="check")
+        fresh_res = ts.import_statement(st, FRESH, user="check")
+        closed_res = ts.import_statement(st, ACCT, user="check")
+    chk("filing a statement opens the following month",
+        fresh_res.get("seeded_period") == "202607", str(fresh_res)[:120])
+    chk("...at the statement's own ending balance",
+        fresh_res.get("seeded_amount") == 2500.00,
+        str(fresh_res.get("seeded_amount")))
+    chk("a reconciled account is NOT re-based by a later statement",
+        closed_res.get("ok") and not closed_res.get("seeded_period"),
+        str(closed_res)[:120])
+    chk("...and its statement is filed all the same",
+        closed_res.get("ok") is True, str(closed_res)[:90])
+
+    lst = client.get("/api/treasury/statements?account_number=%s" % ACCT,
+                     headers=acctant)
+    chk("GET /statements answers", lst.status_code == 200, str(lst.status_code))
+    rows = lst.get_json() or []
+    chk("the statement just filed is listed", len(rows) >= 1, str(len(rows)))
+    if rows:
+        chk("the statements panel reads no field the server does not send",
+            not _missing(rows[0], STATEMENT_FIELDS),
+            str(_missing(rows[0], STATEMENT_FIELDS)))
+        chk("...and the period is derived for it, not left to the screen",
+            rows[0]["period"] == "202606", str(rows[0].get("period")))
+    # A read, like the rest of the section: a viewer may look one up.
+    chk("a viewer may call up a statement list",
+        client.get("/api/treasury/statements", headers=viewer).status_code == 200)
+
     # ---- cleanup -------------------------------------------------------
     from sqlalchemy import text
     from flask_app.db import get_engine
@@ -270,8 +320,9 @@ def main():
         for t in ("tr_activity", "tr_statements", "tr_periods", "tr_accounts",
                   "tr_matches"):
             with eng.begin() as c:
-                c.execute(text("DELETE FROM %s WHERE account_number = :a" % t),
-                          {"a": ACCT})
+                c.execute(text("DELETE FROM %s WHERE account_number IN "
+                               "(:a, :b)" % t),
+                          {"a": ACCT, "b": ACCT[:-1] + "9"})
 
     print("\n%d checks, %d failed." % (len(_passed) + len(_failed), len(_failed)))
     if _failed:

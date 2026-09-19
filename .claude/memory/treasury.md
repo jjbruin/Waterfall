@@ -1,6 +1,6 @@
 # Treasury — the bank side of the close
 
-**Live at `v507`.** Screen at `/treasury`, under Accounting. Service
+**Live at `v508`.** Screen at `/treasury`, under Accounting. Service
 `flask_app/services/treasury_service.py`, API `flask_app/api/treasury.py`, view
 `vue_app/src/views/TreasuryView.vue`.
 
@@ -111,7 +111,14 @@ still carries the bank side, so "map this account first" is actionable.
   A format check written from a specification proves only that the code
   agrees with itself; this one caught the amount formatting (`13313.8`, not
   `13313.80`).
-- `scripts/treasury_api_check.py` — 37. **Asserts every field name the screen
+- `scripts/treasury_seed_on_import_check.py` — 29. Filing opens a chain that
+  has not started, and **never re-bases one that has** — both directions, since
+  a check written only in the seeding direction is satisfied by seeding
+  everything, which is the one outcome the rule exists to prevent. Proved
+  non-vacuous by injecting each defect: turning the seed off fails 4 checks,
+  removing the reconciled-account guard fails 5 and overwrites a closed
+  10,000.00 with 88,888.88.
+- `scripts/treasury_api_check.py` — 46. **Asserts every field name the screen
   reads against a live response.** This exists because the service's own checks
   structurally cannot see that seam: a field read by the wrong name renders as a
   blank cell with no error and no log. It happened three times while the view
@@ -185,7 +192,57 @@ registered accounts:
 Total ending balance across the 49: **$32,450,887.35**. Two of the 14 held hold real
 money: PPI Life Storage NY 119,701.35 and PSC Ambassadors Fund TGA VI 629,125.04.
 
-The order is: upload `06.2026` → answer the 14 held → **Seed all** for `202607`.
+The order is: upload `06.2026` → answer the 14 held. **Since `v508` the seeding
+is part of the upload**, so there is no third step: each filed statement opens
+its account at `202607` as it lands.
+
+## Filing a statement opens the chain
+
+Jim, Sep 19 2026, after the seeder returned `0 of 49 opened`: *"Shouldn't the
+seeding process be integrated into loading the statements function? If the
+account does not need a seed because reconciled balances are carried forward,
+the process should simply save the statement file in its place and make it
+readily available when called by the accountant."*
+
+Right on both halves, and the plumbing was already there.
+
+- **Filing knows everything seeding needs** — the account, the period, the
+  ending balance. A second deliberate step only creates the state the June load
+  was in: statements loaded, openings not, and nothing on screen connecting the
+  two.
+- **`import_statement` CALLS `seed_from_statement`.** It does not compute an
+  opening itself, so the "seeding is not re-basing" rule below is unchanged and
+  is enforced in exactly one place. An account with a reconciled period is left
+  alone; the refusal is returned as `seed_skipped`, not as an error, because the
+  statement IS filed and needing no seed is not a failure.
+- **Each statement opens its OWN following month**, so there is no ordering
+  dependence when a folder of several months arrives at once, and no month can
+  be opened twice from different files.
+- **A real close outranks a seed automatically** — `opening_balance()` reads the
+  prior period's `computed_ending` and the seed is stored as a `seeded` row, so
+  reconciling that month simply replaces it.
+- **Re-importing the same file stores nothing twice.** Re-running a folder is
+  ordinary; a second row would leave two statements for one month with nothing
+  saying which is read.
+- **A SEEDED PERIOD WAS NEVER CLOSED.** The accounts tab said "Closed 202606 at
+  …" of a seeded row. That was wrong before and would now be wrong on every row,
+  since filing opens a chain for every account at once. `last_status` is carried
+  and the wording is "Opened at … from the … statement, nothing reconciled yet".
+
+The **Seed openings from statements** button stays, for statements filed before
+this and for opening a month other than the one after the statement.
+
+## The statements are listed, so one can be called up
+
+`GET /api/treasury/statements`, panel at the foot of the Accounts tab, filterable
+by account. The PDF had been kept since `v507` and **nothing listed it** — the
+only route to one was the held-statement prompt, which empties the moment the
+statement is placed. Stored and unreachable is not kept.
+
+`has_file` is per row: a statement filed before the bytes were kept still has
+correct balances, and the difference is whether the PDF opens, not whether the
+statement is there. The single-file import route was also not storing the PDF at
+all while the bulk one was.
 
 ## A statement whose account is not registered
 

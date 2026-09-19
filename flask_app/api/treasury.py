@@ -123,7 +123,10 @@ def import_statement():
         return jsonify({"error": "Could not open that PDF: %s"
                                  % str(e)[:160]}), 400
     parsed = ts.parse_statement_text(txt, source_file=f.filename or "")
-    res = ts.import_statement(parsed, account_number)
+    # `file_data` was missing here while the bulk route stored it, so a
+    # statement loaded one at a time could not be called up afterwards.
+    res = ts.import_statement(parsed, account_number, file_data=raw,
+                              user=_user())
     if res.get("error"):
         # The parse is returned alongside the refusal so the screen can show
         # what WAS found -- a scanned statement is a different problem from a
@@ -402,7 +405,7 @@ def import_statements():
     except Exception as e:
         return _fail(e, "pdfplumber", 500)
 
-    results, filed, skipped, pending = [], 0, 0, 0
+    results, filed, skipped, pending, opened = [], 0, 0, 0, 0
     for f in files:
         name = f.filename or "(unnamed)"
         row = {"file": name}
@@ -441,18 +444,28 @@ def import_statements():
             results.append(row); continue
         row["account_number"] = hit["account_number"]
 
-        res = _ts.import_statement(parsed, hit["account_number"], file_data=raw)
+        res = _ts.import_statement(parsed, hit["account_number"],
+                                   file_data=raw, user=_user())
         if res.get("error"):
             row["error"] = res["error"]
             skipped += 1
         else:
             row["filed"] = True
             filed += 1
+            # Filing opens the chain where there is none. An account already
+            # carrying its balances forward is left alone -- that is not a
+            # failure and is not reported as one.
+            if res.get("seeded_period"):
+                row["seeded_period"] = res["seeded_period"]
+                row["seeded_amount"] = res.get("seeded_amount")
+                opened += 1
+            elif res.get("already_filed"):
+                row["already_filed"] = True
         results.append(row)
 
     return jsonify(safe_json({
         "filed": filed, "skipped": skipped, "held": pending,
-        "count": len(files), "results": results}))
+        "opened": opened, "count": len(files), "results": results}))
 
 
 @treasury_bp.route("/pending-statements", methods=["GET"])
@@ -494,6 +507,23 @@ def resolve_pending_statement(pending_id):
         return (jsonify(res), 400) if res.get("error") else jsonify(safe_json(res))
     except Exception as e:
         return _fail(e, "resolve_pending_statement", 500)
+
+
+@treasury_bp.route("/statements", methods=["GET"])
+@login_required
+def list_statements():
+    """Filed statements, optionally for one account or one period.
+
+    A read, so it is open to anyone signed in, like the rest of the section.
+    """
+    from flask_app.services import treasury_service as _ts
+    try:
+        return jsonify(safe_json(_ts.statements(
+            account_number=(request.args.get("account_number") or "").strip()
+            or None,
+            period=(request.args.get("period") or "").strip() or None)))
+    except Exception as e:
+        return _fail(e, "statements", 500)
 
 
 @treasury_bp.route("/statements/<int:statement_id>/file", methods=["GET"])

@@ -64,7 +64,7 @@ async function resolvePending(p: any) {
     resolveMsg.value = `${p.statement_name || p.source_file} placed against `
       + `${data.account_number}. Later statements for it will route by themselves.`
     delete resolveNum.value[p.id]
-    await Promise.all([loadPending(), loadAccounts()])
+    await Promise.all([loadPending(), loadAccounts(), loadStatements()])
   } catch (e: any) {
     // The refusal text says WHY — usually that the number does not fit the
     // mask — and is the whole value of the check, so it is shown verbatim.
@@ -436,6 +436,26 @@ async function download(kind: 'gl' | 'ia') {
 // MASKED number (XX-XXXX-5765), so routing is on the last four — unique across
 // all fifty of today's accounts, and an ambiguous suffix is refused rather
 // than resolved.
+// ── the statements already on file ───────────────────────────────────
+//
+// Jim, Sep 19 2026: a statement should be "readily available when called by
+// the accountant". The PDF has been kept since v507 and nothing listed it, so
+// the only route to one was the held-statement prompt — which empties the
+// moment the statement is placed. Stored and unreachable is not kept.
+const filed = ref<any[]>([])
+const filedAccount = ref('')
+
+async function loadStatements() {
+  try {
+    const { data } = await api.get('/api/treasury/statements')
+    filed.value = data || []
+  } catch { filed.value = [] }
+}
+
+const filedShown = computed(() => filedAccount.value
+  ? filed.value.filter((r: any) => r.account_number === filedAccount.value)
+  : filed.value)
+
 const stmtFiles = ref<File[]>([])
 const stmtBatch = ref<any>(null)
 const seedPeriod = ref('202607')
@@ -453,9 +473,10 @@ async function uploadStatements() {
     // The held count is the actionable part of a bulk import: those are the
     // statements that parsed and are waiting for somebody to name the account.
     flash(`${data.filed} statements filed`
+      + (data.opened ? `, ${data.opened} openings set` : '')
       + (data.held ? `, ${data.held} waiting for an account number` : '')
       + (data.skipped ? `, ${data.skipped} not read` : '') + '.')
-    await Promise.all([loadAccounts(), loadPending()])
+    await Promise.all([loadAccounts(), loadPending(), loadStatements()])
   } catch (e) { fail(e, 'Importing the statements') } finally {
     busy.value = false
   }
@@ -504,7 +525,7 @@ async function addAccount() {
 const seedProblems = computed(
   () => (seedRes.value?.results || []).filter((r: any) => r.error))
 
-onMounted(() => { loadAccounts(); loadPending() })
+onMounted(() => { loadAccounts(); loadPending(); loadStatements() })
 </script>
 
 <template>
@@ -571,7 +592,7 @@ onMounted(() => { loadAccounts(); loadPending() })
                 <th class="l">GL cash account</th>
                 <th class="r">Current ledger</th>
                 <th class="r">Current available</th>
-                <th class="l">Last closed</th>
+                <th class="l">Chain starts / last closed</th>
                 <th v-if="canManage"></th>
               </tr>
             </thead>
@@ -602,6 +623,13 @@ onMounted(() => { loadAccounts(); loadPending() })
                 <td class="l">
                   <template v-if="a.last_period">
                     {{ a.last_period }} at {{ money(a.last_balance) }}
+                    <!-- A seeded period was never closed. Filing a statement
+                         opens the chain, so most rows start out seeded and
+                         calling that "closed" would claim a reconciliation
+                         nobody did. -->
+                    <div v-if="a.last_status === 'seeded'" class="why">
+                      opened from a statement, not reconciled
+                    </div>
                   </template>
                   <span v-else class="why">never closed</span>
                   <div v-if="a.unclosed_months && a.unclosed_months.length"
@@ -647,8 +675,11 @@ onMounted(() => { loadAccounts(); loadPending() })
 
         <div v-if="canManage" class="seed">
           <span class="hint">
-            Open each account's chain from the prior month's filed statement.
-            Seeds only accounts that have nothing reconciled yet.
+            Loading a statement now opens that account's chain by itself, so
+            this is only needed for statements filed before it did — or to
+            open a month other than the one after the statement. It reads the
+            prior month's filed statement and touches only accounts that have
+            nothing reconciled yet.
           </span>
           <input v-model="seedPeriod" class="mini" placeholder="202607" />
           <button class="btn" :disabled="busy" @click="seedAll">
@@ -674,6 +705,53 @@ onMounted(() => { loadAccounts(); loadPending() })
           appear nowhere in an activity export. It fills in when the PNC
           connection does.
         </p>
+      <!-- ── statements already on file ──────────────────────────── -->
+      <section class="card" v-if="filed.length">
+        <h3>Statements on file ({{ filed.length }})</h3>
+        <p class="hint">
+          Every statement that has been loaded, newest period first. Filing one
+          also opens that account's chain when nothing has been reconciled yet,
+          so there is no separate seeding step; an account already carrying its
+          balances forward keeps them and the statement is simply kept here.
+        </p>
+        <label class="inline">
+          Account
+          <select v-model="filedAccount" class="mini">
+            <option value="">all</option>
+            <option v-for="a in accounts" :key="a.account_number"
+                    :value="a.account_number">
+              {{ a.account_number }}<span v-if="a.account_name"> — {{ a.account_name }}</span>
+            </option>
+          </select>
+        </label>
+        <div class="grid-wrap">
+          <table class="grid">
+            <thead>
+              <tr>
+                <th class="l">Account</th><th class="l">Name</th>
+                <th class="l">Period</th><th class="r">Beginning</th>
+                <th class="r">Ending</th><th class="l">File</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="r in filedShown" :key="r.id">
+                <td class="l mono">{{ r.account_number }}</td>
+                <td class="l">{{ r.account_name || r.entityid || '—' }}</td>
+                <td class="l">{{ r.period_end || '—' }}</td>
+                <td class="r num">{{ money(r.beginning_balance) }}</td>
+                <td class="r num">{{ money(r.ending_balance) }}</td>
+                <td class="l">
+                  <a v-if="r.has_file" :href="statementUrl(r.id)" target="_blank"
+                     rel="noopener" class="stmt-link">{{ r.source_file || 'PDF' }}</a>
+                  <span v-else class="why">
+                    filed before the PDF was kept — the balances are still right
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
       </template>
     </div>
 
@@ -774,7 +852,13 @@ onMounted(() => { loadAccounts(); loadPending() })
                   <span v-if="r.held_for_account_number" class="held">
                     held — needs an account number
                   </span>
-                  <span v-else>{{ r.error || 'filed' }}</span>
+                  <span v-else-if="r.error">{{ r.error }}</span>
+                  <span v-else-if="r.already_filed">already on file</span>
+                  <span v-else-if="r.seeded_period">
+                    filed — {{ r.seeded_period }} opens at
+                    {{ money(r.seeded_amount) }}
+                  </span>
+                  <span v-else>filed</span>
                 </td>
               </tr>
             </table>

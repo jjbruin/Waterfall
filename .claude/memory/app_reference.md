@@ -302,6 +302,14 @@ Under Accounting, at `/treasury`. Four tabs; full detail in `treasury.md`.
   proposal** from commitment amounts. Downloads the GL upload CSV and the IA
   upload workbook, the latter written into a copy of MRI's own template.
 
+**Statements on file** (`v508`) sit at the foot of the Accounts tab: every
+statement loaded, newest period first, filterable by account, each linking its
+PDF. Loading a statement also OPENS that account's chain when nothing has been
+reconciled yet, so there is no separate seeding step; an account already
+carrying its balances forward keeps them and the statement is simply kept. A
+seeded month is labelled "opened from a statement, not reconciled" rather than
+counted as a close.
+
 **Statements waiting for an account number** (`v507`) sit on the Import tab: the
 ones that parsed but whose account is not registered. Each row carries the masked
 number, the balance, the entity name off the filename and a link to the PDF — which

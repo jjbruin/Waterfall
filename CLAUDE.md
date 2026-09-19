@@ -1683,6 +1683,24 @@ columns are loaded from somebody else's spreadsheet, and the debt rows are ours.
 - **SEEDING IS NOT RE-BASING.** `opening_balance()` never reads a statement;
   `seed_from_statement` exists only to START a chain and refuses once any period
   has been reconciled.
+- **FILING A STATEMENT OPENS THE CHAIN** (Jim, Sep 19 2026: "shouldn't the
+  seeding process be integrated into loading the statements function?"). Filing
+  already knows the account, the period and the ending balance, so a second
+  deliberate step only creates the state the June load was in — statements
+  loaded, openings not. `import_statement` calls `seed_from_statement`; it does
+  NOT compute an opening itself, so the refusal above still holds and an account
+  carrying its balances forward is left alone and its statement simply kept. The
+  manual button stays for statements filed before this.
+- **A SEEDED PERIOD WAS NEVER CLOSED**, and the accounts tab must not say it
+  was. Since filing now opens the chain, every account acquires one the day its
+  statements load, so the wrong word would be on every row: `last_status` is
+  carried and the reason reads "Opened at … from the … statement, nothing
+  reconciled yet".
+- **The filed statements are LISTED** (`GET /api/treasury/statements`, panel at
+  the foot of the Accounts tab). Stored and unreachable is not kept: the PDF had
+  been held since `v507` but only the held-statement prompt linked one, and that
+  list empties the moment the statement is placed. Re-importing the same file is
+  an ordinary thing to do and no longer stores a second row.
 - **The cash side of a journal entry is never typed** — each bank transaction
   becomes its own cash line at the bank's own amount, so the entry balances by
   construction and a partly coded month cannot produce a file.
@@ -2037,6 +2055,8 @@ it; the sidebar map above is kept here as a quick orientation.
 - `build_package()` - The 17-tab workbook; exhibits placed into it, not attached (workpaper_excel.py)
 - `hold_unmatched_statement()` / `pending_statements()` / `resolve_pending_statement()` - A statement whose account is unknown is kept and asked about; the typed number is validated against the printed mask (treasury_service.py)
 - `statement_file()` - The stored PDF for one statement, filed or pending (treasury_service.py)
+- `statements()` - Every filed statement, optionally by account or period, each saying whether its PDF can be opened (treasury_service.py)
+- `next_period()` - The month a statement opens, the mirror of `prior_period` (treasury_service.py)
 - `select_measure_rows()` / `drilldown()` - Which GL rows compose a statement figure, and the entries behind it; ONE definition shared with `_balances` so they cannot disagree (statement_service.py)
 - `annual_rent_psf()` / `rent_psf_for()` - Rent PSF on ANNUAL rent over SF, never monthly; returns the basis with the figure (lease_terms.py)
 - `amendment_ordinal()` / `order_lease_documents()` - Which amendment a document is, and the order they are layered in; reports when the order cannot be established (lease_terms.py)

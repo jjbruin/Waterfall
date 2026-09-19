@@ -259,6 +259,13 @@ def prior_period(period: str) -> Optional[str]:
     return "%04d%02d" % ((y - 1, 12) if m == 1 else (y, m - 1))
 
 
+def next_period(period: str) -> Optional[str]:
+    if not period or len(period) != 6 or not period.isdigit():
+        return None
+    y, m = int(period[:4]), int(period[4:])
+    return "%04d%02d" % ((y + 1, 1) if m == 12 else (y, m + 1))
+
+
 # ------------------------------------------------------------------ parsing
 
 #: The PNC activity export's own header, as exported from PINACLE.
@@ -482,8 +489,29 @@ def import_activity(rows, engine=None) -> dict:
 
 
 def import_statement(parsed: dict, account_number: str, engine=None,
-                     file_data: bytes = None) -> dict:
-    """Store a statement's balances. Refused when they could not be read."""
+                     file_data: bytes = None, user: str = "",
+                     seed: bool = True) -> dict:
+    """Store a statement's balances, and open the chain if it has not started.
+
+    Jim, Sep 19 2026: "Shouldn't the seeding process be integrated into loading
+    the statements function? If the account does not need a seed because
+    reconciled balances are carried forward, the process should simply save the
+    statement file in its place."
+
+    Right on both halves. Filing already knows the account, the period and the
+    ending balance, which is everything seeding needs -- so asking for a second
+    deliberate step only creates a state where the statements are loaded and the
+    openings are not, which is exactly where the June load stood.
+
+    SEEDING IS STILL NOT RE-BASING. This calls `seed_from_statement`, which
+    refuses the moment the account has a reconciled period, so an account whose
+    balances are carried forward is left alone and the statement is simply filed
+    and kept. One engine for the seed: this does not compute an opening itself.
+
+    A statement already filed for the same account, period and file is NOT
+    stored twice -- re-running a folder is an ordinary thing to do, and a second
+    row would leave two statements for one month with nothing saying which.
+    """
     engine = engine or get_engine()
     ensure_tables(engine)
     if parsed.get("error") or parsed.get("ending_balance") is None:
@@ -494,7 +522,17 @@ def import_statement(parsed: dict, account_number: str, engine=None,
                          "(beginning + credits - debits does not equal ending), "
                          "so they were not stored."}
     now = datetime.utcnow().isoformat(timespec="seconds")
+    acct_clean = str(account_number).strip()
     with engine.begin() as conn:
+        dup = conn.execute(text(
+            "SELECT id FROM tr_statements WHERE account_number = :a "
+            "  AND period_end = :pe AND source_file = :f"),
+            {"a": acct_clean, "pe": parsed.get("period_end"),
+             "f": parsed.get("source_file")}).fetchone()
+        if dup:
+            return {"ok": True, "already_filed": True, "statement_id": dup[0],
+                    "period_end": parsed.get("period_end"),
+                    "ending_balance": parsed.get("ending_balance")}
         conn.execute(text(
             "INSERT INTO tr_statements (account_number, period_start, "
             " period_end, beginning_balance, ending_balance, credits_total, "
@@ -506,8 +544,26 @@ def import_statement(parsed: dict, account_number: str, engine=None,
              "e": parsed.get("ending_balance"),
              "c": parsed.get("credits_total"), "d": parsed.get("debits_total"),
              "f": parsed.get("source_file"), "i": now})
-    return {"ok": True, "period_end": parsed.get("period_end"),
-            "ending_balance": parsed.get("ending_balance")}
+
+    out = {"ok": True, "period_end": parsed.get("period_end"),
+           "ending_balance": parsed.get("ending_balance")}
+    if not seed:
+        return out
+    # The statement just filed is the PRIOR period's for the month it opens, so
+    # `seed_from_statement` reads back the row written above. Its refusals are
+    # reported as `seed_skipped` rather than raised: the statement IS filed, and
+    # a chain that is already carried forward needs no seed.
+    nxt = next_period(period_of(parsed.get("period_end") or ""))
+    if not nxt:
+        return out
+    res = seed_from_statement(str(account_number).strip(), nxt, user=user,
+                              engine=engine)
+    if res.get("error"):
+        out["seed_skipped"] = res["error"]
+    else:
+        out["seeded_period"] = nxt
+        out["seeded_amount"] = res.get("amount")
+    return out
 
 
 
@@ -586,6 +642,47 @@ def _statement_name(source_file: str) -> str:
     name = re.sub(r"^\d{1,2}\s+\w+\s+\d{4}\s*", "", name)
     name = re.sub(r"\s*\d{3,4}\s*PNC\s*$", "", name, flags=re.I)
     return name.strip()
+
+
+def statements(account_number: str = None, period: str = None,
+               engine=None) -> list:
+    """Every filed statement, newest first, so one can be called up by name.
+
+    Jim, Sep 19 2026: a statement should be "readily available when called by
+    the accountant". The PDF has been kept since v507 but nothing LISTED it, so
+    the only route to one was the held-statement prompt -- which empties the
+    moment the statement is placed. Stored and unreachable is not kept.
+
+    `has_file` is reported per row because a statement filed before the bytes
+    were kept still has correct balances; the difference is whether the PDF can
+    be opened, not whether the statement is there.
+    """
+    engine = engine or get_engine()
+    ensure_tables(engine)
+    where, params = [], {}
+    if account_number:
+        where.append("s.account_number = :a")
+        params["a"] = str(account_number).strip()
+    if period and len(period) == 6 and period.isdigit():
+        where.append("s.period_end LIKE :pe")
+        params["pe"] = "%s-%s%%" % (period[:4], period[4:])
+    sql = ("SELECT s.id, s.account_number, s.period_start, s.period_end, "
+           "       s.beginning_balance, s.ending_balance, s.source_file, "
+           "       s.imported_at, a.account_name, a.entityid, "
+           "       CASE WHEN s.file_data IS NULL THEN 0 ELSE 1 END "
+           "  FROM tr_statements s "
+           "  LEFT JOIN tr_accounts a ON a.account_number = s.account_number "
+           + (" WHERE " + " AND ".join(where) if where else "")
+           + " ORDER BY s.period_end DESC, s.account_number")
+    with engine.connect() as conn:
+        rows = conn.execute(text(sql), params).fetchall()
+    return [{"id": r[0], "account_number": r[1], "period_start": r[2],
+             "period_end": r[3],
+             "beginning_balance": None if r[4] is None else float(r[4]),
+             "ending_balance": None if r[5] is None else float(r[5]),
+             "source_file": r[6], "imported_at": r[7], "account_name": r[8],
+             "entityid": r[9], "period": period_of(r[3] or ""),
+             "has_file": bool(r[10])} for r in rows]
 
 
 def statement_file(statement_id: int, pending: bool = False,
@@ -1135,11 +1232,11 @@ def accounts(engine=None):
             "       gl_cash_account, active FROM tr_accounts "
             " ORDER BY account_number")).fetchall()
         last = {}
-        for a, p, c in conn.execute(text(
-                "SELECT account_number, period, computed_ending "
+        for a, p, c, st in conn.execute(text(
+                "SELECT account_number, period, computed_ending, status "
                 "  FROM tr_periods WHERE computed_ending IS NOT NULL "
                 " ORDER BY period")).fetchall():
-            last[a] = (p, c)
+            last[a] = (p, c, st)
         # Activity rolled up by month, so the position below can be carried
         # forward from the last close without reading every transaction.
         by_month = {}
@@ -1154,19 +1251,20 @@ def accounts(engine=None):
     out = []
     for r in rows:
         acct = r[0]
-        period, balance = last.get(acct, (None, None))
+        period, balance, pstatus = last.get(acct, (None, None, None))
         row = {"account_number": acct, "bank_id": r[1], "account_name": r[2],
                "entityid": r[3],
                "gl_cash_account": r[4] or DEFAULT_CASH_ACCOUNT,
                "active": bool(r[5]),
                "last_period": period,
+               "last_status": pstatus,
                "last_balance": (float(balance) if balance is not None else None)}
-        row.update(_position(period, balance, by_month.get(acct, [])))
+        row.update(_position(period, balance, by_month.get(acct, []), pstatus))
         out.append(row)
     return out
 
 
-def _position(last_period, last_balance, months) -> dict:
+def _position(last_period, last_balance, months, status=None) -> dict:
     """What we can honestly say the account holds right now.
 
     CURRENT LEDGER is carried the same way the opening balance is: the last
@@ -1207,12 +1305,18 @@ def _position(last_period, last_balance, months) -> dict:
             "there is no balance to carry it forward from.")
     else:
         pos["current_ledger"] = float(last_balance) + net
-        pos["ledger_reason"] = (
-            "Closed %s at %s%s." % (
-                last_period, _m(last_balance),
-                (", plus %d transaction%s through %s netting %s"
+        # A SEEDED PERIOD WAS NEVER CLOSED. Saying "closed" of one claims a
+        # reconciliation that never happened, and since filing a statement now
+        # opens the chain by itself, every account gets one the day its
+        # statements are loaded -- so the wrong word would be on every row.
+        tail = ((", plus %d transaction%s through %s netting %s"
                  % (txns, "" if txns == 1 else "s", through, _m(net)))
-                if txns else ", with no activity imported since"))
+                if txns else ", with no activity imported since")
+        pos["ledger_reason"] = (
+            ("Opened at %s from the %s statement, nothing reconciled yet%s."
+             % (_m(last_balance), last_period, tail))
+            if status == "seeded" else
+            ("Closed %s at %s%s." % (last_period, _m(last_balance), tail)))
     return pos
 
 
