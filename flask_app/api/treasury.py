@@ -18,7 +18,7 @@ as every accounting role and a level comparison cannot exclude it.
 import io
 import logging
 
-from flask import Blueprint, Response, g, jsonify, request
+from flask import Blueprint, Response, g, jsonify, request, send_file
 
 from flask_app.auth.routes import (ACCOUNTING_ROLES, login_required,
                                    roles_exactly)
@@ -402,7 +402,7 @@ def import_statements():
     except Exception as e:
         return _fail(e, "pdfplumber", 500)
 
-    results, filed, skipped = [], 0, 0
+    results, filed, skipped, pending = [], 0, 0, 0
     for f in files:
         name = f.filename or "(unnamed)"
         row = {"file": name}
@@ -424,11 +424,24 @@ def import_statements():
 
         hit = _ts.match_account_by_suffix(parsed.get("account_suffix"))
         if hit.get("error"):
-            row["error"] = hit["error"]
-            results.append(row); skipped += 1; continue
+            # AN UNROUTABLE STATEMENT IS HELD, NOT DISCARDED. The file parsed
+            # correctly; all that is missing is which account it belongs to,
+            # and refusing it threw away a reading somebody would otherwise
+            # have to find again by hand. Of the 64 June 2026 statements 14
+            # land here and two hold real money. The analyst supplies the
+            # number once and every later pull routes by itself.
+            held = _ts.hold_unmatched_statement(parsed, file_data=raw)
+            if held.get("error"):
+                row["error"] = held["error"]
+                skipped += 1
+            else:
+                row["held_for_account_number"] = True
+                row["note"] = hit["error"]
+                pending += 1
+            results.append(row); continue
         row["account_number"] = hit["account_number"]
 
-        res = _ts.import_statement(parsed, hit["account_number"])
+        res = _ts.import_statement(parsed, hit["account_number"], file_data=raw)
         if res.get("error"):
             row["error"] = res["error"]
             skipped += 1
@@ -438,8 +451,71 @@ def import_statements():
         results.append(row)
 
     return jsonify(safe_json({
-        "filed": filed, "skipped": skipped, "count": len(files),
-        "results": results}))
+        "filed": filed, "skipped": skipped, "held": pending,
+        "count": len(files), "results": results}))
+
+
+@treasury_bp.route("/pending-statements", methods=["GET"])
+@login_required
+def pending_statements():
+    """Statements held because their account is not registered.
+
+    The list is the prompt: each row carries the masked number, the balance and
+    the entity name off the filename, which is everything somebody needs to go
+    and find the real account number.
+    """
+    from flask_app.services import treasury_service as _ts
+    try:
+        return jsonify(safe_json(_ts.pending_statements(
+            include_resolved=request.args.get("all") == "1")))
+    except Exception as e:
+        return _fail(e, "pending_statements", 500)
+
+
+@treasury_bp.route("/pending-statements/<int:pending_id>/resolve",
+                   methods=["POST"])
+@login_required
+@roles_exactly(*ACCOUNTING_ROLES)
+def resolve_pending_statement(pending_id):
+    """Supply the account number for a held statement, register it and file it.
+
+    The number is checked against the mask the statement printed, so a mistyped
+    digit is refused rather than registering a plausible-looking new account
+    that splits one balance across two records.
+    """
+    from flask_app.services import treasury_service as _ts
+    body = request.get_json(silent=True) or {}
+    try:
+        res = _ts.resolve_pending_statement(
+            pending_id, body.get("account_number") or "",
+            entityid=body.get("entityid") or "",
+            gl_cash_account=body.get("gl_cash_account") or "",
+            user=_user())
+        return (jsonify(res), 400) if res.get("error") else jsonify(safe_json(res))
+    except Exception as e:
+        return _fail(e, "resolve_pending_statement", 500)
+
+
+@treasury_bp.route("/statements/<int:statement_id>/file", methods=["GET"])
+@login_required
+def statement_file(statement_id):
+    """The statement PDF itself, so a figure can be checked against its source.
+
+    Jim, Sep 19 2026: accounting should be able to pull up a copy from the
+    treasury screen. `?pending=1` fetches one that is still waiting for its
+    account number -- that is the one most likely to be opened, since somebody
+    has to read it to find the number.
+    """
+    from flask_app.services import treasury_service as _ts
+    try:
+        got = _ts.statement_file(statement_id,
+                                 pending=request.args.get("pending") == "1")
+        if got.get("error"):
+            return jsonify(got), 404
+        return send_file(io.BytesIO(got["data"]), mimetype="application/pdf",
+                         download_name=got["name"])
+    except Exception as e:
+        return _fail(e, "statement_file", 500)
 
 
 @treasury_bp.route("/seed-from-statement", methods=["POST"])

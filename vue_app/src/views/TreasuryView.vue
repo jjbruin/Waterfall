@@ -30,6 +30,47 @@ const auth = useAuthStore()
 const canManage = computed(() => auth.canEditAccounting)
 
 const tab = ref<'accounts' | 'import' | 'reconcile' | 'journal'>('accounts')
+
+// ── statements held because their account is not registered ───────────────
+const pending = ref<any[]>([])
+const resolveNum = ref<Record<number, string>>({})
+const resolveMsg = ref('')
+
+function statementUrl(id: number, isPending = false) {
+  // A plain link, so the PDF opens in the browser's own viewer rather than
+  // being rebuilt in ours.
+  const t = localStorage.getItem('token') || ''
+  return `/api/treasury/statements/${id}/file`
+    + `?pending=${isPending ? 1 : 0}&token=${encodeURIComponent(t)}`
+}
+
+function lastFour(suffix: string) {
+  return String(suffix || '').replace(/\D/g, '').slice(-4)
+}
+
+async function loadPending() {
+  try {
+    pending.value = (await api.get('/api/treasury/pending-statements')).data
+  } catch { pending.value = [] }
+}
+
+async function resolvePending(p: any) {
+  resolveMsg.value = ''
+  busy.value = true
+  try {
+    const { data } = await api.post(
+      `/api/treasury/pending-statements/${p.id}/resolve`,
+      { account_number: resolveNum.value[p.id] })
+    resolveMsg.value = `${p.statement_name || p.source_file} placed against `
+      + `${data.account_number}. Later statements for it will route by themselves.`
+    delete resolveNum.value[p.id]
+    await Promise.all([loadPending(), loadAccounts()])
+  } catch (e: any) {
+    // The refusal text says WHY — usually that the number does not fit the
+    // mask — and is the whole value of the check, so it is shown verbatim.
+    resolveMsg.value = e.response?.data?.error || e.message
+  } finally { busy.value = false }
+}
 const msg = ref('')
 const error = ref('')
 const busy = ref(false)
@@ -409,8 +450,12 @@ async function uploadStatements() {
     for (const f of stmtFiles.value) fd.append('files', f)
     const { data } = await api.post('/api/treasury/import/statements', fd)
     stmtBatch.value = data
-    flash(`${data.filed} statements filed, ${data.skipped} not.`)
-    await loadAccounts()
+    // The held count is the actionable part of a bulk import: those are the
+    // statements that parsed and are waiting for somebody to name the account.
+    flash(`${data.filed} statements filed`
+      + (data.held ? `, ${data.held} waiting for an account number` : '')
+      + (data.skipped ? `, ${data.skipped} not read` : '') + '.')
+    await Promise.all([loadAccounts(), loadPending()])
   } catch (e) { fail(e, 'Importing the statements') } finally {
     busy.value = false
   }
@@ -459,7 +504,7 @@ async function addAccount() {
 const seedProblems = computed(
   () => (seedRes.value?.results || []).filter((r: any) => r.error))
 
-onMounted(loadAccounts)
+onMounted(() => { loadAccounts(); loadPending() })
 </script>
 
 <template>
@@ -725,10 +770,54 @@ onMounted(loadAccounts)
                 <td class="l mono">{{ r.account_number || r.suffix || '—' }}</td>
                 <td class="l">{{ r.period_end || '' }}</td>
                 <td class="r num">{{ r.ending_balance == null ? '' : money(r.ending_balance) }}</td>
-                <td class="l why">{{ r.error || 'filed' }}</td>
+                <td class="l why">
+                  <span v-if="r.held_for_account_number" class="held">
+                    held — needs an account number
+                  </span>
+                  <span v-else>{{ r.error || 'filed' }}</span>
+                </td>
               </tr>
             </table>
           </div>
+        </section>
+
+        <!-- ── statements waiting for an account number ──────────────── -->
+        <section v-if="pending.length" class="card">
+          <h3>Statements waiting for an account number ({{ pending.length }})</h3>
+          <p class="hint">
+            These parsed correctly — all that is missing is which account they
+            belong to. An account registers itself from an activity import, and
+            PNC serves only 90 days, so an account quiet longer than that has a
+            statement and no transaction to introduce it. Open the PDF to find
+            the number, type it once, and every later pull routes by itself.
+          </p>
+          <table class="grid">
+            <tr>
+              <th class="l">Statement</th><th class="l">On the statement</th>
+              <th class="l">Period</th><th class="r">Ending balance</th>
+              <th class="l">Full account number</th><th></th>
+            </tr>
+            <tr v-for="p in pending" :key="p.id">
+              <td class="l">
+                <!-- The PDF is the only place the full number is written, so
+                     opening it IS the task, not a convenience. -->
+                <a :href="statementUrl(p.id, true)" target="_blank" rel="noopener"
+                   class="stmt-link">{{ p.statement_name || p.source_file }}</a>
+              </td>
+              <td class="l mono">{{ p.account_suffix }}</td>
+              <td class="l">{{ p.period_end }}</td>
+              <td class="r num">{{ money(p.ending_balance) }}</td>
+              <td class="l">
+                <input v-model="resolveNum[p.id]" class="acct-in" inputmode="numeric"
+                       :placeholder="'digits ending ' + lastFour(p.account_suffix)" />
+              </td>
+              <td class="l">
+                <button class="btn small" :disabled="busy || !resolveNum[p.id]"
+                        @click="resolvePending(p)">Place it</button>
+              </td>
+            </tr>
+          </table>
+          <p v-if="resolveMsg" class="result">{{ resolveMsg }}</p>
         </section>
       </div>
     </div>

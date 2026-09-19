@@ -113,12 +113,36 @@ _DDL = [
         credits_total     DOUBLE PRECISION,
         debits_total      DOUBLE PRECISION,
         source_file       TEXT,
-        imported_at       TEXT
+        imported_at       TEXT,
+        -- The PDF itself. Accounting has to be able to pull up the statement a
+        -- figure came from without going back to the folder it was uploaded
+        -- from (Jim, Sep 19 2026), and a reconciliation queried months later is
+        -- exactly when that folder has moved.
+        file_data         {blob}
     )
     """,
     # Pairings an accountant made by hand. Honoured before any automatic
     # match and never re-decided: they looked at both sides, the matcher only
     # looked at the amount.
+    """
+    CREATE TABLE IF NOT EXISTS tr_pending_statements (
+        id                {pk},
+        account_suffix    TEXT NOT NULL,
+        period_start      TEXT,
+        period_end        TEXT,
+        beginning_balance DOUBLE PRECISION,
+        ending_balance    DOUBLE PRECISION,
+        credits_total     DOUBLE PRECISION,
+        debits_total      DOUBLE PRECISION,
+        statement_name    TEXT,
+        source_file       TEXT,
+        imported_at       TEXT,
+        resolved_account  TEXT,
+        resolved_by       TEXT,
+        resolved_at       TEXT,
+        file_data         {blob}
+    )
+    """,
     """
     CREATE TABLE IF NOT EXISTS tr_matches (
         id             {pk},
@@ -157,10 +181,32 @@ def ensure_tables(engine=None) -> None:
         return
     is_pg = engine.dialect.name == "postgresql"
     pk = "SERIAL PRIMARY KEY" if is_pg else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    blob = "BYTEA" if is_pg else "BLOB"
     with engine.begin() as conn:
         for ddl in _DDL:
-            conn.execute(text(ddl.format(pk=pk)))
+            conn.execute(text(ddl.format(pk=pk, blob=blob)))
+
+    # An EXISTING database does not get a column from CREATE TABLE IF NOT
+    # EXISTS. Production already holds accounts and activity, so the PDF column
+    # has to arrive by migration or `file_data` is missing exactly where it
+    # matters.
+    for tbl in ("tr_statements", "tr_pending_statements"):
+        _add_column(engine, tbl, "file_data", blob)
     _DDL_DONE.add(key)
+
+
+def _add_column(engine, table: str, column: str, coltype: str):
+    """Add a column if the table does not already have it. PG and SQLite."""
+    from sqlalchemy import inspect
+    try:
+        have = {c["name"] for c in inspect(engine).get_columns(table)}
+    except Exception:
+        return          # table not there yet; CREATE TABLE above will carry it
+    if column in have:
+        return
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE %s ADD COLUMN %s %s"
+                          % (table, column, coltype)))
 
 
 # ------------------------------------------------------------------ helpers
@@ -435,7 +481,8 @@ def import_activity(rows, engine=None) -> dict:
             "accounts": sorted({r["account_number"] for r in rows})}
 
 
-def import_statement(parsed: dict, account_number: str, engine=None) -> dict:
+def import_statement(parsed: dict, account_number: str, engine=None,
+                     file_data: bytes = None) -> dict:
     """Store a statement's balances. Refused when they could not be read."""
     engine = engine or get_engine()
     ensure_tables(engine)
@@ -451,9 +498,9 @@ def import_statement(parsed: dict, account_number: str, engine=None) -> dict:
         conn.execute(text(
             "INSERT INTO tr_statements (account_number, period_start, "
             " period_end, beginning_balance, ending_balance, credits_total, "
-            " debits_total, source_file, imported_at) "
-            "VALUES (:a,:ps,:pe,:b,:e,:c,:d,:f,:i)"),
-            {"a": str(account_number).strip(),
+            " debits_total, source_file, imported_at, file_data) "
+            "VALUES (:a,:ps,:pe,:b,:e,:c,:d,:f,:i,:fd)"),
+            {"a": str(account_number).strip(), "fd": file_data,
              "ps": parsed.get("period_start"), "pe": parsed.get("period_end"),
              "b": parsed.get("beginning_balance"),
              "e": parsed.get("ending_balance"),
@@ -462,6 +509,213 @@ def import_statement(parsed: dict, account_number: str, engine=None) -> dict:
     return {"ok": True, "period_end": parsed.get("period_end"),
             "ending_balance": parsed.get("ending_balance")}
 
+
+
+def hold_unmatched_statement(parsed: dict, engine=None,
+                             file_data: bytes = None) -> dict:
+    """Keep a statement whose account is not registered, and ask for the number.
+
+    Jim, Sep 19 2026: "for the statements without a production account, I would
+    like you to create a record and prompt the user to find and input the account
+    number for future matching of the data pulls."
+
+    An account normally registers itself from an activity import, and PNC serves
+    only 90 days -- so an account quiet longer than that has a statement showing
+    real money and no transaction anywhere to introduce it. Of the 64 June 2026
+    statements, 14 land here; two of them hold money (PPI Life Storage NY
+    119,701.35 and PSC Ambassadors Fund TGA VI 629,125.04).
+
+    REFUSING THEM WAS THE OLD BEHAVIOUR AND IT LOST THE READING. The file was
+    parsed correctly, said so in a result row, and then nothing kept it -- so the
+    balance had to be found again by hand. This keeps everything that was read,
+    including the MASK, which is what lets the number the analyst types be checked
+    rather than taken on trust.
+
+    Nothing here is a bank account yet: `tr_pending_statements` is deliberately a
+    separate table, so a reconciliation can never pick up a statement that has not
+    been placed against a real account.
+    """
+    engine = engine or get_engine()
+    ensure_tables(engine)
+    suffix = (parsed.get("account_suffix") or "").strip()
+    if not suffix:
+        return {"error": "No account number could be read from this statement, "
+                         "so there is nothing to match it on later."}
+    if parsed.get("ending_balance") is None:
+        return {"error": parsed.get("error")
+                or "No ending balance could be read from this statement."}
+
+    now = datetime.utcnow().isoformat(timespec="seconds")
+    src = parsed.get("source_file") or ""
+    with engine.begin() as conn:
+        # Re-importing the same file must not stack up duplicates of the same
+        # unanswered question.
+        dup = conn.execute(text(
+            "SELECT id FROM tr_pending_statements "
+            " WHERE account_suffix = :s AND period_end = :p "
+            "   AND resolved_account IS NULL"),
+            {"s": suffix, "p": parsed.get("period_end")}).fetchone()
+        if dup:
+            return {"ok": True, "pending_id": dup[0], "already_held": True,
+                    "account_suffix": suffix}
+        res = conn.execute(text(
+            "INSERT INTO tr_pending_statements (account_suffix, period_start, "
+            " period_end, beginning_balance, ending_balance, credits_total, "
+            " debits_total, statement_name, source_file, imported_at, "
+            " file_data) "
+            "VALUES (:s,:ps,:pe,:b,:e,:c,:d,:n,:f,:i,:fd)"),
+            {"s": suffix, "fd": file_data, "ps": parsed.get("period_start"),
+             "pe": parsed.get("period_end"),
+             "b": parsed.get("beginning_balance"),
+             "e": parsed.get("ending_balance"),
+             "c": parsed.get("credits_total"), "d": parsed.get("debits_total"),
+             "n": _statement_name(src), "f": src, "i": now})
+    return {"ok": True, "account_suffix": suffix, "held": True,
+            "ending_balance": parsed.get("ending_balance"),
+            "period_end": parsed.get("period_end")}
+
+
+def _statement_name(source_file: str) -> str:
+    """The entity name PNC's filename carries, as a hint for whoever answers.
+
+    `30 June 2026 PPI Life Storage NY LLC 7891 PNC.pdf` -> `PPI Life Storage NY
+    LLC`. It is a HINT and never a match key: the number is what routes, and the
+    name only helps a person find the right account.
+    """
+    name = re.sub(r"\.pdf$", "", (source_file or ""), flags=re.I)
+    name = re.sub(r"^\d{1,2}\s+\w+\s+\d{4}\s*", "", name)
+    name = re.sub(r"\s*\d{3,4}\s*PNC\s*$", "", name, flags=re.I)
+    return name.strip()
+
+
+def statement_file(statement_id: int, pending: bool = False,
+                   engine=None) -> dict:
+    """The stored PDF for one statement, so it can be opened from the screen.
+
+    Returns {name, data} or an error. A statement imported before the file was
+    kept has no bytes, and that is reported as such rather than as a missing
+    statement -- the balances are still there and still right.
+    """
+    engine = engine or get_engine()
+    ensure_tables(engine)
+    tbl = "tr_pending_statements" if pending else "tr_statements"
+    with engine.connect() as conn:
+        row = conn.execute(text(
+            "SELECT source_file, file_data FROM %s WHERE id = :i" % tbl),
+            {"i": statement_id}).fetchone()
+    if not row:
+        return {"error": "No statement with id %s." % statement_id}
+    if not row[1]:
+        return {"error": "This statement was imported before the PDF was kept, "
+                         "so there is no copy to open. Its balances are still "
+                         "on file; re-import the PDF to attach it.",
+                "no_file": True, "source_file": row[0]}
+    return {"name": row[0] or "statement.pdf", "data": bytes(row[1])}
+
+
+def pending_statements(include_resolved: bool = False, engine=None) -> list:
+    """Statements waiting for somebody to say which account they belong to."""
+    engine = engine or get_engine()
+    ensure_tables(engine)
+    where = "" if include_resolved else " WHERE resolved_account IS NULL"
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT id, account_suffix, period_start, period_end, "
+            " beginning_balance, ending_balance, statement_name, source_file, "
+            " imported_at, resolved_account, resolved_by, resolved_at "
+            " FROM tr_pending_statements" + where +
+            " ORDER BY resolved_account IS NULL DESC, ending_balance DESC")
+        ).fetchall()
+    return [{"id": r[0], "account_suffix": r[1], "period_start": r[2],
+             "period_end": r[3], "beginning_balance": r[4],
+             "ending_balance": r[5], "statement_name": r[6],
+             "source_file": r[7], "imported_at": r[8],
+             "resolved_account": r[9], "resolved_by": r[10],
+             "resolved_at": r[11]} for r in rows]
+
+
+def resolve_pending_statement(pending_id: int, account_number: str,
+                              entityid: str = "", gl_cash_account: str = "",
+                              user: str = "", engine=None) -> dict:
+    """Give a held statement its account number, register it, and file it.
+
+    THE NUMBER IS CHECKED AGAINST THE MASK. The statement prints
+    `XX-XXXX-7891`, which says the number is ten digits ending 7891 -- so a typed
+    number that does not fit that is refused. Without the check a mistyped digit
+    registers a brand-new account that looks right, and the statement files
+    against it; the real account then arrives later under its true number and the
+    balance is split across two records with nothing saying so.
+
+    The account is created if it does not exist, and the statement moves into
+    `tr_statements` so the ordinary reconciliation picks it up. FUTURE PULLS THEN
+    MATCH BY THEMSELVES, which is the point of asking.
+    """
+    engine = engine or get_engine()
+    ensure_tables(engine)
+    acct = _clean(account_number)
+    if not acct:
+        return {"error": "An account number is required."}
+    if not acct.isdigit():
+        return {"error": "%r is not an account number: digits only, exactly as "
+                         "PNC exports it." % account_number}
+
+    with engine.connect() as conn:
+        row = conn.execute(text(
+            "SELECT account_suffix, period_start, period_end, "
+            " beginning_balance, ending_balance, credits_total, debits_total, "
+            " source_file, resolved_account, file_data "
+            " FROM tr_pending_statements WHERE id = :i"),
+            {"i": pending_id}).fetchone()
+    if not row:
+        return {"error": "No held statement with id %s." % pending_id}
+    if row[8]:
+        return {"error": "That statement was already placed against %s." % row[8]}
+
+    rx = _mask_pattern(row[0])
+    if rx is None:
+        return {"error": "The mask %r on this statement cannot be read, so a "
+                         "typed number cannot be checked against it." % row[0]}
+    if not rx.match(acct):
+        return {"error": "%s does not fit the number printed on the statement "
+                         "(%s), which says %d digits ending %s. Check the "
+                         "digits rather than registering a new account."
+                         % (acct, row[0], _mask_len(row[0]),
+                            re.sub(r"\D", "", row[0])[-4:])}
+
+    made = create_account(acct, entityid=entityid,
+                          gl_cash_account=gl_cash_account,
+                          account_name=_statement_name(row[7]), user=user,
+                          engine=engine)
+    if made.get("error") and "already registered" not in made["error"]:
+        return made
+
+    filed = import_statement({
+        "period_start": row[1], "period_end": row[2],
+        "beginning_balance": row[3], "ending_balance": row[4],
+        "credits_total": row[5], "debits_total": row[6],
+        "source_file": row[7], "internally_consistent": True,
+    }, acct, engine=engine, file_data=row[9])
+    if filed.get("error"):
+        return filed
+
+    now = datetime.utcnow().isoformat(timespec="seconds")
+    with engine.begin() as conn:
+        conn.execute(text(
+            "UPDATE tr_pending_statements SET resolved_account = :a, "
+            " resolved_by = :u, resolved_at = :t WHERE id = :i"),
+            {"a": acct, "u": user, "t": now, "i": pending_id})
+    return {"ok": True, "account_number": acct,
+            "account_created": not made.get("error"),
+            "period_end": row[2], "ending_balance": row[4]}
+
+
+def _mask_len(suffix: str) -> int:
+    """How many digits the mask says the whole number has."""
+    n = 0
+    for ch in str(suffix or ""):
+        if ch.isdigit() or ch in "xX":
+            n += 1
+    return n
 
 
 def create_account(account_number: str, entityid: str = "",
