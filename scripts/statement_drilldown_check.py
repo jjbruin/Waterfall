@@ -366,6 +366,74 @@ check('...which is why it is an OPEN_POST rather than gated',
       open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         'accounting_access_check.py'), encoding='utf-8').read())
 
+# ===========================================================================
+section('The FS mapping cannot be lost the way it was')
+
+# On Sep 19 2026 `wp_fs_map` was found EMPTY on production against 583 accounts
+# and 79,074 GL rows, and every statement for every entity had gone blank while
+# the API still answered 200. Two holes let that happen and both are closed here.
+from flask_app.services import workpaper_service as _W  # noqa: E402
+import database as _DB  # noqa: E402
+
+_FDB = os.path.join(tempfile.gettempdir(), 'fs_map_guard_check.db')
+if os.path.exists(_FDB):
+    os.remove(_FDB)
+_feng = create_engine(f'sqlite:///{_FDB}')
+_W.ensure_tables(_feng)
+_W.set_fs_map([{'acctnum': 'A1', 'statement': 'Assets', 'fs_line': 'Cash',
+                'sort_order': 1},
+               {'acctnum': 'A2', 'statement': 'Income', 'fs_line': 'Revenue',
+                'sort_order': 2}], 'guardrail', engine=_feng)
+
+
+def _n():
+    with _feng.connect() as c:
+        return c.execute(text('SELECT COUNT(*) FROM wp_fs_map')).scalar()
+
+
+check('the fixture mapping is there to lose', _n() == 2, str(_n()))
+
+# 1. A replace carrying nothing is refused -- that is the exact shape that
+#    emptied it, and it used to answer {"status": "ok"}.
+try:
+    _W.set_fs_map([], 'guardrail', engine=_feng)
+    check('an empty replace is refused', False, 'it was allowed')
+except ValueError as e:
+    check('an empty replace is refused', 'Refusing' in str(e))
+check('...and nothing was deleted trying', _n() == 2, str(_n()))
+
+# Entries that are all blank are the same thing wearing a different shape.
+try:
+    _W.set_fs_map([{'acctnum': ''}, {'acctnum': '   '}], 'guardrail', engine=_feng)
+    check('a replace with only blank accounts is refused', False)
+except ValueError:
+    check('a replace with only blank accounts is refused', True)
+check('...and still nothing was deleted', _n() == 2, str(_n()))
+
+# 2. Clearing ON PURPOSE must still work, or the rule is a lockout.
+_W.set_fs_map([], 'guardrail', engine=_feng, allow_empty=True)
+check('a deliberate clear is still allowed', _n() == 0, str(_n()))
+
+# 3. A real replace still replaces.
+_W.set_fs_map([{'acctnum': 'B1', 'statement': 'Assets', 'fs_line': 'Cash'}],
+              'guardrail', engine=_feng)
+check('a genuine replace still works', _n() == 1, str(_n()))
+
+# 4. And a CSV import can no longer drop the table underneath it.
+check('wp_fs_map is in PROTECTED_TABLES', 'wp_fs_map' in _DB.PROTECTED_TABLES)
+check('...for the same reason as the budget supplement, which is also there',
+      'isbs_budget_is_supplements' in _DB.PROTECTED_TABLES)
+
+# 5. The seed it is restored from really is accounting's own, so a restore puts
+#    back the vocabulary rather than one invented from account names.
+from flask_app.services import fs_line_seed as _seed  # noqa: E402
+check('the seed carries accounting\'s 192 tagged accounts',
+      len(_seed.ACCOUNT_LINE) == 192, str(len(_seed.ACCOUNT_LINE)))
+check('...across their 56 captions', len(_seed.LINE_SECTION) == 56,
+      str(len(_seed.LINE_SECTION)))
+check('...and every caption has a section, or its line cannot render',
+      all(c in _seed.LINE_SECTION for c in set(_seed.ACCOUNT_LINE.values())))
+
 print(f'\n{len(PASS)} passed, {len(FAIL)} failed, {len(SKIP)} skipped')
 if FAIL:
     print('FAILED:')

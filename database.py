@@ -1630,7 +1630,23 @@ PROTECTED_TABLES = {'capital_calls', 'waterfalls', 'one_pager_comments', 'waterf
                     # unchangeable, and those rows feed the One Pager's underwritten
                     # PE ROE (7073 capital events). Protect each one if and when the
                     # app becomes its writer.
-                    'isbs_budget_is_supplements'}
+                    'isbs_budget_is_supplements',
+                    # ── The FS mapping ────────────────────────────────────────
+                    # Same rule as the budget supplement: the APP is its writer
+                    # and it holds the only copy. It is accounting's own
+                    # account-to-statement-line vocabulary, seeded from the FS
+                    # Tagging column of the PPI Eastchase 06.30.2026 package and
+                    # then edited by the CFO, and nothing else can reproduce the
+                    # edits.
+                    #
+                    # With the table EMPTY every account falls to `unmapped`, so
+                    # every statement for every entity renders blank while the
+                    # API still answers 200 — no error anywhere, and the damage
+                    # invisible until somebody opens a statement. That happened
+                    # on Sep 19 2026: `wp_fs_map` was found at 0 rows against
+                    # 583 accounts and 79,074 GL rows, and the statements had
+                    # simply stopped appearing on the workbench.
+                    'wp_fs_map'}
 
 
 def _get_import_connection():
