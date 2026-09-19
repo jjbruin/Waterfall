@@ -1,4 +1,147 @@
-# Session Handoff — through Sep 18 2026 (v494 live)
+# Session Handoff — through Sep 19 2026 (v504 live)
+
+## Sep 18-19 2026 — ONE NUMBER ONE ENGINE, the lease rent in force, and the CFO's query tool
+
+**`v502` = `0d9eaee`, `v503` = `2bb9138`, `v504` = `93ce506`.**
+Open items: **`open_items.md` §8** (three duplicates still open) and **§5.10**.
+
+### The standing rule that came out of this, and why it is in CLAUDE.md
+
+Jim, Sep 18 2026: *"We should not have conflicting calculation results. It will
+cause doubt in the accuracy of the entire work. Make sure the vetted calculation
+engines are used consistently and we do not have separate calculation engines
+for the same number. The only differences in results should come from changes in
+time frames or projections that we are running through the engines."*
+
+He had said a version of this twice before and it kept recurring, so it is now a
+standing rule in `CLAUDE.md` under **ONE NUMBER, ONE ENGINE**, with a table of
+which engine owns which number and `scripts/one_engine_per_number_check.py`
+enforcing it. **Before writing any calculation, find out whether the app already
+answers it.**
+
+### What the sweep actually found
+
+**Accrued pref had two implementations in ONE FILE.** `_compute_accrued_pref`
+(ROE Summary, Committee Summary) and `build_pref_balance_detail` (everything
+else) walked the same ledger at the same rate and disagreed on **34 of the 68
+deals both could price**, the ROE path **$633,807.54 low** in aggregate at
+2025-12-31.
+
+The cause: it accrued `cur -> 31 Dec`, compounded, then resumed at `1 Jan`, so
+**31 Dec -> 1 Jan was never accrued**. One lost day per year end, always short,
+worse the older the deal — P0000068 lost ~$102,000 over nine of them.
+
+**It never looked wrong.** A slightly low accrual is still a plausible accrual.
+That is the lesson worth carrying: *a second implementation is most dangerous
+when it is nearly right*, because nothing on screen and nothing in the logs
+distinguishes it from the answer.
+
+**Which one was correct was settled by Jim's own figures**, not by which was
+newer — the vetted walk reproduces P0000044 51,926.54 and P0000031 37,394.57
+exactly as he stated them; the other gave 26,489.03 for P0000031. When you find
+a duplicate, **measure both across every deal before changing either**, and say
+which of his figures the candidate reproduces.
+
+**A "temporary estimate" is a second engine.** The Committee tab's Net Proceeds
+fell back to `value - debt` when no NAV had run — scaffolding from before the
+NAV engine, left in after it shipped. Removed.
+
+**A guardrail was pointed at the wrong engine** — it asserted "no grace period"
+against the DELETED function's docstring while claiming to describe the one the
+NAV uses. It would have kept passing while the real engine drifted. Now proven
+behaviourally.
+
+### Lease review: the rent in force is resolved, not guessed (`v503`)
+
+New business via Jim, Sep 19. Two asks, and a worse defect underneath them.
+
+* **Rent PSF is annual rent over SF.** A monthly rent is annualised before
+  dividing. Same 12x shape as `v495`.
+* **The most recent amendment governs.** Consolidation ordered by `doc_date`,
+  and `parse_doc_date` only matched a date at the START of a filename — so
+  "First/Second/Third/Fourth Amendment.pdf" had no dates and fell through to
+  UPLOAD ORDER. Measured applying **4, 1, 3, 2**: the First Amendment's
+  superseded rent overwrote the Fourth's. The ordinal was already being matched
+  by `DOC_TYPE_PATTERNS` and thrown away.
+* **"Months 1-12" is placed against the rent commencement date**, which now
+  lives on `lease_tenants` instead of only inside `extraction_json`. Month 1
+  begins ON commencement, so month N is the anniversary.
+* **THE DEFECT NEITHER ASK NAMED:** when a step would not resolve, the
+  validation picked the step whose annual rent was **closest to the rent roll's
+  own figure**. The rent roll was checked against whichever lease number already
+  agreed with it — **it could not report a mismatch**. A validation that always
+  passes is worse than none, because it reads as confirmation.
+
+### The CFO's GL / IA query tool (`v504`)
+
+His workbook `GL & IA Queries with Filters - 09182026.xlsx`. **It does not
+re-run his SQL** — `queries/MRI_GL_Detail.sql` already IS that query with the
+&SPARM parameters stripped, so the job was putting the parameters back against
+the tables we already import (Jim: *"since we are already pulling these tables
+into our database we can have the query hit our tables"*).
+
+Note the UI lesson: he asked whether he could select several entities and
+accounts in the same query. **He already could** — a native `<select multiple>`
+needs ctrl-click and nothing said so. Replaced with `MultiPicker.vue`. When
+somebody asks whether a thing is possible, check whether it is already possible
+and merely invisible.
+
+---
+
+## STILL OPEN — carry these forward
+
+### Needs Jim's decision
+1. **Capital balance: floored in one path, raw in the other** (`open_items.md`
+   §8.1). Same accumulation; the ROE Summary shows the raw running total, the
+   pref walk shows `max(0, running)`. **15 deals show a negative balance in one
+   place and 0.00 in the other** — PWILLOW −8,044,374.08, POUTLOO −8,008,062.00,
+   P3RDAVE −6,777,786.00 the largest. It arises because `realized gain` is
+   accumulated as return of capital. Is below-zero a finding to surface, or is
+   realized gain misfiled? Do not pick one silently.
+2. **The MRI VPN password is committed in git**, hardcoded at
+   `flask_app/services/mri_service.py:41` with no env fallback, and repeated in
+   three `.claude/memory/` files. In the repo since `670902e`. **Jim rotates; I
+   surface and remove afterwards.** Raised Sep 19 2026, not yet actioned.
+3. **GL / IA Query access** — reads are open to any signed-in user, matching the
+   rest of Accounting, but this is a bulk export of entity GL. One decorator
+   narrows it to `ACCOUNTING_ROLES`.
+4. **The IA date bound** — his sheet uses strictly-before; the tool's To date is
+   inclusive and says so. Flip it if he wants his figures to tie exactly.
+
+### Needs production data to settle
+5. **Two debt implementations** (`open_items.md` §8.2) —
+   `compute.get_isbs_debt_balance` vs `valuation_nav_service._bs_snapshot`
+   summed over `DEBT_BS_ACCTS`. They also differ on child consolidation.
+   **Unmeasurable locally**: `isbs_raw` is a 61-row stub here, so both return
+   nothing for all 128 deals.
+6. **Prior-year figures come from two sources** (`open_items.md` §8.3) — the
+   Committee tab reads MRI's `valuations` feed, the summary tabs read the prior
+   cycle's own records. Only one cycle exists locally.
+7. **Lease amendment ordering coverage** — how many real amendments carry
+   neither a date nor a number is unknown; there are no lease documents in local
+   data and a production read was refused by a permission gate. That is the
+   population where ordering is still best-effort, and it is reported per tenant.
+8. **`gl_detail` may never have been imported on production.** `MRI_GL_Detail`
+   is last in the refresh registry and its own description says "never yet
+   executed" — unbounded GHIS on a 2GB container. The query tool says which
+   query to run rather than showing an empty grid, but check before the CFO
+   opens it expecting data.
+9. **His workbook is truncated** — the IA query's third branch (non-cash
+   transactions) is cut off mid-statement at 124 characters in row 49. Our
+   import covers non-cash so the tool does, but something else may have been
+   lost in his paste.
+
+### Working practice that keeps paying
+* **Measure before building, and measure the thing that would be wrong.** Every
+  defect above was found by running against real artefacts, not fixtures.
+* **Make a guardrail fail on purpose before trusting it.** Two checks this week
+  passed vacuously: a fixture whose ids happened to ascend with the amendment
+  ordinals, and a seam check whose window was wide enough to catch an unrelated
+  mention. Both were caught by injecting the defect and confirming a failure.
+* **Production reads are gated for me.** `az containerapp exec` was refused this
+  session. Anything needing production measurement has to be asked for.
+
+---
 
 ## Sep 17-18 2026 — TREASURY END TO END, and three bugs the real files found
 

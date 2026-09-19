@@ -2,7 +2,7 @@
 
 ## Topic Files
 - [open_items.md](open_items.md) — **THE LIVE WORK QUEUE.** Every open item from the Aug 2026 One Pager audit, re-verified against the tree on Sep 11 2026, with evidence, an owner and a verified-as-of date. Code gaps, decisions waiting on Charlene, data/ops items for Jim, and a "resolved — do not re-open" list. Start here, not in the session logs.
-- [accounting_workpapers.md](accounting_workpapers.md) — **THE ACCOUNTING WORKPAPERS + STATEMENT ENGINE** (built Sep 14–15 2026, live `v455`): one engine producing BS/IS/Members' Capital/Cash Flow/SOI for any entity, the five MRI queries behind it, accounting's own 56-caption vocabulary, the 12-step close workflow with CFO deadlines, and the 17-tab download. Read before touching anything under `/workpapers` or `statement_service.py`.
+- [accounting_workpapers.md](accounting_workpapers.md) — **THE ACCOUNTING WORKPAPERS + STATEMENT ENGINE** (engine built Sep 14–15 2026; access model current to `v504`): one engine producing BS/IS/Members' Capital/Cash Flow/SOI for any entity, the five MRI queries behind it, accounting's own 56-caption vocabulary, the 12-step close workflow with CFO deadlines, and the 17-tab download. Read before touching anything under `/workpapers` or `statement_service.py`. The section now has THREE screens — Workpaper Packages, Treasury, and **GL / IA Query** (`v504`), the CFO's two Spreadsheet Server queries with his filters against our imported `gl_detail` / `ia_transactions`.
 - [session_log_aug2026.md](session_log_aug2026.md) — verbatim narrative of the Aug 5–13 2026 One Pager audit (the diagnostics and the numbers behind each conclusion). **Its "still open" lists are stale — use `open_items.md` for status.**
 - [treasury.md](treasury.md) — **TREASURY, the bank side of the close** (built Sep 17-18 2026, live `v494`): PNC activity and statement import, the three-way tie, the matcher and its reconciling items, and why `current_available` is deliberately blank. Also the ACCESS MODEL for the whole accounting section — `roles_exactly` vs `role_required`, and the six writes that had no gate at all. Read before touching `/treasury` or any accounting permission.
 
@@ -18,7 +18,7 @@
 - [portfolio_analysis.md](portfolio_analysis.md) — Portfolio Analysis tab (upstream entity analysis, actual/proposed modes)
 - [transfer_aware_returns.md](transfer_aware_returns.md) — Design doc: transfer-aware IRR/ROE/MOIC (scoped, not yet implemented)
 - [onepager_audit_q1_2026.md](onepager_audit_q1_2026.md) — Q1 2026 audit: Azure vs Excel One Pager (959 discrepancies, 7 code bugs, data gaps)
-- [session_handoff.md](session_handoff.md) — **CURRENT rolling handoff (Sep 15 2026, v455 live)**: the accounting workpapers section and its three open items (MR22000002 with accounting, nothing set up in production, SendGrid's plan lapsed). Below that, Sep 11 / v440: the valuation budget work (shared budget/Argus line mapping, modeled debt service), the app admin password exposed in git for two months and awaiting rotation, and `isbs_budget_is_supplements` never yet created on PostgreSQL. Older content below that, from Sep 10 / v428: the Brainerd/TIAA look-through defect (a 11/21/2024 transfer never recorded in MRI understates TIAA 63.142% vs 74.415% — root cause proved, data fix NOT made), the ownership reconciliation report and its queue, the Waterfall Setup fixes shipped in v426-v428, and FOUR COMMITS ON MAIN NOT IN THE LIVE IMAGE including three investor-facing One Pager print changes of Charlene's. Carries the durable defect list forward. Read this first.
+- [session_handoff.md](session_handoff.md) — **CURRENT rolling handoff (Sep 19 2026, `v504` live). READ THIS FIRST.** Top section: ONE NUMBER ONE ENGINE (Jim's standing rule and the $633,807 pref split that produced it), the lease rent-in-force resolution, and the CFO's GL/IA query tool. Below that a STILL OPEN list — four decisions waiting on Jim (the capital-balance floor on 15 deals, the MRI password in git, GL/IA access, the IA date bound) and five things needing production data. Older strata beneath: Sep 17-18 treasury, Sep 15 workpapers, Sep 11 valuations, Sep 10 ownership.
 - [session_handoff_sep2.md](session_handoff_sep2.md) — Sep 2 2026 / v416 handoff, superseded but NOT stale: still the only record of TRACK 1 (investor groups around a deal / the KOC slice, Phase 0 done, Phases 1-4 open), TRACK 3 (the Sep 2 engine corrections — capital reversals, excess-CF pref, mid-month sale dates, terminal NOI window; start here if returns look wrong) and Charlene's stream v403-v416. None of it was touched on Sep 10.
 - [session_handoff_may7b.md](session_handoff_may7b.md) — Session handoff: pref accrual fix, combined table, TGA23 step deletion
 - [ai_assistant.md](ai_assistant.md) — Embedded AI assistant (Claude API, tools, streaming chat)
@@ -32,6 +32,19 @@
 - [commit_review_charlene.md](commit_review_charlene.md) — review of all 83 Charlene commits for symptom-vs-root-cause; the dev-deal special-casing cluster and the two self-declared per-deal hardcodes. Deploy rule lives in CLAUDE.md.
 - [tga6_amb6_agreement_review.md](tga6_amb6_agreement_review.md) — the TGA6 and Ambassadors Fund VI executed LLC agreements vs the modeled waterfalls: 9% pref missing from both TGA6 tiers, an IRR step with no basis in the agreement, PSC=INV6 not PSCMAN, and AMB6 §8.4(b) promote-receipts stream not implemented (PSC1 is excluded from promote but currently receives it)
 - [psckoc_structure.md](psckoc_structure.md) — PSC KOC I LLC terms RECOVERED from the Belair net-returns PDF (8% coupon pari-passu 85/15, 1.50% accruing AM fee, 20% catch-up, $15k venture costs); the prior agreement-reading session and its step rows are GONE
+
+## Standing rules that govern new work
+- **ONE NUMBER, ONE ENGINE** (`CLAUDE.md`, Jim Sep 18 2026) — never write a second
+  calculation for a number the app already answers. A date or a scenario is a
+  parameter; the arithmetic is not. The catalogue of which engine owns which number
+  is in `CLAUDE.md`; `scripts/one_engine_per_number_check.py` enforces it. The
+  precedent: accrued pref had two implementations in one file that disagreed on 34 of
+  68 deals by $633,807, because one lost a day at every year end — and it never looked
+  wrong, which is why a nearly-right duplicate is the dangerous kind.
+- **Fix problems, not symptoms** (`CLAUDE.md`, Jim Sep 1 2026) — and tell Jim BEFORE
+  building the image when a commit is a symptom repair.
+- **Pre-flight P1-P4 before every deploy** (`CLAUDE.md`) — the span is against the LIVE
+  IMAGE, not local HEAD, and every commit it lists is yours to review.
 
 ## Project Overview
 - Flask + Vue application for real estate investment waterfall calculations

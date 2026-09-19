@@ -652,6 +652,91 @@ Owner: **Jim** to read the breakdown; then whoever settles §1.7 / §2.3.
 
 ---
 
+## 9. Lease review and the GL / IA query tool (Sep 19 2026)
+
+Shipped in `v503` and `v504`. What is left, with an owner on each.
+
+### 9.1 Lease amendment ordering: coverage UNMEASURED
+The most recent amendment now governs, ordered by the number in the filename when no
+document carries a date (`lease_terms.order_lease_documents`). Where an amendment has
+**neither a date nor a number**, the order is best-effort and the consolidation says
+so per tenant in `_order_notes`.
+
+**How often that happens is unknown.** There are no lease documents in local data, and
+a production read was refused by a permission gate this session. Needs one query
+against production:
+
+```sql
+SELECT COUNT(*) FILTER (WHERE doc_date IS NULL AND doc_ordinal IS NULL) AS neither,
+       COUNT(*) AS amendments
+  FROM lease_documents WHERE doc_type = 'Amendment';
+```
+
+If `neither` is material, the next step is reading the execution date out of the
+document itself — the extraction already returns dates — rather than the filename.
+Owner: unassigned. Needs Jim to approve a production read.
+
+### 9.2 The extraction has not been re-run since the prompt changed
+`period_start_month` / `period_end_month` only arrive from extractions run AFTER
+`v503`. Existing rows carry the period as text in `effective_date`, which
+`resolve_rent_steps` still reads — verified — so nothing is broken and no backfill is
+required. But a tenant extracted before `v503` gets its period parsed from prose
+rather than from a field the model filled deliberately, which is the weaker path.
+
+Re-extracting a review is an existing button; worth doing on Market at Poplar and
+whichever review carries the Hobby Lobby lease, and comparing the rent in force
+before and after. Owner: unassigned.
+
+### 9.3 `gl_detail` may never have been imported on production — CHECK FIRST
+`MRI_GL_Detail` is LAST in `QUERY_REGISTRY` and its own description says "never yet
+executed": unbounded GHIS on a 2GB container is the query that could kill the worker.
+The GL tab of the query tool reads `gl_detail`, and says which MRI query to run when
+the table is absent rather than showing an empty grid — but the CFO should not meet
+that message as his first experience of the tool.
+
+Check before pointing him at it, and if it has not run, run it deliberately and watch
+the container. Owner: Jim / whoever runs the refresh.
+
+### 9.4 The CFO's workbook is TRUNCATED — confirm nothing else was lost
+In `GL & IA Queries with Filters - 09182026.xlsx`, row 49 — the third `UNION ALL`
+branch of the IA query, covering `ia_noncashtrans` — is cut off mid-statement at 124
+characters. Our `MRI_IA_Transactions.sql` does include non-cash transactions, so the
+tool covers that branch, but if he pasted from a longer original something else may
+have been lost with it. Worth one look at his source. Owner: Jim to ask the CFO.
+
+### 9.5 The IA date bound differs from his sheet ON PURPOSE — DECISION NEEDED (Jim)
+His query is `contributiondate < &SPARM03` — strictly before. The tool's To date is
+**inclusive**, and says so on screen, because "to 6/30" excluding 6/30 surprises
+people. A transaction dated exactly on the end date is therefore IN the tool and OUT
+of his spreadsheet.
+
+Setting To one day earlier reproduces his figure exactly. If he would rather the tool
+tie by default, it is a one-character change (`<=` to `<`) plus the label. Not picked
+unilaterally because it changes which rows a saved query returns.
+
+### 9.6 GL / IA Query access is READ-OPEN — DECISION NEEDED (Jim)
+Reads are open to any signed-in user, matching the rest of the accounting section
+(`CLAUDE.md`, "Who may edit the Accounting section": reads open, writes gated).
+Nothing in the tool writes.
+
+But this is a **bulk export of entity-level GL**, which is a wider read than viewing
+one entity's statement, and it exports to a workbook that gets mailed around.
+Narrowing it to `ACCOUNTING_ROLES` is one decorator on six endpoints. Raised Sep 19
+2026; left consistent with the section rather than narrowed on my own judgement.
+
+### 9.7 The MRI VPN password is committed in git — JIM ROTATES
+Hardcoded at `flask_app/services/mri_service.py:41` as `MRI_PASSWORD`, with **no
+environment fallback**, and repeated in three `.claude/memory/` files
+(`vpn_tunnel_handoff.md`, `mri_databases.md`, `MEMORY.md`). In the repo since
+`670902e`.
+
+**Jim rotates it; I never handle the secret.** Once rotated, the fix is the pattern
+already used for `DATABASE_URL` and `ACS_CONNECTION_STRING` — a container app secret
+ref plus `os.environ.get`, and the literal stripped from all four files. Note that
+removing it from the working tree does not remove it from history; whether to rewrite
+history or treat rotation as sufficient is Jim's call. Raised Sep 19 2026.
+
+
 ## 8. One number, one engine — the sweep (Sep 18 2026)
 
 **Two of the duplicates found in this sweep shipped in `v503`** — accrued pref

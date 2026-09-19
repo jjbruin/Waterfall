@@ -304,6 +304,38 @@ Under Accounting, at `/treasury`. Four tabs; full detail in `treasury.md`.
 
 Nothing here posts to MRI; it produces the two files a person uploads.
 
+### 10e. Accounting — GL / IA Query
+Under Accounting at `/gl-ia-query`, **bottom of the section**. Built Sep 19 2026
+(`v504`) from the CFO's workbook `GL & IA Queries with Filters - 09182026.xlsx`.
+Vue: `GlIaQueryView.vue` + `components/common/MultiPicker.vue`. Flask:
+`api/gl_ia_query.py` + `services/gl_ia_query_service.py`.
+
+Two tabs, matching his two Spreadsheet Server queries, reading the app's imported
+copies (`gl_detail`, `ia_transactions`) rather than re-running his SQL — those .sql
+files ARE his queries with the `&SPARM` smart parameters stripped, so the tool puts
+the parameters back rather than duplicating the SQL.
+
+- **GL Detail** — entities, accounts, period from/to, basis. Columns are his:
+  Entity, Period, Entry Date, Account, Account Name, Basis, Bal/Fwd, Item, Ref,
+  Description, Segment, Related Entity, Related Entity Name, Amount.
+- **IA Detail** — investments, investors, a date range on Transaction *or* Effective
+  date, major types, sub types. Columns are his: Investment ID/Name, Investor
+  ID/Name, Transaction Date, Effective Date, Major Type, Sub Type, Amount.
+- **Every picker is a checkbox list** with search, a count and Select all / Clear.
+  It replaced a native `<select multiple>`: several entities and several accounts in
+  one query already worked, and nothing on screen said so. The search matches the
+  NAME as well as the code.
+- **Filters are bound parameters, never concatenated.** `date_field` — the only
+  filter naming a column — is matched against a fixed set first.
+- **A truncated grid totals the WHOLE match** and says it was truncated; a period
+  before `202401` names the import bound as the reason it is empty; freshness is the
+  last completed MRI refresh, or "unknown".
+- **Export** writes a workbook carrying the filters that produced it, and is not
+  capped at the screen's row limit.
+
+Reads are open to any signed-in user, like the rest of the section — see
+`open_items.md` §9.6, which is open for Jim.
+
 ### 11. New Business
 Deal pipeline, lease due diligence, and deal evaluation workspace under the "New Business" sidebar section.
 

@@ -1,11 +1,20 @@
 # Accounting Workpapers & the Statement Engine
 
-Built Sep 14–15 2026, live at `v455`. Replicates the quarterly workpaper package
+Built Sep 14–15 2026. The workpaper engine itself is unchanged since `v455`; the
+ACCESS MODEL below is current to `v504`. Replicates the quarterly workpaper package
 accounting produces by hand in Spreadsheet Server (the PPI Eastchase 06.30.2026
 workbook was the specimen), sourced from MRI directly instead.
 
 Sidebar: **Accounting → Workpaper Packages** (`/workpapers`,
 `vue_app/src/views/WorkpapersView.vue`). 25 routes in `flask_app/api/workpapers.py`.
+
+**The Accounting section now has three screens**, and the access model below covers
+all of them: Workpaper Packages, **Treasury** (`treasury.md`), and **GL / IA Query**
+(`v504`, `/gl-ia-query`) — the CFO's two Spreadsheet Server queries with his filters,
+reading the app's imported `gl_detail` and `ia_transactions`. The query tool is
+READ-ONLY and its reads are open to any signed-in user like the rest of the section;
+that it is a bulk export of entity GL rather than one entity's statement is raised in
+`open_items.md` §9.6.
 
 ---
 

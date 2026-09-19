@@ -81,6 +81,7 @@ waterfall-xirr/
 │   │   ├── lease_review.py   # Lease review & risk analysis endpoints (DD workflow, document upload, field resolution)
 │   │   ├── prospects.py      # Pipeline prospect CRUD (deals, properties, entities, investors, assumptions)
 │   │   ├── argus.py          # Argus Enterprise import, projection management, COA mapping, forecast preview
+│   │   ├── gl_ia_query.py    # GL / IA Query endpoints (options, run, Excel)
 │   │   └── ...               # Additional route blueprints
 │   └── services/             # Business logic (reuses compute.py, database.py, etc.)
 │       ├── dashboard_service.py  # KPI calculations, NOI pipeline, chart data
@@ -98,6 +99,9 @@ waterfall-xirr/
 │       ├── workpaper_workbench.py # Step → evidence mapping (accounting knowledge, server-side)
 │       ├── workpaper_excel.py    # 17-tab downloadable package; exhibits placed, not attached
 │       ├── lease_review_service.py  # Lease review DD workflow, document upload, extraction, field resolution
+│       ├── lease_terms.py        # Rent PSF, amendment order, rent steps stated as months of the term (pure)
+│       ├── gl_ia_query_service.py # The CFO's GL/IA Spreadsheet Server filters, against our imported tables
+│       ├── valuation_summary_service.py # The two portfolio summary tabs, assembled from vetted figures
 │       ├── prospect_service.py      # Pipeline prospect CRUD, lease review creation, deal evaluation
 │       ├── argus_service.py         # Argus Enterprise import, projection CRUD, forecast generation, NB→AM migration
 │       └── ...
@@ -1419,7 +1423,7 @@ columns are loaded from somebody else's spreadsheet, and the debt rows are ours.
   Deliberate as of Sep 11 2026, not accidental, and still worth settling.
 
 ### Accounting Workpapers & the Statement Engine
-**Full detail in `.claude/memory/accounting_workpapers.md`.** Live at `v455`.
+**Full detail in `.claude/memory/accounting_workpapers.md`.** Live at `v504`.
 
 - **ONE ENGINE, MANY ENTITIES.** `statement_service.py` builds Balance Sheet, Income
   Statement, Members' Capital, Cash Flow and Schedule of Investments for any entity and
@@ -1459,7 +1463,7 @@ columns are loaded from somebody else's spreadsheet, and the debt rows are ours.
   `scripts/workpaper_deadline_check.py`.
 
 ### Who may edit the Accounting section
-**Full detail in `.claude/memory/accounting_workpapers.md`.** Live at `v490`.
+**Full detail in `.claude/memory/accounting_workpapers.md`.** Live at `v504`.
 
 | Gate | Who | What |
 |---|---|---|
@@ -1530,6 +1534,62 @@ columns are loaded from somebody else's spreadsheet, and the debt rows are ours.
   `CapitalPercent`, which is 4dp and sums to 99.9999 — allocating by it is wrong
   on 5 of 13 investors for AMB6.
 - **Nothing here posts to MRI**; it produces the two files a person uploads.
+
+### GL / IA Query — the CFO's Spreadsheet Server filters
+Live at `v504`, screen `/gl-ia-query`, bottom of the Accounting section.
+
+- **It does NOT re-run his SQL.** `queries/MRI_GL_Detail.sql` already IS his GL query
+  ("the Spreadsheet Server NEW JOURNAL query one-for-one, with the &SPARM smart
+  parameters removed") and `MRI_IA_Transactions.sql` is the IA one. Both import into
+  `gl_detail` and `ia_transactions`. The tool puts the PARAMETERS back against the copy
+  we hold (Jim, Sep 19 2026). A second copy of the SQL would be a second engine.
+- **Filters** are exactly his list. GL: entities, period from/to, accounts, basis.
+  IA: investments, investors, a date range on Transaction or Effective date, major
+  types, sub types. All multi-select, all ANDed, all optional.
+- **No user input is concatenated into SQL.** Bound parameters throughout, expanding
+  bindparams for IN lists, and `date_field` — the one filter naming a COLUMN — matched
+  against a fixed set before it reaches the query.
+- **A truncated grid totals the WHOLE match**, not the rows shown, and says so.
+  Totalling the visible page makes a truncated result look complete and be wrong.
+- **A period before `202401` says the import bound is why**, because our GL copy starts
+  there and an empty grid otherwise reads as "no activity".
+- **Freshness is the last completed MRI refresh**, worded as the refresh and not the
+  table (`mri_refresh_status` holds one row for the whole job), and unknown when none
+  has completed.
+- **Sub types carry their major type** — Return of Capital under Distribution is not
+  the same line as one under Contribution.
+- **`MultiPicker.vue`** (checkbox list + search + select all/clear) replaced a native
+  `<select multiple>`: multi-select already worked and nothing on screen said so.
+  Reusable anywhere the same problem appears.
+- Guardrail: `scripts/gl_ia_query_check.py` (94).
+- **Open**: his workbook's IA query is truncated mid-statement in row 49 (the non-cash
+  branch); the To date is INCLUSIVE here and strictly-before in his sheet; reads are
+  open to any signed-in user, which is a wider read than one entity's statement.
+
+### Lease review — rent PSF, amendments, and rent by month of term
+Live at `v503`. New business, Sep 19 2026, via Jim.
+
+- **Rent PSF is ANNUAL rent over square feet, always.** A monthly rent is ANNUALISED
+  before dividing, never divided as-is — that yields a plausible figure a twelfth of
+  the right one, which is the 12x error `v495` already shipped once. A per-SF figure
+  the file or lease STATES is kept as stated; only derivation is constrained.
+- **The most recent amendment governs.** Consolidation layers documents in order, and
+  the order used to come from `doc_date`, which `parse_doc_date` only found at the
+  START of a filename. A folder of "First/Second/Third/Fourth Amendment.pdf" had no
+  dates, so it fell through to UPLOAD ORDER — measured applying 4, 1, 3, 2. The
+  ordinal is read from the filename and stored in `lease_documents.doc_ordinal`.
+- **A rent step stated as "Months 1-12" is placed against the rent commencement date.**
+  `period_start_month` / `period_end_month` are columns; `rent_commencement` is lifted
+  out of `extraction_json` onto `lease_tenants`. **Month 1 begins ON rent
+  commencement**, so month N is the ANNIVERSARY, not the first of that calendar month.
+- **The validation no longer guesses.** When a step would not resolve it used to pick
+  the step whose annual rent was CLOSEST to the rent roll's — the rent roll checked
+  against whichever lease figure already agreed with it, so it could not report a
+  mismatch. A tenant whose rent cannot be dated is now a `rent_step_in_force` finding.
+- The extraction prompt is told NOT to convert a period into a date itself; the app
+  does it, because a later commencement letter often carries the real date.
+- Guardrail: `scripts/lease_terms_check.py` (129), which drives the shipping paths
+  against a real database including an EXISTING schema migrated with rows in it.
 
 ### Cap Rate at Sale / Refinance
 - **Source column**: `fCapRate` from `valuations` table (MRI_Val)
@@ -1660,7 +1720,7 @@ The sidebar (`AppSidebar.vue`) is organized into major sections with expandable 
 |---------|------|----------|
 | **Dashboard** | Standalone link | `/dashboard` |
 | **Asset Management** | Expandable | Deal Analysis, Property Financials, Surveillance, One Pager, Review Tracking, Ownership, Waterfall Setup, Report Settings (expandable config panel) |
-| **Accounting** | Expandable | Workpaper Packages, Treasury |
+| **Accounting** | Expandable | Workpaper Packages, Treasury, GL / IA Query |
 | **New Business** | Expandable | Pipeline, Deal Analysis, Lease Review, Lease Risk Analysis |
 | **Investment Management** | Future (dimmed) | — |
 | **Reports** | Standalone link | `/reports` (Projected Returns, ROE Summary, Pref Balance Detail, Sold Portfolio, PSCKOC, Portfolio Analysis) |
@@ -1782,7 +1842,8 @@ it; the sidebar map above is kept here as a quick orientation.
 - `compute_net_waterfall_for_deal()` - Per-deal net returns waterfall with fees/promote (sold_service.py)
 - `compute_all_net_returns()` - Orchestrator: loops sold deals, pools net cashflows for portfolio metrics (sold_service.py)
 - `generate_net_returns_excel()` - Multi-sheet workbook with formula-driven waterfall detail (sold_service.py)
-- `build_pref_balance_detail()` - Per-investor pref accrual detail matching Excel PE_Pref_Balances (reports_service.py)
+- `build_pref_balance_detail()` - Per-investor pref accrual detail matching Excel PE_Pref_Balances — THE pref engine (reports_service.py)
+- `deal_accrued_pref()` - Total accrued pref for a deal at a date. THE single way to ask; every consumer goes through it (reports_service.py)
 - `get_deal_pe_investors()` - List PE investors for a deal from accounting (reports_service.py)
 - `generate_pref_balance_excel()` - Pref balance detail Excel with header + transaction table (reports_service.py)
 - `parse_budget_workbook()` - Partner budget Excel → lines × months, subtotal rows FLAGGED not dropped (budget_import_service.py)
@@ -1799,6 +1860,13 @@ it; the sidebar map above is kept here as a quick orientation.
 - `validate_due_date()` / `period_start()` - Deadline rule and the period bound it uses (workpaper_service.py)
 - `step_evidence()` / `statements_summary()` - What a step asserts and how to verify it, server-side (workpaper_workbench.py)
 - `build_package()` - The 17-tab workbook; exhibits placed into it, not attached (workpaper_excel.py)
+- `annual_rent_psf()` / `rent_psf_for()` - Rent PSF on ANNUAL rent over SF, never monthly; returns the basis with the figure (lease_terms.py)
+- `amendment_ordinal()` / `order_lease_documents()` - Which amendment a document is, and the order they are layered in; reports when the order cannot be established (lease_terms.py)
+- `parse_relative_period()` / `month_to_date()` / `resolve_rent_steps()` - "Months 1-12" placed against the rent commencement date; month 1 begins ON it, so month N is the anniversary (lease_terms.py)
+- `step_in_force_at()` - The rent the lease says applies on a date. Replaced a nearest-value guess that matched the rent roll against whichever step already agreed with it (lease_terms.py)
+- `gl_filter_options()` / `ia_filter_options()` - What can be picked, read from the data itself (gl_ia_query_service.py)
+- `run_gl_query()` / `run_ia_query()` / `to_excel()` - The CFO's filters, bound not concatenated; totals cover the whole match (gl_ia_query_service.py)
+- `pref_summary()` / `valuation_summary()` - The two portfolio summary tabs; `set_group_label` / `carry_forward_groups` for the CFO's own groupings (valuation_summary_service.py)
 - `create_request()` - Create a new user feedback request with reply token (feedback_service.py)
 - `list_requests()` - List requests with optional user/status/type filters (feedback_service.py)
 - `send_request_email()` - Send email to request submitter via SendGrid with reply link (feedback_service.py)
