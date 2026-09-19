@@ -102,6 +102,11 @@ const routes = [
     component: () => import('../views/ValuationsView.vue'),
   },
   {
+    path: '/gl-ia-query',
+    name: 'GlIaQuery',
+    component: () => import('../views/GlIaQueryView.vue'),
+  },
+  {
     path: '/workpapers',
     name: 'Workpapers',
     component: () => import('../views/WorkpapersView.vue'),

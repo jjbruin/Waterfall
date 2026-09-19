@@ -29,7 +29,7 @@ const amRoutes = ['/deal-analysis', '/property-financials', '/surveillance', '/v
 const imRoutes = ['/ownership']
 const nbRoutes = ['/pipeline', '/prospect-analysis', '/lease-review', '/lease-risk-analysis']
 const dmRoutes = ['/data-explorer', '/settings']
-const acctRoutes = ['/workpapers', '/treasury']
+const acctRoutes = ['/workpapers', '/treasury', '/gl-ia-query']
 
 watch(() => route.path, (path) => {
   if (amRoutes.some(r => path.startsWith(r))) expandedSections.am = true
@@ -566,6 +566,7 @@ function toggleCollapsed() {
         <div v-if="expandedSections.acct" class="nav-children">
           <router-link to="/workpapers" class="nav-item">Workpaper Packages</router-link>
           <router-link to="/treasury" class="nav-item">Treasury</router-link>
+          <router-link to="/gl-ia-query" class="nav-item">GL / IA Query</router-link>
         </div>
       </div>
 
