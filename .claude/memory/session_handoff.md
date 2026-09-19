@@ -1,4 +1,4 @@
-# Session Handoff — through Sep 19 2026 (v504 live)
+# Session Handoff — through Sep 19 2026 (v505 live)
 
 ## Sep 18-19 2026 — ONE NUMBER ONE ENGINE, the lease rent in force, and the CFO's query tool
 
@@ -71,6 +71,24 @@ New business via Jim, Sep 19. Two asks, and a worse defect underneath them.
   own figure**. The rent roll was checked against whichever lease number already
   agreed with it — **it could not report a mismatch**. A validation that always
   passes is worse than none, because it reads as confirmation.
+
+### Statement drilldown on the workbench (`v505`)
+
+Click any figure on a workbench statement, see the GL entries behind it. It does
+not re-query — `_balances` already reads `gl_detail`, so the row selection moved
+into one function both the builder and the drilldown call. **A drilldown that does
+not reconcile makes a correct statement look wrong**, which is worse than none.
+
+Two things the rendered line did not say, either of which would have made a correct
+drilldown look broken: WHICH MEASURE it is (balance sheet `closing`, income
+statement `ytd`) and THE PRESENTATION SIGN (a liability shown as 5,000 is -5,000 in
+the GL). And the one balance-sheet line with no accounts of its own — the period
+result carried into members' capital — would have opened an empty drawer; it now
+carries the income accounts.
+
+The refactor touches every statement, so it was proved behaviour-preserving before
+the build: the pre-change module run side by side with the new one, 50 figures
+across three period ends, zero differences.
 
 ### The CFO's GL / IA query tool (`v504`)
 

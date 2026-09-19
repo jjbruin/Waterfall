@@ -253,6 +253,52 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v505` = `36a26d9` (CLICK A STATEMENT FIGURE, SEE THE ENTRIES BEHIND IT.
+    The CFO, Sep 19 2026 via Jim, on the workbench financial statements.
+    IT DOES NOT RE-QUERY. `_balances` — which builds every statement — already
+    reads `gl_detail`, so the entries behind a figure ARE the rows the figure
+    was made from. The row selection moved into `select_measure_rows` and BOTH
+    the builder and the drilldown call it. If the two selected differently the
+    entries would not add up to the number, and a drilldown that does not
+    reconcile makes a CORRECT statement look wrong with no way for the reader to
+    tell which to believe — worse than no drilldown at all.
+    TWO THINGS THE RENDERED LINE DID NOT SAY, either of which would have made a
+    correct drilldown look broken. WHICH MEASURE it is: the balance sheet shows
+    `closing` and the income statement `ytd`, so assuming one returns the right
+    rows for the wrong question. THE PRESENTATION SIGN: `render()` applies a
+    sign per section, so a liability shown as 5,000 is -5,000 in the GL; the
+    drilldown takes the sign the screen displayed and returns `presented_total`
+    beside the GL `total`, so the figure it reports is the one that was clicked.
+    `closing` is deliberately the UNION of the balance-forward rows and the
+    year's activity — a closing balance IS opening plus activity, and showing
+    only the activity would not add up to the figure it was opened from.
+    THE ONE BALANCE-SHEET LINE WITH NO ACCOUNTS OF ITS OWN is the period result
+    carried into members' capital. It IS the income statement's total, so its
+    `accounts` list was empty and it would have opened an EMPTY DRAWER on a
+    figure the CFO will certainly click. It now carries the INCOME statement's
+    accounts and its `ytd` measure. Ties on real data.
+    THE REFACTOR WAS PROVED BEHAVIOUR-PRESERVING BEFORE THE BUILD, because
+    `_balances` feeds every statement, the print view and the Excel package: the
+    pre-change module was checked out and run side by side with the new one —
+    50 figures across three period ends, ZERO differences, and members' capital,
+    cash flow and the schedule of investments byte-identical.
+    Verified on real local data (all six PPIECH lines tie) and end to end
+    through the running app: clicked 2,317.24 on Accrued Expenses: Audit, three
+    entries totalling 2,317.24 with the opening balance labelled B/fwd so it is
+    not hunted for as a posting. Totals are deliberately NOT clickable.
+    Guardrail `statement_drilldown_check.py` (32) with a deliberately awkward
+    fixture — a balance-forward row AND activity so the measures are genuinely
+    different row sets, two accounts on one line, a prior-year row, a row on an
+    excluded basis, and the same account number on another entity. Building it
+    found the real trap: `statement` on a `wp_fs_map` row is the SECTION name,
+    not the statement name, and getting it wrong sends every account to
+    `conflicts` and renders an empty statement.
+    Also carried the documentation commits `dad4442` and `2200906` — `CLAUDE.md`
+    and `.claude/memory/`, neither copied into the image; the handoff had still
+    said `v455` was live, four deploys stale.
+    SAME CAVEAT AS v504: `gl_detail` may never have been imported on production,
+    and the drilldown reads the table the statements read — if the statements
+    render, it works. See `open_items.md` §9.3.)
   - `v504` = `93ce506` (THE CFO'S GL / IA QUERY, as a screen. His workbook
     `GL & IA Queries with Filters - 09182026.xlsx` carries the two Spreadsheet
     Server queries and what he needs to vary: GL — multiple entities, change
