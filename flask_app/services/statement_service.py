@@ -101,15 +101,58 @@ def _mapping(engine=None) -> Dict[str, dict]:
 MEASURES = ("opening", "ytd", "qtd", "closing")
 
 
-def _gl_for_entity(entityid: str, bases: List[str], engine) -> pd.DataFrame:
-    """Every GL row for one entity on the given bases, normalised."""
+# What a BALANCE needs, and what a drilldown additionally likes to show. The split
+# matters: the first list is required and the second is not.
+_BALANCE_COLUMNS = ["ACCTNUM", "ACCTNAME", "PERIOD", "BALFOR", "BASIS", "AMT"]
+_DETAIL_COLUMNS = ["ENTRDATE", "ITEM", "REF", "DESCRPN", "SEGMENTID",
+                   "RLTDENTITY", "RLTDENTITY_NAME"]
+
+
+def _gl_columns(engine) -> set:
+    """The columns `gl_detail` actually has right now."""
+    from sqlalchemy import inspect
+    try:
+        return {c["name"] for c in inspect(engine).get_columns("gl_detail")}
+    except Exception:
+        logger.warning("gl_detail columns unreadable", exc_info=True)
+        return set()
+
+
+def _gl_for_entity(entityid: str, bases: List[str], engine,
+                   detail: bool = False) -> pd.DataFrame:
+    """Every GL row for one entity on the given bases, normalised.
+
+    `detail` adds the descriptive columns a drilldown shows. THE STATEMENTS NEVER ASK
+    FOR THEM, so a `gl_detail` that arrives from MRI without one of them cannot take
+    the statements down -- which is exactly what widening this query risked.
+
+    AND THE RISK IS INVISIBLE LOCALLY. SQLite treats a double-quoted identifier that
+    matches no column as a STRING LITERAL, so `SELECT "ENTRDATE"` quietly returns the
+    text 'ENTRDATE' for every row; PostgreSQL raises UndefinedColumn. A column this
+    query names but the table lacks therefore breaks production only, and local dev
+    cannot reproduce it -- the same shape as the v496 foreign-key failure. So the
+    detail columns are intersected with what the table HAS rather than assumed.
+    """
+    have = _gl_columns(engine)
+    wanted = list(_BALANCE_COLUMNS)
+    missing_detail: List[str] = []
+    if detail:
+        for c in _DETAIL_COLUMNS:
+            (wanted if (not have or c in have) else missing_detail).append(c)
+
+    # A balance column that is genuinely absent is a broken table, not something to
+    # paper over; let it raise rather than return figures built from nothing.
+    cols = ", ".join(f'"{c}"' for c in wanted)
     with engine.connect() as conn:
         gl = pd.read_sql(text(
-            'SELECT "ACCTNUM", "ACCTNAME", "PERIOD", "ENTRDATE", "BALFOR", '
-            '"BASIS", "ITEM", "REF", "DESCRPN", "SEGMENTID", "RLTDENTITY", '
-            '"RLTDENTITY_NAME", "AMT" '
-            'FROM gl_detail WHERE UPPER(TRIM("ENTITYID")) = :e'),
+            f'SELECT {cols} FROM gl_detail '
+            'WHERE UPPER(TRIM("ENTITYID")) = :e'),
             conn, params={"e": entityid.strip().upper()})
+    if missing_detail:
+        logger.warning("gl_detail is missing %s; drilldown will show them blank",
+                       ", ".join(missing_detail))
+        for c in missing_detail:
+            gl[c] = None
     if gl.empty:
         return gl
     for c in ("ACCTNUM", "PERIOD", "BALFOR", "BASIS"):
@@ -199,7 +242,7 @@ def drilldown(entityid: str, period_end: str, accounts: List[str],
                 "presentation_sign": presentation_sign, "presented_total": None,
                 "note": "No accounts were given, so there is nothing to show."}
 
-    gl = _gl_for_entity(entityid, bases, engine)
+    gl = _gl_for_entity(entityid, bases, engine, detail=True)
     if gl.empty:
         return {"entity": entityid, "periods": p, "bases": bases,
                 "measure": measure, "accounts": sorted(wanted), "rows": [],
@@ -209,8 +252,10 @@ def drilldown(entityid: str, period_end: str, accounts: List[str],
 
     rows = select_measure_rows(gl, p, measure)
     rows = rows[rows["ACCTNUM"].isin(wanted)]
-    rows = rows.sort_values(["ACCTNUM", "PERIOD", "ENTRDATE", "ITEM"],
-                            na_position="last")
+    sort_by = [c for c in ("ACCTNUM", "PERIOD", "ENTRDATE", "ITEM")
+               if c in rows.columns and rows[c].notna().any()]
+    if sort_by:
+        rows = rows.sort_values(sort_by, na_position="last")
 
     total = float(rows["AMT"].sum()) if len(rows) else 0.0
 

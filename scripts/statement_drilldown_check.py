@@ -283,6 +283,62 @@ else:
     print('  SKIP  screen checks  [Vue source not in the image]')
 
 
+
+# ===========================================================================
+section('A gl_detail missing a descriptive column cannot break the statements')
+
+# THIS FAILURE IS INVISIBLE ON SQLITE. A double-quoted identifier matching no column
+# is treated as a STRING LITERAL, so `SELECT "ENTRDATE"` quietly returns the text
+# 'ENTRDATE' for every row; PostgreSQL raises UndefinedColumn. Widening the balance
+# query to fetch drilldown columns therefore risked taking every statement down on
+# production ONLY, with local dev unable to reproduce it -- the v496 shape.
+_MDB = os.path.join(tempfile.gettempdir(), 'stmt_drill_missingcols.db')
+if os.path.exists(_MDB):
+    os.remove(_MDB)
+_meng = create_engine(f'sqlite:///{_MDB}')
+with _meng.begin() as _c:
+    # The six columns a BALANCE needs, and not one of the descriptive ones.
+    _c.execute(text('CREATE TABLE gl_detail ("ENTITYID" TEXT,"PERIOD" TEXT,'
+                    '"ACCTNAME" TEXT,"ACCTNUM" TEXT,"BASIS" TEXT,"BALFOR" TEXT,'
+                    '"AMT" REAL)'))
+    _c.execute(text('CREATE TABLE gl_accounts ("ACCTNUM" TEXT,"ACCTNAME" TEXT,'
+                    '"TYPE" TEXT)'))
+    _c.execute(text("INSERT INTO gl_detail VALUES "
+                    "('E1','202601','Cash','1000','B','B',100.0)"))
+    _c.execute(text("INSERT INTO gl_detail VALUES "
+                    "('E1','202603','Cash','1000','B','N',25.0)"))
+    _c.execute(text("INSERT INTO gl_accounts VALUES ('1000','Cash','B')"))
+W.ensure_tables(_meng)
+W.set_fs_map([{'acctnum': '1000', 'statement': 'Assets',
+               'fs_line': 'Cash and cash equivalents', 'sort_order': 1}],
+             'guardrail', engine=_meng)
+
+_st = S.build('E1', '2026-06-30', bases=['A', 'B'], engine=_meng)
+_lines = [l for sec in (_st.get('balance_sheet') or {}).get('sections', [])
+          for l in sec.get('lines') or []]
+check('the statement still builds with the descriptive columns absent',
+      len(_lines) == 1, f'{len(_lines)} lines')
+check('...and the figure is right', abs(_lines[0]['amount'] - 125.0) < 0.005,
+      str(_lines[0]['amount']))
+check('the balance query asks ONLY for the columns a balance needs',
+      set(S._BALANCE_COLUMNS) == {'ACCTNUM', 'ACCTNAME', 'PERIOD', 'BALFOR',
+                                  'BASIS', 'AMT'},
+      str(S._BALANCE_COLUMNS))
+check('...and the descriptive ones are a separate list',
+      'ENTRDATE' in S._DETAIL_COLUMNS and 'ENTRDATE' not in S._BALANCE_COLUMNS)
+
+_dd = S.drilldown('E1', '2026-06-30', ['1000'], measure='closing',
+                  bases=['A', 'B'], engine=_meng)
+check('the drilldown still returns its rows', _dd['row_count'] == 2)
+check('...and still totals correctly', abs(_dd['total'] - 125.0) < 0.005)
+# The SQLite trap made this return the string 'ENTRDATE' for every row, which would
+# have rendered as a column of the word ENTRDATE where the dates belong.
+check('a missing column comes back EMPTY, not as the column name',
+      all(r['ENTRDATE'] is None for r in _dd['rows']),
+      str([r['ENTRDATE'] for r in _dd['rows']]))
+check('...and it is not the literal string either',
+      not any(r['ENTRDATE'] == 'ENTRDATE' for r in _dd['rows']))
+
 print(f'\n{len(PASS)} passed, {len(FAIL)} failed, {len(SKIP)} skipped')
 if FAIL:
     print('FAILED:')
