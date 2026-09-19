@@ -1646,7 +1646,27 @@ PROTECTED_TABLES = {'capital_calls', 'waterfalls', 'one_pager_comments', 'waterf
                     # on Sep 19 2026: `wp_fs_map` was found at 0 rows against
                     # 583 accounts and 79,074 GL rows, and the statements had
                     # simply stopped appearing on the workbench.
-                    'wp_fs_map'}
+                    'wp_fs_map',
+                    # ── Treasury ──────────────────────────────────────────────
+                    # The bank side of the close, and the same rule again: the
+                    # APP is the writer of every one of these and holds the only
+                    # copy. Nothing here comes from a CSV feed.
+                    #
+                    # `tr_periods` is the reconciliation CHAIN — each period's
+                    # closed ending becomes the next one's opening — so losing it
+                    # does not lose a report, it loses the thread that makes next
+                    # month's opening balance mean anything. `tr_statements` now
+                    # carries the statement PDFs themselves, and
+                    # `tr_pending_statements` holds the ones still waiting for an
+                    # account number, which is work somebody did by hand.
+                    #
+                    # Checked against the `isbs_uw_supplements` lesson before
+                    # adding these: protection without a write path is a lockout,
+                    # not a safeguard. All six are written by the app (imports,
+                    # manual pairings, close_period, create_account, resolve), so
+                    # protecting them takes nothing away.
+                    'tr_accounts', 'tr_activity', 'tr_statements',
+                    'tr_pending_statements', 'tr_matches', 'tr_periods'}
 
 
 def _get_import_connection():

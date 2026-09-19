@@ -129,6 +129,28 @@ nxt = ts.match_account_by_suffix('XX-XXXX-7891', engine=eng)
 chk('a LATER statement for the same account now routes automatically',
     nxt.get('account_number') == '8517897891', str(nxt))
 
+
+# ── the treasury tables cannot be dropped by a CSV import ──────────────────
+# Same rule as wp_fs_map and the budget supplement: the app is the writer and
+# holds the only copy. `tr_periods` is the reconciliation CHAIN -- each closed
+# period's ending becomes the next one's opening -- so losing it loses the
+# thread, not just a report.
+import database as _DB  # noqa: E402
+import inspect as _i  # noqa: E402
+
+_TR = ('tr_accounts', 'tr_activity', 'tr_statements',
+       'tr_pending_statements', 'tr_matches', 'tr_periods')
+for _t in _TR:
+    chk(f'{_t} is in PROTECTED_TABLES', _t in _DB.PROTECTED_TABLES)
+
+# Protection without a write path is a lockout, not a safeguard (the
+# isbs_uw_supplements lesson), so every table protected here must be one the
+# app actually writes.
+_src = _i.getsource(ts)
+for _t in _TR:
+    chk(f'...and the app writes {_t}, so it is not a lockout',
+        (f'INTO {_t}' in _src) or (f'UPDATE {_t}' in _src))
+
 print(f'\n{len(OK)} passed, {len(BAD)} failed')
 if BAD:
     for b in BAD:
