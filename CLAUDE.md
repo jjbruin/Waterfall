@@ -253,6 +253,60 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v510` = `a12f98a` (A DOCUMENT IS TYPED BY ITS FILE NAME, and the documents
+    that carry terms are kept. Jim, Sep 20 2026: "do both changes" — both,
+    because either alone does damage.
+    `classify_document` matched the whole stored PATH. Every production document
+    sits under `Tenant Leases/`, so pattern 0 (`lease`) matched the FOLDER and
+    short-circuited before any later pattern was tried: 409 of 530 typed
+    `Original Lease` with only 77 carrying "lease" in the file name.
+    Certificates of insurance, easements, option letters, move-in forms and
+    landlord consents all read as original leases — and because extraction is
+    GATED ON THE TYPE they were sent to the extraction API as leases and layered
+    into the tenant's consolidated terms. 500 of 530 documents were in a
+    consolidation and 328 of them were misclassified; 69 of 70 tenants carried
+    at least one.
+    THE OBVIOUS FIX WOULD HAVE BEEN WORSE THAN THE BUG, which is why it was
+    measured first. Correcting the classifier ALONE pushes those 328 out of the
+    gate and strips the rent commencement date from 16 of the 38 tenants that
+    have one — 15 of those sources being COMMENCEMENT LETTERS, the document
+    whose whole purpose is to state that date, and the date `v503` uses to place
+    a rent step written as "Months 1-12". The naive fix would have broken the
+    feature shipped three deploys earlier.
+    So the gate widened with it: `is_term_bearing`, and `NON_TERM_TYPES` is
+    `{'COI'}` ALONE. The list was MEASURED against all 500 extracted documents,
+    not chosen — excluding COI costs no tenant its rent commencement, expiration,
+    square feet, escalation or rent steps, while removing 108 certificates of
+    insurance from the layering, two of which were supplying a
+    `rent_commencement` a COI has no business stating. The narrower rule loses 16
+    tenants a date; keeping everything keeps two wrong ones.
+    ONE RULE, TWO CALL SITES. `is_term_bearing` gates extraction AND filters the
+    consolidation, applied in Python against the same function rather than
+    repeated as a SQL `NOT IN`. It HAS to be in the consolidation too: a document
+    extracted under the old classifier still carries its `extraction_json`, which
+    is that query's admission ticket, so the COIs would go on being layered in
+    for as long as that JSON exists. An unknown or missing type counts as
+    term-bearing — visibly wrong beats invisibly absent.
+    `_reclassify_documents` backfills the stored types from the filename,
+    idempotent, after the CREATEs. Safe because `doc_type` is only ever written
+    by the classifier: there is no screen or endpoint that sets it by hand, so
+    nothing overwrites a human judgement. Production after deploy: Original Lease
+    409 -> 77, COI 0 -> 111, Commencement Letter 0 -> 23, Option Letter 0 -> 12,
+    Amendment 100 -> 100 exactly as predicted.
+    Guardrail `lease_doc_type_check.py` (37) drives a real database and asserts
+    BOTH directions, since "the COIs are gone" is satisfied by dropping
+    everything. Proved non-vacuous against each defect: path matching fails 10
+    checks; the old narrow gate fails 10, including the commencement letter
+    dropping out of `_documents_applied` — the 16-tenant failure, reproduced.
+    STILL OPEN, and it is `open_items.md` §9.2: ALL 70 stored consolidated
+    records predate `v503` — not one contains `_documents_applied` — so every
+    one was built by the old consolidation, before the amendment ordering fix and
+    with the COIs layered in. Consolidation only runs at the end of an
+    extraction, so nothing refreshes by itself. A METHOD NOTE went with it: the
+    first attempt to size this asked how many stored blobs carried a
+    now-excluded document in `_documents_applied` and got 0, which reads as
+    "nothing to do" and was VACUOUS, because the key is absent from all 70.
+    Carried the two docs commits `068febb` and `9f2d2dd`, neither shipped.)
   - `v509` = `49d2120` (THE INPUT COLUMN FOLDS AWAY, and the GL grid shows what
     matters. Two asks from Jim, Sep 19 2026.
     "MANY OF OUR PAGES HAVE INPUT SECTIONS ON THE LEFT AND ANALYSIS SECTIONS ON
@@ -1901,7 +1955,7 @@ above the results, or an overlay drawer, and is deliberately untouched.
 - Guardrail: `scripts/collapsible_panel_check.py` (43).
 
 ### Lease review — rent PSF, amendments, and rent by month of term
-Live at `v503`. New business, Sep 19 2026, via Jim.
+Live at `v510`. New business, Sep 19 2026, via Jim.
 
 - **Rent PSF is ANNUAL rent over square feet, always.** A monthly rent is ANNUALISED
   before dividing, never divided as-is — that yields a plausible figure a twelfth of
@@ -1922,8 +1976,29 @@ Live at `v503`. New business, Sep 19 2026, via Jim.
   mismatch. A tenant whose rent cannot be dated is now a `rent_step_in_force` finding.
 - The extraction prompt is told NOT to convert a period into a date itself; the app
   does it, because a later commencement letter often carries the real date.
-- Guardrail: `scripts/lease_terms_check.py` (129), which drives the shipping paths
-  against a real database including an EXISTING schema migrated with rows in it.
+- **A DOCUMENT IS TYPED BY ITS FILE NAME, NOT ITS FOLDER** (`v510`).
+  `classify_document` matched the whole stored path, and every document sits
+  under `Tenant Leases/`, so the `lease` pattern matched the FOLDER and won:
+  409 of 530 typed `Original Lease`, only 77 with "lease" in the file name.
+  There is deliberately no fallback to the path when the basename yields
+  `Other` — that fallback re-admits the 126 documents this fixes.
+- **Extraction is gated on `is_term_bearing`, not on two type names.** Fixing
+  the classifier alone would push 328 documents out of the old
+  `('Original Lease', 'Amendment')` gate and strip the rent commencement date
+  from **16 of the 38 tenants that have one**, 15 of those sources being
+  Commencement Letters. `NON_TERM_TYPES` is `{'COI'}` alone and was MEASURED
+  against all 500 extracted documents: excluding it costs no tenant a field and
+  removes 108 certificates of insurance from the layering. An unknown or
+  missing type counts as term-bearing.
+- **The same function gates extraction AND filters the consolidation.** It must
+  do both: a document extracted under the old classifier still carries its
+  `extraction_json`, which is the consolidation's admission ticket.
+- **Every stored consolidated record predates `v503`** — none contains
+  `_documents_applied` — and consolidation only runs at the end of an
+  extraction, so nothing refreshes by itself. See `open_items.md` §9.2.
+- Guardrails: `scripts/lease_terms_check.py` (129), which drives the shipping
+  paths against a real database including an EXISTING schema migrated with rows
+  in it, and `scripts/lease_doc_type_check.py` (37).
 
 ### Cap Rate at Sale / Refinance
 - **Source column**: `fCapRate` from `valuations` table (MRI_Val)

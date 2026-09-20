@@ -732,86 +732,70 @@ population, so "0 of 100" is 0 of the documents whose NAME says amendment. A
 document misfiled under another type would not be counted here. That is a real
 gap but a different one, and it is recorded separately.
 
-### 9.9 The document classifier reads the FOLDER, and the obvious fix would make it worse — DECISION NEEDED (Jim)
+### 9.9 The document classifier read the FOLDER — FIXED at `v510`
 
-Found while measuring §9.1. Fully measured against production at `v509` on
-Sep 20 2026. **Nothing has been changed.**
+`classify_document` matched `DOC_TYPE_PATTERNS` against the whole stored path,
+and every production document sits under `Tenant Leases/…`, so pattern 0
+(`lease`) matched the FOLDER and short-circuited. It now reads the basename,
+with no fallback to the path — that fallback would re-admit the 126 documents
+the fix corrects.
 
-**The defect.** `classify_document` runs `DOC_TYPE_PATTERNS` against the whole
-stored path. Pattern 0 is `(?i)lease(?!.*(?:abstract|amend|memo))` and every
-production document sits under `Tenant Leases/…`, so it matches the FOLDER and
-short-circuits before any later pattern is reached.
+Production types after the backfill, which ran on first request at `v510`:
 
-| | |
-|---|---|
-| typed `Original Lease` today | **409 of 530** |
-| genuinely have "lease" in the FILE name | 77 |
-| matched on the folder alone | **332** |
-
-Classified on the basename instead, **332 of 530 change type**, all of them out
-of `Original Lease`:
-
-| would become | n | | would become | n |
-|---|---|---|---|---|
-| Other | 126 | | Waiver Letter | 9 |
-| **COI** | **111** | | Move-In Notice | 8 |
-| Commencement Letter | 23 | | Notice Change | 5 |
-| Consent Letter | 17 | | Delivery Notice | 3 |
-| **Option Letter** | **12** | | Estoppel | 2 |
-| SNDA | 12 | | four singles | 4 |
-
-The 100 amendments are untouched — the negative lookahead sends anything
-containing "amend" to the Amendment pattern.
-
-**What it has already done.** Extraction runs only for
-`doc_type in ('Original Lease', 'Amendment')`, so every one of these was sent to
-the Claude extraction API as a lease and given an `extraction_json`, which is the
-consolidation's admission ticket:
-
-| | |
-|---|---|
-| documents extracted and in a consolidation | **500 of 530** |
-| of those, misclassified | **328** (66%) |
-| genuinely a lease or amendment | 172 |
-| consolidating tenants with ≥1 misclassified document | **69 of 70** |
-
-**THE OBVIOUS FIX IS WRONG ON ITS OWN, and this is the finding that matters.**
-Correcting the classifier alone would push 328 documents OUT of the extraction
-gate — including the ones that carry the terms:
-
-| field | documents supplying it | dropped by the fix |
+| | before | after |
 |---|---|---|
-| `rent_commencement` | 54 | **26** — 15 of them Commencement Letters |
-| `lease_expiration` | 75 | 31 |
-| `square_feet` | 69 | 10 |
-| `escalation_structure` | 70 | 3 |
+| Original Lease | 409 | **77** |
+| COI | 0 | **111** |
+| Other | 21 | 147 |
+| Commencement Letter | 0 | 23 |
+| Consent Letter | 0 | 17 |
+| Option Letter / SNDA | 0 | 12 / 12 |
+| Amendment | 100 | **100** (untouched, as predicted) |
 
-**16 of the 38 tenants that currently have a rent commencement date would be
-left with none.** That date is what `v503` uses to place a rent step stated as
-"Months 1-12", so the naive fix would break the feature that was just built —
-and `consolidate_tenant_extractions`'s own comment already says a commencement
-letter is *supposed* to beat the original lease's estimate.
+**The gate widened with it, and that was the necessary half.** Extraction was
+gated on `('Original Lease', 'Amendment')`; correcting the types alone would
+have pushed 328 documents out of it and stripped the rent commencement date from
+16 of the 38 tenants that have one. `is_term_bearing` now gates extraction AND
+filters the consolidation — one function, two call sites, because two spellings
+of one rule is how they come to disagree. `NON_TERM_TYPES` is `{'COI'}` alone,
+measured: excluding it costs no tenant any field and removes 108 certificates of
+insurance from the layering, two of which were supplying a `rent_commencement`.
 
-**So it is two changes, not one:**
+Guardrail: `scripts/lease_doc_type_check.py` (37), both directions, proved
+non-vacuous against each defect.
 
-1. Classify on the **basename**, not the path.
-2. **Widen the extraction gate** past `('Original Lease', 'Amendment')` to the
-   types that genuinely carry terms — Commencement Letter and Option Letter at
-   minimum, on this evidence also whatever the 5 `Other` / 3 Move-In / 1 Opening
-   Notice documents carrying a real `rent_commencement` turn out to be.
+**Measurement base:** one property, Windsor Square — the only lease review on
+production. The rule is general (a certificate of insurance is not a lease
+anywhere) but the evidence is one roster.
 
-Done together the coverage is the same or better, the types are right, and 111
-certificates of insurance and 17 consent letters stop being layered into
-consolidated lease terms. `_merge_extraction_terms` is "non-null wins", so a COI
-contributes only where its extraction returned something — and 2 COIs did return
-a `rent_commencement`, which is a misread reaching a real field.
+### 9.2 Every consolidated tenant record predates BOTH fixes — NEEDS A RE-RUN (Jim)
 
-**Owner: Jim to approve the two-part change.** Then: re-run classification,
-re-run consolidation for the 70 tenants, and diff the consolidated terms before
-and after rather than assuming. The cost of the mistake so far is API spend and
-noise; the cost of fixing it carelessly is 16 tenants losing a date.
+Was "the extraction has not been re-run since the prompt changed". Measured at
+`v510` and it is broader than that.
 
-### 9.2 The extraction has not been re-run since the prompt changed
+**All 70 stored consolidated records predate `v503`.** Checked directly: not one
+of the 70 `lease_tenants.extraction_json` blobs contains `_documents_applied`,
+the field `v503` added. So every stored set of consolidated terms was built by
+the OLD consolidation — before the amendment ordering fix, before rent steps
+were resolved against the commencement date, and with the certificates of
+insurance layered in. 43 tenants own at least one now-excluded COI.
+
+**Consolidation does not re-run by itself** — `consolidate_review_extractions`
+is called only at the end of `extract_all_documents`, so nothing refreshes until
+an extraction run happens.
+
+**A METHOD NOTE WORTH KEEPING.** The first attempt to size this asked how many
+stored blobs carried a now-excluded document in `_documents_applied` and got
+**0**, which reads as "nothing to do". It was vacuous: the key is absent from all
+70, so the comparison could only ever return zero. A check against a field that
+does not exist returns the same answer as a clean bill of health. The follow-up
+counted the blobs that HAVE the field first, which is what exposed it.
+
+**Owner: Jim.** Re-running extraction for the review is an API spend and rewrites
+70 tenants' terms, so it is his call. When it runs: snapshot
+`lease_tenants.extraction_json` and `rent_commencement` first, then diff before
+against after rather than assuming the new terms are better.
+
 `period_start_month` / `period_end_month` only arrive from extractions run AFTER
 `v503`. Existing rows carry the period as text in `effective_date`, which
 `resolve_rent_steps` still reads — verified — so nothing is broken and no backfill is
