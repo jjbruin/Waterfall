@@ -253,6 +253,47 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v512` = `e473a07` (A SCANNED LEASE IS READ FROM THE PDF, not from its
+    empty text. Jim, Sep 20 2026: "is there anything we can do to extract from
+    the pdfs that produce no text extractions? I'm sure it will be a common
+    problem when scanning bulk files of pdfs." Then: "I'm not price sensitive
+    for this task. build it with the best model suites for all scenarios."
+    MEASURED ON PRODUCTION BEFORE BUILDING: 219 of the 419 term-bearing
+    documents yield under 200 characters of text — including 47 AMENDMENTS and
+    28 ORIGINAL LEASES. Their pages are images, pdfplumber returns nothing, the
+    prompt was being filled with an empty string, and the document contributed
+    NOTHING to the tenant's terms with no error and no warning. All 219 have
+    their PDF stored; the largest is 79 pages against the API's 600-page
+    ceiling and exactly one exceeds the 32 MB cap.
+    NO OCR STACK. The API reads a PDF as images, so where the text is too thin
+    the PDF itself goes as a document block — same prompt, different
+    representation of the same document. No Tesseract, no poppler, nothing new
+    in the container image.
+    BOTH ROUTES RUN ON `claude-opus-5` now, not the date-pinned Haiku this
+    started on: extraction decides every rent figure downstream and reading a
+    scan is harder again.
+    THREE THINGS THAT WOULD HAVE BROKEN QUIETLY. `content[0].text` — thinking is
+    ON by default on this model, so the first block is a THINKING block and the
+    indexed read would raise; the text blocks are joined instead, and the
+    guardrail's stub returns a thinking block FIRST so a reintroduced indexed
+    read fails. A REFUSAL returns HTTP 200 with no text, so `stop_reason` is
+    checked BEFORE the content and reported as `_refused` rather than as a parse
+    failure. And the base64 must carry no newlines — `b64encode` adds none,
+    `encodebytes` would.
+    Streamed, because the input can be a 180,000-character lease or a 79-page
+    scan and a blocking request that size risks the HTTP timeout; max_tokens
+    4096 -> 16000. Over a cap is REFUSED WITH A REASON naming the size or the
+    page count, never attempted. Every result records `_extraction_source`
+    (text / pdf) so a reader seeing thin terms can tell how it was read.
+    VERIFIED ON A REAL SCAN, not a fixture: `1987.08.11_Sam's Club-Short Form
+    Lease.pdf`, 5 pages, 428 KB, **4 characters of extractable text**, came back
+    with 10 populated fields — Wal-Mart Stores Inc., suite C500, 103,060 SF,
+    commencement 1987-08-11, expiry 2007-10-31, six 5-year renewal options. It
+    returned nothing at all before.
+    Guardrail `lease_scan_extraction_check.py` (25), which makes NO API calls —
+    a stub records the request, because what matters is the ROUTING DECISION and
+    the request SHAPE. Proved non-vacuous: disabling the scan route fails 3,
+    restoring the Haiku pin fails 2.)
   - `v511` = `07a83ed` (EVERYTHING AFTER THE BASE LEASE IS LAYERED IN DATE
     ORDER. Found by running the re-consolidation Jim asked for AND DIFFING IT —
     the diff is the only reason this was caught, and the regression was mine.
@@ -2052,6 +2093,17 @@ Live at `v510`. New business, Sep 19 2026, via Jim.
   the first time (0 -> 37). A second pass moves nothing, which is the
   convergence proof. Re-consolidation makes NO API calls; it re-layers the
   existing per-document extractions.
+- **A SCANNED PDF IS READ AS IMAGES, not as its empty text** (`v512`). 219 of
+  the 419 term-bearing documents yield under 200 characters — 47 amendments and
+  28 original leases among them — and were contributing nothing, silently. Below
+  `SCAN_TEXT_THRESHOLD` the PDF goes to the model as a document block: no OCR
+  stack, no Tesseract, no poppler. Over the 32 MB / 600-page caps it is refused
+  with the reason, never attempted, and every result records
+  `_extraction_source`.
+- **Extraction runs on `claude-opus-5`** (Jim: best model for every scenario).
+  Thinking is ON by default there, so the response's first block is a THINKING
+  block — never read `content[0].text`. A refusal returns HTTP 200 with no text;
+  check `stop_reason` first.
 - **Re-EXTRACTION is still outstanding** — no rent step carries
   `period_start_month` (0 of 346), since those only arrive from an extraction
   run after `v503`. See `open_items.md` §9.2.
