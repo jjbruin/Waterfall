@@ -2440,17 +2440,49 @@ DOCUMENT TEXT:
 {text}"""
 
 
+#: A PDF yielding less text than this is a SCAN -- the pages are images and
+#: pdfplumber has nothing to return. MEASURED on production: 219 of the 419
+#: term-bearing documents fall under it, including 47 amendments and 28 original
+#: leases, so more than half the corpus was being read as an empty string and
+#: silently returning nothing.
+SCAN_TEXT_THRESHOLD = 200
+
+#: The API's own limits for an inline PDF document block: 32 MB per request, and
+#: 600 pages on a 1M-context model (100 on a 200K one). Production's largest
+#: scan is 79 pages and exactly one file exceeds the byte cap.
+PDF_MAX_BYTES = 32 * 1024 * 1024
+PDF_MAX_PAGES = 600
+
+#: Jim, Sep 20 2026: "I'm not price sensitive for this task. build it with the
+#: best model suites for all scenarios." Extraction decides every rent figure
+#: downstream, and reading a SCANNED lease is a harder job again, so both routes
+#: run on the strongest general model rather than the cheap one this started on.
+EXTRACTION_MODEL = "claude-opus-5"
+
+
 def extract_lease_terms_via_api(
     text: str,
     tenant_name: str,
     suite: str,
     doc_type: str,
     api_key: Optional[str] = None,
+    file_data: Optional[bytes] = None,
+    page_count: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Call Claude API to extract structured lease terms from PDF text.
+    """Extract structured lease terms, from the document's TEXT or the PDF itself.
 
-    Uses Haiku for cost efficiency on high-volume extraction.
+    A scanned lease has no extractable text, so the text path sends an empty
+    string and gets nothing back -- no error, no warning, just a document that
+    contributes nothing to the tenant's terms. Where the text is that thin and we
+    hold the PDF, the PDF goes to the model instead and is read as images. That
+    needs no OCR stack, no Tesseract and no poppler in the image; it is the same
+    prompt against a different representation of the same document.
+
+    The route taken is recorded on the result as `_extraction_source`, because a
+    reader looking at a thin set of terms needs to know whether the document was
+    read as text, read as a scan, or refused for being too large.
     """
+    import base64
     import anthropic
 
     key = api_key or os.environ.get('ANTHROPIC_API_KEY')
@@ -2471,24 +2503,63 @@ def extract_lease_terms_via_api(
         text=text,
     )
 
-    message = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=4096,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    # ---- which representation of the document goes to the model -----------
+    route, route_note = 'text', None
+    content: List[Dict[str, Any]] = []
+    if len((text or '').strip()) < SCAN_TEXT_THRESHOLD and file_data:
+        if len(file_data) > PDF_MAX_BYTES:
+            route_note = ("the PDF is %.1f MB, over the %d MB the API accepts"
+                          % (len(file_data) / 1e6, PDF_MAX_BYTES // (1024 * 1024)))
+        elif page_count and page_count > PDF_MAX_PAGES:
+            route_note = ("the PDF is %d pages, over the %d the API accepts"
+                          % (page_count, PDF_MAX_PAGES))
+        else:
+            # The document block goes BEFORE the text block, and the base64 must
+            # carry no newlines -- b64encode does not add any, encodebytes would.
+            content.append({
+                "type": "document",
+                "source": {"type": "base64", "media_type": "application/pdf",
+                           "data": base64.b64encode(file_data).decode('ascii')},
+            })
+            route = 'pdf'
+    elif len((text or '').strip()) < SCAN_TEXT_THRESHOLD:
+        route_note = "almost no text could be read and the PDF is not stored"
+    content.append({"type": "text", "text": prompt})
 
-    response_text = message.content[0].text
+    # Streamed because the input can be a 180,000-character lease or a 79-page
+    # scan, and a non-streaming request of that size risks the HTTP timeout.
+    with client.messages.stream(
+        model=EXTRACTION_MODEL,
+        max_tokens=16000,
+        messages=[{"role": "user", "content": content}],
+    ) as stream:
+        message = stream.get_final_message()
+
+    # Checked BEFORE reading content: a refusal returns HTTP 200 with no text,
+    # and treating it as a parse failure would hide why.
+    if message.stop_reason == 'refusal':
+        return {'_parse_error': True, '_extraction_source': route,
+                '_refused': True,
+                '_raw_response': 'the model declined to read this document'}
+
+    # NOT content[0]: thinking is on by default on this model, so the first
+    # block is a thinking block and `.text` would raise.
+    response_text = "".join(b.text for b in message.content if b.type == "text")
+
+    meta = {'_extraction_source': route}
+    if route_note:
+        meta['_extraction_note'] = route_note
 
     # Parse JSON from response
     try:
         # Try to find JSON block
         json_match = re.search(r'\{[\s\S]*\}', response_text)
         if json_match:
-            return json.loads(json_match.group())
+            return {**json.loads(json_match.group()), **meta}
     except json.JSONDecodeError:
         logger.warning(f"Failed to parse JSON for {tenant_name}: {response_text[:200]}")
 
-    return {'_raw_response': response_text, '_parse_error': True}
+    return {'_raw_response': response_text, '_parse_error': True, **meta}
 
 
 # ---------------------------------------------------------------------------
@@ -2905,8 +2976,19 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None,
                 # the rent commencement date and an Option Letter states renewal
                 # rent, and gating on those two types alone loses both.
                 if is_term_bearing(doc_type):
+                    # A scan needs the PDF itself, and the already-extracted
+                    # branch above never loads it, so fetch it here when the
+                    # text is too thin to be the document.
+                    blob, pages = None, None
+                    if len((pdf_text or '').strip()) < SCAN_TEXT_THRESHOLD:
+                        got = conn.execute(sql_text(
+                            "SELECT file_data, page_count FROM lease_documents "
+                            " WHERE id = :did"), {'did': doc_id}).fetchone()
+                        if got:
+                            blob, pages = got[0], got[1]
                     terms = extract_lease_terms_via_api(
-                        pdf_text, tenant_name, suite, doc_type, api_key
+                        pdf_text, tenant_name, suite, doc_type, api_key,
+                        file_data=blob, page_count=pages,
                     )
 
                     if not terms.get('_parse_error'):
