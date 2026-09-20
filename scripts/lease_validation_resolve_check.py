@@ -132,6 +132,19 @@ T1 = {
                            'Leases/ATT/4th Amendment.pdf'],
     '_governing_document': 'Leases/ATT/4th Amendment.pdf',
 }
+# Tenants 3 and 4: the schedule stated in LEASE YEARS, which is how the Poplar
+# lease states it ("for the first five (5) Lease Years"). Tenant 3 has a rent
+# commencement date, so it can be placed on the calendar; tenant 4 has none, so it
+# cannot -- and must SAY so rather than fall silent.
+CAM_LEASE_YEARS = [
+    {'period': 'Lease Years 1-5', 'lease_year_start': 1, 'lease_year_end': 5,
+     'per_sf': 1.96},
+    {'period': 'Lease Years 6-10', 'lease_year_start': 6, 'lease_year_end': 10,
+     'per_sf': 2.156},
+    {'period': 'Lease Years 11-15', 'lease_year_start': 11, 'lease_year_end': 15,
+     'per_sf': 2.3716},
+]
+
 # Tenant 2: a gross-style lease where the fixed amount IS the whole recovery, so
 # the two sides ARE comparable and a difference is a real mismatch.
 T2 = dict(T1)
@@ -156,6 +169,25 @@ with eng.begin() as c:
         " extraction_json, extraction_status) VALUES "
         "(2,7,'Gross Tenant','B1',4000,120000,10000,30,'2035-12-31',0,'active',"
         " '2020-01-01',4.632,:j,'extracted')"), {'j': json.dumps(T2)})
+    T3 = {**T1, 'cam_fixed': CAM_LEASE_YEARS,
+          'tax_pass_through': False, 'insurance_pass_through': False,
+          'rent_commencement': '2022-04-15'}
+    T4 = {**T3}
+    T4.pop('rent_commencement')
+    c.execute(text(
+        "INSERT INTO lease_tenants (id, review_id, tenant_name, suite, square_feet,"
+        " annual_rent, monthly_rent, rent_per_sf, lease_end, is_vacant,"
+        " tenant_status, rent_commencement, annual_recoveries_per_sf,"
+        " extraction_json, extraction_status) VALUES "
+        "(3,7,'Lease Year Tenant','C1',12000,300000,25000,25,'2037-04-14',0,'active',"
+        " '2022-04-15',1.96,:j,'extracted')"), {'j': json.dumps(T3)})
+    c.execute(text(
+        "INSERT INTO lease_tenants (id, review_id, tenant_name, suite, square_feet,"
+        " annual_rent, monthly_rent, rent_per_sf, lease_end, is_vacant,"
+        " tenant_status, rent_commencement, annual_recoveries_per_sf,"
+        " extraction_json, extraction_status) VALUES "
+        "(4,7,'Undated Tenant','D1',12000,300000,25000,25,'2037-04-14',0,'active',"
+        " NULL,1.96,:j,'extracted')"), {'j': json.dumps(T4)})
     for did, tid, fn, dt in ((21, 1, 'Leases/ATT/Original Lease.pdf', 'Original Lease'),
                              (22, 1, 'Leases/ATT/4th Amendment.pdf', 'Amendment'),
                              (23, 2, 'Leases/B/Original Lease.pdf', 'Original Lease')):
@@ -200,8 +232,72 @@ if 2 in rec:
         rec[2][2] == 'mismatch', str(rec[2][2]))
     chk('...and says the fixed amount is the whole recovery',
         'whole recovery' in (rec[2][3] or ''), (rec[2][3] or '')[:80])
-chk('a tenant with no fixed schedule raises no recovery finding',
-    len(rec) == 2, str(sorted(rec)))
+chk('every tenant with a fixed schedule raises one, and no other tenant does',
+    sorted(rec) == [1, 2, 3, 4], str(sorted(rec)))
+
+
+section('A schedule stated in LEASE YEARS is placed against rent commencement')
+# Lease year 1 begins ON rent commencement (2022-04-15), so at the rent roll date
+# 2026-09-01 the tenant is inside Lease Years 1-5 at $1.96.
+if 3 in rec:
+    chk('the lease-year schedule resolves', rec[3][1] == '1.96', str(rec[3][1]))
+    chk('...and says which period, and from when',
+        'Lease Years 1-5' in (rec[3][3] or '')
+        and '2022-04-15' in (rec[3][3] or ''), (rec[3][3] or '')[:90])
+    chk('...and is compared for real, not parked as a question',
+        rec[3][2] == 'match', str(rec[3][2]))
+# THE CASE THE FIX EXISTS FOR: no rent commencement date, so the schedule cannot be
+# placed on the calendar. It must report that -- not fall silent, and above all not
+# approximate it from the calendar year, which would give $1.96 by luck here and a
+# wrong figure on any lease that did not commence in April.
+if 4 in rec:
+    chk('a lease-year schedule with NO rent commencement is reported',
+        rec[4][2] == 'review', str(rec[4][2]))
+    chk('...naming what is missing',
+        'no rent commencement date' in (rec[4][3] or ''), (rec[4][3] or '')[:110])
+    chk('...and offering NO lease figure rather than a guess',
+        rec[4][1] is None, str(rec[4][1]))
+
+# The seam, checked on both sides: lease year 6 begins on the FIFTH anniversary.
+_r5, _b5 = cam_fixed_in_force(CAM_LEASE_YEARS, '2027-04-14', '2022-04-15')
+_r6, _b6 = cam_fixed_in_force(CAM_LEASE_YEARS, '2027-04-15', '2022-04-15')
+chk('the day before the fifth anniversary is still Lease Years 1-5',
+    _r5 and _r5['per_sf'] == 1.96, str(_r5))
+chk('...and the anniversary itself steps to Lease Years 6-10',
+    _r6 and _r6['per_sf'] == 2.156, str(_r6))
+chk('a date before lease year 1 is declined',
+    cam_fixed_in_force(CAM_LEASE_YEARS, '2022-01-01', '2022-04-15')[0] is None)
+# The same row stated only as text, which is what an extraction often returns.
+_txt = [{'period': 'Lease Years 6-10', 'per_sf': 2.156}]
+chk('a period given only as TEXT resolves the same way',
+    cam_fixed_in_force(_txt, '2027-06-01', '2022-04-15')[0] is not None)
+# AND THE STRUCTURED FIELDS MUST WORK ON THEIR OWN. Every fixture above carries a
+# period label that happens to parse, so deleting the lease_year_start branch
+# entirely still passed -- the text fallback covered for it. This row's label is
+# the way the real Poplar lease words it, which no parser reads, so only the
+# structured fields can date it.
+_struct = [{'period': 'first five (5) Lease Years',
+            'lease_year_start': 1, 'lease_year_end': 5, 'per_sf': 1.96},
+           {'period': 'thereafter', 'lease_year_start': 6, 'per_sf': 2.156}]
+_sr, _sb = cam_fixed_in_force(_struct, '2024-01-01', '2022-04-15')
+chk('a schedule whose WORDING no parser reads still dates from its fields',
+    _sr is not None and _sr['per_sf'] == 1.96, str(_sr))
+chk('...and an open-ended final row runs on',
+    (cam_fixed_in_force(_struct, '2035-01-01', '2022-04-15')[0] or {})
+    .get('per_sf') == 2.156)
+chk('...but without a rent commencement date it is REPORTED, not guessed',
+    cam_fixed_in_force(_struct, '2024-01-01')[0] is None
+    and 'no rent commencement date' in cam_fixed_in_force(_struct, '2024-01-01')[1])
+# ONE ENGINE: the period parser the rent steps use, not a second one.
+from flask_app.services.lease_terms import parse_relative_period  # noqa: E402
+chk('"Lease Years 1-5" parses as months 1-60', parse_relative_period('Lease Years 1-5') == (1, 60))
+chk('...and "Lease Years 6 through 10" as 61-120',
+    parse_relative_period('Lease Years 6 through 10') == (61, 120))
+chk('a backwards range is refused, not silently reordered',
+    parse_relative_period('Lease Years 5-1') is None)
+chk('a single lease year still resolves', parse_relative_period('Lease Year 1') == (1, 12))
+chk('an ISO date is NOT read as a period',
+    parse_relative_period('2026-01-01') is None)
 
 
 section('Settling a finding: the API')

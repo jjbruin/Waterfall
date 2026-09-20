@@ -2329,7 +2329,7 @@ Return a JSON object with these fields (use null for fields not found):
   "security_deposit": number,
   "cam_structure": "pro rata / fixed / gross",
   "cam_fixed": [
-    {{"period": "verbatim text, e.g. 2026 to 2030", "year_start": number, "year_end": number or null, "per_sf": number or null, "annual": number or null, "monthly": number or null}}
+    {{"period": "verbatim text, e.g. 2026 to 2030 or Lease Years 1-5", "year_start": number or null, "year_end": number or null, "lease_year_start": number or null, "lease_year_end": number or null, "per_sf": number or null, "annual": number or null, "monthly": number or null}}
   ],
   "cam_cap_pct": number or null,
   "admin_fee_pct": number or null,
@@ -2438,6 +2438,16 @@ IMPORTANT:
   period, the years it spans, and whichever of per_sf / annual / monthly the
   document states. Do not compute the ones it does not state. Leave cam_fixed empty
   for a pro-rata or gross lease.
+- A RECOVERY SCHEDULE IS OFTEN STATED IN LEASE YEARS RATHER THAN CALENDAR YEARS --
+  "for the first five (5) Lease Years", "Lease Years 6-10". When it is, fill
+  lease_year_start / lease_year_end and LEAVE year_start / year_end NULL. Do NOT
+  convert lease years to calendar years yourself: lease year 1 begins on the Rent
+  Commencement Date, which this document may not even contain (a later
+  commencement letter often carries it), so a calendar year guessed here silently
+  overrides the real one. Put the wording verbatim in "period" either way. Where a
+  lease states an escalation instead of a table -- "increasing 10% at the
+  commencement of the sixth Lease Year and each fifth anniversary thereafter" --
+  return one row per period it defines, with the periods it names.
 - For amendments, only return CHANGED fields; unchanged fields should be null
 - Dates must be YYYY-MM-DD format
 - Dollar amounts should be numbers (no $ signs)
@@ -3866,8 +3876,41 @@ def validate_rent_roll(
             # step will not resolve can still have its recoveries checked.
             cam_fixed = ext.get('cam_fixed') if isinstance(ext, dict) else None
             if cam_fixed and rr_date:
-                cam_row, cam_basis = cam_fixed_in_force(cam_fixed, rr_date)
+                # A schedule stated in LEASE YEARS is placed against the tenant's
+                # rent commencement date, exactly as a rent step written "Months
+                # 1-12" is -- same primitive, so the two cannot drift apart. Lease
+                # year 1 begins ON rent commencement, so lease year 6 begins on the
+                # fifth anniversary, not on 1 January of anything.
+                cam_row, cam_basis = cam_fixed_in_force(
+                    cam_fixed, rr_date, rent_commencement)
                 lease_rec_psf = annual_recovery_psf(cam_row, rr_sf)
+                if lease_rec_psf is None and cam_basis:
+                    # A lease that FIXES its recoveries and cannot be placed on the
+                    # calendar is a finding about the lease, not silence. Reported
+                    # the way an undatable rent step is: the figure is knowable in
+                    # principle and something identifiable is missing.
+                    conn.execute(text("""
+                        INSERT INTO lease_validation
+                            (tenant_id, field_name, source_type,
+                             seller_value, lease_value, status, source_doc, notes)
+                        VALUES (:tid, 'annual_recoveries_per_sf', 'rent_roll',
+                                :sv, NULL, 'review', 'rent_roll', :notes)
+                    """), {
+                        'tid': tenant_id,
+                        'sv': str(rr_rec_psf) if rr_rec_psf is not None else None,
+                        'notes': ('The lease fixes its recoveries but the amount in '
+                                  'force could not be determined. ' + cam_basis),
+                    })
+                    results.append({
+                        'tenant': tenant_name, 'suite': suite,
+                        'field': 'annual_recoveries_per_sf',
+                        'source_type': 'rent_roll',
+                        'seller_value': (str(rr_rec_psf)
+                                         if rr_rec_psf is not None else None),
+                        'lease_value': None, 'status': 'review',
+                        'notes': ('The lease fixes its recoveries but the amount in '
+                                  'force could not be determined. ' + cam_basis),
+                    })
                 if lease_rec_psf is not None:
                     # WHETHER THIS IS A MISMATCH OR A QUESTION DEPENDS ON WHAT THE
                     # RENT ROLL'S COLUMN MEANS. Ours is a SINGLE recoveries figure

@@ -265,6 +265,14 @@ _MONTHS_RANGE = re.compile(
     r'(?i)\bmonths?\s*(\d{1,3})\s*(?:-|–|—|to|through|thru)\s*(\d{1,3})')
 _MONTH_SINGLE = re.compile(r'(?i)\bmonths?\s*(\d{1,3})\b')
 _LEASE_YEAR = re.compile(r'(?i)\b(?:lease\s*)?year\s*(\d{1,2})\b')
+#: A RANGE of lease years -- "Lease Years 1-5", "Lease Years 6 through 10". The
+#: singular pattern above cannot match one: "years 1" has an 's' where that pattern
+#: expects digits, so the whole phrase fell through to None and the period went
+#: undated. Real leases state recovery schedules this way at least as often as they
+#: state months -- the Poplar lease fixing operating expenses "for the first five
+#: (5) Lease Years" is the live case -- and the same form appears on rent steps.
+_LEASE_YEAR_RANGE = re.compile(
+    r'(?i)\b(?:lease\s*)?years?\s*(\d{1,2})\s*(?:-|–|—|to|through|thru)\s*(\d{1,2})\b')
 
 
 def parse_relative_period(textval: Any) -> Optional[Tuple[int, Optional[int]]]:
@@ -289,6 +297,14 @@ def parse_relative_period(textval: Any) -> Optional[Tuple[int, Optional[int]]]:
         a, b = int(m.group(1)), int(m.group(2))
         if a >= 1 and b >= a:
             return a, b
+        return None
+    # The RANGE is tried before the singular, or "Lease Years 1-5" matches the
+    # first year alone and silently loses the other four.
+    m = _LEASE_YEAR_RANGE.search(s)
+    if m:
+        a, b = int(m.group(1)), int(m.group(2))
+        if a >= 1 and b >= a:
+            return 12 * (a - 1) + 1, 12 * b
         return None
     m = _LEASE_YEAR.search(s)
     if m:
@@ -467,48 +483,120 @@ def step_in_force_at(steps: List[Dict[str, Any]], as_of: Any
 # wrong quietly.
 
 
+def _cam_row_window(entry: Dict[str, Any],
+                    rent_commencement: Any
+                    ) -> Tuple[Optional[date], Optional[date], str, str]:
+    """(start, end, label, blocked) for one fixed-recovery row.
+
+    `end` is INCLUSIVE and None means open-ended. `blocked` is empty when the row
+    could be placed on the calendar, and otherwise says what is missing -- a row
+    that cannot be dated must say so rather than be dropped, or the whole schedule
+    quietly reports "not covered" when the real answer is "we do not know yet".
+
+    A row states its period in ONE of three ways, and the first two are the same
+    distinction the rent steps draw (see `resolve_rent_steps`):
+
+      calendar years   year_start / year_end          -> 1 Jan .. 31 Dec
+      lease years      lease_year_start / lease_year_end -> anniversaries of rent
+                                                            commencement
+      verbatim text    period, e.g. "Lease Years 1-5" -> parsed to months
+
+    LEASE YEAR 1 BEGINS ON RENT COMMENCEMENT, so lease year N begins on the
+    (N-1)th anniversary -- the anniversary, never the first of that calendar
+    month. That is `month_to_date`, the same primitive the rent steps use, rather
+    than a second piece of arithmetic that would eventually disagree with it.
+    """
+    label = str(entry.get('period') or '').strip()
+
+    def _int(v):
+        try:
+            return int(v) if v not in (None, '') else None
+        except (TypeError, ValueError):
+            return None
+
+    ys, ye = _int(entry.get('year_start')), _int(entry.get('year_end'))
+    if ys is not None:
+        start = date(ys, 1, 1)
+        end = date(ye, 12, 31) if ye is not None else None
+        return start, end, (label or (str(ys) if ye in (None, ys)
+                                      else '%s to %s' % (ys, ye))), ''
+
+    ls, le = _int(entry.get('lease_year_start')), _int(entry.get('lease_year_end'))
+    if ls is not None:
+        m1, m2 = 12 * (ls - 1) + 1, (12 * le if le is not None else None)
+        label = label or ('Lease Year %s' % ls if le in (None, ls)
+                          else 'Lease Years %s-%s' % (ls, le))
+    else:
+        months = parse_relative_period(label)
+        if not months:
+            return None, None, label, ''
+        m1, m2 = months
+
+    rc = _as_date(rent_commencement)
+    if rc is None:
+        return None, None, label, (
+            'it is stated in lease years and this tenant has no rent '
+            'commencement date')
+    start = month_to_date(rc, m1)
+    # The row runs UP TO the day before the next month begins, so consecutive
+    # rows meet exactly and neither a gap nor an overlap can appear at the seam.
+    end = None
+    if m2:
+        nxt = month_to_date(rc, m2 + 1)
+        end = (nxt - relativedelta(days=1)) if nxt else None
+    return start, end, label, ''
+
+
 def cam_fixed_in_force(entries: List[Dict[str, Any]],
-                       as_of: Any) -> Tuple[Optional[Dict[str, Any]], str]:
+                       as_of: Any,
+                       rent_commencement: Any = None
+                       ) -> Tuple[Optional[Dict[str, Any]], str]:
     """The fixed recovery schedule row that applies on a date.
 
-    Rows carry a year range (`year_start` / `year_end`); a row with no `year_end`
-    runs open-ended from its start. Returns (row, basis) and, like every other
-    resolver here, the basis is a sentence rather than a flag -- a recovery figure
-    the reader cannot trace is not usable as evidence against a rent roll.
+    Returns (row, basis) and, like every other resolver here, the basis is a
+    sentence rather than a flag -- a recovery figure the reader cannot trace is
+    not usable as evidence against a rent roll.
+
+    A schedule stated in LEASE YEARS needs the tenant's rent commencement date to
+    be placed on the calendar. Without it the answer is that we do not know, which
+    is reported; it is never approximated from the lease commencement date or from
+    the calendar year, both of which would produce a plausible wrong figure.
     """
     d = _as_date(as_of)
     if not entries or d is None:
         return None, ''
-    year = d.year
-    eligible = []
+
+    eligible, starts, blocked = [], [], []
     for e in entries:
         if not isinstance(e, dict):
             continue
-        ys, ye = e.get('year_start'), e.get('year_end')
-        try:
-            ys = int(ys) if ys is not None else None
-            ye = int(ye) if ye is not None else None
-        except (TypeError, ValueError):
+        start, end, label, why = _cam_row_window(e, rent_commencement)
+        if why:
+            blocked.append(why)
             continue
-        if ys is None:
+        if start is None:
             continue
-        if year >= ys and (ye is None or year <= ye):
-            eligible.append((ys, e))
+        starts.append(start)
+        if start <= d and (end is None or d <= end):
+            eligible.append((start, label, e))
+
     if not eligible:
-        starts = [int(e['year_start']) for e in entries
-                  if isinstance(e, dict) and e.get('year_start') is not None]
-        if starts and year < min(starts):
-            return None, (f"The fixed recovery schedule begins {min(starts)}, "
-                          f"after {d.isoformat()}.")
-        return None, (f"The fixed recovery schedule does not cover {year}.")
+        if blocked:
+            return None, ('The fixed recovery schedule cannot be dated because %s.'
+                          % blocked[0])
+        if starts and d < min(starts):
+            return None, ('The fixed recovery schedule begins %s, after %s.'
+                          % (min(starts).isoformat(), d.isoformat()))
+        if not starts:
+            return None, 'The fixed recovery schedule states no period.'
+        return None, ('The fixed recovery schedule does not cover %s.'
+                      % d.isoformat())
+
     # The latest range that has begun, so overlapping rows resolve the way rent
     # steps do rather than by document order.
-    ys, best = max(eligible, key=lambda t: t[0])
-    label = best.get('period') or (
-        str(ys) if best.get('year_end') in (None, ys) else
-        '%s to %s' % (ys, best.get('year_end')))
-    return best, ('Fixed recovery stated for %s, in force at %s.'
-                  % (label, d.isoformat()))
+    start, label, best = max(eligible, key=lambda t: t[0])
+    return best, ('Fixed recovery stated for %s (from %s), in force at %s.'
+                  % (label or start.isoformat(), start.isoformat(), d.isoformat()))
 
 
 def annual_recovery_psf(entry: Optional[Dict[str, Any]],
