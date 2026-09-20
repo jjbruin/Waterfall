@@ -475,6 +475,10 @@ async function setDisposition(t: any, status: string) {
 // answerable from the header text: Market at Poplar prints CAM, Insurance and Tax as
 // three separate columns, and its "Base Rent" is a monthly figure.
 const scanResult = ref<any>(null)
+// Asked for at the moment the analyst has the rent roll in front of them.
+// Without it the review cannot validate a single rent -- see the validation
+// step -- and Market at Poplar shipped a whole import without one.
+const scanRentRollDate = ref<string>('')
 const scanFile = ref<File | null>(null)
 
 const scanning = ref(false)
@@ -538,6 +542,7 @@ async function commitRentRoll() {
   const formData = new FormData()
   formData.append('file', scanFile.value)
   formData.append('mapping', JSON.stringify(scanResult.value.mapping))
+  formData.append('rent_roll_date', scanRentRollDate.value || '')
 
   committing.value = true
   try {
@@ -556,6 +561,7 @@ async function commitRentRoll() {
       `$${Math.round(res.data.total_annual_recoveries || 0).toLocaleString()} recoveries`
     scanResult.value = null
     scanFile.value = null
+    scanRentRollDate.value = ''
     await loadReview(selectedReviewId.value!)
   } catch (e: any) {
     console.error('Commit error', e)
@@ -1236,6 +1242,28 @@ function statusClass(s: string): string {
                  the rent roll -- not a reason to delete the tenant and the abstract
                  built from its lease. Removing a tenant stays a deliberate, one-at-
                  a-time act. -->
+            <!-- ASKED HERE, while the rent roll is in front of the analyst.
+                 Without it no rent can be placed in force and the whole
+                 validation step is skipped silently -- which is exactly what
+                 happened to Market at Poplar. Requested, not enforced: a date
+                 typed wrong is worse than one supplied a moment later, and the
+                 validation step says plainly when it is missing. -->
+            <div class="map-rrd" :class="{ unset: !scanRentRollDate }">
+              <label>Rent roll date
+                <input type="date" v-model="scanRentRollDate" />
+              </label>
+              <span class="map-rrd-why">
+                <template v-if="scanRentRollDate">
+                  Rents will be validated as at {{ scanRentRollDate }}.
+                </template>
+                <template v-else>
+                  The date this rent roll speaks as of. Without it no lease rent
+                  can be placed in force, so every rent comparison on the
+                  Validation step is skipped. It can be set there later.
+                </template>
+              </span>
+            </div>
+
             <div class="map-actions">
               <button class="btn-primary" :disabled="committing || unansweredPeriods.length > 0"
                 @click="commitRentRoll">
@@ -1929,6 +1957,13 @@ function statusClass(s: string): string {
 </template>
 
 <style scoped>
+.map-rrd {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin: 10px 0; padding: 8px 12px; border-radius: 4px;
+  background: #f4f6f8; border: 1px solid #dde3ea; font-size: 13px;
+}
+.map-rrd.unset { background: #fff6e5; border-color: #f0c674; }
+.map-rrd-why { color: #7a5200; max-width: 640px; }
 .rrd-bar {
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
   margin-bottom: 1rem; padding: 8px 12px; border-radius: 4px;

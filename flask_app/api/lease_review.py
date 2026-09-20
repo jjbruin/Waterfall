@@ -366,7 +366,19 @@ def commit_rent_roll(review_id):
     The file is posted again rather than held between the two calls, so a scan that
     is never confirmed leaves nothing behind on the server.
 
-    Form fields: file, mapping (JSON).
+    Form fields: file, mapping (JSON), rent_roll_date.
+
+    THE DATE IS ASKED FOR HERE because this is the moment the analyst has the rent
+    roll in front of them, and because without it the review cannot validate
+    anything: no rent can be placed "in force at an unknown date", so every rent
+    comparison is skipped. Market at Poplar imported without one and reported 23
+    tenants whose rent "could not be determined from the lease" while holding 148
+    rent steps — two real mismatches sat invisible (Benjamin Moore 50,052 vs
+    38,038; Bombay Collierville 33,620 vs 31,671).
+
+    It is REQUESTED, not enforced: a date typed wrong is worse than one supplied a
+    moment later, and the validation screen now says plainly when it is missing and
+    lets it be set there. What the import must not do is fail to ask.
 
     Always a merge. Nothing here deletes a tenant: the leases are the authority in
     a lease review and the rent roll is what is being checked against them, so a
@@ -390,13 +402,30 @@ def commit_rent_roll(review_id):
     if not mapping.get('roles'):
         return jsonify({'error': 'mapping.roles is required'}), 400
 
+    # Parsed or refused, never guessed -- a rent roll dated by a typo is worse
+    # than one left blank, because blank announces itself and a wrong date does
+    # not.
+    rrd = (request.form.get('rent_roll_date') or '').strip()
+    if rrd:
+        import pandas as _pd
+        try:
+            rrd = _pd.to_datetime(rrd).date().isoformat()
+        except Exception:
+            return jsonify({'error': '%r is not a date.' % rrd}), 400
+
     engine = get_engine()
     ensure_lease_tables(engine)
 
     try:
         rr_df, report = rent_roll_mapping.apply_mapping(
             file.read(), file.filename, mapping)
-        result = {'status': 'merged', **merge_rent_roll_to_review(
+        if rrd:
+            from sqlalchemy import text as _text
+            with engine.begin() as _c:
+                _c.execute(_text("UPDATE lease_reviews SET rent_roll_date = :d "
+                                 "WHERE id = :i"), {'d': rrd, 'i': review_id})
+        result = {'status': 'merged', 'rent_roll_date': rrd or None,
+                  **merge_rent_roll_to_review(
             engine, review_id, rr_df,
             source_label=request.form.get('source_label', 'seller_rent_roll'),
         )}

@@ -193,6 +193,37 @@ if os.path.exists(V):
 else:
     print('  SKIP  Vue source not present')
 
+
+section('The upload ASKS for the date, so this cannot recur')
+# Jim, Sep 20 2026: "To avoid this going forward we should request that date from
+# the analyst during the upload process." Asked at the moment the analyst has the
+# rent roll in front of them -- not enforced, because a date typed wrong is worse
+# than one supplied a moment later, and the validation step now says when it is
+# missing and lets it be set there.
+_api = open(os.path.join('flask_app', 'api', 'lease_review.py'),
+            encoding='utf-8').read()
+_commit = _api[_api.index('def commit_rent_roll'):]
+_commit = _commit[:_commit.index('@lease_review_bp', 10)]
+chk('the commit accepts a rent roll date',
+    "request.form.get('rent_roll_date')" in _commit)
+chk('...parsed or refused, never guessed',
+    'is not a date' in _commit and 'to_datetime' in _commit)
+chk('...and stored on the review', 'SET rent_roll_date' in _commit)
+chk('...and reported back, so the screen can confirm it landed',
+    "'rent_roll_date': rrd or None" in _commit)
+
+if os.path.exists(V):
+    chk('the upload panel asks for it',
+        'scanRentRollDate' in v and 'map-rrd' in v)
+    chk('...sends it with the commit',
+        "formData.append('rent_roll_date'" in v)
+    chk('...says what a blank one costs',
+        'every rent comparison on the' in v)
+    # Requested, not blocking: the Import button must not depend on it.
+    chk('...but does NOT block the import on it',
+        'committing || unansweredPeriods.length > 0' in v)
+
+
 print('\n%d passed, %d failed' % (len(OK), len(BAD)))
 if BAD:
     for b in BAD:
