@@ -1,4 +1,107 @@
-# Session Handoff — through Sep 19 2026 (v508 live)
+# Session Handoff — through Sep 20 2026 (v512 live)
+
+## Sep 20 2026 — THE LEASE CORPUS, and a regression the diff caught
+
+**`v509` = `49d2120`, `v510` = `a12f98a`, `v511` = `07a83ed`, `v512` = `e473a07`.**
+Open items: **`open_items.md` §9.2** (a re-extraction is RUNNING as this is written)
+and **§9.8** (the CFO's `ITEM = 1`, still needing Jim's call).
+
+### Read this first: a re-extraction may still be in flight
+
+At the time of writing, a full re-extraction of all 419 term-bearing lease documents
+is running detached on production (`/app/reex.py`, log `/app/reex.log`, revision
+`v512`). It is resumable — anything finished is marked `extracted` and is not
+repeated — so if it died, re-launching is safe. **When it completes, the
+consolidation must be re-run and DIFFED**, which is the outstanding half of §9.2.
+`scripts/` holds no runner for it; the script is in the session scratch and is
+reproduced in shape by `open_items.md` §9.2.
+
+### The lease work, in the order it actually happened
+
+It started as Jim asking two unrelated UI things and turned into four deploys,
+because each measurement exposed the next thing.
+
+**`v509` — the input column folds away.** One `CollapsiblePanel` on the five pages
+with a genuine inputs-left / analysis-right split. The lesson worth keeping: **a
+GRID parent sets the column track, so a child narrowing itself reclaims nothing** —
+the arrow works, the panel goes, and the empty space stays. Each page states its own
+collapsed track and the guardrail asserts it per page. Also in `v509`: the GL grid
+hides four columns and clips Description, **hidden on screen but kept in the
+export**.
+
+**The CFO's `ITEM = 1` was refused, with figures.** `ITEM` is a LINE NUMBER, not a
+debit/credit side — 13,493 distinct values across 79,074 rows. Filtering to it keeps
+8.4% of rows and 5.5% of the money and takes the on-screen net from 10,797 to
+2,102,385,065. Nothing is duplicated (0 duplicate rows on any key; all 8,809
+open-period entries balance). §9.8, awaiting Jim.
+
+**`v510` — the classifier read the FOLDER.** `classify_document` matched
+`DOC_TYPE_PATTERNS` against the whole stored path, and every document sits under
+`Tenant Leases/`, so the `lease` pattern matched the folder and short-circuited. 409
+of 530 typed `Original Lease`; only 77 had "lease" in the file name. Because
+extraction is gated on the type, 108 certificates of insurance were being sent to
+the extraction API as leases and layered into tenant terms.
+
+**And the obvious fix would have been worse than the bug.** Correcting the classifier
+ALONE pushes 328 documents out of the `('Original Lease','Amendment')` gate and
+strips the rent commencement date from 16 of the 38 tenants that have one — 15 of
+those sources being Commencement Letters. So the gate widened to `is_term_bearing`,
+with `NON_TERM_TYPES = {'COI'}` **measured** against all 500 extracted documents
+rather than chosen.
+
+**`v511` — everything after the base lease is layered in DATE order.** Found by
+running the re-consolidation and diffing it. `order_lease_documents` returned
+`originals + amendments + others`, applying every non-amendment AFTER every
+amendment — invisible while `others` was nearly empty, and exposed the moment `v510`
+put 147 documents in it. Three tenants moved the wrong way; Style Studio's expiry
+went 2031 → 2026 because a 2021 Acceptance of Premises overwrote a 2026 First
+Amendment.
+
+**The re-consolidation then landed properly**: 70 of 70, 392 documents applied, 9
+lease expirations and 5 rent commencements corrected, coverage unchanged on every
+field, `lease_tenants.rent_commencement` populated 0 → 37, and a second pass moving
+nothing at all.
+
+**`v512` — a scanned lease is read from the PDF.** Jim: "is there anything we can do
+to extract from the pdfs that produce no text extractions? I'm sure it will be a
+common problem when scanning bulk files of pdfs." **219 of the 419 term-bearing
+documents yield under 200 characters of text**, including 47 amendments and 28
+original leases — their pages are images, so the prompt was being filled with an
+empty string and the document contributed nothing, silently.
+
+The API reads a PDF as images, so below `SCAN_TEXT_THRESHOLD` the PDF itself goes as
+a document block. **No OCR stack — no Tesseract, no poppler, nothing new in the
+image.** Jim: "I'm not price sensitive for this task. build it with the best model
+suites for all scenarios", so both routes moved from a date-pinned Haiku to
+`claude-opus-5`.
+
+Verified on a real scan rather than a fixture: the 1987 Sam's Club short form lease,
+5 pages, **4 characters of extractable text**, returned 10 populated fields
+including 103,060 SF and six 5-year renewal options.
+
+### Three things that would have broken quietly on the new model
+
+Worth carrying to any other call site that moves to Opus:
+
+- **`content[0].text` raises.** Thinking is ON by default, so the first block is a
+  thinking block. Join the `type == "text"` blocks instead. The guardrail's stub
+  returns a thinking block FIRST so a reintroduced indexed read fails.
+- **A refusal returns HTTP 200 with no text.** Check `stop_reason` BEFORE reading
+  content, and report it as a refusal rather than as a parse failure.
+- **Base64 must carry no newlines.** `b64encode` adds none; `encodebytes` would.
+
+### The method note, and it is the one to keep
+
+**A check against a field that does not exist returns the same answer as a clean
+bill of health.** Sizing how many stored consolidations were stale, I counted the
+ones carrying a now-excluded document in `_documents_applied` and got **0** — which
+reads as "nothing to do". The field was added in `v503` and is absent from all 70
+records, so the comparison could only ever return zero. Counting how many rows
+*have* the field first is one line and is what exposed it.
+
+And: **the diff is what catches your own mistake.** "70 of 70, zero errors" was true
+and useless; the before/after comparison is what surfaced the `v511` ordering
+regression.
 
 ## Sep 19 2026 — A STATEMENT WITH NO ACCOUNT IS HELD, and the June load still has not happened
 

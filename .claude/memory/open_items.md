@@ -768,7 +768,7 @@ non-vacuous against each defect.
 production. The rule is general (a certificate of insurance is not a lease
 anywhere) but the evidence is one roster.
 
-### 9.2 Consolidation RE-RUN at `v511`; re-EXTRACTION still outstanding
+### 9.2 Consolidation RE-RUN at `v511`; re-EXTRACTION RUNNING at `v512`
 
 Was "the extraction has not been re-run since the prompt changed". Measured at
 `v510` and it is broader than that.
@@ -813,14 +813,45 @@ Several tenants had been showing terms that expired years ago and now show live
 ones: Office Depot 2022-01-31 -> 2027-01-31, DSW 2024-01-31 -> 2029-01-31,
 SalonCentric 2024-09-30 -> 2029-09-30, Peak Potential 2019-01-30 -> 2029-01-31.
 
-**STILL OUTSTANDING: re-EXTRACTION.** No rent step carries `period_start_month`
-(0 of 346) — those arrive only from an extraction run after `v503`, and that IS
-an API spend. The commencement dates are now in place for when one happens.
+**RE-EXTRACTION IS RUNNING** (launched Sep 20 2026 on Jim's instruction, on
+revision `v512`). Detached: `/app/reex.py`, log `/app/reex.log`. **Resumable** —
+anything finished is marked `extracted` and is not repeated — so if it died,
+re-launching is safe and cheap.
 
-**Also seen, and not an ordering problem:** Style Studio's `suite` is now
+What it does, and why it is not just "run the button": `extract_all_documents`
+selects `extraction_status IN ('pending','text_extracted')`, so it SKIPS anything
+already extracted — running it untouched processes ~26 documents, not the 419
+whose extractions predate the `v503` prompt. The runner therefore resets the
+term-bearing extracted documents to `text_extracted` first (which keeps
+`extracted_text`, so no PDF is parsed twice), then extracts, then consolidates.
+COIs are deliberately not reset.
+
+Scale, measured before launching: 419 documents, 219 of them scans going through
+the `v512` PDF route, on `claude-opus-5`. ~37s per document observed, so 3-5
+hours; roughly $50, which Jim approved explicitly ("I'm not price sensitive for
+this task").
+
+**WHEN IT FINISHES — this is the outstanding work:**
+
+1. Re-run `consolidate_tenant_extractions` for all 70 tenants (no API calls).
+2. **Diff the terms before against after.** Snapshot `extraction_json` and
+   `rent_commencement` per tenant first. The first consolidation run is what
+   caught the `v511` ordering regression; a success count catches nothing.
+3. Run it a SECOND time and assert nothing moves — convergence is the proof it
+   settled rather than oscillating.
+
+Two things to check specifically in that diff: the 219 scans should ADD coverage
+(they contributed nothing before, so `lease_expiration` / `rent_commencement` /
+`square_feet` counts should rise, not merely shuffle), and rent steps stated as
+"Months 1-12" should appear for the first time — `period_start_month` was 0 of
+346 before this run, since it only arrives from an extraction under the `v503`
+prompt.
+
+**Also seen, and not an ordering problem:** Style Studio's `suite` was
 `9623-F East Independence Blvd., Matthews, NC 28105` — an address the extractor
 put in the suite field. Extraction quality, cosmetic (suite feeds no
-calculation), worth a look when the re-extraction runs.
+calculation). Worth re-checking after the run above, which is on a much stronger
+model than the one that produced it.
 
 `period_start_month` / `period_end_month` only arrive from extractions run AFTER
 `v503`. Existing rows carry the period as text in `effective_date`, which
