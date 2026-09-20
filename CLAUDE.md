@@ -253,6 +253,53 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v511` = `07a83ed` (EVERYTHING AFTER THE BASE LEASE IS LAYERED IN DATE
+    ORDER. Found by running the re-consolidation Jim asked for AND DIFFING IT —
+    the diff is the only reason this was caught, and the regression was mine.
+    `order_lease_documents` returned `originals + ordered_am + others`, so every
+    non-amendment applied AFTER every amendment. It was invisible while the
+    classifier typed nearly everything `Original Lease` and `others` was almost
+    empty; correcting the classifier at `v510` put 147 documents into it and
+    three tenants moved the WRONG way at once — Style Studio's expiry
+    2031-05-31 -> 2026-05-31 (a 2021 Acceptance of Premises overwriting the 2026
+    First Amendment that extended the term five years), Green Zone's
+    2026-12-31 -> 2025-12-31, and Appliances 4 Less's suite N625 -> a misread
+    "G" that beat the lease AND three COIs all saying N625.
+    Now: the original lease is the base and everything after it is layered in
+    the order it was executed. UNDATED documents sort last with amendments among
+    them by number, so the case this ordering was built for still holds — a
+    folder of "First / Second / Third / Fourth Amendment.pdf" carrying no dates
+    applies 1,2,3,4 with the Fourth governing. On an equal date the amendment
+    wins, since a non-amendment carries no ordinal.
+    THE RE-CONSOLIDATION IS WHAT THIS WAS FOR, and it is done: 70 of 70 tenants,
+    zero errors, 392 documents applied — matching the 392 predicted before any
+    of it was built. It re-layers the EXISTING per-document extractions and
+    makes no API calls, so it cost nothing and is re-runnable.
+    WHAT MOVED, and it is the shape you would expect once amendments govern:
+    nine lease expirations, five rent commencements, two suites, one lease
+    commencement, one escalation. Several tenants were showing terms that had
+    expired years ago and now show live ones — Office Depot 2022-01-31 ->
+    2027-01-31, DSW 2024-01-31 -> 2029-01-31, SalonCentric 2024-09-30 ->
+    2029-09-30, Peak Potential 2019-01-30 -> 2029-01-31, Firehouse Subs
+    2013-01-31 -> 2023-01-31.
+    COVERAGE HELD, which is the check that the exclusions cost nothing:
+    rent_commencement 38 -> 38, lease_expiration 45 -> 45, square_feet 43 -> 43,
+    escalation 45 -> 45, security_deposit 31 -> 31, suite 69 -> 69,
+    lease_commencement 35 -> 34 (the one lost came FROM a COI).
+    AND `lease_tenants.rent_commencement` IS POPULATED FOR THE FIRST TIME — 0 ->
+    37. That column is written only by consolidation, which had not run since
+    `v503` added it, so the month-of-term rent-step dating has had no date to
+    work against on production until now.
+    CONVERGED: a second full pass leaves 70 of 70 blobs byte-identical and moves
+    no field, which is the proof it is settled rather than oscillating.
+    Guardrail `lease_doc_type_check.py` 37 -> 44, both directions, proved
+    non-vacuous by restoring the old ordering — which reproduces the production
+    symptom exactly, `[1, 4, 3, 2, 5]`, the amendment applied second with the
+    2021 documents after it. `lease_terms_check` still 129/129, so `v503` is
+    intact.
+    STILL OPEN: no rent step carries `period_start_month` yet (0 of 346), since
+    those arrive only from an extraction run after `v503`. The dates are now in
+    place for when one happens. `open_items.md` §9.2.)
   - `v510` = `a12f98a` (A DOCUMENT IS TYPED BY ITS FILE NAME, and the documents
     that carry terms are kept. Jim, Sep 20 2026: "do both changes" — both,
     because either alone does damage.
@@ -1993,9 +2040,21 @@ Live at `v510`. New business, Sep 19 2026, via Jim.
 - **The same function gates extraction AND filters the consolidation.** It must
   do both: a document extracted under the old classifier still carries its
   `extraction_json`, which is the consolidation's admission ticket.
-- **Every stored consolidated record predates `v503`** — none contains
-  `_documents_applied` — and consolidation only runs at the end of an
-  extraction, so nothing refreshes by itself. See `open_items.md` §9.2.
+- **THE BASE LEASE IS FIRST; EVERYTHING AFTER IT IS LAYERED BY DATE** (`v511`).
+  The ordering used to return `originals + amendments + others`, applying every
+  non-amendment AFTER every amendment — so a 2021 Acceptance of Premises
+  overwrote a 2026 First Amendment. Undated documents sort last, amendments
+  among them by number, so a folder of undated numbered amendments still
+  applies 1,2,3,4. On an equal date the amendment wins.
+- **The 70 stored consolidations were re-run at `v511`** — 392 documents
+  applied, coverage unchanged on every field, nine expirations and five rent
+  commencements corrected, and `lease_tenants.rent_commencement` populated for
+  the first time (0 -> 37). A second pass moves nothing, which is the
+  convergence proof. Re-consolidation makes NO API calls; it re-layers the
+  existing per-document extractions.
+- **Re-EXTRACTION is still outstanding** — no rent step carries
+  `period_start_month` (0 of 346), since those only arrive from an extraction
+  run after `v503`. See `open_items.md` §9.2.
 - Guardrails: `scripts/lease_terms_check.py` (129), which drives the shipping
   paths against a real database including an EXISTING schema migrated with rows
   in it, and `scripts/lease_doc_type_check.py` (37).

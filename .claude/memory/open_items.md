@@ -768,7 +768,7 @@ non-vacuous against each defect.
 production. The rule is general (a certificate of insurance is not a lease
 anywhere) but the evidence is one roster.
 
-### 9.2 Every consolidated tenant record predates BOTH fixes — NEEDS A RE-RUN (Jim)
+### 9.2 Consolidation RE-RUN at `v511`; re-EXTRACTION still outstanding
 
 Was "the extraction has not been re-run since the prompt changed". Measured at
 `v510` and it is broader than that.
@@ -791,10 +791,36 @@ stored blobs carried a now-excluded document in `_documents_applied` and got
 does not exist returns the same answer as a clean bill of health. The follow-up
 counted the blobs that HAVE the field first, which is what exposed it.
 
-**Owner: Jim.** Re-running extraction for the review is an API spend and rewrites
-70 tenants' terms, so it is his call. When it runs: snapshot
-`lease_tenants.extraction_json` and `rent_commencement` first, then diff before
-against after rather than assuming the new terms are better.
+**RE-CONSOLIDATION IS DONE** (`v511`, Sep 20 2026, on Jim's instruction). It
+re-layers the existing per-document extractions and makes NO API calls, so it
+cost nothing and is re-runnable. 70 of 70 tenants, zero errors, 392 documents
+applied — the figure predicted before any of it was built.
+
+The diff earned its keep: the first pass moved three tenants the WRONG way and
+exposed an ordering defect introduced by the `v510` classifier fix. See `v511`
+in the deploy history. After the ordering fix:
+
+| | |
+|---|---|
+| lease expirations corrected | 9 |
+| rent commencements corrected | 5 |
+| suites / lease commencements / escalations | 2 / 1 / 1 |
+| `lease_tenants.rent_commencement` populated | **0 -> 37** |
+| coverage lost on any field | **none** (lease_commencement 35 -> 34, and that one came from a COI) |
+| second full pass | 70 of 70 blobs identical, nothing moved — converged |
+
+Several tenants had been showing terms that expired years ago and now show live
+ones: Office Depot 2022-01-31 -> 2027-01-31, DSW 2024-01-31 -> 2029-01-31,
+SalonCentric 2024-09-30 -> 2029-09-30, Peak Potential 2019-01-30 -> 2029-01-31.
+
+**STILL OUTSTANDING: re-EXTRACTION.** No rent step carries `period_start_month`
+(0 of 346) — those arrive only from an extraction run after `v503`, and that IS
+an API spend. The commencement dates are now in place for when one happens.
+
+**Also seen, and not an ordering problem:** Style Studio's `suite` is now
+`9623-F East Independence Blvd., Matthews, NC 28105` — an address the extractor
+put in the suite field. Extraction quality, cosmetic (suite feeds no
+calculation), worth a look when the re-extraction runs.
 
 `period_start_month` / `period_end_month` only arrive from extractions run AFTER
 `v503`. Existing rows carry the period as text in `effective_date`, which
