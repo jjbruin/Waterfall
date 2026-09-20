@@ -3699,9 +3699,22 @@ def validate_rent_roll(
             # A tenant whose rent cannot be placed on the calendar is a FINDING about
             # the lease, recorded as such rather than left as a silent pass.
             if steps and not in_force:
-                reason = step_basis or (
-                    '; '.join(step_notes) if step_notes
-                    else 'No rent step could be dated from this lease.')
+                # THE REASON MUST NAME THE RIGHT THING. With no rent roll date on
+                # the review, NO step can be in force -- "in force at an unknown
+                # date" is not a question -- and that is a property of the REVIEW,
+                # not of the lease. Reporting it as "could not be determined from
+                # the lease" sent a reader looking for missing lease data that was
+                # not missing: Market at Poplar had 148 rent steps and every one of
+                # its 23 tenants reported this.
+                if not rr_date:
+                    reason = ('This review has no rent roll date set, so no rent '
+                              'can be placed in force. The lease steps are present '
+                              '-- set the date the rent roll speaks as of and '
+                              're-run validation.')
+                else:
+                    reason = step_basis or (
+                        '; '.join(step_notes) if step_notes
+                        else 'No rent step could be dated from this lease.')
                 conn.execute(text("""
                     INSERT INTO lease_validation
                         (tenant_id, field_name, source_type,
@@ -3711,9 +3724,14 @@ def validate_rent_roll(
                 """), {
                     'tid': tenant_id,
                     'sv': str(rr_annual) if rr_annual is not None else None,
-                    'notes': ('The rent in force at the rent roll date could not be '
-                              'determined from the lease, so the rent figures below '
-                              'are not validated. ' + reason),
+                    # The WHOLE sentence has to be right, not just the reason
+                    # appended to it: the fixed prefix said "could not be
+                    # determined from the lease" even when the lease was complete
+                    # and the review simply had no date.
+                    'notes': (reason if not rr_date else
+                              ('The rent in force at the rent roll date could not '
+                               'be determined from the lease, so the rent figures '
+                               'below are not validated. ' + reason)),
                 })
 
             # Get extraction JSON for date/SF comparisons

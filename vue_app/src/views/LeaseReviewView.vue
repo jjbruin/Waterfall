@@ -32,6 +32,65 @@ const validation = ref<any[]>([])
 // Which of the four secondary panels failed to load, so a blank panel says why
 // instead of looking like "there is nothing here".
 const panelErrors = ref<string[]>([])
+
+// Per tenant: what the RENT ROLL says, what the LEASE says, and the documents
+// behind it in applied order. A separate call so `/validation` keeps its shape.
+const valCtx = ref<any>({ rent_roll_date: null, tenants: {} })
+const rentRollDate = ref<string>('')
+const savingRRD = ref(false)
+
+async function loadValidationContext(id: number) {
+  try {
+    const { data } = await api.get(`/api/lease-review/reviews/${id}/validation-context`)
+    valCtx.value = data
+    rentRollDate.value = data.rent_roll_date || ''
+  } catch {
+    valCtx.value = { rent_roll_date: null, tenants: {} }
+  }
+}
+
+async function saveRentRollDate() {
+  savingRRD.value = true
+  try {
+    const { data } = await api.put(
+      `/api/lease-review/reviews/${selectedReviewId.value}/rent-roll-date`,
+      { rent_roll_date: rentRollDate.value })
+    valCtx.value.rent_roll_date = data.rent_roll_date
+    // Setting the date is only half of it -- nothing revalidates by itself, and
+    // leaving the old findings on screen would read as "the date did not help".
+    await runValidation()
+  } catch (e: any) {
+    alert(e.response?.data?.error || 'Could not save the rent roll date')
+  } finally { savingRRD.value = false }
+}
+
+// Jim, Sep 20 2026: dollars with commas, no decimals.
+function money0(v: any) {
+  const n = typeof v === 'number' ? v : parseFloat(v)
+  if (v === null || v === undefined || v === '' || Number.isNaN(n)) return '\u2014'
+  return '$' + Math.round(n).toLocaleString('en-US')
+}
+function num0(v: any) {
+  const n = typeof v === 'number' ? v : parseFloat(v)
+  if (v === null || v === undefined || v === '' || Number.isNaN(n)) return '\u2014'
+  return Math.round(n).toLocaleString('en-US')
+}
+function psf(rent: any, sf: any) {
+  const r = typeof rent === 'number' ? rent : parseFloat(rent)
+  const f = typeof sf === 'number' ? sf : parseFloat(sf)
+  if (!r || !f || Number.isNaN(r) || Number.isNaN(f)) return '\u2014'
+  return '$' + (r / f).toFixed(2)
+}
+function ctxFor(tenantName: string) {
+  const t: any = Object.values(valCtx.value.tenants || {})
+    .find((x: any) => x.tenant === tenantName)
+  return t || null
+}
+function docUrl(id: number) {
+  const tk = localStorage.getItem('token') || ''
+  return `/api/lease-review/reviews/${selectedReviewId.value}`
+    + `/documents/${id}/view?token=${encodeURIComponent(tk)}`
+}
 const loading = ref(false)
 const expandedTenant = ref<number | null>(null)
 const tenantDocs = ref<any[]>([])
@@ -183,6 +242,7 @@ async function loadReview(id: number) {
       scenarios.value = scenRes.status === 'fulfilled'
         ? (scenRes.value.data.scenarios || []) : []
       validation.value = valRes.status === 'fulfilled' ? valRes.value.data : []
+      await loadValidationContext(id)
     } else {
       expirations.value = null
       cotenancy.value = null
@@ -842,6 +902,7 @@ async function resetExtraction() {
 
 // Run validation
 async function runValidation() {
+  // (context reloads with it, so the figures and the findings cannot disagree)
   if (!selectedReviewId.value) return
   validating.value = true
   try {
@@ -1612,6 +1673,27 @@ function statusClass(s: string): string {
         </div>
         <p class="subtitle">Compare seller rent roll vs AI-extracted lease terms vs Argus (if provided). Flags matches and mismatches.</p>
 
+        <!-- WITHOUT THIS DATE NO RENT CAN BE PLACED IN FORCE, so every rent
+             comparison is skipped and the page looks like the leases held
+             nothing. It was settable only when a review was created and had no
+             control at all. -->
+        <div class="rrd-bar" :class="{ missing: !valCtx.rent_roll_date }">
+          <label>Rent roll date
+            <input type="date" v-model="rentRollDate" />
+          </label>
+          <button class="btn-secondary" :disabled="savingRRD || !rentRollDate"
+                  @click="saveRentRollDate">
+            {{ savingRRD ? 'Saving…' : 'Save & re-validate' }}
+          </button>
+          <span v-if="!valCtx.rent_roll_date" class="rrd-why">
+            No rent roll date is set, so no lease rent can be placed in force —
+            every rent comparison below is skipped until it is.
+          </span>
+          <span v-else class="rrd-why ok">
+            Rents are compared as at {{ valCtx.rent_roll_date }}.
+          </span>
+        </div>
+
         <button class="btn-primary" @click="runValidation" :disabled="validating" style="margin-bottom: 1rem">
           {{ validating ? 'Validating...' : 'Run Validation' }}
         </button>
@@ -1635,16 +1717,36 @@ function statusClass(s: string): string {
           <div class="table-scroll">
             <table class="data-table">
               <thead>
-                <tr><th>Tenant</th><th>Suite</th><th class="r">Rent Roll</th><th class="r">Lease</th><th class="c">Status</th><th>Notes</th></tr>
+                <tr>
+                  <th>Tenant</th><th>Suite</th>
+                  <th class="r">RR SF</th><th class="r">RR Rent</th><th class="r">RR $/SF</th>
+                  <th class="r">Lease SF</th><th class="r">Lease Rent</th><th class="r">Lease $/SF</th>
+                  <th class="c">Status</th><th>Documents applied, in order</th>
+                </tr>
               </thead>
               <tbody>
                 <tr v-for="v in annualRentValidation" :key="v.tenant + v.suite" :class="statusClass(v.status)">
                   <td>{{ v.tenant }}</td>
                   <td>{{ v.suite }}</td>
-                  <td class="r">{{ v.seller_value ? fmtCurrency(parseFloat(v.seller_value)) : '\u2014' }}</td>
-                  <td class="r">{{ v.lease_value ? fmtCurrency(parseFloat(v.lease_value)) : '\u2014' }}</td>
+                  <td class="r">{{ num0(ctxFor(v.tenant)?.rent_roll?.square_feet) }}</td>
+                  <td class="r">{{ money0(v.seller_value) }}</td>
+                  <td class="r">{{ psf(v.seller_value, ctxFor(v.tenant)?.rent_roll?.square_feet) }}</td>
+                  <td class="r">{{ num0(ctxFor(v.tenant)?.lease?.square_feet) }}</td>
+                  <td class="r">{{ money0(v.lease_value) }}</td>
+                  <td class="r">{{ psf(v.lease_value, ctxFor(v.tenant)?.lease?.square_feet) }}</td>
                   <td class="c"><span :class="'badge badge-' + v.status">{{ v.status }}</span></td>
-                  <td class="notes">{{ v.notes || '' }}</td>
+                  <td class="docs-cell">
+                    <template v-for="(d, di) in (ctxFor(v.tenant)?.documents || [])" :key="di">
+                      <a v-if="d.has_file && d.id" :href="docUrl(d.id)" target="_blank"
+                         rel="noopener" class="doc-link" :class="{ unapplied: d.applied === false }"
+                         :title="(d.doc_type || '') + (d.applied === false ? ' — not applied' : '')"
+                      >{{ di + 1 }}. {{ d.filename }}</a>
+                      <span v-else class="doc-link none"
+                            :title="d.applied === false ? 'not applied' : ''"
+                      >{{ di + 1 }}. {{ d.filename }}</span>
+                    </template>
+                    <span v-if="!(ctxFor(v.tenant)?.documents || []).length" class="muted">—</span>
+                  </td>
                 </tr>
               </tbody>
             </table>
@@ -1827,6 +1929,21 @@ function statusClass(s: string): string {
 </template>
 
 <style scoped>
+.rrd-bar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin-bottom: 1rem; padding: 8px 12px; border-radius: 4px;
+  background: #f4f6f8; border: 1px solid #dde3ea; font-size: 13px;
+}
+.rrd-bar.missing { background: #fff6e5; border-color: #f0c674; }
+.rrd-why { color: #7a5200; }
+.rrd-why.ok { color: #4a5568; }
+.docs-cell { max-width: 320px; }
+.doc-link {
+  display: block; font-size: 11px; line-height: 1.5;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.doc-link.unapplied { opacity: 0.55; font-style: italic; }
+.doc-link.none { color: var(--color-text-secondary, #718096); }
 .panel-error {
   margin: 0 0 1rem; padding: 8px 12px; border-radius: 4px;
   background: #fff6e5; border: 1px solid #f0c674; color: #7a5200;

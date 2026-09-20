@@ -745,6 +745,123 @@ def get_validation(review_id):
     } for r in rows])
 
 
+@lease_review_bp.route('/reviews/<int:review_id>/rent-roll-date', methods=['PUT'])
+@login_required
+def set_rent_roll_date(review_id):
+    """The date the rent roll speaks as of.
+
+    Validation cannot place a rent in force without it -- "the rent in force at
+    an unknown date" is not a question -- so every rent comparison is skipped and
+    the screen shows nothing. It was settable only in the payload that CREATED a
+    review and had no UI at all, so a review that arrived without one could never
+    be given one.
+    """
+    import pandas as pd
+    from sqlalchemy import text
+    body = request.get_json(silent=True) or {}
+    raw = (body.get('rent_roll_date') or '').strip()
+    if raw:
+        # Parsed or refused, never guessed -- the same rule the deadlines follow.
+        try:
+            raw = pd.to_datetime(raw).date().isoformat()
+        except Exception:
+            return jsonify({'error': '%r is not a date.' % body.get('rent_roll_date')}), 400
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(text(
+            "UPDATE lease_reviews SET rent_roll_date = :d WHERE id = :i"),
+            {'d': raw or None, 'i': review_id})
+    return jsonify({'rent_roll_date': raw or None})
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/validation-context', methods=['GET'])
+@login_required
+def get_validation_context(review_id):
+    """Per tenant: what the RENT ROLL says, what the LEASE says, and the documents
+    behind it in the order they were applied.
+
+    A separate endpoint rather than a wider `/validation`, so that payload keeps
+    its shape (a list) and nothing reading it has to change.
+
+    Jim, Sep 20 2026: "add the sf and $/sf of the lease per the rent roll ... Be
+    sure to add the sf and $/sf from the lease as well", and links to the
+    documents "in order of how they are applied".
+    """
+    import json
+    from sqlalchemy import text
+    engine = get_engine()
+    out = {}
+    with engine.connect() as conn:
+        rrd = conn.execute(text(
+            "SELECT rent_roll_date FROM lease_reviews WHERE id = :i"),
+            {'i': review_id}).scalar()
+
+        tenants = conn.execute(text("""
+            SELECT id, tenant_name, suite, square_feet, annual_rent, rent_per_sf,
+                   extraction_json
+            FROM lease_tenants
+            WHERE review_id = :rid AND is_vacant = false
+              AND COALESCE(tenant_status, 'active') = 'active'
+            ORDER BY tenant_name
+        """), {'rid': review_id}).fetchall()
+
+        # id -> filename, so the applied list (which stores PATHS) can be turned
+        # into links. Keyed on the stored filename exactly as consolidation wrote
+        # it, because that is what `_documents_applied` carries.
+        docs = conn.execute(text("""
+            SELECT id, tenant_id, filename, doc_type,
+                   CASE WHEN file_data IS NULL THEN 0 ELSE 1 END
+            FROM lease_documents WHERE review_id = :rid
+        """), {'rid': review_id}).fetchall()
+
+    by_tenant = {}
+    for did, tid, fn, dt, has in docs:
+        by_tenant.setdefault(tid, {})[fn] = {
+            'id': did, 'filename': fn, 'doc_type': dt, 'has_file': bool(has),
+        }
+
+    for t in tenants:
+        tid, name, suite, rr_sf, rr_annual, rr_rpsf = t[0], t[1], t[2], t[3], t[4], t[5]
+        ext = {}
+        if t[6]:
+            try:
+                ext = json.loads(t[6]) if isinstance(t[6], str) else t[6]
+            except (json.JSONDecodeError, TypeError):
+                ext = {}
+
+        lease_sf = ext.get('square_feet')
+        # The applied order IS the answer to "in order of how they are applied" --
+        # consolidation records it, so it is read rather than re-derived.
+        applied, seen = [], by_tenant.get(tid, {})
+        for p in (ext.get('_documents_applied') or []):
+            d = seen.get(p)
+            applied.append(d if d else {
+                'id': None, 'filename': str(p).rsplit('/', 1)[-1],
+                'doc_type': None, 'has_file': False,
+            })
+        # Anything held for this tenant that consolidation did NOT apply is listed
+        # after, marked, rather than hidden -- a COI is a real document and the
+        # reader should see it was excluded, not wonder where it went.
+        for fn, d in seen.items():
+            if fn not in (ext.get('_documents_applied') or []):
+                applied.append({**d, 'applied': False})
+
+        out[str(tid)] = {
+            'tenant_id': tid, 'tenant': name, 'suite': suite,
+            'rent_roll': {'square_feet': rr_sf, 'annual_rent': rr_annual,
+                          'rent_per_sf': rr_rpsf},
+            'lease': {'square_feet': lease_sf,
+                      'lease_expiration': ext.get('lease_expiration'),
+                      'rent_commencement': ext.get('rent_commencement')},
+            'documents': [{'applied': True, **d} if 'applied' not in d else d
+                          for d in applied],
+            'governing': (ext.get('_governing_document') or '').rsplit('/', 1)[-1]
+            or None,
+        }
+
+    return jsonify({'rent_roll_date': rrd, 'tenants': out})
+
+
 @lease_review_bp.route('/reviews/<int:review_id>/tenants/<int:tenant_id>/documents', methods=['GET'])
 @login_required
 def get_tenant_documents(review_id, tenant_id):
