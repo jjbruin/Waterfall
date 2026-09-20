@@ -253,6 +253,86 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v514` = `42d053d` (A VALIDATION SCREEN WITH ROWS IN THE DATABASE STOPS
+    RENDERING BLANK. Jim asked whether to relocate the Lease Risk validation
+    screen into Lease Review because "right now that page is blank". NO — the
+    screen was complete and its data existed. Windsor Square rendered 175 rows
+    and always had; Market at Poplar had 23 rows in the database and showed
+    nothing, which is why this looked like a MISSING screen rather than a broken
+    one. THREE THINGS STACKED UP.
+    (1) THE NaN THAT WALKED PAST THE RANGE GUARD. Five rows in Market at Poplar
+    carry the literal string `'NaN'` as `lease_end` — the building banner, two
+    subtotal rows and two vacant suites, the same debris `v501` taught the
+    roster to hide. `pd.to_datetime('NaN')` returns NaT WITHOUT RAISING (pandas
+    reads the string as a null token), so the `try/except` never fired, `.year`
+    was `nan`, and BOTH range comparisons were False — NaN never compares — so
+    the row sailed past the guard into `yearly[nan]` and raised `KeyError: nan`,
+    which the endpoint returned as HTTP 500 `{"error":"nan"}`.
+    FIXED TWICE OVER, because each covers what the other cannot: the query
+    filters `COALESCE(tenant_status,'active')='active'` — the idiom every other
+    consumer uses, and the right answer for the debris — AND an explicit
+    `pd.isna(exp_year)` guard catches an ACTIVE tenant whose date will not
+    parse, which the status filter would let straight through. `v501` taught the
+    roster and the headline totals to respect the reading; the histogram was
+    simply never updated, one screen over.
+    (2) ONE FAILING PANEL BLANKED THREE OTHERS. `Promise.all` rejects on the
+    FIRST failure and `validation.value` was the LAST assignment in the block,
+    so the 500 meant it was never set at all. `allSettled` now, each panel
+    assigned from its own result, and scenarios/validation assigned OUTSIDE the
+    cotenancy try so shaping that payload cannot take them down either.
+    (3) THE FAILURE WAS DISMISSED. The catch logged "Secondary data load error
+    (expected for new reviews)", so it read as normal. A panel that could not
+    load now says so on screen.
+    Guardrail `lease_validation_blank_check.py` (15) against a real database in
+    the exact production shape — one real tenant, three debris rows read as
+    `no_lease`, and one ACTIVE tenant with an unparseable date so the status
+    filter ALONE cannot pass it. Both directions: swallowing the exception and
+    returning an empty histogram would satisfy "the debris is excluded" on its
+    own, so five rows go in and exactly one is expected out. Proved non-vacuous
+    by restoring each defect — the original histogram fails with detail `[nan]`,
+    the same error the endpoint returned, and `Promise.all` fails its own check.
+    Production after deploy: review 3's expirations 500 -> 200 carrying real
+    data (2027, annual_rent 435,582), all four endpoints 200 on both reviews,
+    validation returning its 23 rows. Review 2 unchanged throughout, which is
+    the check that the fix cost nothing.
+    A CORRECTION RECORDED WITH IT: the first version of this guardrail asserted
+    on a `tenants` key that `yearly_data` does not carry. It failed loudly
+    rather than passing vacuously, but it is the same trap as the
+    `_documents_applied` count the same day — assert on a shape you have
+    verified, not one you assumed.)
+  - `v513` = `b3bebdf` (THE GL / IA GRID SORTS AND FILTERS ON ANY COLUMN. Jim:
+    "lets make it easy. take the query results that we are currently receiving
+    and allow the user to filter or sort by any of the column headers."
+    He asked for this after two candidate filters were measured and REFUSED.
+    `ITEM = 1` is a LINE NUMBER, not a side — 13,493 distinct values, keeping
+    8.4% of rows and taking the net to $2.1bn. The SIGN of `AMT` was his own
+    objection and it is right: it keeps the expense on an expense entry but
+    keeps the CASH and drops the INCOME on a revenue entry, because sign tracks
+    the ACCOUNT'S NATURE, not which line is the substance. Cash - PNC appears
+    2,786 times on the debit side and 4,360 on the credit side, so no sign rule
+    separates offset from substance. Which line is the 'other side' is a
+    property of the account (`gl_accounts.TYPE`: B 21,574 rows / I 14,970 /
+    C 7,538 cash), so rather than bake in one opinionated default the grid is
+    sliceable and the reader decides.
+    FOUR THINGS THAT WOULD HAVE BEEN WRONG QUIETLY. The body must walk the
+    FILTERED rows — left on `result.rows` the boxes accept text and the count
+    moves while the table does not, and the guardrail fails on exactly that
+    injection. `Array.sort` MUTATES, so sorting in place destroys the server's
+    order permanently and clearing the sort could not restore it; copied first,
+    and verified in the browser that a third click returns the original order
+    exactly. The server totals the WHOLE match on purpose (`v504`), so once a
+    filter is on the filtered subtotal is shown BESIDE it — "Total for all 11:
+    (427.84)  Shown: 127,500.00" — never instead of it. And sorting 5,000 of
+    79,074 loaded rows does not find the largest amount in the match, so a
+    truncated result says so and points at the export.
+    Numeric columns sort numerically: the cells render "(2,694,676.22)", so a
+    string sort would order by the bracket. Blanks sort last in both directions.
+    A filter matching nothing explains itself rather than rendering an empty
+    grid. gl_ia_query_check 113 -> 123.
+    Verified against the SERVED bundle after deploy, cache-busted with the chunk
+    resolved from that response: every user-visible string present. The
+    identifier names are absent because the production build minifies locals —
+    expected, not a miss.)
   - `v512` = `e473a07` (A SCANNED LEASE IS READ FROM THE PDF, not from its
     empty text. Jim, Sep 20 2026: "is there anything we can do to extract from
     the pdfs that produce no text extractions? I'm sure it will be a common
@@ -2009,7 +2089,17 @@ Live at `v504`, screen `/gl-ia-query`, bottom of the Accounting section.
   to zero. A general ledger carries both sides because that is what it is; the
   median entry has 2 lines and the largest has 173. The way to see one side is
   the ACCOUNT filter, which already works. See `open_items.md` §9.8.
-- Guardrail: `scripts/gl_ia_query_check.py` (113).
+- **THE GRID SORTS AND FILTERS ON ANY COLUMN** (`v513`). Which line of an
+  entry is the 'other side' is a property of the ACCOUNT, not of `ITEM` and not
+  of the SIGN of `AMT` — sign keeps the expense on an expense entry and the CASH
+  on a revenue entry. So no default was baked in; the reader slices it. Sorting
+  copies before it sorts (`Array.sort` mutates, and clearing must restore the
+  server's order), numeric columns sort numerically, and a truncated result says
+  the slicing covers only the rows loaded.
+- **A filter shows its subtotal BESIDE the whole-match total, never instead.**
+  `v504` totals the whole match on purpose; once a filter is on that number no
+  longer describes the screen, so both are shown.
+- Guardrail: `scripts/gl_ia_query_check.py` (123).
 - **Open**: his workbook's IA query is truncated mid-statement in row 49 (the non-cash
   branch); the To date is INCLUSIVE here and strictly-before in his sheet; reads are
   open to any signed-in user, which is a wider read than one entity's statement.
@@ -2104,9 +2194,26 @@ Live at `v510`. New business, Sep 19 2026, via Jim.
   Thinking is ON by default there, so the response's first block is a THINKING
   block — never read `content[0].text`. A refusal returns HTTP 200 with no text;
   check `stop_reason` first.
-- **Re-EXTRACTION is still outstanding** — no rent step carries
-  `period_start_month` (0 of 346), since those only arrive from an extraction
-  run after `v503`. See `open_items.md` §9.2.
+- **The re-extraction is DONE** (Sep 20 2026): 417 documents, converged.
+  Coverage rose on every field — rent_commencement 38 -> 53, square_feet
+  43 -> 61, escalation 45 -> 65 — with 110 fields newly populated, and
+  `period_start_month` went 0 -> 305 with **208 rent steps dated from the term**,
+  so the month-of-term feature is live on production for the first time.
+- **A ROW READ AS NOT-A-TENANT HAS NO EXPIRY** (`v514`). `v501` taught the
+  roster and the headline totals to respect `tenant_status`; the expiration
+  histogram was never updated, so the building banner, the subtotal rows and the
+  vacant suites still reached it carrying the literal string `'NaN'` as
+  `lease_end`. **`pd.to_datetime('NaN')` returns NaT WITHOUT raising**, so
+  `.year` is `nan` and BOTH range comparisons are False — a range guard cannot
+  catch NaN. It reached `yearly[nan]` and returned HTTP 500. Filtered on
+  `COALESCE(tenant_status,'active')='active'` AND guarded with `pd.isna`,
+  because the status filter cannot save an ACTIVE tenant with an unparseable
+  date.
+- **The four secondary panels load with `Promise.allSettled`, never `all`.**
+  `all` rejects on the first failure, and validation was assigned last — so one
+  500 left 23 validation rows in the database and a blank screen, with the catch
+  logging "(expected for new reviews)". A panel that cannot load now says so.
+- Guardrail: `scripts/lease_validation_blank_check.py` (15).
 - Guardrails: `scripts/lease_terms_check.py` (129), which drives the shipping
   paths against a real database including an EXISTING schema migrated with rows
   in it, and `scripts/lease_doc_type_check.py` (37).

@@ -869,43 +869,51 @@ removing it from the working tree does not remove it from history; whether to re
 history or treat rotation as sufficient is Jim's call. Raised Sep 19 2026.
 
 
-### 9.8 `ITEM = 1` would not show one side of an entry — DECISION NEEDED (Jim)
+### 9.8 "Both sides of the journal entry" — ANSWERED, and the grid ships instead
 
-Jim, Sep 19 2026: *"The CFO's GL query tool is bringing both sides of the journal
-entries into the results. Let's default the filter to pull entries where
-Item = 1."*
+Jim asked twice for a filter that would show one side of an entry. Two candidates
+were measured and both refused; the third answer is that no single column says
+which line is the substance.
 
-**Not shipped.** The observation is right and the remedy would be wrong, so this
-needs his call. Measured against all 79,074 production `gl_detail` rows:
-
-| | |
+| candidate | why it fails |
 |---|---|
-| distinct `ITEM` values | **13,493** — it is a LINE NUMBER, not a side |
-| rows with `ITEM = 1` | **6,618 of 79,074** (8.4%) |
-| share of the money | **5.5%** (2.65bn of 48.5bn absolute) |
-| net `AMT`, all rows | **10,797** — a balanced ledger |
-| net `AMT`, `ITEM = 1` | **2,102,385,065** |
-| duplicate rows, any key | **0** |
-| open-period entries | 8,809, **all 8,809 balance to zero** |
-| lines per entry | median **2**, mean 5.0, max **173** |
+| `ITEM = 1` | a LINE NUMBER — **13,493 distinct values** across 79,074 rows. Keeps 8.4% of rows and 5.5% of the money, and takes the on-screen net from **10,797 to 2,102,385,065**. Nothing is duplicated: 0 duplicate rows on any key, all 8,809 open-period entries balance |
+| sign of `AMT` | Jim's own objection, and correct. Sign tracks the ACCOUNT'S NATURE: it keeps the expense on an expense entry but keeps the **CASH** and drops the **INCOME** on a revenue entry. Cash - PNC appears 2,786 times on the debit side and 4,360 on the credit side |
 
-**There is nothing being duplicated.** A general ledger carries both sides
-because that is what a ledger is, and the median entry having exactly 2 lines is
-why every transaction appears to show up twice. `ITEM` orders the lines within an
-entry; on a 173-line entry, `ITEM = 1` keeps one line and drops 172.
+**What actually differentiates them is the ACCOUNT**, and `gl_accounts.TYPE`
+carries it — the same classification the financial statements use:
 
-Defaulting to it would leave every on-screen total wrong — and wrong in the way
-that does not announce itself, since the figure is still a plausible, correctly
-formatted number.
+| TYPE | rows | |
+|---|---|---|
+| B | 21,574 | balance sheet — IA Suspense, Distributions, Intercompany |
+| I | 14,970 | income statement — Investment Income, Management Fee Expense |
+| **C** | **7,538** | **cash** — Cash - PNC, Cash - Canada, Cash - Bank |
 
-**What already answers the real need:** the ACCOUNT filter. Picking the accounts
-in question returns only the lines hitting them, and the offsetting cash side
-drops out with no data lost. It is multi-select and already works.
+Jim's call was to skip the opinionated filter: "take the query results that we
+are currently receiving and allow the user to filter or sort by any of the column
+headers." Shipped at `v513`.
 
-**Open question for Jim:** if what he wants is *one row per journal entry* rather
-than one side, that is a grouped view (entry, date, ref, description, net), not a
-filter — worth building, but it is a different thing and would be a new engine
-for a figure, so it needs saying out loud first.
+**Still available if wanted**, and this is the column to key it off: a one-click
+**Hide cash lines** (exclude TYPE `C`) removes 7,538 of 44,082 open-period rows —
+the literal offset on most cash transactions. Measured alternatives: income
+statement only (TYPE `I`) collapses **3,615 of 5,043 entries to a single line**.
+Neither is universally "the real line" — a distribution's substance is
+`MR31000001 Distributions`, which is **B** — which is why no default was chosen.
+
+### 9.10 Five debris rows still carry `lease_end = 'NaN'` — cosmetic
+
+Market at Poplar (review 3) holds five rows whose `lease_end` is the literal
+string `'NaN'`: the building banner `Market @ Poplar`, `Sub-total for
+Building: 925`, `Grand Total for Report`, and two `Vacant`. They are the same
+debris `v501` read as "No lease" and hid from the roster.
+
+`v514` made them harmless — the expiration histogram now filters on
+`tenant_status` and guards `pd.isna` — so this is tidiness, not a defect.
+**Worth knowing before deleting them:** the readings are deliberate and
+reversible, and `v501`'s whole point was that a row read as not-a-tenant is
+HIDDEN, never deleted. Anything that purges them should respect that.
+
+Windsor Square (review 2) has none.
 
 ## 8. One number, one engine — the sweep (Sep 18 2026)
 

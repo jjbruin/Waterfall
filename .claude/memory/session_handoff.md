@@ -1,10 +1,41 @@
-# Session Handoff — through Sep 20 2026 (v512 live)
+# Session Handoff — through Sep 20 2026 (v514 live)
 
 ## Sep 20 2026 — THE LEASE CORPUS, and a regression the diff caught
 
-**`v509` = `49d2120`, `v510` = `a12f98a`, `v511` = `07a83ed`, `v512` = `e473a07`.**
-Open items: **`open_items.md` §9.2** (a re-extraction is RUNNING as this is written)
-and **§9.8** (the CFO's `ITEM = 1`, still needing Jim's call).
+**`v509` = `49d2120`, `v510` = `a12f98a`, `v511` = `07a83ed`, `v512` = `e473a07`,
+`v513` = `b3bebdf`, `v514` = `42d053d`.**
+Everything in this section is SHIPPED and verified on production. The live open
+items after it are **`open_items.md` §9.3** (whether `gl_detail` was ever imported
+— it was, so this can probably close), **§9.5 / §9.6** (two decisions for Jim on
+the GL tool), **§9.7** (the MRI password in git, Jim rotates) and **§9.10** (five
+cosmetic debris rows).
+
+### Two more, after the extraction landed
+
+**`v513` — the GL grid slices.** Jim asked twice for a filter showing one side of
+a journal entry, and both candidates were measured and refused: `ITEM = 1` is a
+line number (13,493 distinct values; it takes the net from 10,797 to
+2,102,385,065), and the SIGN of `AMT` — his own objection — keeps the expense on
+an expense entry but keeps the CASH and drops the INCOME on a revenue entry.
+Which line is the substance is a property of the ACCOUNT (`gl_accounts.TYPE`),
+so no default was baked in and the grid became sortable and filterable on every
+column instead. `open_items.md` §9.8 carries the measurements and the one-click
+"hide cash lines" option if it is ever wanted.
+
+**`v514` — "that page is blank" was three bugs, not a missing screen.** Jim asked
+whether to relocate the Lease Risk validation screen into Lease Review. The Lease
+Review screen was complete and its 23 rows were in the database; Windsor Square
+rendered its 175 the whole time, which is why it read as missing rather than
+broken. The chain: five debris rows carry the STRING `'NaN'` as `lease_end`;
+`pd.to_datetime('NaN')` returns NaT WITHOUT raising so the try/except never
+fired; `.year` is `nan` and BOTH range comparisons are False, so **a range guard
+cannot catch NaN**; `yearly[nan]` raised and the endpoint 500'd; `Promise.all`
+rejected and validation — assigned LAST — was never set; and the catch called it
+"(expected for new reviews)".
+
+**The generalisable half:** `v501` taught the roster and the headline totals to
+respect `tenant_status`, and the expiration histogram was simply never updated.
+When a reading is added, find every consumer of the rows it governs.
 
 ### The re-extraction is DONE (finished 16:27, Sep 20)
 
@@ -15,16 +46,6 @@ gaining terms it never had. `period_start_month` went 0 -> 305 and 208 rent step
 are now dated from the term, so the `v503` month-of-term feature is live on
 production for the first time. Detail and the two follow-ups in
 `open_items.md` §9.2.
-
-### Superseded: the re-extraction was in flight when this was written
-
-At the time of writing, a full re-extraction of all 419 term-bearing lease documents
-is running detached on production (`/app/reex.py`, log `/app/reex.log`, revision
-`v512`). It is resumable — anything finished is marked `extracted` and is not
-repeated — so if it died, re-launching is safe. **When it completes, the
-consolidation must be re-run and DIFFED**, which is the outstanding half of §9.2.
-`scripts/` holds no runner for it; the script is in the session scratch and is
-reproduced in shape by `open_items.md` §9.2.
 
 ### The lease work, in the order it actually happened
 
@@ -43,7 +64,8 @@ export**.
 debit/credit side — 13,493 distinct values across 79,074 rows. Filtering to it keeps
 8.4% of rows and 5.5% of the money and takes the on-screen net from 10,797 to
 2,102,385,065. Nothing is duplicated (0 duplicate rows on any key; all 8,809
-open-period entries balance). §9.8, awaiting Jim.
+open-period entries balance). Answered in full at `v513` — see §9.8 and the
+`v513` note above.
 
 **`v510` — the classifier read the FOLDER.** `classify_document` matched
 `DOC_TYPE_PATTERNS` against the whole stored path, and every document sits under
