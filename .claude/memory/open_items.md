@@ -732,48 +732,84 @@ population, so "0 of 100" is 0 of the documents whose NAME says amendment. A
 document misfiled under another type would not be counted here. That is a real
 gap but a different one, and it is recorded separately.
 
-### 9.9 `classify_document_type` matches the FOLDER, not the file — OPEN
+### 9.9 The document classifier reads the FOLDER, and the obvious fix would make it worse — DECISION NEEDED (Jim)
 
-Found while measuring §9.1, not looked for. `DOC_TYPE_PATTERNS[0]` is
-`(?i)lease(?!.*(?:abstract|amend|memo))` and `classify_document_type` runs it
-against the **whole stored path**. Every production document sits under
-`Tenant Leases/…`, so the first pattern matches on the folder name and
-short-circuits before any later pattern is tried.
+Found while measuring §9.1. Fully measured against production at `v509` on
+Sep 20 2026. **Nothing has been changed.**
+
+**The defect.** `classify_document` runs `DOC_TYPE_PATTERNS` against the whole
+stored path. Pattern 0 is `(?i)lease(?!.*(?:abstract|amend|memo))` and every
+production document sits under `Tenant Leases/…`, so it matches the FOLDER and
+short-circuits before any later pattern is reached.
 
 | | |
 |---|---|
-| documents typed `Original Lease` | **409 of 530** |
-| ...with "lease" in the FILE name | 77 |
-| ...matched only on the FOLDER path | **332** |
+| typed `Original Lease` today | **409 of 530** |
+| genuinely have "lease" in the FILE name | 77 |
+| matched on the folder alone | **332** |
 
-The later patterns would have classified many of them correctly — `move.?in`,
-`option\s*letter`, `consent`, `estoppel` are all in the list and all unreachable
-for a file under this folder. Actual examples now typed `Original Lease`:
+Classified on the basename instead, **332 of 530 change type**, all of them out
+of `Original Lease`:
 
-```
-1987.12.16 Reciprical Easement Agreement.pdf
-2023.12.13_SalonCentric-Option Letter.pdf
-2022.05.24_Francis Hair Lounge-Move-In.pdf
-2023.05.25_Tasty Sichuan-Landlord Consent.pdf
-2027.01.01_COI-SalonCentric.pdf
-```
+| would become | n | | would become | n |
+|---|---|---|---|---|
+| Other | 126 | | Waiver Letter | 9 |
+| **COI** | **111** | | Move-In Notice | 8 |
+| Commencement Letter | 23 | | Notice Change | 5 |
+| Consent Letter | 17 | | Delivery Notice | 3 |
+| **Option Letter** | **12** | | Estoppel | 2 |
+| SNDA | 12 | | four singles | 4 |
 
-**Why it matters:** `get_consolidated_lease` prioritises
-`doc_type in ('Original Lease', 'Amendment')`, so a COI, an easement and a
-move-in form are being fed into the consolidation as though each were an original
-lease. An **option letter** is the sharpest case — it carries rent figures for a
-renewal term and is currently entering the stack as a base lease.
+The 100 amendments are untouched — the negative lookahead sends anything
+containing "amend" to the Amendment pattern.
 
-Amendments are NOT affected: the negative lookahead means anything containing
-"amend" falls through to the Amendment pattern, and all 100 are typed correctly.
+**What it has already done.** Extraction runs only for
+`doc_type in ('Original Lease', 'Amendment')`, so every one of these was sent to
+the Claude extraction API as a lease and given an `extraction_json`, which is the
+consolidation's admission ticket:
 
-**The fix is one line** — classify on the basename — but it is a
-reclassification of 332 live documents, so it needs measuring first and it needs
-Jim's call. **Not yet measured:** what each of the 332 would become, and whether
-any consolidated rent moves as a result. The exec rate limit (429, retry-after
-600s) stopped that measurement mid-session; it is one more read.
+| | |
+|---|---|
+| documents extracted and in a consolidation | **500 of 530** |
+| of those, misclassified | **328** (66%) |
+| genuinely a lease or amendment | 172 |
+| consolidating tenants with ≥1 misclassified document | **69 of 70** |
 
-**Owner: Jim to approve; then measure before changing.**
+**THE OBVIOUS FIX IS WRONG ON ITS OWN, and this is the finding that matters.**
+Correcting the classifier alone would push 328 documents OUT of the extraction
+gate — including the ones that carry the terms:
+
+| field | documents supplying it | dropped by the fix |
+|---|---|---|
+| `rent_commencement` | 54 | **26** — 15 of them Commencement Letters |
+| `lease_expiration` | 75 | 31 |
+| `square_feet` | 69 | 10 |
+| `escalation_structure` | 70 | 3 |
+
+**16 of the 38 tenants that currently have a rent commencement date would be
+left with none.** That date is what `v503` uses to place a rent step stated as
+"Months 1-12", so the naive fix would break the feature that was just built —
+and `consolidate_tenant_extractions`'s own comment already says a commencement
+letter is *supposed* to beat the original lease's estimate.
+
+**So it is two changes, not one:**
+
+1. Classify on the **basename**, not the path.
+2. **Widen the extraction gate** past `('Original Lease', 'Amendment')` to the
+   types that genuinely carry terms — Commencement Letter and Option Letter at
+   minimum, on this evidence also whatever the 5 `Other` / 3 Move-In / 1 Opening
+   Notice documents carrying a real `rent_commencement` turn out to be.
+
+Done together the coverage is the same or better, the types are right, and 111
+certificates of insurance and 17 consent letters stop being layered into
+consolidated lease terms. `_merge_extraction_terms` is "non-null wins", so a COI
+contributes only where its extraction returned something — and 2 COIs did return
+a `rent_commencement`, which is a misread reaching a real field.
+
+**Owner: Jim to approve the two-part change.** Then: re-run classification,
+re-run consolidation for the 70 tenants, and diff the consolidated terms before
+and after rather than assuming. The cost of the mistake so far is API spend and
+noise; the cost of fixing it carelessly is 16 tenants losing a date.
 
 ### 9.2 The extraction has not been re-run since the prompt changed
 `period_start_month` / `period_end_month` only arrive from extractions run AFTER
