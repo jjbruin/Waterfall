@@ -253,6 +253,50 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v509` = `49d2120` (THE INPUT COLUMN FOLDS AWAY, and the GL grid shows what
+    matters. Two asks from Jim, Sep 19 2026.
+    "MANY OF OUR PAGES HAVE INPUT SECTIONS ON THE LEFT AND ANALYSIS SECTIONS ON
+    THE RIGHT. CAN WE PROVIDE THE SAME LITTLE ARROW AS EXISTS IN THE SIDE BAR TO
+    EXPAND OR COLLAPSE THE INPUT SECTIONS THROUGHOUT THE APP?" One
+    `CollapsiblePanel`, the sidebar's own `<` / `>`, on the five pages that have
+    a genuine inputs-left / analysis-right split: Ownership, Workpapers,
+    Reports, Data Explorer, Prospect Analysis. Everything else is an
+    equal-width content grid, a filter bar above the results, or an overlay
+    drawer, and is deliberately left alone.
+    A GRID PARENT MUST DECLARE ITS OWN COLLAPSED TRACK, and that is the failure
+    the guardrail exists for: the container sets the column, so a child
+    narrowing itself to 30px reclaims NOTHING — the arrow works, the panel
+    goes, and 260px of empty space sits where it was, with no error and nothing
+    on screen saying so. Each page binds `input-collapsed` and states the track
+    itself; the component does not reach upward into a layout it cannot see.
+    THE TOGGLE SURVIVES COLLAPSING and the rail keeps the panel's NAME — a
+    control that vanishes when used cannot be undone by anyone who did not
+    already know it was there, which v482 shipped once and had to fix.
+    VERIFIED IN THE RUNNING APP at 1440px, both directions, all five: Reports
+    280 -> 30 (results 888 -> 1138), Ownership 290 -> 30 (789 -> 1064), Data
+    Explorer 240 -> 30 (833 -> 1043), Workpapers 320 -> 30 (721 -> 1011),
+    Prospect 480 -> 33 (657 -> 1119). Guardrail `collapsible_panel_check.py`
+    (43), proved non-vacuous by deleting one page's collapsed track — which
+    fails exactly the check that matters. (The first injection attempt was a
+    no-op because the file is CRLF and the needle was not; worth knowing.)
+    THE GL GRID drops Bal/Fwd, Item, Related Entity and Related Entity Name and
+    clips Description at 260px with the full text on hover. HIDDEN ON SCREEN,
+    KEPT IN THE EXPORT: the workbook is what somebody checks the screen against
+    and ITEM is how a line is found again in MRI's journal. Description was
+    measured first — 85 characters at the longest, median 29, and the tail
+    repeats an entity name the Entity column already carries. Asserted in both
+    directions; the check catches "dropped instead of hidden" AND "flag emitted,
+    grid ignores it". gl_ia_query_check 94 -> 113.
+    NOT DONE, AND IT NEEDS JIM'S CALL: defaulting the filter to `ITEM = 1`.
+    ITEM is a LINE NUMBER, not a debit/credit side — 13,493 distinct values
+    across the real 79,074 rows. It would keep 6,618 rows (8.4%) and 5.5% of the
+    money, and take the on-screen net from 10,797 to 2,102,385,065. Nothing is
+    being duplicated: 0 duplicate rows on any key, and all 8,809 open-period
+    entries balance to zero. A ledger carries both sides because that is what it
+    is; the median entry has 2 lines and the largest 173. The ACCOUNT filter
+    already answers the real need. `open_items.md` §9.8.
+    Production after deploy: four columns hidden, ten visible, all 14 still
+    returned by the query, 79,074 rows. Carried the docs commit `1f9d913`.)
   - `v508` = `b75cf92` (FILING A STATEMENT OPENS THE CHAIN, and the statements
     can be called up. Jim, Sep 19 2026, after "Seed openings from statements"
     returned `0 of 49 opened`: "Shouldn't the seeding process be integrated

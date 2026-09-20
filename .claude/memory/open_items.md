@@ -705,25 +705,75 @@ sentence would have turned a diagnosis into a glance. Owner: unassigned.
 
 Shipped in `v503` and `v504`. What is left, with an owner on each.
 
-### 9.1 Lease amendment ordering: coverage UNMEASURED
-The most recent amendment now governs, ordered by the number in the filename when no
-document carries a date (`lease_terms.order_lease_documents`). Where an amendment has
-**neither a date nor a number**, the order is best-effort and the consolidation says
-so per tenant in `_order_notes`.
+### 9.1 Lease amendment ordering: MEASURED, and it is clean — CLOSED
 
-**How often that happens is unknown.** There are no lease documents in local data, and
-a production read was refused by a permission gate this session. Needs one query
-against production:
+Measured against production on Sep 20 2026 at `v509`, on Jim's instruction ("if
+you want that measured, please run a read against the container"). **530
+documents across 71 tenants, one property (Windsor Square).**
 
-```sql
-SELECT COUNT(*) FILTER (WHERE doc_date IS NULL AND doc_ordinal IS NULL) AS neither,
-       COUNT(*) AS amendments
-  FROM lease_documents WHERE doc_type = 'Amendment';
+| | |
+|---|---|
+| documents carrying a date (stored, or parsed from the filename) | 487 |
+| documents carrying an amendment ordinal | 97 |
+| documents carrying **neither** | **42** |
+| **AMENDMENTS carrying neither** | **0 of 100** |
+
+**Every amendment on production can be ordered.** That was the open question and
+the answer is none — so the "best-effort, reported per tenant" path exists and is
+currently never taken by a document that layers rent.
+
+The 42 are 21 typed `Original Lease` and 21 typed `Other`, and their filenames
+say what they are: certificates of insurance, a reciprocal easement agreement, a
+move-in form, an option letter, a landlord consent, a change-of-notices address.
+None of them carries a rent step.
+
+**Caveat, and it is §9.8's subject:** `doc_type` is not trustworthy for this
+population, so "0 of 100" is 0 of the documents whose NAME says amendment. A
+document misfiled under another type would not be counted here. That is a real
+gap but a different one, and it is recorded separately.
+
+### 9.9 `classify_document_type` matches the FOLDER, not the file — OPEN
+
+Found while measuring §9.1, not looked for. `DOC_TYPE_PATTERNS[0]` is
+`(?i)lease(?!.*(?:abstract|amend|memo))` and `classify_document_type` runs it
+against the **whole stored path**. Every production document sits under
+`Tenant Leases/…`, so the first pattern matches on the folder name and
+short-circuits before any later pattern is tried.
+
+| | |
+|---|---|
+| documents typed `Original Lease` | **409 of 530** |
+| ...with "lease" in the FILE name | 77 |
+| ...matched only on the FOLDER path | **332** |
+
+The later patterns would have classified many of them correctly — `move.?in`,
+`option\s*letter`, `consent`, `estoppel` are all in the list and all unreachable
+for a file under this folder. Actual examples now typed `Original Lease`:
+
+```
+1987.12.16 Reciprical Easement Agreement.pdf
+2023.12.13_SalonCentric-Option Letter.pdf
+2022.05.24_Francis Hair Lounge-Move-In.pdf
+2023.05.25_Tasty Sichuan-Landlord Consent.pdf
+2027.01.01_COI-SalonCentric.pdf
 ```
 
-If `neither` is material, the next step is reading the execution date out of the
-document itself — the extraction already returns dates — rather than the filename.
-Owner: unassigned. Needs Jim to approve a production read.
+**Why it matters:** `get_consolidated_lease` prioritises
+`doc_type in ('Original Lease', 'Amendment')`, so a COI, an easement and a
+move-in form are being fed into the consolidation as though each were an original
+lease. An **option letter** is the sharpest case — it carries rent figures for a
+renewal term and is currently entering the stack as a base lease.
+
+Amendments are NOT affected: the negative lookahead means anything containing
+"amend" falls through to the Amendment pattern, and all 100 are typed correctly.
+
+**The fix is one line** — classify on the basename — but it is a
+reclassification of 332 live documents, so it needs measuring first and it needs
+Jim's call. **Not yet measured:** what each of the 332 would become, and whether
+any consolidated rent moves as a result. The exec rate limit (429, retry-after
+600s) stopped that measurement mid-session; it is one more read.
+
+**Owner: Jim to approve; then measure before changing.**
 
 ### 9.2 The extraction has not been re-run since the prompt changed
 `period_start_month` / `period_end_month` only arrive from extractions run AFTER
