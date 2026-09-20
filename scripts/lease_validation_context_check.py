@@ -176,8 +176,11 @@ section('The screen formats it the way Jim asked')
 V = os.path.join('vue_app', 'src', 'views', 'LeaseReviewView.vue')
 if os.path.exists(V):
     v = open(V, encoding='utf-8').read()
+    # Whole dollars, commas, no decimals -- and from v516 the sign sits outside
+    # the dollar sign, so the assertion follows the rule rather than one spelling
+    # of it.
     chk('money renders with commas and NO decimals',
-        "Math.round(n).toLocaleString('en-US')" in v and "'$' + Math.round" in v)
+        "Math.round(Math.abs(n)).toLocaleString('en-US')" in v)
     chk('$/SF is computed from rent over SF', 'function psf(' in v
         and '(r / f).toFixed(2)' in v)
     for col in ('RR SF', 'RR $/SF', 'Lease SF', 'Lease $/SF'):

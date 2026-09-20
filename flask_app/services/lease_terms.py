@@ -443,3 +443,104 @@ def step_in_force_at(steps: List[Dict[str, Any]], as_of: Any
     basis = best.get('effective_date_basis') or 'stated'
     return best, (f"Step effective {best['effective_date']} ({basis}), "
                   f"in force at {d.isoformat()}.")
+
+
+# ---------------------------------------------------------------------------
+# Fixed recoveries (CAM / operating expenses)
+# ---------------------------------------------------------------------------
+#
+# Jim, Sep 20 2026, reading the AT&T Mobility 4th Amendment on Market at Poplar:
+# "one of the lease amendments was stating a fixed CAM charge for the lease. Is this
+# situation part of the lease review and validation to the rent roll?"
+#
+# It was not. The extraction captured `cam_structure = 'fixed'` -- the WORD -- and
+# nothing captured the AMOUNT, so the one figure the rent roll could be checked
+# against did not exist anywhere in the app. That amendment states a schedule:
+#
+#     2025          $2.16/SF   $8,640.00/yr   $720.00/mo
+#     2026 to 2030  $2.38/SF   $9,520.00/yr   $793.33/mo
+#     2031 to 2035  $2.62/SF  $10,480.00/yr   $873.33/mo
+#
+# and adds "In no event shall Tenant be required to pay any amount in excess of or
+# below the fixed Tenant's Proportionate Share of Operating Expenses set forth above."
+# A capped, stated, checkable number -- exactly the kind of term a rent roll gets
+# wrong quietly.
+
+
+def cam_fixed_in_force(entries: List[Dict[str, Any]],
+                       as_of: Any) -> Tuple[Optional[Dict[str, Any]], str]:
+    """The fixed recovery schedule row that applies on a date.
+
+    Rows carry a year range (`year_start` / `year_end`); a row with no `year_end`
+    runs open-ended from its start. Returns (row, basis) and, like every other
+    resolver here, the basis is a sentence rather than a flag -- a recovery figure
+    the reader cannot trace is not usable as evidence against a rent roll.
+    """
+    d = _as_date(as_of)
+    if not entries or d is None:
+        return None, ''
+    year = d.year
+    eligible = []
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        ys, ye = e.get('year_start'), e.get('year_end')
+        try:
+            ys = int(ys) if ys is not None else None
+            ye = int(ye) if ye is not None else None
+        except (TypeError, ValueError):
+            continue
+        if ys is None:
+            continue
+        if year >= ys and (ye is None or year <= ye):
+            eligible.append((ys, e))
+    if not eligible:
+        starts = [int(e['year_start']) for e in entries
+                  if isinstance(e, dict) and e.get('year_start') is not None]
+        if starts and year < min(starts):
+            return None, (f"The fixed recovery schedule begins {min(starts)}, "
+                          f"after {d.isoformat()}.")
+        return None, (f"The fixed recovery schedule does not cover {year}.")
+    # The latest range that has begun, so overlapping rows resolve the way rent
+    # steps do rather than by document order.
+    ys, best = max(eligible, key=lambda t: t[0])
+    label = best.get('period') or (
+        str(ys) if best.get('year_end') in (None, ys) else
+        '%s to %s' % (ys, best.get('year_end')))
+    return best, ('Fixed recovery stated for %s, in force at %s.'
+                  % (label, d.isoformat()))
+
+
+def annual_recovery_psf(entry: Optional[Dict[str, Any]],
+                        square_feet: Any) -> Optional[float]:
+    """A fixed recovery row as an ANNUAL per-SF figure.
+
+    Same rule as `annual_rent_psf`: a MONTHLY amount is annualised before dividing,
+    never divided as-is. Prefers the stated per-SF figure, then the annual amount,
+    then twelve times the monthly -- so a lease that states all three is read as it
+    is written, and one that states only a monthly charge still produces the figure
+    the rent roll can be checked against.
+    """
+    if not isinstance(entry, dict):
+        return None
+    psf = entry.get('per_sf')
+    if psf not in (None, ''):
+        try:
+            return float(psf)
+        except (TypeError, ValueError):
+            pass
+    try:
+        sf = float(square_feet) if square_feet not in (None, '') else None
+    except (TypeError, ValueError):
+        sf = None
+    if not sf:
+        return None
+    for key, mult in (('annual', 1.0), ('monthly', 12.0)):
+        val = entry.get(key)
+        if val in (None, ''):
+            continue
+        try:
+            return float(val) * mult / sf
+        except (TypeError, ValueError):
+            continue
+    return None

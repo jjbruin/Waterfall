@@ -27,6 +27,10 @@ from flask_app.services.lease_review_service import (
     ensure_resolution_table,
     resolve_field,
     clear_resolution,
+    validation_resolutions,
+    rent_roll_changes,
+    consolidate_tenant_extractions,
+    VALIDATION_FIELD_TO_RESOLVABLE,
     get_risk_analysis_data,
     get_tenant_abstract,
     save_abstract_sections,
@@ -760,18 +764,36 @@ def get_validation(review_id):
     with engine.connect() as conn:
         rows = conn.execute(text("""
             SELECT t.tenant_name, t.suite, v.field_name, v.source_type,
-                   v.seller_value, v.lease_value, v.status, v.notes
+                   v.seller_value, v.lease_value, v.status, v.notes, t.id
             FROM lease_validation v
             JOIN lease_tenants t ON t.id = v.tenant_id
             WHERE t.review_id = :rid
             ORDER BY t.tenant_name, v.source_type, v.field_name
         """), {'rid': review_id}).fetchall()
 
-    return jsonify([{
-        'tenant': r[0], 'suite': r[1], 'field': r[2],
-        'source_type': r[3], 'seller_value': r[4],
-        'lease_value': r[5], 'status': r[6], 'notes': r[7],
-    } for r in rows])
+    # A SETTLED FINDING MUST STOP ASKING (the v499 lesson). Validation rows are
+    # deleted and rebuilt on every run, so the decision cannot live on them -- it
+    # lives in lease_field_resolutions, keyed by tenant and field, and is joined on
+    # here. Without this the analyst re-reads the same six mismatches after every
+    # re-validation with nothing on screen saying which were already dealt with.
+    engine2 = get_engine()
+    res_by_key = {}
+    for r in validation_resolutions(engine2, review_id):
+        res_by_key[(r['tenant_id'], r['field'])] = r
+
+    out = []
+    for r in rows:
+        field, tid = r[2], r[8]
+        resolvable = VALIDATION_FIELD_TO_RESOLVABLE.get(field)
+        out.append({
+            'tenant': r[0], 'suite': r[1], 'field': field,
+            'source_type': r[3], 'seller_value': r[4],
+            'lease_value': r[5], 'status': r[6], 'notes': r[7],
+            'tenant_id': tid,
+            'resolvable_field': resolvable,
+            'resolution': res_by_key.get((tid, resolvable)) if resolvable else None,
+        })
+    return jsonify(out)
 
 
 @lease_review_bp.route('/reviews/<int:review_id>/rent-roll-date', methods=['PUT'])
@@ -889,6 +911,235 @@ def get_validation_context(review_id):
         }
 
     return jsonify({'rent_roll_date': rrd, 'tenants': out})
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/validation/resolve', methods=['PUT'])
+@login_required
+@role_required('admin', 'analyst')
+def resolve_validation_finding(review_id):
+    """Settle one validation finding: the figure that applies, and why.
+
+    Jim, Sep 20 2026: "how does the analyst clear the mismatches on this page? If
+    the analyst determines that the applicable rent is different from the rent
+    roll, we need a clear report showing the changes with the reasons for the
+    change citing the lease document that was used."
+
+    THE REASON IS REQUIRED AND THE DOCUMENT IS CHECKED. A rent figure changed
+    with neither is indistinguishable from a typo a month later, and the rent roll
+    is what the purchase price is built on. The cited document must belong to this
+    tenant -- a document id from another tenant is refused rather than stored,
+    because a citation nobody verified is worse than none: it reads as evidence.
+
+    Confirming the rent roll is a decision too, and is recorded the same way. It
+    is not a change, so the report separates it rather than dropping it.
+    """
+    from sqlalchemy import text
+    body = request.get_json(silent=True) or {}
+    tenant_id = body.get('tenant_id')
+    field = (body.get('field') or '').strip()
+    value = body.get('value')
+    reason = (body.get('reason') or '').strip()
+    source_doc_id = body.get('source_doc_id')
+    prior_value = body.get('prior_value')
+
+    if not tenant_id or not field:
+        return jsonify({'error': 'tenant_id and field are required'}), 400
+    resolvable = VALIDATION_FIELD_TO_RESOLVABLE.get(field, field)
+    if resolvable not in RESOLVABLE_FIELDS:
+        return jsonify({'error': "'%s' cannot be resolved. Resolvable: %s"
+                        % (field, sorted(RESOLVABLE_FIELDS))}), 400
+    if not reason:
+        return jsonify({'error': 'A reason is required. The change report has to '
+                                 'say why the rent roll was changed.'}), 400
+    if value in (None, ''):
+        return jsonify({'error': 'A value is required.'}), 400
+
+    engine = get_engine()
+    with engine.connect() as conn:
+        owned = conn.execute(text(
+            "SELECT 1 FROM lease_tenants WHERE id = :tid AND review_id = :rid"
+        ), {'tid': tenant_id, 'rid': review_id}).fetchone()
+        if not owned:
+            return jsonify({'error': 'That tenant is not part of this review.'}), 400
+        if source_doc_id:
+            doc = conn.execute(text(
+                "SELECT filename FROM lease_documents "
+                "WHERE id = :did AND review_id = :rid AND tenant_id = :tid"
+            ), {'did': source_doc_id, 'rid': review_id, 'tid': tenant_id}).fetchone()
+            if not doc:
+                return jsonify({
+                    'error': 'That document does not belong to this tenant, so it '
+                             'cannot be cited as the source.'}), 400
+
+    resolve_field(
+        engine, int(tenant_id), resolvable, str(value),
+        resolved_source=body.get('source') or 'analyst',
+        resolved_by=g.current_user.get('username', 'unknown'),
+        reason=reason,
+        source_doc_id=int(source_doc_id) if source_doc_id else None,
+        prior_value=(str(prior_value) if prior_value not in (None, '') else None),
+    )
+    return jsonify({'status': 'resolved', 'field': resolvable,
+                    'tenant_id': tenant_id, 'value': str(value)})
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/validation/resolve', methods=['DELETE'])
+@login_required
+@role_required('admin', 'analyst')
+def clear_validation_finding(review_id):
+    """Undo a settled finding, putting it back on the outstanding list."""
+    from sqlalchemy import text
+    tenant_id = request.args.get('tenant_id', type=int)
+    field = (request.args.get('field') or '').strip()
+    if not tenant_id or not field:
+        return jsonify({'error': 'tenant_id and field are required'}), 400
+    resolvable = VALIDATION_FIELD_TO_RESOLVABLE.get(field, field)
+    engine = get_engine()
+    with engine.connect() as conn:
+        owned = conn.execute(text(
+            "SELECT 1 FROM lease_tenants WHERE id = :tid AND review_id = :rid"
+        ), {'tid': tenant_id, 'rid': review_id}).fetchone()
+    if not owned:
+        return jsonify({'error': 'That tenant is not part of this review.'}), 400
+    clear_resolution(engine, tenant_id, resolvable)
+    return jsonify({'status': 'cleared', 'field': resolvable,
+                    'tenant_id': tenant_id})
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/rent-roll-changes', methods=['GET'])
+@login_required
+def get_rent_roll_changes(review_id):
+    """The changes made against the rent roll, with reasons and citations."""
+    engine = get_engine()
+    return jsonify(rent_roll_changes(engine, review_id))
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/rent-roll-changes/excel',
+                       methods=['GET'])
+@login_required
+def download_rent_roll_changes(review_id):
+    """The same report as a workbook, because this one gets sent to the seller.
+
+    It carries the property, the rent roll date and the confirmations as well as
+    the changes: a list of changes alone does not say what was checked and left
+    alone, and "we reviewed 23 and changed 6" is the sentence a broker argues with.
+    """
+    from sqlalchemy import text
+    import pandas as pd
+    engine = get_engine()
+    data = rent_roll_changes(engine, review_id)
+    with engine.connect() as conn:
+        meta = conn.execute(text(
+            "SELECT property_name, rent_roll_date FROM lease_reviews WHERE id = :rid"
+        ), {'rid': review_id}).fetchone()
+    prop = (meta[0] if meta else None) or 'Lease Review'
+    rrd = (meta[1] if meta else None)
+
+    def _frame(rows):
+        return pd.DataFrame([{
+            'Tenant': r.get('tenant'),
+            'Suite': r.get('suite'),
+            'Field': r.get('field'),
+            'Rent roll': r.get('prior_value'),
+            'Applies': r.get('value'),
+            'Difference': r.get('difference'),
+            'Reason': r.get('reason'),
+            'Document cited': r.get('source_doc'),
+            'By': r.get('by'),
+            'At': r.get('at'),
+        } for r in rows])
+
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as xl:
+        pd.DataFrame([
+            {'Item': 'Property', 'Value': prop},
+            {'Item': 'Rent roll date', 'Value': str(rrd) if rrd else 'not set'},
+            {'Item': 'Changes', 'Value': data['change_count']},
+            {'Item': 'Confirmed as stated', 'Value': data['confirmed_count']},
+        ]).to_excel(xl, sheet_name='Summary', index=False)
+        _frame(data['changes']).to_excel(xl, sheet_name='Changes', index=False)
+        _frame(data['confirmed']).to_excel(xl, sheet_name='Confirmed', index=False)
+    buf.seek(0)
+    return send_file(
+        buf,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True,
+        download_name='Rent_Roll_Changes_%s.xlsx' % prop.replace(' ', '_'),
+    )
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/tenants/<int:tenant_id>/documents',
+                       methods=['POST'])
+@login_required
+@role_required('admin', 'analyst')
+def upload_tenant_document(review_id, tenant_id):
+    """Load a document the seller has just supplied, against THIS tenant.
+
+    Jim, Sep 20 2026: "If the seller provides missing documentation, then we
+    should be able to load that document right here and update lease side
+    accordingly."
+
+    It runs the SAME upload, the SAME extraction and the SAME consolidation as a
+    bulk load -- scoped to one tenant by a parameter. A second, lighter path here
+    would be a second engine for the lease terms, and the two would drift.
+
+    Extraction runs in the background because a scanned amendment can be 80
+    pages; the screen polls extract-status exactly as the bulk run does. The
+    consolidation and a re-validation follow it, because a document that does not
+    move the figures on screen looks like it did nothing.
+    """
+    files_list = request.files.getlist('files')
+    if not files_list:
+        return jsonify({'error': 'No files provided'}), 400
+
+    engine = get_engine()
+    ensure_lease_tables(engine)
+
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        owned = conn.execute(text(
+            "SELECT 1 FROM lease_tenants WHERE id = :tid AND review_id = :rid"
+        ), {'tid': tenant_id, 'rid': review_id}).fetchone()
+    if not owned:
+        return jsonify({'error': 'That tenant is not part of this review.'}), 400
+
+    file_tuples = [(f.filename, f.read()) for f in files_list if f.filename]
+    if not file_tuples:
+        return jsonify({'error': 'No valid files'}), 400
+
+    report = upload_documents_to_review(
+        engine, review_id, file_tuples,
+        uploaded_by=g.current_user.get('username', 'unknown'),
+        force_tenant_id=tenant_id,
+    )
+
+    job = _extraction_jobs.get(review_id)
+    if job and job['status'] == 'running':
+        return jsonify({'status': 'uploaded', 'extraction': 'already_running',
+                        **report})
+
+    def _progress(extracted, total, current_file):
+        _extraction_jobs[review_id].update(
+            extracted=extracted, total=total, current_file=current_file)
+
+    def _run():
+        try:
+            _extraction_jobs[review_id] = {
+                'status': 'running', 'extracted': 0, 'total': 0,
+                'current_file': '', 'error': None,
+            }
+            extract_all_documents(engine, review_id, progress_callback=_progress,
+                                  tenant_id=tenant_id)
+            consolidate_tenant_extractions(engine, tenant_id)
+            validate_rent_roll(engine, review_id)
+            _extraction_jobs[review_id]['status'] = 'complete'
+        except Exception as e:
+            logger.error(f"Tenant document extraction error: {e}", exc_info=True)
+            _extraction_jobs[review_id]['status'] = 'failed'
+            _extraction_jobs[review_id]['error'] = str(e)
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({'status': 'uploaded', 'extraction': 'started', **report})
 
 
 @lease_review_bp.route('/reviews/<int:review_id>/tenants/<int:tenant_id>/documents', methods=['GET'])

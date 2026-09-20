@@ -68,7 +68,9 @@ async function saveRentRollDate() {
 function money0(v: any) {
   const n = typeof v === 'number' ? v : parseFloat(v)
   if (v === null || v === undefined || v === '' || Number.isNaN(n)) return '\u2014'
-  return '$' + Math.round(n).toLocaleString('en-US')
+  // The sign goes OUTSIDE the dollar sign. The change report is full of
+  // negative differences and "$-12,014" is not how a figure is written.
+  return (n < 0 ? '-$' : '$') + Math.round(Math.abs(n)).toLocaleString('en-US')
 }
 function num0(v: any) {
   const n = typeof v === 'number' ? v : parseFloat(v)
@@ -91,6 +93,156 @@ function docUrl(id: number) {
   return `/api/lease-review/reviews/${selectedReviewId.value}`
     + `/documents/${id}/view?token=${encodeURIComponent(tk)}`
 }
+
+// --- Formatting, by what the field IS -------------------------------------
+// Jim, Sep 20 2026: "format all rents on the validation screen as whole dollars
+// with commas and no decimals. For $/SF items format as dollars with cents."
+// The comparison tables carry several fields in one column, so the format has to
+// follow the FIELD rather than the column -- rendering a $/SF figure as whole
+// dollars turns $2.38 into $2 and a rent into $50052.
+const MONEY_FIELDS = new Set([
+  'annual_rent', 'monthly_rent', 'security_deposit', 'rent_step_in_force',
+])
+const PSF_FIELDS = new Set(['rent_per_sf', 'annual_recoveries_per_sf'])
+const COUNT_FIELDS = new Set(['square_feet'])
+
+function psfFmt(v: any) {
+  const n = typeof v === 'number' ? v : parseFloat(v)
+  if (v === null || v === undefined || v === '' || Number.isNaN(n)) return '—'
+  return (n < 0 ? '-$' : '$') + Math.abs(n).toFixed(2)
+}
+function fmtByField(field: string, v: any) {
+  if (v === null || v === undefined || v === '') return '—'
+  if (MONEY_FIELDS.has(field)) return money0(v)
+  if (PSF_FIELDS.has(field)) return psfFmt(v)
+  if (COUNT_FIELDS.has(field)) return num0(v)
+  return v
+}
+
+// --- Settling a finding ----------------------------------------------------
+// A mismatch had no control at all: the page listed it and the only thing near
+// it was a per-TENANT approve/flag two steps later, recording no value, no reason
+// and no document.
+const settling = ref<any>(null)
+const settleChoice = ref<'rent_roll' | 'lease' | 'other'>('lease')
+const settleOther = ref<string>('')
+const settleReason = ref<string>('')
+const settleDocId = ref<number | null>(null)
+const savingSettle = ref(false)
+const settleUploading = ref(false)
+const changes = ref<any>({ changes: [], confirmed: [], change_count: 0, confirmed_count: 0 })
+
+function openSettle(v: any) {
+  settling.value = v
+  settleChoice.value = v.lease_value != null && v.lease_value !== '' ? 'lease' : 'rent_roll'
+  settleOther.value = ''
+  settleReason.value = v.resolution?.reason || ''
+  const ctx = ctxFor(v.tenant)
+  // Default to the document that GOVERNS, which is the one the lease figure came
+  // from -- the analyst can pick another, but the common case should not be typing.
+  // The document that GOVERNS is the one the lease figure came from, so it is
+  // the default citation; the analyst can pick another. `governing` is a
+  // BASENAME and the stored filename is a path, hence the suffix match.
+  const govName = ctx?.governing || ''
+  const gov = govName
+    ? (ctx?.documents || []).find((d: any) => (d.filename || '').endsWith(govName))
+    : null
+  settleDocId.value = v.resolution?.source_doc_id ?? (gov?.id ?? null)
+}
+function settleValue(): string {
+  if (!settling.value) return ''
+  if (settleChoice.value === 'rent_roll') return String(settling.value.seller_value ?? '')
+  if (settleChoice.value === 'lease') return String(settling.value.lease_value ?? '')
+  return settleOther.value
+}
+async function saveSettle() {
+  if (!settling.value) return
+  savingSettle.value = true
+  try {
+    await api.put(`/api/lease-review/reviews/${selectedReviewId.value}/validation/resolve`, {
+      tenant_id: settling.value.tenant_id,
+      field: settling.value.field,
+      value: settleValue(),
+      reason: settleReason.value,
+      source_doc_id: settleDocId.value,
+      // The rent roll's own figure, stored WITH the decision: the rent roll can be
+      // re-imported, and the report must still say what was changed and from what.
+      prior_value: settling.value.seller_value,
+    })
+    settling.value = null
+    await loadValidationRows()
+    await loadChanges()
+  } catch (e: any) {
+    alert(e.response?.data?.error || 'Could not save')
+  } finally { savingSettle.value = false }
+}
+async function clearSettle(v: any) {
+  if (!confirm('Put this finding back on the outstanding list?')) return
+  await api.delete(`/api/lease-review/reviews/${selectedReviewId.value}/validation/resolve`,
+    { params: { tenant_id: v.tenant_id, field: v.field } })
+  await loadValidationRows()
+  await loadChanges()
+}
+async function loadValidationRows() {
+  const { data } = await api.get(`/api/lease-review/reviews/${selectedReviewId.value}/validation`)
+  validation.value = data
+  await loadValidationContext(selectedReviewId.value!)
+}
+async function loadChanges() {
+  try {
+    const { data } = await api.get(
+      `/api/lease-review/reviews/${selectedReviewId.value}/rent-roll-changes`)
+    changes.value = data
+  } catch { /* the report is a view of the resolutions; a failure here is not fatal */ }
+}
+function changesUrl() {
+  const tk = localStorage.getItem('token') || ''
+  return `/api/lease-review/reviews/${selectedReviewId.value}/rent-roll-changes/excel`
+    + `?token=${encodeURIComponent(tk)}`
+}
+
+// The seller supplies the missing document, and it is loaded against THIS tenant
+// rather than hunted for in a bulk upload that matches on filename.
+async function uploadSettleDoc(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  if (!input.files?.length || !settling.value) return
+  const fd = new FormData()
+  for (const f of Array.from(input.files)) fd.append('files', f)
+  settleUploading.value = true
+  try {
+    const { data } = await api.post(
+      `/api/lease-review/reviews/${selectedReviewId.value}`
+      + `/tenants/${settling.value.tenant_id}/documents`, fd)
+    if (data.extraction === 'already_running') {
+      alert('The document was loaded. An extraction is already running, so it will '
+        + 'be read when that finishes.')
+    } else {
+      alert(`${data.added} document(s) loaded. Reading them now — the lease side `
+        + 'updates when extraction finishes.')
+      pollExtraction()
+    }
+  } catch (e: any) {
+    alert(e.response?.data?.error || 'Upload failed')
+  } finally {
+    settleUploading.value = false
+    input.value = ''
+  }
+}
+function pollExtraction() {
+  const iv = setInterval(async () => {
+    try {
+      const { data } = await api.get(
+        `/api/lease-review/reviews/${selectedReviewId.value}/extract-status`)
+      if (data.status === 'complete' || data.status === 'failed' || data.status === 'idle') {
+        clearInterval(iv)
+        if (data.status === 'failed') alert('Extraction failed: ' + (data.error || ''))
+        await loadValidationRows()
+        await loadChanges()
+      }
+    } catch { clearInterval(iv) }
+  }, 4000)
+}
+
 const loading = ref(false)
 const expandedTenant = ref<number | null>(null)
 const tenantDocs = ref<any[]>([])
@@ -243,6 +395,7 @@ async function loadReview(id: number) {
         ? (scenRes.value.data.scenarios || []) : []
       validation.value = valRes.status === 'fulfilled' ? valRes.value.data : []
       await loadValidationContext(id)
+      await loadChanges()
     } else {
       expirations.value = null
       cotenancy.value = null
@@ -1097,6 +1250,74 @@ function statusClass(s: string): string {
     </div>
 
     <!-- New Review Modal -->
+    <!-- SETTLING ONE FINDING. The value that applies, the reason, and the document
+         it was read from — the reason is required, because a rent figure changed
+         without one is indistinguishable from a typo a month later. -->
+    <div v-if="settling" class="modal-overlay" @click.self="settling = null">
+      <div class="modal-box settle-box">
+        <h3>{{ settling.tenant }} — {{ settling.field }}</h3>
+        <p class="muted" style="margin-top:-0.5rem">
+          Suite {{ settling.suite }}. Decide which figure applies and say why; the
+          change report carries the reason and the document.
+        </p>
+
+        <label class="settle-opt">
+          <input type="radio" value="rent_roll" v-model="settleChoice" />
+          <span>Rent roll stands —
+            <b>{{ fmtByField(settling.field, settling.seller_value) }}</b></span>
+        </label>
+        <label class="settle-opt">
+          <input type="radio" value="lease" v-model="settleChoice"
+                 :disabled="settling.lease_value === null || settling.lease_value === ''" />
+          <span>The lease governs —
+            <b>{{ fmtByField(settling.field, settling.lease_value) }}</b></span>
+        </label>
+        <label class="settle-opt">
+          <input type="radio" value="other" v-model="settleChoice" />
+          <span>Another figure
+            <input type="text" v-model="settleOther" placeholder="e.g. 38037.96"
+                   :disabled="settleChoice !== 'other'" style="width:140px" />
+          </span>
+        </label>
+
+        <label class="settle-field">Reason (required)
+          <textarea v-model="settleReason" rows="3"
+                    placeholder="e.g. First Amendment fixes base rent at $38,037.96 from 2026-01-01; the rent roll carries the pre-amendment figure."></textarea>
+        </label>
+
+        <label class="settle-field">Document relied on
+          <select v-model="settleDocId">
+            <option :value="null">— none cited —</option>
+            <option v-for="d in (ctxFor(settling.tenant)?.documents || [])"
+                    :key="d.id || d.filename" :value="d.id">
+              {{ d.filename }}{{ d.applied === false ? ' (not applied)' : '' }}
+            </option>
+          </select>
+        </label>
+
+        <!-- The seller supplies what was missing, and it is read straight away. -->
+        <div class="settle-upload">
+          <span>Seller supplied a document?</span>
+          <input type="file" multiple accept=".pdf" @change="uploadSettleDoc"
+                 :disabled="settleUploading" />
+          <span v-if="settleUploading" class="muted">Loading…</span>
+          <p class="muted" style="margin:4px 0 0">
+            It is attached to this tenant, read with the same extraction as a bulk
+            load, layered into the lease terms in document order, and the validation
+            re-runs. Come back to this finding when it finishes.
+          </p>
+        </div>
+
+        <div class="modal-actions">
+          <button class="btn-secondary" @click="settling = null">Cancel</button>
+          <button class="btn-primary" :disabled="savingSettle || !settleReason.trim()"
+                  @click="saveSettle">
+            {{ savingSettle ? 'Saving…' : 'Record this reading' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <div v-if="showNewReview" class="modal-overlay" @click.self="showNewReview = false">
       <div class="modal-box">
         <h3>New Lease Review</h3>
@@ -1739,6 +1960,56 @@ function statusClass(s: string): string {
           </div>
         </div>
 
+        <!-- WHAT WAS CHANGED AGAINST THE RENT ROLL, AND WHY.
+             Jim, Sep 20 2026: "we need a clear report showing the changes with the
+             reasons for the change citing the lease document that was used."
+             Confirmations are kept beside the changes rather than dropped: a list
+             of changes alone does not say what was checked and left alone. -->
+        <div v-if="changes.change_count || changes.confirmed_count" class="changes-box">
+          <div class="changes-head">
+            <h3>Changes against the rent roll</h3>
+            <span class="changes-count">
+              {{ changes.change_count }} changed,
+              {{ changes.confirmed_count }} confirmed as stated
+            </span>
+            <a :href="changesUrl()" class="btn-secondary btn-sm" target="_blank"
+               rel="noopener">Download report</a>
+          </div>
+          <div class="table-scroll" v-if="changes.change_count">
+            <table class="data-table compact">
+              <thead>
+                <tr>
+                  <th>Tenant</th><th>Suite</th><th>Field</th>
+                  <th class="r">Rent roll</th><th class="r">Applies</th>
+                  <th class="r">Difference</th>
+                  <th>Reason</th><th>Document cited</th><th>By</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(c, i) in changes.changes" :key="'ch' + i">
+                  <td>{{ c.tenant }}</td>
+                  <td>{{ c.suite }}</td>
+                  <td>{{ c.field }}</td>
+                  <td class="r">{{ fmtByField(c.field, c.prior_value) }}</td>
+                  <td class="r">{{ fmtByField(c.field, c.value) }}</td>
+                  <td class="r">{{ fmtByField(c.field, c.difference) }}</td>
+                  <td class="notes">{{ c.reason }}</td>
+                  <td class="notes">
+                    <a v-if="c.source_doc_id" :href="docUrl(c.source_doc_id)"
+                       target="_blank" rel="noopener">{{ c.source_doc }}</a>
+                    <span v-else class="muted">none cited</span>
+                  </td>
+                  <td>{{ c.by }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p v-else class="muted" style="margin:0">
+            Nothing has been changed yet — every finding settled so far confirmed
+            the rent roll as it stands.
+          </p>
+        </div>
+
         <!-- Annual rent comparison -->
         <div v-if="annualRentValidation.length">
           <h3 style="margin-top:1.5rem">Annual Rent: Rent Roll vs Lease</h3>
@@ -1749,7 +2020,8 @@ function statusClass(s: string): string {
                   <th>Tenant</th><th>Suite</th>
                   <th class="r">RR SF</th><th class="r">RR Rent</th><th class="r">RR $/SF</th>
                   <th class="r">Lease SF</th><th class="r">Lease Rent</th><th class="r">Lease $/SF</th>
-                  <th class="c">Status</th><th>Documents applied, in order</th>
+                  <th class="c">Status</th><th>Reading</th>
+                  <th>Documents applied, in order</th>
                 </tr>
               </thead>
               <tbody>
@@ -1763,6 +2035,25 @@ function statusClass(s: string): string {
                   <td class="r">{{ money0(v.lease_value) }}</td>
                   <td class="r">{{ psf(v.lease_value, ctxFor(v.tenant)?.lease?.square_feet) }}</td>
                   <td class="c"><span :class="'badge badge-' + v.status">{{ v.status }}</span></td>
+                  <td class="read-cell">
+                    <div v-if="v.resolution" class="settled">
+                      <b>{{ fmtByField(v.field, v.resolution.value) }}</b>
+                      <span class="settled-why" :title="v.resolution.reason">
+                        {{ v.resolution.reason }}
+                      </span>
+                      <a v-if="v.resolution.source_doc_id"
+                         :href="docUrl(v.resolution.source_doc_id)" target="_blank"
+                         rel="noopener" class="settled-doc">{{ v.resolution.source_doc }}</a>
+                      <button class="linkish" @click="clearSettle(v)">undo</button>
+                    </div>
+                    <!-- A row that AGREES needs no reading; offering one on every
+                         line would bury the six that need a decision among the ten
+                         that do not. -->
+                    <button v-else-if="v.resolvable_field && v.status !== 'match'"
+                            class="btn-secondary btn-sm"
+                            @click="openSettle(v)">Settle</button>
+                    <span v-else class="muted">&mdash;</span>
+                  </td>
                   <td class="docs-cell">
                     <template v-for="(d, di) in (ctxFor(v.tenant)?.documents || [])" :key="di">
                       <a v-if="d.has_file && d.id" :href="docUrl(d.id)" target="_blank"
@@ -1787,7 +2078,7 @@ function statusClass(s: string): string {
           <div class="table-scroll">
             <table class="data-table compact">
               <thead>
-                <tr><th>Tenant</th><th>Suite</th><th>Source</th><th>Field</th><th class="r">Seller</th><th class="r">Lease</th><th class="c">Status</th><th>Basis</th></tr>
+                <tr><th>Tenant</th><th>Suite</th><th>Source</th><th>Field</th><th class="r">Seller</th><th class="r">Lease</th><th class="c">Status</th><th>Reading</th><th>Basis</th></tr>
               </thead>
               <tbody>
                 <tr v-for="(v, i) in validation" :key="i" :class="statusClass(v.status)">
@@ -1795,9 +2086,23 @@ function statusClass(s: string): string {
                   <td>{{ v.suite }}</td>
                   <td>{{ v.source_type }}</td>
                   <td>{{ v.field }}</td>
-                  <td class="r">{{ v.seller_value ?? '\u2014' }}</td>
-                  <td class="r">{{ v.lease_value ?? '\u2014' }}</td>
+                  <!-- Formatted by the FIELD, not the column: these two columns
+                       carry rents, $/SF figures, square feet and dates in turn, so
+                       a single format for the column is wrong for most of the rows
+                       -- whole dollars turn $2.38/SF into $2, and cents turn an
+                       annual rent into $50,052.00. -->
+                  <td class="r">{{ fmtByField(v.field, v.seller_value) }}</td>
+                  <td class="r">{{ fmtByField(v.field, v.lease_value) }}</td>
                   <td class="c"><span :class="'badge badge-' + v.status">{{ v.status }}</span></td>
+                  <td class="read-cell">
+                    <div v-if="v.resolution" class="settled">
+                      <b>{{ fmtByField(v.field, v.resolution.value) }}</b>
+                      <button class="linkish" @click="clearSettle(v)">undo</button>
+                    </div>
+                    <button v-else-if="v.resolvable_field && v.status !== 'match'"
+                            class="btn-secondary btn-sm" @click="openSettle(v)">Settle</button>
+                    <span v-else class="muted">&mdash;</span>
+                  </td>
                   <!-- The note says WHICH rent step the lease figure came from and
                        how it was dated, and for a tenant whose rent cannot be placed
                        on the calendar it is the entire finding. The column existed in
@@ -1964,6 +2269,33 @@ function statusClass(s: string): string {
 }
 .map-rrd.unset { background: #fff6e5; border-color: #f0c674; }
 .map-rrd-why { color: #7a5200; max-width: 640px; }
+.changes-box {
+  margin: 1rem 0; padding: 10px 12px; border: 1px solid #dde3ea;
+  border-radius: 4px; background: #fbfcfd;
+}
+.changes-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.changes-head h3 { margin: 0; font-size: 1rem; color: #1F4E79; }
+.changes-count { color: #4a5568; font-size: 12px; }
+.btn-sm { padding: 2px 8px; font-size: 11px; }
+.read-cell { min-width: 150px; font-size: 11px; }
+.settled { display: flex; flex-direction: column; gap: 1px; }
+.settled-why {
+  color: #4a5568; max-width: 220px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.settled-doc { font-size: 10px; }
+.linkish {
+  background: none; border: none; padding: 0; color: #1F4E79;
+  text-decoration: underline; cursor: pointer; font-size: 10px; text-align: left;
+}
+.settle-box { max-width: 560px; }
+.settle-opt { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 13px; }
+.settle-field { display: block; margin: 10px 0; font-size: 13px; }
+.settle-field textarea, .settle-field select { width: 100%; margin-top: 4px; }
+.settle-upload {
+  margin-top: 10px; padding: 8px; border: 1px dashed #c3ccd9;
+  border-radius: 4px; font-size: 12px;
+}
 .rrd-bar {
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
   margin-bottom: 1rem; padding: 8px 12px; border-radius: 4px;

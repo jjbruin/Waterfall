@@ -23,6 +23,7 @@ from flask_app.services.lease_terms import (
     amendment_ordinal, order_lease_documents, resolve_rent_steps,
     rent_psf_for, annual_rent_from, step_in_force_at,
     parse_relative_period, month_to_date,
+    cam_fixed_in_force, annual_recovery_psf,
 )
 
 logger = logging.getLogger(__name__)
@@ -1737,6 +1738,7 @@ def upload_documents_to_review(
     files: List[Tuple[str, bytes]],
     uploaded_by: str = 'system',
     folder_hints: Optional[List[str]] = None,
+    force_tenant_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Upload multiple PDF documents to a review with dedup and auto-matching.
 
@@ -1744,6 +1746,14 @@ def upload_documents_to_review(
         files: List of (filename, file_bytes) tuples.
         folder_hints: Optional list of subfolder names (one per file, same order)
                       used as additional signal for tenant matching.
+        force_tenant_id: Attach every file to THIS tenant instead of matching by
+                      filename. Used when the seller supplies a missing document
+                      against a specific finding (Jim, Sep 20 2026: "If the seller
+                      provides missing documentation, then we should be able to
+                      load that document right here") -- the analyst has already
+                      said whose it is, so guessing from the filename could only
+                      disagree with them. A PARAMETER, not a second uploader: the
+                      dedup, classification, doc_date and ordinal are the same.
 
     Returns dict with counts: {added, skipped_duplicate, unmatched, details}.
     """
@@ -1796,8 +1806,9 @@ def upload_documents_to_review(
             folder_hint = (folder_hints[i]
                            if folder_hints and i < len(folder_hints)
                            else None)
-            tenant_id = _match_file_to_tenant(filename, tenants,
-                                              folder_hint=folder_hint)
+            tenant_id = (force_tenant_id if force_tenant_id is not None
+                         else _match_file_to_tenant(filename, tenants,
+                                                    folder_hint=folder_hint))
 
             if tenant_id is None:
                 unmatched += 1
@@ -2317,6 +2328,9 @@ Return a JSON object with these fields (use null for fields not found):
   "escalation_structure": "fixed $ / fixed % / CPI / other",
   "security_deposit": number,
   "cam_structure": "pro rata / fixed / gross",
+  "cam_fixed": [
+    {{"period": "verbatim text, e.g. 2026 to 2030", "year_start": number, "year_end": number or null, "per_sf": number or null, "annual": number or null, "monthly": number or null}}
+  ],
   "cam_cap_pct": number or null,
   "admin_fee_pct": number or null,
   "tax_pass_through": true/false,
@@ -2416,6 +2430,14 @@ IMPORTANT:
   real one. Month 1 is the month rent commences.
 - rent_commencement is the date RENT begins, which is frequently NOT the lease
   commencement date. Return it whenever the document states or confirms it.
+- WHEN RECOVERIES ARE A FIXED AMOUNT, RETURN THE AMOUNT AND NOT ONLY THE WORD.
+  cam_structure "fixed" says a lease does not bill a pro-rata share, and on its own
+  it cannot be checked against anything. An amendment stating "a fixed amount for
+  Tenant's Proportionate Share of Operating Expenses" is normally followed by a
+  SCHEDULE of years and amounts -- put each row in cam_fixed with its verbatim
+  period, the years it spans, and whichever of per_sf / annual / monthly the
+  document states. Do not compute the ones it does not state. Leave cam_fixed empty
+  for a pro-rata or gross lease.
 - For amendments, only return CHANGED fields; unchanged fields should be null
 - Dates must be YYYY-MM-DD format
 - Dollar amounts should be numbers (no $ signs)
@@ -2909,11 +2931,16 @@ def reset_extraction_data(engine, review_id: int) -> Dict[str, int]:
 # ---------------------------------------------------------------------------
 
 def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None,
-                          progress_callback=None):
+                          progress_callback=None, tenant_id: Optional[int] = None):
     """Extract text from all PDFs and run Claude extraction for key documents.
 
     Prioritizes Original Lease and Amendment documents.
     progress_callback: optional callable(extracted_count, total, current_file)
+    tenant_id: extract only this tenant's pending documents. A SCOPE, not a
+        second extractor -- a document supplied against one finding should not
+        start a review-wide run, and the model, the prompt, the scan routing and
+        the consolidation must stay identical or the two paths would produce
+        different terms from the same PDF.
     """
     from sqlalchemy import text as sql_text
 
@@ -2929,8 +2956,9 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None,
             JOIN lease_tenants t ON t.id = d.tenant_id
             WHERE d.review_id = :rid
             AND d.extraction_status IN ('pending', 'text_extracted')
+            AND (:tid IS NULL OR d.tenant_id = :tid)
             ORDER BY d.tenant_id, d.doc_date
-        """), {'rid': review_id}).fetchall()
+        """), {'rid': review_id, 'tid': tenant_id}).fetchall()
 
         logger.info(f"Extracting {len(docs)} documents for review {review_id}")
 
@@ -3369,6 +3397,15 @@ def _merge_extraction_terms(base: Dict, amendment: Dict) -> Dict:
     # replaces the set, since it restates the restriction as amended.
     if amendment.get('exclusive_use'):
         merged['exclusive_use'] = amendment['exclusive_use']
+
+    # cam_fixed is a LIST, so it belongs to neither list above and would have been
+    # dropped silently by a whitelist that only knows scalars and objects -- and
+    # dropped in exactly the wrong direction, since the fixed recovery schedule is
+    # stated BY the amendment (AT&T Mobility's 4th Amendment on Market at Poplar is
+    # the live case). An amendment that restates the schedule replaces it whole; one
+    # that says nothing about recoveries leaves the base lease's schedule standing.
+    if amendment.get('cam_fixed'):
+        merged['cam_fixed'] = amendment['cam_fixed']
     for key in object_keys:
         val = amendment.get(key)
         if val and isinstance(val, dict) and any(v is not None for v in val.values()):
@@ -3629,7 +3666,8 @@ def validate_rent_roll(
         tenants = conn.execute(text("""
             SELECT id, tenant_name, suite, square_feet, lease_start,
                    lease_end, monthly_rent, annual_rent, rent_per_sf,
-                   security_deposit, extraction_json, extraction_status
+                   security_deposit, extraction_json, extraction_status,
+                   annual_recoveries_per_sf
             FROM lease_tenants
             WHERE review_id = :rid AND is_vacant = false
             ORDER BY suite
@@ -3646,6 +3684,7 @@ def validate_rent_roll(
             rr_annual = t[7]
             rr_rpsf = t[8]
             extraction_status = t[11]
+            rr_rec_psf = t[12]
 
             # --- The rent the LEASE says is in force on the rent roll date ---
             #
@@ -3811,6 +3850,72 @@ def validate_rent_roll(
                     'status': 'pending',
                     'notes': 'Lease not yet extracted',
                 })
+
+            # --- 1b. Recoveries: a lease that FIXES them can be checked ---
+            #
+            # Jim, Sep 20 2026, having read the AT&T Mobility 4th Amendment:
+            # "one of the lease amendments was stating a fixed CAM charge for the
+            # lease. Is this situation part of the lease review and validation to
+            # the rent roll?" It was not. The extraction stored the WORD "fixed"
+            # and no amount, so there was nothing to compare and no finding was
+            # ever raised -- on a term the amendment caps in both directions
+            # ("in excess of or below").
+            #
+            # OUTSIDE the `current_step` branch on purpose: a fixed recovery is
+            # stated independently of the rent schedule, so a tenant whose rent
+            # step will not resolve can still have its recoveries checked.
+            cam_fixed = ext.get('cam_fixed') if isinstance(ext, dict) else None
+            if cam_fixed and rr_date:
+                cam_row, cam_basis = cam_fixed_in_force(cam_fixed, rr_date)
+                lease_rec_psf = annual_recovery_psf(cam_row, rr_sf)
+                if lease_rec_psf is not None:
+                    # WHETHER THIS IS A MISMATCH OR A QUESTION DEPENDS ON WHAT THE
+                    # RENT ROLL'S COLUMN MEANS. Ours is a SINGLE recoveries figure
+                    # -- the import sums CAM, insurance and tax into it -- while
+                    # the lease fixes the operating-expense share alone. If the
+                    # lease also passes taxes or insurance through separately, the
+                    # two sides are not the same quantity and calling a difference
+                    # a mismatch would be wrong; it is reported as a question, with
+                    # both figures and the reason, for someone to settle. Only when
+                    # the lease passes NEITHER through are they comparable, and
+                    # then a difference is a real mismatch.
+                    separate = bool(ext.get('tax_pass_through')) or bool(
+                        ext.get('insurance_pass_through'))
+                    if separate:
+                        status = 'review'
+                        note = (cam_basis + ' The rent roll figure is TOTAL '
+                                'recoveries (CAM, insurance and tax together) '
+                                'while the lease fixes the operating-expense '
+                                'share alone and passes tax and/or insurance '
+                                'through separately, so these are not the same '
+                                'quantity -- compare against the CAM component.')
+                    else:
+                        status = _compare_amounts(rr_rec_psf, lease_rec_psf,
+                                                  tolerance=0.05)
+                        note = (cam_basis + ' The lease passes neither tax nor '
+                                'insurance through separately, so the fixed '
+                                'amount is the whole recovery.')
+                    conn.execute(text("""
+                        INSERT INTO lease_validation
+                            (tenant_id, field_name, source_type,
+                             seller_value, lease_value, status, source_doc, notes)
+                        VALUES (:tid, 'annual_recoveries_per_sf', 'rent_roll',
+                                :sv, :lv, :st, 'rent_roll', :notes)
+                    """), {
+                        'tid': tenant_id,
+                        'sv': str(rr_rec_psf) if rr_rec_psf is not None else None,
+                        'lv': str(round(lease_rec_psf, 4)),
+                        'st': status, 'notes': note,
+                    })
+                    results.append({
+                        'tenant': tenant_name, 'suite': suite,
+                        'field': 'annual_recoveries_per_sf',
+                        'source_type': 'rent_roll',
+                        'seller_value': (str(rr_rec_psf)
+                                         if rr_rec_psf is not None else None),
+                        'lease_value': str(round(lease_rec_psf, 4)),
+                        'status': status, 'notes': note,
+                    })
 
             # --- 2. Argus vs Lease Validation ---
             if len(argus_df) and ext:
@@ -4754,6 +4859,9 @@ CREATE TABLE IF NOT EXISTS lease_field_resolutions (
     resolved_source TEXT DEFAULT 'analyst_override',
     resolved_by     TEXT,
     resolved_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    reason          TEXT,
+    source_doc_id   INTEGER,
+    prior_value     TEXT,
     UNIQUE (tenant_id, field_name)
 )
 """
@@ -4773,12 +4881,38 @@ def ensure_resolution_table(engine):
            else LEASE_RESOLUTION_DDL_PG)
     with engine.begin() as conn:
         conn.execute(text(ddl))
+    # BY MIGRATION AS WELL AS DDL: production already has this table, and
+    # CREATE TABLE IF NOT EXISTS would not have touched it -- the v507 lesson. A
+    # resolution recorded without its reason and its cited document is just a
+    # number somebody typed, which is the thing this is meant to replace.
+    for col, typ in (('reason', 'TEXT'),
+                     ('source_doc_id', 'INTEGER'),
+                     ('prior_value', 'TEXT')):
+        _migrate_add_column(engine, 'lease_field_resolutions', col, typ)
 
 
 # Resolvable fields and which columns they map to on lease_tenants
 RESOLVABLE_FIELDS = {
     'square_feet', 'annual_rent', 'monthly_rent', 'rent_per_sf',
     'lease_start', 'lease_end', 'security_deposit',
+    'annual_recoveries_per_sf',
+}
+
+#: A validation row names the field as the COMPARISON calls it; a resolution names
+#: it as the tenant record calls it. They are not the same vocabulary and the two
+#: that differ are the ones that matter: `lease_expiration` is stored as `lease_end`,
+#: and `rent_step_in_force` is not a value at all -- it is the finding that the app
+#: could not say WHICH rent applies, and settling it is a decision about the annual
+#: rent. Mapping them here rather than at each call site keeps one answer to "what
+#: does resolving this row change".
+VALIDATION_FIELD_TO_RESOLVABLE = {
+    'annual_rent': 'annual_rent',
+    'monthly_rent': 'monthly_rent',
+    'rent_per_sf': 'rent_per_sf',
+    'square_feet': 'square_feet',
+    'lease_expiration': 'lease_end',
+    'rent_step_in_force': 'annual_rent',
+    'annual_recoveries_per_sf': 'annual_recoveries_per_sf',
 }
 
 
@@ -4789,10 +4923,25 @@ def resolve_field(
     resolved_value: str,
     resolved_source: str = 'analyst_override',
     resolved_by: str = 'system',
+    reason: Optional[str] = None,
+    source_doc_id: Optional[int] = None,
+    prior_value: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Save an analyst's resolution for a specific field on a tenant.
 
     Uses UPSERT (INSERT ON CONFLICT UPDATE) to handle re-resolution.
+
+    `reason`, `source_doc_id` and `prior_value` are what make a resolution a
+    RECORD rather than an override. Jim, Sep 20 2026: "If the analyst determines
+    that the applicable rent is different from the rent roll, we need a clear
+    report showing the changes with the reasons for the change citing the lease
+    document that was used." A figure changed with no reason and no document is
+    indistinguishable from a typo six months later, and the rent roll is what the
+    purchase price is built on.
+
+    `prior_value` is stored rather than looked up later because the rent roll can
+    be re-imported: whatever it says next week, the record must still say what was
+    changed and from what.
     """
     from sqlalchemy import text
 
@@ -4802,33 +4951,35 @@ def resolve_field(
 
     ensure_resolution_table(engine)
 
+    params = {
+        'tid': tenant_id, 'fn': field_name,
+        'rv': resolved_value, 'rs': resolved_source, 'rb': resolved_by,
+        'rn': reason, 'sd': source_doc_id, 'pv': prior_value,
+    }
     with engine.begin() as conn:
         if engine.dialect.name == 'postgresql':
             conn.execute(text("""
                 INSERT INTO lease_field_resolutions
                     (tenant_id, field_name, resolved_value, resolved_source,
-                     resolved_by, resolved_at)
-                VALUES (:tid, :fn, :rv, :rs, :rb, CURRENT_TIMESTAMP)
+                     resolved_by, resolved_at, reason, source_doc_id, prior_value)
+                VALUES (:tid, :fn, :rv, :rs, :rb, CURRENT_TIMESTAMP, :rn, :sd, :pv)
                 ON CONFLICT (tenant_id, field_name)
                 DO UPDATE SET resolved_value = :rv, resolved_source = :rs,
-                              resolved_by = :rb, resolved_at = CURRENT_TIMESTAMP
-            """), {
-                'tid': tenant_id, 'fn': field_name,
-                'rv': resolved_value, 'rs': resolved_source, 'rb': resolved_by,
-            })
+                              resolved_by = :rb, resolved_at = CURRENT_TIMESTAMP,
+                              reason = :rn, source_doc_id = :sd, prior_value = :pv
+            """), params)
         else:
             conn.execute(text("""
                 INSERT OR REPLACE INTO lease_field_resolutions
                     (tenant_id, field_name, resolved_value, resolved_source,
-                     resolved_by, resolved_at)
-                VALUES (:tid, :fn, :rv, :rs, :rb, CURRENT_TIMESTAMP)
-            """), {
-                'tid': tenant_id, 'fn': field_name,
-                'rv': resolved_value, 'rs': resolved_source, 'rb': resolved_by,
-            })
+                     resolved_by, resolved_at, reason, source_doc_id, prior_value)
+                VALUES (:tid, :fn, :rv, :rs, :rb, CURRENT_TIMESTAMP, :rn, :sd, :pv)
+            """), params)
 
     return {'tenant_id': tenant_id, 'field_name': field_name,
-            'resolved_value': resolved_value, 'resolved_source': resolved_source}
+            'resolved_value': resolved_value, 'resolved_source': resolved_source,
+            'reason': reason, 'source_doc_id': source_doc_id,
+            'prior_value': prior_value}
 
 
 def clear_resolution(engine, tenant_id: int, field_name: str) -> None:
@@ -4871,7 +5022,8 @@ def get_resolved_tenants(
                    annual_rent, rent_per_sf, security_deposit,
                    is_vacant, is_material, has_cotenancy, has_exclusive_use,
                    extraction_status, approval_status, tenant_status,
-                   successor_tenant_id, replaced_by_event_id
+                   successor_tenant_id, replaced_by_event_id,
+                   annual_recoveries_per_sf
             FROM lease_tenants
             WHERE review_id = :rid {status_filter}
             ORDER BY suite
@@ -4907,7 +5059,8 @@ def get_resolved_tenants(
                 raw = tenant_res[field_name]['value']
                 # Try numeric conversion for numeric fields
                 if field_name in ('square_feet', 'annual_rent', 'monthly_rent',
-                                  'rent_per_sf', 'security_deposit'):
+                                  'rent_per_sf', 'security_deposit',
+                                  'annual_recoveries_per_sf'):
                     try:
                         return float(raw) if raw else default_val
                     except (ValueError, TypeError):
@@ -4937,6 +5090,11 @@ def get_resolved_tenants(
             'tenant_status': t[18] or 'active',
             'successor_tenant_id': t[19],
             'replaced_by_event_id': t[20],
+            # Resolvable for the same reason the rent is: a lease stating a FIXED
+            # recovery is checkable against the rent roll, and when they disagree
+            # the analyst's reading has to reach everything downstream, not just
+            # the change report.
+            'annual_recoveries_per_sf': resolved('annual_recoveries_per_sf', t[21]),
             'resolutions': {
                 fn: {'value': info['value'], 'source': info['source']}
                 for fn, info in tenant_res.items()
@@ -4946,6 +5104,90 @@ def get_resolved_tenants(
 
     return result
 
+
+
+# ---------------------------------------------------------------------------
+# The record of what the analyst decided, and the report of what changed
+# ---------------------------------------------------------------------------
+#
+# Jim, Sep 20 2026: "how does the analyst clear the mismatches on this page? If
+# the analyst determines that the applicable rent is different from the rent roll,
+# we need a clear report showing the changes with the reasons for the change citing
+# the lease document that was used."
+#
+# There was no way to clear one. The screen listed findings and the only control
+# anywhere near them was a per-TENANT approve/flag on a later step, which records
+# no value, no reason and no document -- so a mismatch stayed on the page for ever
+# and the decision that settled it lived in somebody's email.
+
+
+def validation_resolutions(engine, review_id: int) -> List[Dict[str, Any]]:
+    """Every field resolution on this review, with the document each one cites.
+
+    Keyed by (tenant_id, field) so the validation screen can mark a settled row
+    rather than going on asking about it -- the v499 lesson: a finding that has
+    been read must stop asking, or the analyst cannot tell the outstanding ones
+    from the settled ones.
+    """
+    from sqlalchemy import text
+    ensure_resolution_table(engine)
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT r.tenant_id, r.field_name, r.resolved_value, r.resolved_source,
+                   r.resolved_by, r.resolved_at, r.reason, r.source_doc_id,
+                   r.prior_value, t.tenant_name, t.suite, d.filename
+            FROM lease_field_resolutions r
+            JOIN lease_tenants t ON t.id = r.tenant_id
+            LEFT JOIN lease_documents d ON d.id = r.source_doc_id
+            WHERE t.review_id = :rid
+            ORDER BY t.tenant_name, r.field_name
+        """), {'rid': review_id}).fetchall()
+    return [{
+        'tenant_id': r[0], 'field': r[1], 'value': r[2], 'source': r[3],
+        'by': r[4], 'at': str(r[5]) if r[5] else None, 'reason': r[6],
+        'source_doc_id': r[7], 'prior_value': r[8],
+        'tenant': r[9], 'suite': r[10],
+        'source_doc': (r[11] or '').rsplit('/', 1)[-1] or None,
+    } for r in rows]
+
+
+def rent_roll_changes(engine, review_id: int) -> Dict[str, Any]:
+    """What the analyst has changed against the rent roll, and why.
+
+    ONE ROW PER CHANGE, carrying the rent roll's figure, the figure that now
+    applies, the difference, the reason and the document it was read from. A row
+    where the analyst confirmed the rent roll is NOT a change and is reported
+    separately -- "23 findings, 6 changes, 4 confirmed" is the shape of an answer;
+    a list mixing them is not.
+
+    `prior_value` is read from the resolution rather than from the tenant record,
+    because the rent roll can be re-imported and the record must still say what
+    was changed and from what.
+    """
+    resolutions = validation_resolutions(engine, review_id)
+    changes, confirmed = [], []
+    for r in resolutions:
+        prior, new = r.get('prior_value'), r.get('value')
+        delta = None
+        try:
+            if prior not in (None, '') and new not in (None, ''):
+                delta = float(new) - float(prior)
+        except (TypeError, ValueError):
+            delta = None
+        row = dict(r)
+        row['difference'] = delta
+        # A change is a change if the numbers differ; where they cannot be
+        # compared as numbers (a date, say) fall back to the text.
+        same = (delta == 0) if delta is not None else (
+            str(prior or '') == str(new or ''))
+        (confirmed if same else changes).append(row)
+    return {
+        'review_id': review_id,
+        'changes': changes,
+        'confirmed': confirmed,
+        'change_count': len(changes),
+        'confirmed_count': len(confirmed),
+    }
 
 def get_resolved_expiration_histogram(
     engine, review_id: int, years: int = 10,
