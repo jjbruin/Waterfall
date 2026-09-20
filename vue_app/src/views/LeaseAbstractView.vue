@@ -12,6 +12,15 @@ interface AbstractSection {
   content: string
   lease_ref: string
   sort_order: number
+  // Set when the leases have moved since a PERSON wrote this section. The
+  // abstract used to freeze the moment anyone saved it: `get_tenant_abstract`
+  // assembles from data only when NO section is stored, so adding an amendment
+  // that extended a term left the abstract stating the old expiry with nothing
+  // saying it was out of date. Their words are never overwritten -- the newly
+  // assembled text is carried beside them to take or reject.
+  stale?: boolean
+  stale_at?: string | null
+  proposed_content?: string | null
 }
 
 interface AbstractData {
@@ -75,6 +84,15 @@ async function loadAbstract() {
   } finally {
     loading.value = false
   }
+}
+
+// Taking the proposal puts it in the editor rather than saving it outright: the
+// analyst is accepting text into their own section, and they should see it in
+// place before it becomes the record. Saving is what clears the marker.
+function takeProposed(sec: AbstractSection) {
+  if (!sec.proposed_content) return
+  sec.content = sec.proposed_content
+  editing.value = true
 }
 
 async function saveAbstract() {
@@ -220,6 +238,16 @@ watch(tenantId, () => { loadAbstract() })
                   </span>
                   <span v-if="s.lease_ref" class="lease-ref">({{ s.lease_ref }})</span>
                 </template>
+                <div v-if="s.stale" class="stale-note">
+                  <b>The leases have changed since this was written.</b>
+                  <div class="stale-proposed">{{ s.proposed_content || '(nothing)' }}</div>
+                  <button class="btn-secondary btn-xs" @click="takeProposed(s)">
+                    Use the updated text
+                  </button>
+                  <span class="muted">
+                    Or edit and save to keep your own wording; either clears this.
+                  </span>
+                </div>
               </td>
             </tr>
           </template>
@@ -397,6 +425,17 @@ watch(tenantId, () => { loadAbstract() })
   font-size: 0.85rem;
   white-space: nowrap;
 }
+.stale-note {
+  margin-top: 6px; padding: 6px 8px; border-radius: 4px;
+  background: #fff6e5; border: 1px solid #f0c674; font-size: 12px;
+}
+.stale-note b { display: block; color: #7a5200; }
+.stale-proposed {
+  margin: 4px 0; padding: 4px 6px; background: #fff; border: 1px solid #eadfc4;
+  border-radius: 3px; white-space: pre-wrap;
+}
+.btn-xs { padding: 2px 8px; font-size: 11px; }
+.muted { color: #718096; }
 .section-content {
   font-size: 0.85rem;
   line-height: 1.5;

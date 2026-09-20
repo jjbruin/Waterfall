@@ -30,6 +30,7 @@ from flask_app.services.lease_review_service import (
     validation_resolutions,
     rent_roll_changes,
     consolidate_tenant_extractions,
+    rerun_tenant_extraction,
     VALIDATION_FIELD_TO_RESOLVABLE,
     get_risk_analysis_data,
     get_tenant_abstract,
@@ -1006,6 +1007,49 @@ def clear_validation_finding(review_id):
                     'tenant_id': tenant_id})
 
 
+@lease_review_bp.route('/reviews/<int:review_id>/tenants/<int:tenant_id>/reextract',
+                       methods=['POST'])
+@login_required
+@role_required('admin', 'analyst')
+def reextract_tenant(review_id, tenant_id):
+    """Re-read this tenant's whole set of leases and rebuild what follows.
+
+    Jim, Sep 20 2026: "When we add a lease document to a previously scanned
+    tenant's record, we should rerun the extraction just on that tenant's set of
+    leases... rerun that tenant's extract updating the abstract, downstream lease
+    risk analyses, and all validation records etc."
+
+    Separate from the upload because the two are separate acts: a document can
+    arrive in a bulk load, or be assigned to a tenant from the unmatched list, and
+    the tenant still needs re-reading. Also the way to pick a tenant up after the
+    prompt has changed.
+    """
+    engine = get_engine()
+    job = _extraction_jobs.get(review_id)
+    if job and job['status'] == 'running':
+        return jsonify({'status': 'already_running', **job}), 409
+
+    def _progress(extracted, total, current_file):
+        _extraction_jobs[review_id].update(
+            extracted=extracted, total=total, current_file=current_file)
+
+    def _run():
+        try:
+            _extraction_jobs[review_id] = {
+                'status': 'running', 'extracted': 0, 'total': 0,
+                'current_file': '', 'error': None, 'tenant_id': tenant_id,
+            }
+            report = rerun_tenant_extraction(
+                engine, review_id, tenant_id, progress_callback=_progress)
+            _extraction_jobs[review_id].update(status='complete', report=report)
+        except Exception as e:
+            logger.error(f"Tenant re-extraction error: {e}", exc_info=True)
+            _extraction_jobs[review_id].update(status='failed', error=str(e))
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({'status': 'started', 'tenant_id': tenant_id})
+
+
 @lease_review_bp.route('/reviews/<int:review_id>/rent-roll-changes', methods=['GET'])
 @login_required
 def get_rent_roll_changes(review_id):
@@ -1126,13 +1170,16 @@ def upload_tenant_document(review_id, tenant_id):
         try:
             _extraction_jobs[review_id] = {
                 'status': 'running', 'extracted': 0, 'total': 0,
-                'current_file': '', 'error': None,
+                'current_file': '', 'error': None, 'tenant_id': tenant_id,
             }
-            extract_all_documents(engine, review_id, progress_callback=_progress,
-                                  tenant_id=tenant_id)
-            consolidate_tenant_extractions(engine, tenant_id)
-            validate_rent_roll(engine, review_id)
-            _extraction_jobs[review_id]['status'] = 'complete'
+            # THE TENANT'S WHOLE SET, not just the file that arrived (Jim, Sep 20
+            # 2026). Reading only the new document leaves the terms assembled from
+            # a mixture of prompt versions, and the prompt moves -- cam_fixed and
+            # escalation_pct arrived this week. It also refreshes the abstract and
+            # re-validates, which reading one document did not.
+            report = rerun_tenant_extraction(
+                engine, review_id, tenant_id, progress_callback=_progress)
+            _extraction_jobs[review_id].update(status='complete', report=report)
         except Exception as e:
             logger.error(f"Tenant document extraction error: {e}", exc_info=True)
             _extraction_jobs[review_id]['status'] = 'failed'

@@ -203,30 +203,65 @@ function changesUrl() {
 
 // The seller supplies the missing document, and it is loaded against THIS tenant
 // rather than hunted for in a bulk upload that matches on filename.
-async function uploadSettleDoc(ev: Event) {
+//
+// FILES ARE STAGED AND THE QUESTION IS ASKED BEFORE ANYTHING RUNS (Jim, Sep 20
+// 2026: "Ask the user if any other files will be loaded before running, if yes,
+// prompt the next upload, if no, load the files and rerun that tenant's
+// extract"). Uploading on choose started a re-read per drop, so three files
+// arriving one at a time meant three runs over the same tenant -- each paying for
+// the whole set again, and the first two immediately superseded.
+const stagedFiles = ref<File[]>([])
+const stageInput = ref<HTMLInputElement | null>(null)
+
+function stageSettleDocs(ev: Event) {
   const input = ev.target as HTMLInputElement
-  if (!input.files?.length || !settling.value) return
+  if (!input.files?.length) return
+  stagedFiles.value = [...stagedFiles.value, ...Array.from(input.files)]
+  input.value = ''
+}
+function unstage(i: number) {
+  stagedFiles.value = stagedFiles.value.filter((_, n) => n !== i)
+}
+async function loadStagedAndRerun() {
+  if (!settling.value || !stagedFiles.value.length) return
   const fd = new FormData()
-  for (const f of Array.from(input.files)) fd.append('files', f)
+  for (const f of stagedFiles.value) fd.append('files', f)
   settleUploading.value = true
   try {
     const { data } = await api.post(
       `/api/lease-review/reviews/${selectedReviewId.value}`
       + `/tenants/${settling.value.tenant_id}/documents`, fd)
+    stagedFiles.value = []
     if (data.extraction === 'already_running') {
-      alert('The document was loaded. An extraction is already running, so it will '
-        + 'be read when that finishes.')
+      alert(data.added + ' document(s) loaded. An extraction is already running, '
+        + 'so this tenant will be re-read when it finishes.')
     } else {
-      alert(`${data.added} document(s) loaded. Reading them now — the lease side `
-        + 'updates when extraction finishes.')
+      alert(data.added + ' document(s) loaded. Re-reading this tenant\'s whole set '
+        + 'of leases - the terms, the abstract and the validation all update when '
+        + 'it finishes.')
       pollExtraction()
     }
   } catch (e: any) {
     alert(e.response?.data?.error || 'Upload failed')
   } finally {
     settleUploading.value = false
-    input.value = ''
   }
+}
+// Re-read without adding anything: for a document that arrived in a bulk load or
+// was assigned from the unmatched list, and for picking a tenant up after the
+// extraction itself has changed.
+async function rerunTenant() {
+  if (!settling.value) return
+  if (!confirm('Re-read every lease document for this tenant?')) return
+  settleUploading.value = true
+  try {
+    await api.post(`/api/lease-review/reviews/${selectedReviewId.value}`
+      + `/tenants/${settling.value.tenant_id}/reextract`)
+    alert('Re-reading this tenant. The screen updates when it finishes.')
+    pollExtraction()
+  } catch (e: any) {
+    alert(e.response?.data?.error || 'Could not start')
+  } finally { settleUploading.value = false }
 }
 function pollExtraction() {
   const iv = setInterval(async () => {
@@ -1295,16 +1330,43 @@ function statusClass(s: string): string {
           </select>
         </label>
 
-        <!-- The seller supplies what was missing, and it is read straight away. -->
+        <!-- The seller supplies what was missing. Files are staged, and nothing
+             runs until the analyst says there are no more to come. -->
         <div class="settle-upload">
           <span>Seller supplied a document?</span>
-          <input type="file" multiple accept=".pdf" @change="uploadSettleDoc"
-                 :disabled="settleUploading" />
-          <span v-if="settleUploading" class="muted">Loading…</span>
+          <input ref="stageInput" type="file" multiple accept=".pdf"
+                 @change="stageSettleDocs" :disabled="settleUploading" />
+          <ul v-if="stagedFiles.length" class="staged">
+            <li v-for="(f, i) in stagedFiles" :key="i">
+              {{ f.name }}
+              <button class="linkish" @click="unstage(i)">remove</button>
+            </li>
+          </ul>
+          <div v-if="stagedFiles.length" class="staged-ask">
+            <b>Any other files for this tenant?</b>
+            <span class="muted">
+              Add them now - everything loads together and the tenant is read once.
+            </span>
+            <div class="staged-actions">
+              <button class="btn-secondary btn-sm" :disabled="settleUploading"
+                      @click="stageInput?.click()">Yes - add more</button>
+              <button class="btn-primary btn-sm" :disabled="settleUploading"
+                      @click="loadStagedAndRerun">
+                {{ settleUploading ? 'Loading...'
+                   : 'No - load ' + stagedFiles.length + ' and re-read this tenant' }}
+              </button>
+            </div>
+          </div>
           <p class="muted" style="margin:4px 0 0">
-            It is attached to this tenant, read with the same extraction as a bulk
-            load, layered into the lease terms in document order, and the validation
-            re-runs. Come back to this finding when it finishes.
+            The files attach to this tenant and its <b>whole set</b> of leases is
+            read again with the same extraction as a bulk load, layered in document
+            order. The terms, the abstract and every validation record update when
+            it finishes; the risk analysis reads them directly, so it follows.
+          </p>
+          <p style="margin:6px 0 0">
+            <button class="linkish" :disabled="settleUploading" @click="rerunTenant">
+              Re-read this tenant's leases without adding a document
+            </button>
           </p>
         </div>
 
@@ -2296,6 +2358,13 @@ function statusClass(s: string): string {
   margin-top: 10px; padding: 8px; border: 1px dashed #c3ccd9;
   border-radius: 4px; font-size: 12px;
 }
+.staged { margin: 6px 0; padding-left: 18px; }
+.staged li { margin: 2px 0; }
+.staged-ask {
+  margin-top: 6px; padding: 6px 8px; background: #f4f6f8; border-radius: 4px;
+}
+.staged-ask b { display: block; margin-bottom: 2px; }
+.staged-actions { display: flex; gap: 8px; margin-top: 6px; }
 .rrd-bar {
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
   margin-bottom: 1rem; padding: 8px 12px; border-radius: 4px;

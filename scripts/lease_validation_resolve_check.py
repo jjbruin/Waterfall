@@ -515,10 +515,16 @@ chk('the uploader takes an explicit tenant',
 chk('...and the extraction is SCOPED, not reimplemented',
     'tenant_id' in inspect.signature(S.extract_all_documents).parameters)
 src = inspect.getsource(LR_.upload_tenant_document)
-chk('the upload runs the same extraction', 'extract_all_documents(' in src)
-chk('...then consolidates the tenant', 'consolidate_tenant_extractions(' in src)
-chk('...then re-validates, so the screen cannot look unchanged',
-    'validate_rent_roll(' in src)
+# It composes ONE function rather than repeating the three steps, so there is a
+# single answer to "what happens after a document arrives". The steps themselves
+# are asserted behaviourally in lease_tenant_rerun_check.
+chk('the upload runs the tenant-wide re-read', 'rerun_tenant_extraction(' in src)
+rsrc = inspect.getsource(S.rerun_tenant_extraction)
+chk('...which runs the same extraction', 'extract_all_documents(' in rsrc)
+chk('...consolidates the tenant', 'consolidate_tenant_extractions(' in rsrc)
+chk('...refreshes the abstract', 'refresh_tenant_abstract(' in rsrc)
+chk('...and re-validates, so the screen cannot look unchanged',
+    'validate_rent_roll(' in rsrc)
 
 
 section('The screen formats by FIELD, and offers the control')
@@ -549,8 +555,8 @@ if os.path.exists(V):
     chk('the change report is on the page', 'changes-box' in v
         and 'Changes against the rent roll' in v)
     chk('...and downloads', 'changesUrl()' in v)
-    chk('the seller\'s document can be loaded from the finding',
-        'uploadSettleDoc' in v)
+    chk("the seller's document can be loaded from the finding",
+        'stageSettleDocs' in v and 'loadStagedAndRerun' in v)
 else:
     print('  SKIP  Vue source not present')
 

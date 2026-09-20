@@ -307,6 +307,8 @@ LEASE_DDL_PG = [
         sort_order      INTEGER DEFAULT 0,
         updated_by      TEXT,
         updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        stale_at        TIMESTAMP,
+        proposed_content TEXT,
         UNIQUE(tenant_id, section_key)
     )
     """,
@@ -550,6 +552,10 @@ def ensure_lease_tables(engine):
     _migrate_add_column(engine, 'lease_tenants', 'monthly_rent_per_sf', 'DOUBLE PRECISION')
     _migrate_add_column(engine, 'lease_tenants', 'annual_rent_per_sf', 'DOUBLE PRECISION')
     _migrate_add_column(engine, 'lease_tenants', 'annual_recoveries_per_sf', 'DOUBLE PRECISION')
+    # By MIGRATION as well as DDL -- every live database already has this table,
+    # and CREATE TABLE IF NOT EXISTS would not have touched it (the v507 lesson).
+    _migrate_add_column(engine, 'lease_abstract_sections', 'stale_at', 'TIMESTAMP')
+    _migrate_add_column(engine, 'lease_abstract_sections', 'proposed_content', 'TEXT')
     _migrate_add_column(engine, 'lease_tenants', 'annual_misc_per_sf', 'DOUBLE PRECISION')
     _migrate_add_column(engine, 'lease_tenants', 'annual_sales_override', 'DOUBLE PRECISION')
 
@@ -6088,17 +6094,25 @@ def get_tenant_abstract(
 
         # Check for saved abstract sections
         saved = conn.execute(text("""
-            SELECT section_key, section_title, content, lease_ref, sort_order
+            SELECT section_key, section_title, content, lease_ref, sort_order,
+                   stale_at, proposed_content
             FROM lease_abstract_sections
             WHERE tenant_id = :tid
             ORDER BY sort_order
         """), {'tid': tenant_id}).fetchall()
 
-    # If we have saved sections, use them (merging with template for any missing)
+    # If we have saved sections, use them (merging with template for any missing).
+    # `stale` says the leases have moved since a PERSON wrote this section, and
+    # `proposed_content` is what they now say -- carried side by side rather than
+    # substituted, because overwriting somebody's judgement silently is the one
+    # thing worse than showing them a stale figure.
     saved_map = {r[0]: {
         'section_key': r[0], 'section_title': r[1],
         'content': r[2] or '', 'lease_ref': r[3] or '',
         'sort_order': r[4],
+        'stale': bool(r[5]),
+        'stale_at': str(r[5]) if r[5] else None,
+        'proposed_content': r[6],
     } for r in saved}
 
     # Assemble from data for any section not yet saved
@@ -6155,16 +6169,21 @@ def save_abstract_sections(
             lease_ref = s.get('lease_ref', '')
             sort_order = s.get('sort_order', 0)
 
+            # Saving CLEARS the stale marker and the proposal: the person has
+            # now looked at it, whichever text they kept.
             if engine.dialect.name == 'postgresql':
                 conn.execute(text("""
                     INSERT INTO lease_abstract_sections
                         (tenant_id, section_key, section_title, content,
-                         lease_ref, sort_order, updated_by, updated_at)
-                    VALUES (:tid, :sk, :st, :c, :lr, :so, :ub, CURRENT_TIMESTAMP)
+                         lease_ref, sort_order, updated_by, updated_at,
+                         stale_at, proposed_content)
+                    VALUES (:tid, :sk, :st, :c, :lr, :so, :ub, CURRENT_TIMESTAMP,
+                            NULL, NULL)
                     ON CONFLICT (tenant_id, section_key)
                     DO UPDATE SET section_title = :st, content = :c,
                         lease_ref = :lr, sort_order = :so,
-                        updated_by = :ub, updated_at = CURRENT_TIMESTAMP
+                        updated_by = :ub, updated_at = CURRENT_TIMESTAMP,
+                        stale_at = NULL, proposed_content = NULL
                 """), {
                     'tid': tenant_id, 'sk': key, 'st': title,
                     'c': content, 'lr': lease_ref, 'so': sort_order,
@@ -6174,14 +6193,145 @@ def save_abstract_sections(
                 conn.execute(text("""
                     INSERT OR REPLACE INTO lease_abstract_sections
                         (tenant_id, section_key, section_title, content,
-                         lease_ref, sort_order, updated_by, updated_at)
-                    VALUES (:tid, :sk, :st, :c, :lr, :so, :ub, CURRENT_TIMESTAMP)
+                         lease_ref, sort_order, updated_by, updated_at,
+                         stale_at, proposed_content)
+                    VALUES (:tid, :sk, :st, :c, :lr, :so, :ub, CURRENT_TIMESTAMP,
+                            NULL, NULL)
                 """), {
                     'tid': tenant_id, 'sk': key, 'st': title,
                     'c': content, 'lr': lease_ref, 'so': sort_order,
                     'ub': username,
                 })
 
+
+
+# ---------------------------------------------------------------------------
+# Re-reading one tenant after a document arrives
+# ---------------------------------------------------------------------------
+#
+# Jim, Sep 20 2026: "When we add a lease document to a previously scanned
+# tenant's record, we should rerun the extraction just on that tenant's set of
+# leases... load the files and rerun that tenant's extract updating the abstract,
+# downstream lease risk analyses, and all validation records etc."
+#
+# THE WHOLE SET, NOT THE NEW FILE. Reading only the new document leaves the
+# tenant's terms assembled from a mixture of prompt versions -- and the prompt
+# moves (cam_fixed and escalation_pct arrived this week). A tenant's terms should
+# be the product of ONE reading of ONE set of documents, or two tenants can differ
+# for no reason anyone can see.
+
+
+def refresh_tenant_abstract(engine, tenant_id: int, review_id: int) -> Dict[str, Any]:
+    """Bring a stored abstract up to date with what the leases now say.
+
+    THE ABSTRACT WAS FROZEN THE MOMENT ANYONE SAVED IT. `get_tenant_abstract`
+    assembles from data only when NO section has been saved, so an abstract that
+    had been touched once never saw another document again -- add an amendment
+    extending the term and the abstract went on stating the old expiry, with
+    nothing on screen saying it was out of date.
+
+    AN ANALYST'S WORDS ARE NEVER OVERWRITTEN, which is the other half. A section
+    this code wrote (`updated_by = 'extraction'`) is refreshed in place. A section
+    a person wrote is left exactly as it is and MARKED, with the newly assembled
+    text kept beside it so they can take it or reject it. On the first run nothing
+    is known to be machine-written, so nothing is overwritten -- the safe
+    direction.
+    """
+    from sqlalchemy import text
+
+    assembled = _assemble_abstract_from_data(engine, tenant_id, review_id)
+    titles = {k: t for k, t, _o in ABSTRACT_SECTIONS}
+    orders = {k: o for k, _t, o in ABSTRACT_SECTIONS}
+    refreshed, flagged = [], []
+
+    with engine.begin() as conn:
+        saved = {r[0]: (r[1], r[2]) for r in conn.execute(text(
+            "SELECT section_key, content, updated_by FROM lease_abstract_sections"
+            " WHERE tenant_id = :t"), {'t': tenant_id}).fetchall()}
+        for key, data in assembled.items():
+            content = (data or {}).get('content', '')
+            if key not in saved:
+                continue  # nothing stored: it assembles from data on every read
+            old, who = saved[key]
+            if (old or '') == (content or ''):
+                conn.execute(text(
+                    "UPDATE lease_abstract_sections SET stale_at = NULL,"
+                    " proposed_content = NULL"
+                    " WHERE tenant_id = :t AND section_key = :k"),
+                    {'t': tenant_id, 'k': key})
+                continue
+            if (who or '') in ('', 'extraction'):
+                conn.execute(text(
+                    "UPDATE lease_abstract_sections SET content = :c,"
+                    " lease_ref = :lr, updated_by = 'extraction',"
+                    " updated_at = CURRENT_TIMESTAMP, stale_at = NULL,"
+                    " proposed_content = NULL"
+                    " WHERE tenant_id = :t AND section_key = :k"),
+                    {'c': content, 'lr': (data or {}).get('lease_ref', ''),
+                     't': tenant_id, 'k': key})
+                refreshed.append(key)
+            else:
+                conn.execute(text(
+                    "UPDATE lease_abstract_sections"
+                    " SET stale_at = CURRENT_TIMESTAMP, proposed_content = :c"
+                    " WHERE tenant_id = :t AND section_key = :k"),
+                    {'c': content, 't': tenant_id, 'k': key})
+                flagged.append(key)
+        # A section the leases now support but the stored abstract never had.
+        for key, data in assembled.items():
+            if key in saved or not (data or {}).get('content'):
+                continue
+    return {'refreshed': refreshed, 'flagged': flagged,
+            'titles': {k: titles.get(k, k) for k in refreshed + flagged},
+            'orders': orders}
+
+
+def rerun_tenant_extraction(engine, review_id: int, tenant_id: int,
+                            progress_callback=None) -> Dict[str, Any]:
+    """Re-read every term-bearing document this tenant has, then rebuild
+    everything that is derived from them.
+
+    The order matters and each step feeds the next: extract -> consolidate the
+    tenant's terms -> refresh the abstract -> re-validate the review. The risk
+    analysis needs no step of its own, and that is worth stating rather than
+    leaving to chance: `get_risk_analysis_data` computes expirations, the
+    cotenancy matrix and the scenarios from `get_resolved_tenants` at READ time,
+    so it is correct the moment consolidation writes. Nothing caches it.
+    """
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        owned = conn.execute(text(
+            "SELECT 1 FROM lease_tenants WHERE id = :t AND review_id = :r"),
+            {'t': tenant_id, 'r': review_id}).fetchone()
+        if not owned:
+            raise ValueError('Tenant %s is not part of review %s'
+                             % (tenant_id, review_id))
+        docs = conn.execute(text(
+            "SELECT id, doc_type FROM lease_documents WHERE tenant_id = :t"),
+            {'t': tenant_id}).fetchall()
+
+    ids = [d[0] for d in docs if is_term_bearing(d[1])]
+    if ids:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "UPDATE lease_documents SET extraction_status = 'pending'"
+                " WHERE id IN (%s)" % ','.join(str(int(i)) for i in ids)))
+
+    extract_all_documents(engine, review_id, progress_callback=progress_callback,
+                          tenant_id=tenant_id)
+    consolidated = consolidate_tenant_extractions(engine, tenant_id)
+    abstract = refresh_tenant_abstract(engine, tenant_id, review_id)
+    validate_rent_roll(engine, review_id)
+
+    return {
+        'tenant_id': tenant_id,
+        'documents_read': len(ids),
+        'documents_skipped': len(docs) - len(ids),
+        'consolidated': bool(consolidated),
+        'abstract_refreshed': abstract['refreshed'],
+        'abstract_flagged': abstract['flagged'],
+    }
 
 def get_review_abstracts_list(engine, review_id: int) -> List[Dict]:
     """Get a list of tenants and whether they have abstract data."""
