@@ -227,7 +227,33 @@ def order_lease_documents(docs: List[Dict[str, Any]]) -> Tuple[List[Dict], List[
                 f"{missing} of {len(amendments)} amendments carry neither a date nor "
                 f"a number, so the order they were applied in is not established.")
 
-    return originals + ordered_am + others, notes
+    # EVERYTHING AFTER THE BASE IS LAYERED IN DATE ORDER, amendments and other
+    # documents together. This used to return `originals + ordered_am + others`,
+    # which applied every non-amendment AFTER every amendment — so a 2021
+    # Acceptance of Premises overwrote the expiration set by a 2026 First
+    # Amendment. It went unnoticed while the classifier typed almost everything
+    # `Original Lease` and `others` was nearly empty; correcting the classifier
+    # filled `others` with 147 documents and the regression surfaced at once, on
+    # Style Studio (expiry 2031 -> 2026), Green Zone (2026 -> 2025) and
+    # Appliances 4 Less (suite N625 -> a misread "G").
+    #
+    # UNDATED DOCUMENTS SORT LAST, amendments among them by their number, which
+    # is what keeps the case this ordering was built for: a folder of "First /
+    # Second / Third / Fourth Amendment.pdf" carrying no dates at all still
+    # applies 1, 2, 3, 4 with the Fourth governing.
+    #
+    # On an equal date the amendment wins, since a non-amendment carries no
+    # ordinal and sorts ahead of one that does.
+    UNDATED = '9999-99-99'
+    seq = {id(d): i for i, d in enumerate(ordered_am)}
+
+    def _key(d):
+        is_am = (d.get('doc_type') or '') == 'Amendment'
+        return ((d.get('doc_date') or UNDATED),
+                seq.get(id(d), -1) + 1 if is_am else 0,
+                d.get('id') or 0)
+
+    return originals + sorted(ordered_am + others, key=_key), notes
 
 
 # ---------------------------------------------------------------------------

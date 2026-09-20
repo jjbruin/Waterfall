@@ -167,6 +167,59 @@ with eng.connect() as c:
         "SELECT rent_commencement FROM lease_tenants WHERE id=7")).scalar()
 chk('the tenant carries the right commencement date', rc == '2021-03-01', str(rc))
 
+section('A later amendment is not overwritten by an older document')
+# THE REGRESSION THIS FIX CAUSED, AND THE DIFF CAUGHT. order_lease_documents
+# returned `originals + amendments + others`, so every non-amendment applied
+# AFTER every amendment. It was invisible while the classifier typed nearly
+# everything `Original Lease` and `others` was almost empty; correcting the
+# classifier put 147 documents in there and three tenants' terms moved the wrong
+# way at once -- Style Studio's expiry 2031 -> 2026, Green Zone's 2026 -> 2025,
+# and Appliances 4 Less's suite from N625 to a misread "G".
+from flask_app.services.lease_terms import order_lease_documents  # noqa: E402
+
+STYLE = [
+    {'id': 1, 'doc_type': 'Original Lease', 'doc_date': '2021-03-31'},
+    {'id': 2, 'doc_type': 'Other', 'doc_date': '2021-04-07'},
+    {'id': 3, 'doc_type': 'Other', 'doc_date': '2021-04-02'},
+    {'id': 4, 'doc_type': 'Amendment', 'doc_date': '2026-02-17', 'ordinal': 1},
+    {'id': 5, 'doc_type': 'COI', 'doc_date': '2025-08-02'},
+]
+ordered, _ = order_lease_documents(STYLE)
+chk('the 2026 amendment has the last word, not a 2021 notice',
+    ordered[-1]['id'] == 4, str([d['id'] for d in ordered]))
+chk('...the base lease is still first', ordered[0]['id'] == 1)
+chk('...and the 2021 documents are in date order between them',
+    [d['id'] for d in ordered[1:3]] == [3, 2],
+    str([d['id'] for d in ordered]))
+
+# BOTH DIRECTIONS: sorting everything by date must not break the case this
+# ordering was built for, where no document carries a date at all.
+UND = [{'id': 9, 'doc_type': 'Original Lease'}] + [
+    {'id': i, 'doc_type': 'Amendment', 'ordinal': k}
+    for i, k in ((41, 4), (11, 1), (31, 3), (21, 2))]
+ordered2, _ = order_lease_documents(UND)
+chk('undated numbered amendments still apply 1,2,3,4',
+    [d.get('ordinal') for d in ordered2[1:]] == [1, 2, 3, 4],
+    str([d.get('ordinal') for d in ordered2]))
+chk('...with the Fourth governing', ordered2[-1].get('ordinal') == 4)
+
+# An undated document cannot claim to supersede a dated amendment.
+MIX = [{'id': 1, 'doc_type': 'Original Lease', 'doc_date': '2020-01-01'},
+       {'id': 2, 'doc_type': 'Amendment', 'doc_date': '2024-01-01', 'ordinal': 1},
+       {'id': 3, 'doc_type': 'Other'}]
+ordered3, _ = order_lease_documents(MIX)
+chk('an undated document sorts after a dated amendment, not before it',
+    [d['id'] for d in ordered3] == [1, 2, 3], str([d['id'] for d in ordered3]))
+
+# On the same day the amendment wins: it is the document that changes the deal.
+SAME = [{'id': 1, 'doc_type': 'Original Lease', 'doc_date': '2020-01-01'},
+        {'id': 2, 'doc_type': 'Other', 'doc_date': '2024-01-01'},
+        {'id': 3, 'doc_type': 'Amendment', 'doc_date': '2024-01-01', 'ordinal': 1}]
+ordered4, _ = order_lease_documents(SAME)
+chk('on an equal date the amendment is applied last',
+    ordered4[-1]['id'] == 3, str([d['id'] for d in ordered4]))
+
+
 print('\n%d passed, %d failed' % (len(OK), len(BAD)))
 if BAD:
     for b in BAD:
