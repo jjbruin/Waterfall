@@ -17,6 +17,13 @@ const tab = ref<Tab>('gl')
 const glOptions = ref<any>(null)
 const iaOptions = ref<any>(null)
 const result = ref<any>(null)
+
+// The GRID hides four columns so the key figures fit without scrolling (Jim,
+// Sep 19 2026). The EXPORT is untouched and still carries them: the workbook is
+// what somebody checks the screen against, and ITEM is how a line is found
+// again in MRI's journal. Hidden here, present in the file.
+const shownCols = computed(() =>
+  (result.value?.columns || []).filter((c: any) => !c.hidden))
 const loading = ref(false)
 const exporting = ref(false)
 const error = ref<string | null>(null)
@@ -310,14 +317,16 @@ onMounted(loadOptions)
         <table class="data-table">
           <thead>
             <tr>
-              <th v-for="c in result.columns" :key="c.key"
-                  :class="{ num: isNum(c.key) }">{{ c.label }}</th>
+              <th v-for="c in shownCols" :key="c.key"
+                  :class="{ num: isNum(c.key), clip: c.clip }">{{ c.label }}</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="(r, i) in result.rows" :key="i">
-              <td v-for="c in result.columns" :key="c.key"
-                  :class="{ num: isNum(c.key) }">{{ fmt(r[c.key], c.key) }}</td>
+              <td v-for="c in shownCols" :key="c.key"
+                  :class="{ num: isNum(c.key), clip: c.clip }"
+                  :title="c.clip ? String(r[c.key] ?? '') : undefined"
+              >{{ fmt(r[c.key], c.key) }}</td>
             </tr>
           </tbody>
         </table>
@@ -381,4 +390,11 @@ onMounted(loadOptions)
 }
 .data-table td { padding: 4px 9px; border-bottom: 1px solid var(--color-border); white-space: nowrap; }
 .data-table th.num, .data-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+/* Description runs to 85 characters and its tail repeats the entity name the
+   Entity column already shows, so it is capped and the full text is on hover.
+   max-width alone does nothing to a table cell -- the fixed layout comes from
+   the width + overflow pair. */
+.data-table th.clip, .data-table td.clip {
+  max-width: 260px; overflow: hidden; text-overflow: ellipsis;
+}
 </style>

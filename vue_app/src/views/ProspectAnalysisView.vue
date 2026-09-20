@@ -1,5 +1,11 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
+import CollapsiblePanel from '../components/common/CollapsiblePanel.vue'
+
+// The input column folds away to give the analysis the width (Jim, Sep 19
+// 2026). The panel remembers the choice per browser; false here just means
+// "open until told otherwise".
+const inputsCollapsed = ref(false)
 import api from '../api/client'
 import { useAuthStore } from '../stores/auth'
 
@@ -1617,7 +1623,8 @@ loadDeals()
     <template v-if="deal">
       <div class="analysis-layout">
         <!-- LEFT: Setup Panel -->
-        <div class="setup-panel">
+        <CollapsiblePanel v-model="inputsCollapsed" label="Setup"
+                          storage-key="prospect" class="setup-panel">
 
           <!-- Deal Info -->
           <div class="section">
@@ -2724,7 +2731,7 @@ loadDeals()
               {{ savingAssumptions ? 'Saving...' : 'Save Assumptions' }}
             </button>
           </div>
-        </div>
+        </CollapsiblePanel>
 
         <!-- RIGHT: Results Panel -->
         <div class="results-panel">

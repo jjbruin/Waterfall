@@ -26,6 +26,12 @@
  * which is what the CFO runs the close from today.
  */
 import { ref, computed, onMounted, watch } from 'vue'
+import CollapsiblePanel from '../components/common/CollapsiblePanel.vue'
+
+// The input column folds away to give the analysis the width (Jim, Sep 19
+// 2026). The panel remembers the choice per browser; false here just means
+// "open until told otherwise".
+const inputsCollapsed = ref(false)
 import api from '../api/client'
 import { useAuthStore } from '../stores/auth'
 
@@ -970,8 +976,9 @@ onMounted(loadCycles)
       </section>
 
       <!-- Checklist on the left, that step's evidence on the right. -->
-      <section class="work">
-        <div class="steps">
+      <section class="work" :class="{ 'input-collapsed': inputsCollapsed }">
+        <CollapsiblePanel v-model="inputsCollapsed" label="Checklist"
+                          storage-key="workpapers" class="steps">
           <h3>Close checklist</h3>
           <button v-for="s in detail.steps" :key="s.key" class="step-row"
                   :class="{ active: activeStep === s.key, late: s.overdue, done: s.done }"
@@ -998,7 +1005,7 @@ onMounted(loadCycles)
           </div>
           <input v-model="returnNote" class="note-input"
                  placeholder="Note — required when returning" />
-        </div>
+        </CollapsiblePanel>
 
         <div class="evidence">
           <div v-if="evidenceLoading" class="muted">Loading evidence…</div>
@@ -1158,6 +1165,7 @@ h4 { margin: 12px 0 4px; font-size: 12.5px; font-weight: 600; }
 .stmt-body { margin-top: 12px; background: var(--color-surface); padding: 10px 12px;
   border: 1px solid var(--color-border); border-radius: 5px; }
 
+.work.input-collapsed { grid-template-columns: 30px minmax(0, 1fr); }
 .work { display: grid; grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
   gap: 18px; padding: 14px 16px; }
 @media (max-width: 900px) { .work { grid-template-columns: 1fr; } }

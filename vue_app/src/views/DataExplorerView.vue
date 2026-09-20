@@ -1,5 +1,11 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, type Directive } from 'vue'
+import CollapsiblePanel from '../components/common/CollapsiblePanel.vue'
+
+// The input column folds away to give the analysis the width (Jim, Sep 19
+// 2026). The panel remembers the choice per browser; false here just means
+// "open until told otherwise".
+const inputsCollapsed = ref(false)
 import { useRoute, useRouter } from 'vue-router'
 import api from '../api/client'
 
@@ -191,7 +197,8 @@ function showAllColumns() {
 
     <div class="explorer-layout">
       <!-- Table selector panel -->
-      <aside class="table-list-panel">
+      <CollapsiblePanel v-model="inputsCollapsed" label="Tables"
+                        storage-key="explorer" class="table-list-panel">
         <!-- The list is fetched on mount. An MRI refresh runs from the sidebar
              and creates tables WITHOUT this view knowing, so a table loaded for
              the first time while Data Explorer is open is simply absent until
@@ -220,7 +227,7 @@ function showAllColumns() {
             <span class="table-row-count">{{ t.rows.toLocaleString() }}</span>
           </button>
         </div>
-      </aside>
+      </CollapsiblePanel>
 
       <!-- Data panel -->
       <main class="data-panel">

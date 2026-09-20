@@ -1,5 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue'
+import CollapsiblePanel from '../components/common/CollapsiblePanel.vue'
+
+// The input column folds away to give the analysis the width (Jim, Sep 19
+// 2026). The panel remembers the choice per browser; false here just means
+// "open until told otherwise".
+const inputsCollapsed = ref(false)
 import { useDataStore } from '../stores/data'
 import { useDealsStore } from '../stores/deals'
 import DataTable from '../components/common/DataTable.vue'
@@ -364,7 +370,8 @@ const roeDetailCF = computed(() => {
 
     <div class="reports-layout">
       <!-- Left: report list + filters -->
-      <div class="reports-sidebar">
+      <CollapsiblePanel v-model="inputsCollapsed" label="Reports"
+                        storage-key="reports" class="reports-sidebar">
         <!-- Report list -->
         <div class="section-label">Select Report</div>
         <div class="report-list">
@@ -459,7 +466,7 @@ const roeDetailCF = computed(() => {
             {{ loading ? 'Generating...' : 'Generate Report' }}
           </button>
         </template>
-      </div>
+      </CollapsiblePanel>
 
       <!-- Right: results -->
       <div class="reports-main">

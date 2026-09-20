@@ -13,6 +13,12 @@
  * need a waterfall" reads down a column rather than chasing indentation.
  */
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import CollapsiblePanel from '../components/common/CollapsiblePanel.vue'
+
+// The input column folds away to give the analysis the width (Jim, Sep 19
+// 2026). The panel remembers the choice per browser; false here just means
+// "open until told otherwise".
+const inputsCollapsed = ref(false)
 import DataTable from '../components/common/DataTable.vue'
 import api from '../api/client'
 import { useDataStore } from '../stores/data'
@@ -394,9 +400,11 @@ watch([root, collapsed], () => nextTick(() => {
       >Upstream analysis</button>
     </nav>
 
-    <div v-show="tab === 'chain'" class="layout">
+    <div v-show="tab === 'chain'" class="layout"
+         :class="{ 'input-collapsed': inputsCollapsed }">
       <!-- Left: the PE investment level -->
-      <aside class="picker">
+      <CollapsiblePanel v-model="inputsCollapsed" label="Investments"
+                        storage-key="ownership" class="picker">
         <div class="picker-controls">
           <input v-model="filter" class="search" type="search" placeholder="Filter investments…" />
           <label class="chk">
@@ -446,7 +454,7 @@ watch([root, collapsed], () => nextTick(() => {
           </li>
           <li v-if="!shownInvestments.length" class="muted pad">Nothing matches.</li>
         </ul>
-      </aside>
+      </CollapsiblePanel>
 
       <!-- Right: the horizontal chain -->
       <section class="chain">
@@ -810,6 +818,7 @@ h2 { margin: 0 0 4px; font-size: 20px; }
 .btn:hover:not(:disabled) { background: #f5f7fa; }
 .btn:disabled { opacity: .6; cursor: default; }
 
+.layout.input-collapsed { grid-template-columns: 30px 1fr; }
 .layout { display: grid; grid-template-columns: 290px 1fr; gap: 18px; margin-top: 18px; align-items: start; }
 @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
 

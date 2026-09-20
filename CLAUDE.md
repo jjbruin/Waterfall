@@ -1808,10 +1808,53 @@ Live at `v504`, screen `/gl-ia-query`, bottom of the Accounting section.
 - **`MultiPicker.vue`** (checkbox list + search + select all/clear) replaced a native
   `<select multiple>`: multi-select already worked and nothing on screen said so.
   Reusable anywhere the same problem appears.
-- Guardrail: `scripts/gl_ia_query_check.py` (94).
+- **FOUR COLUMNS ARE HIDDEN ON SCREEN AND KEPT IN THE EXPORT** (Jim, Sep 19
+  2026): Bal/Fwd, Item, Related Entity, Related Entity Name. The workbook is what
+  somebody checks the screen against and `ITEM` is how a line is found again in
+  MRI's journal, so they are flagged (`GL_SCREEN_HIDDEN`), not dropped from the
+  query. **Description is CLIPPED at 260px with the full text on hover** — across
+  the real 79,074 rows it runs to 85 characters but the median is 29 and the tail
+  repeats an entity name the Entity column already carries.
+- **`ITEM` IS A LINE NUMBER, NOT A DEBIT/CREDIT SIDE**, and defaulting the filter
+  to `ITEM = 1` would be wrong. Measured on production: 13,493 distinct values,
+  ITEM=1 is 6,618 of 79,074 rows (8.4%) and 5.5% of the money, and the on-screen
+  net would go from **10,797** to **2,102,385,065**. There is no duplication to
+  remove — 0 duplicate rows on any key, and all 8,809 open-period entries balance
+  to zero. A general ledger carries both sides because that is what it is; the
+  median entry has 2 lines and the largest has 173. The way to see one side is
+  the ACCOUNT filter, which already works. See `open_items.md` §9.8.
+- Guardrail: `scripts/gl_ia_query_check.py` (113).
 - **Open**: his workbook's IA query is truncated mid-statement in row 49 (the non-cash
   branch); the To date is INCLUSIVE here and strictly-before in his sheet; reads are
   open to any signed-in user, which is a wider read than one entity's statement.
+
+### The input column folds away
+Live at `v509`. `vue_app/src/components/common/CollapsiblePanel.vue`.
+
+Jim, Sep 19 2026: the same little arrow as the sidebar, to give the analysis the
+screen. Applied to the five pages that have a genuine inputs-left /
+analysis-right split — Ownership (`picker`), Workpapers (`steps`), Reports
+(`reports-sidebar`), Data Explorer (`table-list-panel`), Prospect Analysis
+(`setup-panel`). Everything else is an equal-width content grid, a filter bar
+above the results, or an overlay drawer, and is deliberately untouched.
+
+- **A GRID parent must declare its own collapsed track.** The container sets the
+  column, so a child narrowing itself to 30px reclaims NOTHING and leaves 260px
+  of empty space where the panel was — the arrow works, the panel goes, and the
+  analysis is exactly as cramped as before, with no error and nothing on screen
+  saying so. Each page binds `input-collapsed` on its layout element and states
+  `grid-template-columns: 30px …` itself. The guardrail asserts this per page;
+  the component deliberately does not reach upward into a layout it cannot see.
+- **The toggle survives collapsing**, and the rail keeps the panel's NAME. A
+  control that vanishes when used cannot be undone by anyone who did not already
+  know it was there — `v482` shipped exactly that and had to fix it.
+- **The choice is remembered per page** in `localStorage`, per browser, wrapped
+  in try/catch both ways: it is a convenience, never load-bearing, and a private
+  window simply opens the panel.
+- Measured in the running app at 1440px, both directions: Reports 280→30 (results
+  888→1138), Ownership 290→30 (789→1064), Data Explorer 240→30 (833→1043),
+  Workpapers 320→30 (721→1011), Prospect 480→33 (657→1119).
+- Guardrail: `scripts/collapsible_panel_check.py` (43).
 
 ### Lease review — rent PSF, amendments, and rent by month of term
 Live at `v503`. New business, Sep 19 2026, via Jim.

@@ -786,6 +786,44 @@ removing it from the working tree does not remove it from history; whether to re
 history or treat rotation as sufficient is Jim's call. Raised Sep 19 2026.
 
 
+### 9.8 `ITEM = 1` would not show one side of an entry — DECISION NEEDED (Jim)
+
+Jim, Sep 19 2026: *"The CFO's GL query tool is bringing both sides of the journal
+entries into the results. Let's default the filter to pull entries where
+Item = 1."*
+
+**Not shipped.** The observation is right and the remedy would be wrong, so this
+needs his call. Measured against all 79,074 production `gl_detail` rows:
+
+| | |
+|---|---|
+| distinct `ITEM` values | **13,493** — it is a LINE NUMBER, not a side |
+| rows with `ITEM = 1` | **6,618 of 79,074** (8.4%) |
+| share of the money | **5.5%** (2.65bn of 48.5bn absolute) |
+| net `AMT`, all rows | **10,797** — a balanced ledger |
+| net `AMT`, `ITEM = 1` | **2,102,385,065** |
+| duplicate rows, any key | **0** |
+| open-period entries | 8,809, **all 8,809 balance to zero** |
+| lines per entry | median **2**, mean 5.0, max **173** |
+
+**There is nothing being duplicated.** A general ledger carries both sides
+because that is what a ledger is, and the median entry having exactly 2 lines is
+why every transaction appears to show up twice. `ITEM` orders the lines within an
+entry; on a 173-line entry, `ITEM = 1` keeps one line and drops 172.
+
+Defaulting to it would leave every on-screen total wrong — and wrong in the way
+that does not announce itself, since the figure is still a plausible, correctly
+formatted number.
+
+**What already answers the real need:** the ACCOUNT filter. Picking the accounts
+in question returns only the lines hitting them, and the offsetting cash side
+drops out with no data lost. It is multi-select and already works.
+
+**Open question for Jim:** if what he wants is *one row per journal entry* rather
+than one side, that is a grouped view (entry, date, ref, description, net), not a
+filter — worth building, but it is a different thing and would be a new engine
+for a figure, so it needs saying out loud first.
+
 ## 8. One number, one engine — the sweep (Sep 18 2026)
 
 **Two of the duplicates found in this sweep shipped in `v503`** — accrued pref

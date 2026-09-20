@@ -59,6 +59,20 @@ GL_COLUMNS = [
     ('RLTDENTITY_NAME', 'Related Entity Name'), ('AMT', 'Amount'),
 ]
 
+#: Columns the GRID does not show, so the key figures fit without scrolling
+#: (Jim, Sep 19 2026). They are NOT dropped from the query or the export: an
+#: exported workbook is the record somebody checks the screen against, and
+#: `ITEM` in particular is how a line is located back in MRI's journal. Hidden
+#: on screen, present in the file.
+GL_SCREEN_HIDDEN = {'BALFOR', 'ITEM', 'RLTDENTITY', 'RLTDENTITY_NAME'}
+
+#: Columns the grid clips, with the full value on hover. Measured against the
+#: real 79,074 production rows: DESCRPN runs to 85 characters but the median is
+#: 29 and the 95th percentile 68, and the long tail ends in an entity name that
+#: the Entity column already carries -- "2025 Year End Valuation EPU - Pegasus
+#: Life Storage - TGA22". So clipping loses the repeat, not the substance.
+GL_CLIPPED = {'DESCRPN'}
+
 IA_COLUMNS = [
     ('InvestmentID', 'Investment ID'), ('InvestmentName', 'Investment Name'),
     ('InvestorID', 'Investor ID'), ('InvestorName', 'Investor Name'),
@@ -377,7 +391,9 @@ def _execute(engine, sql: str, params: Dict, columns, limit: int,
 
     return {
         'available': True,
-        'columns': [{'key': k, 'label': lbl} for k, lbl in columns],
+        'columns': [{'key': k, 'label': lbl,
+                     'hidden': k in GL_SCREEN_HIDDEN,
+                     'clip': k in GL_CLIPPED} for k, lbl in columns],
         'rows': df.where(pd.notna(df), None).to_dict(orient='records'),
         'row_count': int(total_rows),
         'shown': int(len(df)),

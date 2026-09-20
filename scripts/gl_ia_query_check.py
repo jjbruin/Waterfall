@@ -366,6 +366,76 @@ else:
     print('  SKIP  sidebar checks  [Vue source not in the image]')
 
 
+# ===========================================================================
+section('The grid hides four columns; the EXPORT still carries them')
+# Jim, Sep 19 2026: drop Bal/Fwd, Item, Related Entity and Related Entity Name
+# from the screen so the key figures fit without scrolling, and narrow the
+# description.
+#
+# ASSERTED IN BOTH DIRECTIONS ON PURPOSE. Hiding a column on screen is a
+# display choice; dropping it from the workbook would lose the record somebody
+# checks the screen against, and ITEM is how a line is found again in MRI's
+# journal. A check written only for "these are hidden" is satisfied by deleting
+# them outright, which is the one outcome that would do damage.
+from flask_app.services import gl_ia_query_service as _gq  # noqa: E402
+
+_ASKED = {'BALFOR', 'ITEM', 'RLTDENTITY', 'RLTDENTITY_NAME'}
+check('exactly the four columns asked for are hidden',
+      _gq.GL_SCREEN_HIDDEN == _ASKED, str(_gq.GL_SCREEN_HIDDEN))
+_keys = [k for k, _ in _gq.GL_COLUMNS]
+for _k in sorted(_ASKED):
+    check(f'...{_k} is still SELECTED and still in the export',
+          _k in _keys)
+check('the money and the account are NOT hidden',
+      not (_gq.GL_SCREEN_HIDDEN & {'AMT', 'ACCTNUM', 'ACCTNAME', 'ENTITYID',
+                                   'PERIOD', 'ENTRDATE', 'DESCRPN'}))
+check('the description is clipped, not hidden',
+      'DESCRPN' in _gq.GL_CLIPPED and 'DESCRPN' not in _gq.GL_SCREEN_HIDDEN)
+
+_res = _gq.run_gl_query(eng, limit=5)
+if _res.get('available'):
+    _cols = _res['columns']
+    check('every column still comes back from the query',
+          len(_cols) == len(_gq.GL_COLUMNS), f'{len(_cols)}')
+    check('...each carrying whether the screen shows it',
+          all('hidden' in c and 'clip' in c for c in _cols))
+    _vis = [c['key'] for c in _cols if not c['hidden']]
+    check('...and the four are flagged hidden',
+          not (_ASKED & set(_vis)), str(sorted(set(_vis) & _ASKED)))
+    check('...leaving the ten that matter', len(_vis) == len(_gq.GL_COLUMNS) - 4,
+          str(len(_vis)))
+    # The workbook is built from result['columns'], which is the FULL list.
+    _xl = _gq.to_excel(_res, 'GL', ['check'])
+    check('the workbook is still written', bool(_xl) and _xl[:2] == b'PK')
+    import openpyxl as _op  # noqa: E402
+    import io as _io  # noqa: E402
+    _ws = _op.load_workbook(_io.BytesIO(_xl)).active
+    _heads = {c.value for row in _ws.iter_rows() for c in row if c.value}
+    for _lbl in ('Item', 'Bal/Fwd', 'Related Entity', 'Related Entity Name'):
+        check(f'...with "{_lbl}" in it, hidden on screen or not', _lbl in _heads)
+else:
+    SKIP.append('grid column checks')
+    print('  SKIP  grid column checks  [gl_detail not imported]')
+
+_gview = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                      'vue_app', 'src', 'views', 'GlIaQueryView.vue')
+if os.path.exists(_gview):
+    _gsrc = open(_gview, encoding='utf-8').read()
+    # A grid that still walks result.columns would render the hidden ones
+    # anyway, and nothing on screen would say the flag was ignored.
+    check('the grid walks the VISIBLE columns, not all of them',
+          'v-for="c in shownCols"' in _gsrc
+          and 'v-for="c in result.columns"' not in _gsrc)
+    check('...filtering on the flag the server sends',
+          '!c.hidden' in _gsrc)
+    check('the clipped column carries its full value on hover',
+          ':title="c.clip' in _gsrc)
+else:
+    SKIP.append('grid view checks')
+    print('  SKIP  grid view checks  [Vue source not in the image]')
+
+
+
 print(f'\n{len(PASS)} passed, {len(FAIL)} failed, {len(SKIP)} skipped')
 if FAIL:
     print('FAILED:')
