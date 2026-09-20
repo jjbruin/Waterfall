@@ -768,100 +768,56 @@ non-vacuous against each defect.
 production. The rule is general (a certificate of insurance is not a lease
 anywhere) but the evidence is one roster.
 
-### 9.2 Consolidation RE-RUN at `v511`; re-EXTRACTION RUNNING at `v512`
+### 9.2 Re-extraction and re-consolidation are DONE — CLOSED
 
-Was "the extraction has not been re-run since the prompt changed". Measured at
-`v510` and it is broader than that.
+Finished Sep 20 2026 at 16:27 on `v512`: **417 documents re-extracted, zero
+errors**, then consolidated (the extraction ends by consolidating each review, so
+that half ran itself). A separate second consolidation pass afterwards left
+**71 of 71 blobs byte-identical and moved no field** — the convergence proof.
 
-**All 70 stored consolidated records predate `v503`.** Checked directly: not one
-of the 70 `lease_tenants.extraction_json` blobs contains `_documents_applied`,
-the field `v503` added. So every stored set of consolidated terms was built by
-the OLD consolidation — before the amendment ordering fix, before rent steps
-were resolved against the commencement date, and with the certificates of
-insurance layered in. 43 tenants own at least one now-excluded COI.
+**COVERAGE ROSE ON EVERY FIELD**, which is the signature that the 219 scans are
+now contributing where they previously contributed nothing:
 
-**Consolidation does not re-run by itself** — `consolidate_review_extractions`
-is called only at the end of `extract_all_documents`, so nothing refreshes until
-an extraction run happens.
+| field | before | after |
+|---|---|---|
+| rent_commencement | 38 | **53** |
+| lease_commencement | 34 | **51** |
+| lease_expiration | 45 | **57** |
+| square_feet | 43 | **61** |
+| escalation_structure | 45 | **65** |
+| security_deposit | 31 | **53** |
+| suite | 69 | **71** |
 
-**A METHOD NOTE WORTH KEEPING.** The first attempt to size this asked how many
-stored blobs carried a now-excluded document in `_documents_applied` and got
-**0**, which reads as "nothing to do". It was vacuous: the key is absent from all
-70, so the comparison could only ever return zero. A check against a field that
-does not exist returns the same answer as a clean bill of health. The follow-up
-counted the blobs that HAVE the field first, which is what exposed it.
+- **110 fields newly populated** where there had been nothing.
+- 65 of 71 tenants' terms moved; **one tenant (Monterrey Mexican Restaurant) had
+  no terms at all before** and now has them.
+- Documents applied 392 → 414; tenants with stored terms 70 → 71.
+- `lease_tenants.rent_commencement` 37 → **54**.
 
-**RE-CONSOLIDATION IS DONE** (`v511`, Sep 20 2026, on Jim's instruction). It
-re-layers the existing per-document extractions and makes NO API calls, so it
-cost nothing and is re-runnable. 70 of 70 tenants, zero errors, 392 documents
-applied — the figure predicted before any of it was built.
+**THE `v503` FEATURE IS LIVE FOR THE FIRST TIME.** `period_start_month` was 0 of
+346 before this run and is now **305**, with **208 rent steps dated from the term**
+(`effective_date_basis` set). Those only arrive from an extraction under the
+post-`v503` prompt, so a step written "Months 1-12" is now placed against the
+tenant's own rent commencement date rather than left unresolved.
 
-The diff earned its keep: the first pass moved three tenants the WRONG way and
-exposed an ordering defect introduced by the `v510` classifier fix. See `v511`
-in the deploy history. After the ordering fix:
+**Spot-checked the largest move rather than trusting the aggregate.** Style
+Studio's rent commencement went 2021-06-01 → 2026-06-01, which looks alarming and
+is correct: the original term ran to 2026-05-31 and the 2026 First Amendment
+renews 2026-06-01 → 2031-05-31. The amendment GOVERNS (last applied, `v511`
+ordering), the address that had been sitting in `suite` is gone and reads P765,
+and both COIs are extracted but NOT in `_documents_applied`. Several other tenants
+show the same shape — Outback Steakhouse's expiry 2006-12-09 → 2026-12-09, Cici's
+2017-02-28 → 2027-02-28 — stale decade-old terms replaced by the renewal that
+superseded them.
 
-| | |
-|---|---|
-| lease expirations corrected | 9 |
-| rent commencements corrected | 5 |
-| suites / lease commencements / escalations | 2 / 1 / 1 |
-| `lease_tenants.rent_commencement` populated | **0 -> 37** |
-| coverage lost on any field | **none** (lease_commencement 35 -> 34, and that one came from a COI) |
-| second full pass | 70 of 70 blobs identical, nothing moved — converged |
+**Two things worth a later look, neither blocking:**
 
-Several tenants had been showing terms that expired years ago and now show live
-ones: Office Depot 2022-01-31 -> 2027-01-31, DSW 2024-01-31 -> 2029-01-31,
-SalonCentric 2024-09-30 -> 2029-09-30, Peak Potential 2019-01-30 -> 2029-01-31.
-
-**RE-EXTRACTION IS RUNNING** (launched Sep 20 2026 on Jim's instruction, on
-revision `v512`). Detached: `/app/reex.py`, log `/app/reex.log`. **Resumable** —
-anything finished is marked `extracted` and is not repeated — so if it died,
-re-launching is safe and cheap.
-
-What it does, and why it is not just "run the button": `extract_all_documents`
-selects `extraction_status IN ('pending','text_extracted')`, so it SKIPS anything
-already extracted — running it untouched processes ~26 documents, not the 419
-whose extractions predate the `v503` prompt. The runner therefore resets the
-term-bearing extracted documents to `text_extracted` first (which keeps
-`extracted_text`, so no PDF is parsed twice), then extracts, then consolidates.
-COIs are deliberately not reset.
-
-Scale, measured before launching: 419 documents, 219 of them scans going through
-the `v512` PDF route, on `claude-opus-5`. ~37s per document observed, so 3-5
-hours; roughly $50, which Jim approved explicitly ("I'm not price sensitive for
-this task").
-
-**WHEN IT FINISHES — this is the outstanding work:**
-
-1. Re-run `consolidate_tenant_extractions` for all 70 tenants (no API calls).
-2. **Diff the terms before against after.** Snapshot `extraction_json` and
-   `rent_commencement` per tenant first. The first consolidation run is what
-   caught the `v511` ordering regression; a success count catches nothing.
-3. Run it a SECOND time and assert nothing moves — convergence is the proof it
-   settled rather than oscillating.
-
-Two things to check specifically in that diff: the 219 scans should ADD coverage
-(they contributed nothing before, so `lease_expiration` / `rent_commencement` /
-`square_feet` counts should rise, not merely shuffle), and rent steps stated as
-"Months 1-12" should appear for the first time — `period_start_month` was 0 of
-346 before this run, since it only arrives from an extraction under the `v503`
-prompt.
-
-**Also seen, and not an ordering problem:** Style Studio's `suite` was
-`9623-F East Independence Blvd., Matthews, NC 28105` — an address the extractor
-put in the suite field. Extraction quality, cosmetic (suite feeds no
-calculation). Worth re-checking after the run above, which is on a much stronger
-model than the one that produced it.
-
-`period_start_month` / `period_end_month` only arrive from extractions run AFTER
-`v503`. Existing rows carry the period as text in `effective_date`, which
-`resolve_rent_steps` still reads — verified — so nothing is broken and no backfill is
-required. But a tenant extracted before `v503` gets its period parsed from prose
-rather than from a field the model filled deliberately, which is the weaker path.
-
-Re-extracting a review is an existing button; worth doing on Market at Poplar and
-whichever review carries the Hobby Lobby lease, and comparing the rent in force
-before and after. Owner: unassigned.
+- **`security_deposit` moved `None` → `0` on several tenants.** Zero and unknown
+  are different facts, and this is the model asserting there is no deposit rather
+  than declining to say. It is extraction output, not our code, but it is the
+  sentinel-vs-unknown shape this repo is careful about.
+- 417 of 419 term-bearing documents extracted; the 2 that did not are worth
+  identifying if anything downstream looks thin.
 
 ### 9.3 `gl_detail` may never have been imported on production — CHECK FIRST
 `MRI_GL_Detail` is LAST in `QUERY_REGISTRY` and its own description says "never yet

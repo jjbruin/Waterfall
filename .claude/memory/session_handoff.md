@@ -6,7 +6,17 @@
 Open items: **`open_items.md` §9.2** (a re-extraction is RUNNING as this is written)
 and **§9.8** (the CFO's `ITEM = 1`, still needing Jim's call).
 
-### Read this first: a re-extraction may still be in flight
+### The re-extraction is DONE (finished 16:27, Sep 20)
+
+417 documents, zero errors, consolidated and converged. Coverage rose on every
+field — rent_commencement 38 -> 53, square_feet 43 -> 61, escalation 45 -> 65,
+security_deposit 31 -> 53 — with 110 fields newly populated and one tenant
+gaining terms it never had.  went 0 -> 305 and 208 rent steps
+are now dated from the term, so the  month-of-term feature is live on
+production for the first time. Detail and the two follow-ups in
+ §9.2.
+
+### Superseded: the re-extraction was in flight when this was written
 
 At the time of writing, a full re-extraction of all 419 term-bearing lease documents
 is running detached on production (`/app/reex.py`, log `/app/reex.log`, revision
