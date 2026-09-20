@@ -60,10 +60,52 @@ DOC_TYPE_PATTERNS = [
 ]
 
 
+#: Types that never carry lease terms: neither sent to the extraction API nor
+#: layered into a tenant's consolidated terms. ONE list, used by both, so the two
+#: cannot drift apart and leave a document extracted but never applied.
+#:
+#: MEASURED against all 500 extracted production documents before this was set.
+#: Excluding COI alone costs nothing -- every tenant keeps its rent commencement,
+#: expiration, square feet, escalation and rent steps -- while removing 108
+#: certificates of insurance from the layering, including two that were supplying
+#: a `rent_commencement` a certificate of insurance has no business stating.
+#:
+#: The tempting narrower rule, "Original Lease and Amendment only", was measured
+#: and REFUSED: it strips the rent commencement date from 16 of the 38 tenants
+#: that have one, and 15 of those sources are Commencement Letters -- the
+#: document whose whole purpose is to state that date.
+NON_TERM_TYPES = frozenset({'COI'})
+
+
+def is_term_bearing(doc_type) -> bool:
+    """Whether a document of this type can carry lease terms.
+
+    Unknown or missing types count as term-bearing. A type nobody anticipated
+    should be read and layered, not silently dropped -- being visibly wrong beats
+    being invisibly absent.
+    """
+    return (doc_type or '').strip() not in NON_TERM_TYPES
+
+
 def classify_document(filename: str) -> str:
-    """Classify a lease document by its filename."""
+    """Classify a lease document by its FILE NAME.
+
+    THE FOLDER IS NOT THE DOCUMENT. This matched against the whole stored path,
+    and every production document sits under `Tenant Leases/...`, so the first
+    pattern -- `lease` -- matched the FOLDER and short-circuited before any later
+    pattern was tried. 409 of 530 production documents were typed `Original
+    Lease`; only 77 had "lease" in the file name. Certificates of insurance,
+    easements, option letters, move-in forms and landlord consents were all
+    reading as original leases, and because extraction is gated on the type they
+    were being sent to the extraction API as leases and layered into the tenant's
+    terms.
+
+    There is deliberately no fallback to the full path when the basename yields
+    `Other`: that fallback would re-admit exactly the 126 documents this fixes.
+    """
+    base = (filename or '').replace('\\', '/').rsplit('/', 1)[-1]
     for pattern, doc_type in DOC_TYPE_PATTERNS:
-        if re.search(pattern, filename):
+        if re.search(pattern, base):
             return doc_type
     return 'Other'
 
@@ -397,6 +439,55 @@ def _migrate_nullable(engine, table: str, column: str):
             pass  # Already nullable or column doesn't exist
 
 
+def _reclassify_documents(engine) -> dict:
+    """Re-derive `doc_type` from the FILE NAME for rows the old classifier typed
+    from the folder path.
+
+    `classify_document` used to match against the whole stored path, and every
+    production document sits under `Tenant Leases/...`, so the `lease` pattern
+    matched the folder and won before any later pattern was reached. 332 of 530
+    production rows carry a type derived that way. The column is only ever
+    written by the classifier -- there is no screen or endpoint that lets anyone
+    set it by hand -- so re-deriving it cannot overwrite somebody's judgement.
+
+    Idempotent: it writes only where the stored type differs from what the
+    filename now yields, so the second run changes nothing.
+    """
+    from sqlalchemy import inspect as sa_inspect, text
+
+    out = {'checked': 0, 'changed': 0}
+    try:
+        with engine.begin() as conn:
+            insp = sa_inspect(conn)
+            if 'lease_documents' not in insp.get_table_names():
+                return out
+            rows = conn.execute(text(
+                "SELECT id, filename, doc_type FROM lease_documents "
+                " WHERE filename IS NOT NULL")).fetchall()
+            out['checked'] = len(rows)
+            changes = {}
+            for did, fn, old in rows:
+                new = classify_document(fn)
+                if new != (old or ''):
+                    changes[did] = new
+            for did, new in changes.items():
+                conn.execute(text(
+                    "UPDATE lease_documents SET doc_type = :t WHERE id = :i"),
+                    {'t': new, 'i': did})
+            out['changed'] = len(changes)
+        if out['changed']:
+            # Worth a line in the log: it is a one-time correction of live rows,
+            # and the count is how anyone confirms it ran.
+            logger.info("Reclassified %d of %d lease documents from the file "
+                        "name (was matching the folder path)",
+                        out['changed'], out['checked'])
+    except Exception as e:
+        # A failed reclassification must not take the whole section down; the
+        # old types still work, they are just wrong in the way they always were.
+        logger.warning("Document reclassification skipped: %s", e)
+    return out
+
+
 def ensure_lease_tables(engine):
     """Create lease review tables and migrate missing columns."""
     from sqlalchemy import text, inspect
@@ -512,6 +603,9 @@ def ensure_lease_tables(engine):
     _migrate_add_column(engine, 'lease_tenants', 'replaced_by_event_id', 'INTEGER')
     _migrate_add_column(engine, 'lease_tenants', 'successor_tenant_id', 'INTEGER')
 
+    # The old classifier typed from the folder path; this corrects the rows it
+    # wrote. Idempotent, so it is safe on every request.
+    _reclassify_documents(engine)
     logger.info("Lease review tables ensured")
 
 
@@ -2806,8 +2900,11 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None,
                         WHERE id = :did
                     """), {'txt': pdf_text, 'pc': page_count, 'did': doc_id})
 
-                # Step 2: Run Claude extraction for leases and amendments
-                if doc_type in ('Original Lease', 'Amendment'):
+                # Step 2: extract terms from anything that can carry them.
+                # NOT just leases and amendments: a Commencement Letter states
+                # the rent commencement date and an Option Letter states renewal
+                # rent, and gating on those two types alone loses both.
+                if is_term_bearing(doc_type):
                     terms = extract_lease_terms_via_api(
                         pdf_text, tenant_name, suite, doc_type, api_key
                     )
@@ -3212,13 +3309,21 @@ def consolidate_tenant_extractions(
     from sqlalchemy import text
 
     with engine.connect() as conn:
-        rows = conn.execute(text("""
+        # The type filter is applied in PYTHON, against the same
+        # `is_term_bearing` the extraction gate uses, rather than repeated as a
+        # SQL NOT IN. Two spellings of one rule is how they come to disagree.
+        #
+        # It has to be applied HERE and not only at extraction: a document
+        # extracted under the old classifier still carries its `extraction_json`,
+        # which is this query's admission ticket, so 108 certificates of
+        # insurance would go on being layered in for as long as that JSON exists.
+        rows = [r for r in conn.execute(text("""
             SELECT id, doc_type, doc_date, extraction_json, filename, doc_ordinal
             FROM lease_documents
             WHERE tenant_id = :tid
               AND extraction_status = 'extracted'
               AND extraction_json IS NOT NULL
-        """), {'tid': tenant_id}).fetchall()
+        """), {'tid': tenant_id}).fetchall() if is_term_bearing(r[1])]
 
         if not rows:
             return None
