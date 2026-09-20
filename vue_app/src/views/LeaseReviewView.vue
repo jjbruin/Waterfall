@@ -29,6 +29,9 @@ const expirations = ref<any>(null)
 const cotenancy = ref<any>(null)
 const scenarios = ref<any[]>([])
 const validation = ref<any[]>([])
+// Which of the four secondary panels failed to load, so a blank panel says why
+// instead of looking like "there is nothing here".
+const panelErrors = ref<string[]>([])
 const loading = ref(false)
 const expandedTenant = ref<number | null>(null)
 const tenantDocs = ref<any[]>([])
@@ -132,15 +135,32 @@ async function loadReview(id: number) {
 
     // Load secondary data — these may fail if no tenants yet
     if (tenants.value.length) {
+      // allSettled, NOT all. `Promise.all` rejects on the FIRST failure, and
+      // validation was assigned LAST -- so when the expirations endpoint
+      // returned a 500 the validation screen rendered blank with its rows
+      // sitting in the database, and the catch below logged
+      // "(expected for new reviews)" so nobody looked. Four independent panels
+      // must fail independently.
+      panelErrors.value = []
+      const NAMES = ['expirations', 'cotenancy', 'scenarios', 'validation']
+      const settled = await Promise.allSettled([
+        api.get(`/api/lease-review/reviews/${id}/expirations`),
+        api.get(`/api/lease-review/reviews/${id}/cotenancy`),
+        api.get(`/api/lease-review/reviews/${id}/scenarios`),
+        api.get(`/api/lease-review/reviews/${id}/validation`),
+      ])
+      settled.forEach((r, i) => {
+        if (r.status === 'rejected') {
+          panelErrors.value.push(
+            `${NAMES[i]}: ${r.reason?.response?.data?.error || r.reason?.message || 'failed'}`)
+        }
+      })
+      const [expRes, cotRes, scenRes, valRes] = settled as any[]
+
       try {
-        const [expRes, cotRes, scenRes, valRes] = await Promise.all([
-          api.get(`/api/lease-review/reviews/${id}/expirations`),
-          api.get(`/api/lease-review/reviews/${id}/cotenancy`),
-          api.get(`/api/lease-review/reviews/${id}/scenarios`),
-          api.get(`/api/lease-review/reviews/${id}/validation`),
-        ])
-        expirations.value = expRes.data
-        const cotData = cotRes.data
+        expirations.value = expRes.status === 'fulfilled' ? expRes.value.data : null
+        if (cotRes.status !== 'fulfilled') throw new Error('cotenancy')
+        const cotData = cotRes.value.data
         const clauses: any[] = []
         if (cotData.details) {
           for (const [tenantName, detail] of Object.entries(cotData.details) as any) {
@@ -155,11 +175,14 @@ async function loadReview(id: number) {
           }
         }
         cotenancy.value = { ...cotData, clauses }
-        scenarios.value = scenRes.data.scenarios || []
-        validation.value = valRes.data
-      } catch (e2: any) {
-        console.warn('Secondary data load error (expected for new reviews)', e2)
+      } catch {
+        cotenancy.value = null
       }
+      // Assigned OUTSIDE the cotenancy try, so shaping that payload cannot take
+      // these two down with it.
+      scenarios.value = scenRes.status === 'fulfilled'
+        ? (scenRes.value.data.scenarios || []) : []
+      validation.value = valRes.status === 'fulfilled' ? valRes.value.data : []
     } else {
       expirations.value = null
       cotenancy.value = null
@@ -1579,6 +1602,14 @@ function statusClass(s: string): string {
       <!-- STEP 5: Validation -->
       <div v-if="activeStep === 'validation'" class="step-content">
         <h2>Three-Way Validation</h2>
+
+        <!-- A panel that could not load says so. Every table below is behind a
+             v-if on its own length, so a failed fetch previously rendered as an
+             empty page that looked like "no findings" rather than "not loaded". -->
+        <div v-if="panelErrors.length" class="panel-error">
+          Some data could not be loaded, so this page may be incomplete:
+          {{ panelErrors.join('; ') }}
+        </div>
         <p class="subtitle">Compare seller rent roll vs AI-extracted lease terms vs Argus (if provided). Flags matches and mismatches.</p>
 
         <button class="btn-primary" @click="runValidation" :disabled="validating" style="margin-bottom: 1rem">
@@ -1796,6 +1827,11 @@ function statusClass(s: string): string {
 </template>
 
 <style scoped>
+.panel-error {
+  margin: 0 0 1rem; padding: 8px 12px; border-radius: 4px;
+  background: #fff6e5; border: 1px solid #f0c674; color: #7a5200;
+  font-size: 13px;
+}
 .lease-review-page {
   padding: 1.5rem;
   max-width: 1400px;

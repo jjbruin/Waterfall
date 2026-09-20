@@ -3988,13 +3988,19 @@ def get_expiration_histogram(
         total_gla = review[0] or 0
         total_rent = review[1] or 0
 
-        # Get all non-vacant tenants with lease end dates
+        # A ROW READ AS NOT-A-TENANT HAS NO EXPIRY. `v501` taught the roster
+        # and the headline totals to respect `tenant_status`; this histogram was
+        # never updated, so the building banner, the two subtotal rows and the
+        # vacant suites still reached it -- carrying the literal string 'NaN' as
+        # their lease_end, which is what took the endpoint down. Same idiom as
+        # every other consumer.
         tenants = conn.execute(text("""
             SELECT id, tenant_name, suite, square_feet, lease_end,
                    annual_rent, rent_per_sf, is_material, has_cotenancy
             FROM lease_tenants
             WHERE review_id = :rid AND is_vacant = false
             AND lease_end IS NOT NULL
+            AND COALESCE(tenant_status, 'active') = 'active'
             ORDER BY lease_end
         """), {'rid': review_id}).fetchall()
 
@@ -4020,6 +4026,15 @@ def get_expiration_histogram(
             lease_end = pd.to_datetime(t[4])
             exp_year = lease_end.year
         except Exception:
+            continue
+
+        # THE RANGE GUARD BELOW CANNOT DO THIS, and that is the whole bug.
+        # `pd.to_datetime('NaN')` returns NaT WITHOUT raising -- the string is a
+        # null token to pandas -- so the except above never fires, `.year` is
+        # nan, and BOTH comparisons are False because NaN never compares. The
+        # row sailed past the guard into `yearly[nan]` and raised KeyError: nan,
+        # which the endpoint returned as HTTP 500 {"error":"nan"}.
+        if pd.isna(exp_year):
             continue
 
         if exp_year < current_year or exp_year > end_year:
