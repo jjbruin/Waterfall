@@ -547,6 +547,61 @@ def _cam_row_window(entry: Dict[str, Any],
     return start, end, label, ''
 
 
+def fill_cam_escalations(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Carry a stated escalation forward over rows that state only a period.
+
+    A lease very often states ONE amount and a rule: Starbucks #8362 on Market at
+    Poplar fixes operating expenses at "$1.96 per square foot of Gross Leasable
+    Area for the first five (5) Lease Years, increasing ten percent (10%) on the
+    commencement of the sixth (6th) Lease Year and upon each fifth anniversary
+    thereafter". The extraction is told NOT to compute the later figures -- the
+    same rule the rent steps follow -- so the rows for lease years 6 onward come
+    back with a period, an `escalation_pct`, and no amount.
+
+    THE ARITHMETIC BELONGS HERE, not in the model: it is stated, exact and
+    checkable, and a figure the model worked out in its head cannot be traced back
+    to the sentence that produced it. Each row escalates the LAST AMOUNT ACTUALLY
+    CARRIED, so 10% every five years compounds the way the lease says.
+
+    A row that states its own amount always wins over the carried one. Returns
+    copies; the stored extraction is never rewritten.
+    """
+    out: List[Dict[str, Any]] = []
+    carried: Optional[Tuple[str, float]] = None
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        row = dict(e)
+        stated = None
+        for key in ('per_sf', 'annual', 'monthly'):
+            val = row.get(key)
+            if val not in (None, ''):
+                try:
+                    stated = (key, float(val))
+                    break
+                except (TypeError, ValueError):
+                    continue
+        if stated is not None:
+            carried = stated
+        else:
+            pct = row.get('escalation_pct')
+            try:
+                pct = float(pct) if pct not in (None, '') else None
+            except (TypeError, ValueError):
+                pct = None
+            if pct is not None and carried is not None:
+                key, amount = carried
+                amount = amount * (1.0 + pct / 100.0)
+                row[key] = amount
+                # Said out loud, because a derived figure that does not announce
+                # itself is indistinguishable from one the lease printed.
+                row['_derived'] = ('escalated %s%% from the previous period'
+                                   % (('%g' % pct)))
+                carried = (key, amount)
+        out.append(row)
+    return out
+
+
 def cam_fixed_in_force(entries: List[Dict[str, Any]],
                        as_of: Any,
                        rent_commencement: Any = None
@@ -565,6 +620,27 @@ def cam_fixed_in_force(entries: List[Dict[str, Any]],
     d = _as_date(as_of)
     if not entries or d is None:
         return None, ''
+
+    entries = fill_cam_escalations(entries)
+
+    # A LEASE THAT STATES ONE AMOUNT AND NO PERIOD MEANS IT THROUGHOUT. BooYa's on
+    # Market at Poplar reads "Tenant Reimbursement charges currently billed and
+    # collected at $1,276.27 will also be due with Minimum Monthly Rent" -- a real,
+    # checkable figure with nothing to date. Reporting nothing there loses a
+    # comparison the rent roll can be held to. It applies ONLY when it is the sole
+    # row: among dated rows a period-less one would otherwise beat every one of
+    # them at every date, which is the opposite of what a schedule means.
+    if len(entries) == 1:
+        only = entries[0]
+        if isinstance(only, dict):
+            start, _end, label, why = _cam_row_window(only, rent_commencement)
+            if start is None and not why:
+                has_amount = any(only.get(k) not in (None, '')
+                                 for k in ('per_sf', 'annual', 'monthly'))
+                if has_amount:
+                    return only, ('Fixed recovery stated without a period%s, '
+                                  'taken as applying throughout the term.'
+                                  % ((' (%s)' % label) if label else ''))
 
     eligible, starts, blocked = [], [], []
     for e in entries:

@@ -2329,7 +2329,7 @@ Return a JSON object with these fields (use null for fields not found):
   "security_deposit": number,
   "cam_structure": "pro rata / fixed / gross",
   "cam_fixed": [
-    {{"period": "verbatim text, e.g. 2026 to 2030 or Lease Years 1-5", "year_start": number or null, "year_end": number or null, "lease_year_start": number or null, "lease_year_end": number or null, "per_sf": number or null, "annual": number or null, "monthly": number or null}}
+    {{"period": "verbatim text, e.g. 2026 to 2030 or Lease Years 1-5", "year_start": number or null, "year_end": number or null, "lease_year_start": number or null, "lease_year_end": number or null, "per_sf": number or null, "annual": number or null, "monthly": number or null, "escalation_pct": number or null}}
   ],
   "cam_cap_pct": number or null,
   "admin_fee_pct": number or null,
@@ -2447,7 +2447,18 @@ IMPORTANT:
   overrides the real one. Put the wording verbatim in "period" either way. Where a
   lease states an escalation instead of a table -- "increasing 10% at the
   commencement of the sixth Lease Year and each fifth anniversary thereafter" --
-  return one row per period it defines, with the periods it names.
+  return one row per period it defines, with the periods it names, and put the
+  percentage in escalation_pct on each row it applies to -- leave that row's
+  per_sf / annual / monthly NULL. THE APPLICATION COMPOUNDS IT FORWARD from the
+  last stated amount. Do not work the later figures out yourself: a number you
+  calculated cannot be traced back to the sentence that produced it, and the app
+  does this arithmetic the same way for every lease. Starbucks #8362 on Market at
+  Poplar is the pattern -- "$1.96 per square foot for the first five (5) Lease
+  Years, increasing ten percent (10%) on the commencement of the sixth (6th) Lease
+  Year and upon each fifth anniversary thereafter" is six rows: the first carries
+  1.96, the rest carry escalation_pct 10 and their own lease years.
+- A FIXED RECOVERY STATED WITH NO PERIOD AT ALL is fine -- return the amount with
+  period null. It is read as applying throughout the term.
 - For amendments, only return CHANGED fields; unchanged fields should be null
 - Dates must be YYYY-MM-DD format
 - Dollar amounts should be numbers (no $ signs)
@@ -3885,6 +3896,18 @@ def validate_rent_roll(
                     cam_fixed, rr_date, rent_commencement)
                 lease_rec_psf = annual_recovery_psf(cam_row, rr_sf)
                 if lease_rec_psf is None and cam_basis:
+                    # TWO DIFFERENT ANSWERS, AND THEY MUST NOT READ THE SAME. Either
+                    # the period in force could not be established, or it was and the
+                    # lease states no amount against it -- "could not be determined"
+                    # followed by a sentence naming the period reads as a
+                    # contradiction and sends the reader to the wrong page of the
+                    # lease.
+                    unpriced = cam_row is not None
+                    lead = ('The lease fixes its recoveries and this period is in '
+                            'force, but it states no amount for it. '
+                            if unpriced else
+                            'The lease fixes its recoveries but the amount in '
+                            'force could not be determined. ')
                     # A lease that FIXES its recoveries and cannot be placed on the
                     # calendar is a finding about the lease, not silence. Reported
                     # the way an undatable rent step is: the figure is knowable in
@@ -3898,8 +3921,7 @@ def validate_rent_roll(
                     """), {
                         'tid': tenant_id,
                         'sv': str(rr_rec_psf) if rr_rec_psf is not None else None,
-                        'notes': ('The lease fixes its recoveries but the amount in '
-                                  'force could not be determined. ' + cam_basis),
+                        'notes': lead + cam_basis,
                     })
                     results.append({
                         'tenant': tenant_name, 'suite': suite,
@@ -3908,8 +3930,7 @@ def validate_rent_roll(
                         'seller_value': (str(rr_rec_psf)
                                          if rr_rec_psf is not None else None),
                         'lease_value': None, 'status': 'review',
-                        'notes': ('The lease fixes its recoveries but the amount in '
-                                  'force could not be determined. ' + cam_basis),
+                        'notes': lead + cam_basis,
                     })
                 if lease_rec_psf is not None:
                     # WHETHER THIS IS A MISMATCH OR A QUESTION DEPENDS ON WHAT THE

@@ -300,6 +300,67 @@ chk('an ISO date is NOT read as a period',
     parse_relative_period('2026-01-01') is None)
 
 
+section('A stated escalation is compounded forward, not asked of the model')
+# Starbucks #8362 on Market at Poplar: "$1.96 per square foot ... for the first
+# five (5) Lease Years, increasing ten percent (10%) on the commencement of the
+# sixth (6th) Lease Year and upon each fifth anniversary thereafter". The
+# extraction is told NOT to compute the later figures, so they arrive as a period
+# plus escalation_pct and no amount. THE FIRST TARGETED RE-EXTRACTION RETURNED
+# EXACTLY THAT and the app had nothing to do with it -- it reported "the amount in
+# force could not be determined" on a lease that states it perfectly clearly.
+from flask_app.services.lease_terms import fill_cam_escalations  # noqa: E402
+SB = [
+    {'period': 'first five (5) Lease Years', 'lease_year_start': 1,
+     'lease_year_end': 5, 'per_sf': 1.96},
+    {'period': 'sixth Lease Year', 'lease_year_start': 6, 'lease_year_end': 10,
+     'escalation_pct': 10},
+    {'period': 'eleventh Lease Year', 'lease_year_start': 11, 'lease_year_end': 15,
+     'escalation_pct': 10},
+]
+_filled = fill_cam_escalations(SB)
+chk('the stated amount is left alone', _filled[0]['per_sf'] == 1.96)
+chk('the next period escalates 10%', abs(_filled[1]['per_sf'] - 2.156) < 1e-9,
+    str(_filled[1].get('per_sf')))
+chk('...and it COMPOUNDS rather than restarting',
+    abs(_filled[2]['per_sf'] - 2.3716) < 1e-9, str(_filled[2].get('per_sf')))
+chk('a derived figure says it was derived',
+    'escalated 10%' in (_filled[1].get('_derived') or ''),
+    str(_filled[1].get('_derived')))
+chk('the stated one does NOT claim to be derived', '_derived' not in _filled[0])
+# Starbucks commences 2017-09-29, so lease year 6 begins 2022-09-29 and a
+# 2026-09-01 rent roll sits inside Lease Years 6-10.
+_sr, _sb = cam_fixed_in_force(SB, '2026-09-01', '2017-09-29')
+chk('the escalated figure is the one in force at the rent roll date',
+    _sr is not None and _sr.get('per_sf') is not None
+    and abs(_sr['per_sf'] - 2.156) < 1e-9, str(_sr))
+chk('...dated from the fifth anniversary', '2022-09-29' in _sb, _sb)
+# BOTH DIRECTIONS: escalating without a stated amount to escalate FROM would be
+# inventing the figure outright.
+chk('an escalation with nothing before it stays empty',
+    fill_cam_escalations([{'lease_year_start': 1, 'escalation_pct': 10}])[0]
+    .get('per_sf') is None)
+
+
+section('A fixed amount stated with NO period applies throughout')
+# BooYa's Inc: "Tenant Reimbursement charges currently billed and collected at
+# $1,276.27 will also be due with Minimum Monthly Rent" -- a real figure with
+# nothing to date. Reporting nothing loses a comparison the rent roll can be held
+# to: $1,276.27/mo over 4,777 SF is $3.21/SF against a rent roll saying $3.64.
+BY = [{'period': 'currently billed at $1,276.27', 'monthly': 1276.27}]
+_br, _bb = cam_fixed_in_force(BY, '2026-09-01', '2024-04-01')
+chk('the sole undated row is used', _br is not None, str(_br))
+chk('...and says it was read as applying throughout',
+    'applying throughout' in _bb, _bb)
+_bpsf = annual_recovery_psf(_br, 4777)
+chk('...giving a real per-SF figure',
+    _bpsf is not None and abs(_bpsf - 3.2059) < 0.001, str(_bpsf))
+# THE OTHER DIRECTION, which is the one that would do damage: among dated rows an
+# undated one would otherwise be in force at every date and beat all of them.
+_mixed = cam_fixed_in_force(BY + SB, '2026-09-01', '2017-09-29')[0]
+chk('an undated row among dated ones is NOT used, even listed first',
+    _mixed is not None and _mixed.get('lease_year_start') == 6, str(_mixed))
+
+
 section('Settling a finding: the API')
 os.environ.setdefault('DATABASE_URL', '')
 from flask_app import create_app  # noqa: E402
