@@ -186,6 +186,83 @@ function isNum(key: string) { return key === 'AMT' || key === 'Amount' }
 const totalKey = computed(() => (tab.value === 'gl' ? 'AMT' : 'Amount'))
 const totalValue = computed(() => result.value?.totals?.[totalKey.value])
 
+// ── sort and filter the grid, on any column ──────────────────────────────
+//
+// Jim, Sep 20 2026: "take the query results that we are currently receiving and
+// allow the user to filter or sort by any of the column headers." Which line of
+// a journal entry is the 'other side' turned out not to be answerable from the
+// entry at all -- it is a property of the account -- so rather than bake in one
+// opinionated filter, the grid is made sliceable and the reader decides.
+//
+// THIS OPERATES ON THE ROWS THAT WERE RETURNED, NOT THE WHOLE MATCH, and that
+// distinction is reported rather than glossed: a truncated result holds the
+// first 5,000 rows, so sorting it does NOT give the largest amount in the match,
+// and a filter over it does not see what was never sent.
+const sortKey = ref<string>('')
+const sortDir = ref<'asc' | 'desc'>('asc')
+const colFilters = ref<Record<string, string>>({})
+const filtersOpen = ref(false)
+
+function toggleSort(key: string) {
+  if (sortKey.value === key) {
+    // third click clears it, so the server's own ordering can be got back
+    if (sortDir.value === 'asc') sortDir.value = 'desc'
+    else { sortKey.value = ''; sortDir.value = 'asc' }
+  } else {
+    sortKey.value = key
+    sortDir.value = 'asc'
+  }
+}
+
+function clearSlicing() {
+  sortKey.value = ''
+  sortDir.value = 'asc'
+  colFilters.value = {}
+}
+
+const anyFilter = computed(() =>
+  Object.values(colFilters.value).some(v => (v || '').trim() !== ''))
+
+const viewRows = computed<any[]>(() => {
+  let rows: any[] = result.value?.rows || []
+  const f = colFilters.value
+  for (const key of Object.keys(f)) {
+    const needle = (f[key] || '').trim().toLowerCase()
+    if (!needle) continue
+    rows = rows.filter(r => String(r[key] ?? '').toLowerCase().includes(needle))
+  }
+  if (sortKey.value) {
+    const k = sortKey.value
+    const dir = sortDir.value === 'asc' ? 1 : -1
+    // Copied before sorting: Array.sort mutates, and mutating the store's rows
+    // would make the order stick after the sort is cleared.
+    rows = rows.slice().sort((a, b) => {
+      const x = a[k], y = b[k]
+      if (x === null || x === undefined) return 1      // blanks last, either way
+      if (y === null || y === undefined) return -1
+      if (typeof x === 'number' && typeof y === 'number') return (x - y) * dir
+      return String(x).localeCompare(String(y), undefined, { numeric: true }) * dir
+    })
+  }
+  return rows
+})
+
+// The server's total covers the WHOLE match by design (a truncated grid that
+// totalled only its own rows would look complete and be wrong). Once the reader
+// filters, that number no longer describes what is on screen, so the filtered
+// subtotal is shown BESIDE it rather than replacing it.
+const viewTotal = computed(() => {
+  if (!anyFilter.value && !result.value?.truncated) return null
+  const k = totalKey.value
+  if (!k) return null
+  let n = 0
+  for (const r of viewRows.value) {
+    const v = Number(r[k])
+    if (!Number.isNaN(v)) n += v
+  }
+  return n
+})
+
 onMounted(loadOptions)
 </script>
 
@@ -295,9 +372,15 @@ onMounted(loadOptions)
           <template v-if="result.truncated">
             — showing the first {{ result.shown.toLocaleString() }}
           </template>
+          <template v-if="anyFilter">
+            — <strong>{{ viewRows.length.toLocaleString() }}</strong> after filtering
+          </template>
           <span v-if="totalValue !== undefined && totalValue !== null" class="total">
-            Total {{ tab === 'gl' ? 'amount' : 'amount' }}:
+            Total for all {{ result.row_count.toLocaleString() }}:
             {{ fmt(totalValue, totalKey) }}
+          </span>
+          <span v-if="viewTotal !== null" class="total shown">
+            Shown: {{ fmt(viewTotal, totalKey) }}
           </span>
         </div>
         <div class="asof" v-if="result.data_as_of">
@@ -310,19 +393,53 @@ onMounted(loadOptions)
 
       <div v-for="(n, i) in result.notes" :key="i" class="notice">{{ n }}</div>
 
+      <div class="slice-bar" v-if="result.rows.length">
+        <button class="linkish" @click="filtersOpen = !filtersOpen">
+          {{ filtersOpen ? 'Hide' : 'Filter' }} by column
+        </button>
+        <span v-if="sortKey" class="slice-note">
+          sorted by {{ (shownCols.find(c => c.key === sortKey) || {}).label }}
+          ({{ sortDir === 'asc' ? 'ascending' : 'descending' }})
+        </span>
+        <button v-if="sortKey || anyFilter" class="linkish" @click="clearSlicing">
+          Clear
+        </button>
+        <!-- Said plainly: the rows that never arrived cannot be sorted into view. -->
+        <span v-if="result.truncated" class="slice-warn">
+          Sorting and filtering apply to the
+          {{ result.shown.toLocaleString() }} rows loaded, not to all
+          {{ result.row_count.toLocaleString() }} matched — export for the rest.
+        </span>
+      </div>
+
       <div v-if="!result.rows.length" class="notice">
         Nothing matched these filters.
+      </div>
+      <div v-else-if="!viewRows.length" class="notice">
+        No loaded row matches the column filters. Clear them to see the
+        {{ result.shown.toLocaleString() }} rows that came back.
       </div>
       <div v-else class="table-scroll">
         <table class="data-table">
           <thead>
             <tr>
               <th v-for="c in shownCols" :key="c.key"
-                  :class="{ num: isNum(c.key), clip: c.clip }">{{ c.label }}</th>
+                  :class="{ num: isNum(c.key), clip: c.clip, sorted: sortKey === c.key }"
+                  :title="`Sort by ${c.label}`"
+                  @click="toggleSort(c.key)">
+                {{ c.label }}<span class="arrow">{{
+                  sortKey === c.key ? (sortDir === 'asc' ? '▲' : '▼') : '' }}</span>
+              </th>
+            </tr>
+            <tr v-if="filtersOpen" class="filter-row">
+              <th v-for="c in shownCols" :key="c.key">
+                <input v-model="colFilters[c.key]" class="colf"
+                       :placeholder="c.label" />
+              </th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(r, i) in result.rows" :key="i">
+            <tr v-for="(r, i) in viewRows" :key="i">
               <td v-for="c in shownCols" :key="c.key"
                   :class="{ num: isNum(c.key), clip: c.clip }"
                   :title="c.clip ? String(r[c.key] ?? '') : undefined"
@@ -394,6 +511,27 @@ onMounted(loadOptions)
    Entity column already shows, so it is capped and the full text is on hover.
    max-width alone does nothing to a table cell -- the fixed layout comes from
    the width + overflow pair. */
+.data-table th { cursor: pointer; user-select: none; }
+.data-table th:hover { color: var(--color-text); }
+.data-table th.sorted { color: var(--color-text); }
+.arrow { font-size: 9px; margin-left: 3px; }
+.filter-row th { padding: 2px 4px; background: var(--color-surface); }
+.colf {
+  width: 100%; min-width: 60px; box-sizing: border-box;
+  font-size: 11px; padding: 2px 4px;
+  border: 1px solid var(--color-border); border-radius: 3px;
+}
+.slice-bar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin: 6px 0 4px; font-size: 12px;
+}
+.slice-note { color: var(--color-text-secondary); }
+.slice-warn { color: #9a6700; }
+.linkish {
+  background: none; border: none; padding: 0; cursor: pointer;
+  color: var(--color-primary, #2b6cb0); font-size: 12px; text-decoration: underline;
+}
+.total.shown { font-weight: 600; }
 .data-table th.clip, .data-table td.clip {
   max-width: 260px; overflow: hidden; text-overflow: ellipsis;
 }

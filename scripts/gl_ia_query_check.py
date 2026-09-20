@@ -436,6 +436,67 @@ else:
 
 
 
+
+# ===========================================================================
+section('The grid can be sorted and filtered by any column')
+# Jim, Sep 20 2026: "take the query results that we are currently receiving and
+# allow the user to filter or sort by any of the column headers of the query
+# result." He asked for this after two candidate filters were measured and
+# refused -- `ITEM = 1` (a line number, not a side) and the sign of `AMT` (which
+# keeps the expense on an expense entry and the CASH on a revenue entry). Which
+# line is the 'other side' is a property of the ACCOUNT, so the grid is made
+# sliceable and the reader decides rather than a default deciding for them.
+#
+# Verified in the running app before these were written: sorting Amount gives
+# -2,694,676.22 .. 2,614,646.68 ascending, reverses, and a third click restores
+# the server's original order; filtering Account Name on "cash" takes 11 rows to
+# 2 and the head reads "Total for all 11: (427.84)  Shown: 127,500.00".
+_gview = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                      'vue_app', 'src', 'views', 'GlIaQueryView.vue')
+if os.path.exists(_gview):
+    _g = open(_gview, encoding='utf-8').read()
+
+    # If the body still walks result.rows, every filter silently does nothing --
+    # the boxes accept text, the count changes, the table does not.
+    check('the table body walks the FILTERED rows',
+          'v-for="(r, i) in viewRows"' in _g
+          and 'v-for="(r, i) in result.rows"' not in _g)
+    check('every visible column gets a filter box',
+          'v-for="c in shownCols"' in _g and 'v-model="colFilters[c.key]"' in _g)
+    check('every column header sorts', '@click="toggleSort(c.key)"' in _g)
+
+    # Array.sort mutates. Sorting result.rows in place would destroy the
+    # server's ordering permanently -- clearing the sort could not get it back.
+    check('rows are COPIED before sorting, so clearing restores the original',
+          'rows.slice().sort(' in _g)
+
+    # The server totals the WHOLE match on purpose (a truncated grid that
+    # totalled its own rows would look complete and be wrong). Once a filter is
+    # on, that number no longer describes the screen, so both are shown.
+    check('the whole-match total says how many rows it covers',
+          'Total for all {{ result.row_count' in _g)
+    check('...and a filtered subtotal is shown beside it, not instead of it',
+          'viewTotal' in _g and 'Shown:' in _g)
+
+    # Sorting 5,000 of 79,074 rows does not find the largest amount in the match.
+    check('a truncated result says the slicing only covers what was loaded',
+          'not to all' in _g and 'result.truncated' in _g)
+
+    # A filter that matches nothing must say so rather than render an empty grid.
+    check('filtering everything out is explained, not left blank',
+          'No loaded row matches the column filters' in _g)
+
+    # Numbers must sort as numbers: the cells render "(2,694,676.22)", so a
+    # string sort would order by the bracket.
+    check('numeric columns sort numerically, not as formatted text',
+          "typeof x === 'number' && typeof y === 'number'" in _g)
+    check('blanks sort to the end either way',
+          'blanks last' in _g or 'return 1' in _g)
+else:
+    SKIP.append('grid slicing checks')
+    print('  SKIP  grid slicing checks  [Vue source not in the image]')
+
+
 print(f'\n{len(PASS)} passed, {len(FAIL)} failed, {len(SKIP)} skipped')
 if FAIL:
     print('FAILED:')
