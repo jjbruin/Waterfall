@@ -2465,6 +2465,14 @@ IMPORTANT:
   1.96, the rest carry escalation_pct 10 and their own lease years.
 - A FIXED RECOVERY STATED WITH NO PERIOD AT ALL is fine -- return the amount with
   period null. It is read as applying throughout the term.
+- cam_fixed IS FOR THE TENANT'S SHARE OF CAM / OPERATING EXPENSES AND NOTHING
+  ELSE. Do not put a separate utility reimbursement in it -- "Tenant will pay
+  $25.00 per month to reimburse Landlord for water and sewer charges" is not a
+  CAM charge and comparing it to a rent roll's recovery figure is meaningless.
+  Do not put an ESTIMATE in it either: under a pro-rata lease the monthly figure
+  is an estimate trued up at the annual reconciliation, so leave cam_fixed empty
+  and say "pro rata" in cam_structure. Fill cam_fixed only where the lease states
+  an amount the tenant pays REGARDLESS of what the expenses turn out to be.
 - For amendments, only return CHANGED fields; unchanged fields should be null
 - Dates must be YYYY-MM-DD format
 - Dollar amounts should be numbers (no $ signs)
@@ -3892,6 +3900,18 @@ def validate_rent_roll(
             # stated independently of the rent schedule, so a tenant whose rent
             # step will not resolve can still have its recoveries checked.
             cam_fixed = ext.get('cam_fixed') if isinstance(ext, dict) else None
+            # A SCHEDULE ONLY COUNTS IF THE LEASE ACTUALLY FIXES THE RECOVERY.
+            # The full re-extraction found this: USA Karate and CPR are PRO RATA
+            # leases, and the rows returned for them are the INITIAL ESTIMATE the
+            # tenant starts paying ("Initial Common Area Maintenance charge per
+            # month", "the estimated amounts set forth ... for calendar year
+            # 2017"). An estimate under a pro-rata lease is trued up at the annual
+            # reconciliation; holding the rent roll to it as though the lease
+            # capped it is comparing two different things, and it produced 3 of the
+            # 9 findings. The structure is what says whether the amount binds.
+            structure = str((ext or {}).get('cam_structure') or '').strip().lower()
+            if cam_fixed and not structure.startswith('fixed'):
+                cam_fixed = None
             if cam_fixed and rr_date:
                 # A schedule stated in LEASE YEARS is placed against the tenant's
                 # rent commencement date, exactly as a rent step written "Months

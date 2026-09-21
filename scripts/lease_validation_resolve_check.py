@@ -361,6 +361,44 @@ chk('an undated row among dated ones is NOT used, even listed first',
     _mixed is not None and _mixed.get('lease_year_start') == 6, str(_mixed))
 
 
+section('An ESTIMATE under a pro-rata lease is not a fixed recovery')
+# The full re-extraction produced 9 recovery findings and 3 of them compared the
+# wrong thing: USA Karate and CPR are PRO RATA leases whose rows are the initial
+# ESTIMATE the tenant starts paying, trued up at the annual reconciliation. The
+# rent roll cannot be held to an estimate as though the lease capped it.
+with eng.begin() as c:
+    c.execute(text(
+        "INSERT INTO lease_tenants (id, review_id, tenant_name, suite, square_feet,"
+        " annual_rent, monthly_rent, rent_per_sf, lease_end, is_vacant,"
+        " tenant_status, rent_commencement, annual_recoveries_per_sf,"
+        " extraction_json, extraction_status) VALUES "
+        "(5,7,'Pro Rata Tenant','E1',1768,50000,4166.67,28,'2035-12-31',0,'active',"
+        " '2024-05-01',3.64,:j,'extracted')"),
+        {'j': json.dumps({
+            'square_feet': 1768, 'cam_structure': 'pro rata',
+            'cam_fixed': [{'period': 'Initial Common Area Maintenance charge per '
+                                     'month', 'monthly': 209.21}],
+            'tax_pass_through': False, 'insurance_pass_through': False})})
+    c.execute(text(
+        "INSERT INTO lease_rent_steps (tenant_id, effective_date, annual_rent,"
+        " monthly_rent, rent_per_sf) VALUES (5,'2026-01-01',50000,4166.67,28)"))
+S.validate_rent_roll(eng, 7)
+with eng.connect() as c:
+    prorata = c.execute(text(
+        "SELECT COUNT(*) FROM lease_validation WHERE tenant_id = 5"
+        " AND field_name = 'annual_recoveries_per_sf'")).scalar()
+chk('a PRO RATA lease raises no fixed-recovery finding', prorata == 0,
+    str(prorata))
+# BOTH DIRECTIONS: gating on the structure is satisfied by dropping every
+# recovery comparison, which would silently undo the whole feature.
+with eng.connect() as c:
+    still = c.execute(text(
+        "SELECT COUNT(*) FROM lease_validation WHERE"
+        " field_name = 'annual_recoveries_per_sf'")).scalar()
+chk('...while the leases that DO fix it are still compared', still == 4,
+    str(still))
+
+
 section('Settling a finding: the API')
 os.environ.setdefault('DATABASE_URL', '')
 from flask_app import create_app  # noqa: E402
