@@ -1,4 +1,61 @@
-# Session Handoff — through Sep 20 2026 (v514 live)
+# Session Handoff — through Sep 21 2026 (v518 live)
+
+## Sep 20–21 2026 — THE VALIDATION SCREEN BECAME USABLE, and CAM got checked
+
+**`v515` = `a21494e`, `v516` = `d27fd9f`, `v517` = `8393b25`, `v518` = `03e93aa`.**
+All shipped and verified on production. Full entries in `CLAUDE.md`; this is what
+a reader needs to carry forward.
+
+### What Jim asked for, in order, and what each one turned up
+
+**The rent roll date, and why the page looked empty.** Market at Poplar showed 23
+tenants whose rent "could not be determined from the lease" while holding 148 rent
+steps. The review simply had no `rent_roll_date`, so no rent could be placed in
+force — and the message blamed the lease, which is what sent a reader hunting for
+data that was not missing. The date is now settable on the page AND asked for at
+upload (requested, not enforced). With 2026-09-01 set: 0 of 23 comparisons became
+22 of 23, six real disagreements.
+
+**Clearing a mismatch.** There was no control at all — the only thing near a
+finding was a per-TENANT approve/flag two steps later, recording no value, no
+reason and no document. Settle now records the figure, a REQUIRED reason and a
+CHECKED document citation, survives re-validation, and feeds a change report
+(rent roll → applies → difference → reason → document → who) that downloads.
+
+**The CAM question, which was the biggest finding.** A fixed CAM charge was not
+validated at all: the extraction stored the word `fixed` and never the amount.
+Now captured, dated (calendar years, lease years against rent commencement, or a
+verbatim period), escalations compounded by the app, and compared — as a QUESTION
+where the lease passes tax or insurance through separately, since our rent roll
+column is one combined figure.
+
+**A document arriving for a scanned tenant** re-reads that tenant's WHOLE set,
+after asking whether more files are coming. Which exposed that the abstract had
+been frozen the moment anyone saved it.
+
+### The three things worth remembering
+
+1. **RUN A RE-EXTRACTION WITH A DIFF.** The second full run (419 documents, three
+   hours, no failures) reported nine recovery findings and three were comparing a
+   pro-rata ESTIMATE to the rent roll as though the lease had capped it. "No
+   errors" would have read as success.
+2. **THE TARGETED RUN BEFORE THE FULL ONE EARNED ITS PLACE** — Jim asked for it,
+   and it found two more shapes (a stated escalation with no amounts, and a fixed
+   amount with no period) that would otherwise have been discovered across the
+   whole corpus.
+3. **FOUR OF MY OWN CHECKS WERE WEAKER THAN THEY LOOKED**, each found by injecting
+   the defect rather than by reading: an undated row sitting second in a fixture
+   so "the first row is not used" proved nothing; two assertions raising TypeError
+   instead of failing and hiding every check after them; and a section key outside
+   the abstract template that never reaches the screen. Inject the defect.
+
+### Live open items after this
+
+`open_items.md` **§9.11** (O'Reilly needs a rent commencement date — nothing to
+build), **§9.12** (the pro-rata/fixed boundary rests on one model-classified
+field), **§9.3** (whether `gl_detail` was imported — it was, can probably close),
+**§9.5 / §9.6** (two GL-tool decisions for Jim), **§9.7** (the MRI password in
+git, Jim rotates), **§9.10** (five cosmetic debris rows).
 
 ## Sep 20 2026 — THE LEASE CORPUS, and a regression the diff caught
 

@@ -768,7 +768,24 @@ non-vacuous against each defect.
 production. The rule is general (a certificate of insurance is not a lease
 anywhere) but the evidence is one roster.
 
-### 9.2 Re-extraction and re-consolidation are DONE — CLOSED
+### 9.2 Re-extraction and re-consolidation are DONE — CLOSED (twice)
+
+**A SECOND full re-extraction ran Sep 21 2026 on `v517`**, to pick up the
+`cam_fixed` schedules and `escalation_pct` the first run predated: **419 documents
+in three hours, no failures.** Coverage HELD on every field (rent_commencement 53,
+lease_expiration 57, square_feet 61, suite 71; security deposit +2, escalation −1)
+and 92 fields moved — 32 escalation descriptions, 15 rent-step counts, 11 rent
+commencements, 11 lease commencements, 7 suites, **one** lease expiration.
+Tenants with a fixed-recovery schedule went 4 → 9.
+
+**RUN IT WITH A DIFF.** The diff is what found the defect `v518` fixed: nine
+recovery findings, three of them comparing a pro-rata ESTIMATE to the rent roll as
+though the lease had capped it. A run reported as "419 documents, no errors" would
+have looked like a success.
+
+The original run's record follows.
+
+---
 
 Finished Sep 20 2026 at 16:27 on `v512`: **417 documents re-extracted, zero
 errors**, then consolidated (the extraction ends by consolidating each review, so
@@ -899,6 +916,41 @@ the literal offset on most cash transactions. Measured alternatives: income
 statement only (TYPE `I`) collapses **3,615 of 5,043 entries to a single line**.
 Neither is universally "the real line" — a distribution's substance is
 `MR31000001 Distributions`, which is **B** — which is why no default was chosen.
+
+### 9.11 O'Reilly Auto Parts #6716 has no rent commencement date — NEEDS THE FILE
+
+Its lease fixes Common Area Expenses as a **35-year monthly schedule**, Lease
+Year 1 $10,429.29/mo rising to Lease Year 35 $28,491.83/mo, and all 35 rows are
+captured. It cannot be priced because **lease year 1 begins on the rent
+commencement date and the tenant has none** — so the validation says exactly that
+rather than approximating it from the calendar year, which would be right by luck
+only for a January commencement.
+
+The rent roll says $3.52/SF. For scale, $10,429.29/mo over 36,594 SF is $3.42/SF
+in Lease Year 1, so the answer turns entirely on which lease year is in force.
+
+**To close it:** find the commencement date (a commencement letter usually carries
+it) and set it, or add the document and let the tenant re-read. Nothing to build.
+
+### 9.12 The pro-rata / fixed boundary is read from ONE field — watch it
+
+`v518` gates the recovery comparison on `cam_structure` starting with `fixed`,
+because under a pro-rata lease the monthly figure is an ESTIMATE trued up at the
+annual reconciliation. That is the right rule and it removed three wrong findings
+— but it rests on the model's own one-word classification of the lease.
+
+Two things to keep an eye on:
+
+- **A misread structure now silently removes a comparison** rather than producing
+  a wrong one. Safer direction, but still silent. A lease that genuinely fixes its
+  recoveries and is typed `pro rata` will simply raise no finding.
+- **`cam_fixed` is CAM only.** Pure Barre returned "$25.00 per month ... for water
+  and sewer" as a fixed recovery; the prompt now excludes utility reimbursements,
+  but no structural rule can tell one from a CAM charge, so this is a
+  prompt-quality boundary, not a checked one.
+
+Both are worth a look the next time the corpus is re-extracted: compare the count
+of `fixed` structures before and after, and read any that changed.
 
 ### 9.10 Five debris rows still carry `lease_end = 'NaN'` — cosmetic
 

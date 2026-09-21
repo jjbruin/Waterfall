@@ -253,6 +253,126 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v518` = `03e93aa` (AN ESTIMATE UNDER A PRO-RATA LEASE IS NOT A FIXED
+    RECOVERY, and a document added to a scanned tenant re-reads its whole set.
+    THE FULL RE-EXTRACTION FOUND THE FIRST ONE, which is the argument for having
+    run it with a diff: 419 documents in three hours, nine recovery findings, and
+    THREE of them comparing the wrong thing. USA Karate and CPR are PRO RATA
+    leases and the rows captured for them are the initial ESTIMATE ("Initial
+    Common Area Maintenance charge per month" $209.21; "the estimated amounts ...
+    ($5.00 per square foot annually)"), trued up at the annual reconciliation --
+    holding the rent roll to one as though the lease had capped it compares two
+    different things. Gated on `cam_structure` actually saying FIXED: the
+    structure says whether the amount binds, the presence of a schedule does not.
+    The third was Pure Barre, whose row is "$25.00 per month to reimburse
+    Landlord for water and sewer charges", $0.20/SF against a rent roll of $3.64
+    -- not a CAM charge at all and no structural rule can tell, so the PROMPT now
+    says it in terms. Both were needed: after re-reading, Pure Barre and USA
+    Karate return no schedule at all while CPR still returns its 2017 estimate and
+    the gate is what excludes it.
+    Findings 9 -> 4, and the two extra disappearances were CHECKED rather than
+    assumed: DSW #2 and Kohls #0249 are also pro rata. Seven tenants carry a
+    schedule or a fixed structure, four say fixed, and those four are exactly the
+    findings that remain -- Starbucks $7.70 vs $2.16, AT&T $4.63 vs $2.38,
+    BooYa's $3.64 vs $3.21, O'Reilly cannot be dated for want of a rent
+    commencement date.
+    ALSO: ADDING A DOCUMENT RE-READS THE TENANT'S WHOLE SET (Jim: "rerun the
+    extraction just on that tenant's set of leases... Ask the user if any other
+    files will be loaded before running"). Reading only the new file leaves the
+    terms assembled from a mixture of prompt versions, and the prompt moved twice
+    in one day. Files STAGE and the panel asks before anything runs -- uploading
+    on choose started a re-read per drop, so three files arriving one at a time
+    meant three runs over the same tenant. A tenant can also be re-read with no
+    upload, for a document assigned from the unmatched list.
+    THE ABSTRACT WAS FROZEN THE MOMENT ANYONE SAVED IT: `get_tenant_abstract`
+    assembles from data only when NO section is stored, so an abstract touched
+    once never saw another document again. A section this code wrote is refreshed;
+    a section A PERSON wrote is never overwritten -- it is marked, with the newly
+    assembled text beside it, and saving clears the mark either way.
+    THE RISK ANALYSIS DELIBERATELY DOES NOT TAKE THE LEASE'S DATE.
+    `lease_tenants.lease_end` is the RENT ROLL's figure; copying the lease's over
+    it on every re-read would make the two agree by construction and no expiry
+    mismatch could ever be reported again -- the v503 failure. The re-read
+    surfaces the disagreement; SETTLING it moves the analysis. Both halves
+    asserted.
+    Guardrail `lease_tenant_rerun_check.py` (36), proved against six injected
+    defects; `lease_validation_resolve_check` 102 -> 106. Two of my own fixtures
+    were wrong first -- a section key outside the template never reaches the
+    screen, and "is 2032 in the histogram" was true before the change too.
+    Production after deploy: both migrations present, three routes gated.)
+  - `v517` = `8393b25` (THE TARGETED RE-EXTRACTION FOUND TWO MORE SHAPES, which
+    is why Jim asked for it before the full run. It worked on two of the four
+    fixed-CAM leases and reported "the amount in force could not be determined"
+    on the other two, both of which state it perfectly clearly.
+    A STATED ESCALATION IS COMPOUNDED BY THE APP. Starbucks #8362 fixes operating
+    expenses at "$1.96 per square foot ... for the first five (5) Lease Years,
+    increasing ten percent (10%) on the commencement of the sixth (6th) Lease
+    Year and upon each fifth anniversary thereafter"; the extraction is told not
+    to compute the later figures, so six rows arrived with periods and no
+    amounts. `escalation_pct` is captured per row and `fill_cam_escalations`
+    carries the last stated amount forward, compounding -- $1.96 -> $2.156 ->
+    $2.3716 -- and a derived figure SAYS it was derived. An escalation with
+    nothing before it stays empty rather than inventing a base.
+    A FIXED AMOUNT WITH NO PERIOD APPLIES THROUGHOUT (BooYa's: "$1,276.27 ... due
+    with Minimum Monthly Rent"), but ONLY when it is the sole row -- among dated
+    rows an undated one would be in force at every date and beat all of them.
+    "Could not be determined" and "states no amount for this period" are
+    different answers and no longer read the same.
+    TWO OF MY OWN CHECKS WERE WEAKER THAN THEY LOOKED. "An undated row is not used
+    among dated ones" passed 102/102 with the rule deleted, because the undated
+    row sat SECOND in the fixture and the code reads the first. And two assertions
+    raised TypeError rather than failing, hiding every check after them.
+    After deploy all four leases resolve: Starbucks $2.156 dated from the fifth
+    anniversary 2022-09-29, AT&T $2.38, BooYa's $3.206, O'Reilly reporting that it
+    cannot be dated. Guardrail 90 -> 102.)
+  - `v516` = `d27fd9f` (A MISMATCH CAN BE SETTLED, A FIXED CAM CHARGE IS CHECKED,
+    and a lease-year schedule is dated from rent commencement.
+    THERE WAS NO WAY TO CLEAR A FINDING. The page listed them and the only control
+    near one was a per-TENANT approve/flag two steps later, recording no value, no
+    reason and no document -- so a mismatch stayed for ever and the decision that
+    settled it lived in somebody's email. SETTLE records the figure that applies,
+    the REASON (required) and the DOCUMENT it was read from, defaulted to the one
+    that governs; a citation naming another tenant's document is REFUSED, because
+    an unchecked citation reads as evidence. Confirming the rent roll is a
+    decision too and the report separates it from a change. A settled finding
+    stops asking, and survives a re-validation, because the decision lives in
+    `lease_field_resolutions` and not on the rows that get rebuilt.
+    THE CHANGE REPORT is rent roll -> applies -> difference -> reason -> document
+    -> who, on screen and as a workbook with the confirmations on their own tab.
+    `prior_value` is stored WITH the decision because the rent roll gets
+    re-imported.
+    A FIXED CAM CHARGE IS NOW PART OF THE VALIDATION (Jim, on the AT&T 4th
+    Amendment: "Is this situation part of the lease review and validation to the
+    rent roll?" It was NOT). The extraction captured the WORD `fixed` and never
+    the amount, so the one figure the rent roll could be checked against did not
+    exist anywhere. WHETHER A DIFFERENCE IS A MISMATCH OR A QUESTION depends on
+    what the column means: our rent roll carries ONE recoveries figure while a
+    lease fixing only the operating-expense share passes tax and insurance
+    through separately, so that is raised as a question naming both figures.
+    `cam_fixed` is a LIST and the merge whitelist knew only scalars and objects,
+    so it would have been dropped silently -- in the wrong direction, since the
+    schedule is stated BY the amendment.
+    FORMATTING FOLLOWS THE FIELD, NOT THE COLUMN: "All Validation Comparisons"
+    put rents, $/SF figures, square feet and dates in the same two columns and
+    rendered them raw (50052.0, 18.99998001998002). The sign sits OUTSIDE the
+    dollar sign -- "$-12,014" is not how a figure is written.
+    Verified in the running app: Benjamin Moore $50,052 vs $38,038 settled to the
+    lease figure citing the First Amendment, the report showing -$12,014, and undo
+    putting the finding back. Guardrails 72 and 90.)
+  - `v515` = `a21494e` (THE UPLOAD ASKS FOR THE RENT ROLL DATE, so Market at
+    Poplar cannot recur. Asked on the mapping confirmation, REQUESTED not
+    enforced -- a date typed wrong is worse than one supplied a moment later,
+    blank announces itself and a wrong date does not -- and the panel says what a
+    blank one costs. Parsed or refused, never guessed.
+    Carried `0ef754d`: the validation page shows enough to resolve a finding --
+    RR SF / RR Rent / RR $/SF / Lease SF / Lease Rent / Lease $/SF, every document
+    linked in applied order with un-applied COIs listed and marked, and the rent
+    roll date settable on the page. THE MESSAGE THAT BLAMED THE LEASE is gone: it
+    said rents "could not be determined from the lease" when the lease had 148
+    rent steps and the REVIEW simply had no date, which is what made Jim's
+    instinct right and the page wrong.
+    After deploy, Market at Poplar set to 2026-09-01: 0 of 23 rent comparisons
+    became 22 of 23, with six real disagreements surfacing.)
   - `v514` = `42d053d` (A VALIDATION SCREEN WITH ROWS IN THE DATABASE STOPS
     RENDERING BLANK. Jim asked whether to relocate the Lease Risk validation
     screen into Lease Review because "right now that page is blank". NO — the
@@ -2132,6 +2252,97 @@ above the results, or an overlay drawer, and is deliberately untouched.
   Workpapers 320→30 (721→1011), Prospect 480→33 (657→1119).
 - Guardrail: `scripts/collapsible_panel_check.py` (43).
 
+### Lease review — settling a finding, and the change report
+Live at `v518`. Jim, Sep 20 2026: "how does the analyst clear the mismatches on
+this page? If the analyst determines that the applicable rent is different from
+the rent roll, we need a clear report showing the changes with the reasons for the
+change citing the lease document that was used."
+
+- **THE REASON IS REQUIRED AND THE DOCUMENT IS CHECKED.** Settle records the
+  figure that applies, why, and the document it was read from (defaulted to the
+  one that governs). A citation naming ANOTHER tenant's document is refused — an
+  unchecked citation is worse than none, because it reads as evidence.
+- **A settled finding stops asking, and survives a re-validation.** Validation
+  rows are deleted and rebuilt on every run, so the decision lives in
+  `lease_field_resolutions`, keyed by tenant and field. `prior_value` is stored
+  WITH it because the rent roll gets re-imported.
+- **Confirming the rent roll is a decision too.** The report separates changes
+  from confirmations rather than dropping the latter: "23 findings, 6 changed, 4
+  confirmed" is the shape of an answer.
+- **A validation field is not a tenant field.** `VALIDATION_FIELD_TO_RESOLVABLE`
+  maps them in one place — `lease_expiration` is stored as `lease_end`, and
+  `rent_step_in_force` is not a value at all but a decision about the annual rent.
+- **Formatting follows the FIELD, not the column.** One table carries rents, $/SF
+  figures, square feet and dates in the same two columns. Whole dollars with
+  commas for a rent, dollars and cents for $/SF, and the sign OUTSIDE the dollar
+  sign.
+- **`RESOLVABLE_FIELDS` must reach something.** `annual_recoveries_per_sf` was
+  added to `get_resolved_tenants` at the same time; a resolution that changes
+  nothing downstream is a silent no-op.
+
+### Lease review — adding a document to a scanned tenant
+Live at `v518`. Jim: "rerun the extraction just on that tenant's set of leases...
+Ask the user if any other files will be loaded before running."
+
+- **THE WHOLE SET, NOT THE FILE THAT ARRIVED.** Reading only the new document
+  leaves a tenant's terms assembled from a mixture of prompt versions, and the
+  prompt moves. `rerun_tenant_extraction` resets every TERM-BEARING document
+  (a COI is still excluded) and runs extract → consolidate → refresh the abstract
+  → re-validate, each feeding the next. Scoped by a PARAMETER, never a second
+  extractor.
+- **Nothing runs until the analyst says there are no more files.** Files stage;
+  uploading on choose started a re-read per drop, so three files arriving one at a
+  time meant three runs over the same tenant. A tenant can also be re-read with no
+  upload, for a document assigned from the unmatched list.
+- **THE ABSTRACT WAS FROZEN THE MOMENT ANYONE SAVED IT.** `get_tenant_abstract`
+  assembles from data only when NO section is stored. A section this code wrote
+  (`updated_by = 'extraction'`) is refreshed; a section A PERSON wrote is never
+  overwritten — it is marked `stale_at` with `proposed_content` beside it, and
+  saving clears the mark whichever text they keep.
+- **THE RISK ANALYSIS DOES NOT TAKE THE LEASE'S DATE, AND MUST NOT.**
+  `lease_tenants.lease_end` is the RENT ROLL's figure and the extraction's
+  `lease_expiration` is the LEASE's; the histogram reads the former with
+  resolutions on top. Copying the lease's over it would make the rent roll agree
+  by construction and no expiry mismatch could ever be reported — the `v503`
+  failure. The re-read surfaces the disagreement; SETTLING it moves the analysis.
+- Guardrails: `scripts/lease_validation_resolve_check.py` (106),
+  `scripts/lease_tenant_rerun_check.py` (36),
+  `scripts/lease_validation_context_check.py` (35).
+
+### Lease review — fixed recoveries (CAM)
+Live at `v518`. Jim, having read the AT&T Mobility 4th Amendment: "one of the
+lease amendments was stating a fixed CAM charge for the lease. Is this situation
+part of the lease review and validation to the rent roll?" **It was not.**
+
+- The extraction captured `cam_structure = 'fixed'` — the WORD — and never the
+  AMOUNT, so the one figure the rent roll could be checked against did not exist.
+- **A SCHEDULE ONLY COUNTS IF `cam_structure` SAYS FIXED.** Under a pro-rata lease
+  the monthly figure is an ESTIMATE trued up at the annual reconciliation; holding
+  the rent roll to it as though the lease capped it compares two different things.
+  That was 3 of the first 9 findings (USA Karate, CPR, and DSW/Kohls behind them).
+- **`cam_fixed` is CAM only** — a separate water-and-sewer reimbursement is not a
+  recovery (Pure Barre, $0.20/SF against a rent roll of $3.64). The prompt says so;
+  no structural rule can tell.
+- **A difference is a QUESTION when the lease passes tax or insurance through
+  separately**, because our rent roll carries ONE combined recoveries figure. Only
+  where it passes NEITHER through are the two sides the same quantity and a
+  difference a real mismatch.
+- **Calendar years, lease years, or a verbatim period** — `cam_fixed_in_force`
+  resolves all three. A LEASE-YEAR schedule is placed against rent commencement
+  with `month_to_date`, the rent steps' own primitive: lease year 1 begins ON rent
+  commencement, so lease year 6 begins on the fifth anniversary. Without that date
+  it is REPORTED, never approximated from the calendar year.
+- **A stated escalation is compounded by the app** (`fill_cam_escalations`), not
+  by the model — $1.96 → $2.156 → $2.3716 — and a derived figure says so. An
+  escalation with nothing before it stays empty.
+- **A fixed amount with NO period applies throughout**, but only when it is the
+  sole row: among dated rows an undated one would beat all of them at every date.
+- **`cam_fixed` is a LIST**, so `_merge_extraction_terms` needed its own case —
+  the scalar/object whitelist would have dropped it silently, and in the wrong
+  direction, since the schedule is stated BY the amendment.
+- Live findings (Sep 21 2026): Starbucks $7.70 vs $2.16, AT&T $4.63 vs $2.38,
+  BooYa's $3.64 vs $3.21, O'Reilly cannot be dated — no rent commencement date.
+
 ### Lease review — rent PSF, amendments, and rent by month of term
 Live at `v510`. New business, Sep 19 2026, via Jim.
 
@@ -2199,6 +2410,14 @@ Live at `v510`. New business, Sep 19 2026, via Jim.
   43 -> 61, escalation 45 -> 65 — with 110 fields newly populated, and
   `period_start_month` went 0 -> 305 with **208 rent steps dated from the term**,
   so the month-of-term feature is live on production for the first time.
+- **A SECOND full re-extraction ran on `v517`** (Sep 21 2026) to pick up
+  `cam_fixed` / `escalation_pct`: 419 documents in three hours, no failures.
+  Coverage HELD on every field (rent_commencement 53, lease_expiration 57,
+  square_feet 61, suite 71), security deposit +2 and escalation -1, with 92
+  fields moved — 32 escalation descriptions, 15 rent-step counts, 11 rent
+  commencements, 11 lease commencements, 7 suites and **one** lease expiration.
+  Tenants carrying a fixed-recovery schedule went 4 -> 9. **Run it with a diff:**
+  it is what found the pro-rata estimate defect `v518` fixed.
 - **A ROW READ AS NOT-A-TENANT HAS NO EXPIRY** (`v514`). `v501` taught the
   roster and the headline totals to respect `tenant_status`; the expiration
   histogram was never updated, so the building banner, the subtotal rows and the
@@ -2496,6 +2715,11 @@ it; the sidebar map above is kept here as a quick orientation.
 - `amendment_ordinal()` / `order_lease_documents()` - Which amendment a document is, and the order they are layered in; reports when the order cannot be established (lease_terms.py)
 - `parse_relative_period()` / `month_to_date()` / `resolve_rent_steps()` - "Months 1-12" placed against the rent commencement date; month 1 begins ON it, so month N is the anniversary (lease_terms.py)
 - `step_in_force_at()` - The rent the lease says applies on a date. Replaced a nearest-value guess that matched the rent roll against whichever step already agreed with it (lease_terms.py)
+- `cam_fixed_in_force()` / `annual_recovery_psf()` - The fixed recovery that applies on a date, from calendar years, lease years or a verbatim period; a lease-year schedule is placed against rent commencement and REPORTED, never approximated, when that date is missing (lease_terms.py)
+- `fill_cam_escalations()` - "increasing ten percent (10%) on the sixth Lease Year and each fifth anniversary thereafter" compounded forward from the last stated amount; the model is told not to compute them, and a derived figure says it was derived (lease_terms.py)
+- `validation_resolutions()` / `rent_roll_changes()` - What the analyst decided and what changed against the rent roll, with the reason and the document cited; confirmations are separated from changes, never dropped (lease_review_service.py)
+- `rerun_tenant_extraction()` - Re-read one tenant's WHOLE set of leases, then consolidate, refresh the abstract and re-validate; the scope is a parameter, never a second extractor (lease_review_service.py)
+- `refresh_tenant_abstract()` - Bring a stored abstract up to date; a section this code wrote is refreshed, a section a PERSON wrote is marked stale with the new text beside it and never overwritten (lease_review_service.py)
 - `gl_filter_options()` / `ia_filter_options()` - What can be picked, read from the data itself (gl_ia_query_service.py)
 - `run_gl_query()` / `run_ia_query()` / `to_excel()` - The CFO's filters, bound not concatenated; totals cover the whole match (gl_ia_query_service.py)
 - `pref_summary()` / `valuation_summary()` - The two portfolio summary tabs; `set_group_label` / `carry_forward_groups` for the CFO's own groupings (valuation_summary_service.py)
