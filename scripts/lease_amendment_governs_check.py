@@ -99,7 +99,9 @@ with eng.begin() as c:
     c.execute(text(
         "INSERT INTO lease_rent_steps (tenant_id, period_start_month,"
         " period_end_month, annual_rent, monthly_rent, source_doc, source_doc_id,"
-        " term_start) VALUES (1,3,14,38037.96,3169.83,'BM/Lease.pdf',11,NULL)"))
+        " term_start, effective_date, effective_date_basis)"
+        " VALUES (1,3,14,38037.96,3169.83,'BM/Lease.pdf',11,NULL,"
+        " '2026-06-01','month 3 of the term')"))
     c.execute(text(
         "INSERT INTO lease_rent_steps (tenant_id, effective_date, annual_rent,"
         " monthly_rent, source_doc, source_doc_id, term_start)"
@@ -227,6 +229,25 @@ chk('...and one without it from the original',
 chk('...and the basis names which term it counted from',
     'term beginning 2026-04-01' in (_r[1].get('effective_date_basis') or ''),
     str(_r[1].get('effective_date_basis')))
+# THE STORED DATE IS THE WHOLE PROBLEM. Consolidation writes the resolved date
+# back onto the step, so every row already in the table carries one computed from
+# the OLD anchor -- Benjamin Moore's months 3-14 sits in the database as
+# 2026-06-01. Read back as stated, it beats the amendment for ever and the fix
+# above changes nothing at all. The fixture above stores exactly that.
+_stale = [{'effective_date': '2026-06-01',
+           'effective_date_basis': 'month 3 of the term',
+           'period_start_month': 3, 'annual_rent': 1.0, 'term_start': None}]
+chk('a date the app DERIVED is re-derived, not trusted',
+    resolve_rent_steps(_stale, '2021-06-01')[0][0]['effective_date']
+    == '2021-08-01',
+    str(resolve_rent_steps(_stale, '2021-06-01')[0][0]['effective_date']))
+# BOTH DIRECTIONS: a date the DOCUMENT stated must survive, period or no period.
+_real = [{'effective_date': '2026-06-01', 'effective_date_basis': 'stated',
+          'period_start_month': 3, 'annual_rent': 1.0, 'term_start': None}]
+chk("...but a date the document STATED is kept",
+    resolve_rent_steps(_real, '2021-06-01')[0][0]['effective_date']
+    == '2026-06-01',
+    str(resolve_rent_steps(_real, '2021-06-01')[0][0]['effective_date']))
 
 
 section('C. An amendment that states no date still applies')

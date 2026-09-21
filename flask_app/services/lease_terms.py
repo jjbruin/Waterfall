@@ -406,6 +406,18 @@ def resolve_rent_steps(steps: List[Dict[str, Any]],
         anchor = _as_date(s.get('term_start')) or rc
         anchor_is_own = _as_date(s.get('term_start')) is not None
 
+        # A DATE THAT WAS DERIVED IS NOT A DATE THE DOCUMENT STATED, and the
+        # stored one has to be re-derived or the fix above changes nothing. The
+        # consolidation writes a resolved date back onto the step, so every step
+        # already in the table carries a date computed from the WRONG anchor --
+        # Benjamin Moore's "months 3-14" sits in the database as 2026-06-01, and
+        # read back as stated it goes on beating the amendment for ever.
+        # Re-derived only where the basis SAYS it was derived: a step whose date
+        # came from its document keeps it.
+        _basis_in = str(s.get('effective_date_basis') or '').strip().lower()
+        if start_m and _basis_in.startswith('month'):
+            stated = None
+
         if stated:
             s['effective_date'] = stated.isoformat()
             s['effective_date_basis'] = 'stated'
