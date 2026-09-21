@@ -253,6 +253,70 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v521` = `c370509` (AN UNDATED AMENDMENT NEEDS ITS DOCUMENT'S DATE, and most
+    had none. `v520` fixed Benjamin Moore and BooYa's and left Chapultepec still
+    reporting the original lease's $51,999.96 against the amendment's $53,331.96
+    -- the fix was LIVE and still producing the old number, which is the argument
+    for checking each named tenant rather than stopping at a green guardrail.
+    Dating an undated step from the document that states it needs that document to
+    HAVE a date, and most Poplar documents predate `parse_doc_date_anywhere`
+    (`v503`) and carry none, so the fallback had nothing to fall back to. Read
+    from the filename now, in the same backfill, only where none is stored.
+    THE FIXTURE HAD TO CHANGE TO PROVE IT: the original lease's filename carried
+    no date, so "a date already stored is left alone" was true however the code
+    behaved and injecting the overwrite passed 38/38. It now carries 2015.05.05
+    against a stored 2019-01-01, so overwriting is visible.
+    After deploy, SIX of the analyst's seven tenants agree with the rent roll and
+    every row names the document its figure came from. Marco's waits on the
+    re-extraction. `lease_amendment_governs_check` 36 -> 38.)
+  - `v520` = `445cb26` (A DATE THE APP DERIVED IS RE-DERIVED, NOT TRUSTED.
+    Deploying `v519` proved the six fixes changed NOTHING on the seven tenants.
+    THE WRONGLY-DATED STEP IS STORED: consolidation writes the resolved date back
+    onto the row, so every step already in the table carried one computed from the
+    old anchor -- Benjamin Moore's "months 3-14" sits in the database as
+    2026-06-01 -- and `resolve_rent_steps` read it back as a date the DOCUMENT had
+    stated. Anchoring correctly is useless while the wrong answer is an input.
+    A step whose basis SAYS it was derived ("month N of the term") is re-derived
+    from its own anchor; one whose date came from the document keeps it, period or
+    no period -- re-deriving everything is the same defect facing the other way,
+    and the guardrail fails on that injection too.
+    Benjamin Moore resolved to $50,052 and BooYa's to $103,596, both matching the
+    rent roll, with the original schedules back on their own terms.)
+  - `v519` = `ea8e196` (THE AMENDMENT GOVERNS: six defects behind the analyst's
+    seven tenants, five of them corpus-wide. Measured on production first.
+    (A) THIRTEEN DOCUMENTS HAD NEVER REACHED THE MODEL -- 8 `text_extracted`, 4
+    `error`, 1 `pending` -- including Ciao Baby's 4th Amendment and both of Hobby
+    Lobby's option notices, exactly the documents reported as "not recognized".
+    `error` was excluded from the retry, so a document that failed once could
+    never be read again by any run. Retried now, and `unread_documents` puts them
+    on the Validation screen: a document that was never read is not the extraction
+    disagreeing with the lease, and the screen could not tell them apart.
+    (B) AN ORIGINAL LEASE'S SCHEDULE WAS RE-DATED ONTO A LATER AMENDMENT'S TERM,
+    anchored to the tenant's LATEST commencement, so it outranked the amendment's
+    own rent -- Benjamin Moore $38,038 against $50,052 (THE RENT ROLL WAS RIGHT
+    AND THE APP WAS WRONG), Kohls projecting its 2017 schedule to 2062. 22
+    tenants. Each step now carries the term its own document states and falls back
+    to the ORIGINAL commencement, never the latest.
+    (C) 168 OF 809 STEPS could never be in force, having neither date nor period,
+    so they lost silently to the original lease.
+    (D) AN AMENDMENT THAT ADDS SPACE ADDS RENT. Marco's Pizza's takes another
+    160 SF for another $242 a month; read as a replacement it reported $2,904 a
+    year against $65,558 -- while the square footage in the SAME amendment was
+    combined correctly, so one document disagreed with itself. The model now says
+    which it is; never inferred.
+    (E) THE MERGE DROPPED THE BASE LEASE'S UNDATED STEPS whenever an amendment
+    supplied any -- 53 tenants, Kohls holding 1 against 11.
+    (F) 82 TIED DATES across 31 tenants, decided by row order. The later DOCUMENT
+    governs, and a step we cannot attribute never outranks one we can.
+    THE BACKFILL IS WHAT MAKES ANY OF IT LIVE: all of it reads `source_doc_id` and
+    `term_start`, which only a NEW extraction writes, so on the 809 stored steps
+    nothing would have changed. Derived from what we already hold, idempotent,
+    fills only NULLs, and cannot invent `is_additional`.
+    FIXING E BROKE A TEST THAT HAD BEEN PASSING BY ACCIDENT, the most useful thing
+    this turned up: `lease_terms_check` asserts the Fourth Amendment's 544,500
+    beats the First's superseded 510,000, and it passed only because the merge was
+    DROPPING the First's undated step. The merge now reads the period wording as
+    well as the parsed months. Guardrail `lease_amendment_governs_check.py`.)
   - `v518` = `03e93aa` (AN ESTIMATE UNDER A PRO-RATA LEASE IS NOT A FIXED
     RECOVERY, and a document added to a scanned tenant re-reads its whole set.
     THE FULL RE-EXTRACTION FOUND THE FIRST ONE, which is the argument for having
