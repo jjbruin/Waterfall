@@ -10,8 +10,16 @@ import pandas as pd
 from flask import current_app
 
 from flask_app.services import data_service
+from flask_app.services import data_dictionary_service
 
 logger = logging.getLogger(__name__)
+
+#: Field ids for lookup_field's closed enum, read from the dictionary FILE at
+#: import time — writing the list out here would be a second copy of the very
+#: thing the dictionary exists to be authoritative about, and the two would
+#: drift the moment a field was added. Fails soft to [] (the schema then omits
+#: the enum and the tool reports a miss) rather than breaking the assistant.
+_FIELD_IDS = data_dictionary_service.field_ids()
 
 # ── Tool definitions ─────────────────────────────────────────────────
 
@@ -349,6 +357,67 @@ TOOLS = [
             },
         },
     },
+    # ── Data traceability (read-only reference files, no DB access) ──────
+    #
+    # These two answer "where does this number come from" and "what breaks if I
+    # change it". They read flask_app/reference/*.json and nothing else — no
+    # database, no computation, no value. Added because the assistant used to
+    # answer such questions from general knowledge: asked what uses the ISBS
+    # balance sheet on 2026-09-21 it cited "how ISBS data is typically wired in
+    # real estate investment platforms" and named one consumer out of a dozen.
+    {
+        "name": "lookup_field",
+        "description": (
+            "Where a report field comes from and what it means. Use for "
+            "where-does-X-come-from / how-is-X-calculated / what-source. "
+            "Returns the plain meaning, a Source line, the basis-selection rule "
+            "and any caveats, from the committed field dictionary. A field can "
+            "legitimately have several bases (the same deal's Debt has three) — "
+            "omit `basis` to see them all, or name one to narrow."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "field_id": {
+                    "type": "string",
+                    # Closed enum, built from the dictionary FILE at import so it
+                    # cannot drift from the data it indexes. See _FIELD_IDS.
+                    **({"enum": _FIELD_IDS} if _FIELD_IDS else {}),
+                    "description": "The dictionary id of the field, e.g. 'debt', 'total_pref', 'ltv'.",
+                },
+                "basis": {
+                    "type": "string",
+                    "description": (
+                        "Optional. Narrow to one basis of THIS field, e.g. 'isbs' / "
+                        "'hard_costs' / 'orig_loan' for debt. Validated against the "
+                        "field's own bases; an unknown value returns all of them."
+                    ),
+                },
+            },
+            "required": ["field_id"],
+        },
+    },
+    {
+        "name": "impact_of",
+        "description": (
+            "What uses a source and what breaks if it changes. Use for "
+            "what-uses-X / what-depends-on-X / what-happens-if-I-change-X. "
+            "`name` may be a source table (ISBS balance sheet, MRI_Loans.mOrigLoanAmt), "
+            "a shared constant (config.DEBT_BS_ACCTS, config.IS_ACCOUNTS), or a field id. "
+            "Returns the blast-radius note, any duplicate-literal warnings, and the "
+            "consumer list from the committed dependency map."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Source table, shared constant, or field id.",
+                },
+            },
+            "required": ["name"],
+        },
+    },
 ]
 
 # ── System prompt ────────────────────────────────────────────────────
@@ -383,6 +452,9 @@ Tool selection tips:
 - Use get_debt_service for loan schedules, amortization, balloon payments, maturity dates
 - Use get_cash_management for cash reserves, distributable cash, CapEx from reserves
 - Use get_tenant_roster for tenant info, lease expirations, rent rolls (commercial deals only)
+- Use lookup_field for where-does-this-come-from / how-is-this-calculated / what-source questions about a REPORT FIELD (Debt, Total Pref, LTV, Econ Occ, NOI At Close...). It answers where a number comes from, not what the number is — pair it with a value tool if the user wants both.
+- Use impact_of for what-uses-X / what-depends-on-X / what-breaks-if-I-change-X, where X is a source table, a shared constant, or a field.
+- NEVER answer either kind of question from general knowledge, from a tool's description text, or from the names of tables you have seen. If lookup_field or impact_of does not have it, say so — an ungrounded answer about where a number comes from is worse than no answer.
 
 Key conventions:
 - Cashflow signs: negative = contribution (money in), positive = distribution (money out)
@@ -397,6 +469,13 @@ When answering questions:
 - When showing tables, use markdown formatting
 - If a query returns too much data, summarize the key findings
 - Always explain what the numbers mean in context
+
+When answering with lookup_field or impact_of:
+- Render the tool's `lead` as your opening sentence, in plain language, then put its `source_line` VERBATIM on the next line. Do not paraphrase the Source line and do not merge it into the sentence above it.
+- If the field has several bases and the user named a deal type, say which basis applies and why, quoting `basis_selection`. If you cannot tell which deal type they mean, give the bases and say what decides between them.
+- For impact_of, lead with the `blast_radius_note` and any `duplicate_literal_warnings` — a second hardcoded copy of a constant is the thing most likely to bite, so it goes near the top, not in a footnote. Then list the `consumers`.
+- On a miss (the tool returns `error` / `did_you_mean`), say plainly that there is no verified source for it in the dictionary or dependency map, offer the near matches, and STOP. Do not fill the gap from general knowledge.
+- Cite only what these tools return. Never invent a file, table, account or line number.
 
 When the user asks a question, use the page context (provided below) to understand what they are looking at. If they ask about a deal without specifying which one, assume they mean the deal currently selected on their page. If their question requires data from a different tab (e.g., asking about expected returns while on the One Pager), use the current deal's vcode to fetch that data from the appropriate source (e.g., compute_deal_returns for Deal Analysis metrics).
 
@@ -584,6 +663,10 @@ def execute_tool(tool_name: str, tool_input: dict) -> str:
             return _tool_get_valuation_cycle(tool_input)
         elif tool_name == "get_valuation_detail":
             return _tool_get_valuation_detail(tool_input)
+        elif tool_name == "lookup_field":
+            return _tool_lookup_field(tool_input)
+        elif tool_name == "impact_of":
+            return _tool_impact_of(tool_input)
         else:
             return json.dumps({"error": f"Unknown tool: {tool_name}"})
     except Exception as e:
@@ -1414,6 +1497,28 @@ def get_client():
     if not api_key:
         raise ValueError("ANTHROPIC_API_KEY environment variable not set")
     return anthropic.Anthropic(api_key=api_key)
+
+
+# ── Data traceability tools ──────────────────────────────────────────
+#
+# Read-only over flask_app/reference/*.json. No database, no computation, no
+# value — these say where a value COMES FROM, which is a different question
+# from what it is, and the two must not be confused in an answer.
+
+def _tool_lookup_field(inp):
+    """Where a field comes from. `basis` is validated inside the service,
+    against that field's OWN bases — never against a global list."""
+    return json.dumps(
+        data_dictionary_service.lookup_field(
+            inp.get("field_id"), inp.get("basis")),
+        default=str)
+
+
+def _tool_impact_of(inp):
+    """What reads a source/constant/field, and what moves if it changes."""
+    return json.dumps(
+        data_dictionary_service.impact(inp.get("name")),
+        default=str)
 
 
 def _build_system_prompt(page_context: dict = None) -> str:
