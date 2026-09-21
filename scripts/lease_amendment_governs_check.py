@@ -393,7 +393,7 @@ with eng2.begin() as c:
     c.execute(text(
         "INSERT INTO lease_documents (id, tenant_id, review_id, filename,"
         " doc_type, doc_date, extraction_status, extraction_json) VALUES"
-        " (1,1,9,'B/Lease.pdf','Original Lease','2019-01-01','extracted',:j)"),
+        " (1,1,9,'B/2015.05.05-Lease.pdf','Original Lease','2019-01-01','extracted',:j)"),
         {'j': json.dumps({'rent_commencement': '2019-06-01'})})
     c.execute(text(
         "INSERT INTO lease_documents (id, tenant_id, review_id, filename,"
@@ -403,7 +403,8 @@ with eng2.begin() as c:
     # Steps as they sit today: a source FILENAME, and nothing else.
     c.execute(text(
         "INSERT INTO lease_rent_steps (tenant_id, period_start_month,"
-        " annual_rent, source_doc) VALUES (1,3,100.0,'B/Lease.pdf')"))
+        " annual_rent, source_doc)"
+        " VALUES (1,3,100.0,'B/2015.05.05-Lease.pdf')"))
     c.execute(text(
         "INSERT INTO lease_rent_steps (tenant_id, effective_date, annual_rent,"
         " source_doc, term_start) VALUES (1,'2026-04-01',200.0,'B/Amend.pdf',"
@@ -419,6 +420,28 @@ with eng2.connect() as c:
         " WHERE id = 1")).scalar()
 chk('the document behind each step is matched by its filename',
     rows[0][1] == 1 and rows[1][1] == 2, str([(r[0], r[1]) for r in rows]))
+# Its filename carries 2015.05.05 while its stored date is 2019-01-01, so
+# overwriting would be visible. Without that the "left alone" check below is true
+# whatever the code does -- the injection passed 38/38 until the fixture changed.
+# A DOCUMENT WITH NO STORED DATE CANNOT DATE AN UNDATED STEP. Most Poplar
+# documents predate `parse_doc_date_anywhere` and carry none, so Chapultepec's
+# amendment went on losing to the original lease even after the anchoring was
+# fixed -- the fix was live and still produced the old number.
+with eng2.begin() as c:
+    c.execute(text(
+        "INSERT INTO lease_documents (id, tenant_id, review_id, filename,"
+        " doc_type, extraction_status) VALUES"
+        " (3,1,9,'B/2022.03.30-First Amendment.pdf','Amendment','extracted')"))
+S.ensure_lease_tables(eng2)
+with eng2.connect() as c:
+    _dd = c.execute(text(
+        "SELECT doc_date FROM lease_documents WHERE id = 3")).scalar()
+    _kept = c.execute(text(
+        "SELECT doc_date FROM lease_documents WHERE id = 1")).scalar()
+chk('a missing document date is read from the filename',
+    str(_dd)[:10] == '2022-03-30', str(_dd))
+chk('...and a date already stored is left alone',
+    str(_kept)[:10] == '2019-01-01', str(_kept))
 chk("...and the step takes that document's own term start",
     rows[0][2] == '2019-06-01', str(rows[0][2]))
 chk('a value already stored is NOT overwritten',

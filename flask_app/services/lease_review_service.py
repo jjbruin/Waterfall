@@ -3544,9 +3544,27 @@ def _backfill_step_provenance(engine) -> Dict[str, int]:
     model's judgement and no backfill can invent it.
     """
     from sqlalchemy import text
-    filled = {'source_doc_id': 0, 'term_start': 0, 'original_rc': 0}
+    from flask_app.services.lease_terms import parse_doc_date_anywhere
+    filled = {'source_doc_id': 0, 'term_start': 0, 'original_rc': 0,
+              'doc_date': 0}
     try:
         with engine.begin() as conn:
+            # 0. THE DOCUMENT'S OWN DATE, read from its filename where it was
+            #    never stored. Most Poplar documents predate `parse_doc_date_
+            #    anywhere` (v503) and carry no date at all, and without one an
+            #    amendment that states a rent with no date of its own still
+            #    cannot be placed -- Chapultepec's $53,331.96 went on losing to
+            #    the original $51,999.96 even after the anchoring was fixed.
+            for did, fn in conn.execute(text(
+                    "SELECT id, filename FROM lease_documents"
+                    " WHERE doc_date IS NULL AND filename IS NOT NULL")).fetchall():
+                dd = parse_doc_date_anywhere(fn or '')
+                if dd:
+                    conn.execute(text(
+                        "UPDATE lease_documents SET doc_date = :d"
+                        " WHERE id = :i AND doc_date IS NULL"),
+                        {'d': dd, 'i': did})
+                    filled['doc_date'] += 1
             # 1. the document behind each step, matched on the filename it stored
             conn.execute(text("""
                 UPDATE lease_rent_steps SET source_doc_id = (
