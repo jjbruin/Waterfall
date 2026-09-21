@@ -2022,6 +2022,31 @@ function statusClass(s: string): string {
           </div>
         </div>
 
+        <!-- A DOCUMENT THAT WAS NEVER READ IS NOT A WRONG EXTRACTION.
+             Ciao Baby's 4th Amendment and both of Hobby Lobby's option notices
+             had their text pulled and the model never called, so the terms they
+             carry were simply absent while the tenant showed as extracted. That
+             reads as a bad extraction; it is a missing one. -->
+        <div v-if="(valCtx.unread_documents || []).length" class="unread-box">
+          <b>{{ (valCtx.unread_documents || []).length }} document(s) in this
+            review have never been read.</b>
+          <span class="muted">
+            Their terms are absent from every figure below — this is not the
+            extraction disagreeing with them. Re-read the tenant to pick them up.
+          </span>
+          <ul class="unread-list">
+            <li v-for="d in (valCtx.unread_documents || [])" :key="d.id"
+                :class="{ 'not-term': !d.term_bearing }">
+              <b v-if="d.term_bearing">{{ d.doc_type || 'Document' }}</b>
+              <span v-else>{{ d.doc_type || 'Document' }}</span>
+              — {{ d.filename }}
+              <span class="muted">
+                ({{ d.tenant || 'not assigned to a tenant' }}, {{ d.status }})
+              </span>
+            </li>
+          </ul>
+        </div>
+
         <!-- WHAT WAS CHANGED AGAINST THE RENT ROLL, AND WHY.
              Jim, Sep 20 2026: "we need a clear report showing the changes with the
              reasons for the change citing the lease document that was used."
@@ -2331,6 +2356,14 @@ function statusClass(s: string): string {
 }
 .map-rrd.unset { background: #fff6e5; border-color: #f0c674; }
 .map-rrd-why { color: #7a5200; max-width: 640px; }
+.unread-box {
+  margin: 1rem 0; padding: 10px 12px; border: 1px solid #f0c674;
+  border-radius: 4px; background: #fff6e5; font-size: 13px;
+}
+.unread-box b { color: #7a5200; }
+.unread-list { margin: 6px 0 0; padding-left: 18px; }
+.unread-list li { margin: 2px 0; }
+.unread-list li.not-term { opacity: 0.7; }
 .changes-box {
   margin: 1rem 0; padding: 10px 12px; border: 1px solid #dde3ea;
   border-radius: 4px; background: #fbfcfd;

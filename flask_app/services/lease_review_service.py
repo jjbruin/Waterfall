@@ -23,7 +23,7 @@ from flask_app.services.lease_terms import (
     amendment_ordinal, order_lease_documents, resolve_rent_steps,
     rent_psf_for, annual_rent_from, step_in_force_at,
     parse_relative_period, month_to_date,
-    cam_fixed_in_force, annual_recovery_psf,
+    cam_fixed_in_force, annual_recovery_psf, additional_in_force,
 )
 
 logger = logging.getLogger(__name__)
@@ -554,8 +554,20 @@ def ensure_lease_tables(engine):
     _migrate_add_column(engine, 'lease_tenants', 'annual_recoveries_per_sf', 'DOUBLE PRECISION')
     # By MIGRATION as well as DDL -- every live database already has this table,
     # and CREATE TABLE IF NOT EXISTS would not have touched it (the v507 lesson).
+    # A rent step must say WHICH DOCUMENT it came from and WHAT TERM its months
+    # count from. Without those two, an original lease's "months 3-14" was dated
+    # from whatever rent commencement a LATER amendment happened to set -- 22
+    # tenants, projecting the original rent forward over the amendment's own
+    # figure (Kohls reached 2062). See the analyst feedback, Sep 21 2026.
+    _migrate_add_column(engine, 'lease_rent_steps', 'source_doc_id', 'INTEGER')
+    _migrate_add_column(engine, 'lease_rent_steps', 'term_start', 'TEXT')
+    _migrate_add_column(engine, 'lease_rent_steps', 'is_additional', 'INTEGER')
+    _migrate_add_column(engine, 'lease_tenants', 'original_rent_commencement', 'TEXT')
     _migrate_add_column(engine, 'lease_abstract_sections', 'stale_at', 'TIMESTAMP')
     _migrate_add_column(engine, 'lease_abstract_sections', 'proposed_content', 'TEXT')
+    # The provenance columns are useless empty, and only a new extraction writes
+    # them -- so every step already stored would behave exactly as before.
+    _backfill_step_provenance(engine)
     _migrate_add_column(engine, 'lease_tenants', 'annual_misc_per_sf', 'DOUBLE PRECISION')
     _migrate_add_column(engine, 'lease_tenants', 'annual_sales_override', 'DOUBLE PRECISION')
 
@@ -2329,7 +2341,7 @@ Return a JSON object with these fields (use null for fields not found):
   "lease_expiration": "YYYY-MM-DD",
   "holdover_rate": "...",
   "rent_steps": [
-    {{"effective_date": "YYYY-MM-DD or null", "period_start_month": number or null, "period_end_month": number or null, "period": "verbatim text if stated as a period, e.g. Months 1-12", "monthly_rent": number, "annual_rent": number, "rent_per_sf": number}}
+    {{"effective_date": "YYYY-MM-DD or null", "period_start_month": number or null, "period_end_month": number or null, "period": "verbatim text if stated as a period, e.g. Months 1-12", "monthly_rent": number, "annual_rent": number, "rent_per_sf": number, "amount_is_additional": true/false}}
   ],
   "escalation_structure": "fixed $ / fixed % / CPI / other",
   "security_deposit": number,
@@ -2435,7 +2447,22 @@ IMPORTANT:
   commencement letter often carries it. A date guessed here silently overrides the
   real one. Month 1 is the month rent commences.
 - rent_commencement is the date RENT begins, which is frequently NOT the lease
-  commencement date. Return it whenever the document states or confirms it.
+  commencement date. Return it whenever the document states or confirms it. IN AN
+  AMENDMENT THAT EXTENDS THE TERM, return the date the EXTENSION's rent begins --
+  the months its rent schedule counts from. The app anchors a "Months 1-12" step
+  to it, so giving the original lease's date for an extension dates the new
+  schedule years too early.
+- SAY WHETHER AN AMOUNT REPLACES THE RENT OR IS ADDED TO IT. Set
+  amount_is_additional TRUE when the document states a charge ON TOP of the rent
+  otherwise payable -- an amendment letting the tenant take extra space "for an
+  additional $242.00 per month", a supplemental charge, an add-on for a
+  storage area. Set it FALSE (or omit it) when the amount is the whole rent for
+  the period. Marco's Pizza's first amendment adds 160 square feet for $242 a
+  month and was read as the ENTIRE rent -- $2,904 a year against a rent roll
+  saying $65,558 -- while the square footage in the same amendment was correctly
+  combined, so the two halves of one document disagreed. Where the amendment
+  states a NEW TOTAL rent for the enlarged premises, that is not additional;
+  return the total and leave the flag false.
 - WHEN RECOVERIES ARE A FIXED AMOUNT, RETURN THE AMOUNT AND NOT ONLY THE WORD.
   cam_structure "fixed" says a lease does not bill a pro-rata share, and on its own
   it cannot be checked against anything. An amendment stating "a fixed amount for
@@ -2990,7 +3017,11 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None,
             FROM lease_documents d
             JOIN lease_tenants t ON t.id = d.tenant_id
             WHERE d.review_id = :rid
-            AND d.extraction_status IN ('pending', 'text_extracted')
+            -- 'error' IS A RETRY, NOT A VERDICT. It was excluded here, so a
+            -- document that failed once could never be read again by any run --
+            -- four documents on production were in that state permanently, and
+            -- nothing on any screen said so.
+            AND d.extraction_status IN ('pending', 'text_extracted', 'error')
             AND (:tid IS NULL OR d.tenant_id = :tid)
             ORDER BY d.tenant_id, d.doc_date
         """), {'rid': review_id, 'tid': tenant_id}).fetchall()
@@ -3117,9 +3148,11 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None,
                                         (tenant_id, effective_date,
                                          period_start_month, period_end_month,
                                          monthly_rent, annual_rent,
-                                         rent_per_sf, source_doc)
+                                         rent_per_sf, source_doc,
+                                         source_doc_id, term_start, is_additional)
                                     VALUES (:tid, :ed, :psm, :pem,
-                                            :mr, :ar, :rpsf, :sd)
+                                            :mr, :ar, :rpsf, :sd,
+                                            :sdid, :ts, :add)
                                 """), {
                                     'tid': tenant_id,
                                     'ed': ed,
@@ -3129,6 +3162,21 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None,
                                     'ar': _to_number(step.get('annual_rent')),
                                     'rpsf': _to_number(step.get('rent_per_sf')),
                                     'sd': doc[2],  # filename
+                                    'sdid': doc_id,
+                                    # THE TERM THIS DOCUMENT'S MONTHS COUNT FROM.
+                                    # An amendment that extends states its own
+                                    # commencement; a document that states none is
+                                    # counting from the ORIGINAL term, and the
+                                    # resolver falls back to that -- never to the
+                                    # tenant's latest, which is what re-dated the
+                                    # base schedule over the amendment.
+                                    'ts': terms.get('rent_commencement'),
+                                    # An amendment adding space adds rent ON TOP of
+                                    # the rent otherwise in force (Marco's Pizza:
+                                    # +160 SF for +$242/month, read as the whole
+                                    # rent). Never guessed -- the model says so.
+                                    'add': 1 if step.get('amount_is_additional')
+                                    else 0,
                                 })
 
                         # Store cotenancy from extraction (with dedup by source_doc)
@@ -3383,22 +3431,49 @@ def _merge_extraction_terms(base: Dict, amendment: Dict) -> Dict:
         if val is not None:
             merged[key] = val
 
-    # Rent steps — merge by effective_date
+    # Rent steps — merge by effective_date, or by the PERIOD when undated
+    #
+    # THE BASE'S UNDATED STEPS USED TO VANISH. The old loop only put a base step
+    # into the map `if ed`, so any step stated as months of the term -- which is
+    # most original leases -- was dropped the moment an amendment supplied a single
+    # step of its own. Measured Sep 21 2026: 53 tenants held a consolidated blob
+    # far shorter than their step table (Kohls 1 step against 11), which is what
+    # the abstract and every reader of the blob were working from.
     if amendment.get('rent_steps'):
-        existing_by_date = {}
-        for step in (merged.get('rent_steps') or []):
-            ed = step.get('effective_date')
+        def _key(st, fallback):
+            ed = st.get('effective_date')
             if ed:
-                existing_by_date[ed] = step
-        for step in amendment['rent_steps']:
-            ed = step.get('effective_date')
-            if ed:
-                existing_by_date[ed] = step  # amendment overwrites same date
-            else:
-                existing_by_date[id(step)] = step  # undated step, just append
+                return ('d', ed)
+            psm = st.get('period_start_month')
+            if psm is None:
+                # THE PERIOD IS OFTEN ONLY TEXT AT THIS POINT -- the months are
+                # parsed later, in `resolve_rent_steps`. Without reading it here,
+                # the First Amendment's "Months 61-120" and the Fourth's are two
+                # different keys and BOTH survive, so the superseded 510,000 comes
+                # back and wins the tie on insertion order. The old merge passed
+                # that case only because it was dropping every undated base step,
+                # which is the defect this loop exists to fix: it was right by
+                # accident, in a way that stopped being right the moment the
+                # accident was corrected.
+                rel = parse_relative_period(st.get('period')
+                                            or st.get('effective_date'))
+                if rel:
+                    return ('m', rel[0], rel[1])
+            if psm is not None:
+                return ('m', psm, st.get('period_end_month'))
+            return ('x', fallback)
+
+        existing = {}
+        for i, step in enumerate(merged.get('rent_steps') or []):
+            existing[_key(step, 'b%d' % i)] = step
+        for i, step in enumerate(amendment['rent_steps']):
+            # An amendment restating the same date, or the same months of the
+            # term, supersedes; anything else is added to the schedule.
+            existing[_key(step, 'a%d' % i)] = step
         merged['rent_steps'] = sorted(
-            existing_by_date.values(),
-            key=lambda s: s.get('effective_date') or '',
+            existing.values(),
+            key=lambda s: (s.get('effective_date') or '',
+                           s.get('period_start_month') or 0),
         )
 
     # Options — merge by (option_type_key, option_number)
@@ -3448,6 +3523,129 @@ def _merge_extraction_terms(base: Dict, amendment: Dict) -> Dict:
 
     return merged
 
+
+
+
+def _backfill_step_provenance(engine) -> Dict[str, int]:
+    """Fill in where each existing rent step came from, without re-reading a lease.
+
+    THE FIXES ARE INERT WITHOUT THIS. Anchoring a step to its own document's term,
+    breaking a tie by which document is later, and dating an undated amendment
+    step all read `source_doc_id` / `term_start`, which only a NEW extraction
+    writes -- so on the 809 steps already stored every one of them would go on
+    behaving exactly as before, and the analyst would see no change at all.
+
+    All of it is derivable from what we already hold: the step records its source
+    FILENAME, the document carries its own extracted `rent_commencement`, and the
+    earliest one a tenant's documents state is the original term.
+
+    Idempotent: only NULLs are filled, so a value a real extraction wrote is never
+    overwritten. What it cannot derive it leaves alone -- `is_additional` is the
+    model's judgement and no backfill can invent it.
+    """
+    from sqlalchemy import text
+    filled = {'source_doc_id': 0, 'term_start': 0, 'original_rc': 0}
+    try:
+        with engine.begin() as conn:
+            # 1. the document behind each step, matched on the filename it stored
+            conn.execute(text("""
+                UPDATE lease_rent_steps SET source_doc_id = (
+                    SELECT d.id FROM lease_documents d
+                    WHERE d.tenant_id = lease_rent_steps.tenant_id
+                      AND d.filename = lease_rent_steps.source_doc
+                    LIMIT 1)
+                WHERE source_doc_id IS NULL AND source_doc IS NOT NULL
+            """))
+            filled['source_doc_id'] = conn.execute(text(
+                "SELECT COUNT(*) FROM lease_rent_steps"
+                " WHERE source_doc_id IS NOT NULL")).scalar() or 0
+
+            # 2. the term that document's months count from: its own extracted
+            #    commencement. A document that states none leaves it NULL, and the
+            #    resolver then falls back to the ORIGINAL -- which is the point.
+            rows = conn.execute(text("""
+                SELECT d.id, d.extraction_json FROM lease_documents d
+                WHERE d.extraction_json IS NOT NULL
+            """)).fetchall()
+            for did, ej in rows:
+                try:
+                    e = json.loads(ej) if isinstance(ej, str) else (ej or {})
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                rc = (e or {}).get('rent_commencement')
+                if not rc or not re.match(r'^\d{4}-\d{2}-\d{2}', str(rc)):
+                    continue
+                r = conn.execute(text(
+                    "UPDATE lease_rent_steps SET term_start = :rc"
+                    " WHERE source_doc_id = :d AND term_start IS NULL"),
+                    {'rc': str(rc)[:10], 'd': did})
+                filled['term_start'] += r.rowcount or 0
+
+            # 3. the tenant's ORIGINAL commencement: the earliest any of its
+            #    documents states, by document date then id -- the order the
+            #    consolidation applies them in.
+            tens = conn.execute(text(
+                "SELECT id FROM lease_tenants"
+                " WHERE original_rent_commencement IS NULL")).fetchall()
+            for (tid,) in tens:
+                docs = conn.execute(text("""
+                    SELECT extraction_json FROM lease_documents
+                    WHERE tenant_id = :t AND extraction_json IS NOT NULL
+                    ORDER BY COALESCE(doc_date, '9999-99-99'), id
+                """), {'t': tid}).fetchall()
+                orc = None
+                for (ej,) in docs:
+                    try:
+                        e = json.loads(ej) if isinstance(ej, str) else (ej or {})
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    rc = (e or {}).get('rent_commencement')
+                    if rc and re.match(r'^\d{4}-\d{2}-\d{2}', str(rc)):
+                        orc = str(rc)[:10]
+                        break
+                if orc:
+                    conn.execute(text(
+                        "UPDATE lease_tenants SET original_rent_commencement = :o"
+                        " WHERE id = :t AND original_rent_commencement IS NULL"),
+                        {'o': orc, 't': tid})
+                    filled['original_rc'] += 1
+    except Exception as exc:
+        logger.warning('Rent step provenance backfill skipped: %s', exc)
+    return filled
+
+def unread_documents(engine, review_id: int) -> List[Dict[str, Any]]:
+    """Documents this review holds that have never been read by the extraction.
+
+    THE ANALYST COULD NOT SEE THESE. Ciao Baby's 4th Amendment and both of Hobby
+    Lobby's option notices sat at `text_extracted` -- their text had been pulled
+    and the model had never been called -- so the terms they carry were simply
+    absent, and the screen reported the tenant as extracted. That reads as "the
+    extraction got it wrong" when the truth is "that document was never read".
+
+    Term-bearing ones are listed first because they are the ones that change a
+    figure; a COI that never extracted costs nothing.
+    """
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT d.id, d.tenant_id, t.tenant_name, d.filename, d.doc_type,
+                   d.extraction_status
+            FROM lease_documents d
+            LEFT JOIN lease_tenants t ON t.id = d.tenant_id
+            WHERE d.review_id = :rid
+              AND (d.extraction_status IS NULL
+                   OR d.extraction_status <> 'extracted')
+            ORDER BY t.tenant_name, d.filename
+        """), {'rid': review_id}).fetchall()
+    out = [{
+        'id': r[0], 'tenant_id': r[1], 'tenant': r[2],
+        'filename': (r[3] or '').rsplit('/', 1)[-1],
+        'doc_type': r[4], 'status': r[5],
+        'term_bearing': is_term_bearing(r[4]),
+        'unassigned': r[1] is None,
+    } for r in rows]
+    out.sort(key=lambda d: (not d['term_bearing'], d['tenant'] or '', d['filename']))
+    return out
 
 def consolidate_tenant_extractions(
     engine, tenant_id: int
@@ -3499,6 +3697,7 @@ def consolidate_tenant_extractions(
 
         consolidated = {}
         applied = []
+        original_rc = None
         for doc in docs:
             try:
                 terms = json.loads(doc['extraction_json'])
@@ -3508,6 +3707,16 @@ def consolidate_tenant_extractions(
                     else:
                         consolidated = _merge_extraction_terms(consolidated, terms)
                     applied.append(doc['filename'])
+                    # THE EARLIEST commencement any document states, kept beside
+                    # the latest. The latest is what the tenant record carries and
+                    # is right for "when does the current term run from"; the
+                    # ORIGINAL is what an undated month-of-term step in the base
+                    # lease counts from, and using the latest for both re-dated
+                    # every original schedule onto the newest extension.
+                    _rc = terms.get('rent_commencement')
+                    if (_rc and original_rc is None
+                            and re.match(r'^\d{4}-\d{2}-\d{2}', str(_rc))):
+                        original_rc = _rc
             except (json.JSONDecodeError, TypeError):
                 continue
 
@@ -3534,9 +3743,12 @@ def consolidate_tenant_extractions(
             UPDATE lease_tenants
             SET extraction_json = :ej,
                 rent_commencement = COALESCE(:rc, rent_commencement),
+                original_rent_commencement = COALESCE(:orc,
+                                                      original_rent_commencement),
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = :tid
-        """), {'tid': tenant_id, 'ej': json.dumps(consolidated), 'rc': rc})
+        """), {'tid': tenant_id, 'ej': json.dumps(consolidated), 'rc': rc,
+                 'orc': original_rc or rc})
 
         # Now that the commencement date is known, date the steps that were stored as
         # months of the term. Resolution is recomputed rather than trusted, because a
@@ -3735,36 +3947,64 @@ def validate_rent_roll(
             # period and placed against the tenant's rent commencement date (new
             # business, Sep 19 2026). Where it still cannot be resolved, the answer is
             # that we do not know which rent applies -- reported, not guessed.
+            # THE DOCUMENT BEHIND EACH STEP TRAVELS WITH IT. Its own term start
+            # anchors the months it states, its date breaks a tie with another step
+            # on the same day, and whether it is an ADDITIONAL charge decides
+            # whether it replaces the rent or adds to it.
             step_rows = conn.execute(text("""
-                SELECT effective_date, monthly_rent, annual_rent, rent_per_sf,
-                       period_start_month, period_end_month, effective_date_basis
-                FROM lease_rent_steps
-                WHERE tenant_id = :tid
+                SELECT s.effective_date, s.monthly_rent, s.annual_rent,
+                       s.rent_per_sf, s.period_start_month, s.period_end_month,
+                       s.effective_date_basis, s.term_start, s.source_doc_id,
+                       s.is_additional, s.source_doc, d.doc_date
+                FROM lease_rent_steps s
+                LEFT JOIN lease_documents d ON d.id = s.source_doc_id
+                WHERE s.tenant_id = :tid
             """), {'tid': tenant_id}).fetchall()
 
-            rent_commencement = conn.execute(text("""
-                SELECT rent_commencement FROM lease_tenants WHERE id = :tid
-            """), {'tid': tenant_id}).scalar()
+            # THE ORIGINAL COMMENCEMENT, not the latest. A step with no term of its
+            # own belongs to the ORIGINAL term; anchoring it to whatever date a
+            # later amendment set re-dated the base schedule on top of the
+            # amendment's own rent (22 tenants, Sep 21 2026).
+            rcs = conn.execute(text("""
+                SELECT original_rent_commencement, rent_commencement
+                FROM lease_tenants WHERE id = :tid
+            """), {'tid': tenant_id}).fetchone()
+            rent_commencement = (rcs[0] or rcs[1]) if rcs else None
 
             steps = [{
                 'effective_date': r[0], 'monthly_rent': r[1], 'annual_rent': r[2],
                 'rent_per_sf': r[3], 'period_start_month': r[4],
                 'period_end_month': r[5], 'effective_date_basis': r[6],
+                'term_start': r[7], 'source_doc_id': r[8],
+                'is_additional': bool(r[9]), 'source_doc': r[10], 'doc_date': r[11],
             } for r in step_rows]
 
             resolved_steps, step_notes = resolve_rent_steps(
                 steps, rent_commencement, square_feet=rr_sf)
             in_force, step_basis = step_in_force_at(resolved_steps, rr_date)
+            extra_steps, extra_annual = additional_in_force(resolved_steps, rr_date)
 
             current_step = None
             step_date = None
             step_match_method = None
             if in_force:
+                # The base rent PLUS anything the lease adds on top of it. Marco's
+                # Pizza's amendment rents another 160 SF for another $242 a month;
+                # read as a replacement it reported $2,904 a year.
+                _base_annual = annual_rent_from(
+                    annual_rent=in_force.get('annual_rent'),
+                    monthly_rent=in_force.get('monthly_rent'))
+                _annual = ((_base_annual or 0) + extra_annual
+                           if extra_annual else _base_annual)
+                _monthly = (_annual / 12.0) if _annual else in_force.get('monthly_rent')
+                _psf, _ = rent_psf_for(annual_rent=_annual, square_feet=rr_sf,
+                                       stated_psf=(None if extra_annual
+                                                   else in_force.get('rent_per_sf')))
                 current_step = (
                     in_force.get('effective_date'),
-                    in_force.get('monthly_rent'),
-                    in_force.get('annual_rent'),
-                    in_force.get('rent_per_sf'),
+                    _monthly,
+                    _annual,
+                    _psf,
                 )
                 step_date = in_force.get('effective_date')
                 step_match_method = (in_force.get('effective_date_basis')
@@ -3850,8 +4090,19 @@ def validate_rent_roll(
 
                 for field, seller_val, lease_val, status in rr_validations:
                     if field.startswith(('monthly', 'annual', 'rent_per')):
+                        # WHICH DOCUMENT the figure came from, on every rent row.
+                        # Five of the seven tenants the analyst raised were "the
+                        # amendment was not recognised", and the screen could not
+                        # say which document the rent it showed had come from.
+                        _src = ((in_force or {}).get('source_doc')
+                                or '').rsplit('/', 1)[-1]
                         note = (f"Lease rent step effective {step_date} "
-                                f"({step_match_method}).")
+                                f"({step_match_method})"
+                                + (f", per {_src}." if _src else "."))
+                        if extra_annual:
+                            note += (' Includes %d additional charge(s) totalling '
+                                     '%.2f a year that the lease adds on top of the '
+                                     'base rent.' % (len(extra_steps), extra_annual))
                     else:
                         note = None
                     conn.execute(text("""

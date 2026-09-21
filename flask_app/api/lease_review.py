@@ -31,6 +31,7 @@ from flask_app.services.lease_review_service import (
     rent_roll_changes,
     consolidate_tenant_extractions,
     rerun_tenant_extraction,
+    unread_documents,
     VALIDATION_FIELD_TO_RESOLVABLE,
     get_risk_analysis_data,
     get_tenant_abstract,
@@ -911,7 +912,11 @@ def get_validation_context(review_id):
             or None,
         }
 
-    return jsonify({'rent_roll_date': rrd, 'tenants': out})
+    # A DOCUMENT THAT WAS NEVER READ IS NOT A WRONG EXTRACTION, and the screen
+    # could not tell them apart: the tenant shows as extracted while the terms of
+    # an unread amendment are simply absent.
+    return jsonify({'rent_roll_date': rrd, 'tenants': out,
+                    'unread_documents': unread_documents(engine, review_id)})
 
 
 @lease_review_bp.route('/reviews/<int:review_id>/validation/resolve', methods=['PUT'])

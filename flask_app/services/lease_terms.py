@@ -369,6 +369,20 @@ def resolve_rent_steps(steps: List[Dict[str, Any]],
     Steps that cannot be dated are RETURNED, not dropped, with the reason in `notes`.
     A step nobody can place is a finding about the lease; silently discarding it makes
     the schedule look complete.
+
+    EACH STEP IS ANCHORED TO ITS OWN DOCUMENT'S TERM. `rent_commencement` here is the
+    ORIGINAL one; a step carrying `term_start` -- the commencement the document that
+    stated it gave -- counts from that instead. Anchoring everything to the tenant's
+    LATEST commencement re-dated each original lease's schedule onto whatever
+    extension a later amendment began, where it then outranked the amendment's own
+    rent: Benjamin Moore reported $38,038 against an amendment saying $50,052, and
+    Kohls projected its 2017 schedule to 2062. Measured Sep 21 2026: 22 tenants.
+
+    AN UNDATED STEP FROM AN AMENDMENT TAKES THAT AMENDMENT'S DATE. A step with no
+    date and no period could never be in force at all, so it lost silently to the
+    original lease -- Chapultepec's amendment raised the rent to $53,331.96 and the
+    app went on reporting the original $51,999.96. 168 of 809 steps were in that
+    state. It is dated from `term_start`, else the document's own date, and says so.
     """
     out: List[Dict[str, Any]] = []
     notes: List[str] = []
@@ -387,21 +401,40 @@ def resolve_rent_steps(steps: List[Dict[str, Any]],
             if rel:
                 start_m, end_m = rel[0], (end_m if end_m is not None else rel[1])
 
+        # The term THIS step's months count from: what its own document stated,
+        # else the original commencement.
+        anchor = _as_date(s.get('term_start')) or rc
+        anchor_is_own = _as_date(s.get('term_start')) is not None
+
         if stated:
             s['effective_date'] = stated.isoformat()
             s['effective_date_basis'] = 'stated'
         elif start_m:
-            needed_rc = True
-            d = month_to_date(rc, int(start_m))
+            if anchor is None:
+                needed_rc = True
+            d = month_to_date(anchor, int(start_m))
             if d:
                 s['effective_date'] = d.isoformat()
-                s['effective_date_basis'] = f'month {int(start_m)} of the term'
+                s['effective_date_basis'] = (
+                    'month %d of the term beginning %s'
+                    % (int(start_m), anchor.isoformat())
+                    if anchor_is_own else
+                    'month %d of the term' % int(start_m))
             else:
                 s['effective_date'] = None
                 s['effective_date_basis'] = ''
         else:
-            s['effective_date'] = None
-            s['effective_date_basis'] = ''
+            # NO DATE AND NO PERIOD. The document still places it: an amendment
+            # restating rent applies from the term it governs, or failing that
+            # from its own date. Reported as such, never as 'stated'.
+            fallback = _as_date(s.get('term_start')) or _as_date(s.get('doc_date'))
+            if fallback:
+                s['effective_date'] = fallback.isoformat()
+                s['effective_date_basis'] = (
+                    'from the document that states it (%s)' % fallback.isoformat())
+            else:
+                s['effective_date'] = None
+                s['effective_date_basis'] = ''
 
         s['period_start_month'] = int(start_m) if start_m else None
         s['period_end_month'] = int(end_m) if end_m else None
@@ -447,7 +480,10 @@ def step_in_force_at(steps: List[Dict[str, Any]], as_of: Any
     d = _as_date(as_of)
     if not steps or d is None:
         return None, ''
-    dated = [s for s in steps if _as_date(s.get('effective_date'))]
+    # An ADDITIONAL charge is not a candidate for the base rent -- it is added to
+    # whatever the base turns out to be. See `additional_in_force`.
+    base = [s for s in steps if not s.get('is_additional')]
+    dated = [s for s in base if _as_date(s.get('effective_date'))]
     if not dated:
         return None, ''
     eligible = [s for s in dated if _as_date(s['effective_date']) <= d]
@@ -455,10 +491,67 @@ def step_in_force_at(steps: List[Dict[str, Any]], as_of: Any
         first = min(dated, key=lambda s: _as_date(s['effective_date']))
         return None, (f"The earliest rent step begins "
                       f"{first['effective_date']}, after {d.isoformat()}.")
-    best = max(eligible, key=lambda s: _as_date(s['effective_date']))
+    # WHEN SEVERAL STEPS SHARE A DATE, THE LATER DOCUMENT GOVERNS. 82 tied dates
+    # across 31 tenants, and `max` returns whichever the list happened to hold
+    # first -- BooYa's has four steps on 2024-04-01 ($52,800 from the 2008 lease
+    # and $103,596 from the 5th amendment), so which rent was "in force" was an
+    # accident of row order.
+    best = max(eligible, key=lambda s: (_as_date(s['effective_date']),
+                                        _doc_rank(s)))
     basis = best.get('effective_date_basis') or 'stated'
+    src = (best.get('source_doc') or '').rsplit('/', 1)[-1]
     return best, (f"Step effective {best['effective_date']} ({basis}), "
-                  f"in force at {d.isoformat()}.")
+                  f"in force at {d.isoformat()}"
+                  + (f", per {src}." if src else "."))
+
+
+def _doc_rank(step: Dict[str, Any]) -> Tuple[str, int]:
+    """How late the document behind a step is: its date, then its id.
+
+    Both fall back to empty/0, so a step carrying no provenance sorts BEFORE one
+    that does -- a step we cannot attribute must not outrank a step we can.
+    """
+    dd = step.get('doc_date') or ''
+    try:
+        did = int(step.get('source_doc_id') or 0)
+    except (TypeError, ValueError):
+        did = 0
+    return (str(dd), did)
+
+
+def additional_in_force(steps: List[Dict[str, Any]],
+                        as_of: Any) -> Tuple[List[Dict[str, Any]], float]:
+    """The charges that sit ON TOP of the base rent on a date, and their total.
+
+    An amendment that adds space adds rent: Marco's Pizza's first amendment lets
+    the tenant take another 160 SF for another $242 a month, and it was read as
+    the WHOLE rent -- $2,904 a year against a rent roll saying $65,558. The square
+    footage was combined correctly (3,772 = 3,612 + 160) and the rent was not, so
+    the two halves of one amendment disagreed with each other.
+
+    The model now says which it is (`amount_is_additional`); this never guesses.
+    An additional charge with a later replacement of the same base is still added,
+    because the lease that added the space did not take it away.
+    """
+    d = _as_date(as_of)
+    if not steps or d is None:
+        return [], 0.0
+    live, total = [], 0.0
+    for s in steps:
+        if not s.get('is_additional'):
+            continue
+        sd = _as_date(s.get('effective_date'))
+        if sd is None or sd > d:
+            continue
+        ed = _as_date(s.get('period_end_date'))
+        if ed and ed < d:
+            continue
+        amt = annual_rent_from(annual_rent=s.get('annual_rent'),
+                               monthly_rent=s.get('monthly_rent'))
+        if amt:
+            live.append(s)
+            total += amt
+    return live, total
 
 
 # ---------------------------------------------------------------------------
