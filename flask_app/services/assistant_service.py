@@ -10,8 +10,16 @@ import pandas as pd
 from flask import current_app
 
 from flask_app.services import data_service
+from flask_app.services import data_dictionary_service
 
 logger = logging.getLogger(__name__)
+
+#: Field ids for lookup_field's closed enum, read from the dictionary FILE at
+#: import time — writing the list out here would be a second copy of the very
+#: thing the dictionary exists to be authoritative about, and the two would
+#: drift the moment a field was added. Fails soft to [] (the schema then omits
+#: the enum and the tool reports a miss) rather than breaking the assistant.
+_FIELD_IDS = data_dictionary_service.field_ids()
 
 # ── Tool definitions ─────────────────────────────────────────────────
 
@@ -349,6 +357,67 @@ TOOLS = [
             },
         },
     },
+    # ── Data traceability (read-only reference files, no DB access) ──────
+    #
+    # These two answer "where does this number come from" and "what breaks if I
+    # change it". They read flask_app/reference/*.json and nothing else — no
+    # database, no computation, no value. Added because the assistant used to
+    # answer such questions from general knowledge: asked what uses the ISBS
+    # balance sheet on 2026-09-21 it cited "how ISBS data is typically wired in
+    # real estate investment platforms" and named one consumer out of a dozen.
+    {
+        "name": "lookup_field",
+        "description": (
+            "Where a report field comes from and what it means. Use for "
+            "where-does-X-come-from / how-is-X-calculated / what-source. "
+            "Returns the plain meaning, a Source line, the basis-selection rule "
+            "and any caveats, from the committed field dictionary. A field can "
+            "legitimately have several bases (the same deal's Debt has three) — "
+            "omit `basis` to see them all, or name one to narrow."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "field_id": {
+                    "type": "string",
+                    # Closed enum, built from the dictionary FILE at import so it
+                    # cannot drift from the data it indexes. See _FIELD_IDS.
+                    **({"enum": _FIELD_IDS} if _FIELD_IDS else {}),
+                    "description": "The dictionary id of the field, e.g. 'debt', 'total_pref', 'ltv'.",
+                },
+                "basis": {
+                    "type": "string",
+                    "description": (
+                        "Optional. Narrow to one basis of THIS field, e.g. 'isbs' / "
+                        "'hard_costs' / 'orig_loan' for debt. Validated against the "
+                        "field's own bases; an unknown value returns all of them."
+                    ),
+                },
+            },
+            "required": ["field_id"],
+        },
+    },
+    {
+        "name": "impact_of",
+        "description": (
+            "What uses a source and what breaks if it changes. Use for "
+            "what-uses-X / what-depends-on-X / what-happens-if-I-change-X. "
+            "`name` may be a source table (ISBS balance sheet, MRI_Loans.mOrigLoanAmt), "
+            "a shared constant (config.DEBT_BS_ACCTS, config.IS_ACCOUNTS), or a field id. "
+            "Returns the blast-radius note, any duplicate-literal warnings, and the "
+            "consumer list from the committed dependency map."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Source table, shared constant, or field id.",
+                },
+            },
+            "required": ["name"],
+        },
+    },
 ]
 
 # ── System prompt ────────────────────────────────────────────────────
@@ -383,6 +452,9 @@ Tool selection tips:
 - Use get_debt_service for loan schedules, amortization, balloon payments, maturity dates
 - Use get_cash_management for cash reserves, distributable cash, CapEx from reserves
 - Use get_tenant_roster for tenant info, lease expirations, rent rolls (commercial deals only)
+- Use lookup_field for where-does-this-come-from / how-is-this-calculated / what-source questions about a REPORT FIELD (Debt, Total Pref, LTV, Econ Occ, NOI At Close...). It answers where a number comes from, not what the number is — pair it with a value tool if the user wants both.
+- Use impact_of for what-uses-X / what-depends-on-X / what-breaks-if-I-change-X, where X is a source table, a shared constant, or a field.
+- NEVER answer either kind of question from general knowledge, from a tool's description text, or from the names of tables you have seen. If lookup_field or impact_of does not have it, say so — an ungrounded answer about where a number comes from is worse than no answer.
 
 Key conventions:
 - Cashflow signs: negative = contribution (money in), positive = distribution (money out)
@@ -394,9 +466,33 @@ Key conventions:
 When answering questions:
 - Be concise and direct
 - Format numbers as currency ($1,234,567) or percentages (12.34%) as appropriate
-- When showing tables, use markdown formatting
+- When showing tables, use markdown formatting. Exception — for lookup_field and impact_of answers, follow the traceability answer format below; it takes precedence over table/markdown styling.
 - If a query returns too much data, summarize the key findings
 - Always explain what the numbers mean in context
+
+TRACEABILITY ANSWER FORMAT — a hard rule, overriding the general formatting guidance above. Output ONLY the bullets shown, in order, with nothing before them.
+
+lookup_field answers:
+- **What:** <the tool's `lead`, one line>
+- **Source:** <the tool's `source_value` — NOT `source_line`, which carries its own "Source: " prefix and would print it twice>
+- **Formula:** <`formula`> — from <`inputs`>      (ONLY if the tool returned them)
+- **Note:** <at most ONE caveat, and only if material>
+
+impact_of answers:
+- **What:** <the tool's `lead`, one line>
+- **Definition:** <`definition`>      (ONLY when `match_type` is "shared_constant"; OMIT this bullet entirely for a source)
+- **Breaks:** <`blast_radius_note`, one line>
+- **Duplicates (keep in sync):** <`duplicates`>
+- **Consumers (<`consumer_count`>):** <brief grouped list>
+
+Rules for both:
+- No "Let me look up..." preamble and no narrating the tool call. Your first output token is the first bullet.
+- NOTHING follows the last bullet. No summary, no "bottom line", no trailing warning paragraph — anything worth saying goes inside a bullet.
+- No tables, no headings, no multi-paragraph prose. At most one Note. Keep it scannable.
+- When the question names a deal type, tab, or lifecycle state (development, stabilized/operating, new/undrawn, One Pager, Snapshot), work out which basis applies from the field's `basis_selection`, call lookup_field AGAIN with that `basis`, and answer from that result — so What and Source are the SPECIFIC basis, not the generic multi-basis one.
+- The Source bullet is MANDATORY. If a result has no `source_line`, say the source is unavailable — never omit it silently.
+- Everything comes only from tool fields. Do not invent sources, counts or labels: render `duplicate_warning` faithfully, take counts only from `consumer_count`, and never relabel which location is the definition.
+- On a miss (`error` / `did_you_mean`), say plainly there is no verified source in the dictionary or dependency map, offer the near matches, and STOP. Do not fill the gap from general knowledge.
 
 When the user asks a question, use the page context (provided below) to understand what they are looking at. If they ask about a deal without specifying which one, assume they mean the deal currently selected on their page. If their question requires data from a different tab (e.g., asking about expected returns while on the One Pager), use the current deal's vcode to fetch that data from the appropriate source (e.g., compute_deal_returns for Deal Analysis metrics).
 
@@ -584,6 +680,10 @@ def execute_tool(tool_name: str, tool_input: dict) -> str:
             return _tool_get_valuation_cycle(tool_input)
         elif tool_name == "get_valuation_detail":
             return _tool_get_valuation_detail(tool_input)
+        elif tool_name == "lookup_field":
+            return _tool_lookup_field(tool_input)
+        elif tool_name == "impact_of":
+            return _tool_impact_of(tool_input)
         else:
             return json.dumps({"error": f"Unknown tool: {tool_name}"})
     except Exception as e:
@@ -1414,6 +1514,142 @@ def get_client():
     if not api_key:
         raise ValueError("ANTHROPIC_API_KEY environment variable not set")
     return anthropic.Anthropic(api_key=api_key)
+
+
+# ── Data traceability tools ──────────────────────────────────────────
+#
+# Read-only over flask_app/reference/*.json. No database, no computation, no
+# value — these say where a value COMES FROM, which is a different question
+# from what it is, and the two must not be confused in an answer.
+
+_SOURCE_PREFIX = "Source: "
+
+
+def _source_value(source_line):
+    """The source string WITHOUT its leading "Source: ".
+
+    The answer template renders a bullet already labelled **Source:**, so a
+    value that carries its own prefix prints "Source: Source: ...". That is
+    exactly what happened on the Total Cap answer (2026-09-21) while the LTV
+    answer silently stripped it — the same field rendered two ways in one run.
+    Supplying a pre-stripped value removes the judgement call.
+    """
+    text = source_line or ""
+    return (text[len(_SOURCE_PREFIX):]
+            if text.startswith(_SOURCE_PREFIX) else text)
+
+def _tool_lookup_field(inp):
+    """Where a field comes from. `basis` is validated inside the service,
+    against that field's OWN bases — never against a global list.
+
+    A CALCULATED FIELD ALSO CARRIES ITS FORMULA AND ITS INPUTS. "Where does LTV
+    come from" has no source table as an answer — it comes from two other
+    figures — so for a basis whose origin is `calculated` the formula already
+    written in that basis's `source` is surfaced as its own field, alongside the
+    inputs recorded in dependencies.json `internal_edges.computed_fields`. Both
+    keys are OMITTED for a non-calculated field rather than returned empty, so
+    the answer template can test presence instead of emptiness.
+    """
+    field_id = inp.get("field_id")
+    result = data_dictionary_service.lookup_field(field_id, inp.get("basis"))
+
+    if isinstance(result, dict) and not result.get("error"):
+        calc = next((b for b in (result.get("bases") or [])
+                     if b.get("origin") == "calculated"), None)
+        if calc and calc.get("source"):
+            result["formula"] = calc["source"]
+            inputs, seen = [], set()
+            try:
+                computed = (data_dictionary_service._dependencies()
+                            .get("internal_edges", {})
+                            .get("computed_fields", {}) or {})
+            except Exception:
+                computed = {}
+            want = str(field_id or "").strip().lower()
+            for key, entry in computed.items():
+                # `ltv` -> `snapshot_loan.ltv`; `total_cap` -> `cap_stack.total_cap`.
+                # Matched on the trailing segment so a field cannot pick up an
+                # unrelated entry that merely mentions it in prose.
+                if key.rsplit(".", 1)[-1].lower() != want:
+                    continue
+                for dep in (entry.get("depends_on")
+                            or entry.get("inputs_from") or []):
+                    if dep not in seen:
+                        seen.add(dep)
+                        inputs.append(dep)
+            if inputs:
+                result["inputs"] = inputs
+        result["source_value"] = _source_value(result.get("source_line"))
+    return json.dumps(result, default=str)
+
+
+def _tool_impact_of(inp):
+    """What reads a source/constant/field, and what moves if it changes.
+
+    THE SOURCE LINE IS ASSEMBLED HERE, not left to the service, so every branch
+    returns one in the same shape. The live format check on 2026-09-21 had the
+    model drop the Source line entirely from the "what changes if we change the
+    debt source" answer while rendering it correctly elsewhere — a rule the
+    model applies unevenly needs the data to be uniform first. A miss says the
+    source is unavailable rather than carrying no line at all, so the prompt
+    rule ("never omit it silently") always has something to render.
+    """
+    result = data_dictionary_service.impact(inp.get("name"))
+    if isinstance(result, dict):
+        matched, kind = result.get("matched"), result.get("match_type")
+        if kind == "shared_constant" and matched:
+            result["source_line"] = (
+                f'Source: dependencies.json — shared_constants["{matched}"]')
+        elif kind == "source" and matched:
+            result["source_line"] = (
+                f'Source: dependencies.json — sources["{matched}"]')
+        elif kind == "field" and matched:
+            result["source_line"] = (
+                f'Source: dependencies.json — sources[*].downstream_fields '
+                f'matching "{matched}"')
+        else:
+            result["source_line"] = (
+                "Source: unavailable — no matching entry in dependencies.json")
+
+        # WHICH LOCATION IS THE DEFINITION IS STATED, NOT LEFT TO BE INFERRED.
+        #
+        # `duplicate_literal_warnings` was a bare list of locations with no
+        # marker saying which one defines the constant, so the model filled the
+        # gap: on 2026-09-21 it labelled config.py:232 "the canonical
+        # definition" twice, in two separate runs, while the definition is
+        # config.py:23. A prompt rule forbidding the word did not stop it. The
+        # fix is to close the gap in the data — there is nothing left to infer
+        # once the answer ships pre-labelled.
+        consumers = result.get("consumers") or []
+        result["consumer_count"] = len(consumers)
+
+        raw = result.get("duplicate_literal_warnings") or []
+        if raw:
+            try:
+                constants = (data_dictionary_service._dependencies()
+                             .get("shared_constants") or {})
+            except Exception:
+                constants = {}
+            # Each entry is "<constant key>: <location>" (see
+            # data_dictionary_service._constant_duplicate_index).
+            definition, dups = result.get("defined_at"), []
+            for warning in raw:
+                ckey, sep, location = warning.partition(": ")
+                dups.append(location if sep else warning)
+                if not definition and sep:
+                    definition = (constants.get(ckey) or {}).get("at")
+            result["definition"] = definition
+            result["duplicates"] = dups
+            joined = "; ".join(dups)
+            result["duplicate_warning"] = (
+                f"Definition is at {definition}. The following are DUPLICATE "
+                f"copies that must be changed in sync — NOT the definition: "
+                f"{joined}."
+                if definition else
+                f"The following are DUPLICATE copies that must be changed in "
+                f"sync; the defining location is not recorded: {joined}.")
+        result["source_value"] = _source_value(result.get("source_line"))
+    return json.dumps(result, default=str)
 
 
 def _build_system_prompt(page_context: dict = None) -> str:

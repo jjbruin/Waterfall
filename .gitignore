@@ -5,6 +5,9 @@
 !package.json
 !package-lock.json
 !tsconfig*.json
+# Reference data shipped in the Docker image — must be tracked, see flask_app/reference/
+!flask_app/reference/
+!flask_app/reference/*.json
 data/
 
 # MRI's own BLANK upload templates, vendored so the app can write into a copy
