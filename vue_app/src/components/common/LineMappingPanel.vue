@@ -87,13 +87,9 @@
           Only show lines with an account number
           <span class="lm-note-inline">({{ unnumberedCount }} hidden)</span>
         </label>
-        <label>
-          <input type="checkbox" v-model="showFullCoa" />
-          Offer the whole chart of accounts in the Account column
-        </label>
         <span class="lm-note-inline">
-          Off, each row offers only its category's accounts. On, you can pick any
-          account and the category fills itself in.
+          The account number is the mapping. The category is whatever our chart of
+          accounts says that account is.
         </span>
       </div>
       <!-- Suggested, priced, and off until ticked. Automating it would put $20,000
@@ -180,38 +176,25 @@
                 </span>
               </td>
               <td class="num">{{ fmtCurrency(line.total) }}</td>
-              <td>
-                <select :value="m(line.row).category || ''" :disabled="!editable"
-                        @change="setCategory(line.row, $event.target.value)">
-                  <option value="">— not imported —</option>
-                  <optgroup label="Used by this deal">
-                    <option v-for="c in usedCats" :key="c.category" :value="c.category">
-                      {{ c.category }}{{ c.prior_total ? ` — ${fmtCurrency(c.prior_total)}` : '' }}
-                    </option>
-                  </optgroup>
-                  <optgroup label="Other categories">
-                    <option v-for="c in unusedCats" :key="c.category" :value="c.category">
-                      {{ c.category }}
-                    </option>
-                  </optgroup>
-                </select>
+              <!-- READ ONLY. Jack, Sep 22 2026: "The category dropdown should come
+                   out entirely and just display whatever the account dictates." It was
+                   two controls for one decision, and they could disagree — the analyst
+                   set the account, the category stayed where it was, and submit
+                   refused. The account is the mapping; this says where it lands. -->
+              <td class="lm-derived">
+                <template v-if="m(line.row).account">{{ categoryOf(line.row) || '—' }}</template>
+                <span v-else class="lm-note-inline">not imported</span>
               </td>
-              <!-- Either way round. Picking a category narrows the accounts; picking
-                   an account from the whole chart fills the category in. Asset
-                   management: "it's hard to select by category and then see which GL
-                   codes are available, and we end up guessing which category maps to
-                   which account code." -->
               <td>
                 <select :value="m(line.row).account || ''" :disabled="!editable"
                         @change="setAccount(line.row, $event.target.value)">
-                  <option value="">— pick an account —</option>
-                  <optgroup v-if="m(line.row).category"
-                            :label="'In ' + m(line.row).category">
-                    <option v-for="a in accountsFor(m(line.row).category)" :key="a.account" :value="a.account">
-                      {{ a.account }} {{ a.description || '' }}{{ a.used ? '' : '  (not used recently)' }}
+                  <option value="">— not imported —</option>
+                  <optgroup v-if="dealAccounts.length" label="Used by this deal">
+                    <option v-for="a in dealAccounts" :key="'d-' + a.account" :value="a.account">
+                      {{ a.account }} {{ a.description || '' }} — {{ a.category }}
                     </option>
                   </optgroup>
-                  <optgroup v-if="showFullCoa" label="Whole chart of accounts">
+                  <optgroup label="Whole chart of accounts">
                     <option v-for="a in allAccounts" :key="'all-' + a.account" :value="a.account">
                       {{ a.account }} {{ a.description || '' }} — {{ a.category }}
                     </option>
@@ -395,7 +378,6 @@ const commitLabel = computed(() => props.source === 'argus'
   ? 'Save and apply to the Valuation column'
   : 'Save and import into the Budget column')
 
-const showFullCoa = ref(false)
 const onlyNumbered = ref(false)
 const acceptedProposals = ref({})
 
@@ -453,35 +435,22 @@ const allAccounts = computed(() => {
   return out
 })
 
-const usedCats = computed(() => (cats.value.categories || []).filter(c => c.used_by_deal))
-const unusedCats = computed(() => (cats.value.categories || []).filter(c => !c.used_by_deal))
+// The accounts this deal has actually used, offered first. Same list, ranked — not a
+// different set, so nothing is reachable in one group and missing from the other.
+const dealAccounts = computed(() =>
+  allAccounts.value.filter(a => a.used || a.used_by_deal))
 const reconRows = computed(() => check.value?.reconciliation?.rows || [])
 const canCommit = computed(() =>
   props.editable && !committing.value && !!check.value?.can_import)
 
 function m(row) { return mapping.value[String(row)] || {} }
-function catByName(name) {
-  return (cats.value.categories || []).find(c => c.category === name) || null
-}
-function accountsFor(name) { return catByName(name)?.accounts || [] }
 
-/**
- * Picking a category selects the deal's most-used account within it, and sets the flip
- * from how that account actually behaved for this deal. NOT from the 4xxx/5xxx prefix:
- * 4030 Residential Vacancy and 4042 Loss to Lease are 4xxx accounts stored POSITIVE, and
- * 5220 Other (Income) Expense is 5xxx stored NEGATIVE, so a prefix rule gets all three
- * backwards and silently inverts NOI.
- */
-function setCategory(row, name) {
-  const key = String(row)
-  if (!name) { delete mapping.value[key]; mapping.value = { ...mapping.value }; return void runCheck() }
-  const c = catByName(name)
-  const acct = c?.default_account || null
-  mapping.value = {
-    ...mapping.value,
-    [key]: { category: name, account: acct, flip: defaultFlip(row, name, acct) },
-  }
-  runCheck()
+/** Where this line lands, read off the account. The server derives it the same way
+ *  from the same map and ignores whatever the screen sends, so the two cannot drift. */
+function categoryOf(row) {
+  const acct = m(row).account
+  if (!acct) return null
+  return allAccounts.value.find(a => String(a.account) === String(acct))?.category || null
 }
 
 function setAccount(row, acct) {
@@ -492,10 +461,11 @@ function setAccount(row, acct) {
     mapping.value = { ...mapping.value }
     return void runCheck()
   }
-  // An account chosen from the whole chart brings its category with it, so the two
-  // columns cannot end up disagreeing about where the line lands.
+  // The account brings its own category, ALWAYS — never `cur.category || ...`, which
+  // would let a category set earlier survive a change of account and put the line on a
+  // row its account does not belong to.
   const owning = allAccounts.value.find(a => String(a.account) === String(acct))
-  const category = cur.category || owning?.category || null
+  const category = owning?.category || null
   mapping.value = {
     ...mapping.value,
     [key]: { ...cur, category, account: acct, flip: defaultFlip(row, category, acct) },
@@ -509,9 +479,15 @@ function setFlip(row, on) {
   runCheck()
 }
 
+/**
+ * The flip comes from how the account ACTUALLY behaved for this deal, never from the
+ * 4xxx/5xxx prefix: 4030 Residential Vacancy and 4042 Loss to Lease are 4xxx accounts
+ * stored POSITIVE, and 5220 Other (Income) Expense is 5xxx stored NEGATIVE, so a prefix
+ * rule gets all three backwards and silently inverts NOI.
+ */
 function defaultFlip(row, category, account) {
   const line = (parsed.value?.lines || []).find(l => String(l.row) === String(row))
-  const a = (catByName(category)?.accounts || []).find(x => x.account === account)
+  const a = allAccounts.value.find(x => String(x.account) === String(account))
   if (!line || !a || !line.total) return false
   return (line.total > 0) !== (a.mri_sign > 0)
 }
@@ -700,6 +676,7 @@ onMounted(() => { if (props.recordId) loadDraft() })
 }
 .lm-coa-toggle label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 .lm-note-inline { color: #777; font-size: 0.76rem; }
+.lm-derived { color: #33475b; }
 .lm-coa-btn { font-size: 0.78rem; padding: 3px 10px; }
 .lm-proposed {
   border: 1px solid #e0a800; background: #fff8e5; border-radius: 4px;

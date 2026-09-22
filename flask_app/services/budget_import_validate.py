@@ -76,33 +76,43 @@ def validate(parsed: Dict[str, Any], mapping: Dict[str, Any], vcode: str,
         blocking.append({"code": "no_lines",
                          "message": "No lines have been assigned an account."})
 
-    # The same account twice in one month cannot both be right — one would overwrite the
-    # other's meaning and the total would silently double.
+    # SEVERAL LINES ON ONE ACCOUNT ADD UP. They do not collide.
     #
-    # REPORTED ONCE PER CLASH, not once per month. A 12-month file with two lines on the
-    # same account produced twelve identical blocking messages, which buries the one
-    # thing the analyst has to fix and makes a legible panel impossible.
-    seen: Dict[tuple, str] = {}
-    clashes: Dict[tuple, Dict[str, Any]] = {}
+    # Jack, Sep 22 2026: "Our partners budget in far more detail than our chart of
+    # accounts carries, so fifteen of their repair lines all belong in one account
+    # on our side. The app treats every line after the first as a conflict and
+    # won't let us submit." That blocking rule is what forced him to build a
+    # rolled-up summary block by hand and delete the detail -- 60 budget lines
+    # reduced to 19, with everything that made them checkable thrown away.
+    #
+    # The old comment claimed the total "would silently double". It would not:
+    # ISBS is a JOURNAL, one key legitimately carries many rows and every consumer
+    # SUMS them, which is the same property `drop_duplicates` violated at a cost
+    # of 358,392 rows (see CLAUDE.md). Two lines on one account-month is the
+    # correct representation of two budget lines landing in one account.
+    #
+    # What the rule was really protecting against is the analyst not SEEING it, so
+    # the roll-up is reported instead of refused: every account that takes more
+    # than one line is named, with the lines and the combined total.
+    rollup: Dict[str, Dict[str, Any]] = {}
     for row_key, m in mapped.items():
         line = by_row.get(int(row_key))
         if not line:
             continue
         acct = str(m["account"]).strip()
-        for period in line["amounts"]:
-            k = (acct, period)
-            if k in seen:
-                pair = (acct, seen[k], line["label"])
-                c = clashes.setdefault(pair, {"months": 0})
-                c["months"] += 1
-            else:
-                seen[k] = line["label"]
-    for (acct, first, second), info in clashes.items():
-        blocking.append({
-            "code": "duplicate_account_month",
-            "message": (f"'{first}' and '{second}' are both mapped to account {acct} — "
-                        f"they collide in {info['months']} month(s). One of them needs a "
-                        f"different account, or one should be left unmapped.")})
+        entry = rollup.setdefault(acct, {"labels": [], "total": 0.0})
+        entry["labels"].append(line["label"])
+        flip = -1 if m.get("flip") else 1
+        entry["total"] += sum(line["amounts"].values()) * flip
+    combined = {a: e for a, e in rollup.items() if len(e["labels"]) > 1}
+    for acct, e in sorted(combined.items()):
+        warnings.append({
+            "code": "lines_combined",
+            "message": (f"{len(e['labels'])} lines add together into account {acct}: "
+                        f"{', '.join(e['labels'][:4])}"
+                        + (f" and {len(e['labels']) - 4} more" if len(e['labels']) > 4
+                           else "")
+                        + f" — combined {e['total']:,.2f}.")})
 
     # A line carries BOTH a category (what the analyst picked, and the row it lands on in
     # the comparison) and an account within it (what the supplement stores, and what NOI,
@@ -111,11 +121,29 @@ def validate(parsed: Dict[str, Any], mapping: Dict[str, Any], vcode: str,
     # is no reading of it that is intended.
     # From the SAME definition the dropdown is built from, so a category the screen
     # offers can always be satisfied. See `_CATEGORY_ACCOUNTS_FOR_BUDGET`.
+    # THE ACCOUNT DECIDES THE CATEGORY, so they can no longer disagree. Whatever the
+    # screen sends is overwritten with the category that owns the account -- one
+    # source of mapping, which is what was asked for. A category that came in
+    # disagreeing is not an error to report; it is a field that should not have been
+    # an input.
+    for m in mapped.values():
+        derived = budget_service.category_for_account(m.get("account"))
+        if derived:
+            m["category"] = derived
     cat_accounts = {cat: set(accts)
                     for cat, accts in budget_service.category_accounts().items()}
     for row_key, m in mapped.items():
         cat = m.get("category")
         if not cat:
+            # No category means we do not carry the account at all, which IS worth
+            # blocking: the figure would land on no row of the comparison.
+            line = by_row.get(int(row_key))
+            blocking.append({
+                "code": "account_not_in_any_category",
+                "message": (f"Account {str(m['account']).strip()} "
+                            f"({(line or {}).get('label', 'this line')}) is not on "
+                            f"our chart of accounts, so it has no row on the "
+                            f"comparison.")})
             continue
         acct = str(m["account"]).strip()
         valid = cat_accounts.get(cat)
@@ -216,10 +244,10 @@ def commit(engine, vcode: str, parsed: Dict[str, Any], mapping: Dict[str, Any],
     (vcode, the periods in THIS file) so a deal budgeted across two files does not have
     its first import erased by its second.
 
-    Every column name is DOUBLE-QUOTED. This table is created by pandas `to_sql`, so on
-    PostgreSQL its columns really are `vcode`/`dtEntry`/`vAccount`, and unquoted SQL
-    resolves to lower case and raises `column does not exist` — the defect that made the
-    valuation publish path fail on Azure while working on every local run. See
+    Every column name is DOUBLE-QUOTED, AND READ FROM THE TABLE. Quoting alone is not
+    enough and this docstring used to claim it was: it asserted the columns "really
+    are `vcode`", which was true of the table pandas creates locally and false of the
+    one production has. See the note on the DELETE below and
     scripts/sql_mixedcase_identifier_check.py.
     """
     by_row = {l["row"]: l for l in parsed["lines"]}
@@ -241,19 +269,31 @@ def commit(engine, vcode: str, parsed: Dict[str, Any], mapping: Dict[str, Any],
 
     periods = sorted({r["dtEntry"] for r in rows})
     _ensure_table(engine)
+    # THE COLUMN NAMES ARE READ FROM THE TABLE, NEVER ASSUMED. Production's
+    # supplement tables were created by a CSV import and carry `vCode`; the ISBS
+    # tables the MRI refresh creates carry `vcode`. A double-quoted identifier is
+    # CASE-SENSITIVE on PostgreSQL and case-insensitive on SQLite, so
+    # `WHERE "vcode" = ...` worked in every local test and raised
+    # UndefinedColumn on production -- the v435 / v496 shape. Every budget import
+    # through this path has failed, for every file, since it was written: the
+    # DELETE raises, the transaction rolls back, and the analyst sees an empty
+    # Budget column after doing the work. Jack rebuilt his spreadsheet eight times
+    # against a bug no spreadsheet could have fixed.
+    cols = _supplement_columns(engine)
     with engine.begin() as conn:
         deleted = 0
         for period in periods:
             res = conn.execute(
                 text(f'DELETE FROM {SUPPLEMENT_TABLE} '
-                     f'WHERE "vcode" = :v AND "dtEntry" = :d'),
+                     f'WHERE "{cols["vcode"]}" = :v AND "{cols["dtEntry"]}" = :d'),
                 {"v": vcode, "d": period})
             deleted += res.rowcount or 0
+        insert_cols = ', '.join('"%s"' % cols[k] for k in _SUPPLEMENT_FIELDS)
+        insert_vals = ', '.join(':%s' % k for k in _SUPPLEMENT_FIELDS)
         for r in rows:
             conn.execute(
-                text(f'INSERT INTO {SUPPLEMENT_TABLE} '
-                     f'("vcode", "dtEntry", "vSource", "vAccount", "mAmount", "vInput") '
-                     f'VALUES (:vcode, :dtEntry, :vSource, :vAccount, :mAmount, :vInput)'),
+                text(f'INSERT INTO {SUPPLEMENT_TABLE} ({insert_cols}) '
+                     f'VALUES ({insert_vals})'),
                 r)
 
     # isbs_raw is reassembled from the supplement tables, so the valuation comparison
@@ -269,6 +309,35 @@ def commit(engine, vcode: str, parsed: Dict[str, Any], mapping: Dict[str, Any],
                 vcode, len(rows), len(periods), deleted)
     return {"rows_written": len(rows), "rows_replaced": deleted, "periods": periods,
             "accounts": sorted({r["vAccount"] for r in rows})}
+
+
+#: The fields this import writes, in our own vocabulary. `_supplement_columns`
+#: maps each to whatever the table actually calls it.
+_SUPPLEMENT_FIELDS = ("vcode", "dtEntry", "vSource", "vAccount", "mAmount", "vInput")
+
+
+def _supplement_columns(engine) -> Dict[str, str]:
+    """Our field names mapped to the table's ACTUAL column names.
+
+    Matched case-insensitively, because the same logical column is `vCode` on the
+    CSV-created supplement tables and `vcode` on the MRI-created ones, and quoting
+    the wrong one is a PostgreSQL-only failure that SQLite cannot reproduce.
+
+    Creates the table first, so a fresh database resolves against the DDL below
+    rather than against nothing. A field the table does not have at all is left as
+    our own spelling and will fail loudly on use -- guessing a near-miss would be
+    worse, since it would write to the wrong column.
+    """
+    from sqlalchemy import inspect
+    _ensure_table(engine)
+    try:
+        actual = [c["name"] for c in inspect(engine).get_columns(SUPPLEMENT_TABLE)]
+    except Exception as exc:                                  # noqa: BLE001
+        logger.warning("Could not inspect %s (%s) -- using our own spellings",
+                       SUPPLEMENT_TABLE, exc)
+        actual = []
+    lower = {c.lower(): c for c in actual}
+    return {f: lower.get(f.lower(), f) for f in _SUPPLEMENT_FIELDS}
 
 
 def _ensure_table(engine) -> None:

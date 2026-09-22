@@ -297,8 +297,7 @@ def parse(engine, record_id: int, source: str, file_bytes: bytes, filename: str,
             # categories actually contains the account, since that is what decides the
             # row. Where they disagree, the account wins and the discrepancy is visible
             # because the screen shows both.
-            owning = next((c["category"] for c in cats
-                           if any(a["account"] == acct for a in c["accounts"])), cat)
+            owning = budget.category_for_account(acct) or cat
             if not owning:
                 continue
             default_sign = next(
@@ -326,8 +325,7 @@ def parse(engine, record_id: int, source: str, file_bytes: bytes, filename: str,
         acct = line.get("stated_account")
         if not acct:
             continue
-        owning = next((c["category"] for c in cats
-                       if any(a["account"] == acct for a in c["accounts"])), None)
+        owning = budget.category_for_account(acct)
         if not owning:
             # The sheet names an account we do not carry. Saying so beats silently
             # dropping it, so it is reported and the line is left for the analyst.
@@ -354,9 +352,7 @@ def parse(engine, record_id: int, source: str, file_bytes: bytes, filename: str,
         if not prior:
             continue
         if key not in suggested and not line["looks_like_total"]:
-            owning = next((c["category"] for c in cats
-                           if any(a["account"] == prior["account"] for a in c["accounts"])),
-                          None)
+            owning = budget.category_for_account(prior["account"])
             if owning:
                 default_sign = next(
                     (a["mri_sign"] for a in by_cat.get(owning, {}).get("accounts", [])

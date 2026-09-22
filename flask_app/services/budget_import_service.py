@@ -76,6 +76,30 @@ def category_accounts() -> Dict[str, List[str]]:
     return out
 
 
+def category_for_account(account) -> Optional[str]:
+    """The ONE category an account belongs to, or None if we do not carry it.
+
+    Jack, Sep 22 2026: "Auto-map should take the account number off the upload, go
+    to our global mapping, and match it. Account 4090 comes in ... the app looks up
+    to the global mapping, says 4090 is CAM, so it maps to CAM. Done." And: "We want
+    one source of mapping, and that's the account number. The category dropdown
+    should come out entirely and just display whatever the account dictates."
+
+    It CAN be one source: measured against `category_accounts()`, all 80 accounts
+    belong to exactly one category, so a category chosen separately could only ever
+    agree with the account or contradict it. Contradicting it was blocking, which is
+    the "two separate steps and they fight each other" he describes -- the analyst
+    picked the account, the category stayed on something else, and submit refused.
+    """
+    if account in (None, ""):
+        return None
+    acct = str(account).strip()
+    for cat, accts in category_accounts().items():
+        if acct in {str(a).strip() for a in accts}:
+            return cat
+    return None
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # What the analyst may map a line to
 # ──────────────────────────────────────────────────────────────────────────────
@@ -302,6 +326,12 @@ _ACCT_HEADER_RE = re.compile(
     r'|\b(acct|account|gl)\s*#')
 # 3+ digits, so a year, a month number or a floor does not read as an account.
 _ACCT_IN_LABEL_RE = re.compile(r'[-–—:]\s*(\d{3,6})\s*$')
+#: "4010 - Rental Income" -- the account LEADS the description. This is how our own
+#: chart of accounts writes a line and how every roll-up an analyst builds by hand
+#: comes out, and it was not matched at all: only a TRAILING account was. Jack's
+#: final file was 19 lines every one of which named its account in plain sight, and
+#: the app read none of them.
+_ACCT_LEADS_LABEL_RE = re.compile(r'^\s*(\d{3,6})\s*[-–—:]')
 _ACCT_VALUE_RE = re.compile(r'^\s*(\d{3,6})(\.0+)?\s*$')
 
 
@@ -339,14 +369,180 @@ def _find_account_column(body: List[list], date_row: int, label_col: int,
     return None
 
 
+def _looks_like_account_column(cells: List[str]) -> bool:
+    """Mostly numbers that are ACCOUNTS WE CARRY -- not merely 3-6 digit numbers.
+
+    Shape alone is not enough and assuming it was got this wrong immediately: a
+    roll-up column of annual totals (1200, 240, 120) matches "3-6 digits" perfectly,
+    so it was read as the account column and every line came back with an account
+    number of 1200. `_find_account_column` already says this in its own docstring --
+    "an account number and a monthly amount are both 3-6 digits" -- and answers it
+    with a header match, which a block boundary does not have.
+
+    So the test is membership of our chart of accounts. A budget may state the odd
+    account we do not carry (Evergreen's file has 7076 and 5019), hence 80% rather
+    than all; an amount column will essentially never clear it.
+    """
+    if not cells:
+        return False
+    known = {str(a).strip() for accts in category_accounts().values() for a in accts}
+    hits = 0
+    for v in cells:
+        t = str(v).strip()
+        if t.endswith(".0"):
+            t = t[:-2]
+        if re.fullmatch(r"\d{3,6}", t) and t in known:
+            hits += 1
+    return hits / len(cells) >= 0.8
+
+
+def _rebase_to_amount_block(body: List[list], date_row: int, label_col: int,
+                            period_cols: set, cells_of) -> Optional[int]:
+    """The label column must belong to the SAME block as the amounts.
+
+    Jack's v5 puts TWO INDEPENDENT TABLES side by side: a 19-row roll-up in columns
+    A-B, and the 50-row detail it was rolled up FROM in columns D-G, with the months
+    beside the detail. The detector finds the leftmost labels, so every line read its
+    name from the roll-up and its figures from the detail -- "5051 - Water" carrying
+    Property Management's 366,157.78. Nothing about that looks wrong on screen: the
+    labels are real, the amounts are real, and they belong to different lines.
+
+    A second block ANNOUNCES ITSELF with a second account column: a run of 3-6 digit
+    numbers between the detected labels and the first month. Without one there is no
+    evidence of a block boundary and the label column is left exactly where it was --
+    a sheet whose labels simply have a sub-description beside them must not be
+    re-based onto the sub-description.
+
+    Returns (label column, account column) to use instead, or (None, None) to keep
+    the detected ones. The account column comes back with it because finding the
+    block boundary IS finding the account column -- it was identified by its content
+    here, and handing it over beats discarding it and asking the header-based finder
+    to locate it again, which needs a header the sheet may not have.
+    """
+    if not period_cols:
+        return None, None
+    first_period = min(period_cols)
+    if label_col >= first_period - 1:
+        return None, None
+
+    def _mostly_text(cells, ref_count):
+        if not cells or len(cells) < 0.5 * ref_count:
+            return False
+        numeric = 0
+        for v in cells:
+            try:
+                float(str(v).replace(',', ''))
+                numeric += 1
+            except ValueError:
+                pass
+        return numeric / len(cells) <= 0.5
+
+    ref = len(cells_of(label_col)) or 1
+    boundary = next((c for c in range(label_col + 1, first_period)
+                     if c not in period_cols
+                     and _looks_like_account_column(cells_of(c))), None)
+    if boundary is None:
+        return None, None
+
+    # The labels for these amounts are the nearest text column to their LEFT, on the
+    # far side of that account column.
+    for col in range(first_period - 1, boundary, -1):
+        if col in period_cols:
+            continue
+        if _mostly_text(cells_of(col), ref):
+            return col, boundary
+    return None, None
+
+
+def _resolve_label_and_account(body: List[list], date_row: int, label_col: int,
+                               period_cols: set) -> tuple:
+    """(label column, account column, whether the label was shifted).
+
+    The detector finds ONE label column. A budget often has two: the account number
+    and the line's name, side by side. When the detected one is essentially all
+    numbers it is the ACCOUNT, and the description is the next column to its right
+    that carries text on the same rows.
+
+    Returns the label column unchanged when there is nothing to shift to, so a
+    sheet with a single text label column behaves exactly as before.
+    """
+    def _cells(col):
+        out = []
+        for r in body[date_row + 1:]:
+            if col < len(r) and r[col] is not None and str(r[col]).strip():
+                out.append(str(r[col]).strip())
+        return out
+
+    rebased, rebased_acct = _rebase_to_amount_block(
+        body, date_row, label_col, period_cols, _cells)
+    if rebased is not None:
+        # A header still wins if the sheet has one -- it is the stronger evidence, and
+        # `_find_account_column` confirms it on the content anyway.
+        return (rebased,
+                _find_account_column(body, date_row, rebased, period_cols)
+                or rebased_acct,
+                True)
+
+    label_cells = _cells(label_col)
+    if not label_cells:
+        return label_col, _find_account_column(body, date_row, label_col,
+                                               period_cols), False
+
+    def _numeric(v):
+        try:
+            float(str(v).replace(',', ''))
+            return True
+        except ValueError:
+            return False
+
+    numeric_share = sum(1 for v in label_cells if _numeric(v)) / len(label_cells)
+    if numeric_share < 0.9:
+        # An ordinary text label column: nothing to shift.
+        return label_col, _find_account_column(body, date_row, label_col,
+                                               period_cols), False
+
+    # It is a number column. Find the description beside it -- the nearest column
+    # to the right, outside the month columns, that is mostly TEXT and populated on
+    # a comparable number of rows. Comparable matters: a sparse note column three
+    # columns over is not this budget's line names.
+    width = max((len(r) for r in body[:date_row + 6]), default=0)
+    for col in range(label_col + 1, width):
+        if col in period_cols:
+            continue
+        cells = _cells(col)
+        if not cells or len(cells) < 0.5 * len(label_cells):
+            continue
+        if sum(1 for v in cells if _numeric(v)) / len(cells) > 0.5:
+            continue          # another number column, not a description
+        return col, label_col, True
+
+    # Numbers with no description anywhere: keep the original behaviour rather
+    # than inventing a label.
+    return label_col, _find_account_column(body, date_row, label_col,
+                                           period_cols), False
+
+
 def _account_from(row_vals: list, acct_col: Optional[int], label: str) -> Optional[str]:
-    """This row's stated account number: its own column first, then the label's tail."""
+    """This row's stated account number.
+
+    THE LABEL'S OWN ACCOUNT WINS over a separate column, and that ordering is the
+    fix for a silent mis-pairing. A worksheet often carries two independent blocks
+    side by side -- Jack's v5 has his rolled-up summary in columns A-B and the
+    partner's detail in D-H -- and an account column found in the RIGHT block was
+    being read onto the LEFT block's labels, row by row. "Property Management
+    Fees" came back as account 4090 (Estimated CAM) carrying the water-reimbursement
+    figures, with nothing on screen saying the two had been joined. A label that
+    names its own account cannot be mispaired with anything.
+    """
+    for pat in (_ACCT_LEADS_LABEL_RE, _ACCT_IN_LABEL_RE):
+        m = pat.search(label or '')
+        if m:
+            return m.group(1)
     if acct_col is not None and acct_col < len(row_vals):
         v = row_vals[acct_col]
         if v is not None and _ACCT_VALUE_RE.match(str(v).strip()):
             return _ACCT_VALUE_RE.match(str(v).strip()).group(1)
-    m = _ACCT_IN_LABEL_RE.search(label or '')
-    return m.group(1) if m else None
+    return None
 
 
 def parse_budget_workbook(file_bytes: bytes, filename: str) -> Dict[str, Any]:
@@ -395,8 +591,19 @@ def parse_budget_workbook(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     body = [list(r) for r in ws.iter_rows(values_only=True)]
     wb.close()
 
-    acct_col = _find_account_column(body, date_row, label_col,
-                                    {p["col"] for p in periods})
+    # THE LABEL COLUMN MAY BE THE ACCOUNT COLUMN, with the description beside it.
+    # The raw budget arrives that way: column A holds the account number, column B
+    # the partner's line name. The detector picks A as the label, so every line
+    # came through named "4010" or "1" with the description never read at all --
+    # Jack: "all I got was a list of account numbers with no descriptions", which
+    # is what made him build a helper column joining the two by hand.
+    #
+    # Detected on TYPE, not on whether the values look like accounts: column A here
+    # is 195 placeholder `1`s and 59 real accounts, so "most of them look like
+    # accounts" is false. A label column is text; a column that is essentially all
+    # numbers is not a label, whatever it holds.
+    label_col, acct_col, desc_shift = _resolve_label_and_account(
+        body, date_row, label_col, {p["col"] for p in periods})
 
     lines: List[Dict[str, Any]] = []
     for r in range(date_row + 1, len(body)):
@@ -434,6 +641,11 @@ def parse_budget_workbook(file_bytes: bytes, filename: str) -> Dict[str, Any]:
         "lines": lines,
         "stated_totals": _stated_totals(lines),
         "account_column": acct_col,
+        "label_column": label_col,
+        # Said out loud so the confirmation panel can report it: the analyst should
+        # be able to see that the app read the description column rather than
+        # wonder why the names look different from the file.
+        "description_column_used": desc_shift,
         "stated_account_count": sum(1 for l in lines if l.get("stated_account")),
     }
 

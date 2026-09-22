@@ -330,9 +330,18 @@ else:
     check('a prior mapping is labelled as such',
           'from_history' in vue2 and 'as mapped before' in vue2)
     check('a keyword match is still labelled a guess', 'keyword guess' in vue2)
-    check('the account column can offer the whole chart',
-          'showFullCoa' in vue2 and 'Whole chart of accounts' in vue2)
-    check('picking an account fills in its category', 'owning?.category' in vue2)
+    # The whole chart is offered UNCONDITIONALLY now. It used to sit behind a
+    # `showFullCoa` tick box because the category narrowed the account list; with the
+    # category derived FROM the account (Jack, Sep 22 2026) there is nothing left to
+    # narrow it, so a tick box would leave most accounts unreachable.
+    check('the whole chart is offered, not hidden behind a toggle',
+          'Whole chart of accounts' in vue2 and 'showFullCoa' not in vue2)
+    check('the account brings its own category', 'owning?.category' in vue2)
+    # BOTH DIRECTIONS: the category must be shown and must NOT be selectable. A check
+    # for "no dropdown" alone is satisfied by removing the column altogether, which
+    # would hide where the figure lands.
+    check('the category is displayed, read-only',
+          'categoryOf(' in vue2 and 'setCategory(' not in vue2)
     check('unnumbered rows can be hidden, with a count',
           'onlyNumbered' in vue2 and 'unnumberedCount' in vue2)
     check('the chart of accounts opens beside the work', 'toggleCoa' in vue2)

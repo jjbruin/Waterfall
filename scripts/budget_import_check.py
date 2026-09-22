@@ -136,12 +136,21 @@ def main() -> int:
     v0 = val.validate(parsed, {}, "P0000004", isbs)
     chk("mapping nothing BLOCKS", v0["can_import"] is False
         and v0["blocking"][0]["code"] == "no_lines")
+    # REVERSED Sep 22 2026 at Jack's request: "fifteen of their repair lines all
+    # belong in one account on our side. The app treats every line after the first as
+    # a conflict and won't let us submit. We want to keep every line visible so we can
+    # see what we mapped, and have them add together into the account behind the
+    # scenes." They combine and the combining is reported. Asserted here in the
+    # not-blocking direction; that they actually ADD, rather than one winning, is
+    # asserted in scripts/budget_import_mapping_check.py.
     dupe = dict(mapping)
     dupe[str(rows["CAM Recoveries"])] = {"account": "4010", "flip": True}
     vd = val.validate(parsed, dupe, "P0000004", isbs)
-    chk("the same account twice in a month BLOCKS",
-        any(b["code"] == "duplicate_account_month" for b in vd["blocking"]),
+    chk("two lines on one account do NOT block", vd["can_import"] is True,
         f"{vd['blocking']}")
+    chk("...and the combining is reported",
+        any(w["code"] == "lines_combined" for w in vd["warnings"]),
+        f"{vd['warnings']}")
     chk("an unmapped subtotal row does NOT block", v["can_import"] is True)
 
     print("\n5. Warnings against the deal's real history")
