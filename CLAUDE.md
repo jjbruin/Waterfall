@@ -2057,14 +2057,45 @@ columns are loaded from somebody else's spreadsheet, and the debt rows are ours.
   (partner's workbook → `isbs_budget_is_supplements` → Budget column) or `argus`
   (appraiser's download → COA overrides via `argus_service.update_coa_mapping` →
   Valuation column). Same job, same rules, same screen.
-- **Category first, then an account within it.** The categories are the ~27 rows the
-  comparison renders; a bare account number asks the analyst to translate from a
-  169-item list into a row they cannot see. The account is still required — the
-  supplement stores `vAccount` and NOI/FAD/DSCR/waterfall all read accounts — and
-  defaults to the one that deal used most in the last 12 months.
+- **THE ACCOUNT IS THE MAPPING; the category is derived from it** (Jack, Sep 22 2026,
+  reversing "category first"). `budget_import_service.category_for_account` is the one
+  lookup, the server ignores whatever category the screen sends, and the screen
+  displays it read-only. Measured before reversing: all 80 accounts in
+  `category_accounts()` belong to exactly one category, so a separately-chosen category
+  could only ever agree or contradict — and contradicting was BLOCKING, which is the
+  "two separate steps and they fight each other" he reported. An account on **no**
+  category still blocks; a rule that only ever corrects would accept anything. The
+  whole chart is offered unconditionally, since with nothing narrowing the list a tick
+  box would leave most accounts unreachable.
+- **MANY LINES MAY SHARE ONE ACCOUNT** — 23 of Evergreen's repair lines are 5060. They
+  combine, and the combining is reported with the lines named and the combined figure.
+  Simply not-blocking would be satisfied by dropping every line after the first.
+- **THE LABEL AND THE AMOUNTS MUST COME FROM THE SAME BLOCK.** A sheet can carry two
+  independent tables side by side (Evergreen v5: a roll-up in A–B, the detail it came
+  from in D–G with the months beside the detail); reading names from one and figures
+  from the other produced "5051 - Water" carrying Property Management's 366,157.78, and
+  nothing about it looks wrong. A second block announces itself with a second account
+  column — **found by membership of our chart of accounts, not by shape**, because a
+  roll-up of annual totals (1200, 240, 120) matches "3–6 digits" perfectly. Without
+  that evidence nothing is re-based, or a sheet whose labels merely have a
+  sub-description beside them would be read off the sub-description.
+- **The account may be its own column or lead the label** ("4010 - Rental Income"), and
+  the label's own account outranks a separate column. Before this the detector took the
+  account column AS the label and read nothing else, which is why Jack was building a
+  helper column joining the number and the description by hand.
+- **`commit()` READS THE COLUMN NAMES FROM THE TABLE.** Production's supplement tables
+  carry `vCode`; the MRI-created ISBS tables carry `vcode`. A double-quoted identifier
+  is case-SENSITIVE on PostgreSQL and case-INSENSITIVE on SQLite, so `WHERE "vcode"`
+  passed every local test and raised `UndefinedColumn` on every real import — **the
+  budget import had never once succeeded on production**, for any file, since it was
+  written. Quoting is not enough, and the docstring that claimed the columns "really
+  are `vcode`" was itself the mistake.
 - **The flip default is PER ACCOUNT, from the deal's own history**, never from the
   4xxx/5xxx prefix: 4030 Residential Vacancy and 4042 Loss to Lease are 4xxx stored
   POSITIVE, 5220 Other (Income) Expense is 5xxx stored NEGATIVE.
+- **Guardrail**: `scripts/budget_import_mapping_check.py` (25), on fixtures of all
+  three real file shapes plus the negative case for block re-basing; proved
+  non-vacuous against nine injected defects including both opposite failures.
 - **Unmapped lines never block.** Spreadsheets carry subtotals and skipping them is
   correct; `reconcile()` shows stated-vs-computed revenue, expense and NOI so the analyst
   can tell a skipped subtotal from a missed line. Anything announcing itself as a total
