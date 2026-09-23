@@ -410,6 +410,51 @@ async function transition(action: Action) {
 const isFrozen = computed(() => bundle.value?.source === 'frozen')
 const sourceNote = computed(() => bundle.value?.source_note || '')
 
+// --- freeze as sent ---
+// Deliberately NOT part of the review strip: freezing records that a quarter
+// was sent, approving records a decision somebody made, and the two are
+// separate acts. Putting the button among the approval controls would invite
+// the reader to treat it as one more step in that chain.
+const showFreezeConfirm = ref(false)
+const freezing = ref(false)
+const freezeError = ref<string | null>(null)
+
+const frozenAsSent = computed(() => bundle.value?.frozen_reason === 'as-sent')
+const frozenBy = computed(() => bundle.value?.frozen_by || bundle.value?.approved_by || '')
+const frozenOn = computed(() => {
+  const raw = bundle.value?.frozen_at || bundle.value?.approved_at
+  if (!raw) return ''
+  const m = String(raw).match(/^(\d{4})-(\d{2})-(\d{2})/)
+  return m ? `${parseInt(m[2])}/${parseInt(m[3])}/${m[1]}` : String(raw).slice(0, 10)
+})
+const frozenSourceLabel = computed(() => {
+  const man = bundle.value?.source_manifest
+  if (man?.file) {
+    const n = man.overlay_cells_applied
+    return `seeded from ${man.file}` + (n ? ` (${n} published cell${n === 1 ? '' : 's'})` : '')
+  }
+  return 'captured from the app at the moment of freezing'
+})
+
+async function doFreeze() {
+  freezing.value = true
+  freezeError.value = null
+  try {
+    const res = await api.post('/api/portfolio-snapshot/freeze', {
+      investor: selectedInvestor.value, quarter: selectedQuarter.value,
+    })
+    if (!res.data?.frozen) throw new Error(res.data?.error || 'Freeze did not complete')
+    showFreezeConfirm.value = false
+    await load()
+  } catch (e: any) {
+    // The quarter is STILL LIVE when this fires. Say so on screen rather than
+    // leaving a half-finished state that looks frozen.
+    freezeError.value = e?.response?.data?.error || e?.message || 'Freeze failed'
+  } finally {
+    freezing.value = false
+  }
+}
+
 const approvedAsOf = computed(() => {
   const raw = bundle.value?.approved_at
   if (!raw) return ''
@@ -530,20 +575,52 @@ const statusColor = computed(() => {
     <p v-if="saveError" class="banner err">{{ saveError }}</p>
     <p v-if="loadError" class="banner err">{{ loadError }}</p>
 
-    <!-- Frozen vs live. An approved report serves the payload frozen at
-         approval, so the reader must never be left guessing which they have. -->
+    <!-- Frozen vs live. The reader must never be left guessing which of the two
+         they are looking at, so this states it on every load, not just when
+         something is unusual. -->
     <div v-if="bundle && isFrozen" class="banner frozen">
-      <strong>Approved version{{ approvedAsOf ? ` — as of ${approvedAsOf}` : '' }}</strong>
+      <strong>
+        {{ frozenAsSent ? 'Frozen as sent' : 'Approved version' }}{{ frozenOn ? ` — ${frozenOn}` : '' }}
+      </strong>
       <span>
-        Frozen at approval and not recomputed, so it cannot shift if MRI data
-        changes.
-        <template v-if="bundle.approved_by">Approved by {{ bundle.approved_by }}.</template>
+        This is the stored copy of what was sent. It is not recomputed, so
+        later data changes cannot move it.
+        <template v-if="frozenBy">Frozen by {{ frozenBy }}.</template>
+        <template v-if="bundle.frozen_version"> Version {{ bundle.frozen_version }}.</template>
       </span>
+      <span class="banner-meta">{{ frozenSourceLabel }}</span>
       <span v-if="bundle.data_version" class="banner-meta">{{ bundle.data_version }}</span>
     </div>
     <div v-else-if="bundle" class="banner live">
       <strong>Live data</strong>
       <span>{{ sourceNote || 'In progress — computed from current data and will change as data changes.' }}</span>
+      <button class="btn-sm primary freeze-btn" :disabled="!canLoad || loading"
+              @click="showFreezeConfirm = true">Freeze as sent</button>
+    </div>
+
+    <!-- Confirmation. Freezing is not destructive but it IS a commitment: from
+         here on this quarter stops following the data. Worth one click. -->
+    <div v-if="showFreezeConfirm" class="freeze-confirm">
+      <strong>Freeze {{ selectedQuarter }} for {{ investorName }}?</strong>
+      <p>
+        This locks {{ selectedQuarter }} for {{ investorName }}. Later data
+        changes won't affect it. The stored copy keeps every Snapshot subtab,
+        every One Pager, and the roster in the order it was sent.
+      </p>
+      <p class="muted">
+        Typed fields — Net ROE, ITD, comments and footnotes — become read-only.
+        An admin can Re-freeze or Unfreeze it afterwards, with a reason.
+      </p>
+      <p v-if="freezeError" class="banner err">
+        {{ freezeError }} — {{ selectedQuarter }} is still live.
+      </p>
+      <div class="freeze-actions">
+        <button class="btn-sm primary" :disabled="freezing" @click="doFreeze">
+          {{ freezing ? 'Freezing…' : 'Freeze as sent' }}
+        </button>
+        <button class="btn-sm" :disabled="freezing"
+                @click="showFreezeConfirm = false; freezeError = null">Cancel</button>
+      </div>
     </div>
 
     <!-- Population diagnostics -->
@@ -779,6 +856,24 @@ h2 { font-size: 20px; margin: 0 0 12px 0; }
   border: 1px solid var(--color-border);
   color: var(--color-text-secondary);
 }
+/* The button sits in the live banner, so it is next to the words that say the
+   quarter is still live — the state it changes. */
+.freeze-btn { margin-left: auto; }
+
+.freeze-confirm {
+  margin: 8px 0 12px;
+  padding: 12px 14px;
+  border: 1px solid #f0c36d;
+  border-left: 4px solid #e0a800;
+  border-radius: 4px;
+  background: #fffbf0;
+  font-size: 12px;
+}
+.freeze-confirm strong { display: block; margin-bottom: 6px; font-size: 13px; }
+.freeze-confirm p { margin: 0 0 8px; line-height: 1.45; }
+.freeze-confirm p.muted { color: #6b7684; }
+.freeze-actions { display: flex; gap: 8px; }
+
 .banner-meta {
   margin-left: auto;
   font-size: 10px;
