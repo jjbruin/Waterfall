@@ -23,7 +23,7 @@ that enrichment. Do not add ``full_data=data`` here without measuring.
 from flask import Blueprint, request, jsonify
 import pandas as pd
 
-from flask_app.auth.routes import login_required
+from flask_app.auth.routes import login_required, role_required, roles_exactly
 from flask_app.serializers import safe_json
 from flask_app.services import data_service
 
@@ -310,6 +310,127 @@ def _scope_vcodes(resolved: dict) -> list:
            for e in items]
     out += [f["vcode"] for f in (resolved.get("flagged") or [])]
     return out
+
+
+# ── freeze as sent ────────────────────────────────────────────────────────
+#
+# DELIBERATELY SEPARATE FROM THE APPROVAL CHAIN. Freezing records that a
+# quarter was SENT; approving records a decision somebody made. Rolling them
+# together would have the button write an approval nobody gave, which is the
+# confusion this split exists to prevent — so nothing here touches
+# `portfolio_snapshot_documents` or its steps.
+
+@portfolio_snapshot_bp.route("/freeze-status", methods=["GET"])
+@login_required
+def freeze_status():
+    """Whether this investor+quarter is frozen, by whom, when, and from what."""
+    investor, quarter = _args()
+    err = _missing(investor, quarter)
+    if err:
+        return err
+    from flask_app.services import portfolio_snapshot_freeze as FZ
+    try:
+        fr = FZ.get_frozen(investor, quarter)
+        out = {
+            "investor_code": investor, "quarter": quarter,
+            "frozen": bool(fr),
+            "history": FZ.frozen_history(investor, quarter),
+        }
+        if fr:
+            out.update({
+                "frozen_by": fr.get("frozen_by") or fr.get("approved_by"),
+                "frozen_at": fr.get("frozen_at") or fr.get("approved_at"),
+                "frozen_reason": fr.get("frozen_reason"),
+                "version": fr.get("version"),
+                "data_version": fr.get("data_version"),
+                "source_manifest": fr.get("source_manifest"),
+                "roster": fr.get("roster") or [],
+                "one_pager_count": len(fr.get("one_pagers") or {}),
+            })
+        return jsonify(safe_json(out))
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@portfolio_snapshot_bp.route("/freeze", methods=["POST"])
+@login_required
+@role_required("analyst")
+def post_freeze():
+    """Freeze this investor+quarter as sent.
+
+    A FAILURE IS REPORTED, NEVER SWALLOWED. ``freeze_as_sent`` raises rather
+    than storing a partial report, so a 500 here means the quarter is still
+    live — which is what the caller needs to know.
+    """
+    body = request.get_json(silent=True) or {}
+    investor = (body.get("investor") or "").strip().upper()
+    quarter = (body.get("quarter") or "").strip()
+    err = _missing(investor, quarter)
+    if err:
+        return err
+    from flask_app.services import portfolio_snapshot_freeze as FZ
+    if FZ.is_frozen(investor, quarter):
+        return jsonify({
+            "error": f"{investor} {quarter} is already frozen. Use Re-freeze "
+                     f"to replace it, which keeps the previous version."}), 409
+    user = _current_user()
+    try:
+        receipt = FZ.freeze_as_sent(
+            investor, quarter, user.get("username") or "unknown")
+    except Exception as exc:
+        return jsonify({
+            "error": f"Freeze failed, so {investor} {quarter} is still live: "
+                     f"{exc}", "frozen": False}), 500
+    return jsonify(safe_json({**receipt, "frozen": True}))
+
+
+@portfolio_snapshot_bp.route("/refreeze", methods=["POST"])
+@login_required
+@roles_exactly("admin")
+def post_refreeze():
+    """Replace a frozen quarter. Admin only, reason required, history kept."""
+    body = request.get_json(silent=True) or {}
+    investor = (body.get("investor") or "").strip().upper()
+    quarter = (body.get("quarter") or "").strip()
+    reason = (body.get("reason") or "").strip()
+    err = _missing(investor, quarter)
+    if err:
+        return err
+    from flask_app.services import portfolio_snapshot_freeze as FZ
+    user = _current_user()
+    try:
+        receipt = FZ.refreeze(investor, quarter,
+                              user.get("username") or "unknown", reason)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": f"Re-freeze failed, the stored copy is "
+                                 f"unchanged: {exc}"}), 500
+    return jsonify(safe_json({**receipt, "frozen": True}))
+
+
+@portfolio_snapshot_bp.route("/unfreeze", methods=["POST"])
+@login_required
+@roles_exactly("admin")
+def post_unfreeze():
+    """Return a quarter to live. Admin only, reason required, copy archived."""
+    body = request.get_json(silent=True) or {}
+    investor = (body.get("investor") or "").strip().upper()
+    quarter = (body.get("quarter") or "").strip()
+    reason = (body.get("reason") or "").strip()
+    err = _missing(investor, quarter)
+    if err:
+        return err
+    from flask_app.services import portfolio_snapshot_freeze as FZ
+    user = _current_user()
+    try:
+        receipt = FZ.unfreeze(investor, quarter,
+                              user.get("username") or "unknown", reason)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": f"Unfreeze failed: {exc}"}), 500
+    return jsonify(safe_json({**receipt, "frozen": False}))
 
 
 # ── editable elements ─────────────────────────────────────────────────────
