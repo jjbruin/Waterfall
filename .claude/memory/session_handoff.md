@@ -1,3 +1,155 @@
+# Session Handoff — through Sep 23 2026 (v523 live)
+
+## Sep 22–23 2026 — THE BUDGET IMPORT HAD NEVER WORKED ON PRODUCTION
+
+**`v523` = `07272c6`.** Shipped and verified on production. Full entry in
+`CLAUDE.md`; this is what a reader needs to carry forward.
+
+Jack (asset management) sent feedback on the Evergreen Plaza budget upload with
+**three attached spreadsheets — his versions 1, 5 and 8 of the same budget**. He
+wanted to "take our Excel version of the budget and upload it directly with no
+manipulation". Four asks, and a crash report at the end.
+
+### The crash report was the whole story, and it reframed the other three
+
+```
+(psycopg2.errors.UndefinedColumn) column "vcode" does not exist
+HINT: Perhaps you meant to reference the column "isbs_budget_is_supplements.vCode".
+```
+
+`commit()` quoted `"vcode"`. Production's supplement table carries **`vCode`**. A
+double-quoted identifier is case-**sensitive** on PostgreSQL and case-**insensitive**
+on SQLite — so it passed every local test and raised on every real import: the
+DELETE raises, the transaction rolls back, and the analyst sees an empty Budget
+column after doing all the mapping work.
+
+**So the budget import had never once succeeded on production, for any file, since
+it was written.** All eight of Jack's spreadsheet versions were doomed at the last
+step whatever their layout. No spreadsheet could have fixed it. That is the thing
+to lead with if this comes up again — the layout problems below were real, but they
+were not why his imports failed.
+
+The column names are now READ FROM THE TABLE (`_supplement_columns`, via
+`inspect()`). **Quoting is not enough**, and the old docstring — which asserted the
+columns "really are `vcode`" — was itself the mistake: true of the table pandas
+creates locally, false of the one production has. Corrected rather than left as a
+passing claim. This is the `v435` / `v496` family: PostgreSQL-only, locally
+unreproducible.
+
+**Verified on production after deploy**, because the premise is the fix:
+```
+ACTUAL  : ['vCode','dtEntry','vSource','vAccount','mAmount','vInput','statement _id']
+RESOLVED: {'vcode': 'vCode', ...}
+```
+
+### The 324 rows that would have contradicted the claim
+
+The table already held 324 rows, which reads as "so it HAS worked". Checked rather
+than assumed: they are **P0000019**, and their `vInput` holds bare account numbers
+(`5064`, `4092`, `5190`) — not the `"label [username]"` this importer writes. They
+came from a **CSV upload**, which is also why the table carries `vCode` and a column
+named `statement _id` with a space in it. Nothing in there came through this path.
+
+**Flagged, not changed:** a screen import for P0000019 would REPLACE those rows for
+any overlapping month, since commit is scoped to (vcode, the periods in this file).
+That is the designed behaviour and it is correct, but nobody would expect it.
+
+### It only ever read column A
+
+The detector finds ONE label column and took the **account** column as the label —
+which is exactly why Jack had built a helper column joining the number and the
+description by hand. Now: a label column that is essentially all numbers is
+recognised as the account with the description taken from beside it; an account
+**leading** the label (`"4010 - Rental Income"`, his v8) is read; and the label's own
+account outranks a separate column.
+
+### The label and the amounts must come from the same block
+
+His **v5 puts two independent tables side by side** — a 19-row roll-up in A–B, and
+the 50-row detail it was rolled up FROM in D–G with the months beside the *detail*.
+Every line read its NAME from one and its FIGURES from the other: **"5051 - Water"
+carrying Property Management's 366,157.78.** Nothing about that looks wrong. The
+labels are real, the amounts are real, and they belong to different lines.
+
+A second block **announces itself with a second account column**. Without that
+evidence nothing is re-based — a sheet whose labels merely have a sub-description
+beside them must not be read off the sub-description, and that negative case is in
+the guardrail.
+
+**Finding that column by SHAPE got it wrong immediately**, and this is the lesson
+worth keeping: a roll-up column of annual totals (1200, 240, 120) matches
+"3–6 digits" perfectly, so it was read as the account column and every line came
+back with account `1200`. `_find_account_column`'s own docstring had already said
+this — *"an account number and a monthly amount are both 3-6 digits"* — and answers
+it with a header match, which a block boundary does not have. The test is now
+**membership of our chart of accounts**.
+
+### The account decides the category; the dropdown is gone
+
+Jack: *"right now it's two separate steps and they fight each other… the category
+dropdown should come out entirely and just display whatever the account dictates."*
+
+**Measured before reversing it:** all 80 accounts in `category_accounts()` belong to
+exactly one category, so a separately-chosen category could only ever agree with the
+account or contradict it — and contradicting was **blocking**. The server derives it
+and IGNORES what the screen sends; the screen displays it read-only. An account on
+**no** category still blocks, because a rule that only ever corrects would accept
+anything. The whole chart is offered unconditionally now: with nothing narrowing the
+list, a tick box would leave most accounts unreachable.
+
+### Many lines may share one account
+
+23 of Evergreen's repair lines are 5060. They combine, and the combining is
+**reported** with the lines named and the combined figure. Simply not-blocking would
+be satisfied by dropping every line after the first, which is worse than the refusal
+it replaced — both directions are asserted.
+
+### What it does on his real files
+
+| File | Result |
+|---|---|
+| Original | 231 lines, 56 auto-mapped, 23 repair lines rolling into 5060 |
+| v5 | **19 mis-paired lines → 52 correct ones** |
+| v8 | 19 lines, all auto-mapped |
+
+All three import with **zero blocking errors**. Two accounts are genuinely not on
+our comparison (**7076** Tenant Improvements, **5019** Leasing Commissions) and are
+NAMED rather than dropped — worth telling Jack. And his own Total column agrees with
+the sum of its months on **228 of 229 rows** (the exception is the DSCR row, a
+ratio), so the months ARE the total and no separate total column needs importing.
+
+### Three method notes
+
+1. **A verification of mine was vacuous.** I grepped the deployed bundle for the new
+   strings and got "gone" for every one — from a **551-byte SPA shell that
+   references no chunk**. `index.html` names only the ENTRY bundle; the lazy chunk
+   name lives inside it. Resolved properly (`ValuationsView-rlSXpPnk.js`, 95,086
+   bytes) the new strings are present and the old dropdown's are gone. Checking for
+   a *server-side* string in a Vue chunk proves nothing either way, in either
+   direction.
+2. **`v522` was live and unrecorded** — found by pre-flight P1 while deploying
+   v523. It is `e4bb231`, the traceability-tools merge. Both are recorded now. The
+   history is the only thing mapping a running revision to a commit, so a missing
+   entry is the same failure as an untagged image.
+3. **Guardrail `budget_import_mapping_check.py` (25)**, on fixtures of all three
+   real shapes plus the negative case; 25/25 in the container. Proved non-vacuous
+   against **nine** injected defects including both opposite failures (combining
+   blocked again; only the first line of a shared account written). Two older
+   guardrails asserted the behaviour Jack asked to change and were reversed with the
+   reason recorded — `mapping_draft_check` now asserts the category is displayed
+   AND not selectable, since "no dropdown" alone is satisfied by deleting the column.
+
+### Still open from this
+
+- **`budget_import_check` has one PRE-EXISTING failure** — "the account list is the
+  deal's own recent accounts" — which fails on local data (no 4010 history for the
+  fixture's vcode) and fails **identically on the unmodified tree**. Not introduced
+  here, not fixed here. `open_items.md` §11.1.
+- **Jack has not re-run his import yet.** The fix is live and measured against his
+  files offline; nobody has driven it through the screen on production.
+
+---
+
 # Session Handoff — through Sep 21 2026 (v518 live)
 
 ## Sep 20–21 2026 — THE VALIDATION SCREEN BECAME USABLE, and CAM got checked

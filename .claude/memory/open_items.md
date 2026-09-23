@@ -701,6 +701,95 @@ A statement with no lines AND a non-empty `unmapped` list should say so on its f
 sentence would have turned a diagnosis into a glance. Owner: unassigned.
 
 
+## 11. Budget import, and a vacant suite reported as un-extracted (Sep 22-23 2026)
+
+Shipped in `v523`. What is left, with an owner on each.
+
+### 11.1 `budget_import_check` has ONE pre-existing failure — unassigned
+
+`scripts/budget_import_check.py` fails on **"the account list is the deal's own
+recent accounts, not the whole COA"** (`got 0`), then raises `StopIteration` at
+line 159 looking for account 4010 in the choices.
+
+**PROVED PRE-EXISTING**, not introduced by `v523`: `git stash` the working tree and
+it fails identically on the unmodified code. It is a local-data artefact — the
+fixture's vcode has no 4010 history in `waterfall.db` — so `account_choices()`
+correctly returns nothing and the check has nothing to assert on.
+
+Two honest options: point the fixture at a vcode that does have history, or have
+the check SKIP with a reason when the deal has no actuals (the pattern
+`treasury_pending_check` uses). **Do not "fix" it by loosening the assertion** —
+the rule it defends is real and was measured (Asbury Commons uses 23 accounts of
+169).
+
+### 11.2 Jack has not re-run his import — NEEDS HIM
+
+The fix is live and measured against all three of his real files offline (all
+import with zero blocking errors). **Nobody has driven it through the screen on
+production.** Until he does, "it works" rests on offline parsing plus a guardrail,
+not on the round trip that failed before.
+
+Tell him he no longer needs the helper column joining the account number and the
+description — that was a workaround for a defect, not a requirement.
+
+### 11.3 A screen import for P0000019 would REPLACE its CSV-loaded rows — WATCH
+
+`isbs_budget_is_supplements` holds **324 rows for P0000019** covering 2026-01-31 to
+2026-12-31, loaded by **CSV** (their `vInput` is a bare account number, not the
+`"label [username]"` this importer writes; the table also carries `vCode` and a
+column literally named `statement _id`, both CSV-creation fingerprints).
+
+`commit()` replaces by (vcode, the periods in THIS file), so importing a budget for
+P0000019 through the screen removes those rows for any overlapping month. **That is
+the designed scope and it is correct** — a budget is re-imported until final — but
+nobody would expect a screen import to clear rows that arrived by CSV. Owner: Jim,
+if P0000019's budget is ever loaded through the screen.
+
+### 11.4 A VACANT SUITE IS REPORTED AS "not yet extracted" — CODE GAP
+
+**New business analyst, Sep 23 2026 via Jim:** *"Is there a reason why once I get to
+analyst review, it shows 7 tenants with data not yet extracted?"*
+
+**Measured on production. Nothing is missing.** All seven are VACANT SUITES:
+
+| Review | Suite | is_vacant | tenant_status | docs | annual_rent |
+|---|---|---|---|---|---|
+| 2 Windsor Square | CELLTWR, N605, P705, +2 | true | active | 0 | 0.00 |
+| 3 Market at Poplar | 930-06, 920-02 | true | active | 0 | 0.00 |
+
+A vacant suite has no tenant and no lease, so there is nothing to extract and
+**no amount of uploading will ever clear those rows.** `validate_against_leases`
+emits `'Lease not yet extracted'` from a bare `elif extraction_status != 'extracted'`
+(`lease_review_service.py:4147`) with no check for whether there is anything TO
+extract.
+
+**This is the `v501` / `v514` family, third occurrence:** rows that are not tenants
+reaching a screen that assumes they are. `v501` taught the roster and the headline
+totals; `v514` taught the expiration histogram; this branch was never updated.
+
+**The gate is `is_vacant`, NOT `tenant_status`** — and the distinction is the one
+`v497` drew deliberately. `is_vacant` = the suite is empty per the rent roll;
+`tenant_status='vacated'` = we hold a lease for a tenant who has left. All seven are
+`tenant_status='active'` and correctly so — they are current rent-roll rows — so a
+status filter would not catch them. It is set correctly on all seven, so the fix is
+a clean gate, not a name match.
+
+A vacant suite should either be silent here or say **"vacant suite — no lease to
+extract"**, which is a different statement from "not yet extracted". Reporting
+nothing at all is the weaker choice: the analyst is entitled to see the suite was
+considered.
+
+**NOT YET BUILT — awaiting Jim's go.** Owner: Jim to approve, then code.
+
+**Also confirmed by the same read, and it is good news:** the three Market at Poplar
+debris rows (the building banner and two subtotal rows) are `tenant_status =
+'disregarded'` and are correctly excluded from the analyst's seven. `v501`'s reading
+is holding.
+
+**Worth knowing for any future query:** `lease_tenants.is_vacant` is a real
+**BOOLEAN on PostgreSQL** and an integer locally, so `COALESCE(is_vacant, -1)`
+raises `DatatypeMismatch` on production and works fine in local dev. Cast it.
+
 ## 9. Lease review and the GL / IA query tool (Sep 19 2026)
 
 Shipped in `v503` and `v504`. What is left, with an owner on each.
