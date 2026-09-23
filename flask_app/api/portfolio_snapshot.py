@@ -30,6 +30,59 @@ from flask_app.services import data_service
 portfolio_snapshot_bp = Blueprint("portfolio_snapshot", __name__)
 
 
+#: Writes that stay legal on a frozen quarter, named one by one. Everything
+#: else that writes is refused.
+#:
+#: DENY BY DEFAULT, and that direction is the point. An allowlist of endpoints
+#: that may NOT write would have to be extended every time somebody adds an
+#: editable field, and the day it is forgotten a sent quarter becomes editable
+#: with nothing saying so. This way a new element endpoint is locked the moment
+#: it exists and has to be named here to be let through.
+_FROZEN_WRITE_ALLOWED = frozenset({
+    "portfolio_snapshot.post_freeze",      # the button itself
+    "portfolio_snapshot.post_refreeze",    # an admin correction
+    "portfolio_snapshot.post_unfreeze",    # returning it to live
+    "portfolio_snapshot.submit",           # the review chain is a separate
+    "portfolio_snapshot.approve",          # authority and is not a typed
+    "portfolio_snapshot.return_to_draft",  # field; freezing does not gate it
+    "portfolio_snapshot.reopen",
+})
+
+
+@portfolio_snapshot_bp.before_request
+def _lock_frozen_quarters():
+    """Refuse edits to a quarter that has been frozen.
+
+    A frozen quarter is the record of what an investor was sent, so the typed
+    fields on it — Net ROE, ITD, comments, footnotes — are no longer editable.
+    """
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return None
+    if (request.endpoint or "") in _FROZEN_WRITE_ALLOWED:
+        return None
+    body = request.get_json(silent=True) or {}
+    investor = (body.get("investor") or request.args.get("investor") or "").strip().upper()
+    quarter = (body.get("quarter") or request.args.get("quarter") or "").strip()
+    if not investor or not quarter:
+        return None
+    try:
+        from flask_app.services.portfolio_snapshot_freeze import get_frozen
+        fr = get_frozen(investor, quarter)
+    except Exception:
+        return None                       # never block a write on a lookup fault
+    if not fr:
+        return None
+    who = fr.get("frozen_by") or fr.get("approved_by") or "unknown"
+    when = str(fr.get("frozen_at") or fr.get("approved_at") or "")[:10]
+    return jsonify({
+        "error": f"{investor} {quarter} was frozen as sent by {who}"
+                 + (f" on {when}" if when else "")
+                 + ". Frozen quarters are read-only. An admin can Re-freeze or "
+                   "Unfreeze it if it genuinely has to change.",
+        "frozen": True,
+    }), 409
+
+
 def _get_data():
     return data_service.get_data()
 
@@ -221,14 +274,14 @@ def bundle():
 
     review = _review_payload(investor, quarter)
 
-    # An APPROVED report serves its frozen payload, not a fresh computation:
-    # live MRI data moves (45th & Main went 100% -> 90% on 2026-08-24) and an
-    # approved report must not move with it. Anything not yet approved computes
-    # live so work in progress reflects current data. `source` says which.
+    # A FROZEN quarter serves its stored copy, not a fresh computation: live
+    # MRI data moves (45th & Main went 100% -> 90% on 2026-08-24) and a report
+    # that has been sent must not move with it. Only the current, unsent
+    # quarter computes live. `source` says which.
     #
-    # NOTE this is the deliberate divergence from the One Pager, which defaults
-    # to live and puts the frozen copy behind a manual toggle. See the module
-    # docstring in portfolio_snapshot_freeze.
+    # The One Pager now follows the SAME rule rather than defaulting to live —
+    # see financials.one_pager. The two halves of one report diverging on which
+    # copy they serve was the older behaviour and is gone.
     try:
         from flask_app.services.portfolio_snapshot_freeze import load_report
         report = load_report(investor, quarter, status=review.get("status"))
@@ -245,6 +298,15 @@ def bundle():
         "approved_by": report.get("approved_by"),
         "approved_at": report.get("approved_at"),
         "data_version": report.get("data_version"),
+        # What the Frozen / Live indicator renders, and what locks the inputs.
+        "frozen": report.get("source") == "frozen",
+        "read_only": bool(report.get("read_only")),
+        "frozen_by": report.get("frozen_by"),
+        "frozen_at": report.get("frozen_at"),
+        "frozen_reason": report.get("frozen_reason"),
+        "frozen_version": report.get("version"),
+        "source_manifest": report.get("source_manifest"),
+        "roster": report.get("roster"),
         "frozen_elements": (report.get("elements")
                             if report.get("source") == "frozen" else None),
         "review": review,
