@@ -253,6 +253,94 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v523` = `07272c6` (THE BUDGET IMPORT HAD NEVER ONCE SUCCEEDED ON
+    PRODUCTION, which reframes the eight spreadsheet versions Jack built trying
+    to get one through. `commit()` quoted `"vcode"`; production's supplement
+    table carries `vCode`. A double-quoted identifier is case-SENSITIVE on
+    PostgreSQL and case-INSENSITIVE on SQLite, so it passed every local test and
+    raised `UndefinedColumn` on every real import -- the DELETE raises, the
+    transaction rolls back, and the analyst sees an empty Budget column after
+    doing the work. NO SPREADSHEET COULD HAVE FIXED IT. The column names are
+    READ FROM THE TABLE now; the old docstring asserted the columns "really are
+    `vcode`", true of the table pandas creates and false of the one production
+    has, and that claim was itself the mistake.
+    VERIFIED ON PRODUCTION AFTER DEPLOY: the table really is
+    ['vCode','dtEntry','vSource','vAccount','mAmount','vInput','statement _id']
+    and the resolver maps vcode -> vCode. The 324 rows already in it are
+    P0000019 with ACCOUNT NUMBERS in `vInput`, not the `label [username]` this
+    importer writes -- so they came from a CSV upload, which is also why the
+    table carries `vCode` and a column named with a space. Nothing in there came
+    through this path, which is the evidence for the claim above.
+    IT ONLY EVER READ COLUMN A. The detector finds one label column and took the
+    ACCOUNT column as the label, which is why Jack was hand-building a helper
+    column joining the number and the description. A label column that is
+    essentially all numbers is now recognised as the account with the
+    description taken from beside it; an account LEADING the label ("4010 -
+    Rental Income") is read; and the label's own account outranks a separate
+    column.
+    THE LABEL AND THE AMOUNTS MUST COME FROM THE SAME BLOCK. His v5 puts two
+    independent tables side by side -- a 19-row roll-up in A-B, the 50-row
+    detail it came from in D-G with the months beside the DETAIL. Every line
+    read its NAME from one and its FIGURES from the other: "5051 - Water"
+    carrying Property Management's 366,157.78. Nothing about that looks wrong;
+    the labels are real and the amounts are real. A second block announces
+    itself with a second account column, and without that evidence nothing is
+    re-based, or a sheet whose labels merely have a sub-description beside them
+    would be read off the sub-description. SHAPE ALONE IS NOT ENOUGH TO FIND
+    THAT COLUMN and assuming it was got this wrong immediately: a roll-up of
+    annual totals (1200, 240, 120) matches "3-6 digits" perfectly and was read
+    as the account column, so every line came back with account 1200. The test
+    is membership of our chart of accounts. `_find_account_column`'s own
+    docstring had already said this -- "an account number and a monthly amount
+    are both 3-6 digits" -- and answers it with a header match, which a block
+    boundary does not have.
+    THE ACCOUNT DECIDES THE CATEGORY; the dropdown is gone (Jack: "right now
+    it's two separate steps and they fight each other... the category dropdown
+    should come out entirely and just display whatever the account dictates").
+    Measured before reversing: all 80 accounts belong to exactly one category,
+    so one source IS possible. The server derives it and IGNORES what the screen
+    sends. An account on NO category still blocks -- a rule that only ever
+    corrects would accept anything. The whole chart is offered unconditionally,
+    since with nothing narrowing the list a tick box would leave most accounts
+    unreachable.
+    MANY LINES MAY SHARE ONE ACCOUNT -- 23 of Evergreen's repair lines are 5060.
+    They combine, and the combining is REPORTED with the lines named and the
+    combined figure; merely not-blocking would be satisfied by dropping every
+    line after the first.
+    MEASURED ON JACK'S THREE REAL FILES: all three import with ZERO blocking
+    errors. v5 goes from 19 mis-paired lines to 52 correct ones. Two accounts
+    are genuinely not on our comparison (7076 Tenant Improvements, 5019 Leasing
+    Commissions) and are NAMED rather than dropped. The file's own Total column
+    agrees with the sum of its months on 228 of 229 rows -- the exception is the
+    DSCR row, a ratio -- so the months ARE the total and no separate total
+    column is imported.
+    Guardrail `budget_import_mapping_check.py` (25), on fixtures of all three
+    real shapes plus the NEGATIVE case for re-basing; 25/25 in the container.
+    Proved non-vacuous against NINE injected defects, including both opposite
+    failures: combining blocked again, and only the first line of a shared
+    account written. `budget_import_check`'s duplicate assertion is reversed
+    with the reason recorded; `mapping_draft_check` now asserts the category is
+    displayed AND not selectable, since "no dropdown" alone is satisfied by
+    deleting the column.
+    A VERIFICATION OF MINE WAS VACUOUS FIRST and is worth recording: I grepped
+    the deployed bundle for the new strings and got "gone" for all of them --
+    from a 551-byte SPA shell that references no chunk. index.html names only
+    the ENTRY bundle; the lazy chunk name lives inside it. Resolved properly
+    (`ValuationsView-rlSXpPnk.js`, 95,086 bytes) the new strings are present and
+    the old dropdown's are gone. Two server-side strings I also checked prove
+    nothing from a Vue chunk either way.
+    PRE-EXISTING, NOT FIXED: `budget_import_check`'s "the account list is the
+    deal's own recent accounts" fails on local data (no 4010 history for the
+    fixture's vcode) and fails identically on the unmodified tree.
+    FLAGGED: the 324 P0000019 rows are CSV-loaded, and a screen import for that
+    deal would REPLACE them for any overlapping month. That is the designed
+    scope and is correct, but nobody would expect it.)
+  - `v522` = `e4bb231` (traceability tools -- field dictionary, dependency map,
+    and two read-only assistant tools (`lookup_field`, `impact_of`). RECORDED
+    AFTER THE FACT on Sep 23 2026: it was live and absent from this history,
+    found by pre-flight P1 while deploying v523. The history is the only thing
+    that maps a running revision to its source, so a missing entry is the same
+    failure as an untagged image.)
   - `v521` = `c370509` (AN UNDATED AMENDMENT NEEDS ITS DOCUMENT'S DATE, and most
     had none. `v520` fixed Benjamin Moore and BooYa's and left Chapultepec still
     reporting the original lease's $51,999.96 against the amendment's $53,331.96
