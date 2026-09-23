@@ -745,50 +745,56 @@ the designed scope and it is correct** — a budget is re-imported until final �
 nobody would expect a screen import to clear rows that arrived by CSV. Owner: Jim,
 if P0000019's budget is ever loaded through the screen.
 
-### 11.4 A VACANT SUITE IS REPORTED AS "not yet extracted" — CODE GAP
+### 11.4 "7 tenants with data not yet extracted" — NOT YET IDENTIFIED
 
 **New business analyst, Sep 23 2026 via Jim:** *"Is there a reason why once I get to
 analyst review, it shows 7 tenants with data not yet extracted?"*
 
-**Measured on production. Nothing is missing.** All seven are VACANT SUITES:
+**A FIRST ANSWER WAS GIVEN AND WAS WRONG. Recorded because the mistake is the
+lesson.** Seven ACTIVE tenants do carry `extraction_status != 'extracted'`, and all
+seven are vacant suites with no documents — so the count matched and I reported it as
+the cause. **It is not**: `occupiedTenants` in the Vue filters `!t.is_vacant`, and
+`validate_against_leases` selects `WHERE is_vacant = false`, so those rows reach
+neither the extraction KPI nor the validation. **Matching on the number and stopping
+is the error** — the same shape as counting a field that does not exist. Check that
+the rows you found actually reach the screen being described.
 
-| Review | Suite | is_vacant | tenant_status | docs | annual_rent |
-|---|---|---|---|---|---|
-| 2 Windsor Square | CELLTWR, N605, P705, +2 | true | active | 0 | 0.00 |
-| 3 Market at Poplar | 930-06, 920-02 | true | active | 0 | 0.00 |
+**What IS true, measured on production before an `az containerapp exec` rate limit
+cut the session short:**
 
-A vacant suite has no tenant and no lease, so there is nothing to extract and
-**no amount of uploading will ever clear those rows.** `validate_against_leases`
-emits `'Lease not yet extracted'` from a bare `elif extraction_status != 'extracted'`
-(`lease_review_service.py:4147`) with no check for whether there is anything TO
-extract.
+| Fact | Value |
+|---|---|
+| Reviews that exist | TWO — Windsor Square (id 2), Market at Poplar (id 3), both at `validation` |
+| Extraction KPI, review 2 | **45 / 45 — zero not extracted** |
+| Extraction KPI, review 3 | **33 / 33 — zero not extracted** |
+| `lease_validation` rows with status `pending` | **0** |
+| Unread documents, review 2 | 10 docs, 4 term-bearing, **6 distinct tenants** |
+| Unread documents, review 3 | 2 docs, both term-bearing, **2 distinct tenants** |
 
-**This is the `v501` / `v514` family, third occurrence:** rows that are not tenants
-reaching a screen that assumes they are. `v501` taught the roster and the headline
-totals; `v514` taught the expiration histogram; this branch was never updated.
+So the screen the analyst describes does not derive its number from tenant
+`extraction_status` — that reads 0 on both reviews.
 
-**The gate is `is_vacant`, NOT `tenant_status`** — and the distinction is the one
-`v497` drew deliberately. `is_vacant` = the suite is empty per the rent roll;
-`tenant_status='vacated'` = we hold a lease for a tenant who has left. All seven are
-`tenant_status='active'` and correctly so — they are current rent-roll rows — so a
-status filter would not catch them. It is set correctly on all seven, so the fix is
-a clean gate, not a name match.
+**The best remaining candidate is the UNREAD DOCUMENTS box** (`v519`), which says "N
+document(s) in this review were never read". Windsor Square has 10 across 6 tenants,
+and those ARE genuinely un-extracted data: Outback's Letter Agreement and Option
+Letter, Sam's Club's CenturyLink document (`error`), an unassigned abstracts PDF, plus
+COIs for Green Zone, O'Reilly and Velva Nail. **Six, not seven** — which is why this
+is a candidate and not an answer.
 
-A vacant suite should either be silent here or say **"vacant suite — no lease to
-extract"**, which is a different statement from "not yet extracted". Reporting
-nothing at all is the weaker choice: the analyst is entitled to see the suite was
-considered.
+**NOTHING SHOULD BE BUILT UNTIL THE SCREEN IS IDENTIFIED.** The vacant-suite gate I
+proposed would have changed nothing the analyst sees. Jim to ask: which property, and
+which panel is the number on?
 
-**NOT YET BUILT — awaiting Jim's go.** Owner: Jim to approve, then code.
+**Still worth knowing regardless:** `lease_tenants.is_vacant` is a real **BOOLEAN on
+PostgreSQL** and an integer locally, so `COALESCE(is_vacant, -1)` raises
+`DatatypeMismatch` on production and works fine in dev. Cast it.
 
-**Also confirmed by the same read, and it is good news:** the three Market at Poplar
-debris rows (the building banner and two subtotal rows) are `tenant_status =
-'disregarded'` and are correctly excluded from the analyst's seven. `v501`'s reading
-is holding.
+**And confirmed good:** the three Market at Poplar debris rows are
+`tenant_status='disregarded'` and correctly excluded — `v501`'s reading is holding.
 
-**Worth knowing for any future query:** `lease_tenants.is_vacant` is a real
-**BOOLEAN on PostgreSQL** and an integer locally, so `COALESCE(is_vacant, -1)`
-raises `DatatypeMismatch` on production and works fine in local dev. Cast it.
+**Method note:** `az containerapp exec` rate-limits with `retry-after: 600` after
+repeated calls. Batch production questions into ONE script; a sequence of small probes
+costs a ten-minute lockout, which is what ended this investigation early.
 
 ## 9. Lease review and the GL / IA query tool (Sep 19 2026)
 
