@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Callable, Optional
 
 import pandas as pd
@@ -56,6 +57,26 @@ SOURCE_FROZEN = "frozen"
 SOURCE_LIVE = "live"
 
 _TABLE = "portfolio_snapshot_frozen"
+_HISTORY = "portfolio_snapshot_frozen_history"
+
+#: Why a payload was stored. A freeze is NOT an approval and must never be
+#: recorded as one — the two are separate acts with separate authority.
+REASON_AS_SENT = "as-sent"          # the "Freeze as sent" button
+REASON_AS_APPROVED = "as-approved"  # the legacy CEO-approval freeze
+REASON_REFREEZE = "re-freeze"       # an admin correction
+
+#: Columns added after the table first shipped. Applied one at a time because a
+#: failed ALTER on one must not abandon the rest, and because SQLite has no
+#: ``ADD COLUMN IF NOT EXISTS``.
+_ADDED_COLUMNS = (
+    ("frozen_by", "TEXT"),
+    ("frozen_at", "TIMESTAMP"),
+    ("frozen_reason", "TEXT"),
+    ("source_manifest", "TEXT"),   # JSON: published source, sha256, pages
+    ("roster", "TEXT"),            # JSON: the One Pager roster, in printed order
+    ("one_pagers", "TEXT"),        # JSON: {vcode: payload} as published
+    ("version", "INTEGER"),
+)
 
 
 def _engine():
@@ -71,7 +92,15 @@ def _is_postgres() -> bool:
 
 
 def _ensure_table() -> None:
-    """Create the frozen-payload table if absent. Idempotent."""
+    """Create the frozen-payload tables if absent, and add later columns.
+
+    PURELY ADDITIVE. The UNIQUE(investor_code, quarter) on the live table is
+    deliberately left alone: superseded versions go to a SEPARATE history table
+    rather than becoming extra rows here. Dropping a UNIQUE constraint means a
+    table rebuild on SQLite, and this data is the only record of what an
+    investor was sent — so the migration that cannot lose it is the one that
+    never rewrites it.
+    """
     pk = ("SERIAL PRIMARY KEY" if _is_postgres()
           else "INTEGER PRIMARY KEY AUTOINCREMENT")
     with _engine().begin() as conn:
@@ -87,6 +116,44 @@ def _ensure_table() -> None:
                 UNIQUE(investor_code, quarter)
             )
         """))
+        conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS {_HISTORY} (
+                id {pk},
+                investor_code TEXT NOT NULL,
+                quarter TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                data_version TEXT,
+                frozen_by TEXT,
+                frozen_at TIMESTAMP,
+                frozen_reason TEXT,
+                source_manifest TEXT,
+                roster TEXT,
+                one_pagers TEXT,
+                version INTEGER,
+                superseded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                superseded_by TEXT,
+                supersede_reason TEXT NOT NULL
+            )
+        """))
+    existing = _columns(_TABLE)
+    for col, typ in _ADDED_COLUMNS:
+        if col in existing:
+            continue
+        try:
+            with _engine().begin() as conn:
+                conn.execute(text(f"ALTER TABLE {_TABLE} ADD COLUMN {col} {typ}"))
+        except Exception:
+            log.exception("could not add %s.%s", _TABLE, col)
+
+
+def _columns(table: str) -> set:
+    """Column names on a table, empty when it cannot be read."""
+    try:
+        import sqlalchemy as sa
+        return set(sa.inspect(_engine()).get_columns(table) and
+                   [c["name"] for c in sa.inspect(_engine()).get_columns(table)])
+    except Exception:
+        return set()
 
 
 # ── assembly (shared by the freeze and the live read) ─────────────────────
@@ -448,42 +515,337 @@ def freeze(investor_code: str, quarter: str, approved_by: str,
             "values": elements.get("values") or [],
         },
     })
+    return _write_frozen(investor_code, quarter, payload,
+                         frozen_by=approved_by,
+                         reason=REASON_AS_APPROVED,
+                         approved_by=approved_by)
+
+
+def _write_frozen(investor_code: str, quarter: str, payload: dict,
+                  frozen_by: str, reason: str,
+                  approved_by: Optional[str] = None,
+                  source_manifest: Optional[dict] = None,
+                  roster: Optional[list] = None,
+                  one_pagers: Optional[dict] = None,
+                  supersede_reason: Optional[str] = None) -> dict:
+    """THE one writer for a frozen payload. Both freeze paths funnel here.
+
+    Any existing row is copied to the history table BEFORE being replaced, so a
+    re-freeze never destroys what an investor was actually sent.
+    """
+    import datetime as _dt
     blob = json.dumps(payload)
-    version = _data_version()
+    version_str = _data_version()
+    now = _dt.datetime.utcnow()
 
     _ensure_table()
+    prior = _current_row(investor_code, quarter)
+    next_version = int((prior or {}).get("version") or 0) + 1
+
     with _engine().begin() as conn:
-        # DELETE-then-INSERT: cross-DB, and re-approval overwrites by design.
+        if prior:
+            conn.execute(text(f"""
+                INSERT INTO {_HISTORY}
+                    (investor_code, quarter, payload, data_version, frozen_by,
+                     frozen_at, frozen_reason, source_manifest, roster,
+                     one_pagers, version, superseded_by, supersede_reason)
+                VALUES (:i, :q, :p, :dv, :fb, :fa, :fr, :sm, :ro, :op, :ver,
+                        :sby, :sr)
+            """), {"i": investor_code, "q": quarter,
+                   "p": prior.get("payload_raw") or "{}",
+                   "dv": prior.get("data_version"), "fb": prior.get("frozen_by"),
+                   "fa": prior.get("frozen_at"), "fr": prior.get("frozen_reason"),
+                   "sm": prior.get("source_manifest_raw"),
+                   "ro": prior.get("roster_raw"), "op": prior.get("one_pagers_raw"),
+                   "ver": prior.get("version"), "sby": frozen_by,
+                   "sr": supersede_reason or reason})
         conn.execute(text(f"DELETE FROM {_TABLE} "
                           f"WHERE investor_code = :i AND quarter = :q"),
                      {"i": investor_code, "q": quarter})
         conn.execute(text(f"""
             INSERT INTO {_TABLE}
-                (investor_code, quarter, payload, approved_by, data_version)
-            VALUES (:i, :q, :p, :by, :v)
+                (investor_code, quarter, payload, approved_by, data_version,
+                 frozen_by, frozen_at, frozen_reason, source_manifest, roster,
+                 one_pagers, version)
+            VALUES (:i, :q, :p, :by, :v, :fb, :fa, :fr, :sm, :ro, :op, :ver)
         """), {"i": investor_code, "q": quarter, "p": blob,
-               "by": approved_by, "v": version})
+               "by": approved_by, "v": version_str, "fb": frozen_by,
+               "fa": now, "fr": reason,
+               "sm": json.dumps(source_manifest) if source_manifest else None,
+               "ro": json.dumps(roster) if roster is not None else None,
+               "op": json.dumps(one_pagers) if one_pagers is not None else None,
+               "ver": next_version})
 
-    log.info("Froze Portfolio Snapshot for %s %s (%s)",
-             investor_code, quarter, version)
+    log.info("Froze %s %s (%s, version %s, %s)",
+             investor_code, quarter, reason, next_version, version_str)
     return {"investor_code": investor_code, "quarter": quarter,
-            "approved_by": approved_by, "data_version": version,
-            "bytes": len(blob)}
+            "frozen_by": frozen_by, "frozen_at": now.isoformat(),
+            "frozen_reason": reason, "version": next_version,
+            "data_version": version_str, "bytes": len(blob),
+            "one_pager_count": len(one_pagers or {}),
+            "roster_count": len(roster or [])}
+
+
+def _current_row(investor_code: str, quarter: str) -> Optional[dict]:
+    """The stored row as-is, or None. Never raises."""
+    try:
+        _ensure_table()
+        cols = _columns(_TABLE)
+        sel = ["payload", "approved_by", "approved_at", "data_version"]
+        sel += [c for c, _ in _ADDED_COLUMNS if c in cols]
+        with _engine().connect() as conn:
+            row = conn.execute(text(
+                f"SELECT {', '.join(sel)} FROM {_TABLE} "
+                f"WHERE investor_code = :i AND quarter = :q"),
+                {"i": investor_code, "q": quarter}).mappings().fetchone()
+    except Exception:
+        log.exception("reading frozen row failed")
+        return None
+    if not row:
+        return None
+    out = dict(row)
+    out["payload_raw"] = out.get("payload")
+    out["source_manifest_raw"] = out.get("source_manifest")
+    out["roster_raw"] = out.get("roster")
+    out["one_pagers_raw"] = out.get("one_pagers")
+    return out
+
+
+def freeze_as_sent(investor_code: str, quarter: str, frozen_by: str,
+                   overlay: Optional[dict] = None,
+                   roster: Optional[list] = None,
+                   source_manifest: Optional[dict] = None,
+                   assembler: Optional[Callable] = None,
+                   one_pager_getter: Optional[Callable] = None,
+                   elements_loader: Optional[Callable] = None) -> dict:
+    """Freeze a quarter AS SENT: subtabs, every One Pager, and the roster.
+
+    Separate from the approval chain on purpose. ``approved_by`` is left NULL —
+    a freeze records who froze it, never a decision nobody made.
+
+    ``overlay`` is the published-value layer for the one-time 26Q2 seeding:
+    ``{vcode_or_"__subtabs__": {dotted.path: {"published": v, "page": n}}}``.
+    Applied AFTER assembly, so every untouched cell stays the computed one and
+    the diff between the two is recoverable later.
+
+    Raises on failure. The caller must NOT mark the quarter frozen unless this
+    returns — a silent failure is the one outcome this design forbids.
+    """
+    from flask_app.serializers import safe_json
+
+    assemble = assembler or assemble_full_report
+    report = assemble(investor_code, quarter) or {}
+    resolved = report.pop("_resolved", None) or {}
+
+    load_elements = elements_loader
+    if load_elements is None:
+        from flask_app.services.portfolio_snapshot_persistence import load_page
+        load_elements = load_page
+    elements = load_elements(investor_code, quarter) or {}
+
+    if roster is None:
+        roster = _roster_from_report(report)
+    get_op = one_pager_getter or _default_one_pager_getter()
+    one_pagers, failures = {}, []
+    for vc in roster:
+        try:
+            one_pagers[vc] = get_op(vc, quarter)
+        except Exception as exc:                      # noqa: BLE001
+            failures.append(f"{vc}: {type(exc).__name__}: {exc}")
+    if failures:
+        raise RuntimeError(
+            f"{len(failures)} One Pager(s) could not be built, so the freeze "
+            f"would be incomplete: " + "; ".join(failures[:5]))
+
+    payload = safe_json({
+        "subtabs": report.get("subtabs") or {},
+        "errors": report.get("errors") or {},
+        "resolution": report.get("resolution") or {},
+        "elements": {
+            "comments": elements.get("comments") or [],
+            "footnotes": elements.get("footnotes") or [],
+            "values": elements.get("values") or [],
+        },
+    })
+    one_pagers = safe_json(one_pagers)
+
+    applied = 0
+    if overlay:
+        applied = _apply_overlay(payload, one_pagers, overlay)
+
+    manifest = dict(source_manifest or {})
+    manifest["overlay_cells_applied"] = applied
+    return _write_frozen(investor_code, quarter, payload,
+                         frozen_by=frozen_by, reason=REASON_AS_SENT,
+                         source_manifest=manifest, roster=roster,
+                         one_pagers=one_pagers)
+
+
+def _roster_from_report(report: dict) -> list:
+    """Deal vcodes on the report, in the order the Financial subtab lists them."""
+    fin = ((report.get("subtabs") or {}).get("financial") or {})
+    out = []
+    for _g, blk in (fin.get("groups") or {}).items():
+        for r in ((blk.get("deals") if isinstance(blk, dict) else blk) or []):
+            if r.get("vcode") and r["vcode"] not in out:
+                out.append(r["vcode"])
+    for r in (fin.get("ownership_flagged") or []):
+        if r.get("vcode") and r["vcode"] not in out:
+            out.append(r["vcode"])
+    return out
+
+
+def _default_one_pager_getter() -> Callable:
+    """(vcode, quarter) -> the live One Pager payload."""
+    from flask_app.services import data_service
+    from flask_app.services.financials_service import get_one_pager_data
+    data = data_service.get_data()
+
+    def _get(vcode, quarter):
+        return get_one_pager_data(
+            vcode, quarter, data["inv"], data["isbs_raw"],
+            data["mri_loans_raw"], data["mri_val"], data["wf"], data["acct"],
+            occupancy_raw=data["occupancy_raw"],
+            budget_econ_occ=data.get("budget_econ_occ"),
+            deal_terms=data.get("deal_terms_raw"),
+            at_close_noi=data.get("at_close_noi_raw"),
+            event_dates=data.get("event_dates_raw"),
+            full_data=data, relationships=data.get("relationships_raw"),
+            mri_loans_all=data.get("mri_loans_all"),
+            inspection=data.get("inspection_raw"))
+    return _get
+
+
+def _set_path(obj, dotted: str, value) -> bool:
+    """Set a dotted path, supporting ``a.b[2].c``. True when it landed."""
+    cur = obj
+    parts = re.findall(r"[^.\[\]]+|\[\d+\]", dotted)
+    for i, part in enumerate(parts):
+        last = i == len(parts) - 1
+        if part.startswith("["):
+            idx = int(part[1:-1])
+            if not isinstance(cur, list) or idx >= len(cur):
+                return False
+            if last:
+                cur[idx] = value; return True
+            cur = cur[idx]
+        else:
+            if not isinstance(cur, dict) or part not in cur:
+                return False
+            if last:
+                cur[part] = value; return True
+            cur = cur[part]
+    return False
+
+
+def _apply_overlay(payload: dict, one_pagers: dict, overlay: dict) -> int:
+    """Overwrite published cells, keeping the computed value beside each one.
+
+    Records into ``payload['published_overrides']`` so drift stays measurable:
+    a later reader can see what was published AND what the engine said at the
+    moment of freezing.
+    """
+    recorded, applied = [], 0
+    for scope, cells in (overlay or {}).items():
+        target = payload if scope == "__subtabs__" else one_pagers.get(scope)
+        if target is None:
+            continue
+        for path, spec in (cells or {}).items():
+            published = spec.get("published") if isinstance(spec, dict) else spec
+            before = _read_path(target, path)
+            if _set_path(target, path, published):
+                applied += 1
+                recorded.append({
+                    "scope": scope, "path": path, "published": published,
+                    "computed_at_freeze": before,
+                    "page": (spec or {}).get("page") if isinstance(spec, dict) else None,
+                })
+    payload["published_overrides"] = recorded
+    return applied
+
+
+def _read_path(obj, dotted: str):
+    cur = obj
+    for part in re.findall(r"[^.\[\]]+|\[\d+\]", dotted):
+        try:
+            cur = cur[int(part[1:-1])] if part.startswith("[") else cur[part]
+        except Exception:
+            return None
+    return cur
+
+
+def is_frozen(investor_code: str, quarter: str) -> bool:
+    """True when this investor+quarter has a stored copy."""
+    return _current_row(investor_code, quarter) is not None
+
+
+def refreeze(investor_code: str, quarter: str, frozen_by: str, reason: str,
+             **kw) -> dict:
+    """Replace a frozen quarter, keeping the previous version in history."""
+    if not (reason or "").strip():
+        raise ValueError("A reason is required to re-freeze a sent quarter")
+    if not is_frozen(investor_code, quarter):
+        raise ValueError(f"{investor_code} {quarter} is not frozen")
+    out = freeze_as_sent(investor_code, quarter, frozen_by, **kw)
+    out["refreeze_reason"] = reason
+    return out
+
+
+def unfreeze(investor_code: str, quarter: str, by: str, reason: str) -> dict:
+    """Return a quarter to live, archiving what was frozen. Reason required."""
+    if not (reason or "").strip():
+        raise ValueError("A reason is required to unfreeze a sent quarter")
+    prior = _current_row(investor_code, quarter)
+    if not prior:
+        raise ValueError(f"{investor_code} {quarter} is not frozen")
+    import datetime as _dt
+    _ensure_table()
+    with _engine().begin() as conn:
+        conn.execute(text(f"""
+            INSERT INTO {_HISTORY}
+                (investor_code, quarter, payload, data_version, frozen_by,
+                 frozen_at, frozen_reason, source_manifest, roster, one_pagers,
+                 version, superseded_by, supersede_reason)
+            VALUES (:i, :q, :p, :dv, :fb, :fa, :fr, :sm, :ro, :op, :ver, :sby, :sr)
+        """), {"i": investor_code, "q": quarter,
+               "p": prior.get("payload_raw") or "{}",
+               "dv": prior.get("data_version"), "fb": prior.get("frozen_by"),
+               "fa": prior.get("frozen_at"), "fr": prior.get("frozen_reason"),
+               "sm": prior.get("source_manifest_raw"),
+               "ro": prior.get("roster_raw"), "op": prior.get("one_pagers_raw"),
+               "ver": prior.get("version"), "sby": by,
+               "sr": f"unfrozen: {reason}"})
+        conn.execute(text(f"DELETE FROM {_TABLE} "
+                          f"WHERE investor_code = :i AND quarter = :q"),
+                     {"i": investor_code, "q": quarter})
+    log.info("Unfroze %s %s by %s: %s", investor_code, quarter, by, reason)
+    return {"investor_code": investor_code, "quarter": quarter,
+            "unfrozen_by": by, "reason": reason,
+            "archived_version": prior.get("version"),
+            "frozen_at": _dt.datetime.utcnow().isoformat()}
+
+
+def frozen_history(investor_code: str, quarter: str) -> list:
+    """Superseded versions, newest first. Never raises."""
+    try:
+        _ensure_table()
+        with _engine().connect() as conn:
+            rows = conn.execute(text(f"""
+                SELECT version, frozen_by, frozen_at, frozen_reason,
+                       superseded_at, superseded_by, supersede_reason
+                FROM {_HISTORY}
+                WHERE investor_code = :i AND quarter = :q
+                ORDER BY id DESC
+            """), {"i": investor_code, "q": quarter}).mappings().fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        log.exception("reading freeze history failed")
+        return []
 
 
 def get_frozen(investor_code: str, quarter: str) -> Optional[dict]:
     """The frozen payload for a page, or None."""
-    try:
-        _ensure_table()
-        with _engine().connect() as conn:
-            row = conn.execute(text(f"""
-                SELECT payload, approved_by, approved_at, data_version
-                FROM {_TABLE}
-                WHERE investor_code = :i AND quarter = :q
-            """), {"i": investor_code, "q": quarter}).mappings().fetchone()
-    except Exception as exc:
-        log.exception("reading frozen snapshot failed")
-        return None
+    row = _current_row(investor_code, quarter)
     if not row:
         return None
     try:
@@ -492,15 +854,45 @@ def get_frozen(investor_code: str, quarter: str) -> Optional[dict]:
         log.exception("frozen payload for %s %s is not valid JSON",
                       investor_code, quarter)
         return None
-    approved_at = row["approved_at"]
+
+    def _j(raw):
+        try:
+            return json.loads(raw) if raw else None
+        except Exception:
+            return None
+
+    def _iso(v):
+        return (v.isoformat() if hasattr(v, "isoformat")
+                else (str(v) if v else None))
+
     return {
         "payload": payload,
-        "approved_by": row["approved_by"],
-        "approved_at": (approved_at.isoformat()
-                        if hasattr(approved_at, "isoformat")
-                        else (str(approved_at) if approved_at else None)),
-        "data_version": row["data_version"],
+        "approved_by": row.get("approved_by"),
+        "approved_at": _iso(row.get("approved_at")),
+        "data_version": row.get("data_version"),
+        "frozen_by": row.get("frozen_by"),
+        "frozen_at": _iso(row.get("frozen_at")),
+        "frozen_reason": row.get("frozen_reason"),
+        "version": row.get("version"),
+        "source_manifest": _j(row.get("source_manifest_raw")),
+        "roster": _j(row.get("roster_raw")),
+        "one_pagers": _j(row.get("one_pagers_raw")),
     }
+
+
+def get_frozen_one_pager(investor_code: str, quarter: str,
+                         vcode: str) -> Optional[dict]:
+    """One deal's One Pager as published for THIS investor, or None.
+
+    Keyed by investor as well as deal on purpose. The same deal and quarter can
+    carry different published figures on two investors' reports — Nottingham
+    Village went out at $9.1M to one and $12.1M to the other — so a store keyed
+    only by (vcode, quarter) cannot represent what was actually sent.
+    """
+    fr = get_frozen(investor_code, quarter)
+    if not fr:
+        return None
+    return (fr.get("one_pagers") or {}).get(vcode)
 
 
 def delete_frozen(investor_code: str, quarter: str) -> None:
@@ -540,23 +932,34 @@ def load_report(investor_code: str, quarter: str,
         except Exception:
             status = None
 
+    # A STORED COPY WINS, WHATEVER THE APPROVAL STATUS. Freezing and approving
+    # are separate acts now: the button records that a quarter was sent, and a
+    # sent quarter must not be recomputed. Live data is for the current,
+    # unsent quarter only.
+    frozen = get_frozen_fn(investor_code, quarter)
+    if frozen:
+        out = dict(frozen["payload"])
+        out["source"] = SOURCE_FROZEN
+        who = frozen.get("frozen_by") or frozen.get("approved_by") or "unknown"
+        when = str(frozen.get("frozen_at") or frozen.get("approved_at") or "")[:10]
+        reason = frozen.get("frozen_reason") or REASON_AS_APPROVED
+        label = ("Frozen as sent" if reason == REASON_AS_SENT
+                 else "Frozen at approval")
+        out["source_note"] = (
+            f"{label} — stored copy, not recomputed. By {who}"
+            + (f" on {when}" if when else ""))
+        for k in ("approved_by", "approved_at", "data_version", "frozen_by",
+                  "frozen_at", "frozen_reason", "version", "source_manifest",
+                  "roster"):
+            out[k] = frozen.get(k)
+        out["read_only"] = True
+        return out
+
     if status == "approved":
-        frozen = get_frozen_fn(investor_code, quarter)
-        if frozen:
-            out = dict(frozen["payload"])
-            out["source"] = SOURCE_FROZEN
-            out["source_note"] = (
-                f"Approved snapshot — frozen at approval, not recomputed. "
-                f"Approved by {frozen.get('approved_by') or 'unknown'}"
-                + (f" on {str(frozen['approved_at'])[:10]}"
-                   if frozen.get("approved_at") else ""))
-            out["approved_by"] = frozen.get("approved_by")
-            out["approved_at"] = frozen.get("approved_at")
-            out["data_version"] = frozen.get("data_version")
-            return out
         out = assemble(investor_code, quarter) or {}
         out.pop("_resolved", None)
         out["source"] = SOURCE_LIVE
+        out["read_only"] = False
         out["source_note"] = (
             "This report is approved but has no frozen payload, so it is being "
             "recomputed live and may not match what was approved.")
@@ -565,6 +968,7 @@ def load_report(investor_code: str, quarter: str,
     out = assemble(investor_code, quarter) or {}
     out.pop("_resolved", None)
     out["source"] = SOURCE_LIVE
+    out["read_only"] = False
     out["source_note"] = "In progress — computed live from current data."
     return out
 
