@@ -15,6 +15,55 @@ interface ToolEvent {
   input: Record<string, unknown>
 }
 
+// ── LaTeX in assistant answers ───────────────────────────────────────
+//
+// The traceability answers render a field's formula as $$...$$ (see the
+// TRACEABILITY ANSWER FORMAT block in assistant_service.SYSTEM_PROMPT). Without
+// this the delimiters print literally.
+//
+// KaTeX is loaded ON DEMAND — ~270KB plus fonts, and the panel is shut on most
+// page loads. A failed import must never cost the message: the catch leaves the
+// LaTeX as source text, which is degraded but readable.
+//
+// DECLARED IN `<script setup>` ON PURPOSE. Vue auto-registers a `v`-prefixed
+// const here as a directive; the same const in the plain `<script>` block below
+// sits at module scope, which `resolveDirective` does not consult, so `v-typeset`
+// would silently do nothing.
+type KatexRender = (el: HTMLElement, opts: unknown) => void
+let _katexRender: KatexRender | null = null
+async function typeset(el: HTMLElement) {
+  try {
+    if (!_katexRender) {
+      // KaTeX ships no types for the contrib subpath — the runtime export is
+      // real, only the declaration is missing.
+      // @ts-expect-error untyped subpath export
+      const mod = await import('katex/contrib/auto-render')
+      _katexRender = mod.default as KatexRender
+      await import('katex/dist/katex.min.css')
+    }
+    // Narrowed to a local: the awaits above lose TS's narrowing on the
+    // module-level binding.
+    const render = _katexRender
+    render(el, {
+      delimiters: [
+        { left: '$$', right: '$$', display: true },
+        { left: '\\(', right: '\\)', display: false },
+      ],
+      throwOnError: false,   // bad LaTeX renders red; it does not blow up the panel
+      ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
+    })
+  } catch { /* leave the math as source text */ }
+}
+
+// `updated` fires on every streamed token, but v-html rewrites innerHTML from
+// source each tick — so KaTeX's DOM is discarded and re-derived, which is
+// self-healing rather than cumulative. The binding gates on the message being
+// COMPLETE so a half-arrived `$$` does not flash as garbage mid-stream.
+const vTypeset = {
+  mounted(el: HTMLElement, b: { value: boolean }) { if (b.value) typeset(el) },
+  updated(el: HTMLElement, b: { value: boolean }) { if (b.value) typeset(el) },
+}
+
 const route = useRoute()
 const dataStore = useDataStore()
 const dealsStore = useDealsStore()
@@ -326,7 +375,11 @@ function formatToolName(name: string): string {
           class="ai-message"
           :class="msg.role === 'user' ? 'ai-message--user' : 'ai-message--assistant'"
         >
-          <div class="ai-message-bubble" v-html="renderMarkdown(msg.content)" />
+          <div
+            class="ai-message-bubble"
+            v-html="renderMarkdown(msg.content)"
+            v-typeset="msg.role === 'assistant' && !(isLoading && i === messages.length - 1)"
+          />
         </div>
 
         <!-- Suggested questions -->
@@ -467,6 +520,15 @@ function renderMarkdown(text: string): string {
   line-height: 1.5;
   word-break: break-word;
 }
+/* The panel is 420px wide and display math is the one thing that will exceed
+   it. Scroll the formula, never the panel. */
+.ai-message-bubble :deep(.katex-display) {
+  overflow-x: auto;
+  overflow-y: hidden;
+  margin: 6px 0;
+  padding-bottom: 2px;
+}
+.ai-message-bubble :deep(.katex) { font-size: 1.02em; }
 .ai-message--user .ai-message-bubble {
   background: var(--color-primary, #1F4E79);
   color: #fff;
