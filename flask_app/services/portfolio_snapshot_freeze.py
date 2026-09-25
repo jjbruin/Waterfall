@@ -751,14 +751,46 @@ def _apply_overlay(payload: dict, one_pagers: dict, overlay: dict) -> int:
         if target is None:
             continue
         for path, spec in (cells or {}).items():
-            published = spec.get("published") if isinstance(spec, dict) else spec
+            if not isinstance(spec, dict):
+                spec = {"published": spec}
             before = _read_path(target, path)
-            if _set_path(target, path, published):
+            display = spec.get("display")
+
+            if display is not None:
+                # A PRINTED-UNITS CELL. The PDF prints something the stored
+                # field cannot hold in the same units — the variance columns
+                # print a PERCENT OF BUDGET while the field holds a DOLLAR
+                # difference. Writing the percent into the dollar field would
+                # be a lie about the field, and writing the dollars would not
+                # reproduce the page.
+                #
+                # It also would not even show: the variance the One Pager
+                # RENDERS is derived in the browser by `fmtVariance` from
+                # ytd_actual and ytd_budget, so the server's stored `variance`
+                # reaches no screen. Overlaying the path alone changes nothing.
+                #
+                # So the printed text is kept verbatim in `published_display`,
+                # keyed by the same dotted path, and the view prefers it when
+                # the report is frozen. The numeric field is left ALONE.
+                target.setdefault("published_display", {})[path] = display
                 applied += 1
                 recorded.append({
-                    "scope": scope, "path": path, "published": published,
+                    "scope": scope, "path": path,
+                    "published": spec.get("published"),
+                    "display": display,
+                    "units": spec.get("units") or "printed",
                     "computed_at_freeze": before,
-                    "page": (spec or {}).get("page") if isinstance(spec, dict) else None,
+                    "page": spec.get("page"), "source": spec.get("source"),
+                })
+                continue
+
+            if _set_path(target, path, spec.get("published")):
+                applied += 1
+                recorded.append({
+                    "scope": scope, "path": path,
+                    "published": spec.get("published"),
+                    "computed_at_freeze": before,
+                    "page": spec.get("page"), "source": spec.get("source"),
                 })
     payload["published_overrides"] = recorded
     return applied
@@ -772,6 +804,59 @@ def _read_path(obj, dotted: str):
         except Exception:
             return None
     return cur
+
+
+def _norm_title(s) -> str:
+    """A deal name reduced to what survives PDF typesetting."""
+    return re.sub(r"[^a-z0-9]", "", str(s or "").lower())
+
+
+def resolve_roster(investor_code: str, quarter: str, titles: list) -> tuple:
+    """(``{printed title: vcode}``, ``[titles that matched nothing]``).
+
+    The overlay is keyed by the deal TITLE because that is all the sent PDF
+    knows; only the app knows vcodes. Resolving here — against the same
+    assembled report the freeze itself will store — keeps the preview and the
+    freeze on one answer.
+
+    A TITLE MATCHING SEVERAL DEALS IS LEFT UNRESOLVED, not resolved to the
+    first. Picking one would attach a whole page of published figures to the
+    wrong deal, which is the single worst thing this feature could do, and it
+    would be invisible afterwards.
+    """
+    from flask_app.services import data_service
+    from flask_app.services.portfolio_snapshot_service import resolve_investor_deals
+
+    data = data_service.get_data()
+    resolved_deals = resolve_investor_deals(investor_code, quarter, data=data)
+    fin = build_subtab("financial", investor_code, quarter, data, resolved_deals)
+
+    by_name = {}
+    for blk in (fin.get("groups") or {}).values():
+        rows = (blk.get("deals") if isinstance(blk, dict) else blk) or []
+        for r in rows:
+            if r.get("name") and r.get("vcode"):
+                by_name.setdefault(_norm_title(r["name"]), set()).add(r["vcode"])
+    for r in (fin.get("ownership_flagged") or []):
+        if r.get("name") and r.get("vcode"):
+            by_name.setdefault(_norm_title(r["name"]), set()).add(r["vcode"])
+
+    out, missing = {}, []
+    for title in titles or []:
+        key = _norm_title(title)
+        hit = by_name.get(key)
+        if not hit:
+            # A printed title is often a prefix of the stored name, or the
+            # other way round. Only an UNAMBIGUOUS partial is accepted.
+            cands = {v for k, vs in by_name.items()
+                     if key and (k.startswith(key) or key.startswith(k))
+                     for v in vs}
+            hit = cands
+        if hit and len(hit) == 1:
+            out[title] = next(iter(hit))
+        else:
+            missing.append(title)
+    return out, missing
 
 
 def is_frozen(investor_code: str, quarter: str) -> bool:

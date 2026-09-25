@@ -21,6 +21,8 @@ that enrichment. Do not add ``full_data=data`` here without measuring.
 """
 
 from flask import Blueprint, request, jsonify
+import json
+
 import pandas as pd
 
 from flask_app.auth.routes import login_required, role_required, roles_exactly
@@ -42,6 +44,9 @@ _FROZEN_WRITE_ALLOWED = frozenset({
     "portfolio_snapshot.post_freeze",      # the button itself
     "portfolio_snapshot.post_refreeze",    # an admin correction
     "portfolio_snapshot.post_unfreeze",    # returning it to live
+    "portfolio_snapshot.post_freeze_overlay",   # the seeded 26Q2 freeze; it
+                                                # refuses an already-frozen
+                                                # quarter on its own terms
     "portfolio_snapshot.submit",           # the review chain is a separate
     "portfolio_snapshot.approve",          # authority and is not a typed
     "portfolio_snapshot.return_to_draft",  # field; freezing does not gate it
@@ -444,6 +449,128 @@ def post_freeze():
             "error": f"Freeze failed, so {investor} {quarter} is still live: "
                      f"{exc}", "frozen": False}), 500
     return jsonify(safe_json({**receipt, "frozen": True}))
+
+
+@portfolio_snapshot_bp.route("/freeze-overlay", methods=["POST"])
+@login_required
+@roles_exactly("admin")
+def post_freeze_overlay():
+    """Freeze a quarter from a published overlay built off the sent PDF.
+
+    ONE ENDPOINT, TWO MODES, ON PURPOSE. Without ``confirm`` it previews:
+    it resolves every printed deal title to a vcode and reports how many cells
+    each report would take, and freezes NOTHING. With ``confirm`` it does
+    exactly the same resolution and then freezes. Two endpoints could drift,
+    and a preview that describes a different resolution from the freeze it
+    precedes is worse than no preview — the reader would have approved
+    something other than what ran.
+
+    The overlay comes from ``scripts/build_26q2_overlay.py``, which reads the
+    sent PDFs offline. That split is what removes the need for a live token:
+    the PDF truth is computed outside, and the only thing needing the app's
+    session is resolving titles and writing — which happens here, under the
+    admin's own login.
+
+    A TITLE THAT CANNOT BE PLACED IS REPORTED, NEVER DROPPED. Freezing a
+    roster quietly missing a page would store an incomplete record of what was
+    sent, so an unresolved title blocks the freeze unless it is explicitly
+    allowed through.
+    """
+    body = request.get_json(silent=True) or {}
+    doc = body.get("overlay")
+    if doc is None and "overlay" in request.files:
+        try:
+            doc = json.loads(request.files["overlay"].read().decode("utf-8"))
+        except Exception as exc:
+            return jsonify({"error": f"overlay file is not readable JSON: {exc}"}), 400
+    if not isinstance(doc, dict) or not doc.get("investors"):
+        return jsonify({
+            "error": "No overlay supplied. Build one with "
+                     "scripts/build_26q2_overlay.py and upload it."}), 400
+
+    investor = (body.get("investor") or "").strip().upper()
+    quarter = (body.get("quarter") or doc.get("quarter") or "").strip()
+    confirm = bool(body.get("confirm"))
+    allow_unresolved = bool(body.get("allow_unresolved"))
+
+    wanted = [investor] if investor else list(doc["investors"])
+    from flask_app.services import portfolio_snapshot_freeze as FZ
+    user = _current_user()
+    out = {"quarter": quarter, "confirmed": confirm, "reports": []}
+
+    for inv in wanted:
+        blk = (doc["investors"] or {}).get(inv)
+        if not blk:
+            out["reports"].append({"investor": inv,
+                                   "error": "not present in this overlay"})
+            continue
+        try:
+            resolved, unresolved = FZ.resolve_roster(inv, quarter,
+                                                     blk.get("roster_titles") or [])
+        except Exception as exc:
+            out["reports"].append({"investor": inv,
+                                   "error": f"could not read live: {exc}"})
+            continue
+
+        overlay, per_report = {}, []
+        for title, cells in (blk.get("reports") or {}).items():
+            vc = resolved.get(title)
+            n_disp = sum(1 for c in cells.values() if c.get("display"))
+            per_report.append({
+                "title": title, "vcode": vc, "cells": len(cells),
+                "printed_units_cells": n_disp,
+                "page": next((c.get("page") for c in cells.values()), None),
+            })
+            if vc:
+                overlay[vc] = cells
+
+        rep = {
+            "investor": inv,
+            "source": blk.get("source"),
+            "roster_size": len(blk.get("roster_titles") or []),
+            "resolved": len(resolved), "unresolved": unresolved,
+            "cells_total": sum(r["cells"] for r in per_report),
+            "printed_units_total": sum(r["printed_units_cells"] for r in per_report),
+            "unmapped_labels": blk.get("unmapped_labels") or [],
+            "per_report": per_report,
+            "already_frozen": FZ.is_frozen(inv, quarter),
+        }
+
+        if not confirm:
+            rep["preview"] = True
+            out["reports"].append(rep)
+            continue
+        if rep["already_frozen"]:
+            rep["error"] = (f"{inv} {quarter} is already frozen — Re-freeze it "
+                            f"if it genuinely has to change.")
+            out["reports"].append(rep)
+            continue
+        if unresolved and not allow_unresolved:
+            rep["error"] = (f"{len(unresolved)} printed page(s) could not be "
+                            f"matched to a deal: {', '.join(unresolved[:5])}"
+                            + ("…" if len(unresolved) > 5 else "")
+                            + ". Freezing would store an incomplete record of "
+                              "what was sent.")
+            out["reports"].append(rep)
+            continue
+        try:
+            rep["receipt"] = FZ.freeze_as_sent(
+                inv, quarter, user.get("username") or "unknown",
+                overlay=overlay,
+                roster=[resolved[t] for t in (blk.get("roster_titles") or [])
+                        if t in resolved],
+                source_manifest={**(blk.get("source") or {}),
+                                 "unmapped_labels": blk.get("unmapped_labels") or []})
+            rep["frozen"] = True
+        except Exception as exc:
+            # The service raises rather than storing a partial report, so the
+            # quarter is still live — which is what the caller needs to know.
+            rep["frozen"] = False
+            rep["error"] = f"Freeze failed, so {inv} {quarter} is still live: {exc}"
+        out["reports"].append(rep)
+
+    status = 200 if all(not r.get("error") for r in out["reports"]) else 409
+    return jsonify(safe_json(out)), (200 if not confirm else status)
 
 
 @portfolio_snapshot_bp.route("/refreeze", methods=["POST"])

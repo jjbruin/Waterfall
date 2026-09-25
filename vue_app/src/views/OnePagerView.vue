@@ -496,19 +496,40 @@ const perfRows = computed(() => {
   return buildPerfRows(p)
 })
 
+/**
+ * The variance a FROZEN report printed, when it printed something this client
+ * would not derive.
+ *
+ * THE VARIANCE ON SCREEN IS DERIVED HERE, NOT SENT. `fmtVariance` computes a
+ * percent of budget in the browser; the server's `property_performance.*.
+ * variance` holds a DOLLAR difference and reaches no screen. So a frozen
+ * quarter whose PDF printed something else — Giant 7's "-100%" — cannot be
+ * reproduced by overwriting the stored number: nothing renders it.
+ *
+ * `published_display` carries the printed text verbatim, keyed by the same
+ * dotted path the overlay used. Live reports have no such map and are
+ * untouched, so this can only ever change a frozen page.
+ */
+function publishedDisplay(p: any, path: string): string | null {
+  const v = p?.published_display?.[path]
+  return (typeof v === 'string' && v !== '') ? v : null
+}
+
 function buildPerfRows(p: any) {
+  const pd = (k: string, derived: string) =>
+    publishedDisplay(p, `property_performance.${k}.variance`) ?? derived
   return [
     { label: 'Economic Occ.', ytdA: fmtOcc(p.economic_occ?.ytd_actual), ytdB: fmtOcc(p.economic_occ?.ytd_budget),
-      variance: fmtOccVariance(p.economic_occ?.ytd_actual, p.economic_occ?.ytd_budget),
+      variance: pd('economic_occ', fmtOccVariance(p.economic_occ?.ytd_actual, p.economic_occ?.ytd_budget)),
       atClose: fmtOcc(p.economic_occ?.at_close), actualYE: fmtOcc(p.economic_occ?.actual_ye), uwYE: fmtOcc(p.economic_occ?.uw_ye) },
     { label: 'Revenue', ytdA: fmtMil(p.revenue?.ytd_actual), ytdB: fmtMil(p.revenue?.ytd_budget),
-      variance: fmtVariance(p.revenue?.ytd_actual, p.revenue?.ytd_budget),
+      variance: pd('revenue', fmtVariance(p.revenue?.ytd_actual, p.revenue?.ytd_budget)),
       atClose: fmtMil(p.revenue?.at_close), actualYE: fmtMil(p.revenue?.actual_ye), uwYE: fmtMil(p.revenue?.uw_ye) },
     { label: 'Expenses', ytdA: fmtMil(p.expenses?.ytd_actual), ytdB: fmtMil(p.expenses?.ytd_budget),
-      variance: fmtVariance(p.expenses?.ytd_actual, p.expenses?.ytd_budget),
+      variance: pd('expenses', fmtVariance(p.expenses?.ytd_actual, p.expenses?.ytd_budget)),
       atClose: fmtMil(p.expenses?.at_close), actualYE: fmtMil(p.expenses?.actual_ye), uwYE: fmtMil(p.expenses?.uw_ye), underline: true },
     { label: 'NOI', ytdA: fmtMil(p.noi?.ytd_actual), ytdB: fmtMil(p.noi?.ytd_budget),
-      variance: fmtVariance(p.noi?.ytd_actual, p.noi?.ytd_budget),
+      variance: pd('noi', fmtVariance(p.noi?.ytd_actual, p.noi?.ytd_budget)),
       atClose: fmtMil(p.noi?.at_close), actualYE: fmtMil(p.noi?.actual_ye), uwYE: fmtMil(p.noi?.uw_ye) },
     { label: 'DSCR', ytdA: fmtDscr(p.dscr?.ytd_actual), ytdB: fmtDscr(p.dscr?.ytd_budget),
       variance: '',

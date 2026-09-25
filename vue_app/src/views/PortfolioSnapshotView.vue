@@ -17,6 +17,7 @@ import SnapshotFinancial from '../components/snapshot/SnapshotFinancial.vue'
 import SnapshotOperating from '../components/snapshot/SnapshotOperating.vue'
 import SnapshotLoan from '../components/snapshot/SnapshotLoan.vue'
 import { fmtItd } from '../components/snapshot/format'
+import { useAuthStore } from '../stores/auth'
 
 const BASE = '/api/portfolio-snapshot'
 
@@ -436,6 +437,58 @@ const frozenSourceLabel = computed(() => {
   return 'captured from the app at the moment of freezing'
 })
 
+// --- admin: freeze as sent from a published overlay -----------------------
+//
+// THE PREVIEW AND THE FREEZE ARE ONE ENDPOINT. `confirm:false` resolves every
+// printed deal title and reports what WOULD be written; `confirm:true` repeats
+// the identical resolution and writes. Two calls to one endpoint rather than
+// two endpoints, so the thing previewed cannot differ from the thing frozen.
+const auth = useAuthStore()
+const showOverlayPanel = ref(false)
+const overlayFile = ref<File | null>(null)
+const overlayPreview = ref<any>(null)
+const overlayBusy = ref(false)
+const overlayError = ref<string | null>(null)
+const overlayDone = ref<any>(null)
+
+function pickOverlay(e: Event) {
+  const f = (e.target as HTMLInputElement).files?.[0] || null
+  overlayFile.value = f
+  overlayPreview.value = null
+  overlayDone.value = null
+  overlayError.value = null
+}
+
+async function sendOverlay(confirm: boolean) {
+  if (!overlayFile.value) return
+  overlayBusy.value = true
+  overlayError.value = null
+  try {
+    const doc = JSON.parse(await overlayFile.value.text())
+    const res = await api.post('/api/portfolio-snapshot/freeze-overlay', {
+      investor: selectedInvestor.value, quarter: selectedQuarter.value,
+      overlay: doc, confirm,
+    })
+    if (confirm) {
+      overlayDone.value = res.data
+      // A per-report error means that report is still live; surface it rather
+      // than reporting a blanket success.
+      const failed = (res.data?.reports || []).filter((r: any) => r.error)
+      if (failed.length) {
+        overlayError.value = failed.map((r: any) => `${r.investor}: ${r.error}`).join(' | ')
+      } else {
+        await load()
+      }
+    } else {
+      overlayPreview.value = res.data
+    }
+  } catch (e: any) {
+    overlayError.value = e?.response?.data?.error || e?.message || 'Overlay freeze failed'
+  } finally {
+    overlayBusy.value = false
+  }
+}
+
 async function doFreeze() {
   freezing.value = true
   freezeError.value = null
@@ -596,6 +649,91 @@ const statusColor = computed(() => {
       <span>{{ sourceNote || 'In progress — computed from current data and will change as data changes.' }}</span>
       <button class="btn-sm primary freeze-btn" :disabled="!canLoad || loading"
               @click="showFreezeConfirm = true">Freeze as sent</button>
+      <!-- ADMIN ONLY, and a second button rather than a mode of the first:
+           this one freezes from a document, and conflating "freeze what the
+           app computes" with "freeze what we posted" is the confusion the
+           whole overlay exists to remove. -->
+      <button v-if="auth.isAdmin" class="btn-sm freeze-btn"
+              :disabled="!canLoad || loading"
+              @click="showOverlayPanel = !showOverlayPanel">
+        Freeze as sent (with published overlay)…
+      </button>
+    </div>
+
+    <!-- The published-overlay freeze. Admin only, preview before write. -->
+    <div v-if="showOverlayPanel && auth.isAdmin" class="freeze-confirm">
+      <strong>Freeze {{ selectedQuarter }} for {{ investorName }} from the sent PDF</strong>
+      <p class="muted">
+        Build the overlay first with
+        <code>python scripts/build_26q2_overlay.py</code>, then upload
+        <code>overlay_26q2.json</code>. Every figure it carries was read from
+        the document that was sent, with its page and the file's SHA-256.
+      </p>
+      <input type="file" accept="application/json" @change="pickOverlay" />
+
+      <div v-if="overlayFile" class="freeze-actions">
+        <button class="btn-sm" :disabled="overlayBusy" @click="sendOverlay(false)">
+          {{ overlayBusy ? 'Reading…' : 'Preview' }}
+        </button>
+        <button class="btn-sm primary"
+                :disabled="overlayBusy || !overlayPreview"
+                @click="sendOverlay(true)">
+          {{ overlayBusy ? 'Freezing…' : 'Confirm and freeze' }}
+        </button>
+        <button class="btn-sm" :disabled="overlayBusy"
+                @click="showOverlayPanel = false; overlayPreview = null; overlayError = null">
+          Cancel
+        </button>
+      </div>
+
+      <!-- The preview IS the review: what would be written, per report. -->
+      <div v-if="overlayPreview" class="overlay-preview">
+        <div v-for="rep in overlayPreview.reports" :key="rep.investor" class="overlay-rep">
+          <strong>{{ rep.investor }}</strong>
+          <span v-if="rep.error" class="banner err">{{ rep.error }}</span>
+          <template v-else>
+            <div class="muted">
+              {{ rep.source?.file }} · sha256 {{ (rep.source?.sha256 || '').slice(0, 12) }}…
+            </div>
+            <div>
+              {{ rep.resolved }} of {{ rep.roster_size }} One Pagers matched ·
+              <strong>{{ rep.cells_total }}</strong> cells would be overwritten
+              <template v-if="rep.printed_units_total">
+                ({{ rep.printed_units_total }} kept as printed text)
+              </template>
+            </div>
+            <div v-if="rep.unresolved?.length" class="banner err">
+              {{ rep.unresolved.length }} printed page(s) matched no deal:
+              {{ rep.unresolved.join(', ') }} — freezing is blocked until these
+              are resolved, or the record would be incomplete.
+            </div>
+            <div v-if="rep.already_frozen" class="banner err">
+              Already frozen — Re-freeze it instead if it must change.
+            </div>
+            <div v-if="rep.unmapped_labels?.length" class="muted">
+              {{ rep.unmapped_labels.length }} printed label(s) have no vetted
+              field and are recorded, not applied.
+            </div>
+            <table class="overlay-table">
+              <thead><tr><th>p.</th><th>One Pager</th><th>deal</th><th class="right">cells</th></tr></thead>
+              <tbody>
+                <tr v-for="r in rep.per_report" :key="r.title">
+                  <td>{{ r.page }}</td>
+                  <td>{{ r.title }}</td>
+                  <td :class="{ err: !r.vcode }">{{ r.vcode || 'no match' }}</td>
+                  <td class="right">{{ r.cells }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </template>
+        </div>
+      </div>
+
+      <p v-if="overlayError" class="banner err">{{ overlayError }}</p>
+      <p v-else-if="overlayDone" class="banner">
+        Frozen. {{ (overlayDone.reports || []).filter((r: any) => r.frozen).length }}
+        report(s) stored as sent.
+      </p>
     </div>
 
     <!-- Confirmation. Freezing is not destructive but it IS a commitment: from
@@ -872,6 +1010,12 @@ h2 { font-size: 20px; margin: 0 0 12px 0; }
 .freeze-confirm strong { display: block; margin-bottom: 6px; font-size: 13px; }
 .freeze-confirm p { margin: 0 0 8px; line-height: 1.45; }
 .freeze-confirm p.muted { color: #6b7684; }
+.overlay-preview { margin-top: 10px; }
+.overlay-rep { margin-bottom: 12px; }
+.overlay-table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 11px; }
+.overlay-table th, .overlay-table td { border-bottom: 1px solid #eee; padding: 2px 6px; text-align: left; }
+.overlay-table .right { text-align: right; }
+.overlay-table td.err { color: #b00020; font-weight: 600; }
 .freeze-actions { display: flex; gap: 8px; }
 
 .banner-meta {
