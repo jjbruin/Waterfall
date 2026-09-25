@@ -572,5 +572,63 @@ _un = (F.get_frozen("KOCINV", "2026-Q2")["payload"].get("published_unapplied")
 chk("a printed cell with no matching field is reported as unapplied",
     len(_un) == 1 and _un[0]["path"] == "cap_stack.no_such_field", str(_un))
 
+# ── N. Snapshot cells land where the SCREEN reads them ─────────────────────
+#
+# The deal rows render `_display` twins — SnapshotLoan.vue reads
+# `r.ltv_display`, SnapshotOperating.vue reads `r.noi_display.at_close` — while
+# the SUBTOTAL rows render the raw field. Writing only the raw value leaves a
+# frozen deal row showing the LIVE figure: the same defect the One Pager
+# variance had, and just as invisible.
+print("\nN. Snapshot cells land where the screen actually reads them")
+
+_assembled = {"subtabs": {"loan": {
+    "groups": {"G": {"deals": [{"vcode": "D9", "name": "Giant 7",
+                                "ltv": 0.10, "ltv_display": 0.10,
+                                "debt": 1.0, "debt_display": 1.0}],
+                     "subtotal": {"name": "Total G", "debt": 2.0,
+                                  "ltv": 0.20}}},
+    "ownership_flagged": [], "total": {"debt": 3.0}}}}
+_snap = {"loan": {
+    "Giant 7": {"ltv": {"published": 0.709, "page": 8},
+                "debt": {"published": 95.1e6, "page": 8}},
+    "Total G": {"debt": {"published": 288.4e6, "page": 8}},
+}}
+_cells, _missing = F.resolve_snapshot_cells(_assembled, _snap)
+chk("a deal row writes BOTH the raw field and the display twin",
+    "subtabs.loan.groups.G.deals[0].ltv" in _cells
+    and "subtabs.loan.groups.G.deals[0].ltv_display" in _cells,
+    str(sorted(_cells)))
+chk("a SUBTOTAL row writes the raw field only (it is what renders there)",
+    "subtabs.loan.groups.G.subtotal.debt" in _cells
+    and "subtabs.loan.groups.G.subtotal.debt_display" not in _cells)
+chk("every snapshot row resolved", _missing == [], str(_missing))
+
+_snap_sent = {"loan": {"Giant 7": {"ltv": {
+    "published": None, "display": "Dev", "units": "printed-sentinel",
+    "page": 8}}}}
+_sc, _ = F.resolve_snapshot_cells(_assembled, _snap_sent)
+chk("a printed sentinel goes to the display twin ONLY",
+    list(_sc) == ["subtabs.loan.groups.G.deals[0].ltv_display"], str(list(_sc)))
+chk("...carrying the printed text as the value the twin renders",
+    _sc["subtabs.loan.groups.G.deals[0].ltv_display"]["published"] == "Dev")
+chk("...and the raw numeric ltv is NOT written, so subtotals stay sound",
+    "subtabs.loan.groups.G.deals[0].ltv" not in _sc)
+
+# ── O. unapplied cells are predicted BEFORE the freeze ─────────────────────
+print("\nO. unapplied cells are predicted before the freeze, not found after")
+_dry = F.dry_run_unapplied(
+    {"subtabs": {}, "one_pagers": {"D1": {"cap_stack": {"debt": 1.0}}}},
+    {"D1": {"cap_stack.debt": {"published": 9.0},
+            "cap_stack.no_such_field": {"published": 2.0}}})
+chk("the dry run names exactly the cell that would not land",
+    [u["path"] for u in _dry] == ["cap_stack.no_such_field"], str(_dry))
+chk("the dry run does not mutate the report it was given",
+    True)   # asserted by the next line reading the ORIGINAL back
+_orig = {"subtabs": {}, "one_pagers": {"D1": {"cap_stack": {"debt": 1.0}}}}
+F.dry_run_unapplied(_orig, {"D1": {"cap_stack.debt": {"published": 9.0}}})
+chk("...the original still holds its live value, not the published one",
+    _orig["one_pagers"]["D1"]["cap_stack"]["debt"] == 1.0,
+    str(_orig["one_pagers"]["D1"]["cap_stack"]["debt"]))
+
 print(f"\n{'=' * 60}\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

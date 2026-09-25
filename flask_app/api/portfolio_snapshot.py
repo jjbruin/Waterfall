@@ -554,6 +554,12 @@ def post_freeze_overlay():
                                  .get("snapshot_pages", []) if True), None)]
             ],
             "snapshot_cells_total": len(snap_cells),
+            # WHAT WOULD NOT LAND. Computed by applying the overlay to a COPY
+            # of the assembled report, so the preview reports the same thing
+            # the freeze would do rather than a guess about it. A printed cell
+            # that never lands means the stored copy does not reproduce the
+            # page, so it is surfaced and it blocks.
+            "unapplied": FZ.dry_run_unapplied(assembled, overlay),
             "snapshot_unresolved": snap_missing,
             "snapshot_skipped": blk.get("snapshot_skipped") or [],
             "per_report": per_report,
@@ -567,6 +573,22 @@ def post_freeze_overlay():
         if rep["already_frozen"]:
             rep["error"] = (f"{inv} {quarter} is already frozen — Re-freeze it "
                             f"if it genuinely has to change.")
+            out["reports"].append(rep)
+            continue
+        _unapplied = rep.get("unapplied") or []
+        _acked = set(body.get("acknowledge_unapplied") or [])
+        _unacked = [u for u in _unapplied
+                    if f"{u.get('scope')}|{u.get('path')}" not in _acked]
+        rep["unapplied_count"] = len(_unapplied)
+        rep["unapplied_unacknowledged"] = len(_unacked)
+        if _unacked:
+            rep["error"] = (
+                f"{len(_unacked)} printed cell(s) would not land in the "
+                f"assembled report, so the frozen copy would not reproduce the "
+                f"page: "
+                + ", ".join(f"{u['path']}" for u in _unacked[:5])
+                + ("…" if len(_unacked) > 5 else "")
+                + ". Acknowledge each one to proceed.")
             out["reports"].append(rep)
             continue
         if snap_missing and not allow_unresolved:

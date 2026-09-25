@@ -923,6 +923,52 @@ def _index_subtab(sub: str, blk: dict) -> dict:
     return {k: v[0] for k, v in seen.items() if len(v) == 1}
 
 
+#: Deal-row fields whose RENDERED cell is a `_display` twin, per subtab.
+#:
+#: THE RAW FIELD DOES NOT REACH THE SCREEN FOR THESE. SnapshotLoan.vue renders
+#: `r.ltv_display`, SnapshotOperating.vue renders `r.noi_display.at_close`, and
+#: SnapshotFinancial.vue renders `r.debt_display` — so writing only the raw
+#: value leaves the frozen page showing the LIVE figure, which is the same
+#: defect the One Pager variance had. Subtotal and total rows are the other way
+#: round: they render the raw field, so they are NOT translated.
+_DISPLAY_TWIN = {
+    "financial": {"debt": "debt_display"},
+    "operating": {
+        "econ_occ": "econ_occ_display",
+        "noi.at_close": "noi_display.at_close",
+        "noi.uw_ye": "noi_display.uw_ye",
+        "noi.projected_ye": "noi_display.projected_ye",
+        "expected_growth": "expected_growth_display",
+        "actual_growth": "actual_growth_display",
+    },
+    "loan": {
+        "rate": "rate_display", "maturity": "maturity_display",
+        "debt": "debt_display", "ytd_dscr": "ytd_dscr_display",
+        "ltv": "ltv_display", "debt_yield": "debt_yield_display",
+    },
+}
+
+
+def _snapshot_targets(sub: str, field: str, spec: dict, is_deal: bool) -> list:
+    """The path suffix(es) one printed cell should be written to.
+
+    A NUMBER GOES TO BOTH the raw field and its display twin: the twin is what
+    renders, and the raw is what the subtotals are built from, so writing only
+    one leaves the page and its totals disagreeing.
+
+    A SENTINEL GOES TO THE TWIN ALONE. "—" and "Dev" are display strings; the
+    twin legitimately holds them, and putting one in the raw numeric field
+    would corrupt every sum that reads it.
+    """
+    twin = _DISPLAY_TWIN.get(sub, {}).get(field) if is_deal else None
+    is_sentinel = spec.get("units") == "printed-sentinel"
+    if twin and is_sentinel:
+        return [twin]
+    if twin:
+        return [field, twin]
+    return [] if is_sentinel and not twin else [field]
+
+
 def resolve_snapshot_cells(payload: dict, snapshot: dict) -> tuple:
     """(``{dotted path: spec}``, ``[rows that matched nothing]``).
 
@@ -944,9 +990,40 @@ def resolve_snapshot_cells(payload: dict, snapshot: dict) -> tuple:
             if not prefix:
                 missing.append(f"{sub}/{label}")
                 continue
+            is_deal = ".deals[" in prefix or ".ownership_flagged[" in prefix
             for field, spec in (fields or {}).items():
-                cells[f"{prefix}.{field}"] = spec
+                for target in _snapshot_targets(sub, field, spec, is_deal):
+                    out = dict(spec)
+                    if target.endswith("_display") or "_display." in target:
+                        # The twin renders, so the printed text goes in as the
+                        # VALUE here rather than through `published_display` —
+                        # the Snapshot components do not read that map.
+                        if spec.get("display") is not None:
+                            out = {**spec, "published": spec["display"],
+                                   "display": None}
+                    cells[f"{prefix}.{target}"] = out
     return cells, missing
+
+
+def dry_run_unapplied(assembled: dict, overlay: dict) -> list:
+    """Which overlay cells would NOT land, without freezing anything.
+
+    Applies the overlay to a DEEP COPY of the assembled report and returns what
+    `_apply_overlay` could not place. The preview and the freeze therefore
+    answer from the same code — a preview that predicted differently from the
+    write it precedes would be worse than none.
+    """
+    import copy
+    payload = copy.deepcopy(assembled or {})
+    one_pagers = {k: copy.deepcopy(v) for k, v in
+                  (payload.get("one_pagers") or {}).items()}
+    # A One Pager scope needs a target to write into; absent ones are reported
+    # by the roster resolution, not here.
+    for scope in (overlay or {}):
+        if scope != "__subtabs__":
+            one_pagers.setdefault(scope, {})
+    _apply_overlay(payload, one_pagers, overlay or {})
+    return payload.get("published_unapplied") or []
 
 
 def is_frozen(investor_code: str, quarter: str) -> bool:
