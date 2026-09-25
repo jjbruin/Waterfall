@@ -291,6 +291,26 @@ def _match_key_strict(name: str, entries: dict) -> Optional[str]:
     return None
 
 
+#: Minimum token-overlap score for a fuzzy match to count.
+#:
+#: THE OLD 0.25 ALWAYS RETURNED SOMETHING, AND A CONFIDENT WRONG BLAST RADIUS IS
+#: WORSE THAN A MISS. ``impact_of`` is asked "what breaks if I change X"; at 0.25
+#: an unlisted name still resolved to the nearest entry, so a typo or a table we
+#: do not track came back with a real consumer list attached to it — sourced,
+#: formatted and wrong, with nothing on screen saying the name was never found.
+#:
+#: MEASURED, NOT PICKED. Against the 20 sources and 4 constants in
+#: dependencies.json: the highest-scoring UNKNOWN name is 0.3333
+#: ("flux capacitor feed" catching accounting_feed on the token "feed"), while
+#: the lowest-scoring REAL partial query is 0.5000 ("hard costs" ->
+#: MRI_Inspection.mHardCosts). Every listed name scores 1.0 against its own
+#: entry. 0.5 is the floor of that window, and reads as a rule: at least half the
+#: query's tokens must hit, counting a hit on the entry's NAME twice.
+#:
+#: Exact and substring names never reach here — ``_match_key_strict`` runs first.
+_MATCH_FLOOR = 0.5
+
+
 def _match_key(name: str, entries: dict) -> Optional[str]:
     """Best token-overlap match, or None below the confidence floor."""
     q = _tokens(name)
@@ -303,7 +323,7 @@ def _match_key(name: str, entries: dict) -> Optional[str]:
         score = (len(q & _tokens(blob)) + key_hits) / (2.0 * len(q))
         if score > best_score:
             best, best_score = k, score
-    return best if best_score >= 0.25 else None
+    return best if best_score >= _MATCH_FLOOR else None
 
 
 def _matching_notes(deps: dict, want: str) -> dict:

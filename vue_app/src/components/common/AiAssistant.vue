@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, nextTick, onMounted } from 'vue'
+import { ref, computed, nextTick, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '../../api/client'
 import { useDataStore } from '../../stores/data'
@@ -72,6 +72,7 @@ const isOpen = ref(false)
 const isAvailable = ref(false)
 const messages = ref<Message[]>([])
 const inputText = ref('')
+const inputEl = ref<HTMLTextAreaElement | null>(null)
 const isLoading = ref(false)
 const toolActivity = ref<ToolEvent[]>([])
 const chatBody = ref<HTMLElement | null>(null)
@@ -206,6 +207,56 @@ function useSuggestion(text: string) {
   inputText.value = text
   suggestions.value = []
   sendMessage()
+}
+
+// ── "How to ask" helper ──────────────────────────────────────────────
+//
+// THE SAME LABEL IS NOT THE SAME FIGURE ON EVERY TAB. "Debt" is three separate
+// dictionary entries — one_pager.debt (which a development deal rebases onto
+// hard costs), snapshot_financial.debt and snapshot_loan.debt (which do not).
+// Asked without a tab, lookup_field correctly returns ALL the variants rather
+// than guessing, so a question naming the tab is the one that gets a single
+// precise answer. That is what this tip is for.
+//
+// It FILLS the box rather than sending, unlike `useSuggestion` above: these are
+// templates to edit — swap in your own field or tab — not questions to fire as
+// written. Sending on click would throw away the edit the user came to make.
+
+const HOW_TO_ASK_KEY = 'ai.howToAsk.dismissed'
+
+const HOW_TO_ASK_EXAMPLES = [
+  'On the One Pager, where does Debt come from?',
+  'How is ROE calculated on the One Pager, and where does each input come from?',
+  'Is Current Valuation from MRI or entered by an analyst?',
+  'On the Snapshot, how is Debt Yield calculated?',
+]
+
+const howToAskDismissed = ref(false)
+try {
+  howToAskDismissed.value = localStorage.getItem(HOW_TO_ASK_KEY) === '1'
+} catch {
+  // A private window has no storage. The tip is a convenience and never
+  // load-bearing, so the panel simply shows it.
+}
+
+// Only while there is nothing to interrupt: the box is empty, nothing is
+// streaming, and the user has not dismissed it.
+const showHowToAsk = computed(() =>
+  !howToAskDismissed.value && !isLoading.value && !inputText.value.trim()
+)
+
+function dismissHowToAsk() {
+  howToAskDismissed.value = true
+  try {
+    localStorage.setItem(HOW_TO_ASK_KEY, '1')
+  } catch {
+    // Nothing to persist to; it stays dismissed for this session.
+  }
+}
+
+function useHowToAskExample(text: string) {
+  inputText.value = text
+  nextTick(() => inputEl.value?.focus())
 }
 
 function scrollToBottom() {
@@ -405,8 +456,33 @@ function formatToolName(name: string): string {
         </div>
       </div>
 
+      <!-- How to ask: shown only while the box is empty and nothing is streaming -->
+      <div v-if="showHowToAsk" class="ai-howto">
+        <div class="ai-howto-head">
+          <span class="ai-howto-tip">
+            Name the tab (One Pager or Snapshot) and the exact field — the same
+            label can come from different places on different tabs.
+          </span>
+          <button
+            class="ai-howto-dismiss"
+            type="button"
+            title="Hide this tip"
+            aria-label="Hide this tip"
+            @click="dismissHowToAsk"
+          >&times;</button>
+        </div>
+        <button
+          v-for="(q, i) in HOW_TO_ASK_EXAMPLES"
+          :key="i"
+          class="ai-howto-example"
+          type="button"
+          @click="useHowToAskExample(q)"
+        >{{ q }}</button>
+      </div>
+
       <div class="ai-panel-footer">
         <textarea
+          ref="inputEl"
           v-model="inputText"
           class="ai-input"
           placeholder="Ask about deals, returns, data..."
@@ -609,6 +685,53 @@ function renderMarkdown(text: string): string {
 }
 .ai-typing-dot:nth-child(2) { animation-delay: 0.2s; }
 .ai-typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+/* How-to-ask helper — sits directly above the input, deliberately quieter than
+   the suggestion chips: it is guidance, not the next thing to click. */
+.ai-howto {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px;
+  border-top: 1px solid #eee;
+  background: #fafafa;
+}
+.ai-howto-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+.ai-howto-tip {
+  flex: 1;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #6b7280;
+}
+.ai-howto-dismiss {
+  flex: none;
+  background: none;
+  border: none;
+  color: #9aa3af;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+}
+.ai-howto-dismiss:hover { color: var(--color-primary, #1F4E79); }
+.ai-howto-example {
+  background: none;
+  border: none;
+  padding: 2px 0;
+  font-size: 11.5px;
+  font-family: inherit;
+  color: var(--color-primary, #1F4E79);
+  text-align: left;
+  cursor: pointer;
+}
+.ai-howto-example:hover { text-decoration: underline; }
+/* The helper already draws the rule that separates this band from the
+   messages; without this the footer draws a second one 8px below it. */
+.ai-howto + .ai-panel-footer { border-top: none; }
 
 .ai-panel-footer {
   display: flex;

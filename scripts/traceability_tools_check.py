@@ -73,7 +73,15 @@ chk("formula_latex is a single line (a $$ block broken by \\n never renders)",
     "\n" not in (r.get("formula_latex") or ""))
 chk("the 45-day grace is carried as its own input",
     any("45-day" in i["component"] for i in r.get("inputs") or []))
-chk("the grace is a LOOK-FORWARD window, asymmetric", "NOT pulled back" in b)
+# PHRASING MOVED, THE FACT DID NOT. This read `"NOT pulled back" in b` against
+# the pre-2026-09-25 wording. The dictionary was reworded into plain language
+# and now says "...contributions and returns of capital in that window are not —
+# this asymmetry is intentional". Asserting the retired literal would fail on
+# correct content, so the check tests the CLAIM: the window pulls things back,
+# and it is explicitly asymmetric. Both halves are required — "pulled back" alone
+# is satisfied by a symmetric window, which is the error this exists to catch.
+chk("the grace is a LOOK-FORWARD window, asymmetric",
+    "pulled back" in b.lower() and "asymmetr" in b.lower())
 chk("it is distinguished from the waterfall.py pref-compounding grace",
     "waterfall.py" in b)
 chk("accounting_feed is named as the distributions source", "accounting_feed" in b)
@@ -86,7 +94,10 @@ print("\nUW ROE (one_pager.uw_roe_to_date)")
 r = lookup(field_id="one_pager.uw_roe_to_date")
 b = blob(r)
 chk("7071 named", "7071" in b)
-chk("7071 is abs() — NOT sign-preserving", "NOT sign-preserving" in b)
+# Case-insensitive for the same reason as the grace check above: the plain-
+# language rewrite lowercased the "NOT". The asymmetry between 7071 and 7073 is
+# the thing being pinned, and it survives verbatim ("not sign-preserving").
+chk("7071 is abs() — NOT sign-preserving", "not sign-preserving" in b.lower())
 chk("7073 named", "7073" in b)
 chk("7073 IS sign-preserving", "sign-preserving" in b)
 chk("Projected IS named as the vSource", "Projected IS" in b)
@@ -104,7 +115,20 @@ chk("the One Pager variant is present",
 chk("a Snapshot variant is present",
     any(str(v["tab"]).startswith("snapshot") for v in variants))
 chk("the dev hard-costs override is named", "hard" in b.lower() and "cost" in b.lower())
-chk("hard costs are flagged One Pager ONLY", "One Pager only" in b)
+# Was `"One Pager only" in b`; the rewrite says "only on the One Pager". Rather
+# than swap one literal for another, this now asserts the scoping sits on the
+# HARD-COSTS INPUT ITSELF — stronger than a blob substring, which a stray
+# mention of the phrase on any unrelated input would satisfy.
+_hard_inputs = [i
+                for v in (r.get("variants") or [])
+                for i in (v.get("inputs") or [])
+                if "hard" in json.dumps(i, ensure_ascii=False).lower()
+                and "cost" in json.dumps(i, ensure_ascii=False).lower()]
+chk("hard costs are flagged One Pager ONLY",
+    bool(_hard_inputs) and any(
+        "one pager" in (i.get("note") or "").lower()
+        and "only" in (i.get("note") or "").lower()
+        for i in _hard_inputs))
 chk("the ISBS debt accounts 2150/2152/2210 are named", "2150" in b and "2210" in b)
 chk("no variant claims clean arithmetic (debt is a resolution order, not a sum)",
     all(not v.get("formula_is_arithmetic") for v in variants))
@@ -240,8 +264,23 @@ finally:
 # ── 10. The enum the model is constrained to ─────────────────────────────
 print("\nThe field_id enum")
 ids = A._FIELD_IDS
-chk("the enum carries the 88 full tab.field ids",
-    sum(1 for i in ids if "." in i) == 88)
+# DERIVED FROM THE FILE, NOT HARDCODED. This pinned the literal 88 and so failed
+# the moment the dictionary was regenerated at 91 fields — a maintenance failure,
+# not a real one. What actually matters is that EVERY field in the dictionary
+# reaches the enum: a loader that silently dropped entries would leave the model
+# unable to ask for them. The `> 0` guard stops it passing vacuously if the file
+# ever fails to load and both sides collapse to zero.
+_dict_field_ids = [f["field_id"]
+                   for f in json.load(open(
+                       os.path.join(os.path.dirname(os.path.dirname(
+                           os.path.abspath(__file__))),
+                           "flask_app", "reference", "data_dictionary.json"),
+                       encoding="utf-8"))["fields"]
+                   if f.get("field_id")]
+chk(f"the enum carries all {len(_dict_field_ids)} full tab.field ids",
+    len(_dict_field_ids) > 0
+    and sum(1 for i in ids if "." in i) == len(_dict_field_ids),
+    f"enum={sum(1 for i in ids if '.' in i)} file={len(_dict_field_ids)}")
 chk("the enum ALSO carries bare names, or 'debt' could never be asked",
     "debt" in ids and "total_cap" in ids)
 chk("the enum is built from the file, not written out in code",
