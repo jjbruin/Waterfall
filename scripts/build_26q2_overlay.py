@@ -331,13 +331,19 @@ def _split_row(line: str, ncols: int) -> tuple:
     # Where does the free-text comment start? The first word-like token that
     # appears AFTER at least one cell — so a label's own words are not mistaken
     # for a comment, and a rate's "fixed" is not either.
-    seen_cell = False
+    # A COMMENT ONLY STARTS ONCE THE WHOLE TABLE HAS BEEN READ. Cutting at the
+    # first word after any cell destroyed "Total PSC TGA 2022 LLC": 2022 is
+    # cell-like and LLC is a word, so the row was truncated to one cell and
+    # dropped — all four fund subtotals vanished from the page. Requiring
+    # `ncols` cells first means a number inside a LABEL cannot trigger the cut.
+    # Page 6 has no comment column at all and passes ncols=0 to disable it.
+    seen_cells = 0
     cut = len(toks)
     for i, t in enumerate(toks):
         if _cellish(t):
-            seen_cell = True
+            seen_cells += 1
             continue
-        if seen_cell and re.match(r"^[A-Za-z]", t):
+        if ncols and seen_cells >= ncols and re.match(r"^[A-Za-z]", t):
             cut = i
             break
     region = toks[:cut]
