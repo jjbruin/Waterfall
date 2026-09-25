@@ -714,6 +714,53 @@ const statusColor = computed(() => {
               {{ rep.unmapped_labels.length }} printed label(s) have no vetted
               field and are recorded, not applied.
             </div>
+
+            <!-- What would actually CHANGE, against live. The expectation is
+                 printed beside the count so a big deviation is obvious to a
+                 reader; nothing is enforced on it. -->
+            <div v-if="rep.live_diff" class="overlay-diff">
+              <strong>
+                {{ rep.live_diff.differs_total }} of
+                {{ rep.live_diff.cells_total }} cells differ from live
+              </strong>
+              <span class="muted">
+                — expected ≈{{ rep.live_diff.expected_differences }}
+              </span>
+              <span v-if="Math.abs(rep.live_diff.differs_total - rep.live_diff.expected_differences) > 40"
+                    class="banner err">
+                that is a long way from the expectation — check before freezing
+              </span>
+              <div class="muted">
+                per page:
+                <span v-for="(v, pg) in rep.live_diff.by_page" :key="pg">
+                  p{{ pg }} {{ v.differs }}/{{ v.cells }}&nbsp;
+                </span>
+              </div>
+
+              <div v-if="rep.live_diff.warnings?.length" class="banner err">
+                <div v-for="(w, i) in rep.live_diff.warnings" :key="i">
+                  <strong>{{ w.column }}</strong> — {{ w.detail }}
+                </div>
+                Acknowledge each to proceed: a whole column differing, or a
+                ratio far from 1, is what a units or column-shift error looks
+                like.
+              </div>
+
+              <div v-if="rep.live_diff.sentinels_live_non_blank?.length" class="muted">
+                {{ rep.live_diff.sentinels_live_non_blank.length }} printed
+                “—”/“n/a”/“Dev” cell(s) sit over a live value — the printed
+                text is stored so the page shows what was sent:
+                <span v-for="(s, i) in rep.live_diff.sentinels_live_non_blank.slice(0, 4)" :key="i">
+                  {{ s.path }} (live {{ s.live }});
+                </span>
+              </div>
+
+              <div v-if="rep.unapplied_count" class="banner err">
+                {{ rep.unapplied_unacknowledged }} of {{ rep.unapplied_count }}
+                printed cell(s) would NOT land in the report — the frozen copy
+                would not reproduce the page.
+              </div>
+            </div>
             <table class="overlay-table">
               <thead><tr><th>p.</th><th>One Pager</th><th>deal</th><th class="right">cells</th></tr></thead>
               <tbody>
@@ -1011,6 +1058,7 @@ h2 { font-size: 20px; margin: 0 0 12px 0; }
 .freeze-confirm p { margin: 0 0 8px; line-height: 1.45; }
 .freeze-confirm p.muted { color: #6b7684; }
 .overlay-preview { margin-top: 10px; }
+.overlay-diff { margin-top: 8px; padding: 6px 8px; background: #f7f9fc; border-radius: 4px; }
 .overlay-rep { margin-bottom: 12px; }
 .overlay-table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 11px; }
 .overlay-table th, .overlay-table td { border-bottom: 1px solid #eee; padding: 2px 6px; text-align: left; }

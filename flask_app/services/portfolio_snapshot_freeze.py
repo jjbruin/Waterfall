@@ -1026,6 +1026,134 @@ def dry_run_unapplied(assembled: dict, overlay: dict) -> list:
     return payload.get("published_unapplied") or []
 
 
+#: Roughly how many cells the 26Q2 overlay is expected to change. Shown on the
+#: preview so a big deviation is obvious. NOT enforced — the point is that a
+#: reader who sees 900 where 114 was expected stops and asks why, which no
+#: automatic threshold does as well.
+EXPECTED_DIFFERENCES_26Q2 = 114
+
+#: A column is flagged when most of its rows differ, or when the typical
+#: overlay/live ratio is nowhere near 1. Both are signatures of a mechanical
+#: fault rather than a genuine correction: a units error lands near 1e6 or
+#: 1e-6, and a column shift makes almost every row differ at once.
+_MOSTLY_DIFFER = 0.60
+_RATIO_LO, _RATIO_HI = 0.5, 2.0
+
+
+def _num_or_none(v):
+    if isinstance(v, bool) or v is None or not isinstance(v, (int, float)):
+        return None
+    f = float(v)
+    return None if f != f else f
+
+
+def get_one_pager_live(vcode: str, quarter: str):
+    """One deal's LIVE One Pager, through the same getter the freeze uses.
+
+    The preview compares against exactly what the freeze would store, so it
+    must read it the same way — a second route to the One Pager would let the
+    preview describe a payload the freeze never sees.
+    """
+    try:
+        return _default_one_pager_getter()(vcode, quarter)
+    except Exception:
+        log.exception("live One Pager unavailable for %s %s", vcode, quarter)
+        return None
+
+
+def compare_overlay_to_live(targets: dict, overlay: dict) -> dict:
+    """What the overlay would CHANGE, per page and per column.
+
+    ``targets`` is ``{"__subtabs__": assembled, vcode: one_pager, ...}`` — the
+    live payloads the overlay is about to be written over.
+
+    THREE THINGS A READER CANNOT GET FROM A CELL COUNT. How many cells actually
+    move (a freeze that changes nothing means the overlay never landed); which
+    columns move TOGETHER (a whole column differing is a column shift, not
+    thirty independent corrections); and the typical ratio (a units error sits
+    at 1e6 or 1e-6 and every individual cell looks plausible).
+
+    A SENTINEL WHOSE LIVE VALUE IS NOT BLANK is called out separately. The page
+    printed "—" while the app holds a figure — East Manchester's loan rate is
+    the known case — so the frozen row would show a number that was never sent
+    unless the printed dash is stored over it.
+    """
+    per_page, per_col, differing, sentinels = {}, {}, [], []
+    for scope, cells in (overlay or {}).items():
+        target = targets.get(scope)
+        if target is None:
+            continue
+        for path, spec in (cells or {}).items():
+            page = spec.get("page")
+            pg = per_page.setdefault(page, {"cells": 0, "differs": 0})
+            pg["cells"] += 1
+            col = path.rsplit(".", 1)[-1]
+            cc = per_col.setdefault(f"{scope if scope == '__subtabs__' else 'one_pager'}.{col}",
+                                    {"n": 0, "differ": 0, "ratios": []})
+            cc["n"] += 1
+
+            live = _read_path(target, path)
+            pub = spec.get("published")
+            disp = spec.get("display")
+            is_sentinel = spec.get("units") == "printed-sentinel"
+
+            if is_sentinel:
+                if live not in (None, "", "—", "n/a", "N/A", "Dev"):
+                    sentinels.append({"scope": scope, "path": path,
+                                      "printed": disp, "live": live,
+                                      "page": page})
+                    pg["differs"] += 1
+                    cc["differ"] += 1
+                    differing.append({"scope": scope, "path": path,
+                                      "published": disp, "live": live,
+                                      "page": page, "kind": "sentinel"})
+                continue
+
+            want = pub if pub is not None else disp
+            same = (want == live)
+            ln, wn = _num_or_none(live), _num_or_none(want)
+            if ln is not None and wn is not None:
+                same = abs(wn - ln) <= max(0.005, abs(wn) * 1e-6)
+                if ln:
+                    cc["ratios"].append(wn / ln)
+            if not same:
+                pg["differs"] += 1
+                cc["differ"] += 1
+                differing.append({"scope": scope, "path": path,
+                                  "published": want, "live": live,
+                                  "page": page, "kind": "value"})
+
+    warnings = []
+    for col, c in per_col.items():
+        rs = sorted(c["ratios"])
+        med = rs[len(rs) // 2] if rs else None
+        c["median_ratio"] = med
+        c.pop("ratios", None)
+        if c["n"] >= 4 and c["differ"] / c["n"] >= _MOSTLY_DIFFER:
+            warnings.append({
+                "column": col, "kind": "most-rows-differ",
+                "detail": f"{c['differ']} of {c['n']} rows differ — a column "
+                          f"shift looks exactly like this"})
+        if med is not None and not (_RATIO_LO <= med <= _RATIO_HI):
+            warnings.append({
+                "column": col, "kind": "ratio-far-from-one",
+                "detail": f"typical overlay/live ratio is {med:.4g}"
+                          + (" — that is a units error (1e6)"
+                             if med > 1e5 or (med and med < 1e-5) else "")})
+
+    return {
+        "differs_total": sum(p["differs"] for p in per_page.values()),
+        "cells_total": sum(p["cells"] for p in per_page.values()),
+        "expected_differences": EXPECTED_DIFFERENCES_26Q2,
+        "by_page": {str(k): v for k, v in sorted(
+            per_page.items(), key=lambda kv: (kv[0] is None, kv[0]))},
+        "by_column": per_col,
+        "differing_cells": differing,
+        "sentinels_live_non_blank": sentinels,
+        "warnings": warnings,
+    }
+
+
 def is_frozen(investor_code: str, quarter: str) -> bool:
     """True when this investor+quarter has a stored copy."""
     return _current_row(investor_code, quarter) is not None

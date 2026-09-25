@@ -560,6 +560,16 @@ def post_freeze_overlay():
             # that never lands means the stored copy does not reproduce the
             # page, so it is surfaced and it blocks.
             "unapplied": FZ.dry_run_unapplied(assembled, overlay),
+            # WHAT WOULD ACTUALLY CHANGE, against live, server-side. A cell
+            # count says nothing about whether the overlay moves anything;
+            # this says how many cells move, which columns move TOGETHER (a
+            # shift, not thirty corrections) and the typical ratio (a units
+            # error sits at 1e6 and every single cell still looks plausible).
+            "live_diff": FZ.compare_overlay_to_live(
+                {"__subtabs__": assembled,
+                 **{vc: (FZ.get_one_pager_live(vc, quarter) or {})
+                    for vc in overlay if vc != "__subtabs__"}},
+                overlay),
             "snapshot_unresolved": snap_missing,
             "snapshot_skipped": blk.get("snapshot_skipped") or [],
             "per_report": per_report,
@@ -573,6 +583,21 @@ def post_freeze_overlay():
         if rep["already_frozen"]:
             rep["error"] = (f"{inv} {quarter} is already frozen — Re-freeze it "
                             f"if it genuinely has to change.")
+            out["reports"].append(rep)
+            continue
+        _ld = rep.get("live_diff") or {}
+        _warn = _ld.get("warnings") or []
+        _ackw = set(body.get("acknowledge_warnings") or [])
+        _unackw = [w for w in _warn
+                   if f"{w.get('column')}|{w.get('kind')}" not in _ackw]
+        if _unackw:
+            rep["error"] = (
+                f"{len(_unackw)} column warning(s) — most rows differing, or a "
+                f"ratio far from 1, is what a units or column-shift error looks "
+                f"like: "
+                + "; ".join(f"{w['column']}: {w['detail']}" for w in _unackw[:3])
+                + ("…" if len(_unackw) > 3 else "")
+                + ". Acknowledge each to proceed.")
             out["reports"].append(rep)
             continue
         _unapplied = rep.get("unapplied") or []

@@ -630,5 +630,77 @@ chk("...the original still holds its live value, not the published one",
     _orig["one_pagers"]["D1"]["cap_stack"]["debt"] == 1.0,
     str(_orig["one_pagers"]["D1"]["cap_stack"]["debt"]))
 
+# ── P. the preview's live comparison, and every warning it can raise ───────
+#
+# Driven with a SYNTHETIC live payload built to trigger each warning on
+# purpose, because the three faults this guards against are exactly the ones
+# that look fine cell by cell: a units error (every value plausible, all of
+# them 1e6 out), a column shift (every value plausible, all in the wrong
+# column), and a printed dash sitting over a live figure.
+print("\nP. the preview's live comparison raises each warning it should")
+
+_live = {
+    "__subtabs__": {"subtabs": {"loan": {"groups": {"G": {"deals": [
+        # A units column: live in MILLIONS-as-units, overlay in dollars.
+        {"debt": 33.5, "ltv": 0.665, "ytd_dscr": 2.0, "rate": "5.6% fixed"},
+        {"debt": 45.4, "ltv": 0.560, "ytd_dscr": 3.5, "rate": "3.5% fixed"},
+        {"debt": 95.1, "ltv": 0.709, "ytd_dscr": 2.1, "rate": "3.9% fixed"},
+        {"debt": 77.4, "ltv": 0.850, "ytd_dscr": 1.4, "rate": "SOFR + 250"},
+    ]}}}}},
+}
+_ov = {"__subtabs__": {}}
+for i, (d, l) in enumerate([(33.5e6, 0.665), (45.4e6, 0.560),
+                            (95.1e6, 0.709), (77.4e6, 0.850)]):
+    _ov["__subtabs__"][f"subtabs.loan.groups.G.deals[{i}].debt"] = {
+        "published": d, "page": 8}
+    # ltv agrees exactly — this column must NOT be flagged.
+    _ov["__subtabs__"][f"subtabs.loan.groups.G.deals[{i}].ltv"] = {
+        "published": l, "page": 8}
+# A printed dash over a live figure.
+_ov["__subtabs__"]["subtabs.loan.groups.G.deals[0].rate"] = {
+    "published": None, "display": "—", "units": "printed-sentinel", "page": 8}
+
+_cmp = F.compare_overlay_to_live(_live, _ov)
+chk("it counts how many cells actually differ",
+    _cmp["differs_total"] == 5, str(_cmp["differs_total"]))
+chk("and reports the count per page",
+    (_cmp["by_page"].get("8") or {}).get("differs") == 5,
+    str(_cmp["by_page"]))
+chk("it carries the ~114 expectation for the reader to compare against",
+    _cmp["expected_differences"] == F.EXPECTED_DIFFERENCES_26Q2 == 114)
+
+_cols = _cmp["by_column"]
+chk("the units column is flagged, with a ratio near 1e6",
+    any(w["column"].endswith(".debt") and w["kind"] == "ratio-far-from-one"
+        for w in _cmp["warnings"]),
+    str(_cmp["warnings"]))
+chk("...and its median ratio really is ~1e6",
+    abs((_cols.get("__subtabs__.debt") or {}).get("median_ratio", 0) - 1e6) < 1,
+    str(_cols.get("__subtabs__.debt")))
+chk("a column where MOST rows differ is flagged as a possible shift",
+    any(w["column"].endswith(".debt") and w["kind"] == "most-rows-differ"
+        for w in _cmp["warnings"]), str(_cmp["warnings"]))
+chk("a column that AGREES is not flagged — the paired direction",
+    not any(w["column"].endswith(".ltv") for w in _cmp["warnings"]),
+    str(_cmp["warnings"]))
+chk("the sentinel over a live figure is listed separately",
+    [s["path"] for s in _cmp["sentinels_live_non_blank"]]
+    == ["subtabs.loan.groups.G.deals[0].rate"],
+    str(_cmp["sentinels_live_non_blank"]))
+chk("...naming the printed dash and the live value it would cover",
+    _cmp["sentinels_live_non_blank"][0]["printed"] == "—"
+    and _cmp["sentinels_live_non_blank"][0]["live"] == "5.6% fixed")
+chk("every differing cell is listed, not just counted",
+    len(_cmp["differing_cells"]) == 5, str(len(_cmp["differing_cells"])))
+
+# A clean overlay raises nothing — otherwise the warnings are noise.
+_clean = F.compare_overlay_to_live(
+    _live, {"__subtabs__": {
+        f"subtabs.loan.groups.G.deals[{i}].ltv": {"published": l, "page": 8}
+        for i, l in enumerate([0.665, 0.560, 0.709, 0.850])}})
+chk("an overlay that matches live raises NO warning and no differences",
+    _clean["warnings"] == [] and _clean["differs_total"] == 0,
+    str(_clean["warnings"]) + str(_clean["differs_total"]))
+
 print(f"\n{'=' * 60}\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
