@@ -435,6 +435,53 @@ TOOLS = [
             "required": ["name"],
         },
     },
+    {
+        "name": "trace_field_value",
+        "description": (
+            "The REAL numbers behind a calculated field FOR ONE DEAL. Use when "
+            "the question is about a specific deal — 'for this deal, how is ROE "
+            "calculated', 'show me the numbers behind Total Cap', 'why is LTV "
+            "that figure'. lookup_field gives the formula in the abstract; this "
+            "gives the deal's own values for each input, each labelled with its "
+            "source, read from the SAME payload the page renders so the figures "
+            "tie to the screen. Returns `reconciles` when the inputs were "
+            "checked against the published value. A component the builder does "
+            "not publish comes back unavailable with a reason — never a guess. "
+            "Snapshot fields (snapshot_loan.*) also need `investor_code`, "
+            "because the Snapshot is assembled per investor; ask the user for it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "deal_id": {
+                    "type": "string",
+                    "description": "The deal's vcode, e.g. P0000109.",
+                },
+                "field_id": {
+                    "type": "string",
+                    "description": (
+                        "Dictionary field id, e.g. one_pager.roe_to_date, "
+                        "one_pager.total_cap, snapshot_loan.ltv."
+                    ),
+                },
+                "quarter": {
+                    "type": "string",
+                    "description": (
+                        "Reporting quarter, e.g. 26Q2. Optional for One Pager "
+                        "fields (defaults to the most recent completed "
+                        "quarter); REQUIRED for snapshot fields."
+                    ),
+                },
+                "investor_code": {
+                    "type": "string",
+                    "description": (
+                        "Required for snapshot_* fields only. Never invent one."
+                    ),
+                },
+            },
+            "required": ["deal_id", "field_id"],
+        },
+    },
 ]
 
 # ── System prompt ────────────────────────────────────────────────────
@@ -471,6 +518,7 @@ Tool selection tips:
 - Use get_tenant_roster for tenant info, lease expirations, rent rolls (commercial deals only)
 - Use lookup_field for where-does-this-come-from / how-is-this-calculated / what-source questions about a REPORT FIELD (Debt, Total Pref, LTV, Econ Occ, NOI At Close...). It answers where a number comes from, not what the number is — pair it with a value tool if the user wants both.
 - Use impact_of for what-uses-X / what-depends-on-X / what-breaks-if-I-change-X, where X is a source table, a shared constant, or a field.
+- Use trace_field_value when the question is about a SPECIFIC DEAL's numbers — "for this deal, how is ROE calculated", "show me the numbers behind Total Cap", "why is LTV that figure". lookup_field gives the formula in general; trace_field_value gives this deal's actual values for each input, read from the same payload the page renders. Prefer it over lookup_field whenever a deal is in context and the user asks for numbers; use lookup_field when they ask what a field means or where it comes from in general.
 - NEVER answer either kind of question from general knowledge, from a tool's description text, or from the names of tables you have seen. If lookup_field or impact_of does not have it, say so — an ungrounded answer about where a number comes from is worse than no answer.
 
 Key conventions:
@@ -521,14 +569,46 @@ Take these only from the tool's `inputs[].source` and `source_value`. Never
 invent a source. If the result has no source, say the source is unavailable —
 never drop this part silently.
 
-**How it's calculated:** ONLY when the field is a formula. Put the formula on its
-OWN line (see the FORMULA RULE below), then one bullet per input, each naming
-that input's own source, broken up one per line — like the ROE breakdown in the
-dictionary, never run together into a paragraph.
+**How it's calculated:** ONLY when the field is a formula. Render the field's
+`formula_latex` as a KaTeX block on its OWN line — $$<formula_latex>$$, one
+single line, verbatim (see the FORMULA RULE below). Do NOT write the formula out
+as plain text when `formula_latex` is present. Then one bullet per input, each
+naming that input's own source, broken up one per line — like the ROE breakdown
+in the dictionary, never run together into a paragraph.
 
 **Worth knowing:** ONLY when there is a real caveat — a supplement or uploaded
 value that overrides the MRI figure, a rule that applies on one tab only, a known
 gotcha. Plain words, at most a couple of lines. Omit entirely when there is none.
+
+trace_field_value answers — "FOR THIS DEAL, how is X calculated / what are the
+numbers?" Use this template when the question is about a SPECIFIC deal rather
+than the field in general:
+
+**In plain terms:** the result for this deal, in one sentence with the figure in
+it — "Burton Retail's ROE to date is 8.2% a year."
+
+**The numbers behind it:** the formula with THIS DEAL'S ACTUAL VALUES substituted
+in, as a single-line $$...$$ block ending in the result, e.g.
+$$\\text{ROE} = \\frac{\\$12.3\\text{M}}{\\$45.1\\text{M} \\times 2.3} = 8.2\\%$$
+Then one bullet per input: its number for this deal and where that number came
+from, one per line — never run together.
+
+**Worth knowing:** any caveat, plainly. Omit when there is none.
+
+THE NUMBERS COME FROM THE TRACE TOOL AND NOWHERE ELSE. Do not take a figure from
+another tool's output, from the page context, or from earlier in the
+conversation, and never do arithmetic of your own to fill a gap. Specifically:
+- An input marked `available: false` is reported as not available, with the
+  tool's `reason` in plain words. Do NOT work it out from the others.
+- `reconciles: false` means the inputs do NOT add up to the published value. Say
+  so plainly and give the published value as the answer. `reconciles: null`
+  means it was not checked — say nothing either way; it is NOT a failure.
+- `breakdown_available: false` means the value is real but its components are
+  not published. Give the value, then say the breakdown is not available and
+  why, using `breakdown_unavailable_reason`. Do not substitute the general
+  formula's inputs as though they were this deal's numbers.
+- If the tool returns an `error` — including a Snapshot field needing an
+  `investor_code` — say what is needed and ask for it. Never guess an investor.
 
 impact_of answers — the same plain-language, blank-line-separated treatment:
 
@@ -560,6 +640,16 @@ FORMULA RULE — the single thing most likely to produce a wrong answer.
   a <br>, which splits the text node and the block then never renders — it
   prints raw LaTeX instead.
 - Inline math inside a sentence: \\( ... \\). Never put ** inside a formula.
+- SHOW FORMULAS AS RENDERED MATH, NOT AS TYPED TEXT. Use `formula_latex` for the
+  structure. For a live per-deal trace, substitute that deal's ACTUAL values
+  into the same structure and end with the result, still on ONE line.
+- ESCAPE LITERAL DOLLAR SIGNS INSIDE MATH AS \\$ — write \\$12.3\\text{M}, never
+  $12.3M. An unescaped $ inside a $$...$$ block closes the math early, and the
+  rest of the formula prints as raw LaTeX. This is the single most likely way a
+  live-numbers answer breaks, because every figure in one is currency.
+- Round for READABILITY in the rendered formula (\\$12.3\\text{M}, 8.2\\%) and give
+  the fuller figure in the bullet beneath it when the precision matters. Never
+  round a value into agreement — if the inputs do not reconcile, say so.
 
 MULTI-TAB RESULTS — THE SAME LABEL IS NOT THE SAME FIGURE ON EVERY TAB. When the
 result carries `multi_tab: true`, the user named a field but not a tab, and that
@@ -776,6 +866,8 @@ def execute_tool(tool_name: str, tool_input: dict) -> str:
             return _tool_lookup_field(tool_input)
         elif tool_name == "impact_of":
             return _tool_impact_of(tool_input)
+        elif tool_name == "trace_field_value":
+            return _tool_trace_field_value(tool_input)
         else:
             return json.dumps({"error": f"Unknown tool: {tool_name}"})
     except Exception as e:
@@ -1673,6 +1765,29 @@ def _tool_impact_of(inp):
     result = data_dictionary_service.impact(inp.get("name"))
     if isinstance(result, dict):
         result["source_value"] = _source_value(result.get("source_line"))
+    return json.dumps(result, default=str)
+
+
+def _tool_trace_field_value(inp):
+    """One deal's actual numbers behind a calculated field.
+
+    A PASS-THROUGH, like the two above. Every figure is read by
+    `field_trace_service` out of the payload the page is rendered from; nothing
+    is computed, rounded or reformatted here. In particular `reconciles` is
+    forwarded as-is — including `null`, which means "not checked" and is NOT the
+    same as `false`, and collapsing the two would turn an unchecked breakdown
+    into an apparently verified one.
+    """
+    from flask_app.services import field_trace_service
+    try:
+        result = field_trace_service.trace_field_value(
+            inp.get("deal_id"), inp.get("field_id"),
+            quarter=inp.get("quarter") or None,
+            investor_code=inp.get("investor_code") or None,
+        )
+    except Exception as exc:
+        logger.exception("trace_field_value failed")
+        result = {"error": f"Value trace failed: {exc}"}
     return json.dumps(result, default=str)
 
 

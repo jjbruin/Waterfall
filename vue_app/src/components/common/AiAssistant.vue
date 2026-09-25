@@ -227,6 +227,7 @@ const HOW_TO_ASK_KEY = 'ai.howToAsk.dismissed'
 const HOW_TO_ASK_EXAMPLES = [
   'On the One Pager, where does Debt come from?',
   'How is ROE calculated on the One Pager, and where does each input come from?',
+  'For this deal, how is ROE calculated — show me the numbers?',
   'Is Current Valuation from MRI or entered by an analyst?',
   'On the Snapshot, how is Debt Yield calculated?',
 ]
