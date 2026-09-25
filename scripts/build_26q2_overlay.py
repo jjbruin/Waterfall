@@ -112,11 +112,21 @@ def sha256(path: str) -> str:
 
 
 def money(s):
-    m = re.match(r"^\$?(-?[\d,]+(?:\.\d+)?)\s*([MK]?)$", str(s).strip())
+    """"$2.10M" / "-$0.20M" / "33.5" -> a float.
+
+    THE SIGN CAN PRECEDE THE DOLLAR. The page prints a negative ITD as
+    "-$0.20M", and a regex expecting "$" first rejected it — so the row parsed
+    one cell short and the LABEL absorbed the missing value ("Brainerd Place
+    Apartments 64.4"). Every deal with a negative distribution was affected.
+    """
+    t = str(s).strip()
+    m = re.match(r"^(-)?\$?(-)?([\d,]+(?:\.\d+)?)\s*([MK]?)$", t)
     if not m:
         return None
-    v = float(m.group(1).replace(",", ""))
-    return v * (1e6 if m.group(2) == "M" else 1e3 if m.group(2) == "K" else 1)
+    v = float(m.group(3).replace(",", ""))
+    if m.group(1) or m.group(2):
+        v = -v
+    return v * (1e6 if m.group(4) == "M" else 1e3 if m.group(4) == "K" else 1)
 
 
 def pct(s):
@@ -234,8 +244,12 @@ _SENTINELS = {"—", "-", "–", "n/a", "N/A", "na", "Dev", "dev", ""}
 
 
 def _num(tok):
-    m = re.match(r"^\$?(-?[\d,]+(?:\.\d+)?)", str(tok).strip())
-    return float(m.group(1).replace(",", "")) if m else None
+    """A leading number, sign-before-or-after-$ tolerant. See `money`."""
+    m = re.match(r"^(-)?\$?(-)?([\d,]+(?:\.\d+)?)", str(tok).strip())
+    if not m:
+        return None
+    v = float(m.group(3).replace(",", ""))
+    return -v if (m.group(1) or m.group(2)) else v
 
 
 def _pct_frac(tok):
@@ -284,27 +298,65 @@ SNAPSHOT_COLS = {
 _HEADER_ROWS = {"individual investments", "proprietary & confidential"}
 
 
-def _split_row(line: str, ncols: int) -> tuple:
-    """(label, [cells], trailing comment) for one printed table row.
+#: Words that belong to a RATE, not to a comment. "5.6% fixed" and
+#: "SOFR + 250" are cell content on the Loan page.
+_RATE_WORDS = {"fixed", "floating", "sofr", "+", "libor", "prime", "var",
+               "variable"}
 
-    The label is everything before the first cell-looking token, so a deal name
-    carrying a number survives. The tail after the last numeric column is the
-    free-text comment, which is returned separately and never parsed as a cell.
+
+def _cellish(t: str) -> bool:
+    return (_num(t) is not None or pct(t) is not None
+            or str(t).strip() in _SENTINELS
+            or bool(_DATE.match(t)) or str(t).lower() in _RATE_WORDS)
+
+
+def _split_row(line: str, ncols: int) -> tuple:
+    """(label, [cells], comment) for one printed table row.
+
+    TAKEN FROM THE RIGHT, NOT THE LEFT, AND THIS IS THE WHOLE POINT. Scanning
+    left to right for "the first token that looks like a cell" breaks on every
+    row label containing a number: "Giant 7" became label "Giant" with 7 read
+    as Debt, and "Total PSC TGA 2022 LLC" became "Total PSC TGA" — which
+    collided four ways on one page, so three of the four fund subtotals
+    overwrote each other and were lost. Both bugs were invisible in a spot
+    check of a row whose name has no digits.
+
+    So the COLUMN COUNT is the anchor: the table has a known width, the comment
+    is prose at the end, and the label is whatever is left at the front.
     """
     toks = line.split()
-    # Find where the data starts: the first token that looks like a cell.
-    start = None
-    for i, t in enumerate(toks):
-        if (_num(t) is not None or pct(t) is not None or t in _SENTINELS
-                or re.match(r"^\d{1,2}/\d{1,2}/\d{4}$", t)
-                or re.match(r"^SOFR$", t, re.I)):
-            start = i
-            break
-    if start is None or start == 0:
+    if not toks:
         return None, [], ""
-    label = " ".join(toks[:start])
-    rest = toks[start:]
-    return label, rest, ""
+
+    # Where does the free-text comment start? The first word-like token that
+    # appears AFTER at least one cell — so a label's own words are not mistaken
+    # for a comment, and a rate's "fixed" is not either.
+    seen_cell = False
+    cut = len(toks)
+    for i, t in enumerate(toks):
+        if _cellish(t):
+            seen_cell = True
+            continue
+        if seen_cell and re.match(r"^[A-Za-z]", t):
+            cut = i
+            break
+    region = toks[:cut]
+    comment = " ".join(toks[cut:])
+
+    cells = [t for t in region if _cellish(t)]
+    if len(cells) < 2:
+        return None, [], ""
+    # The last `ncols` cell-like tokens are the data; everything before the
+    # first of them is the label.
+    take = cells[-ncols:] if ncols and len(cells) > ncols else cells
+    first = region.index(take[0]) if take else len(region)
+    # `index` finds the first occurrence, which can be too early when a label
+    # token equals a cell token; walk back from the end instead.
+    first = len(region) - len(take)
+    label = " ".join(region[:first]).strip()
+    if not label:
+        return None, [], ""
+    return label, take, comment
 
 
 _DATE = re.compile(r"^\d{1,2}/\d{1,2}/\d{4}$")
@@ -323,14 +375,35 @@ def _split_loan_row(label: str, rest: list) -> list:
     and the four numerics follow it. A subtotal row prints no rate or maturity
     at all, so with no date the row starts at `debt`.
     """
-    idx = next((i for i, t in enumerate(rest) if _DATE.match(t)), None)
-    if idx is None:
-        return ["", ""] + rest          # subtotal/total: no rate, no maturity
-    return [" ".join(rest[:idx]), rest[idx]] + rest[idx + 1:]
+    dates = [i for i, t in enumerate(rest) if _DATE.match(t)]
+    if dates:
+        # FIRST date to LAST date, because a two-loan row prints BOTH:
+        # Brainerd is "SOFR + 650 | 4.2% fixed   12/1/2026 | 7/1/2027", and
+        # anchoring on the first date alone left the pipe and the second date
+        # to be read as Debt.
+        f, l = dates[0], dates[-1]
+        return [" ".join(rest[:f]), " ".join(rest[f:l + 1])] + rest[l + 1:]
+
+    # NO DATE MEANS ONE OF TWO DIFFERENT ROWS, and guessing wrong shifts every
+    # column. A sold deal prints a dash in ALL SIX columns — East Manchester is
+    # "— — — — — —", no date anywhere — while a subtotal prints no rate or
+    # maturity at all and starts at `debt`. The first token tells them apart: a
+    # sentinel means the row is dashed across, a number means it starts at debt.
+    if rest and str(rest[0]).strip() in _SENTINELS:
+        return rest
+    return ["", ""] + rest              # subtotal/total: no rate, no maturity
 
 
-def snapshot_rows(pdf_path: str, page: int) -> dict:
-    """{row label: [printed cells]} for one Snapshot page."""
+def snapshot_rows(pdf_path: str, page: int, known: list = None) -> dict:
+    """{row label: [printed cells]} for one Snapshot page.
+
+    ``known`` is the canonical label list, taken from page 6. The Loan page's
+    rate is variable width ("5.6% fixed", "SOFR + 650 | 4.2% fixed"), so there
+    is no left-hand anchor that survives it — "Giant 7" lost its 7 and "Mount
+    Prospect Plaza 5.3%" swallowed its rate. The same deals appear on all three
+    pages, and page 6 is a fixed 10-wide grid that parses cleanly, so its
+    labels are the evidence for where the label ends here.
+    """
     import pdfplumber
     with pdfplumber.open(pdf_path) as pdf:
         text = pdf.pages[page - 1].extract_text() or ""
@@ -339,8 +412,36 @@ def snapshot_rows(pdf_path: str, page: int) -> dict:
         s = line.strip()
         if not s or s.lower() in _HEADER_ROWS or s.isdigit():
             continue
-        label, cells, _ = _split_row(s, 0)
-        if not label or len(cells) < 2:
+        # The Loan page's rate is multi-token, so its numeric tail is 4 wide
+        # (debt, dscr, ltv, debt yield) and rate/maturity are recovered from
+        # the date anchor inside what is left.
+        ncols = {6: 10, 7: 6, 8: 6}.get(page, 0)
+        label = cells = None
+        if known:
+            # Longest canonical label that prefixes this line wins.
+            hit = max((k for k in known if s.startswith(k)), key=len, default=None)
+            if hit:
+                label = hit
+                # STOP AT THE COMMENT. Taking every cell-like token would pull
+                # figures out of the prose — "sale now expected 11/2026" is a
+                # date, "phase I & II" has numbers — which widened the row past
+                # the table and made the shape guard drop it. Nine of the forty
+                # operating rows were being lost that way. The table columns
+                # come first; the comment begins at the first word-like token
+                # after at least one cell.
+                rest = s[len(hit):].split()
+                cells, seen = [], False
+                for t in rest:
+                    if _cellish(t) or t == "|":
+                        cells.append(t)
+                        seen = True
+                        continue
+                    if seen:
+                        break            # the comment starts here
+                    break
+        if label is None:
+            label, cells, _ = _split_row(s, 0 if page == 8 else ncols)
+        if not label or not cells or len(cells) < 2:
             continue
         if page == 8:
             cells = _split_loan_row(label, cells)
@@ -351,12 +452,14 @@ def snapshot_rows(pdf_path: str, page: int) -> dict:
 def snapshot_cells(pdf_path: str, pages: list, pdf_name: str) -> tuple:
     """({subtab: {row label: {field: spec}}}, [skipped sentinel cells])."""
     by_subtab, skipped = {}, []
+    # Page 6 first: its labels are canonical for the other two.
+    canonical = sorted(snapshot_rows(pdf_path, 6), key=len, reverse=True)         if 6 in (pages or []) else []
     for pno in pages or []:
         spec = SNAPSHOT_COLS.get(pno)
         if not spec:
             continue
         subtab, cols = spec
-        rows = snapshot_rows(pdf_path, pno)
+        rows = snapshot_rows(pdf_path, pno, known=canonical)
         dest = by_subtab.setdefault(subtab, {})
         for label, cells in rows.items():
             cmap = {}
@@ -364,10 +467,30 @@ def snapshot_cells(pdf_path: str, pages: list, pdf_name: str) -> tuple:
                 if i >= len(cells):
                     break
                 tok = cells[i]
+                if not str(tok).strip():
+                    continue          # an empty column is not a printed cell
                 if str(tok).strip() in _SENTINELS:
+                    # A SENTINEL IS STILL WHAT THE PAGE PRINTED. East Manchester
+                    # prints "—" for rate and maturity while the app holds
+                    # 3.65% / 1/11/2031, so skipping the cell leaves the frozen
+                    # page showing a live figure that was never sent — the exact
+                    # failure freezing exists to prevent.
+                    #
+                    # Kept as DISPLAY text, never as a number: writing "—" into
+                    # `debt` would corrupt every subtotal built from it. The
+                    # numeric field is left alone and the printed dash is what
+                    # renders. Where the live value is blank too this is a
+                    # harmless no-op, which is why all of them are stored rather
+                    # than only the ones that differ — deciding that needs live
+                    # data, and getting it wrong silently publishes the wrong
+                    # cell.
+                    cmap[field] = {"published": None, "display": str(tok).strip(),
+                                   "units": "printed-sentinel", "page": pno,
+                                   "source": pdf_name, "printed": str(tok)}
                     skipped.append({"page": pno, "row": label, "field": field,
                                     "printed": tok,
-                                    "why": "printed as not-applicable"})
+                                    "why": "printed as not-applicable — kept as "
+                                           "display text"})
                     continue
                 if parser is None:
                     # RATE and MATURITY print as text ("5.6% fixed",
@@ -385,6 +508,18 @@ def snapshot_cells(pdf_path: str, pages: list, pdf_name: str) -> tuple:
                     continue
                 cmap[field] = {"published": v, "page": pno, "source": pdf_name,
                                "printed": str(tok)}
+            # A ROW THAT IS NOT THE TABLE'S WIDTH IS NOT MAPPED POSITIONALLY.
+            # Page 6 prints "Excluding Development Deals = $325.9 $45.79M 5.5%"
+            # — three figures, and they are NOT debt/pref/equity. Assigning
+            # them by position would publish $325.9M as Debt. Skipped and
+            # listed instead; pages 6 and 7 are fixed grids, page 8 pads its
+            # missing rate/maturity itself.
+            if pno in (6, 7) and len(cells) != len(cols):
+                skipped.append({"page": pno, "row": label, "field": "(row)",
+                                "printed": " ".join(map(str, cells)),
+                                "why": f"row has {len(cells)} cells, the table "
+                                       f"is {len(cols)} wide — not mapped"})
+                continue
             if cmap:
                 dest[label] = cmap
     return by_subtab, skipped
@@ -434,7 +569,7 @@ def build(only: str = None) -> dict:
             print(f"    snapshot p{pg} {sub:<10} {len(rows):>3} rows, "
                   f"{sum(len(c) for c in rows.values()):>4} cells")
         if snap_skipped:
-            print(f"    snapshot sentinels skipped: {len(snap_skipped)}")
+            print(f"    snapshot sentinel cells kept as display text: {len(snap_skipped)}")
     return doc
 
 
