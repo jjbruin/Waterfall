@@ -313,14 +313,21 @@ else:
             # Live values deliberately WRONG, so anything the overlay fails to
             # apply shows up as a difference rather than passing by accident.
             return {"vcode": vcode,
+                    # Every field a real One Pager carries. An absent key is
+                    # REFUSED by _set_path (rightly — inventing it would hide a
+                    # published figure where no reader looks), so a thin stub
+                    # would make cells vanish and this check fail for the wrong
+                    # reason. It did, on pe_coupon.
                     "cap_stack": {"loan_terms_str": "LIVE-NOT-PDF",
                                   "debt": -1.0, "pref_equity": -1.0,
                                   "partner_equity": -1.0, "total_cap": -1.0,
-                                  "purchase_price": -1.0},
+                                  "purchase_price": -1.0,
+                                  "pe_coupon": -1.0, "pe_participation": -1.0},
                     "pe_performance": {k: -1.0 for k in
                                        ("committed_pe", "remaining_to_fund",
                                         "funded_to_date", "return_of_capital",
-                                        "current_pe_balance", "accrued_balance")},
+                                        "current_pe_balance", "accrued_balance",
+                                        "coupon", "participation")},
                     "property_performance": {
                         k: {c: -1.0 for c in
                             ("at_close", "actual_ye", "uw_ye", "ytd_actual",
@@ -474,6 +481,96 @@ with _app.test_client() as _c:
                       "vcode": "R000", "field": "net_roe", "value": 0.12})
     chk("an unfrozen quarter is NOT refused by the frozen gate",
         _r.status_code != 409, f"status={_r.status_code}")
+
+# ── M. the overlay OVERRIDES differing live values, and touches nothing else ─
+#
+# J proves the frozen copy equals the PDF. That is necessary but not
+# sufficient: it would also pass if the live values happened to agree. Here the
+# live payload is deliberately perturbed on the cells the overlay covers —
+# including a newest-value field (loan rate), a preserved-row cell (Nottingham's
+# pref) and a variance cell — and the PDF must win every one. The paired half is
+# that cells the overlay does NOT name come through untouched, or "the PDF wins"
+# would be satisfied by overwriting the whole payload.
+print("\nM. the overlay overrides differing live values, and touches nothing else")
+
+_LIVE = {
+    "cap_stack": {
+        "loan_terms_str": "9.99% floating | 1/1/2099",   # newest-value field
+        "debt": 111.0, "pref_equity": 222.0,
+        "untouched_cap": 333.0,                           # not in the overlay
+    },
+    "pe_performance": {"current_pe_balance": 444.0, "coupon": 0.999,
+                       "untouched_pe": 555.0},
+    "property_performance": {
+        "noi": {"ytd_actual": 666.0, "ytd_budget": 777.0, "variance": 888.0},
+    },
+    "untouched_block": {"deep": {"value": 999.0}},
+}
+_PDF = {
+    "cap_stack.loan_terms_str": {"published": "5.59% fixed | 7/1/2031", "page": 8},
+    "cap_stack.debt": {"published": 95_100_000.0, "page": 8},
+    "pe_performance.current_pe_balance": {"published": 9_100_000.0, "page": 9},
+    "pe_performance.coupon": {"published": 0.085, "page": 9},
+    # The units case: text kept, the number left alone.
+    "property_performance.noi.variance": {
+        "published": None, "display": "-100%", "units": "percent_of_budget",
+        "page": 9},
+}
+F.unfreeze("KOCINV", "2026-Q2", "cbui", reason="reset for the override case")
+F.freeze_as_sent(
+    "KOCINV", "2026-Q2", "cbui", overlay={"D1": _PDF}, roster=["D1"],
+    assembler=lambda i, q: {"subtabs": {}, "errors": {}, "resolution": {}},
+    one_pager_getter=lambda vc, q: _json.loads(_json.dumps(_LIVE)),
+    elements_loader=stub_elements,
+    source_manifest={"file": "TIAA.pdf", "sha256": "abc123"})
+_m = F.get_frozen("KOCINV", "2026-Q2")["one_pagers"]["D1"]
+
+chk("a newest-value field (loan rate) takes the PDF's text",
+    _m["cap_stack"]["loan_terms_str"] == "5.59% fixed | 7/1/2031",
+    str(_m["cap_stack"]["loan_terms_str"]))
+chk("a money cell takes the PDF's figure, not the live one",
+    _m["cap_stack"]["debt"] == 95_100_000.0, str(_m["cap_stack"]["debt"]))
+chk("a preserved-row cell (pref balance) takes the PDF's figure",
+    _m["pe_performance"]["current_pe_balance"] == 9_100_000.0,
+    str(_m["pe_performance"]["current_pe_balance"]))
+chk("a percent field stored as a fraction takes the PDF's converted value",
+    _m["pe_performance"]["coupon"] == 0.085, str(_m["pe_performance"]["coupon"]))
+chk("a variance cell keeps the PDF's printed text",
+    (_m.get("published_display") or {}).get(
+        "property_performance.noi.variance") == "-100%",
+    str(_m.get("published_display")))
+chk("...and its NUMERIC field keeps the live value, not the percent",
+    _m["property_performance"]["noi"]["variance"] == 888.0,
+    str(_m["property_performance"]["noi"]["variance"]))
+# The paired direction.
+chk("a cell the overlay does not name is untouched (cap_stack)",
+    _m["cap_stack"]["untouched_cap"] == 333.0)
+chk("a cell the overlay does not name is untouched (pe_performance)",
+    _m["pe_performance"]["untouched_pe"] == 555.0)
+chk("a nested block the overlay does not name is untouched",
+    _m["untouched_block"]["deep"]["value"] == 999.0)
+chk("ytd_actual and ytd_budget beside the overridden variance are untouched",
+    _m["property_performance"]["noi"]["ytd_actual"] == 666.0
+    and _m["property_performance"]["noi"]["ytd_budget"] == 777.0)
+# Every override keeps the value it displaced, so the drift stays measurable.
+_mr = F.get_frozen("KOCINV", "2026-Q2")["payload"].get("published_overrides") or []
+chk("each override records the live value it displaced",
+    any(r["path"] == "cap_stack.debt" and r["computed_at_freeze"] == 111.0
+        for r in _mr), str(_mr)[:140])
+
+# A printed cell that cannot land is REPORTED, not silently dropped.
+F.unfreeze("KOCINV", "2026-Q2", "cbui", reason="reset for the unapplied case")
+F.freeze_as_sent(
+    "KOCINV", "2026-Q2", "cbui",
+    overlay={"D1": {"cap_stack.no_such_field": {"published": 1.0, "page": 8}}},
+    roster=["D1"],
+    assembler=lambda i, q: {"subtabs": {}, "errors": {}, "resolution": {}},
+    one_pager_getter=lambda vc, q: _json.loads(_json.dumps(_LIVE)),
+    elements_loader=stub_elements, source_manifest={})
+_un = (F.get_frozen("KOCINV", "2026-Q2")["payload"].get("published_unapplied")
+       or [])
+chk("a printed cell with no matching field is reported as unapplied",
+    len(_un) == 1 and _un[0]["path"] == "cap_stack.no_such_field", str(_un))
 
 print(f"\n{'=' * 60}\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

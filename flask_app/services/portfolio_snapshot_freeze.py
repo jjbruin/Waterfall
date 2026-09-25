@@ -745,7 +745,7 @@ def _apply_overlay(payload: dict, one_pagers: dict, overlay: dict) -> int:
     a later reader can see what was published AND what the engine said at the
     moment of freezing.
     """
-    recorded, applied = [], 0
+    recorded, unapplied, applied = [], [], 0
     for scope, cells in (overlay or {}).items():
         target = payload if scope == "__subtabs__" else one_pagers.get(scope)
         if target is None:
@@ -792,7 +792,23 @@ def _apply_overlay(payload: dict, one_pagers: dict, overlay: dict) -> int:
                     "computed_at_freeze": before,
                     "page": spec.get("page"), "source": spec.get("source"),
                 })
+            else:
+                # NOT SILENTLY DROPPED. `_set_path` refuses a path the live
+                # payload does not already carry — which is right, since
+                # inventing the key would put a published figure somewhere no
+                # reader looks. But a printed cell that never landed means the
+                # stored copy does NOT reproduce the page, and that has to be
+                # visible rather than showing up only as a lower applied count.
+                unapplied.append({
+                    "scope": scope, "path": path,
+                    "published": spec.get("published"),
+                    "display": spec.get("display"),
+                    "page": spec.get("page"),
+                    "why": "no such field in the assembled report",
+                })
     payload["published_overrides"] = recorded
+    if unapplied:
+        payload["published_unapplied"] = unapplied
     return applied
 
 
@@ -857,6 +873,80 @@ def resolve_roster(investor_code: str, quarter: str, titles: list) -> tuple:
         else:
             missing.append(title)
     return out, missing
+
+
+def _norm_row(s) -> str:
+    """A Snapshot row label reduced for matching.
+
+    Parenthetical suffixes are dropped — the page prints "Camarillo Village
+    (Sold)", "Portfolio Totals (38)" and "Excluding development deals (28)",
+    and the count in particular moves between quarters.
+    """
+    s = re.sub(r"\([^)]*\)", " ", str(s or ""))
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def _index_subtab(sub: str, blk: dict) -> dict:
+    """{normalised row label: dotted path prefix} for one assembled subtab.
+
+    Covers every row the sent page prints: deals, the ownership-flagged rows,
+    each group's subtotal, Portfolio Totals and the Excluding-development row.
+    A label matching two rows is dropped from the index rather than resolved to
+    one — publishing a row of figures against the wrong property is the worst
+    thing this can do and is invisible afterwards.
+    """
+    seen: dict = {}
+
+    def add(label, path):
+        k = _norm_row(label)
+        if not k:
+            return
+        seen.setdefault(k, []).append(path)
+
+    for gname, g in (blk.get("groups") or {}).items():
+        rows = (g.get("deals") if isinstance(g, dict) else g) or []
+        for i, r in enumerate(rows):
+            if r.get("name"):
+                add(r["name"], f"subtabs.{sub}.groups.{gname}.deals[{i}]")
+        if isinstance(g, dict) and isinstance(g.get("subtotal"), dict):
+            st = g["subtotal"]
+            add(st.get("name") or st.get("label") or f"Total {gname}",
+                f"subtabs.{sub}.groups.{gname}.subtotal")
+    for i, r in enumerate(blk.get("ownership_flagged") or []):
+        if r.get("name"):
+            add(r["name"], f"subtabs.{sub}.ownership_flagged[{i}]")
+    if isinstance(blk.get("total"), dict):
+        add("Portfolio Totals", f"subtabs.{sub}.total")
+    if isinstance(blk.get("total_excluding_dev"), dict):
+        add("Excluding development deals",
+            f"subtabs.{sub}.total_excluding_dev")
+    return {k: v[0] for k, v in seen.items() if len(v) == 1}
+
+
+def resolve_snapshot_cells(payload: dict, snapshot: dict) -> tuple:
+    """(``{dotted path: spec}``, ``[rows that matched nothing]``).
+
+    The overlay is keyed by PRINTED ROW LABEL because that is all the sent page
+    knows; the payload keys rows by group and index. Resolving against the
+    assembled report — the very payload about to be stored — keeps the preview
+    and the freeze on one answer.
+    """
+    cells, missing = {}, []
+    subs = (payload or {}).get("subtabs") or {}
+    for sub, rows in (snapshot or {}).items():
+        blk = subs.get(sub)
+        if not isinstance(blk, dict):
+            missing.extend([f"{sub}/{lbl}" for lbl in (rows or {})])
+            continue
+        index = _index_subtab(sub, blk)
+        for label, fields in (rows or {}).items():
+            prefix = index.get(_norm_row(label))
+            if not prefix:
+                missing.append(f"{sub}/{label}")
+                continue
+            for field, spec in (fields or {}).items():
+                cells[f"{prefix}.{field}"] = spec
+    return cells, missing
 
 
 def is_frozen(investor_code: str, quarter: str) -> bool:

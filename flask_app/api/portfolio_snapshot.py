@@ -507,6 +507,17 @@ def post_freeze_overlay():
         try:
             resolved, unresolved = FZ.resolve_roster(inv, quarter,
                                                      blk.get("roster_titles") or [])
+            # ASSEMBLED ONCE, AND THE SAME PAYLOAD IS FROZEN. The Snapshot
+            # overlay is keyed by printed ROW LABEL and has to be resolved to
+            # `groups.<G>.deals[i]` paths, which only exist once the report is
+            # built. Assembling a second time inside the freeze would resolve
+            # against one payload and write into another — and an index that
+            # shifted between the two would publish a row of figures against
+            # the wrong property. So the assembled report is passed straight
+            # through as the assembler.
+            assembled = FZ.assemble_full_report(inv, quarter)
+            snap_cells, snap_missing = FZ.resolve_snapshot_cells(
+                assembled, blk.get("snapshot") or {})
         except Exception as exc:
             out["reports"].append({"investor": inv,
                                    "error": f"could not read live: {exc}"})
@@ -523,6 +534,8 @@ def post_freeze_overlay():
             })
             if vc:
                 overlay[vc] = cells
+        if snap_cells:
+            overlay["__subtabs__"] = snap_cells
 
         rep = {
             "investor": inv,
@@ -532,6 +545,17 @@ def post_freeze_overlay():
             "cells_total": sum(r["cells"] for r in per_report),
             "printed_units_total": sum(r["printed_units_cells"] for r in per_report),
             "unmapped_labels": blk.get("unmapped_labels") or [],
+            # The Snapshot half: what each printed page would write.
+            "snapshot_pages": [
+                {"page": pg, "subtab": sub, "rows": len(rows),
+                 "cells": sum(len(c) for c in rows.values())}
+                for sub, rows in sorted((blk.get("snapshot") or {}).items())
+                for pg in [next((p for p in (blk.get("source") or {})
+                                 .get("snapshot_pages", []) if True), None)]
+            ],
+            "snapshot_cells_total": len(snap_cells),
+            "snapshot_unresolved": snap_missing,
+            "snapshot_skipped": blk.get("snapshot_skipped") or [],
             "per_report": per_report,
             "already_frozen": FZ.is_frozen(inv, quarter),
         }
@@ -543,6 +567,13 @@ def post_freeze_overlay():
         if rep["already_frozen"]:
             rep["error"] = (f"{inv} {quarter} is already frozen — Re-freeze it "
                             f"if it genuinely has to change.")
+            out["reports"].append(rep)
+            continue
+        if snap_missing and not allow_unresolved:
+            rep["error"] = (f"{len(snap_missing)} printed Snapshot row(s) "
+                            f"matched no row in the assembled report: "
+                            f"{', '.join(snap_missing[:5])}"
+                            + ("…" if len(snap_missing) > 5 else ""))
             out["reports"].append(rep)
             continue
         if unresolved and not allow_unresolved:
@@ -559,8 +590,11 @@ def post_freeze_overlay():
                 overlay=overlay,
                 roster=[resolved[t] for t in (blk.get("roster_titles") or [])
                         if t in resolved],
+                assembler=lambda _i, _q, _p=assembled: _p,
                 source_manifest={**(blk.get("source") or {}),
-                                 "unmapped_labels": blk.get("unmapped_labels") or []})
+                                 "unmapped_labels": blk.get("unmapped_labels") or [],
+                                 "snapshot_cells": len(snap_cells),
+                                 "snapshot_skipped": blk.get("snapshot_skipped") or []})
             rep["frozen"] = True
         except Exception as exc:
             # The service raises rather than storing a partial report, so the
