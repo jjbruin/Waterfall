@@ -198,6 +198,53 @@ chk("the manifest counts the cells applied",
     (ov["source_manifest"] or {}).get("overlay_cells_applied") == 2,
     str(ov["source_manifest"]))
 
+# ── G2. a PRINTED-UNITS cell keeps the PDF's text and leaves the number alone
+#
+# The money-row variances are printed as a percent of budget while the field
+# stores a dollar difference (one_pager.py:1913), and the percent ON THE PAGE is
+# derived in the BROWSER — so the stored number reaches no screen and
+# overwriting it would change nothing. Giant 7's "-100%" is where this showed,
+# but all three money rows have it. Asserted in BOTH directions: the text is
+# kept AND the numeric field is untouched, because writing the percent into the
+# dollar field would satisfy "the text is kept" while corrupting the figure.
+print("\nG2. a printed-units cell keeps the PDF's text, and the number is left alone")
+F.unfreeze("RBS262", "2026-Q2", "cbui", reason="reset for the display case")
+disp_overlay = {
+    "D1": {
+        "property_performance.noi.variance":
+            {"published": None, "display": "-100%",
+             "units": "percent_of_budget", "page": 9, "source": "TIAA.pdf"},
+    },
+}
+F.freeze_as_sent("RBS262", "2026-Q2", "cbui", overlay=disp_overlay,
+                 assembler=stub_report, one_pager_getter=stub_op,
+                 elements_loader=stub_elements,
+                 source_manifest={"file": "TIAA.pdf", "sha256": "abc123"})
+dv = F.get_frozen("RBS262", "2026-Q2")
+op1 = dv["one_pagers"]["D1"]
+before_num = (stub_op("D1", "2026-Q2") or {}).get(
+    "property_performance", {}).get("noi", {}).get("variance")
+chk("the printed text is stored verbatim under published_display",
+    (op1.get("published_display") or {}).get(
+        "property_performance.noi.variance") == "-100%",
+    str(op1.get("published_display")))
+chk("the NUMERIC variance field is left exactly as computed",
+    (op1.get("property_performance", {}).get("noi", {}).get("variance")
+     == before_num),
+    f"stored={op1.get('property_performance', {}).get('noi', {}).get('variance')!r} "
+    f"computed={before_num!r}")
+drecs = [r for r in (dv["payload"].get("published_overrides") or [])
+         if r.get("display")]
+chk("the override records it as a display cell, with its units",
+    len(drecs) == 1 and drecs[0].get("units") == "percent_of_budget",
+    str(drecs))
+chk("and keeps the page and source file for the printed text",
+    bool(drecs) and drecs[0].get("page") == 9
+    and drecs[0].get("source") == "TIAA.pdf", str(drecs))
+chk("a display cell still counts as a cell applied",
+    (dv["source_manifest"] or {}).get("overlay_cells_applied") == 1,
+    str(dv["source_manifest"]))
+
 print("\nH. re-freeze and unfreeze keep history and demand a reason")
 try:
     F.refreeze("TGAM", "2026-Q2", "admin", "", assembler=stub_report,
@@ -236,6 +283,197 @@ kept = F.get_frozen("KOCINV", "2026-Q2")
 chk("KOCINV's stored copy is untouched by everything above",
     kept["one_pagers"]["D1"]["cap_stack"]["pref_equity"] == 12_100_000
     and kept["version"] == 1)
+
+# ── J. the 26Q2 overlay reproduces the sent PDFs, cell by cell ─────────────
+#
+# SKIPS RATHER THAN FAILS when the overlay is absent: it is gitignored, built
+# from documents that are not in the repo. Where it IS present this is the
+# check that the seeded freeze is faithful — every published cell in the
+# frozen copy equals what the PDF printed, with the live value deliberately
+# set to something else first so a no-op would be caught.
+print("\nJ. the 26Q2 overlay reproduces the sent PDFs, cell by cell")
+import json as _json                                                # noqa: E402
+
+_ov_path = os.path.join(ROOT, "overlay_26q2.json")
+if not os.path.exists(_ov_path):
+    print("  SKIP  overlay_26q2.json not present — build it with "
+          "scripts/build_26q2_overlay.py")
+else:
+    _doc = _json.load(open(_ov_path, encoding="utf-8"))
+    _tot_cells = _tot_reports = 0
+    _diffs = []
+    for _inv, _blk in (_doc.get("investors") or {}).items():
+        # One scratch quarter per investor so the two cannot interfere.
+        _q = f"OVL-{_inv}"
+        _reports = _blk.get("reports") or {}
+        _titles = list(_reports)
+        _vcodes = {t: f"V{i:03d}" for i, t in enumerate(_titles)}
+
+        def _ov_op(vcode, quarter, _v=_vcodes):
+            # Live values deliberately WRONG, so anything the overlay fails to
+            # apply shows up as a difference rather than passing by accident.
+            return {"vcode": vcode,
+                    "cap_stack": {"loan_terms_str": "LIVE-NOT-PDF",
+                                  "debt": -1.0, "pref_equity": -1.0,
+                                  "partner_equity": -1.0, "total_cap": -1.0,
+                                  "purchase_price": -1.0},
+                    "pe_performance": {k: -1.0 for k in
+                                       ("committed_pe", "remaining_to_fund",
+                                        "funded_to_date", "return_of_capital",
+                                        "current_pe_balance", "accrued_balance")},
+                    "property_performance": {
+                        k: {c: -1.0 for c in
+                            ("at_close", "actual_ye", "uw_ye", "ytd_actual",
+                             "ytd_budget", "variance")}
+                        for k in ("economic_occ", "revenue", "expenses", "noi")}}
+
+        def _ov_report(investor, quarter, _t=_titles, _v=_vcodes):
+            return {"subtabs": {"financial": {"groups": {"G1": {"deals": [
+                {"vcode": _v[t], "name": t} for t in _t]}}}},
+                "errors": {}, "resolution": {}}
+
+        _overlay = {_vcodes[t]: cells for t, cells in _reports.items()}
+        F.freeze_as_sent(_inv, _q, "cbui", overlay=_overlay,
+                         roster=[_vcodes[t] for t in _titles],
+                         assembler=_ov_report, one_pager_getter=_ov_op,
+                         elements_loader=stub_elements,
+                         source_manifest=_blk.get("source") or {})
+        _fr = F.get_frozen(_inv, _q)
+        for _t in _titles:
+            _tot_reports += 1
+            _stored = (_fr["one_pagers"] or {}).get(_vcodes[_t]) or {}
+            for _path, _spec in _reports[_t].items():
+                _tot_cells += 1
+                if _spec.get("display") is not None:
+                    got = (_stored.get("published_display") or {}).get(_path)
+                    want = _spec["display"]
+                else:
+                    got = F._read_path(_stored, _path)
+                    want = _spec.get("published")
+                if isinstance(want, float) and isinstance(got, (int, float)):
+                    # "beyond rounding" — the PDF prints to 0.1M / 1%.
+                    ok = abs(float(got) - want) <= max(50_000.0, abs(want) * 1e-9)
+                else:
+                    ok = got == want
+                if not ok:
+                    _diffs.append(f"{_inv}/{_t}/{_path}: frozen={got!r} pdf={want!r}")
+
+    chk(f"every published cell matches the PDF ({_tot_cells} cells, "
+        f"{_tot_reports} One Pagers)",
+        not _diffs, "; ".join(_diffs[:4]))
+    chk("the overlay actually carried cells (not a vacuous pass)",
+        _tot_cells > 500, str(_tot_cells))
+    chk("both sent documents are represented",
+        len(_doc.get("investors") or {}) == 2,
+        str(list(_doc.get("investors") or {})))
+
+# ── K. batch print serves the FROZEN roster, in printed order ──────────────
+#
+# Through the real endpoint, because the roster rule lives in the view: the
+# service could store a perfect roster and the batch could still rebuild the
+# population from today's ownership feed, which is exactly how a deal that was
+# in the sent document goes missing from a reprint of it.
+print("\nK. batch print serves the frozen roster, in printed order")
+from flask import Flask                                             # noqa: E402
+from flask_app.config import Config                                 # noqa: E402
+
+_app = Flask(__name__)
+_app.config.from_object(Config)
+_app.config["TESTING"] = True
+import flask_app.api.financials as _finmod                          # noqa: E402
+import flask_app.api.portfolio_snapshot as _snapmod                 # noqa: E402
+_app.register_blueprint(_finmod.financials_bp, url_prefix="/api/financials")
+_app.register_blueprint(_snapmod.portfolio_snapshot_bp,
+                        url_prefix="/api/portfolio-snapshot")
+
+# A REAL TOKEN, NOT A BYPASSED DECORATOR. `login_required` is applied at import
+# time, so reassigning the module attribute afterwards does nothing — the first
+# attempt at this failed with 401 for exactly that reason. Minting a token with
+# the app's own secret also makes section L's refusal mean something much
+# stronger: the frozen gate turning away an AUTHENTICATED ADMIN, rather than an
+# anonymous caller being turned away by auth.
+import jwt as _jwt                                                  # noqa: E402
+from datetime import datetime as _dt, timedelta as _td              # noqa: E402
+
+_TOK = _jwt.encode({"sub": "1", "username": "cbui", "role": "admin",
+                    "exp": _dt.utcnow() + _td(hours=1)},
+                   Config.JWT_SECRET, algorithm="HS256")
+_HDR = {"Authorization": f"Bearer {_TOK}"}
+_ROSTER = [f"R{i:03d}" for i in range(30)]
+F.freeze_as_sent("BATCH", "2026-Q2", "cbui",
+                 roster=_ROSTER,
+                 assembler=lambda i, q: {"subtabs": {}, "errors": {},
+                                         "resolution": {}},
+                 one_pager_getter=lambda vc, q: {"vcode": vc},
+                 elements_loader=stub_elements)
+with _app.test_client() as _c:
+    # WRAPPED ON PURPOSE. If the frozen-roster branch is ever bypassed the
+    # request falls through to the LIVE path, which reaches for the real
+    # database and raises — taking the whole run down instead of failing one
+    # named check. A crash here IS the failure, so it is reported as one.
+    try:
+        _r = _c.post("/api/financials/one-pager/batch", headers=_HDR,
+                     json={"investor": "BATCH", "quarter": "2026-Q2",
+                           "vcodes": ["SOMETHING", "ELSE"]})
+        _body = _r.get_json() or {}
+        _status = _r.status_code
+    except Exception as _exc:                                   # noqa: BLE001
+        _body, _status = {}, f"raised {type(_exc).__name__}: {_exc}"
+chk("the batch answers from the frozen copy", _body.get("source") == "frozen",
+    str(_status) + " " + str(_body)[:120])
+chk("it serves the STORED roster, not the vcodes posted",
+    [p.get("vcode") for p in (_body.get("pages") or [])] == _ROSTER,
+    str([p.get("vcode") for p in (_body.get("pages") or [])])[:120])
+chk("in the order it was sent",
+    [p.get("vcode") for p in (_body.get("pages") or [])] == _ROSTER)
+chk("and says the roster is the frozen one",
+    "frozen roster" in (_body.get("roster_source") or ""))
+# Rosters the seeded freeze must produce — TIAA 30 without Plaza Del Mar, KOC 15.
+if os.path.exists(_ov_path):
+    _d2 = _json.load(open(_ov_path, encoding="utf-8"))
+    _tg = (_d2["investors"].get("TGAM") or {}).get("roster_titles") or []
+    _ko = (_d2["investors"].get("KOCINV") or {}).get("roster_titles") or []
+    chk("TIAA's printed roster is 30 One Pagers", len(_tg) == 30, str(len(_tg)))
+    chk("Plaza Del Mar is not among them",
+        not [t for t in _tg if "plaza" in t.lower() and "mar" in t.lower()],
+        str([t for t in _tg if "plaza" in t.lower()]))
+    chk("KOC's printed roster is 15 One Pagers", len(_ko) == 15, str(len(_ko)))
+
+# ── L. typed fields on a frozen quarter are REFUSED by the API ─────────────
+#
+# Not "marked read-only" — REFUSED. A payload flag is a hint to the screen; the
+# guarantee has to be that the write does not land, because a frozen quarter is
+# the record of what an investor was sent. Driven through the blueprint so the
+# before_request gate is the thing being tested.
+print("\nL. writes to typed fields on a frozen quarter are refused by the API")
+with _app.test_client() as _c:
+    for _label, _url, _payload in [
+        ("Net ROE", "/api/portfolio-snapshot/value",
+         {"investor": "BATCH", "quarter": "2026-Q2", "vcode": "R000",
+          "field": "net_roe", "value": 0.12}),
+        ("ITD", "/api/portfolio-snapshot/value",
+         {"investor": "BATCH", "quarter": "2026-Q2", "vcode": "R000",
+          "field": "itd", "value": 1234}),
+        ("comment", "/api/portfolio-snapshot/comment",
+         {"investor": "BATCH", "quarter": "2026-Q2", "scope": "deal",
+          "field": "comment", "text": "edited after sending"}),
+        ("footnote", "/api/portfolio-snapshot/footnote",
+         {"investor": "BATCH", "quarter": "2026-Q2", "text": "late footnote"}),
+    ]:
+        _r = _c.put(_url, headers=_HDR, json=_payload)
+        if _r.status_code == 405:
+            _r = _c.post(_url, headers=_HDR, json=_payload)
+        _b = _r.get_json() or {}
+        chk(f"a {_label} write on a frozen quarter is refused",
+            _r.status_code == 409 and _b.get("frozen") is True,
+            f"status={_r.status_code} body={str(_b)[:90]}")
+    # The paired direction: an UNFROZEN quarter must still accept writes, or
+    # "refused" would be satisfied by refusing everything.
+    _r = _c.put("/api/portfolio-snapshot/value", headers=_HDR,
+                json={"investor": "BATCH", "quarter": "2099-Q4",
+                      "vcode": "R000", "field": "net_roe", "value": 0.12})
+    chk("an unfrozen quarter is NOT refused by the frozen gate",
+        _r.status_code != 409, f"status={_r.status_code}")
 
 print(f"\n{'=' * 60}\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
