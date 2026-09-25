@@ -284,8 +284,11 @@ chk(f"the enum carries all {len(_dict_field_ids)} full tab.field ids",
     f"enum={sum(1 for i in ids if '.' in i)} file={len(_dict_field_ids)}")
 chk("the enum ALSO carries bare names, or 'debt' could never be asked",
     "debt" in ids and "total_cap" in ids)
+# Derived, not the old literal 88: the enum must exceed the id count because it
+# carries the bare names as well, and pinning a number here just goes stale
+# every time the dictionary is regenerated.
 chk("the enum is built from the file, not written out in code",
-    len(ids) > 88)
+    len(ids) > len(_dict_field_ids))
 
 # ── 11. trace_field_value — the live per-deal value trace ────────────────
 #
@@ -625,6 +628,83 @@ chk("the assistant's One Pager call passes everything the page's route does",
     not _missing, f"missing: {sorted(_missing)}")
 chk("including full_data, without which the PE enrichment never runs",
     "full_data" in _op_call_args(_assist_src))
+
+# ── 13. The Dev tag / (Sold) label fields and the 7083 constant ──────────
+#
+# THESE EXIST BECAUSE THEY WENT MISSING ONCE. The 791f46b regeneration re-keyed
+# the dictionary from bare names to tab.field and, in doing so, dropped
+# `dev_tag` and `sold_label` entirely and removed
+# one_pager.AT_CLOSE_RESERVE_RELEASE_ACCTS from the dependency map — while all
+# three remained live in the app. Nothing failed: the tools simply reported "no
+# verified entry", which is the designed SAFE answer and therefore invisible.
+# These assertions make a silent re-drop loud.
+print("\nDev tag / (Sold) label / 7083 coverage")
+
+_SNAP_TABS = ("snapshot_financial", "snapshot_operating", "snapshot_loan")
+
+# NOTE THE ARGUMENT ORDER: this file's chk is (label, cond) — the opposite of
+# verify_traceability_live.py's (cond, label). Getting it backwards makes every
+# check pass VACUOUSLY, because a non-empty label string is truthy. It did, and
+# printed "PASS True" eight times before it was spotted.
+for _tab in _SNAP_TABS:
+    for _name in ("dev_tag", "sold_label"):
+        _fid = f"{_tab}.{_name}"
+        _r = lookup(field_id=_fid)
+        chk(f"{_fid} resolves and carries a source",
+            not _r.get("error") and bool(_r.get("source_value")),
+            str(_r.get("error", ""))[:70])
+
+# The BARE name is what a user asks ("where does the Dev tag come from?"), and
+# it must surface all three tabs rather than silently answering for one.
+for _name in ("dev_tag", "sold_label"):
+    _r = lookup(field_id=_name)
+    chk(f"a bare '{_name}' surfaces all three snapshot tabs, not one",
+        _r.get("multi_tab") is True
+        and set(_r.get("tabs") or []) == set(_SNAP_TABS),
+        f"tabs={_r.get('tabs')} error={str(_r.get('error',''))[:50]}")
+
+# The enum is CLOSED, so a field the model cannot name is a field it cannot ask
+# about — being in the dictionary is necessary but not sufficient.
+chk("the new ids are reachable through the closed field_id enum",
+    all(f"{t}.{n}" in A._FIELD_IDS for t in _SNAP_TABS
+        for n in ("dev_tag", "sold_label"))
+    and "dev_tag" in A._FIELD_IDS and "sold_label" in A._FIELD_IDS,
+    "an id absent from the enum cannot be asked for at all")
+
+# Sources must be the real ones, not a placeholder.
+_dev = lookup(field_id="snapshot_loan.dev_tag")
+chk("the Dev tag names is_dev_deal / Lifecycle as its source",
+    "is_dev_deal" in blob(_dev) and "Lifecycle" in blob(_dev))
+_sold = lookup(field_id="snapshot_loan.sold_label")
+chk("the (Sold) label names is_sold_as_of and the analyst-maintained columns",
+    "is_sold_as_of" in blob(_sold) and "Sale_Status" in blob(_sold))
+
+# THE CONSTANT, BY NAME AND BY ACCOUNT NUMBER. "7083" is the form somebody
+# actually types, and it already appears inside the Prop_Info_AtClose SOURCE —
+# and impact() searches sources BEFORE constants. So this asserts not merely
+# that it resolves, but that it resolves to the CONSTANT and not to that source.
+_deps_path = os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), "flask_app", "reference", "dependencies.json")
+_consts = json.load(open(_deps_path, encoding="utf-8"))["shared_constants"]
+chk("the dependency map carries 5 shared constants",
+    len(_consts) == 5, f"got {len(_consts)}")
+chk("one of them is AT_CLOSE_RESERVE_RELEASE_ACCTS",
+    any("AT_CLOSE_RESERVE_RELEASE_ACCTS" in c["name"] for c in _consts))
+
+for _q in ("AT_CLOSE_RESERVE_RELEASE_ACCTS",
+           "one_pager.AT_CLOSE_RESERVE_RELEASE_ACCTS", "7083"):
+    _r = impact(_q)
+    chk(f"impact_of({_q!r}) resolves to the 7083 constant",
+        not _r.get("error") and _r.get("match_type") == "shared_constant"
+        and "AT_CLOSE_RESERVE_RELEASE_ACCTS" in str(_r.get("matched")),
+        f"match_type={_r.get('match_type')} matched={_r.get('matched')!r} "
+        f"error={str(_r.get('error',''))[:50]}")
+
+# And it says what moves — a constant that resolves to an empty blast radius is
+# no more useful than a miss.
+_r = impact("7083")
+chk("the 7083 constant reports what changes if it moves",
+    bool(_r.get("fields_that_change")) and "at_close" in blob(_r))
 
 # (r) the meta-cleaned dictionaries are the ones on disk.
 _meta = json.load(open(os.path.join(os.path.dirname(os.path.dirname(

@@ -1533,6 +1533,46 @@
       ]
     },
     {
+      "field_id": "snapshot_financial.dev_tag",
+      "display_label": "Dev tag",
+      "section": "Snapshot – Financial",
+      "appears_on": [
+        "snapshot_financial"
+      ],
+      "status": "Verified",
+      "definition": "The 'Dev' marker shown on a development deal's row.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — is_dev_deal: the deal is classified as development from its Lifecycle value, which MRI refreshes. The preferred Investment_Strategy field is not refreshed by MRI and is empty on every deal, so Lifecycle decides.",
+          "note": "Same marker also listed among the components of this tab's annotations row."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_financial.sold_label",
+      "display_label": "(Sold) label",
+      "section": "Snapshot – Financial",
+      "appears_on": [
+        "snapshot_financial"
+      ],
+      "status": "Verified",
+      "definition": "The '(Sold)' marker shown on a sold deal's row.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI deals table via is_sold_as_of (Sale_Status / Sale_Date). Sale_Status and Sale_Date are analyst/app-maintained — NOT overwritten by an MRI refresh.",
+          "note": "Same marker also listed among the components of this tab's annotations row."
+        }
+      ]
+    },
+    {
       "field_id": "snapshot_operating.econ_occ",
       "display_label": "econ_occ",
       "section": "Snapshot – Operating",
@@ -1739,6 +1779,46 @@
           "component": "deal_count",
           "source": "App — subtotal member count",
           "note": ""
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_operating.dev_tag",
+      "display_label": "Dev tag",
+      "section": "Snapshot – Operating",
+      "appears_on": [
+        "snapshot_operating"
+      ],
+      "status": "Verified",
+      "definition": "The 'Dev' marker shown on a development deal's row.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — is_dev_deal: the deal is classified as development from its Lifecycle value, which MRI refreshes. The preferred Investment_Strategy field is not refreshed by MRI and is empty on every deal, so Lifecycle decides.",
+          "note": "Same marker also listed among the components of this tab's annotations row."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_operating.sold_label",
+      "display_label": "(Sold) label",
+      "section": "Snapshot – Operating",
+      "appears_on": [
+        "snapshot_operating"
+      ],
+      "status": "Verified",
+      "definition": "The '(Sold)' marker shown on a sold deal's row.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI deals table via is_sold_as_of (Sale_Status / Sale_Date). Sale_Status and Sale_Date are analyst/app-maintained — NOT overwritten by an MRI refresh.",
+          "note": "Same marker also listed among the components of this tab's annotations row."
         }
       ]
     },
@@ -1964,6 +2044,46 @@
           "component": "deal_count",
           "source": "App — subtotal member count",
           "note": ""
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_loan.dev_tag",
+      "display_label": "Dev tag",
+      "section": "Snapshot – Loan",
+      "appears_on": [
+        "snapshot_loan"
+      ],
+      "status": "Verified",
+      "definition": "The 'Dev' marker shown on a development deal's row.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — is_dev_deal: the deal is classified as development from its Lifecycle value, which MRI refreshes. The preferred Investment_Strategy field is not refreshed by MRI and is empty on every deal, so Lifecycle decides.",
+          "note": "Same marker also listed among the components of this tab's annotations row."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_loan.sold_label",
+      "display_label": "(Sold) label",
+      "section": "Snapshot – Loan",
+      "appears_on": [
+        "snapshot_loan"
+      ],
+      "status": "Verified",
+      "definition": "The '(Sold)' marker shown on a sold deal's row.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI deals table via is_sold_as_of (Sale_Status / Sale_Date). Sale_Status and Sale_Date are analyst/app-maintained — NOT overwritten by an MRI refresh.",
+          "note": "Same marker also listed among the components of this tab's annotations row."
         }
       ]
     },

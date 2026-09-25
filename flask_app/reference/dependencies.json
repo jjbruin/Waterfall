@@ -436,6 +436,22 @@
         "every field sourced from a download-only or unregistered table"
       ],
       "consumer_count": 2
+    },
+    {
+      "name": "one_pager.AT_CLOSE_RESERVE_RELEASE_ACCTS (7083)",
+      "value": [
+        "7083"
+      ],
+      "defined_at": "one_pager.py:1135",
+      "read_by": [
+        "one_pager.py:1838 (At-Close 7083 reserve-release netting fallback)"
+      ],
+      "duplicates": [],
+      "duplicate_warning": "",
+      "fields_that_change": [
+        "noi at_close (the 7083 netting fallback — 30 Bearfoot only; a blanket 7xxx rule would wrongly move other deals)"
+      ],
+      "consumer_count": 1
     }
   ],
   "known_divergences": [
