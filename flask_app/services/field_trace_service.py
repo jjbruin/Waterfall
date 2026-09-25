@@ -42,11 +42,19 @@ from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-#: A reconciliation tolerance, not a rounding rule. Ratios are held to a
-#: relative tolerance because a 1e-9 float tail on 0.0812 is not a disagreement;
-#: money is held to half a cent.
+#: A reconciliation tolerance, not a rounding rule, and RELATIVE on purpose.
+#:
+#: An absolute floor big enough for money is catastrophic for a ratio: at half a
+#: cent (0.005) a ROE of 0.082 would "agree" with 0.078, a 5% error, because the
+#: gap is smaller than the tolerance. None of the builders traced here round —
+#: `ltv` and `debt_yield` are plain divisions, and `total_cap` and the exposure
+#: fields are float sums of the same operands — so the only slack needed is for
+#: float noise, and 1e-6 relative is generous for that at every magnitude.
+#:
+#: The absolute floor now exists ONLY to let two genuine zeros agree, where a
+#: relative tolerance collapses to nothing.
 _REL_TOL = 1e-6
-_ABS_TOL = 0.005
+_NEAR_ZERO_TOL = 1e-9
 
 
 def _dig(payload: Any, path: tuple) -> Any:
@@ -97,7 +105,7 @@ def _agree(a: Optional[float], b: Optional[float]) -> Optional[bool]:
     if a is None or b is None:
         return None
     scale = max(abs(a), abs(b))
-    return abs(a - b) <= max(_ABS_TOL, scale * _REL_TOL)
+    return abs(a - b) <= max(_NEAR_ZERO_TOL, scale * _REL_TOL)
 
 
 # ── what each traceable field is made of ─────────────────────────────────
@@ -204,17 +212,26 @@ _BASES = ("ytd_actual", "ytd_budget", "actual_ye", "uw_ye", "at_close")
 
 #: (row key, [(component label, row key)]) for the Snapshot Loan subtab.
 _SNAPSHOT_LOAN_SPECS: dict = {
+    # BOTH RATIOS ARE STORED AS FRACTIONS, NOT PERCENTAGES. The builder does
+    # `ltv = debt / val["value"]` and `dy = annualised / debt`; the x100 lives in
+    # the display layer. Checking against a percentage would report every real
+    # row as failing to reconcile.
     "snapshot_loan.ltv": {
         "value": "ltv",
         "components": [("debt", "debt"), ("valuation", "valuation")],
-        # Published as a percentage.
-        "check": lambda c: (None if None in c or not c[1] else c[0] / c[1] * 100),
+        "check": lambda c: (None if None in c or not c[1] else c[0] / c[1]),
     },
     "snapshot_loan.debt_yield": {
         "value": "debt_yield",
-        "components": [("quarter NOI", "quarter_noi"), ("debt", "debt")],
-        "check": lambda c: (None if None in c or not c[1]
-                            else c[0] * 4 / c[1] * 100),
+        # `annualised_noi` IS THE NUMERATOR THAT WAS DIVIDED, and it is not
+        # always quarter NOI x 4: the Giant 7 fallback annualises projected
+        # year-end NOI instead. Checking `quarter_noi * 4` would therefore be
+        # wrong for exactly those deals, so the published numerator is used and
+        # quarter NOI is carried alongside it for context.
+        "components": [("quarter NOI", "quarter_noi"),
+                       ("annualised NOI", "annualised_noi"),
+                       ("debt", "debt")],
+        "check": lambda c: (None if c[1] is None or not c[2] else c[1] / c[2]),
     },
     "snapshot_loan.ytd_dscr": {
         "value": "ytd_dscr",
@@ -300,7 +317,53 @@ def _snapshot_loan_row(vcode: str, investor_code: str, quarter: str) -> dict:
     return {}
 
 
-# ── the ROE breakdown, gated ─────────────────────────────────────────────
+# ── the ROE breakdown ────────────────────────────────────────────────────
+#
+# PREFERRED PATH: the components the SCREEN'S OWN ENGINE produced.
+# `get_pe_performance` now calls `calculate_roe_detailed` — which delegates to
+# `calculate_roe` for the scalar — and carries the components in the payload
+# beside the figure. So the breakdown is decomposed by the engine that made the
+# number, and cannot fail to tie. `_roe_breakdown` below is kept as a dormant
+# fallback for a payload predating that change (a frozen snapshot, say); for a
+# live One Pager it should no longer be reached.
+
+def _roe_components_from_payload(payload: dict, uw: bool = False) -> Optional[dict]:
+    """The ROE components the One Pager itself computed, or None if absent."""
+    key = "uw_roe_components" if uw else "roe_components"
+    comp = _dig(payload, ("pe_performance", key))
+    if not isinstance(comp, dict):
+        return None
+    dists = _num(comp.get("total_cf_distributions"))
+    wac = _num(comp.get("weighted_avg_capital"))
+    years = _num(comp.get("years"))
+    if dists is None and wac is None and years is None:
+        return None
+    # Labels spelled out per branch so they match the `inputs[].component` names
+    # in data_dictionary.json exactly — that pairing is how each traced number
+    # gets its documented source. A label that does not match simply carries no
+    # source line, which is the right failure: no source beats a wrong one.
+    num_label = "UW distributions (numerator)" if uw else "Distributions (numerator)"
+    den_label = ("UW contributions & returns of capital (denominator)" if uw
+                 else "Weighted-avg capital (denominator)")
+    return {
+        "available": True,
+        "source_engine": ("one_pager.get_pe_performance via "
+                          "metrics.calculate_roe_detailed — the same engine, and "
+                          "the same call, that produced the figure on the page"),
+        "recomputed": (dists / wac / years
+                       if dists is not None and wac and years else None),
+        "components": [
+            {"component": num_label, "value": dists,
+             "available": dists is not None},
+            {"component": den_label, "value": wac, "available": wac is not None},
+            {"component": "years", "value": years, "available": years is not None},
+            {"component": "inception", "value": str(comp.get("inception")),
+             "available": comp.get("inception") is not None},
+            {"component": "total days", "value": _num(comp.get("total_days")),
+             "available": _num(comp.get("total_days")) is not None},
+        ],
+    }
+
 
 def _roe_breakdown(vcode: str, quarter: str, page_value: Optional[float],
                    uw: bool = False) -> dict:
@@ -511,40 +574,58 @@ def trace_field_value(deal_id: str, field_id: str, quarter: str = None,
             "source_payload": ("financials_service.get_one_pager_data — the same "
                                "call the One Pager route makes, full_data included")}
 
-    # DSCR is reported on five bases, not as one number.
+    # DSCR is reported on five bases, not as one number. Each carries its own
+    # numerator and its own denominator — the bases genuinely differ, so they
+    # are read per column and never borrowed from one another.
     if fid == "one_pager.dscr":
         rows = []
         for b in _BASES:
             ratio = _num(_dig(payload, ("property_performance", "dscr", b)))
             noi = _num(_dig(payload, ("property_performance", "noi", b)))
+            ds = _num(_dig(payload, ("property_performance", "debt_service", b)))
+            den = {"component": "debt service (denominator)", "value": ds,
+                   "available": ds is not None, "source": sources.get(b)}
+            if ds is None:
+                # STILL HONEST WHERE IT IS ABSENT. A column whose denominator
+                # the builder did not resolve says so; the ratio is NOT divided
+                # backwards to manufacture one.
+                den["reason"] = ("this column's debt service was not resolved by "
+                                 "the One Pager, so it is not reported — the "
+                                 "ratio is never divided backwards to produce it")
             rows.append({
                 "basis": b, "dscr": ratio, "available": ratio is not None,
                 "inputs": [
                     {"component": "NOI (numerator)", "value": noi,
                      "available": noi is not None,
                      "source": sources.get(b)},
-                    {"component": "debt service (denominator)", "value": None,
-                     "available": False,
-                     "reason": ("the One Pager publishes the ratio and its NOI "
-                                "numerator but not the debt service it divided "
-                                "by, so it is not reported here rather than "
-                                "being worked backwards out of the ratio"),
-                     "source": sources.get(b)},
+                    den,
                 ],
+                "reconciles": _agree(
+                    (noi / ds) if (noi is not None and ds) else None, ratio),
             })
         return {**base, "multi_basis": True, "bases": rows,
                 "value": _num(_dig(payload, ("property_performance", "dscr", "ytd_actual"))),
                 "note": ("DSCR is reported on five bases. The figure quoted "
                          "alone is ytd_actual.")}
 
-    # ROE — value from the page, components gated on the two engines agreeing.
+    # ROE — value and components from the SAME engine wherever possible.
     if fid in ("one_pager.roe_to_date", "one_pager.uw_roe_to_date"):
         key = "roe_to_date" if fid.endswith(".roe_to_date") else "uw_roe_to_date"
+        is_uw = key.startswith("uw")
         value = _num(_dig(payload, ("pe_performance", key)))
-        breakdown = (_roe_breakdown(vcode, resolved_q, value,
-                                    uw=key.startswith("uw"))
-                     if resolved_q else
-                     {"available": False, "reason": "no quarter could be resolved"})
+
+        # FIRST CHOICE: the components the page's own engine published. Nothing
+        # to gate — they came out of the same call as the figure itself.
+        breakdown = _roe_components_from_payload(payload, uw=is_uw)
+        if breakdown is None:
+            # DORMANT FALLBACK. Only a payload built before the components were
+            # carried (a frozen snapshot) lands here, and it is still gated on
+            # the second engine agreeing before anything is shown.
+            breakdown = (_roe_breakdown(vcode, resolved_q, value, uw=is_uw)
+                         if resolved_q else
+                         {"available": False,
+                          "reason": "no quarter could be resolved"})
+
         out = {**base, "value": value, "value_available": value is not None}
         # `.get(... ) or []` rather than indexing: a breakdown that says it is
         # available but carries no components is a bug, and it should degrade to
@@ -552,7 +633,14 @@ def trace_field_value(deal_id: str, field_id: str, quarter: str = None,
         if breakdown.get("available") and (breakdown.get("components") or []):
             out["inputs"] = _label(breakdown.get("components") or [])
             out["breakdown_engine"] = breakdown.get("source_engine")
-            out["reconciles"] = True
+            # CHECKED, NOT ASSERTED. The same-engine path carries a `recomputed`
+            # figure (distributions / weighted-avg capital / years) and the flag
+            # comes from comparing it to the published ROE — so the answer
+            # proves it ties rather than claiming it. The dormant fallback has
+            # no `recomputed` because it was already gated on the two engines
+            # agreeing before it got here.
+            out["reconciles"] = (_agree(breakdown["recomputed"], value)
+                                 if "recomputed" in breakdown else True)
         else:
             out["inputs"] = []
             out["breakdown_available"] = False

@@ -1151,7 +1151,17 @@ def _tool_get_one_pager(inp):
             deal_terms=data.get("deal_terms_raw"),
             at_close_noi=data.get("at_close_noi_raw"),
             event_dates=data.get("event_dates_raw"),
+            # PASSED SO THIS TOOL AGREES WITH THE SCREEN. The One Pager route
+            # (flask_app/api/financials.py) passes both and this did not, and
+            # they were the ONLY difference between the two calls — every other
+            # argument was already identical. Without `full_data` the PE
+            # enrichment (`_enrich_pe_from_deal_result`) never runs, so the
+            # assistant reported pre-enrichment balances — a current PE balance
+            # and accrued balance on a different basis from the ones printed on
+            # the page, with nothing saying so.
+            full_data=data,
             relationships=data.get("relationships_raw"),
+            mri_loans_all=data.get("mri_loans_all"),
             inspection=data.get("inspection_raw"),
         )
         if not result:

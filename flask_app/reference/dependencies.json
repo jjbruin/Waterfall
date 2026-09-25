@@ -6,7 +6,7 @@
     "consumed_by": "impact_of(name) tool in the chatbot",
     "citation_format": "file.py:line (repo root for one_pager.py / metrics.py)",
     "answer_rule": "Report only from these fields. Give the blast radius, the duplicates to keep in sync, and the consumer count. Never invent a consumer or a downstream field.",
-    "matcher_caveat": "impact_of matches a queried name to the nearest entry via token overlap (floor 0.25) and always returns something — so an unlisted name gets a confidently-WRONG blast radius. Two mitigations: (a) these first-class entries for every source the dictionary cites (done), and (b) a code fix to raise the match floor so a truly unknown name MISSES and the tool says 'no verified source' instead of guessing."
+    "matcher_caveat": "impact_of matches a queried name to the nearest source entry via token overlap. The floor is 0.5: a name that does not clearly match a listed source MISSES and the tool reports 'no verified source' instead of guessing (fix applied on feat/traceability-verified-dictionary). Every source the dictionary cites has a first-class entry here."
   },
   "sources": [
     {

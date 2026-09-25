@@ -9,13 +9,14 @@
     "formula_rule": "Render `formula_latex` when present (formula_is_arithmetic=true). When null, the field has NO clean single-expression arithmetic — state the method in words and DO NOT reconstruct an equation. Never invent a formula or a source.",
     "answer_format": {
       "order": [
-        "What",
-        "Source",
-        "Formula (if formula_is_arithmetic)",
-        "Inputs (each component + source)",
-        "Note"
+        "In plain terms",
+        "Where it comes from",
+        "How it's calculated (if formula_is_arithmetic)",
+        "The numbers behind it (when tracing a specific deal's value)",
+        "Worth knowing (if a caveat)"
       ],
-      "latex": "block math on ONE line as $$...$$ ; inline as \\( ... \\) ; never ** inside a formula"
+      "style": "plain language, no internal code shorthand (no bare function names / abs()); break into short labeled parts with a blank line between them; use bullets, never one run-on block",
+      "latex": "render formulas as KaTeX using each field's formula_latex: block math on ONE line as $$...$$; for a specific deal substitute the actual values into a one-line $$...$$ and escape literal dollar signs as \\$; never ** inside a formula; typeset only after the stream completes"
     },
     "mri_table_note": "Sources name the MRI feed/table an analyst can open directly (e.g. Prop_Info_Core = deal roster; ISBS_Download = interim/projected/budget statements; accounting_feed = investor cash flows; MRI_Loans, MRI_Occupancy_Download, Prop_Info_AtClose, MRI_Budget_Econ_Occ, Prop_Info_DealTerms, MRI_VAL, MRI_Event_Dates, MRI_Inspection) plus the column/account.",
     "supplement_caveat": "Five ISBS supplement tables (isbs_uw_supplements, isbs_budget_is_supplements, isbs_interim_is_supplements, isbs_interim_bs_supplements, isbs_valuation_is_supplements) are analyst-loaded CSV uploads, NOT MRI-refreshed. They merge into the ISBS data and WIN over MRI on collision — so an ISBS-sourced value can actually come from an analyst CSV. Valuations (MRI_VAL) and waterfalls are app-owned / PROTECTED, not MRI feeds."

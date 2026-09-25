@@ -27,6 +27,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import sys
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
@@ -411,6 +412,232 @@ chk("a numeric STRING is not read as a number",
     TR._num("1.45") is None, str(TR._num("1.45")))
 chk("'n/a' and 'Dev' are not read as numbers",
     TR._num("n/a") is None and TR._num("Dev") is None and TR._num(True) is None)
+
+# ── 12. Single-engine ROE components, and the DSCR denominator ───────────
+#
+# BOTH DIRECTIONS THROUGHOUT. "the breakdown is shown" is satisfied by showing
+# one unconditionally, so the withhold path is asserted to still refuse; "the
+# denominator is published" is satisfied by inventing one, so a column without
+# it is asserted to stay unavailable.
+print("\nSingle-engine ROE components + DSCR denominator")
+
+# (k) THE REGRESSION GUARD. `get_pe_performance` swapped calculate_roe for
+# calculate_roe_detailed; the displayed ROE must not move. It cannot, because
+# detailed DELEGATES to calculate_roe for the scalar — this pins that, including
+# the degenerate cases where the early returns could diverge.
+from metrics import calculate_roe, calculate_roe_detailed          # noqa: E402
+from datetime import date as _d                                    # noqa: E402
+
+_roe_cases = [
+    ([], [], _d(2020, 1, 1), _d(2024, 1, 1)),
+    ([(_d(2020, 1, 1), -1000.0)], [], _d(2020, 1, 1), _d(2020, 1, 1)),
+    ([(_d(2020, 1, 1), 1000.0)], [], _d(2020, 1, 1), _d(2024, 1, 1)),
+    ([(_d(2020, 1, 1), -1_000_000.0), (_d(2022, 6, 30), 250_000.0)],
+     [(_d(2022, 6, 30), 250_000.0)], _d(2020, 1, 1), _d(2024, 1, 1)),
+    ([(_d(2019, 3, 1), -5_000_000.0), (_d(2021, 9, 1), -2_000_000.0),
+      (_d(2023, 1, 15), 900_000.0)],
+     [(_d(2023, 1, 15), 900_000.0), (_d(2023, 6, 1), -20_000.0)],
+     _d(2019, 3, 1), _d(2026, 6, 30)),
+]
+chk("calculate_roe_detailed returns the IDENTICAL scalar calculate_roe does",
+    all(calculate_roe(*c) == calculate_roe_detailed(*c)["roe"] for c in _roe_cases))
+
+# (p) THE TOLERANCE MUST DISCRIMINATE RATIOS. An absolute floor sized for money
+# (half a cent) calls a ROE of 0.082 equal to 0.078 — a 5% error — so the
+# reconciliation flag would be decorative on every ratio field.
+chk("a 5% gap between two ratios is NOT called agreement",
+    TR._agree(0.082, 0.078) is False)
+chk("float noise between two ratios IS called agreement",
+    TR._agree(0.082, 0.082 * (1 + 1e-9)) is True)
+chk("two genuine zeros agree", TR._agree(0.0, 0.0) is True)
+
+_P2 = {
+    "cap_stack": {}, "general": {},
+    "property_performance": {
+        "noi": {"ytd_actual": 4.2e6, "ytd_budget": 4.0e6, "actual_ye": 8.5e6,
+                "uw_ye": 9.0e6, "at_close": 7.0e6},
+        "dscr": {"ytd_actual": 1.45, "ytd_budget": 1.40, "actual_ye": 1.50,
+                 "uw_ye": 1.60, "at_close": None},
+        # at_close's denominator is deliberately ABSENT — the honest path.
+        "debt_service": {"ytd_actual": 4.2e6 / 1.45, "ytd_budget": 4.0e6 / 1.40,
+                         "actual_ye": 8.5e6 / 1.50, "uw_ye": 9.0e6 / 1.60,
+                         "at_close": None},
+    },
+    "pe_performance": {
+        "roe_to_date": 0.082,
+        "roe_components": {
+            "total_cf_distributions": 12_300_000.0,
+            "weighted_avg_capital": 45_100_000.0,
+            "years": 12_300_000.0 / 45_100_000.0 / 0.082,
+            "inception": "2021-01-01", "through": "2026-06-30",
+            "total_days": 1276},
+    },
+}
+_real_payload2 = TR._one_pager_payload
+_real_roe2 = TR._roe_breakdown
+try:
+    TR._one_pager_payload = lambda v, q: (_P2, "26Q2")
+
+    # (l) the components the PAGE'S OWN engine published are used, and the
+    # breakdown is no longer withheld.
+    r = TR.trace_field_value("P1", "one_pager.roe_to_date", quarter="26Q2")
+    chk("ROE now returns a components breakdown, not a withholding",
+        bool(r.get("inputs")) and r.get("breakdown_available") is not False)
+    chk("the breakdown names the SCREEN's engine, not the ROE Summary report",
+        "calculate_roe_detailed" in (r.get("breakdown_engine") or ""))
+    chk("ROE reconciles — dists / wtd-avg capital / years ties to the figure",
+        r.get("reconciles") is True)
+    chk("the ROE components carry their dictionary sources",
+        sum(1 for i in r["inputs"] if i.get("source")) >= 3)
+
+    # (l2) AND IT IS A REAL CHECK, NOT A RUBBER STAMP: components that do not
+    # divide out to the published ROE report reconciles=False.
+    _bad = dict(_P2["pe_performance"]["roe_components"], years=99.0)
+    _P2["pe_performance"] = dict(_P2["pe_performance"], roe_components=_bad)
+    r = TR.trace_field_value("P1", "one_pager.roe_to_date", quarter="26Q2")
+    chk("ROE components that do NOT tie report reconciles=False",
+        r.get("reconciles") is False, str(r.get("reconciles")))
+    _P2["pe_performance"] = {"roe_to_date": 0.082, "roe_components": {
+        "total_cf_distributions": 12_300_000.0,
+        "weighted_avg_capital": 45_100_000.0,
+        "years": 12_300_000.0 / 45_100_000.0 / 0.082,
+        "inception": "2021-01-01", "through": "2026-06-30", "total_days": 1276}}
+
+    # (n) DSCR now shows numerator, denominator and ratio, per basis.
+    r = TR.trace_field_value("P1", "one_pager.dscr", quarter="26Q2")
+    _by = {b["basis"]: b for b in r["bases"]}
+    chk("DSCR publishes its denominator where the builder resolved one",
+        _by["ytd_actual"]["inputs"][1]["available"] is True
+        and _by["ytd_actual"]["inputs"][1]["value"] is not None)
+    chk("DSCR shows numerator AND denominator AND ratio together",
+        _by["ytd_actual"]["inputs"][0]["value"] == 4.2e6
+        and _by["ytd_actual"]["dscr"] == 1.45)
+    chk("each DSCR basis reconciles against its OWN denominator",
+        all(_by[b]["reconciles"] is True
+            for b in ("ytd_actual", "ytd_budget", "actual_ye", "uw_ye")))
+
+    # (o) ...and a column whose denominator is absent STAYS honest.
+    chk("a DSCR column with no resolved denominator stays unavailable",
+        _by["at_close"]["inputs"][1]["available"] is False
+        and _by["at_close"]["inputs"][1]["value"] is None)
+    chk("and says why, rather than dividing the ratio backwards",
+        "backwards" in (_by["at_close"]["inputs"][1].get("reason") or ""))
+
+    # (m) THE WITHHOLD PATH IS STILL LIVE for a payload carrying no components
+    # (a frozen snapshot), and still refuses on a real mismatch.
+    _P2["pe_performance"] = {"roe_to_date": 0.082}
+    TR._roe_breakdown = lambda vc, q, val, uw=False: {
+        "available": False, "reason": "engines disagree: 0.071 vs 0.082"}
+    r = TR.trace_field_value("P1", "one_pager.roe_to_date", quarter="26Q2")
+    chk("with no published components, the withhold path still refuses",
+        r.get("inputs") == [] and r.get("breakdown_available") is False)
+    chk("the withholding keeps the PAGE's value and names the disagreement",
+        r.get("value") == 0.082
+        and "disagree" in (r.get("breakdown_unavailable_reason") or ""))
+finally:
+    TR._one_pager_payload = _real_payload2
+    TR._roe_breakdown = _real_roe2
+
+# (q) the Snapshot ratios are FRACTIONS, not percentages — checking against a
+# percentage would report every real row as failing to reconcile.
+_ROW = {"vcode": "P1", "ltv": 0.65, "debt": 65e6, "valuation": 100e6,
+        "debt_yield": 6.4e6 / 65e6, "quarter_noi": 1.6e6,
+        "annualised_noi": 6.4e6, "ytd_dscr": 1.45, "ytd_noi": 4.2e6}
+_real_row = TR._snapshot_loan_row
+try:
+    TR._snapshot_loan_row = lambda v, i, q: _ROW
+    r = TR.trace_field_value("P1", "snapshot_loan.ltv", quarter="26Q2",
+                             investor_code="TIAA")
+    chk("snapshot LTV reconciles as a FRACTION (debt / valuation)",
+        r.get("reconciles") is True, str(r.get("reconciles")))
+    r = TR.trace_field_value("P1", "snapshot_loan.debt_yield", quarter="26Q2",
+                             investor_code="TIAA")
+    chk("snapshot Debt Yield reconciles off the PUBLISHED annualised NOI",
+        r.get("reconciles") is True, str(r.get("reconciles")))
+    # The Giant 7 fallback annualises projected year-end NOI, so the numerator
+    # is NOT quarter NOI x 4 — checking that product would fail those deals.
+    _G7 = dict(_ROW, quarter_noi=None, annualised_noi=7.0e6,
+               debt_yield=7.0e6 / 65e6)
+    TR._snapshot_loan_row = lambda v, i, q: _G7
+    r = TR.trace_field_value("P1", "snapshot_loan.debt_yield", quarter="26Q2",
+                             investor_code="TIAA")
+    chk("a Debt Yield not built from quarter NOI x 4 still reconciles",
+        r.get("reconciles") is True, str(r.get("reconciles")))
+finally:
+    TR._snapshot_loan_row = _real_row
+
+# (s) THE SHIPPING BUILDERS ACTUALLY PUBLISH THE NEW KEYS. Everything above
+# runs against an injected payload, so it would keep passing if one_pager
+# stopped emitting them. These call the real builders with empty frames — which
+# returns their seed dicts — so the contract is checked against the code that
+# ships, not against the fixture. A source grep would not do: it cannot tell a
+# key that is emitted from one that is merely mentioned in a comment.
+import pandas as _pd                                              # noqa: E402
+from one_pager import (get_property_performance as _gpp,           # noqa: E402
+                       get_pe_performance as _gpe)
+_empty = _pd.DataFrame()
+_perf_seed = _gpp("PX", "2026-Q2", _empty, _empty, _empty)
+chk("get_property_performance publishes a debt_service block",
+    isinstance(_perf_seed.get("debt_service"), dict))
+chk("it carries a denominator slot for every DSCR basis",
+    set(_perf_seed.get("debt_service") or {}) == set(_perf_seed.get("dscr") or {}))
+_pe_seed = _gpe("PX", "2026-Q2", _empty, _empty, _empty)
+chk("get_pe_performance publishes roe_components and uw_roe_components",
+    "roe_components" in _pe_seed and "uw_roe_components" in _pe_seed)
+# `.get()`, not indexing: if the key above is missing this must report a second
+# named FAILURE, not raise and take every later check down with it.
+chk("they seed to None, so 'no breakdown' stays distinct from a zero breakdown",
+    "roe_components" in _pe_seed
+    and _pe_seed.get("roe_components") is None
+    and _pe_seed.get("uw_roe_components") is None)
+
+# (t) the assistant's One Pager tool now calls the builder the way the ROUTE
+# does. This was the pre-existing divergence: without full_data the PE
+# enrichment never ran, so the tool could report balances the page does not.
+_route_src = open(os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), "flask_app", "api", "financials.py"),
+    encoding="utf-8").read()
+
+
+def _op_call_args(src: str) -> set:
+    """The argument NAMES of the get_one_pager_data call in `src`."""
+    i = src.index("result = get_one_pager_data(")
+    k = src.index("(", i)
+    depth = 0
+    for p in range(k, len(src)):
+        if src[p] == "(":
+            depth += 1
+        elif src[p] == ")":
+            depth -= 1
+            if depth == 0:
+                j = p
+                break
+    body = re.sub(r"#[^\n]*", "", src[k + 1:j])
+    return {a.split("=")[0].strip()
+            for a in re.split(r",(?![^()\[\]]*[)\]])", body) if a.strip()}
+
+
+_assist_src = open(os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), "flask_app", "services",
+    "assistant_service.py"), encoding="utf-8").read()
+_missing = _op_call_args(_route_src) - _op_call_args(_assist_src)
+chk("the assistant's One Pager call passes everything the page's route does",
+    not _missing, f"missing: {sorted(_missing)}")
+chk("including full_data, without which the PE enrichment never runs",
+    "full_data" in _op_call_args(_assist_src))
+
+# (r) the meta-cleaned dictionaries are the ones on disk.
+_meta = json.load(open(os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), "flask_app", "reference",
+    "data_dictionary.json"), encoding="utf-8"))["meta"]
+chk("the dictionary carries the plain-language answer_format order",
+    (_meta.get("answer_format") or {}).get("order", [None])[0] == "In plain terms")
+_dmeta = json.load(open(os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), "flask_app", "reference",
+    "dependencies.json"), encoding="utf-8"))["meta"]
+chk("the dependency map's matcher caveat states the 0.5 floor that is in force",
+    "0.5" in (_dmeta.get("matcher_caveat") or "")
+    and "floor 0.25" not in (_dmeta.get("matcher_caveat") or ""))
 
 print("\n" + "=" * 62)
 print(f"RESULT: {PASSED} passed, {FAILED} failed")
