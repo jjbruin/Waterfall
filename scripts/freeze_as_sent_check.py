@@ -702,5 +702,76 @@ chk("an overlay that matches live raises NO warning and no differences",
     _clean["warnings"] == [] and _clean["differs_total"] == 0,
     str(_clean["warnings"]) + str(_clean["differs_total"]))
 
+# ── Q. the Loan-tab hardcodes cannot move a FROZEN page ────────────────────
+#
+# Five per-deal hardcodes decide what the live Loan tab shows:
+#   MANUAL_RATIO_SEEDS          typed LTV/DSCR/Debt Yield for six recent deals
+#   PROJECTED_YE_NOI_FALLBACK   Giant 7's debt yield from projected YE NOI
+#   DEBT_FREE_DEALS             Pegasus prints a dash instead of 0.0
+#   KNOWN_LOAN_SUBTOTAL_DIFFS   documented subtotal ties that no longer hold
+#   (and the Presidential Arms debt_yield seed inside MANUAL_RATIO_SEEDS)
+#
+# They will be removed or corrected eventually, and the question this answers
+# is whether doing so could rewrite a quarter that has already been SENT.
+# It cannot — a frozen quarter is served from stored JSON — but "cannot" is
+# worth pinning, because the whole feature rests on the read path not
+# recomputing, and a future change that made it recompute would silently make
+# every one of these live again on a sent report.
+print("\nQ. removing the Loan-tab hardcodes cannot change a frozen page")
+
+from flask_app.services import portfolio_snapshot_loan as LOAN     # noqa: E402
+
+_frozen_loan = {"subtabs": {"loan": {"groups": {"G": {"deals": [
+    {"vcode": "P0000119", "name": "Presidential Arms JV, LLC (DE)",
+     "ltv": 0.706, "ltv_display": 0.706,
+     "debt_yield": 0.0593, "debt_yield_display": 0.059},
+    {"vcode": "P0000066", "name": "Pegasus Life Storage",
+     "debt": 25_200_000.0, "debt_display": None},
+    {"vcode": "P0000019", "name": "Giant 7",
+     "debt_yield": 0.097, "debt_yield_display": 0.097},
+], "subtotal": {"name": "Total Individual Investments",
+                "ytd_dscr": 2.2, "debt_yield": 0.102}}}}},
+    "errors": {}, "resolution": {}}
+
+F.freeze_as_sent("HARDCODE", "2026-Q2", "cbui",
+                 assembler=lambda i, q: _json.loads(_json.dumps(_frozen_loan)),
+                 one_pager_getter=lambda vc, q: {"vcode": vc},
+                 elements_loader=stub_elements,
+                 roster=["P0000119", "P0000066", "P0000019"])
+_before = _json.dumps(F.get_frozen("HARDCODE", "2026-Q2")["payload"],
+                      sort_keys=True, default=str)
+
+_saved = (LOAN.MANUAL_RATIO_SEEDS, LOAN.PROJECTED_YE_NOI_FALLBACK,
+          LOAN.DEBT_FREE_DEALS, LOAN.KNOWN_LOAN_SUBTOTAL_DIFFS)
+try:
+    # Remove all five, as a future cleanup would.
+    LOAN.MANUAL_RATIO_SEEDS = {}
+    LOAN.PROJECTED_YE_NOI_FALLBACK = frozenset()
+    LOAN.DEBT_FREE_DEALS = set()
+    LOAN.KNOWN_LOAN_SUBTOTAL_DIFFS = {}
+    _after = _json.dumps(F.get_frozen("HARDCODE", "2026-Q2")["payload"],
+                         sort_keys=True, default=str)
+finally:
+    (LOAN.MANUAL_RATIO_SEEDS, LOAN.PROJECTED_YE_NOI_FALLBACK,
+     LOAN.DEBT_FREE_DEALS, LOAN.KNOWN_LOAN_SUBTOTAL_DIFFS) = _saved
+
+chk("the frozen payload is byte-identical with all five hardcodes removed",
+    _before == _after,
+    f"len {len(_before)} vs {len(_after)}")
+_fr = F.get_frozen("HARDCODE", "2026-Q2")["payload"]["subtabs"]["loan"]
+_rows = _fr["groups"]["G"]["deals"]
+chk("Presidential Arms keeps the seeded 5.93% / printed 5.9%",
+    _rows[0]["debt_yield"] == 0.0593 and _rows[0]["debt_yield_display"] == 0.059)
+chk("Pegasus keeps its dash, and the debt behind it",
+    _rows[1]["debt_display"] is None and _rows[1]["debt"] == 25_200_000.0)
+chk("Giant 7 keeps the debt yield the fallback produced",
+    _rows[2]["debt_yield"] == 0.097)
+chk("the subtotal KNOWN_LOAN_SUBTOTAL_DIFFS documents is unchanged",
+    _fr["groups"]["G"]["subtotal"]["ytd_dscr"] == 2.2
+    and _fr["groups"]["G"]["subtotal"]["debt_yield"] == 0.102)
+# The paired direction: the read path must be reading STORE, not recomputing.
+chk("the frozen read never consults the live loan module at all",
+    F.get_frozen("HARDCODE", "2026-Q2")["frozen_reason"] == F.REASON_AS_SENT)
+
 print(f"\n{'=' * 60}\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
