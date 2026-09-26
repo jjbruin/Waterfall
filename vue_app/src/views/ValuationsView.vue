@@ -235,11 +235,86 @@ async function onMappingCommitted() {
   await loadBudgetReview()
 }
 
+// The third column: Valuation Yr 1 or underwriting for the budget year. Asset
+// management, Sep 25 2026: "so we can compare budget to valuation or budget to UW."
+const budgetCompare = ref<'valuation' | 'underwriting'>('valuation')
+async function setBudgetCompare(v: string) {
+  budgetCompare.value = v === 'underwriting' ? 'underwriting' : 'valuation'
+  budgetReview.value = null
+  await loadBudgetReview()
+}
+
+// Estimate overrides. Line items only -- the totals follow, so the column still adds
+// up. The computed figure is kept and shown on hover; Revert puts it back.
+const editingEst = ref<string | null>(null)
+const estDraft = ref('')
+const estNote = ref('')
+const estSaving = ref(false)
+function startEstEdit(row: any) {
+  if (!commentsEditable.value || !row.overridable || row.is_ratio) return
+  editingEst.value = row.account
+  estDraft.value = row.estimate === null || row.estimate === undefined ? '' : String(Math.round(row.estimate))
+  estNote.value = row.override_note || ''
+}
+async function saveEst(row: any, revert = false) {
+  // Accepts 1,234 / $1,234 / (1,234) for a negative.
+  const raw = estDraft.value.replace(/[,$\s]/g, '').replace(/^\((.*)\)$/, '-$1')
+  if (!revert && (raw === '' || isNaN(Number(raw)))) {
+    error.value = 'Enter a number to override the Estimate, or Cancel.'
+    return
+  }
+  estSaving.value = true
+  try {
+    await api.put(`/api/valuations/records/${selectedRecordId.value}/estimate-overrides`, {
+      row: row.account,
+      amount: revert ? null : Number(raw),
+      computed_amount: row.estimate_overridden ? row.estimate_computed : row.estimate,
+      note: estNote.value,
+    })
+    editingEst.value = null
+    budgetReview.value = null
+    await loadBudgetReview()
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
+  } finally {
+    estSaving.value = false
+  }
+}
+function estTitle(row: any): string {
+  if (row.estimate_overridden) {
+    return `Overridden${row.override_by ? ' by ' + row.override_by : ''} — computed figure ` +
+      `${fmtCurrency(row.estimate_computed)}${row.override_note ? '. ' + row.override_note : ''}` +
+      (commentsEditable.value ? ' (double-click to change or revert)' : '')
+  }
+  if (row.estimate_includes_override) return 'Includes an overridden line'
+  if (commentsEditable.value && row.overridable) return 'Double-click to override'
+  return ''
+}
+const hasEstOverrides = computed(() =>
+  (budgetReview.value?.rows || []).some((r: any) => r.estimate_overridden))
+
+// Where the Budget column's debt service comes from: modeled from the deal's loan
+// terms, or underwriting's own 7010 for the year.
+const basisSaving = ref(false)
+async function setDebtBasis(basis: 'modeled' | 'underwriting') {
+  basisSaving.value = true
+  try {
+    await api.put(`/api/valuations/records/${selectedRecordId.value}/debt-service-basis`, { basis })
+    budgetReview.value = null
+    await loadBudgetReview()
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
+  } finally {
+    basisSaving.value = false
+  }
+}
+
 async function loadBudgetReview() {
   if (!selectedRecordId.value || budgetReview.value) return
   budgetLoading.value = true
   try {
-    const res = await api.get(`/api/valuations/records/${selectedRecordId.value}/budget-review`)
+    const res = await api.get(`/api/valuations/records/${selectedRecordId.value}/budget-review`,
+                              { params: { compare: budgetCompare.value } })
     budgetReview.value = res.data
   } catch (e: any) {
     error.value = e.response?.data?.error || e.message
@@ -1685,8 +1760,8 @@ watch(selectedCycleId, () => {
               <p class="panel-note">
                 {{ budgetReview.estimate_year }} Estimate = actuals through
                 {{ fmtDate(budgetReview.last_actual_month) || 'n/a' }} plus budget for the remaining months.
-                <span v-if="!budgetReview.has_argus" class="warn-note">
-                  No Argus import linked — the Valuation column is empty until one is imported on the first tab.
+                <span v-if="budgetReview.compare && !budgetReview.compare.available" class="warn-note">
+                  {{ budgetReview.compare.note }}
                 </span>
               </p>
               <!-- The debt rows are OURS, not the file's. Saying so is not optional:
@@ -1711,6 +1786,31 @@ watch(selectedCycleId, () => {
                 Debt service is as stated in the source files —
                 {{ budgetReview.debt_service.notes.join(' ') }}
               </p>
+              <!-- AM, Sep 25 2026: "if we're not happy with what's being populated in the
+                   budget column for debt service, there is a toggle that we can switch to
+                   instead just populate the UW amount." Stored on the record. -->
+              <div class="ds-basis no-print" v-if="budgetReview.debt_service">
+                <span class="ds-basis-label">Budget debt service:</span>
+                <label>
+                  <input type="radio" name="ds-basis" :checked="budgetReview.debt_service.budget_basis !== 'underwriting'"
+                         :disabled="!commentsEditable || basisSaving" @change="setDebtBasis('modeled')" />
+                  Modeled from loan terms
+                </label>
+                <label :class="{ 'ds-basis-na': !budgetReview.debt_service.uw_available }">
+                  <input type="radio" name="ds-basis" :checked="budgetReview.debt_service.budget_basis === 'underwriting'"
+                         :disabled="!commentsEditable || basisSaving" @change="setDebtBasis('underwriting')" />
+                  Underwriting
+                  <template v-if="!budgetReview.debt_service.uw_available">(none for {{ budgetReview.budget_year }})</template>
+                </label>
+              </div>
+              <p class="panel-note"
+                 v-if="budgetReview.debt_service?.budget_basis_applied || budgetReview.compare?.source === 'underwriting'">
+                Underwriting records debt service as <strong>one figure</strong> (7010, principal and
+                interest together), so wherever UW is the source, Interest and Principal are blank and
+                Total Debt Service carries it.
+              </p>
+              <p class="panel-note warn-note" v-for="(n, i) in budgetReview.debt_service?.basis_notes || []"
+                 :key="'bn' + i">{{ n }}</p>
               <div class="table-scroll">
                 <table class="data-table budget-table">
                   <thead>
@@ -1719,7 +1819,14 @@ watch(selectedCycleId, () => {
                       <th class="num">{{ budgetReview.estimate_year }} Estimate</th>
                       <th class="num">{{ budgetReview.budget_year }} Budget</th>
                       <th class="num">Variance</th>
-                      <th class="num">Valuation Yr 1</th>
+                      <th class="num">
+                        <select class="compare-select no-print" :value="budgetCompare"
+                                @change="setBudgetCompare(($event.target as HTMLSelectElement).value)">
+                          <option value="valuation">Valuation Yr 1</option>
+                          <option value="underwriting">UW {{ budgetReview.budget_year }}</option>
+                        </select>
+                        <span class="print-only">{{ budgetReview.compare?.label || 'Valuation Yr 1' }}</span>
+                      </th>
                       <th class="num">Var to Budget</th>
                     </tr>
                   </thead>
@@ -1728,32 +1835,77 @@ watch(selectedCycleId, () => {
                         :class="{ 'row-total': row.is_total, 'row-calc': row.is_calc }">
                       <td :class="{ indent: row.level === 1 }">{{ row.account }}</td>
                       <template v-if="row.is_ratio">
-                        <td class="num">{{ fmtRatio(row.estimate) }}</td>
+                        <td class="num" :title="estTitle(row)">{{ fmtRatio(row.estimate) }}<sup
+                            v-if="row.estimate_includes_override" class="est-mark">*</sup></td>
                         <td class="num">{{ fmtRatio(row.budget) }}</td>
                         <td class="num"></td>
                         <td class="num">{{ fmtRatio(row.valuation) }}</td>
                         <td class="num"></td>
                       </template>
                       <template v-else>
-                        <td class="num">{{ fmtCurrency(row.estimate) }}</td>
+                        <td class="num est-cell"
+                            :class="{ 'est-over': row.estimate_overridden,
+                                      'est-editable': commentsEditable && row.overridable }"
+                            :title="estTitle(row)" @dblclick="startEstEdit(row)">
+                          <div v-if="editingEst === row.account" class="est-edit" @dblclick.stop>
+                            <input v-model="estDraft" class="est-input" autofocus
+                                   @keydown.enter="saveEst(row)" @keydown.esc="editingEst = null" />
+                            <input v-model="estNote" class="est-note-input" placeholder="Why (optional)"
+                                   @keydown.enter="saveEst(row)" @keydown.esc="editingEst = null" />
+                            <div class="est-actions">
+                              <button class="btn-link" :disabled="estSaving" @click="saveEst(row)">Save</button>
+                              <button v-if="row.estimate_overridden" class="btn-link" :disabled="estSaving"
+                                      @click="saveEst(row, true)">Revert</button>
+                              <button class="btn-link" @click="editingEst = null">Cancel</button>
+                            </div>
+                          </div>
+                          <template v-else>{{ fmtCurrency(row.estimate) }}<sup
+                            v-if="row.estimate_overridden || row.estimate_includes_override"
+                            class="est-mark">*</sup></template>
+                        </td>
                         <td class="num">{{ fmtCurrency(row.budget) }}</td>
                         <td class="num" :class="{ neg: (row.var_est_bud ?? 0) < 0 }">{{ fmtCurrency(row.var_est_bud) }}</td>
-                        <td class="num">{{ budgetReview.has_argus ? fmtCurrency(row.valuation) : '—' }}</td>
+                        <td class="num">{{ budgetReview.compare?.available ? fmtCurrency(row.valuation) : '—' }}</td>
                         <td class="num" :class="{ neg: (row.var_bud_val ?? 0) < 0 }">
-                          {{ budgetReview.has_argus ? fmtCurrency(row.var_bud_val) : '—' }}
+                          {{ budgetReview.compare?.available ? fmtCurrency(row.var_bud_val) : '—' }}
                         </td>
                       </template>
                     </tr>
                   </tbody>
                 </table>
               </div>
+              <p class="panel-note" v-if="hasEstOverrides">
+                <span class="est-mark">*</span> Estimate figures overridden by the analyst are
+                highlighted; the computed figure is on hover. Totals marked
+                <span class="est-mark">*</span> include an overridden line.
+              </p>
+              <p class="panel-note warn-note" v-if="budgetReview.estimate_overrides?.orphaned?.length">
+                Stored overrides for rows no longer shown:
+                {{ budgetReview.estimate_overrides.orphaned.join(', ') }}.
+              </p>
+              <p class="panel-note no-print" v-else-if="commentsEditable && !hasEstOverrides">
+                Double-click a line in the {{ budgetReview.estimate_year }} Estimate column to override it.
+              </p>
             </div>
 
             <div class="panel" v-if="budgetReview.occupancy_trend?.length">
               <h3>Occupancy Trend</h3>
+              <!-- Budgeted quarters come from the occupancy row on the partner budget
+                   and are drawn in a second colour (AM, Sep 25 2026). -->
+              <div class="occ-legend">
+                <span><span class="occ-swatch"></span>Historical</span>
+                <span v-if="budgetReview.occupancy_trend.some((q: any) => q.budgeted)">
+                  <span class="occ-swatch occ-swatch-budget"></span>Budgeted {{ budgetReview.budget_year }}
+                </span>
+                <span v-else class="panel-note">
+                  No budgeted occupancy loaded — add an "Occupancy" row to the budget import.
+                </span>
+              </div>
               <div class="occ-strip">
-                <div v-for="q in budgetReview.occupancy_trend" :key="q.quarter" class="occ-col">
-                  <div class="occ-bar-wrap"><div class="occ-bar" :style="{ height: q.occupancy + '%' }"></div></div>
+                <div v-for="q in budgetReview.occupancy_trend" :key="q.quarter + (q.budgeted ? '-b' : '')"
+                     class="occ-col" :title="q.budgeted ? `Budgeted — average of ${q.months} month(s)` : 'Reported'">
+                  <div class="occ-bar-wrap"><div class="occ-bar" :class="{ 'occ-bar-budget': q.budgeted }"
+                                                  :style="{ height: q.occupancy + '%' }"></div></div>
                   <div class="occ-val">{{ q.occupancy.toFixed(0) }}%</div>
                   <div class="occ-label">{{ q.quarter }}</div>
                 </div>
@@ -2297,6 +2449,26 @@ textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--color-border)
 .occ-col { text-align: center; min-width: 52px; }
 .occ-bar-wrap { height: 90px; display: flex; align-items: flex-end; justify-content: center; }
 .occ-bar { width: 26px; background: var(--color-accent); border-radius: 3px 3px 0 0; min-height: 2px; }
+.occ-bar-budget { background: var(--color-floating); }
+.occ-legend { display: flex; gap: 16px; align-items: center; font-size: 11px; margin-bottom: 4px; }
+.occ-legend > span { display: inline-flex; align-items: center; gap: 5px; }
+.occ-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; background: var(--color-accent); }
+.occ-swatch-budget { background: var(--color-floating); }
+.compare-select { font: inherit; font-weight: 600; border: 1px solid var(--color-border); border-radius: 3px;
+  padding: 1px 4px; background: var(--color-surface); color: inherit; }
+.print-only { display: none; }
+@media print { .print-only { display: inline; } }
+.est-editable { cursor: cell; }
+.est-over { background: #fff4d6; }
+.est-mark { color: #b26a00; font-weight: 700; margin-left: 1px; }
+.est-edit { display: flex; flex-direction: column; gap: 3px; align-items: flex-end; min-width: 150px; }
+.est-input { width: 110px; text-align: right; font: inherit; padding: 1px 4px; }
+.est-note-input { width: 150px; font-size: 11px; padding: 1px 4px; }
+.est-actions { display: flex; gap: 8px; }
+.ds-basis { display: flex; gap: 14px; align-items: center; font-size: 12px; margin: 4px 0 8px; flex-wrap: wrap; }
+.ds-basis label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+.ds-basis-label { font-weight: 600; }
+.ds-basis-na { color: var(--color-text-secondary); }
 .occ-val { font-size: 11px; font-weight: 600; margin-top: 2px; }
 .occ-label { font-size: 10px; color: var(--color-text-secondary); white-space: nowrap; }
 

@@ -223,6 +223,37 @@ _VALUATION_DDL = [
         UNIQUE(record_id, source)
     )
     """,
+    # An analyst's figure in place of a computed Estimate cell (AM, Sep 25 2026: "if
+    # the 2026 estimate is substantially off from reality, we don't have to show a
+    # number that we know is not going to be achieved"). Keyed by the ROW LABEL the
+    # comparison renders; the computed figure is kept at the moment of override so
+    # the screen can say what was replaced. Line items only -- totals recompute.
+    """
+    CREATE TABLE IF NOT EXISTS valuation_estimate_overrides (
+        record_id INTEGER NOT NULL,
+        row_label TEXT NOT NULL,
+        amount DOUBLE PRECISION NOT NULL,
+        computed_amount DOUBLE PRECISION,
+        note TEXT,
+        updated_by TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (record_id, row_label)
+    )
+    """,
+    # Budgeted occupancy, read off the partner budget's occupancy row. Per DEAL and
+    # month, like the budget supplement it arrives with, because the MRI loader that
+    # will send it on is keyed the same way. Percent, 0-100.
+    """
+    CREATE TABLE IF NOT EXISTS valuation_budget_occupancy (
+        vcode TEXT NOT NULL,
+        period TEXT NOT NULL,
+        occupancy_pct DOUBLE PRECISION NOT NULL,
+        source_file TEXT,
+        updated_by TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (vcode, period)
+    )
+    """,
     "CREATE INDEX IF NOT EXISTS idx_valuation_records_cycle ON valuation_records(cycle_id)",
     "CREATE INDEX IF NOT EXISTS idx_valuation_documents_record ON valuation_documents(record_id)",
     "CREATE INDEX IF NOT EXISTS idx_valuation_questions_record ON valuation_questions(record_id)",
@@ -255,6 +286,13 @@ def ensure_valuation_tables(engine=None):
     try:
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE valuation_records ADD COLUMN group_label TEXT"))
+    except Exception:
+        pass  # column already exists
+    # Where the Budget column's debt service comes from: NULL / 'modeled' is the
+    # deal's own loan terms (v440); 'underwriting' is UW's own 7010 for the year.
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE valuation_records ADD COLUMN debt_service_basis TEXT"))
     except Exception:
         pass  # column already exists
 
@@ -956,16 +994,34 @@ def import_argus(engine, record_id: int, file_bytes: bytes, filename: str,
 # Budget review (Review Form page 1)
 # ============================================================
 
-def get_budget_review(engine, record_id: int, data: dict) -> Dict[str, Any]:
+def get_budget_review(engine, record_id: int, data: dict,
+                      compare: str = "valuation") -> Dict[str, Any]:
     """Three-column comparison: cycle-year Estimate (YTD actual + budget
-    remainder), next-year Budget, and valuation year 1 (the linked Argus
-    import) — with Estimate-vs-Budget and Budget-vs-Valuation variances.
-    Mirrors the printed Budget Review form."""
+    remainder), next-year Budget, and a third column that is either valuation
+    year 1 (the linked Argus import) or underwriting for the budget year --
+    with Estimate-vs-Budget and Budget-vs-third-column variances.
+    Mirrors the printed Budget Review form.
+
+    `compare` chooses the third column (AM, Sep 25 2026: "Create drop down where
+    'Valuation Yr 1' header is so we can toggle between Valuation & UW"). Both are
+    the SAME engine, `_calculate_is_amounts`, with a different source -- the UW
+    column is not a second calculation. The row keys stay `valuation` /
+    `var_bud_val` whatever the column holds; `compare` in the payload says which.
+
+    Analyst inputs from `valuation_budget_inputs` are applied here: Estimate
+    overrides on line items (totals recompute from them), and the Budget column's
+    debt-service basis.
+    """
     from flask_app.services import argus_service
+    from flask_app.services import valuation_budget_inputs as inputs
     from flask_app.services.financials_service import (
         _prepare_isbs, _calculate_is_amounts, _get_bs_principal,
         _get_budget_principal, _get_valuation_sum,
     )
+    from one_pager import uw_debt_service_for_year
+
+    if compare not in ("valuation", "underwriting"):
+        raise ValueError(f"Unknown comparison '{compare}'. Expected valuation or underwriting.")
 
     with engine.connect() as conn:
         row = conn.execute(text("""
@@ -980,12 +1036,18 @@ def get_budget_review(engine, record_id: int, data: dict) -> Dict[str, Any]:
 
     isbs = _prepare_isbs(data.get("isbs_raw"), vcode)
     if isbs.empty:
-        actual_data = budget_data = bs_data = pd.DataFrame()
+        # EMPTY WITH ITS COLUMNS. A bare DataFrame() has none, and the budget helpers
+        # index `dtEntry_parsed` unconditionally, so a deal with no ISBS yet -- a new
+        # acquisition -- raised KeyError and the whole tab returned 500. 44 of 84
+        # local records did.
+        empty = pd.DataFrame(columns=["vcode", "dtEntry_parsed", "vSource", "vAccount", "mAmount"])
+        actual_data = budget_data = bs_data = uw_data = empty
         actual_periods = []
     else:
         actual_data = isbs[isbs["vSource"] == "Interim IS"]
         budget_data = isbs[isbs["vSource"] == "Budget IS"]
         bs_data = isbs[isbs["vSource"] == "Interim BS"]
+        uw_data = isbs[isbs["vSource"] == "Projected IS"]
         actual_periods = sorted(actual_data["dtEntry_parsed"].dropna().unique()) if not actual_data.empty else []
 
     argus_fc = None
@@ -996,6 +1058,7 @@ def get_budget_review(engine, record_id: int, data: dict) -> Dict[str, Any]:
         except Exception:
             pro_yr_base = year
         argus_fc = argus_service.get_forecast_df_by_id(engine, vcode, int(argus_import_id), pro_yr_base)
+    has_argus = argus_fc is not None and not argus_fc.empty
 
     est_ref = pd.Timestamp(f"{year}-12-31")
     bud_ref = pd.Timestamp(f"{budget_year}-12-31")
@@ -1004,13 +1067,49 @@ def get_budget_review(engine, record_id: int, data: dict) -> Dict[str, Any]:
                                 actual_data, actual_periods, budget_data, pd.DataFrame(), None)
     bud = _calculate_is_amounts("Full Year", "Budget", bud_ref, budget_year, IS_ACCOUNTS,
                                 actual_data, actual_periods, budget_data, pd.DataFrame(), None)
+
+    # ── The third column ─────────────────────────────────────────────────────
     val = {}
-    if argus_fc is not None and not argus_fc.empty:
-        val = _calculate_is_amounts("Full Year", "Valuation", bud_ref, budget_year, IS_ACCOUNTS,
-                                    actual_data, actual_periods, budget_data, pd.DataFrame(), argus_fc)
+    uw_periods = sorted(uw_data["dtEntry_parsed"].dropna().unique()) if not uw_data.empty else []
+    uw_has_year = any(pd.Timestamp(p).year == budget_year and pd.Timestamp(p).month == 12
+                      for p in uw_periods)
+    if compare == "valuation":
+        if has_argus:
+            val = _calculate_is_amounts("Full Year", "Valuation", bud_ref, budget_year, IS_ACCOUNTS,
+                                        actual_data, actual_periods, budget_data, pd.DataFrame(), argus_fc)
+        compare_info = {
+            "source": "valuation", "label": "Valuation Yr 1", "available": has_argus,
+            "note": None if has_argus else
+            "No Argus import linked — the Valuation column is empty until one is imported on the first tab.",
+        }
+    else:
+        if uw_has_year:
+            val = _calculate_is_amounts("Full Year", "Underwriting", bud_ref, budget_year, IS_ACCOUNTS,
+                                        actual_data, actual_periods, budget_data, uw_data, None)
+        compare_info = {
+            "source": "underwriting", "label": f"UW {budget_year}", "available": uw_has_year,
+            "note": None if uw_has_year else
+            f"Underwriting for this deal does not run through December {budget_year}, "
+            f"so there is no UW year to compare against.",
+        }
+    has_compare = compare_info["available"]
 
     def _get(bal, section, category):
         return float(bal.get(section, {}).get(category, 0) or 0)
+
+    # ── Estimate overrides ──────────────────────────────────────────────────
+    overrides = inputs.get_overrides(engine, record_id)
+    applied_overrides: List[str] = []
+
+    def _est(label, computed):
+        """The Estimate figure for a line item, and the row flags describing it."""
+        o = overrides.get(label)
+        if not o:
+            return computed, {}
+        applied_overrides.append(label)
+        return o["amount"], {"estimate_overridden": True, "estimate_computed": computed,
+                             "override_note": o["note"], "override_by": o["updated_by"],
+                             "override_at": o["updated_at"]}
 
     rows = []
 
@@ -1024,19 +1123,28 @@ def get_budget_review(engine, record_id: int, data: dict) -> Dict[str, Any]:
         })
 
     totals = {}
+    est_touched = {}
     for section, display in (("REVENUES", "Total Revenues"), ("EXPENSES", "Total Expenses")):
         sec_e = sec_b = sec_v = 0.0
+        touched = False
         for category in IS_ACCOUNTS[section].keys():
             e, b, v = _get(est, section, category), _get(bud, section, category), _get(val, section, category)
             if section == "REVENUES":
                 e, b, v = -e, -b, -v  # credits → display positive
-            _add_row(category, e, b, v)
+            # Overrides are entered as DISPLAYED, so they apply after the sign flip.
+            e, flags = _est(category, e)
+            touched = touched or bool(flags)
+            _add_row(category, e, b, v, overridable=True, **flags)
             sec_e += e; sec_b += b; sec_v += v
-        _add_row(display, sec_e, sec_b, sec_v, level=0, is_total=True)
+        _add_row(display, sec_e, sec_b, sec_v, level=0, is_total=True,
+                 estimate_includes_override=touched)
         totals[section] = (sec_e, sec_b, sec_v)
+        est_touched[section] = touched
 
     noi = tuple(totals["REVENUES"][i] - totals["EXPENSES"][i] for i in range(3))
-    _add_row("Net Operating Income", *noi, level=0, is_calc=True)
+    noi_touched = est_touched["REVENUES"] or est_touched["EXPENSES"]
+    _add_row("Net Operating Income", *noi, level=0, is_calc=True,
+             estimate_includes_override=noi_touched)
 
     # Debt service — interest from 5190; principal per-source
     int_e = _get(est, "DEBT_SERVICE", "Interest")
@@ -1058,7 +1166,7 @@ def get_budget_review(engine, record_id: int, data: dict) -> Dict[str, Any]:
     prin_b = _get_budget_principal(budget_data, bud_jan1, bud_ref)
 
     prin_v = 0.0
-    if argus_fc is not None and not argus_fc.empty:
+    if compare == "valuation" and has_argus:
         pv = _get_valuation_sum(argus_fc, bud_jan1.date(), bud_ref.date(), {"_": {"P": ["7060"]}})
         prin_v = abs(pv.get("_", {}).get("P", 0) or 0)
 
@@ -1076,7 +1184,6 @@ def get_budget_review(engine, record_id: int, data: dict) -> Dict[str, Any]:
     modeled = valuation_debt_service.for_year(vcode, budget_year, data)
     source_debt = {"interest_budget": int_b, "principal_budget": float(prin_b or 0),
                    "interest_valuation": int_v, "principal_valuation": float(prin_v or 0)}
-    has_argus = argus_fc is not None and not argus_fc.empty
     applied_to = []
     if modeled["available"]:
         int_b = modeled["interest"]
@@ -1086,44 +1193,110 @@ def get_budget_review(engine, record_id: int, data: dict) -> Dict[str, Any]:
         # column is empty by design, and putting debt service against a zero NOI turns a
         # blank DSCR into a hard 0.00 — a figure that reads as "this deal cannot cover
         # its debt" when it actually means "no appraiser forecast has been loaded".
-        if has_argus:
+        if compare == "valuation" and has_argus:
             int_v = modeled["interest"]
             prin_v = modeled["principal"]
             applied_to.append("valuation")
 
-    _add_row("Interest Expense", int_e, int_b, int_v)
-    _add_row("Principal Payments", float(prin_e or 0), float(prin_b or 0), float(prin_v or 0))
-    ds = (int_e + (prin_e or 0), int_b + (prin_b or 0), int_v + (prin_v or 0))
-    _add_row("Total Debt Service", *ds, level=0, is_total=True)
+    # UNDERWRITING records debt service as ONE figure (7010, P&I), so wherever UW is
+    # the source, Interest and Principal are unknown -- shown blank, never split by a
+    # guess -- and Total Debt Service carries the UW figure.
+    uw_ds = uw_debt_service_for_year(uw_data, budget_year)
+    uw_ds_amount = uw_ds["amount"] if uw_ds["amount"] > 0 else None
+    ds_notes: List[str] = []
+
+    ds_b_total = None
+    basis = inputs.get_debt_basis(engine, record_id)
+    basis_applied = False
+    if basis == "underwriting":
+        if uw_ds_amount is not None:
+            int_b = prin_b = None
+            ds_b_total = uw_ds_amount
+            basis_applied = True
+            if "budget" in applied_to:
+                applied_to.remove("budget")
+        else:
+            # Chosen but not available: say so, and keep what the column had rather
+            # than showing a blank that reads as "no debt".
+            ds_notes.append(f"Underwriting was chosen for the Budget debt service, but UW "
+                            f"carries no {budget_year} debt service (7010); the Budget "
+                            f"column shows the modeled figure instead.")
+
+    ds_v_total = None
+    if compare == "underwriting":
+        int_v = prin_v = None
+        ds_v_total = uw_ds_amount if has_compare else None
+    if uw_ds_amount is not None and uw_ds["months_active"] < 12 and (
+            basis_applied or compare == "underwriting"):
+        ds_notes.append(f"UW debt service for {budget_year} covers {uw_ds['months_active']} "
+                        f"months — underwriting assumed an exit that year.")
+
+    int_e, int_flags = _est("Interest Expense", int_e)
+    prin_e, prin_flags = _est("Principal Payments", float(prin_e or 0))
+    _add_row("Interest Expense", int_e, int_b, int_v, overridable=True, **int_flags)
+    _add_row("Principal Payments", prin_e, None if prin_b is None else float(prin_b or 0),
+             None if prin_v is None else float(prin_v or 0), overridable=True, **prin_flags)
+
+    def _ds(i, p, total):
+        if total is not None:
+            return total
+        if i is None and p is None:
+            return None
+        return (i or 0) + (p or 0)
+
+    ds = (_ds(int_e, prin_e, None), _ds(int_b, prin_b, ds_b_total), _ds(int_v, prin_v, ds_v_total))
+    ds_touched = bool(int_flags or prin_flags)
+    _add_row("Total Debt Service", *ds, level=0, is_total=True,
+             estimate_includes_override=ds_touched,
+             uw_total_only=bool(basis_applied or compare == "underwriting"))
     rows.append({
         "account": "DSCR", "level": 0, "is_calc": True,
         "estimate": (noi[0] / ds[0]) if ds[0] else None,
         "budget": (noi[1] / ds[1]) if ds[1] else None,
         "valuation": (noi[2] / ds[2]) if ds[2] else None,
         "var_est_bud": None, "var_bud_val": None, "is_ratio": True,
+        "estimate_includes_override": noi_touched or ds_touched,
     })
 
     # Below the line
     btl_e = btl_b = btl_v = 0.0
+    btl_touched = False
     for category in IS_ACCOUNTS.get("OTHER_BTL", {}).keys():
         e, b, v = _get(est, "OTHER_BTL", category), _get(bud, "OTHER_BTL", category), _get(val, "OTHER_BTL", category)
-        _add_row(category, e, b, v)
+        e, flags = _est(category, e)
+        btl_touched = btl_touched or bool(flags)
+        _add_row(category, e, b, v, overridable=True, **flags)
         btl_e += e; btl_b += b; btl_v += v
-    _add_row("Other Below the Line", btl_e, btl_b, btl_v, level=0, is_total=True)
+    _add_row("Other Below the Line", btl_e, btl_b, btl_v, level=0, is_total=True,
+             estimate_includes_override=btl_touched)
+
+    # An override on a row the comparison no longer renders is still stored; say so
+    # rather than let it sit invisibly.
+    orphaned = sorted(set(overrides) - set(applied_overrides))
+
+    occupancy = [dict(q, budgeted=False) for q in _occupancy_trend(data.get("occupancy_raw"), vcode, year)]
+    budgeted_occ = inputs.budget_occupancy_quarters(engine, vcode, budget_year)
 
     return {
         "vcode": vcode,
         "estimate_year": year,
         "budget_year": budget_year,
-        "has_argus": argus_fc is not None and not argus_fc.empty,
+        "has_argus": has_argus,
+        "compare": compare_info,
         "last_actual_month": (pd.Timestamp(last_actual).strftime("%Y-%m-%d") if last_actual is not None else None),
         "rows": rows,
+        "estimate_overrides": {"applied": applied_overrides, "orphaned": orphaned},
         # What the reader needs to know about the two debt rows they are looking at:
         # where they came from, what the file itself said, and anything that qualifies
         # the model. Substituting a figure silently would be worse than not substituting.
         "debt_service": {
             "source": "modeled" if applied_to else "file",
             "applies_to": applied_to,
+            "budget_basis": basis,
+            "budget_basis_applied": basis_applied,
+            "uw_available": uw_ds_amount is not None,
+            "uw_months_active": uw_ds["months_active"] if uw_ds_amount is not None else None,
+            "basis_notes": ds_notes,
             "interest_account": valuation_debt_service.INTEREST_ACCOUNT,
             "principal_account": valuation_debt_service.PRINCIPAL_ACCOUNT,
             "loan_count": modeled["loan_count"],
@@ -1131,7 +1304,7 @@ def get_budget_review(engine, record_id: int, data: dict) -> Dict[str, Any]:
             "as_stated_in_source": source_debt,
             "monthly": modeled["rows"],
         },
-        "occupancy_trend": _occupancy_trend(data.get("occupancy_raw"), vcode, year),
+        "occupancy_trend": occupancy + budgeted_occ,
     }
 
 

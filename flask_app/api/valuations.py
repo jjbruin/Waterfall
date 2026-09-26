@@ -13,7 +13,9 @@ Endpoints (registered at /api/valuations):
     DELETE /records/<id>/documents/<doc_id>       — remove a document
     PUT    /records/<id>/comments                 — save a comment section
     POST   /records/<id>/argus                    — import the valuation Argus export
-    GET    /records/<id>/budget-review            — Review Form p.1 comparison
+    GET    /records/<id>/budget-review            — Review Form p.1 comparison (?compare=valuation|underwriting)
+    PUT    /records/<id>/estimate-overrides       — override / clear one Estimate line
+    PUT    /records/<id>/debt-service-basis       — Budget debt service: modeled | underwriting
     GET    /records/<id>/balance-sheet            — Review Form p.2 data
     GET    /records/<id>/mapping/categories       — the comparison's categories for this deal
     POST   /records/<id>/mapping/parse            — read a budget or Argus file (multipart)
@@ -36,7 +38,9 @@ from flask import Blueprint, request, jsonify, g, send_file
 from flask_app.auth.routes import login_required, role_required
 from flask_app.db import get_engine
 from flask_app.serializers import safe_json
-from flask_app.services import data_service, line_mapping_service, valuation_service
+from flask_app.services import (
+    data_service, line_mapping_service, valuation_budget_inputs, valuation_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -275,12 +279,52 @@ def import_argus(record_id):
 def budget_review(record_id):
     try:
         result = valuation_service.get_budget_review(
-            get_engine(), record_id, data_service.get_data())
+            get_engine(), record_id, data_service.get_data(),
+            compare=(request.args.get("compare") or "valuation").strip().lower())
         return jsonify(safe_json(result))
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
         logger.error(f"budget_review failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@valuations_bp.route("/records/<int:record_id>/estimate-overrides", methods=["PUT"])
+@login_required
+@role_required("admin", "analyst")
+def estimate_override(record_id):
+    """Body: {row, amount (null clears), computed_amount, note}."""
+    body = request.get_json(silent=True) or {}
+    amount = body.get("amount")
+    try:
+        amount = None if amount in (None, "") else float(amount)
+        computed = body.get("computed_amount")
+        computed = None if computed in (None, "") else float(computed)
+    except (TypeError, ValueError):
+        return jsonify({"error": "Amount must be a number"}), 400
+    try:
+        return jsonify(valuation_budget_inputs.set_override(
+            get_engine(), record_id, str(body.get("row") or ""), amount, computed,
+            body.get("note"), _username()))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"estimate_override failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@valuations_bp.route("/records/<int:record_id>/debt-service-basis", methods=["PUT"])
+@login_required
+@role_required("admin", "analyst")
+def debt_service_basis(record_id):
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify(valuation_budget_inputs.set_debt_basis(
+            get_engine(), record_id, str(body.get("basis") or ""), _username()))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"debt_service_basis failed: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 

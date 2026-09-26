@@ -1135,6 +1135,51 @@ IS_ACCOUNTS = {
 AT_CLOSE_RESERVE_RELEASE_ACCTS = ['7083']
 
 
+def uw_debt_service_for_year(uw_data, year, dec_date=None):
+    """UW's total debt service for a calendar year, from Projected IS account 7010.
+
+    Underwriting records debt service as ONE figure, 7010 "Hard Debt (P&I)" -- not
+    5190 interest and 7060 principal as actuals do -- so there is no interest /
+    principal split to report and none is invented. Projected IS is YTD cumulative,
+    so the year's figure is the December balance.
+
+    `months_active` is the last month the cumulative was still growing: when UW's
+    exit falls before year-end the figure covers only those months. The One Pager's
+    UW DSCR annualises on it; the valuation Budget Review reports it. One reading of
+    7010, shared, so the two screens cannot disagree about what UW assumed.
+
+    Returns {"amount": float (0.0 when absent), "months_active": int, "dec_date"}.
+    """
+    out = {"amount": 0.0, "months_active": 12, "dec_date": None}
+    if uw_data is None or uw_data.empty:
+        return out
+    if dec_date is None:
+        periods = sorted(uw_data['dtEntry_parsed'].dropna().unique())
+        dec_date = next((pd.Timestamp(p) for p in periods
+                         if pd.Timestamp(p).year == year and pd.Timestamp(p).month == 12), None)
+        if dec_date is None:
+            return out
+    out["dec_date"] = dec_date
+    accts = IS_ACCOUNTS['UW_DEBT_SERVICE']
+    uw_dec = uw_data[uw_data['dtEntry_parsed'] == dec_date]
+    out["amount"] = float(abs(uw_dec[uw_dec['vAccount'].isin(accts)]['mAmount'].sum()))
+    if out["amount"] > 0:
+        uw_7010 = uw_data[(uw_data['vAccount'].isin(accts))
+                          & (uw_data['dtEntry_parsed'].dt.year == year)]
+        if not uw_7010.empty:
+            monthly_cum = (uw_7010.groupby(uw_7010['dtEntry_parsed'].dt.month)['mAmount']
+                           .sum().abs().sort_index())
+            if len(monthly_cum) >= 2:
+                vals = list(monthly_cum.items())
+                months_active = vals[0][0]  # at least the first month
+                for i in range(len(vals) - 1, 0, -1):
+                    if abs(vals[i][1] - vals[i - 1][1]) > 1.0:
+                        months_active = vals[i][0]
+                        break
+                out["months_active"] = int(months_active)
+    return out
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # At-Close requires a Year-0 (2015-12-31) Projected IS row
 # ══════════════════════════════════════════════════════════════════════════
@@ -1705,34 +1750,14 @@ def get_property_performance(
             perf['noi']['uw_ye'] = noi
 
             # Fix 7: U/W DSCR uses account 7010 (total debt service) from Projected IS
-            uw_dec = uw_data[uw_data['dtEntry_parsed'] == dec_date]
-            uw_ds = abs(uw_dec[uw_dec['vAccount'].isin(IS_ACCOUNTS['UW_DEBT_SERVICE'])]['mAmount'].sum())
+            uw = uw_debt_service_for_year(uw_data, year, dec_date)
+            uw_ds = uw['amount']
             if uw_ds > 0:
-                # Detect partial-year debt service.  When the original U/W
-                # exit date falls before year-end, account 7010's YTD
-                # cumulative only covers months through the projected exit.
-                # Dividing 12 months of NOI by < 12 months of DS inflates
-                # the ratio (e.g. Ascent: 12 mo NOI / 3 mo DS → 10.69X
-                # instead of ~2X).  Fix: find the last month the cumulative
-                # was still growing and annualise.
-                uw_7010 = uw_data[
-                    (uw_data['vAccount'].isin(IS_ACCOUNTS['UW_DEBT_SERVICE']))
-                    & (uw_data['dtEntry_parsed'].dt.year == year)
-                ]
-                if not uw_7010.empty:
-                    monthly_cum = (
-                        uw_7010.groupby(uw_7010['dtEntry_parsed'].dt.month)['mAmount']
-                        .sum().abs().sort_index()
-                    )
-                    if len(monthly_cum) >= 2:
-                        vals = list(monthly_cum.items())
-                        months_active = vals[0][0]  # at least the first month
-                        for i in range(len(vals) - 1, 0, -1):
-                            if abs(vals[i][1] - vals[i - 1][1]) > 1.0:
-                                months_active = vals[i][0]
-                                break
-                        if months_active < 12:
-                            uw_ds = uw_ds * (12 / months_active)
+                # Partial-year debt service: when the original U/W exit falls before
+                # year-end, 12 months of NOI over < 12 months of DS inflates the ratio
+                # (Ascent: 10.69X instead of ~2X), so the DSCR annualises it.
+                if uw['months_active'] < 12:
+                    uw_ds = uw_ds * (12 / uw['months_active'])
                 perf['dscr']['uw_ye'] = noi / uw_ds
 
             # U/W YE Economic Occupancy from Projected IS: 1 - (vacancy / rental income)

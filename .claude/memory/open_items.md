@@ -719,19 +719,63 @@ the new fixture at exactly -35,000.
 else is folded behind "Show N notes". The per-line "below NOI" warning is replaced by
 the reconcile's outside-NOI list (its hand-kept set `{5190,7030,7060,7050}` missed 5130).
 
-### 12.3 Budgeted occupancy row -> 1Q-4Q 2027 bars in a second colour — OPEN
+### 12.3 Budgeted occupancy row -> 2027 bars in a second colour — BUILT, not deployed (Sep 25 2026)
+Read off the budget import by LABEL ("Occupancy", "Budgeted Occupancy", "Occ %"), above
+or below the month header, and pulled OUT of the mappable lines. A row only counts if its
+figures read as percentages -- a hotel "Occupancy Tax" in dollars stays a line. 0.95 / 95
+/ "95%" all read 95; one figure on the row is an annual budget applied to every month;
+out-of-range months are refused, not clipped. Saved on commit to
+`valuation_budget_occupancy` (vcode, period), replace-by-months. Orange bars
+(`--color-floating`) beside the blue history, with a legend.
+
 ### 12.4 MRI loaders for budget, valuation, budgeted occupancy — OPEN, needs MRI's
 accepted loader files (same method as treasury `v492`: rebuild an accepted file
-byte-identical). Supersedes §5.9.
+byte-identical). Supersedes §5.9. `valuation_budget_occupancy` is keyed the way a loader
+will want it.
+
 ### 12.5 Replacement reserves above/below NOI — DECISION (Jim/AM)
-### 12.6 Valuation / UW toggle on the third column — OPEN. UW = ISBS Projected IS,
-already computed by `financials_service` — reuse, do not re-derive.
-### 12.7 Debt service: UW override toggle; dev deals at commitment x (treasury +
-spread); variable-with-cap, two loans, assumed loans — OPEN. Note the Budget column is
-NOT "pulled from MRI" figures: it is MODELED from MRI loan terms (§5.3). No treasury
-rate source exists in the app today.
-### 12.8 Override any 2026 Estimate cell, marked as overridden — OPEN. Needs a stored,
-protected override table; the Estimate stays computed underneath.
+Facts for the decision: UW (Projected IS) carries replacements on **7075 "Total Recurring
+Replacements"**, below NOI, on 74 deals locally. And **the chart of accounts names 7030
+"Replacement Reserve Deposit"** while `config.INTEREST_ACCTS = {5190, 7030}` treats it as
+INTEREST and `compute.py` writes modeled interest to it (§5.8) -- so in the AM forecast a
+reserve deposit and modeled interest can share an account. Not changed; it moves Property
+Financials on every deal and needs its own look before the reserves policy is set.
+
+### 12.6 Valuation / UW toggle on the third column — BUILT, not deployed
+`get_budget_review(compare="underwriting")`: the same `_calculate_is_amounts` with
+`source="Underwriting"`, Full Year at Dec of the budget year. **UW records debt service
+as ONE figure, 7010 "Hard Debt (P&I)"** -- not 5190/7060 (UW carries neither) -- so the UW
+column's Interest/Principal are BLANK and Total Debt Service carries 7010. Read through
+`one_pager.uw_debt_service_for_year`, extracted from One Pager's UW DSCR (proved
+identical on 428 deal-years, 51 partial-year). A deal whose UW does not reach Dec of the
+budget year says so.
+
+### 12.7 Debt service — UW override BUILT, not deployed; the rest OPEN
+Per-record `valuation_records.debt_service_basis` ('modeled' default, 'underwriting').
+Underwriting puts UW's 7010 total in the Budget column; when UW has none for the year it
+is NOT applied, the modeled figure stays, and a note says so. A partial-year UW figure is
+reported, not annualised (that is what UW assumed for the year). STILL OPEN: development
+deals at commitment x (treasury + spread) -- no treasury rate source exists in the app --
+variable-with-cap, two loans, assumed loans. The Budget column's debt service is MODELED
+from MRI loan terms (§5.3), not a figure pulled from MRI.
+
+### 12.8 Override any 2026 Estimate line — BUILT, not deployed
+`valuation_estimate_overrides` (record_id, row_label). LINE ITEMS ONLY: totals, NOI,
+Total Debt Service and DSCR recompute from them and are marked `*` as including one --
+overriding a total would leave a column that no longer adds up. Double-click to edit;
+highlighted with `*`; computed figure, who and why on hover; Revert restores it. Refused on
+an approved record. Overrides on rows no longer rendered are listed, not hidden.
+
+### 12.9 Fixed in passing: the Budget Review 500'd for a deal with no ISBS
+`get_budget_review` built empty frames with NO COLUMNS and the budget helpers index
+`dtEntry_parsed` unconditionally -- KeyError, HTTP 500, for any deal whose ISBS has not
+arrived (a new acquisition). 44 of 84 local records. Pre-existing; the old code fails
+identically.
+
+Guardrail `scripts/budget_review_inputs_check.py` (50), proved against injected defects
+(UW split, overrides ignored, occupancy left in the lines, no percentage test, totals
+overridable). One fixture was vacuous first -- "93%" as TEXT never became a line whatever
+the code did; a % cell arrives from Excel as 0.93.
 
 ## 11. Budget import, and a vacant suite reported as un-extracted (Sep 22-23 2026)
 

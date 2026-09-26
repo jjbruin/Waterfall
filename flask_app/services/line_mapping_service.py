@@ -408,6 +408,15 @@ def commit(engine, record_id: int, source: str, parsed: Dict[str, Any],
         res = validate_mod.commit(engine, vcode, parsed, mapping, username)
         res["target"] = budget.SUPPLEMENT_TABLE
         res["column"] = "Budget"
+        # Budgeted occupancy travels with the budget it was read from. A file with no
+        # occupancy row leaves what an earlier file stored alone, and says so.
+        occ = (parsed.get("occupancy") or {}).get("by_period") or {}
+        if occ:
+            from flask_app.services import valuation_budget_inputs as inputs
+            res["occupancy_months"] = inputs.save_occupancy(
+                engine, vcode, occ, parsed.get("filename") or "", username)
+        else:
+            res["occupancy_months"] = 0
     else:
         # Argus feeds the VALUATION column through the projection the record already
         # links, so the two sources share this screen and these rules while each writes

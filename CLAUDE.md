@@ -2214,6 +2214,19 @@ columns are loaded from somebody else's spreadsheet, and the debt rows are ours.
   and its interest was actually paid. Levered only when an Argus forecast exists:
   modeled debt over a zero NOI turns a blank DSCR into a hard `0.00`, which reads as
   "cannot cover its debt" instead of "no forecast loaded".
+- **The third column is Valuation Yr 1 OR underwriting** (`?compare=underwriting`), the
+  same `_calculate_is_amounts` with a different source. **UW records debt service as ONE
+  figure, 7010 "Hard Debt (P&I)"** -- it carries no 5190 or 7060 -- so wherever UW is the
+  source, Interest/Principal are blank and Total Debt Service is 7010, read through
+  `one_pager.uw_debt_service_for_year` (shared with One Pager's UW DSCR). Never split it.
+- **The Budget column's debt service may be UW's** (`valuation_records.debt_service_basis`).
+  Chosen but unavailable -> not applied, and said so; never blanked.
+- **An Estimate line may be overridden** (`valuation_estimate_overrides`); LINE ITEMS ONLY,
+  totals recompute and are marked. The computed figure is kept beside it.
+- **Budgeted occupancy is read off the budget file** by label, only if its figures read as
+  percentages, kept OUT of the mappable lines, and stored in `valuation_budget_occupancy`.
+- **7030 is "Replacement Reserve Deposit" in the chart of accounts**, yet `INTEREST_ACCTS`
+  treats it as interest. See `open_items.md` §12.5 before touching either.
 - **Interest goes to 5190 here, 7030 in the AM forecast** — see `open_items.md` §5.8.
   Deliberate as of Sep 11 2026, not accidental, and still worth settling.
 

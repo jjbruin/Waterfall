@@ -42,6 +42,25 @@
     </div>
 
     <template v-if="parsed">
+      <!-- Budgeted occupancy is read off its own row and kept out of the lines below,
+           so it cannot be mapped to an account. Said out loud so the analyst can see
+           what was read -- and catch a wrong reading before it is imported. -->
+      <p v-if="source === 'budget' && parsed.occupancy?.by_period" class="lm-note lm-occ">
+        <strong>Budgeted occupancy</strong> read from "{{ parsed.occupancy.label }}":
+        <template v-for="(q, i) in occQuarters" :key="q.q">{{ i ? ', ' : '' }}{{ q.q }}
+          {{ q.v.toFixed(1) }}%</template>.
+        <template v-if="parsed.occupancy.basis === 'annual'">
+          One figure on the row, applied to every month.
+        </template>
+        <span v-if="parsed.occupancy.rejected_periods?.length" class="warn-note">
+          {{ parsed.occupancy.rejected_periods.length }} month(s) outside 0–100% were not read.
+        </span>
+        It is saved with the budget on import.
+      </p>
+      <p v-else-if="source === 'budget'" class="lm-note">
+        No occupancy row found. To load budgeted occupancy, add a row labelled
+        "Budgeted Occupancy" with a percentage for each month (or one for the year).
+      </p>
       <p class="lm-note">
         {{ parsed.lines.length }} line(s), {{ parsed.periods.length }} month(s)
         — {{ fmtPeriod(parsed.periods[0]) }} to {{ fmtPeriod(parsed.periods[parsed.periods.length - 1]) }}.
@@ -329,6 +348,9 @@
         <template v-if="result.periods?.length">
           {{ fmtPeriod(result.periods[0]) }} to {{ fmtPeriod(result.periods[result.periods.length - 1]) }}.
         </template>
+        <template v-if="result.occupancy_months">
+          Budgeted occupancy saved for {{ result.occupancy_months }} month(s).
+        </template>
         <div class="lm-note">
           Re-import as many times as you need — the same months are replaced, not stacked,
           so the last version you load is the one the comparison uses.
@@ -461,6 +483,16 @@ const allAccounts = computed(() => {
 const dealAccounts = computed(() =>
   allAccounts.value.filter(a => a.used || a.used_by_deal))
 const reconRows = computed(() => check.value?.reconciliation?.rows || [])
+// The occupancy read off the sheet, averaged per quarter as the chart will show it.
+const occQuarters = computed(() => {
+  const by = parsed.value?.occupancy?.by_period || {}
+  const b = {}
+  for (const [p, v] of Object.entries(by)) {
+    const q = `${p.slice(0, 4)} Q${Math.floor((Number(p.slice(5, 7)) - 1) / 3) + 1}`
+    ;(b[q] = b[q] || []).push(Number(v))
+  }
+  return Object.keys(b).sort().map(q => ({ q, v: b[q].reduce((a, x) => a + x, 0) / b[q].length }))
+})
 const outsideNoi = computed(() => check.value?.reconciliation?.outside_noi || [])
 const criticalWarnings = computed(() => (check.value?.warnings || []).filter(w => w.critical))
 const infoWarnings = computed(() => (check.value?.warnings || []).filter(w => !w.critical))

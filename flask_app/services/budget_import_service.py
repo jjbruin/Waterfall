@@ -605,8 +605,17 @@ def parse_budget_workbook(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     label_col, acct_col, desc_shift = _resolve_label_and_account(
         body, date_row, label_col, {p["col"] for p in periods})
 
+    # BUDGETED OCCUPANCY is not a line to map. AM, Sep 25 2026: "The AM team will
+    # add row at top of budget import file with 2027 budgeted occupancy & the app
+    # will pick this up." Read before the lines and kept out of them, so it cannot
+    # be mapped to an account by accident, wherever on the sheet it sits.
+    occupancy = _read_occupancy_row(body, date_row, label_col, periods)
+    occ_rows = set(occupancy.get("rows", []))
+
     lines: List[Dict[str, Any]] = []
     for r in range(date_row + 1, len(body)):
+        if r in occ_rows:
+            continue
         row_vals = body[r]
         label = row_vals[label_col] if label_col < len(row_vals) else None
         if label is None or not str(label).strip():
@@ -647,7 +656,77 @@ def parse_budget_workbook(file_bytes: bytes, filename: str) -> Dict[str, Any]:
         # wonder why the names look different from the file.
         "description_column_used": desc_shift,
         "stated_account_count": sum(1 for l in lines if l.get("stated_account")),
+        "occupancy": occupancy,
     }
+
+
+def _as_written(v) -> Optional[float]:
+    """A cell's number as written (95% -> 95.0, 0.95 -> 0.95), or None if not a number."""
+    if v is None or isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return None if v != v else float(v)
+    s = str(v).strip().rstrip("%").replace(",", "").strip()
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _read_occupancy_row(body: List[list], date_row: int, label_col: int,
+                        periods: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """The budgeted-occupancy row, if the sheet carries one.
+
+    Found by LABEL ("Occupancy", "Budgeted Occupancy", "Occ %") in any of the first
+    few columns, above or below the month header -- "a row at the top" may mean
+    either. A label alone is not enough: a hotel budget can carry an "Occupancy Tax"
+    line in dollars. The row's figures must read as percentages (every value 0-100,
+    or written with %), or it stays an ordinary line.
+
+    Monthly figures are read per month; a row carrying ONE figure (an annual budgeted
+    occupancy) applies it to every month, and says so.
+    """
+    from flask_app.services import valuation_budget_inputs as occ
+
+    period_cols = {p["col"]: p["period"] for p in periods}
+    for r, row_vals in enumerate(body):
+        if r == date_row:
+            continue
+        label_cells = [row_vals[c] for c in range(min(len(row_vals), max(label_col + 2, 3)))
+                       if isinstance(row_vals[c], str)]
+        label = next((c for c in label_cells if occ.is_occupancy_label(c)), None)
+        if label is None:
+            continue
+        raw_monthly = {period_cols[c]: row_vals[c] for c in period_cols
+                       if c < len(row_vals) and row_vals[c] not in (None, "")}
+        # Any other figure on the row, for the single-annual-figure case.
+        raw_other = [v for c, v in enumerate(row_vals)
+                     if c not in period_cols and _as_written(v) is not None]
+        raw = list(raw_monthly.values()) or raw_other
+        if not raw or any(_as_written(v) is None for v in raw):
+            continue
+        # Percentages, as written: every figure within 0-100, or marked with %.
+        if not all(isinstance(v, str) and v.strip().endswith("%")
+                   or abs(_as_written(v)) <= 100 for v in raw):
+            continue
+        # ONE figure is an annual budget wherever it sits -- typed beside the label
+        # it lands in the first month's column, and a budgeted occupancy for January
+        # alone is not a thing anybody means. The panel says it was applied to every
+        # month, so a reading that is wrong is visible.
+        single = raw if len(raw) == 1 else None
+        if raw_monthly and not single:
+            by_period = {p: occ.to_pct(v) for p, v in raw_monthly.items()
+                         if occ.to_pct(v) is not None}
+            basis = "monthly"
+        else:
+            annual = occ.to_pct(single[0] if single else raw_other[0])
+            by_period = {p["period"]: annual for p in periods}
+            basis = "annual"
+        checked = occ.normalise_occupancy(by_period)
+        return {"label": str(label).strip(), "rows": [r], "basis": basis,
+                "by_period": checked["by_period"],
+                "rejected_periods": checked["rejected_periods"]}
+    return {}
 
 
 def _to_number(v) -> Optional[float]:
