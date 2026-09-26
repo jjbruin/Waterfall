@@ -245,6 +245,14 @@
               This sheet states no totals of its own, so only our side is shown.
             </span>
           </p>
+          <!-- NOI here is the Budget column's NOI. Anything mapped below the line is
+               imported but sits outside it — if the partner's own NOI includes one of
+               these (replacement reserves, partnership costs), that is the difference. -->
+          <p v-if="outsideNoi.length" class="lm-note">
+            Imported, but below NOI (as on the Budget column):
+            <span v-for="(o, i) in outsideNoi" :key="o.account">{{ i ? ', ' : '' }}{{ o.account }}
+              {{ fmtCurrency(o.amount) }}</span>.
+          </p>
         </div>
 
         <!-- ── Step 4: what to look at ─────────────────────────────────── -->
@@ -259,21 +267,34 @@
             <div v-for="(b, i) in check.blocking" :key="'b' + i" class="lm-block">
               {{ b.message }}
             </div>
-            <div v-for="(w, i) in check.warnings" :key="'w' + i" class="lm-warn">
+            <!-- CRITICAL ONLY up front: a sign opposite to the deal's history, a figure
+                 off by an order of magnitude, a negative NOI. Asset management, Sep 25
+                 2026, asked for critical checks only; the rest are kept and folded. -->
+            <div v-for="(w, i) in criticalWarnings" :key="'w' + i" class="lm-warn">
               {{ w.message }}
-              <button v-if="w.accounts?.length" class="lm-more" @click="toggle(i)">
-                {{ open[i] ? 'hide' : 'show all' }}
-              </button>
-              <ul v-if="open[i] && w.accounts" class="lm-acct-list">
-                <li v-for="a in w.accounts" :key="a.account">
-                  {{ a.account }} {{ a.description }} — {{ a.months }} mo,
-                  {{ fmtCurrency(a.prior_total) }}
-                </li>
-              </ul>
             </div>
-            <p v-if="!check.blocking.length && !check.warnings.length" class="lm-clean">
-              Nothing flagged.
+            <p v-if="!check.blocking.length && !criticalWarnings.length" class="lm-clean">
+              No critical issues.
             </p>
+            <div v-if="infoWarnings.length" class="lm-info">
+              <button class="lm-more" @click="showInfo = !showInfo">
+                {{ showInfo ? 'Hide' : 'Show' }} {{ infoWarnings.length }} note(s) for reference
+              </button>
+              <template v-if="showInfo">
+                <div v-for="(w, i) in infoWarnings" :key="'n' + i" class="lm-note-item">
+                  {{ w.message }}
+                  <button v-if="w.accounts?.length" class="lm-more" @click="toggle(i)">
+                    {{ open[i] ? 'hide' : 'show all' }}
+                  </button>
+                  <ul v-if="open[i] && w.accounts" class="lm-acct-list">
+                    <li v-for="a in w.accounts" :key="a.account">
+                      {{ a.account }} {{ a.description }} — {{ a.months }} mo,
+                      {{ fmtCurrency(a.prior_total) }}
+                    </li>
+                  </ul>
+                </div>
+              </template>
+            </div>
           </template>
         </div>
       </div>
@@ -296,8 +317,8 @@
         <span v-if="check && !check.can_import" class="lm-blocked-note">
           Resolve the {{ check.blocking.length }} blocking item(s) above first.
         </span>
-        <span v-else-if="check?.warnings.length" class="lm-warn-note">
-          {{ check.warnings.length }} warning(s) — you can import anyway.
+        <span v-else-if="criticalWarnings.length" class="lm-warn-note">
+          {{ criticalWarnings.length }} warning(s) — you can import anyway.
         </span>
       </div>
 
@@ -440,6 +461,10 @@ const allAccounts = computed(() => {
 const dealAccounts = computed(() =>
   allAccounts.value.filter(a => a.used || a.used_by_deal))
 const reconRows = computed(() => check.value?.reconciliation?.rows || [])
+const outsideNoi = computed(() => check.value?.reconciliation?.outside_noi || [])
+const criticalWarnings = computed(() => (check.value?.warnings || []).filter(w => w.critical))
+const infoWarnings = computed(() => (check.value?.warnings || []).filter(w => !w.critical))
+const showInfo = ref(false)
 const canCommit = computed(() =>
   props.editable && !committing.value && !!check.value?.can_import)
 
@@ -752,6 +777,9 @@ onMounted(() => { if (props.recordId) loadDraft() })
 .lm-warn { background: #fff8e6; border-left: 3px solid #e0a800; padding: 7px 10px;
   font-size: 12px; margin-bottom: 6px; line-height: 1.45; }
 .lm-clean { font-size: 12px; color: #2e7d32; }
+.lm-info { margin-top: 6px; }
+.lm-note-item { font-size: 11px; color: #555; padding: 4px 10px; border-left: 2px solid #ddd;
+  margin-bottom: 4px; line-height: 1.4; }
 .lm-more { background: none; border: none; color: #2c5aa0; font-size: 11px;
   cursor: pointer; padding: 0 0 0 4px; text-decoration: underline; }
 .lm-acct-list { margin: 6px 0 0; padding-left: 18px; font-size: 11px; color: #555; }

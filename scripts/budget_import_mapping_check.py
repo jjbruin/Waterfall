@@ -223,6 +223,51 @@ check("...naming both lines and their combined total (10+5 over 12 months = 180)
       "CAM Reimb" in msg4090 and "Water Reimb" in msg4090 and "180" in msg4090,
       msg4090)
 
+check("...and combining is a NOTE, not a critical warning",
+      all(not w.get("critical") for w in combined), combined)
+
+print("\n3b. The tie-out's NOI is the Budget column's NOI")
+# Asset management, Sep 25 2026: the Budget column tied to the sheet and the tie-out
+# said it did not. The tie-out classified by prefix (any 4xxx / 5xxx), so interest,
+# partnership costs and the proposed $20K 5130 line sat INSIDE its NOI while the
+# comparison, reading IS_ACCOUNTS, puts them below it -- and it ignored the 7070
+# abatement the comparison folds into expenses.
+tie = {"lines": [
+    {"row": 1, "label": "Rent", "total": -100000.0, "amounts": {}, "months": 12},
+    {"row": 2, "label": "Repairs", "total": 30000.0, "amounts": {}, "months": 12},
+    {"row": 3, "label": "Partnership", "total": 20000.0, "amounts": {}, "months": 12},
+    {"row": 4, "label": "Interest", "total": 10000.0, "amounts": {}, "months": 12},
+    {"row": 5, "label": "Abatement", "total": -5000.0, "amounts": {}, "months": 12},
+], "stated_totals": {"revenue": 100000.0, "expense": 25000.0, "noi": 75000.0}}
+tmap = {"1": {"account": "4010"}, "2": {"account": "5060"}, "3": {"account": "5130"},
+        "4": {"account": "5190"}, "5": {"account": "7070"}}
+rec = {r["line"]: r for r in V.reconcile(tie, tmap)["rows"]}
+check("NOI ties when the sheet's NOI matches the comparison's definition",
+      rec["noi"]["difference"] == 0, rec["noi"])
+check("partnership (5130) and interest (5190) are NOT inside NOI",
+      rec["expense"]["computed"] == 25000.0, rec["expense"])
+check("the 7070 abatement IS inside expenses, as on the comparison",
+      rec["expense"]["computed"] == 25000.0 and rec["revenue"]["computed"] == 100000.0, rec)
+outside = {o["account"]: o["amount"] for o in V.reconcile(tie, tmap)["outside_noi"]}
+check("what is mapped below NOI is REPORTED, not dropped",
+      outside == {"5130": 20000.0, "5190": 10000.0}, outside)
+import config as _cfg
+_rev = {a for v in _cfg.IS_ACCOUNTS["REVENUES"].values() for a in v}
+_exp = {a for v in _cfg.IS_ACCOUNTS["EXPENSES"].values() for a in v}
+check("the tie-out reads the SAME account sections the comparison sums",
+      "4050" not in _rev and "5130" not in _exp and "7070" in _exp)
+
+print("\n3c. Only critical warnings are critical")
+check("the critical set is exactly sign, magnitude and negative NOI",
+      V.CRITICAL_WARNINGS == {"sign_opposite_prior", "magnitude", "negative_noi"},
+      V.CRITICAL_WARNINGS)
+neg = {"lines": [{"row": 1, "label": "Repairs", "total": 50000.0, "amounts": {"2027-01-31": 50000.0},
+                  "months": 1}], "periods": ["2027-01-31"], "stated_totals": {}}
+out = V.validate(neg, {"1": {"account": "5060"}}, "P0000018", None)
+check("a negative NOI is flagged critical",
+      any(w["code"] == "negative_noi" and w["critical"] for w in out["warnings"]),
+      out["warnings"])
+
 print("\n4. The column names are read from the table, whatever it calls them")
 for spelling in ("vCode", "vcode"):
     tmp = os.path.join(tempfile.mkdtemp(), "wf.db")

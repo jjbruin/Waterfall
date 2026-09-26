@@ -701,6 +701,39 @@ A statement with no lines AND a non-empty `unmapped` list should say so on its f
 sentence would have turned a diagnosis into a glance. Owner: unassigned.
 
 
+## 12. Valuation section — asset management's second list (Sep 25 2026)
+
+From AM (Matt + colleague) via Jim. **12.1 and 12.2 are fixed in the working tree, NOT
+committed or deployed** — date-stamped; delete this note when they ship.
+
+### 12.1 Tie-out said NOI did not tie when it did — FIXED (uncommitted)
+`budget_import_validate.reconcile` classified by PREFIX (any 4xxx revenue, any 5xxx
+expense) — a second NOI definition. The Budget column sums `IS_ACCOUNTS` REVENUES /
+EXPENSES, which puts 5190, 5120/5130, 5160/5165, 5195/5210/5220/5400 and 4050 BELOW
+NOI and folds 7070 into expenses. The proposed $20K 5130 line alone made every import
+that accepted it "not tie" by $20,000. Now reads the same sections, and lists what was
+mapped below NOI. Guardrail `budget_import_mapping_check` 25 -> 33; the old code fails
+the new fixture at exactly -35,000.
+
+### 12.2 Checks panel: critical only — FIXED (uncommitted)
+`CRITICAL_WARNINGS` = sign opposite to history, magnitude, negative NOI. Everything
+else is folded behind "Show N notes". The per-line "below NOI" warning is replaced by
+the reconcile's outside-NOI list (its hand-kept set `{5190,7030,7060,7050}` missed 5130).
+
+### 12.3 Budgeted occupancy row -> 1Q-4Q 2027 bars in a second colour — OPEN
+### 12.4 MRI loaders for budget, valuation, budgeted occupancy — OPEN, needs MRI's
+accepted loader files (same method as treasury `v492`: rebuild an accepted file
+byte-identical). Supersedes §5.9.
+### 12.5 Replacement reserves above/below NOI — DECISION (Jim/AM)
+### 12.6 Valuation / UW toggle on the third column — OPEN. UW = ISBS Projected IS,
+already computed by `financials_service` — reuse, do not re-derive.
+### 12.7 Debt service: UW override toggle; dev deals at commitment x (treasury +
+spread); variable-with-cap, two loans, assumed loans — OPEN. Note the Budget column is
+NOT "pulled from MRI" figures: it is MODELED from MRI loan terms (§5.3). No treasury
+rate source exists in the app today.
+### 12.8 Override any 2026 Estimate cell, marked as overridden — OPEN. Needs a stored,
+protected override table; the Estimate stays computed underneath.
+
 ## 11. Budget import, and a vacant suite reported as un-extracted (Sep 22-23 2026)
 
 Shipped in `v523`. What is left, with an owner on each.

@@ -25,6 +25,10 @@ from flask_app.services.budget_import_service import (
 logger = logging.getLogger(__name__)
 
 
+#: Warnings that mean a figure is probably wrong, rather than merely worth knowing.
+CRITICAL_WARNINGS = {"sign_opposite_prior", "magnitude", "negative_noi"}
+
+
 def reconcile(parsed: Dict[str, Any], mapping: Dict[str, Any]) -> Dict[str, Any]:
     """Spreadsheet totals against what the SELECTED lines actually produce.
 
@@ -34,12 +38,26 @@ def reconcile(parsed: Dict[str, Any], mapping: Dict[str, Any]) -> Dict[str, Any]
     number they can see is what lets them. A non-zero difference is INFORMATION, not an
     error, and never blocks.
 
-    Lines are classified by the ACCOUNT they were mapped to (4xxx / 5xxx on our chart),
-    never by the partner's wording, and reported as positive magnitudes so the three rows
-    read like a statement.
+    Lines are classified by the ACCOUNT they were mapped to, never by the partner's
+    wording, and reported as positive magnitudes so the three rows read like a statement.
+
+    NOI HERE IS THE BUDGET COLUMN'S NOI, from the same `IS_ACCOUNTS` sections
+    `valuation_service.get_budget_review` sums. This used to classify by prefix -- any
+    4xxx revenue, any 5xxx expense -- which is a second definition of NOI: it counted
+    interest (5190), partnership costs (5120/5130), depreciation, 5195/5210/5220/5400
+    and interest income (4050) inside NOI, and missed the tax abatement (7070) that the
+    comparison folds into expenses. Asset management, Sep 25 2026: "The NOI per the
+    import sheet and what's getting populated in the 2027 budget column are tying out
+    but this section is saying the NOI is not tying out." The proposed $20K partnership
+    line to 5130 alone put a $20,000 difference on every import that accepted it.
+    What is mapped below the line is reported beside the three rows, not dropped.
     """
+    import config
+    rev_accts = {str(a) for accts in config.IS_ACCOUNTS["REVENUES"].values() for a in accts}
+    exp_accts = {str(a) for accts in config.IS_ACCOUNTS["EXPENSES"].values() for a in accts}
     by_row = {l["row"]: l for l in parsed["lines"]}
     rev = exp = 0.0
+    outside: Dict[str, float] = {}
     for row_key, m in (mapping or {}).items():
         line = by_row.get(int(row_key))
         if not line or not m.get("account"):
@@ -47,10 +65,12 @@ def reconcile(parsed: Dict[str, Any], mapping: Dict[str, Any]) -> Dict[str, Any]
         amount = line["total"] * (-1 if m.get("flip") else 1)
         acct = str(m["account"]).strip()
         # After flipping, our convention holds: revenue negative, expense positive.
-        if acct.startswith("4"):
+        if acct in rev_accts:
             rev += -amount
-        elif acct.startswith("5"):
+        elif acct in exp_accts:
             exp += amount
+        else:
+            outside[acct] = outside.get(acct, 0.0) + amount
 
     stated = parsed.get("stated_totals") or {}
     computed = {"revenue": round(rev, 2), "expense": round(exp, 2),
@@ -61,7 +81,12 @@ def reconcile(parsed: Dict[str, Any], mapping: Dict[str, Any]) -> Dict[str, Any]
         rows.append({"line": k, "stated": s, "computed": computed[k],
                      "difference": round(computed[k] - s, 2) if s is not None else None})
     return {"rows": rows,
-            "has_stated_totals": any(v is not None for v in stated.values())}
+            "has_stated_totals": any(v is not None for v in stated.values()),
+            # Mapped, imported, and outside NOI: debt service, partnership costs,
+            # capex and the rest. If the partner's own NOI line includes one of these,
+            # this is where the difference comes from.
+            "outside_noi": [{"account": a, "amount": round(v, 2)}
+                            for a, v in sorted(outside.items()) if round(v, 2) != 0]}
 
 
 def validate(parsed: Dict[str, Any], mapping: Dict[str, Any], vcode: str,
@@ -219,17 +244,25 @@ def validate(parsed: Dict[str, Any], mapping: Dict[str, Any], vcode: str,
                         "message": (f"'{line['label']}' to {acct} is {ratio:.2f}x the last "
                                     f"12 months ({amount:,.0f} vs {base:,.0f}).")})
 
-        if acct in _BELOW_THE_LINE:
-            warnings.append({
-                "code": "below_the_line",
-                "message": (f"'{line['label']}' is mapped to {acct}, which sits below NOI "
-                            f"— it will not affect the NOI comparison.")})
+        # (The per-line "sits below NOI" warning is gone: `reconcile` now reports
+        # everything mapped outside NOI in one place, from the comparison's own
+        # sections rather than a hand-kept four-account set that missed 5130.)
 
     recon = reconcile(parsed, mapping)
     noi = next((r for r in recon["rows"] if r["line"] == "noi"), None)
     if noi and noi["computed"] < 0:
         warnings.append({"code": "negative_noi",
                          "message": f"Budgeted NOI is negative ({noi['computed']:,.0f})."})
+
+    # CRITICAL vs everything else. Asset management, Sep 25 2026: "need to have
+    # critical checks only and condense this area ... Not sure what a lot of the checks
+    # are implying." A 50-line partner file produced a warning per combined account,
+    # per partial line and per account new to the deal, and the two that mean the
+    # number is probably WRONG -- a sign opposite to the deal's history, a figure off
+    # by an order of magnitude -- were lost among them. Critical ones are shown; the
+    # rest are kept, counted, and folded away. Nothing is dropped.
+    for w in warnings:
+        w["critical"] = w["code"] in CRITICAL_WARNINGS
 
     return {"blocking": blocking, "warnings": warnings, "reconciliation": recon,
             "can_import": not blocking}
