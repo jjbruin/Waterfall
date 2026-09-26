@@ -1,4 +1,76 @@
-# Session Handoff — through Sep 23 2026 (v523 live)
+# Session Handoff — through Sep 25 2026 (v526 live)
+
+## Sep 25 2026 — ASSET MANAGEMENT'S SECOND VALUATION LIST
+
+AM (via Jim) sent eight items on the valuation section. Six shipped across `v525`
+and `v526`; three need someone else before they can be built. Status lives in
+`open_items.md` §12; this is what to carry forward.
+
+### What shipped
+
+| | Revision | What |
+|---|---|---|
+| "NOI not tying" when it did | `v525` | `reconcile()` classified by PREFIX (any 4xxx/5xxx) — a second NOI definition. Now reads `IS_ACCOUNTS`, same as the Budget column. The proposed $20K 5130 line alone was a $20,000 phantom difference on every import that took it |
+| Checks panel noise | `v525` | Critical only (sign opposite history, magnitude, negative NOI); the rest folded behind a count |
+| Valuation / UW toggle | `v526` | Header dropdown; `?compare=underwriting`; same engine, different source |
+| UW debt service in the Budget column | `v526` | Per-record basis; not applied (and said so) when UW has none for the year |
+| Override a 2026 Estimate cell | `v526` | Line items only; totals recompute and are marked `*`; computed figure kept |
+| Budgeted occupancy bars | `v526` | "Occupancy" row read off the budget file, orange bars beside the blue history |
+
+### Four things that are not obvious
+
+1. **UW records debt service as ONE figure — 7010 "Hard Debt (P&I)".** It carries no
+   5190 and no 7060. So a UW column or a UW-based Budget column has Interest and
+   Principal BLANK and Total Debt Service = 7010. Never split it. Read through
+   `one_pager.uw_debt_service_for_year`, extracted from One Pager's UW DSCR and proved
+   identical on 428 deal-years (51 partial-year, 0 differences).
+2. **On production, UW reaches 2027 on 131 of 162 records but only 78 carry 7010.** The
+   other 53 show UW debt service blank. Correct — blank, not zero — but AM should hear it
+   before reading it as "no debt". Whether those UWs had no debt or 7010 was never loaded
+   is a data question.
+3. **7030 is "Replacement Reserve Deposit" in the chart of accounts**, yet
+   `config.INTEREST_ACCTS = {5190, 7030}` and `compute.py` writes modeled interest to it.
+   Found while scoping the reserves question (§12.5). NOT changed — it moves Property
+   Financials on every deal.
+4. **The Budget Review 500'd for any deal with no ISBS** — empty frames had no columns and
+   the helpers index `dtEntry_parsed`. 44 of 84 local records. Fixed in `v526`; the old
+   code failed identically, so it had been live all along.
+
+### v524 never took traffic — and it was not the commit
+
+Every gunicorn worker died on boot with `No module named 'psycopg'`. **SQLAlchemy 2.1.0
+was released Sep 24 2026**; `requirements.txt` said `>=2.0`, and 2.1 makes a bare
+`postgresql://` URL load psycopg v3 instead of psycopg2. v523 kept serving (site 200).
+**Any rebuild after Sep 24 would have failed identically, whatever it carried.** Pinned
+`<2.1` in `0d68e53`. When a revision fails on boot right after a rebuild, check what
+PyPI released since the last good build before reading the diff — only SQLAlchemy had
+crossed a major boundary. Moving to 2.1 is a deliberate upgrade, still to do.
+
+### Method notes
+
+- **One fixture was vacuous and injection found it.** "The occupancy row is not a
+  mappable line" passed with the exclusion deleted, because the fixture wrote `"93%"` as
+  TEXT, which the line reader cannot parse — the row never became a line whatever the
+  code did. A % cell arrives from Excel as the NUMBER 0.93. Five defects injected; the
+  corrected check fails on the one that matters.
+- **Local data cannot test UW.** Locally `isbs_raw` is 61 rows and the split
+  `isbs_projected_is` has 1, so UW mode was proven on a synthetic fixture and first
+  measured for real on production. The regression (old vs new, default mode) was 0
+  differences on the 40 local records that rendered at all.
+- **Endpoints were driven in-process** with a JWT minted from `JWT_SECRET`, the
+  `accounting_access_check` method — no password typed anywhere. 16/16, including viewer
+  refusals, and the script cleaned up after itself.
+
+### Still open — each needs someone else
+
+- **MRI loaders** (budget, valuation, budgeted occupancy): one ACCEPTED loader file of
+  each from AM, then rebuild byte-identical (the treasury `v492` method).
+- **Development-deal debt service** (commitment × (treasury + spread)): no treasury rate
+  source exists in the app. Rate caps, two loans, assumed loans also open.
+- **Replacement reserves** above/below NOI: Jim and AM's decision; the 7030 finding is
+  the input.
+- **Nobody has used the v526 screens yet.** AM offered to test.
+
 
 ## Sep 22–23 2026 — THE BUDGET IMPORT HAD NEVER WORKED ON PRODUCTION
 
