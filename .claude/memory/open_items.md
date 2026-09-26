@@ -719,7 +719,7 @@ the new fixture at exactly -35,000.
 else is folded behind "Show N notes". The per-line "below NOI" warning is replaced by
 the reconcile's outside-NOI list (its hand-kept set `{5190,7030,7060,7050}` missed 5130).
 
-### 12.3 Budgeted occupancy row -> 2027 bars in a second colour — BUILT, not deployed (Sep 25 2026)
+### 12.3 Budgeted occupancy row -> 2027 bars in a second colour — DONE, `v526`
 Read off the budget import by LABEL ("Occupancy", "Budgeted Occupancy", "Occ %"), above
 or below the month header, and pulled OUT of the mappable lines. A row only counts if its
 figures read as percentages -- a hotel "Occupancy Tax" in dollars stays a line. 0.95 / 95
@@ -741,16 +741,18 @@ INTEREST and `compute.py` writes modeled interest to it (§5.8) -- so in the AM 
 reserve deposit and modeled interest can share an account. Not changed; it moves Property
 Financials on every deal and needs its own look before the reserves policy is set.
 
-### 12.6 Valuation / UW toggle on the third column — BUILT, not deployed
+### 12.6 Valuation / UW toggle on the third column — DONE, `v526`
 `get_budget_review(compare="underwriting")`: the same `_calculate_is_amounts` with
 `source="Underwriting"`, Full Year at Dec of the budget year. **UW records debt service
 as ONE figure, 7010 "Hard Debt (P&I)"** -- not 5190/7060 (UW carries neither) -- so the UW
 column's Interest/Principal are BLANK and Total Debt Service carries 7010. Read through
 `one_pager.uw_debt_service_for_year`, extracted from One Pager's UW DSCR (proved
 identical on 428 deal-years, 51 partial-year). A deal whose UW does not reach Dec of the
-budget year says so.
+budget year says so. **On production (v526): UW reaches the budget year on 131 of 162
+records, but only 78 carry 7010** -- the other 53 show UW debt service BLANK. Whether
+those UWs genuinely had no debt or 7010 was never loaded is a data question for AM.
 
-### 12.7 Debt service — UW override BUILT, not deployed; the rest OPEN
+### 12.7 Debt service — UW override DONE `v526`; the rest OPEN
 Per-record `valuation_records.debt_service_basis` ('modeled' default, 'underwriting').
 Underwriting puts UW's 7010 total in the Budget column; when UW has none for the year it
 is NOT applied, the modeled figure stays, and a note says so. A partial-year UW figure is
@@ -759,7 +761,7 @@ deals at commitment x (treasury + spread) -- no treasury rate source exists in t
 variable-with-cap, two loans, assumed loans. The Budget column's debt service is MODELED
 from MRI loan terms (§5.3), not a figure pulled from MRI.
 
-### 12.8 Override any 2026 Estimate line — BUILT, not deployed
+### 12.8 Override any 2026 Estimate line — DONE, `v526`
 `valuation_estimate_overrides` (record_id, row_label). LINE ITEMS ONLY: totals, NOI,
 Total Debt Service and DSCR recompute from them and are marked `*` as including one --
 overriding a total would leave a column that no longer adds up. Double-click to edit;

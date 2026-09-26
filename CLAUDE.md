@@ -253,6 +253,17 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v526` = `6bf26b6` (BUDGET REVIEW: the third column can be UNDERWRITING, the
+    Budget column's debt service can be UW's, an Estimate LINE can be overridden
+    (totals follow, marked), and budgeted occupancy is read off the budget file --
+    AM's second list, Sep 25 2026. UW debt service is ONE figure, 7010, so its
+    Interest/Principal are blank, never split. Also fixed: the tab 500'd for any
+    deal with no ISBS. VERIFIED ON PRODUCTION (PostgreSQL): both tables and the
+    basis column present; all 162 records render in BOTH modes, 0 errors; UW
+    reaches the budget year on 131 of them but only 78 carry 7010 -- on the other
+    53 the UW debt service is BLANK, not zero, which is correct and worth knowing
+    before AM reads it as "no debt". Guardrail 50/50 in the container. Served
+    chunk `ValuationsView-klczDMgR.js` resolved from the entry bundle.)
   - `v525` = `0d68e53` (THE TIE-OUT'S NOI IS THE BUDGET COLUMN'S NOI, and the
     Checks panel shows critical items only -- AM, Sep 25 2026. `reconcile()`
     classified by PREFIX (any 4xxx / 5xxx), a second definition of NOI that put
