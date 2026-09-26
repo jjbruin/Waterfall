@@ -5,7 +5,10 @@ flask-caching>=2.3
 Werkzeug>=3.1
 
 # Database
-SQLAlchemy>=2.0
+# <2.1: SQLAlchemy 2.1 (released Sep 24 2026) makes a bare postgresql:// URL load
+# psycopg (v3), not psycopg2. v524 built with it and every worker died on boot with
+# "No module named psycopg". Moving to 2.1 is a deliberate upgrade, not a rebuild.
+SQLAlchemy>=2.0,<2.1
 psycopg2-binary>=2.9
 pyodbc>=5.3
 
