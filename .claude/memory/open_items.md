@@ -703,10 +703,9 @@ sentence would have turned a diagnosis into a glance. Owner: unassigned.
 
 ## 12. Valuation section — asset management's second list (Sep 25 2026)
 
-From AM (Matt + colleague) via Jim. **12.1 and 12.2 are fixed in the working tree, NOT
-committed or deployed** — date-stamped; delete this note when they ship.
+From AM (Matt + colleague) via Jim. 12.1 and 12.2 shipped in `v525`.
 
-### 12.1 Tie-out said NOI did not tie when it did — FIXED (uncommitted)
+### 12.1 Tie-out said NOI did not tie when it did — DONE, `v525`
 `budget_import_validate.reconcile` classified by PREFIX (any 4xxx revenue, any 5xxx
 expense) — a second NOI definition. The Budget column sums `IS_ACCOUNTS` REVENUES /
 EXPENSES, which puts 5190, 5120/5130, 5160/5165, 5195/5210/5220/5400 and 4050 BELOW
@@ -715,7 +714,7 @@ that accepted it "not tie" by $20,000. Now reads the same sections, and lists wh
 mapped below NOI. Guardrail `budget_import_mapping_check` 25 -> 33; the old code fails
 the new fixture at exactly -35,000.
 
-### 12.2 Checks panel: critical only — FIXED (uncommitted)
+### 12.2 Checks panel: critical only — DONE, `v525`
 `CRITICAL_WARNINGS` = sign opposite to history, magnitude, negative NOI. Everything
 else is folded behind "Show N notes". The per-line "below NOI" warning is replaced by
 the reconcile's outside-NOI list (its hand-kept set `{5190,7030,7060,7050}` missed 5130).

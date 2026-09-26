@@ -253,6 +253,22 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v525` = `0d68e53` (THE TIE-OUT'S NOI IS THE BUDGET COLUMN'S NOI, and the
+    Checks panel shows critical items only -- AM, Sep 25 2026. `reconcile()`
+    classified by PREFIX (any 4xxx / 5xxx), a second definition of NOI that put
+    5190, 5120/5130, depreciation and 4050 inside it and left 7070 out; the
+    proposed $20K 5130 line alone made every import that took it "not tie" by
+    $20,000. Now reads `IS_ACCOUNTS`, and lists what was mapped below NOI.
+    Critical = sign opposite to history, magnitude, negative NOI; the rest fold
+    behind a count. Guardrail 25 -> 33, 33/33 in the container; the old code
+    fails the new fixture at exactly -35,000. Served chunk verified by resolving
+    the lazy chunk from the entry bundle.)
+  - `v524` = `8839ab4` -- NEVER TOOK TRAFFIC. Every worker died on boot with
+    "No module named psycopg": SQLAlchemy 2.1.0 was released Sep 24 2026,
+    requirements said only `>=2.0`, and 2.1 makes a bare `postgresql://` URL load
+    psycopg v3 instead of psycopg2. v523 kept serving throughout (site 200). ANY
+    rebuild after Sep 24 would have failed identically, whatever it carried --
+    worth knowing before blaming the commit. Pinned `<2.1` in `0d68e53`.
   - `v523` = `07272c6` (THE BUDGET IMPORT HAD NEVER ONCE SUCCEEDED ON
     PRODUCTION, which reframes the eight spreadsheet versions Jack built trying
     to get one through. `commit()` quoted `"vcode"`; production's supplement
