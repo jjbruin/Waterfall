@@ -1,4 +1,75 @@
-# Session Handoff — through Sep 25 2026 (v526 live)
+# Session Handoff — through Sep 28 2026 (v528 live)
+
+## Sep 28 2026 — THE ARGUS CASH FLOW, AM'S THIRD LIST
+
+**`v528` = `799239a`**, live and verified on production. Status in `open_items.md` §13.
+AM confirmed the whole `v526` batch works (UW dropdown, debt-service toggle, Estimate
+double-click, orange budgeted-occupancy bars) and asked for the budget's framework on
+the Argus file.
+
+| Ask | What shipped |
+|---|---|
+| One upload | Assumptions-tab upload, its route and `valuation_service.import_argus` REMOVED. Budget Review > **Load Valuation Cash Flow** is the one way in; applying it writes the Valuation cash flow |
+| Map by the file's account | Keyword pre-fill removed; the file's account, then "as mapped before" -- same as the budget |
+| Overturn a subtotal | "not a subtotal" per row, pre-filling the file's account |
+
+### What was actually wrong, and it was not what it looked like
+
+1. **Two parsers, joined by label.** The Assumptions upload read the file with
+   `argus_parser.parse_monthly_cashflow` (its own labels, keyword accounts); the mapping
+   panel read it with the budget parser and wrote its mapping back BY LABEL onto that
+   import. Any line the two parsers named differently took no mapping. Now the panel's
+   reading IS the cash flow: `_commit_argus` creates the import, replaces it in place, or
+   makes a new one when another cycle's record shares it. Signs come from the account
+   (`_normalize_amount`), so Argus shows no flip box.
+2. **AM's layout was never read.** `parse_budget_workbook` only found an account column
+   LEFT of the description. AM said "description, then the four-digit account" -- every
+   line would have come in blank. `_account_column_beside` reads it on the right, by
+   membership of our chart; a column of annual totals is still refused.
+3. **The subtotal was never locked** -- the dropdown worked; the row was greyed, tagged
+   and not pre-filled, which read as final.
+
+### Found building it: a tick box that did nothing, and a claim of mine that was false
+
+The **Partnership costs** proposal ($20K, 5130) never left the browser from `v502`:
+`acceptedProposals` was not sent with the check, the draft or the commit. It now rides
+on the parsed file (`accepted_proposals`) and `with_accepted_proposals` makes it a line.
+
+**That falsified my own v525 write-up**, which blamed that line for a phantom $20,000 in
+the tie-out -- it never reached the tie-out. The v525 fix stands (interest, partnership
+costs mapped FROM THE FILE, depreciation and 4050 really were inside the tie-out's
+NOI); that example did not. Corrected in place everywhere it appeared. **Lesson: before
+citing a control as a cause, trace it to the server.**
+
+### Verification
+
+- `argus_single_load_check` (42 locally, 35 in the container with 7 screen checks
+  skipping), proved against six injected defects. One of its own checks had `or True`
+  in it and was vacuous until rewritten.
+- `line_mapping_check` 27/9 -> 35/0 and one `mapping_draft_check` assertion REVERSED,
+  reasons recorded -- they asserted the keyword behaviour AM asked to remove. The
+  mapping_draft one had gone vacuous: "keyword guess" matched a comment saying the
+  guesses were gone.
+- Production (PostgreSQL): every column the new commit writes exists; the old route is
+  gone; **4 records link an Argus import, 0 shared**. They keep it until someone applies
+  a mapping on the new tab -- nothing migrates by itself.
+
+### Method notes
+
+- **`npm install` after pulling** -- the traceability merge added `katex`, and the local
+  build failed until installed. It also rewrote `package-lock.json`; restored, not
+  shipped.
+- **Heredocs mangled escapes AGAIN** (`\n` in a Python splice). Write edit scripts to
+  the scratchpad with the Write tool.
+
+### Still open
+
+- **MRI loaders** (budget, valuation, budgeted occupancy) — need one accepted loader
+  file of each from AM (§12.4).
+- **Development-deal debt service** — no treasury rate source (§12.7).
+- **Replacement reserves** — Jim/AM's decision; 7030 is "Replacement Reserve Deposit"
+  in the COA yet treated as interest (§12.5).
+
 
 ## Sep 25 2026 — ASSET MANAGEMENT'S SECOND VALUATION LIST
 

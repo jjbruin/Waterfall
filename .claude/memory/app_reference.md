@@ -470,6 +470,9 @@ Property-level cash flow import hub supporting two sources: Argus Enterprise Exc
 5. Term sheet accepted → move to DD/verification
 
 #### Argus Parser (`argus_parser.py`)
+- **New Business only since `v528`.** The valuation section no longer uses it: the
+  appraiser's Argus file is read by `budget_import_service.parse_budget_workbook` on
+  Budget Review > Load Valuation Cash Flow and mapped by the account the file states.
 - Stateless, no DB/Flask deps. 56 keyword-to-COA mappings
 - Three parsers: `parse_monthly_cashflow()`, `parse_rent_roll_summary()`, `parse_revenue_assumptions()`
 - `cashflow_to_forecast_df()` converts to compute-compatible DataFrame

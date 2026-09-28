@@ -2254,8 +2254,9 @@ columns are loaded from somebody else's spreadsheet, and the debt rows are ours.
 - **One screen for both sources** (`LineMappingPanel.vue`, `line_mapping_service.py`,
   four endpoints under `/api/valuations/records/<id>/mapping/`). `source` is `budget`
   (partner's workbook → `isbs_budget_is_supplements` → Budget column) or `argus`
-  (appraiser's download → COA overrides via `argus_service.update_coa_mapping` →
-  Valuation column). Same job, same rules, same screen.
+  (appraiser's Argus download → the record's `argus_imports` / `argus_cashflows`, WRITTEN
+  by `_commit_argus` from this screen's own reading since `v528` → Valuation column).
+  Same job, same rules, same screen.
 - **THE ACCOUNT IS THE MAPPING; the category is derived from it** (Jack, Sep 22 2026,
   reversing "category first"). `budget_import_service.category_for_account` is the one
   lookup, the server ignores whatever category the screen sends, and the screen
@@ -3022,10 +3023,12 @@ it; the sidebar map above is kept here as a quick orientation.
 - `account_choices()` / `category_choices()` - The deal's own last-12-months accounts, and the ~27 comparison categories each with its accounts, ranked by the deal's usage with a default account (budget_import_service.py)
 - `category_accounts()` - {category: accounts} as the IMPORT sees it — config plus `_CATEGORY_ACCOUNTS_FOR_BUDGET`, so the dropdown and the not-in-category check cannot drift (budget_import_service.py)
 - `reconcile()` / `validate()` / `commit()` - Stated-vs-computed revenue/expense/NOI; blocking vs warnings; replace-by-(vcode, periods) write to `isbs_budget_is_supplements` (budget_import_validate.py)
-- `parse()` / `check()` / `commit()` - One line-mapping flow for `source` in ("budget", "argus"); Argus pre-fills from `argus_parser.map_to_coa` as a visible, editable suggestion, a budget never guesses (line_mapping_service.py)
+- `parse()` / `check()` / `commit()` - One line-mapping flow for `source` in ("budget", "argus"); both pre-fill from the account the FILE states, then "as mapped before", never keywords (`v528`); an Argus commit writes the Valuation cash flow (line_mapping_service.py)
 - `get_budget_review(compare=)` - Estimate | Budget | Valuation Yr 1 or UW; applies Estimate overrides (line items, totals recompute) and the Budget debt-service basis (valuation_service.py)
 - `get_overrides()` / `set_override()` / `get_debt_basis()` / `set_debt_basis()` / `save_occupancy()` / `budget_occupancy_quarters()` - The analyst inputs to the Budget Review; inputs, never calculations (valuation_budget_inputs.py)
 - `uw_debt_service_for_year()` - UW debt service for a year from Projected IS 7010 (one P&I figure) with partial-year months; shared by One Pager UW DSCR and the Budget Review (one_pager.py)
+- `with_accepted_proposals()` - A ticked proposed line (Partnership costs, 5130) made a real line for check and commit; offered accounts only, Argus only (line_mapping_service.py)
+- `_account_column_beside()` - The account column to the RIGHT of a description, found by membership of our chart, headed or not (budget_import_service.py)
 - `_read_occupancy_row()` - Budgeted occupancy off the budget file, by label AND percentage-looking figures, kept out of the lines (budget_import_service.py)
 - `monthly_schedule()` / `for_year()` - Modeled interest (5190) and principal (7060) from the deal's own loan terms, balloons excluded, child-property loans included; returns unavailable-with-a-reason, never a zero (valuation_debt_service.py)
 - `build()` - Balance Sheet + Income Statement for one entity/period, with tie-out, `sign_anomalies`, unmapped/untyped/conflicts (statement_service.py)
