@@ -21,13 +21,71 @@ that enrichment. Do not add ``full_data=data`` here without measuring.
 """
 
 from flask import Blueprint, request, jsonify
+import json
+
 import pandas as pd
 
-from flask_app.auth.routes import login_required
+from flask_app.auth.routes import login_required, role_required, roles_exactly
 from flask_app.serializers import safe_json
 from flask_app.services import data_service
 
 portfolio_snapshot_bp = Blueprint("portfolio_snapshot", __name__)
+
+
+#: Writes that stay legal on a frozen quarter, named one by one. Everything
+#: else that writes is refused.
+#:
+#: DENY BY DEFAULT, and that direction is the point. An allowlist of endpoints
+#: that may NOT write would have to be extended every time somebody adds an
+#: editable field, and the day it is forgotten a sent quarter becomes editable
+#: with nothing saying so. This way a new element endpoint is locked the moment
+#: it exists and has to be named here to be let through.
+_FROZEN_WRITE_ALLOWED = frozenset({
+    "portfolio_snapshot.post_freeze",      # the button itself
+    "portfolio_snapshot.post_refreeze",    # an admin correction
+    "portfolio_snapshot.post_unfreeze",    # returning it to live
+    "portfolio_snapshot.post_freeze_overlay",   # the seeded 26Q2 freeze; it
+                                                # refuses an already-frozen
+                                                # quarter on its own terms
+    "portfolio_snapshot.submit",           # the review chain is a separate
+    "portfolio_snapshot.approve",          # authority and is not a typed
+    "portfolio_snapshot.return_to_draft",  # field; freezing does not gate it
+    "portfolio_snapshot.reopen",
+})
+
+
+@portfolio_snapshot_bp.before_request
+def _lock_frozen_quarters():
+    """Refuse edits to a quarter that has been frozen.
+
+    A frozen quarter is the record of what an investor was sent, so the typed
+    fields on it — Net ROE, ITD, comments, footnotes — are no longer editable.
+    """
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return None
+    if (request.endpoint or "") in _FROZEN_WRITE_ALLOWED:
+        return None
+    body = request.get_json(silent=True) or {}
+    investor = (body.get("investor") or request.args.get("investor") or "").strip().upper()
+    quarter = (body.get("quarter") or request.args.get("quarter") or "").strip()
+    if not investor or not quarter:
+        return None
+    try:
+        from flask_app.services.portfolio_snapshot_freeze import get_frozen
+        fr = get_frozen(investor, quarter)
+    except Exception:
+        return None                       # never block a write on a lookup fault
+    if not fr:
+        return None
+    who = fr.get("frozen_by") or fr.get("approved_by") or "unknown"
+    when = str(fr.get("frozen_at") or fr.get("approved_at") or "")[:10]
+    return jsonify({
+        "error": f"{investor} {quarter} was frozen as sent by {who}"
+                 + (f" on {when}" if when else "")
+                 + ". Frozen quarters are read-only. An admin can Re-freeze or "
+                   "Unfreeze it if it genuinely has to change.",
+        "frozen": True,
+    }), 409
 
 
 def _get_data():
@@ -221,14 +279,14 @@ def bundle():
 
     review = _review_payload(investor, quarter)
 
-    # An APPROVED report serves its frozen payload, not a fresh computation:
-    # live MRI data moves (45th & Main went 100% -> 90% on 2026-08-24) and an
-    # approved report must not move with it. Anything not yet approved computes
-    # live so work in progress reflects current data. `source` says which.
+    # A FROZEN quarter serves its stored copy, not a fresh computation: live
+    # MRI data moves (45th & Main went 100% -> 90% on 2026-08-24) and a report
+    # that has been sent must not move with it. Only the current, unsent
+    # quarter computes live. `source` says which.
     #
-    # NOTE this is the deliberate divergence from the One Pager, which defaults
-    # to live and puts the frozen copy behind a manual toggle. See the module
-    # docstring in portfolio_snapshot_freeze.
+    # The One Pager now follows the SAME rule rather than defaulting to live —
+    # see financials.one_pager. The two halves of one report diverging on which
+    # copy they serve was the older behaviour and is gone.
     try:
         from flask_app.services.portfolio_snapshot_freeze import load_report
         report = load_report(investor, quarter, status=review.get("status"))
@@ -245,6 +303,15 @@ def bundle():
         "approved_by": report.get("approved_by"),
         "approved_at": report.get("approved_at"),
         "data_version": report.get("data_version"),
+        # What the Frozen / Live indicator renders, and what locks the inputs.
+        "frozen": report.get("source") == "frozen",
+        "read_only": bool(report.get("read_only")),
+        "frozen_by": report.get("frozen_by"),
+        "frozen_at": report.get("frozen_at"),
+        "frozen_reason": report.get("frozen_reason"),
+        "frozen_version": report.get("version"),
+        "source_manifest": report.get("source_manifest"),
+        "roster": report.get("roster"),
         "frozen_elements": (report.get("elements")
                             if report.get("source") == "frozen" else None),
         "review": review,
@@ -310,6 +377,330 @@ def _scope_vcodes(resolved: dict) -> list:
            for e in items]
     out += [f["vcode"] for f in (resolved.get("flagged") or [])]
     return out
+
+
+# ── freeze as sent ────────────────────────────────────────────────────────
+#
+# DELIBERATELY SEPARATE FROM THE APPROVAL CHAIN. Freezing records that a
+# quarter was SENT; approving records a decision somebody made. Rolling them
+# together would have the button write an approval nobody gave, which is the
+# confusion this split exists to prevent — so nothing here touches
+# `portfolio_snapshot_documents` or its steps.
+
+@portfolio_snapshot_bp.route("/freeze-status", methods=["GET"])
+@login_required
+def freeze_status():
+    """Whether this investor+quarter is frozen, by whom, when, and from what."""
+    investor, quarter = _args()
+    err = _missing(investor, quarter)
+    if err:
+        return err
+    from flask_app.services import portfolio_snapshot_freeze as FZ
+    try:
+        fr = FZ.get_frozen(investor, quarter)
+        out = {
+            "investor_code": investor, "quarter": quarter,
+            "frozen": bool(fr),
+            "history": FZ.frozen_history(investor, quarter),
+        }
+        if fr:
+            out.update({
+                "frozen_by": fr.get("frozen_by") or fr.get("approved_by"),
+                "frozen_at": fr.get("frozen_at") or fr.get("approved_at"),
+                "frozen_reason": fr.get("frozen_reason"),
+                "version": fr.get("version"),
+                "data_version": fr.get("data_version"),
+                "source_manifest": fr.get("source_manifest"),
+                "roster": fr.get("roster") or [],
+                "one_pager_count": len(fr.get("one_pagers") or {}),
+            })
+        return jsonify(safe_json(out))
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@portfolio_snapshot_bp.route("/freeze", methods=["POST"])
+@login_required
+@role_required("analyst")
+def post_freeze():
+    """Freeze this investor+quarter as sent.
+
+    A FAILURE IS REPORTED, NEVER SWALLOWED. ``freeze_as_sent`` raises rather
+    than storing a partial report, so a 500 here means the quarter is still
+    live — which is what the caller needs to know.
+    """
+    body = request.get_json(silent=True) or {}
+    investor = (body.get("investor") or "").strip().upper()
+    quarter = (body.get("quarter") or "").strip()
+    err = _missing(investor, quarter)
+    if err:
+        return err
+    from flask_app.services import portfolio_snapshot_freeze as FZ
+    if FZ.is_frozen(investor, quarter):
+        return jsonify({
+            "error": f"{investor} {quarter} is already frozen. Use Re-freeze "
+                     f"to replace it, which keeps the previous version."}), 409
+    user = _current_user()
+    try:
+        receipt = FZ.freeze_as_sent(
+            investor, quarter, user.get("username") or "unknown")
+    except Exception as exc:
+        return jsonify({
+            "error": f"Freeze failed, so {investor} {quarter} is still live: "
+                     f"{exc}", "frozen": False}), 500
+    return jsonify(safe_json({**receipt, "frozen": True}))
+
+
+@portfolio_snapshot_bp.route("/freeze-overlay", methods=["POST"])
+@login_required
+@roles_exactly("admin")
+def post_freeze_overlay():
+    """Freeze a quarter from a published overlay built off the sent PDF.
+
+    ONE ENDPOINT, TWO MODES, ON PURPOSE. Without ``confirm`` it previews:
+    it resolves every printed deal title to a vcode and reports how many cells
+    each report would take, and freezes NOTHING. With ``confirm`` it does
+    exactly the same resolution and then freezes. Two endpoints could drift,
+    and a preview that describes a different resolution from the freeze it
+    precedes is worse than no preview — the reader would have approved
+    something other than what ran.
+
+    The overlay comes from ``scripts/build_26q2_overlay.py``, which reads the
+    sent PDFs offline. That split is what removes the need for a live token:
+    the PDF truth is computed outside, and the only thing needing the app's
+    session is resolving titles and writing — which happens here, under the
+    admin's own login.
+
+    A TITLE THAT CANNOT BE PLACED IS REPORTED, NEVER DROPPED. Freezing a
+    roster quietly missing a page would store an incomplete record of what was
+    sent, so an unresolved title blocks the freeze unless it is explicitly
+    allowed through.
+    """
+    body = request.get_json(silent=True) or {}
+    doc = body.get("overlay")
+    if doc is None and "overlay" in request.files:
+        try:
+            doc = json.loads(request.files["overlay"].read().decode("utf-8"))
+        except Exception as exc:
+            return jsonify({"error": f"overlay file is not readable JSON: {exc}"}), 400
+    if not isinstance(doc, dict) or not doc.get("investors"):
+        return jsonify({
+            "error": "No overlay supplied. Build one with "
+                     "scripts/build_26q2_overlay.py and upload it."}), 400
+
+    investor = (body.get("investor") or "").strip().upper()
+    quarter = (body.get("quarter") or doc.get("quarter") or "").strip()
+    confirm = bool(body.get("confirm"))
+    allow_unresolved = bool(body.get("allow_unresolved"))
+
+    wanted = [investor] if investor else list(doc["investors"])
+    from flask_app.services import portfolio_snapshot_freeze as FZ
+    user = _current_user()
+    out = {"quarter": quarter, "confirmed": confirm, "reports": []}
+
+    for inv in wanted:
+        blk = (doc["investors"] or {}).get(inv)
+        if not blk:
+            out["reports"].append({"investor": inv,
+                                   "error": "not present in this overlay"})
+            continue
+        try:
+            resolved, unresolved = FZ.resolve_roster(inv, quarter,
+                                                     blk.get("roster_titles") or [])
+            # ASSEMBLED ONCE, AND THE SAME PAYLOAD IS FROZEN. The Snapshot
+            # overlay is keyed by printed ROW LABEL and has to be resolved to
+            # `groups.<G>.deals[i]` paths, which only exist once the report is
+            # built. Assembling a second time inside the freeze would resolve
+            # against one payload and write into another — and an index that
+            # shifted between the two would publish a row of figures against
+            # the wrong property. So the assembled report is passed straight
+            # through as the assembler.
+            assembled = FZ.assemble_full_report(inv, quarter)
+            snap_cells, snap_missing = FZ.resolve_snapshot_cells(
+                assembled, blk.get("snapshot") or {})
+        except Exception as exc:
+            out["reports"].append({"investor": inv,
+                                   "error": f"could not read live: {exc}"})
+            continue
+
+        overlay, per_report = {}, []
+        for title, cells in (blk.get("reports") or {}).items():
+            vc = resolved.get(title)
+            n_disp = sum(1 for c in cells.values() if c.get("display"))
+            per_report.append({
+                "title": title, "vcode": vc, "cells": len(cells),
+                "printed_units_cells": n_disp,
+                "page": next((c.get("page") for c in cells.values()), None),
+            })
+            if vc:
+                overlay[vc] = cells
+        if snap_cells:
+            overlay["__subtabs__"] = snap_cells
+
+        rep = {
+            "investor": inv,
+            "source": blk.get("source"),
+            "roster_size": len(blk.get("roster_titles") or []),
+            "resolved": len(resolved), "unresolved": unresolved,
+            "cells_total": sum(r["cells"] for r in per_report),
+            "printed_units_total": sum(r["printed_units_cells"] for r in per_report),
+            "unmapped_labels": blk.get("unmapped_labels") or [],
+            # The Snapshot half: what each printed page would write.
+            "snapshot_pages": [
+                {"page": pg, "subtab": sub, "rows": len(rows),
+                 "cells": sum(len(c) for c in rows.values())}
+                for sub, rows in sorted((blk.get("snapshot") or {}).items())
+                for pg in [next((p for p in (blk.get("source") or {})
+                                 .get("snapshot_pages", []) if True), None)]
+            ],
+            "snapshot_cells_total": len(snap_cells),
+            # WHAT WOULD NOT LAND. Computed by applying the overlay to a COPY
+            # of the assembled report, so the preview reports the same thing
+            # the freeze would do rather than a guess about it. A printed cell
+            # that never lands means the stored copy does not reproduce the
+            # page, so it is surfaced and it blocks.
+            "unapplied": FZ.dry_run_unapplied(assembled, overlay),
+            # WHAT WOULD ACTUALLY CHANGE, against live, server-side. A cell
+            # count says nothing about whether the overlay moves anything;
+            # this says how many cells move, which columns move TOGETHER (a
+            # shift, not thirty corrections) and the typical ratio (a units
+            # error sits at 1e6 and every single cell still looks plausible).
+            "live_diff": FZ.compare_overlay_to_live(
+                {"__subtabs__": assembled,
+                 **{vc: (FZ.get_one_pager_live(vc, quarter) or {})
+                    for vc in overlay if vc != "__subtabs__"}},
+                overlay),
+            "snapshot_unresolved": snap_missing,
+            "snapshot_skipped": blk.get("snapshot_skipped") or [],
+            "per_report": per_report,
+            "already_frozen": FZ.is_frozen(inv, quarter),
+        }
+
+        if not confirm:
+            rep["preview"] = True
+            out["reports"].append(rep)
+            continue
+        if rep["already_frozen"]:
+            rep["error"] = (f"{inv} {quarter} is already frozen — Re-freeze it "
+                            f"if it genuinely has to change.")
+            out["reports"].append(rep)
+            continue
+        _ld = rep.get("live_diff") or {}
+        _warn = _ld.get("warnings") or []
+        _ackw = set(body.get("acknowledge_warnings") or [])
+        _unackw = [w for w in _warn
+                   if f"{w.get('column')}|{w.get('kind')}" not in _ackw]
+        if _unackw:
+            rep["error"] = (
+                f"{len(_unackw)} column warning(s) — most rows differing, or a "
+                f"ratio far from 1, is what a units or column-shift error looks "
+                f"like: "
+                + "; ".join(f"{w['column']}: {w['detail']}" for w in _unackw[:3])
+                + ("…" if len(_unackw) > 3 else "")
+                + ". Acknowledge each to proceed.")
+            out["reports"].append(rep)
+            continue
+        _unapplied = rep.get("unapplied") or []
+        _acked = set(body.get("acknowledge_unapplied") or [])
+        _unacked = [u for u in _unapplied
+                    if f"{u.get('scope')}|{u.get('path')}" not in _acked]
+        rep["unapplied_count"] = len(_unapplied)
+        rep["unapplied_unacknowledged"] = len(_unacked)
+        if _unacked:
+            rep["error"] = (
+                f"{len(_unacked)} printed cell(s) would not land in the "
+                f"assembled report, so the frozen copy would not reproduce the "
+                f"page: "
+                + ", ".join(f"{u['path']}" for u in _unacked[:5])
+                + ("…" if len(_unacked) > 5 else "")
+                + ". Acknowledge each one to proceed.")
+            out["reports"].append(rep)
+            continue
+        if snap_missing and not allow_unresolved:
+            rep["error"] = (f"{len(snap_missing)} printed Snapshot row(s) "
+                            f"matched no row in the assembled report: "
+                            f"{', '.join(snap_missing[:5])}"
+                            + ("…" if len(snap_missing) > 5 else ""))
+            out["reports"].append(rep)
+            continue
+        if unresolved and not allow_unresolved:
+            rep["error"] = (f"{len(unresolved)} printed page(s) could not be "
+                            f"matched to a deal: {', '.join(unresolved[:5])}"
+                            + ("…" if len(unresolved) > 5 else "")
+                            + ". Freezing would store an incomplete record of "
+                              "what was sent.")
+            out["reports"].append(rep)
+            continue
+        try:
+            rep["receipt"] = FZ.freeze_as_sent(
+                inv, quarter, user.get("username") or "unknown",
+                overlay=overlay,
+                roster=[resolved[t] for t in (blk.get("roster_titles") or [])
+                        if t in resolved],
+                assembler=lambda _i, _q, _p=assembled: _p,
+                source_manifest={**(blk.get("source") or {}),
+                                 "unmapped_labels": blk.get("unmapped_labels") or [],
+                                 "snapshot_cells": len(snap_cells),
+                                 "snapshot_skipped": blk.get("snapshot_skipped") or []})
+            rep["frozen"] = True
+        except Exception as exc:
+            # The service raises rather than storing a partial report, so the
+            # quarter is still live — which is what the caller needs to know.
+            rep["frozen"] = False
+            rep["error"] = f"Freeze failed, so {inv} {quarter} is still live: {exc}"
+        out["reports"].append(rep)
+
+    status = 200 if all(not r.get("error") for r in out["reports"]) else 409
+    return jsonify(safe_json(out)), (200 if not confirm else status)
+
+
+@portfolio_snapshot_bp.route("/refreeze", methods=["POST"])
+@login_required
+@roles_exactly("admin")
+def post_refreeze():
+    """Replace a frozen quarter. Admin only, reason required, history kept."""
+    body = request.get_json(silent=True) or {}
+    investor = (body.get("investor") or "").strip().upper()
+    quarter = (body.get("quarter") or "").strip()
+    reason = (body.get("reason") or "").strip()
+    err = _missing(investor, quarter)
+    if err:
+        return err
+    from flask_app.services import portfolio_snapshot_freeze as FZ
+    user = _current_user()
+    try:
+        receipt = FZ.refreeze(investor, quarter,
+                              user.get("username") or "unknown", reason)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": f"Re-freeze failed, the stored copy is "
+                                 f"unchanged: {exc}"}), 500
+    return jsonify(safe_json({**receipt, "frozen": True}))
+
+
+@portfolio_snapshot_bp.route("/unfreeze", methods=["POST"])
+@login_required
+@roles_exactly("admin")
+def post_unfreeze():
+    """Return a quarter to live. Admin only, reason required, copy archived."""
+    body = request.get_json(silent=True) or {}
+    investor = (body.get("investor") or "").strip().upper()
+    quarter = (body.get("quarter") or "").strip()
+    reason = (body.get("reason") or "").strip()
+    err = _missing(investor, quarter)
+    if err:
+        return err
+    from flask_app.services import portfolio_snapshot_freeze as FZ
+    user = _current_user()
+    try:
+        receipt = FZ.unfreeze(investor, quarter,
+                              user.get("username") or "unknown", reason)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": f"Unfreeze failed: {exc}"}), 500
+    return jsonify(safe_json({**receipt, "frozen": False}))
 
 
 # ── editable elements ─────────────────────────────────────────────────────

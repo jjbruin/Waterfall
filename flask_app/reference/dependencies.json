@@ -1,535 +1,500 @@
 {
   "meta": {
-    "generated": "2026-09-21",
-    "scope": "MRI source -> consumer fields, internal delegation edges, shared constants",
-    "citation_format": "file.py:function:line",
-    "read_only": true,
-    "load_path": "MRI .sql query -> mri_service.QUERY_REGISTRY.target_table -> DB table -> data_service.load_all() key -> consumer"
+    "name": "Portfolio Snapshot + One Pager dependency map (verified content)",
+    "as_of": "2026-09-24",
+    "verification": "Sources, blast radius, constants and divergences verified against live code on 2026-09-24.",
+    "consumed_by": "impact_of(name) tool in the chatbot",
+    "citation_format": "file.py:line (repo root for one_pager.py / metrics.py)",
+    "answer_rule": "Report only from these fields. Give the blast radius, the duplicates to keep in sync, and the consumer count. Never invent a consumer or a downstream field.",
+    "matcher_caveat": "impact_of matches a queried name to the nearest source entry via token overlap. The floor is 0.5: a name that does not clearly match a listed source MISSES and the tool reports 'no verified source' instead of guessing (fix applied on feat/traceability-verified-dictionary). Every source the dictionary cites has a first-class entry here."
   },
-
-  "sources": {
-
-    "ISBS_Download[vSource='Interim BS', vAccount in 2150/2152/2210]": {
-      "query": "ISBS_Download.sql",
-      "target_table": "_isbs_split -> isbs_interim_bs",
-      "data_key": "isbs_raw (data_service.py:_assemble_isbs)",
-      "gateway": "compute.py:get_isbs_debt_balance:46",
-      "gateway_rules": [
-        "filters vSource=='Interim BS', vAccount in config.DEBT_BS_ACCTS, returns abs(sum(mAmount)) at the selected period",
-        "as_of_date picks the latest period <= date; None picks the max period",
-        "STALE GUARD: if latest debt period < latest BS period AND no MRI_Loans row exists for the vcode -> returns 0.0 (paid off). An existing loan row keeps the last known balance. compute.py:100-117",
-        "returns None (not 0) when there is no ISBS at all; returns 0.0 when BS exists but carries no debt accounts"
+  "sources": [
+    {
+      "name": "ISBS — Interim BS debt accounts 2150 / 2152 / 2210",
+      "loads_to": "ISBS_Download.sql -> isbs_interim_bs; gateway compute.get_isbs_debt_balance:46",
+      "provides": "Outstanding debt balance: abs(sum(mAmount)) over 2150/2152/2210 at latest period <= quarter-end.",
+      "feeds": [
+        "debt",
+        "debt (BS balance)",
+        "total_cap",
+        "debt_pct",
+        "pe_exposure_on_cap",
+        "pe_exposure_on_value",
+        "pe_yield_on_exposure",
+        "ltv",
+        "debt_yield",
+        "ytd_dscr (principal leg)",
+        "dashboard total_debt",
+        "Property Financials Principal",
+        "NAV liability split"
       ],
-      "direct_consumers": [
-        "one_pager.py:get_capitalization_stack:609 -> cap_stack.debt, cap_stack.debt_isbs, cap_stack.debt_basis",
-        "compute.py:get_deal_capitalization:309,315 -> cap_data.debt (child vcodes summed in), cap_data.total_cap",
-        "compute.py:compute_deal_analysis:1533 -> loan payoff amount at sale when modeled loans are inactive",
-        "flask_app/services/surveillance_service.py:_compute_debt_balances:219 -> Surveillance debt balance column, its LTV",
-        "flask_app/services/dashboard_service.py:get_portfolio_caps:94 -> portfolio debt KPI, total_cap KPI"
-      ],
-      "direct_account_readers_bypassing_the_gateway": [
-        "one_pager.py:_get_bs_principal_change:1473 (via one_pager.IS_ACCOUNTS['DEBT_BS_ACCTS'], a LOCAL copy of the same three accounts) -> YTD actual principal -> dscr.ytd_actual, dscr.actual_ye",
-        "one_pager.py:_estimate_principal_from_bs:1559 (DEAD since b2b0a40 2026-08-14 — no live call site)",
-        "flask_app/services/financials_service.py:_get_bs_principal:452 -> Property Financials 'Principal' line for Actuals columns",
-        "flask_app/services/valuation_nav_service.py:65,218,225 -> NAV debt vs non-debt liability classification"
-      ],
-      "downstream_fields": [
-        "cap_stack.debt", "cap_stack.debt_isbs", "cap_stack.debt_display", "cap_stack.total_cap",
-        "cap_stack.total_cap_isbs", "cap_stack.debt_pct", "cap_stack.pe_exposure_on_cap",
-        "cap_stack.pe_exposure_on_value", "cap_stack.pe_yield_on_exposure",
-        "snapshot_financial.debt", "snapshot_financial.total_cap", "snapshot_financial.total_cap_funded",
-        "snapshot_loan.debt", "snapshot_loan.isbs_debt", "snapshot_loan.ltv", "snapshot_loan.debt_yield",
-        "deal_analysis.capitalization.debt", "deal_analysis.sale_proceeds.loan_payoff",
-        "surveillance.debt_balance", "dashboard.total_debt",
-        "property_financials.debt_service.Principal",
-        "one_pager.dscr.ytd_actual", "one_pager.dscr.actual_ye"
-      ],
-      "blast_radius_note": "Changing DEBT_BS_ACCTS moves cap stacks, Total Cap, LTV, Debt Yield, DSCR principal, the dashboard debt KPI and NAV liability classification simultaneously. one_pager.py:1110 holds a SECOND hardcoded copy of the same list — change both or the One Pager's principal diverges from everything else."
+      "blast_radius_note": "Changing the debt-account list moves the capital stack, Total Cap, LTV, Debt Yield, DSCR principal, dashboard debt and the NAV liability split all at once. There is a second, hardcoded copy of this list at one_pager.py line 1110 that must be changed too, or the One Pager's DSCR principal will drift away from every other debt figure.",
+      "traps": "A stale-debt safeguard returns 0.0 (treated as paid off) when the newest debt period is older than the balance-sheet period and there is no loan row; it returns nothing at all (not 0) when there is no ISBS data.",
+      "consumer_count": 13,
+      "kind": "MRI-refreshed"
     },
-
-    "accounting_feed.Amt": {
-      "query": "accounting_feed.sql",
-      "target_table": "accounting",
-      "data_key": "acct (data_service.py:load_all:605, normalized at :664)",
-      "normalizer": "loaders.py:normalize_accounting_feed:217",
-      "normalizer_rules": [
-        "Amt string-cleaned ($ , parens) -> float; raw preserved as _raw_amt (loaders.py:251)",
-        "sign convention: negative = cash IN (contribution), positive = cash OUT (distribution)",
-        "derives is_contribution / is_distribution / is_commitment; commitment = MajorType contains 'contrib' AND Typename contains 'commitment' (loaders.py:271)",
-        "rows with blank MajorType dropped; only contrib/distr/commitment rows survive"
+    {
+      "name": "ISBS — Income statement (Interim IS / Projected IS / Budget IS)",
+      "loads_to": "ISBS_Download.sql -> isbs_* by vSource; config.IS_ACCOUNTS:251",
+      "provides": "Revenue & expense accounts by period (actual / budget / projected).",
+      "feeds": [
+        "revenue",
+        "expenses",
+        "noi",
+        "dscr (all columns)",
+        "noi_uw_ye",
+        "noi_projected_ye",
+        "debt_yield (NOI leg)",
+        "ytd_dscr (NOI leg)",
+        "economic_occ bad-debt adj",
+        "dashboard & surveillance NOI"
       ],
-      "shared_running_balance_rule": "loaders.py:capital_after:321 — capital moves by the NEGATED signed amount, never abs(), so a reversal cancels its original. Not floored at zero (order-independence). Floor at point of use.",
-      "direct_consumers": [
-        "one_pager.py:get_capitalization_stack:910-956 -> cap_stack.pref_equity (non-OP), cap_stack.partner_equity (InvestorID startswith 'OP'), cap_stack.committed_pe (is_commitment rows, non-OP, abs sum)",
-        "one_pager.py:get_pe_performance:2549-2693 -> pe.funded_to_date, pe.return_of_capital, pe.roe_to_date, pe.committed_pe, pe.current_pe_balance, pe.remaining_to_fund (+45-day grace window for pref distributions, :2618)",
-        "waterfall.py:seed_states_from_accounting:1088 -> InvestorState capital/pref/cashflows -> compute.py:build_partner_results -> XIRR, ROE, MOIC, pref balances",
-        "compute.py:get_deal_capitalization:290-306 -> cap_data.pref_equity, cap_data.partner_equity (NOTE: uses abs(amt), NOT capital_after — diverges from one_pager on reversal rows)",
-        "flask_app/services/reports_service.py:359 (Pref Balance Detail), :1149 (ROE Summary accrued)",
-        "flask_app/services/sold_service.py:301 -> Sold Portfolio net returns waterfall",
-        "flask_app/services/ownership_service.py:440 + ownership_chain_service.py:199 -> ownership tree capital balances",
-        "flask_app/services/valuation_nav_service.py:371,835 -> NAV waterfall seeding",
-        "flask_app/services/data_service.py:_enrich_acquisition_dates:200 -> inv.Acquisition_Date (reads EffectiveDate, not Amt)"
-      ],
-      "downstream_fields": [
-        "cap_stack.pref_equity", "cap_stack.partner_equity", "cap_stack.committed_pe",
-        "cap_stack.total_cap", "cap_stack.pref_equity_pct", "cap_stack.partner_equity_pct",
-        "pe_performance.*", "snapshot_financial.total_pref", "snapshot_financial.invested",
-        "snapshot_financial.ptr_equity", "snapshot_summary.funded", "snapshot_summary.committed",
-        "deal_analysis.partner_results.*", "reports.pref_balance_detail", "reports.roe_summary",
-        "reports.sold_portfolio", "one_pager.general.date_closed (via Acquisition_Date)"
-      ]
+      "blast_radius_note": "There are two separate income-statement account lists: one in config.py (line 251) and a different one in one_pager.py (line 1077). The One Pager list leaves out accounts 4075 and 5092, keeps 7070 out of Real Estate Taxes (handled separately), and sets Principal to 7060 where the config list leaves it empty. Editing the config list moves NOI on Property Financials, Surveillance, the Dashboard and the snapshot Debt Yield — but not the One Pager's revenue, expenses or NOI. Both lists must be edited together.",
+      "traps": "The One Pager's NOI uses its own account list, not the shared config list, so any reference to 'IS_ACCOUNTS' has to say which of the two it means.",
+      "consumer_count": 10,
+      "kind": "MRI-refreshed"
     },
-
-    "MRI_Loans.mOrigLoanAmt": {
-      "query": "MRI_Loans.sql",
-      "target_table": "loans",
-      "data_keys": ["mri_loans_raw (paid-off filtered + date-events collapsed)", "mri_loans_all (unfiltered)"],
-      "column_spelling": "matched case-insensitively on mOrigLoanAmt AND mOriginLoanAmt (portfolio_snapshot_debt.py:committed_facility:96)",
-      "direct_consumers": [
-        "loans.py:build_loans:51 -> Loan.orig_amount -> amortization schedule -> interest, principal, debt service, DSCR, FAD, balloon, sale proceeds, Debt Service Excel",
-        "flask_app/services/portfolio_snapshot_debt.py:committed_facility:88 -> the 'committed facility' basis",
-        "one_pager.py:get_capitalization_stack:632 -> cap_stack.debt FALLBACK when ISBS returns None (incl. parent inheriting co-terminous child loans, :626)",
-        "one_pager.py:get_capitalization_stack:745 -> orders loans to pick first vs second mortgage for the terms display",
-        "compute.py:get_deal_capitalization:334 -> cap_data.debt fallback",
-        "flask_app/services/dashboard_service.py:400-448 -> maturity ladder by year/rate type, weighted average fixed rate",
-        "flask_app/services/portfolio_snapshot_loan.py:_loan_terms:725 -> per-loan amount used for the 'Various' dedupe"
+    {
+      "name": "accounting_feed.Amt (contributions / commitments / distributions)",
+      "loads_to": "accounting_feed.sql -> accounting; normalizer loaders.normalize_accounting_feed:217",
+      "provides": "Every investor's cash in (contribution/commitment) and cash out (distribution).",
+      "feeds": [
+        "total_pref",
+        "funded_pref (pref_equity)",
+        "committed_pe",
+        "ptr_equity",
+        "invested",
+        "total_commitment",
+        "pct_of_pref",
+        "funded_to_date",
+        "return_of_capital",
+        "roe_to_date",
+        "current_pe_balance",
+        "accrued_balance",
+        "date_closed",
+        "XIRR/ROE/MOIC",
+        "pref-balance & ROE & sold reports",
+        "ownership tree"
       ],
-      "downstream_fields": [
-        "snapshot_loan.debt (dev deals)", "snapshot_loan.orig_loan_amt",
-        "snapshot_financial.debt (dev deals)", "snapshot_financial.total_cap (dev deals, re-footed)",
-        "snapshot_loan.ltv", "snapshot_loan.debt_yield",
-        "deal_analysis.loan_schedule.*", "deal_analysis.dscr", "annual_forecast.debt_service",
-        "dashboard.maturity_ladder", "dashboard.weighted_avg_fixed_rate"
-      ]
+      "blast_radius_note": "This feeds the entire equity side of the model. The sign convention is central: a negative amount is cash coming in (a contribution) and a positive amount is cash going out (a distribution).",
+      "traps": "The capital-stack netting uses signed amounts, while compute.get_deal_capitalization uses absolute values, so the two disagree on reversal rows (about $80.5M across 66 rows and 16 deals). Also, return-of-capital counts 'realized gain' rows but the capital-stack netting does not — which is why 'funded minus return of capital' misstates the current PE balance.",
+      "consumer_count": 16,
+      "kind": "MRI-refreshed"
     },
-
-    "MRI_Loans[terms]": {
-      "columns": ["nRate", "vIntType", "vIndex", "vSpread", "nFloor", "vIntRatereset", "dtMaturity", "dtEvent", "iLoanTerm", "iAmortTerm", "mNominalPenalty", "vDateType", "LoanID"],
-      "target_table": "loans",
-      "load_transforms": [
-        "data_service.py:_filter_paid_off_loans -> drops vDateType=='Paid Off' from mri_loans_raw (mri_loans_all keeps them)",
-        "data_service.py:_collapse_loan_date_events -> one row per facility rather than per date event",
-        "loaders.py:150 -> numeric coercion of mOrigLoanAmt, iAmortTerm, mNominalPenalty, iLoanTerm"
+    {
+      "name": "MRI_Loans.mOrigLoanAmt (committed facility)",
+      "loads_to": "MRI_Loans.sql -> loans; portfolio_snapshot_debt.committed_facility:88",
+      "provides": "Original committed loan amount per deal.",
+      "feeds": [
+        "debt (dev & undrawn)",
+        "committed-facility basis",
+        "loan schedules",
+        "ltv",
+        "debt_yield",
+        "maturity ladder",
+        "weighted-avg fixed rate",
+        "debt-service Excel"
       ],
-      "direct_consumers": [
-        "loans.py:build_loans:30-77 -> Loan(orig_date, maturity_date, loan_term_m, amort_term_m, io_months, int_type, index_name, fixed_rate, spread, floor, cap)",
-        "one_pager.py:get_capitalization_stack:_parse_loan:683 -> loan_maturity, loan_rate, loan_type, loan_terms_str, second_loan_*, rate_cap",
-        "flask_app/services/portfolio_snapshot_loan.py:_loan_terms:639 -> rate, rate_display, maturity, maturity_display, interest_type, various, loan_count. Floating (vIntType in FLOATING_INT_TYPES + vIndex + vSpread) renders 'INDEX + bps' and BEATS nRate",
-        "one_pager.py:get_property_performance:1431-1445 -> _refi_months from mri_loans_all where vDateType=='Paid Off' (dtEvent month) -> _get_bs_principal_change payoff substitution",
-        "compute.py:get_isbs_debt_balance:105-110 -> EXISTENCE test only (does an active loan row exist) for the stale-debt paid-off rule",
-        "flask_app/services/surveillance_service.py:_compute_loan_maturities:601, _compute_loan_covenants:604",
-        "planned_loans.py -> refinance sizing (LTV / DSCR / debt yield constraints)"
-      ],
-      "downstream_fields": [
-        "cap_stack.loan_maturity", "cap_stack.loan_rate", "cap_stack.loan_type", "cap_stack.loan_terms_str",
-        "cap_stack.second_loan_*", "cap_stack.rate_cap",
-        "snapshot_loan.rate", "snapshot_loan.rate_display", "snapshot_loan.maturity", "snapshot_loan.loan_count",
-        "one_pager.dscr.ytd_actual (via _refi_months)", "deal_analysis.amortization_schedule",
-        "surveillance.loan_maturity", "surveillance.covenants"
-      ]
+      "blast_radius_note": "This drives the debt figure whenever ISBS returns nothing (including a parent deal inheriting co-terminous child loans), and it drives every loan calculation.",
+      "traps": "The column is matched case-insensitively and under both spellings, mOrigLoanAmt and mOriginLoanAmt.",
+      "consumer_count": 8,
+      "kind": "MRI-refreshed"
     },
-
-    "MRI_Occupancy_Download": {
-      "query": "MRI_Occupancy_Download.sql",
-      "target_table": "occupancy",
-      "data_key": "occupancy_raw (+ data_service.py:_append_occupancy_supplements:625)",
-      "columns_read": ["Occ% (or OccupancyPercent)", "dtReported", "vCode"],
-      "parse_note": "one_pager.py:1934 parses dtReported with format='mixed'; if >50% NaT it retries as an Excel serial (origin 1899-12-30)",
-      "direct_consumers": [
-        "one_pager.py:get_property_performance:1922-1962 -> economic_occ.ytd_actual = mean(Occ% for YTD months) - bad_debt_pct",
-        "one_pager.py:get_noi_chart_data:2729 -> trailing-quarter occupancy series",
-        "flask_app/services/dashboard_service.py:get_latest_occupancy:138 -> portfolio_occupancy KPI (unit-weighted), sub-portfolio parents rolled up from children by Total_Units",
-        "flask_app/services/dashboard_service.py:get_occupancy_by_type:278 -> occupancy by asset type chart",
-        "flask_app/services/dashboard_service.py:_get_deal_trailing_occupancy:714",
-        "flask_app/services/dashboard_service.py:536-600 -> occupancy series on the performance chart",
-        "flask_app/services/surveillance_service.py:_latest_occupancy:989 + _compute_reporting_completeness:620"
+    {
+      "name": "MRI_Loans [terms] (nRate, vIntType, vIndex, vSpread, dtMaturity, ...)",
+      "loads_to": "MRI_Loans.sql -> loans; loans.build_loans_from_mri_loans:14",
+      "provides": "Each loan's rate, index, spread, floor, maturity, amortization, structure.",
+      "feeds": [
+        "rate",
+        "maturity",
+        "loan_rate",
+        "loan_type",
+        "loan_terms_str",
+        "second_loan_terms_str",
+        "rate_cap",
+        "amortization",
+        "refi sizing",
+        "covenants"
       ],
-      "downstream_fields": [
-        "one_pager.economic_occ.ytd_actual", "one_pager.economic_occ.variance", "one_pager.economic_occ.actual_ye",
-        "snapshot_operating.econ_occ.ytd_actual", "snapshot_operating.econ_occ.projected_ye",
-        "snapshot_operating.econ_occ (subtotals, NOI-weighted)",
-        "dashboard.portfolio_occupancy", "dashboard.occupancy_by_type", "surveillance.occupancy",
-        "surveillance.reporting_completeness"
-      ],
-      "co_dependency": "economic_occ.ytd_actual is occupancy MINUS an ISBS figure — bad_debt_pct = (4040 + 4043) / abs(4010) from Interim IS at ytd_date (one_pager.py:1955). It is not a pure occupancy field."
+      "blast_radius_note": "Feeds the rate and maturity display and every loan schedule.",
+      "traps": "Floating-rate loans (interest type in the floating set, plus an index and spread) display as 'index + bps' and take priority over the fixed nRate. Paid-off loans are dropped from the main loans table but kept in a separate all-loans table, which is used to substitute the payoff month.",
+      "consumer_count": 10,
+      "kind": "MRI-refreshed"
     },
-
-    "Prop_Info_AtClose": {
-      "query": "Prop_Info_AtClose.sql",
-      "target_table": "at_close_noi",
-      "data_key": "at_close_noi_raw",
-      "columns_read": ["at_close_revenue", "at_close_expenses", "at_close_noi", "at_close_interest", "at_close_principal"],
-      "direct_consumers": [
-        "one_pager.py:get_property_performance:1750-1796 -> revenue.at_close (negated), expenses.at_close, noi.at_close (negated), dscr.at_close = noi / (|interest| + |principal|)",
-        "one_pager.py:1776-1796 -> 7070 tax abatement pulled from Projected IS at the earliest December and folded into at_close expenses (the MRI query uses 5xxx only)",
-        "one_pager.py:1798-1823 FALLBACK when no at_close_noi row: earliest December in Projected IS, with account 7083 netted against gross cost (AT_CLOSE_RESERVE_RELEASE_ACCTS, mirrored in queries/Prop_Info_AtClose.sql)"
+    {
+      "name": "MRI_Occupancy_Download (Occ% / OccupancyPercent)",
+      "loads_to": "MRI_Occupancy_Download.sql -> occupancy",
+      "provides": "Physical occupancy readings per property over time.",
+      "feeds": [
+        "econ_occ (YTD & projected)",
+        "economic_occ grid (One Pager)",
+        "portfolio occupancy KPI",
+        "occupancy by asset type",
+        "surveillance occupancy"
       ],
-      "overrides_applied_after": [
-        "one_pager.py:1861-1871 Year-0 gate — (AT_CLOSE_REQUIRE_YEAR0_ROW) AND (dev via config.DEV_STRATEGIES OR vcode in AT_CLOSE_FORCE_SUPPRESS) AND no 2015-12-31 Projected IS row -> revenue/expenses/noi zeroed, dscr None, flag at_close_zeroed_no_year0",
-        "AT_CLOSE_FORCE_SUPPRESS = {'P0000066'} (one_pager.py:1225) — editorial, keyed by vcode"
-      ],
-      "downstream_fields": [
-        "one_pager.revenue.at_close", "one_pager.expenses.at_close", "one_pager.noi.at_close", "one_pager.dscr.at_close",
-        "snapshot_operating.noi.at_close", "snapshot_operating.expected_growth", "snapshot_operating.actual_growth",
-        "snapshot_operating subtotals (noi.at_close sum, econ_occ.at_close NOI-weighted)"
-      ]
+      "blast_radius_note": "Economic occupancy is physical occupancy minus a bad-debt percentage (Interim IS accounts 4040 + 4043 divided by 4010) — it is not a pure occupancy number.",
+      "traps": "The reported date is read with flexible parsing; if more than half the dates fail to parse, the code retries them as Excel serial numbers (counted from 1899-12-30).",
+      "consumer_count": 5,
+      "kind": "MRI-refreshed"
     },
-
-    "MRI_Budget_Econ_Occ": {
-      "query": "MRI_Budget_Econ_Occ.sql (ProjOccupancy)",
-      "target_table": "budget_econ_occ",
-      "data_key": "budget_econ_occ",
-      "columns_read": ["VCODE", "DTPERIOD", "YTDAvgPctOccupied", "PctOccupied"],
-      "unit_note": "stored as a DECIMAL (0.887); multiplied by 100 to match Occ% which is in percentage points",
-      "direct_consumers": [
-        "one_pager.py:get_property_performance:1965-2005 -> economic_occ.ytd_budget = YTDAvgPctOccupied(last month in quarter) * 100 - budget bad-debt % from Budget IS accounts 4040/4041/4043 over 4010",
-        "one_pager.py:2018-2045 -> economic_occ.actual_ye = weighted(ytd_actual * actual_months + mean(PctOccupied for remaining months) * 100 * remaining_months) / 12"
+    {
+      "name": "Prop_Info_AtClose (at_close_revenue / _expenses / _noi / _interest / _principal)",
+      "loads_to": "Prop_Info_AtClose.sql -> at_close_noi",
+      "provides": "Revenue, expenses and NOI underwritten at acquisition.",
+      "feeds": [
+        "noi_at_close",
+        "revenue/expenses/noi (At Close column)",
+        "dscr (At Close)",
+        "expected_growth",
+        "actual_growth",
+        "operating subtotals"
       ],
-      "downstream_fields": [
-        "one_pager.economic_occ.ytd_budget", "one_pager.economic_occ.variance", "one_pager.economic_occ.actual_ye",
-        "snapshot_operating.econ_occ.projected_ye", "snapshot_operating subtotal econ_occ.projected_ye"
-      ]
+      "blast_radius_note": "The acquisition baseline that the growth metrics compare against.",
+      "traps": "A 'year-0' rule zeroes out a development deal (or P0000066) that has no 2015-12-31 Projected IS row — both conditions are required, otherwise 9 non-development deals would wrongly zero out. The fallback path nets account 7083 (only for 30 Bearfoot). Many deals carry a 2015-12-31 date, which is a defect in the upstream data.",
+      "consumer_count": 6,
+      "kind": "MRI-refreshed"
     },
-
-    "Prop_Info_DealTerms": {
-      "query": "Prop_Info_DealTerms.sql (txfinancial_IC)",
-      "target_table": "deal_terms",
-      "data_key": "deal_terms_raw",
-      "direct_consumers": [
-        "one_pager.py:get_property_performance:1875-1893 -> economic_occ.at_close from econ_occ_at_close (stored decimal, x100)",
-        "one_pager.py:_pe_terms_fallback:2386 -> pe.coupon, pe.participation when the waterfall has no rows",
-        "financials_service.py:_enrich_cap_stack_from_deal_terms:1457 -> OVERRIDES cap_stack.pe_coupon, cap_stack.pe_participation (pe_split_capital, >= 0 so a real zero survives), sets cap_stack.irr_lookback"
+    {
+      "name": "MRI_Budget_Econ_Occ (YTDAvgPctOccupied, PctOccupied)",
+      "loads_to": "MRI_Budget_Econ_Occ.sql -> budget_econ_occ",
+      "provides": "Budgeted occupancy percentages by period.",
+      "feeds": [
+        "econ_occ (Projected YE)",
+        "economic_occ Actual YE & Variance"
       ],
-      "note": "_pe_terms_fallback and _enrich_cap_stack_from_deal_terms read the SAME two columns with the same '< 1' normalisation. Change one and the Capitalization block and the PE block print different numbers for the same term."
+      "blast_radius_note": "Projects occupancy for the rest of the year.",
+      "traps": "Stored as a decimal (like 0.887) and multiplied by 100 to match the Occ% scale. The budget bad-debt side adds account 4041, which the actuals side leaves out — an intentional mismatch. In Q4, or when there is no budget, it falls back to the year-to-date actual.",
+      "consumer_count": 2,
+      "kind": "MRI-refreshed"
     },
-
-    "MRI_VAL": {
-      "target_table": null,
-      "note": "download-only since Aug 2026 — the app is system of record; valuation_nav_service.publish writes rows",
-      "data_key": "mri_val",
-      "direct_consumers": [
-        "flask_app/services/portfolio_snapshot_loan.py:_latest_valuation:823 -> latest mIncomeCapConcludedValue by dtValuation, restricted to dtValuation <= valuation_year_end(quarter) -> snapshot_loan.valuation -> LTV",
-        "planned_loans.py:projected_cap_rate_at_date -> fCapRate + 0.05%/yr escalation -> sale value, refi sizing",
-        "compute.py:get_deal_capitalization:347 -> cap_data valuation",
-        "one_pager.py:get_capitalization_stack -> cap_stack.current_valuation, valuation_year -> pe_exposure_on_value",
-        "flask_app/services/surveillance_service.py:_get_property_values:608"
+    {
+      "name": "Prop_Info_DealTerms (econ_occ_at_close, pe coupon, pe participation, irr_lookback)",
+      "loads_to": "Prop_Info_DealTerms.sql -> deal_terms",
+      "provides": "PE coupon & participation, occupancy at close, IRR lookback.",
+      "feeds": [
+        "econ_occ (At Close)",
+        "pe_coupon",
+        "pe_participation",
+        "irr_lookback (dead payload)",
+        "cap_stack coupon/participation"
       ],
-      "parse_trap": "dtValuation MUST be parsed with format='mixed' (portfolio_snapshot_loan.py:878). A bare to_datetime infers one format and silently NaTs app-published rows out of existence."
+      "blast_radius_note": "Two functions (the PE-terms fallback and the cap-stack enrichment) read these same two columns with the same 'values under 1' normalisation — so if you change one and not the other, the Capitalization block and the PE block will print different numbers for the same term.",
+      "traps": "irr_lookback and the at-close economic occupancy are written onto the cap-stack object but never displayed anywhere — a dead payload.",
+      "consumer_count": 5,
+      "kind": "MRI-refreshed"
+    },
+    {
+      "name": "MRI_VAL.mIncomeCapConcludedValue (via valuations)",
+      "loads_to": "download-only (target_table = null); app publishes via valuation_nav_service",
+      "provides": "Most recent concluded property value; also mPurchasePrice / Acquisition_Price.",
+      "feeds": [
+        "current_valuation",
+        "valuation_year",
+        "purchase_price",
+        "ltv",
+        "pe_exposure_on_value",
+        "deal valuation",
+        "surveillance property values",
+        "refi sizing"
+      ],
+      "blast_radius_note": "Download-only since August 2026 — the app is now the system of record, and an MRI refresh can never overwrite app-published valuations, so every LTV depends on that.",
+      "traps": "The valuation date must be read with flexible parsing, or app-published rows silently fail to parse and disappear.",
+      "consumer_count": 8,
+      "kind": "download-only (app is system of record)"
+    },
+    {
+      "name": "isbs_uw_supplements (CSV)",
+      "kind": "analyst-loaded supplement CSV — NOT MRI-refreshed",
+      "loads_to": "ISBS_UW_Supplements.csv via /api/data/upload-import; merged into isbs_raw with _is_supplement=True",
+      "provides": "Underwritten PE contributions/distributions backfill (accounts 7071/7073) where MRI's Projected IS is missing them.",
+      "feeds": [
+        "uw_roe_to_date (7073 contributions, 7071 distributions)"
+      ],
+      "blast_radius_note": "There is no way to write this from the app — it only comes from a CSV upload. The supplement wins over MRI when they collide on the same deal, date, source and account. Account 7073 is de-duplicated because MRI and this CSV can carry the same row (Burton's $26.6M contribution).",
+      "consumer_count": 1
+    },
+    {
+      "name": "isbs_budget_is_supplements (CSV)",
+      "kind": "analyst-loaded supplement CSV (+ app Budget Review), PROTECTED",
+      "loads_to": "ISBS_Budget_IS_Supplements.csv upload; PROTECTED_TABLES",
+      "provides": "Budget income-statement lines; the source of record for a budget between import and MRI approval (the normal state).",
+      "feeds": [
+        "economic_occ.ytd_budget",
+        "revenue.ytd_budget",
+        "expenses.ytd_budget",
+        "noi_projected_ye (remaining budget)"
+      ],
+      "blast_radius_note": "Wins over the MRI Budget IS when they collide. Most current-year budgets live here rather than in MRI until they're approved.",
+      "consumer_count": 4
+    },
+    {
+      "name": "isbs_interim_is_supplements / isbs_interim_bs_supplements / isbs_valuation_is_supplements (CSV)",
+      "kind": "analyst-loaded supplement CSV — NOT MRI-refreshed",
+      "loads_to": "ISBS_*_Supplements.csv upload; merged into isbs_raw, supplement wins on collision",
+      "provides": "Interim IS / Interim BS / Valuation IS backfill lines.",
+      "feeds": [
+        "any Interim IS read (econ_occ.ytd_actual bad-debt, revenue/expenses.ytd_actual, dscr, ytd_dscr, debt_yield)",
+        "debt drawn balance (Interim BS)",
+        "valuation IS"
+      ],
+      "blast_radius_note": "Where a row exists for the deal and period, it structurally overrides the matching MRI ISBS read.",
+      "consumer_count": 8
+    },
+    {
+      "name": "waterfalls (app-built)",
+      "kind": "app-owned / PROTECTED — NEVER MRI-fed",
+      "loads_to": "hand-built in Waterfall Setup; PROTECTED_TABLES",
+      "provides": "The deal's waterfall structure — coupon (nPercent), participation (FXRate), pref steps.",
+      "feeds": [
+        "pe_coupon (cap block seed)",
+        "pe_participation (cap block seed)",
+        "coupon (PE block, primary)",
+        "participation (PE block, primary)",
+        "accrued_balance (pref rate legs 2-3)"
+      ],
+      "blast_radius_note": "This is the structure that actually runs the model. In the Capitalization block the MRI deal terms override it; in the PE block the waterfall is primary (though a deal-terms value of 0 still overrides it). It is never overwritten by an MRI refresh.",
+      "consumer_count": 5
+    },
+    {
+      "name": "Prop_Info_Core -> deals (the 'inv_map' deal roster)",
+      "kind": "MRI-refreshed",
+      "loads_to": "Prop_Info_Core.sql -> _deals_upsert (deals; manual columns preserved)",
+      "provides": "One row per deal with descriptive attributes.",
+      "feeds": [
+        "investment_name",
+        "partner",
+        "asset_type",
+        "location",
+        "year_built",
+        "units",
+        "sqft",
+        "date_closed",
+        "investment_strategy (Lifecycle)",
+        "dev tag (Lifecycle)",
+        "sold tags (Lifecycle leg)"
+      ],
+      "blast_radius_note": "This roster is refreshed by MRI, but Investment_Strategy, Sale_Status and Sale_Date are not among the refreshed columns — they are maintained by analysts/the app and survive a refresh.",
+      "consumer_count": 11
+    },
+    {
+      "name": "MRI_Inspection.mHardCosts",
+      "kind": "MRI-refreshed",
+      "loads_to": "MRI_Inspection.sql -> inspection",
+      "provides": "Hard costs drawn to date on a development deal.",
+      "feeds": [
+        "debt (dev hard-costs override, One Pager only)"
+      ],
+      "blast_radius_note": "Overrides the debt figure for development deals only; 18 of the 26 development deals have no inspection row.",
+      "consumer_count": 1
+    },
+    {
+      "name": "event_dates (MRI_Event_Dates)",
+      "kind": "MRI-refreshed",
+      "loads_to": "MRI_Event_Dates.sql -> event_dates",
+      "provides": "Dated deal events (U/W exit, disposition closing, etc.).",
+      "feeds": [
+        "anticipated_exit",
+        "current_anticipated_exit"
+      ],
+      "blast_radius_note": "Selected by matching event type, event and date-type together, taking the latest event date.",
+      "consumer_count": 2
+    },
+    {
+      "name": "portfolio_snapshot_values",
+      "kind": "analyst-entry table",
+      "loads_to": "analyst input in the app; PROTECTED",
+      "provides": "Analyst-entered Snapshot values and manual ratio seeds.",
+      "feeds": [
+        "itd_distributions",
+        "net_roe",
+        "ytd_dscr manual seed",
+        "ltv manual seed",
+        "debt_yield manual seed"
+      ],
+      "blast_radius_note": "Never from MRI — these are typed in by analysts. A manual entry shades the displayed cell and does feed into subtotals through the displayed value.",
+      "consumer_count": 5
+    },
+    {
+      "name": "ROE_Download",
+      "kind": "download-only (target_table = null)",
+      "loads_to": "MRI download, never imported",
+      "provides": "An ROE export — download-only.",
+      "feeds": [],
+      "blast_radius_note": "Not used by any field in this dictionary; it's listed only so the 'what breaks if this changes' lookup answers 'download-only, no consumers' instead of guessing a wrong match.",
+      "consumer_count": 0
+    },
+    {
+      "name": "capital_calls",
+      "kind": "app-entered / PROTECTED — NOT MRI-refreshed",
+      "loads_to": "app entry; not in QUERY_REGISTRY",
+      "provides": "Capital-call records.",
+      "feeds": [],
+      "blast_radius_note": "Not a source for any current field; it's listed only so the 'what breaks if this changes' lookup doesn't wrongly attribute it to the accounting feed.",
+      "consumer_count": 0
     }
-  },
-
-  "internal_edges": {
-
-    "delegations": [
-      {
-        "from": "flask_app/services/portfolio_snapshot_financial.py:build_row:1072",
-        "to": "flask_app/services/portfolio_snapshot_debt.py:resolve_debt:104",
-        "passes": ["cap_stack (from one_pager.get_capitalization_stack)", "dev (config.is_dev_deal via resolve_strategy)", "committed (portfolio_snapshot_debt.committed_facility)"],
-        "produces": ["snapshot_financial.debt", "snapshot_financial.debt_basis"]
-      },
-      {
-        "from": "flask_app/services/portfolio_snapshot_loan.py:build_row:992",
-        "to": "flask_app/services/portfolio_snapshot_debt.py:resolve_debt:104",
-        "produces": ["snapshot_loan.debt", "snapshot_loan.debt_basis"],
-        "why": "single decision point so Financial and Loan cannot print two Debt figures for one deal (JB Fair Park 66.36 vs 77.37)"
-      },
-      {
-        "from": "flask_app/services/portfolio_snapshot_financial.py:build_row:1095",
-        "to": "flask_app/services/portfolio_snapshot_service.py:resolve_committed_pref:245",
-        "produces": ["snapshot_financial.total_pref", "snapshot_financial.pref_basis"]
-      },
-      {
-        "from": "flask_app/services/portfolio_snapshot_summary.py",
-        "to": "flask_app/services/portfolio_snapshot_service.py:resolve_committed_pref:245",
-        "produces": ["snapshot_summary.committed"],
-        "why": "same resolver as Financial so page 1 and page 2 report the same committed dollars"
-      },
-      {
-        "from": "flask_app/services/portfolio_snapshot_freeze.py:_one_pager_provider:94",
-        "to": ["one_pager.py:get_capitalization_stack:513", "one_pager.py:get_property_performance:1259", "one_pager.py:closing_date_from_row:238"],
-        "note": "lean parallel path — skips pe_performance/comments/get_general_information; returns the same cap_stack and property_performance keys. general.date_closed is NOT optional: without it months_owned() returns None and the insufficient-history rule never fires (measured 30/30 deals)."
-      },
-      {
-        "from": "flask_app/services/portfolio_snapshot_operating.py:build_row:655-673",
-        "to": "one_pager.get_property_performance.property_performance",
-        "maps": {
-          "noi.at_close": "pp.noi.at_close",
-          "noi.uw_ye": "pp.noi.uw_ye",
-          "noi.projected_ye": "pp.noi.actual_ye (_OP_NOI_SOURCE:239)",
-          "econ_occ.at_close": "pp.economic_occ.at_close",
-          "econ_occ.uw_ye": "pp.economic_occ.uw_ye",
-          "econ_occ.projected_ye": "pp.economic_occ.actual_ye",
-          "econ_occ.ytd_actual": "pp.economic_occ.ytd_actual"
-        },
-        "filter": "portfolio_snapshot_operating.py:_payload_unpopulated:384 maps the One Pager's literal-0 default to None so 'no At Close row' does not print as a measured zero"
-      },
-      {
-        "from": "flask_app/services/portfolio_snapshot_loan.py:build_row:1056,1072",
-        "to": "one_pager property_performance",
-        "reads": ["dscr.ytd_actual -> snapshot_loan.ytd_dscr", "noi.ytd_actual -> snapshot_loan.ytd_noi", "noi.actual_ye (Giant 7 temporary fallback only, PROJECTED_YE_NOI_FALLBACK)"]
-      },
-      {
-        "from": "flask_app/services/portfolio_snapshot_loan.py:build_row:1073",
-        "to": "flask_app/services/portfolio_snapshot_freeze.py:_quarterly_noi_provider:176",
-        "chain": "isbs_raw -> financials_service._prepare_isbs -> isbs_helpers.compute_cumulative_noi -> cumulative_to_periodic -> aggregate_periodic('Quarterly') -> single-quarter NOI; incomplete quarters (<3 months) return None",
-        "produces": ["snapshot_loan.quarter_noi", "snapshot_loan.annualised_noi", "snapshot_loan.debt_yield"]
-      },
-      {
-        "from": "one_pager.py:get_capitalization_stack:1024",
-        "to": "flask_app/services/portfolio_snapshot_service.py:is_sold_as_of",
-        "produces": ["cap_stack.sold_suppressed", "cap_stack.debt_display"],
-        "note": "One Pager imports the Snapshot's sold test rather than reimplementing it; display-only, debt/debt_isbs keep raw values"
-      },
-      {
-        "from": "flask_app/services/financials_service.py:get_one_pager_data:1141",
-        "to": ["get_general_information", "get_capitalization_stack", "get_property_performance", "get_pe_performance", "get_one_pager_comments", "_enrich_pe_from_deal_result", "_enrich_cap_stack_from_deal_terms"],
-        "note": "the full path; the Snapshot uses the lean freeze provider instead"
-      }
-    ],
-
-    "computed_fields": {
-
-      "cap_stack.total_cap": {
-        "formula": "debt_leg + pref_equity + partner_equity",
-        "defined_at": "one_pager.py:get_capitalization_stack:1050",
-        "depends_on": ["cap_stack.debt (or 0 when sold_suppressed)", "cap_stack.pref_equity", "cap_stack.partner_equity"],
-        "inputs_from": ["ISBS Interim BS 2150/2152/2210", "accounting_feed.Amt (non-OP)", "accounting_feed.Amt (OP*)"]
-      },
-      "cap_stack.total_cap_isbs": {
-        "formula": "debt_leg_isbs + pref_equity + partner_equity",
-        "defined_at": "one_pager.py:1054",
-        "why": "the pre-dev-override twin the Snapshot reads so a One Pager rebase cannot move the Snapshot's Total Cap"
-      },
-      "cap_stack.debt": {
-        "resolution_order": [
-          "1. get_isbs_debt_balance (ISBS Interim BS as of quarter end)",
-          "2. sum(mOrigLoanAmt) over the deal's loans, or co-terminous child loans, when ISBS returns None",
-          "3. OVERRIDE: dev deal with an Inspection row -> _dev_hard_costs (mHardCosts drawn to date), one_pager.py:656"
-        ],
-        "twin": "debt_isbs captured BEFORE step 3 (one_pager.py:654)"
-      },
-      "cap_stack.debt_pct": {"formula": "debt_leg / total_cap", "at": "one_pager.py:1057"},
-      "cap_stack.pref_equity_pct": {"formula": "pref_equity / total_cap", "at": "one_pager.py:1058"},
-      "cap_stack.partner_equity_pct": {"formula": "partner_equity / total_cap", "at": "one_pager.py:1059"},
-      "cap_stack.pe_exposure_on_cap": {"formula": "(debt_leg + pref_equity) / total_cap * 100", "at": "one_pager.py:1060", "sentinel": "None (not 0.0) when total_cap <= 0"},
-      "cap_stack.pe_exposure_on_value": {"formula": "(debt_leg + pref_equity) / current_valuation * 100", "at": "one_pager.py:1063", "sentinel": "None when current_valuation <= 0"},
-      "cap_stack.pe_yield_on_exposure": {
-        "formula": "(noi.actual_ye or noi.ytd_actual) / (cap_stack.debt + cap_stack.pref_equity)",
-        "at": "flask_app/services/financials_service.py:get_one_pager_data:1200",
-        "depends_on": ["property_performance.noi.actual_ye", "cap_stack.debt", "cap_stack.pref_equity"],
-        "note": "the only field that crosses the cap-stack / property-performance boundary"
-      },
-      "cap_stack.committed_pe": {
-        "primary": "sum(abs(Amt)) over is_commitment rows, non-OP (one_pager.py:924)",
-        "fallback": "pref_equity when no commitment row exists -> committed_pe_basis = 'funded (no commitment row)' (one_pager.py:983). Applies at source so both Snapshot pages inherit it. Live cases: East Manchester PPI20, City West PPICW."
-      },
-
-      "property_performance.noi.ytd_actual": {
-        "formula": "revenue - expenses from Interim IS cumulative at ytd_date",
-        "at": "one_pager.py:calc_amounts:1342 called at :1627",
-        "depends_on": ["ISBS Interim IS", "one_pager.IS_ACCOUNTS.REVENUES", "one_pager.IS_ACCOUNTS.EXPENSES", "one_pager.IS_ACCOUNTS.TAX_ABATEMENT (7070 folded into expenses)"]
-      },
-      "property_performance.dscr.ytd_actual": {
-        "formula": "noi.ytd_actual / (abs(5190 at ytd_date) + _get_bs_principal_change(bs_data))",
-        "at": "one_pager.py:1632-1639",
-        "depends_on": ["noi.ytd_actual", "ISBS Interim IS account 5190", "ISBS Interim BS DEBT_BS_ACCTS balance delta", "MRI_Loans vDateType='Paid Off' (payoff-month substitution)"]
-      },
-      "property_performance.dscr.ytd_budget": {"formula": "noi.ytd_budget / abs(5190 + 7060 summed over Budget IS range)", "at": "one_pager.py:1650"},
-      "property_performance.dscr.actual_ye": {"formula": "(ytd_noi + remainder_budget_noi) / (ytd_ds + remainder_budget_ds)", "at": "one_pager.py:1674"},
-      "property_performance.dscr.uw_ye": {
-        "formula": "noi.uw_ye / account 7010 YTD at December, annualised by 12/months_active when the cumulative stopped growing early",
-        "at": "one_pager.py:1707-1736",
-        "depends_on": ["ISBS Projected IS", "one_pager.IS_ACCOUNTS.UW_DEBT_SERVICE = ['7010']"]
-      },
-      "property_performance.economic_occ.uw_ye": {"formula": "(1 - vacancy(4030+4031) / abs(rental 4010)) * 100 from Projected IS December", "at": "one_pager.py:1746"},
-      "property_performance.revenue|expenses|noi.actual_ye": {
-        "formula": "YTD actual + remainder-of-year Budget (or full-year Budget when no current-year actuals)",
-        "at": "one_pager.py:1656-1692",
-        "gate": "the prior-year budget shift (one_pager.py:1419) is SKIPPED for dev deals — config.DEV_STRATEGIES"
-      },
-      "property_performance.*.variance": {"formula": "ytd_actual - ytd_budget, None when either side is None", "at": "one_pager.py:1910-1919"},
-
-      "pe_performance.current_pe_balance": {"formula": "funded_to_date - return_of_capital", "at": "one_pager.py:2692"},
-      "pe_performance.remaining_to_fund": {"formula": "max(0, committed_pe - funded_to_date)", "at": "one_pager.py:2693"},
-      "pe_performance.roe_to_date": {"formula": "metrics.calculate_roe(capital_events, cf_distributions, inception, quarter_end)", "at": "one_pager.py:2665", "depends_on": ["accounting_feed.Amt (non-OP, signed)", "45-day grace pref distributions"]},
-      "pe_performance.uw_roe_to_date": {"formula": "calculate_roe(_get_uw_7073_signed, _get_uw_pe_distributions)", "at": "one_pager.py:2685", "depends_on": ["ISBS Projected IS account 7073 (sign-preserving)", "account 7071", "isbs_uw_supplements"]},
-      "pe_performance.accrued_balance": {"source": "reports_service.build_pref_balance_detail via financials_service._enrich_pe_from_deal_result:1217, quarter-scoped cutoff"},
-
-      "snapshot_financial.total_cap": {
-        "formula": "debt_leg + total_pref + ptr_equity, re-footed from the PRINTED debt (committed on a dev deal)",
-        "at": "flask_app/services/portfolio_snapshot_financial.py:1171-1180",
-        "fallback": "cap.total_cap_isbs when any leg is None (an unknown leg is not a zero)",
-        "sold_rule": "debt_leg = 0 when 'debt' is in the n/a cells for that row"
-      },
-      "snapshot_financial.total_cap_funded": {"formula": "debt_leg_isbs + funded_pref + ptr_equity", "at": "portfolio_snapshot_financial.py:1201", "note": "audit twin, funded throughout — deliberately keeps the ISBS debt leg; nothing renders it today"},
-      "snapshot_financial.invested": {"formula": "funded_pref * lookthrough_pct_pe", "note": "always FUNDED, never total_pref — the identity that proves Total Pref is committed"},
-      "snapshot_loan.ltv": {
-        "formula": "debt / valuation",
-        "at": "portfolio_snapshot_loan.py:1042",
-        "depends_on": ["resolve_debt output", "_latest_valuation(mIncomeCapConcludedValue, dtValuation <= valuation_year_end(quarter))"],
-        "suppressions": ["dev -> 'Dev' literal", "debt_free (DEBT_FREE_DEALS={'P0000066'}) -> 'N/A'", "raw > ltv_ceiling -> withheld with a review flag (non-dev only)"]
-      },
-      "snapshot_loan.debt_yield": {
-        "formula": "(quarter_noi * 4) / debt",
-        "at": "portfolio_snapshot_loan.py:1097",
-        "depends_on": ["_quarterly_noi_provider (ISBS Interim IS, config.IS_ACCOUNTS)", "resolve_debt output"],
-        "alt": "debt_yield_ytd_annualised = (ytd_noi / months_elapsed * 12) / debt — comparison basis only"
-      },
-      "snapshot_loan.ytd_dscr": {"source": "property_performance.dscr.ytd_actual, verbatim; None for dev"}
-    },
-
-    "aggregates": [
-      {
-        "field": "snapshot_loan subtotal.{ltv, ytd_dscr, debt_yield}",
-        "rule": "debt-weighted mean over rows carrying a DISPLAYED value",
-        "at": "portfolio_snapshot_loan.py:_debt_weighted:559 via aggregation_value:514",
-        "excluded": ["sold_suppressed rows", "computed None", "cleared typed cells (stored NULL)", "cells suppressed to 'Dev' or 'N/A'"],
-        "unit_trap": "a typed LTV/debt-yield stores DISPLAY units (69.0) and is divided by 100; DSCR passes through"
-      },
-      {"field": "snapshot_loan subtotal.debt", "rule": "sum over every deal, development included, sold_suppressed excluded", "at": "portfolio_snapshot_loan.py:loan_subtotal:578"},
-      {
-        "field": "snapshot_operating subtotal.noi.{at_close,uw_ye,projected_ye}",
-        "rule": "sum of the VISIBLE cells; a suppressed cell contributes 0 and is counted in noi_contributors",
-        "at": "portfolio_snapshot_operating.py:operating_subtotal:548"
-      },
-      {
-        "field": "snapshot_operating subtotal.econ_occ.*",
-        "rule": "NOI-weighted mean over rows whose occupancy cell is visible; weight is the VISIBLE NOI",
-        "at": "portfolio_snapshot_operating.py:_weighted:523"
-      },
-      {"field": "snapshot_operating subtotal.expected_growth", "formula": "_growth(sum uw_ye, sum at_close) — from the sums, as the PDF does", "at": "portfolio_snapshot_operating.py:581"},
-      {"field": "snapshot_operating subtotal.actual_growth", "formula": "_growth(sum projected_ye, sum at_close)", "at": "portfolio_snapshot_operating.py:582"},
-      {
-        "field": "snapshot_summary.funded / committed (asset & deal-type allocation)",
-        "formula": "cap_stack.pref_equity (resp. resolve_committed_pref) * lookthrough_pct_pe, grouped by ASSET_TYPE_ROLLUP / DEAL_TYPE_MAP",
-        "at": "portfolio_snapshot_summary.py",
-        "note": "lookthrough_pct_pe, NOT lookthrough_pct — the deal-level pct removes the OP stake a second time (Pegasus $2,144,757.65)"
-      },
-      {"field": "dashboard.portfolio_occupancy", "rule": "unit-weighted mean of latest Occ%; parents rolled up from children by Total_Units", "at": "dashboard_service.py:get_latest_occupancy:138, get_portfolio_caps:235"},
-      {"field": "dashboard.total_debt / total_cap", "rule": "sum of per-deal get_isbs_debt_balance over parent-level deals", "at": "dashboard_service.py:get_portfolio_caps:94"}
-    ]
-  },
-
-  "shared_constants": {
-
-    "config.DEBT_BS_ACCTS": {
-      "value": ["2150", "2152", "2210"],
-      "at": "config.py:23",
+  ],
+  "shared_constants": [
+    {
+      "name": "config.DEBT_BS_ACCTS",
+      "value": [
+        "2150",
+        "2152",
+        "2210"
+      ],
+      "defined_at": "config.py:23",
       "read_by": [
-        "compute.py:get_isbs_debt_balance:90",
-        "flask_app/services/financials_service.py:_get_bs_principal:452",
-        "flask_app/services/surveillance_service.py:15",
-        "flask_app/services/valuation_nav_service.py:65,218,225"
+        "compute.get_isbs_debt_balance",
+        "financials_service._get_bs_principal",
+        "surveillance_service",
+        "valuation_nav_service"
       ],
-      "duplicated_at": [
-        "one_pager.py:IS_ACCOUNTS['DEBT_BS_ACCTS']:1110 (hardcoded copy, NOT an import)",
-        "config.py:BS_ACCOUNTS['LIABILITIES']['Noncurrent Liabilities']['Mortgages and Loans']:232"
+      "duplicates": [
+        "one_pager.py:1110 (hardcoded copy, NOT an import)",
+        "config.py:232 BS_ACCOUNTS 'Mortgages and Loans'"
       ],
-      "fields_that_change_if_this_changes": [
-        "cap_stack.debt", "cap_stack.debt_isbs", "cap_stack.total_cap", "cap_stack.total_cap_isbs",
-        "cap_stack.debt_pct", "cap_stack.pe_exposure_on_cap", "cap_stack.pe_exposure_on_value", "cap_stack.pe_yield_on_exposure",
-        "snapshot_financial.debt/total_cap (non-dev)", "snapshot_loan.debt/isbs_debt/ltv/debt_yield (non-dev)",
-        "deal_analysis.capitalization.debt", "deal_analysis.sale_proceeds.loan_payoff",
-        "surveillance.debt_balance", "dashboard.total_debt",
-        "property_financials.BS 'Mortgages and Loans'", "property_financials.debt_service.Principal",
-        "one_pager.dscr.ytd_actual / dscr.actual_ye (ONLY via the one_pager copy)",
-        "valuation_nav liability split"
-      ]
+      "duplicate_warning": "If you change only one copy, the One Pager's DSCR principal will diverge from every other debt figure.",
+      "fields_that_change": [
+        "debt",
+        "debt_isbs",
+        "total_cap",
+        "debt_pct",
+        "pe_exposure_on_cap",
+        "pe_exposure_on_value",
+        "pe_yield_on_exposure",
+        "ltv",
+        "debt_yield",
+        "ytd_dscr (principal)",
+        "dashboard total_debt",
+        "NAV liability split"
+      ],
+      "consumer_count": 16
     },
-
-    "config.IS_ACCOUNTS": {
-      "at": "config.py:251",
+    {
+      "name": "config.IS_ACCOUNTS",
+      "value": "revenue / expense / debt-service account lists",
+      "defined_at": "config.py:251",
       "read_by": [
-        "flask_app/services/financials_service.py:14,238,690,741,888 (Property Financials IS, TTM NOI)",
-        "flask_app/services/surveillance_service.py:157-189 (TTM NOI, DSCR)",
-        "flask_app/services/dashboard_service.py:489,638 (NOI pipeline, chart)",
-        "flask_app/services/portfolio_snapshot_freeze.py:194-201 (_quarterly_noi_provider -> snapshot_loan.debt_yield)",
-        "flask_app/services/budget_import_service.py:73,166 (category vocabulary, with _CATEGORY_ACCOUNTS_FOR_BUDGET overrides)",
-        "flask_app/services/line_mapping_service.py (the ~27 comparison rows)",
-        "flask_app/services/valuation_service.py:973 (Estimate|Budget|Valuation comparison)",
-        "flask_app/services/valuation_debt_service.py:26 (Interest == ['5190'])",
-        "flask_app/api/prospects.py:658-699"
+        "financials_service",
+        "surveillance_service",
+        "dashboard_service",
+        "portfolio_snapshot_freeze (debt_yield)",
+        "budget/line-mapping/valuation services"
       ],
-      "DIVERGENCE_WARNING": {
-        "second_definition": "one_pager.py:IS_ACCOUNTS:1077 — a separate module-level dict, NOT an import of config",
-        "differences": [
-          "config 'Real Estate Taxes' = ['5090','7070']; one_pager = ['5090'] (7070 handled separately as TAX_ABATEMENT)",
-          "config 'Other Income' includes 4075; one_pager does not",
-          "config 'Repairs & Maintenance' includes 5092; one_pager does not",
-          "config DEBT_SERVICE.Principal = [] (computed from BS delta); one_pager = ['7060']",
-          "one_pager adds TAX_ABATEMENT ['7070'], DEBT_BS_ACCTS, UW_DEBT_SERVICE ['7010']"
-        ],
-        "consequence": "Editing config.IS_ACCOUNTS moves Property Financials, Surveillance, the Dashboard NOI pipeline and snapshot_loan.debt_yield, but NOT the One Pager's revenue/expenses/noi or the snapshot Operating subtab that reads them. The two must be edited together to keep One Pager NOI and Debt Yield on the same account basis."
-      }
+      "duplicates": [
+        "one_pager.py:1077 (separate module-level dict, NOT an import)"
+      ],
+      "duplicate_warning": "The two lists differ on accounts 4075, 5092, 7070 and Principal (7060 versus empty). The One Pager's NOI and everyone else's NOI sit on different bases unless both are edited together.",
+      "fields_that_change": [
+        "revenue",
+        "expenses",
+        "noi",
+        "dscr",
+        "noi_uw_ye",
+        "noi_projected_ye",
+        "debt_yield",
+        "ytd_dscr",
+        "dashboard NOI",
+        "surveillance NOI"
+      ],
+      "consumer_count": 15
     },
-
-    "config.DEV_STRATEGIES / config.is_dev_deal": {
-      "value": ["development"],
-      "at": "config.py:334,337",
-      "history": "'new construction' REMOVED 2026-09-01 (Belleville P0000006, Pegasus P0000066 are finished assets)",
+    {
+      "name": "config.DEV_STRATEGIES / is_dev_deal",
+      "value": [
+        "development"
+      ],
+      "defined_at": "config.py:334",
       "read_by": [
-        "one_pager.py:_is_dev_deal:431 -> (a) dev debt basis / mHardCosts override :656, (b) budget prior-year shift SKIP :1419, (c) At-Close Year-0 gate :1862",
-        "flask_app/services/portfolio_snapshot_operating.py:93 (imports and RE-EXPORTS; financial and loan import from there)",
-        "flask_app/services/portfolio_snapshot_financial.py:1016 -> dev flag -> resolve_debt branch",
-        "flask_app/services/portfolio_snapshot_loan.py:959 -> 'Dev' display on ltv / ytd_dscr / debt_yield",
-        "flask_app/services/valuation_service.py:40"
+        "one_pager._is_dev_deal",
+        "portfolio_snapshot_operating (re-exports)",
+        "portfolio_snapshot_financial",
+        "portfolio_snapshot_loan",
+        "valuation_service"
       ],
-      "fields_that_change_if_this_changes": [
-        "cap_stack.debt (mHardCosts override)", "cap_stack.debt_basis",
-        "snapshot_financial.debt / total_cap (committed vs ISBS basis)", "snapshot_loan.debt",
-        "snapshot_loan.ltv_display / ytd_dscr_display / debt_yield_display ('Dev' literal)",
-        "one_pager.revenue|expenses|noi|dscr .at_close (Year-0 gate)",
-        "one_pager.revenue|expenses|noi .actual_ye and .ytd_budget (prior-year budget shift)",
-        "snapshot subtotals 'Excluding Development Deals'", "snapshot_summary deal-type allocation (SEPARATE map: DEAL_TYPE_MAP — does not move)"
+      "duplicates": [],
+      "duplicate_warning": "'New construction' was removed on 2026-09-01. Investment_Strategy is filled on 0 of 110 deals, so the Lifecycle value decides every classification.",
+      "fields_that_change": [
+        "debt (hard-costs override)",
+        "snapshot debt basis",
+        "ltv/ytd_dscr/debt_yield 'Dev' display",
+        "noi at_close (Year-0 gate)",
+        "noi/revenue/expenses actual_ye (budget shift)",
+        "'Excluding Development' subtotals"
       ],
-      "escape_hatches": ["one_pager.AT_CLOSE_FORCE_SUPPRESS = {'P0000066'} — editorial, survives a classification change", "portfolio_snapshot_loan.DEBT_FREE_DEALS = {'P0000066'}"]
+      "consumer_count": 11
     },
-
-    "mri_service.QUERY_REGISTRY": {
-      "at": "flask_app/services/mri_service.py:47",
-      "role": "query name -> {server, target_table, description}. target_table None = download-only, never imported. Walked IN ORDER by refresh_all().",
-      "mappings_relevant_here": {
-        "accounting_feed": "accounting",
-        "ISBS_Download": "_isbs_split (6 tables by vSource)",
-        "MRI_Loans": "loans",
-        "MRI_VAL": null,
-        "MRI_Occupancy_Download": "occupancy",
-        "MRI_Budget_Econ_Occ": "budget_econ_occ",
-        "Prop_Info_AtClose": "at_close_noi",
-        "Prop_Info_DealTerms": "deal_terms",
-        "Prop_Info_Core": "_deals_upsert (deals, manual columns preserved)",
-        "MRI_Event_Dates": "event_dates",
-        "MRI_Inspection": "inspection",
-        "MRI_GL_Detail": "gl_detail (LAST on purpose — unbounded GHIS on a 2GB container)"
-      },
-      "not_in_the_registry_so_never_refreshed": ["capital_calls", "waterfalls", "sale_overrides", "parcel_sales", "isbs_uw_supplements", "isbs_budget_is_supplements"],
-      "consequence": "A table absent here has no MRI feed — a field sourced from it cannot be fixed by 'Refresh All Data from MRI'. MRI_VAL's null target means a refresh can never overwrite app-published valuations, so snapshot_loan.valuation and every LTV depend on the app being system of record."
+    {
+      "name": "mri_service.QUERY_REGISTRY",
+      "value": "query name -> DB table (null = download-only)",
+      "defined_at": "mri_service.py:47",
+      "read_by": [
+        "refresh_all() — walked in order"
+      ],
+      "duplicates": [],
+      "duplicate_warning": "MRI_VAL has no target table, so valuations are never overwritten by a refresh (the app is the system of record). Tables not in the registry — capital_calls, waterfalls, sale_overrides, isbs_uw_supplements — have no MRI feed at all and can't be fixed by a refresh.",
+      "fields_that_change": [
+        "every field sourced from a download-only or unregistered table"
+      ],
+      "consumer_count": 2
     },
-
-    "one_pager.AT_CLOSE_RESERVE_RELEASE_ACCTS": {
-      "value": ["7083"],
-      "at": "one_pager.py:1135",
-      "scope": "At-Close FALLBACK path only",
-      "mirrored_in": "queries/Prop_Info_AtClose.sql (nets the same account into at_close_expenses for the primary path)",
-      "warning": "one deal portfolio-wide (30 Bearfoot P0000001). A blanket 7xxx rule would add 22.2M to Jefferson Addison Heights via 7073/7074."
+    {
+      "name": "one_pager.AT_CLOSE_RESERVE_RELEASE_ACCTS (7083)",
+      "value": [
+        "7083"
+      ],
+      "defined_at": "one_pager.py:1135",
+      "read_by": [
+        "one_pager.py:1838 (At-Close 7083 reserve-release netting fallback)"
+      ],
+      "duplicates": [],
+      "duplicate_warning": "",
+      "fields_that_change": [
+        "noi at_close (the 7083 netting fallback — 30 Bearfoot only; a blanket 7xxx rule would wrongly move other deals)"
+      ],
+      "consumer_count": 1
     }
-  },
-
+  ],
   "known_divergences": [
     {
-      "what": "cap_stack pref/partner equity vs deal_analysis capitalization pref/partner equity",
-      "where": ["one_pager.py:949 uses loaders.capital_after (signed netting)", "compute.py:298-301 uses abs(amt) by row type"],
-      "effect": "reversal rows (same MajorType+Typename, opposite sign) move capital twice in compute.get_deal_capitalization. Measured 66 rows / 16 deals / ~$80.5M on the 2026-09-02 feed for the capital_after path."
+      "what": "cap_stack vs deal_analysis pref/partner equity",
+      "where": "one_pager.py:949 (capital_after) vs compute.py:298 (abs by row type)",
+      "effect": "Reversal rows get counted twice in the compute path, moving capital twice.",
+      "magnitude": "~$80.5M across 66 rows / 16 deals (2026-09-02 feed)."
     },
     {
-      "what": "two IS_ACCOUNTS dicts",
-      "where": ["config.py:251", "one_pager.py:1077"],
-      "effect": "One Pager NOI and Property Financials / Dashboard / snapshot debt-yield NOI are on different account bases (4075, 5092, 7070)."
+      "what": "Two IS_ACCOUNTS dicts",
+      "where": "config.py:251 vs one_pager.py:1077",
+      "effect": "The One Pager's NOI and the Property Financials / Dashboard / snapshot Debt Yield NOI use different account bases (they differ on 4075, 5092, 7070).",
+      "magnitude": ""
     },
     {
-      "what": "DEBT_BS_ACCTS hardcoded in one_pager",
+      "what": "DEBT_BS_ACCTS hardcoded in One Pager",
       "where": "one_pager.py:1110",
-      "effect": "a config change does not reach One Pager DSCR principal."
+      "effect": "A change to the shared debt-account list does not reach the One Pager's DSCR principal, which has its own copy.",
+      "magnitude": ""
+    },
+    {
+      "what": "return_of_capital includes realized gain; cap-stack netting does not",
+      "where": "PE return_of_capital vs one_pager.py:949 netting",
+      "effect": "The simple 'funded-to-date minus return-of-capital' subtraction misstates the current PE balance; the engine uses the waterfall seed states instead.",
+      "magnitude": "East Manchester: −$1,539,662 vs the engine's 0."
+    }
+  ],
+  "known_defects": [
+    {
+      "what": "variance computed twice",
+      "where": "backend one_pager.py:1909-1919 (None-guarded) AND Vue fmtVariance/fmtOccVariance",
+      "effect": "The front-end recalculates variance in the browser from year-to-date actual and budget and never reads the backend's value — so the same number is implemented twice."
+    },
+    {
+      "what": "pe_yield_on_exposure sentinel",
+      "where": "financials_service.py:1202-1205",
+      "effect": "It defaults to 0.0 where its two sibling exposure fields default to nothing — so a yield that isn't available prints as 0.0%."
+    },
+    {
+      "what": "dead payload",
+      "where": "_enrich_cap_stack_from_deal_terms",
+      "effect": "irr_lookback and the at-close economic occupancy (on the cap-stack object) are computed and returned but never displayed."
     }
   ]
 }

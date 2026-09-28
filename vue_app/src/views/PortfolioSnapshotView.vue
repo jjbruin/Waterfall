@@ -17,6 +17,7 @@ import SnapshotFinancial from '../components/snapshot/SnapshotFinancial.vue'
 import SnapshotOperating from '../components/snapshot/SnapshotOperating.vue'
 import SnapshotLoan from '../components/snapshot/SnapshotLoan.vue'
 import { fmtItd } from '../components/snapshot/format'
+import { useAuthStore } from '../stores/auth'
 
 const BASE = '/api/portfolio-snapshot'
 
@@ -410,6 +411,103 @@ async function transition(action: Action) {
 const isFrozen = computed(() => bundle.value?.source === 'frozen')
 const sourceNote = computed(() => bundle.value?.source_note || '')
 
+// --- freeze as sent ---
+// Deliberately NOT part of the review strip: freezing records that a quarter
+// was sent, approving records a decision somebody made, and the two are
+// separate acts. Putting the button among the approval controls would invite
+// the reader to treat it as one more step in that chain.
+const showFreezeConfirm = ref(false)
+const freezing = ref(false)
+const freezeError = ref<string | null>(null)
+
+const frozenAsSent = computed(() => bundle.value?.frozen_reason === 'as-sent')
+const frozenBy = computed(() => bundle.value?.frozen_by || bundle.value?.approved_by || '')
+const frozenOn = computed(() => {
+  const raw = bundle.value?.frozen_at || bundle.value?.approved_at
+  if (!raw) return ''
+  const m = String(raw).match(/^(\d{4})-(\d{2})-(\d{2})/)
+  return m ? `${parseInt(m[2])}/${parseInt(m[3])}/${m[1]}` : String(raw).slice(0, 10)
+})
+const frozenSourceLabel = computed(() => {
+  const man = bundle.value?.source_manifest
+  if (man?.file) {
+    const n = man.overlay_cells_applied
+    return `seeded from ${man.file}` + (n ? ` (${n} published cell${n === 1 ? '' : 's'})` : '')
+  }
+  return 'captured from the app at the moment of freezing'
+})
+
+// --- admin: freeze as sent from a published overlay -----------------------
+//
+// THE PREVIEW AND THE FREEZE ARE ONE ENDPOINT. `confirm:false` resolves every
+// printed deal title and reports what WOULD be written; `confirm:true` repeats
+// the identical resolution and writes. Two calls to one endpoint rather than
+// two endpoints, so the thing previewed cannot differ from the thing frozen.
+const auth = useAuthStore()
+const showOverlayPanel = ref(false)
+const overlayFile = ref<File | null>(null)
+const overlayPreview = ref<any>(null)
+const overlayBusy = ref(false)
+const overlayError = ref<string | null>(null)
+const overlayDone = ref<any>(null)
+
+function pickOverlay(e: Event) {
+  const f = (e.target as HTMLInputElement).files?.[0] || null
+  overlayFile.value = f
+  overlayPreview.value = null
+  overlayDone.value = null
+  overlayError.value = null
+}
+
+async function sendOverlay(confirm: boolean) {
+  if (!overlayFile.value) return
+  overlayBusy.value = true
+  overlayError.value = null
+  try {
+    const doc = JSON.parse(await overlayFile.value.text())
+    const res = await api.post('/api/portfolio-snapshot/freeze-overlay', {
+      investor: selectedInvestor.value, quarter: selectedQuarter.value,
+      overlay: doc, confirm,
+    })
+    if (confirm) {
+      overlayDone.value = res.data
+      // A per-report error means that report is still live; surface it rather
+      // than reporting a blanket success.
+      const failed = (res.data?.reports || []).filter((r: any) => r.error)
+      if (failed.length) {
+        overlayError.value = failed.map((r: any) => `${r.investor}: ${r.error}`).join(' | ')
+      } else {
+        await load()
+      }
+    } else {
+      overlayPreview.value = res.data
+    }
+  } catch (e: any) {
+    overlayError.value = e?.response?.data?.error || e?.message || 'Overlay freeze failed'
+  } finally {
+    overlayBusy.value = false
+  }
+}
+
+async function doFreeze() {
+  freezing.value = true
+  freezeError.value = null
+  try {
+    const res = await api.post('/api/portfolio-snapshot/freeze', {
+      investor: selectedInvestor.value, quarter: selectedQuarter.value,
+    })
+    if (!res.data?.frozen) throw new Error(res.data?.error || 'Freeze did not complete')
+    showFreezeConfirm.value = false
+    await load()
+  } catch (e: any) {
+    // The quarter is STILL LIVE when this fires. Say so on screen rather than
+    // leaving a half-finished state that looks frozen.
+    freezeError.value = e?.response?.data?.error || e?.message || 'Freeze failed'
+  } finally {
+    freezing.value = false
+  }
+}
+
 const approvedAsOf = computed(() => {
   const raw = bundle.value?.approved_at
   if (!raw) return ''
@@ -530,20 +628,184 @@ const statusColor = computed(() => {
     <p v-if="saveError" class="banner err">{{ saveError }}</p>
     <p v-if="loadError" class="banner err">{{ loadError }}</p>
 
-    <!-- Frozen vs live. An approved report serves the payload frozen at
-         approval, so the reader must never be left guessing which they have. -->
+    <!-- Frozen vs live. The reader must never be left guessing which of the two
+         they are looking at, so this states it on every load, not just when
+         something is unusual. -->
     <div v-if="bundle && isFrozen" class="banner frozen">
-      <strong>Approved version{{ approvedAsOf ? ` — as of ${approvedAsOf}` : '' }}</strong>
+      <strong>
+        {{ frozenAsSent ? 'Frozen as sent' : 'Approved version' }}{{ frozenOn ? ` — ${frozenOn}` : '' }}
+      </strong>
       <span>
-        Frozen at approval and not recomputed, so it cannot shift if MRI data
-        changes.
-        <template v-if="bundle.approved_by">Approved by {{ bundle.approved_by }}.</template>
+        This is the stored copy of what was sent. It is not recomputed, so
+        later data changes cannot move it.
+        <template v-if="frozenBy">Frozen by {{ frozenBy }}.</template>
+        <template v-if="bundle.frozen_version"> Version {{ bundle.frozen_version }}.</template>
       </span>
+      <span class="banner-meta">{{ frozenSourceLabel }}</span>
       <span v-if="bundle.data_version" class="banner-meta">{{ bundle.data_version }}</span>
     </div>
     <div v-else-if="bundle" class="banner live">
       <strong>Live data</strong>
       <span>{{ sourceNote || 'In progress — computed from current data and will change as data changes.' }}</span>
+      <button class="btn-sm primary freeze-btn" :disabled="!canLoad || loading"
+              @click="showFreezeConfirm = true">Freeze as sent</button>
+      <!-- ADMIN ONLY, and a second button rather than a mode of the first:
+           this one freezes from a document, and conflating "freeze what the
+           app computes" with "freeze what we posted" is the confusion the
+           whole overlay exists to remove. -->
+      <button v-if="auth.isAdmin" class="btn-sm freeze-btn"
+              :disabled="!canLoad || loading"
+              @click="showOverlayPanel = !showOverlayPanel">
+        Freeze as sent (with published overlay)…
+      </button>
+    </div>
+
+    <!-- The published-overlay freeze. Admin only, preview before write. -->
+    <div v-if="showOverlayPanel && auth.isAdmin" class="freeze-confirm">
+      <strong>Freeze {{ selectedQuarter }} for {{ investorName }} from the sent PDF</strong>
+      <p class="muted">
+        Build the overlay first with
+        <code>python scripts/build_26q2_overlay.py</code>, then upload
+        <code>overlay_26q2.json</code>. Every figure it carries was read from
+        the document that was sent, with its page and the file's SHA-256.
+      </p>
+      <input type="file" accept="application/json" @change="pickOverlay" />
+
+      <div v-if="overlayFile" class="freeze-actions">
+        <button class="btn-sm" :disabled="overlayBusy" @click="sendOverlay(false)">
+          {{ overlayBusy ? 'Reading…' : 'Preview' }}
+        </button>
+        <button class="btn-sm primary"
+                :disabled="overlayBusy || !overlayPreview"
+                @click="sendOverlay(true)">
+          {{ overlayBusy ? 'Freezing…' : 'Confirm and freeze' }}
+        </button>
+        <button class="btn-sm" :disabled="overlayBusy"
+                @click="showOverlayPanel = false; overlayPreview = null; overlayError = null">
+          Cancel
+        </button>
+      </div>
+
+      <!-- The preview IS the review: what would be written, per report. -->
+      <div v-if="overlayPreview" class="overlay-preview">
+        <div v-for="rep in overlayPreview.reports" :key="rep.investor" class="overlay-rep">
+          <strong>{{ rep.investor }}</strong>
+          <span v-if="rep.error" class="banner err">{{ rep.error }}</span>
+          <template v-else>
+            <div class="muted">
+              {{ rep.source?.file }} · sha256 {{ (rep.source?.sha256 || '').slice(0, 12) }}…
+            </div>
+            <div>
+              {{ rep.resolved }} of {{ rep.roster_size }} One Pagers matched ·
+              <strong>{{ rep.cells_total }}</strong> cells would be overwritten
+              <template v-if="rep.printed_units_total">
+                ({{ rep.printed_units_total }} kept as printed text)
+              </template>
+            </div>
+            <div v-if="rep.unresolved?.length" class="banner err">
+              {{ rep.unresolved.length }} printed page(s) matched no deal:
+              {{ rep.unresolved.join(', ') }} — freezing is blocked until these
+              are resolved, or the record would be incomplete.
+            </div>
+            <div v-if="rep.already_frozen" class="banner err">
+              Already frozen — Re-freeze it instead if it must change.
+            </div>
+            <div v-if="rep.unmapped_labels?.length" class="muted">
+              {{ rep.unmapped_labels.length }} printed label(s) have no vetted
+              field and are recorded, not applied.
+            </div>
+
+            <!-- What would actually CHANGE, against live. The expectation is
+                 printed beside the count so a big deviation is obvious to a
+                 reader; nothing is enforced on it. -->
+            <div v-if="rep.live_diff" class="overlay-diff">
+              <strong>
+                {{ rep.live_diff.differs_total }} of
+                {{ rep.live_diff.cells_total }} cells differ from live
+              </strong>
+              <span class="muted">
+                — expected ≈{{ rep.live_diff.expected_differences }}
+              </span>
+              <span v-if="Math.abs(rep.live_diff.differs_total - rep.live_diff.expected_differences) > 40"
+                    class="banner err">
+                that is a long way from the expectation — check before freezing
+              </span>
+              <div class="muted">
+                per page:
+                <span v-for="(v, pg) in rep.live_diff.by_page" :key="pg">
+                  p{{ pg }} {{ v.differs }}/{{ v.cells }}&nbsp;
+                </span>
+              </div>
+
+              <div v-if="rep.live_diff.warnings?.length" class="banner err">
+                <div v-for="(w, i) in rep.live_diff.warnings" :key="i">
+                  <strong>{{ w.column }}</strong> — {{ w.detail }}
+                </div>
+                Acknowledge each to proceed: a whole column differing, or a
+                ratio far from 1, is what a units or column-shift error looks
+                like.
+              </div>
+
+              <div v-if="rep.live_diff.sentinels_live_non_blank?.length" class="muted">
+                {{ rep.live_diff.sentinels_live_non_blank.length }} printed
+                “—”/“n/a”/“Dev” cell(s) sit over a live value — the printed
+                text is stored so the page shows what was sent:
+                <span v-for="(s, i) in rep.live_diff.sentinels_live_non_blank.slice(0, 4)" :key="i">
+                  {{ s.path }} (live {{ s.live }});
+                </span>
+              </div>
+
+              <div v-if="rep.unapplied_count" class="banner err">
+                {{ rep.unapplied_unacknowledged }} of {{ rep.unapplied_count }}
+                printed cell(s) would NOT land in the report — the frozen copy
+                would not reproduce the page.
+              </div>
+            </div>
+            <table class="overlay-table">
+              <thead><tr><th>p.</th><th>One Pager</th><th>deal</th><th class="right">cells</th></tr></thead>
+              <tbody>
+                <tr v-for="r in rep.per_report" :key="r.title">
+                  <td>{{ r.page }}</td>
+                  <td>{{ r.title }}</td>
+                  <td :class="{ err: !r.vcode }">{{ r.vcode || 'no match' }}</td>
+                  <td class="right">{{ r.cells }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </template>
+        </div>
+      </div>
+
+      <p v-if="overlayError" class="banner err">{{ overlayError }}</p>
+      <p v-else-if="overlayDone" class="banner">
+        Frozen. {{ (overlayDone.reports || []).filter((r: any) => r.frozen).length }}
+        report(s) stored as sent.
+      </p>
+    </div>
+
+    <!-- Confirmation. Freezing is not destructive but it IS a commitment: from
+         here on this quarter stops following the data. Worth one click. -->
+    <div v-if="showFreezeConfirm" class="freeze-confirm">
+      <strong>Freeze {{ selectedQuarter }} for {{ investorName }}?</strong>
+      <p>
+        This locks {{ selectedQuarter }} for {{ investorName }}. Later data
+        changes won't affect it. The stored copy keeps every Snapshot subtab,
+        every One Pager, and the roster in the order it was sent.
+      </p>
+      <p class="muted">
+        Typed fields — Net ROE, ITD, comments and footnotes — become read-only.
+        An admin can Re-freeze or Unfreeze it afterwards, with a reason.
+      </p>
+      <p v-if="freezeError" class="banner err">
+        {{ freezeError }} — {{ selectedQuarter }} is still live.
+      </p>
+      <div class="freeze-actions">
+        <button class="btn-sm primary" :disabled="freezing" @click="doFreeze">
+          {{ freezing ? 'Freezing…' : 'Freeze as sent' }}
+        </button>
+        <button class="btn-sm" :disabled="freezing"
+                @click="showFreezeConfirm = false; freezeError = null">Cancel</button>
+      </div>
     </div>
 
     <!-- Population diagnostics -->
@@ -779,6 +1041,31 @@ h2 { font-size: 20px; margin: 0 0 12px 0; }
   border: 1px solid var(--color-border);
   color: var(--color-text-secondary);
 }
+/* The button sits in the live banner, so it is next to the words that say the
+   quarter is still live — the state it changes. */
+.freeze-btn { margin-left: auto; }
+
+.freeze-confirm {
+  margin: 8px 0 12px;
+  padding: 12px 14px;
+  border: 1px solid #f0c36d;
+  border-left: 4px solid #e0a800;
+  border-radius: 4px;
+  background: #fffbf0;
+  font-size: 12px;
+}
+.freeze-confirm strong { display: block; margin-bottom: 6px; font-size: 13px; }
+.freeze-confirm p { margin: 0 0 8px; line-height: 1.45; }
+.freeze-confirm p.muted { color: #6b7684; }
+.overlay-preview { margin-top: 10px; }
+.overlay-diff { margin-top: 8px; padding: 6px 8px; background: #f7f9fc; border-radius: 4px; }
+.overlay-rep { margin-bottom: 12px; }
+.overlay-table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 11px; }
+.overlay-table th, .overlay-table td { border-bottom: 1px solid #eee; padding: 2px 6px; text-align: left; }
+.overlay-table .right { text-align: right; }
+.overlay-table td.err { color: #b00020; font-weight: 600; }
+.freeze-actions { display: flex; gap: 8px; }
+
 .banner-meta {
   margin-left: auto;
   font-size: 10px;

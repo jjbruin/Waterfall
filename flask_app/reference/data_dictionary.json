@@ -1,384 +1,2380 @@
 {
   "meta": {
-    "name": "Portfolio Snapshot + One Pager data dictionary",
-    "purpose": "Static, queryable source-of-meaning for the data-traceability chatbot. Holds what each field MEANS, where it comes from (per basis), and the RULE that picks the basis. The live per-deal pick is still done by the app resolver; basis_selection here is the general, explanatory version.",
-    "as_of": "2026-09-21",
+    "name": "Portfolio Snapshot + One Pager data dictionary (verified content)",
+    "as_of": "2026-09-24",
     "quarter_reference": "2026-Q2",
-    "consumed_by": "lookup_field(field_id, basis=None) tool in the chatbot",
-    "audience": "analysts — internal table and column names in `source` are fine to show",
+    "verification": "Every formula and source verified against live code (one_pager.py, metrics.py, portfolio_snapshot_*.py, config.py) on 2026-09-24.",
+    "audience": "analysts — internal table/column/account names are fine to show",
+    "granularity": "one entry per (tab, field); each entry decomposes into `inputs`, each with its own source.",
+    "formula_rule": "Render `formula_latex` when present (formula_is_arithmetic=true). When null, the field has NO clean single-expression arithmetic — state the method in words and DO NOT reconstruct an equation. Never invent a formula or a source.",
     "answer_format": {
-      "rule": "Lead with the plain sentence, then one 'Source:' line as '<origin phrase> — <source>'. Never lead with a table or database name. If a field/basis is absent or status is needs_trace, say there is no verified source and do not guess.",
-      "example": "\"The current outstanding loan balance as of quarter-end. Source: Comes from MRI — ISBS_Download (Interim BS), accounts 2150/2152/2210.\""
+      "order": [
+        "In plain terms",
+        "Where it comes from",
+        "How it's calculated (if formula_is_arithmetic)",
+        "The numbers behind it (when tracing a specific deal's value)",
+        "Worth knowing (if a caveat)"
+      ],
+      "style": "plain language, no internal code shorthand (no bare function names / abs()); break into short labeled parts with a blank line between them; use bullets, never one run-on block",
+      "latex": "render formulas as KaTeX using each field's formula_latex: block math on ONE line as $$...$$; for a specific deal substitute the actual values into a one-line $$...$$ and escape literal dollar signs as \\$; never ** inside a formula; typeset only after the stream completes"
     },
-    "structural_principles": {
-      "tab_aware": "Some fields (debt, total_pref) resolve differently by tab. basis_selection is keyed by tab where so; answer for the tab the user names.",
-      "display_vs_computed": "For ltv, ytd_dscr and debt_yield the ordered conditions are DISPLAY precedence only. The stored/raw field is always the computed figure, and that is what subtotals and guardrails read. Manual entries and suppressions change what is shown, never what is aggregated.",
-      "field_id_is_the_enum": "Constrain the tool's field_id argument to this closed list; validate basis inside the tool against the chosen field's own bases (omitted or unknown basis -> return all bases)."
-    },
-    "origins": {
-      "mri": "Comes from MRI",
-      "csv": "Comes from a CSV / spreadsheet loaded into the app",
-      "analyst": "Entered by an analyst",
-      "calculated": "Calculated by the app",
-      "none": "Not populated (seed / suppressed)"
-    },
-    "open_confirm": "The *_Download tables (ISBS_Download, MRI_Occupancy_Download, MRI_Budget_Econ_Occ) are marked origin 'mri' but load via an MRI download — confirm once whether they arrive as CSV imports; if so, flip their origin to 'csv'."
-  },
-  "status_legend": {
-    "verified": "Traced to code against live production this session.",
-    "partial": "Definition and general source known; exact source column not freshly code-traced.",
-    "needs_trace": "Placeholder. Plain-English definition only. Run the per-field code trace before the chatbot cites a source."
-  },
-  "owner_legend": {
-    "app-logic": "How it is computed lives in the app code (Charlene / Jim).",
-    "Alay": "A data-basis or MRI-content question.",
-    "Joe": "An accounting-table / account-set question.",
-    "analyst": "A value entered by an analyst in the app."
+    "mri_table_note": "Sources name the MRI feed/table an analyst can open directly (e.g. Prop_Info_Core = deal roster; ISBS_Download = interim/projected/budget statements; accounting_feed = investor cash flows; MRI_Loans, MRI_Occupancy_Download, Prop_Info_AtClose, MRI_Budget_Econ_Occ, Prop_Info_DealTerms, MRI_VAL, MRI_Event_Dates, MRI_Inspection) plus the column/account.",
+    "supplement_caveat": "Five ISBS supplement tables (isbs_uw_supplements, isbs_budget_is_supplements, isbs_interim_is_supplements, isbs_interim_bs_supplements, isbs_valuation_is_supplements) are analyst-loaded CSV uploads, NOT MRI-refreshed. They merge into the ISBS data and WIN over MRI on collision — so an ISBS-sourced value can actually come from an analyst CSV. Valuations (MRI_VAL) and waterfalls are app-owned / PROTECTED, not MRI feeds."
   },
   "fields": [
     {
-      "field_id": "debt",
-      "display_label": "Debt",
-      "appears_on": ["one_pager", "snapshot_financial", "snapshot_loan"],
-      "owner": "app-logic",
-      "status": "verified",
-      "tab_notes": "The same deal can legitimately show THREE different debt numbers by design: the One Pager prints hard costs for a development deal, the Snapshot prints the committed facility, and debt_isbs carries the drawn balance. Always answer for the tab the user names.",
-      "basis_selection": {
-        "one_pager": "In order: (1) if the balance sheet has usable debt-account rows -> the ISBS drawn balance (isbs); (2) else if the deal has loan rows -> the committed loan amount (orig_loan; a portfolio parent inherits its children's loans only if their rate + maturity + type match); (3) else $0 (none). Then, for development deals only, if hard-costs inspection rows exist they OVERRIDE the above with hard costs (a $0 hard-costs figure still overrides; no inspection row — 18 of 26 dev deals — leaves the earlier figure). The pre-override drawn balance is preserved as debt_isbs.",
-        "snapshot": "resolve_debt (both Financial and Loan subtabs): non-development -> the ISBS drawn balance (isbs); development WITH a loan facility on record -> the committed loan amount (orig_loan / BASIS_COMMITTED); development with NO facility -> unavailable (deliberately NOT a fall-back to the ISBS balance, which the dev branch exists to distrust). The Snapshot never uses hard costs — that basis is One-Pager only.",
-        "display_suppression": "Applies on top, raw values never move: debt-free deals (Pegasus / P0000066) show a dash; sold deals show a dash and drop out of Total Cap's debt leg; foreclosure and PDF n/a maps (City West, Pegasus) blank specific cells."
-      },
-      "bases": [
-        {"basis": "isbs", "plain": "The current outstanding loan balance from the balance sheet, as of quarter-end.", "origin": "mri", "source": "ISBS_Download (vSource 'Interim BS'), accounts 2150 / 2152 / 2210; most recent balance on or before quarter-end.", "caveats": "A measured $0 can mean 'balance-sheet rows exist but no debt accounts' or 'paid off'."},
-        {"basis": "hard_costs", "plain": "Hard costs drawn to date on a development deal. Can legitimately be $0 before construction draws begin.", "origin": "mri", "source": "MRI_Inspection.mHardCosts, summed over all draw rows. One Pager only.", "caveats": "JB Fair Park and Jefferson Stephens show a real $0 here while the Snapshot shows the ISBS balance — the tabs intentionally differ."},
-        {"basis": "orig_loan", "plain": "The original committed loan amount — shown because the deal has no balance-sheet balance yet, e.g. a new/undrawn deal, or on the Snapshot for a development deal with a facility.", "origin": "mri", "source": "MRI_Loans.mOrigLoanAmt (committed facility).", "caveats": "The stored debt_basis label mislabels this as ISBS on the One Pager path; the resolver identifies the branch correctly. Fix queued at :632."},
-        {"basis": "none", "plain": "$0 — no balance-sheet balance and no loan rolled up. May be a data gap, not a true zero.", "origin": "none", "source": "Seed value.", "caveats": "Seen on parent deals whose child loan does not inherit (Donald Lynch / P0000049)."}
+      "field_id": "one_pager.investment_name",
+      "display_label": "investment_name",
+      "section": "One Pager – General",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Deal / investment name.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — Prop_Info_Core, column Investment_Name",
+          "note": ""
+        }
       ]
     },
     {
-      "field_id": "total_pref",
-      "display_label": "Total Pref",
-      "appears_on": ["one_pager", "snapshot_financial"],
-      "owner": "Alay",
-      "status": "verified",
-      "tab_notes": "Includes sold deals, which is why the Snapshot figure exceeds the Executive Summary by the sold deals' combined Total Pref.",
-      "basis_selection": {
-        "source_figure": "(1) committed pref = sum of |Amt| over commitment rows (non-OP investors, EffectiveDate <= quarter-end) -> 'commitment rows'; (2) if that is zero but funded pref exists -> use funded pref, 'funded (no commitment row)' (this can only raise a zero, since contributed capital is committed by definition; fires for East Manchester and City West); (3) both zero -> 'none'.",
-        "what_prints": "The committed value (commitment_basis = 'committed_pe'). The funded fallback is re-checked at print time rather than trusted, because the payload can arrive from an un-deployed backend serving the pre-fallback 0.0.",
-        "related": "Ptr Equity stays on the funded basis deliberately (committing both would double-count Brainerd's OP row by $10.6M). Invested always scales funded pref; Total Commitment scales whatever Total Pref printed; Un-funded = Total Commitment - Invested."
-      },
-      "bases": [
-        {"basis": "commitment_rows", "plain": "Total committed preferred equity, from the deal's commitment rows.", "origin": "mri", "source": "accounting_feed.Amt where MajorType ~ 'contrib' AND Typename ~ 'commitment', non-OP, EffectiveDate <= quarter-end, absolute sum; joined InvestmentID -> vcode.", "caveats": "The app reads committed pref from IA_Contribution (Commitment-typed rows); the PDF reads IA_Commitment, a different table — a basis difference, not a bug."},
-        {"basis": "funded_no_commitment", "plain": "The funded preferred equity, shown when the deal has no commitment row at all.", "origin": "mri", "source": "Equals funded pref (field pref_equity), from accounting_feed.Amt.", "caveats": "East Manchester, City West."},
-        {"basis": "none", "plain": "No committed and no funded pref found — $0.", "origin": "none", "source": "Seed value.", "caveats": ""}
+      "field_id": "one_pager.partner",
+      "display_label": "partner",
+      "section": "One Pager – General",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Operating / JV partner name.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — Prop_Info_Core, column Operating_Partner",
+          "note": ""
+        }
       ]
     },
     {
-      "field_id": "pref_equity",
-      "display_label": "Funded Pref (feeds Total Pref fallback)",
-      "appears_on": ["one_pager"],
-      "owner": "Alay",
-      "status": "verified",
-      "basis_selection": "Non-OP investors' contributions netted by sign over contribution and return-of-capital rows (commitment rows skipped); OP* investors route to partner_equity instead.",
-      "bases": [
-        {"basis": "contributions_netted_non_op", "plain": "Funded preferred equity: contributions netted by sign for non-operating-partner investors, floored at zero.", "origin": "mri", "source": "accounting_feed.Amt; InvestorID NOT starting 'OP'; running balance netted by sign; max(0) per investor.", "caveats": "max(0) floors an over-returned investor at zero."}
+      "field_id": "one_pager.asset_type",
+      "display_label": "asset_type",
+      "section": "One Pager – General",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Property asset type.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — Prop_Info_Core, column Asset_Type",
+          "note": ""
+        }
       ]
     },
     {
-      "field_id": "partner_equity",
-      "display_label": "Ptr. Equity",
-      "appears_on": ["one_pager", "snapshot_financial"],
-      "owner": "Alay",
-      "status": "verified",
-      "basis_selection": "Same contribution-netting rule as funded pref, but only for investors whose InvestorID starts 'OP'. Kept on the funded basis on purpose.",
-      "bases": [
-        {"basis": "contributions_netted_op", "plain": "Operating-partner equity: the funded-pref rule applied to operating-partner investors.", "origin": "mri", "source": "accounting_feed.Amt, InvestorID starting 'OP'.", "caveats": "The 'OP' prefix is the ONLY test separating partner from preferred equity. Whether every operating-partner ID is OP-prefixed is an open Alay question."}
+      "field_id": "one_pager.investment_strategy",
+      "display_label": "investment_strategy",
+      "section": "One Pager – General",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Investment strategy.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — Prop_Info_Core (deal roster): reads Investment_Strategy (present but NOT in the MRI refresh set) else Lifecycle (MRI-refreshed). Lifecycle decides today — Investment_Strategy is 0/110 populated.",
+          "note": "None of the 110 deals have Investment_Strategy filled in, so the deal's Lifecycle value is what classifies it today."
+        }
       ]
     },
     {
-      "field_id": "invested",
-      "display_label": "Invested",
-      "appears_on": ["snapshot_financial"],
-      "owner": "Alay",
-      "status": "partial",
-      "basis_selection": "Always scales funded pref (does not follow the committed/funded switch, to keep tying the PDF).",
-      "bases": [
-        {"basis": "funded", "plain": "The funded portion of TIAA's preferred-equity commitment (capital contributed to date).", "origin": "mri", "source": "Scales funded_pref; NEEDS TRACE for the exact scaling field.", "caveats": "Includes the four sold deals ($23.8M combined)."}
+      "field_id": "one_pager.location",
+      "display_label": "location",
+      "section": "One Pager – General",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Property city + state.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — Prop_Info_Core, column City, suffixed with State",
+          "note": ""
+        }
       ]
     },
     {
-      "field_id": "un_funded",
-      "display_label": "Un-funded",
-      "appears_on": ["snapshot_financial"],
-      "owner": "app-logic",
-      "status": "verified",
-      "basis_selection": "Always Total Commitment minus Invested.",
-      "bases": [
-        {"basis": "committed_minus_funded", "plain": "Remaining commitment still to be funded: Total Commitment minus Invested.", "origin": "calculated", "source": "Computed from Total Commitment and Invested.", "caveats": "A deal can be genuinely part-funded at quarter-end (Burton at 51%) and self-correct to $0 next quarter."}
+      "field_id": "one_pager.year_built",
+      "display_label": "year_built",
+      "section": "One Pager – General",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Year the property was built.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — Prop_Info_Core, column Year_Built",
+          "note": ""
+        }
       ]
     },
     {
-      "field_id": "total_commitment",
-      "display_label": "Total Commitment",
-      "appears_on": ["snapshot_financial"],
-      "owner": "Alay",
-      "status": "partial",
-      "basis_selection": "Scales whatever Total Pref printed (both bases carried as total_commitment_if_funded / _if_committed).",
-      "bases": [
-        {"basis": "committed", "plain": "TIAA's total committed capital to the deal (funded plus un-funded).", "origin": "mri", "source": "NEEDS TRACE; related to the committed-pref path.", "caveats": "Includes the four sold deals."}
+      "field_id": "one_pager.units",
+      "display_label": "units",
+      "section": "One Pager – General",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Unit count.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — Prop_Info_Core, column Total_Units",
+          "note": ""
+        }
       ]
     },
     {
-      "field_id": "pct_of_pref",
-      "display_label": "% of Pref",
-      "appears_on": ["snapshot_financial"],
-      "owner": "app-logic",
-      "status": "verified",
-      "basis_selection": "At subtotal/portfolio level, committed-weighted: sum of Total Commitment divided by sum of Total Pref. Scaling uses lookthrough_pct_pe (PE-basis, excluding OP owners), since the dollars scaled already exclude the OP stake.",
-      "bases": [
-        {"basis": "committed_weighted", "plain": "TIAA's commitment as a share of the deal's total preferred equity.", "origin": "calculated", "source": "Computed: Σ Total Commitment ÷ Σ Total Pref.", "caveats": "Deliberately a different basis than the PDF (Invested ÷ Total Pref). Three bases exist; the app uses committed-weighted."}
+      "field_id": "one_pager.sqft",
+      "display_label": "sqft",
+      "section": "One Pager – General",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Square footage.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — Prop_Info_Core, column Size_Sqf",
+          "note": ""
+        }
       ]
     },
     {
-      "field_id": "total_cap",
-      "display_label": "Total Cap",
-      "appears_on": ["one_pager", "snapshot_financial"],
-      "owner": "app-logic",
-      "status": "verified",
-      "basis_selection": "Re-footed as debt leg + Total Pref + Ptr Equity using the PRINTED debt (committed-on-dev), so the four columns sum. total_cap_isbs and total_cap_funded keep the ISBS debt leg / funded pref respectively.",
-      "bases": [
-        {"basis": "sum_of_stack", "plain": "Total capitalization: Debt + Total Pref + Partner Equity (Debt counted as 0 when n/a).", "origin": "calculated", "source": "Computed from the three components.", "caveats": "For sold deals the debt leg is zeroed out of Total Cap while Debt and Total Pref lines keep raw values."}
+      "field_id": "one_pager.date_closed",
+      "display_label": "date_closed",
+      "section": "One Pager – General",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Acquisition / closing date.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — Prop_Info_Core, column Acquisition_Date",
+          "note": ""
+        }
       ]
     },
     {
-      "field_id": "itd_distributions",
-      "display_label": "ITD Distributions",
-      "appears_on": ["snapshot_financial"],
-      "owner": "analyst",
-      "status": "verified",
-      "basis_selection": "Per-deal is an analyst entry; subtotals/totals self-sum the member deals' entries (blank, never 0, if none entered).",
-      "bases": [
-        {"basis": "manual_entry", "plain": "Inception-to-date distributions, entered by an analyst per deal.", "origin": "analyst", "source": "portfolio_snapshot_values. The per-deal fee-allocation formula (footnote 1) is still TBD.", "caveats": "Excluding-Development ITD can exceed Portfolio Total because development deals carry negative ITD."},
-        {"basis": "aggregate_sum", "plain": "A subtotal / total: the sum of the member deals' entered ITD.", "origin": "calculated", "source": "Sum over member deals that have an entry; blank if none.", "caveats": ""}
+      "field_id": "one_pager.anticipated_exit",
+      "display_label": "anticipated_exit",
+      "section": "One Pager – General",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Underwritten exit (renders 'Underwritten Exit').",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — MRI_Event_Dates where vEventType='Asset Management', vEvent='U/W Exit', vDateType='Actual' -> max(dtEvent)",
+          "note": ""
+        }
       ]
     },
     {
-      "field_id": "net_roe",
-      "display_label": "Net ROE",
-      "appears_on": ["snapshot_financial"],
-      "owner": "analyst",
-      "status": "verified",
-      "basis_selection": "Always an analyst entry; no system formula. Foreclosure deals (City West) are not enterable; normal-sale deals (East Manchester, Camarillo, Outlook) are enterable.",
-      "bases": [
-        {"basis": "manual_entry", "plain": "Net return on equity, entered by an analyst. No system formula exists yet.", "origin": "analyst", "source": "portfolio_snapshot_values (formula TBD).", "caveats": "City West (foreclosure) excluded; normal sales enterable as realized returns."}
+      "field_id": "one_pager.current_anticipated_exit",
+      "display_label": "current_anticipated_exit",
+      "section": "One Pager – General",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Current expected exit.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — MRI_Event_Dates where vEventType='Disposition', vEvent='Closing', vDateType='Projected' -> max(dtEvent)",
+          "note": ""
+        }
       ]
     },
     {
-      "field_id": "econ_occ",
-      "display_label": "Econ Occ",
-      "appears_on": ["snapshot_operating"],
-      "owner": "app-logic",
-      "status": "verified",
-      "tab_notes": "Displayed in percentage points, not a ratio.",
-      "basis_selection": "In order: (1) deal in the temporary-suppression list (Hanestowne / P0000118) -> n/a 'TEMPORARY per-deal suppression'; (2) owned < 3 months -> n/a 'insufficient operating history' (fails open if no close date on the payload); (3) development deal, unless exempted -> n/a 'dev'; (4) otherwise the first available of projected_ye -> ytd_actual -> at_close, and the basis names which was taken. Subtotals are NOI-weighted over visible rows only.",
-      "bases": [
-        {"basis": "ytd_actual", "plain": "Average physical occupancy year-to-date, less bad-debt / concession points.", "origin": "mri", "source": "MRI_Occupancy_Download 'Occ%' averaged Jan 1 -> quarter-end; bad-debt leg from Interim IS accounts 4040/4043 over 4010.", "caveats": ""},
-        {"basis": "projected_ye", "plain": "Actual months at actual occupancy plus remaining months at budget occupancy, divided by 12.", "origin": "mri", "source": "ytd_actual blended with MRI_Budget_Econ_Occ.PctOccupied for remaining months.", "caveats": "Q4 or missing budget falls back to ytd_actual."},
-        {"basis": "at_close", "plain": "The economic occupancy recorded at acquisition (stored, not computed).", "origin": "mri", "source": "Prop_Info_DealTerms.econ_occ_at_close.", "caveats": "A data-entry field; a blank is a gap in MRI."},
-        {"basis": "suppressed", "plain": "Occupancy intentionally not shown — temporary suppression, insufficient history, or a development deal.", "origin": "none", "source": "Suppression reason set in portfolio_snapshot_operating.", "caveats": "A 'why is it blank' answer, not a source."}
+      "field_id": "one_pager.purchase_price",
+      "display_label": "purchase_price",
+      "section": "One Pager – Capitalization",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Acquisition purchase price.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "App-published — valuations table (mPurchasePrice / Acquisition_Price); the app is the system of record. MRI_VAL is download-only back-history, NOT refreshed. Fallback: MRI Prop_Info_Core, column Acquisition_Price.",
+          "note": ""
+        }
       ]
     },
     {
-      "field_id": "noi_at_close",
-      "display_label": "NOI At Close",
-      "appears_on": ["snapshot_operating"],
-      "owner": "Joe",
-      "status": "verified",
-      "basis_selection": "(1) if the At-Close table has the deal -> that figure (revenue/NOI negated, plus a 7070 tax-abatement fold-in); (2) else the earliest December Projected IS (YTD-cumulative); (3) a Year-0 gate zeroes it ONLY when the deal is development (or force-suppressed, {P0000066}) AND has no 2015-12-31 Projected IS row — both required, or nine non-dev deals would wrongly zero; (4) a fully-zeroed column is emitted as a dash (None), not a measured $0.",
-      "bases": [
-        {"basis": "at_close_table", "plain": "Net operating income underwritten at acquisition.", "origin": "mri", "source": "Prop_Info_AtClose (at_close_noi etc.).", "caveats": "The exact account set lives in Prop_Info_AtClose.sql — whether it matches IS_ACCOUNTS and nets 7083 is an open Joe question. Many deals carry a 2015-12-31 date (upstream defect)."}
+      "field_id": "one_pager.debt",
+      "display_label": "debt",
+      "section": "One Pager – Capitalization",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Loan / debt (deal-type dependent).",
+      "formula": "Debt = ISBS drawn balance -> else committed loan -> (dev) hard costs",
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "Drawn balance (stabilized)",
+          "source": "MRI — ISBS 'Interim BS', accounts 2150/2152/2210 (config.DEBT_BS_ACCTS)",
+          "note": "This figure comes from ISBS (MRI), but if an analyst has uploaded a supplement CSV for this deal and period, the uploaded value is used instead."
+        },
+        {
+          "component": "Committed loan (undrawn)",
+          "source": "MRI — MRI_Loans.mOrigLoanAmt",
+          "note": ""
+        },
+        {
+          "component": "Hard costs (dev)",
+          "source": "MRI — MRI_Inspection.mHardCosts",
+          "note": "Only applies to development deals, and only on the One Pager."
+        }
       ]
     },
     {
-      "field_id": "noi_uw_ye",
-      "display_label": "NOI U/W YE",
-      "appears_on": ["snapshot_operating"],
-      "owner": "app-logic",
-      "status": "verified",
-      "basis_selection": "The last December Projected IS snapshot in the report year (YTD-cumulative = full year). No December row -> blank. Suppressed to n/a on Operating by the same temporary/history/dev gate (with DEV_DISPLAY_EXCEPTIONS, currently P0000078 for noi).",
-      "bases": [
-        {"basis": "projected_is_december", "plain": "Underwritten year-end NOI, read as the December Projected IS snapshot.", "origin": "mri", "source": "ISBS_Download vSource 'Projected IS', last December of the report year; IS_ACCOUNTS revenue/expense sets plus 7070.", "caveats": ""}
+      "field_id": "one_pager.debt_pct",
+      "display_label": "debt_pct",
+      "section": "One Pager – Capitalization",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Debt share of total cap.",
+      "formula": "debt_pct = debt ÷ total_cap",
+      "formula_latex": "\\text{Debt \\%} = \\dfrac{\\text{Debt}}{\\text{Total Cap}}",
+      "formula_is_arithmetic": true,
+      "inputs": [
+        {
+          "component": "debt",
+          "source": "See debt field",
+          "note": ""
+        },
+        {
+          "component": "total_cap",
+          "source": "See total_cap field",
+          "note": ""
+        }
       ]
     },
     {
-      "field_id": "noi_projected_ye",
-      "display_label": "NOI Projected YE",
-      "appears_on": ["snapshot_operating"],
-      "owner": "app-logic",
-      "status": "verified",
-      "basis_selection": "Keyed on whether current-year actuals exist: (1) actuals + budget -> YTD actual + remaining-year budget; (2) actuals, no budget -> = YTD actual; (3) no actuals, budget -> full-year budget; (4) neither -> blank. When a year has no budget the prior year's budget is shifted forward 12 months — EXCEPT for development deals (their prior year is a non-repeating lease-up), which drops them to case 2 (Projected YE = YTD Actual, YTD Budget = 0).",
-      "bases": [
-        {"basis": "ytd_actual_plus_budget", "plain": "Year-to-date actual NOI plus the remainder of the year at budget.", "origin": "mri", "source": "ISBS Interim IS (YTD cumulative, to quarter-end) plus Budget IS summed over the rest of the year.", "caveats": "The two legs are different bases by design; correct because Interim IS is YTD-cumulative."}
+      "field_id": "one_pager.pref_equity",
+      "display_label": "pref_equity",
+      "section": "One Pager – Capitalization",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Funded preferred equity (non-OP).",
+      "formula": "pref_equity = SUM of over non-OP investors of max(0, running balance)",
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — accounting_feed.Amt; per-investor running balance via capital_after(bal, amt) = bal − amt (signed, NOT floored per row); rows where MajorType~'contrib' OR ('distri' AND return of capital); commitment rows skipped; InvestorID NOT starting 'OP'",
+          "note": "Each investor's balance is floored at zero, so an investor who has been paid back can't pull another investor's balance negative. Realized-gain rows are not included here — they are counted under the PE 'return of capital' figure instead."
+        }
       ]
     },
     {
-      "field_id": "expected_growth",
-      "display_label": "Expected Growth",
-      "appears_on": ["snapshot_operating"],
-      "owner": "app-logic",
-      "status": "verified",
-      "basis_selection": "Always computed from the NOI values (growth function over the underwriting triple).",
-      "bases": [
-        {"basis": "computed_from_noi", "plain": "Growth from one NOI point to a later NOI point in the underwriting triple.", "origin": "calculated", "source": "Computed via the growth function over the NOI values.", "caveats": ""}
+      "field_id": "one_pager.pref_equity_pct",
+      "display_label": "pref_equity_pct",
+      "section": "One Pager – Capitalization",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Pref equity share of total cap.",
+      "formula": "pref_equity_pct = pref_equity ÷ total_cap",
+      "formula_latex": "\\text{Pref Equity \\%} = \\dfrac{\\text{Pref Equity}}{\\text{Total Cap}}",
+      "formula_is_arithmetic": true,
+      "inputs": [
+        {
+          "component": "pref_equity",
+          "source": "See pref_equity field",
+          "note": ""
+        },
+        {
+          "component": "total_cap",
+          "source": "See total_cap field",
+          "note": ""
+        }
       ]
     },
     {
-      "field_id": "actual_growth",
-      "display_label": "Actual Growth",
-      "appears_on": ["snapshot_operating"],
-      "owner": "app-logic",
-      "status": "verified",
-      "basis_selection": "Always computed from the NOI values.",
-      "bases": [
-        {"basis": "computed_from_noi", "plain": "Realized growth across the NOI triple.", "origin": "calculated", "source": "Computed via the growth function over the NOI values.", "caveats": ""}
+      "field_id": "one_pager.partner_equity",
+      "display_label": "partner_equity",
+      "section": "One Pager – Capitalization",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Operating-partner equity.",
+      "formula": "partner_equity = SUM of over 'OP' investors of max(0, running balance)",
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — accounting_feed.Amt; same capital_after netting as pref_equity but InvestorID starting 'OP'",
+          "note": "The only thing that separates partner equity from preferred equity is whether the investor ID starts with 'OP'."
+        }
       ]
     },
     {
-      "field_id": "operating_comment",
-      "display_label": "Operating comment",
-      "appears_on": ["snapshot_operating"],
-      "owner": "analyst",
-      "status": "partial",
-      "basis_selection": "Always an analyst entry.",
-      "bases": [
-        {"basis": "manual_entry", "plain": "Free-text operating commentary written by an analyst.", "origin": "analyst", "source": "Analyst entry (read-only prose on the subtab).", "caveats": ""}
+      "field_id": "one_pager.partner_equity_pct",
+      "display_label": "partner_equity_pct",
+      "section": "One Pager – Capitalization",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Partner equity share of total cap.",
+      "formula": "partner_equity_pct = partner_equity ÷ total_cap",
+      "formula_latex": "\\text{Partner Equity \\%} = \\dfrac{\\text{Partner Equity}}{\\text{Total Cap}}",
+      "formula_is_arithmetic": true,
+      "inputs": [
+        {
+          "component": "partner_equity",
+          "source": "See partner_equity field",
+          "note": ""
+        },
+        {
+          "component": "total_cap",
+          "source": "See total_cap field",
+          "note": ""
+        }
       ]
     },
     {
-      "field_id": "rate",
-      "display_label": "Rate",
-      "appears_on": ["snapshot_loan"],
-      "owner": "app-logic",
-      "status": "verified",
-      "basis_selection": "Always from the loan terms; N/A for debt-free deals, blank for sold deals.",
-      "bases": [
-        {"basis": "mri_loan_terms", "plain": "The loan's interest rate / index / spread.", "origin": "mri", "source": "MRI_Loans columns (vIntType, vIndex, vSpread, nRate).", "caveats": "N/A for debt-free, blank for sold."}
+      "field_id": "one_pager.total_cap",
+      "display_label": "total_cap",
+      "section": "One Pager – Capitalization",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Total capitalization (capital stack).",
+      "formula": "total_cap = debt + pref_equity + partner_equity",
+      "formula_latex": "\\text{Total Cap} = \\text{Debt} + \\text{Pref Equity} + \\text{Partner Equity}",
+      "formula_is_arithmetic": true,
+      "inputs": [
+        {
+          "component": "debt",
+          "source": "See debt field",
+          "note": "Uses the debt figure shown on the page — which is the committed loan amount for a development deal."
+        },
+        {
+          "component": "pref_equity",
+          "source": "See pref_equity field",
+          "note": ""
+        },
+        {
+          "component": "partner_equity",
+          "source": "See partner_equity field",
+          "note": ""
+        }
       ]
     },
     {
-      "field_id": "maturity",
-      "display_label": "Maturity",
-      "appears_on": ["snapshot_loan"],
-      "owner": "app-logic",
-      "status": "verified",
-      "basis_selection": "Always from the loan record; N/A for debt-free, blank for sold.",
-      "bases": [
-        {"basis": "mri_loan_maturity", "plain": "The loan's maturity date.", "origin": "mri", "source": "MRI_Loans.dtMaturity, falling back to dtEvent.", "caveats": ""}
+      "field_id": "one_pager.pe_exposure_on_cap",
+      "display_label": "pe_exposure_on_cap",
+      "section": "One Pager – Capitalization",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Our position as share of total cap.",
+      "formula": "pe_exposure_on_cap = (debt + pref_equity) ÷ total_cap × 100",
+      "formula_latex": "\\dfrac{\\text{Debt} + \\text{Pref Equity}}{\\text{Total Cap}} \\times 100",
+      "formula_is_arithmetic": true,
+      "inputs": [
+        {
+          "component": "debt",
+          "source": "See debt field",
+          "note": ""
+        },
+        {
+          "component": "pref_equity",
+          "source": "See pref_equity field",
+          "note": ""
+        },
+        {
+          "component": "total_cap",
+          "source": "See total_cap field",
+          "note": "Shows nothing when total cap is zero or negative."
+        }
       ]
     },
     {
-      "field_id": "ytd_dscr",
-      "display_label": "YTD DSCR",
-      "appears_on": ["snapshot_loan"],
-      "owner": "app-logic",
-      "status": "verified",
-      "basis_selection": "DISPLAY precedence (the raw field is ALWAYS the computed figure, which is what subtotals weight): (1) debt-free -> N/A; (2) development -> 'Dev' (unconditional since 2026-09-01); (3) a seeded/typed manual entry -> that entry (a stored blank stays a dash); (4) Giant 7 (P0000019) fallback when computed is None and not dev -> the One Pager's projected-YE DSCR; (5) otherwise the computed YTD DSCR.",
-      "aggregates_use": "the computed figure (ytd_dscr_computed), debt-weighted; manual/display overrides never reach subtotals.",
-      "bases": [
-        {"basis": "computed", "plain": "Year-to-date debt service coverage: YTD NOI divided by (interest + principal balance change).", "origin": "calculated", "source": "Interim IS NOI ÷ (account 5190 interest + balance-sheet principal movement across 2150/2152/2210); payoff months substituted, not account 7060, to avoid double-counting.", "caveats": "Debt-weighted at subtotal. Unlabelled refinancings (The Gallery, Pontchartrain, PMAT) can overstate the denominator until corrected in MRI (Alay). Debt service of 0 -> None."},
-        {"basis": "manual_entry", "plain": "A value entered by an analyst, overriding the computed figure for display only.", "origin": "analyst", "source": "portfolio_snapshot_values (MANUAL_RATIO_SEEDS, 4 vcodes).", "caveats": "'pre-filled — editable' = an unreviewed seed, not an affirmed entry."}
+      "field_id": "one_pager.pe_exposure_on_value",
+      "display_label": "pe_exposure_on_value",
+      "section": "One Pager – Capitalization",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Our position as share of value.",
+      "formula": "pe_exposure_on_value = (debt + pref_equity) ÷ current_valuation × 100",
+      "formula_latex": "\\dfrac{\\text{Debt} + \\text{Pref Equity}}{\\text{Current Valuation}} \\times 100",
+      "formula_is_arithmetic": true,
+      "inputs": [
+        {
+          "component": "debt",
+          "source": "See debt field",
+          "note": ""
+        },
+        {
+          "component": "pref_equity",
+          "source": "See pref_equity field",
+          "note": ""
+        },
+        {
+          "component": "current_valuation",
+          "source": "See current_valuation field",
+          "note": "Shows nothing when the valuation is zero or negative."
+        }
       ]
     },
     {
-      "field_id": "ltv",
-      "display_label": "LTV",
-      "appears_on": ["snapshot_loan"],
-      "owner": "app-logic",
-      "status": "verified",
-      "basis_selection": "DISPLAY precedence (raw is ALWAYS the computed figure): (1) debt-free -> N/A; (2) development -> 'Dev'; (3) a seeded manual entry (all six seeded deals lack a qualifying valuation anyway); (4) debt and valuation both present -> debt ÷ valuation, but WITHHELD and flagged if the raw ratio exceeds 150% ('likely stale debt'); (5) no valuation -> dash, flagged.",
-      "aggregates_use": "the computed figure, debt-weighted over deals with a displayed value.",
-      "bases": [
-        {"basis": "computed", "plain": "Loan-to-value: debt divided by valuation.", "origin": "calculated", "source": "debt ÷ valuation. Valuation = most recent concluded value (mIncomeCapConcludedValue) on/before the prior year-end (Q4 uses its own year-end).", "caveats": "Withheld above the 150% ceiling. Numerator is the same resolve_debt figure, so a dev deal's LTV is committed-over-value. Date parsing is format='mixed' (load-bearing)."},
-        {"basis": "manual_entry", "plain": "An analyst-entered LTV overriding the computed figure for display only.", "origin": "analyst", "source": "portfolio_snapshot_values (MANUAL_RATIO_SEEDS, 6 vcodes).", "caveats": "'pre-filled — editable' = an unreviewed seed."}
+      "field_id": "one_pager.pe_yield_on_exposure",
+      "display_label": "pe_yield_on_exposure",
+      "section": "One Pager – Capitalization",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "NOI return on our position.",
+      "formula": "pe_yield_on_exposure = NOI (actual_ye, else ytd_actual) ÷ (debt + pref_equity)",
+      "formula_latex": "\\dfrac{\\text{NOI}}{\\text{Debt} + \\text{Pref Equity}}",
+      "formula_is_arithmetic": true,
+      "inputs": [
+        {
+          "component": "NOI",
+          "source": "See NOI field (uses dev-overridden debt, not debt_isbs)",
+          "note": "This is the only field that combines capital-stack data with property-performance data. It is only calculated when debt plus preferred equity is above zero and NOI is above zero."
+        },
+        {
+          "component": "debt",
+          "source": "See debt field",
+          "note": ""
+        },
+        {
+          "component": "pref_equity",
+          "source": "See pref_equity field",
+          "note": "Known defect: when the yield can't be calculated it defaults to 0.0 instead of showing nothing (the way the two exposure fields do), so an unavailable yield displays as 0.0%."
+        }
       ]
     },
     {
-      "field_id": "debt_yield",
-      "display_label": "Debt Yield",
-      "appears_on": ["snapshot_loan"],
-      "owner": "app-logic",
-      "status": "verified",
-      "basis_selection": "DISPLAY precedence (raw is ALWAYS the computed figure): (1) debt-free -> N/A; (2) development -> 'Dev'; (3) a seeded manual entry; (4) no debt -> n/a 'no debt balance'; (5) Giant 7 (P0000019) fallback (actual_ye ÷ debt) when quarter NOI is missing; (6) no complete quarter of actual NOI -> n/a; (7) otherwise single-quarter Interim IS NOI × 4 ÷ debt.",
-      "aggregates_use": "the computed figure; manual/display overrides never reach subtotals.",
-      "bases": [
-        {"basis": "computed", "plain": "Debt yield: annualized quarter NOI divided by debt.", "origin": "calculated", "source": "single-quarter Interim IS NOI × 4 ÷ debt (config.IS_ACCOUNTS revenue/expense lists; a quarter missing any of its three months is dropped upstream, so 'incomplete quarter -> None').", "caveats": "A YTD-annualised comparison basis is carried alongside; the two are equal at Q1 and diverge after."},
-        {"basis": "manual_entry", "plain": "An analyst-entered debt yield overriding the computed figure for display only.", "origin": "analyst", "source": "portfolio_snapshot_values (MANUAL_RATIO_SEEDS).", "caveats": "'pre-filled — editable' = an unreviewed seed."}
+      "field_id": "one_pager.current_valuation",
+      "display_label": "current_valuation",
+      "section": "One Pager – Capitalization",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Most recent concluded property value.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "App-published — the app is the system of record for valuations (published from approved valuation cycles). MRI_VAL is download-only, NOT an MRI refresh.",
+          "note": "Comes from the MRI_VAL column mIncomeCapConcludedValue. The valuation date is read with flexible date parsing so mixed date formats still load."
+        }
       ]
     },
     {
-      "field_id": "loan_comment",
-      "display_label": "Loan comment",
-      "appears_on": ["snapshot_loan"],
-      "owner": "analyst",
-      "status": "partial",
-      "basis_selection": "Always an analyst entry.",
-      "bases": [
-        {"basis": "manual_entry", "plain": "Free-text loan commentary written by an analyst.", "origin": "analyst", "source": "Analyst entry.", "caveats": ""}
+      "field_id": "one_pager.valuation_year",
+      "display_label": "valuation_year",
+      "section": "One Pager – Capitalization",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Year of the valuation (also the row label).",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "App-published valuations (system of record) — first present of dtValuation -> dtVal -> dtReported -> dtEntry. MRI_VAL is download-only.",
+          "note": ""
+        }
       ]
     },
     {
-      "field_id": "asset_allocation",
-      "display_label": "Asset Allocation (Summary)",
-      "appears_on": ["snapshot_summary"],
-      "owner": "app-logic",
-      "status": "partial",
-      "basis_selection": "Currently-funded share bucketed by asset type.",
-      "bases": [
-        {"basis": "funded_over_committed_by_asset_type", "plain": "Share of the portfolio by asset type, on a currently-funded basis.", "origin": "calculated", "source": "Currently Funded ÷ Total Commitment, bucketed by asset type. NEEDS TRACE: confirm the exact 'Currently Funded' source field.", "caveats": ""}
+      "field_id": "one_pager.loan_terms_str",
+      "display_label": "loan_terms_str",
+      "section": "One Pager – Capitalization",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Composed loan terms (rate / index / spread / extension / maturity).",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — MRI_Loans (nRate, vIntType, vIndex, vSpread, dtMaturity, extension)",
+          "note": "For a floating-rate loan the display shows 'index + spread' rather than the fixed nRate."
+        }
       ]
     },
     {
-      "field_id": "deal_type_allocation",
-      "display_label": "Deal Type Allocation (Summary)",
-      "appears_on": ["snapshot_summary"],
-      "owner": "app-logic",
-      "status": "needs_trace",
-      "basis_selection": "NEEDS TRACE.",
-      "bases": [
-        {"basis": "by_deal_type", "plain": "Share of the portfolio by deal type.", "origin": "calculated", "source": "NEEDS TRACE.", "caveats": ""}
+      "field_id": "one_pager.second_loan_terms_str",
+      "display_label": "second_loan_terms_str",
+      "section": "One Pager – Capitalization",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Composed terms of a second mortgage.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — MRI_Loans (second mortgage row)",
+          "note": ""
+        }
       ]
     },
     {
-      "field_id": "excluded_deals",
-      "display_label": "Excluded deals (Summary)",
-      "appears_on": ["snapshot_summary"],
-      "owner": "app-logic",
-      "status": "needs_trace",
-      "basis_selection": "NEEDS TRACE: confirm the exclusion rule and reason strings.",
-      "bases": [
-        {"basis": "exclusion_reason", "plain": "Deals left out of a Summary bucket, with the reason.", "origin": "calculated", "source": "NEEDS TRACE.", "caveats": ""}
+      "field_id": "one_pager.rate_cap",
+      "display_label": "rate_cap",
+      "section": "One Pager – Capitalization",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Interest-rate cap on a floating loan.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — MRI_Loans (rate cap)",
+          "note": ""
+        }
       ]
     },
     {
-      "field_id": "sold_label",
-      "display_label": "(Sold) label / annotation",
-      "appears_on": ["snapshot_financial", "snapshot_operating", "snapshot_loan"],
-      "owner": "app-logic",
-      "status": "verified",
-      "basis_selection": "is_sold_as_of: Sale_Status == 'SOLD' AND Sale_Date <= quarter-end (SOLD with no date -> treated as sold). Uses the quarter, not today's date, so history stays stable. Then: kept-despite-sold deals (City West, East Manchester, Camarillo, Outlook) stay on the page labelled '(Sold)', read at their last-held quarter, Debt blanked; foreclosure (City West) also blanks Net ROE; all other sold deals drop off. A parent with null Sale_Status is never treated as sold even if its child is.",
-      "bases": [
-        {"basis": "is_sold_as_of", "plain": "Marks a deal sold as of the quarter.", "origin": "mri", "source": "deals table Sale_Status == 'SOLD' AND Sale_Date <= quarter-end.", "caveats": "On the One Pager a sold deal's debt is suppressed and its Total Cap debt leg zeroed; raw values retained. Any exception fails open (keeps reporting debt)."}
+      "field_id": "one_pager.pe_coupon",
+      "display_label": "pe_coupon",
+      "section": "One Pager – Capitalization",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Preferred-equity coupon (rendered in the cap block).",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "App-built waterfalls.nPercent (PROTECTED_TABLES, never MRI-fed) as the seed, OVERRIDDEN by MRI Prop_Info_DealTerms.pe_coupon only where present and > 0.",
+          "note": "If a deal has an app-built waterfall but no coupon in the MRI deal terms, the app's waterfall coupon is shown. (In the Capitalization block, the MRI deal-terms value takes priority instead.)"
+        }
       ]
     },
     {
-      "field_id": "dev_tag",
-      "display_label": "Dev tag / development-deal annotation",
-      "appears_on": ["snapshot_financial", "snapshot_operating", "snapshot_loan"],
-      "owner": "app-logic",
-      "status": "verified",
-      "basis_selection": "is_dev_deal(strategy): strategy in DEV_STRATEGIES ({'development'} as of 2026-09-01; 'new construction' removed). Strategy = Investment_Strategy if populated, else Lifecycle (proxy). Today Investment_Strategy is 0/110 populated, so Lifecycle decides every classification. Unknown/unclassifiable -> not dev (safe direction).",
-      "bases": [
-        {"basis": "is_dev_deal", "plain": "Marks a development deal.", "origin": "mri", "source": "Investment_Strategy, falling back to Lifecycle, on the deal's inv_map row; checked against config.DEV_STRATEGIES.", "caveats": "Drives One Pager hard-costs debt, Snapshot committed-facility debt, the budget-shift carve-out, the At-Close Year-0 gate, Operating/Loan n/a, and the Excluding-Development subtotal — one definition so they can't disagree. 10 dev deals at 2026-Q2."}
+      "field_id": "one_pager.pe_participation",
+      "display_label": "pe_participation",
+      "section": "One Pager – Capitalization",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "PE participation / profit share (cap block).",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "App-built waterfalls.FXRate (PROTECTED_TABLES, never MRI-fed) as the seed, OVERRIDDEN by MRI Prop_Info_DealTerms.pe_participation only where present and >= 0.",
+          "note": "In the Capitalization block, the MRI deal-terms value takes priority over the waterfall."
+        }
+      ]
+    },
+    {
+      "field_id": "one_pager.economic_occ",
+      "display_label": "economic_occ",
+      "section": "One Pager – Property Performance",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Economic occupancy (pct pts). Columns: ytd_actual · ytd_budget · variance · at_close · actual_ye · uw_ye.",
+      "formula": "ytd_actual = Avg Physical Occ (YTD) − Bad-Debt %;  variance = ytd_actual − ytd_budget",
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "ytd_actual",
+          "source": "MRI — mean(Occ% Jan 1 -> quarter-end) − bad-debt (Interim IS: (4040 + 4043) ÷ |4010|)",
+          "note": "Occupancy comes from the MRI_Occupancy_Download 'Occ%' (or 'OccupancyPercent') column. This figure comes from ISBS (MRI), but if an analyst has uploaded a supplement CSV for this deal and period, the uploaded value is used instead."
+        },
+        {
+          "component": "ytd_budget",
+          "source": "MRI — YTDAvgPctOccupied ×100 − budget bad-debt ((4040 + 4041 + 4043) ÷ |4010|) ×100 over Budget IS YTD range",
+          "note": "The budget side adds account 4041 (Commercial Concessions); the actuals side does not — an intentional mismatch, to match the original Excel. The budget itself usually comes from the isbs_budget_is_supplements CSV, which is the official source for a budget between the time it is imported and the time MRI approves it (normally the case)."
+        },
+        {
+          "component": "at_close",
+          "source": "MRI — Prop_Info_DealTerms.econ_occ_at_close (×100)",
+          "note": ""
+        },
+        {
+          "component": "actual_ye",
+          "source": "Calc — (ytd_actual × 3q + mean(PctOccupied, remaining months) ×100 × (12−3q)) ÷ 12",
+          "note": "In Q4, or when there is no budget, this equals the year-to-date actual. The rest-of-year portion carries no bad-debt adjustment; only the year-to-date portion does."
+        },
+        {
+          "component": "uw_ye",
+          "source": "MRI — (1 − SUM(4030,4031) ÷ |SUM of 4010|) × 100 from Projected IS Dec snapshot",
+          "note": "This figure comes from ISBS (MRI), but if an analyst has uploaded a supplement CSV for this deal and period, the uploaded value is used instead."
+        },
+        {
+          "component": "variance",
+          "source": "Calc — recomputed CLIENT-SIDE in Vue (fmtOccVariance), not the backend variance key",
+          "note": "This number is calculated in two different places in the code (see the variance defect in the dependency map)."
+        }
+      ]
+    },
+    {
+      "field_id": "one_pager.revenue",
+      "display_label": "revenue",
+      "section": "One Pager – Property Performance",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Rental & other income. Columns: ytd_actual · ytd_budget · variance · at_close · actual_ye · uw_ye.",
+      "formula": "actual_ye = ytd_actual + remaining-year budget;  variance = ytd_actual − ytd_budget",
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "at_close",
+          "source": "MRI — Prop_Info_AtClose.at_close_revenue (negated)",
+          "note": ""
+        },
+        {
+          "component": "ytd_actual",
+          "source": "MRI — ISBS Interim IS, config.IS_ACCOUNTS revenue accounts (cumulative)",
+          "note": "This figure comes from ISBS (MRI), but if an analyst has uploaded a supplement CSV for this deal and period, the uploaded value is used instead."
+        },
+        {
+          "component": "ytd_budget",
+          "source": "MRI — ISBS Budget IS revenue accounts",
+          "note": "The budget usually comes from the isbs_budget_is_supplements CSV, which is the official source for a budget between import and MRI approval (normally the case)."
+        },
+        {
+          "component": "uw_ye",
+          "source": "MRI — ISBS Projected IS (Dec) revenue accounts",
+          "note": "This figure comes from ISBS (MRI), but if an analyst has uploaded a supplement CSV for this deal and period, the uploaded value is used instead."
+        },
+        {
+          "component": "actual_ye",
+          "source": "Calc — ytd_actual + remainder Budget",
+          "note": ""
+        },
+        {
+          "component": "variance",
+          "source": "Calc — recomputed client-side in Vue (fmtVariance)",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "field_id": "one_pager.expenses",
+      "display_label": "expenses",
+      "section": "One Pager – Property Performance",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Operating expenses. Columns: ytd_actual · ytd_budget · variance · at_close · actual_ye · uw_ye.",
+      "formula": "actual_ye = ytd_actual + remaining-year budget;  variance = ytd_actual − ytd_budget",
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "at_close",
+          "source": "MRI — Prop_Info_AtClose.at_close_expenses",
+          "note": ""
+        },
+        {
+          "component": "ytd_actual",
+          "source": "MRI — ISBS Interim IS expense accounts + 7070 (tax abatement) folded in",
+          "note": "This figure comes from ISBS (MRI), but if an analyst has uploaded a supplement CSV for this deal and period, the uploaded value is used instead."
+        },
+        {
+          "component": "ytd_budget",
+          "source": "MRI — ISBS Budget IS expense accounts",
+          "note": "The budget usually comes from the isbs_budget_is_supplements CSV, which is the official source for a budget between import and MRI approval (normally the case)."
+        },
+        {
+          "component": "uw_ye",
+          "source": "MRI — ISBS Projected IS (Dec) expense accounts",
+          "note": "This figure comes from ISBS (MRI), but if an analyst has uploaded a supplement CSV for this deal and period, the uploaded value is used instead."
+        },
+        {
+          "component": "actual_ye",
+          "source": "Calc — ytd_actual + remainder Budget",
+          "note": ""
+        },
+        {
+          "component": "variance",
+          "source": "Calc — recomputed client-side in Vue",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "field_id": "one_pager.noi",
+      "display_label": "noi",
+      "section": "One Pager – Property Performance",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Net operating income. Columns: ytd_actual · ytd_budget · variance · at_close · actual_ye · uw_ye.",
+      "formula": "noi = revenue − expenses (each column);  actual_ye = ytd_actual NOI + remainder Budget NOI",
+      "formula_latex": "\\text{NOI} = \\text{Revenue} - \\text{Expenses}",
+      "formula_is_arithmetic": true,
+      "inputs": [
+        {
+          "component": "revenue leg",
+          "source": "See revenue field (negated / credit)",
+          "note": ""
+        },
+        {
+          "component": "expenses leg",
+          "source": "See expenses field (+ abatement SUM of 7070 added to expenses)",
+          "note": ""
+        },
+        {
+          "component": "at_close",
+          "source": "MRI — Prop_Info_AtClose.at_close_noi (negated) + 7070; fallback earliest Dec Projected IS, 7083 netted",
+          "note": "This figure comes from ISBS (MRI), but if an analyst has uploaded a supplement CSV for this deal and period, the uploaded value is used instead."
+        },
+        {
+          "component": "ACCOUNT SET",
+          "source": "Uses one_pager.IS_ACCOUNTS (:1077), NOT config.IS_ACCOUNTS",
+          "note": "The One Pager uses its own account list, which differs from the shared config list: it leaves out 4075 (Other Income) and 5092 (Repairs & Maintenance), keeps 7070 out of Real Estate Taxes (handled separately), and sets Principal to account 7060 where the shared list leaves it empty. Any reference to 'IS_ACCOUNTS' here means the One Pager's own list."
+        },
+        {
+          "component": "variance",
+          "source": "Calc — recomputed client-side in Vue",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "field_id": "one_pager.dscr",
+      "display_label": "dscr",
+      "section": "One Pager – Property Performance",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Debt service coverage. Columns: ytd_actual · ytd_budget · variance · at_close · actual_ye · uw_ye.",
+      "formula": "dscr = NOI ÷ debt service",
+      "formula_latex": "\\text{DSCR} = \\dfrac{\\text{NOI}}{\\text{Debt Service}}",
+      "formula_is_arithmetic": true,
+      "inputs": [
+        {
+          "component": "ytd_actual",
+          "source": "Calc — ytd NOI ÷ (|SUM of 5190 at ytd_date| + BS principal change 2150/2152/2210), gated > 0",
+          "note": "The principal-paid figure is never allowed to go negative. For months where a loan was paid off (MRI_Loans vDateType = 'Paid Off'), the code substitutes the nearest earlier normal month's principal change, or the deal's median paydown."
+        },
+        {
+          "component": "ytd_budget",
+          "source": "Calc — NOI ÷ |SUM(5190 + 7060) over (prior Dec 31, quarter-end] from Budget IS|",
+          "note": "Debt service on the One Pager is accounts 5190 plus 7060. This figure comes from ISBS (MRI), but if an analyst has uploaded a supplement CSV for this deal and period, the uploaded value is used instead."
+        },
+        {
+          "component": "actual_ye",
+          "source": "Calc — (ytd NOI + rem NOI) ÷ (|ytd DS| + |rem DS|)",
+          "note": "This uses a mixed basis: the year-to-date portion is account 5190 plus the change in the balance-sheet loan balance, while the rest-of-year portion is budgeted account 5190 plus 7060."
+        },
+        {
+          "component": "uw_ye",
+          "source": "Calc — NOI uw_ye ÷ |SUM of 7010|",
+          "note": "Underwritten debt service is account 7010. If that account's running total stops growing before month 12, the figure is annualised by multiplying by 12 ÷ months active (this fixed Ascent, which had been showing 10.69x)."
+        },
+        {
+          "component": "at_close",
+          "source": "Calc — −at_close_noi ÷ (|at_close_interest| + |at_close_principal|) from at_close_noi table; fallback calc_amounts(Projected IS, earliest Dec-31)",
+          "note": "Comes from the Prop_Info_AtClose columns at_close_revenue / _expenses / _noi, with revenue and NOI sign-flipped when read. This figure comes from ISBS (MRI), but if an analyst has uploaded a supplement CSV for this deal and period, the uploaded value is used instead."
+        }
+      ]
+    },
+    {
+      "field_id": "one_pager.committed_pe",
+      "display_label": "committed_pe",
+      "section": "One Pager – PE Performance",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Committed preferred equity ('Committed Pref Equity').",
+      "formula": "committed_pe = SUM of | Amt | where is_commitment & non-OP & EffectiveDate <= quarter-end",
+      "formula_latex": "\\text{Committed PE} = \\text{SUM}(|\\text{Amt}|\\ \\text{for commitment rows, non-OP})",
+      "formula_is_arithmetic": true,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — accounting_feed.Amt/.MajorType/.Typename; is_commitment = MajorType~'contrib' AND Typename~'commitment'",
+          "note": "If this comes out as zero, it falls back to the sum of preferred-equity contributions from partner_results."
+        }
+      ]
+    },
+    {
+      "field_id": "one_pager.funded_to_date",
+      "display_label": "funded_to_date",
+      "section": "One Pager – PE Performance",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "PE contributed to date.",
+      "formula": "funded_to_date = SUM of (−Amt) over non-OP, non-commitment rows where MajorType~'contrib'",
+      "formula_latex": "\\text{Funded to Date} = \\text{SUM}(-\\text{Amt}\\ \\text{for contrib, non-OP, non-commitment rows})",
+      "formula_is_arithmetic": true,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — accounting_feed.Amt, non-OP, signed",
+          "note": "Uses signed amounts, not absolute values, so a positive contribution row actually reduces this total."
+        }
+      ]
+    },
+    {
+      "field_id": "one_pager.return_of_capital",
+      "display_label": "return_of_capital",
+      "section": "One Pager – PE Performance",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Capital returned to the PE investor.",
+      "formula": "return_of_capital = SUM of Amt over non-OP rows where MajorType~'distri' AND TypeName~'return of capital' OR 'realized gain'",
+      "formula_latex": "\\text{Return of Capital} = \\text{SUM}(\\text{Amt for non-OP ROC / realized-gain rows})",
+      "formula_is_arithmetic": true,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — accounting_feed.Amt distribution rows, signed",
+          "note": "Realized-gain rows are counted here, but they are not counted in the capital-stack equity netting. That mismatch is what makes the simple 'funded minus return of capital' subtraction wrong (see current_pe_balance below)."
+        }
+      ]
+    },
+    {
+      "field_id": "one_pager.current_pe_balance",
+      "display_label": "current_pe_balance",
+      "section": "One Pager – PE Performance",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Remaining funded balance.",
+      "formula": "current_pe_balance = SUM of seed_states[non-OP].total_capital_outstanding at min(quarter-end, ACTUALS_THROUGH)",
+      "formula_latex": "\\text{Current PE Balance} = \\text{SUM}(\\text{Capital Outstanding, non-OP})",
+      "formula_is_arithmetic": true,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "Waterfall engine seed_states (financials_service._enrich_pe_from_deal_result:1307)",
+          "note": "This is not simply funded-to-date minus return of capital — that subtraction is thrown off by realized-gain rows (for East Manchester it gives −$1,539,662 versus the engine's correct 0). The subtraction is only used as a fallback when the full data isn't available."
+        }
+      ]
+    },
+    {
+      "field_id": "one_pager.remaining_to_fund",
+      "display_label": "remaining_to_fund",
+      "section": "One Pager – PE Performance",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Commitment still to fund.",
+      "formula": "remaining_to_fund = max(0, committed_pe − funded_to_date)",
+      "formula_latex": "\\text{Remaining to Fund} = \\max\\!\\left(0,\\ \\text{Committed PE} - \\text{Funded to Date}\\right)",
+      "formula_is_arithmetic": true,
+      "inputs": [
+        {
+          "component": "committed_pe",
+          "source": "See committed_pe field",
+          "note": ""
+        },
+        {
+          "component": "funded_to_date",
+          "source": "See funded_to_date field",
+          "note": "Set to 0.0 when committed PE is zero and the partner_results contribution fallback is used."
+        }
+      ]
+    },
+    {
+      "field_id": "one_pager.roe_to_date",
+      "display_label": "roe_to_date",
+      "section": "One Pager – PE Performance",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Return on equity to date (annualised, time-weighted — NOT IRR).",
+      "formula": "roe_to_date = SUM(distributions, inception→quarter-end) ÷ weighted-avg capital ÷ years",
+      "formula_latex": "\\text{ROE} = \\frac{\\text{SUM}(\\text{Distributions, inception}\\to\\text{quarter-end})}{\\text{Avg Capital} \\times \\text{years}}",
+      "formula_is_arithmetic": true,
+      "inputs": [
+        {
+          "component": "Distributions (numerator)",
+          "source": "MRI — accounting_feed.Amt, non-OP, EffectiveDate <= quarter-end, InvestmentID->vcode",
+          "note": "Distributions are netted against the positive (contribution) rows so that only actual returns of capital reduce the capital balance."
+        },
+        {
+          "component": "Weighted-avg capital (denominator)",
+          "source": "Calc — SUMPRODUCT(balance, days) ÷ total_days. This is the time-weighted average capital: each period's capital balance is weighted by how many days it was held, so a balance held for 90 days counts more than one held for 10.",
+          "note": ""
+        },
+        {
+          "component": "→ How each period's balance is built",
+          "source": "Calc from the MRI accounting_feed — start with the prior period's balance, add contributions (cash in), and subtract returns of capital (cash out). So each period's balance = prior balance + that period's change.",
+          "note": ""
+        },
+        {
+          "component": "→ The zero floor",
+          "source": "Calc — the balance can never drop below zero. Once an investor has been fully repaid, their balance stays at 0 instead of going negative.",
+          "note": ""
+        },
+        {
+          "component": "years",
+          "source": "Calc — total_days ÷ 365; inception = earliest capital-event date",
+          "note": "The whole ROE returns 0.0 if there are no contributions or events, if the day count is zero, or if the weighted-average capital is zero or below."
+        },
+        {
+          "component": "45-day grace",
+          "source": "Look-forward window: pref distributions (TypeID 1019 or name ~ 'preferred/pref return'), non-OP, non-commitment, in (quarter-end, +45d] pulled back to quarter-end",
+          "note": "Only distributions in the 45-day window are pulled back to quarter-end; contributions and returns of capital in that window are not — this asymmetry is intentional. (This is a different rule from the 45-day preferred-return compounding in waterfall.py, which does not apply here.)"
+        }
+      ]
+    },
+    {
+      "field_id": "one_pager.uw_roe_to_date",
+      "display_label": "uw_roe_to_date",
+      "section": "One Pager – PE Performance",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Underwritten ROE to date (same calc on underwritten flows).",
+      "formula": "uw_roe_to_date = SUM(UW distributions) ÷ UW weighted-avg capital ÷ years",
+      "formula_latex": "\\text{UW ROE} = \\frac{\\text{SUM}(\\text{UW Distributions})}{\\text{Avg UW Capital} \\times \\text{years}}",
+      "formula_is_arithmetic": true,
+      "inputs": [
+        {
+          "component": "UW distributions (numerator)",
+          "source": "MRI ISBS_Download 'Projected IS', account 7071 — PLUS isbs_uw_supplements (analyst-loaded CSV, NOT MRI-refreshed; the CSV row WINS on collision). Read as abs(periodic) — not sign-preserving.",
+          "note": "Read as an absolute value, not sign-preserving (this corrects an earlier note that said otherwise)."
+        },
+        {
+          "component": "UW contributions & returns of capital (denominator)",
+          "source": "MRI ISBS_Download 'Projected IS', account 7073 — PLUS isbs_uw_supplements (analyst-loaded CSV backfill, NOT MRI-refreshed). Sign-preserving: MRI-positive = contribution. This is where the underwritten CONTRIBUTIONS come from.",
+          "note": "Duplicates are removed by matching on date and amount, because the same row can arrive from both MRI and the supplement CSV — for example Burton's 6/30/2025 contribution of $26,597,500 shows up in both."
+        },
+        {
+          "component": "YTD->periodic conversion",
+          "source": "Calc — base ISBS rows are YTD-cumulative: periodic = cumulative − prior-same-year (first entry of year = cumulative)",
+          "note": "The base MRI rows are year-to-date running totals and get converted to per-period amounts; supplement CSV rows are already per-period. Account 7073 is de-duplicated by date and rounded amount because Burton's contribution was otherwise double-counted across MRI and the supplement CSV, so this de-duplication genuinely matters."
+        },
+        {
+          "component": "gating",
+          "source": "Only runs when the deal has actual capital_events",
+          "note": "If a deal has no actual accounting activity, it gets no underwritten ROE either, even when underwritten figures exist."
+        }
+      ]
+    },
+    {
+      "field_id": "one_pager.accrued_balance",
+      "display_label": "accrued_balance",
+      "section": "One Pager – PE Performance",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Accrued preferred-return balance owed.",
+      "formula": "accrued_balance = max(0, accrued − | pref paid in the 45-day grace window |)",
+      "formula_latex": "\\text{Accrued Balance} = \\max\\!\\left(0,\\ \\text{Accrued} - \\lvert \\text{Pref Paid}_{\\text{grace}} \\rvert\\right)",
+      "formula_is_arithmetic": true,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "App — reports_service.deal_accrued_pref via build_pref_balance_detail; fallback SUM of seed_states[non-OP].(pref_unpaid_compounded + add_pref_accrued_current_year)",
+          "note": "The preferred rate used is, in order: (1) the MRI Prop_Info_DealTerms pe_coupon if it exists, otherwise (2) the matching preferred step in the app-built waterfall, otherwise (3) any preferred step on the deal. The accrued amount itself is computed by the app (deal_accrued_pref)."
+        }
+      ]
+    },
+    {
+      "field_id": "one_pager.econ_comments",
+      "display_label": "econ_comments",
+      "section": "One Pager – Comments",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Economic / operating commentary.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "Analyst entry",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "field_id": "one_pager.business_plan_comments",
+      "display_label": "business_plan_comments",
+      "section": "One Pager – Comments",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Business-plan commentary.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "Analyst entry",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "field_id": "one_pager.accrued_pref_comment",
+      "display_label": "accrued_pref_comment",
+      "section": "One Pager – Comments",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Accrued-pref commentary.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "Analyst entry",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "field_id": "one_pager.pe_cap_comment",
+      "display_label": "pe_cap_comment",
+      "section": "One Pager – Comments",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "PE / capitalization commentary.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "Analyst entry",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "field_id": "one_pager.occupancy_series",
+      "display_label": "Occupancy series",
+      "section": "One Pager – Chart",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Trailing-quarter occupancy series.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — MRI_Occupancy_Download 'Occ%'",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "field_id": "one_pager.noi_actual_series",
+      "display_label": "NOI_Actual series",
+      "section": "One Pager – Chart",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Trailing-quarter actual NOI series.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — ISBS Interim IS (config.IS_ACCOUNTS)",
+          "note": "This figure comes from ISBS (MRI), but if an analyst has uploaded a supplement CSV for this deal and period, the uploaded value is used instead."
+        }
+      ]
+    },
+    {
+      "field_id": "one_pager.noi_uw_series",
+      "display_label": "NOI_UW series",
+      "section": "One Pager – Chart",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Trailing-quarter underwritten NOI series.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — ISBS Projected IS",
+          "note": "This figure comes from ISBS (MRI), but if an analyst has uploaded a supplement CSV for this deal and period, the uploaded value is used instead."
+        }
+      ]
+    },
+    {
+      "field_id": "one_pager.sold_header_suffix",
+      "display_label": "(Sold) header suffix",
+      "section": "One Pager – Annotation",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "'(Sold)' suffix in the deal header.",
+      "formula": "sold = Lifecycle == 'SOLD' (no quarter comparison)",
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "App / MRI — the Vue computes: Sale_Status == 'SOLD' (Sale_Status is analyst/app-maintained, NOT MRI-refreshed) OR Lifecycle == 'SOLD' (Lifecycle is MRI-refreshed).",
+          "note": "Uses a different rule from the Snapshot's sold label: it does no quarter comparison and it treats a Lifecycle value of 'SOLD' as sold."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_financial.debt",
+      "display_label": "debt",
+      "section": "Snapshot – Financial",
+      "appears_on": [
+        "snapshot_financial"
+      ],
+      "status": "Verified",
+      "definition": "Debt (see One Pager debt).",
+      "formula": "resolve_debt(cap_stack, dev, committed)",
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "Same resolver as One Pager (ISBS / MRI_Loans / committed facility)",
+          "note": "Shows 'N/A' when debt is not available, and is left blank for sold deals. This figure comes from ISBS (MRI), but if an analyst has uploaded a supplement CSV for this deal and period, the uploaded value is used instead."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_financial.total_pref",
+      "display_label": "total_pref",
+      "section": "Snapshot – Financial",
+      "appears_on": [
+        "snapshot_financial"
+      ],
+      "status": "Verified",
+      "definition": "Total committed preferred equity.",
+      "formula": "total_pref = committed pref, else funded fallback",
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — accounting_feed.Amt commitment rows (non-OP); funded fallback = pref_equity",
+          "note": "Includes sold deals."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_financial.ptr_equity",
+      "display_label": "ptr_equity",
+      "section": "Snapshot – Financial",
+      "appears_on": [
+        "snapshot_financial"
+      ],
+      "status": "Verified",
+      "definition": "Operating-partner equity.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — accounting_feed.Amt, InvestorID 'OP'",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_financial.total_cap",
+      "display_label": "total_cap",
+      "section": "Snapshot – Financial",
+      "appears_on": [
+        "snapshot_financial"
+      ],
+      "status": "Verified",
+      "definition": "Total capitalization (re-footed on printed debt).",
+      "formula": "total_cap = debt + total_pref + ptr_equity",
+      "formula_latex": "\\text{Total Cap} = \\text{Debt} + \\text{Total Pref} + \\text{Partner Equity}",
+      "formula_is_arithmetic": true,
+      "inputs": [
+        {
+          "component": "debt",
+          "source": "See debt",
+          "note": "Shows 0 when the deal is sold and suppressed."
+        },
+        {
+          "component": "total_pref",
+          "source": "See total_pref",
+          "note": ""
+        },
+        {
+          "component": "ptr_equity",
+          "source": "See ptr_equity",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_financial.pct_of_pref",
+      "display_label": "pct_of_pref",
+      "section": "Snapshot – Financial",
+      "appears_on": [
+        "snapshot_financial"
+      ],
+      "status": "Verified",
+      "definition": "Commitment as share of total pref.",
+      "formula": "deal row: pct_of_pref = lookthrough_pct_pe;  subtotal: = SUM of total_commitment ÷ SUM of total_pref",
+      "formula_latex": "\\%\\,\\text{of Pref} = \\frac{\\text{SUM}(\\text{Total Commitment})}{\\text{SUM}(\\text{Total Pref})}",
+      "formula_is_arithmetic": true,
+      "inputs": [
+        {
+          "component": "deal row",
+          "source": "MRI/App — entry['lookthrough_pct_pe'] directly (PE basis, re-normalised vs non-OP owners)",
+          "note": "These match by definition, because total commitment is calculated as this percentage times total preferred."
+        },
+        {
+          "component": "subtotal",
+          "source": "Calc — SUM of total_commitment ÷ SUM of total_pref",
+          "note": "The Portfolio Total uses this same rule, so it won't match the 68% in the old PDF, which was computed on a different basis."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_financial.invested",
+      "display_label": "invested",
+      "section": "Snapshot – Financial",
+      "appears_on": [
+        "snapshot_financial"
+      ],
+      "status": "Verified",
+      "definition": "Funded portion of the PE commitment.",
+      "formula": "invested = lookthrough_pct_pe × funded_pref",
+      "formula_latex": "\\text{Invested} = \\text{lookthrough\\_pct\\_pe} \\times \\text{Funded Pref}",
+      "formula_is_arithmetic": true,
+      "inputs": [
+        {
+          "component": "funded_pref",
+          "source": "MRI — cap_stack['pref_equity'] (funded pref, read explicitly)",
+          "note": "This reads the funded-preferred figure, so it does not follow the Total Pref basis switch."
+        },
+        {
+          "component": "lookthrough_pct_pe",
+          "source": "App — lookthrough_pct_pe (NOT lookthrough_pct)",
+          "note": "Includes 4 sold deals."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_financial.un_funded",
+      "display_label": "un_funded",
+      "section": "Snapshot – Financial",
+      "appears_on": [
+        "snapshot_financial"
+      ],
+      "status": "Verified",
+      "definition": "Remaining commitment to fund.",
+      "formula": "un_funded = total_commitment − invested",
+      "formula_latex": "\\text{Un-funded} = \\text{Total Commitment} - \\text{Invested}",
+      "formula_is_arithmetic": true,
+      "inputs": [
+        {
+          "component": "total_commitment",
+          "source": "See total_commitment",
+          "note": ""
+        },
+        {
+          "component": "invested",
+          "source": "See invested",
+          "note": "Shows nothing if either side of the subtraction is missing."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_financial.total_commitment",
+      "display_label": "total_commitment",
+      "section": "Snapshot – Financial",
+      "appears_on": [
+        "snapshot_financial"
+      ],
+      "status": "Verified",
+      "definition": "Total committed capital.",
+      "formula": "total_commitment = lookthrough_pct_pe × (total_pref if commitment_basis=='committed_pe' else funded_pref)",
+      "formula_latex": "\\text{Total Commitment} = \\text{lookthrough\\_pct\\_pe} \\times \\text{Total Pref}",
+      "formula_is_arithmetic": true,
+      "inputs": [
+        {
+          "component": "total_pref",
+          "source": "MRI — resolve_committed_pref(cap) = cap_stack['committed_pe']",
+          "note": "Comes in two variants: total_commitment_if_funded and total_commitment_if_committed."
+        },
+        {
+          "component": "lookthrough_pct_pe",
+          "source": "App — lookthrough_pct_pe (NOT lookthrough_pct)",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_financial.itd_distributions",
+      "display_label": "itd_distributions",
+      "section": "Snapshot – Financial",
+      "appears_on": [
+        "snapshot_financial"
+      ],
+      "status": "Verified",
+      "definition": "Inception-to-date distributions.",
+      "formula": "subtotal = SUM of member deals' entered ITD",
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "per-deal entry",
+          "source": "Analyst — portfolio_snapshot_values",
+          "note": "The fee-allocation part of this is still to be finalized."
+        },
+        {
+          "component": "itd_source",
+          "source": "Provenance string: 'sum of N of M member deals'",
+          "note": "Shown on subtotal rows."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_financial.net_roe",
+      "display_label": "net_roe",
+      "section": "Snapshot – Financial",
+      "appears_on": [
+        "snapshot_financial"
+      ],
+      "status": "Verified",
+      "definition": "Net return on equity.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "Analyst — portfolio_snapshot_values (no system formula)",
+          "note": "City West (in foreclosure) can't have a value entered."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_financial.annotations",
+      "display_label": "annotations",
+      "section": "Snapshot – Financial",
+      "appears_on": [
+        "snapshot_financial"
+      ],
+      "status": "Verified",
+      "definition": "Row / header annotations.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "sold_label",
+          "source": "MRI deals table via is_sold_as_of (Sale_Status / Sale_Date) — but Sale_Status / Sale_Date are analyst/app-maintained, NOT overwritten by an MRI refresh.",
+          "note": ""
+        },
+        {
+          "component": "dev tag",
+          "source": "MRI — is_dev_deal",
+          "note": "Shows a 'Dev' tag. The dev classification comes from the deal's Lifecycle value (which MRI refreshes); the preferred Investment_Strategy field is not refreshed by MRI."
+        },
+        {
+          "component": "pdf_na_cells (* star)",
+          "source": "App — kept-despite-sold / n-a map",
+          "note": ""
+        },
+        {
+          "component": "flags[] (! warn dots)",
+          "source": "App — per-deal flags",
+          "note": ""
+        },
+        {
+          "component": "ownership_detail / ownership_unresolved",
+          "source": "App — ownership tree; tooltip on the 4 Zone-B cells",
+          "note": "Ownership splits are placeholders for now (for example 13/77)."
+        },
+        {
+          "component": "footnotes",
+          "source": "Analyst text + colMark()/dealMark() anchors",
+          "note": ""
+        },
+        {
+          "component": "deal_count",
+          "source": "App — member-deal count on subtotals",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_financial.dev_tag",
+      "display_label": "Dev tag",
+      "section": "Snapshot – Financial",
+      "appears_on": [
+        "snapshot_financial"
+      ],
+      "status": "Verified",
+      "definition": "The 'Dev' marker shown on a development deal's row.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — is_dev_deal: the deal is classified as development from its Lifecycle value, which MRI refreshes. The preferred Investment_Strategy field is not refreshed by MRI and is empty on every deal, so Lifecycle decides.",
+          "note": "Same marker also listed among the components of this tab's annotations row."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_financial.sold_label",
+      "display_label": "(Sold) label",
+      "section": "Snapshot – Financial",
+      "appears_on": [
+        "snapshot_financial"
+      ],
+      "status": "Verified",
+      "definition": "The '(Sold)' marker shown on a sold deal's row.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI deals table via is_sold_as_of (Sale_Status / Sale_Date). Sale_Status and Sale_Date are analyst/app-maintained — NOT overwritten by an MRI refresh.",
+          "note": "Same marker also listed among the components of this tab's annotations row."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_operating.econ_occ",
+      "display_label": "econ_occ",
+      "section": "Snapshot – Operating",
+      "appears_on": [
+        "snapshot_operating"
+      ],
+      "status": "Verified",
+      "definition": "Economic occupancy (pct pts).",
+      "formula": "select: projected_ye -> ytd_actual -> at_close",
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "projected_ye",
+          "source": "MRI — ytd_actual blended with MRI_Budget_Econ_Occ.PctOccupied",
+          "note": "In Q4, or when there's no budget, this equals the year-to-date actual."
+        },
+        {
+          "component": "ytd_actual",
+          "source": "MRI — MRI_Occupancy_Download 'Occ%' − bad-debt",
+          "note": ""
+        },
+        {
+          "component": "at_close",
+          "source": "MRI — Prop_Info_DealTerms.econ_occ_at_close",
+          "note": "Hidden when the deal has been owned less than 3 months, is a development deal, or is temporarily suppressed."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_operating.noi_at_close",
+      "display_label": "noi_at_close",
+      "section": "Snapshot – Operating",
+      "appears_on": [
+        "snapshot_operating"
+      ],
+      "status": "Verified",
+      "definition": "NOI underwritten at acquisition.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — Prop_Info_AtClose.at_close_noi (+7070; fallback earliest Dec Projected IS)",
+          "note": "A 'year-0' rule zeroes out development deals that have no 2015-12-31 row. This figure comes from ISBS (MRI), but if an analyst has uploaded a supplement CSV for this deal and period, the uploaded value is used instead."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_operating.noi_uw_ye",
+      "display_label": "noi_uw_ye",
+      "section": "Snapshot – Operating",
+      "appears_on": [
+        "snapshot_operating"
+      ],
+      "status": "Verified",
+      "definition": "Underwritten year-end NOI.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — ISBS 'Projected IS' last December, config.IS_ACCOUNTS + 7070",
+          "note": "This figure comes from ISBS (MRI), but if an analyst has uploaded a supplement CSV for this deal and period, the uploaded value is used instead."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_operating.noi_projected_ye",
+      "display_label": "noi_projected_ye",
+      "section": "Snapshot – Operating",
+      "appears_on": [
+        "snapshot_operating"
+      ],
+      "status": "Verified",
+      "definition": "Projected year-end NOI.",
+      "formula": "noi_projected_ye = ytd_actual NOI + remaining-year Budget NOI",
+      "formula_latex": "\\text{NOI Projected YE} = \\text{YTD Actual NOI} + \\text{Remaining Budget NOI}",
+      "formula_is_arithmetic": true,
+      "inputs": [
+        {
+          "component": "ytd_actual NOI",
+          "source": "MRI — ISBS Interim IS (YTD cumulative)",
+          "note": "This figure comes from ISBS (MRI), but if an analyst has uploaded a supplement CSV for this deal and period, the uploaded value is used instead."
+        },
+        {
+          "component": "remaining Budget NOI",
+          "source": "MRI — ISBS Budget IS (rest of year)",
+          "note": "Four cases: (1) actuals and budget present → year-to-date actual plus rest-of-year budget; (2) actuals but no budget → year-to-date actual; (3) no actuals but budget → full-year budget; (4) neither → blank. The budget usually comes from the isbs_budget_is_supplements CSV, the official source until MRI approves it."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_operating.expected_growth",
+      "display_label": "expected_growth",
+      "section": "Snapshot – Operating",
+      "appears_on": [
+        "snapshot_operating"
+      ],
+      "status": "Verified",
+      "definition": "Expected NOI growth.",
+      "formula": "expected_growth = (noi_uw_ye − noi_at_close) ÷ noi_at_close",
+      "formula_latex": "\\text{Expected Growth} = \\dfrac{\\text{NOI U/W YE} - \\text{NOI At Close}}{\\text{NOI At Close}}",
+      "formula_is_arithmetic": true,
+      "inputs": [
+        {
+          "component": "noi_uw_ye",
+          "source": "See noi_uw_ye",
+          "note": ""
+        },
+        {
+          "component": "noi_at_close",
+          "source": "See noi_at_close",
+          "note": "Growth is (later value − base value) ÷ base value, and shows nothing when the base is missing or zero. The subtotal is computed from the summed values."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_operating.actual_growth",
+      "display_label": "actual_growth",
+      "section": "Snapshot – Operating",
+      "appears_on": [
+        "snapshot_operating"
+      ],
+      "status": "Verified",
+      "definition": "Realized NOI growth.",
+      "formula": "actual_growth = (noi_projected_ye − noi_at_close) ÷ noi_at_close",
+      "formula_latex": "\\text{Actual Growth} = \\dfrac{\\text{NOI Projected YE} - \\text{NOI At Close}}{\\text{NOI At Close}}",
+      "formula_is_arithmetic": true,
+      "inputs": [
+        {
+          "component": "noi_projected_ye",
+          "source": "See noi_projected_ye (sourced via _OP_NOI_SOURCE)",
+          "note": ""
+        },
+        {
+          "component": "noi_at_close",
+          "source": "See noi_at_close",
+          "note": "The base for this growth is the At Close figure, not the underwritten year-end figure."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_operating.operating_comment",
+      "display_label": "operating_comment",
+      "section": "Snapshot – Operating",
+      "appears_on": [
+        "snapshot_operating"
+      ],
+      "status": "Verified",
+      "definition": "Free-text operating commentary.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "Analyst entry",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_operating.annotations",
+      "display_label": "annotations",
+      "section": "Snapshot – Operating",
+      "appears_on": [
+        "snapshot_operating"
+      ],
+      "status": "Verified",
+      "definition": "Row annotations.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "sold_label",
+          "source": "MRI deals table via is_sold_as_of (Sale_Status / Sale_Date) — but Sale_Status / Sale_Date are analyst/app-maintained, NOT overwritten by an MRI refresh.",
+          "note": ""
+        },
+        {
+          "component": "dev tag",
+          "source": "MRI — is_dev_deal",
+          "note": "Shows a 'Dev' tag. The dev classification comes from the deal's Lifecycle value (which MRI refreshes); the preferred Investment_Strategy field is not refreshed by MRI."
+        },
+        {
+          "component": "months_owned ('New' tag)",
+          "source": "App — months_owned() < threshold",
+          "note": ""
+        },
+        {
+          "component": "dev_display_exception (* star)",
+          "source": "App — DEV_DISPLAY_EXCEPTIONS",
+          "note": ""
+        },
+        {
+          "component": "flags[] (! dots)",
+          "source": "App — per-deal flags",
+          "note": ""
+        },
+        {
+          "component": "deal_count",
+          "source": "App — subtotal member count",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_operating.dev_tag",
+      "display_label": "Dev tag",
+      "section": "Snapshot – Operating",
+      "appears_on": [
+        "snapshot_operating"
+      ],
+      "status": "Verified",
+      "definition": "The 'Dev' marker shown on a development deal's row.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — is_dev_deal: the deal is classified as development from its Lifecycle value, which MRI refreshes. The preferred Investment_Strategy field is not refreshed by MRI and is empty on every deal, so Lifecycle decides.",
+          "note": "Same marker also listed among the components of this tab's annotations row."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_operating.sold_label",
+      "display_label": "(Sold) label",
+      "section": "Snapshot – Operating",
+      "appears_on": [
+        "snapshot_operating"
+      ],
+      "status": "Verified",
+      "definition": "The '(Sold)' marker shown on a sold deal's row.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI deals table via is_sold_as_of (Sale_Status / Sale_Date). Sale_Status and Sale_Date are analyst/app-maintained — NOT overwritten by an MRI refresh.",
+          "note": "Same marker also listed among the components of this tab's annotations row."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_loan.rate",
+      "display_label": "rate",
+      "section": "Snapshot – Loan",
+      "appears_on": [
+        "snapshot_loan"
+      ],
+      "status": "Verified",
+      "definition": "Interest rate / index / spread.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — MRI_Loans (nRate, vIntType, vIndex, vSpread)",
+          "note": "Shows 'N/A' for debt-free deals and is blank for sold deals."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_loan.maturity",
+      "display_label": "maturity",
+      "section": "Snapshot – Loan",
+      "appears_on": [
+        "snapshot_loan"
+      ],
+      "status": "Verified",
+      "definition": "Maturity date.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — MRI_Loans.dtMaturity (fallback dtEvent)",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_loan.debt",
+      "display_label": "debt",
+      "section": "Snapshot – Loan",
+      "appears_on": [
+        "snapshot_loan"
+      ],
+      "status": "Verified",
+      "definition": "Debt (resolve_debt).",
+      "formula": "resolve_debt(...)",
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "Same resolver as One Pager",
+          "note": "One shared piece of logic decides the debt figure for both the Financial and Loan sections."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_loan.ytd_dscr",
+      "display_label": "ytd_dscr",
+      "section": "Snapshot – Loan",
+      "appears_on": [
+        "snapshot_loan"
+      ],
+      "status": "Verified",
+      "definition": "Year-to-date DSCR (read-only pass-through — Snapshot computes nothing).",
+      "formula": "ytd_dscr = one_pager.get_property_performance().dscr.ytd_actual",
+      "formula_latex": "\\text{YTD DSCR} = \\dfrac{\\text{YTD NOI}}{\\text{Interest} + \\text{Principal Paid}}",
+      "formula_is_arithmetic": true,
+      "inputs": [
+        {
+          "component": "computed",
+          "source": "MRI — engine is one_pager.get_property_performance() (Interim IS 5190 + BS principal)",
+          "note": "For development deals this shows nothing rather than the computed figure; Giant 7 (P0000019) falls back to the projected figure. This figure comes from ISBS (MRI), but if an analyst has uploaded a supplement CSV for this deal and period, the uploaded value is used instead."
+        },
+        {
+          "component": "manual override (display)",
+          "source": "Analyst — portfolio_snapshot_values (4 seeds)",
+          "note": "Subtotals are weighted by the value the row actually displays — the analyst-typed value where there is one, otherwise the computed value. Typed overrides do feed into subtotals (as of 2026-09-02)."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_loan.ltv",
+      "display_label": "ltv",
+      "section": "Snapshot – Loan",
+      "appears_on": [
+        "snapshot_loan"
+      ],
+      "status": "Verified",
+      "definition": "Loan-to-value.",
+      "formula": "ltv = debt ÷ valuation",
+      "formula_latex": "\\text{LTV} = \\dfrac{\\text{Debt}}{\\text{Valuation}}",
+      "formula_is_arithmetic": true,
+      "inputs": [
+        {
+          "component": "debt",
+          "source": "See debt (resolve_debt)",
+          "note": ""
+        },
+        {
+          "component": "valuation",
+          "source": "App-published valuation (mIncomeCapConcludedValue via _latest_valuation), scoped to report / prior year-end — the app is the system of record, NOT an MRI feed.",
+          "note": "When LTV would be above 1.50, and on development deals, the LTV is set to nothing at all — the raw value is not kept behind the scenes."
+        },
+        {
+          "component": "manual override (display)",
+          "source": "Analyst — portfolio_snapshot_values (6 seeds)",
+          "note": "A typed override feeds subtotals through the displayed value; a typed percentage is divided by 100."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_loan.debt_yield",
+      "display_label": "debt_yield",
+      "section": "Snapshot – Loan",
+      "appears_on": [
+        "snapshot_loan"
+      ],
+      "status": "Verified",
+      "definition": "Debt yield.",
+      "formula": "debt_yield = (quarter NOI × 4) ÷ debt",
+      "formula_latex": "\\text{Debt Yield} = \\dfrac{\\text{Quarter NOI} \\times 4}{\\text{Debt}}",
+      "formula_is_arithmetic": true,
+      "inputs": [
+        {
+          "component": "quarter NOI",
+          "source": "MRI — single-quarter ISBS Interim IS (config.IS_ACCOUNTS)",
+          "note": "A companion figure, dy_ytd, is (year-to-date NOI ÷ months × 12) ÷ debt. This figure comes from ISBS (MRI), but if an analyst has uploaded a supplement CSV for this deal and period, the uploaded value is used instead."
+        },
+        {
+          "component": "debt",
+          "source": "See debt (resolve_debt)",
+          "note": ""
+        },
+        {
+          "component": "precedence",
+          "source": "dev -> none; debt_free -> pass; no debt -> n/a; Giant 7 -> actual_ye ÷ debt; q_noi None -> n/a",
+          "note": "Feeds subtotals through the displayed value."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_loan.loan_comment",
+      "display_label": "loan_comment",
+      "section": "Snapshot – Loan",
+      "appears_on": [
+        "snapshot_loan"
+      ],
+      "status": "Verified",
+      "definition": "Free-text loan commentary.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "Analyst entry",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_loan.annotations",
+      "display_label": "annotations",
+      "section": "Snapshot – Loan",
+      "appears_on": [
+        "snapshot_loan"
+      ],
+      "status": "Verified",
+      "definition": "Row annotations.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "sold_label",
+          "source": "MRI deals table via is_sold_as_of (Sale_Status / Sale_Date) — but Sale_Status / Sale_Date are analyst/app-maintained, NOT overwritten by an MRI refresh.",
+          "note": ""
+        },
+        {
+          "component": "dev tag",
+          "source": "MRI — is_dev_deal",
+          "note": "Shows a 'Dev' tag. The dev classification comes from the deal's Lifecycle value (which MRI refreshes); the preferred Investment_Strategy field is not refreshed by MRI."
+        },
+        {
+          "component": "loans_inherited_from_children",
+          "source": "App — parent inheriting co-terminous child loans",
+          "note": ""
+        },
+        {
+          "component": "terms_various",
+          "source": "App — multi-loan marker + termsTitle() tooltip",
+          "note": ""
+        },
+        {
+          "component": "ltv_dev_exception (* star)",
+          "source": "App — dev LTV exception",
+          "note": ""
+        },
+        {
+          "component": "ltv_review_flag",
+          "source": "App — raw LTV > 150% withhold",
+          "note": ""
+        },
+        {
+          "component": "*_is_manual (cell shading)",
+          "source": "App — manual-entry shading",
+          "note": ""
+        },
+        {
+          "component": "flags[] (! dots)",
+          "source": "App — per-deal flags",
+          "note": ""
+        },
+        {
+          "component": "deal_count",
+          "source": "App — subtotal member count",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_loan.dev_tag",
+      "display_label": "Dev tag",
+      "section": "Snapshot – Loan",
+      "appears_on": [
+        "snapshot_loan"
+      ],
+      "status": "Verified",
+      "definition": "The 'Dev' marker shown on a development deal's row.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — is_dev_deal: the deal is classified as development from its Lifecycle value, which MRI refreshes. The preferred Investment_Strategy field is not refreshed by MRI and is empty on every deal, so Lifecycle decides.",
+          "note": "Same marker also listed among the components of this tab's annotations row."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_loan.sold_label",
+      "display_label": "(Sold) label",
+      "section": "Snapshot – Loan",
+      "appears_on": [
+        "snapshot_loan"
+      ],
+      "status": "Verified",
+      "definition": "The '(Sold)' marker shown on a sold deal's row.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI deals table via is_sold_as_of (Sale_Status / Sale_Date). Sale_Status and Sale_Date are analyst/app-maintained — NOT overwritten by an MRI refresh.",
+          "note": "Same marker also listed among the components of this tab's annotations row."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_summary.asset_allocation",
+      "display_label": "asset_allocation",
+      "section": "Snapshot – Summary",
+      "appears_on": [
+        "snapshot_summary"
+      ],
+      "status": "Verified",
+      "definition": "Portfolio funded vs committed by asset type (two columns, NOT a ratio).",
+      "formula": "funded = lookthrough_pct_pe × pref_equity;  committed = lookthrough_pct_pe × committed_pe;  funded_pct = bucket.funded ÷ total_funded;  committed_pct = bucket.committed ÷ total_committed",
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "funded",
+          "source": "App — lookthrough_pct_pe × cap_stack['pref_equity']",
+          "note": "This is the same amount as 'invested' in the Financial section. It's grouped by a rolled-up asset type (the various retail types roll into Retail, self storage into Self-Storage)."
+        },
+        {
+          "component": "committed",
+          "source": "App — lookthrough_pct_pe × cap_stack['committed_pe']",
+          "note": "The 'Funded vs. Total Commitment' heading is showing two columns side by side, not a single ratio."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_summary.deal_type_allocation",
+      "display_label": "deal_type_allocation",
+      "section": "Snapshot – Summary",
+      "appears_on": [
+        "snapshot_summary"
+      ],
+      "status": "Verified",
+      "definition": "Portfolio funded by deal type.",
+      "formula": "map_deal_type(strategy) over DEAL_TYPE_MAP -> {Value-Add, Income, New Construction}, funded only",
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "bucketed funded",
+          "source": "App — DEAL_TYPE_MAP, CALIBRATED (not literal)",
+          "note": "Because Investment_Strategy is empty on all 110 deals, the deal's Lifecycle value stands in for it, and the mapping was worked out to hit the three dollar totals in the old PDF: 'new construction' maps to Income, 'development' maps to New Construction. A literal, unmapped version is also kept as alternate_deal_type_literal."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_summary.excluded_deals",
+      "display_label": "excluded_deals",
+      "section": "Snapshot – Summary",
+      "appears_on": [
+        "snapshot_summary"
+      ],
+      "status": "Verified",
+      "definition": "Deals excluded from allocation, with reason (two separate lists).",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "ownership_flagged",
+          "source": "App — reason 'ownership % unavailable'; excluded from the look-through allocation rather than shown unscaled",
+          "note": "Each excluded deal keeps its code, name, reason, funded amount, asset type and deal type."
+        },
+        {
+          "component": "excluded sold/foreclosed",
+          "source": "App — reason 'sold/foreclosed before quarter end'",
+          "note": "Excluding City West is what keeps the Multifamily total at the published $240,410,995."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_summary.narrative_1",
+      "display_label": "narrative_1",
+      "section": "Snapshot – Summary",
+      "appears_on": [
+        "snapshot_summary"
+      ],
+      "status": "Verified",
+      "definition": "Summary narrative (analyst free text).",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "Analyst entry",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_summary.narrative_2",
+      "display_label": "narrative_2",
+      "section": "Snapshot – Summary",
+      "appears_on": [
+        "snapshot_summary"
+      ],
+      "status": "Verified",
+      "definition": "Second summary narrative.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "Analyst entry",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_summary.basis_note",
+      "display_label": "basis_note",
+      "section": "Snapshot – Summary",
+      "appears_on": [
+        "snapshot_summary"
+      ],
+      "status": "Verified",
+      "definition": "Basis note shown on the Summary.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "App / analyst — basis note",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "field_id": "not_rendered.debt_isbs_total_cap_isbs",
+      "display_label": "debt_isbs / total_cap_isbs",
+      "section": "Carried — not rendered",
+      "appears_on": [],
+      "status": "Not rendered",
+      "definition": "Pre-dev-override debt twin & Total Cap twin.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "Server-side only — read by the Snapshot so a One Pager rebase can't move its Total Cap",
+          "note": "Calculated but not shown on any page."
+        }
+      ]
+    },
+    {
+      "field_id": "not_rendered.committed_pe_basis_sold_suppressed_debt_basis_pref_basis",
+      "display_label": "committed_pe_basis / sold_suppressed / pref_basis",
+      "section": "Carried — not rendered",
+      "appears_on": [],
+      "status": "Not rendered",
+      "definition": "Basis / suppression flags.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "Server-side provenance strings",
+          "note": "These control which value wins for display but are not shown as fields themselves."
+        }
+      ]
+    },
+    {
+      "field_id": "not_rendered.irr_lookback",
+      "display_label": "irr_lookback",
+      "section": "Carried — not rendered",
+      "appears_on": [],
+      "status": "Not rendered",
+      "definition": "IRR lookback provision.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — Prop_Info_DealTerms; enriched onto cap_stack",
+          "note": "Calculated and returned by the backend but not displayed anywhere."
+        }
+      ]
+    },
+    {
+      "field_id": "not_rendered.econ_occ_at_close_cap_stack",
+      "display_label": "econ_occ_at_close (cap_stack)",
+      "section": "Carried — not rendered",
+      "appears_on": [],
+      "status": "Not rendered",
+      "definition": "At-close occupancy on cap_stack.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "MRI — Prop_Info_DealTerms.econ_occ_at_close",
+          "note": "Feeds the Snapshot's at-close economic occupancy; not shown on the One Pager itself."
+        }
+      ]
+    },
+    {
+      "field_id": "not_rendered.underlying_investors",
+      "display_label": "underlying_investors",
+      "section": "Carried — not rendered",
+      "appears_on": [],
+      "status": "Not rendered",
+      "definition": "Underlying investor list.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "Stored, selected, returned — rendered nowhere (confirmed across .vue/.ts)",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "field_id": "one_pager.coupon",
+      "display_label": "coupon (PE block)",
+      "section": "One Pager – PE Performance",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "Preferred coupon shown in the PE Performance block.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "waterfall (primary)",
+          "source": "App-built waterfalls.nPercent (PROTECTED_TABLES, never MRI-fed).",
+          "note": "This is the primary source, used whenever the waterfall has a coupon above 0. A 0% coupon is treated as if there were none."
+        },
+        {
+          "component": "deal_terms (fallback)",
+          "source": "MRI — Prop_Info_DealTerms.pe_coupon.",
+          "note": "Used only when the waterfall coupon is 0 or missing. It's the only source on the three deals that have deal terms but no waterfall rows: Plaza Del Mar (P0000116), Apple Self Storage (P0000003) and Jefferson Stephens (P0000114)."
+        }
+      ]
+    },
+    {
+      "field_id": "one_pager.participation",
+      "display_label": "participation (PE block)",
+      "section": "One Pager – PE Performance",
+      "appears_on": [
+        "one_pager"
+      ],
+      "status": "Verified",
+      "definition": "PE participation shown in the PE Performance block.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "waterfall (primary)",
+          "source": "App-built waterfalls.FXRate (PROTECTED_TABLES, never MRI-fed) — the reader takes the first vState='Share' row (unfiltered by PropCode), else the operating partner's share.",
+          "note": "When the deal-terms participation (pe_split_capital) is a positive number, the waterfall value is used instead."
+        },
+        {
+          "component": "deal_terms (zero-override)",
+          "source": "MRI — Prop_Info_DealTerms.pe_split_capital.",
+          "note": "A deal-terms participation set explicitly to 0 does override the waterfall (the code keeps the waterfall only when the deal-terms value is both present and not zero). This is live on Jefferson Eastchase (P0000085) and Jefferson Addison Heights (P0000077), where an OPJPI participation of 1.0 rendered as 1%."
+        }
+      ]
+    },
+    {
+      "field_id": "snapshot_loan.debt_basis",
+      "display_label": "debt_basis (Debt tooltip)",
+      "section": "Snapshot – Loan",
+      "appears_on": [
+        "snapshot_loan"
+      ],
+      "status": "Verified",
+      "definition": "Provenance label shown as the hover tooltip on the Debt cell — which of the three debt bases fired for this deal.",
+      "formula": null,
+      "formula_latex": null,
+      "formula_is_arithmetic": false,
+      "inputs": [
+        {
+          "component": "value",
+          "source": "App-computed provenance string from resolve_debt (ISBS drawn / committed loan / dev hard-costs). Rendered as the Debt-cell tooltip (SnapshotLoan.vue).",
+          "note": "This is not an MRI field; it just labels which debt basis the resolver picked."
+        }
       ]
     }
   ]

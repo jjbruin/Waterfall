@@ -253,6 +253,71 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v527` = `59b1875` (TWO FEATURES ONTO LIVE, AS A MERGE -- traceability
+    enhancements (`da8c356`, 6 commits) and freeze-as-sent (`72f4592`, 14) on
+    top of live `6bf26b6`, Sep 28 2026. 22 commits in the span, 22 files,
+    +8,921 / -1,218.
+    MERGED, NOT REBASED, AND THAT IS THE WHOLE POINT. Both branches were built
+    before v526 and are BEHIND it; replaying either onto an older base would
+    have dropped the Budget Review work AND Jim's SQLAlchemy pin. The proof is
+    the net diff against live: `requirements.txt`, `database.py`,
+    `api/valuations.py`, `budget_import_service.py`, `valuation_service.py` and
+    `ValuationsView.vue` DO NOT APPEAR in it. The pin is byte-identical to v526
+    and gunicorn booted both workers clean -- no "No module named psycopg", the
+    v524 failure closed.
+    ZERO CONFLICTS, and not by luck: the two features touch DISJOINT file sets
+    (traceability 12 files, freeze-as-sent 10, intersection empty). Only
+    `.claude/memory/open_items.md` auto-merged, and `.dockerignore` excludes
+    `.claude/` anyway.
+    THE ONLY ENGINE FILE IN THE SPAN IS `one_pager.py`, and it is purely
+    additive: the DSCR denominators and ROE components were already being
+    computed and thrown away, and are now published. Each denominator is
+    recorded WHERE IT IS COMPUTED and never inferred from another -- the bases
+    genuinely differ per column (ytd_actual is 5190 plus the balance-sheet
+    principal change, ytd_budget is budget 5190+7060, uw_ye is 7010 annualised)
+    -- and a suppressed column clears its denominator WITH the ratio, so the
+    trace cannot show a figure for a column the page does not publish. `None`,
+    never `0` or `{}`, so "no breakdown" stays distinct from a breakdown of
+    zeros.
+    THE ONE BEHAVIOURAL SWAP WAS VERIFIED, NOT TRUSTED: `calculate_roe` ->
+    `calculate_roe_detailed` cannot move the scalar, because
+    `calculate_roe_detailed` DELEGATES (`metrics.py:243` is
+    `roe = calculate_roe(...)` and that same value is returned). ONE ENGINE
+    holds.
+    NO NEW PER-DEAL HARDCODES. `AT_CLOSE_FORCE_SUPPRESS = {"P0000066"}` is NOT
+    in the span diff -- pre-existing and already live; `P0000089` is inside
+    `_selftest()` (`# pragma: no cover`). Checked rather than assumed.
+    GUARDRAILS: `traceability_tools_check` 129/129 and `freeze_as_sent_check`
+    93/93 IN THE CONTAINER; 129 / 17 / 99 locally.
+    `katex_render_check.py` FAILS IN THE CONTAINER AND THE FEATURE IS FINE --
+    worth recording because it will fail on every future container run until
+    fixed. It reads `vue_app/package.json`, and the runtime stage never copies
+    `vue_app/` (only `COPY --from=frontend-build /build/dist/ static/`);
+    `ls /app/vue_app` is "No such file or directory". It guards its LIVE-RENDER
+    half with `skip()` but reads `package.json` unguarded, so it crashes where
+    the v490/v491 screen checks skip with a reason. The feature was verified
+    against the SERVED bundle instead, resolving the lazy chunk from the entry
+    bundle rather than the 551-byte SPA shell that burned v523:
+    `katex-BYZTj3zW.css` sits in Vite's preload map inside
+    `index-BzdiB7yj.js` and serves 200 / 29,288 bytes.
+    The `freeze_as_sent_check` 99 -> 93 delta is also explained: the six
+    `overlay_26q2.json` checks SKIP when that file is absent, and it is
+    gitignored so it is not in the image. Correct behaviour, stated by the
+    script.
+    **NO REAL FREEZE HAS BEEN RUN, AND DEPLOYING THE CODE DOES NOT PRESS THE
+    BUTTON.** `docs/review_freeze_as_sent.md` ships in this span and says the
+    26Q2 overlay has NEVER been compared against live data -- the cached Sep 23
+    pull never arrived, so the cell-by-cell test runs against a stub. The
+    preview is the first place real values meet the overlay; read it. The
+    freeze is admin-only (`roles_exactly("admin")`), flagged columns BLOCK, and
+    `_lock_frozen_quarters` is inert while no quarter is frozen. Jim signed off
+    on the deploy; the review note's five open items (the `assembler=lambda`
+    seam most of all) still stand before anything is frozen.
+    NOT FIXED HERE, and live: `DEBT_FREE_DEALS` blanks Pegasus's
+    `debt_display` while `loan_subtotal()` sums the raw `debt`, so $25.2M sits
+    inside Portfolio Totals with no row accounting for it. `open_items.md` §12.
+    Build `cam0`, 2m27s, digest `sha256:c9af915deee3c62a`. Deployed at 100%;
+    v526 deactivated and its tag intact for rollback.)
   - `v526` = `6bf26b6` (BUDGET REVIEW: the third column can be UNDERWRITING, the
     Budget column's debt service can be UW's, an Estimate LINE can be overridden
     (totals follow, marked), and budgeted occupancy is read off the budget file --

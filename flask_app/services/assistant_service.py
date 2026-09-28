@@ -19,7 +19,15 @@ logger = logging.getLogger(__name__)
 #: thing the dictionary exists to be authoritative about, and the two would
 #: drift the moment a field was added. Fails soft to [] (the schema then omits
 #: the enum and the tool reports a miss) rather than breaking the assistant.
+#:
+#: THE BARE NAMES ARE IN THE ENUM TOO, and they have to be. Ids are `tab.field`
+#: as of 2026-09-24, so an enum of ids alone would REJECT `debt` — the very call
+#: that should return all three tab variants and let the answer say they differ.
+#: A bare name is a legitimate question ("how is Debt derived?"); narrowing to a
+#: tab is the `tab` argument's job, not a precondition for asking.
 _FIELD_IDS = data_dictionary_service.field_ids()
+_FIELD_IDS = sorted(set(_FIELD_IDS) | {i.rsplit(".", 1)[-1]
+                                       for i in _FIELD_IDS if "." in i})
 
 # ── Tool definitions ─────────────────────────────────────────────────
 
@@ -368,12 +376,14 @@ TOOLS = [
     {
         "name": "lookup_field",
         "description": (
-            "Where a report field comes from and what it means. Use for "
-            "where-does-X-come-from / how-is-X-calculated / what-source. "
-            "Returns the plain meaning, a Source line, the basis-selection rule "
-            "and any caveats, from the committed field dictionary. A field can "
-            "legitimately have several bases (the same deal's Debt has three) — "
-            "omit `basis` to see them all, or name one to narrow."
+            "Where a report field comes from, what it means, and how it is "
+            "computed. Use for where-does-X-come-from / how-is-X-calculated / "
+            "what-source. Returns the definition, a Source line, the formula "
+            "(with LaTeX when the field has real arithmetic) and the full list "
+            "of inputs, each with its own source — from the committed field "
+            "dictionary. Ids are `tab.field`; pass a bare name ('debt') to see "
+            "every tab that reports it, since the same name is often a "
+            "different figure on each."
         ),
         "input_schema": {
             "type": "object",
@@ -383,14 +393,19 @@ TOOLS = [
                     # Closed enum, built from the dictionary FILE at import so it
                     # cannot drift from the data it indexes. See _FIELD_IDS.
                     **({"enum": _FIELD_IDS} if _FIELD_IDS else {}),
-                    "description": "The dictionary id of the field, e.g. 'debt', 'total_pref', 'ltv'.",
-                },
-                "basis": {
-                    "type": "string",
                     "description": (
-                        "Optional. Narrow to one basis of THIS field, e.g. 'isbs' / "
-                        "'hard_costs' / 'orig_loan' for debt. Validated against the "
-                        "field's own bases; an unknown value returns all of them."
+                        "The dictionary id, e.g. 'one_pager.roe_to_date', "
+                        "'snapshot_loan.ltv' — or a bare name ('debt', 'total_cap') "
+                        "to see every tab's variant."
+                    ),
+                },
+                "tab": {
+                    "type": "string",
+                    "enum": ["one_pager", "snapshot_financial", "snapshot_operating",
+                             "snapshot_loan", "snapshot_summary", "not_rendered"],
+                    "description": (
+                        "Optional. Narrow a bare name to one tab. Omit it when the "
+                        "question does not name a tab — the variants are the answer."
                     ),
                 },
             },
@@ -401,11 +416,13 @@ TOOLS = [
         "name": "impact_of",
         "description": (
             "What uses a source and what breaks if it changes. Use for "
-            "what-uses-X / what-depends-on-X / what-happens-if-I-change-X. "
-            "`name` may be a source table (ISBS balance sheet, MRI_Loans.mOrigLoanAmt), "
-            "a shared constant (config.DEBT_BS_ACCTS, config.IS_ACCOUNTS), or a field id. "
-            "Returns the blast-radius note, any duplicate-literal warnings, and the "
-            "consumer list from the committed dependency map."
+            "what-uses-X / what-depends-on-X / what-happens-if-I-change-X, and "
+            "for known divergences and known defects. `name` may be a source "
+            "table (ISBS balance sheet, accounting_feed, MRI_Loans.mOrigLoanAmt), "
+            "a shared constant (DEBT_BS_ACCTS, IS_ACCOUNTS, DEV_STRATEGIES), a "
+            "known divergence/defect, or a field. Returns the blast-radius note, "
+            "the duplicate locations that must be kept in sync, the consumer "
+            "count and the feeds/read-by list, from the committed dependency map."
         ),
         "input_schema": {
             "type": "object",
@@ -416,6 +433,53 @@ TOOLS = [
                 },
             },
             "required": ["name"],
+        },
+    },
+    {
+        "name": "trace_field_value",
+        "description": (
+            "The REAL numbers behind a calculated field FOR ONE DEAL. Use when "
+            "the question is about a specific deal — 'for this deal, how is ROE "
+            "calculated', 'show me the numbers behind Total Cap', 'why is LTV "
+            "that figure'. lookup_field gives the formula in the abstract; this "
+            "gives the deal's own values for each input, each labelled with its "
+            "source, read from the SAME payload the page renders so the figures "
+            "tie to the screen. Returns `reconciles` when the inputs were "
+            "checked against the published value. A component the builder does "
+            "not publish comes back unavailable with a reason — never a guess. "
+            "Snapshot fields (snapshot_loan.*) also need `investor_code`, "
+            "because the Snapshot is assembled per investor; ask the user for it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "deal_id": {
+                    "type": "string",
+                    "description": "The deal's vcode, e.g. P0000109.",
+                },
+                "field_id": {
+                    "type": "string",
+                    "description": (
+                        "Dictionary field id, e.g. one_pager.roe_to_date, "
+                        "one_pager.total_cap, snapshot_loan.ltv."
+                    ),
+                },
+                "quarter": {
+                    "type": "string",
+                    "description": (
+                        "Reporting quarter, e.g. 26Q2. Optional for One Pager "
+                        "fields (defaults to the most recent completed "
+                        "quarter); REQUIRED for snapshot fields."
+                    ),
+                },
+                "investor_code": {
+                    "type": "string",
+                    "description": (
+                        "Required for snapshot_* fields only. Never invent one."
+                    ),
+                },
+            },
+            "required": ["deal_id", "field_id"],
         },
     },
 ]
@@ -454,6 +518,7 @@ Tool selection tips:
 - Use get_tenant_roster for tenant info, lease expirations, rent rolls (commercial deals only)
 - Use lookup_field for where-does-this-come-from / how-is-this-calculated / what-source questions about a REPORT FIELD (Debt, Total Pref, LTV, Econ Occ, NOI At Close...). It answers where a number comes from, not what the number is — pair it with a value tool if the user wants both.
 - Use impact_of for what-uses-X / what-depends-on-X / what-breaks-if-I-change-X, where X is a source table, a shared constant, or a field.
+- Use trace_field_value when the question is about a SPECIFIC DEAL's numbers — "for this deal, how is ROE calculated", "show me the numbers behind Total Cap", "why is LTV that figure". lookup_field gives the formula in general; trace_field_value gives this deal's actual values for each input, read from the same payload the page renders. Prefer it over lookup_field whenever a deal is in context and the user asks for numbers; use lookup_field when they ask what a field means or where it comes from in general.
 - NEVER answer either kind of question from general knowledge, from a tool's description text, or from the names of tables you have seen. If lookup_field or impact_of does not have it, say so — an ungrounded answer about where a number comes from is worse than no answer.
 
 Key conventions:
@@ -470,29 +535,146 @@ When answering questions:
 - If a query returns too much data, summarize the key findings
 - Always explain what the numbers mean in context
 
-TRACEABILITY ANSWER FORMAT — a hard rule, overriding the general formatting guidance above. Output ONLY the bullets shown, in order, with nothing before them.
+TRACEABILITY ANSWER FORMAT — a hard rule, overriding the general formatting guidance above. Output ONLY the parts shown, in order, with nothing before them.
 
-lookup_field answers:
-- **What:** <the tool's `lead`, one line>
-- **Source:** <the tool's `source_value` — NOT `source_line`, which carries its own "Source: " prefix and would print it twice>
-- **Formula:** <`formula`> — from <`inputs`>      (ONLY if the tool returned them)
-- **Note:** <at most ONE caveat, and only if material>
+WHO IS READING. Assume someone who knows the business but NOT this codebase. The
+answer must be understandable without opening a file. This format, not the
+reference JSON's own `meta.answer_format`, is what governs your output — where
+the two differ, FOLLOW THIS.
 
-impact_of answers:
-- **What:** <the tool's `lead`, one line>
-- **Definition:** <`definition`>      (ONLY when `match_type` is "shared_constant"; OMIT this bullet entirely for a source)
-- **Breaks:** <`blast_radius_note`, one line>
-- **Duplicates (keep in sync):** <`duplicates`>
-- **Consumers (<`consumer_count`>):** <brief grouped list>
+LAYOUT — the single most important rule. Every part is a BOLD LABEL followed by
+its content, and there is a BLANK LINE between every part. Never run the parts
+together into one dense block. Prefer short sentences and bullet lists ("• " at
+the start of the line) over long ones. Omit any part that does not apply.
+
+PLAIN LANGUAGE — no internal code shorthand in the user-facing text. Do not print
+bare function names, variable names like `capital_after`, `abs()`, or terms like
+"sign-preserving" without glossing them in ordinary words. Say "read as a
+positive number, so a credit and a debit both count the same" rather than
+"abs()". Real table and column names ARE wanted under "Where it comes from" —
+those are the evidence — but the sentences around them must be jargon-free.
+
+lookup_field answers — the template:
+
+**In plain terms:** one or two jargon-free sentences that answer the question
+asked. This is a rewrite of the tool's `definition` for a non-technical reader,
+not a copy of it.
+
+**Where it comes from:** one bullet per origin, each stated plainly as ONE of:
+• the exact real source — the MRI table and column, e.g. `Prop_Info_Core.Investment_Name`
+• "Entered by an analyst" — for anything uploaded, typed or overridden
+• "Calculated by the app" — for a figure the app derives
+• "App-owned / not from MRI" — for something this application defines itself
+Take these only from the tool's `inputs[].source` and `source_value`. Never
+invent a source. If the result has no source, say the source is unavailable —
+never drop this part silently.
+
+**How it's calculated:** ONLY when the field is a formula. Render the field's
+`formula_latex` as a KaTeX block on its OWN line — $$<formula_latex>$$, one
+single line, verbatim (see the FORMULA RULE below). Do NOT write the formula out
+as plain text when `formula_latex` is present. Then one bullet per input, each
+naming that input's own source, broken up one per line — like the ROE breakdown
+in the dictionary, never run together into a paragraph.
+
+**Worth knowing:** ONLY when there is a real caveat — a supplement or uploaded
+value that overrides the MRI figure, a rule that applies on one tab only, a known
+gotcha. Plain words, at most a couple of lines. Omit entirely when there is none.
+
+trace_field_value answers — "FOR THIS DEAL, how is X calculated / what are the
+numbers?" Use this template when the question is about a SPECIFIC deal rather
+than the field in general:
+
+**In plain terms:** the result for this deal, in one sentence with the figure in
+it — "Burton Retail's ROE to date is 8.2% a year."
+
+**The numbers behind it:** the formula with THIS DEAL'S ACTUAL VALUES substituted
+in, as a single-line $$...$$ block ending in the result, e.g.
+$$\\text{ROE} = \\frac{\\$12.3\\text{M}}{\\$45.1\\text{M} \\times 2.3} = 8.2\\%$$
+Then one bullet per input: its number for this deal and where that number came
+from, one per line — never run together.
+
+**Worth knowing:** any caveat, plainly. Omit when there is none.
+
+THE NUMBERS COME FROM THE TRACE TOOL AND NOWHERE ELSE. Do not take a figure from
+another tool's output, from the page context, or from earlier in the
+conversation, and never do arithmetic of your own to fill a gap. Specifically:
+- An input marked `available: false` is reported as not available, with the
+  tool's `reason` in plain words. Do NOT work it out from the others.
+- `reconciles: false` means the inputs do NOT add up to the published value. Say
+  so plainly and give the published value as the answer. `reconciles: null`
+  means it was not checked — say nothing either way; it is NOT a failure.
+- `breakdown_available: false` means the value is real but its components are
+  not published. Give the value, then say the breakdown is not available and
+  why, using `breakdown_unavailable_reason`. Do not substitute the general
+  formula's inputs as though they were this deal's numbers.
+- If the tool returns an `error` — including a Snapshot field needing an
+  `investor_code` — say what is needed and ask for it. Never guess an investor.
+
+impact_of answers — the same plain-language, blank-line-separated treatment:
+
+**In plain terms:** what this source or setting is, and roughly how widely it is
+used — a rewrite of the tool's `lead` for a non-technical reader.
+
+**What breaks if it changes:** the `blast_radius_note`, in plain words. A SHARED
+CONSTANT has no such note — what breaks IS its `fields_that_change`, so list
+those instead. Never repeat `duplicate_warning` here; it belongs under the next
+part, and printing it twice reads as two separate findings.
+
+**Defined in more than one place:** the `duplicates`, one bullet each, then the
+`duplicate_warning` in plain words. OMIT this whole part when there are none.
+
+**What uses it (<`consumer_count`>):** for a source, the `feeds` list. For a
+shared constant, `read_by` AND `fields_that_change` — the count covers both, so
+listing only one leaves a heading that does not match its own list. One per
+bullet, grouped briefly.
+
+FORMULA RULE — the single thing most likely to produce a wrong answer.
+- `formula_is_arithmetic` is TRUE: render `formula_latex` VERBATIM as a block,
+  $$<formula_latex>$$, ON ONE SINGLE LINE. Never edit, re-derive or "tidy" it.
+- `formula_is_arithmetic` is FALSE: the field has NO clean single-expression
+  arithmetic. State the method in words from `formula` and the inputs, emit NO
+  $$ block, and NEVER reconstruct an equation — not from the field name, not
+  from the inputs, not from general knowledge. An invented formula is the same
+  failure as an invented source, and harder to spot because it looks right.
+- $$ MUST NOT BE BROKEN ACROSS LINES. The chat renderer turns every newline into
+  a <br>, which splits the text node and the block then never renders — it
+  prints raw LaTeX instead.
+- Inline math inside a sentence: \\( ... \\). Never put ** inside a formula.
+- SHOW FORMULAS AS RENDERED MATH, NOT AS TYPED TEXT. Use `formula_latex` for the
+  structure. For a live per-deal trace, substitute that deal's ACTUAL values
+  into the same structure and end with the result, still on ONE line.
+- ESCAPE LITERAL DOLLAR SIGNS INSIDE MATH AS \\$ — write \\$12.3\\text{M}, never
+  $12.3M. An unescaped $ inside a $$...$$ block closes the math early, and the
+  rest of the formula prints as raw LaTeX. This is the single most likely way a
+  live-numbers answer breaks, because every figure in one is currency.
+- Round for READABILITY in the rendered formula (\\$12.3\\text{M}, 8.2\\%) and give
+  the fuller figure in the bullet beneath it when the precision matters. Never
+  round a value into agreement — if the inputs do not reconcile, say so.
+
+MULTI-TAB RESULTS — THE SAME LABEL IS NOT THE SAME FIGURE ON EVERY TAB. When the
+result carries `multi_tab: true`, the user named a field but not a tab, and that
+field resolves DIFFERENTLY depending on where it is read. Handle it like this:
+
+- Say so first, in ONE plain line, under **In plain terms:** — for example:
+  "Debt means different things on different tabs, so the answer depends which one
+  you are looking at."
+- Then EITHER give a short labeled block per tab (naming the tab and how that tab
+  derives it), OR ask which tab they mean — whichever is shorter for the number
+  of variants. Never pick one tab and answer as though it were the only one.
+- Close with ONE short line modelling the better question, e.g.
+  "Next time, try: 'on the One Pager, how is Debt calculated?'" — say it once,
+  keep it friendly, and never lecture.
+
+Call lookup_field again with `tab` only when the user's question names a tab or a
+deal type.
 
 Rules for both:
-- No "Let me look up..." preamble and no narrating the tool call. Your first output token is the first bullet.
-- NOTHING follows the last bullet. No summary, no "bottom line", no trailing warning paragraph — anything worth saying goes inside a bullet.
-- No tables, no headings, no multi-paragraph prose. At most one Note. Keep it scannable.
-- When the question names a deal type, tab, or lifecycle state (development, stabilized/operating, new/undrawn, One Pager, Snapshot), work out which basis applies from the field's `basis_selection`, call lookup_field AGAIN with that `basis`, and answer from that result — so What and Source are the SPECIFIC basis, not the generic multi-basis one.
-- The Source bullet is MANDATORY. If a result has no `source_line`, say the source is unavailable — never omit it silently.
-- Everything comes only from tool fields. Do not invent sources, counts or labels: render `duplicate_warning` faithfully, take counts only from `consumer_count`, and never relabel which location is the definition.
-- On a miss (`error` / `did_you_mean`), say plainly there is no verified source in the dictionary or dependency map, offer the near matches, and STOP. Do not fill the gap from general knowledge.
+- No "Let me look up..." preamble and no narrating the tool call. Your first output token is the first bold label.
+- NOTHING follows the last part. No summary, no "bottom line", no trailing warning paragraph — anything worth saying goes inside a part. The ONLY exception is the single "Next time, try: ..." line on a multi-tab result, below.
+- No tables, no headings, no dense multi-paragraph prose. Keep it scannable, with a blank line between parts.
+- The "Where it comes from" part is MANDATORY. If a result has no source, say the source is unavailable — never omit it silently.
+- Everything comes only from tool fields. Do not invent sources, counts, formulas or labels: take counts only from `consumer_count`, render `duplicate_warning` faithfully, and never relabel which location is the definition.
+- On a miss (`error` / `did_you_mean`), say plainly there is no verified entry in the dictionary or dependency map, offer the near matches, and STOP. Do not fill the gap from general knowledge.
 
 When the user asks a question, use the page context (provided below) to understand what they are looking at. If they ask about a deal without specifying which one, assume they mean the deal currently selected on their page. If their question requires data from a different tab (e.g., asking about expected returns while on the One Pager), use the current deal's vcode to fetch that data from the appropriate source (e.g., compute_deal_returns for Deal Analysis metrics).
 
@@ -684,6 +866,8 @@ def execute_tool(tool_name: str, tool_input: dict) -> str:
             return _tool_lookup_field(tool_input)
         elif tool_name == "impact_of":
             return _tool_impact_of(tool_input)
+        elif tool_name == "trace_field_value":
+            return _tool_trace_field_value(tool_input)
         else:
             return json.dumps({"error": f"Unknown tool: {tool_name}"})
     except Exception as e:
@@ -967,7 +1151,17 @@ def _tool_get_one_pager(inp):
             deal_terms=data.get("deal_terms_raw"),
             at_close_noi=data.get("at_close_noi_raw"),
             event_dates=data.get("event_dates_raw"),
+            # PASSED SO THIS TOOL AGREES WITH THE SCREEN. The One Pager route
+            # (flask_app/api/financials.py) passes both and this did not, and
+            # they were the ONLY difference between the two calls — every other
+            # argument was already identical. Without `full_data` the PE
+            # enrichment (`_enrich_pe_from_deal_result`) never runs, so the
+            # assistant reported pre-enrichment balances — a current PE balance
+            # and accrued balance on a different basis from the ones printed on
+            # the page, with nothing saying so.
+            full_data=data,
             relationships=data.get("relationships_raw"),
+            mri_loans_all=data.get("mri_loans_all"),
             inspection=data.get("inspection_raw"),
         )
         if not result:
@@ -1539,116 +1733,71 @@ def _source_value(source_line):
             if text.startswith(_SOURCE_PREFIX) else text)
 
 def _tool_lookup_field(inp):
-    """Where a field comes from. `basis` is validated inside the service,
-    against that field's OWN bases — never against a global list.
+    """Where a field comes from, what it means, and how it is computed.
 
-    A CALCULATED FIELD ALSO CARRIES ITS FORMULA AND ITS INPUTS. "Where does LTV
-    come from" has no source table as an answer — it comes from two other
-    figures — so for a basis whose origin is `calculated` the formula already
-    written in that basis's `source` is surfaced as its own field, alongside the
-    inputs recorded in dependencies.json `internal_edges.computed_fields`. Both
-    keys are OMITTED for a non-calculated field rather than returned empty, so
-    the answer template can test presence instead of emptiness.
+    A PASS-THROUGH, DELIBERATELY. The dictionary carries `definition`,
+    `formula`, `formula_latex`, `formula_is_arithmetic` and a decomposed
+    `inputs` list per (tab, field); the service flattens them and nothing here
+    adds, reformats or derives a figure. In particular `formula_latex` is
+    forwarded VERBATIM — code that synthesised LaTeX from a field name would be
+    a second, unreviewed definition of the arithmetic, which is precisely what
+    the dictionary exists to prevent.
+
+    The pre-2026-09-24 version built `inputs` itself from dependencies.json
+    `internal_edges.computed_fields`. That key no longer exists — inputs are
+    first-class dictionary content now — so deriving them here would silently
+    return nothing.
     """
-    field_id = inp.get("field_id")
-    result = data_dictionary_service.lookup_field(field_id, inp.get("basis"))
-
-    if isinstance(result, dict) and not result.get("error"):
-        calc = next((b for b in (result.get("bases") or [])
-                     if b.get("origin") == "calculated"), None)
-        if calc and calc.get("source"):
-            result["formula"] = calc["source"]
-            inputs, seen = [], set()
-            try:
-                computed = (data_dictionary_service._dependencies()
-                            .get("internal_edges", {})
-                            .get("computed_fields", {}) or {})
-            except Exception:
-                computed = {}
-            want = str(field_id or "").strip().lower()
-            for key, entry in computed.items():
-                # `ltv` -> `snapshot_loan.ltv`; `total_cap` -> `cap_stack.total_cap`.
-                # Matched on the trailing segment so a field cannot pick up an
-                # unrelated entry that merely mentions it in prose.
-                if key.rsplit(".", 1)[-1].lower() != want:
-                    continue
-                for dep in (entry.get("depends_on")
-                            or entry.get("inputs_from") or []):
-                    if dep not in seen:
-                        seen.add(dep)
-                        inputs.append(dep)
-            if inputs:
-                result["inputs"] = inputs
-        result["source_value"] = _source_value(result.get("source_line"))
+    result = data_dictionary_service.lookup_field(
+        inp.get("field_id"), tab=inp.get("tab"), basis=inp.get("basis"))
     return json.dumps(result, default=str)
 
 
 def _tool_impact_of(inp):
     """What reads a source/constant/field, and what moves if it changes.
 
-    THE SOURCE LINE IS ASSEMBLED HERE, not left to the service, so every branch
-    returns one in the same shape. The live format check on 2026-09-21 had the
-    model drop the Source line entirely from the "what changes if we change the
-    debt source" answer while rendering it correctly elsewhere — a rule the
-    model applies unevenly needs the data to be uniform first. A miss says the
-    source is unavailable rather than carrying no line at all, so the prompt
-    rule ("never omit it silently") always has something to render.
+    ALSO A PASS-THROUGH. The dependency map now states its own
+    `consumer_count`, `duplicates` and `duplicate_warning` per entry, so the
+    post-processing this function used to do is gone:
+
+      * it recomputed `consumer_count` as `len(consumers)`, which would now
+        OVERWRITE the file's own authoritative count with a list length that
+        does not have to equal it;
+      * it assembled `duplicate_warning` by parsing "<key>: <location>" strings
+        out of a derived index, to close a gap where nothing said which copy was
+        the definition. The file states the definition (`defined_at`) and the
+        warning outright, so there is nothing left to infer or to parse.
+
+    The Source line still comes from the service, uniformly for every branch,
+    and `source_value` is pre-stripped so the template's own **Source** label is
+    not printed twice.
     """
     result = data_dictionary_service.impact(inp.get("name"))
     if isinstance(result, dict):
-        matched, kind = result.get("matched"), result.get("match_type")
-        if kind == "shared_constant" and matched:
-            result["source_line"] = (
-                f'Source: dependencies.json — shared_constants["{matched}"]')
-        elif kind == "source" and matched:
-            result["source_line"] = (
-                f'Source: dependencies.json — sources["{matched}"]')
-        elif kind == "field" and matched:
-            result["source_line"] = (
-                f'Source: dependencies.json — sources[*].downstream_fields '
-                f'matching "{matched}"')
-        else:
-            result["source_line"] = (
-                "Source: unavailable — no matching entry in dependencies.json")
-
-        # WHICH LOCATION IS THE DEFINITION IS STATED, NOT LEFT TO BE INFERRED.
-        #
-        # `duplicate_literal_warnings` was a bare list of locations with no
-        # marker saying which one defines the constant, so the model filled the
-        # gap: on 2026-09-21 it labelled config.py:232 "the canonical
-        # definition" twice, in two separate runs, while the definition is
-        # config.py:23. A prompt rule forbidding the word did not stop it. The
-        # fix is to close the gap in the data — there is nothing left to infer
-        # once the answer ships pre-labelled.
-        consumers = result.get("consumers") or []
-        result["consumer_count"] = len(consumers)
-
-        raw = result.get("duplicate_literal_warnings") or []
-        if raw:
-            try:
-                constants = (data_dictionary_service._dependencies()
-                             .get("shared_constants") or {})
-            except Exception:
-                constants = {}
-            # Each entry is "<constant key>: <location>" (see
-            # data_dictionary_service._constant_duplicate_index).
-            definition, dups = result.get("defined_at"), []
-            for warning in raw:
-                ckey, sep, location = warning.partition(": ")
-                dups.append(location if sep else warning)
-                if not definition and sep:
-                    definition = (constants.get(ckey) or {}).get("at")
-            result["definition"] = definition
-            result["duplicates"] = dups
-            joined = "; ".join(dups)
-            result["duplicate_warning"] = (
-                f"Definition is at {definition}. The following are DUPLICATE "
-                f"copies that must be changed in sync — NOT the definition: "
-                f"{joined}."
-                if definition else
-                f"The following are DUPLICATE copies that must be changed in "
-                f"sync; the defining location is not recorded: {joined}.")
         result["source_value"] = _source_value(result.get("source_line"))
+    return json.dumps(result, default=str)
+
+
+def _tool_trace_field_value(inp):
+    """One deal's actual numbers behind a calculated field.
+
+    A PASS-THROUGH, like the two above. Every figure is read by
+    `field_trace_service` out of the payload the page is rendered from; nothing
+    is computed, rounded or reformatted here. In particular `reconciles` is
+    forwarded as-is — including `null`, which means "not checked" and is NOT the
+    same as `false`, and collapsing the two would turn an unchecked breakdown
+    into an apparently verified one.
+    """
+    from flask_app.services import field_trace_service
+    try:
+        result = field_trace_service.trace_field_value(
+            inp.get("deal_id"), inp.get("field_id"),
+            quarter=inp.get("quarter") or None,
+            investor_code=inp.get("investor_code") or None,
+        )
+    except Exception as exc:
+        logger.exception("trace_field_value failed")
+        result = {"error": f"Value trace failed: {exc}"}
     return json.dumps(result, default=str)
 
 

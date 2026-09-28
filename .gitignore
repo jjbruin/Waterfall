@@ -84,3 +84,7 @@ scripts/burton_relmap.py
 scripts/burton_blastradius.py
 scripts/burton_loandump.py
 scripts/pull_live_noi_requested.py
+
+# The 26Q2 published overlay — derived from sent PDFs that are not in the
+# repo, and it carries investor figures. Rebuild with scripts/build_26q2_overlay.py
+overlay_*.json

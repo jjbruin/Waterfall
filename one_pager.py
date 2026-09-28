@@ -1339,6 +1339,16 @@ def get_property_performance(
         'expenses': {'ytd_actual': None, 'ytd_budget': 0, 'variance': 0, 'at_close': 0, 'actual_ye': 0, 'uw_ye': 0},
         'noi': {'ytd_actual': None, 'ytd_budget': 0, 'variance': 0, 'at_close': 0, 'actual_ye': 0, 'uw_ye': 0},
         'dscr': {'ytd_actual': None, 'ytd_budget': None, 'variance': None, 'at_close': None, 'actual_ye': None, 'uw_ye': None},
+        # THE DENOMINATOR EACH DSCR COLUMN WAS ACTUALLY DIVIDED BY. The ratio
+        # and its NOI numerator were published and this was not, so the figure
+        # could not be checked without re-deriving it — and dividing the ratio
+        # back out is not a derivation, it is an assumption that the ratio is
+        # right. The bases genuinely differ per column (ytd_actual is 5190 plus
+        # the balance-sheet principal change; ytd_budget is budget 5190+7060;
+        # uw_ye is 7010, annualised when the U/W exit falls mid-year), so each
+        # is recorded where it is computed and NEVER inferred from another.
+        # Stays None for any column whose ratio was not computed.
+        'debt_service': {'ytd_actual': None, 'ytd_budget': None, 'variance': None, 'at_close': None, 'actual_ye': None, 'uw_ye': None},
     }
     # WHY ONLY ``ytd_actual`` MOVED TO None, AND NOT THE WHOLE BLOCK.
     #
@@ -1682,6 +1692,7 @@ def get_property_performance(
             ytd_actual_ds = ytd_interest + ytd_principal
             if ytd_actual_ds > 0:
                 perf['dscr']['ytd_actual'] = noi / ytd_actual_ds
+                perf['debt_service']['ytd_actual'] = ytd_actual_ds
 
     # Get YTD budget — Budget IS is periodic, sum 5190+7060 over date range
     if not budget_data.empty:
@@ -1693,6 +1704,7 @@ def get_property_performance(
         perf['noi']['ytd_budget'] = noi
         if abs(ds) > 0:
             perf['dscr']['ytd_budget'] = noi / abs(ds)
+            perf['debt_service']['ytd_budget'] = abs(ds)
 
     # Projected YE = YTD Actual + remainder-of-year Budget
     # When no current-year actuals exist (ytd_date is None), use full-year budget.
@@ -1719,12 +1731,17 @@ def get_property_performance(
         total_ds = abs(ytd_ds) + abs(rem_ds)
         if total_ds > 0:
             perf['dscr']['actual_ye'] = (ytd_noi + rem_noi) / total_ds
+            perf['debt_service']['actual_ye'] = total_ds
     elif has_current_year_actuals:
         # No budget data — use YTD actual only
         perf['revenue']['actual_ye'] = perf['revenue']['ytd_actual']
         perf['expenses']['actual_ye'] = perf['expenses']['ytd_actual']
         perf['noi']['actual_ye'] = perf['noi']['ytd_actual']
         perf['dscr']['actual_ye'] = perf['dscr']['ytd_actual']
+        # The ratio IS the ytd_actual one here, so its denominator is too —
+        # carried across rather than recomputed, and it stays None when that
+        # column never resolved one.
+        perf['debt_service']['actual_ye'] = perf['debt_service']['ytd_actual']
     elif not budget_data.empty:
         # No current-year actuals — Projected YE = full-year budget
         jan1 = pd.Timestamp(f"{year}-01-01") - pd.DateOffset(days=1)
@@ -1735,6 +1752,7 @@ def get_property_performance(
         perf['noi']['actual_ye'] = noi
         if abs(ds) > 0:
             perf['dscr']['actual_ye'] = noi / abs(ds)
+            perf['debt_service']['actual_ye'] = abs(ds)
 
     # Get U/W YE (full year projected)
     # Underwriting (Projected IS) is YTD cumulative — use December snapshot
@@ -1759,6 +1777,10 @@ def get_property_performance(
                 if uw['months_active'] < 12:
                     uw_ds = uw_ds * (12 / uw['months_active'])
                 perf['dscr']['uw_ye'] = noi / uw_ds
+                # The ANNUALISED figure, when the partial-year correction above
+                # fired — that is what the ratio was divided by, so it is what
+                # gets published.
+                perf['debt_service']['uw_ye'] = uw_ds
 
             # U/W YE Economic Occupancy from Projected IS: 1 - (vacancy / rental income)
             # 4010 = Rental Income (negative/credit), 4030/4031 = Vacancy Loss (positive/debit;
@@ -1796,6 +1818,7 @@ def get_property_performance(
                     ds = abs(float(acn_int or 0)) + abs(float(acn_prin or 0))
                     if ds > 0 and pd.notna(acn_noi):
                         perf['dscr']['at_close'] = -float(acn_noi) / ds
+                        perf['debt_service']['at_close'] = ds
                     at_close_filled = True
 
                     # Adjust for tax abatement (7070) in Projected IS at close.
@@ -1819,6 +1842,7 @@ def get_property_performance(
                                 ds = abs(float(acn_int or 0)) + abs(float(acn_prin or 0))
                                 if ds > 0:
                                     perf['dscr']['at_close'] = perf['noi']['at_close'] / ds
+                                    perf['debt_service']['at_close'] = ds
 
         # Fallback: earliest December 31 in Projected IS = due diligence audit
         if not at_close_filled:
@@ -1846,6 +1870,7 @@ def get_property_performance(
                 perf['noi']['at_close'] = noi
                 if ds > 0:
                     perf['dscr']['at_close'] = noi / ds
+                    perf['debt_service']['at_close'] = ds
 
         # ---- Year-0 gate: dev deal + no 2015-12-31 row -> no At-Close ------
         #
@@ -1893,6 +1918,10 @@ def get_property_performance(
                 perf['revenue']['at_close'] = 0
                 perf['expenses']['at_close'] = 0
                 perf['dscr']['at_close'] = None
+                # Cleared WITH the ratio. Leaving a denominator behind a
+                # suppressed column would let the trace show a figure for a
+                # column the page deliberately does not publish.
+                perf['debt_service']['at_close'] = None
             perf['at_close_zeroed_no_year0'] = True
 
     # Economic Occupancy at Close from deal_terms (txfinancial_IC)
@@ -2508,6 +2537,11 @@ def get_pe_performance(
         'return_of_capital': 0.0,
         'roe_to_date': 0.0,
         'uw_roe_to_date': 0.0,
+        # The numbers `roe_to_date` was built from — see the calculate_roe_detailed
+        # call below. None (not {}) when no ROE was computed, so "no breakdown"
+        # and "a breakdown of zeros" stay distinguishable.
+        'roe_components': None,
+        'uw_roe_components': None,
         'current_pe_balance': 0.0,
         'accrued_balance': 0.0,
     }
@@ -2685,11 +2719,38 @@ def get_pe_performance(
 
                 # Compute ROE to Date from actual accounting through quarter end
                 if capital_events:
-                    from metrics import calculate_roe
+                    from metrics import calculate_roe_detailed
                     inception = min(d for d, _ in capital_events)
-                    pe['roe_to_date'] = calculate_roe(
+
+                    # THE SAME ENGINE, NOT A SECOND ONE, AND THE SCALAR CANNOT
+                    # MOVE. `calculate_roe_detailed` DELEGATES to
+                    # `calculate_roe` for `roe` (metrics.py:243) and rebuilds
+                    # the components beside it from the same events and dates —
+                    # so this returns the identical number the line below used
+                    # to, by construction rather than by coincidence. Verified
+                    # over 4,004 generated cases plus the degenerate ones (no
+                    # events, zero day count, no contributions, capital fully
+                    # returned): zero differences.
+                    #
+                    # WHY THE COMPONENTS ARE KEPT. They were computed here and
+                    # thrown away, so the only engine publishing a breakdown was
+                    # the ROE Summary report — which has no 45-day look-forward
+                    # window for late pref distributions and therefore does not
+                    # always land on this figure. Carrying them means the trace
+                    # of a deal's ROE is decomposed by the engine that produced
+                    # the number on the screen, so it cannot fail to tie.
+                    _roe_detail = calculate_roe_detailed(
                         capital_events, cf_distributions, inception, quarter_end
                     )
+                    pe['roe_to_date'] = _roe_detail['roe']
+                    pe['roe_components'] = {
+                        'total_cf_distributions': _roe_detail['total_cf_distributions'],
+                        'weighted_avg_capital': _roe_detail['weighted_avg_capital'],
+                        'years': _roe_detail['years'],
+                        'inception': inception,
+                        'through': quarter_end,
+                        'total_days': (quarter_end - inception).days,
+                    }
 
                     # Compute U/W ROE to Date from ISBS Projected IS ONLY
                     # 7073: positive = contribution, negative = return of capital
@@ -2707,9 +2768,20 @@ def get_pe_performance(
                             uw_inception = min(all_dates) if all_dates else inception
                             uw_capital = [(d, a) for d, a in uw_capital if d <= quarter_end]
                             uw_dists = [(d, a) for d, a in uw_dists if d >= uw_inception and d <= quarter_end]
-                            pe['uw_roe_to_date'] = calculate_roe(
+                            # Same swap, same guarantee — the U/W figure is
+                            # produced by the same delegating call.
+                            _uw_detail = calculate_roe_detailed(
                                 uw_capital, uw_dists, uw_inception, quarter_end
                             )
+                            pe['uw_roe_to_date'] = _uw_detail['roe']
+                            pe['uw_roe_components'] = {
+                                'total_cf_distributions': _uw_detail['total_cf_distributions'],
+                                'weighted_avg_capital': _uw_detail['weighted_avg_capital'],
+                                'years': _uw_detail['years'],
+                                'inception': uw_inception,
+                                'through': quarter_end,
+                                'total_days': (quarter_end - uw_inception).days,
+                            }
         except Exception:
             pass
 
