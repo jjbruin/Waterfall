@@ -89,127 +89,172 @@ def field_ids() -> list:
         return []
 
 
-def _find_field(field_id: str) -> Optional[dict]:
+def _tab_of(field_id: str) -> str:
+    """The tab segment of a ``tab.field`` id, or "" for an unqualified id."""
+    fid = str(field_id or "").strip()
+    return fid.rsplit(".", 1)[0].lower() if "." in fid else ""
+
+
+def _bare_of(field_id: str) -> str:
+    """The field segment of a ``tab.field`` id."""
+    return str(field_id or "").strip().rsplit(".", 1)[-1].lower()
+
+
+def _find_fields(field_id: str, tab: Optional[str] = None) -> list:
+    """Every dictionary entry matching ``field_id``, most specific first.
+
+    THE ID IS ``tab.field`` AND A BARE NAME IS AMBIGUOUS ON PURPOSE. "debt" is
+    three different entries — one_pager.debt (which a development deal rebases
+    onto hard costs), snapshot_financial.debt and snapshot_loan.debt (which do
+    not, and must not). Returning a LIST rather than picking one is what stops
+    the assistant answering for the wrong tab: with several hits it is told to
+    show the variants, not to guess.
+
+    ``tab`` narrows by the id prefix or by ``appears_on``. An unknown tab
+    narrows to nothing, and the caller reports that rather than silently
+    widening back to every tab.
+    """
+    fields = _dictionary().get("fields", []) or []
     want = str(field_id or "").strip().lower()
-    for f in _dictionary().get("fields", []):
-        if str(f.get("field_id", "")).strip().lower() == want:
-            return f
-    return None
+    if not want:
+        return []
+
+    exact = [f for f in fields
+             if str(f.get("field_id", "")).strip().lower() == want]
+    if exact:
+        return exact
+
+    bare = _bare_of(want)
+    hits = [f for f in fields if _bare_of(f.get("field_id")) == bare]
+
+    if tab:
+        t = str(tab).strip().lower()
+        hits = [f for f in hits
+                if _tab_of(f.get("field_id")) == t
+                or t in [str(a).strip().lower()
+                         for a in (f.get("appears_on") or [])]]
+    return hits
 
 
-def _origin_phrase(origin: str) -> str:
-    """meta.origins maps an origin key to the phrase the answer should use."""
-    origins = _dictionary().get("meta", {}).get("origins", {})
-    return origins.get(str(origin or "").strip(), str(origin or "unknown origin"))
+def _source_lines(entry: dict) -> tuple:
+    """(source_line, source_value) for one field entry.
+
+    ASSEMBLED FROM ``inputs``, NEVER INVENTED. A field with exactly one input
+    has one source and says it outright. A field with several — ROE has four,
+    economic occupancy six — has no single source, and collapsing them into one
+    sentence would mean choosing which components to drop. So the line points at
+    the Inputs section instead and every component keeps its own source there.
+    """
+    inputs = entry.get("inputs") or []
+    if len(inputs) == 1 and inputs[0].get("source"):
+        value = str(inputs[0]["source"])
+    elif inputs:
+        value = (f"{len(inputs)} components, each with its own source — "
+                 f"see Inputs")
+    else:
+        value = "no source recorded in the dictionary"
+    return f"Source: {value}", value
 
 
-def _basis_payload(b: dict) -> dict:
-    """One basis, with the Source line already assembled from meta.origins."""
+def _field_payload(entry: dict) -> dict:
+    """One dictionary entry, flattened for the tool.
+
+    ``formula_latex`` IS PASSED THROUGH VERBATIM and is never built here. The
+    file is the only authority on how a formula is written; code that assembled
+    LaTeX from a field name would be a second, unreviewed definition of the
+    arithmetic — the exact failure the dictionary exists to prevent.
+    """
+    source_line, source_value = _source_lines(entry)
     return {
-        "basis": b.get("basis"),
-        "plain": b.get("plain"),
-        "origin": b.get("origin"),
-        "source": b.get("source"),
-        "caveats": b.get("caveats"),
-        "source_line": f"Source: {_origin_phrase(b.get('origin'))} — {b.get('source')}",
+        "field_id": entry.get("field_id"),
+        "display_label": entry.get("display_label"),
+        "section": entry.get("section"),
+        "tab": _tab_of(entry.get("field_id")),
+        "appears_on": entry.get("appears_on"),
+        "status": entry.get("status"),
+        "definition": entry.get("definition"),
+        "source_line": source_line,
+        "source_value": source_value,
+        "formula": entry.get("formula"),
+        "formula_latex": entry.get("formula_latex"),
+        "formula_is_arithmetic": bool(entry.get("formula_is_arithmetic")),
+        "inputs": entry.get("inputs") or [],
     }
 
 
-def lookup_field(field_id: str, basis: str = None) -> dict:
-    """What a field means and where it comes from.
+def lookup_field(field_id: str, tab: str = None, basis: str = None) -> dict:
+    """What a field means, how it is computed, and where each input comes from.
 
-    ``basis`` is validated against THIS FIELD'S OWN bases — there is no global
-    basis vocabulary, and there must not be one: 'isbs' is a debt basis,
-    'manual_entry' is a Net ROE basis, and a shared enum would advertise
-    combinations that do not exist. An unknown or omitted basis returns every
-    basis the field has, which is the honest answer to "where does X come from"
-    when X legitimately has more than one source.
+    ``basis`` is the retired pre-2026-09-24 argument and is accepted only so an
+    in-flight tool call from the old schema does not raise; it is treated as a
+    tab hint. The dictionary no longer carries bases — it carries one entry per
+    (tab, field), each decomposed into ``inputs``.
     """
     try:
-        field = _find_field(field_id)
+        matches = _find_fields(field_id, tab or basis)
     except Exception as exc:
         logger.exception("lookup_field: dictionary unavailable")
         return {"error": f"Field dictionary unavailable: {exc}"}
 
-    if field is None:
+    if not matches:
         ids = field_ids()
+        bare = _bare_of(field_id)
+        near = difflib.get_close_matches(str(field_id or "").strip().lower(),
+                                         ids, n=5, cutoff=0.4)
+        if not near:
+            near = [i for i in ids if bare and bare in i.lower()][:5]
         return {
-            "error": f"No field '{field_id}' in the dictionary.",
-            "did_you_mean": difflib.get_close_matches(
-                str(field_id or "").strip().lower(), ids, n=5, cutoff=0.4),
+            "error": (f"No field '{field_id}'"
+                      + (f" on tab '{tab}'" if tab else "")
+                      + " in the dictionary."),
+            "did_you_mean": near,
             "known_field_ids": ids,
         }
 
-    all_bases = field.get("bases", []) or []
-    names = [b.get("basis") for b in all_bases]
+    if len(matches) == 1:
+        return _field_payload(matches[0])
 
-    selected = None
-    if basis:
-        want = str(basis).strip().lower()
-        selected = next(
-            (b for b in all_bases
-             if str(b.get("basis", "")).strip().lower() == want), None)
-    # A field with exactly one basis has no ambiguity to preserve — answer it
-    # directly rather than making the caller pick from a list of one.
-    if selected is None and not basis and len(all_bases) == 1:
-        selected = all_bases[0]
-
-    shown = [selected] if selected else all_bases
-    label = field.get("display_label") or field.get("field_id")
-    tabs = ", ".join(field.get("appears_on", []) or []) or "this report"
-
-    if selected:
-        lead = selected.get("plain")
-        source_line = _basis_payload(selected)["source_line"]
-    else:
-        lead = (f"{label} appears on {tabs} and is reported on "
-                f"{len(all_bases)} different bases ({', '.join(str(n) for n in names)}) — "
-                f"which one applies depends on the deal and the tab.")
-        source_line = ("Source: varies by basis — see `bases` below, each with its "
-                       "own Source line.")
-
-    out = {
-        "lead": lead,
-        "source_line": source_line,
-        "field_id": field.get("field_id"),
-        "display_label": label,
-        "appears_on": field.get("appears_on"),
-        "owner": field.get("owner"),
-        "status": field.get("status"),
-        "basis_selection": field.get("basis_selection"),
-        "bases": [_basis_payload(b) for b in shown],
-        "caveats": (selected or {}).get("caveats") if selected
-                   else [b.get("caveats") for b in all_bases if b.get("caveats")],
+    # SEVERAL TABS REPORT THIS NAME AND THEY DO NOT AGREE. Surfaced as variants
+    # rather than resolved here: which one applies is a property of the question
+    # ("on the One Pager", "for a dev deal"), and the dictionary has no basis on
+    # which to prefer one. The assistant is instructed to show them all.
+    variants = [_field_payload(m) for m in matches]
+    tabs = ", ".join(v["tab"] or "?" for v in variants)
+    return {
+        "field_id": _bare_of(field_id),
+        "multi_tab": True,
+        "definition": (f"'{_bare_of(field_id)}' is reported on {len(variants)} "
+                       f"tabs ({tabs}) and is NOT the same figure on each — "
+                       f"which applies depends on the tab."),
+        "source_line": "Source: varies by tab — see each variant below.",
+        "source_value": "varies by tab — see each variant below",
+        "variants": variants,
+        "tabs": [v["tab"] for v in variants],
     }
-    if field.get("tab_notes"):
-        out["tab_notes"] = field["tab_notes"]
-    if basis and selected is None:
-        out["basis_warning"] = (
-            f"'{basis}' is not a basis for {field.get('field_id')}. "
-            f"Valid bases: {', '.join(str(n) for n in names)}. Showing all.")
-    return out
 
 
 # ── dependency map ────────────────────────────────────────────────────────
+#
+# THE TWO COLLECTIONS ARE LISTS KEYED BY ``name`` as of 2026-09-24. They were
+# objects keyed by a long prose string; a list of records reads the same in the
+# file and stops the key doubling as data.
 
-def _constant_duplicate_index(deps: dict) -> dict:
-    """{bare constant name: [duplicate literal locations]} from shared_constants."""
-    idx = {}
-    for key, entry in (deps.get("shared_constants") or {}).items():
-        dups = entry.get("duplicated_at") or []
-        if not dups:
-            continue
-        for token in str(key).replace("/", " ").split():
-            bare = token.split(".")[-1].strip()
-            if len(bare) > 3:
-                idx.setdefault(bare, []).extend(
-                    [f"{key}: {d}" for d in dups])
-    return idx
+def _by_name(entries) -> dict:
+    """{name: entry} from the new list form, tolerating the old dict form."""
+    if isinstance(entries, dict):
+        return dict(entries)
+    out = {}
+    for e in entries or []:
+        if isinstance(e, dict) and e.get("name"):
+            out[str(e["name"])] = e
+    return out
 
 
 #: Words that carry no discriminating power in a "what uses X" question.
 _STOPWORDS = {"the", "a", "an", "of", "in", "on", "for", "and", "or", "to",
-              "from", "data", "table", "field", "value", "app", "is", "it"}
+              "from", "data", "table", "field", "value", "app", "is", "it",
+              "what", "breaks", "if", "i", "change", "depend", "depends",
+              "many", "things", "how", "uses", "use"}
 
 
 def _tokens(text: str) -> set:
@@ -230,66 +275,75 @@ def _match_key_strict(name: str, entries: dict) -> Optional[str]:
     """Exact, case-insensitive, then substring either way. No fuzzy pass.
 
     Run across sources AND constants before any token scoring, so a caller that
-    names a constant outright — ``config.DEBT_BS_ACCTS`` — gets the constant and
-    not the source whose prose happens to mention it.
+    names a constant outright — ``DEBT_BS_ACCTS`` — gets the constant and not
+    the source whose prose happens to mention it.
     """
     want = str(name or "").strip()
     if not want:
         return None
     keys = list(entries.keys())
     for k in keys:
-        if k == want:
-            return k
-    low = want.lower()
-    for k in keys:
-        if k.lower() == low:
+        if k.lower() == want.lower():
             return k
     for k in keys:
-        if low in k.lower() or k.lower() in low:
+        if want.lower() in k.lower() or k.lower() in want.lower():
             return k
     return None
 
 
-def _match_key(name: str, entries: dict) -> Optional[str]:
-    """Strict pass first, then token overlap.
+#: Minimum token-overlap score for a fuzzy match to count.
+#:
+#: THE OLD 0.25 ALWAYS RETURNED SOMETHING, AND A CONFIDENT WRONG BLAST RADIUS IS
+#: WORSE THAN A MISS. ``impact_of`` is asked "what breaks if I change X"; at 0.25
+#: an unlisted name still resolved to the nearest entry, so a typo or a table we
+#: do not track came back with a real consumer list attached to it — sourced,
+#: formatted and wrong, with nothing on screen saying the name was never found.
+#:
+#: MEASURED, NOT PICKED. Against the 20 sources and 4 constants in
+#: dependencies.json: the highest-scoring UNKNOWN name is 0.3333
+#: ("flux capacitor feed" catching accounting_feed on the token "feed"), while
+#: the lowest-scoring REAL partial query is 0.5000 ("hard costs" ->
+#: MRI_Inspection.mHardCosts). Every listed name scores 1.0 against its own
+#: entry. 0.5 is the floor of that window, and reads as a rule: at least half the
+#: query's tokens must hit, counting a hit on the entry's NAME twice.
+#:
+#: Exact and substring names never reach here — ``_match_key_strict`` runs first.
+_MATCH_FLOOR = 0.5
 
-    THE TOKEN PASS IS WHAT MAKES THIS USABLE FROM A QUESTION. The assistant
-    passes whatever the user said — "ISBS balance sheet" — and the source key is
-    ``ISBS_Download[vSource='Interim BS', vAccount in 2150/2152/2210]``, which
-    shares no substring with it. Scoring query tokens against the key AND the
-    entry's own text matches it on {isbs, balance} without needing a hand-written
-    synonym list that would then have to be kept in step with the file.
-    """
-    exact = _match_key_strict(name, entries)
-    if exact:
-        return exact
-    want = str(name or "").strip()
-    q = _tokens(want)
+
+def _match_key(name: str, entries: dict) -> Optional[str]:
+    """Best token-overlap match, or None below the confidence floor."""
+    q = _tokens(name)
     if not q:
         return None
     best, best_score = None, 0.0
-    for k in entries:
+    for k, entry in entries.items():
+        blob = k + " " + json.dumps(entry, ensure_ascii=False)
         key_hits = len(q & _tokens(k))
-        # AT LEAST ONE WORD MUST LAND ON THE KEY ITSELF. Scoring against the
-        # entry's prose alone matches anything: 'zzz_none' hit the ISBS source
-        # because the word "None" appears in its gateway rules. The key is what
-        # the caller is naming; the prose only breaks ties.
-        if not key_hits:
-            continue
-        blob = k + " " + json.dumps(entries[k], ensure_ascii=False)
-        # Key hits count double — matching the name beats matching prose.
         score = (len(q & _tokens(blob)) + key_hits) / (2.0 * len(q))
         if score > best_score:
             best, best_score = k, score
-    return best if best_score >= 0.25 else None
+    return best if best_score >= _MATCH_FLOOR else None
+
+
+def _matching_notes(deps: dict, want: str) -> dict:
+    """known_divergences / known_defects mentioning ``want``."""
+    out = {}
+    for key in ("known_divergences", "known_defects"):
+        hits = [d for d in (deps.get(key) or [])
+                if want and want in json.dumps(d, ensure_ascii=False).lower()]
+        if hits:
+            out[key] = hits
+    return out
 
 
 def impact(name: str) -> dict:
     """What reads a source or constant, and what moves if it changes.
 
-    ``name`` may be a source table, a shared constant, or a field id. A field id
-    is answered backwards — which sources feed it — because "what breaks if I
-    change the debt field" is really a question about the field's inputs.
+    ``name`` may be a source table, a shared constant, a known divergence or
+    defect, or a field. A field is answered backwards — which sources feed it —
+    because "what breaks if I change the debt field" is really a question about
+    the field's inputs.
     """
     try:
         deps = _dependencies()
@@ -297,103 +351,118 @@ def impact(name: str) -> dict:
         logger.exception("impact: dependency map unavailable")
         return {"error": f"Dependency map unavailable: {exc}"}
 
-    sources = deps.get("sources") or {}
-    constants = deps.get("shared_constants") or {}
-    dup_idx = _constant_duplicate_index(deps)
-
-    def _dup_warnings(blob: str, extra=None) -> list:
-        """Duplicate-literal warnings for any constant named in this entry."""
-        warnings = list(extra or [])
-        for bare, locations in dup_idx.items():
-            if bare in blob:
-                warnings.extend(locations)
-        # stable, de-duplicated
-        seen, out = set(), []
-        for w in warnings:
-            if w not in seen:
-                seen.add(w)
-                out.append(w)
-        return out
+    sources = _by_name(deps.get("sources"))
+    constants = _by_name(deps.get("shared_constants"))
+    want = str(name or "").strip().lower()
 
     # An outright name — source or constant — wins before any fuzzy matching.
     strict_source = _match_key_strict(name, sources)
     strict_const = _match_key_strict(name, constants)
-    if strict_const and not strict_source:
-        key = None
-    else:
-        key = strict_source or _match_key(name, sources)
+    key = None if (strict_const and not strict_source) else (
+        strict_source or _match_key(name, sources))
 
     # 1. a source table
     if key:
         entry = sources[key]
-        blob = json.dumps(entry, ensure_ascii=False)
-        consumers = (list(entry.get("direct_consumers") or [])
-                     + list(entry.get("direct_account_readers_bypassing_the_gateway") or [])
-                     + list(entry.get("downstream_fields") or []))
-        return {
-            "lead": (f"{key} is read by {len(consumers)} consumers across the app "
-                     f"(loaded as `{entry.get('data_key') or entry.get('target_table')}`)."),
+        feeds = list(entry.get("feeds") or [])
+        count = entry.get("consumer_count")
+        if count is None:
+            count = len(feeds)
+        out = {
+            "lead": (f"{key} feeds {count} consumer(s) across the app."),
             "source_line": f"Source: dependencies.json — sources[{key!r}]",
             "matched": key,
             "match_type": "source",
             "blast_radius_note": entry.get("blast_radius_note"),
-            "duplicate_literal_warnings": _dup_warnings(blob),
-            "consumers": consumers,
-            "gateway": entry.get("gateway"),
-            "gateway_rules": entry.get("gateway_rules"),
-            "downstream_fields": entry.get("downstream_fields"),
+            "consumer_count": count,
+            "feeds": feeds,
+            "consumers": feeds,
+            "loads_to": entry.get("loads_to"),
+            "provides": entry.get("provides"),
+            "traps": entry.get("traps"),
         }
+        out.update(_matching_notes(deps, want))
+        return out
 
     # 2. a shared constant
-    key = _match_key(name, constants)
+    key = _match_key_strict(name, constants) or _match_key(name, constants)
     if key:
         entry = constants[key]
-        consumers = (list(entry.get("read_by") or [])
-                     + list(entry.get("fields_that_change_if_this_changes") or []))
-        dups = [f"{key}: {d}" for d in (entry.get("duplicated_at") or [])]
-        return {
-            "lead": (f"{key} (defined at {entry.get('at')}) is read in "
-                     f"{len(entry.get('read_by') or [])} places and moves "
-                     f"{len(entry.get('fields_that_change_if_this_changes') or [])} "
-                     f"fields if it changes."),
+        read_by = list(entry.get("read_by") or [])
+        changes = list(entry.get("fields_that_change") or [])
+        count = entry.get("consumer_count")
+        if count is None:
+            count = len(read_by) + len(changes)
+        out = {
+            "lead": (f"{key} (defined at {entry.get('defined_at')}) is read in "
+                     f"{len(read_by)} place(s) and moves {len(changes)} "
+                     f"field(s) if it changes."),
             "source_line": f"Source: dependencies.json — shared_constants[{key!r}]",
             "matched": key,
             "match_type": "shared_constant",
-            "blast_radius_note": entry.get("blast_radius_note")
-                                 or entry.get("consequence"),
-            "duplicate_literal_warnings": dups,
-            "consumers": consumers,
+            "definition": entry.get("value"),
             "value": entry.get("value"),
-            "defined_at": entry.get("at"),
+            "defined_at": entry.get("defined_at"),
+            # NOT `duplicate_warning`. Reusing it here printed the same sentence
+            # twice in one answer — once under **Breaks** and again under
+            # **Duplicates** — because a constant entry has no blast-radius note
+            # of its own. What breaks IS `fields_that_change`, and the template
+            # renders that list; nothing is synthesised to fill the slot.
+            "blast_radius_note": None,
+            "duplicates": list(entry.get("duplicates") or []),
+            "duplicate_warning": entry.get("duplicate_warning"),
+            "consumer_count": count,
+            "read_by": read_by,
+            "fields_that_change": changes,
+            "consumers": read_by + changes,
+        }
+        out.update(_matching_notes(deps, want))
+        return out
+
+    # 3. a known divergence or defect, named directly
+    notes = _matching_notes(deps, want)
+    if notes and want:
+        first = (notes.get("known_divergences") or notes.get("known_defects"))[0]
+        kind = "divergence" if "known_divergences" in notes else "defect"
+        return {
+            "lead": f"'{name}' matches a known {kind}: {first.get('what')}.",
+            "source_line": (f"Source: dependencies.json — "
+                            f"{'known_divergences' if kind == 'divergence' else 'known_defects'}"),
+            "matched": first.get("what"),
+            "match_type": kind,
+            "blast_radius_note": first.get("effect"),
+            "where": first.get("where"),
+            "magnitude": first.get("magnitude"),
+            "consumer_count": None,
+            **notes,
         }
 
-    # 3. a field id — answered backwards, via the sources that feed it
-    want = str(name or "").strip().lower()
-    feeding, notes, dups = [], [], []
+    # 4. a field — answered backwards, via the sources that feed it
+    feeding, radius = [], []
     for src_key, entry in sources.items():
         blob = json.dumps(entry, ensure_ascii=False).lower()
         if want and want in blob:
             feeding.append(src_key)
             if entry.get("blast_radius_note"):
-                notes.append(f"{src_key}: {entry['blast_radius_note']}")
-            dups.extend(_dup_warnings(json.dumps(entry, ensure_ascii=False)))
+                radius.append(f"{src_key}: {entry['blast_radius_note']}")
     if feeding:
-        divergences = [d for d in (deps.get("known_divergences") or [])
-                       if want in json.dumps(d, ensure_ascii=False).lower()]
-        return {
+        out = {
             "lead": (f"'{name}' is fed by {len(feeding)} source(s): "
                      f"{', '.join(feeding)}."),
-            "source_line": "Source: dependencies.json — sources[*].downstream_fields",
+            "source_line": "Source: dependencies.json — sources[*].feeds",
             "matched": name,
             "match_type": "field",
-            "blast_radius_note": " | ".join(notes) or None,
-            "duplicate_literal_warnings": sorted(set(dups)),
+            "blast_radius_note": " | ".join(radius) or None,
+            "consumer_count": len(feeding),
+            "feeds": feeding,
             "consumers": feeding,
-            "known_divergences": divergences or None,
         }
+        out.update(_matching_notes(deps, want))
+        return out
 
     return {
-        "error": f"No source, constant or field matching '{name}' in the dependency map.",
+        "error": (f"No source, constant, divergence or defect matching "
+                  f"'{name}' in the dependency map."),
         "did_you_mean": difflib.get_close_matches(
             str(name or ""), list(sources.keys()) + list(constants.keys()),
             n=5, cutoff=0.3),
