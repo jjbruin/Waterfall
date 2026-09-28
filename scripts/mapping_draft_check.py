@@ -329,7 +329,10 @@ else:
           'from_file' in vue2 and 'from the file' in vue2)
     check('a prior mapping is labelled as such',
           'from_history' in vue2 and 'as mapped before' in vue2)
-    check('a keyword match is still labelled a guess', 'keyword guess' in vue2)
+    # REVERSED Sep 28 2026: Argus is mapped from the file's account like the budget, so
+    # there are no keyword guesses left to label. (The old string check had also gone
+    # vacuous -- it matched a comment saying the guesses were gone.)
+    check('no pre-fill is a keyword guess any more', 'from_keywords' not in vue2)
     # The whole chart is offered UNCONDITIONALLY now. It used to sit behind a
     # `showFullCoa` tick box because the category narrowed the account list; with the
     # category derived FROM the account (Jack, Sep 22 2026) there is nothing left to

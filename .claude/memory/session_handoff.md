@@ -10,7 +10,7 @@ and `v526`; three need someone else before they can be built. Status lives in
 
 | | Revision | What |
 |---|---|---|
-| "NOI not tying" when it did | `v525` | `reconcile()` classified by PREFIX (any 4xxx/5xxx) — a second NOI definition. Now reads `IS_ACCOUNTS`, same as the Budget column. The proposed $20K 5130 line alone was a $20,000 phantom difference on every import that took it |
+| "NOI not tying" when it did | `v525` | `reconcile()` classified by PREFIX (any 4xxx/5xxx) — a second NOI definition. Now reads `IS_ACCOUNTS`, same as the Budget column. ~~The proposed $20K 5130 line alone was a $20,000 phantom difference~~ — WRONG, corrected Sep 28: that tick box never reached the server |
 | Checks panel noise | `v525` | Critical only (sign opposite history, magnitude, negative NOI); the rest folded behind a count |
 | Valuation / UW toggle | `v526` | Header dropdown; `?compare=underwriting`; same engine, different source |
 | UW debt service in the Budget column | `v526` | Per-record basis; not applied (and said so) when UW has none for the year |

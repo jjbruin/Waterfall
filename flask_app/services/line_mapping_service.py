@@ -6,15 +6,22 @@ rows from `config.IS_ACCOUNTS`. TWO of those columns are loaded from a spreadshe
     Budget      <- the partner's monthly budget workbook
     Valuation   <- the appraiser's Argus download
 
-They are the same job — take somebody else's line names, decide which of our categories
-each one belongs to, check the result, write it — so they get the same screen. The ONLY
-material difference is that Argus arrives with a guess already made, by the 56 keyword
-rules in `argus_parser.ARGUS_COA_MAP`. Making that guess visible and editable is what
-asset management asked for when they said they "can't see or interact with code mapping
-for valuation": today it happens silently at import.
+They are the same job — take somebody else's line names, decide which account each
+belongs to, check the result, write it — so they get the same screen AND THE SAME RULES.
 
-A budget line arrives unassigned, because a partner's wording is their own and guessing
-would recreate exactly the invisible-mapping problem this flow exists to remove.
+Asset management, Sep 28 2026: "We want it to essentially mirror the way the budget
+process works." So neither source guesses from wording any more. A line that states our
+account number is pre-filled from it ("acct 5050 from the file"); a line mapped before
+shows how; anything else is the analyst's to assign. The Argus keyword rules
+(`argus_parser.ARGUS_COA_MAP`) used to pre-fill FIRST and so outranked the account the
+file itself stated -- the opposite of what anyone wanted.
+
+And the Argus file is read ONCE, here. It used to be uploaded twice: on Assumptions &
+Documents, where `argus_parser.parse_monthly_cashflow` read it with its own labels and
+keyword accounts, and again on this screen, where a different parser read it and the
+mapping was written back BY LABEL onto the first import -- so a line the two parsers named
+differently took no mapping at all. `_commit_argus` now writes the Valuation cash flow
+from THIS reading of the file, so what the analyst mapped is exactly what lands.
 """
 from __future__ import annotations
 
@@ -176,6 +183,48 @@ def proposed_lines(engine, record_id: int, source: str,
     return out
 
 
+def with_accepted_proposals(parsed: Dict[str, Any], mapping: Dict[str, Any],
+                            source: str = "argus") -> tuple:
+    """The file's lines plus every proposed line the analyst TICKED, as real lines.
+
+    THE TICK BOX USED TO DO NOTHING. From `v502` until Sep 28 2026 an accepted proposal
+    lived only in the browser: it was not sent with the check, not stored in the draft
+    and not sent on commit, so ticking "Partnership costs" changed nothing that was
+    written. The screen priced it and the import ignored it.
+
+    An accepted proposal now rides on the parsed file (`accepted_proposals`), which is
+    what the check, the draft and the commit already carry, and becomes a line here:
+    its amount spread evenly over the file's months, mapped to its account. Negative
+    row numbers, so it can never collide with a spreadsheet row. Only accounts this
+    screen actually offers are accepted -- a crafted payload cannot add an arbitrary
+    line under the proposal's name.
+    """
+    accepted = parsed.get("accepted_proposals") or []
+    if not accepted or source != "argus":     # proposals are offered on Argus only
+        return parsed, mapping
+    periods = parsed.get("periods") or []
+    offered = {PARTNERSHIP_DEFAULT["account"]}
+    lines = list(parsed.get("lines") or [])
+    mapping = dict(mapping or {})
+    for i, pl in enumerate(accepted):
+        acct = str((pl or {}).get("account") or "")
+        try:
+            amount = float(pl.get("amount"))
+        except (TypeError, ValueError):
+            continue
+        if acct not in offered or not periods or amount == 0:
+            continue
+        each = amount / len(periods)
+        row = -1 - i
+        lines.append({"row": row, "label": pl.get("label") or PARTNERSHIP_DEFAULT["label"],
+                      "amounts": {p: each for p in periods}, "total": round(amount, 2),
+                      "months": len(periods), "looks_like_total": False,
+                      "stated_account": acct, "proposed": True})
+        mapping[str(row)] = {"account": acct, "category": budget.category_for_account(acct),
+                             "flip": False, "proposed": True}
+    return {**parsed, "lines": lines}, mapping
+
+
 def _norm_label(label: str) -> str:
     """Compare line names on their words alone.
 
@@ -270,9 +319,8 @@ def parse(engine, record_id: int, source: str, file_bytes: bytes, filename: str,
           data: dict) -> Dict[str, Any]:
     """Read the file and return its lines with a suggested mapping per line.
 
-    `suggested` is what the screen pre-fills. For a budget it is empty by design. For
-    Argus it is `argus_parser.map_to_coa`, which returns (account, category) — the same
-    pair the mapper works in — surfaced here instead of being applied invisibly.
+    `suggested` is what the screen pre-fills: the account a line STATES, else how the
+    same line was mapped before. Identical for both sources -- no keyword guessing.
     """
     if source not in SOURCES:
         raise ValueError(f"Unknown source '{source}'. Expected one of {SOURCES}.")
@@ -284,35 +332,6 @@ def parse(engine, record_id: int, source: str, file_bytes: bytes, filename: str,
 
     suggested: Dict[str, Dict[str, Any]] = {}
     unknown_accounts: List[Dict[str, Any]] = []
-    if source == "argus":
-        from argus_parser import map_to_coa
-        for line in parsed["lines"]:
-            if line["looks_like_total"]:
-                continue          # subtotals stay unmapped whatever the keywords say
-            acct, cat = map_to_coa(line["label"])
-            if not acct:
-                continue
-            acct = str(acct)
-            # The keyword map's category is advisory; the authority is which of OUR
-            # categories actually contains the account, since that is what decides the
-            # row. Where they disagree, the account wins and the discrepancy is visible
-            # because the screen shows both.
-            owning = budget.category_for_account(acct) or cat
-            if not owning:
-                continue
-            default_sign = next(
-                (a["mri_sign"] for a in by_cat.get(owning, {}).get("accounts", [])
-                 if a["account"] == acct), 1)
-            suggested[str(line["row"])] = {
-                "category": owning,
-                "account": acct,
-                # A source file that already agrees with MRI's sign needs no flip. The
-                # line's own total decides, against how the account behaves for this deal.
-                "flip": bool(line["total"]) and (
-                    (line["total"] > 0) != (default_sign > 0)),
-                "from_keywords": True,
-            }
-
     # A budget line that STATES our account number is pre-filled from it. This is not
     # the guess the flow refuses to make: 4090 in the partner's own "Account Number"
     # column, or on the end of "CAM Reimb - 4090", is our code written down, and
@@ -383,6 +402,7 @@ def check(engine, record_id: int, source: str, parsed: Dict[str, Any],
           mapping: Dict[str, Any], data: dict) -> Dict[str, Any]:
     """Validation + reconciliation for the mapping as it currently stands."""
     vcode = record_vcode(engine, record_id)
+    parsed, mapping = with_accepted_proposals(parsed, mapping, source)
     out = validate_mod.validate(parsed, mapping, vcode, data.get("isbs_raw"))
     out["source"] = source
     out["mapped_count"] = sum(1 for m in (mapping or {}).values() if m.get("account"))
@@ -400,6 +420,8 @@ def commit(engine, record_id: int, source: str, parsed: Dict[str, Any],
     budget.
     """
     vcode = record_vcode(engine, record_id)
+    stored_parsed, stored_mapping = parsed, mapping     # the draft keeps what the screen sent
+    parsed, mapping = with_accepted_proposals(parsed, mapping, source)
     gate = validate_mod.validate(parsed, mapping, vcode, data.get("isbs_raw"))
     if not gate["can_import"]:
         raise ValueError("; ".join(b["message"] for b in gate["blocking"]))
@@ -430,8 +452,8 @@ def commit(engine, record_id: int, source: str, parsed: Dict[str, Any],
     # empty the screen at the moment the work succeeded, which is what made a
     # successful commit look like lost work.
     try:
-        save_draft(engine, record_id, source, parsed.get("filename") or "",
-                   parsed, mapping, username)
+        save_draft(engine, record_id, source, stored_parsed.get("filename") or "",
+                   stored_parsed, stored_mapping, username)
         mark_draft_committed(engine, record_id, source)
     except Exception as e:
         # The write that matters already happened; failing to record the draft must
@@ -451,28 +473,40 @@ def _argus_category(coa: int) -> str:
 
 def _commit_argus(engine, record_id: int, parsed: Dict[str, Any],
                   mapping: Dict[str, Any], username: str) -> Dict[str, Any]:
-    """Apply the analyst's mapping as COA overrides on the record's Argus import.
+    """Write the Valuation cash flow from THIS screen's reading of the file.
 
-    Argus rows are keyed by LINE ITEM TEXT, not by spreadsheet row, so the mapping is
-    translated back to labels here. A label appearing twice in the file would otherwise
-    have its later mapping silently win for both — that case is already blocked upstream
-    as a duplicate account-month, but the translation is done explicitly so the failure
-    would be visible rather than implicit.
+    One upload (asset management, Sep 28 2026): choose the file here, map it, apply,
+    and the Valuation Yr 1 column shows it. The mapped lines ARE the cash flow -- each
+    line's monthly amounts under the account the analyst chose -- so nothing is
+    translated back by label onto an import some other parser made.
+
+    Signs come from the ACCOUNT, through `argus_service._normalize_amount`, the same
+    function every Argus import has always used; the flip box does not reach this path
+    and the screen does not offer it.
+
+    The record's linked import is REPLACED IN PLACE when this record is the only one
+    linking it -- re-applying a mapping must not leave a stale projection in Deal
+    Analysis's dropdown per revision. When another record links the same import (an
+    identical file imported on two cycles shared one), a new import is made instead,
+    so one cycle's revision cannot move another cycle's Valuation column.
     """
+    import hashlib
+    import json
     from flask_app.services import argus_service
 
+    valuation_service._require_not_approved(engine, record_id)
     with engine.connect() as conn:
-        row = conn.execute(
-            text("SELECT argus_import_id FROM valuation_records WHERE id = :i"),
-            {"i": record_id}).fetchone()
-    import_id = row[0] if row else None
-    if not import_id:
-        raise ValueError(
-            "This record has no Argus import to map. Upload the appraiser's Argus "
-            "download on the record first, then review its mapping here.")
+        rec = conn.execute(text("""
+            SELECT r.vcode, r.argus_import_id, c.year FROM valuation_records r
+            JOIN valuation_cycles c ON c.id = r.cycle_id WHERE r.id = :i
+        """), {"i": record_id}).fetchone()
+    if not rec:
+        raise ValueError(f"Valuation record {record_id} not found")
+    vcode, linked, year = str(rec[0]), rec[1], rec[2]
 
     by_row = {l["row"]: l for l in parsed["lines"]}
-    updates: List[Dict[str, Any]] = []
+    rows: List[Dict[str, Any]] = []
+    accounts = set()
     for row_key, m in (mapping or {}).items():
         if not m.get("account"):
             continue
@@ -483,20 +517,62 @@ def _commit_argus(engine, record_id: int, parsed: Dict[str, Any],
             coa = int(str(m["account"]).strip())
         except ValueError:
             continue                      # a non-numeric account cannot be an Argus COA
-        # NOT our category name. `argus_cashflows.category` has its own three-word
-        # vocabulary from ARGUS_COA_MAP — revenue / expense / capex — and writing
-        # "Rental Income" into it would leave the column holding two different kinds of
-        # word depending on who last touched the row. Our category is the screen's
-        # concern; the account is what both layers agree on, so derive from it.
-        updates.append({"line_item": line["label"], "coa_account": coa,
-                        "category": _argus_category(coa)})
-    if not updates:
+        accounts.add(str(coa))
+        for period, value in (line.get("amounts") or {}).items():
+            amount = float(value)
+            if amount == 0.0:
+                continue
+            rows.append({"pd": period, "li": line["label"], "coa": coa, "amt": amount,
+                         "norm": argus_service._normalize_amount(coa, amount),
+                         "cat": _argus_category(coa)})
+    if not rows:
         raise ValueError("Nothing to apply — no lines have an account assigned.")
 
-    argus_service.update_coa_mapping(engine, int(import_id), updates)
-    logger.info("Argus mapping for record %s (import %s): %d line item(s) set by %s",
-                record_id, import_id, len(updates), username)
-    return {"rows_written": len(updates), "rows_replaced": 0,
+    # What was applied, not the file bytes: the same file re-mapped is a different cash
+    # flow, and the hash is what says so.
+    digest = hashlib.sha256(json.dumps(
+        {"file": parsed.get("filename"), "rows": sorted(
+            (r["pd"], r["li"], r["coa"], r["amt"]) for r in rows)},
+        sort_keys=True, default=str).encode()).hexdigest()
+
+    with engine.begin() as conn:
+        shared = False
+        if linked:
+            owner = conn.execute(text("SELECT vcode FROM argus_imports WHERE id = :i"),
+                                 {"i": int(linked)}).fetchone()
+            others = conn.execute(text(
+                "SELECT COUNT(*) FROM valuation_records WHERE argus_import_id = :i AND id <> :r"),
+                {"i": int(linked), "r": record_id}).scalar() or 0
+            shared = others > 0 or not owner or str(owner[0]) != vcode
+        if linked and not shared:
+            import_id = int(linked)
+            replaced = conn.execute(text("DELETE FROM argus_cashflows WHERE import_id = :i"),
+                                    {"i": import_id}).rowcount or 0
+            conn.execute(text("""
+                UPDATE argus_imports SET original_filename = :f, file_hash = :h,
+                    imported_by = :u, updated_at = CURRENT_TIMESTAMP WHERE id = :i
+            """), {"f": parsed.get("filename"), "h": digest, "u": username, "i": import_id})
+        else:
+            replaced = 0
+            import_id = conn.execute(text("""
+                INSERT INTO argus_imports (vcode, import_label, import_type,
+                    original_filename, file_hash, is_active, imported_by)
+                VALUES (:v, :l, 'valuation', :f, :h, TRUE, :u) RETURNING id
+            """), {"v": vcode, "l": f"{year} Valuation", "f": parsed.get("filename"),
+                   "h": digest, "u": username}).fetchone()[0]
+            conn.execute(text("UPDATE valuation_records SET argus_import_id = :a WHERE id = :r"),
+                         {"a": int(import_id), "r": record_id})
+        for r in rows:
+            conn.execute(text("""
+                INSERT INTO argus_cashflows (import_id, vcode, period_date, line_item,
+                    coa_account, amount, amount_norm, category)
+                VALUES (:iid, :v, :pd, :li, :coa, :amt, :norm, :cat)
+            """), {**r, "iid": int(import_id), "v": vcode})
+
+    logger.info("Argus cash flow for record %s -> import %s: %d rows, %d accounts (%s)",
+                record_id, import_id, len(rows), len(accounts), username)
+    return {"rows_written": len(rows), "rows_replaced": replaced,
             "target": "argus_cashflows", "column": "Valuation",
-            "import_id": int(import_id),
-            "accounts": sorted({str(u["coa_account"]) for u in updates})}
+            "import_id": int(import_id), "periods": sorted({r["pd"] for r in rows}),
+            "accounts": sorted(accounts)}
+

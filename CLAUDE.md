@@ -334,7 +334,8 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
     classified by PREFIX (any 4xxx / 5xxx), a second definition of NOI that put
     5190, 5120/5130, depreciation and 4050 inside it and left 7070 out; the
     proposed $20K 5130 line alone made every import that took it "not tie" by
-    $20,000. Now reads `IS_ACCOUNTS`, and lists what was mapped below NOI.
+    $20,000 [CORRECTED Sep 28 2026: it could not have -- that tick box never left
+    the browser; see open_items §13.4]. Now reads `IS_ACCOUNTS`, and lists what was mapped below NOI.
     Critical = sign opposite to history, magnitude, negative NOI; the rest fold
     behind a count. Guardrail 25 -> 33, 33/33 in the container; the old code
     fails the new fixture at exactly -35,000. Served chunk verified by resolving
@@ -2303,6 +2304,25 @@ columns are loaded from somebody else's spreadsheet, and the debt rows are ours.
   percentages, kept OUT of the mappable lines, and stored in `valuation_budget_occupancy`.
 - **7030 is "Replacement Reserve Deposit" in the chart of accounts**, yet `INTEREST_ACCTS`
   treats it as interest. See `open_items.md` §12.5 before touching either.
+- **THE ARGUS CASH FLOW IS LOADED ONCE**, in Budget Review > Load Valuation Cash Flow
+  (AM, Sep 28 2026). The Assumptions-tab upload and its route are GONE. It used to be
+  read by `argus_parser.parse_monthly_cashflow` there and by the budget parser here, with
+  the mapping written back BY LABEL onto the first import -- a line the two parsers named
+  differently took no mapping. `line_mapping_service._commit_argus` now WRITES the
+  Valuation cash flow from the panel's own reading: creates the import if the record has
+  none, replaces it in place if only this record links it, and makes a NEW one if another
+  record (another cycle) shares it. Signs come from the account via
+  `argus_service._normalize_amount`, so the flip box is not offered for Argus.
+- **Argus is mapped like the budget** -- the file's account, then "as mapped before",
+  never keywords. The keyword pre-fill ran FIRST and outranked the file's own account.
+- **An account column to the RIGHT of the description is read** (`_account_column_beside`),
+  by membership of our chart, headed or not. Before this only the account-on-the-left
+  layout was read, and AM's Argus layout is description then account.
+- **A line read as a subtotal can be overturned** ("not a subtotal" on the row, stored as
+  `not_subtotal` in the mapping; it pre-fills the file's account).
+- **The Partnership costs proposal now WRITES.** From `v502` the tick box never left the
+  browser. It rides on the parsed file (`accepted_proposals`) and
+  `with_accepted_proposals` turns it into a line; only offered accounts, Argus only.
 - **Interest goes to 5190 here, 7030 in the AM forecast** — see `open_items.md` §5.8.
   Deliberate as of Sep 11 2026, not accidental, and still worth settling.
 

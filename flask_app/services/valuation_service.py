@@ -957,39 +957,6 @@ def save_comment(engine, record_id: int, section: str, comment_text: str,
 # Argus import (staged to the cycle)
 # ============================================================
 
-def import_argus(engine, record_id: int, file_bytes: bytes, filename: str,
-                 username: str) -> Dict[str, Any]:
-    """Import the appraisal's Argus export against the deal's vcode and link
-    it to this valuation record. The import is visible in the Deal Analysis
-    projection dropdown but does NOT change the default forecast — publishing
-    into forecast_feed is the Phase 3 approval step."""
-    from flask_app.services import argus_service
-
-    _require_not_approved(engine, record_id)
-    with engine.connect() as conn:
-        row = conn.execute(text("""
-            SELECT r.vcode, c.year FROM valuation_records r
-            JOIN valuation_cycles c ON c.id = r.cycle_id
-            WHERE r.id = :i
-        """), {"i": record_id}).fetchone()
-    if not row:
-        raise ValueError(f"Valuation record {record_id} not found")
-    vcode, year = row[0], row[1]
-
-    result = argus_service.import_argus_cashflow(
-        engine, vcode, file_bytes, filename,
-        import_label=f"{year} Valuation", import_type="valuation",
-        username=username,
-    )
-    if result.get("status") in ("success", "duplicate") and result.get("import_id"):
-        with engine.begin() as conn:
-            conn.execute(text("""
-                UPDATE valuation_records SET argus_import_id = :a, updated_at = :now
-                WHERE id = :i
-            """), {"a": int(result["import_id"]), "i": record_id, "now": _now()})
-    return result
-
-
 # ============================================================
 # Budget review (Review Form page 1)
 # ============================================================

@@ -497,9 +497,11 @@ def _resolve_label_and_account(body: List[list], date_row: int, label_col: int,
 
     numeric_share = sum(1 for v in label_cells if _numeric(v)) / len(label_cells)
     if numeric_share < 0.9:
-        # An ordinary text label column: nothing to shift.
-        return label_col, _find_account_column(body, date_row, label_col,
-                                               period_cols), False
+        # An ordinary text label column: nothing to shift. The account, if the sheet
+        # states one, is found by header -- or, failing that, BESIDE the description.
+        return label_col, (_find_account_column(body, date_row, label_col, period_cols)
+                           or _account_column_beside(body, date_row, label_col,
+                                                     period_cols, _cells, label_cells)), False
 
     # It is a number column. Find the description beside it -- the nearest column
     # to the right, outside the month columns, that is mostly TEXT and populated on
@@ -520,6 +522,36 @@ def _resolve_label_and_account(body: List[list], date_row: int, label_col: int,
     # than inventing a label.
     return label_col, _find_account_column(body, date_row, label_col,
                                            period_cols), False
+
+
+def _account_column_beside(body: List[list], date_row: int, label_col: int,
+                           period_cols: set, _cells, label_cells: List[str]) -> Optional[int]:
+    """An account column to the RIGHT of a text description, found by what it holds.
+
+    Asset management, Sep 28 2026, on the appraiser's Argus file: "Our source file will
+    have a column with the account description and an adjacent column with the four
+    digit account number." The detector finds the description as the label; the account
+    beside it was only ever looked for by HEADER ("Account Number", "Acct #"), and a
+    column headed "Account", or not headed at all, was never read -- every line arrived
+    with no account and nothing pre-filled, though the numbers were sitting right there.
+    (The account-on-the-LEFT layout was already handled: a numeric label column is
+    recognised as the account and the description taken from beside it.)
+
+    Confirmed by MEMBERSHIP OF OUR CHART, `_looks_like_account_column`, never by shape:
+    a roll-up column of annual totals is also 3-6 digits. Subtotal rows usually leave
+    the column blank, so only populated cells are judged, and the column must be
+    populated on a comparable share of the rows -- a stray note column is not it.
+    """
+    width = max((len(r) for r in body[:date_row + 6]), default=0)
+    for col in range(label_col + 1, width):
+        if col in period_cols:
+            continue
+        cells = _cells(col)
+        if not cells or len(cells) < 0.5 * len(label_cells):
+            continue
+        if _looks_like_account_column(cells):
+            return col
+    return None
 
 
 def _account_from(row_vals: list, acct_col: Optional[int], label: str) -> Optional[str]:

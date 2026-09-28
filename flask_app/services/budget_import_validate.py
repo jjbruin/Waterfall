@@ -48,8 +48,9 @@ def reconcile(parsed: Dict[str, Any], mapping: Dict[str, Any]) -> Dict[str, Any]
     and interest income (4050) inside NOI, and missed the tax abatement (7070) that the
     comparison folds into expenses. Asset management, Sep 25 2026: "The NOI per the
     import sheet and what's getting populated in the 2027 budget column are tying out
-    but this section is saying the NOI is not tying out." The proposed $20K partnership
-    line to 5130 alone put a $20,000 difference on every import that accepted it.
+    but this section is saying the NOI is not tying out." (An earlier version of this
+    note blamed the proposed $20K partnership line; it could not have been, since that
+    tick box never reached the server until Sep 28 2026.)
     What is mapped below the line is reported beside the three rows, not dropped.
     """
     import config

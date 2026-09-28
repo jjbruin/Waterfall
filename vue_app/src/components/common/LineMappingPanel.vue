@@ -64,11 +64,9 @@
       <p class="lm-note">
         {{ parsed.lines.length }} line(s), {{ parsed.periods.length }} month(s)
         — {{ fmtPeriod(parsed.periods[0]) }} to {{ fmtPeriod(parsed.periods[parsed.periods.length - 1]) }}.
-        <span v-if="source === 'argus' && parsed.suggested_count">
-          {{ parsed.suggested_count }} line(s) pre-filled from the Argus keyword rules —
-          <strong>check them</strong>, they are a guess.
-        </span>
-        <span v-else-if="source === 'budget'">
+        <!-- Both sources, one rule (AM, Sep 28 2026: "mirror the budget process end to
+             end"). The Argus keyword guesses are gone. -->
+        <span>
           <template v-if="parsed.stated_account_count">
             {{ parsed.stated_account_count }} line(s) carry an account number in the
             spreadsheet and are filled in from it — that is read, not guessed.
@@ -163,17 +161,26 @@
               <th class="num">Total</th>
               <th>Category</th>
               <th>Account</th>
-              <th class="ctr">Flip sign</th>
+              <th v-if="source !== 'argus'" class="ctr">Flip sign</th>
               <th class="num">As imported</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="line in visibleLines" :key="line.row"
-                :class="{ 'lm-subtotal': line.looks_like_total, 'lm-mapped': !!m(line.row).account }">
+                :class="{ 'lm-subtotal': isSubtotal(line), 'lm-mapped': !!m(line.row).account }">
               <td>
                 {{ line.label }}
-                <span v-if="line.looks_like_total" class="lm-tag">subtotal</span>
-                <span v-if="m(line.row).from_keywords" class="lm-tag lm-guess">keyword guess</span>
+                <!-- A subtotal is the app's READING of the label, not a fact, and it can
+                     be wrong: "Total Recoveries" was a real line item in an appraiser's
+                     file and had to be renamed CAM in the source to get it mapped (AM,
+                     Sep 28 2026). The reading is now one click to overturn, both ways. -->
+                <template v-if="line.looks_like_total">
+                  <span v-if="isSubtotal(line)" class="lm-tag">subtotal</span>
+                  <span v-else class="lm-tag lm-unflagged">read as a line, not a subtotal</span>
+                  <button v-if="editable" class="lm-more" @click="setNotSubtotal(line, isSubtotal(line))">
+                    {{ isSubtotal(line) ? 'not a subtotal' : 'it is a subtotal' }}
+                  </button>
+                </template>
                 <!-- Where a pre-fill came from decides how much to trust it. An
                      account number the sheet states is a fact; a prior mapping is a
                      decision somebody made; a keyword match is a guess. -->
@@ -220,7 +227,10 @@
                   </optgroup>
                 </select>
               </td>
-              <td class="ctr">
+              <!-- Not for Argus: the Valuation cash flow takes each line's sign from its
+                   ACCOUNT (argus_service._normalize_amount), so a flip box there would be
+                   a control that changes nothing. -->
+              <td v-if="source !== 'argus'" class="ctr">
                 <input type="checkbox" :checked="!!m(line.row).flip" :disabled="!editable || !m(line.row).account"
                        @change="setFlip(line.row, $event.target.checked)" />
               </td>
@@ -406,12 +416,15 @@ const loadingDraft = ref(false)
 const uploadedName = ref('')
 
 const title = computed(() => props.source === 'argus'
-  ? "Appraiser's Argus cash flow"
+  ? "Appraiser's valuation cash flow (Argus)"
   : "Partner's monthly budget")
 
+// ONE upload for the Argus file (AM, Sep 28 2026). It used to be uploaded on
+// Assumptions & Documents AND here, and read by a different parser each time.
 const blurb = computed(() => props.source === 'argus'
-  ? 'Review how each Argus line is coded before it feeds the Valuation column. The '
-    + 'keyword rules pre-fill a guess — this is where you correct it.'
+  ? 'Load the appraiser\'s Argus cash flow here — this is the only place it is loaded. '
+    + 'Each line is mapped by the account number in the file, exactly as the budget is; '
+    + 'applying it feeds the Valuation Yr 1 column, and applying again replaces it.'
   : 'Load the budget the partner sent. It feeds the Budget column, and re-importing '
     + 'replaces it, so you can keep loading revisions until the version is final.')
 
@@ -429,7 +442,16 @@ function toggleProposal(pl, on) {
   if (on) next[pl.account] = { ...pl }
   else delete next[pl.account]
   acceptedProposals.value = next
+  syncProposals()
   runCheck()
+}
+// THE TICK USED TO STAY IN THE BROWSER: it was never sent with the check, the draft or
+// the commit, so from v502 to Sep 28 2026 ticking "Partnership costs" wrote nothing.
+// It now rides on the parsed file, which all three already carry, and the server turns
+// it into a real line (`with_accepted_proposals`).
+function syncProposals() {
+  if (!parsed.value) return
+  parsed.value = { ...parsed.value, accepted_proposals: Object.values(acceptedProposals.value) }
 }
 function setProposalAmount(pl, v) {
   const amt = Number(v)
@@ -438,6 +460,7 @@ function setProposalAmount(pl, v) {
     ...acceptedProposals.value,
     [pl.account]: { ...acceptedProposals.value[pl.account], amount: amt },
   }
+  syncProposals()
   runCheck()
 }
 
@@ -502,6 +525,27 @@ const canCommit = computed(() =>
 
 function m(row) { return mapping.value[String(row)] || {} }
 
+/** Flagged by the label AND not overturned by the analyst. */
+function isSubtotal(line) { return !!line.looks_like_total && !m(line.row).not_subtotal }
+
+/** Overturn (or restore) the subtotal reading. Overturning pre-fills the account the file
+ *  states, exactly as any other line would have been; restoring clears the line. */
+function setNotSubtotal(line, notSubtotal) {
+  const key = String(line.row)
+  if (!notSubtotal) {
+    delete mapping.value[key]
+    mapping.value = { ...mapping.value }
+    return void runCheck()
+  }
+  mapping.value = { ...mapping.value, [key]: { ...m(line.row), not_subtotal: true } }
+  if (line.stated_account && !m(line.row).account) {
+    setAccount(line.row, String(line.stated_account))
+    mapping.value = { ...mapping.value, [key]: { ...m(line.row), from_file: true } }
+  } else {
+    runCheck()
+  }
+}
+
 /** Where this line lands, read off the account. The server derives it the same way
  *  from the same map and ignores whatever the screen sends, so the two cannot drift. */
 function categoryOf(row) {
@@ -514,7 +558,10 @@ function setAccount(row, acct) {
   const key = String(row)
   const cur = m(row)
   if (!acct) {
-    delete mapping.value[key]
+    // Clearing the account must not also undo "not a subtotal" -- that is a separate
+    // decision about the line, and losing it silently would re-grey the row.
+    if (cur.not_subtotal) mapping.value = { ...mapping.value, [key]: { not_subtotal: true } }
+    else delete mapping.value[key]
     mapping.value = { ...mapping.value }
     return void runCheck()
   }
@@ -525,7 +572,8 @@ function setAccount(row, acct) {
   const category = owning?.category || null
   mapping.value = {
     ...mapping.value,
-    [key]: { ...cur, category, account: acct, flip: defaultFlip(row, category, acct) },
+    [key]: { ...cur, category, account: acct, flip: defaultFlip(row, category, acct),
+             from_file: false, from_history: false },
   }
   runCheck()
 }
@@ -573,6 +621,7 @@ async function onFile(e) {
     // Argus pre-fills; a budget starts empty. Either way the analyst sees it before
     // anything is written — which is the whole point of this screen existing.
     mapping.value = { ...(res.data.suggested || {}) }
+    acceptedProposals.value = {}
     uploadedName.value = file.name || ''
     draftLoaded.value = null
     await loadCategories()
@@ -640,6 +689,8 @@ async function loadDraft() {
     if (d && d.parsed && (d.parsed.lines || []).length) {
       parsed.value = d.parsed
       mapping.value = { ...(d.mapping || {}) }
+      acceptedProposals.value = Object.fromEntries(
+        (d.parsed?.accepted_proposals || []).map(p => [p.account, p]))
       draftLoaded.value = d
       uploadedName.value = d.filename || ''
       await loadCategories()
@@ -791,6 +842,7 @@ onMounted(() => { if (props.recordId) loadDraft() })
 .lm-table select { width: 100%; max-width: 260px; font-size: 12px; padding: 3px 4px; }
 .lm-table td { vertical-align: middle; }
 .lm-subtotal { background: #fafafa; color: #888; font-style: italic; }
+.lm-unflagged { background: #e8f5e9; color: #2e7d32; }
 .lm-mapped { background: #f6fbf7; font-style: normal; color: inherit; }
 .lm-tag { font-size: 10px; text-transform: uppercase; letter-spacing: .04em;
   background: #eee; color: #666; padding: 1px 5px; border-radius: 3px; margin-left: 6px; }

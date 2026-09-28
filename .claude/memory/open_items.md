@@ -734,6 +734,44 @@ A statement with no lines AND a non-empty `unmapped` list should say so on its f
 sentence would have turned a diagnosis into a glance. Owner: unassigned.
 
 
+## 13. Valuation section — the Argus cash flow, AM's third list (Sep 28 2026)
+
+Built Sep 28 2026, NOT YET DEPLOYED -- delete this line when it ships.
+
+### 13.1 One upload — BUILT
+The Assumptions & Documents Argus upload, its route and `valuation_service.import_argus`
+are removed; the tab says where the cash flow is loaded now. Budget Review's second tab is
+"Load Valuation Cash Flow", and applying it CREATES / REPLACES the record's import. The
+appraisal PDF upload on Assumptions is untouched.
+
+### 13.2 Map by the account in the file — BUILT
+No keyword pre-fill for Argus. AND THE ACCOUNT BESIDE THE DESCRIPTION WAS NEVER READ:
+`parse_budget_workbook` only recognised the account when it sat LEFT of the description,
+so AM's stated layout (description, then the four-digit account) would have pre-filled
+nothing. Measured on fixtures of all four layouts before and after; a column of annual
+totals is still NOT taken for accounts.
+
+### 13.3 Overturn a subtotal — BUILT
+"not a subtotal" / "it is a subtotal" per row. The dropdown was never actually locked on
+a subtotal row -- it was greyed, tagged and not pre-filled, which read as final.
+
+### 13.4 Found building it: the Partnership costs tick box never did anything
+From `v502` to Sep 28 2026 `acceptedProposals` stayed in the browser -- not sent with the
+check, the draft or the commit. Fixed. **It also means the v525 record was wrong** where
+it said the $20K 5130 line put a phantom $20,000 into the tie-out: it never reached the
+tie-out. The v525 fix stands (interest, partnership costs mapped from the file,
+depreciation, interest income WERE inside the tie-out's NOI); that example did not.
+Corrected in place in CLAUDE.md, the handoff, §12.1 and the code comments.
+
+### 13.5 Existing linked imports — WATCH
+Records already linked to an import made by the old Assumptions upload keep it until the
+analyst applies a mapping, which then replaces it in place (or makes a new one if another
+cycle shares it). Nothing migrates by itself.
+
+Guardrail `scripts/argus_single_load_check.py` (42), proved against six injected defects;
+`line_mapping_check` 27/9 -> 35/0 with the reversed assertions recorded; one
+`mapping_draft_check` assertion reversed (it had gone vacuous -- it matched a comment).
+
 ## 12. Valuation section — asset management's second list (Sep 25 2026)
 
 From AM (Matt + colleague) via Jim. 12.1 and 12.2 shipped in `v525`.
@@ -742,8 +780,8 @@ From AM (Matt + colleague) via Jim. 12.1 and 12.2 shipped in `v525`.
 `budget_import_validate.reconcile` classified by PREFIX (any 4xxx revenue, any 5xxx
 expense) — a second NOI definition. The Budget column sums `IS_ACCOUNTS` REVENUES /
 EXPENSES, which puts 5190, 5120/5130, 5160/5165, 5195/5210/5220/5400 and 4050 BELOW
-NOI and folds 7070 into expenses. The proposed $20K 5130 line alone made every import
-that accepted it "not tie" by $20,000. Now reads the same sections, and lists what was
+NOI and folds 7070 into expenses. ~~The proposed $20K 5130 line alone made every import
+that accepted it "not tie" by $20,000.~~ [CORRECTED Sep 28 2026: the proposed $20K 5130 line could NOT have caused it -- the tick box never left the browser, so it never reached the tie-out, or anything else. The prefix defect is real; that example of it was not.] Now reads the same sections, and lists what was
 mapped below NOI. Guardrail `budget_import_mapping_check` 25 -> 33; the old code fails
 the new fixture at exactly -35,000.
 

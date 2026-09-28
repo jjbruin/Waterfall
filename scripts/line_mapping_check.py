@@ -83,6 +83,31 @@ def make_argus_workbook() -> bytes:
     return buf.getvalue()
 
 
+def make_argus_workbook_with_accounts() -> bytes:
+    """The shape asset management says their Argus file will have (Sep 28 2026): the
+    description, and the four-digit account beside it. Same lines as above; the
+    subtotals, and the keyword BAIT 'Total Capital Expenditures', state no account."""
+    import openpyxl
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    months = [f"{m}/{[31,28,31,30,31,30,31,31,30,31,30,31][m-1]}/2026"
+              for m in range(1, 13)]
+    ws.append(["Line Item", None] + months)
+    for label, acct, amt in (("Potential Base Rent", "4010", 1000),
+                             ("Absorption & Turnover Vacancy", "4030", -50),
+                             ("CAM Recovery", "4090", 200),
+                             ("Total Revenue", None, 1150),
+                             ("Real Estate Taxes", "5090", 300),
+                             ("Insurance", "5110", 100),
+                             ("Tenant Improvements", "7050", 75),
+                             ("Total Capital Expenditures", None, 75),
+                             ("Net Operating Income", None, 750)):
+        ws.append([label, acct] + [amt] * 12)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def main() -> int:
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -157,32 +182,38 @@ def main() -> int:
         chk("the categories ride along so one call fills the screen",
             len(pb["categories"]) == len(cats["categories"]))
 
-        print("\n4. ARGUS arrives pre-filled from the keyword rules, visibly")
-        pa = lm.parse(engine, record_id, "argus", wb, "argus.xlsx", data)
+        # REVERSED Sep 28 2026. These sections used to assert that Argus arrives
+        # pre-filled from the keyword rules. Asset management asked for the opposite --
+        # "mirror the way the budget process works" -- because the keyword guess ran
+        # FIRST and outranked the account the file itself states.
+        print("\n4. ARGUS is mapped like the budget: from the account in the file")
+        pa0 = lm.parse(engine, record_id, "argus", wb, "argus.xlsx", data)
+        chk("a file stating NO accounts is NOT pre-filled from keywords",
+            pa0["suggested_count"] == 0, f"{pa0['suggested']}")
+        wa = make_argus_workbook_with_accounts()
+        pa = lm.parse(engine, record_id, "argus", wa, "argus.xlsx", data)
         by_row = {l["row"]: l for l in pa["lines"]}
         sug = {by_row[int(r)]["label"]: m for r, m in pa["suggested"].items()}
-        chk("several lines are suggested", pa["suggested_count"] >= 5,
-            f"got {pa['suggested_count']}: {sorted(sug)}")
-        chk("Potential Base Rent -> 4010",
-            sug.get("Potential Base Rent", {}).get("account") == "4010",
+        chk("every line stating an account is pre-filled from it",
+            pa["suggested_count"] == 6, f"got {pa['suggested_count']}: {sorted(sug)}")
+        chk("Potential Base Rent -> 4010, from the file",
+            sug.get("Potential Base Rent", {}).get("account") == "4010"
+            and sug.get("Potential Base Rent", {}).get("from_file") is True,
             f"{sug.get('Potential Base Rent')}")
-        chk("and its category is the one that OWNS 4010, not the keyword word",
+        chk("and its category is the one that OWNS 4010",
             sug.get("Potential Base Rent", {}).get("category") == "Rental Income",
             f"{sug.get('Potential Base Rent')}")
-        chk("Tenant Improvements -> 7050",
-            sug.get("Tenant Improvements", {}).get("account") == "7050",
-            f"{sug.get('Tenant Improvements')}")
-        chk("every suggestion is marked as a guess, so the screen can show it",
-            all(m.get("from_keywords") for m in sug.values()))
+        chk("no suggestion is a keyword guess",
+            not any(m.get("from_keywords") for m in sug.values()))
 
-        print("\n5. Subtotals are NEVER pre-filled, whatever the keywords say")
+        print("\n5. Subtotals are NEVER pre-filled")
         from argus_parser import map_to_coa
         # The bait is real: "Total Capital Expenditures" matches the "capital
         # expenditure" rule and would import a subtotal as a 7050 line, doubling capex.
         kw_acct, _ = map_to_coa("Total Capital Expenditures")
         chk("the keyword rules WOULD map 'Total Capital Expenditures'",
             kw_acct == 7050, f"got {kw_acct}")
-        chk("but the flow refuses to suggest it",
+        chk("but the flow does not suggest it",
             "Total Capital Expenditures" not in sug,
             f"{sug.get('Total Capital Expenditures')}")
         chk("'Total Revenue' and 'Net Operating Income' likewise",
@@ -205,7 +236,7 @@ def main() -> int:
         print("\n7. check() reports on the mapping as it stands, for either source")
         mapping = {r: dict(m) for r, m in pa["suggested"].items()}
         ck = lm.check(engine, record_id, "argus", pa, mapping, data)
-        chk("the keyword mapping passes the gate", ck["can_import"] is True,
+        chk("the file's mapping passes the gate", ck["can_import"] is True,
             f"{ck['blocking']}")
         chk("it counts what is mapped out of what is there",
             ck["mapped_count"] == len(mapping) and ck["line_count"] == 9,
@@ -228,23 +259,14 @@ def main() -> int:
             chk("an unmapped payload cannot be committed",
                 "no lines" in str(e).lower(), str(e))
 
-        print("\n9. An Argus commit with no import says what to do about it")
-        with engine.connect() as conn:
-            imp = conn.execute(text(
-                "SELECT argus_import_id FROM valuation_records WHERE id = :i"),
-                {"i": record_id}).fetchone()
-        has_import = bool(imp and imp[0])
-        if has_import:
-            chk("record has an Argus import — refusal path not exercised here", True,
-                "skipped deliberately")
-        else:
-            try:
-                lm.commit(engine, record_id, "argus", pa, mapping, "tester", data)
-                chk("it refuses", False, "no error raised")
-            except ValueError as e:
-                chk("it refuses", "no Argus import" in str(e), str(e))
-                chk("and tells the analyst where to upload it",
-                    "Upload" in str(e) and "record" in str(e), str(e))
+        # REVERSED Sep 28 2026. This used to assert that an Argus commit with no
+        # import REFUSES and sends the analyst to Assumptions & Documents to upload.
+        # That upload is gone: applying the mapping now CREATES the import. The commit
+        # writes to the database, so it is exercised on a temporary one in
+        # scripts/argus_single_load_check.py, not on this real local record.
+        print("\n9. An Argus commit with no import -- see argus_single_load_check.py")
+        chk("the refusal is gone from the code",
+            "Upload the appraiser's Argus" not in open(lm.__file__, encoding="utf-8").read())
 
         print("\n10. The Argus table keeps its OWN category vocabulary")
         chk("4010 -> revenue", lm._argus_category(4010) == "revenue")

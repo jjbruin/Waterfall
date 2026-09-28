@@ -238,7 +238,7 @@ Annual valuation cycle: records → sign-off → committee approval → publish.
 
 - **Cycle / record list** — filter by status, class, text. A record is one deal in one
   cycle, carrying the appraiser's Argus import (`argus_import_id`) once linked.
-- **Assumptions tab** — entered valuation assumptions, and the linked Argus import.
+- **Assumptions tab** — entered valuation assumptions, the appraisal documents, and which Argus cash flow is linked (read-only since Sep 28 2026, with a link to where it is loaded).
 - **Budget Review tab** — the comparison this module exists for:
   **Estimate | Budget | Valuation Yr 1 _or_ UW {budget year}**, ~27 category rows from
   `config.IS_ACCOUNTS`, then Interest / Principal / Total Debt Service / DSCR and the
@@ -260,12 +260,16 @@ Annual valuation cycle: records → sign-off → committee approval → publish.
     applied, and said so. `PUT /records/<id>/debt-service-basis`, column
     `valuation_records.debt_service_basis`.
   - **Line mapping panels** — two tabs on one shared component, `LineMappingPanel.vue`:
-    **Load Partner Budget** and **Review Argus Coding**. Upload → per-line ACCOUNT (the
+    **Load Partner Budget** and **Load Valuation Cash Flow** (Sep 28 2026 — the ONLY place
+    the Argus file is loaded; the Assumptions-tab upload is gone). Both pre-fill from the
+    account the file states, never keywords; a row read as a subtotal can be overturned;
+    Argus shows no flip box. Upload → per-line ACCOUNT (the
     category is derived from it and displayed read-only, `v523`) → flip toggle → "Does it
     tie?" (stated vs computed revenue, expenses, NOI — NOI is the Budget column's NOI,
     `v525`, with anything mapped below NOI listed) → Checks (critical only; the rest
     folded behind a count, `v525`) → commit. Budget writes
-    `isbs_budget_is_supplements`; Argus writes COA overrides on its import. Committing
+    `isbs_budget_is_supplements`; Argus WRITES the record's Valuation cash flow
+    (`argus_imports` / `argus_cashflows`), creating or replacing the import. Committing
     rebuilds the comparison above.
   - **Budgeted occupancy** (`v526`) — an "Occupancy" row on the budget file (above or
     below the month header; 0.95 / 95 / "95%"; one figure = the whole year) is read,
