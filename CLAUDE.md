@@ -253,6 +253,24 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v528` = `799239a` (THE ARGUS CASH FLOW IS LOADED ONCE AND MAPPED BY ACCOUNT --
+    AM's third list, Sep 28 2026. The Assumptions-tab upload, its route and
+    `valuation_service.import_argus` are gone; "Load Valuation Cash Flow" on
+    Budget Review WRITES the Valuation cash flow from its own reading of the file
+    (create, replace in place, or a new import when another cycle shares one).
+    The two old paths used DIFFERENT PARSERS and joined the mapping back BY
+    LABEL. Keyword pre-fill removed; an account column to the RIGHT of the
+    description is now read (AM's layout -- before, nothing would have
+    pre-filled); a subtotal reading can be overturned. FOUND BUILDING IT: the
+    Partnership costs tick box never left the browser from v502 -- it now
+    writes -- which also falsified one example in the v525 entry, corrected in
+    place. P2 listed six commits; five are docs only against live (`.claude/`,
+    `CLAUDE.md`), so the runtime delta is exactly `799239a`. VERIFIED ON
+    PRODUCTION: `argus_single_load_check` 35/0 (7 screen checks skip, no Vue in
+    the image); every column the new commit writes exists on PostgreSQL; the old
+    route is gone; 4 records link an Argus import, 0 shared. Served chunk
+    `ValuationsView-Ciczbwp4.js` carries the new strings and not the old.
+    Build `cam2`, 2m12s.)
   - `v527` = `59b1875` (TWO FEATURES ONTO LIVE, AS A MERGE -- traceability
     enhancements (`da8c356`, 6 commits) and freeze-as-sent (`72f4592`, 14) on
     top of live `6bf26b6`, Sep 28 2026. 22 commits in the span, 22 files,

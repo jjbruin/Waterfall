@@ -736,22 +736,22 @@ sentence would have turned a diagnosis into a glance. Owner: unassigned.
 
 ## 13. Valuation section — the Argus cash flow, AM's third list (Sep 28 2026)
 
-Built Sep 28 2026, NOT YET DEPLOYED -- delete this line when it ships.
+Live at `v528` (Sep 28 2026). On production 4 records link an Argus import, none shared.
 
-### 13.1 One upload — BUILT
+### 13.1 One upload — DONE `v528`
 The Assumptions & Documents Argus upload, its route and `valuation_service.import_argus`
 are removed; the tab says where the cash flow is loaded now. Budget Review's second tab is
 "Load Valuation Cash Flow", and applying it CREATES / REPLACES the record's import. The
 appraisal PDF upload on Assumptions is untouched.
 
-### 13.2 Map by the account in the file — BUILT
+### 13.2 Map by the account in the file — DONE `v528`
 No keyword pre-fill for Argus. AND THE ACCOUNT BESIDE THE DESCRIPTION WAS NEVER READ:
 `parse_budget_workbook` only recognised the account when it sat LEFT of the description,
 so AM's stated layout (description, then the four-digit account) would have pre-filled
 nothing. Measured on fixtures of all four layouts before and after; a column of annual
 totals is still NOT taken for accounts.
 
-### 13.3 Overturn a subtotal — BUILT
+### 13.3 Overturn a subtotal — DONE `v528`
 "not a subtotal" / "it is a subtotal" per row. The dropdown was never actually locked on
 a subtotal row -- it was greyed, tagged and not pre-filled, which read as final.
 
