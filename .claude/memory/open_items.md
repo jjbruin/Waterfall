@@ -22,6 +22,39 @@ fixed, plus `MANUAL_RATIO_SEEDS` and its expiry), `onepager_audit_q1_2026.md`.
 
 ---
 
+## 12. Loan subtotals carry Pegasus's debt while its row prints a dash (Sep 25 2026)
+
+**Live bug. Open for 26Q3 and every live quarter. 26Q2 is protected.**
+
+`DEBT_FREE_DEALS = {"P0000066"}` (Pegasus Life Storage,
+`portfolio_snapshot_loan.py:192`) blanks `debt_display` so the row prints an em
+dash, but leaves the raw `debt` alone. `loan_subtotal()` sums the RAW `debt` and
+excludes only `sold_suppressed` rows — debt-free is not an exclusion — so
+**$25.2M sits inside Portfolio Totals, the fund subtotal and the
+excluding-development row with no row on the page to account for it.**
+
+The in-code justification is itself the defect: *"the raw `debt` stays 0.0 and
+still feeds the subtotals, where it contributes nothing either way"* — true only
+while the ISBS balance is zero, and it is not.
+
+The Financial subtab has no equivalent hole: `PDF_NA_CELLS["P0000066"] =
+{"debt"}` makes `debt_summable` None, so the figure leaves that total. **So
+Financial equals the rows it displays and Loan is the total that does not foot
+to its own page.**
+
+- **The check:** compare the Loan subtab's Portfolio Totals debt against the sum
+  of its displayed rows for any quarter where Pegasus carries a balance.
+- **Why it is not fixed here:** it is a live-engine defect, not a freeze defect.
+  Fixing it on `feat/freeze-as-sent` would put two unrelated concerns in one
+  review.
+- **Why 26Q2 is safe:** the frozen page stores the PDF's own printed subtotal,
+  so the sent quarter keeps the figure that was sent however the live engine
+  changes afterwards. Proved by `scripts/freeze_as_sent_check.py` section Q,
+  which removes all five Loan-tab hardcodes and asserts the frozen payload is
+  byte-identical.
+- **Owner:** unassigned. Earlier measurement (Sep 16 2026) in
+  `loan-financial-debt-footing-wip`.
+
 ## 1. Code gaps — verified present in the tree
 
 ### 1.1 Account 7076 (Tenant Improvements) is completely unmodeled — LARGEST ITEM

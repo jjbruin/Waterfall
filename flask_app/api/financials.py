@@ -2,6 +2,9 @@
 
 from flask import Blueprint, request, jsonify, current_app, send_file
 import io
+import logging
+
+logger = logging.getLogger(__name__)
 
 from flask_app.auth.routes import login_required
 from flask_app.services import data_service
@@ -299,6 +302,40 @@ def excel_full_financials(vcode):
 def one_pager(vcode):
     """Get one pager investor report data."""
     quarter = request.args.get("quarter")
+
+    # A FROZEN QUARTER SERVES ITS STORED COPY. The One Pager is half of an
+    # investor's report, so it follows the same rule as the Snapshot: once the
+    # quarter has been frozen as sent it is not recomputed.
+    #
+    # `investor` is required to reach a frozen copy, and that is not an
+    # oversight. The same deal and quarter can carry different published
+    # figures on two investors' reports — Nottingham Village went out at $9.1M
+    # on one and $12.1M on the other — so without an investor there is no single
+    # right answer and the live figure is the honest one.
+    investor = (request.args.get("investor") or "").strip().upper()
+    if investor and quarter:
+        try:
+            from flask_app.services.portfolio_snapshot_freeze import (
+                get_frozen, get_frozen_one_pager)
+            frozen_op = get_frozen_one_pager(investor, quarter, vcode)
+            if frozen_op is not None:
+                fr = get_frozen(investor, quarter) or {}
+                who = fr.get("frozen_by") or fr.get("approved_by") or "unknown"
+                when = str(fr.get("frozen_at") or fr.get("approved_at") or "")[:10]
+                out = dict(frozen_op)
+                out["source"] = "frozen"
+                out["read_only"] = True
+                out["frozen_by"] = who
+                out["frozen_at"] = fr.get("frozen_at") or fr.get("approved_at")
+                out["frozen_version"] = fr.get("version")
+                out["source_note"] = (
+                    f"Frozen as sent — stored copy, not recomputed. By {who}"
+                    + (f" on {when}" if when else ""))
+                return jsonify(safe_json(out))
+        except Exception:
+            logger.exception("frozen One Pager lookup failed for %s %s %s",
+                             investor, quarter, vcode)
+
     data = _get_data()
     try:
         result = get_one_pager_data(
@@ -418,6 +455,33 @@ def one_pager_batch():
     body = request.get_json(silent=True) or {}
     vcodes = body.get("vcodes", [])
     quarter = body.get("quarter")
+    investor = (body.get("investor") or "").strip().upper()
+
+    # A FROZEN QUARTER PRINTS ITS STORED ROSTER, in the order it was sent, from
+    # the stored payloads. Re-deriving the population would rebuild the batch
+    # from whatever the ownership feed says today — which is how a deal that was
+    # in the sent document goes missing from a reprint of it.
+    if investor and quarter:
+        try:
+            from flask_app.services.portfolio_snapshot_freeze import get_frozen
+            fr = get_frozen(investor, quarter)
+        except Exception:
+            logger.exception("frozen roster lookup failed for %s %s",
+                             investor, quarter)
+            fr = None
+        if fr and fr.get("roster"):
+            stored = fr.get("one_pagers") or {}
+            who = fr.get("frozen_by") or fr.get("approved_by") or "unknown"
+            pages = [{"vcode": vc, "data": stored.get(vc), "chart": None,
+                      "source": "frozen",
+                      **({} if stored.get(vc) is not None
+                         else {"error": "no stored One Pager for this deal"})}
+                     for vc in fr["roster"]]
+            return jsonify(safe_json({
+                "pages": pages, "source": "frozen", "read_only": True,
+                "frozen_by": who, "frozen_at": fr.get("frozen_at"),
+                "roster_source": "frozen roster, in the order it was sent",
+            }))
 
     if not vcodes:
         return jsonify({"error": "vcodes list required"}), 400
