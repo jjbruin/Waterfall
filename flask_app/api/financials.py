@@ -397,6 +397,44 @@ def save_comments(vcode):
     if not quarter:
         return jsonify({"error": "quarter required"}), 400
 
+    # A FROZEN QUARTER'S COMMENTS ARE PART OF WHAT WAS SENT.
+    #
+    # This endpoint is on `financials_bp`, so the snapshot blueprint's
+    # `before_request` lock never sees it — the gap that left comments editable
+    # on a frozen quarter unless it also happened to be APPROVED, which is a
+    # different authority entirely.
+    #
+    # It takes no investor, and it cannot: comments are keyed (vcode, quarter)
+    # while a freeze is keyed (investor, quarter), so one comment row can sit
+    # inside several investors' frozen reports. The question is therefore asked
+    # of every investor, and ANY frozen report carrying this deal refuses the
+    # edit. Deliberately broader than the freeze itself — the alternative is
+    # letting the live text drift away from text already sent to somebody.
+    #
+    # The stored copy is not at risk either way (it holds its own comments), so
+    # what this prevents is the silent kind of wrong: editing a comment, and the
+    # frozen page never changing, with nothing saying why.
+    try:
+        from flask_app.services.portfolio_snapshot_freeze import (
+            quarters_frozen_with_deal)
+        frozen_for = quarters_frozen_with_deal(quarter, vcode)
+        if frozen_for:
+            return jsonify({
+                "error": f"{vcode} {quarter} is inside a frozen report for "
+                         f"{', '.join(frozen_for[:3])}"
+                         + (f" and {len(frozen_for) - 3} other(s)"
+                            if len(frozen_for) > 3 else "")
+                         + ". Those comments are the record of what was sent, "
+                           "so they are read-only. An admin can Re-freeze or "
+                           "Unfreeze the quarter if it genuinely has to change.",
+                "frozen": True,
+                "frozen_for": frozen_for,
+            }), 409
+    except Exception:
+        logger.exception("frozen-comment check failed for %s %s", vcode, quarter)
+        # Never block an edit on a lookup fault — same rule the snapshot
+        # blueprint's lock follows.
+
     # Block comment edits only after final approval
     try:
         from flask_app.services.review_service import is_editable
@@ -469,7 +507,10 @@ def one_pager_batch():
             logger.exception("frozen roster lookup failed for %s %s",
                              investor, quarter)
             fr = None
-        if fr and fr.get("roster"):
+        # Only when the ONE PAGER part is frozen. A quarter whose Snapshot
+        # alone was frozen has a row and may even have a stale roster on it;
+        # printing from that would present One Pagers nobody froze as sent.
+        if fr and fr.get("one_pagers_frozen") and fr.get("roster"):
             stored = fr.get("one_pagers") or {}
             who = fr.get("frozen_by") or fr.get("approved_by") or "unknown"
             pages = [{"vcode": vc, "data": stored.get(vc), "chart": None,

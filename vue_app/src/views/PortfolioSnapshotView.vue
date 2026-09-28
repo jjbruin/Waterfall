@@ -414,11 +414,27 @@ const sourceNote = computed(() => bundle.value?.source_note || '')
 // --- freeze as sent ---
 // Deliberately NOT part of the review strip: freezing records that a quarter
 // was sent, approving records a decision somebody made, and the two are
-// separate acts. Putting the button among the approval controls would invite
-// the reader to treat it as one more step in that chain.
-const showFreezeConfirm = ref(false)
+// separate acts. Putting the buttons among the approval controls would invite
+// the reader to treat them as one more step in that chain.
+//
+// TWO BATCH ACTIONS, ONE PER HALF, and no per-investor freeze any more: a
+// quarter goes out to every investor at once, so freezing them one at a time
+// only ever produced a partly-frozen quarter nobody could describe.
+const freezeAllPart = ref<'snapshot' | 'one_pagers' | null>(null)
 const freezing = ref(false)
 const freezeError = ref<string | null>(null)
+const freezeResult = ref<any>(null)
+
+const PART_LABEL: Record<string, string> = {
+  snapshot: 'Snapshots', one_pagers: 'One Pagers',
+}
+
+// --- which halves are frozen (three states, not two) ---
+const snapshotFrozen = computed(() => !!bundle.value?.snapshot_frozen || isFrozen.value)
+const onePagersFrozen = computed(() => !!bundle.value?.one_pagers_frozen)
+const bothFrozen = computed(() => snapshotFrozen.value && onePagersFrozen.value)
+const partlyFrozen = computed(
+  () => (snapshotFrozen.value || onePagersFrozen.value) && !bothFrozen.value)
 
 const frozenAsSent = computed(() => bundle.value?.frozen_reason === 'as-sent')
 const frozenBy = computed(() => bundle.value?.frozen_by || bundle.value?.approved_by || '')
@@ -489,19 +505,27 @@ async function sendOverlay(confirm: boolean) {
   }
 }
 
-async function doFreeze() {
+async function doFreezeAll() {
+  const part = freezeAllPart.value
+  if (!part) return
   freezing.value = true
   freezeError.value = null
+  freezeResult.value = null
+  const url = part === 'snapshot'
+    ? '/api/portfolio-snapshot/freeze-all/snapshots'
+    : '/api/portfolio-snapshot/freeze-all/one-pagers'
   try {
-    const res = await api.post('/api/portfolio-snapshot/freeze', {
-      investor: selectedInvestor.value, quarter: selectedQuarter.value,
-    })
-    if (!res.data?.frozen) throw new Error(res.data?.error || 'Freeze did not complete')
-    showFreezeConfirm.value = false
+    // 207 is a PARTIAL success and must not read as failure: some investors
+    // froze and some did not, and the per-investor list is the answer. Axios
+    // treats it as a success, so the result is rendered either way and the
+    // caller reads the rows rather than a single verdict.
+    const res = await api.post(url, { quarter: selectedQuarter.value })
+    freezeResult.value = res.data
     await load()
   } catch (e: any) {
-    // The quarter is STILL LIVE when this fires. Say so on screen rather than
-    // leaving a half-finished state that looks frozen.
+    // Nothing froze when this fires — say so rather than leaving a state that
+    // looks half-finished.
+    freezeResult.value = e?.response?.data || null
     freezeError.value = e?.response?.data?.error || e?.message || 'Freeze failed'
   } finally {
     freezing.value = false
@@ -631,28 +655,52 @@ const statusColor = computed(() => {
     <!-- Frozen vs live. The reader must never be left guessing which of the two
          they are looking at, so this states it on every load, not just when
          something is unusual. -->
-    <div v-if="bundle && isFrozen" class="banner frozen">
+    <!-- THREE STATES, NOT TWO. The halves freeze independently, so "frozen"
+         on its own no longer describes the page: a reader looking at a live
+         Snapshot whose One Pagers are fixed must be told, or the two will
+         appear to disagree for no stated reason. -->
+    <div v-if="bundle && snapshotFrozen" class="banner frozen">
       <strong>
         {{ frozenAsSent ? 'Frozen as sent' : 'Approved version' }}{{ frozenOn ? ` — ${frozenOn}` : '' }}
+        <template v-if="partlyFrozen"> — Snapshot only</template>
       </strong>
       <span>
         This is the stored copy of what was sent. It is not recomputed, so
         later data changes cannot move it.
         <template v-if="frozenBy">Frozen by {{ frozenBy }}.</template>
         <template v-if="bundle.frozen_version"> Version {{ bundle.frozen_version }}.</template>
+        <template v-if="!onePagersFrozen">
+          The One Pagers for this quarter are still live.
+        </template>
       </span>
       <span class="banner-meta">{{ frozenSourceLabel }}</span>
       <span v-if="bundle.data_version" class="banner-meta">{{ bundle.data_version }}</span>
+      <button v-if="auth.isAdmin && !onePagersFrozen" class="btn-sm freeze-btn"
+              :disabled="!canLoad || loading"
+              @click="freezeAllPart = 'one_pagers'">Freeze all One Pagers…</button>
     </div>
     <div v-else-if="bundle" class="banner live">
-      <strong>Live data</strong>
-      <span>{{ sourceNote || 'In progress — computed from current data and will change as data changes.' }}</span>
-      <button class="btn-sm primary freeze-btn" :disabled="!canLoad || loading"
-              @click="showFreezeConfirm = true">Freeze as sent</button>
-      <!-- ADMIN ONLY, and a second button rather than a mode of the first:
-           this one freezes from a document, and conflating "freeze what the
-           app computes" with "freeze what we posted" is the confusion the
-           whole overlay exists to remove. -->
+      <strong>Live data<template v-if="onePagersFrozen"> — One Pagers frozen</template></strong>
+      <span>
+        {{ sourceNote || 'In progress — computed from current data and will change as data changes.' }}
+        <template v-if="onePagersFrozen">
+          The One Pagers were frozen
+          <template v-if="bundle.one_pagers_frozen_by">by {{ bundle.one_pagers_frozen_by }}</template>
+          and will not move; this Snapshot still will.
+        </template>
+      </span>
+      <!-- ADMIN ONLY. Freezing a quarter is an all-investors act, so these
+           are batches; there is no per-investor freeze. -->
+      <button v-if="auth.isAdmin" class="btn-sm primary freeze-btn"
+              :disabled="!canLoad || loading"
+              @click="freezeAllPart = 'snapshot'">Freeze all Snapshots…</button>
+      <button v-if="auth.isAdmin && !onePagersFrozen" class="btn-sm freeze-btn"
+              :disabled="!canLoad || loading"
+              @click="freezeAllPart = 'one_pagers'">Freeze all One Pagers…</button>
+      <!-- A third button, not a mode of the others: this one freezes from a
+           DOCUMENT, and conflating "freeze what the app computes" with
+           "freeze what we posted" is the confusion the overlay exists to
+           remove. It covers both halves for one investor. -->
       <button v-if="auth.isAdmin" class="btn-sm freeze-btn"
               :disabled="!canLoad || loading"
               @click="showOverlayPanel = !showOverlayPanel">
@@ -783,28 +831,61 @@ const statusColor = computed(() => {
       </p>
     </div>
 
-    <!-- Confirmation. Freezing is not destructive but it IS a commitment: from
-         here on this quarter stops following the data. Worth one click. -->
-    <div v-if="showFreezeConfirm" class="freeze-confirm">
-      <strong>Freeze {{ selectedQuarter }} for {{ investorName }}?</strong>
+    <!-- Confirmation. Freezing is not destructive but it IS a commitment, and
+         this one covers EVERY investor, so it is worth one click. -->
+    <div v-if="freezeAllPart && auth.isAdmin" class="freeze-confirm">
+      <strong>
+        Freeze all {{ PART_LABEL[freezeAllPart] }} for {{ selectedQuarter }}?
+      </strong>
       <p>
-        This locks {{ selectedQuarter }} for {{ investorName }}. Later data
-        changes won't affect it. The stored copy keeps every Snapshot subtab,
-        every One Pager, and the roster in the order it was sent.
+        This freezes the
+        <template v-if="freezeAllPart === 'snapshot'">Snapshot</template>
+        <template v-else>One Pagers</template>
+        for <em>every investor</em> in {{ selectedQuarter }} — not just
+        {{ investorName }}. Later data changes won't affect what is stored.
       </p>
       <p class="muted">
-        Typed fields — Net ROE, ITD, comments and footnotes — become read-only.
-        An admin can Re-freeze or Unfreeze it afterwards, with a reason.
+        The other half is left alone: freezing the
+        {{ freezeAllPart === 'snapshot' ? 'Snapshots' : 'One Pagers' }} does not
+        freeze the {{ freezeAllPart === 'snapshot' ? 'One Pagers' : 'Snapshots' }}.
+        An investor already frozen for this half is skipped, not re-frozen.
+        Typed fields become read-only; an admin can Re-freeze or Unfreeze
+        afterwards, with a reason.
       </p>
-      <p v-if="freezeError" class="banner err">
-        {{ freezeError }} — {{ selectedQuarter }} is still live.
-      </p>
+      <p v-if="freezeError" class="banner err">{{ freezeError }}</p>
+
+      <!-- PER-INVESTOR RESULTS. A single count cannot say WHICH investor
+           failed, and a batch that half-ran is exactly when that matters. -->
+      <div v-if="freezeResult" class="freeze-results">
+        <p>
+          <strong>{{ freezeResult.frozen }}</strong> frozen,
+          <strong>{{ freezeResult.skipped }}</strong> already frozen,
+          <strong>{{ freezeResult.failed }}</strong> failed,
+          of {{ freezeResult.investors }} investor(s).
+        </p>
+        <ul>
+          <li v-for="r in (freezeResult.results || [])" :key="r.investor"
+              :class="{ bad: r.error, skip: r.skipped }">
+            <span class="who">{{ r.investor }}</span>
+            <span v-if="r.error">{{ r.error }}</span>
+            <span v-else-if="r.skipped">{{ r.reason }}</span>
+            <span v-else>
+              frozen — version {{ r.receipt?.version }},
+              {{ r.receipt?.one_pager_count ?? 0 }} One Pager(s)
+            </span>
+          </li>
+        </ul>
+      </div>
+
       <div class="freeze-actions">
-        <button class="btn-sm primary" :disabled="freezing" @click="doFreeze">
-          {{ freezing ? 'Freezing…' : 'Freeze as sent' }}
+        <button v-if="!freezeResult" class="btn-sm primary" :disabled="freezing"
+                @click="doFreezeAll">
+          {{ freezing ? 'Freezing…' : `Freeze all ${PART_LABEL[freezeAllPart]}` }}
         </button>
         <button class="btn-sm" :disabled="freezing"
-                @click="showFreezeConfirm = false; freezeError = null">Cancel</button>
+                @click="freezeAllPart = null; freezeError = null; freezeResult = null">
+          {{ freezeResult ? 'Close' : 'Cancel' }}
+        </button>
       </div>
     </div>
 
@@ -1054,6 +1135,19 @@ h2 { font-size: 20px; margin: 0 0 12px 0; }
   background: #fffbf0;
   font-size: 12px;
 }
+.freeze-results { margin: 8px 0; }
+.freeze-results ul {
+  margin: 6px 0 0; padding: 0; list-style: none;
+  max-height: 220px; overflow-y: auto; font-size: 12px;
+}
+.freeze-results li {
+  padding: 3px 0; border-top: 1px solid #eef1f5; line-height: 1.4;
+}
+.freeze-results li .who {
+  display: inline-block; min-width: 86px; font-weight: 600;
+}
+.freeze-results li.bad { color: #b4232c; }
+.freeze-results li.skip { color: #6b7684; }
 .freeze-confirm strong { display: block; margin-bottom: 6px; font-size: 13px; }
 .freeze-confirm p { margin: 0 0 8px; line-height: 1.45; }
 .freeze-confirm p.muted { color: #6b7684; }
