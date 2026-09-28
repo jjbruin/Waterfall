@@ -328,10 +328,7 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
     reaches the budget year on 131 of them but only 78 carry 7010 -- on the other
     53 the UW debt service is BLANK, not zero, which is correct and worth knowing
     before AM reads it as "no debt". Guardrail 50/50 in the container. Served
-    chunk `ValuationsView-klczDMgR.js` resolved from the entry bundle.
-    RECORDED HERE AFTER THE FACT: its own record commit `df41c35` is on main but
-    was not in this branch's base, so without this the history would jump v525 ->
-    v527 and the next pre-flight would take v525 as the live baseline.)
+    chunk `ValuationsView-klczDMgR.js` resolved from the entry bundle.)
   - `v525` = `0d68e53` (THE TIE-OUT'S NOI IS THE BUDGET COLUMN'S NOI, and the
     Checks panel shows critical items only -- AM, Sep 25 2026. `reconcile()`
     classified by PREFIX (any 4xxx / 5xxx), a second definition of NOI that put
@@ -2988,6 +2985,10 @@ it; the sidebar map above is kept here as a quick orientation.
 - `category_accounts()` - {category: accounts} as the IMPORT sees it — config plus `_CATEGORY_ACCOUNTS_FOR_BUDGET`, so the dropdown and the not-in-category check cannot drift (budget_import_service.py)
 - `reconcile()` / `validate()` / `commit()` - Stated-vs-computed revenue/expense/NOI; blocking vs warnings; replace-by-(vcode, periods) write to `isbs_budget_is_supplements` (budget_import_validate.py)
 - `parse()` / `check()` / `commit()` - One line-mapping flow for `source` in ("budget", "argus"); Argus pre-fills from `argus_parser.map_to_coa` as a visible, editable suggestion, a budget never guesses (line_mapping_service.py)
+- `get_budget_review(compare=)` - Estimate | Budget | Valuation Yr 1 or UW; applies Estimate overrides (line items, totals recompute) and the Budget debt-service basis (valuation_service.py)
+- `get_overrides()` / `set_override()` / `get_debt_basis()` / `set_debt_basis()` / `save_occupancy()` / `budget_occupancy_quarters()` - The analyst inputs to the Budget Review; inputs, never calculations (valuation_budget_inputs.py)
+- `uw_debt_service_for_year()` - UW debt service for a year from Projected IS 7010 (one P&I figure) with partial-year months; shared by One Pager UW DSCR and the Budget Review (one_pager.py)
+- `_read_occupancy_row()` - Budgeted occupancy off the budget file, by label AND percentage-looking figures, kept out of the lines (budget_import_service.py)
 - `monthly_schedule()` / `for_year()` - Modeled interest (5190) and principal (7060) from the deal's own loan terms, balloons excluded, child-property loans included; returns unavailable-with-a-reason, never a zero (valuation_debt_service.py)
 - `build()` - Balance Sheet + Income Statement for one entity/period, with tie-out, `sign_anomalies`, unmapped/untyped/conflicts (statement_service.py)
 - `build_members_capital()` / `build_cash_flow()` / `build_schedule_of_investments()` - The other three statements (statement_service.py)
