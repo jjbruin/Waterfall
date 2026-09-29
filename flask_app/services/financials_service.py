@@ -1303,13 +1303,21 @@ def _enrich_pe_from_deal_result(pe: dict, vcode: str, data: dict, quarter_str: s
 
         # Capital outstanding per the ENGINE, at the quarter end. Kept on
         # seed_states rather than recomputed as `funded_to_date -
-        # return_of_capital`: that looks like the same thing and is not, because
-        # `return_of_capital` also absorbs "realized gain" rows, so the
-        # subtraction understates the balance on any deal carrying a gain while
-        # capital is still outstanding. East Manchester is the visible proof —
-        # its ROC field is 5,139,662 against 3,600,000 funded, so the formula
-        # yields -1,539,662 where the engine correctly reports 0. One
-        # definition of capital outstanding, asked at the right date.
+        # return_of_capital`, because one figure should have one engine and
+        # this one is the waterfall's.
+        #
+        # THE DIVERGENCE THAT USED TO MAKE THAT ESSENTIAL IS FIXED.
+        # `return_of_capital` absorbed "realized gain" rows, so the subtraction
+        # understated the balance on any deal carrying a gain while capital was
+        # still outstanding: East Manchester's ROC field read 5,139,662 against
+        # 3,600,000 funded, so the formula yielded -1,539,662 where the engine
+        # correctly reported 0. `one_pager._is_return_of_capital` now gates
+        # that sum on the `Capital` flag, so the two agree — East Manchester's
+        # ROC is 3,600,000 and the subtraction gives the engine's 0.
+        #
+        # This line does NOT change: agreeing is not the same as being the
+        # source, and seed_states remains the one definition of capital
+        # outstanding, asked at the right date.
         pe["current_pe_balance"] = total_capital_outstanding
 
         # Accrued balance from authoritative Pref Balance Detail calculation

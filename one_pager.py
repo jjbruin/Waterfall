@@ -2502,6 +2502,40 @@ def _pe_terms_fallback(pe: Dict[str, Any], deal_terms: pd.DataFrame,
         pe[key] = v if v < 1 else v / 100
 
 
+def _is_return_of_capital(row) -> bool:
+    """True when an accounting row actually RETURNED CAPITAL.
+
+    THE `Capital` FLAG IS THE AUTHORITY, not the Typename string. MRI sets
+    `Capital='Y'` on a Return of Capital row and `Capital='N'` on a Realized
+    Gain, and the two are different things: a gain is cash distributed on top
+    of capital, not capital coming back. Reading the Typename instead swept
+    both into one figure — East Manchester's PPI20 reported 5,139,662.37
+    (3,600,000.00 of capital plus a 1,539,662.37 gain) where the sent report
+    says 3,600,000.00.
+
+    ONE DEFINITION, ALREADY NORMALISED UPSTREAM. `loaders.load_accounting`
+    writes `is_capital = Capital == 'Y'` (loaders.py:258), so that column is
+    used wherever it survives normalisation. The `Capital` fallback below is
+    the SAME predicate for a frame that reached here un-normalised (a CSV path
+    or a test fixture) — not a second opinion about what a capital row is.
+
+    A frame carrying NEITHER column returns False rather than falling back to
+    the Typename rule: this function exists because that rule is wrong, and
+    silently reinstating it where the evidence is missing would hide the very
+    defect it was written to fix.
+    """
+    try:
+        flag = row.get("is_capital")
+    except AttributeError:
+        return False
+    if flag is not None and not (isinstance(flag, float) and pd.isna(flag)):
+        return bool(flag)
+    raw = row.get("Capital")
+    if raw is None:
+        return False
+    return str(raw).strip().upper() == "Y"
+
+
 def get_pe_performance(
     vcode: str,
     quarter_str: str,
@@ -2655,7 +2689,14 @@ def get_pe_performance(
                         if "return of capital" in type_name or "realized gain" in type_name:
                             # Capital return (or correction if amt < 0)
                             capital_events.append((evt_date, amt))
-                            pe['return_of_capital'] += amt
+                            # ONLY a Capital='Y' row returned capital. A
+                            # Realized Gain reaches `capital_events` above —
+                            # it IS cash distributed and belongs in the ROE
+                            # series — but it is not a return of capital and
+                            # must not inflate this figure. See
+                            # `_is_return_of_capital`.
+                            if _is_return_of_capital(row):
+                                pe['return_of_capital'] += amt
                         elif "acquisition fee" not in type_name:
                             # CF (operating) distribution — preserve sign so
                             # negative corrections reduce ROE instead of inflating it.
