@@ -254,7 +254,21 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
-  - `v531` = `582f92d` (INTERCOMPANY, PHASE 1 -- the CFO's Due to/from PSC Manager
+  - `v532` = `2aeaaeb` (LEASE CO-TENANCY / EXCLUSIVES -- a re-read replaces a
+    document's clause rows, the export and Exclusive Use tab show Holds / Bound
+    by, radius, carve-outs and source, `lease_clause_reviews` keeps the analysts'
+    reading, a failed reading is `error` with its reason, one retry when no JSON
+    returns, caps raised to 64K output / 2M text chars. Sep 29 2026. P2 listed two
+    commits; `663c7c4` is CLAUDE.md only. AFTER DEPLOY, on production:
+    `rebuild_clause_rows(3)` took Market at Poplar from 291 exclusive rows to 92
+    (holder 63 -> 19, most from one document 25 -> 7; Firehouse 22 -> 7 with ONE
+    sandwich exclusive held), idempotent on a second run, 0 seller rows touched.
+    GNC re-read: 8 of 9 documents read; the 1996 original lease (41-page scan)
+    STILL fails -- the retry fired, and the model's replies to that one PDF are
+    degenerate (the prompt's first sentence; a 30-character markup fragment;
+    no thinking), so it is now recorded as `error` with the reason instead of
+    logged "Extracted". Not a token limit. See open_items §15.1. Build `cam6`.)
+ (INTERCOMPANY, PHASE 1 -- the CFO's Due to/from PSC Manager
     reconciliation as Accounting -> Intercompany, Sep 29 2026. Reads `gl_detail`,
     basis A.B only (C and T rows exist and halve the figures). P2 listed two
     commits; `2d80ec1` is CLAUDE.md only, so the runtime delta is exactly

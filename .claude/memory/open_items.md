@@ -75,7 +75,15 @@ re-read); a failed reading is recorded as `error` WITH its reason
 comes back; output room 16K -> 64K tokens and the text cap 180K chars -> 2M.
 Guardrails `lease_clause_rows_check.py` (35), `lease_scan_extraction_check.py` 25 -> 33.
 
-### 15.1 AFTER DEPLOY -- two production steps, in order
+### 15.1 AFTER DEPLOY -- both steps RUN at `v532` (Sep 29 2026)
+Result: rebuild 291 -> 92 rows (idempotent); GNC 8 of 9 read, the 1996 lease
+still fails and is now recorded as `error` with its reason. **Next for it:**
+the model's replies to that PDF are degenerate, not truncated -- try rendering
+its pages to images with PyMuPDF (already in the image) and sending those, or
+get a cleaner scan. The analysts' vitamins/supplements exclusive is not in the
+app until then.
+
+Original steps:
 1. `POST /api/lease-review/reviews/3/clause-rows/rebuild` (admin) -- measured
    before: 291 exclusive rows for 35 tenant/document pairs, up to 25 from one lease.
 2. Re-read GNC (tenant 159). 8 of its 9 documents were read on Sep 29; the
