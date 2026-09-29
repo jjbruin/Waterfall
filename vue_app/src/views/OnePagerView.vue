@@ -5,6 +5,7 @@ import { useDealsStore } from '../stores/deals'
 import { useRoute } from 'vue-router'
 import api from '../api/client'
 import ReviewPanel from '../components/common/ReviewPanel.vue'
+import FreezeQuarterPanel from '../components/common/FreezeQuarterPanel.vue'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -307,6 +308,18 @@ const batchQuarter = ref('2026-Q2')
 const batchPages = ref<BatchPage[]>([])
 const batchLoading = ref(false)
 const batchProgress = ref('')
+
+/** The quarter the freeze panel acts on — whichever the page is showing.
+ *
+ *  Each mode has its OWN quarter control, so reading one of them would silently
+ *  freeze a different quarter from the one on screen in the other mode. Only a
+ *  well-formed `YYYY-QN` is offered: the batch quarter is a free-text box, and
+ *  an all-investors freeze is not something to run against a half-typed value.
+ */
+const freezeQuarter = computed(() => {
+  const q = (mode.value === 'batch' ? batchQuarter.value : selectedQuarter.value) || ''
+  return /^\d{4}-Q[1-4]$/.test(q.trim()) ? q.trim() : ''
+})
 
 async function loadInvestors() {
   try {
@@ -822,6 +835,17 @@ function printOnePager() {
       <button @click="error = null">Dismiss</button>
     </div>
 
+    <!-- FREEZING THE ONE PAGER HALF OF A QUARTER, for every investor.
+         A QUARTER-LEVEL ACTION ON A DEAL-SCOPED PAGE, and that is deliberate:
+         it belongs beside the One Pagers it fixes, and the page's quarter is
+         the only thing it reads — the selected DEAL is irrelevant to it, which
+         the panel's own wording makes plain. Admin-only; the component renders
+         nothing at all for anyone else. Hidden in print: it is a control, not
+         part of the investor document. -->
+    <div v-if="freezeQuarter" class="freeze-quarter no-print">
+      <FreezeQuarterPanel part="one_pagers" :quarter="freezeQuarter" />
+    </div>
+
     <!-- Review Panel (single mode only) -->
     <ReviewPanel
       v-if="mode === 'single' && opData && selectedQuarter && !viewingSnapshot"
@@ -1247,6 +1271,8 @@ function printOnePager() {
 .btn-save:disabled { opacity: 0.5; cursor: default; }
 .snapshot-banner { background: #eff6ff; border: 1px solid #93c5fd; color: #1e40af; padding: 8px 14px; border-radius: 6px; margin-bottom: 12px; font-size: 13px; text-align: center; font-weight: 500; }
 .btn-active { background: #1e40af !important; color: #fff !important; }
+/* The freeze panel brings its own (scoped) styling; this only gives it room. */
+.freeze-quarter { margin-bottom: 12px; }
 .error-banner { background: #fef2f2; border: 1px solid #fca5a5; color: #991b1b; padding: 8px 14px; border-radius: 6px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
 .error-banner button { background: none; border: 1px solid #fca5a5; color: #991b1b; padding: 3px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
 .loading { text-align: center; padding: 40px; color: #666; font-style: italic; font-size: 14px; }

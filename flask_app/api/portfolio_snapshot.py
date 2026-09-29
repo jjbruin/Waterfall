@@ -459,6 +459,149 @@ def freeze_status():
         return jsonify({"error": str(exc)}), 500
 
 
+#: Where a published overlay lands if one has been built. The overlay document
+#: is NEVER stored in the database — it is uploaded per call — so the only thing
+#: that can be asked about "is there one waiting?" is whether the file exists on
+#: the server. See `_overlay_note` for what that does and does not prove.
+def _overlay_file_for(quarter: str):
+    """The built overlay for this quarter, or None. `2026-Q2` -> `overlay_26q2.json`."""
+    import os
+    import re
+    m = re.match(r"^(\d{4})-Q([1-4])$", (quarter or "").strip())
+    if not m:
+        return None
+    name = f"overlay_{m.group(1)[2:]}q{m.group(2)}.json"
+    root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    return name if os.path.exists(os.path.join(root, name)) else None
+
+
+def _overlay_note(quarter: str, state: dict) -> dict:
+    """Whether the published PDFs still need applying, and on what evidence.
+
+    THE HAZARD THIS WARNS ABOUT IS ORDERING. The batch buttons SKIP an investor
+    already frozen for that part, which is what protects a published-PDF freeze
+    from being overwritten. The unprotected direction is the other one: freeze
+    all Snapshots first and TIAA/KOC are frozen from LIVE data, after which the
+    overlay freeze finds them frozen and skips them — so the figures that were
+    actually sent never land, and nothing on screen would say so.
+
+    ``pending`` is deliberately conservative and its BASIS is returned with it,
+    because neither signal is conclusive on its own:
+
+      * an overlay file on the server proves one was built, not that it is the
+        current one;
+      * no investor carrying ``overlay_cells_applied`` proves none has been
+        applied THROUGH THIS APP, which is the thing that matters here.
+
+    Reported, never enforced: this cannot tell whether a quarter is SUPPOSED to
+    have an overlay, so blocking on it would block every quarter that has none.
+    """
+    have_file = _overlay_file_for(quarter)
+    applied = list(state.get("overlay_investors") or [])
+    return {
+        "file": have_file,
+        "applied_investors": applied,
+        "pending": bool(have_file) and not applied,
+        "basis": (
+            f"{have_file} is on the server and no investor in {quarter} carries "
+            f"published cells yet"
+            if have_file and not applied else
+            f"{len(applied)} investor(s) already carry published cells"
+            if applied else
+            "no overlay has been built for this quarter on this server"
+        ),
+    }
+
+
+@portfolio_snapshot_bp.route("/quarter-status", methods=["GET"])
+@login_required
+def quarter_status():
+    """How much of a quarter is frozen, per part, across every investor.
+
+    THE QUESTION THE BUTTON NEEDS ANSWERED. "Frozen" is not a property of a
+    quarter but of (investor, part), so a screen offering an all-investors
+    freeze has to say which of the three states it is in — none, some, all —
+    or the reader cannot tell a fresh quarter from one that is nearly done.
+
+    Counts come from ONE read (``quarter_part_state``) and the population from
+    ``_investor_list`` — the SAME list the batch iterates, so "12 of 127" is
+    measured against the set the button will actually touch.
+
+    ``one_pagers`` is only computed when asked for (``count_one_pagers=1``): it
+    resolves every investor's deals, which is real work, and the confirmation
+    dialog is the only caller that needs it. It is ``None``, never ``0``, when
+    it cannot be computed — a zero here would read as "this quarter has no One
+    Pagers", which is a different and alarming statement.
+    """
+    quarter = (request.args.get("quarter") or "").strip()
+    if not quarter:
+        return jsonify({"error": "quarter is required"}), 400
+    from flask_app.services import portfolio_snapshot_freeze as FZ
+
+    codes = [r["code"] for r in _investor_list()]
+    if not codes:
+        data, err = _data_or_error()
+        if err:
+            return err
+        codes = [r["code"] for r in _investor_list(data)]
+    total = len(codes)
+    known = set(codes)
+
+    state = FZ.quarter_part_state(quarter)
+    parts = {}
+    for part in FZ.PARTS:
+        # Intersected with the CURRENT population on purpose: a frozen investor
+        # no longer on the list must not make the count exceed the total, which
+        # would render as "130 of 127" and look like a bug in the screen.
+        frozen = sorted(set(state.get(part) or []) & known)
+        parts[part] = {
+            "frozen": len(frozen),
+            "total": total,
+            "remaining": max(0, total - len(frozen)),
+            "investors": frozen,
+            "state": ("all" if total and len(frozen) >= total
+                      else "partly" if frozen else "none"),
+        }
+
+    out = {
+        "quarter": quarter,
+        "investors": total,
+        "parts": parts,
+        "one_pagers_stored": state.get("one_pagers_stored"),
+        "overlay": _overlay_note(quarter, state),
+        "read_error": state.get("error"),
+    }
+
+    if (request.args.get("count_one_pagers") or "").strip() in ("1", "true", "yes"):
+        out["one_pagers"] = _count_one_pagers(codes, quarter)
+    return jsonify(safe_json(out))
+
+
+def _count_one_pagers(codes: list, quarter: str):
+    """How many One Pagers an all-investors freeze would build.
+
+    ``None`` when it cannot be worked out — never 0. One investor failing to
+    resolve does not void the number, but it does make it a floor rather than a
+    total, so the caller is told how many were counted.
+    """
+    data, err = _data_or_error()
+    if err:
+        return None
+    pages = 0
+    counted = 0
+    for code in codes:
+        try:
+            pages += len(_scope_vcodes(_resolve(code, quarter, data)))
+            counted += 1
+        except Exception:                                     # noqa: BLE001
+            logger.exception("one-pager count failed for %s %s", code, quarter)
+    if not counted:
+        return None
+    return {"pages": pages, "investors_counted": counted,
+            "investors": len(codes), "complete": counted == len(codes)}
+
+
 def _freeze_all(part: str):
     """Freeze one PART of a quarter for every investor.
 

@@ -1328,9 +1328,69 @@ def is_frozen(investor_code: str, quarter: str, part=None) -> bool:
     return all(p in have for p in normalize_parts(part))
 
 
-def frozen_parts(investor_code: str, quarter: str) -> list:
-    """Which halves are frozen. ``[]`` when the quarter is live."""
-    return frozen_parts_of(_current_row(investor_code, quarter))
+def quarter_part_state(quarter: str) -> dict:
+    """Which investors have each part frozen for ONE quarter, in one read.
+
+    The screens ask "how much of this quarter is frozen?" before offering the
+    batch button. Asked per investor that is ~127 round trips for a question
+    the table answers in a single SELECT, and the page would be waiting on it.
+
+    REUSES ``frozen_parts_of`` RATHER THAN RE-DERIVING THE RULE. A row this
+    reports as frozen must be the same row ``is_frozen`` reports as frozen —
+    a status line that disagrees with the button's own skip logic is worse than
+    no status line, because the reader would believe the one on screen.
+
+    ``payload`` is deliberately NOT selected: it is the whole stored report, and
+    this only needs to know which parts exist.
+
+    NEVER RAISES. A status read that fails must not take the screen down, so an
+    unreadable table reports nothing frozen AND says it could not be read —
+    ``error`` set, rather than an empty result that reads as "nothing frozen".
+    """
+    out = {p: [] for p in PARTS}
+    out.update(overlay_investors=[], one_pagers_stored=0, error=None)
+    try:
+        _ensure_table()
+        cols = _columns(_TABLE)
+        wanted = ["investor_code", "approved_at"]
+        wanted += [c for c, _ in _ADDED_COLUMNS]
+        sel, seen = [], set()
+        for c in wanted:
+            if c in cols and c not in seen:
+                seen.add(c)
+                sel.append(c)
+        if "investor_code" not in seen:
+            out["error"] = f"{_TABLE} has no investor_code column"
+            return out
+        with _engine().connect() as conn:
+            rows = conn.execute(text(
+                f"SELECT {', '.join(sel)} FROM {_TABLE} WHERE quarter = :q"),
+                {"q": quarter}).mappings().all()
+        for raw in rows:
+            row = dict(raw)
+            code = row.get("investor_code")
+            have = frozen_parts_of(row)
+            for p in have:
+                out[p].append(code)
+            if PART_ONE_PAGERS in have:
+                try:
+                    out["one_pagers_stored"] += len(
+                        json.loads(row.get("one_pagers") or "{}") or {})
+                except Exception:
+                    pass
+            try:
+                man = json.loads(row.get("source_manifest") or "{}") or {}
+            except Exception:
+                man = {}
+            # A row seeded from a published PDF carries the count it applied.
+            # This is the ONLY durable trace that an overlay was used, since the
+            # overlay document itself is uploaded per call and never stored.
+            if (man.get("overlay_cells_applied") or 0) > 0:
+                out["overlay_investors"].append(code)
+    except Exception as exc:                                  # noqa: BLE001
+        log.exception("quarter part state failed for %s", quarter)
+        out["error"] = str(exc)
+    return out
 
 
 def quarters_frozen_with_deal(quarter: str, vcode: str) -> list:
