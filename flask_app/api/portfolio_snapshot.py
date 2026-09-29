@@ -564,6 +564,9 @@ def quarter_status():
                       else "partly" if frozen else "none"),
         }
 
+    from flask_app.services.freeze_gate import (
+        freeze_enabled, FREEZE_DISABLED_MESSAGE)
+    enabled = freeze_enabled()
     out = {
         "quarter": quarter,
         "investors": total,
@@ -571,6 +574,11 @@ def quarter_status():
         "one_pagers_stored": state.get("one_pagers_stored"),
         "overlay": _overlay_note(quarter, state),
         "read_error": state.get("error"),
+        # Carried on the read the panel already makes, so the screen can say
+        # WHY the button is unavailable instead of rendering a dead control.
+        # The server refuses regardless; this only decides the wording.
+        "freeze_enabled": enabled,
+        "freeze_disabled_reason": None if enabled else FREEZE_DISABLED_MESSAGE,
     }
 
     if (request.args.get("count_one_pagers") or "").strip() in ("1", "true", "yes"):
@@ -602,6 +610,24 @@ def _count_one_pagers(codes: list, quarter: str):
             "investors": len(codes), "complete": counted == len(codes)}
 
 
+def _freeze_disabled_response():
+    """503 + the one sentence, or None when freezing is switched on.
+
+    The CORE already refuses (``freeze_part`` raises ``FreezeDisabled``), so
+    this is not the guarantee — it is the manners. Without it the refusal
+    reaches the screen as a 500 with an exception string, which reads as a bug
+    rather than a deliberate switch. 503 because the state is temporary; 403
+    would say the caller lacks permission, which is a different and wrong
+    statement about an admin.
+    """
+    from flask_app.services.freeze_gate import (
+        freeze_enabled, FREEZE_DISABLED_MESSAGE)
+    if freeze_enabled():
+        return None
+    return jsonify({"error": FREEZE_DISABLED_MESSAGE,
+                    "freeze_disabled": True}), 503
+
+
 def _freeze_all(part: str):
     """Freeze one PART of a quarter for every investor.
 
@@ -618,6 +644,9 @@ def _freeze_all(part: str):
     silently re-frozen: re-freezing is an admin act with a required reason, and
     a batch must not perform it by accident.
     """
+    off = _freeze_disabled_response()
+    if off:
+        return off
     body = request.get_json(silent=True) or {}
     quarter = (body.get("quarter") or "").strip()
     if not quarter:
@@ -720,6 +749,15 @@ def post_freeze_overlay():
     sent, so an unresolved title blocks the freeze unless it is explicitly
     allowed through.
     """
+    # THE WHOLE ENDPOINT, PREVIEW INCLUDED. The preview writes nothing, so
+    # allowing it would be safe — but it exists only as the step before
+    # confirming, and an admin who can preview but not confirm learns that the
+    # freeze is off one click later than they should. Off means off. To keep
+    # the preview when re-enabling is discussed, move this below the `confirm`
+    # branch; it is one line.
+    off = _freeze_disabled_response()
+    if off:
+        return off
     body = request.get_json(silent=True) or {}
     doc = body.get("overlay")
     if doc is None and "overlay" in request.files:
@@ -906,7 +944,15 @@ def post_freeze_overlay():
 @login_required
 @roles_exactly("admin")
 def post_refreeze():
-    """Replace a frozen quarter. Admin only, reason required, history kept."""
+    """Replace a frozen quarter. Admin only, reason required, history kept.
+
+    GATED TOO: a re-freeze writes a new frozen copy, so it is a freeze. Unfreeze
+    is not, and stays open — with freezing off, undoing one must remain possible
+    or a mistake made before the switch could not be corrected.
+    """
+    off = _freeze_disabled_response()
+    if off:
+        return off
     body = request.get_json(silent=True) or {}
     investor = (body.get("investor") or "").strip().upper()
     quarter = (body.get("quarter") or "").strip()

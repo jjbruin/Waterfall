@@ -36,6 +36,21 @@ class Config:
     QUERIES_DIR = os.environ.get("QUERIES_DIR", "")     # MRI SQL query files
     DOWNLOADS_DIR = os.environ.get("DOWNLOADS_DIR", "")  # MRI query result downloads
 
+    # Freezing a quarter — OFF unless switched on explicitly.
+    #
+    # Sep 29 2026: the all-investors batch was run against production as a
+    # SINGLE request over ~145 investors and the app was unavailable for about
+    # 35 minutes. The freeze was correct; the shape of the request was not.
+    # It stays off until the freeze runs as a background job.
+    #
+    # DEFAULTS TO FALSE ON PURPOSE. A flag that defaults on protects nobody —
+    # the first deploy that forgets to set it has the buttons live again with
+    # nothing saying so. The gate that reads this is
+    # flask_app/services/freeze_gate.py; it fails closed on any unrecognised
+    # value. Unfreeze is deliberately NOT gated.
+    FREEZE_ENABLED = os.environ.get("FREEZE_ENABLED", "").strip().lower() in (
+        "1", "true", "yes", "on")
+
     # Upload limits
     MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50 MB max request body
 

@@ -63,6 +63,16 @@ const stateClass = computed(() => mine.value?.state || 'none')
 
 const overlayPending = computed(() => !!status.value?.overlay?.pending)
 
+// FREEZING SWITCHED OFF APP-WIDE. The server refuses regardless of what this
+// says; the flag only lets the screen explain a disabled button instead of
+// rendering a dead control that fails on click. Treated as DISABLED until the
+// status read says otherwise, so a failed read cannot present the button as
+// live — the same fail-closed direction as the server gate.
+const freezeEnabled = computed(() => status.value?.freeze_enabled === true)
+const freezeOffReason = computed(
+  () => status.value?.freeze_disabled_reason
+        || 'Freezing is temporarily disabled.')
+
 async function loadStatus() {
   if (!props.quarter) { status.value = null; return }
   statusLoading.value = true
@@ -193,11 +203,17 @@ async function run() {
         <template v-else>—</template>
       </span>
       <button class="btn-sm primary fqp-btn"
-              :disabled="disabled || !quarter || running || mine?.state === 'all'"
+              :disabled="!freezeEnabled || disabled || !quarter || running
+                         || mine?.state === 'all'"
+              :title="freezeEnabled ? '' : freezeOffReason"
               @click="openConfirm">
         Freeze {{ quarter }} {{ label }} — all investors
       </button>
     </div>
+
+    <!-- SAID, NOT JUST GREYED OUT. A disabled button with no reason reads as a
+         bug or a missing permission; this is neither, and it is temporary. -->
+    <p v-if="!freezeEnabled" class="fqp-off">{{ freezeOffReason }}</p>
 
     <p v-if="statusError" class="fqp-err">
       The quarter state could not be read in full ({{ statusError }}) — the
@@ -295,6 +311,11 @@ async function run() {
 .fqp-state.none { color: #6b7684; }
 .fqp-state.partly { color: #9a6700; }
 .fqp-state.all { color: #1a7f37; }
+.fqp-off {
+  margin: 6px 0 0; padding: 6px 8px; border-radius: 4px;
+  background: #eef1f5; border: 1px solid #d7dde5; color: #48505c;
+  line-height: 1.45;
+}
 .fqp-warn {
   margin: 6px 0 0; padding: 6px 8px; border-radius: 4px;
   background: #fff8e5; border: 1px solid #f0d8a8; color: #7a5b00; line-height: 1.45;

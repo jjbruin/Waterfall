@@ -769,6 +769,15 @@ def freeze_part(investor_code: str, quarter: str, part, frozen_by: str,
     returning a receipt would say otherwise.
     """
     from flask_app.serializers import safe_json
+    from flask_app.services.freeze_gate import require_freeze_enabled
+
+    # THE GATE IS HERE, not only on the endpoints. Every freeze in the app comes
+    # through this function — both batch buttons, the published-overlay freeze,
+    # re-freeze, the Portfolio Snapshot approval chain and the One Pager
+    # approval — so gating the core covers paths that do not exist yet. Checked
+    # BEFORE any assembly: refusing after building 145 reports would cost the
+    # very thing the flag exists to avoid.
+    require_freeze_enabled()
 
     parts = normalize_parts(part)
     assemble = assembler or assemble_full_report

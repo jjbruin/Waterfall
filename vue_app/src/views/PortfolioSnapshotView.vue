@@ -90,6 +90,16 @@ onMounted(async () => {
   } catch (e: any) {
     loadError.value = e?.response?.data?.error || 'Could not load selectors'
   }
+  // The overlay freeze answers to the same switch as the batch buttons. Read
+  // separately from the selectors so a failure here cannot cost the page its
+  // dropdowns — and left FALSE on failure, matching the server's fail-closed
+  // gate, so a dead control is never presented as live.
+  try {
+    const cfg = await api.get('/api/data/config')
+    freezeEnabled.value = cfg.data?.freeze_enabled === true
+  } catch {
+    freezeEnabled.value = false
+  }
 })
 
 watch([selectedInvestor, selectedQuarter], () => {
@@ -454,6 +464,10 @@ const frozenSourceLabel = computed(() => {
 // the identical resolution and writes. Two calls to one endpoint rather than
 // two endpoints, so the thing previewed cannot differ from the thing frozen.
 const auth = useAuthStore()
+//: Whether freezing is switched on app-wide (FREEZE_ENABLED). False until the
+//: config read says otherwise — the server refuses either way, so the only
+//: thing this decides is whether the screen offers the control or explains it.
+const freezeEnabled = ref(false)
 const showOverlayPanel = ref(false)
 const overlayFile = ref<File | null>(null)
 const overlayPreview = ref<any>(null)
@@ -669,10 +683,16 @@ const statusColor = computed(() => {
          It covers both halves for one investor. -->
     <div v-if="bundle && auth.isAdmin" class="overlay-entry">
       <button class="btn-sm freeze-btn"
-              :disabled="!canLoad || loading"
+              :disabled="!freezeEnabled || !canLoad || loading"
+              :title="freezeEnabled ? '' : 'Freezing is temporarily disabled.'"
               @click="showOverlayPanel = !showOverlayPanel">
         Freeze {{ selectedQuarter }} as sent (from PDFs)…
       </button>
+      <!-- The batch panel above says the same thing; this is the overlay's own
+           control and must not look merely broken. -->
+      <span v-if="!freezeEnabled" class="overlay-off">
+        Freezing is temporarily disabled.
+      </span>
     </div>
 
     <!-- The published-overlay freeze. Admin only, preview before write. -->
@@ -1046,7 +1066,8 @@ h2 { font-size: 20px; margin: 0 0 12px 0; }
 }
 /* The per-investor result list moved to FreezeQuarterPanel with the batch
    itself; `.freeze-confirm` below is still the OVERLAY panel's frame. */
-.overlay-entry { display: flex; margin: 8px 0; }
+.overlay-entry { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+.overlay-off { font-size: 12px; color: #48505c; }
 .freeze-confirm strong { display: block; margin-bottom: 6px; font-size: 13px; }
 .freeze-confirm p { margin: 0 0 8px; line-height: 1.45; }
 .freeze-confirm p.muted { color: #6b7684; }
