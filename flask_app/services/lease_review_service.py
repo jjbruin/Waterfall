@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 from flask_app.services.lease_terms import (
+    governing_steps,
     amendment_ordinal, order_lease_documents, resolve_rent_steps,
     rent_psf_for, annual_rent_from, step_in_force_at,
     parse_relative_period, month_to_date,
@@ -4247,6 +4248,103 @@ def parse_argus_validation(file_path: str) -> pd.DataFrame:
 # Validation — compare seller sources to lease-extracted ground truth
 # ---------------------------------------------------------------------------
 
+def load_tenant_rent_steps(conn, tenant_id: int):
+    """A tenant's rent steps with the document behind each, and the ORIGINAL rent
+    commencement they count from. Shared by the validation and the lease timeline,
+    so both read the same schedule.
+
+    THE ORIGINAL COMMENCEMENT, not the latest. A step with no term of its own
+    belongs to the ORIGINAL term; anchoring it to whatever date a later amendment
+    set re-dated the base schedule on top of the amendment's own rent (22 tenants,
+    Sep 21 2026).
+    """
+    from sqlalchemy import text
+    step_rows = conn.execute(text("""
+        SELECT s.effective_date, s.monthly_rent, s.annual_rent,
+               s.rent_per_sf, s.period_start_month, s.period_end_month,
+               s.effective_date_basis, s.term_start, s.source_doc_id,
+               s.is_additional, s.source_doc, d.doc_date
+        FROM lease_rent_steps s
+        LEFT JOIN lease_documents d ON d.id = s.source_doc_id
+        WHERE s.tenant_id = :tid
+    """), {'tid': tenant_id}).fetchall()
+    rcs = conn.execute(text("""
+        SELECT original_rent_commencement, rent_commencement
+        FROM lease_tenants WHERE id = :tid
+    """), {'tid': tenant_id}).fetchone()
+    rent_commencement = (rcs[0] or rcs[1]) if rcs else None
+    steps = [{
+        'effective_date': r[0], 'monthly_rent': r[1], 'annual_rent': r[2],
+        'rent_per_sf': r[3], 'period_start_month': r[4],
+        'period_end_month': r[5], 'effective_date_basis': r[6],
+        'term_start': r[7], 'source_doc_id': r[8],
+        'is_additional': bool(r[9]), 'source_doc': r[10], 'doc_date': r[11],
+    } for r in step_rows]
+    return steps, rent_commencement
+
+
+def get_tenant_timeline(engine, review_id: int, tenant_id: int,
+                        as_of: Optional[str] = None,
+                        _resolved: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """One tenant's lease timeline as of a date (default: the review's rent roll
+    date). Square feet and any SETTLED rent come from `get_resolved_tenants`, the
+    governing terms from the tenant's consolidation, the steps from
+    `load_tenant_rent_steps` -- the same inputs as the validation.
+    """
+    from sqlalchemy import text
+    from flask_app.services.lease_timeline import build_timeline
+    with engine.connect() as conn:
+        if as_of is None:
+            as_of = conn.execute(text("SELECT rent_roll_date FROM lease_reviews"
+                                      " WHERE id = :r"), {'r': review_id}).scalar()
+        row = conn.execute(text("SELECT extraction_json, annual_rent FROM lease_tenants"
+                                " WHERE id = :t AND review_id = :r"),
+                           {'t': tenant_id, 'r': review_id}).fetchone()
+        if not row:
+            raise ValueError('That tenant is not part of this review.')
+        steps, rc = load_tenant_rent_steps(conn, tenant_id)
+    try:
+        terms = json.loads(row[0] or '{}')
+    except (TypeError, ValueError):
+        terms = {}
+    if '_options_summary' not in terms:
+        _apply_exercised_options(terms)
+    t = _resolved
+    if t is None:
+        t = next((x for x in get_resolved_tenants(engine, review_id, include_replaced=True)
+                  if x['id'] == tenant_id), {})
+    sf = t.get('square_feet')
+    resolved_steps, step_notes = resolve_rent_steps(steps, rc, square_feet=sf)
+    settled = (t.get('annual_rent')
+               if 'annual_rent' in (t.get('resolutions') or {}) else None)
+    tl = build_timeline(terms, resolved_steps, sf, as_of,
+                        settled_annual_rent=settled,
+                        rent_roll_annual_rent=row[1],
+                        tenant_active=(t.get('tenant_status') or 'active') == 'active')
+    for n in step_notes:
+        tl['flags'].append({'code': 'step_note', 'message': n})
+    tl.update({'tenant_id': tenant_id, 'tenant_name': t.get('tenant_name'),
+               'suite': t.get('suite')})
+    return tl
+
+
+def get_rent_roll_timeline(engine, review_id: int,
+                           as_of: Optional[str] = None) -> Dict[str, Any]:
+    """Every active, occupied tenant's timeline, alphabetical, with the exhibit's
+    totals: SF, current annual rent, and weighted PSF (rent / SF)."""
+    tenants = [t for t in get_resolved_tenants(engine, review_id)
+               if not t.get('is_vacant')]
+    tenants.sort(key=lambda t: (t.get('tenant_name') or '').lower())
+    out = [get_tenant_timeline(engine, review_id, t['id'], as_of, _resolved=t)
+           for t in tenants]
+    sf = sum(float(x['square_feet'] or 0) for x in out)
+    rent = sum(float((x['current'] or {}).get('annual_rent') or 0) for x in out)
+    return {'as_of': out[0]['as_of'] if out else as_of, 'tenants': out,
+            'totals': {'square_feet': sf, 'annual_rent': rent,
+                       'psf': (rent / sf) if sf else None},
+            'flag_count': sum(len(x['flags']) for x in out)}
+
+
 def validate_rent_roll(
     engine,
     review_id: int,
@@ -4331,36 +4429,14 @@ def validate_rent_roll(
             # anchors the months it states, its date breaks a tie with another step
             # on the same day, and whether it is an ADDITIONAL charge decides
             # whether it replaces the rent or adds to it.
-            step_rows = conn.execute(text("""
-                SELECT s.effective_date, s.monthly_rent, s.annual_rent,
-                       s.rent_per_sf, s.period_start_month, s.period_end_month,
-                       s.effective_date_basis, s.term_start, s.source_doc_id,
-                       s.is_additional, s.source_doc, d.doc_date
-                FROM lease_rent_steps s
-                LEFT JOIN lease_documents d ON d.id = s.source_doc_id
-                WHERE s.tenant_id = :tid
-            """), {'tid': tenant_id}).fetchall()
-
-            # THE ORIGINAL COMMENCEMENT, not the latest. A step with no term of its
-            # own belongs to the ORIGINAL term; anchoring it to whatever date a
-            # later amendment set re-dated the base schedule on top of the
-            # amendment's own rent (22 tenants, Sep 21 2026).
-            rcs = conn.execute(text("""
-                SELECT original_rent_commencement, rent_commencement
-                FROM lease_tenants WHERE id = :tid
-            """), {'tid': tenant_id}).fetchone()
-            rent_commencement = (rcs[0] or rcs[1]) if rcs else None
-
-            steps = [{
-                'effective_date': r[0], 'monthly_rent': r[1], 'annual_rent': r[2],
-                'rent_per_sf': r[3], 'period_start_month': r[4],
-                'period_end_month': r[5], 'effective_date_basis': r[6],
-                'term_start': r[7], 'source_doc_id': r[8],
-                'is_additional': bool(r[9]), 'source_doc': r[10], 'doc_date': r[11],
-            } for r in step_rows]
+            steps, rent_commencement = load_tenant_rent_steps(conn, tenant_id)
 
             resolved_steps, step_notes = resolve_rent_steps(
                 steps, rent_commencement, square_feet=rr_sf)
+            # ONE SCHEDULE: the same governing steps the lease timeline shows, so
+            # validation and the rent roll cannot disagree about the rent in force.
+            resolved_steps, _gov_notes = governing_steps(resolved_steps)
+            step_notes = list(step_notes) + list(_gov_notes)
             in_force, step_basis = step_in_force_at(resolved_steps, rr_date)
             extra_steps, extra_annual = additional_in_force(resolved_steps, rr_date)
 

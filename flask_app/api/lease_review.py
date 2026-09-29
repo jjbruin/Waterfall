@@ -4,6 +4,7 @@ API endpoints for lease review and due diligence.
 """
 
 from flask import Blueprint, g, jsonify, request, send_file
+from flask_app.serializers import safe_json
 from flask_app.auth.routes import login_required, role_required
 from flask_app.db import get_engine
 from flask_app.services.lease_review_service import (
@@ -44,6 +45,8 @@ from flask_app.services.lease_review_service import (
     update_tenant_sales_override,
     RESOLVABLE_FIELDS,
     save_clause_review,
+    get_tenant_timeline,
+    get_rent_roll_timeline,
     rebuild_clause_rows,
     # Phase 1: Tenant CRUD
     add_tenant,
@@ -919,6 +922,36 @@ def get_validation_context(review_id):
     # an unread amendment are simply absent.
     return jsonify({'rent_roll_date': rrd, 'tenants': out,
                     'unread_documents': unread_documents(engine, review_id)})
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/rent-roll-timeline', methods=['GET'])
+@login_required
+def rent_roll_timeline(review_id):
+    """Every occupied tenant's lease timeline as of a date (default: the review's
+    rent roll date): current rent, future steps, remaining options, flags. The one
+    engine the rent-roll exhibit and every timeline screen read."""
+    try:
+        return jsonify(safe_json(get_rent_roll_timeline(
+            get_engine(), review_id, request.args.get('as_of') or None)))
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"rent roll timeline failed: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/tenants/<int:tenant_id>/timeline',
+                       methods=['GET'])
+@login_required
+def tenant_timeline(review_id, tenant_id):
+    try:
+        return jsonify(safe_json(get_tenant_timeline(
+            get_engine(), review_id, tenant_id, request.args.get('as_of') or None)))
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"tenant timeline failed: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
 
 
 @lease_review_bp.route('/reviews/<int:review_id>/tenants/<int:tenant_id>/clause-review',
