@@ -184,6 +184,9 @@ def main() -> int:
     ap.add_argument("--deals",
                     default=os.path.join(HERE, "onepager_print_population.txt"))
     ap.add_argument("--only", default=None, help="comma-separated vcodes")
+    ap.add_argument("--quarter", default=None,
+                    help="the quarter to measure; required unless the "
+                         "population file names its own")
     # WHICH PRINT LAYOUT IS IN FORCE. These are not styling preferences, they
     # are two different contracts, and the same measurement is a pass under one
     # and a failure under the other:
@@ -217,13 +220,11 @@ def main() -> int:
     args = ap.parse_args()
 
     deals = []
-    with open(args.deals, encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            parts = line.split()
-            deals.append((parts[0], parts[1] if len(parts) > 1 else "2026-Q2"))
+    from onepager_population import read_population
+    _pop = read_population(args.deals, args.quarter)
+    if _pop is None:
+        return 2
+    deals.extend(_pop)
     if args.only:
         keep = set(args.only.split(","))
         deals = [d for d in deals if d[0] in keep]

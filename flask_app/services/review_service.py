@@ -425,7 +425,25 @@ def is_editable(vcode: str, quarter: str) -> bool:
 # ── Snapshots ────────────────────────────────────────────────
 
 def _save_snapshot(vcode: str, quarter: str, approved_by: str):
-    """Capture the current One Pager computed data as a frozen snapshot."""
+    """Capture the current One Pager computed data as a frozen snapshot.
+
+    GATED ON ``FREEZE_ENABLED``. This is a freeze by another name — it stores a
+    computed report so later data changes cannot move it — and it is reached
+    from the CEO approval, so it has to answer to the same switch as the
+    buttons. It is NOT routed through ``freeze_part``: it writes One Pager
+    snapshots, a separate store, so the core gate does not cover it and it is
+    checked here.
+
+    THE APPROVAL IS NOT AFFECTED. The caller has already advanced the workflow
+    before this runs, and this function has always swallowed its own failures so
+    that an approval is never lost to a snapshot write. With freezing off the
+    approval completes exactly as before; it simply does not snapshot.
+    """
+    from flask_app.services.freeze_gate import freeze_enabled
+    if not freeze_enabled():
+        logger.info("One Pager snapshot skipped for %s %s — freezing is "
+                    "disabled; the approval itself stands", vcode, quarter)
+        return
     try:
         from flask_app.services import data_service
         from flask_app.services.financials_service import get_one_pager_data, get_one_pager_chart

@@ -32,6 +32,18 @@ import os
 import sys
 import tempfile
 
+# FREEZING IS OFF BY DEFAULT (FREEZE_ENABLED, see flask_app/services/freeze_gate.py)
+# and this suite exists to exercise freezing, so it switches it ON for itself,
+# explicitly and in-process. Set BEFORE flask_app is imported: the Config class
+# reads the environment at import time.
+#
+# It does NOT weaken the gate — scripts/freeze_disabled_check.py owns the OFF
+# direction and asserts every entry point refuses. Two suites, one for each
+# state, rather than one suite that silently depends on whichever state it
+# happens to run in.
+import os as _os
+_os.environ["FREEZE_ENABLED"] = "1"
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 if ROOT not in sys.path:

@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../api/client'
+import { defaultQuarter } from '../api/quarters'
 
 const router = useRouter()
 
@@ -23,7 +24,12 @@ const loading = ref(false)
 const error = ref<string | null>(null)
 
 // Filters
-const quarterFilter = ref('2026-Q2')
+// ASKED, NOT HARDCODED. This used to be a pinned quarter literal. A literal is
+// right for one quarter and silently stale from the day the next one ends — the
+// tracker would open on a finished quarter with nothing on screen saying so.
+// Resolved from the server on mount, BEFORE the first load, or the empty value
+// would fetch every quarter at once.
+const quarterFilter = ref('')
 const investorFilter = ref('')
 const statusFilter = ref('')
 // {code, name}: the option's VALUE is the investor code, because /tracking
@@ -40,6 +46,9 @@ const returnedCount = computed(() => items.value.filter(i => i.status === 'retur
 const approvedCount = computed(() => items.value.filter(i => i.status === 'approved').length)
 
 onMounted(async () => {
+  // AWAITED, unlike the One Pager's batch box: an empty quarter here is not a
+  // blank input, it is "no quarter filter", which fetches every quarter at once.
+  quarterFilter.value = await defaultQuarter()
   try {
     const res = await api.get('/api/reviews/investors')
     investorOptions.value = res.data.investors || []
@@ -121,7 +130,7 @@ function filterByStatus(status: string) {
         <input
           type="text"
           v-model="quarterFilter"
-          placeholder="e.g. 2025-Q4"
+          placeholder="YYYY-Qn"
           class="filter-input"
           @keyup.enter="loadTracking"
         />

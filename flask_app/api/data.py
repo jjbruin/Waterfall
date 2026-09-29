@@ -316,7 +316,17 @@ def get_config():
         "pro_yr_base": current_app.config["PRO_YR_BASE_DEFAULT"],
         "actuals_through": current_app.config.get("ACTUALS_THROUGH"),
         "db_path": current_app.config["DB_PATH"],
+        # Read-only here: freezing is switched by FREEZE_ENABLED in the
+        # environment, not through the settings screen. Exposed so a screen can
+        # explain a disabled button rather than render a dead control; the
+        # server refuses regardless of what the client believes.
+        "freeze_enabled": _freeze_enabled(),
     })
+
+
+def _freeze_enabled() -> bool:
+    from flask_app.services.freeze_gate import freeze_enabled
+    return freeze_enabled()
 
 
 @data_bp.route("/config", methods=["PUT"])
