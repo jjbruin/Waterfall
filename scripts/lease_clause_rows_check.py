@@ -290,5 +290,31 @@ with eng.connect() as c:
 chk('a later successful reading clears the old reason', st == 'extracted' and why is None,
     (st, why))
 
+section('the New Business downside list reads the settled roster')
+# scenario_service.get_risk_candidates read lease_tenants raw: a settled expiry
+# never reached the downside scenario, and a vacated tenant was still offered.
+from flask_app.services import scenario_service  # noqa: E402
+with eng.begin() as c:
+    c.execute(text("CREATE TABLE IF NOT EXISTS prospect_properties (id INTEGER PRIMARY KEY,"
+                   " prospect_id INTEGER)"))
+    c.execute(text("INSERT INTO prospect_properties (id, prospect_id) VALUES (1, 10)"))
+    c.execute(text("UPDATE lease_reviews SET prospect_property_id = 1 WHERE id = 3"))
+    c.execute(text("UPDATE lease_tenants SET is_material = 1, lease_end = '2027-12-31'"
+                   " WHERE id = 166"))
+    c.execute(text(
+        "INSERT INTO lease_tenants (id, review_id, tenant_name, suite, square_feet,"
+        " annual_rent, is_vacant, tenant_status, is_material, lease_end) VALUES"
+        " (170, 3, 'CiCi''s Pizza', 'S9', 2000, 40000, 0, 'vacated', 1, '2025-01-31')"))
+S.ensure_resolution_table(eng)
+with eng.begin() as c:
+    c.execute(text("INSERT INTO lease_field_resolutions (tenant_id, field_name,"
+                   " resolved_value, reason) VALUES (166, 'lease_end', '2031-12-31',"
+                   " 'First Amendment extends the term')"))
+cands = {x['tenant_id']: x for x in scenario_service.get_risk_candidates(eng, 10)}
+chk("the analyst's settled expiry reaches the downside candidate (2031, not the rent roll's 2027)",
+    cands.get(166, {}).get('lease_end') == '2031-12-31', cands.get(166))
+chk('a tenant read as vacated is not offered as a downside candidate', 170 not in cands,
+    sorted(cands))
+
 print('\n%d passed, %d failed' % (len(OK), len(BAD)))
 sys.exit(1 if BAD else 0)

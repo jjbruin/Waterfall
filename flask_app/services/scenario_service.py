@@ -158,14 +158,19 @@ def get_risk_candidates(engine, prospect_id: int) -> List[Dict[str, Any]]:
         _today = _date.today().isoformat()
         out: List[Dict[str, Any]] = []
         for rid in review_ids:
-            rows = c.execute(text("""
-                SELECT t.id, t.tenant_name, t.suite, t.square_feet,
-                       t.annual_rent, t.lease_end, t.is_material,
-                       t.has_cotenancy, t.has_exclusive_use, t.is_vacant
-                FROM lease_tenants t
-                WHERE t.review_id = :r
-                ORDER BY COALESCE(t.annual_rent, 0) DESC
-            """), {'r': rid}).fetchall()
+            # THE ROSTER WITH THE ANALYSTS' DECISIONS APPLIED, not the raw table
+            # (Sep 29 2026). Reading lease_tenants directly had two effects: a rent
+            # or expiry the analyst had SETTLED against the lease never reached the
+            # downside scenario, and a tenant read as vacated / no lease was still
+            # offered as a candidate. get_resolved_tenants is what every other
+            # lease screen reads -- one roster, not two.
+            from flask_app.services.lease_review_service import get_resolved_tenants
+            resolved = sorted(get_resolved_tenants(engine, rid),
+                              key=lambda t: -(t.get('annual_rent') or 0))
+            rows = [(t['id'], t['tenant_name'], t['suite'], t['square_feet'],
+                     t['annual_rent'], t['lease_end'], t['is_material'],
+                     t['has_cotenancy'], t['has_exclusive_use'], t['is_vacant'])
+                    for t in resolved]
 
             term_dates = {}
             for tr in c.execute(text("""
