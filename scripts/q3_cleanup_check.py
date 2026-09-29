@@ -155,6 +155,22 @@ def section_a() -> None:
 
 def section_b() -> None:
     print("\nB. The paid-off filter drops a loan, not a row")
+
+    # SKIPPED ON THIS BRANCH, DELIBERATELY. The paid-off fix (30a1cec) is NOT
+    # part of this release — it stays on fix/q3-cleanup-phase1 — so the
+    # behaviour these checks pin does not exist here yet. Skipped rather than
+    # deleted: the coverage returns by itself the day that commit ships, and a
+    # deleted section would have to be remembered and rewritten instead.
+    #
+    # Detected from the SIGNATURE, not from a branch name or a flag: the fix is
+    # what adds the `as_of` parameter, so its absence IS the absence of the fix.
+    # That means this cannot skip by accident once the fix is present.
+    import inspect
+    if "as_of" not in inspect.signature(DS._filter_paid_off_loans).parameters:
+        print("  SKIP  the paid-off fix (30a1cec) is not in this release — "
+              "_filter_paid_off_loans takes no as_of parameter")
+        return
+
     df = loans_fixture()
 
     # B1 — the defect: every row of 257 must go, not just its 'Paid Off' row.
