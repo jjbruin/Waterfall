@@ -40,14 +40,71 @@ _ISBS_SUPPLEMENTS = {
 }
 
 
-def _filter_paid_off_loans(df: pd.DataFrame) -> pd.DataFrame:
-    """Exclude loans with vDateType = 'Paid Off' (case-insensitive)."""
-    if df.empty:
+def _filter_paid_off_loans(df: pd.DataFrame, as_of=None) -> pd.DataFrame:
+    """Drop every row of a LOAN that was paid off, not just its 'Paid Off' row.
+
+    THE OLD RULE DROPPED ROWS, AND A LOAN IS NOT A ROW. ``MRI_Loans.sql`` joins
+    ``Loan_Date``, so one facility yields one row per date event. Excluding the
+    rows whose ``vDateType`` is 'Paid Off' therefore removed only that event and
+    left the loan alive through its Origination and Maturity rows. Measured on
+    the 91 live rows, four carry 'Paid Off' and exactly one has siblings:
+    P0000017 East Manchester LoanID 257, repaid 2026-06-25, survived with its
+    Maturity 2031-01-11 intact. That is not cosmetic — ``get_isbs_debt_balance``
+    only zeroes a stale balance when NO active MRI loan exists, so the surviving
+    rows kept East Manchester's stale 2025-11-30 balance of 9,641,912 alive and
+    printed an LTV against it.
+
+    So the unit is (``vCode``, ``LoanID``): if that loan has a qualifying
+    'Paid Off' event, every one of its rows goes.
+
+    ``as_of`` MAKES IT DATE-AWARE, and the default deliberately is not.
+    A repayment is an event with a date, so "is this loan gone?" is only
+    answerable as at a date: Ascent on Steamboat's LoanIDs 288 and 289 were
+    repaid 2026-07-01, which is AFTER 26Q2 quarter end, yet they were dropped
+    from every quarter including the ones in which they were still outstanding.
+    Pass a date and only repayments on or before it count.
+
+    ``as_of=None`` means "no bound" — ANY 'Paid Off' event drops the loan, which
+    is the conservative reading and never reports a repaid loan as live.
+    :func:`load_all` passes None ON PURPOSE: it is cached by
+    ``(db_path, pro_yr_base)`` and carries no as-of date, so a date chosen here
+    would be baked into a frame shared by every quarter and would be wrong for
+    all but one of them. A quarter-scoped consumer that needs the date-aware
+    answer should re-filter ``mri_loans_all`` — kept unfiltered beside
+    ``mri_loans_raw`` — with its own quarter end. See ``open_items`` for
+    carrying the quarter into the loan frame properly.
+
+    An UNDATED 'Paid Off' event always counts, whatever ``as_of`` is: it records
+    that the loan was repaid, and refusing to act on it would keep a repaid loan
+    alive on a missing field.
+    """
+    if df is None or df.empty:
         return df
-    col = next((c for c in df.columns if c.lower() == "vdatetype"), None)
-    if col:
-        df = df[df[col].astype(str).str.strip().str.lower() != "paid off"].reset_index(drop=True)
-    return df
+    cols = {c.lower(): c for c in df.columns}
+    dt_col = cols.get("vdatetype")
+    if not dt_col:
+        return df
+
+    events = df[dt_col].astype(str).str.strip().str.lower()
+    paid = events == "paid off"
+    if not paid.any():
+        return df
+
+    vc_col, id_col, ev_col = cols.get("vcode"), cols.get("loanid"), cols.get("dtevent")
+    if not (vc_col and id_col):
+        # Not the MRI_Loans shape — no loan identity to group on, so the row-wise
+        # drop is the only honest answer available.
+        return df[~paid].reset_index(drop=True)
+
+    if as_of is not None and ev_col:
+        when = pd.to_datetime(df[ev_col], errors="coerce")
+        paid = paid & (when.isna() | (when <= pd.Timestamp(as_of)))
+        if not paid.any():
+            return df
+
+    key = (df[vc_col].astype(str).str.strip().str.upper() + "|"
+           + df[id_col].astype(str).str.strip())
+    return df[~key.isin(set(key[paid]))].reset_index(drop=True)
 
 
 def _collapse_loan_date_events(df: pd.DataFrame) -> pd.DataFrame:
@@ -93,8 +150,16 @@ def _collapse_loan_date_events(df: pd.DataFrame) -> pd.DataFrame:
     ``dashboard_service.py`` use ``dtEvent`` only, while ``one_pager._parse_loan``
     prefers ``dtMaturity``.
 
-    Call AFTER :func:`_filter_paid_off_loans`: a fully repaid loan carries only a
-    'Paid Off' event, so filtering first drops it entirely, exactly as before.
+    Call AFTER :func:`_filter_paid_off_loans`, which removes repaid loans in
+    full so nothing here has to reason about them.
+
+    THAT ORDERING USED TO REST ON A CLAIM THAT WAS FALSE. It read: "a fully
+    repaid loan carries only a 'Paid Off' event, so filtering first drops it
+    entirely, exactly as before." On live data P0000017 East Manchester LoanID
+    257 carries Origination, Maturity AND 'Paid Off', so the row-wise filter
+    left it standing and this function then resolved a maturity for a loan that
+    had already been repaid. The filter is now per-loan, so the ordering holds
+    because the filter makes it hold — not because MRI only ever writes one row.
     """
     if df is None or df.empty:
         return df
