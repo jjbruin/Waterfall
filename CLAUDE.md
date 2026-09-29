@@ -254,6 +254,22 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v531` = `582f92d` (INTERCOMPANY, PHASE 1 -- the CFO's Due to/from PSC Manager
+    reconciliation as Accounting -> Intercompany, Sep 29 2026. Reads `gl_detail`,
+    basis A.B only (C and T rows exist and halve the figures). P2 listed two
+    commits; `2d80ec1` is CLAUDE.md only, so the runtime delta is exactly
+    `582f92d`. VERIFIED ON PRODUCTION POSTGRESQL: entity side -308,316.59 and
+    manager side 313,093.97, the CFO's sheet to the cent; 64 rows, 0 drilldown
+    mismatches across 4 sides; Investigate = NOTTNV -22,385.07, PEGASU -94,941.70
+    (on its real alternate account MR99991102 -- the sheet had it on the wrong one
+    and read No Balance), PPI2 -274.16, PSC2 -2,467.66; INVF10 reads No Balance
+    where the sheet's formula error said Investigate. New tables
+    `ic_entity_settings` (five rows seeded ONCE from the CFO's answers, each
+    saying where it came from; PSC1's Liberty MM exclusion is marked INFERRED)
+    and `ic_recon_notes`, both protected. Also fixed: GL / IA Query freshness read
+    refresh state 'complete', which nothing writes, so it said "unknown" after
+    every refresh since v504 -- production now reports 2026-09-28 14:56. Pay and
+    the JE file are NOT built. Build `cam5`, 2m48s.)
   - `v530` = `e97c9fe` (FREEZING IS PER QUARTER AND SWITCHED OFF. Deployed Sep 29
     2026 12:53 EDT (16:53:39 UTC), build `cam4` 2m44s, digest
     `sha256:f713a2ad675659b401c1906cd775db80d033158def89cf3351770590157b1f0a`.
