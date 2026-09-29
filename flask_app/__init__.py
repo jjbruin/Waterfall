@@ -178,6 +178,9 @@ def create_app(config_name: str = None) -> Flask:
     from flask_app.api.gl_ia_query import gl_ia_query_bp
     app.register_blueprint(gl_ia_query_bp)
 
+    from flask_app.api.intercompany import intercompany_bp
+    app.register_blueprint(intercompany_bp)
+
     # Health check
     @app.route("/health")
     def health():

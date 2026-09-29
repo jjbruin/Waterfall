@@ -129,6 +129,7 @@ waterfall-xirr/
 - **.claude/memory/accounting_workpapers.md** - The workpaper packages + statement engine: data, mapping, workflow, deadlines, the download (Sep 15 2026)
 - **.claude/memory/app_reference.md** - What each app tab displays + AI Assistant tools/endpoints (split out of this file Sep 11 2026)
 - **.claude/memory/treasury.md** - The bank side of the close: PNC import, the three-way tie, the matcher, what `current_available` cannot say (Sep 17 2026)
+- **.claude/memory/intercompany.md** - Due to/from PSC Manager reconciliation from `gl_detail`, basis A.B only; phase 1 built Sep 29 2026, the Pay/JE step is not
 
 ## Running the Application
 
@@ -3028,7 +3029,7 @@ The sidebar (`AppSidebar.vue`) is organized into major sections with expandable 
 |---------|------|----------|
 | **Dashboard** | Standalone link | `/dashboard` |
 | **Asset Management** | Expandable | Deal Analysis, Property Financials, Surveillance, One Pager, Review Tracking, Ownership, Waterfall Setup, Report Settings (expandable config panel) |
-| **Accounting** | Expandable | Workpaper Packages, Treasury, GL / IA Query |
+| **Accounting** | Expandable | Workpaper Packages, Treasury, Intercompany, GL / IA Query |
 | **New Business** | Expandable | Pipeline, Deal Analysis, Lease Review, Lease Risk Analysis |
 | **Investment Management** | Future (dimmed) | — |
 | **Reports** | Standalone link | `/reports` (Projected Returns, ROE Summary, Pref Balance Detail, Sold Portfolio, PSCKOC, Portfolio Analysis) |

@@ -1666,7 +1666,13 @@ PROTECTED_TABLES = {'capital_calls', 'waterfalls', 'one_pager_comments', 'waterf
                     # manual pairings, close_period, create_account, resolve), so
                     # protecting them takes nothing away.
                     'tr_accounts', 'tr_activity', 'tr_statements',
-                    'tr_pending_statements', 'tr_matches', 'tr_periods'}
+                    'tr_pending_statements', 'tr_matches', 'tr_periods',
+                    # ── Intercompany ─────────────────────────────────────────
+                    # Same rule: the app writes both and holds the only copy.
+                    # The settings say which account is an entity's second
+                    # Due To/From account and which accounts are its cash; the
+                    # notes are the accountant's explanation of each variance.
+                    'ic_entity_settings', 'ic_recon_notes'}
 
 
 def _get_import_connection():

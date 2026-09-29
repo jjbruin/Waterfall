@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 _passed, _failed = [], []
 
 #: Blueprints that make up the accounting section.
-ACCOUNTING_PREFIXES = ("/api/workpapers", "/api/treasury")
+ACCOUNTING_PREFIXES = ("/api/workpapers", "/api/treasury", "/api/intercompany")
 
 #: Anything that changes something. GET is a read and stays open.
 WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}

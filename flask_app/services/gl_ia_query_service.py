@@ -220,6 +220,11 @@ def _freshness(engine, table: str) -> Optional[str]:
     table changed". Close enough to be worth showing and not the same claim, so the
     screen words it as the refresh, not the table. Returns None rather than a
     guess when no refresh has completed.
+
+    THE REFRESH WRITES `state = 'done'` (mri_service.refresh_all_async). This read
+    looked for 'complete', a value nothing writes, so from v504 until Sep 29 2026
+    the screen said "freshness unknown" after every successful refresh. Both are
+    accepted so the check does not hinge on one word again.
     """
     if not _has_table(engine, 'mri_refresh_status'):
         return None
@@ -227,7 +232,7 @@ def _freshness(engine, table: str) -> Optional[str]:
         with engine.connect() as c:
             return c.execute(text(
                 "SELECT finished_at FROM mri_refresh_status "
-                "WHERE id = 1 AND state = 'complete'")).scalar()
+                "WHERE id = 1 AND state IN ('done', 'complete')")).scalar()
     except Exception:
         logger.info("mri_refresh_status unreadable", exc_info=True)
         return None
