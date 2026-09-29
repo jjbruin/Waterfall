@@ -1297,8 +1297,37 @@ Researched Sep 17 2026:
 
 **No screen-scraping of PINACLE.** Credentials stay with PNC's own mechanism.
 
-**Owner: Jim.** A TMO email was offered and not requested. Until then the
-import tab is the feed, and it works.
+**Owner: Jim.** Until then the import tab is the feed, and it works.
+
+**PNC answered, Sep 29 2026** (three guides in Jim's Downloads: Information
+Reporting API v4.0, BAI Download & Transmission, OAuth). Existing TMSA covers
+all options, no addendum. Pricing on top of current PINACLE IR charges:
+
+| Option | PNC price | At our size (63 PNC accounts, ~240 items/mo) | Lead time |
+|---|---|---|---|
+| Info Reporting API | $750/mo per PINACLE ID, any number of APIs | ~$9,000/yr | avg 150 days (40–288), scales with number of APIs |
+| BAI2 over SFTP | $195/mo + $30/account + $0.19/item PDR, $500 setup | ~$25,600/yr IF $30 is monthly — **ask** | 4–6 weeks |
+| EDI statements | $45/mo + $25/file + $150/hr | — | 4–6 weeks |
+| Manual BAI2 Export in PINACLE | none quoted (part of IR) — **confirm** | $0 | now |
+
+What the guides settle:
+- **The API answers §7.2 and §7.7.** `/accounts` returns the FULL `accountNumber`
+  for every entitled account (so quiet accounts register themselves) plus
+  `availableBalance`, `currentLedgerBalance`, `closingLedgerBalance`. Up to
+  **two years** of history, not 90 days. CAD Canadian-branch accounts included.
+- Auth is 2-legged OAuth (`client_credentials`, scope `ViewFinancialInformationIR`
+  = read-only), 15-minute tokens, `apiKey` header, plus mTLS or IP allowlist.
+  **mTLS** for us: Container Apps outbound IPs are not a guarantee.
+  PNC recommends a dedicated API-only PINACLE user.
+- Sandbox responses are MOCKED; real data first appears in Pre-Production.
+- Client must throttle; RPS limits are set with the implementation team.
+- **"Statements by transmission" is ACCOUNT ANALYSIS (fee) statements in X12**,
+  not the monthly DDA statements the three-way tie files. DDA statements are
+  scheduled EMAIL only. Not worth buying.
+
+Recommendation given to Jim: API, scoped to Accounts + Account Transactions
+only (not recondetails, not card), keep the CSV import running during
+onboarding. Open questions for PNC listed in the Sep 29 session reply.
 
 ### 7.2 `current_available` is `None` until that connection exists
 
