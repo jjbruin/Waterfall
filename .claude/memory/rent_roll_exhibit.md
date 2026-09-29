@@ -161,3 +161,31 @@ Potential/Perkins/USA Karate = the current term's start). No rule reproduces it.
 `step_after_expiration` (10) is probably option-period rent the lease already states
 (usable as option rent). Also: Patton's options are 30-day rolling, which
 `term_years` cannot express ("6 x term not stated").
+
+## Acceptance on production data (v538, Sep 29 2026)
+
+Full Market at Poplar re-read with option rent: 33/33 tenants, option rent now
+captured (Starbucks 4/4, Pure Barre, Peach Cobbler, Tropical Smoothie, USA Karate).
+Tropical Smoothie's original lease finally read. The single re-read job was killed
+by memory at tenant 27 -- run long re-reads ONE SUBPROCESS PER TENANT.
+
+Paired 32 of 33 (6 by identical SF where names differ). Matches: SF 31, current
+rent 30, expiration 27, Option(s) 25, subordinate rows 17, whole block 4.
+Workbooks sent to Jim: `Downloads\Acceptance - Market at Poplar Rent Roll.xlsx`
+(summary, differences explained, tenant by tenant, flags) and the app's exhibit.
+
+The differences, by kind:
+- **Start definition** (26/32) -- new business's question, not the engine's.
+- **OLD ANALYST SETTLEMENTS OUTRANK THE CORRECTED DOCUMENTS**: Mattress Firm's
+  lease_end was settled 2027-09-30 and Hobby Lobby's 2027-07-31 when the app still
+  read the documents wrongly; the documents now say 2035-03-21 (Mattress). The
+  timeline flags a settled RENT that differs from the lease, but not a settled
+  start/expiry -- build that flag, and have analysts revisit.
+- Documents not captured: Hobby Lobby's 2024 4th Amendment, Muddy Paws' extension,
+  Perkins' options.
+- Option rent detail: annual option steps (Peak Potential +2%/yr) collapsed to one
+  amount per option.
+- Engine: an option-rent period dated before the option start produced a stray row
+  (Little Petals) -- clip option periods to the option.
+- 30-day rolling options (Patton): term unit unsupported; their exhibit collapses
+  six 30-day options into one row.

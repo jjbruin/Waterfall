@@ -255,7 +255,18 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
-  - `v537` = `7e48a5c` (LEASE TIMELINE -- step 3 of the rent-roll plan: one engine
+  - `v538` = `ccd47bc` (STEPS 4 + 5 of the rent-roll plan: analyst settlement of the
+    timeline, the Rent Roll tab, and the IC exhibit. BUILT FROM `ccd47bc`, NOT
+    MAIN'S TIP: origin had Charlene's PR #5 (freeze background/unfreeze, ~2.7k
+    lines) merged on top, unreviewed by this deploy, so it was left for its own
+    deploy -- it is on main and NOT live. Before deploying, the Market at Poplar
+    full re-read finished (33/33; the single job was killed at 26 -- memory, no
+    traceback, app unaffected -- and the rest re-run one subprocess per tenant).
+    ACCEPTANCE vs new business's exhibit, 32 of 33 tenants paired: SF 31, rent 30,
+    expiration 27, options 25, subordinate rows 17, whole block 4; totals 228,122 /
+    $3,125,144 vs 228,119 / $3,112,833. The layout alone reproduces theirs exactly
+    (rent_roll_exhibit_check). Build `camc`.)
+ (LEASE TIMELINE -- step 3 of the rent-roll plan: one engine
     from governing terms to continuous periods, `governing_steps`, validation reads
     the same schedule. Measured on Poplar vs the exhibit: current rent 26/27, steps
     20/27, option rent 0/34 pending re-extraction. See rent_roll_exhibit.md. Build
