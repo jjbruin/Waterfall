@@ -200,6 +200,63 @@ r = call(LEASE_TEXT)
 chk('max_tokens leaves room for a long answer',
     SENT.get('max_tokens', 0) >= 16000, str(SENT.get('max_tokens')))
 
+
+section('Our own caps are the model\'s, and a failed reading says why (Sep 29 2026)')
+# GNC's 41-page 1996 lease: read in full, 30 tokens back -- the first sentence of
+# the instructions -- and a normal stop. It was logged "Extracted" and kept no
+# reason. These pin the remedy and the record.
+chk('output room raised to 64,000 (thinking + answer, streamed)',
+    SENT.get('max_tokens') == 64_000 == S.MAX_OUTPUT_TOKENS, str(SENT.get('max_tokens')))
+chk('text cap raised from 180,000 characters to the 1M-token window\'s share',
+    S.MAX_TEXT_CHARS >= 1_000_000, S.MAX_TEXT_CHARS)
+
+
+def install_queue(replies):
+    """Each stream() call takes the next (text, stop_reason); records calls."""
+    CALLS = []
+
+    class _Messages:
+        def stream(self, **kw):
+            CALLS.append(kw)
+            text, stop = replies[min(len(CALLS) - 1, len(replies) - 1)]
+            return _Stream(_Msg([_Block('text', text=text)], stop))
+
+    class _Client:
+        def __init__(self, **kw):
+            self.messages = _Messages()
+
+    mod = types.ModuleType('anthropic')
+    mod.Anthropic = _Client
+    sys.modules['anthropic'] = mod
+    return CALLS
+
+
+ECHO = 'You are a commercial real estate lease analyst. Extract the following.'
+calls = install_queue([(ECHO, 'end_turn'), (json.dumps({'square_feet': 1300}), 'end_turn')])
+r = call(LEASE_TEXT)
+chk('no JSON on the first ask -> asked ONCE more, and the second answer is used',
+    len(calls) == 2 and r.get('square_feet') == 1300 and not r.get('_parse_error'),
+    str((len(calls), r)))
+calls = install_queue([(ECHO, 'end_turn')])
+r = call(LEASE_TEXT)
+chk('still nothing after the retry -> a parse error carrying the reason',
+    len(calls) == 2 and r.get('_parse_error')
+    and 'no readable answer' in (r.get('_failure_reason') or ''), r.get('_failure_reason'))
+calls = install_queue([('{"square_feet": 1', 'max_tokens')])
+r = call(LEASE_TEXT)
+chk('a truncated answer is named as running out of room',
+    'ran out of room' in (r.get('_failure_reason') or ''), r.get('_failure_reason'))
+calls = install_queue([('', 'refusal')])
+r = call(LEASE_TEXT)
+chk('a refusal is NOT retried, and says it declined',
+    len(calls) == 1 and r.get('_refused') and 'declined' in (r.get('_failure_reason') or ''))
+calls = install_queue([(json.dumps({'square_feet': 5}), 'end_turn')])
+r = call('x' * (S.MAX_TEXT_CHARS + 10))
+chk('a document over the text cap is cut AND says so',
+    r.get("_truncated") is True, str(r))
+r = call(LEASE_TEXT)
+chk('...and one under it does not', '_truncated' not in r)
+
 print('\n%d passed, %d failed' % (len(OK), len(BAD)))
 if BAD:
     for b in BAD:

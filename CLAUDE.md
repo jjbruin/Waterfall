@@ -2788,6 +2788,24 @@ Ask the user if any other files will be loaded before running."
   `scripts/lease_tenant_rerun_check.py` (36),
   `scripts/lease_validation_context_check.py` (35).
 
+### Lease review — exclusives, co-tenancy and the analysts' review
+Built Sep 29 2026, see `open_items.md` §15 (two production steps after deploy).
+
+- **A re-read REPLACES a document's clause rows** (`_write_document_clause_rows`,
+  scoped to tenant + source_doc). Exclusives used to dedupe on the model's wording,
+  which moves between runs: 291 rows for 35 tenant/document pairs on Market at
+  Poplar. Rows with no source_doc (seller spreadsheet) are never touched.
+- **"Bound by" is not "holds".** A lease's exhibit listing OTHER tenants' existing
+  exclusives is stored `clause_role = 'subject'`. The export used to drop the role,
+  so Firehouse Subs read as holding CiCi's pizza exclusive. Never ship a view of
+  these rows without the role.
+- **The analysts' reading lives in `lease_clause_reviews`**, per tenant and
+  section, apart from the rows (which re-reads rebuild); a re-read after sign-off
+  sets `reread_at`. A flag needs a note.
+- **A failed reading is `error` with `extraction_error`**, never "Extracted". One
+  retry when no JSON returns. Caps are the model's: 64K output, 2M text characters,
+  and a cut document says `_truncated`.
+
 ### Lease review — fixed recoveries (CAM)
 Live at `v518`. Jim, having read the AT&T Mobility 4th Amendment: "one of the
 lease amendments was stating a fixed CAM charge for the lease. Is this situation

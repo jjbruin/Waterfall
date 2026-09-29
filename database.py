@@ -1672,7 +1672,10 @@ PROTECTED_TABLES = {'capital_calls', 'waterfalls', 'one_pager_comments', 'waterf
                     # The settings say which account is an entity's second
                     # Due To/From account and which accounts are its cash; the
                     # notes are the accountant's explanation of each variance.
-                    'ic_entity_settings', 'ic_recon_notes'}
+                    'ic_entity_settings', 'ic_recon_notes',
+                    # The analysts' reading of each tenant's exclusives and
+                    # co-tenancy -- app-written, and the only copy of it.
+                    'lease_clause_reviews'}
 
 
 def _get_import_connection():

@@ -608,6 +608,9 @@ def ensure_lease_tables(engine):
     # Phase 1B: file_hash + uploaded_by on lease_documents; file_data for PDF storage
     _migrate_add_column(engine, 'lease_documents', 'file_hash', 'TEXT')
     _migrate_add_column(engine, 'lease_documents', 'uploaded_by', 'TEXT')
+    # Why a document's reading failed, so the screen can say it rather than
+    # leave a document silently unread.
+    _migrate_add_column(engine, 'lease_documents', 'extraction_error', 'TEXT')
     _migrate_add_column(engine, 'lease_documents', 'file_data',
                         'BYTEA' if engine.dialect.name == 'postgresql' else 'BLOB')
 
@@ -2543,6 +2546,12 @@ PDF_MAX_PAGES = 600
 #: run on the strongest general model rather than the cheap one this started on.
 EXTRACTION_MODEL = "claude-opus-5"
 
+#: The extraction model reads 1M tokens and writes up to 128K. Text is capped at
+#: about half the window (~4 characters a token); output room covers thinking and
+#: the answer, and is safe at this size only because the call streams.
+MAX_TEXT_CHARS = 2_000_000
+MAX_OUTPUT_TOKENS = 64_000
+
 
 def extract_lease_terms_via_api(
     text: str,
@@ -2575,10 +2584,14 @@ def extract_lease_terms_via_api(
 
     client = anthropic.Anthropic(api_key=key)
 
-    # Truncate very long documents to stay within context
-    max_chars = 180_000
-    if len(text) > max_chars:
-        text = text[:max_chars] + "\n\n[TRUNCATED — document exceeds extraction limit]"
+    # THE TEXT CAP IS THE CONTEXT WINDOW'S, NOT AN OLD GUESS. It was 180,000
+    # characters (~45K tokens) from a smaller model; the extraction model reads
+    # 1M tokens. MAX_TEXT_CHARS leaves half the window for the prompt, a PDF block
+    # and the answer. A document over it is still cut, but the result SAYS so
+    # (`_truncated`), because a silently shortened lease reads as a complete one.
+    truncated = len(text) > MAX_TEXT_CHARS
+    if truncated:
+        text = text[:MAX_TEXT_CHARS] + "\n\n[TRUNCATED — document exceeds extraction limit]"
 
     prompt = EXTRACTION_PROMPT.format(
         tenant_name=tenant_name,
@@ -2610,20 +2623,37 @@ def extract_lease_terms_via_api(
         route_note = "almost no text could be read and the PDF is not stored"
     content.append({"type": "text", "text": prompt})
 
-    # Streamed because the input can be a 180,000-character lease or a 79-page
-    # scan, and a non-streaming request of that size risks the HTTP timeout.
-    with client.messages.stream(
-        model=EXTRACTION_MODEL,
-        max_tokens=16000,
-        messages=[{"role": "user", "content": content}],
-    ) as stream:
-        message = stream.get_final_message()
+    # Streamed because the input can be a very long lease or a 79-page scan, and a
+    # non-streaming request of that size risks the HTTP timeout. MAX_OUTPUT_TOKENS
+    # is the room for thinking AND the answer; streaming is what makes a large
+    # value safe.
+    def _ask():
+        with client.messages.stream(
+            model=EXTRACTION_MODEL,
+            max_tokens=MAX_OUTPUT_TOKENS,
+            messages=[{"role": "user", "content": content}],
+        ) as stream:
+            return stream.get_final_message()
+
+    # ONE RETRY WHEN NOTHING PARSEABLE CAME BACK. Measured Sep 29 2026 on GNC's
+    # 41-page 1996 lease: the model read all of it (68,834 input tokens), wrote 30
+    # tokens -- the first sentence of these instructions -- and stopped normally.
+    # Not a limit, and not repeatable by anything we control; a second ask is the
+    # remedy. A refusal is not retried: that answer is deliberate.
+    message = _ask()
+    if message.stop_reason != 'refusal' and not re.search(
+            r'\{[\s\S]*\}', "".join(b.text for b in message.content if b.type == "text")):
+        logger.warning("No JSON from the model for %s (stop_reason=%s, output_tokens=%s);"
+                       " asking once more", tenant_name, message.stop_reason,
+                       getattr(getattr(message, 'usage', None), 'output_tokens', None))
+        message = _ask()
 
     # Checked BEFORE reading content: a refusal returns HTTP 200 with no text,
     # and treating it as a parse failure would hide why.
     if message.stop_reason == 'refusal':
         return {'_parse_error': True, '_extraction_source': route,
                 '_refused': True,
+                '_failure_reason': 'the model declined to read this document',
                 '_raw_response': 'the model declined to read this document'}
 
     # NOT content[0]: thinking is on by default on this model, so the first
@@ -2633,6 +2663,8 @@ def extract_lease_terms_via_api(
     meta = {'_extraction_source': route}
     if route_note:
         meta['_extraction_note'] = route_note
+    if truncated:
+        meta['_truncated'] = True
 
     # Parse JSON from response
     try:
@@ -2643,7 +2675,13 @@ def extract_lease_terms_via_api(
     except json.JSONDecodeError:
         logger.warning(f"Failed to parse JSON for {tenant_name}: {response_text[:200]}")
 
-    return {'_raw_response': response_text, '_parse_error': True, **meta}
+    # WHY it failed travels with the failure, so the document can say so.
+    reason = ("the reading ran out of room before finishing"
+              if message.stop_reason == 'max_tokens'
+              else "the model returned no readable answer (%d characters, stop: %s)"
+              % (len(response_text), message.stop_reason))
+    return {'_raw_response': response_text, '_parse_error': True,
+            '_failure_reason': reason, **meta}
 
 
 # ---------------------------------------------------------------------------
@@ -2992,6 +3030,151 @@ def reset_extraction_data(engine, review_id: int) -> Dict[str, int]:
 # Extract lease terms via Claude API (batch)
 # ---------------------------------------------------------------------------
 
+def _write_document_clause_rows(conn, sql_text, tenant_id: int, review_id: int,
+                                source_doc: str, terms: dict) -> Dict[str, int]:
+    """Write ONE document's co-tenancy and exclusive-use rows, replacing
+    whatever that document wrote before.
+
+    A RE-READ REPLACES, IT DOES NOT ADD. The old code deduplicated exclusives on
+    the model's WORDING of `restricted_use`, and the wording moves between runs,
+    so every re-read added another copy: Market at Poplar reached 291 exclusive
+    rows for 35 tenant/document pairs (Sep 29 2026), one lease contributing 25,
+    Firehouse's own sandwich exclusive three times. Co-tenancy had the opposite
+    fault -- skipped whenever the document already had a row -- so a re-read
+    that changed the answer could never land. Scoping the replace to
+    (tenant, source_doc) keeps every other document's rows, and rows with no
+    source_doc (the seller's spreadsheet, the seed) are never touched.
+
+    Within one document a restriction is still written once per distinct use.
+    Returns counts so a backfill can report what it did.
+    """
+    conn.execute(sql_text(
+        "DELETE FROM lease_cotenancy_refs WHERE cotenancy_id IN ("
+        " SELECT id FROM lease_cotenancy WHERE tenant_id = :tid AND source_doc = :sd)"),
+        {'tid': tenant_id, 'sd': source_doc})
+    conn.execute(sql_text(
+        "DELETE FROM lease_cotenancy WHERE tenant_id = :tid AND source_doc = :sd"),
+        {'tid': tenant_id, 'sd': source_doc})
+    conn.execute(sql_text(
+        "DELETE FROM lease_exclusive_use WHERE tenant_id = :tid AND source_doc = :sd"),
+        {'tid': tenant_id, 'sd': source_doc})
+    written = {'cotenancy': 0, 'refs': 0, 'exclusive_use': 0}
+
+    cot = terms.get('cotenancy') or {}
+    if isinstance(cot, dict) and cot.get('has_clause'):
+        cot_id = conn.execute(sql_text("""
+            INSERT INTO lease_cotenancy
+                (tenant_id, review_id,
+                 trigger_description, trigger_threshold,
+                 cure_period_days, alt_rent_formula,
+                 termination_right, termination_notice_days,
+                 sunset_provision, is_curable,
+                 waiver_mechanism, source_doc)
+            VALUES (:tid, :rid, :td, :tt, :cpd, :arf, :tr, :tnd, :sp, :ic, :wm, :sd)
+            RETURNING id
+        """), {
+            'tid': tenant_id, 'rid': review_id,
+            'td': cot.get('trigger_threshold'),
+            'tt': cot.get('trigger_threshold'),
+            'cpd': _to_int(cot.get('cure_period_days')),
+            'arf': cot.get('alt_rent_formula'),
+            'tr': cot.get('termination_right', False),
+            'tnd': _to_int(cot.get('termination_notice_days')),
+            'sp': cot.get('sunset_or_waiver'),
+            'ic': cot.get('is_curable', True),
+            'wm': cot.get('sunset_or_waiver'),
+            'sd': source_doc,
+        }).fetchone()[0]
+        written['cotenancy'] += 1
+        for ref_name in (cot.get('named_cotenants') or []):
+            conn.execute(sql_text("""
+                INSERT INTO lease_cotenancy_refs
+                    (cotenancy_id, tenant_id, referenced_tenant_name)
+                VALUES (:cid, :tid, :rtn)
+            """), {'cid': cot_id, 'tid': tenant_id, 'rtn': ref_name})
+            written['refs'] += 1
+
+    seen = set()
+    for exc in (terms.get('exclusive_use') or []):
+        if not isinstance(exc, dict):
+            continue
+        r_use = (exc.get('restricted_use') or '').strip()
+        r_text = (exc.get('restriction_text') or '').strip()
+        # "No exclusive" is the absence of a row, not a restriction.
+        if not r_use and not r_text:
+            continue
+        if r_text.lower() in _EXCLUSIVE_NEGATIVES or r_use.lower() in _EXCLUSIVE_NEGATIVES:
+            continue
+        if r_use in seen:
+            continue
+        seen.add(r_use)
+        radius = exc.get('radius_feet')
+        try:
+            radius = float(radius) if radius is not None else None
+        except (TypeError, ValueError):
+            radius = None
+        role = (exc.get('clause_role') or '').strip().lower()
+        if role not in ('holder', 'subject'):
+            role = None
+        conn.execute(sql_text("""
+            INSERT INTO lease_exclusive_use
+                (tenant_id, review_id, restriction_text,
+                 restricted_use, radius_feet, clause_role,
+                 carve_outs, source_doc)
+            VALUES (:tid, :rid, :rt, :ru, :rf, :cr, :co, :sd)
+        """), {
+            'tid': tenant_id, 'rid': review_id,
+            'rt': r_text or None, 'ru': r_use or None,
+            'rf': radius, 'cr': role,
+            'co': (exc.get('carve_outs') or None),
+            'sd': source_doc,
+        })
+        written['exclusive_use'] += 1
+    if written['exclusive_use']:
+        conn.execute(sql_text(
+            "UPDATE lease_tenants SET has_exclusive_use = TRUE WHERE id = :tid"),
+            {'tid': tenant_id})
+    return written
+
+
+def rebuild_clause_rows(engine, review_id: int) -> Dict[str, Any]:
+    """Rebuild every document's co-tenancy and exclusive-use rows from the
+    extraction it ALREADY HOLDS -- no API calls, idempotent.
+
+    This is how the duplicates the old dedup left behind are cleared: each
+    document's stored `extraction_json` is its latest reading, so rewriting its
+    rows from that reproduces exactly what a re-read would write, minus the
+    copies. Documents with no stored extraction are left alone.
+    """
+    from sqlalchemy import text as sql_text
+    with engine.connect() as conn:
+        before = conn.execute(sql_text(
+            "SELECT COUNT(*) FROM lease_exclusive_use e JOIN lease_tenants t "
+            "ON t.id = e.tenant_id WHERE t.review_id = :r"), {'r': review_id}).scalar()
+        docs = conn.execute(sql_text(
+            "SELECT tenant_id, filename, extraction_json FROM lease_documents "
+            "WHERE review_id = :r AND tenant_id IS NOT NULL "
+            "AND extraction_json IS NOT NULL ORDER BY id"), {'r': review_id}).fetchall()
+    totals = {'documents': 0, 'cotenancy': 0, 'refs': 0, 'exclusive_use': 0,
+              'unreadable': 0}
+    with engine.begin() as conn:
+        for tenant_id, filename, ej in docs:
+            try:
+                terms = json.loads(ej) if isinstance(ej, str) else (ej or {})
+            except (TypeError, ValueError):
+                totals['unreadable'] += 1
+                continue
+            if not isinstance(terms, dict) or terms.get('_parse_error'):
+                continue
+            w = _write_document_clause_rows(conn, sql_text, tenant_id, review_id,
+                                            filename, terms)
+            totals['documents'] += 1
+            for k in ('cotenancy', 'refs', 'exclusive_use'):
+                totals[k] += w[k]
+    totals['exclusive_use_before'] = int(before or 0)
+    return totals
+
+
 def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None,
                           progress_callback=None, tenant_id: Optional[int] = None):
     """Extract text from all PDFs and run Claude extraction for key documents.
@@ -3179,99 +3362,10 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None,
                                     else 0,
                                 })
 
-                        # Store cotenancy from extraction (with dedup by source_doc)
-                        cot = terms.get('cotenancy', {})
-                        if cot and cot.get('has_clause') and not conn.execute(sql_text("""
-                            SELECT id FROM lease_cotenancy
-                            WHERE tenant_id = :tid AND source_doc = :sd LIMIT 1
-                        """), {'tid': tenant_id, 'sd': doc[2]}).fetchone():
-                            cot_result = conn.execute(sql_text("""
-                                INSERT INTO lease_cotenancy
-                                    (tenant_id, review_id,
-                                     trigger_description, trigger_threshold,
-                                     cure_period_days, alt_rent_formula,
-                                     termination_right, termination_notice_days,
-                                     sunset_provision, is_curable,
-                                     waiver_mechanism, source_doc)
-                                VALUES (:tid, :rid,
-                                        :td, :tt, :cpd, :arf,
-                                        :tr, :tnd, :sp, :ic,
-                                        :wm, :sd)
-                                RETURNING id
-                            """), {
-                                'tid': tenant_id, 'rid': review_id,
-                                'td': cot.get('trigger_threshold'),
-                                'tt': cot.get('trigger_threshold'),
-                                'cpd': _to_int(cot.get('cure_period_days')),
-                                'arf': cot.get('alt_rent_formula'),
-                                'tr': cot.get('termination_right', False),
-                                'tnd': _to_int(cot.get('termination_notice_days')),
-                                'sp': cot.get('sunset_or_waiver'),
-                                'ic': cot.get('is_curable', True),
-                                'wm': cot.get('sunset_or_waiver'),
-                                'sd': doc[2],
-                            })
-                            cot_id = cot_result.fetchone()[0]
-
-                            # Insert named co-tenant references
-                            for ref_name in (cot.get('named_cotenants') or []):
-                                conn.execute(sql_text("""
-                                    INSERT INTO lease_cotenancy_refs
-                                        (cotenancy_id, tenant_id,
-                                         referenced_tenant_name)
-                                    VALUES (:cid, :tid, :rtn)
-                                """), {
-                                    'cid': cot_id, 'tid': tenant_id,
-                                    'rtn': ref_name,
-                                })
-
-                        # Store exclusive use restrictions.  A lease can carry
-                        # several, so each is a row; dedup on the restriction
-                        # itself so re-running extraction does not duplicate.
-                        for exc in (terms.get('exclusive_use') or []):
-                            if not isinstance(exc, dict):
-                                continue
-                            r_use = (exc.get('restricted_use') or '').strip()
-                            r_text = (exc.get('restriction_text') or '').strip()
-                            # Skip explicit negatives -- "no exclusive" is the
-                            # absence of a row, not a restriction.
-                            if not r_use and not r_text:
-                                continue
-                            if r_text.lower() in _EXCLUSIVE_NEGATIVES or                                r_use.lower() in _EXCLUSIVE_NEGATIVES:
-                                continue
-                            if conn.execute(sql_text("""
-                                SELECT id FROM lease_exclusive_use
-                                WHERE tenant_id = :tid AND source_doc = :sd
-                                  AND COALESCE(restricted_use, '') = :ru
-                                LIMIT 1
-                            """), {'tid': tenant_id, 'sd': doc[2],
-                                   'ru': r_use}).fetchone():
-                                continue
-                            radius = exc.get('radius_feet')
-                            try:
-                                radius = float(radius) if radius is not None else None
-                            except (TypeError, ValueError):
-                                radius = None
-                            role = (exc.get('clause_role') or '').strip().lower()
-                            if role not in ('holder', 'subject'):
-                                role = None
-                            conn.execute(sql_text("""
-                                INSERT INTO lease_exclusive_use
-                                    (tenant_id, review_id, restriction_text,
-                                     restricted_use, radius_feet, clause_role,
-                                     carve_outs, source_doc)
-                                VALUES (:tid, :rid, :rt, :ru, :rf, :cr, :co, :sd)
-                            """), {
-                                'tid': tenant_id, 'rid': review_id,
-                                'rt': r_text or None, 'ru': r_use or None,
-                                'rf': radius, 'cr': role,
-                                'co': (exc.get('carve_outs') or None),
-                                'sd': doc[2],
-                            })
-                            conn.execute(sql_text("""
-                                UPDATE lease_tenants SET has_exclusive_use = TRUE
-                                WHERE id = :tid
-                            """), {'tid': tenant_id})
+                        # Co-tenancy and exclusive use: THIS DOCUMENT'S rows are
+                        # replaced, not added to. See _write_document_clause_rows.
+                        _write_document_clause_rows(
+                            conn, sql_text, tenant_id, review_id, doc[2], terms)
 
                         # Store renewal options (with dedup by source_doc + option_number)
                         for opt in (terms.get('renewal_options') or []):
@@ -3360,8 +3454,27 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None,
                                 'sd': doc[2],
                             })
 
+                    if terms.get('_parse_error'):
+                        # A FAILED READING IS A FAILURE, NOT "Extracted". This
+                        # branch used to fall through to the success log with the
+                        # document left at 'text_extracted' and no reason kept
+                        # anywhere -- GNC's 1996 lease, Sep 29 2026.
+                        conn.execute(sql_text(
+                            "UPDATE lease_documents SET extraction_status = 'error',"
+                            " extraction_error = :why WHERE id = :did"),
+                            {'did': doc_id,
+                             'why': terms.get('_failure_reason') or 'no readable answer'})
+                    else:
+                        conn.execute(sql_text(
+                            "UPDATE lease_documents SET extraction_error = NULL"
+                            " WHERE id = :did"), {'did': doc_id})
+
                 conn.commit()
-                logger.info(f"Extracted: {doc[2]}")
+                if terms.get('_parse_error'):
+                    logger.warning("Not extracted: %s -- %s", doc[2],
+                                   terms.get('_failure_reason'))
+                else:
+                    logger.info(f"Extracted: {doc[2]}")
 
             except Exception as e:
                 logger.error(f"Error extracting {doc[2]}: {e}")
@@ -3377,9 +3490,10 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None,
                 try:
                     conn.execute(sql_text("""
                         UPDATE lease_documents
-                        SET extraction_status = 'error'
+                        SET extraction_status = 'error',
+                            extraction_error = :why
                         WHERE id = :did
-                    """), {'did': doc_id})
+                    """), {'did': doc_id, 'why': str(e)[:500]})
                     conn.commit()
                 except Exception as inner:
                     logger.error(
@@ -3647,7 +3761,7 @@ def unread_documents(engine, review_id: int) -> List[Dict[str, Any]]:
     with engine.connect() as conn:
         rows = conn.execute(text("""
             SELECT d.id, d.tenant_id, t.tenant_name, d.filename, d.doc_type,
-                   d.extraction_status
+                   d.extraction_status, d.extraction_error
             FROM lease_documents d
             LEFT JOIN lease_tenants t ON t.id = d.tenant_id
             WHERE d.review_id = :rid
@@ -3658,7 +3772,7 @@ def unread_documents(engine, review_id: int) -> List[Dict[str, Any]]:
     out = [{
         'id': r[0], 'tenant_id': r[1], 'tenant': r[2],
         'filename': (r[3] or '').rsplit('/', 1)[-1],
-        'doc_type': r[4], 'status': r[5],
+        'doc_type': r[4], 'status': r[5], 'error': r[6],
         'term_bearing': is_term_bearing(r[4]),
         'unassigned': r[1] is None,
     } for r in rows]
@@ -5051,7 +5165,17 @@ def generate_lease_review_excel(engine, review_id: int) -> bytes:
     cot_headers = ['Tenant', 'Suite', 'SF', 'Annual Rent',
                    'Trigger', 'Cure Period', 'Alt Rent Formula',
                    'Termination Right', 'Sunset/Waiver', 'Curable?',
-                   'Named Co-Tenants']
+                   'Named Co-Tenants', 'Source', 'Review', 'Notes / Flags']
+    # The analyst's reading, per tenant and section, so the workbook carries the
+    # Notes/Flags column the analysts were keeping by hand (Sep 29 2026).
+    reviews = get_clause_reviews(engine, review_id)
+
+    def _review_cells(tid, section):
+        r = (reviews.get(int(tid)) or {}).get(section) or {}
+        status = r.get('status') or 'unreviewed'
+        if r.get('reread_at'):
+            status += ' (re-read since)'
+        return status, r.get('notes') or ''
     for c, h in enumerate(cot_headers, 1):
         cell = ws4.cell(4, c, h)
         cell.font = header_font_white
@@ -5065,7 +5189,7 @@ def generate_lease_review_excel(engine, review_id: int) -> bytes:
                    c.trigger_description, c.cure_period_days,
                    c.alt_rent_formula, c.termination_right,
                    c.sunset_provision, c.is_curable, c.waiver_mechanism,
-                   c.id
+                   c.id, c.source_doc, t.id
             FROM lease_cotenancy c
             JOIN lease_tenants t ON t.id = c.tenant_id
             WHERE c.review_id = :rid
@@ -5103,13 +5227,17 @@ def generate_lease_review_excel(engine, review_id: int) -> bytes:
         # Named cotenants
         refs = ref_map.get(c[11], [])
         ws4.cell(row, 11, ', '.join(refs) if refs else 'N/A')
+        ws4.cell(row, 12, c[12] or '')
+        st, nt = _review_cells(c[13], 'cotenancy')
+        ws4.cell(row, 13, st)
+        ws4.cell(row, 14, nt)
 
         # Wrap text for readability
-        for col in (5, 7, 9, 11):
+        for col in (5, 7, 9, 11, 14):
             ws4.cell(row, col).alignment = Alignment(wrap_text=True,
                                                       vertical='top')
 
-    col_widths = [25, 10, 10, 14, 35, 12, 30, 14, 35, 16, 35]
+    col_widths = [25, 10, 10, 14, 35, 12, 30, 14, 35, 16, 35, 30, 16, 45]
     for c, w in enumerate(col_widths, 1):
         ws4.column_dimensions[get_column_letter(c)].width = w
 
@@ -5142,26 +5270,56 @@ def generate_lease_review_excel(engine, review_id: int) -> bytes:
 
     with engine.connect() as conn:
         exc_rows = conn.execute(text("""
-            SELECT t.tenant_name, t.suite, e.restriction_text
+            SELECT t.tenant_name, t.suite, e.clause_role, e.restricted_use,
+                   e.radius_feet, e.carve_outs, e.restriction_text,
+                   e.source_doc, t.id
             FROM lease_exclusive_use e
             JOIN lease_tenants t ON t.id = e.tenant_id
             WHERE t.review_id = :rid
-            ORDER BY t.tenant_name
+            ORDER BY t.tenant_name, e.clause_role, e.id
         """), {'rid': review_id}).fetchall()
+        reviewed_names = conn.execute(text(
+            "SELECT id, tenant_name, suite FROM lease_tenants WHERE review_id = :rid"),
+            {'rid': review_id}).fetchall()
 
-    exc_headers = ['Tenant', 'Suite', 'Exclusive Use Restriction']
+    # WHO HOLDS THE RESTRICTION IS THE COLUMN THAT MATTERS. This sheet used to
+    # carry only the restriction text, so a lease's exhibit DISCLOSING other
+    # tenants' exclusives read as that tenant's own: Firehouse Subs showed the
+    # pizza, hamburger, dairy and shoe-repair exclusives of CiCi's, Dink's, Yogi
+    # Yurt and The Corner Cobbler, while the app itself had them marked "bound
+    # by". The analysts corrected that by hand (Sep 29 2026).
+    ROLE = {'holder': 'Holds', 'subject': 'Bound by'}
+    exc_headers = ['Tenant', 'Suite', 'Holds / Bound by', 'Restricted Use',
+                   'Radius (ft)', 'Carve-outs', 'Restriction Text', 'Source',
+                   'Review', 'Notes / Flags']
     for c, h in enumerate(exc_headers, 1):
         cell = ws5.cell(3, c, h)
         cell.font = header_font_white
         cell.fill = header_fill
-    for i, e in enumerate(exc_rows):
-        row = 4 + i
-        ws5.cell(row, 1, e[0])
-        ws5.cell(row, 2, e[1])
-        ws5.cell(row, 3, e[2]).alignment = Alignment(wrap_text=True)
-    ws5.column_dimensions['A'].width = 30
-    ws5.column_dimensions['B'].width = 12
-    ws5.column_dimensions['C'].width = 60
+        cell.alignment = Alignment(wrap_text=True)
+    row = 4
+    with_rows = set()
+    for e in exc_rows:
+        with_rows.add(int(e[8]))
+        st, nt = _review_cells(e[8], 'exclusive_use')
+        vals = [e[0], e[1], ROLE.get(e[2] or '', ''), e[3],
+                e[4] if e[4] is not None else '', e[5] or '', e[6] or '',
+                e[7] or '', st, nt]
+        for c, v in enumerate(vals, 1):
+            ws5.cell(row, c, v).alignment = Alignment(wrap_text=True, vertical='top')
+        row += 1
+    # A tenant the analysts reviewed but that has no rows still belongs on the
+    # sheet -- "confirmed: no exclusive" is an answer.
+    for tid, name, suite in reviewed_names:
+        r = (reviews.get(int(tid)) or {}).get('exclusive_use')
+        if r and int(tid) not in with_rows:
+            st, nt = _review_cells(tid, 'exclusive_use')
+            vals = [name, suite, '', '(no exclusive-use rows)', '', '', '', '', st, nt]
+            for c, v in enumerate(vals, 1):
+                ws5.cell(row, c, v).alignment = Alignment(wrap_text=True, vertical='top')
+            row += 1
+    for c, w in enumerate([28, 10, 12, 40, 10, 40, 60, 30, 16, 45], 1):
+        ws5.column_dimensions[get_column_letter(c)].width = w
 
     # --- Sheet 6: Option Schedule ---
     ws6 = wb.create_sheet("Option Schedule")
@@ -5248,6 +5406,118 @@ def ensure_resolution_table(engine):
                      ('source_doc_id', 'INTEGER'),
                      ('prior_value', 'TEXT')):
         _migrate_add_column(engine, 'lease_field_resolutions', col, typ)
+
+
+# ---------------------------------------------------------------------------
+# Analyst review of a tenant's exclusives and co-tenancy
+# ---------------------------------------------------------------------------
+#
+# New business, Sep 29 2026: the analysts corrected Market at Poplar's
+# exclusives and co-tenancy -- Firehouse's Exhibit D is a DISCLOSURE of other
+# tenants' exclusives, CiCi's has left so a carve-out naming it is moot, GNC is
+# confirmed from its full lease chain -- and every one of those judgements
+# lived in a workbook's Notes/Flags column and a correction log, because the
+# app had nowhere to put them.
+#
+# PER TENANT AND SECTION, NOT PER ROW. Clause rows are rebuilt whenever a
+# document is re-read, so a note pinned to a row id would vanish with the row,
+# and pinning it to the model's wording fails the same way the old dedup did.
+# A tenant's exclusives, read as a whole, is the unit an analyst signs off.
+#
+# A RE-READ AFTER SIGN-OFF IS MARKED, NEVER SILENTLY KEPT. `rerun_tenant_extraction`
+# sets `reread_at` on a confirmed or flagged review, because a confirmation of
+# rows that have since been rebuilt is a confirmation of something else. Saving
+# the review clears the mark. The same rule the abstract follows.
+
+CLAUSE_REVIEW_SECTIONS = ('exclusive_use', 'cotenancy')
+CLAUSE_REVIEW_STATUSES = ('unreviewed', 'confirmed', 'flagged')
+
+LEASE_CLAUSE_REVIEW_DDL = """
+CREATE TABLE IF NOT EXISTS lease_clause_reviews (
+    tenant_id   INTEGER NOT NULL,
+    section     TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'unreviewed',
+    notes       TEXT,
+    updated_by  TEXT,
+    updated_at  TEXT,
+    reread_at   TEXT,
+    PRIMARY KEY (tenant_id, section)
+)
+"""
+
+
+def ensure_clause_review_table(engine):
+    from sqlalchemy import text
+    with engine.begin() as conn:
+        conn.execute(text(LEASE_CLAUSE_REVIEW_DDL))
+
+
+def get_clause_reviews(engine, review_id: int) -> Dict[int, Dict[str, dict]]:
+    """{tenant_id: {section: review}} for every tenant in the review."""
+    from sqlalchemy import text
+    ensure_clause_review_table(engine)
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT r.tenant_id, r.section, r.status, r.notes, r.updated_by, "
+            "r.updated_at, r.reread_at FROM lease_clause_reviews r "
+            "JOIN lease_tenants t ON t.id = r.tenant_id WHERE t.review_id = :rid"),
+            {'rid': review_id}).mappings().all()
+    out: Dict[int, Dict[str, dict]] = {}
+    for r in rows:
+        out.setdefault(int(r['tenant_id']), {})[r['section']] = dict(r)
+    return out
+
+
+def save_clause_review(engine, review_id: int, tenant_id: int, section: str,
+                       status: str, notes: str, user: str) -> dict:
+    """Record the analyst's reading of one tenant's exclusives or co-tenancy.
+
+    A FLAG NEEDS A NOTE: "flagged" with nothing saying why is a mark nobody can
+    act on, and the note is the whole point of the record.
+    """
+    from sqlalchemy import text
+    ensure_clause_review_table(engine)
+    section = (section or '').strip()
+    status = (status or '').strip().lower()
+    notes = (notes or '').strip()
+    if section not in CLAUSE_REVIEW_SECTIONS:
+        raise ValueError('Section must be one of %s.' % ', '.join(CLAUSE_REVIEW_SECTIONS))
+    if status not in CLAUSE_REVIEW_STATUSES:
+        raise ValueError('Status must be one of %s.' % ', '.join(CLAUSE_REVIEW_STATUSES))
+    if status == 'flagged' and not notes:
+        raise ValueError('A flag needs a note saying what to check.')
+    now = datetime.utcnow().isoformat(timespec='seconds')
+    with engine.begin() as conn:
+        owned = conn.execute(text(
+            "SELECT 1 FROM lease_tenants WHERE id = :t AND review_id = :r"),
+            {'t': tenant_id, 'r': review_id}).fetchone()
+        if not owned:
+            raise ValueError('That tenant is not part of this review.')
+        conn.execute(text(
+            "DELETE FROM lease_clause_reviews WHERE tenant_id = :t AND section = :s"),
+            {'t': tenant_id, 's': section})
+        if status != 'unreviewed' or notes:
+            conn.execute(text(
+                "INSERT INTO lease_clause_reviews (tenant_id, section, status, notes, "
+                "updated_by, updated_at, reread_at) VALUES (:t, :s, :st, :n, :u, :now, NULL)"),
+                {'t': tenant_id, 's': section, 'st': status, 'n': notes or None,
+                 'u': user, 'now': now})
+    return {'tenant_id': tenant_id, 'section': section, 'status': status,
+            'notes': notes or None, 'updated_by': user, 'updated_at': now,
+            'reread_at': None}
+
+
+def mark_clause_reviews_reread(engine, tenant_id: int) -> int:
+    """A tenant was re-read: its signed-off reviews now describe older rows."""
+    from sqlalchemy import text
+    ensure_clause_review_table(engine)
+    now = datetime.utcnow().isoformat(timespec='seconds')
+    with engine.begin() as conn:
+        res = conn.execute(text(
+            "UPDATE lease_clause_reviews SET reread_at = :now "
+            "WHERE tenant_id = :t AND status IN ('confirmed', 'flagged')"),
+            {'now': now, 't': tenant_id})
+    return res.rowcount or 0
 
 
 # Resolvable fields and which columns they map to on lease_tenants
@@ -5780,19 +6050,23 @@ def get_risk_analysis_data(engine, review_id: int) -> Dict[str, Any]:
     with engine.connect() as conn:
         exc_rows = conn.execute(text("""
             SELECT t.tenant_name, t.suite, e.restriction_text, e.restricted_use,
-                   e.clause_role, e.carve_outs, e.radius_feet, e.source_doc
+                   e.clause_role, e.carve_outs, e.radius_feet, e.source_doc, t.id
             FROM lease_exclusive_use e
             JOIN lease_tenants t ON t.id = e.tenant_id
             WHERE t.review_id = :rid
-            ORDER BY t.tenant_name
+            ORDER BY t.tenant_name, e.clause_role, e.id
         """), {'rid': review_id}).fetchall()
 
     exclusive_use = [{
         'tenant_name': r[0], 'suite': r[1],
         'restriction_text': r[2], 'restricted_use': r[3],
         'clause_role': r[4], 'carve_outs': r[5],
-        'radius_feet': r[6], 'source_doc': r[7],
+        'radius_feet': r[6], 'source_doc': r[7], 'tenant_id': r[8],
     } for r in exc_rows]
+
+    # The analyst's reading of each tenant's exclusives and co-tenancy, keyed by
+    # tenant id as a string (JSON object keys are strings either way).
+    clause_reviews = {str(k): v for k, v in get_clause_reviews(engine, review_id).items()}
 
     # Get options
     with engine.connect() as conn:
@@ -5845,6 +6119,7 @@ def get_risk_analysis_data(engine, review_id: int) -> Dict[str, Any]:
         'cotenancy': {**cotenancy, 'clauses': clauses},
         'scenarios': scenarios,
         'exclusive_use': exclusive_use,
+        'clause_reviews': clause_reviews,
         'options': options,
         'documents': documents,
     }
@@ -6612,6 +6887,7 @@ def rerun_tenant_extraction(engine, review_id: int, tenant_id: int,
     consolidated = consolidate_tenant_extractions(engine, tenant_id)
     abstract = refresh_tenant_abstract(engine, tenant_id, review_id)
     validate_rent_roll(engine, review_id)
+    reviews_marked = mark_clause_reviews_reread(engine, tenant_id)
 
     return {
         'tenant_id': tenant_id,
@@ -6620,6 +6896,7 @@ def rerun_tenant_extraction(engine, review_id: int, tenant_id: int,
         'consolidated': bool(consolidated),
         'abstract_refreshed': abstract['refreshed'],
         'abstract_flagged': abstract['flagged'],
+        'clause_reviews_marked': reviews_marked,
     }
 
 def get_review_abstracts_list(engine, review_id: int) -> List[Dict]:
