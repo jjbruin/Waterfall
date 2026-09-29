@@ -254,7 +254,17 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
-  - `v532` = `2aeaaeb` (LEASE CO-TENANCY / EXCLUSIVES -- a re-read replaces a
+  - `v533` = `ffb7bf7` (A SCAN THE MODEL WON'T READ AS A PDF IS RETRIED AS PAGE
+    IMAGES, Sep 29 2026. GNC's 1996 lease gave degenerate replies to the PDF
+    block every time; rendered with PyMuPDF (1600 px, JPEG q80) the same pages
+    read. The retry on the PDF route now sends the images; capped at 100 pages /
+    22 MB, and an unrenderable file retries as the PDF and says why. VERIFIED ON
+    PRODUCTION: the GNC re-read logged "No JSON ... asking once more", the retry
+    went as images, and the 1996 lease is `extracted` via `images` -- 1,300 SF, no
+    co-tenancy, the vitamins/supplements exclusive held (Rider 25), plus three
+    restrictions it is bound by; all 9 GNC documents read, 0 left. P2: `54954b9`
+    is docs only. Build `cam7`. lease_scan_extraction_check 33 -> 39.)
+ (LEASE CO-TENANCY / EXCLUSIVES -- a re-read replaces a
     document's clause rows, the export and Exclusive Use tab show Holds / Bound
     by, radius, carve-outs and source, `lease_clause_reviews` keeps the analysts'
     reading, a failed reading is `error` with its reason, one retry when no JSON

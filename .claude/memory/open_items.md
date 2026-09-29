@@ -77,11 +77,9 @@ Guardrails `lease_clause_rows_check.py` (35), `lease_scan_extraction_check.py` 2
 
 ### 15.1 AFTER DEPLOY -- both steps RUN at `v532` (Sep 29 2026)
 Result: rebuild 291 -> 92 rows (idempotent); GNC 8 of 9 read, the 1996 lease
-still fails and is now recorded as `error` with its reason. **Next for it:**
-the model's replies to that PDF are degenerate, not truncated -- try rendering
-its pages to images with PyMuPDF (already in the image) and sending those, or
-get a cleaner scan. The analysts' vitamins/supplements exclusive is not in the
-app until then.
+still failed at `v532`. **RESOLVED at `v533`**: the retry now sends a scan's
+pages as rendered images, and the 1996 lease read that way -- the
+vitamins/supplements exclusive is in the app, all 9 GNC documents read.
 
 Original steps:
 1. `POST /api/lease-review/reviews/3/clause-rows/rebuild` (admin) -- measured
