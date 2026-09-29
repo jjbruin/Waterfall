@@ -213,6 +213,37 @@ chk("...and every one is archived",
 chk("...and their Snapshots are still frozen",
     all(F.is_frozen(f"BULK{i:03d}", Q3, "snapshot") for i in range(0, N, 17)))
 
+print("\nH. the action is on both tabs, admin-only, with a required reason")
+VIEWS = os.path.join(ROOT, "vue_app", "src", "views")
+PANEL = os.path.join(ROOT, "vue_app", "src", "components", "common",
+                     "FreezeQuarterPanel.vue")
+if not os.path.isdir(VIEWS) or not os.path.exists(PANEL):
+    print("  SKIP the Vue sources - vue_app/ is not in this tree")
+else:
+    panel = open(PANEL, encoding="utf-8").read()
+    snap = open(os.path.join(VIEWS, "PortfolioSnapshotView.vue"),
+                encoding="utf-8").read()
+    ops = open(os.path.join(VIEWS, "OnePagerView.vue"), encoding="utf-8").read()
+    chk("the Snapshot tab mounts the panel for its half",
+        'part="snapshot"' in snap)
+    chk("the One Pager tab mounts it for its half",
+        'part="one_pagers"' in ops)
+    chk("the button names the quarter AND the part",
+        "Unfreeze {{ quarter }} {{ label }}" in panel)
+    chk("the whole panel is admin-only", 'v-if="auth.isAdmin"' in panel)
+    chk("the confirmation shows the investor count",
+        "unfreezeCount" in panel and "investor(s) in" in panel)
+    chk("...and says the other half is left alone",
+        "otherLabel" in panel and "left exactly as they are" in panel)
+    chk("a reason is REQUIRED before the button is usable",
+        "!unfreezeReason.trim()" in panel)
+    chk("...and the reason is sent to the server",
+        "reason: unfreezeReason.value.trim()" in panel)
+    chk("it posts to the quarter-level route, not a per-investor loop",
+        "unfreeze-quarter" in panel and "for (const" not in panel)
+    chk("the count comes from a read-only preview",
+        "unfreeze-quarter/preview" in panel)
+
 print("\nG. the guards, and the single-investor path")
 try:
     F.unfreeze_quarter(Q3, "snapshot", "cbui", "   ")

@@ -88,6 +88,15 @@ F._engine = lambda: eng
 F._is_postgres = lambda: False
 F._data_version = lambda: "build=test;actuals_through=2026-07-31"
 
+# The JOB table must live in the scratch database too. Without this the batch
+# wrote its job rows into whatever real database `get_engine()` resolves to --
+# which is how a stale copy of that table, created before `heartbeat` existed,
+# made a job sit at "0 of 5" for ever.
+from flask_app.services import freeze_batch as _FBmod  # noqa: E402
+_FBmod._engine = lambda: eng
+_FBmod._is_postgres = lambda: False
+_FBmod._schema_ready.clear()
+
 Q = "2026-Q2"
 BROKEN = "BADINV"          # the investor whose One Pagers cannot be built
 

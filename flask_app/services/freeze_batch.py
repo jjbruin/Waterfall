@@ -46,6 +46,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
 import threading
 import time
 import uuid
@@ -107,9 +108,27 @@ def ensure_job_table() -> None:
                 failed INTEGER DEFAULT 0,
                 message TEXT,
                 results TEXT,
-                stats TEXT
+                stats TEXT,
+                -- Last time the job wrote progress. `reap_stale` uses it to
+                -- tell a job whose worker DIED from one that is simply running
+                -- in another worker: a dead job stops beating, a live one does
+                -- not. Without it, a worker restarting under a multi-worker
+                -- setup would reap its sibling's live job.
+                heartbeat TIMESTAMP
             )
         """))
+    # ADDED AFTER THE TABLE FIRST SHIPPED. `CREATE TABLE IF NOT EXISTS` never
+    # touches a table that already exists, so a database that created this table
+    # before `heartbeat` was added would raise "no such column" on the FIRST
+    # progress write -- the thread dies, and the job sits at 0 of N looking
+    # live. Found exactly that way by freeze_quarter_ui_check.
+    for col, typ in (("heartbeat", "TIMESTAMP"),):
+        try:
+            with _engine().begin() as conn:
+                conn.execute(text(
+                    f"ALTER TABLE {_TABLE} ADD COLUMN {col} {typ}"))
+        except Exception:
+            pass          # already there; the CREATE above covers a new table
     _schema_ready.add(key)
 
 
@@ -223,22 +242,44 @@ def _row(row) -> dict:
     return d
 
 
-def reap_stale() -> int:
+def _configured_workers() -> int:
+    try:
+        return max(1, int(os.environ.get("GUNICORN_WORKERS") or 1))
+    except Exception:
+        return 1
+
+
+def reap_stale(grace_seconds: Optional[float] = None) -> int:
     """Mark jobs left running by a DEAD process as interrupted. Returns how many.
 
-    Called at startup. A job row whose worker_id is not this process and which
-    still says running cannot be running — nothing else writes these rows — so
-    it is closed out rather than left to look live for ever. Investors frozen
-    before the restart stay frozen; the freeze commits per investor.
+    Called at startup. A job row still marked running under a worker that is not
+    this one cannot be running *here* — but under a MULTI-WORKER setup it may be
+    running perfectly well in a sibling, and reaping it would mark a live job
+    interrupted. So the test is the HEARTBEAT, which `_progress` writes after
+    every investor: a dead job stops beating, a live one does not.
+
+    With ONE worker configured — which is what production runs — there is no
+    sibling, so a foreign running row is provably dead and is reaped at once.
+    With more than one, a grace window is required, and until it expires a new
+    freeze is refused because the old one still looks live. That is the honest
+    trade: 5 minutes of caution beats killing a running job.
+
+    Investors frozen before the restart stay frozen; the freeze commits per
+    investor.
     """
+    if grace_seconds is None:
+        grace_seconds = 0.0 if _configured_workers() <= 1 else 300.0
     ensure_job_table()
+    import datetime as dt
+    cutoff = _now() - dt.timedelta(seconds=grace_seconds)
     with _engine().begin() as conn:
         res = conn.execute(text(
             f"UPDATE {_TABLE} SET status = :new, finished_at = :now, "
             f"message = :msg "
-            f"WHERE status = :run AND (worker_id IS NULL OR worker_id <> :wid)"),
+            f"WHERE status = :run AND (worker_id IS NULL OR worker_id <> :wid) "
+            f"  AND (heartbeat IS NULL OR heartbeat < :cutoff)"),
             {"new": STATUS_INTERRUPTED, "now": _now(), "run": STATUS_RUNNING,
-             "wid": WORKER_ID,
+             "wid": WORKER_ID, "cutoff": cutoff,
              "msg": "the worker restarted while this job was running; "
                     "investors frozen before the restart are still frozen"})
         n = res.rowcount or 0
@@ -247,7 +288,7 @@ def reap_stale() -> int:
     return n
 
 
-# ── running one ────────────────────────────────────────────────────────────
+# â”€â”€ running one â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def start_job(app, quarter: str, part: str, codes: list, started_by: str):
     """Create the job row and the thread. Returns (job dict, error message).
@@ -282,6 +323,9 @@ def start_job(app, quarter: str, part: str, codes: list, started_by: str):
 
 
 def _progress(job_id: int, **fields):
+    # EVERY progress write is also a heartbeat. `reap_stale` uses it to tell a
+    # job whose worker died from one running in a sibling worker.
+    fields.setdefault("heartbeat", _now())
     sets = ", ".join(f"{k} = :{k}" for k in fields)
     with _engine().begin() as conn:
         conn.execute(text(f"UPDATE {_TABLE} SET {sets} WHERE id = :i"),
@@ -291,12 +335,12 @@ def _progress(job_id: int, **fields):
 def _run(app, job_id: int, quarter: str, part: str, codes: list, who: str):
     """The batch itself. Per investor: freeze, record, move on.
 
-    PER-INVESTOR ISOLATION IS UNCHANGED from the synchronous version — one
+    PER-INVESTOR ISOLATION IS UNCHANGED from the synchronous version â€” one
     investor failing must not abort the rest, and each result row carries either
     a receipt or an error. What changed is only WHERE this runs.
 
     Progress is written after EVERY investor, not at the end, because a progress
-    bar that only moves when the work is done is not a progress bar — and
+    bar that only moves when the work is done is not a progress bar â€” and
     because a restart mid-run must leave a truthful count behind.
     """
     from flask_app.services import portfolio_snapshot_freeze as FZ
@@ -315,7 +359,7 @@ def _run(app, job_id: int, quarter: str, part: str, codes: list, who: str):
             try:
                 if FZ.is_frozen(code, quarter, part):
                     row.update(skipped=True, frozen=False,
-                               reason="already frozen for this part — Re-freeze "
+                               reason="already frozen for this part â€” Re-freeze "
                                       "it if it genuinely has to change")
                     skipped += 1
                 else:

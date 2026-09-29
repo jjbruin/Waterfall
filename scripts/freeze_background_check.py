@@ -301,5 +301,32 @@ chk("a job belonging to THIS worker is left alone",
     (FB.get_job(mine) or {})["status"] == "running",
     str((FB.get_job(mine) or {}).get("status")))
 
+# A SIBLING WORKER'S LIVE JOB MUST NOT BE REAPED. With more than one worker
+# configured, a worker restarting mid-job would otherwise mark its sibling's
+# running job interrupted. The heartbeat is what tells them apart: a dead job
+# stops beating, a live one does not.
+import datetime as _dtm                                            # noqa: E402
+with eng.begin() as cx:
+    cx.execute(sqlalchemy.text(
+        f"INSERT INTO {FB._TABLE} (quarter, part, status, worker_id, total, "
+        f"heartbeat) VALUES ('2025-Q3','one_pagers','running','a-live-sibling',"
+        f"5,:hb)"), {"hb": _dtm.datetime.utcnow()})
+    sibling = cx.execute(sqlalchemy.text(f"SELECT MAX(id) FROM {FB._TABLE}")).scalar()
+FB.reap_stale(grace_seconds=300)
+chk("a SIBLING's still-beating job survives a grace-window reap",
+    (FB.get_job(sibling) or {})["status"] == "running",
+    str((FB.get_job(sibling) or {}).get("status")))
+# ...and once it stops beating, it is reaped.
+with eng.begin() as cx:
+    cx.execute(sqlalchemy.text(
+        f"UPDATE {FB._TABLE} SET heartbeat = :hb WHERE id = :i"),
+        {"hb": _dtm.datetime.utcnow() - _dtm.timedelta(seconds=3600), "i": sibling})
+FB.reap_stale(grace_seconds=300)
+chk("...and a job that stopped beating IS reaped",
+    (FB.get_job(sibling) or {})["status"] == "interrupted",
+    str((FB.get_job(sibling) or {}).get("status")))
+chk("with one worker configured the grace is zero",
+    FB._configured_workers() <= 1)
+
 print(f"\n{'=' * 60}\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
