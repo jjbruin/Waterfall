@@ -253,6 +253,85 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v530` = `e97c9fe` (FREEZING IS PER QUARTER AND SWITCHED OFF. Deployed Sep 29
+    2026 12:53 EDT (16:53:39 UTC), build `cam4` 2m44s, digest
+    `sha256:f713a2ad675659b401c1906cd775db80d033158def89cf3351770590157b1f0a`.
+    Two all-investors buttons become ONE PER TAB -- Snapshots on the Portfolio
+    Snapshot page, One Pagers on the One Pager page -- on one shared
+    `FreezeQuarterPanel`, so each exists in exactly one place. The screen posts
+    in SLICES of 10 through the endpoint's existing `investors` parameter, so
+    "40 of 127" is measured rather than animated, and no single request has to
+    carry every investor.
+    **FREEZING IS OFF AFTER THIS DEPLOY AND THAT IS THE POINT.** `FREEZE_ENABLED`
+    defaults false and is NOT set on the container (verified before and after:
+    the env query returns `[]`). It exists because the all-investors batch was
+    run as a SINGLE request over ~145 investors earlier the same day and the app
+    was unavailable for about 35 minutes. The freeze itself was correct -- 145
+    rows written, then cleanly unfrozen, 0 left frozen, 145 archived. The SHAPE
+    of the request was the problem. It goes back on only when the freeze runs as
+    a background job.
+    GATED AT THE CORE, not only at the doors: `freeze_part` raises, so both
+    batches, the published-overlay freeze, re-freeze and the Portfolio Snapshot
+    approval chain are covered, as is any entry point added later. The One Pager
+    approval snapshot does NOT route through `freeze_part` and is gated
+    separately. Unfreeze is deliberately NOT gated -- a mistake made before the
+    switch has to stay correctable. VERIFIED ON PRODUCTION, authenticated as
+    admin: all four of `freeze-all/snapshots`, `freeze-all/one-pagers`,
+    `freeze-overlay` and `refreeze` return **503** with the reason.
+    A FREEZE IS NOT AN APPROVAL. `approved_at` was declared
+    `DEFAULT CURRENT_TIMESTAMP` and the INSERT never named it, so EVERY row
+    carried one -- including an as-sent freeze that deliberately leaves
+    `approved_by` NULL. All 114 rows read off production showed exactly that.
+    It also broke the legacy fallback: `frozen_parts_of` inferred BOTH halves
+    from `frozen_at` OR `approved_at`, and since `approved_at` was always
+    present that test was always true. Narrowed to `frozen_at`; the fallback
+    STAYS (dropping it would silently un-freeze every quarter already sent) but
+    now reports the parts as INFERRED via `frozen_is_legacy`. The INSERT names
+    `approved_at` -- which is what actually closes it, since a default only
+    applies to a column an INSERT omits.
+    **PRE-FLIGHT P4 CAUGHT A DEFECT IN THE MIGRATION BEFORE THE BUILD, which is
+    exactly what it is for.** `_drop_approved_at_default` ran an UNCONDITIONAL
+    `ALTER TABLE ... DROP DEFAULT` inside `_ensure_table` -- and `_ensure_table`
+    is reached from ordinary READS: `_current_row`, `quarter_part_state`, and
+    `quarters_frozen_with_deal`, which the One Pager comment lock calls on EVERY
+    save. On PostgreSQL that takes an ACCESS EXCLUSIVE lock, so every such
+    request would have serialised behind a catalog lock for a migration whose
+    work is done once. It also broke the pattern beside it -- `_ADDED_COLUMNS`
+    has always checked `if col in existing: continue`. Fixed in PR #4 before
+    building: the ALTER asks `information_schema` first, `_ensure_table` runs
+    once per process per engine, and `create_app` calls `ensure_schema()` at
+    startup so the lock is taken while the worker boots.
+    THE MIGRATION RAN, ONCE, AND SAID SO: the boot log carries exactly one
+    `Dropped the portfolio_snapshot_frozen.approved_at default (was
+    CURRENT_TIMESTAMP)`. 1 worker booted against `GUNICORN_WORKERS=1`, 0
+    tracebacks, no psycopg error.
+    NO SCREEN PINS A QUARTER ANY MORE. `2026-Q2` was a literal in FIVE places,
+    not the two expected -- both views AND the two print-sweep scripts' own
+    fallbacks, plus all 61 rows of `onepager_print_population.txt`. Screens read
+    `/api/portfolio-snapshot/quarters`; the sweeps take `--quarter` and REFUSE
+    rather than guess. On production today that endpoint returns
+    `default = 2026-Q2` (26Q3 ends Sep 30 and has not ended), so the One Pager
+    batch and Review Tracking both open on 26Q2.
+    P2 LISTED ELEVEN COMMITS against live `4036e69`, and that is expected: four
+    are the feature, one is the P4 fix, four are docs only (`.claude/`,
+    `CLAUDE.md`) and two are merges introducing ZERO lines of their own
+    (`git show --cc` empty on both). `845ab5d`'s `--stat` looks like it carries
+    `financials.py`, but that is its first-parent diff -- `9bedf3d` is already
+    an ancestor of the live image, confirmed with `merge-base --is-ancestor`,
+    and the net span diff contains no `financials.py`. Zero vcode literals in
+    shipped `flask_app/` or `vue_app/` code; the only ones are the population
+    list and a test fixture.
+    POST-DEPLOY: root 200 in 0.51s; `freeze_disabled_check` 70/0 and
+    `quarter_hardcode_check` 16/0 IN THE CONTAINER (the Vue-source sections skip
+    with a reason, no `vue_app/` in the image); 154 / 70 / 73 / 24 locally. The
+    served panel chunk, resolved from the entry bundle rather than the 551-byte
+    SPA shell, carries "all investors", "Freezing is temporarily disabled",
+    "Apply the published PDFs first" and "Partly frozen", and the old
+    "Freeze all Snapshots" string is gone. One Pager load 2.31s; comment save
+    0.35s -- the path that would have carried the ALTER.
+    NOT DONE: no freeze has been run and none can be. 26Q2 is still to be frozen
+    from the published PDF overlay after the rerouting work. v529 stays tagged
+    for rollback.)
   - `v529` = `4036e69` (FREEZE ALL SNAPSHOTS / ALL ONE PAGERS, ON ONE CORE, and the
     One Pager comment lock closed. Deployed Sep 29 2026 10:12 EDT (14:12:11 UTC),
     digest `sha256:8873f844c1a362552639503e6ca8eb9822b4555a618321a7a0f776813da4d0b4`.
