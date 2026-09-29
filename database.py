@@ -1675,7 +1675,23 @@ PROTECTED_TABLES = {'capital_calls', 'waterfalls', 'one_pager_comments', 'waterf
                     'ic_entity_settings', 'ic_recon_notes',
                     # The analysts' reading of each tenant's exclusives and
                     # co-tenancy -- app-written, and the only copy of it.
-                    'lease_clause_reviews'}
+                    'lease_clause_reviews',
+                    # ── The frozen Portfolio Snapshot / One Pager store ──────
+                    # Same rule, and the strongest case for it: these hold the
+                    # ONLY record of what an investor was actually sent. A
+                    # recomputation cannot reproduce them -- that is the whole
+                    # point of freezing -- so a CSV replace here is not a
+                    # refresh, it is the loss of the record.
+                    #
+                    # Checked against the `isbs_uw_supplements` lesson first:
+                    # protection without a write path is a LOCKOUT, not a
+                    # safeguard. Both of these are written by the app
+                    # (`_write_frozen`) and cleared by it (`unfreeze`,
+                    # `unfreeze_quarter`), so protection costs nothing and only
+                    # blocks the bulk CSV path. The guardrail asserts BOTH
+                    # halves: protected, AND still writable through the app.
+                    'portfolio_snapshot_frozen',
+                    'portfolio_snapshot_frozen_history'}
 
 
 def _get_import_connection():
