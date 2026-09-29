@@ -88,25 +88,43 @@ F._engine = lambda: eng
 F._is_postgres = lambda: False
 F._data_version = lambda: "build=test;actuals_through=2026-07-31"
 
+# The JOB table must live in the scratch database too. Without this the batch
+# wrote its job rows into whatever real database `get_engine()` resolves to --
+# which is how a stale copy of that table, created before `heartbeat` existed,
+# made a job sit at "0 of 5" for ever.
+from flask_app.services import freeze_batch as _FBmod  # noqa: E402
+_FBmod._engine = lambda: eng
+_FBmod._is_postgres = lambda: False
+_FBmod._schema_ready.clear()
+
 Q = "2026-Q2"
 BROKEN = "BADINV"          # the investor whose One Pagers cannot be built
 
 
-def _stub_report(investor, quarter):
+def _stub_report(investor, quarter, **kw):
+    # **kw because this stands in for `assemble_full_report`, which now also
+    # takes `data` and the two shared providers. Accepting and ignoring them is
+    # right here: what this fixture exercises is the BATCH, not the assembly.
+    #
+    # BROKEN HOLDS A DEAL NOBODY ELSE HOLDS, and that deal is the one that
+    # cannot be built. The failure USED to be keyed on the investor, which
+    # stopped working the moment each deal was built once and reused: BROKEN's
+    # deals had already been built for an earlier investor, so nothing failed.
+    # Keying it on the DEAL is both compatible with the cache and closer to the
+    # real thing — a deal fails to build, not an investor.
+    deals = [{"vcode": "D1", "name": "Deal One"},
+             {"vcode": "D2", "name": "Deal Two"}]
+    if investor == BROKEN:
+        deals = [{"vcode": "DBAD", "name": "Unbuildable"}]
     return {
-        "subtabs": {"financial": {"groups": {"G1": {"deals": [
-            {"vcode": "D1", "name": "Deal One"},
-            {"vcode": "D2", "name": "Deal Two"},
-        ]}}}},
+        "subtabs": {"financial": {"groups": {"G1": {"deals": deals}}}},
         "errors": {},
         "resolution": {"investor_name": investor, "quarter": quarter},
     }
 
 
 def _stub_op(vcode, quarter):
-    # One investor's One Pagers blow up, so section D has a real failure to
-    # isolate rather than a simulated one.
-    if _CURRENT.get("investor") == BROKEN:
+    if vcode == "DBAD":
         raise RuntimeError("one pager build blew up")
     return {"vcode": vcode, "quarter": quarter}
 
@@ -128,6 +146,12 @@ F.assemble_full_report = _stub_report
 F._default_one_pager_getter = lambda: _stub_op
 F.freeze_part = _tracking_freeze_part
 P.load_page = lambda i, q: {"comments": [], "footnotes": [], "values": []}
+
+# FreezeBatch loads the shared DataFrames; there is no application database
+# here. The providers it builds from this are never used, because the batch's
+# assembler is F.assemble_full_report, which is stubbed above.
+from flask_app.services import data_service as _ds  # noqa: E402
+_ds.get_data = lambda *a, **kw: {}
 
 # ── the app, with a real token (the decorators are applied at import time) ──
 from flask import Flask                                            # noqa: E402
@@ -170,10 +194,35 @@ def _row(inv, quarter=Q):
 
 
 # ── A. the Snapshot batch freezes ONLY the Snapshot half ───────────────────
+
+
+def run_batch(url, body):
+    """POST the batch, wait for the background job, return a synchronous-shaped
+    result so the assertions below read the same as when it ran inline.
+
+    THE WAIT IS THE TEST HARNESS, NOT THE FEATURE. The endpoint returns 202 at
+    once; this blocks only so the checks have an outcome to look at.
+    """
+    import time as _t
+    from flask_app.services import freeze_batch as _FB
+    r = cli.post(url, json=body, headers=ADMIN)
+    if r.status_code != 202:
+        return r.status_code, (r.get_json() or {})
+    jid = (r.get_json() or {}).get("id")
+    for _ in range(600):
+        j = _FB.get_job(jid) or {}
+        if j.get("status") and j["status"] != "running":
+            out = {"quarter": j.get("quarter"), "part": j.get("part"),
+                   "investors": j.get("total"), "frozen": j.get("frozen"),
+                   "skipped": j.get("skipped"), "failed": j.get("failed"),
+                   "results": j.get("results") or [], "job": j}
+            return (207 if (j.get("failed") or 0) else 200), out
+        _t.sleep(0.02)
+    raise AssertionError(f"freeze job {jid} never finished")
+
 print("A. the Snapshot button freezes only Snapshots, for every investor")
-r = cli.post(SNAP, json={"quarter": Q}, headers=ADMIN)
-body = r.get_json() or {}
-chk("the batch answers", r.status_code in (200, 207), f"{r.status_code} {str(body)[:120]}")
+_sc, body = run_batch(SNAP, {"quarter": Q})
+chk("the batch answers", _sc in (200, 207), f"{_sc} {str(body)[:120]}")
 chk("every investor was attempted", body.get("investors") == len(INVESTORS),
     str(body.get("investors")))
 chk("all of them froze", body.get("frozen") == len(INVESTORS), str(body.get("frozen")))
@@ -190,8 +239,7 @@ chk("...and the stored row really holds no One Pagers",
 print("\nB. an already-frozen investor is skipped and left exactly as it was")
 before = {c: (_row(c).get("version"), str(_row(c).get("snapshot_frozen_at")))
           for c in INVESTORS}
-r2 = cli.post(SNAP, json={"quarter": Q}, headers=ADMIN)
-b2 = r2.get_json() or {}
+_sc2, b2 = run_batch(SNAP, {"quarter": Q})
 chk("every investor is reported skipped", b2.get("skipped") == len(INVESTORS),
     str(b2.get("skipped")))
 chk("nothing froze on the second run", b2.get("frozen") == 0, str(b2.get("frozen")))
@@ -207,8 +255,7 @@ chk("the skip says why, rather than reporting a bare count",
 
 # ── C. the One Pager batch freezes ONLY the One Pager half ─────────────────
 print("\nC. the One Pager button freezes only One Pagers")
-r3 = cli.post(OPS, json={"quarter": Q}, headers=ADMIN)
-b3 = r3.get_json() or {}
+_sc3, b3 = run_batch(OPS, {"quarter": Q})
 good = [c for c in INVESTORS if c != BROKEN]
 chk("the good investors froze", b3.get("frozen") == len(good), str(b3.get("frozen")))
 chk("...and the store agrees",
@@ -231,15 +278,13 @@ chk("the investor BEFORE it froze", rows.get("CCC", {}).get("frozen") is True)
 chk("the investor AFTER it froze", rows.get("EEE", {}).get("frozen") is True)
 chk("its One Pagers are genuinely not frozen",
     not F.is_frozen(BROKEN, Q, F.PART_ONE_PAGERS))
-chk("the response reports a partial run (207), not a blanket success",
-    r3.status_code == 207, str(r3.status_code))
+chk("the run reports a partial outcome, not a blanket success",
+    _sc3 == 207, str(_sc3))
 
 # ── E. the chunked call the screen makes reaches the same place ────────────
 print("\nE. the investors slice the screen posts in chunks is honoured")
 QC = "2026-Q1"
-rc = cli.post(SNAP, json={"quarter": QC, "investors": ["AAA", "CCC"]},
-              headers=ADMIN)
-bc = rc.get_json() or {}
+_scc, bc = run_batch(SNAP, {"quarter": QC, "investors": ["AAA", "CCC"]})
 chk("only the named investors are touched", bc.get("investors") == 2,
     str(bc.get("investors")))
 chk("...and they froze", F.is_frozen("AAA", QC, F.PART_SNAPSHOT)
@@ -248,8 +293,8 @@ chk("...and they froze", F.is_frozen("AAA", QC, F.PART_SNAPSHOT)
 chk("an investor NOT in the slice is untouched",
     not F.is_frozen("BBB", QC, F.PART_SNAPSHOT))
 chk("...and two slices together cover the quarter",
-    (cli.post(SNAP, json={"quarter": QC, "investors": ["BBB", BROKEN, "EEE"]},
-              headers=ADMIN).get_json() or {}).get("frozen") == 3)
+    run_batch(SNAP, {"quarter": QC, "investors": ["BBB", BROKEN, "EEE"]})[1]
+    .get("frozen") == 3)
 
 # ── F. who may press it ────────────────────────────────────────────────────
 print("\nF. the batch is admin-only, and admins are not locked out")
@@ -261,8 +306,7 @@ chk("...and nothing was frozen by those attempts",
     not F.is_frozen("AAA", "2027-Q1"))
 # THE PAIRED DIRECTION. Refusing everybody would satisfy every check above.
 chk("an admin is still admitted",
-    cli.post(SNAP, json={"quarter": "2027-Q1"},
-             headers=ADMIN).status_code in (200, 207))
+    run_batch(SNAP, {"quarter": "2027-Q1"})[0] in (200, 207))
 chk("...and that really froze something", F.is_frozen("AAA", "2027-Q1",
                                                       F.PART_SNAPSHOT))
 # The STATUS read is open to any signed-in user — it is what draws the state
@@ -306,22 +350,29 @@ chk("an investor off the current list does not inflate the count",
 chk("...and is excluded, not silently counted",
     "GONE" not in (snap2.get("investors") or []))
 
-# ── H. the overlay note ────────────────────────────────────────────────────
-print("\nH. the published-overlay note reports, and never blocks")
-ov = st.get("overlay") or {}
-chk("the note is present on every status read", "pending" in ov, str(ov))
-chk("it states its basis rather than asserting bare truth", bool(ov.get("basis")))
-_seen = F.quarter_part_state(Q)
-chk("no overlay was applied in this run, so none is claimed",
-    _seen.get("overlay_investors") == [], str(_seen.get("overlay_investors")))
-chk("with no overlay file on the server, nothing is pending",
-    ov.get("pending") is False or S._overlay_file_for(Q) is not None, str(ov))
-chk("a malformed quarter yields no overlay file rather than raising",
-    S._overlay_file_for("nonsense") is None)
-chk("the overlay filename follows the built convention",
-    S._overlay_file_for.__doc__ and "overlay_26q2" in S._overlay_file_for.__doc__)
+# ── H. the published-PDF freeze is gone ────────────────────────────────────
+print("\nH. the published-PDF freeze is GONE, not merely hidden")
+# Removing a button is not removing a feature: the route has to go too, or the
+# freeze remains one curl away. Asserted in BOTH directions so "no routes at
+# all" cannot pass.
+_rules = {r.rule for r in app.url_map.iter_rules()}
+chk("no freeze-overlay route exists",
+    not [r for r in _rules if "overlay" in r], str([r for r in _rules if "overlay" in r]))
+chk("...and the two batch routes still do",
+    "/api/portfolio-snapshot/freeze-all/snapshots" in _rules
+    and "/api/portfolio-snapshot/freeze-all/one-pagers" in _rules)
+chk("freeze_part takes no overlay argument any more",
+    "overlay" not in __import__("inspect").signature(F.freeze_part).parameters)
+chk("the quarter status no longer carries an overlay note",
+    "overlay" not in (st or {}), str(list(st or {})[:12]))
+# The COMPARISON survives, in a module that cannot write.
+import flask_app.services.portfolio_snapshot_pdf_compare as PC  # noqa: E402
+chk("the PDF comparison module still exists",
+    callable(getattr(PC, "compare_overlay_to_live", None)))
+chk("...and imports nothing from the freeze engine at module level",
+    not [l for l in open(PC.__file__, encoding="utf-8").read().splitlines()
+         if l.startswith(("from flask_app", "import flask_app"))])
 
-# ── I. the screens: one button each, through one shared panel ──────────────
 print("\nI. each button exists in exactly one place")
 VIEWS = os.path.join(ROOT, "vue_app", "src", "views")
 PANEL = os.path.join(ROOT, "vue_app", "src", "components", "common",
@@ -349,20 +400,22 @@ else:
         and "Freeze all Snapshots" not in snap_src)
     chk("the old batch handler is gone with them",
         "doFreezeAll" not in snap_src and "freezeAllPart" not in snap_src)
-    chk("the published-overlay freeze is still its own action",
-        "showOverlayPanel" in snap_src and "freeze-overlay" in snap_src)
+    chk("the published-PDF freeze is GONE from the screen too",
+        "showOverlayPanel" not in snap_src and "freeze-overlay" not in snap_src)
     chk("the button names the quarter", "Freeze {{ quarter }}" in panel)
     chk("...and says it covers all investors", "all investors" in panel)
     chk("the panel is admin-gated on the screen too", "auth.isAdmin" in panel)
     chk("it shows the three states", all(
         s in panel for s in ("Not frozen", "Partly frozen", "frozen — all")))
     chk("it reports progress while it runs", "progress" in panel and "pct" in panel)
-    chk("it warns when the published PDFs are still to be applied",
-        "Apply the published PDFs first" in panel)
     chk("it reports per investor, not just a count",
-        "result.results" in panel and "r.investor" in panel)
-    chk("it posts in slices, so progress is real rather than animated",
-        "CHUNK" in panel and "investors: slice" in panel)
+        "job.results" in panel and "r.investor" in panel)
+    chk("it starts a JOB and polls, rather than waiting on the request",
+        "freeze-job/" in panel and "setInterval" in panel)
+    chk("...and picks up a job already running when the page is reopened",
+        "freeze-job/active" in panel)
+    chk("...reading progress from the job row, not from its own counter",
+        "job.done" in panel and "job.total" in panel)
 
 # ── J. nothing that was removed is still referenced ────────────────────────
 print("\nJ. the removals left nothing dangling")

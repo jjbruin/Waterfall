@@ -19,9 +19,11 @@ What it pins, and why each one is here rather than assumed:
      a store keyed only by (vcode, quarter) cannot represent what was sent.
   5. A FAILED freeze leaves the quarter unfrozen. Asserted by making one One
      Pager raise: the whole freeze must abort, not store a partial report.
-  6. The published overlay overwrites only the cells named, keeps the computed
-     value beside each one, and counts what it applied.
-  7. Re-freeze and unfreeze keep history and demand a reason.
+  6. Re-freeze and unfreeze keep history and demand a reason.
+  7. THE PUBLISHED-PDF OVERLAY FREEZE IS GONE. The freeze is for 26Q3 onward and
+     always freezes from LIVE data. The overlay's comparison half survives as a
+     report in `portfolio_snapshot_pdf_compare`, exercised by
+     `scripts/pdf_overlay_compare_check.py`, and cannot write.
 
 Usage
     .venv/Scripts/python.exe scripts/freeze_as_sent_check.py
@@ -50,6 +52,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 import sqlalchemy  # noqa: E402
+import json as _json  # noqa: E402
 
 PASS = FAIL = 0
 
@@ -201,87 +204,6 @@ chk("asking for ONLY the One Pagers still raises when they all fail",
 chk("the error names the deal", "D2" in str(raised), str(raised))
 chk("and nothing was stored", F.get_frozen("WRIONLY", "2026-Q2") is None)
 
-print("\nG. the published overlay")
-overlay = {
-    "__subtabs__": {
-        "subtabs.financial.groups.G1.deals[0].total_pref":
-            {"published": 9_100_000, "page": 6},
-    },
-    "D1": {"cap_stack.loan_terms_str":
-           {"published": "3.7% fixed | 7/1/2026", "page": 8}},
-}
-F.freeze_part("RBS262", "2026-Q2", F.PARTS, "cbui", overlay=overlay,
-                 assembler=stub_report, one_pager_getter=stub_op,
-                 elements_loader=stub_elements,
-                 source_manifest={"file": "TIAA.pdf", "sha256": "abc123"})
-ov = F.get_frozen("RBS262", "2026-Q2")
-d0 = ov["payload"]["subtabs"]["financial"]["groups"]["G1"]["deals"][0]
-chk("a published subtab cell is overwritten", d0["total_pref"] == 9_100_000,
-    str(d0["total_pref"]))
-chk("a published One Pager cell is overwritten",
-    ov["one_pagers"]["D1"]["cap_stack"]["loan_terms_str"] == "3.7% fixed | 7/1/2026")
-chk("an untouched cell keeps the computed value",
-    ov["payload"]["subtabs"]["financial"]["groups"]["G1"]["deals"][1]["total_pref"]
-    == 2_000_000)
-recs = ov["payload"].get("published_overrides") or []
-chk("every override records the computed value beside the published one",
-    len(recs) == 2 and all("computed_at_freeze" in r for r in recs), str(recs))
-chk("the computed value recorded is the one at freeze time",
-    any(r["computed_at_freeze"] == 12_100_000 for r in recs), str(recs))
-chk("the page number is kept per cell", all(r.get("page") in (6, 8) for r in recs))
-chk("the manifest records the source file and hash",
-    (ov["source_manifest"] or {}).get("sha256") == "abc123")
-chk("the manifest counts the cells applied",
-    (ov["source_manifest"] or {}).get("overlay_cells_applied") == 2,
-    str(ov["source_manifest"]))
-
-# ── G2. a PRINTED-UNITS cell keeps the PDF's text and leaves the number alone
-#
-# The money-row variances are printed as a percent of budget while the field
-# stores a dollar difference (one_pager.py:1913), and the percent ON THE PAGE is
-# derived in the BROWSER — so the stored number reaches no screen and
-# overwriting it would change nothing. Giant 7's "-100%" is where this showed,
-# but all three money rows have it. Asserted in BOTH directions: the text is
-# kept AND the numeric field is untouched, because writing the percent into the
-# dollar field would satisfy "the text is kept" while corrupting the figure.
-print("\nG2. a printed-units cell keeps the PDF's text, and the number is left alone")
-F.unfreeze("RBS262", "2026-Q2", "cbui", reason="reset for the display case")
-disp_overlay = {
-    "D1": {
-        "property_performance.noi.variance":
-            {"published": None, "display": "-100%",
-             "units": "percent_of_budget", "page": 9, "source": "TIAA.pdf"},
-    },
-}
-F.freeze_part("RBS262", "2026-Q2", F.PARTS, "cbui", overlay=disp_overlay,
-                 assembler=stub_report, one_pager_getter=stub_op,
-                 elements_loader=stub_elements,
-                 source_manifest={"file": "TIAA.pdf", "sha256": "abc123"})
-dv = F.get_frozen("RBS262", "2026-Q2")
-op1 = dv["one_pagers"]["D1"]
-before_num = (stub_op("D1", "2026-Q2") or {}).get(
-    "property_performance", {}).get("noi", {}).get("variance")
-chk("the printed text is stored verbatim under published_display",
-    (op1.get("published_display") or {}).get(
-        "property_performance.noi.variance") == "-100%",
-    str(op1.get("published_display")))
-chk("the NUMERIC variance field is left exactly as computed",
-    (op1.get("property_performance", {}).get("noi", {}).get("variance")
-     == before_num),
-    f"stored={op1.get('property_performance', {}).get('noi', {}).get('variance')!r} "
-    f"computed={before_num!r}")
-drecs = [r for r in (dv["payload"].get("published_overrides") or [])
-         if r.get("display")]
-chk("the override records it as a display cell, with its units",
-    len(drecs) == 1 and drecs[0].get("units") == "percent_of_budget",
-    str(drecs))
-chk("and keeps the page and source file for the printed text",
-    bool(drecs) and drecs[0].get("page") == 9
-    and drecs[0].get("source") == "TIAA.pdf", str(drecs))
-chk("a display cell still counts as a cell applied",
-    (dv["source_manifest"] or {}).get("overlay_cells_applied") == 1,
-    str(dv["source_manifest"]))
-
 print("\nH. re-freeze and unfreeze keep history and demand a reason")
 try:
     F.refreeze("TGAM", "2026-Q2", "admin", "", assembler=stub_report,
@@ -321,102 +243,7 @@ chk("KOCINV's stored copy is untouched by everything above",
     kept["one_pagers"]["D1"]["cap_stack"]["pref_equity"] == 12_100_000
     and kept["version"] == 1)
 
-# ── J. the 26Q2 overlay reproduces the sent PDFs, cell by cell ─────────────
-#
-# SKIPS RATHER THAN FAILS when the overlay is absent: it is gitignored, built
-# from documents that are not in the repo. Where it IS present this is the
-# check that the seeded freeze is faithful — every published cell in the
-# frozen copy equals what the PDF printed, with the live value deliberately
-# set to something else first so a no-op would be caught.
-print("\nJ. the 26Q2 overlay reproduces the sent PDFs, cell by cell")
-import json as _json                                                # noqa: E402
 
-_ov_path = os.path.join(ROOT, "overlay_26q2.json")
-if not os.path.exists(_ov_path):
-    print("  SKIP  overlay_26q2.json not present — build it with "
-          "scripts/build_26q2_overlay.py")
-else:
-    _doc = _json.load(open(_ov_path, encoding="utf-8"))
-    _tot_cells = _tot_reports = 0
-    _diffs = []
-    for _inv, _blk in (_doc.get("investors") or {}).items():
-        # One scratch quarter per investor so the two cannot interfere.
-        _q = f"OVL-{_inv}"
-        _reports = _blk.get("reports") or {}
-        _titles = list(_reports)
-        _vcodes = {t: f"V{i:03d}" for i, t in enumerate(_titles)}
-
-        def _ov_op(vcode, quarter, _v=_vcodes):
-            # Live values deliberately WRONG, so anything the overlay fails to
-            # apply shows up as a difference rather than passing by accident.
-            return {"vcode": vcode,
-                    # Every field a real One Pager carries. An absent key is
-                    # REFUSED by _set_path (rightly — inventing it would hide a
-                    # published figure where no reader looks), so a thin stub
-                    # would make cells vanish and this check fail for the wrong
-                    # reason. It did, on pe_coupon.
-                    "cap_stack": {"loan_terms_str": "LIVE-NOT-PDF",
-                                  "debt": -1.0, "pref_equity": -1.0,
-                                  "partner_equity": -1.0, "total_cap": -1.0,
-                                  "purchase_price": -1.0,
-                                  "pe_coupon": -1.0, "pe_participation": -1.0},
-                    "pe_performance": {k: -1.0 for k in
-                                       ("committed_pe", "remaining_to_fund",
-                                        "funded_to_date", "return_of_capital",
-                                        "current_pe_balance", "accrued_balance",
-                                        "coupon", "participation")},
-                    "property_performance": {
-                        k: {c: -1.0 for c in
-                            ("at_close", "actual_ye", "uw_ye", "ytd_actual",
-                             "ytd_budget", "variance")}
-                        for k in ("economic_occ", "revenue", "expenses", "noi")}}
-
-        def _ov_report(investor, quarter, _t=_titles, _v=_vcodes):
-            return {"subtabs": {"financial": {"groups": {"G1": {"deals": [
-                {"vcode": _v[t], "name": t} for t in _t]}}}},
-                "errors": {}, "resolution": {}}
-
-        _overlay = {_vcodes[t]: cells for t, cells in _reports.items()}
-        F.freeze_part(_inv, _q, F.PARTS, "cbui", overlay=_overlay,
-                         roster=[_vcodes[t] for t in _titles],
-                         assembler=_ov_report, one_pager_getter=_ov_op,
-                         elements_loader=stub_elements,
-                         source_manifest=_blk.get("source") or {})
-        _fr = F.get_frozen(_inv, _q)
-        for _t in _titles:
-            _tot_reports += 1
-            _stored = (_fr["one_pagers"] or {}).get(_vcodes[_t]) or {}
-            for _path, _spec in _reports[_t].items():
-                _tot_cells += 1
-                if _spec.get("display") is not None:
-                    got = (_stored.get("published_display") or {}).get(_path)
-                    want = _spec["display"]
-                else:
-                    got = F._read_path(_stored, _path)
-                    want = _spec.get("published")
-                if isinstance(want, float) and isinstance(got, (int, float)):
-                    # "beyond rounding" — the PDF prints to 0.1M / 1%.
-                    ok = abs(float(got) - want) <= max(50_000.0, abs(want) * 1e-9)
-                else:
-                    ok = got == want
-                if not ok:
-                    _diffs.append(f"{_inv}/{_t}/{_path}: frozen={got!r} pdf={want!r}")
-
-    chk(f"every published cell matches the PDF ({_tot_cells} cells, "
-        f"{_tot_reports} One Pagers)",
-        not _diffs, "; ".join(_diffs[:4]))
-    chk("the overlay actually carried cells (not a vacuous pass)",
-        _tot_cells > 500, str(_tot_cells))
-    chk("both sent documents are represented",
-        len(_doc.get("investors") or {}) == 2,
-        str(list(_doc.get("investors") or {})))
-
-# ── K. batch print serves the FROZEN roster, in printed order ──────────────
-#
-# Through the real endpoint, because the roster rule lives in the view: the
-# service could store a perfect roster and the batch could still rebuild the
-# population from today's ownership feed, which is exactly how a deal that was
-# in the sent document goes missing from a reprint of it.
 print("\nK. batch print serves the frozen roster, in printed order")
 from flask import Flask                                             # noqa: E402
 from flask_app.config import Config                                 # noqa: E402
@@ -472,16 +299,9 @@ chk("in the order it was sent",
     [p.get("vcode") for p in (_body.get("pages") or [])] == _ROSTER)
 chk("and says the roster is the frozen one",
     "frozen roster" in (_body.get("roster_source") or ""))
-# Rosters the seeded freeze must produce — TIAA 30 without Plaza Del Mar, KOC 15.
-if os.path.exists(_ov_path):
-    _d2 = _json.load(open(_ov_path, encoding="utf-8"))
-    _tg = (_d2["investors"].get("TGAM") or {}).get("roster_titles") or []
-    _ko = (_d2["investors"].get("KOCINV") or {}).get("roster_titles") or []
-    chk("TIAA's printed roster is 30 One Pagers", len(_tg) == 30, str(len(_tg)))
-    chk("Plaza Del Mar is not among them",
-        not [t for t in _tg if "plaza" in t.lower() and "mar" in t.lower()],
-        str([t for t in _tg if "plaza" in t.lower()]))
-    chk("KOC's printed roster is 15 One Pagers", len(_ko) == 15, str(len(_ko)))
+# The printed-roster assertions moved to pdf_overlay_compare_check.py with the
+# rest of the PDF comparison: they are about what a SENT PDF contained, which is
+# no longer anything this file can freeze.
 
 # ── L. typed fields on a frozen quarter are REFUSED by the API ─────────────
 #
@@ -519,241 +339,7 @@ with _app.test_client() as _c:
     chk("an unfrozen quarter is NOT refused by the frozen gate",
         _r.status_code != 409, f"status={_r.status_code}")
 
-# ── M. the overlay OVERRIDES differing live values, and touches nothing else ─
-#
-# J proves the frozen copy equals the PDF. That is necessary but not
-# sufficient: it would also pass if the live values happened to agree. Here the
-# live payload is deliberately perturbed on the cells the overlay covers —
-# including a newest-value field (loan rate), a preserved-row cell (Nottingham's
-# pref) and a variance cell — and the PDF must win every one. The paired half is
-# that cells the overlay does NOT name come through untouched, or "the PDF wins"
-# would be satisfied by overwriting the whole payload.
-print("\nM. the overlay overrides differing live values, and touches nothing else")
 
-_LIVE = {
-    "cap_stack": {
-        "loan_terms_str": "9.99% floating | 1/1/2099",   # newest-value field
-        "debt": 111.0, "pref_equity": 222.0,
-        "untouched_cap": 333.0,                           # not in the overlay
-    },
-    "pe_performance": {"current_pe_balance": 444.0, "coupon": 0.999,
-                       "untouched_pe": 555.0},
-    "property_performance": {
-        "noi": {"ytd_actual": 666.0, "ytd_budget": 777.0, "variance": 888.0},
-    },
-    "untouched_block": {"deep": {"value": 999.0}},
-}
-_PDF = {
-    "cap_stack.loan_terms_str": {"published": "5.59% fixed | 7/1/2031", "page": 8},
-    "cap_stack.debt": {"published": 95_100_000.0, "page": 8},
-    "pe_performance.current_pe_balance": {"published": 9_100_000.0, "page": 9},
-    "pe_performance.coupon": {"published": 0.085, "page": 9},
-    # The units case: text kept, the number left alone.
-    "property_performance.noi.variance": {
-        "published": None, "display": "-100%", "units": "percent_of_budget",
-        "page": 9},
-}
-F.unfreeze("KOCINV", "2026-Q2", "cbui", reason="reset for the override case")
-F.freeze_part(
-    "KOCINV", "2026-Q2", F.PARTS, "cbui", overlay={"D1": _PDF}, roster=["D1"],
-    assembler=lambda i, q: {"subtabs": {}, "errors": {}, "resolution": {}},
-    one_pager_getter=lambda vc, q: _json.loads(_json.dumps(_LIVE)),
-    elements_loader=stub_elements,
-    source_manifest={"file": "TIAA.pdf", "sha256": "abc123"})
-_m = F.get_frozen("KOCINV", "2026-Q2")["one_pagers"]["D1"]
-
-chk("a newest-value field (loan rate) takes the PDF's text",
-    _m["cap_stack"]["loan_terms_str"] == "5.59% fixed | 7/1/2031",
-    str(_m["cap_stack"]["loan_terms_str"]))
-chk("a money cell takes the PDF's figure, not the live one",
-    _m["cap_stack"]["debt"] == 95_100_000.0, str(_m["cap_stack"]["debt"]))
-chk("a preserved-row cell (pref balance) takes the PDF's figure",
-    _m["pe_performance"]["current_pe_balance"] == 9_100_000.0,
-    str(_m["pe_performance"]["current_pe_balance"]))
-chk("a percent field stored as a fraction takes the PDF's converted value",
-    _m["pe_performance"]["coupon"] == 0.085, str(_m["pe_performance"]["coupon"]))
-chk("a variance cell keeps the PDF's printed text",
-    (_m.get("published_display") or {}).get(
-        "property_performance.noi.variance") == "-100%",
-    str(_m.get("published_display")))
-chk("...and its NUMERIC field keeps the live value, not the percent",
-    _m["property_performance"]["noi"]["variance"] == 888.0,
-    str(_m["property_performance"]["noi"]["variance"]))
-# The paired direction.
-chk("a cell the overlay does not name is untouched (cap_stack)",
-    _m["cap_stack"]["untouched_cap"] == 333.0)
-chk("a cell the overlay does not name is untouched (pe_performance)",
-    _m["pe_performance"]["untouched_pe"] == 555.0)
-chk("a nested block the overlay does not name is untouched",
-    _m["untouched_block"]["deep"]["value"] == 999.0)
-chk("ytd_actual and ytd_budget beside the overridden variance are untouched",
-    _m["property_performance"]["noi"]["ytd_actual"] == 666.0
-    and _m["property_performance"]["noi"]["ytd_budget"] == 777.0)
-# Every override keeps the value it displaced, so the drift stays measurable.
-_mr = F.get_frozen("KOCINV", "2026-Q2")["payload"].get("published_overrides") or []
-chk("each override records the live value it displaced",
-    any(r["path"] == "cap_stack.debt" and r["computed_at_freeze"] == 111.0
-        for r in _mr), str(_mr)[:140])
-
-# A printed cell that cannot land is REPORTED, not silently dropped.
-F.unfreeze("KOCINV", "2026-Q2", "cbui", reason="reset for the unapplied case")
-F.freeze_part(
-    "KOCINV", "2026-Q2", F.PARTS, "cbui",
-    overlay={"D1": {"cap_stack.no_such_field": {"published": 1.0, "page": 8}}},
-    roster=["D1"],
-    assembler=lambda i, q: {"subtabs": {}, "errors": {}, "resolution": {}},
-    one_pager_getter=lambda vc, q: _json.loads(_json.dumps(_LIVE)),
-    elements_loader=stub_elements, source_manifest={})
-_un = (F.get_frozen("KOCINV", "2026-Q2")["payload"].get("published_unapplied")
-       or [])
-chk("a printed cell with no matching field is reported as unapplied",
-    len(_un) == 1 and _un[0]["path"] == "cap_stack.no_such_field", str(_un))
-
-# ── N. Snapshot cells land where the SCREEN reads them ─────────────────────
-#
-# The deal rows render `_display` twins — SnapshotLoan.vue reads
-# `r.ltv_display`, SnapshotOperating.vue reads `r.noi_display.at_close` — while
-# the SUBTOTAL rows render the raw field. Writing only the raw value leaves a
-# frozen deal row showing the LIVE figure: the same defect the One Pager
-# variance had, and just as invisible.
-print("\nN. Snapshot cells land where the screen actually reads them")
-
-_assembled = {"subtabs": {"loan": {
-    "groups": {"G": {"deals": [{"vcode": "D9", "name": "Giant 7",
-                                "ltv": 0.10, "ltv_display": 0.10,
-                                "debt": 1.0, "debt_display": 1.0}],
-                     "subtotal": {"name": "Total G", "debt": 2.0,
-                                  "ltv": 0.20}}},
-    "ownership_flagged": [], "total": {"debt": 3.0}}}}
-_snap = {"loan": {
-    "Giant 7": {"ltv": {"published": 0.709, "page": 8},
-                "debt": {"published": 95.1e6, "page": 8}},
-    "Total G": {"debt": {"published": 288.4e6, "page": 8}},
-}}
-_cells, _missing = F.resolve_snapshot_cells(_assembled, _snap)
-chk("a deal row writes BOTH the raw field and the display twin",
-    "subtabs.loan.groups.G.deals[0].ltv" in _cells
-    and "subtabs.loan.groups.G.deals[0].ltv_display" in _cells,
-    str(sorted(_cells)))
-chk("a SUBTOTAL row writes the raw field only (it is what renders there)",
-    "subtabs.loan.groups.G.subtotal.debt" in _cells
-    and "subtabs.loan.groups.G.subtotal.debt_display" not in _cells)
-chk("every snapshot row resolved", _missing == [], str(_missing))
-
-_snap_sent = {"loan": {"Giant 7": {"ltv": {
-    "published": None, "display": "Dev", "units": "printed-sentinel",
-    "page": 8}}}}
-_sc, _ = F.resolve_snapshot_cells(_assembled, _snap_sent)
-chk("a printed sentinel goes to the display twin ONLY",
-    list(_sc) == ["subtabs.loan.groups.G.deals[0].ltv_display"], str(list(_sc)))
-chk("...carrying the printed text as the value the twin renders",
-    _sc["subtabs.loan.groups.G.deals[0].ltv_display"]["published"] == "Dev")
-chk("...and the raw numeric ltv is NOT written, so subtotals stay sound",
-    "subtabs.loan.groups.G.deals[0].ltv" not in _sc)
-
-# ── O. unapplied cells are predicted BEFORE the freeze ─────────────────────
-print("\nO. unapplied cells are predicted before the freeze, not found after")
-_dry = F.dry_run_unapplied(
-    {"subtabs": {}, "one_pagers": {"D1": {"cap_stack": {"debt": 1.0}}}},
-    {"D1": {"cap_stack.debt": {"published": 9.0},
-            "cap_stack.no_such_field": {"published": 2.0}}})
-chk("the dry run names exactly the cell that would not land",
-    [u["path"] for u in _dry] == ["cap_stack.no_such_field"], str(_dry))
-chk("the dry run does not mutate the report it was given",
-    True)   # asserted by the next line reading the ORIGINAL back
-_orig = {"subtabs": {}, "one_pagers": {"D1": {"cap_stack": {"debt": 1.0}}}}
-F.dry_run_unapplied(_orig, {"D1": {"cap_stack.debt": {"published": 9.0}}})
-chk("...the original still holds its live value, not the published one",
-    _orig["one_pagers"]["D1"]["cap_stack"]["debt"] == 1.0,
-    str(_orig["one_pagers"]["D1"]["cap_stack"]["debt"]))
-
-# ── P. the preview's live comparison, and every warning it can raise ───────
-#
-# Driven with a SYNTHETIC live payload built to trigger each warning on
-# purpose, because the three faults this guards against are exactly the ones
-# that look fine cell by cell: a units error (every value plausible, all of
-# them 1e6 out), a column shift (every value plausible, all in the wrong
-# column), and a printed dash sitting over a live figure.
-print("\nP. the preview's live comparison raises each warning it should")
-
-_live = {
-    "__subtabs__": {"subtabs": {"loan": {"groups": {"G": {"deals": [
-        # A units column: live in MILLIONS-as-units, overlay in dollars.
-        {"debt": 33.5, "ltv": 0.665, "ytd_dscr": 2.0, "rate": "5.6% fixed"},
-        {"debt": 45.4, "ltv": 0.560, "ytd_dscr": 3.5, "rate": "3.5% fixed"},
-        {"debt": 95.1, "ltv": 0.709, "ytd_dscr": 2.1, "rate": "3.9% fixed"},
-        {"debt": 77.4, "ltv": 0.850, "ytd_dscr": 1.4, "rate": "SOFR + 250"},
-    ]}}}}},
-}
-_ov = {"__subtabs__": {}}
-for i, (d, l) in enumerate([(33.5e6, 0.665), (45.4e6, 0.560),
-                            (95.1e6, 0.709), (77.4e6, 0.850)]):
-    _ov["__subtabs__"][f"subtabs.loan.groups.G.deals[{i}].debt"] = {
-        "published": d, "page": 8}
-    # ltv agrees exactly — this column must NOT be flagged.
-    _ov["__subtabs__"][f"subtabs.loan.groups.G.deals[{i}].ltv"] = {
-        "published": l, "page": 8}
-# A printed dash over a live figure.
-_ov["__subtabs__"]["subtabs.loan.groups.G.deals[0].rate"] = {
-    "published": None, "display": "—", "units": "printed-sentinel", "page": 8}
-
-_cmp = F.compare_overlay_to_live(_live, _ov)
-chk("it counts how many cells actually differ",
-    _cmp["differs_total"] == 5, str(_cmp["differs_total"]))
-chk("and reports the count per page",
-    (_cmp["by_page"].get("8") or {}).get("differs") == 5,
-    str(_cmp["by_page"]))
-chk("it carries the ~114 expectation for the reader to compare against",
-    _cmp["expected_differences"] == F.EXPECTED_DIFFERENCES_26Q2 == 114)
-
-_cols = _cmp["by_column"]
-chk("the units column is flagged, with a ratio near 1e6",
-    any(w["column"].endswith(".debt") and w["kind"] == "ratio-far-from-one"
-        for w in _cmp["warnings"]),
-    str(_cmp["warnings"]))
-chk("...and its median ratio really is ~1e6",
-    abs((_cols.get("__subtabs__.debt") or {}).get("median_ratio", 0) - 1e6) < 1,
-    str(_cols.get("__subtabs__.debt")))
-chk("a column where MOST rows differ is flagged as a possible shift",
-    any(w["column"].endswith(".debt") and w["kind"] == "most-rows-differ"
-        for w in _cmp["warnings"]), str(_cmp["warnings"]))
-chk("a column that AGREES is not flagged — the paired direction",
-    not any(w["column"].endswith(".ltv") for w in _cmp["warnings"]),
-    str(_cmp["warnings"]))
-chk("the sentinel over a live figure is listed separately",
-    [s["path"] for s in _cmp["sentinels_live_non_blank"]]
-    == ["subtabs.loan.groups.G.deals[0].rate"],
-    str(_cmp["sentinels_live_non_blank"]))
-chk("...naming the printed dash and the live value it would cover",
-    _cmp["sentinels_live_non_blank"][0]["printed"] == "—"
-    and _cmp["sentinels_live_non_blank"][0]["live"] == "5.6% fixed")
-chk("every differing cell is listed, not just counted",
-    len(_cmp["differing_cells"]) == 5, str(len(_cmp["differing_cells"])))
-
-# A clean overlay raises nothing — otherwise the warnings are noise.
-_clean = F.compare_overlay_to_live(
-    _live, {"__subtabs__": {
-        f"subtabs.loan.groups.G.deals[{i}].ltv": {"published": l, "page": 8}
-        for i, l in enumerate([0.665, 0.560, 0.709, 0.850])}})
-chk("an overlay that matches live raises NO warning and no differences",
-    _clean["warnings"] == [] and _clean["differs_total"] == 0,
-    str(_clean["warnings"]) + str(_clean["differs_total"]))
-
-# ── Q. the Loan-tab hardcodes cannot move a FROZEN page ────────────────────
-#
-# Five per-deal hardcodes decide what the live Loan tab shows:
-#   MANUAL_RATIO_SEEDS          typed LTV/DSCR/Debt Yield for six recent deals
-#   PROJECTED_YE_NOI_FALLBACK   Giant 7's debt yield from projected YE NOI
-#   DEBT_FREE_DEALS             Pegasus prints a dash instead of 0.0
-#   KNOWN_LOAN_SUBTOTAL_DIFFS   documented subtotal ties that no longer hold
-#   (and the Presidential Arms debt_yield seed inside MANUAL_RATIO_SEEDS)
-#
-# They will be removed or corrected eventually, and the question this answers
-# is whether doing so could rewrite a quarter that has already been SENT.
-# It cannot — a frozen quarter is served from stored JSON — but "cannot" is
-# worth pinning, because the whole feature rests on the read path not
-# recomputing, and a future change that made it recompute would silently make
-# every one of these live again on a sent report.
 print("\nQ. removing the Loan-tab hardcodes cannot change a frozen page")
 
 from flask_app.services import portfolio_snapshot_loan as LOAN     # noqa: E402

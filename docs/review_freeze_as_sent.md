@@ -191,3 +191,140 @@ here would put two unrelated concerns in one review. **26Q2 is protected** — t
 frozen page stores the PDF's own printed subtotal, asserted by guardrail
 section Q, which strips all five Loan-tab hardcodes and requires the stored
 payload to come back byte-identical.
+
+---
+
+# Post-deploy test plan — turning FREEZE_ENABLED on, once
+
+Added Sep 29 2026 with the sustainable freeze (dedup + background job +
+set-based quarter unfreeze). **The branch ships with `FREEZE_ENABLED` off.**
+This is the plan for switching it on for one controlled run, measuring it, and
+switching it back off until 26Q3.
+
+**Why a rehearsal at all.** The freeze has never completed on production. The
+one attempt, on Sep 29 2026, ran the whole batch inside a single request and
+the app was unavailable for about 35 minutes. Everything since — building each
+deal once, running it on a background thread — is a response to that, and none
+of it has met real data. A deliberate rehearsal against 26Q2, which is already
+sent and can be unfrozen afterwards, is how that stops being a guess.
+
+**26Q2 is the subject on purpose.** It is a quarter whose reports have already
+gone out, so freezing it changes nothing anybody will read, and the quarter
+unfreeze puts it straight back. **The freeze is for 26Q3 onward**; this run is
+a measurement, not the real thing.
+
+## Before you start
+
+- [ ] The deploy is done and the revision is serving (`site root 200`).
+- [ ] `portfolio_snapshot_frozen` is **0 rows** — read it, do not assume.
+- [ ] Nobody is mid-quarter in the app. **Outside working hours.**
+- [ ] You can reach `az containerapp exec`, for the row counts and the memory
+      reading.
+
+## 1. Turn the flag on — configuration only, no rebuild
+
+```bash
+az containerapp update -g rg-waterfall-dev -n app-waterfall-dev-v2 \
+  --set-env-vars FREEZE_ENABLED=1 --revision-suffix vNNN
+```
+
+Same image, new revision. **Record the revision name and the image digest** —
+they must match the revision you were already running, or you have changed two
+things at once.
+
+- [ ] Confirm the buttons are live: the panel no longer shows "Freezing is
+      temporarily disabled".
+- [ ] Confirm the gate really flipped, over HTTP: `POST /freeze-all/one-pagers`
+      as a **non-admin** must still be `403`, not `503`.
+
+## 2. Baseline, before freezing anything
+
+Take these first; without them the numbers during the run mean nothing.
+
+- [ ] `GET /` — record milliseconds.
+- [ ] `GET /api/financials/<vcode>/one-pager?quarter=2026-Q2` — record
+      milliseconds. Use the same vcode throughout (P0000001 was 2.31s on
+      Sep 29 2026).
+- [ ] Container memory: `az containerapp exec … "cat /sys/fs/cgroup/memory.current"`
+      (or `memory.usage_in_bytes` on cgroup v1). Record bytes.
+
+## 3. Freeze 26Q2 One Pagers
+
+One Pagers only — it is the expensive half and the one the dedup targets.
+
+- [ ] Press **Freeze 2026-Q2 One Pagers — all investors**. Note the wall-clock
+      start.
+- [ ] Confirm the POST returned **at once** with a job id. If the page hangs,
+      stop: the background path is not working and the rest of the plan is void.
+- [ ] Watch the panel: investors done / total should advance steadily.
+
+**While it runs**, every 60 seconds:
+
+- [ ] `GET /` — record ms.
+- [ ] `GET /api/financials/<vcode>/one-pager?quarter=2026-Q2` — record ms.
+- [ ] Container memory — record bytes.
+
+**What "responsive" means here, so the result can be judged.** One gunicorn
+sync worker serves one request at a time; the freeze runs on a thread beside
+it. The work is mostly pandas and SQLAlchemy, which release the GIL, so
+requests are served throughout — but CPU-bound stretches contend, so some
+slowdown is expected and is not a failure. **A doubling is fine. A page that
+does not return is not.**
+
+## 4. When it finishes
+
+- [ ] Wall clock, start to finish. **Expected ~3 minutes** (84 distinct deals at
+      the 2.31s measured per One Pager). Anything near 28 minutes means the
+      dedup is not working — check the job's `deal_builds` vs `deal_reuses`.
+- [ ] Record `deal_builds` and `deal_reuses` from the job row. Expected roughly
+      84 and 638.
+- [ ] Peak container memory over the run, against the baseline.
+- [ ] Worst `GET /` and worst One Pager response time during the run.
+- [ ] Investors frozen / skipped / failed. **Any failure: record the investor
+      and the error** — per-investor isolation means the rest still froze.
+- [ ] Row count: `portfolio_snapshot_frozen` should be the investor count.
+
+## 5. Unfreeze, and verify it is really gone
+
+- [ ] Press **Unfreeze 2026-Q2 One Pagers**, reason: `rehearsal, 26Q2 not
+      being frozen yet`.
+- [ ] It should complete in **seconds**, not minutes — it is four set-based
+      statements, not a loop.
+- [ ] `portfolio_snapshot_frozen` — **0 rows for 2026-Q2**. Read it.
+- [ ] `portfolio_snapshot_frozen_history` — one row **per investor**, carrying
+      the reason and your username.
+- [ ] Open a One Pager for a deal that was in the freeze and confirm its
+      comments are **editable again** — the comment lock must have released.
+
+## 6. Turn the flag back off
+
+```bash
+az containerapp update -g rg-waterfall-dev -n app-waterfall-dev-v2 \
+  --set-env-vars FREEZE_ENABLED=false --revision-suffix vNNN
+```
+
+- [ ] Confirm the panel says freezing is disabled again.
+- [ ] Confirm `POST /freeze-all/one-pagers` as an **admin** returns **503**.
+
+**It stays off until 26Q3 is ready to be frozen.** Leaving it on is how a
+quarter gets frozen by accident, and the skip-if-frozen rule means an accidental
+freeze is not silently corrected by a later, correct one.
+
+## If it goes wrong
+
+- **The app becomes unresponsive.** The job is a thread in the worker; there is
+  no way to cancel it from the screen. Restart the revision — the job is marked
+  **interrupted** at the next boot, and investors frozen before the restart stay
+  frozen. Then quarter-unfreeze to clear them.
+- **The job says interrupted.** Expected after any container restart. Read the
+  count it reached, quarter-unfreeze, and start again.
+- **A container restart mid-job** loses the in-memory deal cache and the
+  remaining investors, nothing else: every investor frozen so far was committed
+  on its own.
+- **Rolling back the flag is a config change**, not a deploy: set
+  `FREEZE_ENABLED=false` and the buttons refuse again, with the same image.
+
+## Record the result here
+
+Add a dated section under this one with the numbers, whatever they are. A
+rehearsal whose result is not written down has to be run again.

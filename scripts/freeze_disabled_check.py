@@ -122,8 +122,6 @@ with app.app_context():
 for name, url, body in (
         ("freeze all Snapshots", SNAP, {"quarter": Q}),
         ("freeze all One Pagers", OPS, {"quarter": Q}),
-        ("freeze from published PDFs", "/api/portfolio-snapshot/freeze-overlay",
-         {"investor": "AAA", "quarter": Q, "overlay": {}}),
         ("re-freeze", "/api/portfolio-snapshot/refreeze",
          {"investor": "AAA", "quarter": Q, "reason": "x"})):
     r = cli.post(url, json=body, headers=ADMIN)
@@ -133,6 +131,15 @@ for name, url, body in (
         "disabled" in str(b.get("error", "")).lower(), str(b)[:90])
     chk("...and flagged so the screen can tell it from an outage",
         b.get("freeze_disabled") is True)
+
+# THE OVERLAY FREEZE IS GONE, not merely gated. A removed feature that still has
+# a route is a feature that can be called.
+_eps = {r.rule for r in app.url_map.iter_rules()}
+chk("the published-PDF freeze route no longer exists",
+    not [r for r in _eps if "freeze-overlay" in r],
+    str([r for r in _eps if "overlay" in r]))
+chk("...and the batch routes still do",
+    "/api/portfolio-snapshot/freeze-all/snapshots" in _eps)
 
 print("\nC. ...and at the CORE, so a new entry point is safe by default")
 with app.app_context():
