@@ -82,6 +82,13 @@ def create_app(config_name: str = None) -> Flask:
             # Ensure valuation cycle tables exist
             from flask_app.services.valuation_service import ensure_valuation_tables
             ensure_valuation_tables(engine)
+            # Ensure the frozen-snapshot schema AT STARTUP. It is reached from
+            # ordinary reads — including the One Pager comment lock on every
+            # save — so doing it here means the first user request does not pay
+            # for it, and the approved_at migration takes its catalog lock while
+            # the worker is booting rather than mid-traffic.
+            from flask_app.services.portfolio_snapshot_freeze import ensure_schema
+            ensure_schema()
 
     # Ensure surveillance tables (SQLite path — PG handled above)
     if not app.config.get("DATABASE_URL"):

@@ -153,6 +153,14 @@ def _is_postgres() -> bool:
 def _ensure_table() -> None:
     """Create the frozen-payload tables if absent, and add later columns.
 
+    ONCE PER PROCESS, PER ENGINE. This is reached from ordinary reads —
+    `_current_row`, `quarter_part_state`, and `quarters_frozen_with_deal`,
+    which the One Pager comment lock calls on every save — so running DDL here
+    means running DDL on the hot path. The statements are idempotent, but
+    idempotent is not free: they take catalog locks, and the schema cannot
+    change under a running process. After the first call this returns
+    immediately. `ensure_schema(force=True)` re-runs it if a test needs that.
+
     PURELY ADDITIVE. The UNIQUE(investor_code, quarter) on the live table is
     deliberately left alone: superseded versions go to a SEPARATE history table
     rather than becoming extra rows here. Dropping a UNIQUE constraint means a
@@ -160,6 +168,9 @@ def _ensure_table() -> None:
     investor was sent — so the migration that cannot lose it is the one that
     never rewrites it.
     """
+    key = _engine_key()
+    if key in _SCHEMA_READY:
+        return
     pk = ("SERIAL PRIMARY KEY" if _is_postgres()
           else "INTEGER PRIMARY KEY AUTOINCREMENT")
     with _engine().begin() as conn:
@@ -214,6 +225,33 @@ def _ensure_table() -> None:
                         text(f"ALTER TABLE {table} ADD COLUMN {col} {typ}"))
             except Exception:
                 log.exception("could not add %s.%s", table, col)
+    # Marked ready only after a full successful pass, so a half-built schema is
+    # retried on the next call rather than remembered as done.
+    _SCHEMA_READY.add(key)
+
+
+#: Engine URLs whose schema has already been ensured IN THIS PROCESS.
+#:
+#: `_ensure_table` is reached from ordinary READS — `_current_row`,
+#: `quarter_part_state`, `quarters_frozen_with_deal` (which the One Pager
+#: comment lock calls on every save) — so whatever it does, it does on the hot
+#: path. Keyed by engine URL rather than a bare bool so a test that swaps in a
+#: scratch database still gets its tables built.
+_SCHEMA_READY: set = set()
+
+
+def _engine_key() -> str:
+    try:
+        return str(_engine().url)
+    except Exception:
+        return "?"
+
+
+def ensure_schema(force: bool = False) -> None:
+    """Build/patch the schema once per process. Called at startup; safe anywhere."""
+    if force:
+        _SCHEMA_READY.discard(_engine_key())
+    _ensure_table()
 
 
 def _drop_approved_at_default() -> None:
@@ -236,14 +274,33 @@ def _drop_approved_at_default() -> None:
     fire: `_write_frozen` now NAMES `approved_at` in its INSERT, and a default
     only applies to a column an INSERT omits. `_write_frozen` is the only writer.
 
+    GUARDED, AND OFF THE READ PATH. The first version of this ran an
+    unconditional ALTER every time `_ensure_table` was called — which is on
+    every read, including the comment-lock check on every One Pager save. On
+    PostgreSQL that takes an ACCESS EXCLUSIVE lock, so it serialised reads
+    behind a catalog lock for a migration that has work to do exactly once. It
+    now asks `information_schema` first and does nothing when there is no
+    default, matching the `_ADDED_COLUMNS` loop beside it, which has always
+    checked `if col in existing: continue`.
+
     Never raises: a failed migration must not stop the table being used.
     """
     if not _is_postgres():
         return
     try:
+        with _engine().connect() as conn:
+            have_default = conn.execute(text(
+                "SELECT column_default FROM information_schema.columns "
+                "WHERE table_name = :t AND column_name = 'approved_at'"),
+                {"t": _TABLE}).scalar()
+        if not have_default:
+            log.debug("%s.approved_at already has no default", _TABLE)
+            return
         with _engine().begin() as conn:
             conn.execute(text(
                 f"ALTER TABLE {_TABLE} ALTER COLUMN approved_at DROP DEFAULT"))
+        log.info("Dropped the %s.approved_at default (was %s)",
+                 _TABLE, have_default)
     except Exception:
         log.exception("could not drop the %s.approved_at default", _TABLE)
 

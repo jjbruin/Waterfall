@@ -378,5 +378,97 @@ chk("an existing table is migrated, not only new ones",
 chk("...and the INSERT NAMES approved_at, which is what closes it on SQLite too",
     "approved_by, approved_at" in _src)
 
+print("\nK. the schema work is off the read path, and the ALTER is guarded")
+# THE DEFECT THIS PINS. The first version ran an unconditional
+# `ALTER TABLE ... DROP DEFAULT` inside `_ensure_table`, which is reached from
+# `_current_row`, `quarter_part_state` and `quarters_frozen_with_deal` — the
+# last of which the One Pager comment lock calls on EVERY save. On PostgreSQL
+# that takes an ACCESS EXCLUSIVE lock, so every read serialised behind a
+# catalog lock for a migration with work to do exactly once.
+_ddl = []
+_real_connect = eng.connect
+_real_begin = eng.begin
+
+import sqlalchemy.engine as _sae                                   # noqa: E402
+
+
+class _Spy:
+    """Wraps a connection and records every DDL statement executed on it."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def execute(self, stmt, *a, **kw):
+        sql = str(getattr(stmt, "text", stmt))
+        head = sql.strip().split(None, 1)[0].upper() if sql.strip() else ""
+        if head in ("CREATE", "ALTER", "DROP"):
+            _ddl.append(" ".join(sql.split())[:70])
+        return self._inner.execute(stmt, *a, **kw)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def __enter__(self):
+        # `engine.begin()` returns a CONTEXT MANAGER, not a connection, so the
+        # thing to wrap is what __enter__ yields — wrapping the manager itself
+        # gives an object with no .execute, which is how this first failed.
+        return _Spy(self._inner.__enter__())
+
+    def __exit__(self, *a):
+        return self._inner.__exit__(*a)
+
+
+eng.connect = lambda *a, **kw: _Spy(_real_connect(*a, **kw))
+eng.begin = lambda *a, **kw: _Spy(_real_begin(*a, **kw))
+
+# The schema is already built by this point in the run, so these are the
+# steady state — a warm process serving ordinary traffic.
+_ddl.clear()
+F._current_row("APPROVED", Q)
+chk("_current_row issues no DDL", not _ddl, str(_ddl[:2]))
+_ddl.clear()
+F.quarter_part_state(Q)
+chk("quarter_part_state issues no DDL", not _ddl, str(_ddl[:2]))
+_ddl.clear()
+F.quarters_frozen_with_deal(Q, "D1")
+chk("quarters_frozen_with_deal issues no DDL — the comment-lock path",
+    not _ddl, str(_ddl[:2]))
+_ddl.clear()
+F.get_frozen("APPROVED", Q)
+chk("get_frozen issues no DDL", not _ddl, str(_ddl[:2]))
+
+# THE ALTER ITSELF: at most once, and never with no default present. On SQLite
+# `_is_postgres()` is False so it returns before touching anything — assert the
+# guard exists in BOTH forms rather than only the one this engine exercises.
+_ddl.clear()
+for _ in range(5):
+    F._drop_approved_at_default()
+chk("the migration issues no ALTER when there is nothing to drop",
+    not [d for d in _ddl if d.upper().startswith("ALTER")], str(_ddl[:2]))
+_src_fz = open(os.path.join(ROOT, "flask_app", "services",
+                            "portfolio_snapshot_freeze.py"), encoding="utf-8").read()
+chk("...because it asks information_schema first",
+    "information_schema.columns" in _src_fz
+    and "if not have_default:" in _src_fz)
+chk("...and returns before the ALTER when there is none",
+    _src_fz.index("if not have_default:")
+    < _src_fz.index("ALTER COLUMN approved_at DROP DEFAULT"))
+
+# ONCE PER PROCESS: a second ensure does nothing; forcing re-runs it.
+_ddl.clear()
+F._ensure_table()
+chk("a warm _ensure_table issues no DDL at all", not _ddl, str(_ddl[:2]))
+_ddl.clear()
+F.ensure_schema(force=True)
+chk("...and force=True really does re-run it", bool(_ddl), "no DDL seen")
+chk("...creating the tables it is responsible for",
+    any(d.upper().startswith("CREATE") for d in _ddl), str(_ddl[:2]))
+
+eng.connect = _real_connect
+eng.begin = _real_begin
+chk("startup calls it, so the first request does not pay for it",
+    "ensure_schema()" in open(os.path.join(ROOT, "flask_app", "__init__.py"),
+                              encoding="utf-8").read())
+
 print(f"\n{'=' * 60}\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
