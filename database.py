@@ -1676,6 +1676,9 @@ PROTECTED_TABLES = {'capital_calls', 'waterfalls', 'one_pager_comments', 'waterf
                     # The analysts' reading of each tenant's exclusives and
                     # co-tenancy -- app-written, and the only copy of it.
                     'lease_clause_reviews',
+                    # The analysts' settled rent schedules and options -- what
+                    # the IC exhibit prints where it differs from the documents.
+                    'lease_timeline_settlements',
                     # ── The frozen Portfolio Snapshot / One Pager store ──────
                     # Same rule, and the strongest case for it: these hold the
                     # ONLY record of what an investor was actually sent. A

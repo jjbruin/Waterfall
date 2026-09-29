@@ -517,6 +517,54 @@ def step_in_force_at(steps: List[Dict[str, Any]], as_of: Any
                   + (f", per {src}." if src else "."))
 
 
+def governing_steps(steps: List[Dict[str, Any]]
+                    ) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """The base-rent steps that still govern once later documents are applied.
+
+    The step table holds every document's schedule, including ones a later document
+    superseded, and `step_in_force_at` picks the latest step on or before a date --
+    right on a shared date (the later document wins the tie), wrong BETWEEN dates,
+    where a superseded schedule's step can be the latest one standing.
+
+    THE RULE: a later document's schedule replaces earlier documents' steps that
+    begin WITHIN THE SPAN IT COVERS, its first step to its last. Not everything after
+    its first step: a commencement letter restating year-one rent would then wipe the
+    lease's whole schedule. Where a later document states exactly ONE rent and an
+    earlier schedule has steps after it, those steps are kept AND flagged -- whether
+    the single rent runs to expiry or only to the next scheduled step is a question
+    the documents must answer, not this function (spec §21: flag, never guess).
+
+    Additional charges and undated steps pass through untouched. Returns
+    (steps, notes).
+    """
+    notes: List[str] = []
+    passthrough = [s for s in steps if s.get('is_additional')
+                   or _as_date(s.get('effective_date')) is None]
+    base = [s for s in steps if s not in passthrough]
+    groups: Dict[Any, List[Dict[str, Any]]] = {}
+    for s in base:
+        key = s.get('source_doc_id') or s.get('source_doc') or '(unattributed)'
+        groups.setdefault(key, []).append(s)
+    ordered = sorted(groups.values(), key=lambda g: _doc_rank(g[0]))
+    kept: List[Dict[str, Any]] = []
+    for g in ordered:
+        dates = sorted(_as_date(s['effective_date']) for s in g)
+        first, last = dates[0], dates[-1]
+        survivors = [s for s in kept
+                     if not (first <= _as_date(s['effective_date']) <= last)]
+        if len(g) == 1:
+            later = [s for s in survivors if _as_date(s['effective_date']) > first]
+            if later:
+                src = (g[0].get('source_doc') or '').rsplit('/', 1)[-1] or 'a later document'
+                notes.append(
+                    f"{src} states one rent from {first.isoformat()}; an earlier "
+                    f"schedule has {len(later)} later step(s) that were kept -- confirm "
+                    f"whether that rent runs to expiry.")
+        kept = survivors + g
+    kept.sort(key=lambda s: (_as_date(s['effective_date']), _doc_rank(s)))
+    return kept + passthrough, notes
+
+
 def _doc_rank(step: Dict[str, Any]) -> Tuple[str, int]:
     """How late the document behind a step is: its date, then its id.
 

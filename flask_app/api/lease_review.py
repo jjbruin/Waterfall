@@ -4,6 +4,7 @@ API endpoints for lease review and due diligence.
 """
 
 from flask import Blueprint, g, jsonify, request, send_file
+from flask_app.serializers import safe_json
 from flask_app.auth.routes import login_required, role_required
 from flask_app.db import get_engine
 from flask_app.services.lease_review_service import (
@@ -44,6 +45,10 @@ from flask_app.services.lease_review_service import (
     update_tenant_sales_override,
     RESOLVABLE_FIELDS,
     save_clause_review,
+    get_tenant_timeline,
+    get_rent_roll_timeline,
+    save_timeline_settlement,
+    clear_timeline_settlement,
     rebuild_clause_rows,
     # Phase 1: Tenant CRUD
     add_tenant,
@@ -919,6 +924,97 @@ def get_validation_context(review_id):
     # an unread amendment are simply absent.
     return jsonify({'rent_roll_date': rrd, 'tenants': out,
                     'unread_documents': unread_documents(engine, review_id)})
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/rent-roll-timeline', methods=['GET'])
+@login_required
+def rent_roll_timeline(review_id):
+    """Every occupied tenant's lease timeline as of a date (default: the review's
+    rent roll date): current rent, future steps, remaining options, flags. The one
+    engine the rent-roll exhibit and every timeline screen read."""
+    try:
+        return jsonify(safe_json(get_rent_roll_timeline(
+            get_engine(), review_id, request.args.get('as_of') or None)))
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"rent roll timeline failed: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/rent-roll-exhibit', methods=['GET'])
+@login_required
+def rent_roll_exhibit(review_id):
+    """The IC memo's rent roll exhibit as a workbook: new business's template,
+    laid out from the one timeline engine (settlements applied), plus a Flags sheet."""
+    import io
+    from sqlalchemy import text as _t
+    from flask_app.services.rent_roll_exhibit import build_exhibit
+    try:
+        engine = get_engine()
+        rr = get_rent_roll_timeline(engine, review_id, request.args.get('as_of') or None)
+        with engine.connect() as c:
+            name = c.execute(_t("SELECT property_name FROM lease_reviews WHERE id = :r"),
+                             {'r': review_id}).scalar() or 'Rent Roll'
+        data = build_exhibit(rr, title='%s -- Rent Roll as of %s' % (name, rr.get('as_of')))
+        safe = ''.join(ch for ch in name if ch.isalnum() or ch in ' -_').strip()
+        return send_file(io.BytesIO(data), as_attachment=True,
+                         download_name='%s Rent Roll %s.xlsx' % (safe, rr.get('as_of') or ''),
+                         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"rent roll exhibit failed: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/tenants/<int:tenant_id>/timeline',
+                       methods=['GET'])
+@login_required
+def tenant_timeline(review_id, tenant_id):
+    try:
+        return jsonify(safe_json(get_tenant_timeline(
+            get_engine(), review_id, tenant_id, request.args.get('as_of') or None)))
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"tenant timeline failed: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/tenants/<int:tenant_id>/timeline/settlement',
+                       methods=['PUT'])
+@login_required
+@role_required('admin', 'analyst')
+def put_timeline_settlement(review_id, tenant_id):
+    """Settle a tenant's future rent schedule or its options: {section, rows,
+    reason, source_doc_id}. Start and expiration are settled through the
+    validation's resolve endpoint (fields lease_start / lease_end)."""
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify(safe_json(save_timeline_settlement(
+            get_engine(), review_id, tenant_id, body.get('section'), body.get('rows'),
+            body.get('reason'), body.get('source_doc_id'),
+            g.current_user.get('username', 'unknown'))))
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"timeline settlement failed: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/tenants/<int:tenant_id>/timeline/settlement',
+                       methods=['DELETE'])
+@login_required
+@role_required('admin', 'analyst')
+def delete_timeline_settlement(review_id, tenant_id):
+    try:
+        clear_timeline_settlement(get_engine(), review_id, tenant_id,
+                                  request.args.get('section') or '')
+        return jsonify({'ok': True})
+    except Exception as e:
+        logger.error(f"timeline settlement clear failed: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
 
 
 @lease_review_bp.route('/reviews/<int:review_id>/tenants/<int:tenant_id>/clause-review',

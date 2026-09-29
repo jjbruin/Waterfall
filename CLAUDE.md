@@ -255,7 +255,21 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
-  - `v534` = `b4f437f` (NEW BUSINESS DOWNSIDE CANDIDATES READ THE SETTLED ROSTER,
+  - `v537` = `7e48a5c` (LEASE TIMELINE -- step 3 of the rent-roll plan: one engine
+    from governing terms to continuous periods, `governing_steps`, validation reads
+    the same schedule. Measured on Poplar vs the exhibit: current rent 26/27, steps
+    20/27, option rent 0/34 pending re-extraction. See rent_roll_exhibit.md. Build
+    `camb`.)
+  - `v536` = `2e92142` (LEASE GOVERNING TERMS -- step 2: undated documents fill
+    gaps only, lease start from the original lease, exercised options carry the
+    expiration, option rows per document, option rent in the prompt. After deploy:
+    77 tenants re-consolidated, clause/option rows rebuilt for reviews 2 and 3
+    (Windsor exclusives 1,134 -> 337). Build `cama`.)
+  - `v535` = `6ab7ae8` (STEP 1: NUL characters stripped, the PDF size check on the
+    encoded request with over-size scans sent as images, a failed text reading
+    retried from the PDF. Re-read after: Sam's Club and Perkins read in full;
+    Tropical Smoothie's 60-page lease still fails. Build `cam9`.)
+ (NEW BUSINESS DOWNSIDE CANDIDATES READ THE SETTLED ROSTER,
     Sep 29 2026. `scenario_service.get_risk_candidates` read `lease_tenants` raw:
     an analyst's settled rent or expiry never reached the downside scenario, and a
     tenant read as vacated / no lease was still offered. Now `get_resolved_tenants`.
