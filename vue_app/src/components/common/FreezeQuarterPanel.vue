@@ -200,6 +200,53 @@ async function run() {
   }
 }
 
+// --- unfreeze this quarter's half, for everyone --------------------------
+//
+// NOT A JOB. There is no report to assemble and no deal to build: the server
+// archives and clears in one transaction, so this returns when it is done.
+// Deliberately NOT gated on FREEZE_ENABLED — with freezing off, undoing a
+// mistake made before the switch has to stay possible.
+const unfreezing = ref(false)
+const unfreezeOpen = ref(false)
+const unfreezeReason = ref('')
+const unfreezeCount = ref<number | null>(null)
+const unfreezeResult = ref<any>(null)
+const unfreezeError = ref<string | null>(null)
+
+async function openUnfreeze() {
+  unfreezeOpen.value = true
+  unfreezeResult.value = null
+  unfreezeError.value = null
+  unfreezeCount.value = null
+  try {
+    const r = await api.get('/api/portfolio-snapshot/unfreeze-quarter/preview',
+                            { params: { quarter: props.quarter, part: props.part } })
+    unfreezeCount.value = r.data?.investors ?? null
+  } catch {
+    unfreezeCount.value = null      // null, never 0 — 0 would read as "none"
+  }
+}
+
+async function doUnfreeze() {
+  if (!unfreezeReason.value.trim()) return
+  unfreezing.value = true
+  unfreezeError.value = null
+  try {
+    const r = await api.post('/api/portfolio-snapshot/unfreeze-quarter', {
+      quarter: props.quarter, part: props.part,
+      reason: unfreezeReason.value.trim(),
+    })
+    unfreezeResult.value = r.data
+    unfreezeReason.value = ''
+    await loadStatus()
+    emit('frozen')                  // the host reloads either way
+  } catch (e: any) {
+    unfreezeError.value = e?.response?.data?.error || e?.message || 'Unfreeze failed'
+  } finally {
+    unfreezing.value = false
+  }
+}
+
 // A page opened mid-run picks the bar up rather than showing nothing.
 onMounted(async () => {
   try {
@@ -244,6 +291,48 @@ onMounted(async () => {
       counts above may be short.
     </p>
 
+
+    <!-- UNFREEZING IS THE ADMIN'S WAY BACK, and stays available even with
+         freezing switched off. One action per half; no investor to choose. -->
+    <div v-if="mine && mine.frozen > 0" class="fqp-unfreeze-row">
+      <button class="btn-sm" :disabled="unfreezing" @click="openUnfreeze">
+        Unfreeze {{ quarter }} {{ label }}…
+      </button>
+    </div>
+
+    <div v-if="unfreezeOpen" class="fqp-confirm">
+      <strong>Unfreeze {{ quarter }} {{ label }} for every investor?</strong>
+      <p>
+        This returns the <em>{{ label }}</em> to live for
+        <strong>{{ unfreezeCount ?? '—' }}</strong> investor(s) in
+        <strong>{{ quarter }}</strong>.
+        Every affected investor's stored copy is archived to history first — it
+        is not lost — and the {{ otherLabel }} are left exactly as they are.
+      </p>
+      <p class="fqp-muted">
+        A reason is required, and it is stored with the archived copy.
+      </p>
+      <input v-model="unfreezeReason" class="fqp-reason" type="text"
+             placeholder="Why is this being unfrozen?" />
+      <p v-if="unfreezeError" class="fqp-err">{{ unfreezeError }}</p>
+      <p v-if="unfreezeResult" class="fqp-muted">
+        Unfroze <strong>{{ unfreezeResult.investors }}</strong> investor(s);
+        {{ unfreezeResult.archived }} archived to history,
+        {{ unfreezeResult.rows_kept }} kept because the {{ otherLabel }} are
+        still frozen.
+      </p>
+      <div class="fqp-actions">
+        <button v-if="!unfreezeResult" class="btn-sm primary"
+                :disabled="unfreezing || !unfreezeReason.trim()"
+                @click="doUnfreeze">
+          {{ unfreezing ? 'Unfreezing…' : `Unfreeze ${quarter} ${label}` }}
+        </button>
+        <button class="btn-sm" :disabled="unfreezing"
+                @click="unfreezeOpen = false; unfreezeResult = null">
+          {{ unfreezeResult ? 'Close' : 'Cancel' }}
+        </button>
+      </div>
+    </div>
 
     <div v-if="confirming" class="fqp-confirm">
       <strong>Freeze {{ quarter }} {{ label }} for every investor?</strong>
@@ -370,4 +459,7 @@ onMounted(async () => {
 .fqp-results li.bad { color: #b4232c; }
 .fqp-results li.skip { color: #6b7684; }
 .fqp-actions { display: flex; gap: 8px; }
+.fqp-unfreeze-row { margin-top: 6px; }
+.fqp-reason { width: 100%; padding: 4px 6px; margin-bottom: 8px;
+  border: 1px solid #d7dde5; border-radius: 4px; font-size: 12px; }
 </style>

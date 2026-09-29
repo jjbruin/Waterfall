@@ -1638,3 +1638,119 @@ def _selftest():                                    # pragma: no cover
 if __name__ == "__main__":                          # pragma: no cover
     import sys
     sys.exit(0 if _selftest() else 1)
+
+
+#: Which stored columns hold each part's DATA, and what an emptied one becomes.
+#: ``payload`` is NOT NULL on the live table, so a Snapshot that has been
+#: unfrozen is emptied to ``{}`` rather than nulled.
+_PART_DATA = {
+    PART_SNAPSHOT: (("payload", "'{}'"),),
+    PART_ONE_PAGERS: (("roster", "NULL"), ("one_pagers", "NULL")),
+}
+
+
+def unfreeze_quarter(quarter: str, part: str, by: str, reason: str) -> dict:
+    """Unfreeze ONE PART of a quarter for every investor, in one transaction.
+
+    SET-BASED, NOT A LOOP. There is no per-investor work to do — no report to
+    assemble, no deal to build — so this is four statements over the whole
+    quarter rather than 130 round trips and a background job. It finishes in
+    the time a page load takes.
+
+    THE OTHER HALF MUST SURVIVE, and that is the whole difficulty. A row can
+    carry both parts, so unfreezing the One Pagers has to leave a frozen
+    Snapshot exactly as it was, and the reverse.
+
+    LEGACY ROWS ARE MATERIALISED FIRST. A row written before the per-part
+    columns existed carries NO per-part stamps and ``frozen_parts_of`` reports
+    BOTH halves for it. Clearing "the One Pager columns" on such a row would
+    clear nothing and leave it still reading as both-frozen; deleting it would
+    take the Snapshot with it. So the implied state is written out — each part
+    stamped from the row's own ``frozen_at`` — and only then is one part
+    removed. Same reading as ``frozen_parts_of``, made explicit.
+
+    ARCHIVED BEFORE ANYTHING IS REMOVED, inside the same transaction: the
+    history row is the only record of what was sent, so it is written first and
+    both statements stand or fall together.
+    """
+    part = normalize_parts(part)
+    if len(part) != 1:
+        raise ValueError("unfreeze_quarter takes exactly one part; "
+                         f"got {list(part)}")
+    part = part[0]
+    if not (reason or "").strip():
+        raise ValueError("A reason is required to unfreeze a sent quarter")
+
+    other = next(p for p in PARTS if p != part)
+    at_col, by_col = _PART_STATE[part]
+    other_at, _ = _PART_STATE[other]
+    _ensure_table()
+
+    import datetime as _dt
+    now = _dt.datetime.utcnow()
+    with _engine().begin() as conn:
+        # A. Write out the implied state of pre-per-part rows.
+        legacy = conn.execute(text(f"""
+            UPDATE {_TABLE}
+               SET snapshot_frozen_at = frozen_at,
+                   snapshot_frozen_by = frozen_by,
+                   one_pagers_frozen_at = frozen_at,
+                   one_pagers_frozen_by = frozen_by
+             WHERE quarter = :q
+               AND snapshot_frozen_at IS NULL
+               AND one_pagers_frozen_at IS NULL
+               AND frozen_at IS NOT NULL
+        """), {"q": quarter}).rowcount or 0
+
+        affected = conn.execute(text(
+            f"SELECT COUNT(*) FROM {_TABLE} "
+            f"WHERE quarter = :q AND {at_col} IS NOT NULL"),
+            {"q": quarter}).scalar() or 0
+        if not affected:
+            return {"quarter": quarter, "part": part, "investors": 0,
+                    "archived": 0, "rows_removed": 0, "rows_kept": 0,
+                    "legacy_materialised": legacy,
+                    "message": f"nothing frozen for {quarter} {part}"}
+
+        codes = [r[0] for r in conn.execute(text(
+            f"SELECT investor_code FROM {_TABLE} "
+            f"WHERE quarter = :q AND {at_col} IS NOT NULL ORDER BY investor_code"),
+            {"q": quarter})]
+
+        # B. Archive EVERY affected row before anything is removed.
+        archived = conn.execute(text(f"""
+            INSERT INTO {_HISTORY}
+                (investor_code, quarter, payload, data_version, frozen_by,
+                 frozen_at, frozen_reason, source_manifest, roster, one_pagers,
+                 version, superseded_by, supersede_reason, frozen_parts)
+            SELECT investor_code, quarter, payload, data_version, frozen_by,
+                   frozen_at, frozen_reason, source_manifest, roster, one_pagers,
+                   version, :by, :sr, :fp
+              FROM {_TABLE}
+             WHERE quarter = :q AND {at_col} IS NOT NULL
+        """), {"q": quarter, "by": by, "fp": json.dumps([part]),
+               "sr": f"unfrozen ({part}): {reason}"}).rowcount or 0
+
+        # C. Rows carrying ONLY this part have nothing left to be: remove them,
+        #    which is what the single-investor unfreeze does.
+        removed = conn.execute(text(
+            f"DELETE FROM {_TABLE} WHERE quarter = :q "
+            f"AND {at_col} IS NOT NULL AND {other_at} IS NULL"),
+            {"q": quarter}).rowcount or 0
+
+        # D. Rows carrying BOTH keep the other half, untouched.
+        sets = [f"{at_col} = NULL", f"{by_col} = NULL"]
+        sets += [f"{col} = {empty}" for col, empty in _PART_DATA[part]]
+        kept = conn.execute(text(
+            f"UPDATE {_TABLE} SET {', '.join(sets)} "
+            f"WHERE quarter = :q AND {at_col} IS NOT NULL"),
+            {"q": quarter}).rowcount or 0
+
+    log.info("Unfroze %s %s for %s investor(s) by %s: %s "
+             "(%s removed, %s kept with the other half)",
+             quarter, part, affected, by, reason, removed, kept)
+    return {"quarter": quarter, "part": part, "investors": affected,
+            "archived": archived, "rows_removed": removed, "rows_kept": kept,
+            "legacy_materialised": legacy, "investor_codes": codes,
+            "unfrozen_by": by, "reason": reason,
+            "unfrozen_at": now.isoformat()}

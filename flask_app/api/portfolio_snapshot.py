@@ -50,6 +50,8 @@ _FROZEN_WRITE_ALLOWED = frozenset({
                                                        # its own terms
     "portfolio_snapshot.post_refreeze",    # an admin correction
     "portfolio_snapshot.post_unfreeze",    # returning it to live
+    "portfolio_snapshot.post_unfreeze_quarter",  # ...for a whole
+                                                 # quarter, one part
     "portfolio_snapshot.submit",           # the review chain is a separate
     "portfolio_snapshot.approve",          # authority and is not a typed
     "portfolio_snapshot.return_to_draft",  # field; freezing does not gate it
@@ -690,6 +692,54 @@ def post_refreeze():
         return jsonify({"error": f"Re-freeze failed, the stored copy is "
                                  f"unchanged: {exc}"}), 500
     return jsonify(safe_json({**receipt, "frozen": True}))
+
+
+@portfolio_snapshot_bp.route("/unfreeze-quarter", methods=["POST"])
+@login_required
+@roles_exactly("admin")
+def post_unfreeze_quarter():
+    """Unfreeze ONE PART of a quarter for every investor, in one transaction.
+
+    NOT GATED ON FREEZE_ENABLED, on the same rule as the single-investor
+    unfreeze: with freezing switched off, undoing a mistake made before the
+    switch has to stay possible.
+
+    No job, no polling. There is no report to assemble and no deal to build, so
+    this is a handful of set-based statements and returns when it is done.
+    """
+    body = request.get_json(silent=True) or {}
+    quarter = (body.get("quarter") or "").strip()
+    part = (body.get("part") or "").strip()
+    reason = (body.get("reason") or "").strip()
+    if not quarter:
+        return jsonify({"error": "quarter is required"}), 400
+    if not reason:
+        return jsonify({"error": "A reason is required to unfreeze"}), 400
+    from flask_app.services import portfolio_snapshot_freeze as FZ
+    try:
+        out = FZ.unfreeze_quarter(
+            quarter, part, _current_user().get("username") or "unknown", reason)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:                                  # noqa: BLE001
+        logger.exception("unfreeze-quarter failed for %s %s", quarter, part)
+        return jsonify({"error": str(exc)}), 500
+    return jsonify(safe_json(out))
+
+
+@portfolio_snapshot_bp.route("/unfreeze-quarter/preview", methods=["GET"])
+@login_required
+def unfreeze_quarter_preview():
+    """How many investors one part of a quarter would affect. Reads only."""
+    quarter = (request.args.get("quarter") or "").strip()
+    part = (request.args.get("part") or "").strip()
+    if not quarter or part not in ("snapshot", "one_pagers"):
+        return jsonify({"error": "quarter and a valid part are required"}), 400
+    from flask_app.services import portfolio_snapshot_freeze as FZ
+    state = FZ.quarter_part_state(quarter)
+    codes = sorted(state.get(part) or [])
+    return jsonify(safe_json({"quarter": quarter, "part": part,
+                              "investors": len(codes), "investor_codes": codes}))
 
 
 @portfolio_snapshot_bp.route("/unfreeze", methods=["POST"])
