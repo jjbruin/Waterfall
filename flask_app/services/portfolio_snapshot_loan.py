@@ -192,6 +192,20 @@ NA_DISPLAY = "N/A"
 DEBT_FREE_DEALS = {"P0000066"}                  # Pegasus Life Storage
 
 
+def debt_field(debt, debt_free: bool):
+    """The raw ``debt`` a row carries — ``None`` when held debt free.
+
+    A named rule rather than an inline conditional so the invariant "the figure
+    the subtotal sums and the figure the cell prints are decided ONCE" is a
+    thing a guardrail can hold, and so re-injecting the old behaviour is a
+    one-line change instead of an untestable edit inside a 90-key dict literal.
+
+    Both ``debt`` and ``debt_display`` are bound through here, which is the
+    whole point: they cannot drift apart.
+    """
+    return None if debt_free else debt
+
+
 def _debt_free(vcode: str) -> bool:
     """True for a deal held with no debt, whose debt columns read N/A.
     TEMPORARY — see DEBT_FREE_DEALS."""
@@ -1120,11 +1134,28 @@ def assemble_loan(investor_code: str, quarter: str, *,
         #   4. the computed value
         row = {
             "vcode": vcode, "name": name, "strategy": strategy, "is_dev": dev,
-            "debt": debt, "debt_basis": debt_basis,
-            # Dash for a debt-free deal, so a real 0.0 balance does not print
-            # "$0.0". The raw `debt` stays 0.0 and still feeds the subtotals,
-            # where it contributes nothing either way.
-            "debt_display": None if debt_free else debt,
+            # A DEBT-FREE DEAL CARRIES NO DEBT FIGURE AT ALL, raw included.
+            # It used to keep the raw 0.0 and blank only the display, on the
+            # grounds that 0.0 "contributes nothing either way" to the
+            # subtotals. True of the arithmetic, and the wrong shape: the page
+            # was asserting a measured zero in one field and not-applicable in
+            # the one beside it, and the two only agreed because the number
+            # happened to be zero. That is not a property of the rule — it is a
+            # property of this deal's data today. Pegasus's ISBS debt is 0.0
+            # only because `get_isbs_debt_balance` zeroes a stale balance when
+            # no active MRI loan exists; its last real Interim BS row is
+            # 25,200,000 at 2024-09-30. Give it one loan record and the
+            # staleness branch stops firing, 25.2M lands in `debt`, and
+            # `loan_subtotal` sums it into Portfolio Totals while the row
+            # beside it still prints a dash.
+            #
+            # `None` closes that by construction: `loan_subtotal` already skips
+            # None, so display and total cannot disagree whatever the balance
+            # turns out to be. `isbs_debt` below still carries the raw reading
+            # for the audit, so nothing is lost.
+            "debt": debt_field(debt, debt_free),
+            "debt_basis": debt_basis,
+            "debt_display": debt_field(debt, debt_free),
             "debt_free": debt_free,
             "isbs_debt": isbs_debt, "orig_loan_amt": orig_total,
             "valuation": val["value"], "valuation_as_of": val["as_of"],
@@ -1643,8 +1674,15 @@ def _selftest():                                    # pragma: no cover
     chk("Pegasus is flagged debt_free", peg.get("debt_free") is True)
     chk("Pegasus is NOT flagged dev_no_data — that diagnostic is dev-only",
         not peg.get("dev_no_data"))
-    chk("Pegasus Debt renders an em dash, NOT its real 0.0 balance",
-        peg.get("debt_display") is None and peg.get("debt") == 0)
+    # Was: `debt_display is None and debt == 0`, i.e. the dash was asserted
+    # while the raw field still claimed a measured zero. The raw figure is now
+    # None too, so the row cannot say "no debt applies" and "the balance is
+    # 0.0" at the same time, and `loan_subtotal` skips it by the same rule that
+    # blanks the cell instead of by arithmetic that happens to add nothing.
+    chk("Pegasus Debt renders an em dash, and carries NO raw figure either",
+        peg.get("debt_display") is None and peg.get("debt") is None)
+    chk("Pegasus's ISBS reading survives for the audit",
+        "isbs_debt" in peg)
     chk("Pegasus reads 'N/A' on all five debt columns",
         all(peg.get(k) == NA_DISPLAY for k in
             ("ltv_display", "ytd_dscr_display", "debt_yield_display",
