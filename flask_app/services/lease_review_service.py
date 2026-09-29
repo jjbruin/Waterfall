@@ -40,6 +40,9 @@ DOC_TYPE_PATTERNS = [
     (r'(?i)lease(?!.*(?:abstract|amend|memo))', 'Original Lease'),
     (r'(?i)(first|second|third|fourth|fifth|\d+)\s*(amendment|amend)', 'Amendment'),
     (r'(?i)amend', 'Amendment'),
+    # "Addendum #4" modifies the lease exactly as an amendment does; typed Other
+    # it lost its place in the amendment sequence (BooYa's, Sep 29 2026).
+    (r'(?i)addend', 'Amendment'),
     (r'(?i)commencement', 'Commencement Letter'),
     (r'(?i)option\s*letter', 'Option Letter'),
     (r'(?i)snda', 'SNDA'),
@@ -608,6 +611,9 @@ def ensure_lease_tables(engine):
     # Phase 1B: file_hash + uploaded_by on lease_documents; file_data for PDF storage
     _migrate_add_column(engine, 'lease_documents', 'file_hash', 'TEXT')
     _migrate_add_column(engine, 'lease_documents', 'uploaded_by', 'TEXT')
+    # Why a document's reading failed, so the screen can say it rather than
+    # leave a document silently unread.
+    _migrate_add_column(engine, 'lease_documents', 'extraction_error', 'TEXT')
     _migrate_add_column(engine, 'lease_documents', 'file_data',
                         'BYTEA' if engine.dialect.name == 'postgresql' else 'BLOB')
 
@@ -2261,7 +2267,11 @@ def extract_pdf_text(source) -> Tuple[str, int]:
     for page in doc:
         text_parts.append(page.get_text())
     doc.close()
-    return '\n'.join(text_parts), page_count
+    # A NUL CHARACTER CANNOT BE STORED. PostgreSQL refuses it in a text value
+    # ("A string literal cannot contain NUL (0x00) characters"), so one stray NUL
+    # in a PDF's text layer failed the whole document: Sam's Club's 50-page
+    # CenturyLink agreement carried 26 of them (Sep 29 2026). They carry no text.
+    return '\n'.join(text_parts).replace('\x00', ''), page_count
 
 
 # ---------------------------------------------------------------------------
@@ -2386,7 +2396,19 @@ Return a JSON object with these fields (use null for fields not found):
       "notice_deadline": "YYYY-MM-DD or null",
       "auto_renewal": true/false,
       "exercised": true/false,
-      "rent_terms": "fair market / fixed increase / CPI"
+      "rent_terms": "fair market / fixed increase / CPI",
+      "rent_basis": "fixed | stated_increase | fmv | percent_of_fmv | greater_of | cpi | not_stated",
+      "rent_schedule": [
+        {{
+          "period": "as written, e.g. 'Option year 1' or 'Months 1-12 of the option'",
+          "start": "YYYY-MM-DD or null",
+          "end": "YYYY-MM-DD or null",
+          "annual_rent": number or null,
+          "monthly_rent": number or null,
+          "rent_psf": number or null,
+          "escalation_pct": number or null
+        }}
+      ]
     }}
   ],
   "termination_options": [
@@ -2504,7 +2526,8 @@ IMPORTANT:
 - Dates must be YYYY-MM-DD format
 - Dollar amounts should be numbers (no $ signs)
 - If this is an amendment, note which fields were modified
-- For renewal_options: option_start/option_end are the beginning and ending dates of each renewal period. If not explicitly stated, derive from the prior term's expiration + term_years. Mark exercised=true if an amendment or exercise notice confirms the option was exercised.
+- For renewal_options: option_start/option_end are the beginning and ending dates of each renewal period. If not explicitly stated, derive from the prior term's expiration + term_years. Mark exercised=true if an amendment or exercise notice confirms the option was exercised -- never in an original lease, which cannot record its own exercise.
+- For option rent: give every amount the document STATES in rent_schedule, one entry per rent period within the option (an option can step up each year), with the figure in the unit stated (annual, monthly or per square foot). If it states a percentage increase instead of an amount, give escalation_pct and leave the amounts null -- do not compute them. If rent is fair market or a share of it, set rent_basis accordingly and leave the amounts null; never estimate a market rent. If nothing is said about option rent, rent_basis is not_stated.
 - For termination_options: extract early termination rights, kick-out clauses, and similar provisions. earliest_termination_date is when the tenant can first terminate. Mark exercised=true if a termination notice was exercised.
 - For exclusive_use: this is easy to miss, so search the whole document, not
   just a heading called "Exclusive". These provisions appear under Permitted
@@ -2536,12 +2559,74 @@ SCAN_TEXT_THRESHOLD = 200
 #: scan is 79 pages and exactly one file exceeds the byte cap.
 PDF_MAX_BYTES = 32 * 1024 * 1024
 PDF_MAX_PAGES = 600
+#: What one request may carry. A PDF goes base64-encoded, which is 4/3 its size.
+REQUEST_MAX_BYTES = 32 * 1024 * 1024
+REQUEST_HEADROOM = 512 * 1024
+
+
+def _pdf_fits(file_data: bytes, prompt: str) -> bool:
+    """Whether this PDF, encoded, fits in one request beside the prompt."""
+    encoded = 4 * ((len(file_data) + 2) // 3)
+    return encoded + len(prompt.encode('utf-8')) + REQUEST_HEADROOM <= REQUEST_MAX_BYTES
+
+#: Page images for a scan the model will not read as a PDF. The image route is
+#: capped lower than the PDF route: each page becomes its own image block.
+IMAGE_MAX_PAGES = 100
+IMAGE_MAX_BYTES = 22 * 1024 * 1024     # raw JPEG bytes; base64 adds a third
+
+
+def _render_pdf_pages(file_data: bytes):
+    """Render a PDF's pages as JPEG image blocks, or return (None, reason).
+
+    WHY THIS EXISTS. GNC's 1996 lease (41-page scan) sent as a PDF document block
+    came back degenerate on every attempt, Sep 29 2026: the first sentence of the
+    prompt once, a 30-character markup fragment another time, no thinking either
+    time. The SAME pages rendered to images read cleanly -- 1,300 SF, no
+    co-tenancy, the vitamins/supplements exclusive in Rider 25, exactly the
+    analysts' reading. So the image route is the fallback when a PDF yields no
+    answer, not a replacement: the PDF route reads the other 200-odd scans fine.
+
+    1600 px on the long side at quality 80 (8.5 MB for those 41 pages); if the
+    set runs over IMAGE_MAX_BYTES it is re-rendered once, smaller.
+    """
+    import base64
+    try:
+        try:
+            import pymupdf
+        except ImportError:
+            import fitz as pymupdf
+        doc = pymupdf.open(stream=bytes(file_data), filetype="pdf")
+    except Exception as e:                      # not a readable PDF at all
+        return None, "the PDF could not be opened to render its pages (%s)" % e
+    if len(doc) > IMAGE_MAX_PAGES:
+        return None, ("the PDF is %d pages, over the %d that can be sent as images"
+                      % (len(doc), IMAGE_MAX_PAGES))
+    for long_side, quality in ((1600, 80), (1200, 65)):
+        blocks, total = [], 0
+        for page in doc:
+            zoom = long_side / max(page.rect.width, page.rect.height, 1)
+            jpg = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom)).tobytes(
+                "jpeg", jpg_quality=quality)
+            total += len(jpg)
+            blocks.append({"type": "image", "source": {
+                "type": "base64", "media_type": "image/jpeg",
+                "data": base64.b64encode(jpg).decode('ascii')}})
+        if total <= IMAGE_MAX_BYTES:
+            return blocks, None
+    return None, ("the rendered pages are %.1f MB, over the %d MB that can be sent"
+                  % (total / 1e6, IMAGE_MAX_BYTES // (1024 * 1024)))
 
 #: Jim, Sep 20 2026: "I'm not price sensitive for this task. build it with the
 #: best model suites for all scenarios." Extraction decides every rent figure
 #: downstream, and reading a SCANNED lease is a harder job again, so both routes
 #: run on the strongest general model rather than the cheap one this started on.
 EXTRACTION_MODEL = "claude-opus-5"
+
+#: The extraction model reads 1M tokens and writes up to 128K. Text is capped at
+#: about half the window (~4 characters a token); output room covers thinking and
+#: the answer, and is safe at this size only because the call streams.
+MAX_TEXT_CHARS = 2_000_000
+MAX_OUTPUT_TOKENS = 64_000
 
 
 def extract_lease_terms_via_api(
@@ -2575,10 +2660,14 @@ def extract_lease_terms_via_api(
 
     client = anthropic.Anthropic(api_key=key)
 
-    # Truncate very long documents to stay within context
-    max_chars = 180_000
-    if len(text) > max_chars:
-        text = text[:max_chars] + "\n\n[TRUNCATED — document exceeds extraction limit]"
+    # THE TEXT CAP IS THE CONTEXT WINDOW'S, NOT AN OLD GUESS. It was 180,000
+    # characters (~45K tokens) from a smaller model; the extraction model reads
+    # 1M tokens. MAX_TEXT_CHARS leaves half the window for the prompt, a PDF block
+    # and the answer. A document over it is still cut, but the result SAYS so
+    # (`_truncated`), because a silently shortened lease reads as a complete one.
+    truncated = len(text) > MAX_TEXT_CHARS
+    if truncated:
+        text = text[:MAX_TEXT_CHARS] + "\n\n[TRUNCATED — document exceeds extraction limit]"
 
     prompt = EXTRACTION_PROMPT.format(
         tenant_name=tenant_name,
@@ -2591,9 +2680,18 @@ def extract_lease_terms_via_api(
     route, route_note = 'text', None
     content: List[Dict[str, Any]] = []
     if len((text or '').strip()) < SCAN_TEXT_THRESHOLD and file_data:
-        if len(file_data) > PDF_MAX_BYTES:
-            route_note = ("the PDF is %.1f MB, over the %d MB the API accepts"
-                          % (len(file_data) / 1e6, PDF_MAX_BYTES // (1024 * 1024)))
+        if not _pdf_fits(file_data, prompt):
+            # THE LIMIT IS ON THE REQUEST, AND BASE64 ADDS A THIRD. The old check
+            # compared the RAW file with 32 MB, so Tropical Smoothie's 27 MB lease
+            # passed it and was refused by the API as ~36 MB (413, Sep 29 2026).
+            # Rendered pages compress far better, so they go instead.
+            images, why_not = _render_pdf_pages(file_data)
+            if images:
+                content.extend(images)
+                route = 'images'
+            else:
+                route_note = ("the PDF is %.1f MB, over what one request can carry, and"
+                              " %s" % (len(file_data) / 1e6, why_not))
         elif page_count and page_count > PDF_MAX_PAGES:
             route_note = ("the PDF is %d pages, over the %d the API accepts"
                           % (page_count, PDF_MAX_PAGES))
@@ -2610,20 +2708,65 @@ def extract_lease_terms_via_api(
         route_note = "almost no text could be read and the PDF is not stored"
     content.append({"type": "text", "text": prompt})
 
-    # Streamed because the input can be a 180,000-character lease or a 79-page
-    # scan, and a non-streaming request of that size risks the HTTP timeout.
-    with client.messages.stream(
-        model=EXTRACTION_MODEL,
-        max_tokens=16000,
-        messages=[{"role": "user", "content": content}],
-    ) as stream:
-        message = stream.get_final_message()
+    # Streamed because the input can be a very long lease or a 79-page scan, and a
+    # non-streaming request of that size risks the HTTP timeout. MAX_OUTPUT_TOKENS
+    # is the room for thinking AND the answer; streaming is what makes a large
+    # value safe.
+    def _ask():
+        with client.messages.stream(
+            model=EXTRACTION_MODEL,
+            max_tokens=MAX_OUTPUT_TOKENS,
+            messages=[{"role": "user", "content": content}],
+        ) as stream:
+            return stream.get_final_message()
+
+    # ONE RETRY WHEN NOTHING PARSEABLE CAME BACK. Measured Sep 29 2026 on GNC's
+    # 41-page 1996 lease: the model read all of it (68,834 input tokens), wrote 30
+    # tokens -- the first sentence of these instructions -- and stopped normally.
+    # Not a limit, and not repeatable by anything we control; a second ask is the
+    # remedy. A refusal is not retried: that answer is deliberate.
+    message = _ask()
+    if message.stop_reason != 'refusal' and not re.search(
+            r'\{[\s\S]*\}', "".join(b.text for b in message.content if b.type == "text")):
+        logger.warning("No JSON from the model for %s (stop_reason=%s, output_tokens=%s);"
+                       " asking once more", tenant_name, message.stop_reason,
+                       getattr(getattr(message, 'usage', None), 'output_tokens', None))
+        # A SCAN IS RE-SENT AS PAGE IMAGES, not as the same PDF again: the same
+        # PDF failed identically twice for GNC, and the rendered pages read.
+        if route == 'pdf':
+            images, why_not = _render_pdf_pages(file_data)
+            if images:
+                # A NEW list, not an in-place edit: the first request keeps what it sent.
+                content = images + [content[-1]]
+                route = 'images'
+            else:
+                route_note = (route_note + '; ' if route_note else '') + (
+                    'retried as the PDF: ' + why_not)
+        elif route == 'text' and file_data:
+            # A TEXT READING THAT FAILS IS RETRIED FROM THE DOCUMENT ITSELF.
+            # Perkins's Assignment & 1st Amendment failed twice on the same text
+            # and read cleanly on a later run (Sep 29 2026) -- asking the same
+            # question of the same text is the weakest retry available. The PDF
+            # carries the layout the extracted text loses.
+            if _pdf_fits(file_data, content[-1]['text']):
+                content = [{"type": "document", "source": {
+                    "type": "base64", "media_type": "application/pdf",
+                    "data": base64.b64encode(file_data).decode('ascii')}},
+                    content[-1]]
+                route = 'pdf'
+            else:
+                images, why_not = _render_pdf_pages(file_data)
+                if images:
+                    content = images + [content[-1]]
+                    route = 'images'
+        message = _ask()
 
     # Checked BEFORE reading content: a refusal returns HTTP 200 with no text,
     # and treating it as a parse failure would hide why.
     if message.stop_reason == 'refusal':
         return {'_parse_error': True, '_extraction_source': route,
                 '_refused': True,
+                '_failure_reason': 'the model declined to read this document',
                 '_raw_response': 'the model declined to read this document'}
 
     # NOT content[0]: thinking is on by default on this model, so the first
@@ -2633,6 +2776,8 @@ def extract_lease_terms_via_api(
     meta = {'_extraction_source': route}
     if route_note:
         meta['_extraction_note'] = route_note
+    if truncated:
+        meta['_truncated'] = True
 
     # Parse JSON from response
     try:
@@ -2643,7 +2788,13 @@ def extract_lease_terms_via_api(
     except json.JSONDecodeError:
         logger.warning(f"Failed to parse JSON for {tenant_name}: {response_text[:200]}")
 
-    return {'_raw_response': response_text, '_parse_error': True, **meta}
+    # WHY it failed travels with the failure, so the document can say so.
+    reason = ("the reading ran out of room before finishing"
+              if message.stop_reason == 'max_tokens'
+              else "the model returned no readable answer (%d characters, stop: %s)"
+              % (len(response_text), message.stop_reason))
+    return {'_raw_response': response_text, '_parse_error': True,
+            '_failure_reason': reason, **meta}
 
 
 # ---------------------------------------------------------------------------
@@ -2992,6 +3143,206 @@ def reset_extraction_data(engine, review_id: int) -> Dict[str, int]:
 # Extract lease terms via Claude API (batch)
 # ---------------------------------------------------------------------------
 
+def _write_document_clause_rows(conn, sql_text, tenant_id: int, review_id: int,
+                                source_doc: str, terms: dict) -> Dict[str, int]:
+    """Write ONE document's co-tenancy and exclusive-use rows, replacing
+    whatever that document wrote before.
+
+    A RE-READ REPLACES, IT DOES NOT ADD. The old code deduplicated exclusives on
+    the model's WORDING of `restricted_use`, and the wording moves between runs,
+    so every re-read added another copy: Market at Poplar reached 291 exclusive
+    rows for 35 tenant/document pairs (Sep 29 2026), one lease contributing 25,
+    Firehouse's own sandwich exclusive three times. Co-tenancy had the opposite
+    fault -- skipped whenever the document already had a row -- so a re-read
+    that changed the answer could never land. Scoping the replace to
+    (tenant, source_doc) keeps every other document's rows, and rows with no
+    source_doc (the seller's spreadsheet, the seed) are never touched.
+
+    Within one document a restriction is still written once per distinct use.
+    Returns counts so a backfill can report what it did.
+    """
+    conn.execute(sql_text(
+        "DELETE FROM lease_cotenancy_refs WHERE cotenancy_id IN ("
+        " SELECT id FROM lease_cotenancy WHERE tenant_id = :tid AND source_doc = :sd)"),
+        {'tid': tenant_id, 'sd': source_doc})
+    conn.execute(sql_text(
+        "DELETE FROM lease_cotenancy WHERE tenant_id = :tid AND source_doc = :sd"),
+        {'tid': tenant_id, 'sd': source_doc})
+    conn.execute(sql_text(
+        "DELETE FROM lease_exclusive_use WHERE tenant_id = :tid AND source_doc = :sd"),
+        {'tid': tenant_id, 'sd': source_doc})
+    written = {'cotenancy': 0, 'refs': 0, 'exclusive_use': 0}
+
+    cot = terms.get('cotenancy') or {}
+    if isinstance(cot, dict) and cot.get('has_clause'):
+        cot_id = conn.execute(sql_text("""
+            INSERT INTO lease_cotenancy
+                (tenant_id, review_id,
+                 trigger_description, trigger_threshold,
+                 cure_period_days, alt_rent_formula,
+                 termination_right, termination_notice_days,
+                 sunset_provision, is_curable,
+                 waiver_mechanism, source_doc)
+            VALUES (:tid, :rid, :td, :tt, :cpd, :arf, :tr, :tnd, :sp, :ic, :wm, :sd)
+            RETURNING id
+        """), {
+            'tid': tenant_id, 'rid': review_id,
+            'td': cot.get('trigger_threshold'),
+            'tt': cot.get('trigger_threshold'),
+            'cpd': _to_int(cot.get('cure_period_days')),
+            'arf': cot.get('alt_rent_formula'),
+            'tr': cot.get('termination_right', False),
+            'tnd': _to_int(cot.get('termination_notice_days')),
+            'sp': cot.get('sunset_or_waiver'),
+            'ic': cot.get('is_curable', True),
+            'wm': cot.get('sunset_or_waiver'),
+            'sd': source_doc,
+        }).fetchone()[0]
+        written['cotenancy'] += 1
+        for ref_name in (cot.get('named_cotenants') or []):
+            conn.execute(sql_text("""
+                INSERT INTO lease_cotenancy_refs
+                    (cotenancy_id, tenant_id, referenced_tenant_name)
+                VALUES (:cid, :tid, :rtn)
+            """), {'cid': cot_id, 'tid': tenant_id, 'rtn': ref_name})
+            written['refs'] += 1
+
+    seen = set()
+    for exc in (terms.get('exclusive_use') or []):
+        if not isinstance(exc, dict):
+            continue
+        r_use = (exc.get('restricted_use') or '').strip()
+        r_text = (exc.get('restriction_text') or '').strip()
+        # "No exclusive" is the absence of a row, not a restriction.
+        if not r_use and not r_text:
+            continue
+        if r_text.lower() in _EXCLUSIVE_NEGATIVES or r_use.lower() in _EXCLUSIVE_NEGATIVES:
+            continue
+        if r_use in seen:
+            continue
+        seen.add(r_use)
+        radius = exc.get('radius_feet')
+        try:
+            radius = float(radius) if radius is not None else None
+        except (TypeError, ValueError):
+            radius = None
+        role = (exc.get('clause_role') or '').strip().lower()
+        if role not in ('holder', 'subject'):
+            role = None
+        conn.execute(sql_text("""
+            INSERT INTO lease_exclusive_use
+                (tenant_id, review_id, restriction_text,
+                 restricted_use, radius_feet, clause_role,
+                 carve_outs, source_doc)
+            VALUES (:tid, :rid, :rt, :ru, :rf, :cr, :co, :sd)
+        """), {
+            'tid': tenant_id, 'rid': review_id,
+            'rt': r_text or None, 'ru': r_use or None,
+            'rf': radius, 'cr': role,
+            'co': (exc.get('carve_outs') or None),
+            'sd': source_doc,
+        })
+        written['exclusive_use'] += 1
+    if written['exclusive_use']:
+        conn.execute(sql_text(
+            "UPDATE lease_tenants SET has_exclusive_use = TRUE WHERE id = :tid"),
+            {'tid': tenant_id})
+    return written
+
+
+
+def _write_document_option_rows(conn, sql_text, tenant_id: int, source_doc: str,
+                                terms: dict) -> int:
+    """Write ONE document's renewal and termination option rows, replacing what it
+    wrote before -- the same fault and fix as `_write_document_clause_rows`. The old
+    dedup on (source_doc, option_number) never replaced, so 115 renewal-option rows
+    stood for Market at Poplar where the exhibit shows 39 (Sep 29 2026).
+    """
+    conn.execute(sql_text(
+        "DELETE FROM lease_options WHERE tenant_id = :tid AND source_doc = :sd"),
+        {'tid': tenant_id, 'sd': source_doc})
+    n = 0
+    for opt in (terms.get('renewal_options') or []):
+        if not isinstance(opt, dict):
+            continue
+        conn.execute(sql_text("""
+            INSERT INTO lease_options
+                (tenant_id, option_type, option_number, total_options, term_years,
+                 notice_days, notice_deadline, rent_terms, auto_renewal, exercised,
+                 option_start, option_end, source_doc)
+            VALUES (:tid, 'renewal', :on, :to, :ty, :nd, :ndl, :rt, :ar, :ex,
+                    :os, :oe, :sd)
+        """), {
+            'tid': tenant_id, 'on': opt.get('option_number'),
+            'to': opt.get('total_options'), 'ty': _to_number(opt.get('term_years')),
+            'nd': _to_int(opt.get('notice_days')), 'ndl': opt.get('notice_deadline'),
+            'rt': opt.get('rent_terms'), 'ar': opt.get('auto_renewal', False),
+            'ex': opt.get('exercised', False), 'os': opt.get('option_start'),
+            'oe': opt.get('option_end'), 'sd': source_doc,
+        })
+        n += 1
+    for opt in (terms.get('termination_options') or []):
+        if not isinstance(opt, dict):
+            continue
+        conn.execute(sql_text("""
+            INSERT INTO lease_options
+                (tenant_id, option_type, option_number, total_options, term_years,
+                 notice_days, notice_deadline, rent_terms, exercised, option_start,
+                 option_end, source_doc)
+            VALUES (:tid, 'termination', :on, :to, NULL, :nd, :ndl, :rt, :ex, :os,
+                    NULL, :sd)
+        """), {
+            'tid': tenant_id, 'on': opt.get('option_number'),
+            'to': opt.get('total_options'), 'nd': _to_int(opt.get('notice_days')),
+            'ndl': opt.get('notice_deadline'),
+            'rt': opt.get('conditions') or opt.get('termination_fee') or '',
+            'ex': opt.get('exercised', False),
+            'os': opt.get('earliest_termination_date'), 'sd': source_doc,
+        })
+        n += 1
+    return n
+
+
+def rebuild_clause_rows(engine, review_id: int) -> Dict[str, Any]:
+    """Rebuild every document's co-tenancy and exclusive-use rows from the
+    extraction it ALREADY HOLDS -- no API calls, idempotent.
+
+    This is how the duplicates the old dedup left behind are cleared: each
+    document's stored `extraction_json` is its latest reading, so rewriting its
+    rows from that reproduces exactly what a re-read would write, minus the
+    copies. Documents with no stored extraction are left alone.
+    """
+    from sqlalchemy import text as sql_text
+    with engine.connect() as conn:
+        before = conn.execute(sql_text(
+            "SELECT COUNT(*) FROM lease_exclusive_use e JOIN lease_tenants t "
+            "ON t.id = e.tenant_id WHERE t.review_id = :r"), {'r': review_id}).scalar()
+        docs = conn.execute(sql_text(
+            "SELECT tenant_id, filename, extraction_json FROM lease_documents "
+            "WHERE review_id = :r AND tenant_id IS NOT NULL "
+            "AND extraction_json IS NOT NULL ORDER BY id"), {'r': review_id}).fetchall()
+    totals = {'documents': 0, 'cotenancy': 0, 'refs': 0, 'exclusive_use': 0,
+              'unreadable': 0}
+    with engine.begin() as conn:
+        for tenant_id, filename, ej in docs:
+            try:
+                terms = json.loads(ej) if isinstance(ej, str) else (ej or {})
+            except (TypeError, ValueError):
+                totals['unreadable'] += 1
+                continue
+            if not isinstance(terms, dict) or terms.get('_parse_error'):
+                continue
+            w = _write_document_clause_rows(conn, sql_text, tenant_id, review_id,
+                                            filename, terms)
+            totals['options'] = totals.get('options', 0) + _write_document_option_rows(
+                conn, sql_text, tenant_id, filename, terms)
+            totals['documents'] += 1
+            for k in ('cotenancy', 'refs', 'exclusive_use'):
+                totals[k] += w[k]
+    totals['exclusive_use_before'] = int(before or 0)
+    return totals
+
+
 def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None,
                           progress_callback=None, tenant_id: Optional[int] = None):
     """Extract text from all PDFs and run Claude extraction for key documents.
@@ -3179,189 +3530,37 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None,
                                     else 0,
                                 })
 
-                        # Store cotenancy from extraction (with dedup by source_doc)
-                        cot = terms.get('cotenancy', {})
-                        if cot and cot.get('has_clause') and not conn.execute(sql_text("""
-                            SELECT id FROM lease_cotenancy
-                            WHERE tenant_id = :tid AND source_doc = :sd LIMIT 1
-                        """), {'tid': tenant_id, 'sd': doc[2]}).fetchone():
-                            cot_result = conn.execute(sql_text("""
-                                INSERT INTO lease_cotenancy
-                                    (tenant_id, review_id,
-                                     trigger_description, trigger_threshold,
-                                     cure_period_days, alt_rent_formula,
-                                     termination_right, termination_notice_days,
-                                     sunset_provision, is_curable,
-                                     waiver_mechanism, source_doc)
-                                VALUES (:tid, :rid,
-                                        :td, :tt, :cpd, :arf,
-                                        :tr, :tnd, :sp, :ic,
-                                        :wm, :sd)
-                                RETURNING id
-                            """), {
-                                'tid': tenant_id, 'rid': review_id,
-                                'td': cot.get('trigger_threshold'),
-                                'tt': cot.get('trigger_threshold'),
-                                'cpd': _to_int(cot.get('cure_period_days')),
-                                'arf': cot.get('alt_rent_formula'),
-                                'tr': cot.get('termination_right', False),
-                                'tnd': _to_int(cot.get('termination_notice_days')),
-                                'sp': cot.get('sunset_or_waiver'),
-                                'ic': cot.get('is_curable', True),
-                                'wm': cot.get('sunset_or_waiver'),
-                                'sd': doc[2],
-                            })
-                            cot_id = cot_result.fetchone()[0]
+                        # Co-tenancy and exclusive use: THIS DOCUMENT'S rows are
+                        # replaced, not added to. See _write_document_clause_rows.
+                        _write_document_clause_rows(
+                            conn, sql_text, tenant_id, review_id, doc[2], terms)
 
-                            # Insert named co-tenant references
-                            for ref_name in (cot.get('named_cotenants') or []):
-                                conn.execute(sql_text("""
-                                    INSERT INTO lease_cotenancy_refs
-                                        (cotenancy_id, tenant_id,
-                                         referenced_tenant_name)
-                                    VALUES (:cid, :tid, :rtn)
-                                """), {
-                                    'cid': cot_id, 'tid': tenant_id,
-                                    'rtn': ref_name,
-                                })
+                        # Options: THIS DOCUMENT'S rows are replaced, not added
+                        # to. See _write_document_option_rows.
+                        _write_document_option_rows(
+                            conn, sql_text, tenant_id, doc[2], terms)
 
-                        # Store exclusive use restrictions.  A lease can carry
-                        # several, so each is a row; dedup on the restriction
-                        # itself so re-running extraction does not duplicate.
-                        for exc in (terms.get('exclusive_use') or []):
-                            if not isinstance(exc, dict):
-                                continue
-                            r_use = (exc.get('restricted_use') or '').strip()
-                            r_text = (exc.get('restriction_text') or '').strip()
-                            # Skip explicit negatives -- "no exclusive" is the
-                            # absence of a row, not a restriction.
-                            if not r_use and not r_text:
-                                continue
-                            if r_text.lower() in _EXCLUSIVE_NEGATIVES or                                r_use.lower() in _EXCLUSIVE_NEGATIVES:
-                                continue
-                            if conn.execute(sql_text("""
-                                SELECT id FROM lease_exclusive_use
-                                WHERE tenant_id = :tid AND source_doc = :sd
-                                  AND COALESCE(restricted_use, '') = :ru
-                                LIMIT 1
-                            """), {'tid': tenant_id, 'sd': doc[2],
-                                   'ru': r_use}).fetchone():
-                                continue
-                            radius = exc.get('radius_feet')
-                            try:
-                                radius = float(radius) if radius is not None else None
-                            except (TypeError, ValueError):
-                                radius = None
-                            role = (exc.get('clause_role') or '').strip().lower()
-                            if role not in ('holder', 'subject'):
-                                role = None
-                            conn.execute(sql_text("""
-                                INSERT INTO lease_exclusive_use
-                                    (tenant_id, review_id, restriction_text,
-                                     restricted_use, radius_feet, clause_role,
-                                     carve_outs, source_doc)
-                                VALUES (:tid, :rid, :rt, :ru, :rf, :cr, :co, :sd)
-                            """), {
-                                'tid': tenant_id, 'rid': review_id,
-                                'rt': r_text or None, 'ru': r_use or None,
-                                'rf': radius, 'cr': role,
-                                'co': (exc.get('carve_outs') or None),
-                                'sd': doc[2],
-                            })
-                            conn.execute(sql_text("""
-                                UPDATE lease_tenants SET has_exclusive_use = TRUE
-                                WHERE id = :tid
-                            """), {'tid': tenant_id})
-
-                        # Store renewal options (with dedup by source_doc + option_number)
-                        for opt in (terms.get('renewal_options') or []):
-                            opt_dup = conn.execute(sql_text("""
-                                SELECT id FROM lease_options
-                                WHERE tenant_id = :tid AND source_doc = :sd
-                                  AND option_type = 'renewal'
-                                  AND option_number = :on
-                                LIMIT 1
-                            """), {
-                                'tid': tenant_id, 'sd': doc[2],
-                                'on': opt.get('option_number'),
-                            }).fetchone()
-                            if opt_dup:
-                                # Update exercised status if exercise notice confirms it
-                                if opt.get('exercised'):
-                                    conn.execute(sql_text("""
-                                        UPDATE lease_options SET exercised = TRUE
-                                        WHERE id = :id
-                                    """), {'id': opt_dup[0]})
-                                continue
-                            conn.execute(sql_text("""
-                                INSERT INTO lease_options
-                                    (tenant_id, option_type, option_number,
-                                     total_options, term_years, notice_days,
-                                     notice_deadline, rent_terms,
-                                     auto_renewal, exercised,
-                                     option_start, option_end, source_doc)
-                                VALUES (:tid, 'renewal', :on, :to, :ty,
-                                        :nd, :ndl, :rt, :ar, :ex,
-                                        :os, :oe, :sd)
-                            """), {
-                                'tid': tenant_id,
-                                'on': opt.get('option_number'),
-                                'to': opt.get('total_options'),
-                                'ty': _to_number(opt.get('term_years')),
-                                'nd': _to_int(opt.get('notice_days')),
-                                'ndl': opt.get('notice_deadline'),
-                                'rt': opt.get('rent_terms'),
-                                'ar': opt.get('auto_renewal', False),
-                                'ex': opt.get('exercised', False),
-                                'os': opt.get('option_start'),
-                                'oe': opt.get('option_end'),
-                                'sd': doc[2],
-                            })
-
-                        # Store termination options (with dedup by source_doc + option_number)
-                        for opt in (terms.get('termination_options') or []):
-                            opt_dup = conn.execute(sql_text("""
-                                SELECT id FROM lease_options
-                                WHERE tenant_id = :tid AND source_doc = :sd
-                                  AND option_type = 'termination'
-                                  AND option_number = :on
-                                LIMIT 1
-                            """), {
-                                'tid': tenant_id, 'sd': doc[2],
-                                'on': opt.get('option_number'),
-                            }).fetchone()
-                            if opt_dup:
-                                if opt.get('exercised'):
-                                    conn.execute(sql_text("""
-                                        UPDATE lease_options SET exercised = TRUE
-                                        WHERE id = :id
-                                    """), {'id': opt_dup[0]})
-                                continue
-                            conn.execute(sql_text("""
-                                INSERT INTO lease_options
-                                    (tenant_id, option_type, option_number,
-                                     total_options, term_years, notice_days,
-                                     notice_deadline, rent_terms,
-                                     exercised, option_start, option_end,
-                                     source_doc)
-                                VALUES (:tid, 'termination', :on, :to, NULL,
-                                        :nd, :ndl, :rt,
-                                        :ex, :os, NULL,
-                                        :sd)
-                            """), {
-                                'tid': tenant_id,
-                                'on': opt.get('option_number'),
-                                'to': opt.get('total_options'),
-                                'nd': _to_int(opt.get('notice_days')),
-                                'ndl': opt.get('notice_deadline'),
-                                'rt': opt.get('conditions') or opt.get('termination_fee') or '',
-                                'ex': opt.get('exercised', False),
-                                'os': opt.get('earliest_termination_date'),
-                                'sd': doc[2],
-                            })
+                    if terms.get('_parse_error'):
+                        # A FAILED READING IS A FAILURE, NOT "Extracted". This
+                        # branch used to fall through to the success log with the
+                        # document left at 'text_extracted' and no reason kept
+                        # anywhere -- GNC's 1996 lease, Sep 29 2026.
+                        conn.execute(sql_text(
+                            "UPDATE lease_documents SET extraction_status = 'error',"
+                            " extraction_error = :why WHERE id = :did"),
+                            {'did': doc_id,
+                             'why': terms.get('_failure_reason') or 'no readable answer'})
+                    else:
+                        conn.execute(sql_text(
+                            "UPDATE lease_documents SET extraction_error = NULL"
+                            " WHERE id = :did"), {'did': doc_id})
 
                 conn.commit()
-                logger.info(f"Extracted: {doc[2]}")
+                if terms.get('_parse_error'):
+                    logger.warning("Not extracted: %s -- %s", doc[2],
+                                   terms.get('_failure_reason'))
+                else:
+                    logger.info(f"Extracted: {doc[2]}")
 
             except Exception as e:
                 logger.error(f"Error extracting {doc[2]}: {e}")
@@ -3377,9 +3576,10 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None,
                 try:
                     conn.execute(sql_text("""
                         UPDATE lease_documents
-                        SET extraction_status = 'error'
+                        SET extraction_status = 'error',
+                            extraction_error = :why
                         WHERE id = :did
-                    """), {'did': doc_id})
+                    """), {'did': doc_id, 'why': str(e)[:500]})
                     conn.commit()
                 except Exception as inner:
                     logger.error(
@@ -3402,8 +3602,28 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None,
 # Consolidation — merge base lease + amendments into current terms
 # ---------------------------------------------------------------------------
 
-def _merge_extraction_terms(base: Dict, amendment: Dict) -> Dict:
+#: Documents that may set the LEASE START. Everything else that states a
+#: commencement is stating the start of a renewal or extension term.
+_START_SETTING_TYPES = ('Original Lease', 'Commencement Letter')
+_COMMENCEMENT_TYPES = ('Commencement Letter', 'Rent Commencement')
+
+
+def _merge_extraction_terms(base: Dict, amendment: Dict,
+                            ctx: Optional[Dict] = None) -> Dict:
     """Layer an amendment's extracted terms onto the base/running state.
+
+    `ctx` (new business's rent-roll specification, Sep 29 2026):
+      doc_type   -- only an original lease or a commencement letter sets the lease
+                    START (§28). A renewal notice or amendment stating a commencement
+                    is stating its TERM's start, kept as `current_term_commencement`.
+                    BooYa's start moved 2008 -> 2024 and Outback's 1992 -> 2016 on
+                    exactly this.
+      fill_only  -- an UNDATED non-amendment document fills gaps and never overwrites
+                    a value a dated document set. Undated documents sort last, so an
+                    undated "Commencement Date (Exhibit)" reset Mattress Firm's
+                    expiration from the 2024 3rd Amendment's 2035 back to 2027, and an
+                    undated third-party abstract reset Outback's from the 2026 option
+                    letter's 2031 to 2026.
 
     Rules:
     - Scalar fields: amendment value replaces base if not None
@@ -3416,6 +3636,9 @@ def _merge_extraction_terms(base: Dict, amendment: Dict) -> Dict:
     - key_dates: amendment replaces if present
     """
     merged = copy.deepcopy(base)
+    ctx = ctx or {}
+    doc_type = ctx.get('doc_type') or ''
+    fill_only = bool(ctx.get('fill_only'))
 
     # Scalar fields — amendment non-null wins
     scalar_keys = [
@@ -3428,8 +3651,20 @@ def _merge_extraction_terms(base: Dict, amendment: Dict) -> Dict:
     ]
     for key in scalar_keys:
         val = amendment.get(key)
-        if val is not None:
-            merged[key] = val
+        if val is None:
+            continue
+        # An undated COMMENCEMENT document still states the commencement dates --
+        # that is what it is for -- but only fills gaps for everything else: an
+        # undated commencement exhibit is how Mattress Firm's 2035 expiration went.
+        if (fill_only and merged.get(key) is not None
+                and not (key in ('lease_commencement', 'rent_commencement')
+                         and doc_type in _COMMENCEMENT_TYPES)):
+            continue
+        if (key == 'lease_commencement' and merged.get(key) is not None
+                and doc_type not in _START_SETTING_TYPES):
+            merged['current_term_commencement'] = val
+            continue
+        merged[key] = val
 
     # Rent steps — merge by effective_date, or by the PERIOD when undated
     #
@@ -3439,7 +3674,7 @@ def _merge_extraction_terms(base: Dict, amendment: Dict) -> Dict:
     # step of its own. Measured Sep 21 2026: 53 tenants held a consolidated blob
     # far shorter than their step table (Kohls 1 step against 11), which is what
     # the abstract and every reader of the blob were working from.
-    if amendment.get('rent_steps'):
+    if amendment.get('rent_steps') and not (fill_only and merged.get('rent_steps')):
         def _key(st, fallback):
             ed = st.get('effective_date')
             if ed:
@@ -3476,10 +3711,20 @@ def _merge_extraction_terms(base: Dict, amendment: Dict) -> Dict:
                            s.get('period_start_month') or 0),
         )
 
-    # Options — merge by (option_type_key, option_number)
-    for opt_key in ('renewal_options', 'termination_options'):
+    # RENEWAL OPTIONS follow the governing document (§11, §13, §14).
+    ren = [o for o in (amendment.get('renewal_options') or []) if isinstance(o, dict)]
+    if doc_type == 'Original Lease':
+        # A lease cannot record its own option being exercised; a model saying so
+        # is misreading (Muddy Paws' original lease came back "exercised").
+        ren = [dict(o, exercised=False) for o in ren]
+    if ren and not (fill_only and merged.get('renewal_options')):
+        merged['renewal_options'] = _merge_renewal_options(
+            merged.get('renewal_options') or [], ren)
+
+    # Termination options — merge by option_number
+    for opt_key in ('termination_options',):
         amend_opts = amendment.get(opt_key)
-        if amend_opts:
+        if amend_opts and not (fill_only and merged.get(opt_key)):
             existing_by_num = {}
             for opt in (merged.get(opt_key) or []):
                 existing_by_num[opt.get('option_number')] = opt
@@ -3505,7 +3750,7 @@ def _merge_extraction_terms(base: Dict, amendment: Dict) -> Dict:
 
     # exclusive_use is a list of restrictions; an amendment that mentions any
     # replaces the set, since it restates the restriction as amended.
-    if amendment.get('exclusive_use'):
+    if amendment.get('exclusive_use') and not (fill_only and merged.get('exclusive_use')):
         merged['exclusive_use'] = amendment['exclusive_use']
 
     # cam_fixed is a LIST, so it belongs to neither list above and would have been
@@ -3514,16 +3759,124 @@ def _merge_extraction_terms(base: Dict, amendment: Dict) -> Dict:
     # stated BY the amendment (AT&T Mobility's 4th Amendment on Market at Poplar is
     # the live case). An amendment that restates the schedule replaces it whole; one
     # that says nothing about recoveries leaves the base lease's schedule standing.
-    if amendment.get('cam_fixed'):
+    if amendment.get('cam_fixed') and not (fill_only and merged.get('cam_fixed')):
         merged['cam_fixed'] = amendment['cam_fixed']
     for key in object_keys:
         val = amendment.get(key)
         if val and isinstance(val, dict) and any(v is not None for v in val.values()):
+            if fill_only and merged.get(key):
+                continue
             merged[key] = val
 
     return merged
 
 
+
+
+
+def _merge_renewal_options(current: List[Dict], incoming: List[Dict]) -> List[Dict]:
+    """Which renewal options govern after this document.
+
+    Three shapes, decided by what the document says rather than what it is called:
+      * it RESTATES the set -- lists at least one dated, unexercised option: the
+        new list replaces the old (Outback's 4th Amendment grants two new options;
+        the 3rd Amendment's older four are no longer the lease). An option in the
+        old set with the same start date keeps its exercised mark.
+      * it EXERCISES -- every option it lists is exercised: the matching option
+        (by start date, else end date, else number) is marked exercised and takes
+        the document's dates; one with no match is added as exercised.
+      * otherwise (undated restatements, as addenda repeating "two 5-year options"
+        do): merged by number, non-null fields winning -- the old behaviour, which
+        must not strip the dates a lease already gave.
+    """
+    def _d(v):
+        return str(v)[:10] if v and re.match(r'^\d{4}-\d{2}-\d{2}', str(v)) else None
+
+    cur = [dict(o) for o in current]
+    if any(not o.get('exercised') and (_d(o.get('option_start')) or _d(o.get('option_end')))
+           for o in incoming):
+        done = {_d(o.get('option_start')) for o in cur if o.get('exercised')}
+        out = []
+        for o in incoming:
+            o = dict(o)
+            if _d(o.get('option_start')) and _d(o.get('option_start')) in done:
+                o['exercised'] = True
+            out.append(o)
+        return sorted(out, key=lambda o: (_d(o.get('option_start')) or '9999',
+                                          o.get('option_number') or 0))
+    if incoming and all(o.get('exercised') for o in incoming):
+        for o in incoming:
+            hit = None
+            for c in cur:
+                if _d(o.get('option_start')) and _d(c.get('option_start')) == _d(o.get('option_start')):
+                    hit = c
+                    break
+            if hit is None:
+                for c in cur:
+                    if _d(o.get('option_end')) and _d(c.get('option_end')) == _d(o.get('option_end')):
+                        hit = c
+                        break
+            if hit is None and o.get('option_number') is not None:
+                for c in cur:
+                    if c.get('option_number') == o.get('option_number') and not c.get('exercised'):
+                        hit = c
+                        break
+            if hit is None:
+                cur.append(dict(o, exercised=True))
+            else:
+                hit['exercised'] = True
+                for k in ('option_start', 'option_end', 'term_years'):
+                    if o.get(k) is not None:
+                        hit[k] = o[k]
+        return cur
+    by_num = {c.get('option_number'): c for c in cur}
+    for o in incoming:
+        num = o.get('option_number')
+        if num in by_num:
+            for k, v in o.items():
+                if v is not None:
+                    by_num[num][k] = v
+        else:
+            by_num[num] = dict(o)
+    return sorted(by_num.values(), key=lambda o: o.get('option_number') or 0)
+
+
+def _apply_exercised_options(terms: Dict) -> None:
+    """An exercised option is part of the current term (§11), and the options that
+    remain are summarised for the rent roll's Option(s) column (§13).
+
+    An option that has been exercised but whose end is AFTER the stated expiration
+    carries the expiration with it -- the documents confirming the exercise are the
+    authority, not an earlier expiration left standing. Remaining = not exercised
+    and starting after the current expiration (or undated). The summary groups by
+    term: "2 x 5 Years", "None".
+    """
+    def _d(v):
+        return str(v)[:10] if v and re.match(r'^\d{4}-\d{2}-\d{2}', str(v)) else None
+
+    opts = [o for o in (terms.get('renewal_options') or []) if isinstance(o, dict)]
+    exp = _d(terms.get('lease_expiration'))
+    for o in opts:
+        end = _d(o.get('option_end'))
+        if o.get('exercised') and end and (exp is None or end > exp):
+            exp = end
+            terms['lease_expiration'] = end
+            terms['_expiration_basis'] = 'exercised option ending %s' % end
+    remaining = [o for o in opts if not o.get('exercised')
+                 and (not _d(o.get('option_start')) or not exp
+                      or _d(o.get('option_start')) > exp)]
+    counts: Dict[str, int] = {}
+    for o in remaining:
+        ty = o.get('term_years')
+        try:
+            ty = float(ty)
+            label = ('%g Years' % ty) if ty >= 1 else ('%g Months' % round(ty * 12))
+        except (TypeError, ValueError):
+            label = 'term not stated'
+        counts[label] = counts.get(label, 0) + 1
+    terms['_remaining_options'] = remaining
+    terms['_options_summary'] = (', '.join('%d x %s' % (n, k) for k, n in counts.items())
+                                 or 'None')
 
 
 def _backfill_step_provenance(engine) -> Dict[str, int]:
@@ -3647,7 +4000,7 @@ def unread_documents(engine, review_id: int) -> List[Dict[str, Any]]:
     with engine.connect() as conn:
         rows = conn.execute(text("""
             SELECT d.id, d.tenant_id, t.tenant_name, d.filename, d.doc_type,
-                   d.extraction_status
+                   d.extraction_status, d.extraction_error
             FROM lease_documents d
             LEFT JOIN lease_tenants t ON t.id = d.tenant_id
             WHERE d.review_id = :rid
@@ -3658,7 +4011,7 @@ def unread_documents(engine, review_id: int) -> List[Dict[str, Any]]:
     out = [{
         'id': r[0], 'tenant_id': r[1], 'tenant': r[2],
         'filename': (r[3] or '').rsplit('/', 1)[-1],
-        'doc_type': r[4], 'status': r[5],
+        'doc_type': r[4], 'status': r[5], 'error': r[6],
         'term_bearing': is_term_bearing(r[4]),
         'unassigned': r[1] is None,
     } for r in rows]
@@ -3722,8 +4075,16 @@ def consolidate_tenant_extractions(
                 if isinstance(terms, dict):
                     if not consolidated:
                         consolidated = copy.deepcopy(terms)
+                        if (doc.get('doc_type') or '') == 'Original Lease':
+                            for o in consolidated.get('renewal_options') or []:
+                                if isinstance(o, dict):
+                                    o['exercised'] = False
                     else:
-                        consolidated = _merge_extraction_terms(consolidated, terms)
+                        consolidated = _merge_extraction_terms(consolidated, terms, {
+                            'doc_type': doc.get('doc_type'),
+                            'fill_only': (not doc.get('doc_date')
+                                          and (doc.get('doc_type') or '') != 'Amendment'),
+                        })
                     applied.append(doc['filename'])
                     # THE EARLIEST commencement any document states, kept beside
                     # the latest. The latest is what the tenant record carries and
@@ -3740,6 +4101,7 @@ def consolidate_tenant_extractions(
 
         if not consolidated:
             return None
+        _apply_exercised_options(consolidated)
 
         # The reader has to be able to see WHICH document had the last word, and to
         # be told when the order could not be established rather than assuming it was.
@@ -5051,7 +5413,17 @@ def generate_lease_review_excel(engine, review_id: int) -> bytes:
     cot_headers = ['Tenant', 'Suite', 'SF', 'Annual Rent',
                    'Trigger', 'Cure Period', 'Alt Rent Formula',
                    'Termination Right', 'Sunset/Waiver', 'Curable?',
-                   'Named Co-Tenants']
+                   'Named Co-Tenants', 'Source', 'Review', 'Notes / Flags']
+    # The analyst's reading, per tenant and section, so the workbook carries the
+    # Notes/Flags column the analysts were keeping by hand (Sep 29 2026).
+    reviews = get_clause_reviews(engine, review_id)
+
+    def _review_cells(tid, section):
+        r = (reviews.get(int(tid)) or {}).get(section) or {}
+        status = r.get('status') or 'unreviewed'
+        if r.get('reread_at'):
+            status += ' (re-read since)'
+        return status, r.get('notes') or ''
     for c, h in enumerate(cot_headers, 1):
         cell = ws4.cell(4, c, h)
         cell.font = header_font_white
@@ -5065,7 +5437,7 @@ def generate_lease_review_excel(engine, review_id: int) -> bytes:
                    c.trigger_description, c.cure_period_days,
                    c.alt_rent_formula, c.termination_right,
                    c.sunset_provision, c.is_curable, c.waiver_mechanism,
-                   c.id
+                   c.id, c.source_doc, t.id
             FROM lease_cotenancy c
             JOIN lease_tenants t ON t.id = c.tenant_id
             WHERE c.review_id = :rid
@@ -5103,13 +5475,17 @@ def generate_lease_review_excel(engine, review_id: int) -> bytes:
         # Named cotenants
         refs = ref_map.get(c[11], [])
         ws4.cell(row, 11, ', '.join(refs) if refs else 'N/A')
+        ws4.cell(row, 12, c[12] or '')
+        st, nt = _review_cells(c[13], 'cotenancy')
+        ws4.cell(row, 13, st)
+        ws4.cell(row, 14, nt)
 
         # Wrap text for readability
-        for col in (5, 7, 9, 11):
+        for col in (5, 7, 9, 11, 14):
             ws4.cell(row, col).alignment = Alignment(wrap_text=True,
                                                       vertical='top')
 
-    col_widths = [25, 10, 10, 14, 35, 12, 30, 14, 35, 16, 35]
+    col_widths = [25, 10, 10, 14, 35, 12, 30, 14, 35, 16, 35, 30, 16, 45]
     for c, w in enumerate(col_widths, 1):
         ws4.column_dimensions[get_column_letter(c)].width = w
 
@@ -5142,26 +5518,56 @@ def generate_lease_review_excel(engine, review_id: int) -> bytes:
 
     with engine.connect() as conn:
         exc_rows = conn.execute(text("""
-            SELECT t.tenant_name, t.suite, e.restriction_text
+            SELECT t.tenant_name, t.suite, e.clause_role, e.restricted_use,
+                   e.radius_feet, e.carve_outs, e.restriction_text,
+                   e.source_doc, t.id
             FROM lease_exclusive_use e
             JOIN lease_tenants t ON t.id = e.tenant_id
             WHERE t.review_id = :rid
-            ORDER BY t.tenant_name
+            ORDER BY t.tenant_name, e.clause_role, e.id
         """), {'rid': review_id}).fetchall()
+        reviewed_names = conn.execute(text(
+            "SELECT id, tenant_name, suite FROM lease_tenants WHERE review_id = :rid"),
+            {'rid': review_id}).fetchall()
 
-    exc_headers = ['Tenant', 'Suite', 'Exclusive Use Restriction']
+    # WHO HOLDS THE RESTRICTION IS THE COLUMN THAT MATTERS. This sheet used to
+    # carry only the restriction text, so a lease's exhibit DISCLOSING other
+    # tenants' exclusives read as that tenant's own: Firehouse Subs showed the
+    # pizza, hamburger, dairy and shoe-repair exclusives of CiCi's, Dink's, Yogi
+    # Yurt and The Corner Cobbler, while the app itself had them marked "bound
+    # by". The analysts corrected that by hand (Sep 29 2026).
+    ROLE = {'holder': 'Holds', 'subject': 'Bound by'}
+    exc_headers = ['Tenant', 'Suite', 'Holds / Bound by', 'Restricted Use',
+                   'Radius (ft)', 'Carve-outs', 'Restriction Text', 'Source',
+                   'Review', 'Notes / Flags']
     for c, h in enumerate(exc_headers, 1):
         cell = ws5.cell(3, c, h)
         cell.font = header_font_white
         cell.fill = header_fill
-    for i, e in enumerate(exc_rows):
-        row = 4 + i
-        ws5.cell(row, 1, e[0])
-        ws5.cell(row, 2, e[1])
-        ws5.cell(row, 3, e[2]).alignment = Alignment(wrap_text=True)
-    ws5.column_dimensions['A'].width = 30
-    ws5.column_dimensions['B'].width = 12
-    ws5.column_dimensions['C'].width = 60
+        cell.alignment = Alignment(wrap_text=True)
+    row = 4
+    with_rows = set()
+    for e in exc_rows:
+        with_rows.add(int(e[8]))
+        st, nt = _review_cells(e[8], 'exclusive_use')
+        vals = [e[0], e[1], ROLE.get(e[2] or '', ''), e[3],
+                e[4] if e[4] is not None else '', e[5] or '', e[6] or '',
+                e[7] or '', st, nt]
+        for c, v in enumerate(vals, 1):
+            ws5.cell(row, c, v).alignment = Alignment(wrap_text=True, vertical='top')
+        row += 1
+    # A tenant the analysts reviewed but that has no rows still belongs on the
+    # sheet -- "confirmed: no exclusive" is an answer.
+    for tid, name, suite in reviewed_names:
+        r = (reviews.get(int(tid)) or {}).get('exclusive_use')
+        if r and int(tid) not in with_rows:
+            st, nt = _review_cells(tid, 'exclusive_use')
+            vals = [name, suite, '', '(no exclusive-use rows)', '', '', '', '', st, nt]
+            for c, v in enumerate(vals, 1):
+                ws5.cell(row, c, v).alignment = Alignment(wrap_text=True, vertical='top')
+            row += 1
+    for c, w in enumerate([28, 10, 12, 40, 10, 40, 60, 30, 16, 45], 1):
+        ws5.column_dimensions[get_column_letter(c)].width = w
 
     # --- Sheet 6: Option Schedule ---
     ws6 = wb.create_sheet("Option Schedule")
@@ -5248,6 +5654,118 @@ def ensure_resolution_table(engine):
                      ('source_doc_id', 'INTEGER'),
                      ('prior_value', 'TEXT')):
         _migrate_add_column(engine, 'lease_field_resolutions', col, typ)
+
+
+# ---------------------------------------------------------------------------
+# Analyst review of a tenant's exclusives and co-tenancy
+# ---------------------------------------------------------------------------
+#
+# New business, Sep 29 2026: the analysts corrected Market at Poplar's
+# exclusives and co-tenancy -- Firehouse's Exhibit D is a DISCLOSURE of other
+# tenants' exclusives, CiCi's has left so a carve-out naming it is moot, GNC is
+# confirmed from its full lease chain -- and every one of those judgements
+# lived in a workbook's Notes/Flags column and a correction log, because the
+# app had nowhere to put them.
+#
+# PER TENANT AND SECTION, NOT PER ROW. Clause rows are rebuilt whenever a
+# document is re-read, so a note pinned to a row id would vanish with the row,
+# and pinning it to the model's wording fails the same way the old dedup did.
+# A tenant's exclusives, read as a whole, is the unit an analyst signs off.
+#
+# A RE-READ AFTER SIGN-OFF IS MARKED, NEVER SILENTLY KEPT. `rerun_tenant_extraction`
+# sets `reread_at` on a confirmed or flagged review, because a confirmation of
+# rows that have since been rebuilt is a confirmation of something else. Saving
+# the review clears the mark. The same rule the abstract follows.
+
+CLAUSE_REVIEW_SECTIONS = ('exclusive_use', 'cotenancy')
+CLAUSE_REVIEW_STATUSES = ('unreviewed', 'confirmed', 'flagged')
+
+LEASE_CLAUSE_REVIEW_DDL = """
+CREATE TABLE IF NOT EXISTS lease_clause_reviews (
+    tenant_id   INTEGER NOT NULL,
+    section     TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'unreviewed',
+    notes       TEXT,
+    updated_by  TEXT,
+    updated_at  TEXT,
+    reread_at   TEXT,
+    PRIMARY KEY (tenant_id, section)
+)
+"""
+
+
+def ensure_clause_review_table(engine):
+    from sqlalchemy import text
+    with engine.begin() as conn:
+        conn.execute(text(LEASE_CLAUSE_REVIEW_DDL))
+
+
+def get_clause_reviews(engine, review_id: int) -> Dict[int, Dict[str, dict]]:
+    """{tenant_id: {section: review}} for every tenant in the review."""
+    from sqlalchemy import text
+    ensure_clause_review_table(engine)
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT r.tenant_id, r.section, r.status, r.notes, r.updated_by, "
+            "r.updated_at, r.reread_at FROM lease_clause_reviews r "
+            "JOIN lease_tenants t ON t.id = r.tenant_id WHERE t.review_id = :rid"),
+            {'rid': review_id}).mappings().all()
+    out: Dict[int, Dict[str, dict]] = {}
+    for r in rows:
+        out.setdefault(int(r['tenant_id']), {})[r['section']] = dict(r)
+    return out
+
+
+def save_clause_review(engine, review_id: int, tenant_id: int, section: str,
+                       status: str, notes: str, user: str) -> dict:
+    """Record the analyst's reading of one tenant's exclusives or co-tenancy.
+
+    A FLAG NEEDS A NOTE: "flagged" with nothing saying why is a mark nobody can
+    act on, and the note is the whole point of the record.
+    """
+    from sqlalchemy import text
+    ensure_clause_review_table(engine)
+    section = (section or '').strip()
+    status = (status or '').strip().lower()
+    notes = (notes or '').strip()
+    if section not in CLAUSE_REVIEW_SECTIONS:
+        raise ValueError('Section must be one of %s.' % ', '.join(CLAUSE_REVIEW_SECTIONS))
+    if status not in CLAUSE_REVIEW_STATUSES:
+        raise ValueError('Status must be one of %s.' % ', '.join(CLAUSE_REVIEW_STATUSES))
+    if status == 'flagged' and not notes:
+        raise ValueError('A flag needs a note saying what to check.')
+    now = datetime.utcnow().isoformat(timespec='seconds')
+    with engine.begin() as conn:
+        owned = conn.execute(text(
+            "SELECT 1 FROM lease_tenants WHERE id = :t AND review_id = :r"),
+            {'t': tenant_id, 'r': review_id}).fetchone()
+        if not owned:
+            raise ValueError('That tenant is not part of this review.')
+        conn.execute(text(
+            "DELETE FROM lease_clause_reviews WHERE tenant_id = :t AND section = :s"),
+            {'t': tenant_id, 's': section})
+        if status != 'unreviewed' or notes:
+            conn.execute(text(
+                "INSERT INTO lease_clause_reviews (tenant_id, section, status, notes, "
+                "updated_by, updated_at, reread_at) VALUES (:t, :s, :st, :n, :u, :now, NULL)"),
+                {'t': tenant_id, 's': section, 'st': status, 'n': notes or None,
+                 'u': user, 'now': now})
+    return {'tenant_id': tenant_id, 'section': section, 'status': status,
+            'notes': notes or None, 'updated_by': user, 'updated_at': now,
+            'reread_at': None}
+
+
+def mark_clause_reviews_reread(engine, tenant_id: int) -> int:
+    """A tenant was re-read: its signed-off reviews now describe older rows."""
+    from sqlalchemy import text
+    ensure_clause_review_table(engine)
+    now = datetime.utcnow().isoformat(timespec='seconds')
+    with engine.begin() as conn:
+        res = conn.execute(text(
+            "UPDATE lease_clause_reviews SET reread_at = :now "
+            "WHERE tenant_id = :t AND status IN ('confirmed', 'flagged')"),
+            {'now': now, 't': tenant_id})
+    return res.rowcount or 0
 
 
 # Resolvable fields and which columns they map to on lease_tenants
@@ -5780,19 +6298,23 @@ def get_risk_analysis_data(engine, review_id: int) -> Dict[str, Any]:
     with engine.connect() as conn:
         exc_rows = conn.execute(text("""
             SELECT t.tenant_name, t.suite, e.restriction_text, e.restricted_use,
-                   e.clause_role, e.carve_outs, e.radius_feet, e.source_doc
+                   e.clause_role, e.carve_outs, e.radius_feet, e.source_doc, t.id
             FROM lease_exclusive_use e
             JOIN lease_tenants t ON t.id = e.tenant_id
             WHERE t.review_id = :rid
-            ORDER BY t.tenant_name
+            ORDER BY t.tenant_name, e.clause_role, e.id
         """), {'rid': review_id}).fetchall()
 
     exclusive_use = [{
         'tenant_name': r[0], 'suite': r[1],
         'restriction_text': r[2], 'restricted_use': r[3],
         'clause_role': r[4], 'carve_outs': r[5],
-        'radius_feet': r[6], 'source_doc': r[7],
+        'radius_feet': r[6], 'source_doc': r[7], 'tenant_id': r[8],
     } for r in exc_rows]
+
+    # The analyst's reading of each tenant's exclusives and co-tenancy, keyed by
+    # tenant id as a string (JSON object keys are strings either way).
+    clause_reviews = {str(k): v for k, v in get_clause_reviews(engine, review_id).items()}
 
     # Get options
     with engine.connect() as conn:
@@ -5845,6 +6367,7 @@ def get_risk_analysis_data(engine, review_id: int) -> Dict[str, Any]:
         'cotenancy': {**cotenancy, 'clauses': clauses},
         'scenarios': scenarios,
         'exclusive_use': exclusive_use,
+        'clause_reviews': clause_reviews,
         'options': options,
         'documents': documents,
     }
@@ -6612,6 +7135,7 @@ def rerun_tenant_extraction(engine, review_id: int, tenant_id: int,
     consolidated = consolidate_tenant_extractions(engine, tenant_id)
     abstract = refresh_tenant_abstract(engine, tenant_id, review_id)
     validate_rent_roll(engine, review_id)
+    reviews_marked = mark_clause_reviews_reread(engine, tenant_id)
 
     return {
         'tenant_id': tenant_id,
@@ -6620,6 +7144,7 @@ def rerun_tenant_extraction(engine, review_id: int, tenant_id: int,
         'consolidated': bool(consolidated),
         'abstract_refreshed': abstract['refreshed'],
         'abstract_flagged': abstract['flagged'],
+        'clause_reviews_marked': reviews_marked,
     }
 
 def get_review_abstracts_list(engine, review_id: int) -> List[Dict]:

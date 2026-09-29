@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../api/client'
+import { useAuthStore } from '../stores/auth'
 
 const router = useRouter()
 import VChart from 'vue-echarts'
@@ -66,6 +67,96 @@ const showPlanEventModal = ref(false)
 const planEventForm = ref<any>({ event_type: 'vacate', effective_date: '', source_tenant_ids: [], results: [{ tenant_name: '', suite: '', square_feet: 0 }] })
 const confirmDeleteId = ref<number | null>(null)
 
+// ── Analyst review of each tenant's exclusives and co-tenancy ──
+// Per tenant and section, kept apart from the clause rows (which a re-read
+// rebuilds), so a note or a sign-off survives re-extraction. A re-read after
+// sign-off is marked rather than silently kept.
+const auth = useAuthStore()
+const canReview = computed(() => auth.isAnalyst)
+const clauseReviews = ref<Record<string, Record<string, any>>>({})
+const reviewEdit = ref<{ tenantId: number, section: string } | null>(null)
+const reviewForm = ref({ status: 'unreviewed', notes: '' })
+const reviewSaving = ref(false)
+const reviewError = ref<string | null>(null)
+const showBoundBy = ref(true)
+const exclusiveFilter = ref<'all' | 'with' | 'unreviewed' | 'flagged'>('all')
+
+function reviewOf(tenantId: number, section: string) {
+  return clauseReviews.value[String(tenantId)]?.[section] || null
+}
+function startReview(tenantId: number, section: string) {
+  const r = reviewOf(tenantId, section)
+  reviewEdit.value = { tenantId, section }
+  reviewForm.value = { status: r?.status || 'unreviewed', notes: r?.notes || '' }
+  reviewError.value = null
+}
+async function saveReview() {
+  if (!reviewEdit.value) return
+  reviewSaving.value = true
+  reviewError.value = null
+  const { tenantId, section } = reviewEdit.value
+  try {
+    const res = await api.put(
+      `/api/lease-review/reviews/${selectedReviewId.value}/tenants/${tenantId}/clause-review`,
+      { section, status: reviewForm.value.status, notes: reviewForm.value.notes })
+    const key = String(tenantId)
+    clauseReviews.value = {
+      ...clauseReviews.value,
+      [key]: { ...(clauseReviews.value[key] || {}), [section]: res.data },
+    }
+    reviewEdit.value = null
+  } catch (e: any) {
+    reviewError.value = e.response?.data?.error || e.message
+  } finally {
+    reviewSaving.value = false
+  }
+}
+
+// Every active tenant, with its exclusive-use rows grouped under it -- so a
+// tenant with NO rows can still be reviewed ("confirmed: no exclusive" is an
+// answer), and a lease's disclosure of other tenants' exclusives sits visibly
+// under "Bound by", not mixed in with what the tenant holds.
+const exclusiveGroups = computed(() => {
+  const byTenant: Record<string, any[]> = {}
+  for (const e of exclusiveUse.value) (byTenant[String(e.tenant_id)] ||= []).push(e)
+  const seen = new Set<string>()
+  const groups: any[] = []
+  for (const t of tenants.value) {
+    const k = String(t.id)
+    seen.add(k)
+    const rows = byTenant[k] || []
+    groups.push({
+      tenant_id: t.id, tenant_name: t.tenant_name, suite: t.suite,
+      holds: rows.filter(r => r.clause_role === 'holder'),
+      bound: rows.filter(r => r.clause_role === 'subject'),
+      other: rows.filter(r => r.clause_role !== 'holder' && r.clause_role !== 'subject'),
+      review: reviewOf(t.id, 'exclusive_use'),
+    })
+  }
+  // Rows for a tenant not in the active list (vacated / not a tenant) still show.
+  for (const [k, rows] of Object.entries(byTenant)) {
+    if (seen.has(k)) continue
+    groups.push({
+      tenant_id: Number(k), tenant_name: rows[0].tenant_name, suite: rows[0].suite,
+      holds: rows.filter(r => r.clause_role === 'holder'),
+      bound: rows.filter(r => r.clause_role === 'subject'),
+      other: rows.filter(r => r.clause_role !== 'holder' && r.clause_role !== 'subject'),
+      review: reviewOf(Number(k), 'exclusive_use'), inactive: true,
+    })
+  }
+  return groups.filter(g => {
+    const n = g.holds.length + g.bound.length + g.other.length
+    if (exclusiveFilter.value === 'with') return n > 0
+    if (exclusiveFilter.value === 'unreviewed') return !g.review || g.review.status === 'unreviewed'
+    if (exclusiveFilter.value === 'flagged') return g.review?.status === 'flagged' || !!g.review?.reread_at
+    return true
+  })
+})
+
+function radiusText(v: any) {
+  return v === null || v === undefined || v === '' ? '' : `${Number(v).toLocaleString()} ft`
+}
+
 // Alias state
 const aliases = ref<any[]>([])
 const aliasSuggestions = ref<any[]>([])
@@ -124,6 +215,7 @@ async function loadRiskData() {
     cotenancy.value = res.data.cotenancy || null
     scenarios.value = res.data.scenarios || []
     exclusiveUse.value = res.data.exclusive_use || []
+    clauseReviews.value = res.data.clause_reviews || {}
     options.value = res.data.options || []
     documents.value = res.data.documents || {}
     loadAliases()
@@ -1210,6 +1302,50 @@ onMounted(() => {
           </div>
         </template>
         <div v-else class="empty-state">No co-tenancy clauses found for this review.</div>
+
+        <!-- Every active tenant, so "no co-tenancy provision" can be confirmed as
+             an answer and not just inferred from an empty table. -->
+        <h3>Co-Tenancy Review by Tenant</h3>
+        <div class="table-wrapper">
+          <table class="data-table">
+            <thead><tr><th>Tenant</th><th>Suite</th><th>Clause extracted</th><th>Review</th></tr></thead>
+            <tbody>
+              <template v-for="t in tenants" :key="t.id">
+                <tr>
+                  <td>{{ t.tenant_name }}</td>
+                  <td>{{ t.suite }}</td>
+                  <td>{{ (cotenancy?.clauses || []).some((c: any) => c.tenant_name === t.tenant_name) ? 'Yes' : '—' }}</td>
+                  <td>
+                    <div class="review-cell">
+                      <span class="rv-chip" :class="'rv-' + (reviewOf(t.id, 'cotenancy')?.status || 'unreviewed')">
+                        {{ reviewOf(t.id, 'cotenancy')?.status || 'unreviewed' }}</span>
+                      <span v-if="reviewOf(t.id, 'cotenancy')?.reread_at" class="rv-reread">re-read since</span>
+                      <span v-if="reviewOf(t.id, 'cotenancy')?.notes" class="rv-notes">
+                        {{ reviewOf(t.id, 'cotenancy').notes }}</span>
+                      <button v-if="canReview" class="rv-btn" @click="startReview(t.id, 'cotenancy')">Review</button>
+                    </div>
+                  </td>
+                </tr>
+                <tr v-if="reviewEdit && reviewEdit.tenantId === t.id && reviewEdit.section === 'cotenancy'">
+                  <td colspan="4">
+                    <div class="rv-form">
+                      <select v-model="reviewForm.status">
+                        <option value="unreviewed">unreviewed</option>
+                        <option value="confirmed">confirmed</option>
+                        <option value="flagged">flagged</option>
+                      </select>
+                      <textarea v-model="reviewForm.notes" rows="2"
+                                placeholder="What was checked, what was corrected, what is still open"></textarea>
+                      <button class="btn-primary" :disabled="reviewSaving" @click="saveReview">Save</button>
+                      <button class="btn-secondary" @click="reviewEdit = null">Cancel</button>
+                      <span v-if="reviewError" class="rv-error">{{ reviewError }}</span>
+                    </div>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <!-- ═══ SCENARIO ANALYSIS TAB ═══ -->
@@ -1252,32 +1388,79 @@ onMounted(() => {
 
       <!-- ═══ EXCLUSIVE USE TAB ═══ -->
       <div v-if="activeTab === 'exclusive'" class="tab-content">
-        <template v-if="exclusiveUse.length">
-          <h3>Exclusive Use Restrictions</h3>
-          <div class="table-wrapper">
-            <table class="data-table">
-              <thead><tr><th>Tenant</th><th>Suite</th><th>Type</th><th>Restricted Use</th><th>Carve-Outs</th><th>Restriction Text</th><th>Source</th></tr></thead>
-              <tbody>
-                <tr v-for="(e, i) in exclusiveUse" :key="i">
-                  <td>{{ e.tenant_name }}</td>
-                  <td>{{ e.suite }}</td>
-                  <td>
-                    <span v-if="e.clause_role === 'holder'" class="role-badge role-holder"
-                          title="This tenant holds the exclusive">Holds</span>
-                    <span v-else-if="e.clause_role === 'subject'" class="role-badge role-subject"
-                          title="This tenant is bound by a restriction">Bound by</span>
-                    <span v-else class="role-badge role-unknown" title="Not classified">—</span>
-                  </td>
-                  <td>{{ e.restricted_use || '-' }}</td>
-                  <td class="wrap-cell">{{ e.carve_outs || '-' }}</td>
-                  <td class="wrap-cell">{{ e.restriction_text || '-' }}</td>
-                  <td class="src-cell">{{ e.source_doc || '-' }}</td>
-                </tr>
-              </tbody>
-            </table>
+        <h3>Exclusive Use Restrictions</h3>
+        <div class="excl-toolbar">
+          <label>Show
+            <select v-model="exclusiveFilter">
+              <option value="all">every tenant</option>
+              <option value="with">tenants with restrictions</option>
+              <option value="unreviewed">not yet reviewed</option>
+              <option value="flagged">flagged or re-read since review</option>
+            </select>
+          </label>
+          <label class="cb"><input type="checkbox" v-model="showBoundBy" />
+            Show restrictions a tenant is <em>bound by</em></label>
+          <span class="hint-inline">
+            <b>Holds</b> = this tenant's own exclusive. <b>Bound by</b> = another tenant's
+            exclusive or a prohibited-use list this lease discloses, such as an exhibit
+            of existing exclusives.
+          </span>
+        </div>
+        <div v-if="!exclusiveGroups.length" class="empty-state">No tenant matches.</div>
+        <div v-for="g in exclusiveGroups" :key="g.tenant_id" class="excl-group">
+          <div class="excl-head">
+            <div class="excl-name">
+              <b>{{ g.tenant_name }}</b> <span class="muted">{{ g.suite }}</span>
+              <span v-if="g.inactive" class="muted"> · not an active tenant</span>
+              <span class="muted"> · holds {{ g.holds.length }}, bound by {{ g.bound.length }}</span>
+            </div>
+            <div class="review-cell">
+              <span class="rv-chip" :class="'rv-' + (g.review?.status || 'unreviewed')">
+                {{ g.review?.status || 'unreviewed' }}</span>
+              <span v-if="g.review?.reread_at" class="rv-reread"
+                    title="The tenant's documents were re-read after this review">re-read since</span>
+              <span v-if="g.review?.notes" class="rv-notes">{{ g.review.notes }}</span>
+              <button v-if="canReview" class="rv-btn"
+                      @click="startReview(g.tenant_id, 'exclusive_use')">Review</button>
+            </div>
           </div>
-        </template>
-        <div v-else class="empty-state">No exclusive use restrictions found.</div>
+          <div v-if="reviewEdit && reviewEdit.tenantId === g.tenant_id && reviewEdit.section === 'exclusive_use'"
+               class="rv-form">
+            <select v-model="reviewForm.status">
+              <option value="unreviewed">unreviewed</option>
+              <option value="confirmed">confirmed</option>
+              <option value="flagged">flagged</option>
+            </select>
+            <textarea v-model="reviewForm.notes" rows="2"
+                      placeholder="What was checked, what was corrected, what is still open"></textarea>
+            <button class="btn-primary" :disabled="reviewSaving" @click="saveReview">Save</button>
+            <button class="btn-secondary" @click="reviewEdit = null">Cancel</button>
+            <span v-if="reviewError" class="rv-error">{{ reviewError }}</span>
+          </div>
+          <table v-if="g.holds.length + g.other.length + (showBoundBy ? g.bound.length : 0)"
+                 class="data-table excl-table">
+            <thead><tr><th>Type</th><th>Restricted Use</th><th>Radius</th><th>Carve-Outs</th>
+              <th>Restriction Text</th><th>Source</th></tr></thead>
+            <tbody>
+              <tr v-for="(e, i) in [...g.holds, ...g.other, ...(showBoundBy ? g.bound : [])]" :key="i">
+                <td>
+                  <span v-if="e.clause_role === 'holder'" class="role-badge role-holder"
+                        title="This tenant holds the exclusive">Holds</span>
+                  <span v-else-if="e.clause_role === 'subject'" class="role-badge role-subject"
+                        title="This tenant is bound by a restriction">Bound by</span>
+                  <span v-else class="role-badge role-unknown" title="Not classified">—</span>
+                </td>
+                <td>{{ e.restricted_use || '-' }}</td>
+                <td class="nowrap">{{ radiusText(e.radius_feet) }}</td>
+                <td class="wrap-cell">{{ e.carve_outs || '-' }}</td>
+                <td class="wrap-cell">{{ e.restriction_text || '-' }}</td>
+                <td class="src-cell">{{ e.source_doc || '-' }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-else-if="!(g.holds.length + g.bound.length + g.other.length)" class="muted excl-none">
+            No exclusive-use rows extracted.</div>
+        </div>
       </div>
 
       <!-- ═══ OPTIONS TAB ═══ -->
@@ -1673,6 +1856,27 @@ onMounted(() => {
 .role-holder  { background: #e8eff6; color: #1f4e79; }
 .role-subject { background: #f8f0de; color: #9a6a18; }
 .role-unknown { background: #eee; color: #888; }
+.excl-toolbar { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin: 6px 0 12px; font-size: 0.82rem; }
+.excl-toolbar select { margin-left: 6px; }
+.excl-toolbar .cb { display: flex; gap: 5px; align-items: center; }
+.hint-inline { color: #6b7280; font-size: 0.78rem; flex-basis: 100%; }
+.excl-group { border: 1px solid #e5e7eb; border-radius: 6px; margin-bottom: 10px; padding: 8px 10px; }
+.excl-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.excl-table { margin-top: 6px; }
+.excl-none { font-size: 0.8rem; margin-top: 4px; }
+.muted { color: #6b7280; }
+.nowrap { white-space: nowrap; }
+.review-cell { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 0.8rem; max-width: 560px; }
+.rv-chip { padding: 1px 8px; border-radius: 10px; font-size: 0.72rem; font-weight: 600; }
+.rv-unreviewed { background: #eef0f2; color: #6b7280; }
+.rv-confirmed { background: #e6f3e8; color: #2f7a3d; }
+.rv-flagged { background: #fdecd6; color: #9a5200; }
+.rv-reread { background: #fde8e8; color: #b52b27; padding: 1px 6px; border-radius: 3px; font-size: 0.7rem; }
+.rv-notes { color: #374151; font-style: italic; }
+.rv-btn { font-size: 0.75rem; padding: 1px 8px; border: 1px solid #cbd5e1; background: #fff; border-radius: 4px; cursor: pointer; }
+.rv-form { display: flex; gap: 8px; align-items: flex-start; flex-wrap: wrap; margin: 8px 0; }
+.rv-form textarea { flex: 1; min-width: 280px; font-size: 0.8rem; padding: 4px 6px; }
+.rv-error { color: #b52b27; font-size: 0.8rem; }
 .src-cell { font-size: 0.75rem; color: #666; }
 .wrap-cell { max-width: 300px; word-wrap: break-word; white-space: normal; }
 /* ISO dates offer a break opportunity at each hyphen, so a narrow column

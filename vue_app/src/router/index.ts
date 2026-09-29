@@ -117,6 +117,11 @@ const routes = [
     component: () => import('../views/TreasuryView.vue'),
   },
   {
+    path: '/intercompany',
+    name: 'Intercompany',
+    component: () => import('../views/IntercompanyView.vue'),
+  },
+  {
     // Investor-ready statements, one entity or a batch. Its own route rather
     // than a panel, because printing a document should not also print whatever
     // screen it was launched from — the same reason the snapshot and the One

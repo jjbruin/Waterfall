@@ -54,6 +54,77 @@ note (it reads `vue_app/package.json`, which the runtime image does not ship).
 
 ---
 
+## 16. Rent roll objectives and the IC exhibit (Sep 29 2026)
+
+New business's 31-section rent-roll specification and their Market at Poplar exhibit
+(B2:H111), measured against the app. **Full detail, the exhibit's exact formatting
+and the five-step plan: `rent_roll_exhibit.md`.**
+
+Headline, 27 exhibit tenants matched: SF 26, current rent 26, expiration 21-22,
+Start 12, future step dates 21, option count 19, **option rent 0 of 39**. The causes:
+exercised options never applied to the term; later documents overwrite the lease
+start; 115 duplicated option rows; option rent stored only as text; no continuous
+timeline; no analyst settlement of steps or options.
+
+### 16.1 Plan -- step 1 BUILT (the three re-read failures), steps 2-5 open
+Owner: build, in order. Step 2 governing terms; 3 one timeline engine; 4 analyst
+settlement of timeline rows; 5 the exhibit, accepted by reproducing theirs cell by cell.
+
+### 16.2 Also found
+- 7 exhibit tenants did not match an app tenant by name -- reconcile before step 5.
+- The re-read moved BooYa's and Outback's lease start to a later document's date
+  (see the Start row above) -- step 2 fixes the cause; until then the Start field
+  on those two is wrong.
+
+---
+
+## 15. Co-tenancy and exclusives -- the analysts' corrections (Sep 29 2026)
+
+New business corrected Market at Poplar (review 3) by hand in a workbook and a
+correction log. Measured against production first: **the app already had most of
+it right.** Firehouse's pizza/hamburger/dairy/shoe-repair rows were marked "Bound
+by" with the real holder named; Hobby Lobby's 200-ft radius was there; the
+Starbucks carve-out names CiCi's because Exhibit H does. What was wrong was what
+the export and screens HID: the Exclusive Use sheet carried only restriction text,
+so every "bound by" row read as the tenant's own -- the likely source of the
+Firehouse error.
+
+Built (not yet deployed): a re-read replaces a document's clause rows instead of
+adding copies (`_write_document_clause_rows`); `rebuild_clause_rows` clears the
+existing duplicates from stored extractions with no API calls; the export and the
+Exclusive Use tab show Holds/Bound by, radius, carve-outs, source; a per-tenant
+review (`lease_clause_reviews`: unreviewed/confirmed/flagged + note, marked when
+re-read); a failed reading is recorded as `error` WITH its reason
+(`extraction_error`) instead of being logged "Extracted"; one retry when no JSON
+comes back; output room 16K -> 64K tokens and the text cap 180K chars -> 2M.
+Guardrails `lease_clause_rows_check.py` (35), `lease_scan_extraction_check.py` 25 -> 33.
+
+### 15.1 AFTER DEPLOY -- both steps RUN at `v532` (Sep 29 2026)
+Result: rebuild 291 -> 92 rows (idempotent); GNC 8 of 9 read, the 1996 lease
+still failed at `v532`. **RESOLVED at `v533`**: the retry now sends a scan's
+pages as rendered images, and the 1996 lease read that way -- the
+vitamins/supplements exclusive is in the app, all 9 GNC documents read.
+
+Original steps:
+1. `POST /api/lease-review/reviews/3/clause-rows/rebuild` (admin) -- measured
+   before: 291 exclusive rows for 35 tenant/document pairs, up to 25 from one lease.
+2. Re-read GNC (tenant 159). 8 of its 9 documents were read on Sep 29; the
+   **1996 original lease** (41-page scan) came back with 30 tokens -- the first
+   sentence of the prompt -- and a normal stop, so no vitamins/supplements
+   exclusive is in the app yet. The new retry is the remedy; confirm it lands.
+
+### 15.2 Still open
+- **Conflict flags** (one tenant's exclusive vs another's use) exist only in the
+  analysts' workbook. A feature, not a fix -- not built.
+- **Co-tenancy is empty for review 3**: 0 of 138 documents report a clause.
+  Plausible; the analysts should confirm on the Co-Tenancy review list.
+- The lease export raises if a review has no GLA/rent totals yet
+  (`generate_lease_review_excel`, the `review[3]:,.0f` format). Latent.
+- Renewal options still dedupe on `(source_doc, option_number)` and never
+  replace -- the same stale-row shape co-tenancy had.
+
+---
+
 ## 14. MRI commitments as the ownership source — checked Sep 29 2026
 
 Jim updated `IA_Commitment` in MRI to serve as the source of capital ownership

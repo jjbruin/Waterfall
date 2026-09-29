@@ -129,6 +129,8 @@ waterfall-xirr/
 - **.claude/memory/accounting_workpapers.md** - The workpaper packages + statement engine: data, mapping, workflow, deadlines, the download (Sep 15 2026)
 - **.claude/memory/app_reference.md** - What each app tab displays + AI Assistant tools/endpoints (split out of this file Sep 11 2026)
 - **.claude/memory/treasury.md** - The bank side of the close: PNC import, the three-way tie, the matcher, what `current_available` cannot say (Sep 17 2026)
+- **.claude/memory/rent_roll_exhibit.md** - New business's rent-roll specification, the gaps against it, the IC exhibit's exact formatting, and the five-step build plan (Sep 29 2026)
+- **.claude/memory/intercompany.md** - Due to/from PSC Manager reconciliation from `gl_detail`, basis A.B only; phase 1 built Sep 29 2026, the Pay/JE step is not
 
 ## Running the Application
 
@@ -253,6 +255,52 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v534` = `b4f437f` (NEW BUSINESS DOWNSIDE CANDIDATES READ THE SETTLED ROSTER,
+    Sep 29 2026. `scenario_service.get_risk_candidates` read `lease_tenants` raw:
+    an analyst's settled rent or expiry never reached the downside scenario, and a
+    tenant read as vacated / no lease was still offered. Now `get_resolved_tenants`.
+    Both defects reproduced against the old code (lease_clause_rows_check 35 ->
+    37). P2: `45c992c` docs only. Build `cam8`.)
+  - `v533` = `ffb7bf7` (A SCAN THE MODEL WON'T READ AS A PDF IS RETRIED AS PAGE
+    IMAGES, Sep 29 2026. GNC's 1996 lease gave degenerate replies to the PDF
+    block every time; rendered with PyMuPDF (1600 px, JPEG q80) the same pages
+    read. The retry on the PDF route now sends the images; capped at 100 pages /
+    22 MB, and an unrenderable file retries as the PDF and says why. VERIFIED ON
+    PRODUCTION: the GNC re-read logged "No JSON ... asking once more", the retry
+    went as images, and the 1996 lease is `extracted` via `images` -- 1,300 SF, no
+    co-tenancy, the vitamins/supplements exclusive held (Rider 25), plus three
+    restrictions it is bound by; all 9 GNC documents read, 0 left. P2: `54954b9`
+    is docs only. Build `cam7`. lease_scan_extraction_check 33 -> 39.)
+ (LEASE CO-TENANCY / EXCLUSIVES -- a re-read replaces a
+    document's clause rows, the export and Exclusive Use tab show Holds / Bound
+    by, radius, carve-outs and source, `lease_clause_reviews` keeps the analysts'
+    reading, a failed reading is `error` with its reason, one retry when no JSON
+    returns, caps raised to 64K output / 2M text chars. Sep 29 2026. P2 listed two
+    commits; `663c7c4` is CLAUDE.md only. AFTER DEPLOY, on production:
+    `rebuild_clause_rows(3)` took Market at Poplar from 291 exclusive rows to 92
+    (holder 63 -> 19, most from one document 25 -> 7; Firehouse 22 -> 7 with ONE
+    sandwich exclusive held), idempotent on a second run, 0 seller rows touched.
+    GNC re-read: 8 of 9 documents read; the 1996 original lease (41-page scan)
+    STILL fails -- the retry fired, and the model's replies to that one PDF are
+    degenerate (the prompt's first sentence; a 30-character markup fragment;
+    no thinking), so it is now recorded as `error` with the reason instead of
+    logged "Extracted". Not a token limit. See open_items §15.1. Build `cam6`.)
+ (INTERCOMPANY, PHASE 1 -- the CFO's Due to/from PSC Manager
+    reconciliation as Accounting -> Intercompany, Sep 29 2026. Reads `gl_detail`,
+    basis A.B only (C and T rows exist and halve the figures). P2 listed two
+    commits; `2d80ec1` is CLAUDE.md only, so the runtime delta is exactly
+    `582f92d`. VERIFIED ON PRODUCTION POSTGRESQL: entity side -308,316.59 and
+    manager side 313,093.97, the CFO's sheet to the cent; 64 rows, 0 drilldown
+    mismatches across 4 sides; Investigate = NOTTNV -22,385.07, PEGASU -94,941.70
+    (on its real alternate account MR99991102 -- the sheet had it on the wrong one
+    and read No Balance), PPI2 -274.16, PSC2 -2,467.66; INVF10 reads No Balance
+    where the sheet's formula error said Investigate. New tables
+    `ic_entity_settings` (five rows seeded ONCE from the CFO's answers, each
+    saying where it came from; PSC1's Liberty MM exclusion is marked INFERRED)
+    and `ic_recon_notes`, both protected. Also fixed: GL / IA Query freshness read
+    refresh state 'complete', which nothing writes, so it said "unknown" after
+    every refresh since v504 -- production now reports 2026-09-28 14:56. Pay and
+    the JE file are NOT built. Build `cam5`, 2m48s.)
   - `v530` = `e97c9fe` (FREEZING IS PER QUARTER AND SWITCHED OFF. Deployed Sep 29
     2026 12:53 EDT (16:53:39 UTC), build `cam4` 2m44s, digest
     `sha256:f713a2ad675659b401c1906cd775db80d033158def89cf3351770590157b1f0a`.
@@ -2771,6 +2819,24 @@ Ask the user if any other files will be loaded before running."
   `scripts/lease_tenant_rerun_check.py` (36),
   `scripts/lease_validation_context_check.py` (35).
 
+### Lease review — exclusives, co-tenancy and the analysts' review
+Built Sep 29 2026, see `open_items.md` §15 (two production steps after deploy).
+
+- **A re-read REPLACES a document's clause rows** (`_write_document_clause_rows`,
+  scoped to tenant + source_doc). Exclusives used to dedupe on the model's wording,
+  which moves between runs: 291 rows for 35 tenant/document pairs on Market at
+  Poplar. Rows with no source_doc (seller spreadsheet) are never touched.
+- **"Bound by" is not "holds".** A lease's exhibit listing OTHER tenants' existing
+  exclusives is stored `clause_role = 'subject'`. The export used to drop the role,
+  so Firehouse Subs read as holding CiCi's pizza exclusive. Never ship a view of
+  these rows without the role.
+- **The analysts' reading lives in `lease_clause_reviews`**, per tenant and
+  section, apart from the rows (which re-reads rebuild); a re-read after sign-off
+  sets `reread_at`. A flag needs a note.
+- **A failed reading is `error` with `extraction_error`**, never "Extracted". One
+  retry when no JSON returns. Caps are the model's: 64K output, 2M text characters,
+  and a cut document says `_truncated`.
+
 ### Lease review — fixed recoveries (CAM)
 Live at `v518`. Jim, having read the AT&T Mobility 4th Amendment: "one of the
 lease amendments was stating a fixed CAM charge for the lease. Is this situation
@@ -3028,7 +3094,7 @@ The sidebar (`AppSidebar.vue`) is organized into major sections with expandable 
 |---------|------|----------|
 | **Dashboard** | Standalone link | `/dashboard` |
 | **Asset Management** | Expandable | Deal Analysis, Property Financials, Surveillance, One Pager, Review Tracking, Ownership, Waterfall Setup, Report Settings (expandable config panel) |
-| **Accounting** | Expandable | Workpaper Packages, Treasury, GL / IA Query |
+| **Accounting** | Expandable | Workpaper Packages, Treasury, Intercompany, GL / IA Query |
 | **New Business** | Expandable | Pipeline, Deal Analysis, Lease Review, Lease Risk Analysis |
 | **Investment Management** | Future (dimmed) | — |
 | **Reports** | Standalone link | `/reports` (Projected Returns, ROE Summary, Pref Balance Detail, Sold Portfolio, PSCKOC, Portfolio Analysis) |

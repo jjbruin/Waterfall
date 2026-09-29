@@ -2043,6 +2043,7 @@ function statusClass(s: string): string {
               <span class="muted">
                 ({{ d.tenant || 'not assigned to a tenant' }}, {{ d.status }})
               </span>
+              <span v-if="d.error" class="unread-why">— {{ d.error }}</span>
             </li>
           </ul>
         </div>
@@ -2363,6 +2364,7 @@ function statusClass(s: string): string {
 .unread-box b { color: #7a5200; }
 .unread-list { margin: 6px 0 0; padding-left: 18px; }
 .unread-list li { margin: 2px 0; }
+.unread-why { color: #9a1c1c; font-size: 0.85em; }
 .unread-list li.not-term { opacity: 0.7; }
 .changes-box {
   margin: 1rem 0; padding: 10px 12px; border: 1px solid #dde3ea;

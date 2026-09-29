@@ -43,6 +43,8 @@ from flask_app.services.lease_review_service import (
     get_tenant_sales,
     update_tenant_sales_override,
     RESOLVABLE_FIELDS,
+    save_clause_review,
+    rebuild_clause_rows,
     # Phase 1: Tenant CRUD
     add_tenant,
     update_tenant_fields,
@@ -917,6 +919,41 @@ def get_validation_context(review_id):
     # an unread amendment are simply absent.
     return jsonify({'rent_roll_date': rrd, 'tenants': out,
                     'unread_documents': unread_documents(engine, review_id)})
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/tenants/<int:tenant_id>/clause-review',
+                       methods=['PUT'])
+@login_required
+@role_required('admin', 'analyst')
+def put_clause_review(review_id, tenant_id):
+    """The analyst's reading of one tenant's exclusives or co-tenancy:
+    unreviewed / confirmed / flagged, and a note. Kept apart from the clause
+    rows, which are rebuilt on every re-read."""
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify(save_clause_review(
+            get_engine(), review_id, tenant_id, body.get('section'),
+            body.get('status'), body.get('notes'),
+            g.current_user.get('username', 'unknown')))
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"clause review failed: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/clause-rows/rebuild', methods=['POST'])
+@login_required
+@role_required('admin')
+def post_rebuild_clause_rows(review_id):
+    """Rewrite every document's co-tenancy and exclusive-use rows from the
+    extraction it already holds. No API calls; clears duplicates left by the
+    old dedup. Admin only -- it rewrites a whole review's clause rows."""
+    try:
+        return jsonify(rebuild_clause_rows(get_engine(), review_id))
+    except Exception as e:
+        logger.error(f"rebuild clause rows failed: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
 
 
 @lease_review_bp.route('/reviews/<int:review_id>/validation/resolve', methods=['PUT'])
