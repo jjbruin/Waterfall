@@ -170,7 +170,13 @@ def _ensure_table() -> None:
                 quarter TEXT NOT NULL,
                 payload TEXT NOT NULL,
                 approved_by TEXT,
-                approved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                -- NO DEFAULT. A freeze is not an approval, and a column
+                -- default made every row carry an approved_at anyway --
+                -- including an as-sent freeze that deliberately leaves
+                -- approved_by NULL. That is a timestamp nobody produced,
+                -- sitting in the column that is supposed to record a decision.
+                -- Only the approval chain sets it now; see _write_frozen.
+                approved_at TIMESTAMP,
                 data_version TEXT,
                 UNIQUE(investor_code, quarter)
             )
@@ -195,6 +201,7 @@ def _ensure_table() -> None:
                 frozen_parts TEXT
             )
         """))
+    _drop_approved_at_default()
     for table, cols in ((_TABLE, _ADDED_COLUMNS),
                         (_HISTORY, _HISTORY_ADDED_COLUMNS)):
         existing = _columns(table)
@@ -207,6 +214,38 @@ def _ensure_table() -> None:
                         text(f"ALTER TABLE {table} ADD COLUMN {col} {typ}"))
             except Exception:
                 log.exception("could not add %s.%s", table, col)
+
+
+def _drop_approved_at_default() -> None:
+    """Remove the CURRENT_TIMESTAMP default from an EXISTING frozen table.
+
+    `CREATE TABLE IF NOT EXISTS` never touches a table that is already there, so
+    correcting the DDL alone leaves every existing database — production
+    included — still stamping `approved_at` on rows nobody approved. This is the
+    same lesson as the per-part columns at `v529`.
+
+    NOTHING TO BACK-FILL. Checked on production Sep 29 2026:
+    `portfolio_snapshot_frozen` is empty (all 145 rows were unfrozen into
+    history), so there is no row whose `approved_at` has to be decided. The
+    history table keeps whatever it was given and is deliberately not rewritten
+    — it is the record of what happened, including this.
+
+    PostgreSQL only, and that is enough. SQLite cannot drop a column default
+    without rebuilding the table, and a rebuild of the one table that records
+    what an investor was sent is not worth it for a default that can no longer
+    fire: `_write_frozen` now NAMES `approved_at` in its INSERT, and a default
+    only applies to a column an INSERT omits. `_write_frozen` is the only writer.
+
+    Never raises: a failed migration must not stop the table being used.
+    """
+    if not _is_postgres():
+        return
+    try:
+        with _engine().begin() as conn:
+            conn.execute(text(
+                f"ALTER TABLE {_TABLE} ALTER COLUMN approved_at DROP DEFAULT"))
+    except Exception:
+        log.exception("could not drop the %s.approved_at default", _TABLE)
 
 
 def _columns(table: str) -> set:
@@ -656,17 +695,28 @@ def _write_frozen(investor_code: str, quarter: str,
                      {"i": investor_code, "q": quarter})
         conn.execute(text(f"""
             INSERT INTO {_TABLE}
-                (investor_code, quarter, payload, approved_by, data_version,
+                (investor_code, quarter, payload, approved_by, approved_at,
+                 data_version,
                  frozen_by, frozen_at, frozen_reason, source_manifest, roster,
                  one_pagers, version,
                  snapshot_frozen_at, snapshot_frozen_by,
                  one_pagers_frozen_at, one_pagers_frozen_by)
-            VALUES (:i, :q, :p, :by, :v, :fb, :fa, :fr, :sm, :ro, :op, :ver,
-                    :sat, :sby_, :oat, :oby)
+            VALUES (:i, :q, :p, :by, :bat, :v, :fb, :fa, :fr, :sm, :ro, :op,
+                    :ver, :sat, :sby_, :oat, :oby)
         """), {"i": investor_code, "q": quarter, "p": blob,
                # A freeze is not an approval: only the approval path supplies
                # approved_by, and a later part-freeze must not drop it.
                "by": approved_by or prior.get("approved_by"),
+               # NAMED EXPLICITLY so the column default cannot supply one. The
+               # default is dropped on PostgreSQL by _drop_approved_at_default,
+               # but a default only applies to a column the INSERT OMITS — so
+               # naming it here is what actually closes this, on every engine
+               # and on every table that already exists.
+               #
+               # Set only when THIS write is an approval; otherwise carried
+               # forward, so a later part-freeze does not erase the moment a
+               # real approval happened.
+               "bat": (now if approved_by else prior.get("approved_at")),
                "v": version_str, "fb": frozen_by,
                "fa": now, "fr": reason,
                "sm": (json.dumps(source_manifest) if source_manifest
@@ -706,7 +756,33 @@ def frozen_parts_of(row: Optional[dict]) -> list:
     have = [p for p in PARTS if row.get(_PART_STATE[p][0]) is not None]
     if have:
         return have
-    return list(PARTS) if row.get("frozen_at") or row.get("approved_at") else []
+    # NARROWED TO ``frozen_at``, which is EXPLICITLY WRITTEN on every freeze.
+    # ``approved_at`` used to be accepted here as well, and it is a column
+    # DEFAULT — so every row had one, including an as-sent freeze that
+    # deliberately leaves ``approved_by`` NULL. The test was therefore always
+    # true and this branch fired on any row whose per-part stamps were absent,
+    # for whatever reason, rather than on the legacy rows it was written for.
+    return list(PARTS) if row.get("frozen_at") else []
+
+
+def frozen_is_legacy(row: Optional[dict]) -> bool:
+    """True when the parts above were INFERRED rather than read.
+
+    A row written before the per-part columns existed carries no per-part
+    stamps, and ``frozen_parts_of`` reports BOTH halves for it — which is what
+    such a row is, since the old code froze the whole row at once. But "both
+    halves are stamped" and "we are assuming both halves" are different facts,
+    and only one of them is evidence.
+
+    Exists so a consumer can SAY so. Silently asserting both is how a reader
+    ends up believing a One Pager was frozen when all that is really known is
+    that something was.
+    """
+    if not row:
+        return False
+    if any(row.get(_PART_STATE[p][0]) is not None for p in PARTS):
+        return False
+    return row.get("frozen_at") is not None
 
 
 def _current_row(investor_code: str, quarter: str) -> Optional[dict]:
@@ -1357,7 +1433,11 @@ def quarter_part_state(quarter: str) -> dict:
     ``error`` set, rather than an empty result that reads as "nothing frozen".
     """
     out = {p: [] for p in PARTS}
-    out.update(overlay_investors=[], one_pagers_stored=0, error=None)
+    out.update(overlay_investors=[], one_pagers_stored=0, error=None,
+               # Investors whose parts were INFERRED from a pre-per-part row
+               # rather than read off it. Counted separately so a screen can
+               # qualify the number instead of presenting it as measured.
+               legacy_investors=[])
     try:
         _ensure_table()
         cols = _columns(_TABLE)
@@ -1381,6 +1461,8 @@ def quarter_part_state(quarter: str) -> dict:
             have = frozen_parts_of(row)
             for p in have:
                 out[p].append(code)
+            if frozen_is_legacy(row):
+                out["legacy_investors"].append(code)
             if PART_ONE_PAGERS in have:
                 try:
                     out["one_pagers_stored"] += len(
@@ -1544,6 +1626,11 @@ def get_frozen(investor_code: str, quarter: str) -> Optional[dict]:
         # Which halves this row actually carries, and who froze each. A
         # consumer must branch on these rather than on the row existing.
         "frozen_parts": have,
+        # INFERRED, NOT READ. True on a row written before the per-part columns
+        # existed: both halves are reported because that is what the old code
+        # froze, but nothing on the row says so. A consumer showing "frozen"
+        # should say which of the two it is looking at.
+        "frozen_parts_legacy": frozen_is_legacy(row),
         "snapshot_frozen": PART_SNAPSHOT in have,
         "one_pagers_frozen": PART_ONE_PAGERS in have,
         "snapshot_frozen_at": _iso(row.get("snapshot_frozen_at")),

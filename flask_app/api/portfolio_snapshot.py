@@ -574,6 +574,11 @@ def quarter_status():
         "one_pagers_stored": state.get("one_pagers_stored"),
         "overlay": _overlay_note(quarter, state),
         "read_error": state.get("error"),
+        # Investors counted above whose halves were INFERRED from a row written
+        # before the per-part columns existed, rather than read off it. Carried
+        # so the screen can qualify the count rather than present it as measured.
+        "legacy_investors": sorted(
+            set(state.get("legacy_investors") or []) & known),
         # Carried on the read the panel already makes, so the screen can say
         # WHY the button is unavailable instead of rendering a dead control.
         # The server refuses regardless; this only decides the wording.

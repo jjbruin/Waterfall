@@ -295,5 +295,88 @@ if os.path.exists(PANEL):
 else:
     print("  SKIP the panel — vue_app/ is not in this tree")
 
+print("\nH. a freeze is not an approval — approved_at stays NULL")
+# `approved_at` used to be a column DEFAULT, so EVERY row carried one, including
+# an as-sent freeze that deliberately leaves `approved_by` NULL. That is a
+# timestamp nobody produced, in the column that records a decision — and it also
+# made the legacy fallback in section I fire on every unstamped row.
+os.environ["FREEZE_ENABLED"] = "1"
+app.config["FREEZE_ENABLED"] = True
+with app.app_context():
+    F.freeze_part("ASSENT", Q, F.PARTS, "cbui")
+_raw = F._current_row("ASSENT", Q) or {}
+chk("an as-sent freeze leaves approved_by NULL", _raw.get("approved_by") is None,
+    str(_raw.get("approved_by")))
+chk("...and approved_at NULL, not a default timestamp",
+    _raw.get("approved_at") is None, str(_raw.get("approved_at")))
+
+# THE PAIRED DIRECTION. "approved_at is never set" would be satisfied by a
+# column that can no longer be written at all, which would lose the approval.
+with app.app_context():
+    F.freeze("APPROVED", Q, "ceo-user")
+_ap = F._current_row("APPROVED", Q) or {}
+chk("an APPROVAL-chain freeze does set approved_by",
+    _ap.get("approved_by") == "ceo-user", str(_ap.get("approved_by")))
+chk("...and sets approved_at with it", _ap.get("approved_at") is not None)
+
+# And a later part-freeze must not erase the moment the approval happened.
+with app.app_context():
+    F.freeze_part("APPROVED", Q, F.PART_ONE_PAGERS, "cbui")
+_ap2 = F._current_row("APPROVED", Q) or {}
+chk("a later part-freeze carries the approval forward",
+    _ap2.get("approved_by") == "ceo-user"
+    and _ap2.get("approved_at") is not None, str(_ap2.get("approved_at")))
+
+print("\nI. a legacy row is reported as legacy, not asserted as both halves")
+# A row written BEFORE the per-part columns existed: frozen_at set, neither part
+# stamped. It really did freeze both halves — the old code froze the whole row —
+# so reporting both is right; claiming it was MEASURED is not.
+with F._engine().begin() as _cx:
+    _cx.execute(sqlalchemy.text(
+        "UPDATE portfolio_snapshot_frozen "
+        "SET snapshot_frozen_at = NULL, one_pagers_frozen_at = NULL "
+        "WHERE investor_code = 'ASSENT'"))
+_legacy = F._current_row("ASSENT", Q) or {}
+chk("a legacy row still reports BOTH halves",
+    F.frozen_parts_of(_legacy) == list(F.PARTS), str(F.frozen_parts_of(_legacy)))
+chk("...and is FLAGGED as inferred", F.frozen_is_legacy(_legacy) is True)
+chk("...and get_frozen carries the flag",
+    (F.get_frozen("ASSENT", Q) or {}).get("frozen_parts_legacy") is True)
+
+# A row with real per-part stamps is NOT legacy — otherwise the flag means
+# nothing, being true of everything.
+chk("a properly stamped row is NOT legacy",
+    F.frozen_is_legacy(F._current_row("APPROVED", Q)) is False)
+chk("...and get_frozen says so",
+    (F.get_frozen("APPROVED", Q) or {}).get("frozen_parts_legacy") is False)
+
+# THE NARROWING ITSELF: approved_at alone must no longer imply frozen.
+_approved_only = {"approved_at": "2026-09-28 21:22:03", "frozen_at": None,
+                  "snapshot_frozen_at": None, "one_pagers_frozen_at": None}
+chk("approved_at ALONE no longer reads as frozen",
+    F.frozen_parts_of(_approved_only) == [], str(F.frozen_parts_of(_approved_only)))
+chk("...and is not called legacy either", F.frozen_is_legacy(_approved_only) is False)
+chk("frozen_at alone still does read as frozen",
+    F.frozen_parts_of({"frozen_at": "2026-09-28 21:22:03"}) == list(F.PARTS))
+
+_qs = F.quarter_part_state(Q)
+chk("quarter_part_state names the legacy investors",
+    "ASSENT" in (_qs.get("legacy_investors") or []), str(_qs.get("legacy_investors")))
+chk("...and does not name a properly stamped one",
+    "APPROVED" not in (_qs.get("legacy_investors") or []))
+
+os.environ.pop("FREEZE_ENABLED", None)
+app.config["FREEZE_ENABLED"] = False
+
+print("\nJ. the DDL no longer defaults approved_at")
+_src = open(os.path.join(ROOT, "flask_app", "services",
+                         "portfolio_snapshot_freeze.py"), encoding="utf-8").read()
+chk("CREATE TABLE declares approved_at with no default",
+    "approved_at TIMESTAMP DEFAULT" not in _src)
+chk("an existing table is migrated, not only new ones",
+    "_drop_approved_at_default" in _src)
+chk("...and the INSERT NAMES approved_at, which is what closes it on SQLite too",
+    "approved_by, approved_at" in _src)
+
 print(f"\n{'=' * 60}\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
