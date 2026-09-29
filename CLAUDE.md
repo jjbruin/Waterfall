@@ -129,6 +129,7 @@ waterfall-xirr/
 - **.claude/memory/accounting_workpapers.md** - The workpaper packages + statement engine: data, mapping, workflow, deadlines, the download (Sep 15 2026)
 - **.claude/memory/app_reference.md** - What each app tab displays + AI Assistant tools/endpoints (split out of this file Sep 11 2026)
 - **.claude/memory/treasury.md** - The bank side of the close: PNC import, the three-way tie, the matcher, what `current_available` cannot say (Sep 17 2026)
+- **.claude/memory/rent_roll_exhibit.md** - New business's rent-roll specification, the gaps against it, the IC exhibit's exact formatting, and the five-step build plan (Sep 29 2026)
 - **.claude/memory/intercompany.md** - Due to/from PSC Manager reconciliation from `gl_detail`, basis A.B only; phase 1 built Sep 29 2026, the Pay/JE step is not
 
 ## Running the Application
@@ -254,6 +255,12 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v534` = `b4f437f` (NEW BUSINESS DOWNSIDE CANDIDATES READ THE SETTLED ROSTER,
+    Sep 29 2026. `scenario_service.get_risk_candidates` read `lease_tenants` raw:
+    an analyst's settled rent or expiry never reached the downside scenario, and a
+    tenant read as vacated / no lease was still offered. Now `get_resolved_tenants`.
+    Both defects reproduced against the old code (lease_clause_rows_check 35 ->
+    37). P2: `45c992c` docs only. Build `cam8`.)
   - `v533` = `ffb7bf7` (A SCAN THE MODEL WON'T READ AS A PDF IS RETRIED AS PAGE
     IMAGES, Sep 29 2026. GNC's 1996 lease gave degenerate replies to the PDF
     block every time; rendered with PyMuPDF (1600 px, JPEG q80) the same pages

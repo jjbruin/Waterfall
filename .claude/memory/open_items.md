@@ -54,6 +54,30 @@ note (it reads `vue_app/package.json`, which the runtime image does not ship).
 
 ---
 
+## 16. Rent roll objectives and the IC exhibit (Sep 29 2026)
+
+New business's 31-section rent-roll specification and their Market at Poplar exhibit
+(B2:H111), measured against the app. **Full detail, the exhibit's exact formatting
+and the five-step plan: `rent_roll_exhibit.md`.**
+
+Headline, 27 exhibit tenants matched: SF 26, current rent 26, expiration 21-22,
+Start 12, future step dates 21, option count 19, **option rent 0 of 39**. The causes:
+exercised options never applied to the term; later documents overwrite the lease
+start; 115 duplicated option rows; option rent stored only as text; no continuous
+timeline; no analyst settlement of steps or options.
+
+### 16.1 Plan -- step 1 BUILT (the three re-read failures), steps 2-5 open
+Owner: build, in order. Step 2 governing terms; 3 one timeline engine; 4 analyst
+settlement of timeline rows; 5 the exhibit, accepted by reproducing theirs cell by cell.
+
+### 16.2 Also found
+- 7 exhibit tenants did not match an app tenant by name -- reconcile before step 5.
+- The re-read moved BooYa's and Outback's lease start to a later document's date
+  (see the Start row above) -- step 2 fixes the cause; until then the Start field
+  on those two is wrong.
+
+---
+
 ## 15. Co-tenancy and exclusives -- the analysts' corrections (Sep 29 2026)
 
 New business corrected Market at Poplar (review 3) by hand in a workbook and a

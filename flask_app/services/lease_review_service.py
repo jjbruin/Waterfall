@@ -2264,7 +2264,11 @@ def extract_pdf_text(source) -> Tuple[str, int]:
     for page in doc:
         text_parts.append(page.get_text())
     doc.close()
-    return '\n'.join(text_parts), page_count
+    # A NUL CHARACTER CANNOT BE STORED. PostgreSQL refuses it in a text value
+    # ("A string literal cannot contain NUL (0x00) characters"), so one stray NUL
+    # in a PDF's text layer failed the whole document: Sam's Club's 50-page
+    # CenturyLink agreement carried 26 of them (Sep 29 2026). They carry no text.
+    return '\n'.join(text_parts).replace('\x00', ''), page_count
 
 
 # ---------------------------------------------------------------------------
@@ -2539,6 +2543,15 @@ SCAN_TEXT_THRESHOLD = 200
 #: scan is 79 pages and exactly one file exceeds the byte cap.
 PDF_MAX_BYTES = 32 * 1024 * 1024
 PDF_MAX_PAGES = 600
+#: What one request may carry. A PDF goes base64-encoded, which is 4/3 its size.
+REQUEST_MAX_BYTES = 32 * 1024 * 1024
+REQUEST_HEADROOM = 512 * 1024
+
+
+def _pdf_fits(file_data: bytes, prompt: str) -> bool:
+    """Whether this PDF, encoded, fits in one request beside the prompt."""
+    encoded = 4 * ((len(file_data) + 2) // 3)
+    return encoded + len(prompt.encode('utf-8')) + REQUEST_HEADROOM <= REQUEST_MAX_BYTES
 
 #: Page images for a scan the model will not read as a PDF. The image route is
 #: capped lower than the PDF route: each page becomes its own image block.
@@ -2651,9 +2664,18 @@ def extract_lease_terms_via_api(
     route, route_note = 'text', None
     content: List[Dict[str, Any]] = []
     if len((text or '').strip()) < SCAN_TEXT_THRESHOLD and file_data:
-        if len(file_data) > PDF_MAX_BYTES:
-            route_note = ("the PDF is %.1f MB, over the %d MB the API accepts"
-                          % (len(file_data) / 1e6, PDF_MAX_BYTES // (1024 * 1024)))
+        if not _pdf_fits(file_data, prompt):
+            # THE LIMIT IS ON THE REQUEST, AND BASE64 ADDS A THIRD. The old check
+            # compared the RAW file with 32 MB, so Tropical Smoothie's 27 MB lease
+            # passed it and was refused by the API as ~36 MB (413, Sep 29 2026).
+            # Rendered pages compress far better, so they go instead.
+            images, why_not = _render_pdf_pages(file_data)
+            if images:
+                content.extend(images)
+                route = 'images'
+            else:
+                route_note = ("the PDF is %.1f MB, over what one request can carry, and"
+                              " %s" % (len(file_data) / 1e6, why_not))
         elif page_count and page_count > PDF_MAX_PAGES:
             route_note = ("the PDF is %d pages, over the %d the API accepts"
                           % (page_count, PDF_MAX_PAGES))
@@ -2704,6 +2726,23 @@ def extract_lease_terms_via_api(
             else:
                 route_note = (route_note + '; ' if route_note else '') + (
                     'retried as the PDF: ' + why_not)
+        elif route == 'text' and file_data:
+            # A TEXT READING THAT FAILS IS RETRIED FROM THE DOCUMENT ITSELF.
+            # Perkins's Assignment & 1st Amendment failed twice on the same text
+            # and read cleanly on a later run (Sep 29 2026) -- asking the same
+            # question of the same text is the weakest retry available. The PDF
+            # carries the layout the extracted text loses.
+            if _pdf_fits(file_data, content[-1]['text']):
+                content = [{"type": "document", "source": {
+                    "type": "base64", "media_type": "application/pdf",
+                    "data": base64.b64encode(file_data).decode('ascii')}},
+                    content[-1]]
+                route = 'pdf'
+            else:
+                images, why_not = _render_pdf_pages(file_data)
+                if images:
+                    content = images + [content[-1]]
+                    route = 'images'
         message = _ask()
 
     # Checked BEFORE reading content: a refusal returns HTTP 200 with no text,

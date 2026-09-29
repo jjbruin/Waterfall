@@ -160,7 +160,8 @@ section('Refusals that are not silence')
 r = call('   ', file_data=b'x' * (33 * 1024 * 1024), page_count=2)
 chk('an oversized PDF is not sent', SENT['messages'][0]['content'][0]['type'] == 'text')
 chk('...and the reason names the size',
-    'over the 32 MB' in (r.get('_extraction_note') or ''),
+    'over what one request can carry' in (r.get('_extraction_note') or '')
+    and 'MB' in (r.get('_extraction_note') or ''),
     str(r.get('_extraction_note')))
 r = call('   ', file_data=PDF, page_count=900)
 chk('a PDF over the page cap is not sent',
@@ -293,6 +294,52 @@ calls = install_queue([(ECHO, 'end_turn'), (json.dumps({'square_feet': 9}), 'end
 r = call(LEASE_TEXT)
 chk('a TEXT document is simply asked again (no images involved)',
     len(calls) == 2 and 'image' not in kinds(calls[1]) and r.get('square_feet') == 9)
+section('Step 1 of the rent-roll plan: the three re-read failures (Sep 29 2026)')
+# Tropical Smoothie: a 27 MB lease passed a RAW 32 MB check and the API refused
+# it at ~36 MB encoded. The check is on the encoded size, and an over-size scan
+# goes as page images.
+chk('the size check is on the ENCODED request: 25 MB raw does not fit',
+    not S._pdf_fits(b'x' * (25 * 1024 * 1024), 'p') and S._pdf_fits(b'x' * (20 * 1024 * 1024), 'p'))
+_real_max = S.REQUEST_MAX_BYTES
+S.REQUEST_MAX_BYTES = len(REAL_PDF) + 1024 + S.REQUEST_HEADROOM   # this real PDF no longer fits
+try:
+    calls = install_queue([(json.dumps({'square_feet': 1307}), 'end_turn')])
+    r = call('', file_data=REAL_PDF, page_count=3)
+finally:
+    S.REQUEST_MAX_BYTES = _real_max
+chk('an over-size scan is sent as page images on the FIRST ask, not refused',
+    len(calls) == 1 and kinds(calls[0]) == ['image', 'image', 'image', 'text']
+    and r.get('_extraction_source') == 'images', str((len(calls), calls and kinds(calls[0]))))
+
+# Perkins: the same text failed twice and read on a later run. A failed TEXT
+# reading is retried from the document itself.
+calls = install_queue([(ECHO, 'end_turn'), (json.dumps({'square_feet': 5560}), 'end_turn')])
+r = call(LEASE_TEXT, file_data=REAL_PDF, page_count=3)
+chk('a failed text reading is retried as the PDF',
+    len(calls) == 2 and kinds(calls[0]) == ['text'] and kinds(calls[1]) == ['document', 'text']
+    and r.get('square_feet') == 5560 and r.get('_extraction_source') == 'pdf',
+    str([kinds(c) for c in calls]))
+
+# Sam's Club: 26 NUL characters in the text layer failed the whole document.
+class _FakePage:
+    def get_text(self):
+        return 'Access\x00 Agreement\x00'
+
+
+class _FakeDoc(list):
+    def close(self):
+        pass
+
+
+_real_open = pymupdf.open
+pymupdf.open = lambda *a, **k: _FakeDoc([_FakePage(), _FakePage()])
+try:
+    txt, pages = S.extract_pdf_text(b'%PDF-fake')
+finally:
+    pymupdf.open = _real_open
+chk('NUL characters are stripped from extracted text', '\x00' not in txt
+    and 'Access Agreement' in txt and pages == 2, repr(txt))
+
 big = pymupdf.open()
 for _ in range(S.IMAGE_MAX_PAGES + 1):
     big.new_page()
