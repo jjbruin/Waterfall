@@ -22,6 +22,61 @@ fixed, plus `MANUAL_RATIO_SEEDS` and its expiry), `onepager_audit_q1_2026.md`.
 
 ---
 
+## 14. MRI commitments as the ownership source — checked Sep 29 2026
+
+Jim updated `IA_Commitment` in MRI to serve as the source of capital ownership
+percentages and asked whether every chain now reaches the beneficial owners at
+100%. **Not yet.** Measured on the 556 current rows (`EndDate IS NULL`), read
+live from MRI and identical to the app's copy (refresh finished Sep 28 14:56).
+The entity-by-entity list went to Jim as
+`Downloads\Commitments_Ownership_Check_2026-09-29.xlsx` (7 tabs), for whoever
+maintains MRI.
+
+**The app never reads `CapitalPercent`.** `ownership_chain_service` and the
+treasury investor split derive the share from committed DOLLARS (see that
+module's docstring for why: PPIECH/EASTCH read 0.00 on both rows while the
+amounts were right). So what can break the app is the POPULATION and the
+AMOUNTS, not blank percentages. Keep the two apart when this is re-checked.
+
+### 14.1 Two missing links — MRI (Jim / whoever maintains commitments)
+Walking up from each of the 77 deal investments that have commitments, every
+chain ends at OWPSC (its six owners sum to 100.00%) or at one of 107 outside
+investor IDs — except two entities with owners in `relationships` and NONE in
+commitments:
+
+| Entity | Invests into | Owner per relationships | Deals affected |
+|---|---|---|---|
+| `INV24-P` | TGA24 | AMB24 | 45MAIN, BELAIR, DORS, GLENM, GVRTEL, TFTP |
+| `PSS1` | APPLE, PPI2LP | PSC2 | APPLE, BALES |
+
+### 14.2 Amounts to confirm — MRI
+- **PPI11, PPI17, PPI18**: one owner each (PSCKOC) stored at 50%. A second owner
+  missing, or should be 100%? Dollars say 100%.
+- **24 rows carry $0 committed**, so they derive 0% — mostly PSC3's partners
+  (DBH, FNKI, JJB, EAJI), PSCMAN/PSC1 rows, KCREIT. **INVPLY <- PIG3** has a $0
+  row at 100% and a $5,784,031 row at 0%.
+
+### 14.3 `CapitalPercent` itself — only if MRI's column is to be the source
+157 of 228 entities total 100%; **71 do not** — 67 are all 0.00 (most property
+entities, plus PSC1 in 66 deals' chains, PCBLE 23, PSCMAN 22), and four total
+the wrong figure (PPI11/17/18 at 50, PIG6 at 34.04 with PSCKOC's $6.2M at 0%).
+Eleven JV deals store 100% for the PPI vehicle and 0% for the OP partner, which
+is not the dollar split (e.g. WINDSO: PPIWIN 70% / OPWATER 30% by dollars).
+Only **4 of 77 deals** carry a correct stored percentage at every level.
+
+### 14.4 Deals with no current commitments — 32, mostly expected
+Child properties held through a parent (BRN-1..9, BURT-1..3, TFT-1..6, PMATNO)
+plus 13 others — ASTONC, AYRTOW, BEARUN, CREEK1, HERITA, LINDEN, PARKPL, SCOTTO,
+SPRNGM, STONEC, STONES, WHITMA, WSTCHA. **Presumed sold, NOT verified** — the
+query drops ended commitments.
+
+**Re-check**: rerun the extraction (live `run_query("MRI_Commitments",
+save_csv=False)` plus `relationships`, `entities`, `deals` via
+`az containerapp exec`), then walk up from each `deals.InvestmentID`, stopping
+at OWPSC.
+
+---
+
 ## 12. Loan subtotals carry Pegasus's debt while its row prints a dash (Sep 25 2026)
 
 **Live bug. Open for 26Q3 and every live quarter. 26Q2 is protected.**
