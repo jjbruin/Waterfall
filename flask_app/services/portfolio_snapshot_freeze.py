@@ -65,6 +65,22 @@ REASON_AS_SENT = "as-sent"          # the "Freeze as sent" button
 REASON_AS_APPROVED = "as-approved"  # the legacy CEO-approval freeze
 REASON_REFREEZE = "re-freeze"       # an admin correction
 
+#: The two halves of an investor's report, frozen independently.
+#:
+#: THEY ARE ALREADY SEPARATE COLUMNS — ``payload`` holds the Snapshot, and
+#: ``roster`` / ``one_pagers`` hold the One Pagers. What was missing was
+#: separate STATE: one ``frozen_at`` described the whole row, so a Snapshot
+#: freeze and a One Pager freeze could not be told apart, and a row frozen for
+#: one half claimed both.
+PART_SNAPSHOT = "snapshot"
+PART_ONE_PAGERS = "one_pagers"
+PARTS = (PART_SNAPSHOT, PART_ONE_PAGERS)
+
+#: Which stored columns each part owns: ``payload`` is the Snapshot,
+#: ``roster`` + ``one_pagers`` are the One Pagers. ``_write_frozen`` writes
+#: only the ones belonging to the parts being frozen and CARRIES THE REST
+#: FORWARD, so freezing one half cannot blank the other.
+#:
 #: Columns added after the table first shipped. Applied one at a time because a
 #: failed ALTER on one must not abandon the rest, and because SQLite has no
 #: ``ADD COLUMN IF NOT EXISTS``.
@@ -76,7 +92,50 @@ _ADDED_COLUMNS = (
     ("roster", "TEXT"),            # JSON: the One Pager roster, in printed order
     ("one_pagers", "TEXT"),        # JSON: {vcode: payload} as published
     ("version", "INTEGER"),
+    # Per-part state. A row may carry one part, the other, or both, so
+    # "is this frozen?" is only answerable per part. The undated columns above
+    # stay as the WHOLE-ROW record of the most recent write of either part —
+    # existing rows keep meaning what they meant.
+    ("snapshot_frozen_at", "TIMESTAMP"),
+    ("snapshot_frozen_by", "TEXT"),
+    ("one_pagers_frozen_at", "TIMESTAMP"),
+    ("one_pagers_frozen_by", "TEXT"),
 )
+
+#: Per-part state columns, by part. Written out rather than derived from a
+#: naming convention, so a renamed column fails loudly here instead of
+#: silently never being written.
+_PART_STATE = {
+    PART_SNAPSHOT: ("snapshot_frozen_at", "snapshot_frozen_by"),
+    PART_ONE_PAGERS: ("one_pagers_frozen_at", "one_pagers_frozen_by"),
+}
+
+#: The history table predates per-part freezing and already exists in
+#: production, so ``CREATE TABLE IF NOT EXISTS`` would never add this. An
+#: archived row without it says which parts it HELD but not which were being
+#: rewritten when it was superseded.
+_HISTORY_ADDED_COLUMNS = (
+    ("frozen_parts", "TEXT"),      # JSON: the parts this write replaced
+)
+
+
+def normalize_parts(part) -> tuple:
+    """``part`` as a validated tuple, in a stable order.
+
+    Accepts a single name or an iterable. An unknown part RAISES rather than
+    being skipped: a caller asking to freeze ``"onepagers"`` must not be told
+    it froze nothing, quietly.
+    """
+    if part is None:
+        return PARTS
+    names = (part,) if isinstance(part, str) else tuple(part)
+    if not names:
+        raise ValueError("no part named; expected any of " + ", ".join(PARTS))
+    bad = [n for n in names if n not in PARTS]
+    if bad:
+        raise ValueError(
+            f"unknown freeze part(s) {bad}; expected any of {list(PARTS)}")
+    return tuple(p for p in PARTS if p in names)
 
 
 def _engine():
@@ -132,18 +191,22 @@ def _ensure_table() -> None:
                 version INTEGER,
                 superseded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 superseded_by TEXT,
-                supersede_reason TEXT NOT NULL
+                supersede_reason TEXT NOT NULL,
+                frozen_parts TEXT
             )
         """))
-    existing = _columns(_TABLE)
-    for col, typ in _ADDED_COLUMNS:
-        if col in existing:
-            continue
-        try:
-            with _engine().begin() as conn:
-                conn.execute(text(f"ALTER TABLE {_TABLE} ADD COLUMN {col} {typ}"))
-        except Exception:
-            log.exception("could not add %s.%s", _TABLE, col)
+    for table, cols in ((_TABLE, _ADDED_COLUMNS),
+                        (_HISTORY, _HISTORY_ADDED_COLUMNS)):
+        existing = _columns(table)
+        for col, typ in cols:
+            if col in existing:
+                continue
+            try:
+                with _engine().begin() as conn:
+                    conn.execute(
+                        text(f"ALTER TABLE {table} ADD COLUMN {col} {typ}"))
+            except Exception:
+                log.exception("could not add %s.%s", table, col)
 
 
 def _columns(table: str) -> set:
@@ -482,65 +545,92 @@ def _data_version() -> str:
 def freeze(investor_code: str, quarter: str, approved_by: str,
            assembler: Optional[Callable] = None,
            elements_loader: Optional[Callable] = None) -> dict:
-    """Capture the complete report as approved, and store it.
+    """Capture the report as APPROVED — the CEO-approval path.
 
-    Freezes BOTH halves of the report: the four assembled subtabs (computed
-    metrics) and the approved editable content (comments, footnotes, the manual
-    Net ROE / ITD values) exactly as they stood at approval.
+    A thin call into ``freeze_part``, not a second implementation. It freezes
+    the SNAPSHOT part only, which is what this path always wrote: the four
+    assembled subtabs plus the approved editable content (comments, footnotes,
+    the manual Net ROE / ITD values) as they stood at approval. It has never
+    stored One Pagers and does not start now.
 
     ``assembler`` / ``elements_loader`` exist for the self-test; production uses
     the defaults. Raises on failure — the CALLER wraps, so that an approval is
     never lost to a snapshot write.
     """
-    from flask_app.serializers import safe_json
-
-    assemble = assembler or assemble_full_report
-    load_elements = elements_loader
-    if load_elements is None:
-        from flask_app.services.portfolio_snapshot_persistence import load_page
-        load_elements = load_page
-
-    report = assemble(investor_code, quarter) or {}
-    report.pop("_resolved", None)          # not part of the frozen contract
-    elements = load_elements(investor_code, quarter) or {}
-
-    payload = safe_json({
-        "subtabs": report.get("subtabs") or {},
-        "errors": report.get("errors") or {},
-        "resolution": report.get("resolution") or {},
-        # The approved editable content, frozen alongside the metrics.
-        "elements": {
-            "comments": elements.get("comments") or [],
-            "footnotes": elements.get("footnotes") or [],
-            "values": elements.get("values") or [],
-        },
-    })
-    return _write_frozen(investor_code, quarter, payload,
-                         frozen_by=approved_by,
-                         reason=REASON_AS_APPROVED,
-                         approved_by=approved_by)
+    return freeze_part(investor_code, quarter, PART_SNAPSHOT,
+                       frozen_by=approved_by,
+                       reason=REASON_AS_APPROVED,
+                       approved_by=approved_by,
+                       assembler=assembler,
+                       elements_loader=elements_loader)
 
 
-def _write_frozen(investor_code: str, quarter: str, payload: dict,
-                  frozen_by: str, reason: str,
+def _write_frozen(investor_code: str, quarter: str,
+                  frozen_by: str, reason: str, parts,
+                  payload: Optional[dict] = None,
                   approved_by: Optional[str] = None,
                   source_manifest: Optional[dict] = None,
                   roster: Optional[list] = None,
                   one_pagers: Optional[dict] = None,
                   supersede_reason: Optional[str] = None) -> dict:
-    """THE one writer for a frozen payload. Both freeze paths funnel here.
+    """THE one writer for a frozen payload. Every freeze path funnels here.
+
+    ``parts`` names which halves this write owns. **Columns belonging to a part
+    NOT being written are carried forward from the existing row**, because the
+    upsert is DELETE-then-INSERT: without the carry-forward, freezing the
+    Snapshot would blank the One Pagers that were already frozen, and the loss
+    would be silent — the row would still be there, just empty on one side.
 
     Any existing row is copied to the history table BEFORE being replaced, so a
     re-freeze never destroys what an investor was actually sent.
     """
     import datetime as _dt
-    blob = json.dumps(payload)
+    parts = normalize_parts(parts)
     version_str = _data_version()
     now = _dt.datetime.utcnow()
 
     _ensure_table()
-    prior = _current_row(investor_code, quarter)
-    next_version = int((prior or {}).get("version") or 0) + 1
+    prior = _current_row(investor_code, quarter) or {}
+    next_version = int(prior.get("version") or 0) + 1
+
+    # Per part: this write's value, or the stored one untouched.
+    if PART_SNAPSHOT in parts:
+        if payload is None:
+            raise ValueError("freezing the snapshot part needs a payload")
+        blob = json.dumps(payload)
+    else:
+        blob = prior.get("payload_raw") or "{}"
+
+    if PART_ONE_PAGERS in parts:
+        roster_blob = json.dumps(roster) if roster is not None else None
+        op_blob = json.dumps(one_pagers) if one_pagers is not None else None
+    else:
+        roster_blob = prior.get("roster_raw")
+        op_blob = prior.get("one_pagers_raw")
+
+    # Per-part state: stamped for what we froze, carried for what we did not.
+    #
+    # A LEGACY ROW CARRIES BOTH PARTS WITH NEITHER TIMESTAMP. Reading the raw
+    # column would give None for the half we are not writing, so freezing the
+    # Snapshot on such a row would leave its One Pager DATA in place while the
+    # state said that half was never frozen — and it would silently stop being
+    # served. The implied state is resolved through frozen_parts_of, the same
+    # reading every consumer uses, and pinned to the row's own frozen_at.
+    prior_parts = frozen_parts_of(prior)
+    state = {}
+    for p in PARTS:
+        at_col, by_col = _PART_STATE[p]
+        if p in parts:
+            state[at_col], state[by_col] = now, frozen_by
+        elif prior.get(at_col) is not None:
+            state[at_col] = prior.get(at_col)
+            state[by_col] = prior.get(by_col)
+        elif p in prior_parts:
+            state[at_col] = prior.get("frozen_at") or prior.get("approved_at")
+            state[by_col] = prior.get("frozen_by") or prior.get("approved_by")
+        else:
+            state[at_col] = None
+            state[by_col] = None
 
     with _engine().begin() as conn:
         if prior:
@@ -548,9 +638,10 @@ def _write_frozen(investor_code: str, quarter: str, payload: dict,
                 INSERT INTO {_HISTORY}
                     (investor_code, quarter, payload, data_version, frozen_by,
                      frozen_at, frozen_reason, source_manifest, roster,
-                     one_pagers, version, superseded_by, supersede_reason)
+                     one_pagers, version, superseded_by, supersede_reason,
+                     frozen_parts)
                 VALUES (:i, :q, :p, :dv, :fb, :fa, :fr, :sm, :ro, :op, :ver,
-                        :sby, :sr)
+                        :sby, :sr, :fp)
             """), {"i": investor_code, "q": quarter,
                    "p": prior.get("payload_raw") or "{}",
                    "dv": prior.get("data_version"), "fb": prior.get("frozen_by"),
@@ -558,7 +649,8 @@ def _write_frozen(investor_code: str, quarter: str, payload: dict,
                    "sm": prior.get("source_manifest_raw"),
                    "ro": prior.get("roster_raw"), "op": prior.get("one_pagers_raw"),
                    "ver": prior.get("version"), "sby": frozen_by,
-                   "sr": supersede_reason or reason})
+                   "sr": supersede_reason or reason,
+                   "fp": json.dumps(list(parts))})
         conn.execute(text(f"DELETE FROM {_TABLE} "
                           f"WHERE investor_code = :i AND quarter = :q"),
                      {"i": investor_code, "q": quarter})
@@ -566,24 +658,55 @@ def _write_frozen(investor_code: str, quarter: str, payload: dict,
             INSERT INTO {_TABLE}
                 (investor_code, quarter, payload, approved_by, data_version,
                  frozen_by, frozen_at, frozen_reason, source_manifest, roster,
-                 one_pagers, version)
-            VALUES (:i, :q, :p, :by, :v, :fb, :fa, :fr, :sm, :ro, :op, :ver)
+                 one_pagers, version,
+                 snapshot_frozen_at, snapshot_frozen_by,
+                 one_pagers_frozen_at, one_pagers_frozen_by)
+            VALUES (:i, :q, :p, :by, :v, :fb, :fa, :fr, :sm, :ro, :op, :ver,
+                    :sat, :sby_, :oat, :oby)
         """), {"i": investor_code, "q": quarter, "p": blob,
-               "by": approved_by, "v": version_str, "fb": frozen_by,
+               # A freeze is not an approval: only the approval path supplies
+               # approved_by, and a later part-freeze must not drop it.
+               "by": approved_by or prior.get("approved_by"),
+               "v": version_str, "fb": frozen_by,
                "fa": now, "fr": reason,
-               "sm": json.dumps(source_manifest) if source_manifest else None,
-               "ro": json.dumps(roster) if roster is not None else None,
-               "op": json.dumps(one_pagers) if one_pagers is not None else None,
-               "ver": next_version})
+               "sm": (json.dumps(source_manifest) if source_manifest
+                      else prior.get("source_manifest_raw")),
+               "ro": roster_blob, "op": op_blob, "ver": next_version,
+               "sat": state["snapshot_frozen_at"],
+               "sby_": state["snapshot_frozen_by"],
+               "oat": state["one_pagers_frozen_at"],
+               "oby": state["one_pagers_frozen_by"]})
 
-    log.info("Froze %s %s (%s, version %s, %s)",
-             investor_code, quarter, reason, next_version, version_str)
+    log.info("Froze %s %s parts=%s (%s, version %s, %s)",
+             investor_code, quarter, ",".join(parts), reason,
+             next_version, version_str)
     return {"investor_code": investor_code, "quarter": quarter,
             "frozen_by": frozen_by, "frozen_at": now.isoformat(),
             "frozen_reason": reason, "version": next_version,
+            "parts": list(parts),
+            "frozen_parts": frozen_parts_of(_current_row(investor_code, quarter)),
             "data_version": version_str, "bytes": len(blob),
-            "one_pager_count": len(one_pagers or {}),
-            "roster_count": len(roster or [])}
+            "one_pager_count": len(json.loads(op_blob) if op_blob else {}),
+            "roster_count": len(json.loads(roster_blob) if roster_blob else [])}
+
+
+def frozen_parts_of(row: Optional[dict]) -> list:
+    """Which parts a stored row actually carries, in a stable order.
+
+    Read from the per-part timestamps, NOT from whether a column has content:
+    an investor with an empty roster legitimately freezes zero One Pagers, and
+    that is a frozen part, not an absent one.
+
+    A row written BEFORE per-part freezing has no per-part timestamps and is
+    reported as carrying BOTH — which is what it is. Treating it as unfrozen
+    would silently un-freeze every quarter already sent.
+    """
+    if not row:
+        return []
+    have = [p for p in PARTS if row.get(_PART_STATE[p][0]) is not None]
+    if have:
+        return have
+    return list(PARTS) if row.get("frozen_at") or row.get("approved_at") else []
 
 
 def _current_row(investor_code: str, quarter: str) -> Optional[dict]:
@@ -611,74 +734,109 @@ def _current_row(investor_code: str, quarter: str) -> Optional[dict]:
     return out
 
 
-def freeze_as_sent(investor_code: str, quarter: str, frozen_by: str,
-                   overlay: Optional[dict] = None,
-                   roster: Optional[list] = None,
-                   source_manifest: Optional[dict] = None,
-                   assembler: Optional[Callable] = None,
-                   one_pager_getter: Optional[Callable] = None,
-                   elements_loader: Optional[Callable] = None) -> dict:
-    """Freeze a quarter AS SENT: subtabs, every One Pager, and the roster.
+def freeze_part(investor_code: str, quarter: str, part, frozen_by: str,
+                reason: str = REASON_AS_SENT,
+                overlay: Optional[dict] = None,
+                roster: Optional[list] = None,
+                source_manifest: Optional[dict] = None,
+                assembler: Optional[Callable] = None,
+                one_pager_getter: Optional[Callable] = None,
+                elements_loader: Optional[Callable] = None,
+                approved_by: Optional[str] = None,
+                supersede_reason: Optional[str] = None) -> dict:
+    """THE freeze. One core, parameterized by which half is being frozen.
 
-    Separate from the approval chain on purpose. ``approved_by`` is left NULL —
-    a freeze records who froze it, never a decision nobody made.
+    ``part`` is ``"snapshot"``, ``"one_pagers"``, or both. Every caller comes
+    through here — the per-part batches, the published-overlay freeze, the
+    re-freeze and the approval-chain freeze — so there is no second definition
+    of what freezing means and the parts cannot drift apart.
 
-    ``overlay`` is the published-value layer for the one-time 26Q2 seeding:
-    ``{vcode_or_"__subtabs__": {dotted.path: {"published": v, "page": n}}}``.
-    Applied AFTER assembly, so every untouched cell stays the computed one and
-    the diff between the two is recoverable later.
+    **The overlay takes both parts in ONE call, deliberately.** One overlay
+    document carries Snapshot cells and One Pager cells read off the same sent
+    PDF; freezing them as two writes would produce two versions and two history
+    rows for a single act, and a reader could not tell they belonged together.
 
-    Raises on failure. The caller must NOT mark the quarter frozen unless this
-    returns — a silent failure is the one outcome this design forbids.
+    Separate from the approval chain. ``approved_by`` stays NULL unless the
+    approval path supplies it — a freeze records who froze it, never a decision
+    nobody made.
+
+    **A ONE PAGER FAILURE NO LONGER SINKS THE SNAPSHOT.** The old behaviour
+    raised on any failed One Pager so the freeze could not be partial; with the
+    halves independent, that would let one unbuildable deal block a Snapshot
+    that is perfectly fine. Failures now drop the One Pager part from the write
+    and are REPORTED in ``one_pager_errors``. Asking for only the One Pagers and
+    having them all fail still raises, because then nothing was frozen and
+    returning a receipt would say otherwise.
     """
     from flask_app.serializers import safe_json
 
+    parts = normalize_parts(part)
     assemble = assembler or assemble_full_report
     report = assemble(investor_code, quarter) or {}
-    resolved = report.pop("_resolved", None) or {}
+    report.pop("_resolved", None)          # not part of the frozen contract
 
-    load_elements = elements_loader
-    if load_elements is None:
-        from flask_app.services.portfolio_snapshot_persistence import load_page
-        load_elements = load_page
-    elements = load_elements(investor_code, quarter) or {}
+    payload = None
+    if PART_SNAPSHOT in parts:
+        load_elements = elements_loader
+        if load_elements is None:
+            from flask_app.services.portfolio_snapshot_persistence import load_page
+            load_elements = load_page
+        elements = load_elements(investor_code, quarter) or {}
+        payload = safe_json({
+            "subtabs": report.get("subtabs") or {},
+            "errors": report.get("errors") or {},
+            "resolution": report.get("resolution") or {},
+            # The editable content, frozen alongside the metrics.
+            "elements": {
+                "comments": elements.get("comments") or [],
+                "footnotes": elements.get("footnotes") or [],
+                "values": elements.get("values") or [],
+            },
+        })
 
-    if roster is None:
-        roster = _roster_from_report(report)
-    get_op = one_pager_getter or _default_one_pager_getter()
-    one_pagers, failures = {}, []
-    for vc in roster:
-        try:
-            one_pagers[vc] = get_op(vc, quarter)
-        except Exception as exc:                      # noqa: BLE001
-            failures.append(f"{vc}: {type(exc).__name__}: {exc}")
-    if failures:
-        raise RuntimeError(
-            f"{len(failures)} One Pager(s) could not be built, so the freeze "
-            f"would be incomplete: " + "; ".join(failures[:5]))
-
-    payload = safe_json({
-        "subtabs": report.get("subtabs") or {},
-        "errors": report.get("errors") or {},
-        "resolution": report.get("resolution") or {},
-        "elements": {
-            "comments": elements.get("comments") or [],
-            "footnotes": elements.get("footnotes") or [],
-            "values": elements.get("values") or [],
-        },
-    })
-    one_pagers = safe_json(one_pagers)
+    one_pagers = None
+    failures = []
+    if PART_ONE_PAGERS in parts:
+        if roster is None:
+            roster = _roster_from_report(report)
+        get_op = one_pager_getter or _default_one_pager_getter()
+        built = {}
+        for vc in roster:
+            try:
+                built[vc] = get_op(vc, quarter)
+            except Exception as exc:                  # noqa: BLE001
+                failures.append(f"{vc}: {type(exc).__name__}: {exc}")
+        if failures:
+            parts = tuple(p for p in parts if p != PART_ONE_PAGERS)
+            if not parts:
+                raise RuntimeError(
+                    f"{len(failures)} One Pager(s) could not be built, so "
+                    f"nothing was frozen: " + "; ".join(failures[:5]))
+        else:
+            one_pagers = safe_json(built)
 
     applied = 0
     if overlay:
-        applied = _apply_overlay(payload, one_pagers, overlay)
+        # Applied AFTER assembly, so every untouched cell stays the computed
+        # one and the diff between the two stays recoverable.
+        applied = _apply_overlay(payload if payload is not None else {},
+                                 one_pagers if one_pagers is not None else {},
+                                 overlay)
 
-    manifest = dict(source_manifest or {})
-    manifest["overlay_cells_applied"] = applied
-    return _write_frozen(investor_code, quarter, payload,
-                         frozen_by=frozen_by, reason=REASON_AS_SENT,
-                         source_manifest=manifest, roster=roster,
-                         one_pagers=one_pagers)
+    manifest = dict(source_manifest or {}) if source_manifest else None
+    if manifest is not None:
+        manifest["overlay_cells_applied"] = applied
+
+    receipt = _write_frozen(
+        investor_code, quarter, frozen_by=frozen_by, reason=reason,
+        parts=parts, payload=payload, approved_by=approved_by,
+        source_manifest=manifest,
+        roster=roster if PART_ONE_PAGERS in parts else None,
+        one_pagers=one_pagers, supersede_reason=supersede_reason)
+    if failures:
+        receipt["one_pager_errors"] = failures
+        receipt["one_pagers_frozen"] = False
+    return receipt
 
 
 def _roster_from_report(report: dict) -> list:
@@ -1154,19 +1312,75 @@ def compare_overlay_to_live(targets: dict, overlay: dict) -> dict:
     }
 
 
-def is_frozen(investor_code: str, quarter: str) -> bool:
-    """True when this investor+quarter has a stored copy."""
-    return _current_row(investor_code, quarter) is not None
+def is_frozen(investor_code: str, quarter: str, part=None) -> bool:
+    """True when this investor+quarter has the named part frozen.
+
+    ``part=None`` asks "is ANY part frozen", which is what the old whole-row
+    question meant and what the write lock wants. Naming a part asks about that
+    half alone — the read paths must, or a Snapshot-only freeze would serve
+    One Pagers nobody froze.
+    """
+    have = frozen_parts_of(_current_row(investor_code, quarter))
+    if not have:
+        return False
+    if part is None:
+        return True
+    return all(p in have for p in normalize_parts(part))
+
+
+def frozen_parts(investor_code: str, quarter: str) -> list:
+    """Which halves are frozen. ``[]`` when the quarter is live."""
+    return frozen_parts_of(_current_row(investor_code, quarter))
+
+
+def quarters_frozen_with_deal(quarter: str, vcode: str) -> list:
+    """Investors whose frozen ``quarter`` carries ``vcode`` in its One Pagers.
+
+    EXISTS FOR THE COMMENT LOCK. One Pager comments are keyed (vcode, quarter)
+    with no investor, while a freeze is keyed (investor, quarter) — so "is this
+    comment frozen?" has no single answer and must be asked of every investor.
+    Returns the investor codes, so the refusal can name them instead of saying
+    only that something, somewhere, is frozen.
+    """
+    out = []
+    try:
+        _ensure_table()
+        cols = _columns(_TABLE)
+        if "one_pagers" not in cols:
+            return out
+        with _engine().connect() as conn:
+            rows = conn.execute(text(
+                f"SELECT investor_code, one_pagers, roster, "
+                f"       one_pagers_frozen_at, frozen_at, approved_at "
+                f"FROM {_TABLE} WHERE quarter = :q"), {"q": quarter}).mappings()
+            for r in rows:
+                if PART_ONE_PAGERS not in frozen_parts_of(dict(r)):
+                    continue
+                for raw in (r.get("one_pagers"), r.get("roster")):
+                    try:
+                        blob = json.loads(raw) if raw else None
+                    except Exception:
+                        blob = None
+                    if blob and vcode in blob:
+                        out.append(r["investor_code"])
+                        break
+    except Exception:
+        log.exception("frozen-deal lookup failed for %s %s", quarter, vcode)
+    return out
 
 
 def refreeze(investor_code: str, quarter: str, frozen_by: str, reason: str,
-             **kw) -> dict:
-    """Replace a frozen quarter, keeping the previous version in history."""
+             part=None, **kw) -> dict:
+    """Replace a frozen quarter, keeping the previous version in history.
+
+    Defaults to BOTH parts, which is what a correction to a sent report means.
+    A part may be named to restate one half alone.
+    """
     if not (reason or "").strip():
         raise ValueError("A reason is required to re-freeze a sent quarter")
     if not is_frozen(investor_code, quarter):
         raise ValueError(f"{investor_code} {quarter} is not frozen")
-    out = freeze_as_sent(investor_code, quarter, frozen_by, **kw)
+    out = freeze_part(investor_code, quarter, part, frozen_by, **kw)
     out["refreeze_reason"] = reason
     return out
 
@@ -1245,6 +1459,7 @@ def get_frozen(investor_code: str, quarter: str) -> Optional[dict]:
         return (v.isoformat() if hasattr(v, "isoformat")
                 else (str(v) if v else None))
 
+    have = frozen_parts_of(row)
     return {
         "payload": payload,
         "approved_by": row.get("approved_by"),
@@ -1257,6 +1472,15 @@ def get_frozen(investor_code: str, quarter: str) -> Optional[dict]:
         "source_manifest": _j(row.get("source_manifest_raw")),
         "roster": _j(row.get("roster_raw")),
         "one_pagers": _j(row.get("one_pagers_raw")),
+        # Which halves this row actually carries, and who froze each. A
+        # consumer must branch on these rather than on the row existing.
+        "frozen_parts": have,
+        "snapshot_frozen": PART_SNAPSHOT in have,
+        "one_pagers_frozen": PART_ONE_PAGERS in have,
+        "snapshot_frozen_at": _iso(row.get("snapshot_frozen_at")),
+        "snapshot_frozen_by": row.get("snapshot_frozen_by"),
+        "one_pagers_frozen_at": _iso(row.get("one_pagers_frozen_at")),
+        "one_pagers_frozen_by": row.get("one_pagers_frozen_by"),
     }
 
 
@@ -1268,9 +1492,14 @@ def get_frozen_one_pager(investor_code: str, quarter: str,
     carry different published figures on two investors' reports — Nottingham
     Village went out at $9.1M to one and $12.1M to the other — so a store keyed
     only by (vcode, quarter) cannot represent what was actually sent.
+
+    **Returns None unless the ONE PAGER part is frozen.** A quarter whose
+    Snapshot alone was frozen has a row, and before per-part state that row was
+    enough to serve a One Pager nobody had frozen — a stale copy presented as
+    what was sent.
     """
     fr = get_frozen(investor_code, quarter)
-    if not fr:
+    if not fr or not fr.get("one_pagers_frozen"):
         return None
     return (fr.get("one_pagers") or {}).get(vcode)
 
@@ -1316,12 +1545,18 @@ def load_report(investor_code: str, quarter: str,
     # are separate acts now: the button records that a quarter was sent, and a
     # sent quarter must not be recomputed. Live data is for the current,
     # unsent quarter only.
+    # ...BUT ONLY THE SNAPSHOT PART SPEAKS FOR THIS REPORT. A quarter whose
+    # One Pagers alone were frozen has a row, and serving its `payload` would
+    # hand back the empty placeholder that row was created with. The Snapshot
+    # is live until the Snapshot part is frozen.
     frozen = get_frozen_fn(investor_code, quarter)
-    if frozen:
+    if frozen and frozen.get("snapshot_frozen", True):
         out = dict(frozen["payload"])
         out["source"] = SOURCE_FROZEN
-        who = frozen.get("frozen_by") or frozen.get("approved_by") or "unknown"
-        when = str(frozen.get("frozen_at") or frozen.get("approved_at") or "")[:10]
+        who = (frozen.get("snapshot_frozen_by") or frozen.get("frozen_by")
+               or frozen.get("approved_by") or "unknown")
+        when = str(frozen.get("snapshot_frozen_at") or frozen.get("frozen_at")
+                   or frozen.get("approved_at") or "")[:10]
         reason = frozen.get("frozen_reason") or REASON_AS_APPROVED
         label = ("Frozen as sent" if reason == REASON_AS_SENT
                  else "Frozen at approval")
@@ -1330,7 +1565,9 @@ def load_report(investor_code: str, quarter: str,
             + (f" on {when}" if when else ""))
         for k in ("approved_by", "approved_at", "data_version", "frozen_by",
                   "frozen_at", "frozen_reason", "version", "source_manifest",
-                  "roster"):
+                  "roster", "frozen_parts", "snapshot_frozen",
+                  "one_pagers_frozen", "snapshot_frozen_at",
+                  "one_pagers_frozen_at"):
             out[k] = frozen.get(k)
         out["read_only"] = True
         return out
@@ -1350,6 +1587,15 @@ def load_report(investor_code: str, quarter: str,
     out["source"] = SOURCE_LIVE
     out["read_only"] = False
     out["source_note"] = "In progress — computed live from current data."
+    # A LIVE SNAPSHOT MAY STILL HAVE FROZEN ONE PAGERS. Without this the banner
+    # would read "Live data" with nothing saying the other half is fixed, and
+    # the two halves would appear to disagree for no stated reason.
+    if frozen:
+        out["frozen_parts"] = frozen.get("frozen_parts") or []
+        out["snapshot_frozen"] = bool(frozen.get("snapshot_frozen"))
+        out["one_pagers_frozen"] = bool(frozen.get("one_pagers_frozen"))
+        out["one_pagers_frozen_at"] = frozen.get("one_pagers_frozen_at")
+        out["one_pagers_frozen_by"] = frozen.get("one_pagers_frozen_by")
     return out
 
 

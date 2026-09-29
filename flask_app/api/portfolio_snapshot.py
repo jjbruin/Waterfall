@@ -22,12 +22,15 @@ that enrichment. Do not add ``full_data=data`` here without measuring.
 
 from flask import Blueprint, request, jsonify
 import json
+import logging
 
 import pandas as pd
 
-from flask_app.auth.routes import login_required, role_required, roles_exactly
+from flask_app.auth.routes import login_required, roles_exactly
 from flask_app.serializers import safe_json
 from flask_app.services import data_service
+
+logger = logging.getLogger(__name__)
 
 portfolio_snapshot_bp = Blueprint("portfolio_snapshot", __name__)
 
@@ -41,7 +44,10 @@ portfolio_snapshot_bp = Blueprint("portfolio_snapshot", __name__)
 #: with nothing saying so. This way a new element endpoint is locked the moment
 #: it exists and has to be named here to be let through.
 _FROZEN_WRITE_ALLOWED = frozenset({
-    "portfolio_snapshot.post_freeze",      # the button itself
+    "portfolio_snapshot.post_freeze_all_snapshots",    # the two batch buttons;
+    "portfolio_snapshot.post_freeze_all_one_pagers",   # each refuses an
+                                                       # already-frozen part on
+                                                       # its own terms
     "portfolio_snapshot.post_refreeze",    # an admin correction
     "portfolio_snapshot.post_unfreeze",    # returning it to live
     "portfolio_snapshot.post_freeze_overlay",   # the seeded 26Q2 freeze; it
@@ -54,12 +60,41 @@ _FROZEN_WRITE_ALLOWED = frozenset({
 })
 
 
+def frozen_write_refusal(investor: str, quarter: str, fr: dict):
+    """The 409 body for a write into a frozen quarter, or None.
+
+    Shared with the One Pager comment path in ``financials.py``, which is on a
+    DIFFERENT blueprint and so is never reached by the ``before_request``
+    below. One refusal, one wording, both doors.
+    """
+    if not fr:
+        return None
+    who = (fr.get("frozen_by") or fr.get("approved_by") or "unknown")
+    when = str(fr.get("frozen_at") or fr.get("approved_at") or "")[:10]
+    parts = fr.get("frozen_parts") or []
+    what = {"snapshot": "the Snapshot", "one_pagers": "the One Pagers"}
+    named = " and ".join(what.get(p, p) for p in parts) or "this quarter"
+    return {
+        "error": f"{investor} {quarter} was frozen as sent by {who}"
+                 + (f" on {when}" if when else "")
+                 + f" ({named}). Frozen quarters are read-only. An admin can "
+                   "Re-freeze or Unfreeze it if it genuinely has to change.",
+        "frozen": True,
+        "frozen_parts": parts,
+    }
+
+
 @portfolio_snapshot_bp.before_request
 def _lock_frozen_quarters():
     """Refuse edits to a quarter that has been frozen.
 
     A frozen quarter is the record of what an investor was sent, so the typed
     fields on it — Net ROE, ITD, comments, footnotes — are no longer editable.
+
+    ANY frozen part locks the page. The two halves are frozen independently but
+    the editable content is shared: a comment reaches the Snapshot payload AND
+    the One Pagers, so a lock that only fired when both were frozen would let
+    an edit drift away from whichever half was already sent.
     """
     if request.method in ("GET", "HEAD", "OPTIONS"):
         return None
@@ -75,17 +110,10 @@ def _lock_frozen_quarters():
         fr = get_frozen(investor, quarter)
     except Exception:
         return None                       # never block a write on a lookup fault
-    if not fr:
+    refusal = frozen_write_refusal(investor, quarter, fr)
+    if refusal is None:
         return None
-    who = fr.get("frozen_by") or fr.get("approved_by") or "unknown"
-    when = str(fr.get("frozen_at") or fr.get("approved_at") or "")[:10]
-    return jsonify({
-        "error": f"{investor} {quarter} was frozen as sent by {who}"
-                 + (f" on {when}" if when else "")
-                 + ". Frozen quarters are read-only. An admin can Re-freeze or "
-                   "Unfreeze it if it genuinely has to change.",
-        "frozen": True,
-    }), 409
+    return jsonify(refusal), 409
 
 
 def _get_data():
@@ -136,9 +164,7 @@ def _missing(investor: str, quarter: str):
 
 # ── dropdowns ─────────────────────────────────────────────────────────────
 
-@portfolio_snapshot_bp.route("/investors", methods=["GET"])
-@login_required
-def investors():
+def _investor_list(data=None) -> list:
     """Investor codes eligible for a snapshot, with display names.
 
     Reuses Review Tracking's authoritative upstream-investor filter (the SQL
@@ -146,6 +172,10 @@ def investors():
     sold deals and child properties — the same population the Reports "By
     Partner" selector uses. Falls back to the relationships-derived list if
     that helper is unavailable.
+
+    Extracted so the freeze-all batches iterate the SAME population the
+    dropdown offers. Two lists would mean a batch that silently skips an
+    investor the screen shows, or freezes one it does not.
     """
     from flask_app.services.portfolio_snapshot_service import get_investor_name
 
@@ -160,10 +190,7 @@ def investors():
     except Exception:
         out = []
 
-    if not out:
-        data, err = _data_or_error()
-        if err:
-            return err
+    if not out and data is not None:
         rel = data.get("relationships_raw")
         codes = set()
         if rel is not None and not getattr(rel, "empty", True):
@@ -176,6 +203,19 @@ def investors():
                for c in sorted(codes)]
 
     out.sort(key=lambda r: (r["name"] or r["code"]).lower())
+    return out
+
+
+@portfolio_snapshot_bp.route("/investors", methods=["GET"])
+@login_required
+def investors():
+    """Investor codes eligible for a snapshot, with display names."""
+    out = _investor_list()
+    if not out:
+        data, err = _data_or_error()
+        if err:
+            return err
+        out = _investor_list(data)
     return jsonify({"investors": out})
 
 
@@ -419,36 +459,97 @@ def freeze_status():
         return jsonify({"error": str(exc)}), 500
 
 
-@portfolio_snapshot_bp.route("/freeze", methods=["POST"])
-@login_required
-@role_required("analyst")
-def post_freeze():
-    """Freeze this investor+quarter as sent.
+def _freeze_all(part: str):
+    """Freeze one PART of a quarter for every investor.
 
-    A FAILURE IS REPORTED, NEVER SWALLOWED. ``freeze_as_sent`` raises rather
-    than storing a partial report, so a 500 here means the quarter is still
-    live — which is what the caller needs to know.
+    THE LOOP IS THE ONLY NEW LOGIC. Each investor is frozen by the same
+    ``freeze_part`` core the overlay and the approval chain call, so "freeze
+    everyone" cannot mean something different from "freeze one".
+
+    PER-INVESTOR ISOLATION. One investor failing must not abort the rest —
+    a half-run batch with no record of which half ran is worse than either
+    outcome — so every investor gets its own result row carrying either a
+    receipt or an error, and the response is 200 only when all of them worked.
+
+    Investors already frozen for THIS part are reported as skipped rather than
+    silently re-frozen: re-freezing is an admin act with a required reason, and
+    a batch must not perform it by accident.
     """
     body = request.get_json(silent=True) or {}
-    investor = (body.get("investor") or "").strip().upper()
     quarter = (body.get("quarter") or "").strip()
-    err = _missing(investor, quarter)
-    if err:
-        return err
+    if not quarter:
+        return jsonify({"error": "quarter is required"}), 400
     from flask_app.services import portfolio_snapshot_freeze as FZ
-    if FZ.is_frozen(investor, quarter):
-        return jsonify({
-            "error": f"{investor} {quarter} is already frozen. Use Re-freeze "
-                     f"to replace it, which keeps the previous version."}), 409
+
+    # The SAME population the dropdown offers — see _investor_list.
+    codes = [r["code"] for r in _investor_list()]
+    if not codes:
+        data, err = _data_or_error()
+        if err:
+            return err
+        codes = [r["code"] for r in _investor_list(data)]
+    if not codes:
+        return jsonify({"error": "No investors found to freeze."}), 500
+    only = {c.strip().upper() for c in (body.get("investors") or []) if c}
+    if only:
+        codes = [c for c in codes if c in only]
+
     user = _current_user()
-    try:
-        receipt = FZ.freeze_as_sent(
-            investor, quarter, user.get("username") or "unknown")
-    except Exception as exc:
-        return jsonify({
-            "error": f"Freeze failed, so {investor} {quarter} is still live: "
-                     f"{exc}", "frozen": False}), 500
-    return jsonify(safe_json({**receipt, "frozen": True}))
+    who = user.get("username") or "unknown"
+    results = []
+    for code in codes:
+        row = {"investor": code, "part": part}
+        try:
+            if FZ.is_frozen(code, quarter, part):
+                row.update(skipped=True, frozen=False,
+                           reason="already frozen for this part — Re-freeze it "
+                                  "if it genuinely has to change")
+            else:
+                row["receipt"] = safe_json(
+                    FZ.freeze_part(code, quarter, part, who))
+                row["frozen"] = True
+                errs = (row["receipt"] or {}).get("one_pager_errors")
+                if errs:
+                    row["frozen"] = False
+                    row["error"] = (f"{len(errs)} One Pager(s) could not be "
+                                    f"built: " + "; ".join(errs[:3]))
+        except Exception as exc:                      # noqa: BLE001
+            logger.exception("freeze-all %s failed for %s %s",
+                             part, code, quarter)
+            row.update(frozen=False,
+                       error=f"{code} {quarter} is still live: {exc}")
+        results.append(row)
+
+    froze = sum(1 for r in results if r.get("frozen"))
+    failed = [r for r in results if r.get("error")]
+    out = {"quarter": quarter, "part": part, "results": results,
+           "investors": len(results), "frozen": froze,
+           "skipped": sum(1 for r in results if r.get("skipped")),
+           "failed": len(failed)}
+    return jsonify(safe_json(out)), (200 if not failed else 207)
+
+
+@portfolio_snapshot_bp.route("/freeze-all/snapshots", methods=["POST"])
+@login_required
+@roles_exactly("admin")
+def post_freeze_all_snapshots():
+    """Freeze the SNAPSHOT half of a quarter for every investor."""
+    from flask_app.services import portfolio_snapshot_freeze as FZ
+    return _freeze_all(FZ.PART_SNAPSHOT)
+
+
+@portfolio_snapshot_bp.route("/freeze-all/one-pagers", methods=["POST"])
+@login_required
+@roles_exactly("admin")
+def post_freeze_all_one_pagers():
+    """Freeze the ONE PAGER half of a quarter for every investor.
+
+    Keyed per investor on purpose: the same deal and quarter can carry
+    different published figures on two investors' reports, so there is no
+    investor-independent One Pager to freeze.
+    """
+    from flask_app.services import portfolio_snapshot_freeze as FZ
+    return _freeze_all(FZ.PART_ONE_PAGERS)
 
 
 @portfolio_snapshot_bp.route("/freeze-overlay", methods=["POST"])
@@ -632,8 +733,12 @@ def post_freeze_overlay():
             out["reports"].append(rep)
             continue
         try:
-            rep["receipt"] = FZ.freeze_as_sent(
-                inv, quarter, user.get("username") or "unknown",
+            # BOTH PARTS IN ONE CALL. One overlay document carries Snapshot
+            # cells and One Pager cells read off the same sent PDF, so they are
+            # one act: two writes would mint two versions and two history rows
+            # for it, and nothing would say they belonged together.
+            rep["receipt"] = FZ.freeze_part(
+                inv, quarter, FZ.PARTS, user.get("username") or "unknown",
                 overlay=overlay,
                 roster=[resolved[t] for t in (blk.get("roster_titles") or [])
                         if t in resolved],

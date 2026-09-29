@@ -253,6 +253,62 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v529` = `4036e69` (FREEZE ALL SNAPSHOTS / ALL ONE PAGERS, ON ONE CORE, and the
+    One Pager comment lock closed. Deployed Sep 29 2026 10:12 EDT (14:12:11 UTC),
+    digest `sha256:8873f844c1a362552639503e6ca8eb9822b4555a618321a7a0f776813da4d0b4`.
+    THE IMAGE IS A MERGE COMMIT, so read its parents, not its diff: `4036e69` is
+    `9bedf3d` (freeze-all-parts) merged with `30bf3a8` (origin/main), which carries
+    JIM'S v528 `799239a`. Nothing of his is reverted; v528's runtime is inside this
+    image. Rollback target is `799239a` (v528), still tagged.
+    ONE CORE, NOT A SECOND ENGINE. `freeze_part(investor, quarter, part, ...)` is the
+    single body, and the two batch buttons, the published-overlay freeze, refreeze and
+    the approval-chain `freeze()` ALL call it. `freeze_as_sent` and the per-investor
+    `POST /freeze` are DELETED, not left beside it -- the old route now 405s. The
+    overlay takes BOTH parts in ONE call on purpose: one document covers both halves,
+    so two writes would mint two versions and two history rows for a single act.
+    THE CARRY-FORWARD IS LOAD-BEARING. The upsert is DELETE-then-INSERT, so without
+    explicitly carrying the untouched half forward, freezing the Snapshot BLANKS the
+    One Pagers -- silently, with the row still present. Four additive columns via
+    `_ADDED_COLUMNS` plus `frozen_parts` on the history table, which
+    `CREATE TABLE IF NOT EXISTS` would never have added to the existing production
+    table (the v507 lesson).
+    A ONE PAGER FAILURE NO LONGER SINKS THE SNAPSHOT: the old core raised on any
+    failed One Pager, which with independent halves would let one unbuildable deal
+    block a Snapshot that is fine. Failures drop that part and are REPORTED. Asking
+    for the One Pagers alone and having them all fail still raises, because then
+    nothing was frozen.
+    THE COMMENT LOCK WAS A REAL GAP.
+    `PUT /api/financials/<vcode>/one-pager/comments` is on `financials_bp`, so the
+    snapshot blueprint's `before_request` never saw it -- comments stayed EDITABLE on
+    a frozen quarter unless it also happened to be APPROVED, which is a different
+    authority. It takes no investor and cannot: comments are keyed (vcode, quarter)
+    while a freeze is keyed (investor, quarter), so the question is asked of every
+    investor and any frozen report carrying the deal refuses the edit, naming it.
+    DELIBERATELY BROADER THAN THE FREEZE ITSELF -- freezing one investor's quarter
+    makes that deal's One Pager comments read-only for the other investors on the same
+    deal, which nobody would predict from the button's label.
+    TWO OTHER BEHAVIOUR CHANGES WORTH JIM'S EYE, both intentional: freezing is now
+    `@roles_exactly("admin")` where it was analyst-and-above; and a freeze PRESERVES an
+    existing `approved_by` instead of nulling it (`"by": approved_by or
+    prior.get("approved_by")`), needed so the second half of a two-part freeze cannot
+    drop it. A fresh as-sent freeze still leaves `approved_by` NULL, asserted by the
+    guardrail. The review chain -- submit / approve / return_to_draft / reopen -- is
+    untouched.
+    GUARDRAILS: `freeze_as_sent_check` 148/154 IN THE CONTAINER and 154/154 on the
+    merged tree locally; the 6 are the `overlay_26q2.json` checks, which SKIP because
+    that file is gitignored and not in the image -- correct behaviour, stated by the
+    script, same as v527. `traceability_tools_check` 129/129. Jim's own suites on the
+    merged tree 42 / 33 / 58. `line_mapping_check` exits 1 on an empty local SQLite and
+    does so IDENTICALLY on Jim's unmodified tree -- a pre-existing environment failure,
+    not this branch.
+    LIVE SMOKE: clean boot, the SQLAlchemy `<2.1` pin held (no "No module named
+    psycopg", the v524 failure still closed), both buttons present in the served
+    bundle, old `POST /freeze` gone, endpoints auth-gated.
+    NOT DEMONSTRATED AGAINST PRODUCTION: a signed-in NON-ADMIN getting 403. It is
+    asserted by the code and by guardrail U, but no non-admin credential was
+    available, so the one thing the role narrowing exists to do has been proved only
+    locally. **NO REAL FREEZE HAS BEEN RUN** -- the v527 caveat still stands, and
+    deploying the buttons does not press them.)
   - `v528` = `799239a` (THE ARGUS CASH FLOW IS LOADED ONCE AND MAPPED BY ACCOUNT --
     AM's third list, Sep 28 2026. The Assumptions-tab upload, its route and
     `valuation_service.import_argus` are gone; "Load Valuation Cash Flow" on

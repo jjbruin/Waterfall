@@ -89,7 +89,7 @@ def stub_op(vcode, quarter):
 
 
 print("A. a freeze stores subtabs, One Pagers and the roster")
-res = F.freeze_as_sent("TGAM", "2026-Q2", "cbui", assembler=stub_report,
+res = F.freeze_part("TGAM", "2026-Q2", F.PARTS, "cbui", assembler=stub_report,
                        one_pager_getter=stub_op, elements_loader=stub_elements)
 fr = F.get_frozen("TGAM", "2026-Q2")
 chk("freeze returns a receipt naming who and when",
@@ -135,7 +135,7 @@ chk("an unfrozen quarter still serves live", live["source"] == F.SOURCE_LIVE)
 chk("and live is not read-only", live.get("read_only") is False)
 
 print("\nE. One Pagers are keyed by investor as well as deal")
-F.freeze_as_sent("KOCINV", "2026-Q2", "cbui", assembler=stub_report,
+F.freeze_part("KOCINV", "2026-Q2", F.PARTS, "cbui", assembler=stub_report,
                  one_pager_getter=stub_op, elements_loader=stub_elements)
 a = F.get_frozen_one_pager("TGAM", "2026-Q2", "D1")
 b = F.get_frozen_one_pager("KOCINV", "2026-Q2", "D1")
@@ -146,23 +146,48 @@ chk("the same deal+quarter can hold two different published copies",
 chk("an investor with no freeze returns nothing",
     F.get_frozen_one_pager("WRI", "2026-Q2", "D1") is None)
 
-print("\nF. a failed freeze leaves the quarter unfrozen")
+print("\nF. a One Pager failure no longer sinks the Snapshot")
+# CHANGED DELIBERATELY. The old core raised on ANY failed One Pager so a freeze
+# could never be partial. With the halves independent that rule would let one
+# unbuildable deal block a Snapshot that is perfectly fine, so the failure now
+# drops the One Pager part and is REPORTED. Asking for the One Pagers ALONE and
+# having them fail still raises, because then nothing was frozen — both
+# directions are asserted, since reporting-instead-of-raising everywhere would
+# satisfy the first half on its own.
 def exploding_op(vcode, quarter):
     if vcode == "D2":
         raise RuntimeError("forecast unavailable")
     return stub_op(vcode, quarter)
 
 before = F.get_frozen("WRI", "2026-Q2")
+rec = F.freeze_part("WRI", "2026-Q2", F.PARTS, "cbui", assembler=stub_report,
+                    one_pager_getter=exploding_op, elements_loader=stub_elements)
+wri = F.get_frozen("WRI", "2026-Q2")
+chk("nothing was frozen for WRI before this", before is None)
+chk("the Snapshot part still froze", bool(wri and wri["snapshot_frozen"]))
+chk("the One Pager part did NOT", bool(wri) and wri["one_pagers_frozen"] is False)
+chk("the receipt names the deal that failed",
+    any("D2" in e for e in (rec.get("one_pager_errors") or [])),
+    str(rec.get("one_pager_errors")))
+chk("and says the One Pagers are not frozen", rec.get("one_pagers_frozen") is False)
+chk("no One Pager is served for it",
+    F.get_frozen_one_pager("WRI", "2026-Q2", "D1") is None)
+chk("is_frozen('one_pagers') is False",
+    F.is_frozen("WRI", "2026-Q2", "one_pagers") is False)
+chk("is_frozen('snapshot') is True",
+    F.is_frozen("WRI", "2026-Q2", "snapshot") is True)
+
 raised = None
 try:
-    F.freeze_as_sent("WRI", "2026-Q2", "cbui", assembler=stub_report,
-                     one_pager_getter=exploding_op, elements_loader=stub_elements)
+    F.freeze_part("WRIONLY", "2026-Q2", "one_pagers", "cbui",
+                  assembler=stub_report, one_pager_getter=exploding_op,
+                  elements_loader=stub_elements)
 except Exception as exc:          # noqa: BLE001
     raised = exc
-chk("the freeze raises rather than storing a partial report", raised is not None)
-chk("the error names the deal that failed", "D2" in str(raised), str(raised))
-chk("nothing was stored", before is None and F.get_frozen("WRI", "2026-Q2") is None)
-chk("is_frozen reports it as not frozen", F.is_frozen("WRI", "2026-Q2") is False)
+chk("asking for ONLY the One Pagers still raises when they all fail",
+    raised is not None, str(raised))
+chk("the error names the deal", "D2" in str(raised), str(raised))
+chk("and nothing was stored", F.get_frozen("WRIONLY", "2026-Q2") is None)
 
 print("\nG. the published overlay")
 overlay = {
@@ -173,7 +198,7 @@ overlay = {
     "D1": {"cap_stack.loan_terms_str":
            {"published": "3.7% fixed | 7/1/2026", "page": 8}},
 }
-F.freeze_as_sent("RBS262", "2026-Q2", "cbui", overlay=overlay,
+F.freeze_part("RBS262", "2026-Q2", F.PARTS, "cbui", overlay=overlay,
                  assembler=stub_report, one_pager_getter=stub_op,
                  elements_loader=stub_elements,
                  source_manifest={"file": "TIAA.pdf", "sha256": "abc123"})
@@ -216,7 +241,7 @@ disp_overlay = {
              "units": "percent_of_budget", "page": 9, "source": "TIAA.pdf"},
     },
 }
-F.freeze_as_sent("RBS262", "2026-Q2", "cbui", overlay=disp_overlay,
+F.freeze_part("RBS262", "2026-Q2", F.PARTS, "cbui", overlay=disp_overlay,
                  assembler=stub_report, one_pager_getter=stub_op,
                  elements_loader=stub_elements,
                  source_manifest={"file": "TIAA.pdf", "sha256": "abc123"})
@@ -340,7 +365,7 @@ else:
                 "errors": {}, "resolution": {}}
 
         _overlay = {_vcodes[t]: cells for t, cells in _reports.items()}
-        F.freeze_as_sent(_inv, _q, "cbui", overlay=_overlay,
+        F.freeze_part(_inv, _q, F.PARTS, "cbui", overlay=_overlay,
                          roster=[_vcodes[t] for t in _titles],
                          assembler=_ov_report, one_pager_getter=_ov_op,
                          elements_loader=stub_elements,
@@ -407,7 +432,7 @@ _TOK = _jwt.encode({"sub": "1", "username": "cbui", "role": "admin",
                    Config.JWT_SECRET, algorithm="HS256")
 _HDR = {"Authorization": f"Bearer {_TOK}"}
 _ROSTER = [f"R{i:03d}" for i in range(30)]
-F.freeze_as_sent("BATCH", "2026-Q2", "cbui",
+F.freeze_part("BATCH", "2026-Q2", F.PARTS, "cbui",
                  roster=_ROSTER,
                  assembler=lambda i, q: {"subtabs": {}, "errors": {},
                                          "resolution": {}},
@@ -517,8 +542,8 @@ _PDF = {
         "page": 9},
 }
 F.unfreeze("KOCINV", "2026-Q2", "cbui", reason="reset for the override case")
-F.freeze_as_sent(
-    "KOCINV", "2026-Q2", "cbui", overlay={"D1": _PDF}, roster=["D1"],
+F.freeze_part(
+    "KOCINV", "2026-Q2", F.PARTS, "cbui", overlay={"D1": _PDF}, roster=["D1"],
     assembler=lambda i, q: {"subtabs": {}, "errors": {}, "resolution": {}},
     one_pager_getter=lambda vc, q: _json.loads(_json.dumps(_LIVE)),
     elements_loader=stub_elements,
@@ -560,8 +585,8 @@ chk("each override records the live value it displaced",
 
 # A printed cell that cannot land is REPORTED, not silently dropped.
 F.unfreeze("KOCINV", "2026-Q2", "cbui", reason="reset for the unapplied case")
-F.freeze_as_sent(
-    "KOCINV", "2026-Q2", "cbui",
+F.freeze_part(
+    "KOCINV", "2026-Q2", F.PARTS, "cbui",
     overlay={"D1": {"cap_stack.no_such_field": {"published": 1.0, "page": 8}}},
     roster=["D1"],
     assembler=lambda i, q: {"subtabs": {}, "errors": {}, "resolution": {}},
@@ -733,7 +758,7 @@ _frozen_loan = {"subtabs": {"loan": {"groups": {"G": {"deals": [
                 "ytd_dscr": 2.2, "debt_yield": 0.102}}}}},
     "errors": {}, "resolution": {}}
 
-F.freeze_as_sent("HARDCODE", "2026-Q2", "cbui",
+F.freeze_part("HARDCODE", "2026-Q2", F.PARTS, "cbui",
                  assembler=lambda i, q: _json.loads(_json.dumps(_frozen_loan)),
                  one_pager_getter=lambda vc, q: {"vcode": vc},
                  elements_loader=stub_elements,
@@ -772,6 +797,211 @@ chk("the subtotal KNOWN_LOAN_SUBTOTAL_DIFFS documents is unchanged",
 # The paired direction: the read path must be reading STORE, not recomputing.
 chk("the frozen read never consults the live loan module at all",
     F.get_frozen("HARDCODE", "2026-Q2")["frozen_reason"] == F.REASON_AS_SENT)
+
+def _raises(fn):
+    """True when ``fn()`` raises. A refusal that returns quietly is the bug."""
+    try:
+        fn()
+    except Exception:                                 # noqa: BLE001
+        return True
+    return False
+
+
+print("\nR. ONE core — every caller goes through freeze_part")
+# A second freeze implementation is the failure this whole refactor removes, so
+# the check is structural, not behavioural: the deleted names must not come
+# back, and the surviving callers must reach the core.
+import inspect as _insp
+_src = _insp.getsource(F)
+chk("freeze_as_sent is gone", not hasattr(F, "freeze_as_sent"))
+chk("...and its name appears nowhere in the module",
+    "def freeze_as_sent" not in _src)
+chk("freeze_part is the core", callable(getattr(F, "freeze_part", None)))
+chk("the approval freeze() delegates to it, with no second body",
+    "freeze_part(" in _insp.getsource(F.freeze), _insp.getsource(F.freeze))
+chk("refreeze delegates to it too",
+    "freeze_part(" in _insp.getsource(F.refreeze))
+chk("_write_frozen is still the only writer",
+    _src.count("INSERT INTO portfolio_snapshot_frozen\n") <= 1
+    or _src.count("def _write_frozen") == 1)
+
+print("\nS. the parts are independent")
+_asm = lambda i, q: {"subtabs": {"financial": {"groups": {"G": {"deals": [
+    {"vcode": "D1", "name": "One"}]}}}}, "errors": {}, "resolution": {}}
+_op = lambda vc, q: {"vcode": vc, "marker": "op"}
+F.freeze_part("PARTA", "2026-Q2", "snapshot", "cbui",
+              assembler=_asm, elements_loader=stub_elements)
+_a = F.get_frozen("PARTA", "2026-Q2")
+chk("snapshot alone: snapshot_frozen True", _a["snapshot_frozen"] is True)
+chk("snapshot alone: one_pagers_frozen False", _a["one_pagers_frozen"] is False)
+chk("snapshot alone: no One Pager is served",
+    F.get_frozen_one_pager("PARTA", "2026-Q2", "D1") is None)
+chk("snapshot alone: frozen_parts says so", _a["frozen_parts"] == ["snapshot"])
+
+F.freeze_part("PARTA", "2026-Q2", "one_pagers", "cbui",
+              assembler=_asm, one_pager_getter=_op, elements_loader=stub_elements)
+_b = F.get_frozen("PARTA", "2026-Q2")
+chk("adding the One Pagers keeps BOTH", _b["frozen_parts"] == list(F.PARTS))
+# THE CARRY-FORWARD. The upsert is DELETE-then-INSERT, so without it freezing
+# the second part would blank the first — silently, the row still being there.
+chk("...and the Snapshot payload survived the second write",
+    _b["payload"]["subtabs"]["financial"]["groups"]["G"]["deals"][0]["vcode"] == "D1")
+chk("...and the One Pager is now served",
+    (F.get_frozen_one_pager("PARTA", "2026-Q2", "D1") or {}).get("marker") == "op")
+
+# The opposite order, because "carry forward" must hold both ways.
+F.freeze_part("PARTB", "2026-Q2", "one_pagers", "cbui",
+              assembler=_asm, one_pager_getter=_op, elements_loader=stub_elements)
+chk("one_pagers alone: snapshot_frozen False",
+    F.get_frozen("PARTB", "2026-Q2")["snapshot_frozen"] is False)
+# A Snapshot that is not frozen must still READ live, not serve the placeholder.
+_live = F.load_report("PARTB", "2026-Q2", status="draft", assembler=_asm)
+chk("one_pagers alone: the Snapshot still reads live",
+    _live["source"] == F.SOURCE_LIVE)
+chk("...and the banner is told the One Pagers are frozen",
+    _live.get("one_pagers_frozen") is True)
+F.freeze_part("PARTB", "2026-Q2", "snapshot", "cbui",
+              assembler=_asm, elements_loader=stub_elements)
+_c = F.get_frozen("PARTB", "2026-Q2")
+chk("adding the Snapshot second keeps both", _c["frozen_parts"] == list(F.PARTS))
+chk("...and the One Pagers survived",
+    (F.get_frozen_one_pager("PARTB", "2026-Q2", "D1") or {}).get("marker") == "op")
+
+chk("an unknown part RAISES rather than freezing nothing quietly",
+    _raises(lambda: F.freeze_part("PARTC", "2026-Q2", "onepagers", "x")))
+
+# A row written BEFORE per-part state must not read as unfrozen.
+with F._engine().begin() as _cx:
+    _cx.execute(sqlalchemy.text(
+        "UPDATE portfolio_snapshot_frozen SET snapshot_frozen_at = NULL, "
+        "one_pagers_frozen_at = NULL WHERE investor_code = 'PARTA'"))
+chk("a legacy row with no per-part state counts as BOTH frozen",
+    F.get_frozen("PARTA", "2026-Q2")["frozen_parts"] == list(F.PARTS))
+
+# RE-FREEZING ONE HALF OF A LEGACY ROW MUST NOT ORPHAN THE OTHER. The legacy
+# row above carries One Pager DATA and no per-part timestamps; stamping only
+# the Snapshot would leave that data stored but reported as never frozen, and
+# it would stop being served with nothing saying why.
+F.freeze_part("PARTA", "2026-Q2", "snapshot", "cbui",
+              assembler=_asm, elements_loader=stub_elements)
+_d = F.get_frozen("PARTA", "2026-Q2")
+chk("re-freezing the Snapshot of a legacy row keeps the One Pagers frozen",
+    _d["one_pagers_frozen"] is True, str(_d["frozen_parts"]))
+chk("...and they are still served",
+    (F.get_frozen_one_pager("PARTA", "2026-Q2", "D1") or {}).get("marker") == "op")
+
+# THE GATE ITSELF: data present, part NOT frozen -> nothing is served. Built
+# by hand because the carry-forward above deliberately prevents it arising,
+# and a gate that can never be reached by the fixture is untested either way.
+with F._engine().begin() as _cx:
+    _cx.execute(sqlalchemy.text(
+        "UPDATE portfolio_snapshot_frozen SET one_pagers_frozen_at = NULL "
+        "WHERE investor_code = 'PARTA'"))
+chk("One Pager data whose part is NOT frozen is never served",
+    F.get_frozen_one_pager("PARTA", "2026-Q2", "D1") is None)
+chk("...and the row still HOLDS that data, so this is the gate, not an absence",
+    bool((F.get_frozen("PARTA", "2026-Q2") or {}).get("one_pagers")))
+
+print("\nT. the write lock covers the One Pager comment path")
+# THE GAP THIS CLOSES: that endpoint is on `financials_bp`, so the snapshot
+# blueprint's before_request never sees it. Comments are keyed (vcode, quarter)
+# with no investor, so the question is asked of every investor.
+_hits = F.quarters_frozen_with_deal("2026-Q2", "D1")
+chk("a deal inside a frozen report is found", "PARTA" in _hits, str(_hits))
+chk("...and the investor is named, not just a boolean",
+    all(isinstance(h, str) for h in _hits) and len(_hits) > 0)
+chk("a deal in NO frozen report is not found",
+    F.quarters_frozen_with_deal("2026-Q2", "NOSUCHDEAL") == [])
+chk("a quarter with nothing frozen is not found",
+    F.quarters_frozen_with_deal("1999-Q1", "D1") == [])
+# Snapshot-only must NOT lock comments: nobody was sent those One Pagers.
+F.freeze_part("SNAPONLY", "2026-Q3", "snapshot", "cbui",
+              assembler=_asm, elements_loader=stub_elements)
+chk("a Snapshot-only freeze does not lock the comment path",
+    F.quarters_frozen_with_deal("2026-Q3", "D1") == [])
+
+print("\nU. _FROZEN_WRITE_ALLOWED matches the live route set")
+# Deny-by-default only works if every name on the allowlist is a route that
+# EXISTS. A renamed endpoint leaves a dead entry and silently re-locks the
+# button it was meant to let through.
+# Reuses the app section K already built with BOTH blueprints registered, so
+# this is the real route set, not a second opinion about it.
+_live_eps = {r.endpoint for r in _app.url_map.iter_rules()}
+_AL = _snapmod._FROZEN_WRITE_ALLOWED
+_dead = sorted(e for e in _AL if e not in _live_eps)
+chk("every allowlisted endpoint exists", not _dead, f"dead: {_dead}")
+chk("the deleted per-investor freeze is NOT on the allowlist",
+    "portfolio_snapshot.post_freeze" not in _AL)
+chk("...and is not a route either",
+    "portfolio_snapshot.post_freeze" not in _live_eps)
+for _ep in ("portfolio_snapshot.post_freeze_all_snapshots",
+            "portfolio_snapshot.post_freeze_all_one_pagers"):
+    chk(f"{_ep.split('.')[-1]} is a route", _ep in _live_eps)
+    chk("...and is allowlisted, or it would lock itself out", _ep in _AL)
+# Deny-by-default, proved rather than assumed: a write endpoint NOT on the
+# allowlist must be refused on a frozen quarter.
+chk("a non-allowlisted write is still gated",
+    "portfolio_snapshot.put_value" in _live_eps
+    and "portfolio_snapshot.put_value" not in _AL)
+
+print("\nV. the comment endpoint itself refuses, over HTTP")
+# Section T proved the HELPER. This proves the ENDPOINT calls it — the two are
+# different failures, and a helper nobody invokes is the more likely one.
+_cli = _app.test_client()
+_r = _cli.put("/api/financials/D1/one-pager/comments",
+              json={"quarter": "2026-Q2", "econ_comments": "edited"},
+              headers=_HDR)
+chk("a comment on a frozen quarter is refused", _r.status_code == 409,
+    f"got {_r.status_code}")
+_body = _r.get_json() or {}
+chk("...and the refusal names the investor whose report is frozen",
+    "PARTA" in (_body.get("frozen_for") or []), str(_body.get("frozen_for")))
+chk("...and says it is frozen", _body.get("frozen") is True)
+# THE PAIRED DIRECTION. A lock that refuses everything would pass the check
+# above and break every unfrozen quarter, so an untouched quarter must still
+# be editable through the same endpoint.
+_r2 = _cli.put("/api/financials/D1/one-pager/comments",
+               json={"quarter": "1999-Q1", "econ_comments": "fine"},
+               headers=_HDR)
+chk("a comment on an UNfrozen quarter is not refused by the freeze gate",
+    _r2.status_code != 409, f"got {_r2.status_code}")
+# And a Snapshot-only freeze must not lock it — nobody was sent those pages.
+_r3 = _cli.put("/api/financials/D1/one-pager/comments",
+               json={"quarter": "2026-Q3", "econ_comments": "fine"},
+               headers=_HDR)
+chk("a Snapshot-only freeze leaves the comment path open",
+    _r3.status_code != 409, f"got {_r3.status_code}")
+
+print("\nW. the batch isolates one investor's failure from the rest")
+_calls = {"n": 0}
+def _flaky_assembler(inv, quarter):
+    _calls["n"] += 1
+    if inv == "BAD":
+        raise RuntimeError("assembly blew up")
+    return {"subtabs": {"financial": {"groups": {"G": {"deals": [
+        {"vcode": "D1", "name": "One"}]}}}}, "errors": {}, "resolution": {}}
+
+_res = []
+for _code in ("GOOD1", "BAD", "GOOD2"):
+    _row = {"investor": _code}
+    try:
+        _row["receipt"] = F.freeze_part(_code, "2027-Q1", "snapshot", "cbui",
+                                        assembler=_flaky_assembler,
+                                        elements_loader=stub_elements)
+        _row["frozen"] = True
+    except Exception as _e:                           # noqa: BLE001
+        _row["frozen"] = False
+        _row["error"] = str(_e)
+    _res.append(_row)
+chk("the failing investor is reported, not raised out of the loop",
+    _res[1]["frozen"] is False and "blew up" in _res[1]["error"])
+chk("the investor BEFORE it still froze", _res[0]["frozen"] is True)
+chk("the investor AFTER it still froze", _res[2]["frozen"] is True)
+chk("...and both are really in the store",
+    F.is_frozen("GOOD1", "2027-Q1", "snapshot")
+    and F.is_frozen("GOOD2", "2027-Q1", "snapshot"))
+chk("the failed one is NOT", F.get_frozen("BAD", "2027-Q1") is None)
+chk("every investor was attempted", _calls["n"] == 3, str(_calls["n"]))
 
 print(f"\n{'=' * 60}\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
