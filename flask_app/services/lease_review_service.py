@@ -2540,6 +2540,53 @@ SCAN_TEXT_THRESHOLD = 200
 PDF_MAX_BYTES = 32 * 1024 * 1024
 PDF_MAX_PAGES = 600
 
+#: Page images for a scan the model will not read as a PDF. The image route is
+#: capped lower than the PDF route: each page becomes its own image block.
+IMAGE_MAX_PAGES = 100
+IMAGE_MAX_BYTES = 22 * 1024 * 1024     # raw JPEG bytes; base64 adds a third
+
+
+def _render_pdf_pages(file_data: bytes):
+    """Render a PDF's pages as JPEG image blocks, or return (None, reason).
+
+    WHY THIS EXISTS. GNC's 1996 lease (41-page scan) sent as a PDF document block
+    came back degenerate on every attempt, Sep 29 2026: the first sentence of the
+    prompt once, a 30-character markup fragment another time, no thinking either
+    time. The SAME pages rendered to images read cleanly -- 1,300 SF, no
+    co-tenancy, the vitamins/supplements exclusive in Rider 25, exactly the
+    analysts' reading. So the image route is the fallback when a PDF yields no
+    answer, not a replacement: the PDF route reads the other 200-odd scans fine.
+
+    1600 px on the long side at quality 80 (8.5 MB for those 41 pages); if the
+    set runs over IMAGE_MAX_BYTES it is re-rendered once, smaller.
+    """
+    import base64
+    try:
+        try:
+            import pymupdf
+        except ImportError:
+            import fitz as pymupdf
+        doc = pymupdf.open(stream=bytes(file_data), filetype="pdf")
+    except Exception as e:                      # not a readable PDF at all
+        return None, "the PDF could not be opened to render its pages (%s)" % e
+    if len(doc) > IMAGE_MAX_PAGES:
+        return None, ("the PDF is %d pages, over the %d that can be sent as images"
+                      % (len(doc), IMAGE_MAX_PAGES))
+    for long_side, quality in ((1600, 80), (1200, 65)):
+        blocks, total = [], 0
+        for page in doc:
+            zoom = long_side / max(page.rect.width, page.rect.height, 1)
+            jpg = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom)).tobytes(
+                "jpeg", jpg_quality=quality)
+            total += len(jpg)
+            blocks.append({"type": "image", "source": {
+                "type": "base64", "media_type": "image/jpeg",
+                "data": base64.b64encode(jpg).decode('ascii')}})
+        if total <= IMAGE_MAX_BYTES:
+            return blocks, None
+    return None, ("the rendered pages are %.1f MB, over the %d MB that can be sent"
+                  % (total / 1e6, IMAGE_MAX_BYTES // (1024 * 1024)))
+
 #: Jim, Sep 20 2026: "I'm not price sensitive for this task. build it with the
 #: best model suites for all scenarios." Extraction decides every rent figure
 #: downstream, and reading a SCANNED lease is a harder job again, so both routes
@@ -2646,6 +2693,17 @@ def extract_lease_terms_via_api(
         logger.warning("No JSON from the model for %s (stop_reason=%s, output_tokens=%s);"
                        " asking once more", tenant_name, message.stop_reason,
                        getattr(getattr(message, 'usage', None), 'output_tokens', None))
+        # A SCAN IS RE-SENT AS PAGE IMAGES, not as the same PDF again: the same
+        # PDF failed identically twice for GNC, and the rendered pages read.
+        if route == 'pdf':
+            images, why_not = _render_pdf_pages(file_data)
+            if images:
+                # A NEW list, not an in-place edit: the first request keeps what it sent.
+                content = images + [content[-1]]
+                route = 'images'
+            else:
+                route_note = (route_note + '; ' if route_note else '') + (
+                    'retried as the PDF: ' + why_not)
         message = _ask()
 
     # Checked BEFORE reading content: a refusal returns HTTP 200 with no text,

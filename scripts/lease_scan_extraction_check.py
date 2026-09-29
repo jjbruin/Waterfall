@@ -257,6 +257,49 @@ chk('a document over the text cap is cut AND says so',
 r = call(LEASE_TEXT)
 chk('...and one under it does not', '_truncated' not in r)
 
+
+section('A scan the model will not read as a PDF is retried as page images')
+# GNC's 1996 lease: degenerate replies to the PDF twice; the rendered pages read.
+try:
+    import pymupdf
+except ImportError:
+    import fitz as pymupdf
+_d = pymupdf.open()
+for n in range(3):
+    _d.new_page().insert_text((72, 72), 'Page %d of a scanned lease' % (n + 1))
+REAL_PDF = _d.tobytes()
+
+
+def kinds(kw):
+    return [b['type'] for b in kw['messages'][0]['content']]
+
+
+calls = install_queue([(ECHO, 'end_turn'), (json.dumps({'square_feet': 1300}), 'end_turn')])
+r = call('', file_data=REAL_PDF, page_count=3)
+chk('first ask sends the PDF', calls and kinds(calls[0]) == ['document', 'text'],
+    str(calls and kinds(calls[0])))
+chk('the retry sends the RENDERED PAGES, not the same PDF',
+    len(calls) == 2 and kinds(calls[1]) == ['image', 'image', 'image', 'text'],
+    str(len(calls) > 1 and kinds(calls[1])))
+chk('...the images are JPEG, and the answer is used and says how it was read',
+    calls[1]['messages'][0]['content'][0]['source']['media_type'] == 'image/jpeg'
+    and r.get('square_feet') == 1300 and r.get('_extraction_source') == 'images', str(r))
+calls = install_queue([(ECHO, 'end_turn'), (ECHO, 'end_turn')])
+r = call('', file_data=PDF, page_count=3)          # not a real PDF: cannot render
+chk('a PDF that cannot be rendered is retried as the PDF, and the note says why',
+    len(calls) == 2 and kinds(calls[1])[0] == 'document'
+    and 'retried as the PDF' in (r.get('_extraction_note') or ''), str(r))
+calls = install_queue([(ECHO, 'end_turn'), (json.dumps({'square_feet': 9}), 'end_turn')])
+r = call(LEASE_TEXT)
+chk('a TEXT document is simply asked again (no images involved)',
+    len(calls) == 2 and 'image' not in kinds(calls[1]) and r.get('square_feet') == 9)
+big = pymupdf.open()
+for _ in range(S.IMAGE_MAX_PAGES + 1):
+    big.new_page()
+blocks, why = S._render_pdf_pages(big.tobytes())
+chk('over the image page cap: refused with the reason, not attempted',
+    blocks is None and 'over the' in why, why)
+
 print('\n%d passed, %d failed' % (len(OK), len(BAD)))
 if BAD:
     for b in BAD:
