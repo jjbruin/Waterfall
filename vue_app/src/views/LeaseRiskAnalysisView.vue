@@ -184,6 +184,33 @@ watch(activeTab, (t) => { if (t === 'rentroll' && !rentRoll.value) loadRentRoll(
 watch(selectedReviewId, () => { rentRoll.value = null; settleFor.value = null
   if (activeTab.value === 'rentroll') loadRentRoll() })
 
+const exhibitBusy = ref(false)
+async function downloadExhibit() {
+  exhibitBusy.value = true
+  try {
+    const res = await api.get(`/api/lease-review/reviews/${selectedReviewId.value}/rent-roll-exhibit`,
+                              { responseType: 'blob' })
+    const cd = String(res.headers['content-disposition'] || '')
+    const m = cd.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i)
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(new Blob([res.data]))
+    a.download = m ? decodeURIComponent(m[1]) : 'Rent Roll.xlsx'
+    a.click()
+    URL.revokeObjectURL(a.href)
+  } catch (e: any) {
+    rentRollError.value = e.response?.data?.error || e.message
+  } finally {
+    exhibitBusy.value = false
+  }
+}
+// Printing the screen prints only the table: the app chrome, the flag and
+// settle controls and the panels are hidden by the print stylesheet below.
+function printRentRoll() {
+  settleFor.value = null
+  openFlags.value = new Set()
+  setTimeout(() => window.print(), 50)
+}
+
 function rrDate(v: any) {
   if (!v) return ''
   const [y, m, d] = String(v).slice(0, 10).split('-')
@@ -1590,6 +1617,11 @@ onMounted(() => {
         <div v-if="rentRollLoading" class="empty-state">Building the timeline…</div>
         <div v-else-if="rentRollError" class="rv-error">{{ rentRollError }}</div>
         <template v-else-if="rentRoll">
+          <div class="rr-toolbar">
+            <button class="btn-primary" :disabled="exhibitBusy" @click="downloadExhibit">
+              {{ exhibitBusy ? 'Building…' : 'Download IC exhibit (Excel)' }}</button>
+            <button class="btn-secondary" @click="printRentRoll">Print</button>
+          </div>
           <div class="rr-meta">
             As of <b>{{ rrDate(rentRoll.as_of) }}</b> ·
             {{ rentRoll.tenants.length }} tenants ·
@@ -2129,6 +2161,13 @@ onMounted(() => {
 .rr-row input { font-size: 0.78rem; padding: 2px 4px; }
 .rr-optno { width: 48px; }
 .rr-msg { font-size: 0.8rem; color: #374151; }
+.rr-toolbar { display: flex; gap: 8px; margin: 4px 0 8px; }
+@media print {
+  .rr-toolbar, .rr-meta, .rr-actions, .rr-flags, .rr-settle { display: none !important; }
+  .rr-table { font-size: 11pt; max-width: none; }
+  .rr-table thead { display: table-header-group; }
+  .rr-group { break-inside: avoid; page-break-inside: avoid; }
+}
 .src-cell { font-size: 0.75rem; color: #666; }
 .wrap-cell { max-width: 300px; word-wrap: break-word; white-space: normal; }
 /* ISO dates offer a break opportunity at each hyphen, so a narrow column

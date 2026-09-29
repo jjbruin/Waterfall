@@ -942,6 +942,32 @@ def rent_roll_timeline(review_id):
         return jsonify({'error': str(e)}), 500
 
 
+@lease_review_bp.route('/reviews/<int:review_id>/rent-roll-exhibit', methods=['GET'])
+@login_required
+def rent_roll_exhibit(review_id):
+    """The IC memo's rent roll exhibit as a workbook: new business's template,
+    laid out from the one timeline engine (settlements applied), plus a Flags sheet."""
+    import io
+    from sqlalchemy import text as _t
+    from flask_app.services.rent_roll_exhibit import build_exhibit
+    try:
+        engine = get_engine()
+        rr = get_rent_roll_timeline(engine, review_id, request.args.get('as_of') or None)
+        with engine.connect() as c:
+            name = c.execute(_t("SELECT property_name FROM lease_reviews WHERE id = :r"),
+                             {'r': review_id}).scalar() or 'Rent Roll'
+        data = build_exhibit(rr, title='%s -- Rent Roll as of %s' % (name, rr.get('as_of')))
+        safe = ''.join(ch for ch in name if ch.isalnum() or ch in ' -_').strip()
+        return send_file(io.BytesIO(data), as_attachment=True,
+                         download_name='%s Rent Roll %s.xlsx' % (safe, rr.get('as_of') or ''),
+                         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"rent roll exhibit failed: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
 @lease_review_bp.route('/reviews/<int:review_id>/tenants/<int:tenant_id>/timeline',
                        methods=['GET'])
 @login_required
