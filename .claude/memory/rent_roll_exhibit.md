@@ -122,3 +122,42 @@ no document for the extension to 2028 the exhibit shows.
 
 Guardrail `scripts/lease_governing_terms_check.py` (21), the five real cases as
 fixtures; proved against reversing each of the three core rules.
+
+## Deployed and measured (Sep 29 2026)
+
+`v535` step 1, `v536` step 2, `v537` step 3. After `v536`, all 77 tenants with
+readings re-consolidated and `rebuild_clause_rows` run for reviews 2 and 3 (no API
+calls). Windsor Square had the same duplicate problem as Poplar: 1,134 exclusive
+rows -> 337. CORRECTION: the 115 -> 39 option "duplicates" were mostly each document
+legitimately restating the options (119 -> 117 after the rebuild); the governing
+count now comes from `_options_summary`.
+
+Step 1's re-read: Sam's Club and Perkins now read in full. **Tropical Smoothie's
+original lease (60 pages, 27 MB) still fails** -- it renders and was sent as images,
+and the model answered in prose. Not yet diagnosed.
+
+### Against the exhibit, 27 matched tenants
+
+| | After v537 |
+|---|---|
+| Total SF / current rent | 228,122 / $3,125,144 vs 228,119 / $3,112,833 (0.4%) |
+| Current rent | 26 |
+| Future steps exact | 20 |
+| Expiration | 22 |
+| Option(s) summary | 21 (was 0) |
+| Option rows count | 22 |
+| **Option rent** | **0 of 34 -- needs a re-extraction with the new prompt** |
+| Whole block exact | 1 |
+
+### THE START COLUMN IS A DEFINITION QUESTION -- ask new business
+Their spec §28 says Start = lease commencement. Their exhibit does not follow it:
+of 27, 5 match the original commencement, 8 rent commencement, and 14 match no date
+the app holds (BooYa's 2014 = its FIRST renewal, Marco's 2016-10-17 = apparently the
+execution date, Mattress Firm 2025-03-22, Chapultepec/Ciao Baby/Collierville/Peak
+Potential/Perkins/USA Karate = the current term's start). No rule reproduces it.
+
+### Flags to tune before the exhibit
+`psf_mismatch` (25) probably compares a historical step's stated PSF with today's SF;
+`step_after_expiration` (10) is probably option-period rent the lease already states
+(usable as option rent). Also: Patton's options are 30-day rolling, which
+`term_years` cannot express ("6 x term not stated").
