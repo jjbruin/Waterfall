@@ -91,7 +91,6 @@ const balanceLoading = ref(false)
 
 const uploadingDocs = ref(false)
 const uploadDocType = ref('appraisal')
-const uploadingArgus = ref(false)
 const comments = ref<Record<string, string>>({ budget_review: '', balance_sheet: '', general: '' })
 const commentSaving = ref<Record<string, boolean>>({})
 
@@ -230,7 +229,13 @@ const mappingSource = ref<'budget' | 'argus'>('budget')
 
 // A commit changes the very columns the comparison above is showing, so rebuild it
 // rather than leaving the analyst looking at the figures their import just replaced.
-async function onMappingCommitted() {
+async function onMappingCommitted(res?: any) {
+  // An Argus apply may have CREATED the import this record links; show it without
+  // reloading the record, which would also throw the analyst back to the first tab.
+  if (res?.source === 'argus' && res.import_id && record.value) {
+    record.value.argus_import_id = res.import_id
+    record.value.has_argus = true
+  }
   budgetReview.value = null
   await loadBudgetReview()
 }
@@ -896,30 +901,11 @@ function viewDocument(docId: number) {
   )
 }
 
-async function onArgusUpload(event: Event) {
-  const input = event.target as HTMLInputElement
-  if (!input.files?.length || !selectedRecordId.value) return
-  uploadingArgus.value = true
-  try {
-    const formData = new FormData()
-    formData.append('file', input.files[0])
-    const res = await api.post(`/api/valuations/records/${selectedRecordId.value}/argus`, formData)
-    saveMsg.value = `Argus imported (#${res.data.import_id}) — ${res.data.mapped_count ?? '?'} line items mapped`
-    setTimeout(() => (saveMsg.value = ''), 5000)
-    budgetReview.value = null
-    await openRecord(selectedRecordId.value)
-  } catch (e: any) {
-    if (e.response?.status === 409) {
-      saveMsg.value = 'File already imported — linked existing import'
-      setTimeout(() => (saveMsg.value = ''), 4000)
-      await openRecord(selectedRecordId.value)
-    } else {
-      error.value = e.response?.data?.error || e.response?.data?.message || e.message
-    }
-  } finally {
-    uploadingArgus.value = false
-    input.value = ''
-  }
+/** Where the Argus cash flow is loaded now: Budget Review, Load Valuation Cash Flow. */
+function openArgusLoader() {
+  mappingSource.value = 'argus'
+  activeTab.value = 'budget'
+  loadBudgetReview()
 }
 
 async function saveComment(section: string) {
@@ -1696,18 +1682,21 @@ watch(selectedCycleId, () => {
               </table>
               <div v-else class="empty-note">No documents uploaded.</div>
 
-              <h3 class="mt">Argus Projection</h3>
+              <!-- The Argus cash flow is no longer uploaded here (AM, Sep 28 2026). It was
+                   loaded twice -- here and again on Budget Review to see its mapping -- and
+                   read by a different parser each time. It now loads once, in Budget Review
+                   > Load Valuation Cash Flow. This says where, rather than just vanishing. -->
+              <h3 class="mt">Valuation Cash Flow (Argus)</h3>
               <div v-if="record.argus_import_id" class="argus-linked">
                 <span class="mini-badge argus">CF</span>
-                Import #{{ record.argus_import_id }} linked — year-1 flows appear in the Budget Review tab.
+                Loaded (import #{{ record.argus_import_id }}) — it feeds the Valuation Yr 1 column.
               </div>
-              <div v-else class="empty-note">No Argus import linked.</div>
-              <div class="doc-controls no-print" v-if="recordEditable">
-                <label class="btn-secondary btn-upload-label">
-                  {{ uploadingArgus ? 'Importing...' : (record.argus_import_id ? 'Replace Argus Export' : 'Import Argus Export') }}
-                  <input type="file" accept=".xlsx,.xls" @change="onArgusUpload" :disabled="uploadingArgus" hidden />
-                </label>
-              </div>
+              <div v-else class="empty-note">No valuation cash flow loaded yet.</div>
+              <p class="panel-note no-print">
+                Load or replace it on the
+                <a href="#" @click.prevent="openArgusLoader">Budget Review tab → Load Valuation Cash Flow</a>,
+                where it is mapped by account number before it is applied.
+              </p>
             </div>
           </div>
 
@@ -1919,7 +1908,7 @@ watch(selectedCycleId, () => {
                 <button :class="{ active: mappingSource === 'budget' }"
                         @click="mappingSource = 'budget'">Load Partner Budget</button>
                 <button :class="{ active: mappingSource === 'argus' }"
-                        @click="mappingSource = 'argus'">Review Argus Coding</button>
+                        @click="mappingSource = 'argus'">Load Valuation Cash Flow</button>
               </div>
               <LineMappingPanel :key="mappingSource"
                                 :record-id="selectedRecordId"

@@ -12,7 +12,6 @@ Endpoints (registered at /api/valuations):
     GET    /records/<id>/documents/<doc_id>/view  — serve a stored document
     DELETE /records/<id>/documents/<doc_id>       — remove a document
     PUT    /records/<id>/comments                 — save a comment section
-    POST   /records/<id>/argus                    — import the valuation Argus export
     GET    /records/<id>/budget-review            — Review Form p.1 comparison (?compare=valuation|underwriting)
     PUT    /records/<id>/estimate-overrides       — override / clear one Estimate line
     PUT    /records/<id>/debt-service-basis       — Budget debt service: modeled | underwriting
@@ -20,7 +19,7 @@ Endpoints (registered at /api/valuations):
     GET    /records/<id>/mapping/categories       — the comparison's categories for this deal
     POST   /records/<id>/mapping/parse            — read a budget or Argus file (multipart)
     POST   /records/<id>/mapping/check            — validate + reconcile a mapping
-    POST   /records/<id>/mapping/commit           — write it (budget -> supplement, argus -> COA)
+    POST   /records/<id>/mapping/commit           — write it (budget -> supplement, argus -> the Valuation cash flow)
     GET    /records/<id>/mapping/draft            — a mapping in progress, or one already applied
     PUT    /records/<id>/mapping/draft            — store a mapping in progress
     DELETE /records/<id>/mapping/draft            — discard it
@@ -249,29 +248,10 @@ def save_comment(record_id):
 # Argus + Review Form data
 # ------------------------------------------------------------
 
-@valuations_bp.route("/records/<int:record_id>/argus", methods=["POST"])
-@login_required
-@role_required("admin", "analyst")
-def import_argus(record_id):
-    if "file" not in request.files:
-        return jsonify({"error": "No file provided"}), 400
-    f = request.files["file"]
-    if not f.filename:
-        return jsonify({"error": "No file provided"}), 400
-    try:
-        result = valuation_service.import_argus(
-            get_engine(), record_id, f.read(), f.filename, _username())
-        status = result.get("status")
-        if status == "duplicate":
-            return jsonify(safe_json(result)), 409
-        if status == "error":
-            return jsonify(safe_json(result)), 400
-        return jsonify(safe_json(result))
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-    except Exception as e:
-        logger.error(f"import_argus failed: {e}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
+# The Argus upload that lived here is gone (Sep 28 2026). The appraiser's cash flow is
+# loaded ONCE, through /mapping/parse + /mapping/commit with source=argus, so it is
+# read by one parser and mapped by account. A second route in would be a second
+# reading of the same file, which is the defect that made AM upload it twice.
 
 
 @valuations_bp.route("/records/<int:record_id>/budget-review", methods=["GET"])

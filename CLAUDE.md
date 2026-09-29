@@ -253,6 +253,24 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v528` = `799239a` (THE ARGUS CASH FLOW IS LOADED ONCE AND MAPPED BY ACCOUNT --
+    AM's third list, Sep 28 2026. The Assumptions-tab upload, its route and
+    `valuation_service.import_argus` are gone; "Load Valuation Cash Flow" on
+    Budget Review WRITES the Valuation cash flow from its own reading of the file
+    (create, replace in place, or a new import when another cycle shares one).
+    The two old paths used DIFFERENT PARSERS and joined the mapping back BY
+    LABEL. Keyword pre-fill removed; an account column to the RIGHT of the
+    description is now read (AM's layout -- before, nothing would have
+    pre-filled); a subtotal reading can be overturned. FOUND BUILDING IT: the
+    Partnership costs tick box never left the browser from v502 -- it now
+    writes -- which also falsified one example in the v525 entry, corrected in
+    place. P2 listed six commits; five are docs only against live (`.claude/`,
+    `CLAUDE.md`), so the runtime delta is exactly `799239a`. VERIFIED ON
+    PRODUCTION: `argus_single_load_check` 35/0 (7 screen checks skip, no Vue in
+    the image); every column the new commit writes exists on PostgreSQL; the old
+    route is gone; 4 records link an Argus import, 0 shared. Served chunk
+    `ValuationsView-Ciczbwp4.js` carries the new strings and not the old.
+    Build `cam2`, 2m12s.)
   - `v527` = `59b1875` (TWO FEATURES ONTO LIVE, AS A MERGE -- traceability
     enhancements (`da8c356`, 6 commits) and freeze-as-sent (`72f4592`, 14) on
     top of live `6bf26b6`, Sep 28 2026. 22 commits in the span, 22 files,
@@ -334,7 +352,8 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
     classified by PREFIX (any 4xxx / 5xxx), a second definition of NOI that put
     5190, 5120/5130, depreciation and 4050 inside it and left 7070 out; the
     proposed $20K 5130 line alone made every import that took it "not tie" by
-    $20,000. Now reads `IS_ACCOUNTS`, and lists what was mapped below NOI.
+    $20,000 [CORRECTED Sep 28 2026: it could not have -- that tick box never left
+    the browser; see open_items §13.4]. Now reads `IS_ACCOUNTS`, and lists what was mapped below NOI.
     Critical = sign opposite to history, magnitude, negative NOI; the rest fold
     behind a count. Guardrail 25 -> 33, 33/33 in the container; the old code
     fails the new fixture at exactly -35,000. Served chunk verified by resolving
@@ -2235,8 +2254,9 @@ columns are loaded from somebody else's spreadsheet, and the debt rows are ours.
 - **One screen for both sources** (`LineMappingPanel.vue`, `line_mapping_service.py`,
   four endpoints under `/api/valuations/records/<id>/mapping/`). `source` is `budget`
   (partner's workbook → `isbs_budget_is_supplements` → Budget column) or `argus`
-  (appraiser's download → COA overrides via `argus_service.update_coa_mapping` →
-  Valuation column). Same job, same rules, same screen.
+  (appraiser's Argus download → the record's `argus_imports` / `argus_cashflows`, WRITTEN
+  by `_commit_argus` from this screen's own reading since `v528` → Valuation column).
+  Same job, same rules, same screen.
 - **THE ACCOUNT IS THE MAPPING; the category is derived from it** (Jack, Sep 22 2026,
   reversing "category first"). `budget_import_service.category_for_account` is the one
   lookup, the server ignores whatever category the screen sends, and the screen
@@ -2303,6 +2323,25 @@ columns are loaded from somebody else's spreadsheet, and the debt rows are ours.
   percentages, kept OUT of the mappable lines, and stored in `valuation_budget_occupancy`.
 - **7030 is "Replacement Reserve Deposit" in the chart of accounts**, yet `INTEREST_ACCTS`
   treats it as interest. See `open_items.md` §12.5 before touching either.
+- **THE ARGUS CASH FLOW IS LOADED ONCE**, in Budget Review > Load Valuation Cash Flow
+  (AM, Sep 28 2026). The Assumptions-tab upload and its route are GONE. It used to be
+  read by `argus_parser.parse_monthly_cashflow` there and by the budget parser here, with
+  the mapping written back BY LABEL onto the first import -- a line the two parsers named
+  differently took no mapping. `line_mapping_service._commit_argus` now WRITES the
+  Valuation cash flow from the panel's own reading: creates the import if the record has
+  none, replaces it in place if only this record links it, and makes a NEW one if another
+  record (another cycle) shares it. Signs come from the account via
+  `argus_service._normalize_amount`, so the flip box is not offered for Argus.
+- **Argus is mapped like the budget** -- the file's account, then "as mapped before",
+  never keywords. The keyword pre-fill ran FIRST and outranked the file's own account.
+- **An account column to the RIGHT of the description is read** (`_account_column_beside`),
+  by membership of our chart, headed or not. Before this only the account-on-the-left
+  layout was read, and AM's Argus layout is description then account.
+- **A line read as a subtotal can be overturned** ("not a subtotal" on the row, stored as
+  `not_subtotal` in the mapping; it pre-fills the file's account).
+- **The Partnership costs proposal now WRITES.** From `v502` the tick box never left the
+  browser. It rides on the parsed file (`accepted_proposals`) and
+  `with_accepted_proposals` turns it into a line; only offered accounts, Argus only.
 - **Interest goes to 5190 here, 7030 in the AM forecast** — see `open_items.md` §5.8.
   Deliberate as of Sep 11 2026, not accidental, and still worth settling.
 
@@ -2984,10 +3023,12 @@ it; the sidebar map above is kept here as a quick orientation.
 - `account_choices()` / `category_choices()` - The deal's own last-12-months accounts, and the ~27 comparison categories each with its accounts, ranked by the deal's usage with a default account (budget_import_service.py)
 - `category_accounts()` - {category: accounts} as the IMPORT sees it — config plus `_CATEGORY_ACCOUNTS_FOR_BUDGET`, so the dropdown and the not-in-category check cannot drift (budget_import_service.py)
 - `reconcile()` / `validate()` / `commit()` - Stated-vs-computed revenue/expense/NOI; blocking vs warnings; replace-by-(vcode, periods) write to `isbs_budget_is_supplements` (budget_import_validate.py)
-- `parse()` / `check()` / `commit()` - One line-mapping flow for `source` in ("budget", "argus"); Argus pre-fills from `argus_parser.map_to_coa` as a visible, editable suggestion, a budget never guesses (line_mapping_service.py)
+- `parse()` / `check()` / `commit()` - One line-mapping flow for `source` in ("budget", "argus"); both pre-fill from the account the FILE states, then "as mapped before", never keywords (`v528`); an Argus commit writes the Valuation cash flow (line_mapping_service.py)
 - `get_budget_review(compare=)` - Estimate | Budget | Valuation Yr 1 or UW; applies Estimate overrides (line items, totals recompute) and the Budget debt-service basis (valuation_service.py)
 - `get_overrides()` / `set_override()` / `get_debt_basis()` / `set_debt_basis()` / `save_occupancy()` / `budget_occupancy_quarters()` - The analyst inputs to the Budget Review; inputs, never calculations (valuation_budget_inputs.py)
 - `uw_debt_service_for_year()` - UW debt service for a year from Projected IS 7010 (one P&I figure) with partial-year months; shared by One Pager UW DSCR and the Budget Review (one_pager.py)
+- `with_accepted_proposals()` - A ticked proposed line (Partnership costs, 5130) made a real line for check and commit; offered accounts only, Argus only (line_mapping_service.py)
+- `_account_column_beside()` - The account column to the RIGHT of a description, found by membership of our chart, headed or not (budget_import_service.py)
 - `_read_occupancy_row()` - Budgeted occupancy off the budget file, by label AND percentage-looking figures, kept out of the lines (budget_import_service.py)
 - `monthly_schedule()` / `for_year()` - Modeled interest (5190) and principal (7060) from the deal's own loan terms, balloons excluded, child-property loans included; returns unavailable-with-a-reason, never a zero (valuation_debt_service.py)
 - `build()` - Balance Sheet + Income Statement for one entity/period, with tie-out, `sign_anomalies`, unmapped/untyped/conflicts (statement_service.py)

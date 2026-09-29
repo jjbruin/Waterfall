@@ -229,7 +229,7 @@ check("...and combining is a NOTE, not a critical warning",
 print("\n3b. The tie-out's NOI is the Budget column's NOI")
 # Asset management, Sep 25 2026: the Budget column tied to the sheet and the tie-out
 # said it did not. The tie-out classified by prefix (any 4xxx / 5xxx), so interest,
-# partnership costs and the proposed $20K 5130 line sat INSIDE its NOI while the
+# partnership costs mapped from the file sat INSIDE its NOI while the
 # comparison, reading IS_ACCOUNTS, puts them below it -- and it ignored the 7070
 # abatement the comparison folds into expenses.
 tie = {"lines": [
