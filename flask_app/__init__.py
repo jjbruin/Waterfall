@@ -89,6 +89,12 @@ def create_app(config_name: str = None) -> Flask:
             # the worker is booting rather than mid-traffic.
             from flask_app.services.portfolio_snapshot_freeze import ensure_schema
             ensure_schema()
+            # A freeze job left "running" by a worker that died cannot be
+            # running -- nothing else writes those rows -- so it is closed out
+            # as interrupted at boot rather than left looking live for ever.
+            # Investors frozen before the restart stay frozen.
+            from flask_app.services.freeze_batch import reap_stale
+            reap_stale()
 
     # Ensure surveillance tables (SQLite path — PG handled above)
     if not app.config.get("DATABASE_URL"):
