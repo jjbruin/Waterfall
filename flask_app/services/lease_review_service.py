@@ -40,6 +40,9 @@ DOC_TYPE_PATTERNS = [
     (r'(?i)lease(?!.*(?:abstract|amend|memo))', 'Original Lease'),
     (r'(?i)(first|second|third|fourth|fifth|\d+)\s*(amendment|amend)', 'Amendment'),
     (r'(?i)amend', 'Amendment'),
+    # "Addendum #4" modifies the lease exactly as an amendment does; typed Other
+    # it lost its place in the amendment sequence (BooYa's, Sep 29 2026).
+    (r'(?i)addend', 'Amendment'),
     (r'(?i)commencement', 'Commencement Letter'),
     (r'(?i)option\s*letter', 'Option Letter'),
     (r'(?i)snda', 'SNDA'),
@@ -2393,7 +2396,19 @@ Return a JSON object with these fields (use null for fields not found):
       "notice_deadline": "YYYY-MM-DD or null",
       "auto_renewal": true/false,
       "exercised": true/false,
-      "rent_terms": "fair market / fixed increase / CPI"
+      "rent_terms": "fair market / fixed increase / CPI",
+      "rent_basis": "fixed | stated_increase | fmv | percent_of_fmv | greater_of | cpi | not_stated",
+      "rent_schedule": [
+        {{
+          "period": "as written, e.g. 'Option year 1' or 'Months 1-12 of the option'",
+          "start": "YYYY-MM-DD or null",
+          "end": "YYYY-MM-DD or null",
+          "annual_rent": number or null,
+          "monthly_rent": number or null,
+          "rent_psf": number or null,
+          "escalation_pct": number or null
+        }}
+      ]
     }}
   ],
   "termination_options": [
@@ -2511,7 +2526,8 @@ IMPORTANT:
 - Dates must be YYYY-MM-DD format
 - Dollar amounts should be numbers (no $ signs)
 - If this is an amendment, note which fields were modified
-- For renewal_options: option_start/option_end are the beginning and ending dates of each renewal period. If not explicitly stated, derive from the prior term's expiration + term_years. Mark exercised=true if an amendment or exercise notice confirms the option was exercised.
+- For renewal_options: option_start/option_end are the beginning and ending dates of each renewal period. If not explicitly stated, derive from the prior term's expiration + term_years. Mark exercised=true if an amendment or exercise notice confirms the option was exercised -- never in an original lease, which cannot record its own exercise.
+- For option rent: give every amount the document STATES in rent_schedule, one entry per rent period within the option (an option can step up each year), with the figure in the unit stated (annual, monthly or per square foot). If it states a percentage increase instead of an amount, give escalation_pct and leave the amounts null -- do not compute them. If rent is fair market or a share of it, set rent_basis accordingly and leave the amounts null; never estimate a market rent. If nothing is said about option rent, rent_basis is not_stated.
 - For termination_options: extract early termination rights, kick-out clauses, and similar provisions. earliest_termination_date is when the tenant can first terminate. Mark exercised=true if a termination notice was exercised.
 - For exclusive_use: this is easy to miss, so search the whole document, not
   just a heading called "Exclusive". These provisions appear under Permitted
@@ -3234,6 +3250,59 @@ def _write_document_clause_rows(conn, sql_text, tenant_id: int, review_id: int,
     return written
 
 
+
+def _write_document_option_rows(conn, sql_text, tenant_id: int, source_doc: str,
+                                terms: dict) -> int:
+    """Write ONE document's renewal and termination option rows, replacing what it
+    wrote before -- the same fault and fix as `_write_document_clause_rows`. The old
+    dedup on (source_doc, option_number) never replaced, so 115 renewal-option rows
+    stood for Market at Poplar where the exhibit shows 39 (Sep 29 2026).
+    """
+    conn.execute(sql_text(
+        "DELETE FROM lease_options WHERE tenant_id = :tid AND source_doc = :sd"),
+        {'tid': tenant_id, 'sd': source_doc})
+    n = 0
+    for opt in (terms.get('renewal_options') or []):
+        if not isinstance(opt, dict):
+            continue
+        conn.execute(sql_text("""
+            INSERT INTO lease_options
+                (tenant_id, option_type, option_number, total_options, term_years,
+                 notice_days, notice_deadline, rent_terms, auto_renewal, exercised,
+                 option_start, option_end, source_doc)
+            VALUES (:tid, 'renewal', :on, :to, :ty, :nd, :ndl, :rt, :ar, :ex,
+                    :os, :oe, :sd)
+        """), {
+            'tid': tenant_id, 'on': opt.get('option_number'),
+            'to': opt.get('total_options'), 'ty': _to_number(opt.get('term_years')),
+            'nd': _to_int(opt.get('notice_days')), 'ndl': opt.get('notice_deadline'),
+            'rt': opt.get('rent_terms'), 'ar': opt.get('auto_renewal', False),
+            'ex': opt.get('exercised', False), 'os': opt.get('option_start'),
+            'oe': opt.get('option_end'), 'sd': source_doc,
+        })
+        n += 1
+    for opt in (terms.get('termination_options') or []):
+        if not isinstance(opt, dict):
+            continue
+        conn.execute(sql_text("""
+            INSERT INTO lease_options
+                (tenant_id, option_type, option_number, total_options, term_years,
+                 notice_days, notice_deadline, rent_terms, exercised, option_start,
+                 option_end, source_doc)
+            VALUES (:tid, 'termination', :on, :to, NULL, :nd, :ndl, :rt, :ex, :os,
+                    NULL, :sd)
+        """), {
+            'tid': tenant_id, 'on': opt.get('option_number'),
+            'to': opt.get('total_options'), 'nd': _to_int(opt.get('notice_days')),
+            'ndl': opt.get('notice_deadline'),
+            'rt': opt.get('conditions') or opt.get('termination_fee') or '',
+            'ex': opt.get('exercised', False),
+            'os': opt.get('earliest_termination_date'), 'sd': source_doc,
+        })
+        n += 1
+    return n
+
+
 def rebuild_clause_rows(engine, review_id: int) -> Dict[str, Any]:
     """Rebuild every document's co-tenancy and exclusive-use rows from the
     extraction it ALREADY HOLDS -- no API calls, idempotent.
@@ -3265,6 +3334,8 @@ def rebuild_clause_rows(engine, review_id: int) -> Dict[str, Any]:
                 continue
             w = _write_document_clause_rows(conn, sql_text, tenant_id, review_id,
                                             filename, terms)
+            totals['options'] = totals.get('options', 0) + _write_document_option_rows(
+                conn, sql_text, tenant_id, filename, terms)
             totals['documents'] += 1
             for k in ('cotenancy', 'refs', 'exclusive_use'):
                 totals[k] += w[k]
@@ -3464,92 +3535,10 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None,
                         _write_document_clause_rows(
                             conn, sql_text, tenant_id, review_id, doc[2], terms)
 
-                        # Store renewal options (with dedup by source_doc + option_number)
-                        for opt in (terms.get('renewal_options') or []):
-                            opt_dup = conn.execute(sql_text("""
-                                SELECT id FROM lease_options
-                                WHERE tenant_id = :tid AND source_doc = :sd
-                                  AND option_type = 'renewal'
-                                  AND option_number = :on
-                                LIMIT 1
-                            """), {
-                                'tid': tenant_id, 'sd': doc[2],
-                                'on': opt.get('option_number'),
-                            }).fetchone()
-                            if opt_dup:
-                                # Update exercised status if exercise notice confirms it
-                                if opt.get('exercised'):
-                                    conn.execute(sql_text("""
-                                        UPDATE lease_options SET exercised = TRUE
-                                        WHERE id = :id
-                                    """), {'id': opt_dup[0]})
-                                continue
-                            conn.execute(sql_text("""
-                                INSERT INTO lease_options
-                                    (tenant_id, option_type, option_number,
-                                     total_options, term_years, notice_days,
-                                     notice_deadline, rent_terms,
-                                     auto_renewal, exercised,
-                                     option_start, option_end, source_doc)
-                                VALUES (:tid, 'renewal', :on, :to, :ty,
-                                        :nd, :ndl, :rt, :ar, :ex,
-                                        :os, :oe, :sd)
-                            """), {
-                                'tid': tenant_id,
-                                'on': opt.get('option_number'),
-                                'to': opt.get('total_options'),
-                                'ty': _to_number(opt.get('term_years')),
-                                'nd': _to_int(opt.get('notice_days')),
-                                'ndl': opt.get('notice_deadline'),
-                                'rt': opt.get('rent_terms'),
-                                'ar': opt.get('auto_renewal', False),
-                                'ex': opt.get('exercised', False),
-                                'os': opt.get('option_start'),
-                                'oe': opt.get('option_end'),
-                                'sd': doc[2],
-                            })
-
-                        # Store termination options (with dedup by source_doc + option_number)
-                        for opt in (terms.get('termination_options') or []):
-                            opt_dup = conn.execute(sql_text("""
-                                SELECT id FROM lease_options
-                                WHERE tenant_id = :tid AND source_doc = :sd
-                                  AND option_type = 'termination'
-                                  AND option_number = :on
-                                LIMIT 1
-                            """), {
-                                'tid': tenant_id, 'sd': doc[2],
-                                'on': opt.get('option_number'),
-                            }).fetchone()
-                            if opt_dup:
-                                if opt.get('exercised'):
-                                    conn.execute(sql_text("""
-                                        UPDATE lease_options SET exercised = TRUE
-                                        WHERE id = :id
-                                    """), {'id': opt_dup[0]})
-                                continue
-                            conn.execute(sql_text("""
-                                INSERT INTO lease_options
-                                    (tenant_id, option_type, option_number,
-                                     total_options, term_years, notice_days,
-                                     notice_deadline, rent_terms,
-                                     exercised, option_start, option_end,
-                                     source_doc)
-                                VALUES (:tid, 'termination', :on, :to, NULL,
-                                        :nd, :ndl, :rt,
-                                        :ex, :os, NULL,
-                                        :sd)
-                            """), {
-                                'tid': tenant_id,
-                                'on': opt.get('option_number'),
-                                'to': opt.get('total_options'),
-                                'nd': _to_int(opt.get('notice_days')),
-                                'ndl': opt.get('notice_deadline'),
-                                'rt': opt.get('conditions') or opt.get('termination_fee') or '',
-                                'ex': opt.get('exercised', False),
-                                'os': opt.get('earliest_termination_date'),
-                                'sd': doc[2],
-                            })
+                        # Options: THIS DOCUMENT'S rows are replaced, not added
+                        # to. See _write_document_option_rows.
+                        _write_document_option_rows(
+                            conn, sql_text, tenant_id, doc[2], terms)
 
                     if terms.get('_parse_error'):
                         # A FAILED READING IS A FAILURE, NOT "Extracted". This
@@ -3613,8 +3602,28 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None,
 # Consolidation — merge base lease + amendments into current terms
 # ---------------------------------------------------------------------------
 
-def _merge_extraction_terms(base: Dict, amendment: Dict) -> Dict:
+#: Documents that may set the LEASE START. Everything else that states a
+#: commencement is stating the start of a renewal or extension term.
+_START_SETTING_TYPES = ('Original Lease', 'Commencement Letter')
+_COMMENCEMENT_TYPES = ('Commencement Letter', 'Rent Commencement')
+
+
+def _merge_extraction_terms(base: Dict, amendment: Dict,
+                            ctx: Optional[Dict] = None) -> Dict:
     """Layer an amendment's extracted terms onto the base/running state.
+
+    `ctx` (new business's rent-roll specification, Sep 29 2026):
+      doc_type   -- only an original lease or a commencement letter sets the lease
+                    START (§28). A renewal notice or amendment stating a commencement
+                    is stating its TERM's start, kept as `current_term_commencement`.
+                    BooYa's start moved 2008 -> 2024 and Outback's 1992 -> 2016 on
+                    exactly this.
+      fill_only  -- an UNDATED non-amendment document fills gaps and never overwrites
+                    a value a dated document set. Undated documents sort last, so an
+                    undated "Commencement Date (Exhibit)" reset Mattress Firm's
+                    expiration from the 2024 3rd Amendment's 2035 back to 2027, and an
+                    undated third-party abstract reset Outback's from the 2026 option
+                    letter's 2031 to 2026.
 
     Rules:
     - Scalar fields: amendment value replaces base if not None
@@ -3627,6 +3636,9 @@ def _merge_extraction_terms(base: Dict, amendment: Dict) -> Dict:
     - key_dates: amendment replaces if present
     """
     merged = copy.deepcopy(base)
+    ctx = ctx or {}
+    doc_type = ctx.get('doc_type') or ''
+    fill_only = bool(ctx.get('fill_only'))
 
     # Scalar fields — amendment non-null wins
     scalar_keys = [
@@ -3639,8 +3651,20 @@ def _merge_extraction_terms(base: Dict, amendment: Dict) -> Dict:
     ]
     for key in scalar_keys:
         val = amendment.get(key)
-        if val is not None:
-            merged[key] = val
+        if val is None:
+            continue
+        # An undated COMMENCEMENT document still states the commencement dates --
+        # that is what it is for -- but only fills gaps for everything else: an
+        # undated commencement exhibit is how Mattress Firm's 2035 expiration went.
+        if (fill_only and merged.get(key) is not None
+                and not (key in ('lease_commencement', 'rent_commencement')
+                         and doc_type in _COMMENCEMENT_TYPES)):
+            continue
+        if (key == 'lease_commencement' and merged.get(key) is not None
+                and doc_type not in _START_SETTING_TYPES):
+            merged['current_term_commencement'] = val
+            continue
+        merged[key] = val
 
     # Rent steps — merge by effective_date, or by the PERIOD when undated
     #
@@ -3650,7 +3674,7 @@ def _merge_extraction_terms(base: Dict, amendment: Dict) -> Dict:
     # step of its own. Measured Sep 21 2026: 53 tenants held a consolidated blob
     # far shorter than their step table (Kohls 1 step against 11), which is what
     # the abstract and every reader of the blob were working from.
-    if amendment.get('rent_steps'):
+    if amendment.get('rent_steps') and not (fill_only and merged.get('rent_steps')):
         def _key(st, fallback):
             ed = st.get('effective_date')
             if ed:
@@ -3687,10 +3711,20 @@ def _merge_extraction_terms(base: Dict, amendment: Dict) -> Dict:
                            s.get('period_start_month') or 0),
         )
 
-    # Options — merge by (option_type_key, option_number)
-    for opt_key in ('renewal_options', 'termination_options'):
+    # RENEWAL OPTIONS follow the governing document (§11, §13, §14).
+    ren = [o for o in (amendment.get('renewal_options') or []) if isinstance(o, dict)]
+    if doc_type == 'Original Lease':
+        # A lease cannot record its own option being exercised; a model saying so
+        # is misreading (Muddy Paws' original lease came back "exercised").
+        ren = [dict(o, exercised=False) for o in ren]
+    if ren and not (fill_only and merged.get('renewal_options')):
+        merged['renewal_options'] = _merge_renewal_options(
+            merged.get('renewal_options') or [], ren)
+
+    # Termination options — merge by option_number
+    for opt_key in ('termination_options',):
         amend_opts = amendment.get(opt_key)
-        if amend_opts:
+        if amend_opts and not (fill_only and merged.get(opt_key)):
             existing_by_num = {}
             for opt in (merged.get(opt_key) or []):
                 existing_by_num[opt.get('option_number')] = opt
@@ -3716,7 +3750,7 @@ def _merge_extraction_terms(base: Dict, amendment: Dict) -> Dict:
 
     # exclusive_use is a list of restrictions; an amendment that mentions any
     # replaces the set, since it restates the restriction as amended.
-    if amendment.get('exclusive_use'):
+    if amendment.get('exclusive_use') and not (fill_only and merged.get('exclusive_use')):
         merged['exclusive_use'] = amendment['exclusive_use']
 
     # cam_fixed is a LIST, so it belongs to neither list above and would have been
@@ -3725,16 +3759,124 @@ def _merge_extraction_terms(base: Dict, amendment: Dict) -> Dict:
     # stated BY the amendment (AT&T Mobility's 4th Amendment on Market at Poplar is
     # the live case). An amendment that restates the schedule replaces it whole; one
     # that says nothing about recoveries leaves the base lease's schedule standing.
-    if amendment.get('cam_fixed'):
+    if amendment.get('cam_fixed') and not (fill_only and merged.get('cam_fixed')):
         merged['cam_fixed'] = amendment['cam_fixed']
     for key in object_keys:
         val = amendment.get(key)
         if val and isinstance(val, dict) and any(v is not None for v in val.values()):
+            if fill_only and merged.get(key):
+                continue
             merged[key] = val
 
     return merged
 
 
+
+
+
+def _merge_renewal_options(current: List[Dict], incoming: List[Dict]) -> List[Dict]:
+    """Which renewal options govern after this document.
+
+    Three shapes, decided by what the document says rather than what it is called:
+      * it RESTATES the set -- lists at least one dated, unexercised option: the
+        new list replaces the old (Outback's 4th Amendment grants two new options;
+        the 3rd Amendment's older four are no longer the lease). An option in the
+        old set with the same start date keeps its exercised mark.
+      * it EXERCISES -- every option it lists is exercised: the matching option
+        (by start date, else end date, else number) is marked exercised and takes
+        the document's dates; one with no match is added as exercised.
+      * otherwise (undated restatements, as addenda repeating "two 5-year options"
+        do): merged by number, non-null fields winning -- the old behaviour, which
+        must not strip the dates a lease already gave.
+    """
+    def _d(v):
+        return str(v)[:10] if v and re.match(r'^\d{4}-\d{2}-\d{2}', str(v)) else None
+
+    cur = [dict(o) for o in current]
+    if any(not o.get('exercised') and (_d(o.get('option_start')) or _d(o.get('option_end')))
+           for o in incoming):
+        done = {_d(o.get('option_start')) for o in cur if o.get('exercised')}
+        out = []
+        for o in incoming:
+            o = dict(o)
+            if _d(o.get('option_start')) and _d(o.get('option_start')) in done:
+                o['exercised'] = True
+            out.append(o)
+        return sorted(out, key=lambda o: (_d(o.get('option_start')) or '9999',
+                                          o.get('option_number') or 0))
+    if incoming and all(o.get('exercised') for o in incoming):
+        for o in incoming:
+            hit = None
+            for c in cur:
+                if _d(o.get('option_start')) and _d(c.get('option_start')) == _d(o.get('option_start')):
+                    hit = c
+                    break
+            if hit is None:
+                for c in cur:
+                    if _d(o.get('option_end')) and _d(c.get('option_end')) == _d(o.get('option_end')):
+                        hit = c
+                        break
+            if hit is None and o.get('option_number') is not None:
+                for c in cur:
+                    if c.get('option_number') == o.get('option_number') and not c.get('exercised'):
+                        hit = c
+                        break
+            if hit is None:
+                cur.append(dict(o, exercised=True))
+            else:
+                hit['exercised'] = True
+                for k in ('option_start', 'option_end', 'term_years'):
+                    if o.get(k) is not None:
+                        hit[k] = o[k]
+        return cur
+    by_num = {c.get('option_number'): c for c in cur}
+    for o in incoming:
+        num = o.get('option_number')
+        if num in by_num:
+            for k, v in o.items():
+                if v is not None:
+                    by_num[num][k] = v
+        else:
+            by_num[num] = dict(o)
+    return sorted(by_num.values(), key=lambda o: o.get('option_number') or 0)
+
+
+def _apply_exercised_options(terms: Dict) -> None:
+    """An exercised option is part of the current term (§11), and the options that
+    remain are summarised for the rent roll's Option(s) column (§13).
+
+    An option that has been exercised but whose end is AFTER the stated expiration
+    carries the expiration with it -- the documents confirming the exercise are the
+    authority, not an earlier expiration left standing. Remaining = not exercised
+    and starting after the current expiration (or undated). The summary groups by
+    term: "2 x 5 Years", "None".
+    """
+    def _d(v):
+        return str(v)[:10] if v and re.match(r'^\d{4}-\d{2}-\d{2}', str(v)) else None
+
+    opts = [o for o in (terms.get('renewal_options') or []) if isinstance(o, dict)]
+    exp = _d(terms.get('lease_expiration'))
+    for o in opts:
+        end = _d(o.get('option_end'))
+        if o.get('exercised') and end and (exp is None or end > exp):
+            exp = end
+            terms['lease_expiration'] = end
+            terms['_expiration_basis'] = 'exercised option ending %s' % end
+    remaining = [o for o in opts if not o.get('exercised')
+                 and (not _d(o.get('option_start')) or not exp
+                      or _d(o.get('option_start')) > exp)]
+    counts: Dict[str, int] = {}
+    for o in remaining:
+        ty = o.get('term_years')
+        try:
+            ty = float(ty)
+            label = ('%g Years' % ty) if ty >= 1 else ('%g Months' % round(ty * 12))
+        except (TypeError, ValueError):
+            label = 'term not stated'
+        counts[label] = counts.get(label, 0) + 1
+    terms['_remaining_options'] = remaining
+    terms['_options_summary'] = (', '.join('%d x %s' % (n, k) for k, n in counts.items())
+                                 or 'None')
 
 
 def _backfill_step_provenance(engine) -> Dict[str, int]:
@@ -3933,8 +4075,16 @@ def consolidate_tenant_extractions(
                 if isinstance(terms, dict):
                     if not consolidated:
                         consolidated = copy.deepcopy(terms)
+                        if (doc.get('doc_type') or '') == 'Original Lease':
+                            for o in consolidated.get('renewal_options') or []:
+                                if isinstance(o, dict):
+                                    o['exercised'] = False
                     else:
-                        consolidated = _merge_extraction_terms(consolidated, terms)
+                        consolidated = _merge_extraction_terms(consolidated, terms, {
+                            'doc_type': doc.get('doc_type'),
+                            'fill_only': (not doc.get('doc_date')
+                                          and (doc.get('doc_type') or '') != 'Amendment'),
+                        })
                     applied.append(doc['filename'])
                     # THE EARLIEST commencement any document states, kept beside
                     # the latest. The latest is what the tenant record carries and
@@ -3951,6 +4101,7 @@ def consolidate_tenant_extractions(
 
         if not consolidated:
             return None
+        _apply_exercised_options(consolidated)
 
         # The reader has to be able to see WHICH document had the last word, and to
         # be told when the order could not be established rather than assuming it was.

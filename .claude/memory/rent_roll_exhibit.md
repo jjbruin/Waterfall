@@ -95,3 +95,30 @@ analyst validation.
 
 The Sep 29 re-read otherwise: Outback's 2026 Option Letter and BooYa's 2014 Renewal
 Notice read via page images.
+
+## Step 2 -- the governing terms (built Sep 29 2026)
+
+Read off the per-document extractions on production first. The causes were
+CONSOLIDATION RULES, not reading errors:
+
+| Tenant | Documents say | Why the app was wrong | Rule |
+|---|---|---|---|
+| Mattress Firm | 2024 3rd Amendment -> 2035-03-21 | an UNDATED "Commencement Date (Exhibit)" sorts last and reset it to 2027 | an undated non-amendment document only FILLS GAPS (it may still set the commencement dates if it is a commencement document) |
+| Outback | 2026 option letter exercises -> 2031-12-09 | an undated third-party "Abstracts_Misc" reset expiry to 2026 and start to 2016 | same |
+| BooYa's | original commencement 2008-03-15 | Addendum #4 / 5th Amendment state their RENEWAL term's start | only an Original Lease or Commencement Letter sets `lease_commencement`; others -> `current_term_commencement` |
+| Muddy Paws | original lease option marked "exercised" | a lease cannot record its own exercise | exercised flags from an Original Lease are discarded |
+| Hobby Lobby | 3rd Amendment restates options 1-5 | merge by number mixed eras | a document listing dated unexercised options REPLACES the set; an all-exercised list marks the matching option; undated restatements merge by number |
+
+Plus: an exercised option ending after the expiration carries the expiration
+(`_expiration_basis` says so); `_remaining_options` / `_options_summary` ("2 x 5
+Years") computed after consolidation; option rows replaced per document
+(`_write_document_option_rows`, also in `rebuild_clause_rows`); "Addendum" typed
+Amendment; the prompt asks for option rent as figures (`rent_basis`,
+`rent_schedule` with per-period amounts or `escalation_pct`), never estimating FMV.
+
+NOT fixed by rules, needs a person or a re-read: Hobby Lobby's 2024 4th Amendment
+was read with nothing extracted (the exhibit's 2032 comes from it); Muddy Paws has
+no document for the extension to 2028 the exhibit shows.
+
+Guardrail `scripts/lease_governing_terms_check.py` (21), the five real cases as
+fixtures; proved against reversing each of the three core rules.
