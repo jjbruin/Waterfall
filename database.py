@@ -1675,7 +1675,10 @@ PROTECTED_TABLES = {'capital_calls', 'waterfalls', 'one_pager_comments', 'waterf
                     'ic_entity_settings', 'ic_recon_notes',
                     # The analysts' reading of each tenant's exclusives and
                     # co-tenancy -- app-written, and the only copy of it.
-                    'lease_clause_reviews'}
+                    'lease_clause_reviews',
+                    # The analysts' settled rent schedules and options -- what
+                    # the IC exhibit prints where it differs from the documents.
+                    'lease_timeline_settlements'}
 
 
 def _get_import_connection():

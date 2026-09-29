@@ -47,6 +47,8 @@ from flask_app.services.lease_review_service import (
     save_clause_review,
     get_tenant_timeline,
     get_rent_roll_timeline,
+    save_timeline_settlement,
+    clear_timeline_settlement,
     rebuild_clause_rows,
     # Phase 1: Tenant CRUD
     add_tenant,
@@ -951,6 +953,41 @@ def tenant_timeline(review_id, tenant_id):
         return jsonify({'error': str(e)}), 400
     except Exception as e:
         logger.error(f"tenant timeline failed: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/tenants/<int:tenant_id>/timeline/settlement',
+                       methods=['PUT'])
+@login_required
+@role_required('admin', 'analyst')
+def put_timeline_settlement(review_id, tenant_id):
+    """Settle a tenant's future rent schedule or its options: {section, rows,
+    reason, source_doc_id}. Start and expiration are settled through the
+    validation's resolve endpoint (fields lease_start / lease_end)."""
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify(safe_json(save_timeline_settlement(
+            get_engine(), review_id, tenant_id, body.get('section'), body.get('rows'),
+            body.get('reason'), body.get('source_doc_id'),
+            g.current_user.get('username', 'unknown'))))
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"timeline settlement failed: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@lease_review_bp.route('/reviews/<int:review_id>/tenants/<int:tenant_id>/timeline/settlement',
+                       methods=['DELETE'])
+@login_required
+@role_required('admin', 'analyst')
+def delete_timeline_settlement(review_id, tenant_id):
+    try:
+        clear_timeline_settlement(get_engine(), review_id, tenant_id,
+                                  request.args.get('section') or '')
+        return jsonify({'ok': True})
+    except Exception as e:
+        logger.error(f"timeline settlement clear failed: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 

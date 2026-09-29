@@ -153,6 +153,126 @@ const exclusiveGroups = computed(() => {
   })
 })
 
+// ── Rent Roll: the lease timeline in the IC exhibit's layout (steps 3-4) ──
+// One engine (GET /rent-roll-timeline) -- the same timeline the exhibit prints.
+// The analyst settles what the documents cannot settle: start and expiration
+// through the field resolutions, the future schedule and the options as a whole,
+// each with a reason and a cited document.
+const rentRoll = ref<any>(null)
+const rentRollLoading = ref(false)
+const rentRollError = ref<string | null>(null)
+const openFlags = ref<Set<number>>(new Set())
+const settleFor = ref<any>(null)
+const settleForm = ref<any>({})
+const settleSaving = ref(false)
+const settleMsg = ref<string | null>(null)
+
+async function loadRentRoll() {
+  if (!selectedReviewId.value) return
+  rentRollLoading.value = true
+  rentRollError.value = null
+  try {
+    const res = await api.get(`/api/lease-review/reviews/${selectedReviewId.value}/rent-roll-timeline`)
+    rentRoll.value = res.data
+  } catch (e: any) {
+    rentRollError.value = e.response?.data?.error || e.message
+  } finally {
+    rentRollLoading.value = false
+  }
+}
+watch(activeTab, (t) => { if (t === 'rentroll' && !rentRoll.value) loadRentRoll() })
+watch(selectedReviewId, () => { rentRoll.value = null; settleFor.value = null
+  if (activeTab.value === 'rentroll') loadRentRoll() })
+
+function rrDate(v: any) {
+  if (!v) return ''
+  const [y, m, d] = String(v).slice(0, 10).split('-')
+  return `${m}-${d}-${y.slice(2)}`
+}
+function rrMoney(v: any) {
+  return v === null || v === undefined ? '' : Math.round(Number(v)).toLocaleString('en-US')
+}
+function rrPsf(v: any) {
+  return v === null || v === undefined ? '' : Number(v).toFixed(2)
+}
+function toggleFlags(id: number) {
+  const s = new Set(openFlags.value)
+  s.has(id) ? s.delete(id) : s.add(id)
+  openFlags.value = s
+}
+function tenantDocs(tid: number) {
+  return (documents.value as any)[tid] || (documents.value as any)[String(tid)] || []
+}
+
+function openSettle(t: any) {
+  settleMsg.value = null
+  settleFor.value = t
+  settleForm.value = {
+    start: t.start || '', expiration: t.expiration || '',
+    schedule: (t.future || []).map((p: any) => ({ start: p.start, end: p.end,
+      annual_rent: p.annual_rent })),
+    options: (t.options || []).flatMap((o: any, i: number) =>
+      (o.periods || []).map((p: any) => ({ option: i + 1, start: p.start, end: p.end,
+        annual_rent: p.annual_rent, term_years: o.term_years }))),
+    reason: '', doc: (tenantDocs(t.tenant_id)[0] || {}).id || null,
+  }
+}
+async function settleField(field: 'lease_start' | 'lease_end', value: string) {
+  const t = settleFor.value
+  await api.put(`/api/lease-review/reviews/${selectedReviewId.value}/validation/resolve`, {
+    tenant_id: t.tenant_id, field, value, reason: settleForm.value.reason,
+    source_doc_id: settleForm.value.doc,
+    prior_value: field === 'lease_start' ? t.start : t.expiration,
+  })
+}
+async function saveSettlement(what: 'dates' | 'schedule' | 'options') {
+  const t = settleFor.value
+  const f = settleForm.value
+  settleSaving.value = true
+  settleMsg.value = null
+  try {
+    if (!f.reason?.trim()) throw new Error('A reason is required.')
+    if (!f.doc) throw new Error('Cite the document the figures come from.')
+    if (what === 'dates') {
+      if (f.start && f.start !== t.start) await settleField('lease_start', f.start)
+      if (f.expiration && f.expiration !== t.expiration) await settleField('lease_end', f.expiration)
+    } else {
+      let rows: any[]
+      if (what === 'schedule') {
+        rows = f.schedule.filter((r: any) => r.start || r.end)
+      } else {
+        const byOpt: Record<string, any> = {}
+        for (const r of f.options.filter((r: any) => r.start || r.end)) {
+          const k = String(r.option || 1)
+          byOpt[k] ||= { term_years: r.term_years || null, periods: [] }
+          byOpt[k].periods.push({ start: r.start, end: r.end,
+            annual_rent: r.annual_rent === '' ? null : r.annual_rent })
+        }
+        rows = Object.keys(byOpt).sort((a, b) => Number(a) - Number(b)).map(k => byOpt[k])
+      }
+      const res = await api.put(
+        `/api/lease-review/reviews/${selectedReviewId.value}/tenants/${t.tenant_id}/timeline/settlement`,
+        { section: what, rows, reason: f.reason, source_doc_id: f.doc })
+      if (res.data.warnings?.length) settleMsg.value = res.data.warnings.join(' ')
+    }
+    await loadRentRoll()
+    settleFor.value = (rentRoll.value?.tenants || []).find((x: any) => x.tenant_id === t.tenant_id) || null
+    if (!settleMsg.value) settleMsg.value = 'Saved.'
+  } catch (e: any) {
+    settleMsg.value = e.response?.data?.error || e.message
+  } finally {
+    settleSaving.value = false
+  }
+}
+async function clearSettlement(section: 'schedule' | 'options') {
+  const t = settleFor.value
+  await api.delete(
+    `/api/lease-review/reviews/${selectedReviewId.value}/tenants/${t.tenant_id}/timeline/settlement`,
+    { params: { section } })
+  await loadRentRoll()
+  settleFor.value = (rentRoll.value?.tenants || []).find((x: any) => x.tenant_id === t.tenant_id) || null
+}
+
 function radiusText(v: any) {
   return v === null || v === undefined || v === '' ? '' : `${Number(v).toLocaleString()} ft`
 }
@@ -180,6 +300,7 @@ const TABS = [
   { key: 'cotenancy', label: 'Co-Tenancy Risk' },
   { key: 'scenarios', label: 'Scenario Analysis' },
   { key: 'exclusive', label: 'Exclusive Use' },
+  { key: 'rentroll', label: 'Rent Roll' },
   { key: 'options', label: 'Options' },
   { key: 'projections', label: 'Projections' },
 ]
@@ -1463,6 +1584,107 @@ onMounted(() => {
         </div>
       </div>
 
+      <!-- ═══ RENT ROLL TAB — the lease timeline, the IC exhibit's layout ═══ -->
+      <div v-if="activeTab === 'rentroll'" class="tab-content">
+        <h3>Rent Roll</h3>
+        <div v-if="rentRollLoading" class="empty-state">Building the timeline…</div>
+        <div v-else-if="rentRollError" class="rv-error">{{ rentRollError }}</div>
+        <template v-else-if="rentRoll">
+          <div class="rr-meta">
+            As of <b>{{ rrDate(rentRoll.as_of) }}</b> ·
+            {{ rentRoll.tenants.length }} tenants ·
+            {{ rentRoll.flag_count }} flag(s) to review ·
+            current rent, future steps and remaining options from the governing
+            documents, or as settled by the analyst.
+          </div>
+          <table class="rr-table">
+            <thead><tr><th>Tenant</th><th>SF</th><th>Start</th><th>Expiration</th>
+              <th>Annual Rent</th><th>Annual PSF</th><th>Option(s)</th><th></th></tr></thead>
+            <tbody v-for="t in rentRoll.tenants" :key="t.tenant_id" class="rr-group">
+              <tr v-for="(r, i) in t.rows" :key="i" :class="'rr-' + r.kind">
+                <td :class="r.kind === 'tenant' ? 'rr-name' : 'rr-label'">
+                  {{ r.kind === 'tenant' ? t.tenant_name : (r.label || '') }}</td>
+                <td class="num">{{ r.kind === 'tenant' ? rrMoney(r.sf) : '' }}</td>
+                <td class="num">{{ rrDate(r.start) }}</td>
+                <td class="num">{{ rrDate(r.end) }}</td>
+                <td class="num" :class="{ 'rr-blank': r.annual_rent === null && r.kind !== 'tenant' }">
+                  {{ r.annual_rent === null && r.kind.startsWith('option') ? 'not stated' : rrMoney(r.annual_rent) }}
+                  <span v-if="r.derived" class="rr-derived" title="Compounded from a stated percentage">d</span></td>
+                <td class="num">{{ rrPsf(r.psf) }}</td>
+                <td class="num">{{ r.kind === 'tenant' ? r.options : '' }}</td>
+                <td class="rr-actions">
+                  <template v-if="r.kind === 'tenant'">
+                    <button v-if="t.flags.length" class="rr-flagbtn" @click="toggleFlags(t.tenant_id)">
+                      {{ t.flags.length }} flag{{ t.flags.length === 1 ? '' : 's' }}</button>
+                    <span v-if="t.schedule_basis !== 'lease schedule' || t.options_basis !== 'governing documents'
+                                || t.start_basis === 'settled by the analyst' || t.expiration_basis === 'settled by the analyst'"
+                          class="rv-chip rv-confirmed">settled</span>
+                    <button v-if="canReview" class="rv-btn" @click="openSettle(t)">Settle</button>
+                  </template>
+                </td>
+              </tr>
+              <tr v-if="openFlags.has(t.tenant_id)" class="rr-flags">
+                <td colspan="8"><ul><li v-for="(f, j) in t.flags" :key="j">
+                  <b>{{ f.code.replace(/_/g, ' ') }}</b> — {{ f.message }}</li></ul></td>
+              </tr>
+              <tr v-if="settleFor && settleFor.tenant_id === t.tenant_id" class="rr-settle">
+                <td colspan="8">
+                  <div class="rr-settle-box">
+                    <div class="rr-settle-head"><b>Settle {{ t.tenant_name }}</b>
+                      <button class="btn-secondary" @click="settleFor = null">Close</button></div>
+                    <div class="rr-settle-common">
+                      <label>Reason (required)
+                        <input v-model="settleForm.reason" placeholder="What the documents show, and why" /></label>
+                      <label>Document cited
+                        <select v-model="settleForm.doc">
+                          <option v-for="d in tenantDocs(t.tenant_id)" :key="d.id" :value="d.id">
+                            {{ String(d.filename).split('/').pop() }}</option>
+                        </select></label>
+                    </div>
+                    <div class="rr-settle-sec">
+                      <b>Start / Expiration</b>
+                      <input type="date" v-model="settleForm.start" />
+                      <input type="date" v-model="settleForm.expiration" />
+                      <button class="btn-primary" :disabled="settleSaving" @click="saveSettlement('dates')">Save dates</button>
+                    </div>
+                    <div class="rr-settle-sec">
+                      <b>Future rent steps</b>
+                      <div v-for="(r, k) in settleForm.schedule" :key="'s' + k" class="rr-row">
+                        <input type="date" v-model="r.start" /><input type="date" v-model="r.end" />
+                        <input type="number" v-model.number="r.annual_rent" placeholder="Annual rent" />
+                        <button class="rv-btn" @click="settleForm.schedule.splice(k, 1)">×</button>
+                      </div>
+                      <button class="rv-btn" @click="settleForm.schedule.push({ start: '', end: '', annual_rent: null })">+ step</button>
+                      <button class="btn-primary" :disabled="settleSaving" @click="saveSettlement('schedule')">Save schedule</button>
+                      <button v-if="t.schedule_basis === 'settled by the analyst'" class="btn-secondary"
+                              @click="clearSettlement('schedule')">Revert to documents</button>
+                    </div>
+                    <div class="rr-settle-sec">
+                      <b>Options</b> <span class="muted">(rows with the same option number are that option's rent steps; leave rent blank for fair market)</span>
+                      <div v-for="(r, k) in settleForm.options" :key="'o' + k" class="rr-row">
+                        <input type="number" v-model.number="r.option" class="rr-optno" title="Option number" />
+                        <input type="date" v-model="r.start" /><input type="date" v-model="r.end" />
+                        <input type="number" v-model="r.annual_rent" placeholder="Annual rent" />
+                        <button class="rv-btn" @click="settleForm.options.splice(k, 1)">×</button>
+                      </div>
+                      <button class="rv-btn" @click="settleForm.options.push({ option: (settleForm.options.at(-1)?.option || 0) + 1, start: '', end: '', annual_rent: '' })">+ row</button>
+                      <button class="btn-primary" :disabled="settleSaving" @click="saveSettlement('options')">Save options</button>
+                      <button v-if="t.options_basis === 'settled by the analyst'" class="btn-secondary"
+                              @click="clearSettlement('options')">Revert to documents</button>
+                    </div>
+                    <div v-if="settleMsg" class="rr-msg">{{ settleMsg }}</div>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+            <tfoot><tr class="rr-total"><td>Total / Wtd. Avg.</td>
+              <td class="num">{{ rrMoney(rentRoll.totals.square_feet) }}</td><td></td><td></td>
+              <td class="num">{{ rrMoney(rentRoll.totals.annual_rent) }}</td>
+              <td class="num">{{ rrPsf(rentRoll.totals.psf) }}</td><td></td><td></td></tr></tfoot>
+          </table>
+        </template>
+      </div>
+
       <!-- ═══ OPTIONS TAB ═══ -->
       <div v-if="activeTab === 'options'" class="tab-content">
         <template v-if="options.length">
@@ -1877,6 +2099,36 @@ onMounted(() => {
 .rv-form { display: flex; gap: 8px; align-items: flex-start; flex-wrap: wrap; margin: 8px 0; }
 .rv-form textarea { flex: 1; min-width: 280px; font-size: 0.8rem; padding: 4px 6px; }
 .rv-error { color: #b52b27; font-size: 0.8rem; }
+/* Rent Roll: the IC exhibit's look -- Times New Roman, grey header and total,
+   a frame, a thin rule between tenants, italic subordinate labels. */
+.rr-meta { font-size: 0.8rem; color: #6b7280; margin: 4px 0 10px; }
+.rr-table { border-collapse: collapse; font-family: 'Times New Roman', Times, serif; font-size: 0.9rem;
+  border: 2px solid #111; width: 100%; max-width: 1100px; }
+.rr-table th { background: #f2f2f2; font-weight: bold; text-align: center; padding: 3px 8px;
+  border-bottom: 1px solid #111; }
+.rr-table td { padding: 2px 8px; }
+.rr-table .num { text-align: right; white-space: nowrap; }
+.rr-group { border-bottom: 1px solid #111; }
+.rr-name { text-align: left; }
+.rr-label { text-align: right; font-style: italic; }
+.rr-blank { color: #9a5200; font-style: italic; }
+.rr-derived { font-size: 0.7rem; color: #9a5200; vertical-align: super; }
+.rr-total td { background: #f2f2f2; font-weight: bold; border-top: 1px solid #111; }
+.rr-actions { white-space: nowrap; font-family: system-ui, sans-serif; }
+.rr-flagbtn { font-size: 0.72rem; border: 1px solid #d9a441; background: #fdf7ea; color: #9a6700;
+  border-radius: 10px; padding: 0 7px; cursor: pointer; margin-right: 4px; }
+.rr-flags td, .rr-settle td { font-family: system-ui, sans-serif; font-size: 0.78rem; background: #fafafa; }
+.rr-flags ul { margin: 4px 0; padding-left: 18px; }
+.rr-settle-box { display: flex; flex-direction: column; gap: 8px; padding: 6px 0; }
+.rr-settle-head { display: flex; justify-content: space-between; align-items: center; }
+.rr-settle-common { display: flex; gap: 12px; flex-wrap: wrap; }
+.rr-settle-common label { display: flex; flex-direction: column; gap: 2px; min-width: 260px; flex: 1; }
+.rr-settle-sec { display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+  border-top: 1px solid #e5e7eb; padding-top: 6px; }
+.rr-row { display: flex; gap: 4px; flex-basis: 100%; }
+.rr-row input { font-size: 0.78rem; padding: 2px 4px; }
+.rr-optno { width: 48px; }
+.rr-msg { font-size: 0.8rem; color: #374151; }
 .src-cell { font-size: 0.75rem; color: #666; }
 .wrap-cell { max-width: 300px; word-wrap: break-word; white-space: normal; }
 /* ISO dates offer a break opportunity at each hyphen, so a narrow column

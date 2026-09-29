@@ -94,11 +94,33 @@ def _option_periods(opt: Dict[str, Any], start: date, end: Optional[date],
     return periods
 
 
+def summarise_options(options: List[Dict[str, Any]]) -> str:
+    """ "2 x 5 Years" from a list of options, by term; the term is the stated
+    `term_years` or, failing that, measured from the option's own dates."""
+    counts: Dict[str, int] = {}
+    for o in options:
+        ty = o.get('term_years')
+        if ty in (None, '') and _as_date(o.get('start')) and _as_date(o.get('end')):
+            d = relativedelta(_as_date(o['end']) + timedelta(days=1), _as_date(o['start']))
+            ty = d.years + d.months / 12.0
+        try:
+            ty = float(ty)
+            label = ('%g Years' % ty) if ty >= 1 else ('%g Months' % round(ty * 12))
+        except (TypeError, ValueError):
+            label = 'term not stated'
+        counts[label] = counts.get(label, 0) + 1
+    return ', '.join('%d x %s' % (n, k) for k, n in counts.items()) or 'None'
+
+
 def build_timeline(terms: Dict[str, Any], steps: List[Dict[str, Any]],
                    square_feet: Optional[float], as_of: Any,
                    settled_annual_rent: Optional[float] = None,
                    rent_roll_annual_rent: Optional[float] = None,
-                   tenant_active: bool = True) -> Dict[str, Any]:
+                   tenant_active: bool = True,
+                   settled_start: Any = None, settled_expiration: Any = None,
+                   settled_schedule: Optional[List[Dict[str, Any]]] = None,
+                   settled_options: Optional[List[Dict[str, Any]]] = None
+                   ) -> Dict[str, Any]:
     """The complete timeline and the rent-roll rows for one tenant.
 
     `steps` are RESOLVED steps (`resolve_rent_steps` output). `settled_annual_rent`
@@ -109,8 +131,17 @@ def build_timeline(terms: Dict[str, Any], steps: List[Dict[str, Any]],
     """
     flags: List[Dict[str, Any]] = []
     asof = _as_date(as_of)
+    # AN ANALYST'S SETTLED VALUE OUTRANKS THE DERIVED ONE (step 4): it is their
+    # conclusion from the same documents, recorded with a reason and a citation.
+    if settled_start or settled_expiration:
+        terms = dict(terms)
+        if settled_start:
+            terms['lease_commencement'] = settled_start
+        if settled_expiration:
+            terms['lease_expiration'] = settled_expiration
+            terms['_expiration_basis'] = 'settled by the analyst'
     start = _as_date(terms.get('lease_commencement'))
-    start_basis = 'lease commencement'
+    start_basis = 'settled by the analyst' if settled_start else 'lease commencement'
     if start is None and _as_date(terms.get('rent_commencement')):
         start = _as_date(terms.get('rent_commencement'))
         start_basis = 'rent commencement (no lease commencement stated)'
@@ -197,9 +228,18 @@ def build_timeline(terms: Dict[str, Any], steps: List[Dict[str, Any]],
         _flag(flags, 'current_rent_from_rent_roll',
               'No dated rent schedule in the lease; the current rent shown is the rent roll\'s.')
     future = [p for p in term if asof and _as_date(p['start']) > asof]
+    schedule_basis = 'lease schedule'
+    if settled_schedule is not None:
+        future = [dict(p, source='settled') for p in settled_schedule
+                  if not asof or not p.get('end') or _as_date(p['end']) >= asof]
+        schedule_basis = 'settled by the analyst'
 
     # ---- remaining options, in sequence after the term
     opts = [o for o in (terms.get('_remaining_options') or []) if isinstance(o, dict)]
+    options_basis = 'governing documents'
+    if settled_options is not None:
+        opts = []
+        options_basis = 'settled by the analyst' 
     opts.sort(key=lambda o: (_as_date(o.get('option_start')) or date.max,
                              o.get('option_number') or 0))
     options = []
@@ -236,13 +276,25 @@ def build_timeline(terms: Dict[str, Any], steps: List[Dict[str, Any]],
         prev_end = o_end or prev_end
         prior = next((p['annual_rent'] for p in reversed(periods) if p['annual_rent']),
                      prior)
+    options_summary = terms.get('_options_summary') or 'None'
+    if settled_options is not None:
+        options = []
+        for i, o in enumerate(settled_options, start=1):
+            periods = [dict(p) for p in (o.get('periods') or [])] or [
+                {'start': o.get('start'), 'end': o.get('end'),
+                 'annual_rent': o.get('annual_rent'), 'psf': o.get('psf')}]
+            options.append({'label': f'Option {i}', 'start': o.get('start'),
+                            'end': o.get('end'), 'term_years': o.get('term_years'),
+                            'rent_basis': o.get('rent_basis') or 'settled',
+                            'periods': periods})
+        options_summary = summarise_options(settled_options)
 
     # ---- the rent-roll rows (spec §26-27): tenant, steps, then each option
     rows = [{'kind': 'tenant', 'label': None, 'sf': square_feet,
              'start': _iso(start), 'end': _iso(expiration),
              'annual_rent': (current or {}).get('annual_rent'),
              'psf': (current or {}).get('psf'),
-             'options': terms.get('_options_summary') or 'None'}]
+             'options': options_summary}]
     for i, p in enumerate(future):
         rows.append({'kind': 'step', 'label': 'Rent Step Dates' if i == 0 else None,
                      'start': p['start'], 'end': p['end'],
@@ -261,6 +313,7 @@ def build_timeline(terms: Dict[str, Any], steps: List[Dict[str, Any]],
         'expiration_basis': terms.get('_expiration_basis') or 'governing documents',
         'square_feet': square_feet, 'current': current, 'current_basis': current_basis,
         'term': term, 'future': future, 'options': options,
-        'options_summary': terms.get('_options_summary') or 'None',
+        'options_summary': options_summary,
+        'schedule_basis': schedule_basis, 'options_basis': options_basis,
         'rows': rows, 'flags': flags,
     }
