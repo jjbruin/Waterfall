@@ -44,10 +44,15 @@ def main() -> int:
     ap.add_argument("--tag", required=True)
     ap.add_argument("--deals",
                     default=os.path.join(HERE, "onepager_print_population.txt"))
+    ap.add_argument("--quarter", default=None,
+                    help="the quarter to read, e.g. the one the sweep rendered; "
+                         "required unless the population file names its own")
     args = ap.parse_args()
 
-    deals = [l.split() for l in open(args.deals, encoding="utf-8") if l.strip()
-             and not l.startswith("#")]
+    from onepager_population import read_population
+    deals = read_population(args.deals, args.quarter)
+    if deals is None:
+        return 2
 
     checked, leaked, missing = 0, [], []
     for vcode, quarter in deals:

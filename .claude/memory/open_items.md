@@ -22,6 +22,38 @@ fixed, plus `MANUAL_RATIO_SEEDS` and its expiry), `onepager_audit_q1_2026.md`.
 
 ---
 
+## 15. Guardrails that are RED for a known reason (Sep 29 2026)
+
+A check that has been red for a while stops being read, and then the day it goes
+red for a NEW reason nobody notices. Each one here is proved pre-existing —
+`git stash` the working tree and it fails identically on the unmodified code —
+and carries an owner and a fix, so "known red" never becomes "ignored".
+
+### 15.1 `onepager_missing_vs_zero_check` — 15 of 16, unassigned
+
+`scripts/onepager_missing_vs_zero_check.py` fails on **"the Economic Occ. row
+routes through `fmtOccVariance`, not a raw `toFixed`"**.
+
+**PROVED PRE-EXISTING** on Sep 29 2026: stashing the `feat/freeze-per-quarter`
+working tree and re-running gives the same `15/16 checks passed` on clean
+`origin/main` (`27e1dd8`). It is not related to the freeze or quarter work; it
+was simply found while sweeping the suites around them.
+
+The rule it defends is real — the One Pager must not print a raw `toFixed` for a
+variance row, because a missing value and a zero then render identically, which
+is the whole point of that check file. Either the Economic Occ. row genuinely
+stopped using the shared formatter (a defect to fix in the view) or the check is
+matching on a call shape the view has since changed (a defect to fix in the
+check). **Nobody has yet established which**, and that is the work.
+
+**Do not "fix" it by loosening the assertion** — same standing rule as §11.1.
+
+See also §11.1, `budget_import_check`'s one pre-existing failure, and the
+container-only failure of `katex_render_check` recorded in the `v527` deploy
+note (it reads `vue_app/package.json`, which the runtime image does not ship).
+
+---
+
 ## 14. MRI commitments as the ownership source — checked Sep 29 2026
 
 Jim updated `IA_Commitment` in MRI to serve as the source of capital ownership

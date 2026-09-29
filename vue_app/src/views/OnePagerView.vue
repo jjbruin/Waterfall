@@ -6,6 +6,7 @@ import { useRoute } from 'vue-router'
 import api from '../api/client'
 import ReviewPanel from '../components/common/ReviewPanel.vue'
 import FreezeQuarterPanel from '../components/common/FreezeQuarterPanel.vue'
+import { defaultQuarter } from '../api/quarters'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -24,6 +25,10 @@ const reviewLoading = ref(false)
 
 onMounted(async () => {
   if (data.deals.length === 0) await data.loadDeals()
+  // The batch quarter comes from the server, not from a literal in this file.
+  // Not awaited: it only seeds the batch mode's input, and blocking the
+  // single-deal path on it would be a needless round trip for the common case.
+  defaultQuarter().then(q => { if (q && !batchQuarter.value) batchQuarter.value = q })
   // Handle query params (from Review Tracking navigation)
   const qVcode = route.query.vcode as string
   const qQuarter = route.query.quarter as string
@@ -304,7 +309,11 @@ interface BatchPage {
 
 const investors = ref<Investor[]>([])
 const selectedInvestor = ref('')
-const batchQuarter = ref('2026-Q2')
+// ASKED, NOT HARDCODED. This used to be a pinned quarter literal, which is
+// right for one quarter and silently stale from the day the next one ends.
+// Empty until the server answers — a blank box is visibly unanswered, a wrong
+// quarter is not.
+const batchQuarter = ref('')
 const batchPages = ref<BatchPage[]>([])
 const batchLoading = ref(false)
 const batchProgress = ref('')
@@ -821,7 +830,7 @@ function printOnePager() {
         </div>
         <div v-if="selectedInvestor" class="quarter-selector">
           <label>Quarter:</label>
-          <input type="text" v-model="batchQuarter" placeholder="e.g. 2025-Q4" class="quarter-input" />
+          <input type="text" v-model="batchQuarter" placeholder="YYYY-Qn" class="quarter-input" />
         </div>
         <button v-if="selectedInvestor" class="btn btn-sm" @click="loadBatch" :disabled="batchLoading">
           {{ batchLoading ? 'Loading...' : 'Load All' }}

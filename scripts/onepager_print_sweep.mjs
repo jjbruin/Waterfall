@@ -69,15 +69,35 @@ const ONLY = arg('only', null)          // comma-separated vcodes, for a spot ch
 // the default here for that reason. Anything wider reproduces identically.
 const WINDOW = arg('window', '1280,1024')
 
+// THE QUARTER IS PASSED IN, NOT BAKED IN. This used to fall back to a literal
+// quarter, so a sweep run after that quarter ended kept rendering it and the
+// before/after comparison still looked clean. A legacy two-column line still
+// names its own quarter and that still wins; a bare vcode needs --quarter.
+const QUARTER = arg('quarter', null)
+const QUARTER_RE = /^\d{4}-Q[1-4]$/
+if (QUARTER !== null && !QUARTER_RE.test(QUARTER)) {
+  console.error(`--quarter ${QUARTER} is not a quarter (expected YYYY-Qn)`)
+  process.exit(2)
+}
+
 const deals = readFileSync(DEALS_FILE, 'utf8')
   .split('\n')
   .map((l) => l.trim())
   .filter((l) => l && !l.startsWith('#'))
   .map((l) => {
     const [vcode, quarter] = l.split(/\s+/)
-    return { vcode, quarter: quarter || '2026-Q2' }
+    return { vcode, quarter: QUARTER_RE.test(quarter || '') ? quarter : QUARTER }
   })
   .filter((d) => !ONLY || ONLY.split(',').includes(d.vcode))
+
+const bare = deals.filter((d) => !d.quarter)
+if (bare.length) {
+  console.error(
+    `${bare.length} line(s) in ${DEALS_FILE} name no quarter and --quarter was ` +
+    `not given. Pass --quarter YYYY-Qn; the population file deliberately no ` +
+    `longer pins one.`)
+  process.exit(2)
+}
 
 if (!deals.length) {
   console.error(`no deals to render from ${DEALS_FILE}`)
