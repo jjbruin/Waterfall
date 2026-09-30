@@ -590,7 +590,22 @@ def get_capitalization_stack(
         # computed from. `fmtPct` renders None as the same em dash, so the two
         # cells now agree that the figure does not exist.
         'pe_exposure_on_value': None,
-        'pe_yield_on_exposure': 0.0,
+        # None, NOT 0.0 — the third field on this pattern, for the same reason
+        # as the two above. `financials_service` only assigns it when
+        # `senior_plus_pe > 0 and noi_ye > 0`, so on a deal with no exposure or
+        # no NOI the DEFAULT is what the payload carries, and 0.0 published a
+        # computed yield of nil where there was nothing to compute it from.
+        #
+        # THE FIELD'S OWN TRACE ALREADY DISAGREED WITH IT: the `check` for
+        # `one_pager.pe_yield_on_exposure` in `field_trace_service` returns
+        # None in exactly these cases, so the published value said 0.0 while
+        # the trace beside it said "no value". They now agree.
+        #
+        # The screen does not move: both One Pager cells read
+        # `cap.pe_yield_on_exposure ? fmtPct(...) : 'N/A'`, and 0.0 and None are
+        # both falsy, so the rendered cell was — and stays — "N/A". What changes
+        # is the API payload and anything reading it directly.
+        'pe_yield_on_exposure': None,
         'committed_pe': 0.0,
         # Which source `committed_pe` came from — see the fallback below.
         'committed_pe_basis': '',

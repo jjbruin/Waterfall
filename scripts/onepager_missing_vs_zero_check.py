@@ -75,6 +75,68 @@ assign = re.search(
 chk("it is still only assigned when current_valuation > 0", assign is not None)
 
 print()
+print("1b. pe_yield_on_exposure defaults to None, not 0.0"
+      "  (one_pager.py / financials_service.py)")
+
+m = re.search(r"^\s*'pe_yield_on_exposure':\s*(.+?),\s*$", src, re.M)
+chk("the default is declared exactly once", m is not None
+    and len(re.findall(r"'pe_yield_on_exposure':", src)) == 1)
+if m:
+    chk(f"the default is None (found: {m.group(1).strip()})",
+        m.group(1).strip() == "None")
+
+# Same reasoning as above: the field is only ASSIGNED when it can be computed,
+# so the default is what an uncomputable deal publishes. Drop that guard and
+# the default never survives, making the fix inert.
+FS = ROOT / "flask_app" / "services" / "financials_service.py"
+fsrc = read(FS)
+chk("financials_service only assigns it when exposure AND NOI are positive",
+    re.search(r"if senior_plus_pe > 0 and noi_ye > 0:\s*\n\s*"
+              r"cap_stack\['pe_yield_on_exposure'\]\s*=", fsrc) is not None)
+chk("financials_service never assigns it a literal zero",
+    re.search(r"pe_yield_on_exposure'\]\s*=\s*0(\.0)?\s*$", fsrc, re.M) is None)
+
+# BOTH directions. "It is blank when uncomputable" is satisfied by never
+# computing it at all, so the real computation must still be reachable.
+chk("the real computation is still there (NOI / (debt + pref_equity))",
+    "noi_ye / senior_plus_pe" in fsrc)
+
+print()
+print("1c. the SCREEN does not move — 0.0 and None both render 'N/A'")
+_vsrc = read(VUE)
+guarded = re.findall(
+    r"pe_yield_on_exposure\s*\?\s*fmtPct\([^)]*\)\s*:\s*'N/A'", _vsrc)
+chk(f"both One Pager cells stay truthiness-guarded to 'N/A' "
+    f"(found {len(guarded)})", len(guarded) == 2)
+chk("the field appears nowhere else in the component",
+    len(re.findall(r"pe_yield_on_exposure", _vsrc)) == len(guarded) * 2)
+
+# EXECUTED, not asserted — the same principle as fmtOccVariance below. The
+# claim "nothing changes on screen" rests entirely on 0.0 and null being
+# equally falsy, so run the real cell expression under node over both.
+if guarded and shutil.which("node"):
+    # The matched cell text, with whatever accessor it uses
+    # (`cap.…` / `pg.data.cap_stack?.…`) reduced to a single variable, so the
+    # ternary that actually ships is what runs.
+    expr = re.sub(r"[\w.?]*\bpe_yield_on_exposure", "v", guarded[0])
+    js = ("function fmtPct(v){return (v*100).toFixed(1)+'%';}\n"
+          f"const f = (v) => ({expr});\n"
+          "console.log(JSON.stringify([0.0, null, undefined, 0.0625].map(f)));")
+    try:
+        got = json.loads(subprocess.run(["node", "-e", js],
+                                        capture_output=True, text=True,
+                                        check=True).stdout)
+        chk(f"0.0 renders {got[0]!r} and null renders {got[1]!r} — identical",
+            got[0] == got[1] == "N/A")
+        chk("undefined (key absent) also renders 'N/A'", got[2] == "N/A")
+        chk(f"a REAL yield still renders a figure ({got[3]!r})",
+            got[3] not in ("N/A", None) and "%" in str(got[3]))
+    except Exception as ex:                                   # noqa: BLE001
+        chk(f"cell expression executed under node ({type(ex).__name__})", False)
+elif guarded:
+    print("  [SKIP] node not on PATH — cell expression not executed")
+
+print()
 print("2. occupancy variance never prints '-0.0%'  (OnePagerView.vue)")
 vsrc = read(VUE)
 
