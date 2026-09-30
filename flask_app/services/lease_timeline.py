@@ -322,12 +322,19 @@ def build_timeline(terms: Dict[str, Any], steps: List[Dict[str, Any]],
         options.append({'label': label, 'start': _iso(o_start), 'end': _iso(o_end),
                         'term_years': o.get('term_years'),
                         'rent_terms': o.get('rent_terms'),
+                        # The term is often stated only in the schedule's wording
+                        # ("Thirty (30) day option" -- Patton), so it travels too.
+                        'rent_schedule': o.get('rent_schedule'),
                         'rent_basis': o.get('rent_basis') or 'not_stated',
                         'periods': periods})
         prev_end = o_end or prev_end
         prior = next((p['annual_rent'] for p in reversed(periods) if p['annual_rent']),
                      prior)
-    options_summary = terms.get('_options_summary') or 'None'
+    # Summarised HERE from the options shown, not read back from consolidation:
+    # a stored summary is as old as the last consolidation and goes stale the
+    # moment the summary rule improves (Patton read "6 x term not stated" on
+    # v539 while its options said thirty days).
+    options_summary = summarise_options(opts) if opts else 'None'
     if settled_options is not None:
         options = []
         for i, o in enumerate(settled_options, start=1):

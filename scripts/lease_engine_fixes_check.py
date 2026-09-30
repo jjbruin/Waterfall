@@ -180,5 +180,30 @@ chk('five-year options are NOT collapsed',
     [r['label'] for r in tl['rows'] if r['kind'] == 'option'] == ['Option 1', 'Option 2'],
     [r['label'] for r in tl['rows'] if r['kind'] == 'option'])
 
+section("3b. Patton as production stores it (v539)")
+# The wording is in the schedule's period, rent_terms says something else, the
+# dates are calendar months (30 and 31 days), and the stored summary is stale.
+# The first version of this check put the wording in rent_terms and passed
+# while production still read "6 x term not stated".
+prod = []
+for i in range(6):
+    m = 6 + i
+    st, en = '2028-%02d-01' % m, '2028-%02d-%02d' % (m, calendar.monthrange(2028, m)[1])
+    prod.append({'option_number': i + 1, 'option_start': st, 'option_end': en,
+                 'rent_terms': 'fixed increase', 'rent_basis': 'fixed',
+                 'rent_schedule': [{'period': 'Thirty (30) day option at the same rental',
+                                    'start': st, 'end': en, 'monthly_rent': 22000}]})
+terms = {'lease_commencement': '2023-06-01', 'lease_expiration': '2028-05-31',
+         '_remaining_options': prod, '_options_summary': '6 x term not stated'}
+tl = build_timeline(terms, [{'effective_date': '2023-06-01', 'annual_rent': 264000}], 12000, ASOF)
+orows = [r for r in tl['rows'] if r['kind'] == 'option']
+chk('the wording in the schedule decides the term: "6 x 30-Day Rolling"',
+    tl['options_summary'] == '6 x 30-Day Rolling', tl['options_summary'])
+chk('a stale stored summary is not what is shown', tl['options_summary'] != '6 x term not stated')
+chk('30- and 31-day calendar months collapse into ONE row',
+    [r['label'] for r in orows] == ['Option 1 (30-day rolling, 6x)'], [r['label'] for r in orows])
+chk('that row spans June to November', bool(orows) and (orows[0]['start'], orows[0]['end'])
+    == ('2028-06-01', '2028-11-30'), orows and (orows[0]['start'], orows[0]['end']))
+
 print('\n%d passed, %d failed' % (len(OK), len(BAD)))
 sys.exit(1 if BAD else 0)
