@@ -71,9 +71,9 @@ DISPLAY PRECEDENCE (2026-09-01), highest first. Every rule below touches the
 the subtotals and the guardrails see the truth and a frozen payload re-renders
 under whatever the rule is at read time.
 
-  1. Debt free (DEBT_FREE_DEALS) — Debt an em dash, and LTV / YTD DSCR /
-     Debt Yield / Rate / Maturity the literal "N/A". Says "this asset carries
-     no debt", which is neither "no data" nor "Dev".
+  1. Debt free (``_debt_free``, derived from the row's own data) — Debt an em
+     dash, and LTV / YTD DSCR / Debt Yield / Rate / Maturity the literal "N/A".
+     Says "this asset carries no debt", which is neither "no data" nor "Dev".
   2. Development (config.DEV_STRATEGIES) — "Dev" on LTV, YTD DSCR and Debt
      Yield, for EVERY development deal with no exemption of any kind. Debt,
      Rate and Maturity stay real.
@@ -101,8 +101,8 @@ from typing import Callable, Optional
 import pandas as pd
 
 from flask_app.services.portfolio_snapshot_debt import (
-    BASIS_COMMITTED, BASIS_UNAVAILABLE, committed_facility, deal_loan_rows,
-    resolve_debt,
+    BASIS_COMMITTED, BASIS_ISBS, BASIS_UNAVAILABLE, committed_facility,
+    deal_loan_rows, resolve_debt,
 )
 
 log = logging.getLogger(__name__)
@@ -152,44 +152,79 @@ DEV_DISPLAY = "Dev"
 DEV_RATIO_COLUMNS = ("ltv", "ytd_dscr", "debt_yield")
 
 # ══════════════════════════════════════════════════════════════════════════
-# TEMPORARY HARDCODED EXCEPTION 1 of 2 — DEBT-FREE DEALS
-# Remove when the real rule lands. See also exception 2 (Waters Creek LTV).
+# DEBT-FREE DEALS — a data rule, not a list of vcodes (2026-09-30)
 # ══════════════════════════════════════════════════════════════════════════
-#: Deals held with NO DEBT, whose loan row reports that fact rather than
-#: computing ratios from a zero balance.
+#: A deal held with NO DEBT reports that fact rather than computing ratios
+#: from a zero balance.
 #:
 #: Rendered as: Debt an em dash, and LTV / YTD DSCR / Debt Yield / Rate /
 #: Maturity the literal ``NA_DISPLAY``. This is a POSITIVE statement — "this
 #: asset carries no debt, so these columns do not apply" — which is why it is a
 #: literal and not the bare dash that means "no data". It is also emphatically
 #: NOT "Dev": these are operating assets, and conflating the two would undo the
-#: classification fix that made this entry necessary.
+#: classification fix that made this rule necessary.
 #:
-#: P0000066 Pegasus Life Storage is the case: ISBS balance a real 0.0, no loan
-#: record, no mOrigLoanAmt, and the reference PDF prints n/a across its ratio
-#: columns. It used to reach that display by accident — misclassified
-#: development, so ``resolve_debt`` took the dev branch, found no committed
-#: facility and returned (None, unavailable), which the old ``dev_no_data``
-#: test turned into dashes. Correcting the classification puts it on the ISBS
-#: branch, where the balance is a real 0.0 and Debt would print "$0.0" — a
-#: measured zero where the page means not-applicable.
-#:
-#: WHY THIS IS KEYED BY VCODE AND NOT DERIVED. The obvious data rule —
-#: non-dev, no loan record, debt 0-or-None — is not specific enough: measured
-#: live at 26Q1 it also catches PCITWES City West (identical fingerprint: 0
-#: loans, ISBS 0.0, no facility), a foreclosed deal whose blank columns mean
-#: "this deal is gone", not "this deal is unlevered". The two need different
-#: words on the page and the data cannot currently tell them apart. The rule
-#: this stands in for is:
+#: THIS USED TO BE ``DEBT_FREE_DEALS = {"P0000066"}``. The rule it stood in for
+#: was written down at the time and is now implemented literally:
 #:
 #:      a deal shows N/A across its debt columns when it is held
 #:      UNLEVERED BY DESIGN, as distinct from having no debt on record
 #:
-#: which needs a capital-structure intent field, or a lifecycle value that
-#: separates "unlevered" from "disposed", neither of which is extracted today.
-#: Anything added here in the meantime is technical debt.
+#: The old note said that needed "a capital-structure intent field, or a
+#: lifecycle value that separates 'unlevered' from 'disposed', neither of which
+#: is extracted today". THE SECOND ONE IS EXTRACTED TODAY and was not when that
+#: was written: ``sold`` (``kept_despite_sold``, keyed on the sale and not on a
+#: vcode) reaches ``build_row`` and already suppresses all six loan columns for
+#: a disposed deal further down. That is exactly the distinction the note said
+#: was missing, so the rule no longer needs a vcode to make it.
+#:
+#: PCITWES City West was the reason the list existed — measured live at 26Q1 it
+#: has the identical debt fingerprint (0 loans, ISBS 0.0, no facility) but is a
+#: FORECLOSED deal, whose blank columns mean "this deal is gone", not "this
+#: deal is unlevered". ``sold`` is what tells the two apart; without that term
+#: this rule would sweep City West in and say the wrong words on its row.
+#:
+#: MEASURED BEFORE SHIPPING, AND IT CAUGHT SIX DEALS. The rule without the
+#: parent term fired on Pegasus AND on all six Town Fair Tire properties
+#: (P0000101-P0000106) at 26Q1, 26Q2 and 26Q3 — each reporting
+#: "no debt account rows -> 0" with no loan of its own. They are CHILD
+#: properties (``Property_Count == 0``, one shared ``Portfolio_Name``) whose
+#: facility is held at the parent, so "held with no debt" is the wrong sentence
+#: for them; their columns should stay blank, not assert a fact. Pegasus is
+#: ``Property_Count == 1`` with no portfolio. Hence the parent term below.
+#:
+#: NOTE ALSO WHAT DID *NOT* EXCLUDE CITY WEST. The `sold` term is still correct
+#: and still required, but on today's data PCITWES never reaches the rule at
+#: all: it has no ISBS rows, so its debt is ``None`` rather than ``0.0``. Do not
+#: read the `sold` term as the thing keeping it out — that was an assumption,
+#: and the population check disproved it.
+#:
+#: The conditions, and why each is load-bearing:
+#:
+#:   * ``not dev``     — a development deal's three ratio columns already read
+#:                       "Dev", which outranks this and means something else.
+#:   * ``not sold``    — disposed is not unlevered. See City West above.
+#:   * ISBS basis      — the figure must be a READING, not a committed facility
+#:                       standing in for one (``BASIS_COMMITTED``) and not the
+#:                       absence of any basis at all (``BASIS_UNAVAILABLE``).
+#:                       An unavailable basis is "no data", which is the bare
+#:                       dash, not this.
+#:   * debt exactly 0  — a measured zero. ``None`` is "no reading" and must not
+#:                       reach here; ``0.0`` is the balance sheet saying the
+#:                       asset carries nothing.
+#:   * no active loan  — ``loan_count == 0``. Loans with ``vDateType='Paid Off'``
+#:                       are dropped at the data layer (data_service.load_all),
+#:                       so any row still present IS an active facility, and a
+#:                       deal with one is not held debt free however its ISBS
+#:                       balance reads.
+#:   * a PARENT        — ``property_count >= 1``. A child property carries 0 and
+#:                       its debt sits at the parent, so a zero of its own is
+#:                       not evidence of an unlevered asset. A NULL is coerced
+#:                       to 0 by ``_deal_index`` and is ALSO declined here on
+#:                       its own account, so an unknown can never widen the
+#:                       rule — the one direction that must not be left to a
+#:                       coercion elsewhere.
 NA_DISPLAY = "N/A"
-DEBT_FREE_DEALS = {"P0000066"}                  # Pegasus Life Storage
 
 
 def debt_field(debt, debt_free: bool):
@@ -206,10 +241,42 @@ def debt_field(debt, debt_free: bool):
     return None if debt_free else debt
 
 
-def _debt_free(vcode: str) -> bool:
-    """True for a deal held with no debt, whose debt columns read N/A.
-    TEMPORARY — see DEBT_FREE_DEALS."""
-    return str(vcode or "").strip().upper() in DEBT_FREE_DEALS
+def _debt_free(debt, debt_basis: str, loan_count, dev: bool,
+               sold: bool, property_count) -> bool:
+    """True for a deal held UNLEVERED BY DESIGN, whose debt columns read N/A.
+
+    Derived from the row's own data — see the note above for why each term is
+    here, which one keeps a child property out, and what did NOT keep City West
+    out.
+
+    Takes no vcode on purpose: there is nothing to key on, so a deal cannot be
+    added to or removed from this display by editing a list.
+    """
+    if dev or sold:
+        return False
+    if debt_basis != BASIS_ISBS:
+        return False
+    if debt is None:
+        return False
+    try:
+        if float(debt) != 0.0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    try:
+        if int(loan_count or 0) != 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    # A child property, or a deal whose parent/child status we do not know, is
+    # declined. `None` is handled explicitly rather than via `or 0` so that an
+    # unknown reads as unknown here and not as a zero that happens to fail.
+    if property_count is None:
+        return False
+    try:
+        return int(property_count) >= 1
+    except (TypeError, ValueError):
+        return False
 # ══════════════════════════════════════════════════════════════════════════
 
 
@@ -968,7 +1035,8 @@ def assemble_loan(investor_code: str, quarter: str, *,
 
     def build_row(vcode: str, name: str, strategy: str,
                   extra_flags: Optional[list] = None,
-                  sold: bool = False) -> dict:
+                  sold: bool = False,
+                  property_count=None) -> dict:
         flags = list(extra_flags or [])
         dev = is_dev_deal(strategy)
         if dev:
@@ -1030,9 +1098,13 @@ def assemble_loan(investor_code: str, quarter: str, *,
         # ---- debt free: N/A across the debt columns, ahead of everything ---
         # A positive statement that the asset carries no debt, so no ratio
         # applies — distinct from the em dash that means "no data", and
-        # distinct from "Dev". Checked here so it wins over both. See
-        # DEBT_FREE_DEALS.
-        debt_free = _debt_free(vcode)
+        # distinct from "Dev". Checked here so it wins over both.
+        #
+        # Derived from this row's own data, never from a vcode — see the note
+        # beside _debt_free. `sold` is passed because a disposed deal has the
+        # same debt fingerprint and needs different words on the page.
+        debt_free = _debt_free(debt, debt_basis, terms["loan_count"], dev, sold,
+                               property_count)
         if debt_free:
             diag["debt_free"] += 1
             flags.append("held with no debt — Debt shown as a dash, and LTV / "
@@ -1308,6 +1380,7 @@ def assemble_loan(investor_code: str, quarter: str, *,
     def _seated(entry: dict):
         row = build_row(entry["vcode"], entry["name"], resolve_strategy(entry)[0],
                         sold=bool(entry.get("kept_despite_sold")),
+                        property_count=entry.get("property_count"),
                         extra_flags=(_ownership_flags(entry)
                                      if entry.get("derived_group") else None))
         if entry.get("derived_group"):
@@ -1336,6 +1409,7 @@ def assemble_loan(investor_code: str, quarter: str, *,
     for f in unseated:
         row = build_row(f["vcode"], f["name"], resolve_strategy(f)[0],
                         sold=bool(f.get("kept_despite_sold")),
+                        property_count=f.get("property_count"),
                         extra_flags=_ownership_flags(f))
         row["ownership_flagged"] = True
         flagged_rows.append(row)
@@ -1652,7 +1726,7 @@ def _selftest():                                    # pragma: no cover
     # Pegasus Life Storage was the dev_no_data case until 2026-09-01, when
     # "new construction" left config.DEV_STRATEGIES and it became the operating
     # deal it always was. It is held DEBT FREE (ISBS 0.0, no loan record, no
-    # mOrigLoanAmt), so it now takes the DEBT_FREE_DEALS path: Debt an em dash,
+    # mOrigLoanAmt), so it now takes the debt-free path: Debt an em dash,
     # and five columns the literal "N/A". Asserted against BOTH of the other
     # two routes to a blank cell — the dev gate and a bare dash — so they can
     # never be confused for each other.
@@ -1691,10 +1765,16 @@ def _selftest():                                    # pragma: no cover
         not any(peg.get(k) == DEV_DISPLAY for k in
                 ("ltv_display", "ytd_dscr_display", "debt_yield_display",
                  "rate_display", "maturity_display")))
-    chk("Pegasus is the ONLY debt-free deal — City West has the same data "
-        "fingerprint and must NOT be swept in (see DEBT_FREE_DEALS)",
+    # The rule is derived now, so this is no longer "the list has one entry".
+    # It is the stronger claim: on live data the DATA picks out Pegasus alone.
+    # Anything else appearing here is a deal the rule newly touches and must be
+    # read before it ships — see scripts/debt_free_rule_check.py.
+    chk("Pegasus is the ONLY deal the debt-free rule fires on",
         sorted(r["vcode"] for r in flat.values() if r.get("debt_free"))
         in ([], ["P0000066"]))
+    # City West is the reason the rule carries its `sold` term: identical debt
+    # fingerprint (0 loans, ISBS 0.0, no facility), opposite meaning. If the
+    # term were dropped it would be swept in here.
     cw = flat.get("PCITWES") or {}
     if cw:
         chk("City West keeps its em dashes and gains no N/A literal",
@@ -1703,6 +1783,8 @@ def _selftest():                                    # pragma: no cover
                         ("ltv_display", "ytd_dscr_display",
                          "debt_yield_display", "rate_display",
                          "maturity_display")))
+        chk("City West is excluded by the SALE, not by a vcode",
+            bool(cw.get("kept_despite_sold")))
 
     no_data = sorted(r["vcode"] for r in flat.values() if r["dev_no_data"])
     print(f"    dev_no_data deals: {no_data}")

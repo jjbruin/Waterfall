@@ -942,6 +942,12 @@ def resolve_investor_deals(investor_code: str, quarter: str,
                        for r in routes],
             "asset_type": m["asset_type"], "strategy": m["strategy"],
             "investment_strategy": m["investment_strategy"],
+            # The parent/child discriminator — 0 on a child property, >= 1 on a
+            # parent. Published so the Loan subtab's debt-free rule can decline
+            # a child whose facility is held at the parent. `_deal_index` has
+            # already coerced a NULL to 0, i.e. to "child", which is the safe
+            # direction: an unknown can never widen that rule.
+            "property_count": m["property_count"],
             "sale_status": m["sale_status"],
             "sold_after_quarter": (m["sale_status"].upper() == "SOLD"
                                    and not is_sold_as_of(m, q_end)),

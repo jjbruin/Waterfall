@@ -258,10 +258,20 @@ def section_c() -> None:
     print("\nC. A debt-free deal carries no raw debt figure")
     base = 45394000.0 + 95105179.0
 
-    chk("Pegasus is the only deal on the debt-free list",
-        PL.DEBT_FREE_DEALS == {"P0000066"}, str(PL.DEBT_FREE_DEALS))
-    chk("_debt_free identifies it, case- and space-insensitively",
-        PL._debt_free(" p0000066 ") and not PL._debt_free("P0000018"))
+    # The per-deal list is gone (2026-09-30); the gate is derived from the
+    # row's own data. These assertions used to name Pegasus's VCODE — they now
+    # name its FINGERPRINT, and the City West case beside it is what stops the
+    # rule being widened by accident.
+    chk("the debt-free list is gone — nothing is keyed by vcode any more",
+        not hasattr(PL, "DEBT_FREE_DEALS"))
+    chk("_debt_free fires on Pegasus's fingerprint: ISBS, exactly 0, no loan, "
+        "and a PARENT",
+        PL._debt_free(0.0, PL.BASIS_ISBS, 0, False, False, 1))
+    chk("and NOT on City West's — identical fingerprint, but sold",
+        not PL._debt_free(0.0, PL.BASIS_ISBS, 0, False, True, 1))
+    chk("and NOT on a Town Fair Tire child property, nor on an unknown",
+        not PL._debt_free(0.0, PL.BASIS_ISBS, 0, False, False, 0)
+        and not PL._debt_free(0.0, PL.BASIS_ISBS, 0, False, False, None))
 
     # C1 — the rule itself: the debt-free gate decides, not the balance.
     chk("debt_field returns None for a debt-free deal, whatever the balance",
