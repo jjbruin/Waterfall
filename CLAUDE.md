@@ -255,6 +255,106 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v544` = `1da00ca` (A DEBT-FREE DEAL IS FOUND BY ITS DATA, and return of
+    capital counts only `Capital='Y'`. Q3 phase-1 plus the debt-free rule,
+    shipped together, Sep 30 2026. Built from a worktree cut at live `ad65707`;
+    P2 span was exactly five commits over seven files.
+    **THE PER-DEAL LIST IS GONE.** `DEBT_FREE_DEALS = {"P0000066"}` is removed —
+    not emptied — and the N/A display is now derived: `not dev`, `not sold`,
+    ISBS basis, debt exactly `0.0`, no active MRI loan, and
+    `property_count >= 1`. Both guardrails assert the constant cannot return.
+    **THE PARENT TERM EXISTS BECAUSE THE MEASUREMENT FOUND SIX DEALS.** Without
+    it the rule fired on Pegasus AND on all six Town Fair Tire properties
+    (`P0000101`-`P0000106`) at 26Q1, 26Q2 AND 26Q3 — each reporting
+    "no debt account rows -> 0" with no loan of its own. They are CHILD
+    properties (`Property_Count == 0`, one shared `Portfolio_Name`) whose
+    facility is held at the parent, so "held with no debt" is the wrong
+    sentence for them. Pegasus is `Property_Count == 1` with no portfolio. A
+    NULL `Property_Count` is declined on its own account as well as by
+    `_deal_index`'s coercion, so an unknown can never widen the rule.
+    **AND THE `sold` TERM IS NOT WHAT EXCLUDES CITY WEST**, which was my
+    assumption and was wrong. PCITWES never reaches the rule at all: it has no
+    ISBS rows, so its debt is `None`, not `0.0`. The `sold` term is still
+    correct and still required — do not read the measurement as proving it
+    load-bearing for that deal.
+    POPULATION CHECK, READ-ONLY ON PRODUCTION, AFTER THE PARENT TERM: fires on
+    `P0000066` and nothing else at 26Q1, 26Q2 and 26Q3; `CHANGED vs old vcode
+    list = NONE` at all three. **The only thing that moved is the SOURCE of
+    Pegasus's dash** — same em dash, same five N/A literals, `debt` still
+    `None` so no subtotal absorbs anything.
+    RETURN OF CAPITAL: `_is_return_of_capital` reads MRI's `Capital` flag, not
+    the Typename, so a Realized Gain stops inflating capital coming back.
+    **MEASURED THROUGH `get_pe_performance` ITSELF, old rule vs new, all deals
+    at 26Q2: 21 DEALS MOVE AND NONE GOES TO $0.00.**
+
+    | deal | before | after |
+    |---|---|---|
+    | `P0000007` Berger Pittsburgh Portfolio | 57,183,009.00 | 36,719,000.00 |
+    | `P0000003` Apple Self Storage | 46,417,982.69 | 27,214,566.32 |
+    | `PVILLAGE` Village Square Apartments | 29,026,157.79 | 15,400,000.00 |
+    | `PCAMARI` Camarillo Village | 23,934,631.39 | 18,843,400.00 |
+    | `POUTLOO` Outlook Nine Mile | 19,855,369.00 | 11,847,307.00 |
+    | `PJWEST` Jefferson West Love | 19,176,803.67 | 14,747,340.00 |
+    | `PWILLOW` Willowdale Apartments | 18,629,374.08 | 10,585,000.00 |
+    | `P3RDAVE` 3rd Ave & Indian School | 15,311,541.00 | 8,533,755.00 |
+    | `PDEVON` Devon Square | 14,595,605.00 | 12,000,000.00 |
+    | `PLANCS1` Lancaster Apartments | 13,887,277.96 | 7,558,214.86 |
+    | `PASTONC` Jefferson Centura | 6,103,708.57 | 4,346,000.00 |
+    | `P0000017` East Manchester | 5,139,662.37 | 3,600,000.00 |
+    | `PSHOPPW` Shoppers World | 4,671,733.48 | 3,374,000.48 |
+    | `PORANGE` Orange Grove | 4,000,000.00 | 1,200,000.00 |
+    | `P0000038` Quakertown Shopping Center | 3,681,883.24 | 3,087,500.00 |
+    | `PDECLAN` Declan & Walton | 3,049,567.22 | 2,250,000.00 |
+    | `PCREEK` Creek Crossing | 3,030,794.99 | 2,200,000.00 |
+    | `PLENDSS` Leander Self Storage | 3,023,728.71 | 2,261,292.28 |
+    | `PJEFFOA` Jefferson Oakhurst | 2,876,112.87 | 1,796,000.00 |
+    | `PHOMEW` Homewood Commons | 2,604,531.05 | 1,828,033.33 |
+    | `PBARN` Barnbeck Apartments | 1,549,746.02 | 1,150,000.00 |
+
+    **CORRECTION TO `e255da7`'S OWN COMMIT MESSAGE, recorded here because git
+    history is not being rewritten.** That message says "IT MOVES 20 DEAL/
+    INVESTOR PAIRS... Seven go to 0.00 because their entire reported return of
+    capital was realized gain (Village Square, 3rd Ave, Orange Grove, Jefferson
+    Centura, Shoppers World, Jefferson Oakhurst, Leander Self Storage)."
+    **That was a PAIR-LEVEL reading and the deal-level result is different: 21
+    deals change and NOT ONE reaches $0.00.** All seven named deals do appear
+    in the table above — they were identified correctly as affected — but each
+    lands on a real figure (3rd Ave 8,533,755; Orange Grove 1,200,000;
+    Jefferson Centura 4,346,000; Shoppers World 3,374,000.48; Jefferson
+    Oakhurst 1,796,000; Leander 2,261,292.28; Village Square 15,400,000). The
+    claim that their whole return of capital was realized gain is false. Read
+    the table here, not the commit message.
+    `P0000042 "Village Square Apartments"` is a SECOND, EMPTY deal — it maps to
+    no InvestmentID (`iids=[]`), funded 0.00 and ROC 0.00 before and after — so
+    its zero has nothing to do with this change and must not be read as one of
+    the seven.
+    A METHOD NOTE WORTH KEEPING: the first measurement grouped raw accounting
+    rows by `(InvestmentID, InvestorID)` and reported 85 moving pairs, because
+    that counts intermediate entities (`PPI16`, `PSCKOC`, `PSC3`) as deals. The
+    engine scopes by VCODE via `build_investmentid_to_vcode`, which is what
+    gives 21. Same arithmetic, wrong grouping — and it agreed with the engine
+    to the cent on every deal it did scope correctly, which is why the
+    disagreement looked like a defect rather than a grouping error.
+    POST-DEPLOY, ON PRODUCTION: root 200 (0.74s / 0.11s / 0.15s), clean boot
+    with 0 tracebacks, `/api/data/deals` and `/api/data/config` both 401,
+    `FREEZE_ENABLED` still ABSENT (`[]`) before and after — freezing stays off.
+    `q3_cleanup_check` 20/0 and `debt_free_rule_check` 41/0 **in the
+    container**, the former asserting East Manchester's 3,600,000.00 against
+    live data. Locally both trees were run side by side against live `ad65707`
+    and every pre-existing failure is identical, so nothing regressed:
+    `freeze_as_sent_check` 103 -> 104, `one_engine_per_number_check` 26/0,
+    `loan_maturity_gap_check` 36/0, `lease_terms_check` 129/0,
+    `gl_ia_query_check` 123/0.
+    `debt_free_rule_check` is proved non-vacuous THREE ways: `--inject=off`
+    fails 9, `--inject=nosold` fails 3, `--inject=nochild` fails 7. It also
+    caught a bug in its own fixture — "New Construction" is no longer in
+    `config.DEV_STRATEGIES`, so the dev case was silently a second unlevered
+    one.
+    NOT RECORDED BY ANYONE: `v543` = `ad65707` shipped with NO deploy-history
+    entry, the same gap as `v522`. Left for whoever deployed it rather than
+    reconstructed here.
+    Build `1da00ca`, tag locked `--write-enabled false`. v543 stays tagged for
+    rollback.)
   - `v542` = `992de9d` (RENT ADD-ONS: a later document stating the whole rent
     ends an earlier add-on -- Mattress Firm $243,600 -> $170,100, their exhibit's
     figure -- and every add-on applied is flagged with its document. Acceptance
