@@ -255,6 +255,60 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v545` = `c3cb48d` (INVESTMENT METRICS — the quarterly PSC Investment
+    Summary as a top-level report, SHIPPED BEHIND A DRAFT GATE. Sep 30 2026,
+    build `camk` 2m31s, digest `sha256:f315a801b18a616`.
+    **IT IS NOT IN THE SIDEBAR AND THAT IS THE POINT.**
+    `investment_metrics_config.INVESTMENT_METRICS_DRAFT = True` drives three
+    things from one switch — the screen banner, the printed DRAFT mark, and
+    whether the sidebar links to it at all. Published on `/api/data/config` as
+    `investment_metrics_draft` (live: `true`) so the sidebar reads the same
+    flag the report does. The compiled gate in the served entry bundle is
+    `(config?.investment_metrics_draft)===!1`, so with the flag true the link
+    cannot render. Route reachable by direct URL at `/investment-metrics`.
+    THE MARK PRINTS. A banner that vanishes on the way to the printer is worse
+    than none: the screen would say draft and the forwarded PDF would say
+    nothing. Verified against LIVE data through the real browser print path —
+    both sheets carry it. It adds NO LAYOUT: with the flag on, the 1,430 table
+    words on page 1 and 797 on page 2 sit at identical coordinates and there
+    are zero extra rects inside the table, so `investment_metrics_print_inspect`
+    still measures the real document and still passes 44/44 with the flag off.
+    PURELY ADDITIVE against what was live: 15 files, +4,280, **-0**. No DDL, no
+    change to any existing computation; the only edits to existing files are
+    wiring. P2 listed SIX commits and two are other-author and already
+    deployed — `ec9ae69` is CLAUDE.md only, and `a1f073f` is a MERGE whose
+    `--cc` diff is EMPTY and whose second parent IS `1da00ca`, the live commit.
+    So the net runtime delta was exactly the four Investment Metrics commits.
+    90s -> 10s COLD, 0.2s WARM, 0 DB QUERIES. Measured on frames padded to live
+    row counts, because a 5k-row stand-in flatters it by two orders of
+    magnitude. `_earliest_isbs_debt` normalised a 233k-row column with a Python
+    `map` on every call — 92 calls, **21.6 million `norm_id` calls**, 53 of 64
+    seconds; `_get_uw_7073_signed` and `_get_uw_pe_periodic` each open with
+    `isbs_raw.copy()`, 152 copies of a 325 MB frame per report. All three fixes
+    are pure narrowing done once with the SAME predicates, and the payload is
+    byte-identical before and after. `one_pager` deliberately NOT modified — it
+    is shared with the One Pager and the Portfolio Snapshot.
+    Route cache invalidates BY OBJECT IDENTITY, holding a reference to the
+    frames it was built from: `id()` alone can be reused and row counts repeat.
+    POST-DEPLOY, MEASURED: IM cold 5.25s / warm 0.17-0.20s; Dashboard KPIs
+    18.9s (that was the cold `load_all`, shared, first request after deploy);
+    One Pager 2.58s; Snapshot bundle 1.30s; deals 0.15s. Container 1,082 MB of
+    2,048 (50%). Boot log clean, 0 tracebacks.
+    A HARNESS ARTIFACT WAS CORRECTED BY THE DEPLOY, worth recording because it
+    ran through every figure I reported beforehand: `vAccount` is TEXT on
+    production and the local CSV mirror brought it back as int64, so every
+    `== '7073'` in `one_pager` matched nothing and U/W ROE came back empty for
+    all 76 deals — silently, as "this deal has no underwriting". On production
+    `proj_coc_since_close` is populated on **53 of 76**, not 29. Live cell
+    agreement against the reference PDF is **618/1242 (49.8%)**, or 576/1014
+    (56.8%) excluding the 228 cells held for Alay.
+    NOT SIGNED OFF, hence the gate: UW Proj. IRR and Proj/Act Yr-1 CoC are all
+    behind `cfg.UNLOADED_FIGURES` in `"none"` mode with an open TODO(alay), and
+    the first-lien column reproduces the reference on only 42 of 76.
+    Rollback is REDEPLOY THE IMAGE, not a traffic split —
+    `activeRevisionsMode` is **Single**, so `ingress traffic set` does not
+    apply: `az containerapp update ... --image
+    acrwaterfalldev.azurecr.io/waterfall-xirr:1da00ca --revision-suffix v546`.)
   - `v544` = `1da00ca` (A DEBT-FREE DEAL IS FOUND BY ITS DATA, and return of
     capital counts only `Capital='Y'`. Q3 phase-1 plus the debt-free rule,
     shipped together, Sep 30 2026. Built from a worktree cut at live `ad65707`;
