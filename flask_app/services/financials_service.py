@@ -1198,10 +1198,33 @@ def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
         _enrich_cap_stack_from_deal_terms(cap_stack, deal_terms, vcode)
 
     # Compute PE Yield on Exposure = Actual YE NOI / (Debt + PE)
+    #
+    # COMPUTED WHENEVER IT CAN BE, blank only when it genuinely cannot. The
+    # gate was `noi_ye > 0`, which declined a deal whose NOI is really
+    # NEGATIVE and reported it as absent — so "we cannot compute this" and
+    # "this is negative" came out as the same answer. A negative NOI over a
+    # positive exposure is a real, computable, negative yield and is now
+    # published as one: Jefferson Addison Heights -235,114 / 61,854,983 =
+    # -0.38%, Jefferson Eastchase -698,661 / 71,381,704 = -0.98% (26Q2).
+    #
+    # THE TEST IS TRUTHINESS, NOT `is not None`, AND THAT IS LOAD-BEARING.
+    # `perf['noi']['actual_ye']` DEFAULTS TO 0 (one_pager.py:1355) while
+    # `ytd_actual` defaults to None, so on a deal with no actuals at all the
+    # NOI reads as a literal 0 that was never assigned. Gating on "not None"
+    # would divide that no-data 0 by the exposure and publish a computed
+    # "0.0%" — reinstating, for 15 of the 17 affected deals at 26Q2, exactly
+    # the fake zero the `pe_yield_on_exposure` default was just changed to
+    # avoid. Falsy 0 keeps them blank; a negative is truthy and gets through.
+    #
+    # KNOWN LIMIT, deliberately not papered over: a deal whose NOI is a
+    # GENUINELY measured 0 is indistinguishable from one that was never
+    # assigned, so it reads blank. Fixing that means giving `noi.actual_ye`
+    # (and revenue/expenses beside it) a None default, which is a wider change
+    # than this one and would move other readers.
     if prop_perf and cap_stack:
         noi_ye = prop_perf.get('noi', {}).get('actual_ye', 0) or prop_perf.get('noi', {}).get('ytd_actual', 0) or 0
         senior_plus_pe = cap_stack.get('debt', 0) + cap_stack.get('pref_equity', 0)
-        if senior_plus_pe > 0 and noi_ye > 0:
+        if senior_plus_pe > 0 and noi_ye:
             cap_stack['pe_yield_on_exposure'] = noi_ye / senior_plus_pe
 
     return {
