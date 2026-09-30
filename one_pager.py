@@ -2521,9 +2521,32 @@ def _pe_terms_fallback(pe: Dict[str, Any], deal_terms: pd.DataFrame,
         v = float(v)
 
         if key == 'coupon':
-            # Unchanged: fill only when the waterfall gave nothing, and only
-            # from a positive rate.  A 0% coupon is not a thing.
-            if pe.get(key) or v == 0:
+            # COUPON: MRI DEAL TERMS WIN when they state a rate, the same
+            # precedence participation uses below and the same one the
+            # Capitalization block has always used
+            # (`_enrich_cap_stack_from_deal_terms`, which overrides on
+            # `coupon > 0`). The waterfall is the fallback.
+            #
+            # THIS WAS NOT PREVENTIVE, WHICH IS WHY IT IS WORTH STATING.
+            # Measured on production 2026-09-30 at 26Q2: THREE deals carry
+            # both sources and disagree, so each was printing two different
+            # coupons on one page — Capitalization from deal terms, PE
+            # Performance from the waterfall:
+            #
+            #   P0000066  Pegasus Life Storage   PE 10%  -> 9%    (cap 9%)
+            #   P0000084  Cocoplum Apartments    PE  5%  -> 8.5%  (cap 8.5%)
+            #   P0000032  Orange Grove           PE  8%  -> 8.5%  (cap 8.5%)
+            #
+            # The Capitalization cell does not move on any deal; only the PE
+            # block does, onto the figure that block was already showing.
+            #
+            # A ZERO IS STILL NOT A COUPON and does not count as a value —
+            # it falls through to the waterfall rather than overriding it.
+            # Unlike participation, where an explicit 0 is a real term
+            # ("the PE takes no share"), a 0% preferred return is not a
+            # structure anyone writes. Inert on today's data: 75 deals carry
+            # a deal_terms coupon and none of them is 0.
+            if v == 0:
                 continue
         else:
             # PARTICIPATION: MRI DEAL TERMS WIN, ALWAYS, when they carry a
