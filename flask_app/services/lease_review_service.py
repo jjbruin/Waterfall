@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 from flask_app.services.lease_terms import (
-    governing_steps,
+    governing_steps, reanchor_original_steps,
     amendment_ordinal, order_lease_documents, resolve_rent_steps,
     rent_psf_for, annual_rent_from, step_in_force_at,
     parse_relative_period, month_to_date,
@@ -3252,6 +3252,66 @@ def _write_document_clause_rows(conn, sql_text, tenant_id: int, review_id: int,
 
 
 
+
+def _write_document_rent_steps(conn, sql_text, tenant_id: int, doc_id: Optional[int],
+                               source_doc: str, terms: dict) -> int:
+    """Write ONE document's rent steps, replacing what it wrote before.
+
+    THE SAME FAULT AS THE CLAUSE AND OPTION ROWS, WORSE. The old dedup looked for the
+    date ACROSS THE WHOLE TENANT, not within the document: a step from one document
+    silently blocked another document's step on the same date, and a re-read that
+    stated a schedule differently (months of the term one run, dates the next) added
+    a second copy. Little Petals' original lease carried both -- "months 65-124" and
+    an explicit 2030-10-15 -- and the timeline printed a stray row (Sep 30 2026).
+    Rows with no source document (not from extraction) are never touched.
+    """
+    conn.execute(sql_text(
+        "DELETE FROM lease_rent_steps WHERE tenant_id = :tid AND source_doc = :sd"),
+        {'tid': tenant_id, 'sd': source_doc})
+    seen, n = set(), 0
+    for step in (terms.get('rent_steps') or []):
+        if not isinstance(step, dict):
+            continue
+        start_m = _to_number(step.get('period_start_month'))
+        if start_m is None:
+            rel = parse_relative_period(step.get('period') or step.get('effective_date'))
+            start_m = rel[0] if rel else None
+        end_m = _to_number(step.get('period_end_month'))
+        if end_m is None and step.get('period_start_month') is None:
+            rel = parse_relative_period(step.get('period') or step.get('effective_date'))
+            end_m = rel[1] if rel else None
+        # A date field holding "Lease Year 7" is not a date.
+        ed = step.get('effective_date')
+        if ed and not re.match(r'^\d{4}-\d{2}-\d{2}', str(ed)):
+            ed = None
+        key = (ed, int(start_m) if start_m else None, _to_number(step.get('annual_rent')),
+               _to_number(step.get('monthly_rent')))
+        if key in seen:
+            continue
+        seen.add(key)
+        conn.execute(sql_text("""
+            INSERT INTO lease_rent_steps
+                (tenant_id, effective_date, period_start_month, period_end_month,
+                 monthly_rent, annual_rent, rent_per_sf, source_doc,
+                 source_doc_id, term_start, is_additional)
+            VALUES (:tid, :ed, :psm, :pem, :mr, :ar, :rpsf, :sd, :sdid, :ts, :add)
+        """), {
+            'tid': tenant_id, 'ed': ed,
+            'psm': int(start_m) if start_m else None,
+            'pem': int(end_m) if end_m else None,
+            'mr': _to_number(step.get('monthly_rent')),
+            'ar': _to_number(step.get('annual_rent')),
+            'rpsf': _to_number(step.get('rent_per_sf')),
+            'sd': source_doc, 'sdid': doc_id,
+            # The term this document's months count from; see load_tenant_rent_steps
+            # for when a commencement letter's actual date replaces it.
+            'ts': terms.get('rent_commencement'),
+            'add': 1 if step.get('amount_is_additional') else 0,
+        })
+        n += 1
+    return n
+
+
 def _write_document_option_rows(conn, sql_text, tenant_id: int, source_doc: str,
                                 terms: dict) -> int:
     """Write ONE document's renewal and termination option rows, replacing what it
@@ -3319,13 +3379,13 @@ def rebuild_clause_rows(engine, review_id: int) -> Dict[str, Any]:
             "SELECT COUNT(*) FROM lease_exclusive_use e JOIN lease_tenants t "
             "ON t.id = e.tenant_id WHERE t.review_id = :r"), {'r': review_id}).scalar()
         docs = conn.execute(sql_text(
-            "SELECT tenant_id, filename, extraction_json FROM lease_documents "
+            "SELECT tenant_id, filename, extraction_json, id FROM lease_documents "
             "WHERE review_id = :r AND tenant_id IS NOT NULL "
             "AND extraction_json IS NOT NULL ORDER BY id"), {'r': review_id}).fetchall()
     totals = {'documents': 0, 'cotenancy': 0, 'refs': 0, 'exclusive_use': 0,
               'unreadable': 0}
     with engine.begin() as conn:
-        for tenant_id, filename, ej in docs:
+        for tenant_id, filename, ej, doc_id in docs:
             try:
                 terms = json.loads(ej) if isinstance(ej, str) else (ej or {})
             except (TypeError, ValueError):
@@ -3337,6 +3397,8 @@ def rebuild_clause_rows(engine, review_id: int) -> Dict[str, Any]:
                                             filename, terms)
             totals['options'] = totals.get('options', 0) + _write_document_option_rows(
                 conn, sql_text, tenant_id, filename, terms)
+            totals['rent_steps'] = totals.get('rent_steps', 0) + _write_document_rent_steps(
+                conn, sql_text, tenant_id, doc_id, filename, terms)
             totals['documents'] += 1
             for k in ('cotenancy', 'refs', 'exclusive_use'):
                 totals[k] += w[k]
@@ -3454,82 +3516,10 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None,
                             WHERE id = :tid
                         """), {'tid': tenant_id})
 
-                        # Store rent steps (with dedup)
-                        if terms.get('rent_steps'):
-                            for step in terms['rent_steps']:
-                                start_m = _to_number(step.get('period_start_month'))
-                                if start_m is None:
-                                    rel = parse_relative_period(
-                                        step.get('period')
-                                        or step.get('effective_date'))
-                                    start_m = rel[0] if rel else None
-                                end_m = _to_number(step.get('period_end_month'))
-                                # A date field holding "Lease Year 7" is not a date.
-                                # Storing it made `effective_date <= :rrd` compare
-                                # text, which is how the validation ended up guessing.
-                                ed = step.get('effective_date')
-                                if ed and not re.match(r'^\d{4}-\d{2}-\d{2}', str(ed)):
-                                    ed = None
-
-                                # DEDUP ON THE PERIOD AS WELL AS THE DATE. The old
-                                # check was `effective_date = :ed`, and in SQL
-                                # `NULL = NULL` is not true -- so every undated step
-                                # was re-inserted on every extraction run, and a
-                                # lease stating its rent as months of the term
-                                # accumulated a duplicate set each time.
-                                dup = conn.execute(sql_text("""
-                                    SELECT id FROM lease_rent_steps
-                                    WHERE tenant_id = :tid
-                                      AND ((:ed IS NOT NULL AND effective_date = :ed)
-                                        OR (:ed IS NULL AND :psm IS NOT NULL
-                                            AND period_start_month = :psm)
-                                        OR (:ed IS NULL AND :psm IS NULL
-                                            AND effective_date IS NULL
-                                            AND period_start_month IS NULL
-                                            AND source_doc = :sd))
-                                    LIMIT 1
-                                """), {
-                                    'tid': tenant_id, 'ed': ed,
-                                    'psm': int(start_m) if start_m else None,
-                                    'sd': doc[2],
-                                }).fetchone()
-                                if dup:
-                                    continue
-                                conn.execute(sql_text("""
-                                    INSERT INTO lease_rent_steps
-                                        (tenant_id, effective_date,
-                                         period_start_month, period_end_month,
-                                         monthly_rent, annual_rent,
-                                         rent_per_sf, source_doc,
-                                         source_doc_id, term_start, is_additional)
-                                    VALUES (:tid, :ed, :psm, :pem,
-                                            :mr, :ar, :rpsf, :sd,
-                                            :sdid, :ts, :add)
-                                """), {
-                                    'tid': tenant_id,
-                                    'ed': ed,
-                                    'psm': int(start_m) if start_m else None,
-                                    'pem': int(end_m) if end_m else None,
-                                    'mr': _to_number(step.get('monthly_rent')),
-                                    'ar': _to_number(step.get('annual_rent')),
-                                    'rpsf': _to_number(step.get('rent_per_sf')),
-                                    'sd': doc[2],  # filename
-                                    'sdid': doc_id,
-                                    # THE TERM THIS DOCUMENT'S MONTHS COUNT FROM.
-                                    # An amendment that extends states its own
-                                    # commencement; a document that states none is
-                                    # counting from the ORIGINAL term, and the
-                                    # resolver falls back to that -- never to the
-                                    # tenant's latest, which is what re-dated the
-                                    # base schedule over the amendment.
-                                    'ts': terms.get('rent_commencement'),
-                                    # An amendment adding space adds rent ON TOP of
-                                    # the rent otherwise in force (Marco's Pizza:
-                                    # +160 SF for +$242/month, read as the whole
-                                    # rent). Never guessed -- the model says so.
-                                    'add': 1 if step.get('amount_is_additional')
-                                    else 0,
-                                })
+                        # Rent steps: THIS DOCUMENT'S rows are replaced, not
+                        # added to. See _write_document_rent_steps.
+                        _write_document_rent_steps(
+                            conn, sql_text, tenant_id, doc_id, doc[2], terms)
 
                         # Co-tenancy and exclusive use: THIS DOCUMENT'S rows are
                         # replaced, not added to. See _write_document_clause_rows.
@@ -3866,18 +3856,9 @@ def _apply_exercised_options(terms: Dict) -> None:
     remaining = [o for o in opts if not o.get('exercised')
                  and (not _d(o.get('option_start')) or not exp
                       or _d(o.get('option_start')) > exp)]
-    counts: Dict[str, int] = {}
-    for o in remaining:
-        ty = o.get('term_years')
-        try:
-            ty = float(ty)
-            label = ('%g Years' % ty) if ty >= 1 else ('%g Months' % round(ty * 12))
-        except (TypeError, ValueError):
-            label = 'term not stated'
-        counts[label] = counts.get(label, 0) + 1
+    from flask_app.services.lease_timeline import summarise_options
     terms['_remaining_options'] = remaining
-    terms['_options_summary'] = (', '.join('%d x %s' % (n, k) for k, n in counts.items())
-                                 or 'None')
+    terms['_options_summary'] = summarise_options(remaining)
 
 
 def _backfill_step_provenance(engine) -> Dict[str, int]:
@@ -4269,7 +4250,7 @@ def load_tenant_rent_steps(conn, tenant_id: int):
         WHERE s.tenant_id = :tid
     """), {'tid': tenant_id}).fetchall()
     rcs = conn.execute(text("""
-        SELECT original_rent_commencement, rent_commencement
+        SELECT original_rent_commencement, rent_commencement, extraction_json
         FROM lease_tenants WHERE id = :tid
     """), {'tid': tenant_id}).fetchone()
     rent_commencement = (rcs[0] or rcs[1]) if rcs else None
@@ -4280,6 +4261,15 @@ def load_tenant_rent_steps(conn, tenant_id: int):
         'term_start': r[7], 'source_doc_id': r[8],
         'is_additional': bool(r[9]), 'source_doc': r[10], 'doc_date': r[11],
     } for r in step_rows]
+    try:
+        terms = json.loads(rcs[2] or '{}') if rcs else {}
+    except (TypeError, ValueError):
+        terms = {}
+    types = {r[0]: r[1] for r in conn.execute(text(
+        "SELECT id, doc_type FROM lease_documents WHERE tenant_id = :tid"),
+        {'tid': tenant_id})}
+    steps = reanchor_original_steps(steps, types, terms.get('lease_commencement'),
+                                    terms.get('rent_commencement'))
     return steps, rent_commencement
 
 

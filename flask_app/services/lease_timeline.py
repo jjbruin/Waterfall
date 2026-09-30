@@ -19,6 +19,7 @@ periods, the exhibit's rows, and the checks/flags of spec §21, §23 and §24.
 """
 from __future__ import annotations
 
+import re
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -94,22 +95,59 @@ def _option_periods(opt: Dict[str, Any], start: date, end: Optional[date],
     return periods
 
 
+_DAY_TERM = re.compile(r'(\d+)\s*\)?\s*-?\s*days?\b', re.I)
+
+
+def _opt_dates(o: Dict[str, Any]):
+    return (_as_date(o.get('start') or o.get('option_start')),
+            _as_date(o.get('end') or o.get('option_end')))
+
+
+def option_term(o: Dict[str, Any]):
+    """An option's term as (label, days): the stated `term_years`; else a stated
+    day count in its own wording ("Thirty (30) day option" -- Patton Computers,
+    whose term_years is empty); else measured from its dates. Never assumed."""
+    ty = o.get('term_years')
+    try:
+        ty = float(ty)
+        if ty >= 1:
+            return '%g Years' % ty, round(ty * 365)
+        if ty > 0:
+            return '%g Months' % round(ty * 12), round(ty * 365)
+    except (TypeError, ValueError):
+        pass
+    words = ' '.join(str(x) for x in [o.get('rent_terms'), o.get('period')]
+                     + [e.get('period') for e in (o.get('rent_schedule') or [])
+                        if isinstance(e, dict)] if x)
+    m = _DAY_TERM.search(words)
+    if m:
+        return '%d-Day' % int(m.group(1)), int(m.group(1))
+    st, en = _opt_dates(o)
+    if st and en:
+        days = (en - st).days + 1
+        if days < 45:
+            return '%d-Day' % days, days
+        d = relativedelta(en + timedelta(days=1), st)
+        yrs = d.years + d.months / 12.0
+        return (('%g Years' % yrs) if yrs >= 1 else ('%g Months' % round(yrs * 12))), days
+    return 'term not stated', None
+
+
 def summarise_options(options: List[Dict[str, Any]]) -> str:
-    """ "2 x 5 Years" from a list of options, by term; the term is the stated
-    `term_years` or, failing that, measured from the option's own dates."""
+    """ "2 x 5 Years" / "6 x 30-Day Rolling" / "None" -- spec §13. Rolling when two
+    or more options of the same term under a year follow one another. THE one
+    definition: the consolidation's `_options_summary` calls this too."""
     counts: Dict[str, int] = {}
+    days_of: Dict[str, Any] = {}
     for o in options:
-        ty = o.get('term_years')
-        if ty in (None, '') and _as_date(o.get('start')) and _as_date(o.get('end')):
-            d = relativedelta(_as_date(o['end']) + timedelta(days=1), _as_date(o['start']))
-            ty = d.years + d.months / 12.0
-        try:
-            ty = float(ty)
-            label = ('%g Years' % ty) if ty >= 1 else ('%g Months' % round(ty * 12))
-        except (TypeError, ValueError):
-            label = 'term not stated'
+        label, days = option_term(o)
         counts[label] = counts.get(label, 0) + 1
-    return ', '.join('%d x %s' % (n, k) for k, n in counts.items()) or 'None'
+        days_of[label] = days
+    parts = []
+    for k, n in counts.items():
+        rolling = n >= 2 and days_of.get(k) is not None and days_of[k] < 365
+        parts.append('%d x %s%s' % (n, k, ' Rolling' if rolling else ''))
+    return ', '.join(parts) or 'None'
 
 
 def build_timeline(terms: Dict[str, Any], steps: List[Dict[str, Any]],
@@ -133,6 +171,18 @@ def build_timeline(terms: Dict[str, Any], steps: List[Dict[str, Any]],
     asof = _as_date(as_of)
     # AN ANALYST'S SETTLED VALUE OUTRANKS THE DERIVED ONE (step 4): it is their
     # conclusion from the same documents, recorded with a reason and a citation.
+    doc_start, doc_exp = terms.get('lease_commencement'), terms.get('lease_expiration')
+    for what, settled, doc in (('start', settled_start, doc_start),
+                               ('expiration', settled_expiration, doc_exp)):
+        # A SETTLEMENT MADE BEFORE THE DOCUMENTS WERE READ CORRECTLY OUTRANKS THEM
+        # SILENTLY. Mattress Firm's expiry was settled 2027-09-30 when the app still
+        # read its documents wrongly; they now give 2035-03-21 (Sep 30 2026). The
+        # analyst's value stands -- it is theirs -- but the difference is shown.
+        if settled and _as_date(doc) and _as_date(settled) != _as_date(doc):
+            _flag(flags, 'settled_%s_differs' % what,
+                  f"The analyst settled the {what} as {_iso(_as_date(settled))}; the "
+                  f"governing documents now give {_iso(_as_date(doc))} -- re-check the "
+                  f"settlement.")
     if settled_start or settled_expiration:
         terms = dict(terms)
         if settled_start:
@@ -271,6 +321,7 @@ def build_timeline(terms: Dict[str, Any], steps: List[Dict[str, Any]],
             if o_start else []
         options.append({'label': label, 'start': _iso(o_start), 'end': _iso(o_end),
                         'term_years': o.get('term_years'),
+                        'rent_terms': o.get('rent_terms'),
                         'rent_basis': o.get('rent_basis') or 'not_stated',
                         'periods': periods})
         prev_end = o_end or prev_end
@@ -299,7 +350,30 @@ def build_timeline(terms: Dict[str, Any], steps: List[Dict[str, Any]],
         rows.append({'kind': 'step', 'label': 'Rent Step Dates' if i == 0 else None,
                      'start': p['start'], 'end': p['end'],
                      'annual_rent': p['annual_rent'], 'psf': p['psf']})
-    for o in options:
+    # CONSECUTIVE SHORT OPTIONS AT ONE RENT PRINT AS ONE ROW, as new business's
+    # exhibit shows Patton's six 30-day options: "Option 1 (30-day rolling, 6x)".
+    display = []
+    i = 0
+    while i < len(options):
+        o = options[i]
+        lab, days = option_term(o)
+        run = [o]
+        if days is not None and days < 365 and len(o['periods']) <= 1:
+            while (i + len(run) < len(options)
+                   and option_term(options[i + len(run)])[0] == lab
+                   and len(options[i + len(run)]['periods']) <= 1
+                   and (options[i + len(run)]['periods'] or [{}])[0].get('annual_rent')
+                   == (o['periods'] or [{}])[0].get('annual_rent')):
+                run.append(options[i + len(run)])
+        if len(run) >= 2:
+            p0 = (o['periods'] or [{}])[0]
+            display.append({'label': '%s (%s rolling, %dx)' % (o['label'], lab.lower(), len(run)),
+                            'start': o['start'], 'end': run[-1]['end'],
+                            'periods': [dict(p0, start=o['start'], end=run[-1]['end'])]})
+        else:
+            display.append(o)
+        i += len(run)
+    for o in display:
         for j, p in enumerate(o['periods'] or [{'start': o['start'], 'end': o['end'],
                                                 'annual_rent': None, 'psf': None}]):
             rows.append({'kind': 'option' if j == 0 else 'option_step',

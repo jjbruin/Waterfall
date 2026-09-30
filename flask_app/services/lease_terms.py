@@ -517,6 +517,46 @@ def step_in_force_at(steps: List[Dict[str, Any]], as_of: Any
                   + (f", per {src}." if src else "."))
 
 
+
+def reanchor_original_steps(steps: List[Dict[str, Any]], doc_types: Dict[Any, str],
+                            actual_lc: Any, actual_rc: Any) -> List[Dict[str, Any]]:
+    """Count an ORIGINAL LEASE's month-of-term steps from the ACTUAL commencement a
+    commencement letter established, not the lease's own estimate (spec §9: "if a
+    commencement notice ... establishes the actual commencement or rent
+    commencement date, that document controls").
+
+    Which actual date is month 1 is read off the schedule, never assumed: counting
+    from the actual LEASE commencement must put the first month that carries rent on
+    the actual RENT commencement. Little Petals' lease estimated 2025-10-15; the
+    letter says commencement 2025-11-01, rent 2026-03-01; months 1-4 are free, and
+    month 5 from 2025-11-01 IS 2026-03-01 -- so month 1 is the lease commencement and
+    "Option Term, months 65-124" begins 2031-03-01, the option date in new business's
+    exhibit. If the schedule does not confirm the lease commencement that way, the
+    actual rent commencement is month 1. Amendment steps keep their own term.
+    """
+    lc, rc = _as_date(actual_lc), _as_date(actual_rc)
+    if lc is None and rc is None:
+        return steps
+    orig = [s for s in steps if doc_types.get(s.get('source_doc_id')) == 'Original Lease'
+            and s.get('period_start_month')]
+    if not orig:
+        return steps
+    anchor = rc or lc
+    if lc and rc:
+        paying = [s for s in orig if (annual_rent_from(annual_rent=s.get('annual_rent'),
+                                                       monthly_rent=s.get('monthly_rent')) or 0) > 0]
+        first = min((int(s['period_start_month']) for s in paying), default=None)
+        if first and month_to_date(lc, first) == rc:
+            anchor = lc
+    out = []
+    for s in steps:
+        if s in orig and _as_date(s.get('term_start')) != anchor:
+            s = dict(s, term_start=anchor.isoformat(),
+                     effective_date=None, effective_date_basis='')
+        out.append(s)
+    return out
+
+
 def governing_steps(steps: List[Dict[str, Any]]
                     ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """The base-rent steps that still govern once later documents are applied.

@@ -395,9 +395,12 @@ check('...and asks for the rent commencement date explicitly',
       'rent_commencement is the date RENT begins' in LRS.EXTRACTION_PROMPT)
 
 # The dedup bug: `effective_date = NULL` is never true in SQL, so an undated step was
-# re-inserted on every run.
-check('the rent step dedup handles an undated step',
-      ':ed IS NULL' in _src)
+# re-inserted on every run. Since Sep 30 2026 a re-read REPLACES the document's steps
+# (_write_document_rent_steps), which subsumes the dedup; the behaviour -- no copy on
+# a re-read, undated steps included -- is asserted in lease_governing_terms_check.
+check("the rent step writer replaces a document's steps rather than deduplicating",
+      '_write_document_rent_steps' in _src
+      and 'DELETE FROM lease_rent_steps WHERE tenant_id = :tid AND source_doc = :sd' in _src)
 
 
 # ===========================================================================
