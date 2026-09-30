@@ -77,6 +77,19 @@ const routes = [
     component: () => import('../views/ReportsView.vue'),
   },
   {
+    path: '/investment-metrics',
+    name: 'Investment Metrics',
+    component: () => import('../views/InvestmentMetricsView.vue'),
+  },
+  {
+    // The printed document, on its own route so it can carry the reference
+    // sheet's geometry without the app chrome — same pattern as the One Pager
+    // and Portfolio Snapshot print views.
+    path: '/investment-metrics/print',
+    name: 'Investment Metrics Print',
+    component: () => import('../views/InvestmentMetricsPrintView.vue'),
+  },
+  {
     path: '/sold-portfolio',
     name: 'Sold Portfolio',
     component: () => import('../views/SoldPortfolioView.vue'),

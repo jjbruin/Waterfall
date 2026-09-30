@@ -613,6 +613,19 @@ function toggleCollapsed() {
         Reports
       </router-link>
 
+      <!-- Investment Metrics — a top-level report of its own, not a subtab.
+           It is the quarterly PSC Investment Summary (Current + Sold), and it
+           spans the whole portfolio rather than one deal or one investor, so
+           it does not belong under Asset Management beside the per-deal
+           screens. -->
+      <router-link
+        to="/investment-metrics"
+        class="nav-section-link"
+        :class="{ active: route.path.startsWith('/investment-metrics') }"
+      >
+        Investment Metrics
+      </router-link>
+
       <!-- Data Management -->
       <div class="nav-section">
         <button
