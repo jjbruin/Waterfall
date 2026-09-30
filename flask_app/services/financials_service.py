@@ -1503,7 +1503,13 @@ def _enrich_cap_stack_from_deal_terms(cap_stack: dict, deal_terms, vcode: str):
     # the two in step or the page prints two numbers for the same term.
     pe_split = pd.to_numeric(r.get("pe_split_capital"), errors="coerce")
     if pd.notna(pe_split) and pe_split >= 0:
-        cap_stack["pe_participation"] = pe_split if pe_split < 1 else pe_split / 100
+        # `normalize_share` is the ONE definition of "a share as a fraction",
+        # shared with the two waterfall readers and `_pe_terms_fallback`. It
+        # was four copies of `v if v < 1 else v / 100`, which is why the
+        # docstrings above ask callers to keep them in step by hand — and why
+        # a 1.0 share printed as "1%" in all four.
+        from one_pager import normalize_share
+        cap_stack["pe_participation"] = normalize_share(float(pe_split))
 
     # IRR Lookback — new field
     irr = pd.to_numeric(r.get("irr_lookback"), errors="coerce")

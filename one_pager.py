@@ -510,6 +510,35 @@ def _dev_hard_costs(vcode: str, inspection: pd.DataFrame,
     return float(vals.sum())
 
 
+def normalize_share(v):
+    """A participation share as a FRACTION, whichever way the source states it.
+
+    MRI stores a share either as a fraction (0.475) or as a percentage (47.5),
+    so the reader has to decide. The rule is ``<= 1`` is already a fraction and
+    anything above it is a percentage.
+
+    ``<= 1``, NOT ``< 1``, AND THAT BOUNDARY IS THE BUG THIS FIXES. A share of
+    exactly 1.0 means the holder takes ALL of it — 100%. The old ``< 1`` test
+    sent it down the percentage branch, 1.0 / 100 = 0.01, and the page printed
+    "1%" for a hundred percent share: the most wrong a percentage can be while
+    still looking plausible. 1.0 is genuinely ambiguous in the abstract, but a
+    participation of 1% is not a term anyone writes, and 100% is — two live
+    deals carry exactly 1.0 (Jefferson Addison Heights, Jefferson Eastchase),
+    both the OPERATING PARTNER's whole share read off the wrong entity.
+
+    ONE definition, called from every site that reads a share: the two
+    waterfall readers and both deal-terms paths. It used to be four copies of
+    the same expression and the docstrings asked callers to keep them in step
+    by hand.
+
+    Deliberately NOT applied to ``pe_coupon``, which uses the same expression
+    for a different quantity: a 1.0 coupon much more plausibly means 1% than
+    100%, so that boundary is left where it is. See the note in
+    ``_pe_terms_fallback``.
+    """
+    return v if v <= 1 else v / 100
+
+
 def get_capitalization_stack(
     vcode: str,
     mri_loans: pd.DataFrame,
@@ -899,7 +928,10 @@ def get_capitalization_stack(
                 if not share_rows.empty:
                     part = pd.to_numeric(share_rows.iloc[0]['FXRate'], errors='coerce')
                     if pd.notna(part):
-                        cap['pe_participation'] = part if part < 1 else part / 100
+                        # The BASE only — `_enrich_cap_stack_from_deal_terms`
+                        # overrides this from MRI deal terms when they carry a
+                        # value. See normalize_share for the <= 1 boundary.
+                        cap['pe_participation'] = normalize_share(part)
 
     # Get equity from accounting feed (filtered to quarter end when available)
     if acct is not None and not acct.empty and inv_map is not None:
@@ -2494,27 +2526,43 @@ def _pe_terms_fallback(pe: Dict[str, Any], deal_terms: pd.DataFrame,
             if pe.get(key) or v == 0:
                 continue
         else:
-            # Participation carries ONE extra rule: an explicit zero in
-            # deal_terms overrides whatever the waterfall produced.
+            # PARTICIPATION: MRI DEAL TERMS WIN, ALWAYS, when they carry a
+            # value. The waterfall is the fallback and is used only where
+            # deal_terms says nothing (pd.isna above already skipped those).
             #
-            # The waterfall reader takes the first vState='Share' row with no
-            # PropCode filter, so on a deal where the PE has no Share row it
-            # silently reports the OPERATING PARTNER's share instead — there is
-            # no way for it to say "the PE participates in nothing", which is
-            # exactly what that shape means.  pe_split_capital == 0 is MRI
-            # stating the term affirmatively, so it wins.  Live today this is
+            # THIS SETTLES A QUESTION THIS FUNCTION USED TO LEAVE OPEN. It
+            # previously took deal_terms only when the waterfall gave nothing
+            # OR when deal_terms was an explicit 0, and its own note said "a
+            # POSITIVE deal_terms value still defers to the waterfall ...
+            # picking a winner there is a separate question about which source
+            # is right." That question is now decided in favour of deal terms,
+            # and the same precedence the Capitalization block has always used
+            # (`_enrich_cap_stack_from_deal_terms`) — so the two cells stop
+            # printing different numbers for the same term.
+            #
+            # MEASURED ON PRODUCTION: eight deals have both sources and the two
+            # disagree. Six change here, each moving to the Capitalization
+            # cell's existing figure — 5-15 Broad St 0.333 -> 0.33, Merle Hay
+            # 0.7 -> 0.3, OREI Portfolio / Whitney Manor / Westchase
+            # 0.75 -> 0.475, Donald Lynch 0.2 -> 0.3. The other two already
+            # agreed at 0.0 through the explicit-zero rule below.
+            #
+            # The explicit ZERO case is now just an instance of this rule
+            # rather than an exception to it: the waterfall reader takes the
+            # first vState='Share' row with no PropCode filter, so where the PE
+            # has no Share row it reports the OPERATING PARTNER's share and has
+            # no way to say "the PE participates in nothing".
+            # pe_split_capital == 0 is MRI stating that term affirmatively.
             # Jefferson Eastchase (P0000085) and Jefferson Addison Heights
-            # (P0000077): both carry two Share rows owned by OPJPI at
-            # FXRate 1.0, which the `< 1` heuristic below renders as 1%.
-            #
-            # A POSITIVE deal_terms value still defers to the waterfall, so the
-            # six deals where the two sources disagree on a real number are
-            # untouched.  Keep it that way — picking a winner there is a
-            # separate question about which source is right.
-            if pe.get(key) is not None and v != 0:
-                continue
+            # (P0000077) are those deals; both carry Share rows owned by OPJPI
+            # at FXRate 1.0.
+            pass
 
-        pe[key] = v if v < 1 else v / 100
+        # `normalize_share` for participation; the coupon keeps its own `< 1`
+        # boundary deliberately — a 1.0 coupon reads as 1%, a 1.0 SHARE as
+        # 100%. See normalize_share.
+        pe[key] = (normalize_share(v) if key == 'participation'
+                   else (v if v < 1 else v / 100))
 
 
 def _is_return_of_capital(row) -> bool:
@@ -2619,7 +2667,10 @@ def get_pe_performance(
                 if not share_rows.empty:
                     part = pd.to_numeric(share_rows.iloc[0]['FXRate'], errors='coerce')
                     if pd.notna(part):
-                        pe['participation'] = part if part < 1 else part / 100
+                        # The BASE only — `_pe_terms_fallback` overrides this
+                        # from MRI deal terms when they carry a value, the same
+                        # precedence the Capitalization block uses.
+                        pe['participation'] = normalize_share(part)
 
     # Whatever the waterfall did not supply, take from the MRI deal terms.
     #
