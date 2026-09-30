@@ -503,57 +503,67 @@ def first_lien(
     still building is not its capitalization and would understate the column
     by most of the loan.
 
-    Everything else takes the EARLIEST balance-sheet debt row — the amount
-    outstanding when the deal opened, which is what "at stabilization" means
-    for a stabilized asset. Deliberately NOT ``compute.get_isbs_debt_balance``,
-    which returns the MOST RECENT balance: that is today's outstanding after
-    years of amortisation, a different question, and using it would make every
-    older deal's capitalization drift down each quarter.
+    ONE GLOBAL RULE, NOT A DEV / NON-DEV SPLIT. The split this used to apply
+    — development deals take the committed facility, everything else the
+    earliest balance-sheet row — sounds right and the data does not support
+    it. Measured against the reference on all 76 deals it scores **34/76**,
+    where using the summed committed facility on EVERY deal scores **42/76**.
+    The earliest balance-sheet row wins on no development deal at all and on
+    only 27 of the other 66.
 
-    CHILD PROPERTIES ARE ROLLED UP FOR LOANS AND NOT FOR ISBS, and the
-    difference is not an oversight. ``loans`` records one row per property, so
-    a portfolio's facility is only complete once the children are added;
-    ``isbs_interim_bs`` already carries the parent's consolidated balance
-    sheet, so adding the children counts the same debt twice — measured, it
-    doubled Giant-7 ($97.0m to $194.0m), OREI ($34.2m to $68.4m) and Burton
-    ($75.3m to $150.6m).
+    So: the summed committed facility first, then the earliest loan record,
+    then the earliest balance-sheet row, then nothing. The order is worth
+    stating, because the fallbacks are about COVERAGE and not accuracy — a
+    later basis is tried only when the one before it yields no figure at all.
 
-    THIS IS THE WEAKEST COLUMN IN THE REPORT and the reason is structural:
-    "underwritten capitalization at stabilization" is an underwriting
-    ASSUMPTION, and MRI records loans and balances, not assumptions. Measured
-    against the reference across all 76 deals, the committed facility lands on
-    the printed figure for 42 and the earliest balance-sheet row for 27 — so
-    the rule implemented here is the one that was agreed, not the one that
-    scores best, and ``alternate`` carries the other so the gap is visible
-    rather than argued about.
+    CHILD PROPERTIES ARE ROLLED UP FOR LOANS AND NOT FOR ISBS. ``loans``
+    records one row per property, so a portfolio's facility is only complete
+    once the children are added; ``isbs_interim_bs`` already carries the
+    parent's consolidated balance sheet, so adding the children counts the
+    same debt twice — measured, it doubled Giant-7 ($97.0m to $194.0m), OREI
+    ($34.2m to $68.4m) and Burton ($75.3m to $150.6m), and it takes the ISBS
+    basis from 27/76 to 25/76.
+
+    THIS IS STILL THE WEAKEST COLUMN IN THE REPORT and the reason is
+    structural: "underwritten capitalization at stabilization" is an
+    underwriting ASSUMPTION, and MRI records loans and balances, not
+    assumptions. Every basis is published on the row so the gap stays visible.
     """
-    own = {norm_id(v) for v in ([ident.vcode, ident.shadow_vcode]) if v}
+    for basis in (cfg.FIRST_LIEN_BASIS,) + tuple(cfg.FIRST_LIEN_FALLBACKS):
+        value, note = _lien_basis(basis, ident, loans, isbs_interim_bs,
+                                  child_vcodes)
+        if value is not None:
+            return value, note
+    return None, "no loan and no balance-sheet debt on record"
+
+
+#: The three candidate bases, each returning (value, how it was reached).
+_LIEN_BASES = ("summed_facility", "earliest_loan", "earliest_isbs")
+
+
+def _lien_basis(basis, ident, loans, isbs_interim_bs, child_vcodes):
+    own = {norm_id(v) for v in (ident.vcode, ident.shadow_vcode) if v}
     with_kids = own | {norm_id(v) for v in (child_vcodes or []) if v}
-
-    facility = _loan_facility(loans, with_kids)
-    isbs_amt, when = _earliest_isbs_debt(isbs_interim_bs, own)
-
-    if ident.vcode in cfg.DEV_DEALS:
-        if facility is not None:
-            return facility, "loans.mOrigLoanAmt (committed facility — development)"
-        return None, "no loan on record (development)"
-
-    if isbs_amt is not None:
-        return isbs_amt, f"earliest ISBS Interim BS debt row ({when})"
-    if facility is not None:
-        return facility, "loans.mOrigLoanAmt (no ISBS balance-sheet debt found)"
-    return None, f"unavailable ({when})"
+    if basis == "summed_facility":
+        v = _loan_facility(loans, with_kids)
+        return v, "loans.mOrigLoanAmt, summed per facility (children included)"
+    if basis == "earliest_loan":
+        v = _earliest_loan(loans, with_kids)
+        return v, "loans.mOrigLoanAmt of the earliest loan record by date"
+    if basis == "earliest_isbs":
+        v, when = _earliest_isbs_debt(isbs_interim_bs, own)
+        return v, f"earliest ISBS Interim BS debt row ({when})"
+    raise ValueError(f"unknown first-lien basis {basis!r}")
 
 
-def first_lien_alternate(ident, loans, isbs_interim_bs, child_vcodes):
-    """What the source this report did NOT use would have said, and why."""
-    own = {norm_id(v) for v in ([ident.vcode, ident.shadow_vcode]) if v}
-    with_kids = own | {norm_id(v) for v in (child_vcodes or []) if v}
-    if ident.vcode in cfg.DEV_DEALS:
-        amt, when = _earliest_isbs_debt(isbs_interim_bs, own)
-        return {"value": amt, "basis": f"earliest ISBS Interim BS debt row ({when})"}
-    return {"value": _loan_facility(loans, with_kids),
-            "basis": "loans.mOrigLoanAmt (committed facility)"}
+def first_lien_alternates(ident, loans, isbs_interim_bs, child_vcodes, to_m):
+    """Every basis, so the one in use can be checked against the others."""
+    out = []
+    for basis in _LIEN_BASES:
+        v, note = _lien_basis(basis, ident, loans, isbs_interim_bs, child_vcodes)
+        out.append({"basis": basis, "value": to_m(v), "how": note,
+                    "in_use": basis == cfg.FIRST_LIEN_BASIS})
+    return out
 
 
 def _loan_facility(loans: Optional[pd.DataFrame], want: set) -> Optional[float]:
@@ -571,6 +581,32 @@ def _loan_facility(loans: Optional[pd.DataFrame], want: set) -> Optional[float]:
         m = m.drop_duplicates(subset=["LoanID"])
     total = pd.to_numeric(m["mOrigLoanAmt"], errors="coerce").fillna(0.0).sum()
     return float(total) if total else None
+
+
+def _earliest_loan(loans: Optional[pd.DataFrame], want: set) -> Optional[float]:
+    """The committed amount on the deal's earliest loan record.
+
+    NOTE WHAT "EARLIEST" MEANS HERE. ``dtEvent`` carries a MATURITY date on 83
+    of the 91 live rows (``vDateType``) and an origination date on four, so
+    this is the earliest-MATURING facility, not the first-originated one. MRI
+    holds no origination date for most loans. It is measured as a candidate
+    rather than presented as "the original first mortgage".
+    """
+    if loans is None or loans.empty:
+        return None
+    col = "vCode" if "vCode" in loans.columns else ("vcode" if "vcode" in loans.columns else None)
+    if col is None or "mOrigLoanAmt" not in loans.columns or "dtEvent" not in loans.columns:
+        return None
+    m = loans[loans[col].map(norm_id).isin(want)].copy()
+    if m.empty:
+        return None
+    m["_d"] = pd.to_datetime(m["dtEvent"], errors="coerce")
+    m = m.dropna(subset=["_d"])
+    if m.empty:
+        return None
+    sort_cols = ["_d"] + (["LoanID"] if "LoanID" in m.columns else [])
+    v = _to_float(m.sort_values(sort_cols).iloc[0]["mOrigLoanAmt"])
+    return v or None
 
 
 #: ISBS balance-sheet accounts that carry mortgage debt. Same set as
@@ -784,6 +820,17 @@ def build_investment_metrics(
     rows_by_table: Dict[str, List[dict]] = {CURRENT: [], SOLD: []}
 
     for ident in identities:
+        # Excluded BY NAME, with the reason, and reported. A deal the
+        # reference carries in neither table cannot be reached by any
+        # population rule — "sold but not yet moved across" is a judgement
+        # about final distributions, not a state MRI records — so the
+        # alternative to naming it is a rule contorted until it happens to
+        # drop this one deal, which nobody could later read.
+        if ident.vcode in cfg.EXCLUDED_DEALS:
+            diag.setdefault("excluded_deals", []).append(
+                {"vcode": ident.vcode, "name": ident.name,
+                 "reason": cfg.EXCLUDED_DEALS[ident.vcode]})
+            continue
         table = classify(ident, as_of)
         rows_by_table[table].append(
             _build_row(ident, table, as_of, acct, commitments, dt_index,
@@ -963,11 +1010,12 @@ def _build_row(ident, table, as_of, acct, commitments, dt_index, loans,
 
     pref_usd, floss_usd, cap_basis = pref_and_first_loss(ident, acct, commitments)
     lien_usd, lien_basis = first_lien(ident, loans, isbs_interim_bs, children)
-    lien_alt = first_lien_alternate(ident, loans, isbs_interim_bs, children)
     cap_alts = capitalization_sources(ident, acct, commitments)
 
     fx = cfg.CAD_TO_USD if norm_id(ident.currency) == "CAD" else 1.0
     to_m = lambda v: None if v is None else (v * fx) / MILLION  # noqa: E731
+
+    lien_alts = first_lien_alternates(ident, loans, isbs_interim_bs, children, to_m)
 
     pref = to_m(pref_usd)
     first_lien_m = to_m(lien_usd)
@@ -1071,8 +1119,11 @@ def _build_row(ident, table, as_of, acct, commitments, dt_index, loans,
                 "on_commitment": act_yr1_on_commit,
                 "basis": yr1_basis,
             },
-            "first_lien": {"value": to_m(lien_alt["value"]),
-                           "basis": lien_alt["basis"]},
+            # ALL THREE bases, every row, with the one in use flagged. The
+            # column is the report's weakest and the choice between them was
+            # made on a count — publishing only the runner-up would hide the
+            # basis that happens to be right for this deal.
+            "first_lien": lien_alts,
             "capitalization": [
                 {"basis": label, "pref": to_m(p), "first_loss": to_m(o)}
                 for label, p, o in cap_alts

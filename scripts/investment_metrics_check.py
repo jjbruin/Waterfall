@@ -84,12 +84,12 @@ def deals_fixture():
              Acquisition_Date="1/5/2017", Currency="USD", City=None, State=None,
              Asset_Type="Retail", Operating_Partner=None, Lifecycle=None,
              Portfolio_Name=""),
-        dict(vcode="P0000003", InvestmentID="GAMMA", Investment_Name="Gamma Portfolio",
+        dict(vcode="P0000200", InvestmentID="GAMMA", Investment_Name="Gamma Portfolio",
              Property_Count="2", Sale_Status=None, Sale_Date=None,
              Acquisition_Date="07/01/2021 00:00", Currency="CAD", City="Toronto",
              State="Ontario", Asset_Type="Self Storage", Operating_Partner="Gam",
              Lifecycle="Stable", Portfolio_Name="Gamma Portfolio"),
-        dict(vcode="P0000004", InvestmentID="GKID", Investment_Name="Gamma Kid",
+        dict(vcode="P0000201", InvestmentID="GKID", Investment_Name="Gamma Kid",
              Property_Count="0", Sale_Status=None, Sale_Date=None,
              Acquisition_Date="07/01/2021 00:00", Currency="USD", City="Toronto",
              State="Ontario", Asset_Type="Self Storage", Operating_Partner="Gam",
@@ -177,9 +177,9 @@ def loans_fixture():
     return pd.DataFrame([
         dict(vCode="P0000001", LoanID="L1", mOrigLoanAmt=13_000_000.0),
         # one facility fanned out across date events — must count ONCE
-        dict(vCode="P0000003", LoanID="L2", mOrigLoanAmt=8_000_000.0),
-        dict(vCode="P0000003", LoanID="L2", mOrigLoanAmt=8_000_000.0),
-        dict(vCode="P0000004", LoanID="L3", mOrigLoanAmt=2_000_000.0),
+        dict(vCode="P0000200", LoanID="L2", mOrigLoanAmt=8_000_000.0),
+        dict(vCode="P0000200", LoanID="L2", mOrigLoanAmt=8_000_000.0),
+        dict(vCode="P0000201", LoanID="L3", mOrigLoanAmt=2_000_000.0),
         dict(vCode="P0000006", LoanID="L4", mOrigLoanAmt=15_100_000.0),
     ])
 
@@ -192,9 +192,9 @@ def isbs_fixture():
         dict(vcode="p0000001", dtEntry="2024-12-31", vAccount="2150",
              mAmount=-9_000_000.0),
         # GAMMA parent carries the consolidated balance; the child repeats it
-        dict(vcode="p0000003", dtEntry="2021-12-31", vAccount="2150",
+        dict(vcode="p0000200", dtEntry="2021-12-31", vAccount="2150",
              mAmount=-7_000_000.0),
-        dict(vcode="p0000004", dtEntry="2021-12-31", vAccount="2150",
+        dict(vcode="p0000201", dtEntry="2021-12-31", vAccount="2150",
              mAmount=-7_000_000.0),
         dict(vcode="p0000006", dtEntry="2021-12-31", vAccount="2210",
              mAmount=-15_000_000.0),
@@ -264,7 +264,7 @@ def main():
     chk("the orphan is dropped AND named, never silently lost",
         any(o["vcode"] == "P0000005" for o in out["diagnostics"]["orphans"]))
     chk("the child property is excluded AND named",
-        any(c["vcode"] == "P0000004"
+        any(c["vcode"] == "P0000201"
             for c in out["diagnostics"]["children_excluded"]))
     _, mcx = row_of(out, "P0000006")
     chk("one InvestmentID on two rows picks the PARENT",
@@ -285,21 +285,60 @@ def main():
         alpha and abs(alpha["pref"] - 5.0) < 1e-9, f"got {alpha['pref']}")
     chk("first-loss is the operating partner's side",
         alpha and abs(alpha["first_loss"] - 2.0) < 1e-9)
-    chk("first lien is the EARLIEST balance-sheet row, not the latest",
-        alpha and abs(alpha["first_lien"] - 12.0) < 1e-9,
-        f"got {alpha['first_lien']} (9.0 would be the most recent)")
+    def alt_of(row, basis):
+        for a in (row or {}).get("alternates", {}).get("first_lien", []):
+            if a["basis"] == basis:
+                return a
+        return {}
+
+    chk("first lien defaults to the SUMMED committed facility",
+        alpha and abs(alpha["first_lien"] - 13.0) < 1e-9,
+        f"got {(alpha or {}).get('first_lien')} — 12.0 is the ISBS basis")
+    chk("...and that basis is flagged as the one in use",
+        alt_of(alpha, "summed_facility").get("in_use") is True)
+    chk("the ISBS alternate is the EARLIEST balance-sheet row, not the latest",
+        abs((alt_of(alpha, "earliest_isbs").get("value") or 0) - 12.0) < 1e-9,
+        f"got {alt_of(alpha, 'earliest_isbs').get('value')} "
+        "(9.0 would be the most recent)")
+    chk("all three bases are published on every row",
+        {a["basis"] for a in (alpha or {}).get("alternates", {})
+         .get("first_lien", [])} == {"summed_facility", "earliest_loan",
+                                     "earliest_isbs"})
     chk("total size is the three components summed",
-        alpha and abs(alpha["total_size"] - 19.0) < 1e-9)
+        alpha and abs(alpha["total_size"] - 20.0) < 1e-9,
+        f"got {(alpha or {}).get('total_size')}")
     chk("% of cap divides by that total",
-        alpha and abs(alpha["first_lien_pct"] - 12.0 / 19.0) < 1e-9)
-    _, gam = row_of(out, "P0000003")
-    chk("a child's balance sheet is NOT added to its parent's (no double count)",
-        gam and abs(gam["first_lien"] - 7.0 * cfg.CAD_TO_USD) < 1e-9,
-        f"got {gam['first_lien']} — 14.0 would mean the child was added twice")
+        alpha and abs(alpha["first_lien_pct"] - 13.0 / 20.0) < 1e-9)
+    _, gam = row_of(out, "P0000200")
+    chk("a child's LOANS are rolled into the parent's facility",
+        gam and abs(gam["first_lien"] - 10.0 * cfg.CAD_TO_USD) < 1e-9,
+        f"got {(gam or {}).get('first_lien')} — 8.0 would mean the child "
+        "was left out, 18.0 that the duplicated facility row counted twice")
+    chk("...but its BALANCE SHEET is not — the parent's is already consolidated",
+        abs((alt_of(gam, "earliest_isbs").get("value") or 0)
+            - 7.0 * cfg.CAD_TO_USD) < 1e-9,
+        f"got {alt_of(gam, 'earliest_isbs').get('value')} — 14.0 would be "
+        "the same debt counted twice")
     chk("CAD is converted at the footnote's rate",
         gam and abs(gam["pref"] - 4.0 * cfg.CAD_TO_USD) < 1e-9)
     chk("the basis travels with the figure",
         alpha and "commitments" in alpha["basis"]["capitalization"])
+    # The fallback chain: coverage, not accuracy — a later basis is reached
+    # only when the one before it produced nothing at all.
+    no_loans = build(loans=pd.DataFrame())
+    _, a_nl = row_of(no_loans, "P0000001")
+    chk("with no loans at all it falls back to the balance sheet",
+        a_nl and abs(a_nl["first_lien"] - 12.0) < 1e-9
+        and "ISBS" in a_nl["basis"]["first_lien"],
+        f"got {(a_nl or {}).get('first_lien')}")
+    none_at_all = build(loans=pd.DataFrame(), isbs_interim_bs=pd.DataFrame())
+    _, a_no = row_of(none_at_all, "P0000001")
+    chk("with neither, it is an em dash and says so",
+        a_no and a_no["first_lien"] is None
+        and "no loan and no balance-sheet debt" in a_no["basis"]["first_lien"])
+    chk("the rule is GLOBAL — dev and non-dev take the same basis",
+        cfg.FIRST_LIEN_BASIS == "summed_facility"
+        and cfg.FIRST_LIEN_FALLBACKS == ("earliest_loan", "earliest_isbs"))
 
     # ── 5. None is not zero, BOTH directions ──────────────────────────────
     section("5. Unknown vs zero (both ways: a dash where unknown, a figure "
@@ -401,6 +440,37 @@ def main():
         len(cfg.ROW_ORDER_CURRENT) == 50 and len(cfg.ROW_ORDER_SOLD) == 26)
     chk("a deal not in the reference order is APPENDED and reported, not dropped",
         row_of(out, "P0000001")[1] is not None)
+    chk("every deal labelled Dev. is in DEV_DEALS, and vice versa",
+        {v for v, d in cfg.CELL_LABELS_CURRENT.items()
+         if set(d.values()) == {"Dev."}} == cfg.DEV_DEALS,
+        "the two lists describe the same population and must not drift")
+    chk("every Lease up deal is labelled as one",
+        {v for v, d in cfg.CELL_LABELS_CURRENT.items()
+         if set(d.values()) <= {"Lease up", "Lease Up"}} == cfg.LEASE_UP_DEALS)
+
+    # ── 9b. deals the reference carries in neither table ──────────────────
+    section("9b. Excluded deals (both ways: dropped AND named; nothing else "
+            "dropped)")
+    chk("Apple Self Storage is excluded by name, with a reason",
+        "P0000003" in cfg.EXCLUDED_DEALS
+        and "final distributions" in cfg.EXCLUDED_DEALS["P0000003"])
+    excl = build(inv=pd.concat([deals_fixture(), pd.DataFrame([
+        dict(vcode="P0000003", InvestmentID="APPLEX",
+             Investment_Name="Apple Self Storage X", Property_Count="1",
+             Sale_Status=None, Sale_Date="1/31/2026",
+             Acquisition_Date="03/30/2016 00:00", Currency="USD",
+             City="Various", State=None, Asset_Type="Self Storage",
+             Operating_Partner="Apple", Lifecycle="Stable",
+             Portfolio_Name=""),
+    ])], ignore_index=True))
+    chk("it does not appear in either table",
+        row_of(excl, "P0000003")[1] is None)
+    chk("...and the omission is REPORTED, not silent",
+        any(x["vcode"] == "P0000003"
+            for x in excl["diagnostics"].get("excluded_deals", [])))
+    chk("no other deal is dropped with it",
+        len(excl["current"]["rows"]) + len(excl["sold"]["rows"])
+        == len(out["current"]["rows"]) + len(out["sold"]["rows"]))
 
     # ── 10. geometry the printed sheet depends on ─────────────────────────
     section("10. Column geometry (the printed sheet reads this off the payload)")
@@ -450,7 +520,7 @@ def main():
     chk("the letter row is gone, so it cannot win the dict(zip()) collision",
         "PBETA" not in set(frame["vcode"]))
     chk("child properties are KEPT — the child lookup reads this frame",
-        "P0000004" in set(frame["vcode"]))
+        "P0000201" in set(frame["vcode"]))
 
     # ── 13. footnotes (5) and (6) do what they say ────────────────────────
     section("13. Young-deal substitution (both ways: substituted when the "

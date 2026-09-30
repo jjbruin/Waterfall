@@ -216,11 +216,31 @@ ROW_ORDER_SOLD = [
 ]
 
 # ── first lien basis ──────────────────────────────────────────────────────
-#: Development deals take the COMMITTED facility (``loans.mOrigLoanAmt``);
-#: everything else takes the earliest ISBS balance-sheet debt row, which is the
-#: amount actually drawn at stabilization. A construction loan's drawn balance
-#: at any point before completion is not its capitalization, which is what the
-#: column is headed.
+#: ONE GLOBAL RULE, chosen by measurement rather than by argument. Every
+#: candidate was tested against the reference across all 76 deals:
+#:
+#:     basis                          dev     non-dev      all   no value
+#:     A   earliest loan record      7/10      34/66     41/76       19
+#:     A+k earliest loan, +children  7/10      34/66     41/76       16
+#:     B   summed facility           7/10      34/66     41/76       19
+#:     B+k summed facility, +children 7/10     35/66     42/76       16
+#:     C   earliest ISBS             0/10      27/66     27/76       18
+#:     C+k earliest ISBS, +children  0/10      25/66     25/76       17
+#:
+#: and the dev / non-dev SPLIT the report used to apply (dev = B+k, everything
+#: else = C) scores **34/76** — eight worse than simply using B+k on every
+#: deal. The split was a reasonable-sounding rule that the data does not
+#: support: the earliest balance-sheet row wins on NO development deal and on
+#: only 27 of the 66 others.
+#:
+#: So the default is B+k for every deal, and `FIRST_LIEN_FALLBACKS` names what
+#: to try when it yields nothing.
+FIRST_LIEN_BASIS = "summed_facility"
+FIRST_LIEN_FALLBACKS = ("earliest_loan", "earliest_isbs")
+
+#: Development deals. NO LONGER SELECTS THE FIRST-LIEN BASIS — kept because it
+#: is the population footnote (5)-era labelling refers to, and the guardrail
+#: asserts it agrees with the deals labelled ``Dev.`` in CELL_LABELS.
 #:
 #: Named here rather than read from ``Lifecycle`` for the reason in the module
 #: docstring — ``Lifecycle`` says ``Sold`` for six of these.
@@ -235,6 +255,21 @@ DEV_DEALS = {
     "P0000100",   # Outlook Green Valley Ranch
     "P0000110",   # Trolley Square
     "P0000114",   # Jefferson Stephens
+}
+
+#: Deals the reference carries in NEITHER table, excluded by name so the
+#: omission is deliberate and visible rather than a rule nobody can find.
+#:
+#: Apple Self Storage sold in January 2026 but its ``Sale_Status`` is still
+#: NULL, so every population rule puts it in Current. The reference does not
+#: show it in Current and does not show it in Sold either — footnote (3) on the
+#: Sold total explains that the portfolio is not moved across until the final
+#: distributions land, expected end of 2Q27. Until then it belongs nowhere, and
+#: the report says so out loud in `diagnostics.excluded_deals`.
+EXCLUDED_DEALS = {
+    "P0000003": "Apple Self Storage — realized Jan 2026, Sale_Status still "
+                "NULL; the reference carries it in neither table until final "
+                "distributions are received (Sold footnote 3, expected 2Q27)",
 }
 
 LEASE_UP_DEALS = {
