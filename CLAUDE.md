@@ -255,6 +255,43 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v546` = `ad92358` (INVESTMENT METRICS GOES LIVE — draft gate OFF, and the
+    link moves under Asset Management. Sep 30 2026, build `camm` 2m20s, run
+    status Succeeded. `INVESTMENT_METRICS_DRAFT = False`, so the screen banner,
+    the printed DRAFT line and the watermark are gone and the sidebar links to
+    the report between Review Tracking and Waterfall Setup.
+    THE LINK IS STILL GATED ON THE SERVER FLAG, not hard-coded visible: the
+    compiled sidebar in the served bundle is
+    `(config?.investment_metrics_draft)===!1` with `class:"nav-item"`, sitting
+    immediately after Review Tracking. `/investment-metrics` joined `amRoutes`
+    so the section auto-expands on a direct visit. Turning the gate back on
+    removes the link again without touching the sidebar.
+    NOT ONE FIGURE MOVED, and it was checked rather than asserted: the v545 and
+    v546 live payloads were fetched and compared — **every row identical**,
+    totals identical, grand total identical, footnotes identical, column
+    geometry identical. The diff is two files, the flag and the sidebar; the
+    engine, the labels, the footnotes and both view templates are untouched.
+    ACCESS IS THE ONE PAGER'S, VERIFIED ACROSS EVERY LOGIN ROLE. Both routes
+    carry `@login_required`, which does not consult role at all. Driven
+    locally against the shipped code with a forged JWT per role: viewer,
+    analyst, accountant, cfo and admin ALL get 200, and no token gets 401 —
+    identical to `/api/financials/<vcode>/one-pager`. Note there is no Asset
+    Manager LOGIN role: the six are viewer / analyst / accountant /
+    accounting_manager / cfo / admin, and `asset_manager` is a REVIEW-workflow
+    role (`_STEP_ROLE`, `review_roles`) that neither the sidebar nor this API
+    consults. Asset Management is a navigation grouping.
+    POST-DEPLOY: IM cold 4.68s / warm 0.20-0.22s; One Pager 2.53s; Snapshot
+    0.11s; Dashboard KPIs 17.8s (the cold shared `load_all`, first request
+    after the revision started); deals 0.16s. Container 1,091 MB of 2,048
+    (51%), +9 MB over v545. Boot log clean, 0 tracebacks. Live config returns
+    `investment_metrics_draft: false`; the live print render is 44/44 with no
+    DRAFT text on either sheet.
+    STILL OPEN, and the flag being off does not close any of it: UW Proj. IRR
+    and both Yr-1 CoC columns remain in `UNLOADED_FIGURES` "none" mode against
+    an Alay TODO, and first lien reproduces the reference on 42 of 76.
+    Rollback: `activeRevisionsMode` is Single, so redeploy the image —
+    `az containerapp update ... --image
+    acrwaterfalldev.azurecr.io/waterfall-xirr:c3cb48d --revision-suffix v547`.)
   - `v545` = `c3cb48d` (INVESTMENT METRICS — the quarterly PSC Investment
     Summary as a top-level report, SHIPPED BEHIND A DRAFT GATE. Sep 30 2026,
     build `camk` 2m31s, digest `sha256:f315a801b18a616`.
