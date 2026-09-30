@@ -255,6 +255,84 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v547` = `0b439d8` (THREE ONE PAGER FIGURES STOP LYING BY DEFAULT, Sep 30
+    2026. Merge of `fix/pe-yield-blank-when-uncomputable` onto `origin/main`
+    `6829b38`, so it sits ON TOP of Jim's v545/v546 Investment Metrics work and
+    reverts none of it (`ad92358` verified an ancestor of HEAD before building).
+    Build 2m14s, digest `sha256:3fe513c7dc95c91b90a2c23d5abadd37411f0119cd892174a86f0a8b818d6c30`,
+    tag locked. Rollback target `ad92358` (v546), staged and unused.
+    **(1) `pe_yield_on_exposure` DEFAULTED TO 0.0** and is only assigned when it
+    can be computed, so any deal failing that test published a computed yield of
+    nil where there was nothing to compute it from. Now `None` — the same
+    sentinel `pe_exposure_on_cap` and `pe_exposure_on_value` already carried two
+    lines above. The field's own trace already disagreed with it:
+    `field_trace_service`'s check returned None in exactly those cases. 17 of 70
+    deals at 26Q2 published 0.0; they now read N/A. The screen does not move for
+    them — both cells are truthiness-guarded, so 0.0 and null both rendered N/A
+    already; what changes is the payload.
+    **(2) A NEGATIVE NOI NOW YIELDS A NEGATIVE PERCENTAGE.** The gate was
+    `noi_ye > 0`, which declined a deal whose NOI is really negative and
+    reported it as absent — "cannot compute" and "is negative" came out as the
+    same answer. It is truthiness now. Exactly two deals move: Jefferson Addison
+    Heights -235,114 / 61,854,983 = **-0.38%** and Jefferson Eastchase
+    -698,661 / 71,381,704 = **-0.98%**, both confirmed through the live endpoint
+    after deploy.
+    TRUTHINESS, NOT `is not None`, AND THE DIFFERENCE IS LOAD-BEARING.
+    `perf['noi']['actual_ye']` DEFAULTS TO 0 while `ytd_actual` defaults to
+    None, so a deal with no actuals carries a literal 0 that was never assigned
+    — verified on all 15: `actual_ye` 0, `ytd_actual` null. Gating on "not None"
+    would divide that no-data 0 and republish the fake zero on 15 deals.
+    **(3) BOTH PARTICIPATION CELLS AND BOTH COUPON CELLS NOW READ MRI DEAL TERMS
+    FIRST**, waterfall as fallback. The One Pager prints each term TWICE —
+    Capitalization (`cap_stack.pe_participation` / `pe_coupon`) and PE
+    Performance (`participation` / `coupon`) — and the two resolved them
+    differently: Capitalization let deal terms OVERRIDE, the PE block took the
+    waterfall FIRST. So nine deals were each printing two different numbers for
+    one term. `_pe_terms_fallback` had written the participation half down as an
+    open question — "picking a winner there is a separate question about which
+    source is right" — and it is now decided in favour of deal terms.
+    **THE COUPON HALF WAS NOT PREVENTIVE AND WAS BRIEFED AS THOUGH IT WERE.**
+    I stated no live deal disagreed on the coupon WITHOUT HAVING MEASURED IT,
+    and that was wrong. THREE INVESTOR-FACING COUPONS CHANGED:
+    Pegasus Life Storage 10% -> **9%**, Cocoplum Apartments 5% -> **8.5%**,
+    Orange Grove 8% -> **8.5%**. Six participation figures moved with them —
+    5-15 Broad St 0.333 -> 0.33, Merle Hay 0.7 -> 0.3, OREI Portfolio / Whitney
+    Manor / Westchase 0.75 -> 0.475, Donald Lynch 0.2 -> 0.3. In every case the
+    PE block moved ONTO the figure the Capitalization block was already showing;
+    the Capitalization cell moved on no deal.
+    A ZERO IS NOT A COUPON but IS a participation: an explicit 0 in deal terms
+    overrides for participation ("the PE takes no share") and falls through for
+    the coupon (0% preferred return is not a structure). Inert today — 75 deals
+    carry a deal_terms coupon, none of them 0.
+    **(4) `normalize_share`, `<= 1` NOT `< 1`.** A share of exactly 1.0 means
+    ALL of it; the old test sent it down the percentage branch, 1.0/100 = 0.01,
+    and printed "1%" for a hundred percent. ONE definition replacing four copies
+    of the same expression across both waterfall readers and both deal-terms
+    paths. LATENT TODAY and stated as such: the only two deals carrying 1.0 are
+    the OPJPI pair, whose deal_terms 0 overrides them, so nothing on screen
+    moves from this half. The COUPON keeps its own `< 1` — a 1.0 coupon reads as
+    1%, a 1.0 share as 100% — and no deal carries a 1.0 coupon either way.
+    RETURN OF CAPITAL IS NOT IN THIS RELEASE. It shipped as v544 (`e255da7`) and
+    is inherited; East Manchester's 3,600,000.00 was re-confirmed here only as a
+    regression check.
+    VERIFIED AFTER DEPLOY: `onepager_participation_precedence_check` 27/27 **IN
+    THE CONTAINER** (replica `v547-56cf769c64-zqtbv`), which is what proves the
+    IMAGE rather than the local tree; 12 live spot-checks through
+    `/api/financials/<vcode>/one-pager?quarter=2026-Q2`, all pass, with the two
+    cells carrying identical values on every deal that previously disagreed;
+    root 200 (0.14 / 0.08 / 0.10s), `/api/data/deals` 401, clean boot, 0
+    tracebacks, SQLAlchemy `<2.1` pin held.
+    `onepager_missing_vs_zero_check` was DELIBERATELY NOT run in the container:
+    it lifts `fmtOccVariance` and the One Pager cell out of `OnePagerView.vue`,
+    and the runtime image ships no `vue_app/`, so it would fail for reasons
+    unrelated to this deploy. 31/32 locally, that one failure pre-existing and
+    identical on main. The pe_yield fix is confirmed on the image instead by the
+    two Jefferson deals returning real negatives through the live endpoint.
+    STILL UNRESOLVED AT DEPLOY TIME: CLAUDE.md's standing instruction is to tell
+    Jim BEFORE building anything that moves reported figures. This moved nine,
+    three of them investor-facing coupons. It was flagged twice before the build
+    and the deploy proceeded on Charlene's instruction without that step being
+    closed.)
   - `v546` = `ad92358` (INVESTMENT METRICS GOES LIVE — draft gate OFF, and the
     link moves under Asset Management. Sep 30 2026, build `camm` 2m20s, run
     status Succeeded. `INVESTMENT_METRICS_DRAFT = False`, so the screen banner,
