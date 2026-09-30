@@ -25,6 +25,7 @@ from flask_app.services.lease_terms import (
     rent_psf_for, annual_rent_from, step_in_force_at,
     parse_relative_period, month_to_date,
     cam_fixed_in_force, annual_recovery_psf, additional_in_force,
+    bundled_instruments,
 )
 
 logger = logging.getLogger(__name__)
@@ -2407,10 +2408,14 @@ Return a JSON object with these fields (use null for fields not found):
           "annual_rent": number or null,
           "monthly_rent": number or null,
           "rent_psf": number or null,
-          "escalation_pct": number or null
+          "escalation_pct": number or null,
+          "escalation_frequency": "annual | once | null"
         }}
       ]
     }}
+  ],
+  "instruments": [
+    {{"type": "Original Lease | Amendment | Extension | Option Exercise | Commencement Letter | Other", "title": "as headed, e.g. SECOND LEASE AMENDMENT", "date": "YYYY-MM-DD or null", "pages": "e.g. 23-24"}}
   ],
   "termination_options": [
     {{
@@ -2527,8 +2532,9 @@ IMPORTANT:
 - Dates must be YYYY-MM-DD format
 - Dollar amounts should be numbers (no $ signs)
 - If this is an amendment, note which fields were modified
-- For renewal_options: option_start/option_end are the beginning and ending dates of each renewal period. If not explicitly stated, derive from the prior term's expiration + term_years. Mark exercised=true if an amendment or exercise notice confirms the option was exercised -- never in an original lease, which cannot record its own exercise.
-- For option rent: give every amount the document STATES in rent_schedule, one entry per rent period within the option (an option can step up each year), with the figure in the unit stated (annual, monthly or per square foot). If it states a percentage increase instead of an amount, give escalation_pct and leave the amounts null -- do not compute them. If rent is fair market or a share of it, set rent_basis accordingly and leave the amounts null; never estimate a market rent. If nothing is said about option rent, rent_basis is not_stated.
+- ONE FILE MAY HOLD SEVERAL INSTRUMENTS. A lease PDF often has its amendments, extensions or option exercises bound in after it (Muddy Paws' lease carries its First and Second Lease Amendments on its last four pages). List every separate instrument in the file in "instruments", in the order they appear, each with its own date -- where only a month and year are written ("this ___ day of February 2025"), use the first of that month. When the file holds more than one, return the terms AS THEY STAND AFTER THE LAST INSTRUMENT, in full rather than only the changed fields: the expiration, rent and options the latest one leaves in force. In such a file rent_commencement is the ORIGINAL lease's, and give each later instrument's rent with the dates it states. For a file holding a single instrument, "instruments" has one entry.
+- For renewal_options: option_start/option_end are the beginning and ending dates of each renewal period. If not explicitly stated, derive from the prior term's expiration + term_years. Mark exercised=true if an amendment or exercise notice confirms the option was exercised -- that can be an instrument bound into this same file, but never the original lease on its own, which cannot record its own exercise.
+- For option rent: give every amount the document STATES in rent_schedule, one entry per rent period within the option (an option can step up each year), with the figure in the unit stated (annual, monthly or per square foot). If it states a percentage increase instead of an amount, give escalation_pct and leave the amounts null -- do not compute them. Say how often the percentage applies in escalation_frequency: "annual" when it increases every year of the option ("two percent (2%) annual increases"), "once" when it is a single increase at the start of the option. The application compounds it. If rent is fair market or a share of it, set rent_basis accordingly and leave the amounts null; never estimate a market rent. If nothing is said about option rent, rent_basis is not_stated.
 - For termination_options: extract early termination rights, kick-out clauses, and similar provisions. earliest_termination_date is when the tenant can first terminate. Mark exercised=true if a termination notice was exercised.
 - For exclusive_use: this is easy to miss, so search the whole document, not
   just a heading called "Exclusive". These provisions appear under Permitted
@@ -2554,6 +2560,38 @@ DOCUMENT TEXT:
 #: leases, so more than half the corpus was being read as an empty string and
 #: silently returning nothing.
 SCAN_TEXT_THRESHOLD = 200
+
+#: A PAGE carrying less text than this has no text layer worth the name. The
+#: document total cannot see it: a file that is PARTLY scanned passes the
+#: 200-character test on the pages that have text, and its scanned pages then
+#: never reach the model at all. Measured on Market at Poplar, Sep 30 2026 --
+#: exactly the three documents new business named: Hobby Lobby's 2024 4th
+#: Amendment (four pages whose only text is a 54-character dotloop stamp), Perkins'
+#: Assignment & 1st Amendment (page 1 typed, pages 2-5 -- the option rents --
+#: scanned) and Muddy Paws' lease (22 of 26 pages scanned; the two typed pages
+#: at the back are its 1st and 2nd Amendments).
+PAGE_TEXT_MIN = 100
+
+
+def pages_without_text(file_data) -> Tuple[int, int]:
+    """(pages carrying under PAGE_TEXT_MIN characters, total pages) for a PDF,
+    or (0, 0) when it cannot be opened -- an unreadable file is not evidence that
+    any page is a scan."""
+    if not file_data:
+        return 0, 0
+    try:
+        try:
+            import pymupdf
+        except ImportError:
+            import fitz as pymupdf
+        doc = pymupdf.open(stream=bytes(file_data), filetype="pdf")
+    except Exception:
+        return 0, 0
+    try:
+        per = [len((p.get_text() or '').strip()) for p in doc]
+    finally:
+        doc.close()
+    return sum(1 for n in per if n < PAGE_TEXT_MIN), len(per)
 
 #: The API's own limits for an inline PDF document block: 32 MB per request, and
 #: 600 pages on a 1M-context model (100 on a 200K one). Production's largest
@@ -2680,7 +2718,15 @@ def extract_lease_terms_via_api(
     # ---- which representation of the document goes to the model -----------
     route, route_note = 'text', None
     content: List[Dict[str, Any]] = []
-    if len((text or '').strip()) < SCAN_TEXT_THRESHOLD and file_data:
+    # A PARTLY SCANNED FILE GOES AS THE PDF TOO: the document block carries every
+    # page's text layer AND its image, so the typed pages lose nothing and the
+    # scanned ones are read at all. See PAGE_TEXT_MIN.
+    blank, total_pages = pages_without_text(file_data) if (
+        file_data and len((text or '').strip()) >= SCAN_TEXT_THRESHOLD) else (0, 0)
+    if blank:
+        route_note = ("%d of %d pages carry no text layer, so the document was read"
+                      " from the PDF" % (blank, total_pages))
+    if (len((text or '').strip()) < SCAN_TEXT_THRESHOLD or blank) and file_data:
         if not _pdf_fits(file_data, prompt):
             # THE LIMIT IS ON THE REQUEST, AND BASE64 ADDS A THIRD. The old check
             # compared the RAW file with 32 MB, so Tropical Smoothie's 27 MB lease
@@ -3485,15 +3531,15 @@ def extract_all_documents(engine, review_id: int, api_key: Optional[str] = None,
                 # rent, and gating on those two types alone loses both.
                 if is_term_bearing(doc_type):
                     # A scan needs the PDF itself, and the already-extracted
-                    # branch above never loads it, so fetch it here when the
-                    # text is too thin to be the document.
+                    # branch above never loads it. ALWAYS fetched now, not only
+                    # when the whole text is thin: whether any PAGE is a scan
+                    # can only be told from the PDF (see PAGE_TEXT_MIN).
                     blob, pages = None, None
-                    if len((pdf_text or '').strip()) < SCAN_TEXT_THRESHOLD:
-                        got = conn.execute(sql_text(
-                            "SELECT file_data, page_count FROM lease_documents "
-                            " WHERE id = :did"), {'did': doc_id}).fetchone()
-                        if got:
-                            blob, pages = got[0], got[1]
+                    got = conn.execute(sql_text(
+                        "SELECT file_data, page_count FROM lease_documents "
+                        " WHERE id = :did"), {'did': doc_id}).fetchone()
+                    if got:
+                        blob, pages = got[0], got[1]
                     terms = extract_lease_terms_via_api(
                         pdf_text, tenant_name, suite, doc_type, api_key,
                         file_data=blob, page_count=pages,
@@ -3650,6 +3696,13 @@ def _merge_extraction_terms(base: Dict, amendment: Dict,
         if (fill_only and merged.get(key) is not None
                 and not (key in ('lease_commencement', 'rent_commencement')
                          and doc_type in _COMMENCEMENT_TYPES)):
+            continue
+        # A BUNDLE's commencement dates are its ORIGINAL lease's (the prompt asks
+        # for them so), and a commencement letter states those better -- so they
+        # only fill a gap. Its expiration, rent and options are the last
+        # instrument's and are applied like any amendment's.
+        if (ctx.get('bundle') and key in ('lease_commencement', 'rent_commencement')
+                and merged.get(key) is not None):
             continue
         if (key == 'lease_commencement' and merged.get(key) is not None
                 and doc_type not in _START_SETTING_TYPES):
@@ -4046,7 +4099,29 @@ def consolidate_tenant_extractions(
                  'ordinal': r[5] if r[5] is not None
                  else amendment_ordinal(r[4] or '')}
                 for r in rows]
+        # A FILE HOLDING A LEASE AND ITS LATER AMENDMENTS is layered as what it
+        # ends as: at its last instrument's date, and as an amendment, so its
+        # exercised options stand and a commencement letter dated between the
+        # lease and the amendments does not overwrite them. See
+        # `bundled_instruments`. The stored document is not changed.
+        bundle_notes = []
+        for d in docs:
+            try:
+                b = bundled_instruments(json.loads(d['extraction_json'] or '{}'))
+            except (TypeError, ValueError):
+                b = None
+            if not b:
+                continue
+            d['doc_type'] = 'Amendment'
+            d['bundle'] = True
+            if b['last_date'] and b['last_date'] > (d.get('doc_date') or ''):
+                d['doc_date'] = b['last_date']
+            bundle_notes.append(
+                "%s holds %s bound in after it; layered as of %s." % (
+                    (d['filename'] or '').rsplit('/', 1)[-1], ', '.join(b['later']),
+                    b['last_date'] or 'its own date (no instrument date is stated)'))
         docs, order_notes = order_lease_documents(docs)
+        order_notes = bundle_notes + order_notes
 
         consolidated = {}
         applied = []
@@ -4064,6 +4139,7 @@ def consolidate_tenant_extractions(
                     else:
                         consolidated = _merge_extraction_terms(consolidated, terms, {
                             'doc_type': doc.get('doc_type'),
+                            'bundle': doc.get('bundle', False),
                             'fill_only': (not doc.get('doc_date')
                                           and (doc.get('doc_type') or '') != 'Amendment'),
                         })

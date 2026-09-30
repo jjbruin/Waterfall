@@ -244,3 +244,33 @@ The three current-rent differences left at v542:
 Stale-settlement flags now showing: A Perfect Bloom, Hobby Lobby, Muddy Paws.
 Mattress Firm's old 2027-09-30 settlement is no longer applied (documents give
 2035-03-21).
+
+## New business's answers to the v542 acceptance (Sep 30 2026) -- BUILT, NOT DEPLOYED
+
+- **Settlements outrank the documents** -- confirmed, no change. Mattress Firm's
+  analyst REMOVED the old expiry settlement (only SF is settled now), so the
+  timeline shows the documents' 2035-03-21 / $170,100. Bombay's settled $31,671.24
+  is in force. Hobby Lobby's settled 2027-07-31 still outranks the documents and
+  is flagged; after the re-read it will differ from the 4th Amendment -- the
+  analyst should revisit it.
+- **The three "missing documents" were PART-SCANNED FILES** read as text (measured
+  per page on production): Hobby 4th Amend [54,54,54,289] (dotloop stamps only),
+  Perkins 1st Amend [2722,0,0,0,0], Muddy Paws lease 22 of 26 pages empty. Fix:
+  `PAGE_TEXT_MIN` / `pages_without_text` -- any page under 100 characters sends
+  the PDF. 11 Poplar and 40 Windsor term-bearing documents are mixed, so their
+  next re-read moves route: RUN THE ACCEPTANCE COMPARISON after re-reading.
+- **A file holding several instruments** (Muddy Paws' lease + 1st/2nd Amendments):
+  the prompt now returns `instruments` and the as-amended terms;
+  `bundled_instruments` layers such a file at its last instrument's date, as an
+  amendment (exercises kept), commencement dates fill-only.
+- **Annual option increases** (Peak Potential, 2%/yr): `_option_periods` expands a
+  percentage with `escalation_frequency: annual` (or "annual" in its wording) into
+  yearly periods, each rounded to the dollar before the next, as their figures
+  are. Takes effect on stored data without a re-read.
+- **A Perfect Bloom, NOT fixed (analyst investigating)**: two Original Leases,
+  Ste 6 (2024) and Ste 7 (2026 relocation), both read with no dates; Ste 7's rent
+  steps count from Ste 6's commencement letter (2024-07-01). A later lease for
+  new premises probably has to start a fresh lease -- wait for the analyst.
+- Guardrail `scripts/lease_bundle_scan_check.py` (32).
+- To do after deploy: re-read Hobby Lobby, Muddy Paws, Perkins (one subprocess
+  per tenant), then the acceptance comparison.

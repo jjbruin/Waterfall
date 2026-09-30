@@ -269,6 +269,16 @@ _d = pymupdf.open()
 for n in range(3):
     _d.new_page().insert_text((72, 72), 'Page %d of a scanned lease' % (n + 1))
 REAL_PDF = _d.tobytes()
+# A TYPED PDF for the text-route checks: since Sep 30 2026 a page carrying under
+# PAGE_TEXT_MIN characters marks the file as partly scanned and sends the PDF on
+# the FIRST ask (lease_bundle_scan_check.py), so REAL_PDF's one-line pages no
+# longer stand for a typed document.
+_t = pymupdf.open()
+for n in range(3):
+    _t.new_page().insert_textbox(pymupdf.Rect(40, 40, 560, 800),
+                                 'Typed lease page %d. ' % (n + 1) + 'Rent is payable. ' * 20,
+                                 fontsize=9)
+TYPED_PDF = _t.tobytes()
 
 
 def kinds(kw):
@@ -314,7 +324,7 @@ chk('an over-size scan is sent as page images on the FIRST ask, not refused',
 # Perkins: the same text failed twice and read on a later run. A failed TEXT
 # reading is retried from the document itself.
 calls = install_queue([(ECHO, 'end_turn'), (json.dumps({'square_feet': 5560}), 'end_turn')])
-r = call(LEASE_TEXT, file_data=REAL_PDF, page_count=3)
+r = call(LEASE_TEXT, file_data=TYPED_PDF, page_count=3)
 chk('a failed text reading is retried as the PDF',
     len(calls) == 2 and kinds(calls[0]) == ['text'] and kinds(calls[1]) == ['document', 'text']
     and r.get('square_feet') == 5560 and r.get('_extraction_source') == 'pdf',

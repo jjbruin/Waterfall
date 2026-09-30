@@ -46,6 +46,21 @@ def _flag(flags: List[Dict[str, Any]], code: str, message: str, **kw) -> None:
     flags.append({'code': code, 'message': message, **kw})
 
 
+_ANNUAL = re.compile(r'(?i)\bannual(ly)?\b|\b(each|every|per)\s+(lease\s+)?year\b|\byearly\b')
+
+
+def _is_annual(entry: Dict[str, Any], opt: Dict[str, Any]) -> bool:
+    """Whether an option's stated percentage applies every year. The extraction
+    says so in `escalation_frequency`; a reading from before that field existed
+    is judged on its own wording ("two percent (2%) annual increases"). A
+    percentage stated with neither is applied once, as before."""
+    f = (entry.get('escalation_frequency') or '').strip().lower()
+    if f:
+        return f == 'annual'
+    return bool(_ANNUAL.search(' '.join(str(x) for x in (
+        entry.get('period'), opt.get('rent_terms')) if x)))
+
+
 def _option_periods(opt: Dict[str, Any], start: date, end: Optional[date],
                     prior_annual: Optional[float], sf: Optional[float],
                     flags: List[Dict[str, Any]], label: str) -> List[Dict[str, Any]]:
@@ -75,6 +90,27 @@ def _option_periods(opt: Dict[str, Any], start: date, end: Optional[date],
         if amt is None and e.get('rent_psf') and sf:
             amt = float(e['rent_psf']) * float(sf)
         derived = False
+        if (amt is None and e.get('escalation_pct') is not None and running
+                and _is_annual(e, opt) and stop and s):
+            # AN ANNUAL INCREASE APPLIES EVERY YEAR OF THE PERIOD, not once.
+            # Peak Potential's options "each have two percent (2%) annual
+            # increases" and printed ONE figure per five-year option; new
+            # business (Sep 30 2026): Year 1 61,287, Year 2 62,513 ... Year 5
+            # 66,339, and the next option carries on from there. EACH YEAR IS
+            # ROUNDED TO THE DOLLAR BEFORE THE NEXT increase, which is how their
+            # figures are built: compounding on cents gives 65,039 for Year 4.
+            pct = float(e['escalation_pct']) / 100.0
+            y = s
+            while y <= stop:
+                y_end = min(y + relativedelta(years=1) - timedelta(days=1), stop)
+                running = float(round(running * (1 + pct)))
+                psf, _ = rent_psf_for(annual_rent=running, square_feet=sf)
+                periods.append({'start': _iso(y), 'end': _iso(y_end),
+                                'annual_rent': running, 'psf': psf, 'basis': basis,
+                                'derived': True, 'period': e.get('period')})
+                y = y_end + timedelta(days=1)
+            cur = stop + timedelta(days=1)
+            continue
         if amt is None and e.get('escalation_pct') is not None and running:
             amt = round(running * (1 + float(e['escalation_pct']) / 100.0), 2)
             derived = True

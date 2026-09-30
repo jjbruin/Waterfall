@@ -175,6 +175,37 @@ def parse_doc_date_anywhere(filename: str) -> Optional[str]:
     return None
 
 
+_LATER_INSTRUMENT = re.compile(r'(?i)amend|extension|exercise|renewal|option|addendum')
+
+
+def bundled_instruments(terms: Any) -> Optional[Dict[str, Any]]:
+    """What a file holding SEVERAL instruments needs for layering, or None.
+
+    Muddy Paws' lease PDF carries its 1st (2021) and 2nd (2025) Amendments bound in
+    after it. Filed as an Original Lease dated 2020, its as-amended terms were laid
+    down FIRST and the 2021 commencement letter then reset the expiration to 2025 --
+    and its exercised extension was discarded as "a lease cannot record its own
+    exercise". Both rules are right for a lease and wrong for this file.
+
+    Returns {'last_date', 'later'} when the extraction lists more than one
+    instrument and at least one after the first is an amendment, extension or
+    exercise; `last_date` is the latest instrument date stated (None when none is).
+    """
+    if not isinstance(terms, dict):
+        return None
+    inst = [i for i in (terms.get('instruments') or []) if isinstance(i, dict)]
+    if len(inst) < 2:
+        return None
+    later = [i for i in inst[1:]
+             if _LATER_INSTRUMENT.search('%s %s' % (i.get('type') or '', i.get('title') or ''))]
+    if not later:
+        return None
+    dates = [str(i.get('date'))[:10] for i in inst
+             if i.get('date') and re.match(r'^\d{4}-\d{2}-\d{2}', str(i.get('date')))]
+    return {'last_date': max(dates) if dates else None,
+            'later': [i.get('title') or i.get('type') for i in later]}
+
+
 def order_lease_documents(docs: List[Dict[str, Any]]) -> Tuple[List[Dict], List[str]]:
     """Original lease first, then amendments in the order they were made.
 
