@@ -25,7 +25,7 @@ from sqlalchemy import create_engine, text  # noqa: E402
 
 from flask_app.services.lease_review_service import _write_document_rent_steps  # noqa: E402
 from flask_app.services.lease_terms import (  # noqa: E402
-    reanchor_original_steps, resolve_rent_steps)
+    drop_restated_steps, governing_steps, reanchor_original_steps, resolve_rent_steps)
 from flask_app.services.lease_timeline import build_timeline, summarise_options  # noqa: E402
 
 OK, BAD = [], []
@@ -129,13 +129,25 @@ chk('month 5 (first paying month) lands on the actual rent commencement 2026-03-
     got.get(5) == '2026-03-01', got)
 chk("months 65-124 begin 2031-03-01, new business's option date", got.get(65) == '2031-03-01', got)
 chk('month 1 is the actual lease commencement', got.get(1) == '2025-11-01', got)
-out = reanchor_original_steps(
-    [dict(s) for s in lp if s['period_start_month'] != 1] and
-    [dict(s, period_start_month=1, period_end_month=60) if s['period_start_month'] == 5 else s
-     for s in lp if s['period_start_month'] != 1], types, '2025-11-01', '2026-03-01')
-first = next(s for s in out if s['annual_rent'] == 36000)
-chk('when the schedule does NOT confirm lease commencement, rent commencement is month 1',
-    first['term_start'] == '2026-03-01', first['term_start'])
+# Habitat for Humanity as production stores it: rent from month 1, lease
+# commencement 2024-02-01, rent commencement 2024-08-01. The schedule does not
+# confirm either date, so NOTHING may move. v540 fell back to the rent
+# commencement and put $788,127 in force against new business's $518,931.
+hab = [{'period_start_month': m, 'annual_rent': a, 'source_doc_id': 548,
+        'term_start': '2024-02-01'}
+       for m, a in ((1, 461272.0), (19, 490101.5), (31, 518931.0), (43, 547760.5))]
+out = reanchor_original_steps(hab, {548: 'Original Lease'}, '2024-02-01', '2024-08-01')
+chk('an unconfirmed schedule is left on its own term (Habitat)', out == hab,
+    [s['term_start'] for s in out])
+res, _ = resolve_rent_steps(out, '2024-08-01', 57659)
+got = {s['period_start_month']: s['effective_date'] for s in res}
+chk("Habitat's month 43 begins 2027-08-01, new business's next step",
+    got.get(43) == '2027-08-01', got)
+from flask_app.services.lease_timeline import build_timeline as _bt  # noqa: E402
+tl = _bt({'lease_commencement': '2024-02-01', 'lease_expiration': '2031-07-31'},
+         res, 57659, date(2026, 9, 1))
+chk('Habitat rent in force on the rent roll date is 518,931',
+    (tl.get('current') or {}).get('annual_rent') == 518931.0, tl.get('current'))
 amend = [dict(lp[1], source_doc_id=13)]
 out = reanchor_original_steps(amend, {13: 'Amendment'}, '2025-11-01', '2026-03-01')
 chk("an amendment's steps keep their own term", out[0]['term_start'] == '2025-10-15')
@@ -179,6 +191,40 @@ tl = build_timeline(five, [{'effective_date': '2015-01-01', 'annual_rent': 12000
 chk('five-year options are NOT collapsed',
     [r['label'] for r in tl['rows'] if r['kind'] == 'option'] == ['Option 1', 'Option 2'],
     [r['label'] for r in tl['rows'] if r['kind'] == 'option'])
+
+section("2c. an amendment that quotes the original schedule does not re-date it")
+# Hobby Lobby as production stores it (v540): the original lease states months
+# 1 and 61; the 2nd and 3rd Amendments quote them word for word, each stored
+# against its own term, beside their own dated steps.
+def hs(doc, ddate, psm, annual, ts, ed=None):
+    return {'source_doc_id': doc, 'doc_date': ddate, 'period_start_month': psm,
+            'annual_rent': annual, 'term_start': ts, 'effective_date': ed}
+
+
+hobby = [hs(482, '2002-04-15', 1, 311130.0, None), hs(482, '2002-04-15', 61, 342243.0, None),
+         hs(488, '2017-05-22', 1, 311130.0, '2017-08-01'),
+         hs(488, '2017-05-22', 61, 342243.0, '2017-08-01'),
+         hs(488, '2017-05-22', None, 435582.0, '2017-08-01', '2022-08-01'),
+         hs(489, '2020-10-31', 1, 311130.0, '2021-02-01'),
+         hs(489, '2020-10-31', 61, 342243.0, '2021-02-01'),
+         hs(489, '2020-10-31', None, 435582.0, '2021-02-01', '2024-08-01'),
+         hs(489, '2020-10-31', None, 466695.0, '2021-02-01', '2027-08-01')]
+kept = drop_restated_steps(hobby)
+chk('the quoted months are dropped from both amendments',
+    sorted((s['source_doc_id'], s['period_start_month']) for s in kept if s['period_start_month'])
+    == [(482, 1), (482, 61)],
+    [(s['source_doc_id'], s['period_start_month']) for s in kept])
+chk("the amendments' own dated steps are all kept",
+    sum(1 for s in kept if s['effective_date']) == 3)
+res, _ = resolve_rent_steps(kept, '2002-08-01', 62226)
+res, _ = governing_steps(res)
+tl = build_timeline({'lease_commencement': '2002-08-01', 'lease_expiration': '2032-07-31'},
+                    res, 62226, date(2026, 9, 1))
+chk('Hobby Lobby rent in force is 435,582, as new business shows',
+    (tl.get('current') or {}).get('annual_rent') == 435582.0, tl.get('current'))
+own = [hs(1, '2015-01-01', 1, 100000.0, '2015-01-01'), hs(2, '2020-01-01', 1, 120000.0, '2020-01-01')]
+chk("a later document's OWN months at a different rent are kept",
+    len(drop_restated_steps(own)) == 2)
 
 section("3b. Patton as production stores it (v539)")
 # The wording is in the schedule's period, rent_terms says something else, the

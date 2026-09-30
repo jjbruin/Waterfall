@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 from flask_app.services.lease_terms import (
-    governing_steps, reanchor_original_steps,
+    drop_restated_steps, governing_steps, reanchor_original_steps,
     amendment_ordinal, order_lease_documents, resolve_rent_steps,
     rent_psf_for, annual_rent_from, step_in_force_at,
     parse_relative_period, month_to_date,
@@ -4268,7 +4268,8 @@ def load_tenant_rent_steps(conn, tenant_id: int):
     types = {r[0]: r[1] for r in conn.execute(text(
         "SELECT id, doc_type FROM lease_documents WHERE tenant_id = :tid"),
         {'tid': tenant_id})}
-    steps = reanchor_original_steps(steps, types, terms.get('lease_commencement'),
+    steps = reanchor_original_steps(drop_restated_steps(steps), types,
+                                    terms.get('lease_commencement'),
                                     terms.get('rent_commencement'))
     return steps, rent_commencement
 

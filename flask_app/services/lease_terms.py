@@ -531,28 +531,74 @@ def reanchor_original_steps(steps: List[Dict[str, Any]], doc_types: Dict[Any, st
     letter says commencement 2025-11-01, rent 2026-03-01; months 1-4 are free, and
     month 5 from 2025-11-01 IS 2026-03-01 -- so month 1 is the lease commencement and
     "Option Term, months 65-124" begins 2031-03-01, the option date in new business's
-    exhibit. If the schedule does not confirm the lease commencement that way, the
-    actual rent commencement is month 1. Amendment steps keep their own term.
+    exhibit. Amendment steps keep their own term.
+
+    WHEN THE SCHEDULE DOES NOT CONFIRM IT, NOTHING MOVES. The first version fell
+    back to the rent commencement, and that was a guess: Habitat for Humanity's
+    schedule carries rent from month 1 with rent commencement six months after
+    lease commencement, so the fallback shifted every step six months and put
+    $788,127 in force against the $518,931 new business's exhibit shows (v540,
+    Sep 30 2026). Their exhibit counts it from the lease commencement -- the
+    steps' own stored term. Evidence moves the anchor; its absence does not.
     """
     lc, rc = _as_date(actual_lc), _as_date(actual_rc)
-    if lc is None and rc is None:
+    if lc is None or rc is None:
         return steps
     orig = [s for s in steps if doc_types.get(s.get('source_doc_id')) == 'Original Lease'
             and s.get('period_start_month')]
     if not orig:
         return steps
-    anchor = rc or lc
-    if lc and rc:
-        paying = [s for s in orig if (annual_rent_from(annual_rent=s.get('annual_rent'),
-                                                       monthly_rent=s.get('monthly_rent')) or 0) > 0]
-        first = min((int(s['period_start_month']) for s in paying), default=None)
-        if first and month_to_date(lc, first) == rc:
-            anchor = lc
+    paying = [s for s in orig if (annual_rent_from(annual_rent=s.get('annual_rent'),
+                                                   monthly_rent=s.get('monthly_rent')) or 0) > 0]
+    first = min((int(s['period_start_month']) for s in paying), default=None)
+    if not first or first == 1 or month_to_date(lc, first) != rc:
+        return steps
+    anchor = lc
     out = []
     for s in steps:
         if s in orig and _as_date(s.get('term_start')) != anchor:
             s = dict(s, term_start=anchor.isoformat(),
                      effective_date=None, effective_date_basis='')
+        out.append(s)
+    return out
+
+
+
+def drop_restated_steps(steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Drop a month-of-term step that only QUOTES an earlier document's schedule.
+
+    Hobby Lobby's 2nd and 3rd Amendments restate the original lease's "months 1 /
+    61" rents word for word. Stored against the amendment, each copy counts from
+    the AMENDMENT's date, so month 61 lands on 2026-02-01 and outranks the
+    amendment's own dated $435,582 -- the v519 defect (an original schedule
+    re-dated onto a later term) arriving by another door. Until v539 the
+    tenant-wide dedup threw the copies away by accident; replacing each document's
+    rows (correct) exposed them (v540, Sep 30 2026).
+
+    A step is a restatement when an EARLIER document states the same starting
+    month at the same rent: the months belong to the term of the document that
+    first stated them. Dated steps, and a later document's own months at a
+    different rent, are untouched.
+    """
+    def rent(s):
+        return annual_rent_from(annual_rent=s.get('annual_rent'),
+                                monthly_rent=s.get('monthly_rent'))
+
+    def order(s):
+        d = _as_date(s.get('doc_date'))
+        return (d is None, d or date.max, s.get('source_doc_id') or 0)
+
+    first_doc: Dict[Any, Any] = {}
+    for s in sorted(steps, key=order):
+        if s.get('period_start_month') and rent(s):
+            key = (int(s['period_start_month']), round(rent(s), 2))
+            first_doc.setdefault(key, s.get('source_doc_id'))
+    out = []
+    for s in steps:
+        if s.get('period_start_month') and rent(s):
+            key = (int(s['period_start_month']), round(rent(s), 2))
+            if first_doc.get(key) != s.get('source_doc_id'):
+                continue
         out.append(s)
     return out
 
