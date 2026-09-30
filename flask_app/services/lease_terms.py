@@ -678,16 +678,41 @@ def additional_in_force(steps: List[Dict[str, Any]],
     The model now says which it is (`amount_is_additional`); this never guesses.
     An additional charge with a later replacement of the same base is still added,
     because the lease that added the space did not take it away.
+
+    UNLESS A LATER DOCUMENT STATES THE WHOLE RENT. Mattress Firm's 2020 amendment
+    added $6,125 a month; its 2024 3rd Amendment restates the rent at $170,100 a
+    year, and adding 2020's amount on top gave $243,600 (v541, Sep 30 2026). The
+    distinction is the DOCUMENT: Marco's later base steps come from the original
+    lease's own schedule (an EARLIER document) and do not take the space away; a
+    base step stated by a document dated AFTER the add-on's replaces the rent
+    whole. An undated document supersedes nothing -- a date we cannot place is
+    never evidence that something ended.
     """
     d = _as_date(as_of)
     if not steps or d is None:
         return [], 0.0
+
+    def restated_after(add):
+        ad = _as_date(add.get('doc_date'))
+        sd = _as_date(add.get('effective_date'))
+        if ad is None:
+            return False
+        for b in steps:
+            if b.get('is_additional'):
+                continue
+            bd, be = _as_date(b.get('doc_date')), _as_date(b.get('effective_date'))
+            if bd and bd > ad and be and sd <= be <= d:
+                return True
+        return False
+
     live, total = [], 0.0
     for s in steps:
         if not s.get('is_additional'):
             continue
         sd = _as_date(s.get('effective_date'))
         if sd is None or sd > d:
+            continue
+        if restated_after(s):
             continue
         ed = _as_date(s.get('period_end_date'))
         if ed and ed < d:

@@ -226,6 +226,7 @@ def build_timeline(terms: Dict[str, Any], steps: List[Dict[str, Any]],
 
     # ---- the contractual term, continuous by construction
     term: List[Dict[str, Any]] = []
+    added_from: Dict[str, float] = {}
     for i, s in enumerate(base):
         s_start = _as_date(s['effective_date'])
         nxt = _as_date(base[i + 1]['effective_date']) if i + 1 < len(base) else None
@@ -234,6 +235,9 @@ def build_timeline(terms: Dict[str, Any], steps: List[Dict[str, Any]],
         extra_steps, extra = additional_in_force(steps, s_start)
         if extra:
             amt = (amt or 0) + extra
+            for x in extra_steps:
+                src = (x.get('source_doc') or 'an undated document').rsplit('/', 1)[-1]
+                added_from[src] = _annual(x) or 0
         stated = s.get('rent_per_sf') if not extra else None
         psf, _ = rent_psf_for(annual_rent=amt, square_feet=square_feet, stated_psf=stated)
         if (stated and amt and square_feet
@@ -245,6 +249,13 @@ def build_timeline(terms: Dict[str, Any], steps: List[Dict[str, Any]],
         term.append({'start': _iso(s_start), 'end': _iso(s_end), 'annual_rent': amt,
                      'psf': psf, 'source': (s.get('source_doc') or '').rsplit('/', 1)[-1],
                      'basis': s.get('effective_date_basis') or 'stated'})
+    # AN ADD-ON IS NEVER SILENT. Habitat for Humanity's "Rent Reduction Request"
+    # letter was read as adding $7,297.47 a month (v541, Sep 30 2026); whether a
+    # request binds is not something a rule can tell, so the analyst is told.
+    for src, amt in added_from.items():
+        _flag(flags, 'additional_rent_added',
+              f"{amt:,.0f} a year from {src} is added on top of the base rent -- "
+              f"confirm the document binds.")
     if term and expiration and term[-1]['end'] != _iso(expiration):
         _flag(flags, 'final_period_mismatch',
               f"The last rent period ends {term[-1]['end']}, not the expiration "

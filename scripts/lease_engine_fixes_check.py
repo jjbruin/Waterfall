@@ -226,6 +226,45 @@ own = [hs(1, '2015-01-01', 1, 100000.0, '2015-01-01'), hs(2, '2020-01-01', 1, 12
 chk("a later document's OWN months at a different rent are kept",
     len(drop_restated_steps(own)) == 2)
 
+section("2d. a later document stating the whole rent ends an earlier add-on")
+from flask_app.services.lease_terms import additional_in_force  # noqa: E402
+# Mattress Firm as production stores it (v541): the 2020 amendment adds $6,125 a
+# month; the 2024 3rd Amendment restates the rent at $170,100. v541 gave $243,600.
+mf = [{'source_doc_id': 1, 'doc_date': '2020-04-01', 'effective_date': '2020-10-01',
+       'monthly_rent': 6125.0, 'is_additional': True, 'source_doc': '2020 Amend.pdf'},
+      {'source_doc_id': 2, 'doc_date': '2024-08-05', 'effective_date': '2025-03-22',
+       'annual_rent': 170100.0, 'is_additional': False},
+      {'source_doc_id': 2, 'doc_date': '2024-08-05', 'effective_date': '2027-03-22',
+       'annual_rent': 179382.0, 'is_additional': False}]
+_, extra = additional_in_force(mf, date(2026, 9, 1))
+chk("Mattress Firm: the 3rd Amendment's rent supersedes 2020's add-on", extra == 0, extra)
+tl = build_timeline({'lease_commencement': '2017-06-26', 'lease_expiration': '2035-03-21'},
+                    mf, 4200, date(2026, 9, 1))
+chk('Mattress Firm rent in force is 170,100, as new business shows',
+    (tl.get('current') or {}).get('annual_rent') == 170100.0, tl.get('current'))
+_, extra = additional_in_force(mf, date(2022, 1, 1))
+chk('the add-on still applies BEFORE the later document takes effect', extra == 73500.0, extra)
+# Marco's Pizza: the add-on's later base steps come from the EARLIER original
+# lease -- they must NOT end it.
+marco = [{'source_doc_id': 1, 'doc_date': '2015-01-01', 'effective_date': '2015-02-01',
+          'annual_rent': 60000.0, 'is_additional': False},
+         {'source_doc_id': 1, 'doc_date': '2015-01-01', 'effective_date': '2025-02-01',
+          'annual_rent': 62654.0, 'is_additional': False},
+         {'source_doc_id': 2, 'doc_date': '2019-06-01', 'effective_date': '2019-07-01',
+          'monthly_rent': 242.0, 'is_additional': True}]
+_, extra = additional_in_force(marco, date(2026, 9, 1))
+chk("Marco: an earlier document's later base step does not end the add-on",
+    extra == 2904.0, extra)
+undated = [dict(mf[0], doc_date=None)] + mf[1:]
+_, extra = additional_in_force(undated, date(2026, 9, 1))
+chk('an add-on whose document is undated is not ended by inference', extra == 73500.0, extra)
+tl = build_timeline({'lease_commencement': '2015-01-01', 'lease_expiration': '2030-01-31'},
+                    [dict(s, source_doc='Req.pdf') if s.get('is_additional') else s
+                     for s in marco], 3772, date(2026, 9, 1))
+fl = [f['message'] for f in tl['flags'] if f['code'] == 'additional_rent_added']
+chk('an add-on that IS applied is flagged, naming its document',
+    len(fl) == 1 and 'Req.pdf' in fl[0] and '2,904' in fl[0], fl)
+
 section("3b. Patton as production stores it (v539)")
 # The wording is in the schedule's period, rent_terms says something else, the
 # dates are calendar months (30 and 31 days), and the stored summary is stale.
