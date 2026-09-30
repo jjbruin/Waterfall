@@ -641,6 +641,68 @@ def main():
     chk("the switch is restored — the column is a dash again",
         a8 and a8["act_yr1_coc"] is None and a8["proj_yr1_coc"] is None)
 
+    # ── 15. the draft gate ────────────────────────────────────────────────
+    section("15. Draft gate (both ways: marked while True, ABSENT while False)")
+    chk("the report is a draft today", cfg.INVESTMENT_METRICS_DRAFT is True)
+    chk("the flag travels on the payload, so the views cannot disagree",
+        out["draft"] is True and out["draft_banner"] == cfg.DRAFT_BANNER
+        and out["draft_mark"] == cfg.DRAFT_MARK)
+    chk("the banner says what it means",
+        "DRAFT" in cfg.DRAFT_BANNER and "review" in cfg.DRAFT_BANNER.lower())
+    saved_draft = cfg.INVESTMENT_METRICS_DRAFT
+    try:
+        cfg.INVESTMENT_METRICS_DRAFT = False
+        off = build()
+        chk("turning it off clears the flag on the payload",
+            off["draft"] is False)
+        chk("...and nothing else about the report moves",
+            [r["vcode"] for r in off["current"]["rows"]]
+            == [r["vcode"] for r in out["current"]["rows"]]
+            and off["current"]["total"] == out["current"]["total"],
+            "the gate is presentation only; it must not touch a figure")
+    finally:
+        cfg.INVESTMENT_METRICS_DRAFT = saved_draft
+    chk("the flag is restored", cfg.INVESTMENT_METRICS_DRAFT is True)
+
+    # ── 16. the narrowing is EQUIVALENCE, not a shortcut ──────────────────
+    section("16. Pre-narrowing changes speed and nothing else")
+    # Padding the ISBS frames with rows this report never reads must not move
+    # a single figure — that is exactly what the narrowing throws away.
+    noise_bs = pd.DataFrame([
+        dict(vcode="p0000001", dtEntry="2019-12-31", vAccount="5999",
+             mAmount=-99_000_000.0),
+        dict(vcode="p0000001", dtEntry="2010-01-31", vAccount="1010",
+             mAmount=-88_000_000.0),
+    ])
+    noise_pe = pd.DataFrame([
+        dict(vcode="p0000001", dtEntry="2019-12-31", vSource="Interim IS",
+             vAccount="7073", mAmount=5.0),
+        dict(vcode="p0000001", dtEntry="2019-12-31", vSource="Projected IS",
+             vAccount="4010", mAmount=5.0),
+    ])
+    padded = build(
+        isbs_interim_bs=pd.concat([isbs_fixture(), noise_bs], ignore_index=True))
+    _, a_pad = row_of(padded, "P0000001")
+    chk("rows on other accounts cannot reach the first lien",
+        a_pad and abs((a_pad["first_lien"] or 0) - 13.0) < 1e-9,
+        f"got {(a_pad or {}).get('first_lien')}")
+    chk("...and an earlier row on a NON-debt account cannot re-date it",
+        abs((alt_of(a_pad, "earliest_isbs").get("value") or 0) - 12.0) < 1e-9,
+        f"got {alt_of(a_pad, 'earliest_isbs').get('value')} — 88.0 would mean "
+        "the 2010 cash row was read as debt")
+    kept = im.narrow_isbs_for_pe(noise_pe)
+    chk("the PE narrowing keeps only Projected IS 7071/7073",
+        len(kept) == 0,
+        "an Interim IS 7073 row and a Projected IS 4010 row are both excluded, "
+        "exactly as one_pager's own per-deal filter excludes them")
+    chk("narrowing a None frame returns None, not an empty frame",
+        im.narrow_isbs_for_pe(None) is None
+        and im.narrow_isbs_bs_for_lien(None) is None)
+    chk("the balance-sheet narrowing keeps the debt accounts and drops the rest",
+        len(im.narrow_isbs_bs_for_lien(
+            pd.concat([isbs_fixture(), noise_bs], ignore_index=True)))
+        == len(isbs_fixture()))
+
     print(f"\n{PASS} passed, {FAIL} failed")
     if FAILURES:
         print("failed:")

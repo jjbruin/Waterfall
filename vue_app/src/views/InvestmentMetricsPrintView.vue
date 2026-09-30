@@ -118,6 +118,19 @@ onMounted(async () => {
         class="sheet"
         :class="{ last: idx === 1 }"
       >
+        <!--
+          THE DRAFT MARK ADDS NO LAYOUT. Both pieces are absolutely positioned
+          on the sheet, outside the frame's flow, so the table's geometry is
+          bit-for-bit what it is with the flag off — which is what lets the
+          print-fidelity guardrail keep measuring the real document. The
+          watermark sits in the blank lower half the reference leaves empty,
+          and the line above the frame uses the sheet's own top margin.
+        -->
+        <template v-if="data.draft">
+          <div class="draft-line">{{ data.draft_banner }}</div>
+          <div class="draft-wm">{{ data.draft_mark }}</div>
+        </template>
+
         <div class="frame" :class="part">
           <!--
             The title block is always TWO rows of the same 4.68pt grid as the
@@ -269,6 +282,36 @@ onMounted(async () => {
   width: 0.24pt;
   background: #000;
 }
+
+/* ── the draft mark ───────────────────────────────────────────────────── */
+/* Both pieces are positioned against the SHEET, so neither is in the frame's
+   flow and neither can move a column. With the flag off they are not rendered
+   at all — not hidden, absent — so the printed document is the reference's
+   geometry exactly. */
+.draft-line {
+  position: absolute;
+  top: 6pt;
+  left: 18pt;
+  font-family: Garamond, Georgia, "Times New Roman", serif;
+  font-size: 7pt;
+  font-weight: bold;
+  letter-spacing: .06em;
+  color: #b91c1c;
+}
+.draft-wm {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 430pt;                 /* the blank lower half the reference leaves */
+  text-align: center;
+  font-family: Garamond, Georgia, "Times New Roman", serif;
+  font-size: 66pt;
+  font-weight: bold;
+  letter-spacing: .3em;
+  color: rgba(185, 28, 28, .18);
+  pointer-events: none;
+  user-select: none;
+}
 :deep(.im-grid tbody tr.gap td) { height: 4.68pt; background: none; }
 :deep(.im-grid tbody tr.total td) { font-weight: bold; }
 :deep(.im-grid .mark) { font-weight: inherit; }
@@ -307,6 +350,12 @@ onMounted(async () => {
      white. Nothing on screen shows it, because on screen the sheet is meant to
      sit on a tint. */
   :global(html), :global(body), :global(#app) { background: #fff !important; }
+  /* The draft mark must survive the trip to the printer — Chrome drops
+     colour unless asked, and a watermark printed white is no watermark. */
+  .draft-line, .draft-wm {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
   .sheet {
     page: landscape-sheet;
     box-shadow: none;

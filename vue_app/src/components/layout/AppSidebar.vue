@@ -617,8 +617,16 @@ function toggleCollapsed() {
            It is the quarterly PSC Investment Summary (Current + Sold), and it
            spans the whole portfolio rather than one deal or one investor, so
            it does not belong under Asset Management beside the per-deal
-           screens. -->
+           screens.
+
+           HIDDEN WHILE THE REPORT IS A DRAFT. The same server flag that puts
+           the DRAFT banner on the page keeps it out of the sidebar, so the
+           route is reachable by direct URL for review without anyone finding
+           it by accident. `investment_metrics_draft` comes from
+           /api/data/config; while config is still loading it is undefined and
+           the link stays hidden, which is the safe way round. -->
       <router-link
+        v-if="data.config?.investment_metrics_draft === false"
         to="/investment-metrics"
         class="nav-section-link"
         :class="{ active: route.path.startsWith('/investment-metrics') }"

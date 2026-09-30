@@ -397,17 +397,64 @@ def is_psc_side(investor_id: Any) -> bool:
     return not norm_id(investor_id).startswith("OP")
 
 
+#: Column name for the pre-normalised InvestmentID. Added once in
+#: `build_investment_metrics`; `_deal_accounting` uses it when present.
+_NORM_ID_COL = "_im_iid"
+
+
 def _deal_accounting(acct: pd.DataFrame, investment_id: str) -> pd.DataFrame:
+    """The deal's accounting rows.
+
+    Normalising the id column is O(rows) in PYTHON, and this is called eight
+    times per deal across seventy-six deals — eight million `norm_id` calls on
+    the live feed. `build_investment_metrics` normalises once up front and
+    leaves the result in `_im_iid`; this reads it when it is there and falls
+    back to normalising on the spot when a caller passes a raw frame.
+    """
     if acct is None or acct.empty or not investment_id:
         return pd.DataFrame()
+    if _NORM_ID_COL in acct.columns:
+        return acct[acct[_NORM_ID_COL] == investment_id]
     ids = acct["InvestmentID"].map(norm_id)
     return acct[ids == investment_id]
+
+
+def narrow_isbs_for_pe(isbs_raw: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
+    """The only ISBS rows `get_pe_performance` can read, selected ONCE.
+
+    THIS IS THE DIFFERENCE BETWEEN 90 SECONDS AND THREE. `_get_uw_7073_signed`
+    and `_get_uw_pe_periodic` each open with `isbs_raw.copy()` — a full copy of
+    the frame — and `get_pe_performance` calls both, once per deal. On the live
+    `isbs_raw` (797,660 rows, 325 MB) that is 152 copies of a 325 MB frame to
+    reach about five thousand rows.
+
+    The predicate here is the SAME one those functions apply per deal
+    (`vSource == 'Projected IS'` and `vAccount` in {7071, 7073}), so the rows
+    they see are unchanged — including the case where the comparison matches
+    nothing because the column's dtype is wrong, which narrows to empty here
+    and returned empty there. Equivalent, not merely similar.
+
+    `one_pager` is deliberately NOT modified: it is shared with the One Pager
+    screen and the Portfolio Snapshot, and making the copies cheaper there is a
+    change to code this report does not own.
+    """
+    if isbs_raw is None or isbs_raw.empty:
+        return isbs_raw
+    from one_pager import UW_PE_DIST_ACCT, UW_PE_ROC_ACCT
+
+    df = isbs_raw
+    if "vSource" in df.columns:
+        df = df[df["vSource"] == "Projected IS"]
+    if "vAccount" in df.columns:
+        df = df[df["vAccount"].isin([UW_PE_DIST_ACCT, UW_PE_ROC_ACCT])]
+    return df.copy()
 
 
 def pref_and_first_loss(
     ident: DealIdentity,
     acct: pd.DataFrame,
     commitments: Optional[pd.DataFrame],
+    sources: Optional[List[Tuple[str, Optional[float], Optional[float]]]] = None,
 ) -> Tuple[Optional[float], Optional[float], str]:
     """PSC Pref. Equity and First-Loss Equity, in dollars, plus the basis used.
 
@@ -423,7 +470,8 @@ def pref_and_first_loss(
     deal part-way through its draw shows less than it has committed. That is
     why the basis is returned rather than assumed.
     """
-    levels = capitalization_sources(ident, acct, commitments)
+    levels = (sources if sources is not None
+              else capitalization_sources(ident, acct, commitments))
 
     pref = floss = None
     pref_basis = floss_basis = "unavailable"
@@ -475,7 +523,10 @@ def capitalization_sources(
         return (p or None), (o or None)
 
     if commitments is not None and not commitments.empty and "EntityID" in commitments.columns:
-        m = commitments[commitments["EntityID"].map(norm_id) == iid]
+        # Pre-normalised once by `build_investment_metrics` where possible.
+        key = (_NORM_ID_COL if _NORM_ID_COL in commitments.columns else None)
+        m = (commitments[commitments[key] == iid] if key
+             else commitments[commitments["EntityID"].map(norm_id) == iid])
         out.append(("commitments (IA_Commitment)",) + split(m, "Amount"))
     else:
         out.append(("commitments (IA_Commitment)", None, None))
@@ -617,6 +668,30 @@ def _debt_accounts() -> set:
     return {str(a).strip() for a in DEBT_BS_ACCTS}
 
 
+def narrow_isbs_bs_for_lien(isbs: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
+    """The balance-sheet debt rows, selected and normalised ONCE.
+
+    THIS WAS 53 OF 64 SECONDS. `_earliest_isbs_debt` normalised the whole
+    `vcode` column with a Python `map` on every call — and it is called for the
+    default basis and again for each alternate, ninety-two times over 233,072
+    rows: **21.6 million `norm_id` calls**, more than four fifths of the build.
+    Nothing about the result changed between calls.
+
+    So the account filter and the id normalisation happen here, once, and the
+    per-deal path becomes a column comparison. The rows selected are identical
+    — same account set, same `norm_id` — it is only the repetition that goes.
+    """
+    if isbs is None or isbs.empty:
+        return isbs
+    vcol = next((c for c in ("vcode", "vCode") if c in isbs.columns), None)
+    acol = next((c for c in ("vAccount", "vaccount") if c in isbs.columns), None)
+    if not (vcol and acol):
+        return isbs
+    accts = _debt_accounts()
+    m = isbs[isbs[acol].astype(str).str.strip().str.split(".").str[0].isin(accts)]
+    return m.assign(**{_NORM_ID_COL: m[vcol].map(norm_id)})
+
+
 def _earliest_isbs_debt(isbs: Optional[pd.DataFrame], want: set) -> Tuple[Optional[float], str]:
     if isbs is None or isbs.empty:
         return None, "no ISBS data"
@@ -627,13 +702,18 @@ def _earliest_isbs_debt(isbs: Optional[pd.DataFrame], want: set) -> Tuple[Option
     mcol = next((c for c in ("mAmount", "mamount") if c in df.columns), None)
     if not all((vcol, acol, dcol, mcol)):
         return None, "ISBS columns missing"
-    m = df[df[vcol].map(norm_id).isin(want)]
+    # `narrow_isbs_bs_for_lien` has usually done the account filter and the id
+    # normalisation once, for the whole frame. Fall back to doing it here when
+    # a caller passes a raw frame, so the function stands alone.
+    pre = _NORM_ID_COL in df.columns
+    m = df[df[_NORM_ID_COL].isin(want)] if pre else df[df[vcol].map(norm_id).isin(want)]
     if m.empty:
         return None, "no ISBS rows for this deal"
-    accts = _debt_accounts()
-    m = m[m[acol].astype(str).str.strip().str.split(".").str[0].isin(accts)]
-    if m.empty:
-        return None, "no debt accounts on this deal's balance sheet"
+    if not pre:
+        accts = _debt_accounts()
+        m = m[m[acol].astype(str).str.strip().str.split(".").str[0].isin(accts)]
+        if m.empty:
+            return None, "no debt accounts on this deal's balance sheet"
     when = pd.to_datetime(m[dcol], errors="coerce", format="mixed")
     m = m.assign(_when=when).dropna(subset=["_when"])
     if m.empty:
@@ -811,6 +891,21 @@ def build_investment_metrics(
 ) -> Dict[str, Any]:
     """Assemble the Current and Sold tables, their totals and the grand total."""
     as_of = as_of or latest_quarter_end(today)
+
+    # ── done ONCE, not once per deal ──────────────────────────────────────
+    # Both of these are pure narrowing: the rows every consumer below sees are
+    # the rows it would have selected for itself. Measured on frames at live
+    # row counts, they take the build from ~90s to a few seconds.
+    if acct is not None and not acct.empty and _NORM_ID_COL not in acct.columns:
+        acct = acct.assign(**{_NORM_ID_COL: acct["InvestmentID"].map(norm_id)})
+    isbs_pe = narrow_isbs_for_pe(isbs_raw)
+    isbs_interim_bs = narrow_isbs_bs_for_lien(isbs_interim_bs)
+    if (commitments is not None and not commitments.empty
+            and "EntityID" in commitments.columns
+            and _NORM_ID_COL not in commitments.columns):
+        commitments = commitments.assign(
+            **{_NORM_ID_COL: commitments["EntityID"].map(norm_id)})
+
     identities, diag = resolve_deal_identities(inv)
     # Every downstream engine reads the RESOLVED frame, not the raw one — see
     # resolved_inv_frame for why a twin is invisible to the PE engine otherwise.
@@ -834,7 +929,7 @@ def build_investment_metrics(
         table = classify(ident, as_of)
         rows_by_table[table].append(
             _build_row(ident, table, as_of, acct, commitments, dt_index,
-                       loans, isbs_interim_bs, inv_resolved, isbs_raw,
+                       loans, isbs_interim_bs, inv_resolved, isbs_pe,
                        waterfalls, diag)
         )
 
@@ -846,6 +941,12 @@ def build_investment_metrics(
         "units_note": cfg.UNITS_NOTE,
         "disclaimer": cfg.DISCLAIMER,
         "page": cfg.PAGE,
+        # The draft gate travels ON THE PAYLOAD rather than being read again
+        # client-side, so the screen, the printed sheet and the sidebar cannot
+        # disagree about whether this report is signed off.
+        "draft": bool(cfg.INVESTMENT_METRICS_DRAFT),
+        "draft_banner": cfg.DRAFT_BANNER,
+        "draft_mark": cfg.DRAFT_MARK,
         "diagnostics": diag,
     }
 
@@ -1008,9 +1109,13 @@ def _build_row(ident, table, as_of, acct, commitments, dt_index, loans,
     except Exception:
         children = []
 
-    pref_usd, floss_usd, cap_basis = pref_and_first_loss(ident, acct, commitments)
-    lien_usd, lien_basis = first_lien(ident, loans, isbs_interim_bs, children)
+    # Computed ONCE and shared: `pref_and_first_loss` consumes this list and
+    # the row publishes it, and building it twice per deal was measurably the
+    # third-largest cost in the profile.
     cap_alts = capitalization_sources(ident, acct, commitments)
+    pref_usd, floss_usd, cap_basis = pref_and_first_loss(
+        ident, acct, commitments, sources=cap_alts)
+    lien_usd, lien_basis = first_lien(ident, loans, isbs_interim_bs, children)
 
     fx = cfg.CAD_TO_USD if norm_id(ident.currency) == "CAD" else 1.0
     to_m = lambda v: None if v is None else (v * fx) / MILLION  # noqa: E731
@@ -1202,13 +1307,22 @@ def _coc_since_close(ident, as_of, acct, waterfalls, inv, isbs_raw):
     ONE ENGINE. ``get_pe_performance`` is what the One Pager renders as ROE to
     Date and U/W ROE to Date; calling it here means the two screens cannot show
     different numbers for the same deal, which is the whole point of the rule.
+
+    IT IS HANDED ONLY THIS DEAL'S ACCOUNTING ROWS, and that is equivalence
+    rather than a shortcut: the engine's first act is to derive
+    ``deal_investment_ids`` from the frame it was given and filter the feed to
+    ``isin(deal_investment_ids)``, twice — once for the period and once for the
+    45-day grace window. Pre-filtering to the same InvestmentID makes that
+    filter a no-op. What it avoids is the engine's ``acct.copy()`` and its
+    ``to_datetime`` over the WHOLE 13,000-row feed, once per deal.
     """
     from one_pager import get_pe_performance
 
     quarter = f"{as_of.year}-Q{(as_of.month - 1) // 3 + 1}"
+    deal_acct = _deal_accounting(acct, ident.investment_id)
     try:
         pe = get_pe_performance(
-            ident.vcode, quarter, acct, waterfalls, inv,
+            ident.vcode, quarter, deal_acct, waterfalls, inv,
             isbs_raw=isbs_raw, deal_terms=None,
         )
     except Exception:

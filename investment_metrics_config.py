@@ -34,6 +34,29 @@ edited and differ from MRI's (``Airport Village`` for ``Airport Plaza``,
 the first time either side is retyped.
 """
 
+# ── draft gate ────────────────────────────────────────────────────────────
+#: THE REPORT IS NOT SIGNED OFF. While this is True the screen and the printed
+#: sheet both carry a DRAFT mark, and the sidebar does NOT link to it — the
+#: route stays reachable by direct URL so it can be reviewed, without anybody
+#: finding it by accident and mailing a page of figures that are still being
+#: argued about.
+#:
+#: THE MARK PRINTS. A banner that vanishes on the way to the printer is worse
+#: than no banner: the screen says "draft" and the PDF that gets forwarded says
+#: nothing. Both carry it, and both stop carrying it together.
+#:
+#: One flag drives all three. It is published on `/api/data/config` as
+#: `investment_metrics_draft` so the sidebar reads the same switch the report
+#: does, and on the report payload as `draft` so the two views do.
+#:
+#: TODO: set to False once the mismatch table has been worked through — at
+#: that point the sidebar link returns and the print sheet is clean.
+INVESTMENT_METRICS_DRAFT = True
+
+DRAFT_BANNER = "DRAFT - figures under review"
+DRAFT_MARK = "DRAFT"
+
+
 # ── currency ──────────────────────────────────────────────────────────────
 #: CAD -> USD. The reference's footnote (2) states 0.73; the workbook behind it
 #: computed at 0.695 (``Investment Metrics``!W3). They disagree, and the

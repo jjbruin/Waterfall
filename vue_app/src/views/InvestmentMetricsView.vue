@@ -93,6 +93,14 @@ watch(asOf, (v, old) => { if (old !== '' && v !== old) load() })
       </button>
     </div>
 
+    <!--
+      NOT `.no-print`. A banner that disappears on the way to the printer is
+      worse than none at all: the screen would say "draft" and the PDF someone
+      forwards would say nothing. It prints, and it stops printing only when
+      the server flag is turned off.
+    -->
+    <div v-if="data?.draft" class="draft-banner">{{ data.draft_banner }}</div>
+
     <div v-if="loading" class="msg">Loading…</div>
     <div v-else-if="loadError" class="msg err">
       This report could not be loaded: {{ loadError }}
@@ -183,6 +191,30 @@ watch(asOf, (v, old) => { if (old !== '' && v !== old) load() })
 .btn:disabled { opacity: .5; cursor: default; }
 .msg { padding: 20px 4px; font-size: 14px; }
 .msg.err { color: #b91c1c; }
+
+.draft-banner {
+  background: #fef3c7;
+  border: 1px solid #d97706;
+  color: #7c2d12;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-align: center;
+  padding: 7px 12px;
+  border-radius: 4px;
+  margin-bottom: 12px;
+}
+@media print {
+  /* Deliberately still visible. Forcing the colours through is the point:
+     Chrome drops backgrounds when printing unless asked, and a beige banner
+     that prints as white text on white paper is the same as no banner. */
+  .draft-banner {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    border: 1.5pt solid #000;
+    color: #000;
+    background: #fde68a;
+  }
+}
 
 .diagnostics {
   background: #f8fafc;
