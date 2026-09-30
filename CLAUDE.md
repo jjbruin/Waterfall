@@ -255,6 +255,37 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v542` = `992de9d` (RENT ADD-ONS: a later document stating the whole rent
+    ends an earlier add-on -- Mattress Firm $243,600 -> $170,100, their exhibit's
+    figure -- and every add-on applied is flagged with its document. Acceptance
+    vs new business's exhibit: current rent 29/32, expiration 28, options 26,
+    subordinate rows 18; total $3,203,508 vs their $3,112,833, the gap now mostly
+    Habitat's "Rent Reduction Request" letter (flagged, an analyst's call).
+    Build `camg`. Span `35ed8c6..992de9d` is this one commit.)
+  - `v541` = `35ed8c6` (FIXES A REGRESSION v539 INTRODUCED, found only by
+    re-running the acceptance comparison -- every guardrail was green. Current
+    rent had fallen 30 -> 26 of 32 and the total risen $231k. Re-anchoring an
+    original lease's months now happens only when the schedule PROVES the lease
+    commencement (Habitat had shifted six months on a guess); an amendment that
+    QUOTES the original's month-of-term schedule no longer counts it from its own
+    date (Hobby Lobby, which the old tenant-wide dedup had hidden by accident).
+    Build `camf`. RUN THE ACCEPTANCE COMPARISON AFTER EVERY LEASE-ENGINE DEPLOY.)
+  - `v540` = `4283d8b` (Patton's option term travels with its rent schedule and
+    the options summary is computed, not read back from consolidation --
+    "6 x 30-Day Rolling", one row, verified on production. v539 had not fixed it:
+    the fixture put the wording where I expected, not where production stores
+    it. Build `came`.)
+  - `v539` = `a767df5` (CHARLENE'S PR #5 + THE THREE ACCEPTANCE FIXES. P2 listed
+    her four commits and three merges; reviewed, not a symptom repair -- the
+    background freeze with each deal built once, quarter-level unfreeze, reaping,
+    the frozen store protected. FREEZE_ENABLED STAYS OFF and the gate is still in
+    `freeze_part`. Behaviour change: freezing FROM THE PUBLISHED PDFs is removed
+    (26Q3 onward, live data only). Nit: the job table's heartbeat ALTER is tried
+    once per process and its error swallowed rather than checked in
+    information_schema first. Her 8 guardrails green. Ours: stale-settlement
+    flag, rent steps replaced per document (rebuilt on production: Poplar
+    241 -> 180, Windsor 673 -> 509, idempotent), Little Petals' option now
+    2031-03-01. Build `camd`.)
   - `v538` = `ccd47bc` (STEPS 4 + 5 of the rent-roll plan: analyst settlement of the
     timeline, the Rent Roll tab, and the IC exhibit. BUILT FROM `ccd47bc`, NOT
     MAIN'S TIP: origin had Charlene's PR #5 (freeze background/unfreeze, ~2.7k

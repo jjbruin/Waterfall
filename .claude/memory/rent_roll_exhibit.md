@@ -189,3 +189,58 @@ The differences, by kind:
   (Little Petals) -- clip option periods to the option.
 - 30-day rolling options (Patton): term unit unsupported; their exhibit collapses
   six 30-day options into one row.
+
+## The three acceptance fixes, and the regression they caused (v539-v541, Sep 30 2026)
+
+Built from the v538 findings: the stale-settlement flag, rent steps replaced
+per document, month-of-term re-anchoring to the commencement letter, and
+30-day rolling options.
+
+- **v539** shipped all three with Charlene's PR #5. The rebuild on production
+  took rent steps from 241 to 180 (Poplar) and 673 to 509 (Windsor), idempotent.
+  Little Petals' option began 2031-03-01 as their exhibit shows. **Patton was
+  NOT fixed**: its "Thirty (30) day option" wording sits in each option's
+  `rent_schedule` period, the timeline's copy of an option dropped the schedule,
+  and the summary shown was the one STORED at consolidation. The first fixture
+  put the wording in `rent_terms` and passed -- a fixture in the shape I
+  expected, not the shape production stores.
+- **v540** fixed Patton. **The acceptance re-run then showed a regression**:
+  current rent 30 -> 26 of 32, total +$231k. Two causes, both mine:
+  - **Re-anchoring guessed.** Unconfirmed, it fell back to rent commencement;
+    Habitat (rent from month 1, rent commencement six months late) shifted six
+    months. Now evidence-only: the anchor moves when counting from the lease
+    commencement lands the first paying month on the rent commencement, and
+    otherwise nothing moves.
+  - **Replacing each document's steps exposed QUOTED schedules.** Hobby Lobby's
+    2nd/3rd Amendments restate the original "months 1 / 61"; counted from each
+    amendment's date, month 61 outranked the amendment's own $435,582. The old
+    tenant-wide dedup had been hiding this by accident. `drop_restated_steps`
+    keeps months with the document that first stated them.
+- **v541** carries both. RUN THE ACCEPTANCE COMPARISON AFTER EVERY ENGINE
+  DEPLOY -- the guardrails were green at v540 and the regression was only
+  visible against new business's own exhibit.
+- **v542** ends an add-on when a LATER document states the whole rent (Mattress
+  Firm's 2020 +$6,125/mo under its 2024 restated $170,100), keeping Marco's rule
+  that the original lease's own later steps do not end one. Every add-on applied
+  is flagged (`additional_rent_added`) with its document.
+
+Acceptance, Market at Poplar, 32 of 33 paired:
+
+| | v538 | v540 | v541 | v542 |
+|---|---|---|---|---|
+| Current rent | 30 | 26 | 28 | **29** |
+| Annual PSF | 28 | 24 | 26 | **27** |
+| Expiration | 27 | 27 | 28 | **28** |
+| Option(s) | 25 | 26 | 26 | **26** |
+| Subordinate rows | 17 | 16 | 17 | **18** |
+| Total rent (theirs 3,112,833) | 3,125,144 | 3,356,526 | 3,277,008 | **3,203,508** |
+
+The three current-rent differences left at v542:
+- **Habitat** $606,501 vs $518,931 -- a 2025 "Rent Reduction REQUEST" letter
+  read as adding $87,570/yr. Flagged; an analyst decides whether it binds.
+- **Martway** -- the rent roll's own figure moved $56,383 -> $47,177; not this
+  work, and Martway is the one tenant unpaired with their exhibit.
+- The third is the pre-existing difference from v538.
+Stale-settlement flags now showing: A Perfect Bloom, Hobby Lobby, Muddy Paws.
+Mattress Firm's old 2027-09-30 settlement is no longer applied (documents give
+2035-03-21).
