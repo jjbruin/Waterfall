@@ -243,6 +243,60 @@ LEASE_UP_DEALS = {
     "P0000066",   # Life Storage Staten Island
 }
 
+# ── figures that do not exist in the app yet ──────────────────────────────
+# THREE COLUMNS HAVE NO SOURCE THE APP CAN READ, and each is here rather than
+# hard-coded to None in the engine so that switching one on is a one-line
+# change in one file.
+#
+#   `mode`     what the report PRINTS:
+#                "mri"       read `field` off the deal's row; em dash while
+#                            that column does not exist or is NULL
+#                "computed"  print the figure the engine derives
+#                "none"      always an em dash; the derived figure is kept in
+#                            the row's `alternates` and in diagnostics, never
+#                            rendered
+#   `table`    where `field` is expected to land
+#   `field`    the column name. **None until Alay loads it.**
+#   `variant`  for a computed figure with more than one defined form
+#
+# TODO(alay): set `field` for each of the three below once the values are
+# loaded into MRI, and move `mode` to "mri". Nothing else has to change — the
+# engine reads this dict, the footnote (5)/(6) substitution reads the resulting
+# `proj_yr1_coc`, and the pref-weighted averages skip whatever is still None.
+#
+# WHY act_yr1_coc PRINTS NOTHING TODAY even though the engine can derive it:
+# the reference's figures in that column are not reproducible from the
+# accounting feed under any window (see `act_year_one_coc`), so publishing a
+# derived number under the same heading would invite it to be read as the same
+# quantity. It is computed, kept, and not shown.
+UNLOADED_FIGURES = {
+    "uw_irr": {
+        "mode": "none",
+        "table": "deal_terms",
+        "field": None,                       # TODO(alay): e.g. "uw_projected_irr"
+        "label": "UW Proj. IRR",
+        "note": "underwritten projected IRR is not held anywhere in MRI",
+    },
+    "proj_yr1_coc": {
+        "mode": "none",
+        "table": "deal_terms",
+        "field": None,                       # TODO(alay): e.g. "proj_yr1_coc"
+        "label": "Proj Yr-1 CoC Returns",
+        "note": "projected year-1 cash-on-cash is not held anywhere in MRI; "
+                "footnotes (5) and (6) cannot substitute without it",
+    },
+    "act_yr1_coc": {
+        "mode": "none",
+        "table": "deal_terms",
+        "field": None,                       # TODO(alay): if actuals are loaded
+        "variant": "funded",                 # "funded" | "commitment"
+        "label": "Act. Yr-1 CoC Returns",
+        "note": "the derived figure is a different quantity from the "
+                "reference's — kept in alternates, not rendered",
+    },
+}
+
+
 # ── proceeds ──────────────────────────────────────────────────────────────
 #: ``SubtypeUID`` values that make up Proceeds to Date on a CURRENT deal, taken
 #: from the reference workbook's own formula (``Investment Metrics``!V):

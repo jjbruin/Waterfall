@@ -649,10 +649,14 @@ def act_year_one_coc(
 
     DENOMINATOR: funded-to-date, per the agreed data rules. **The reference
     workbook divides by the PSC Pref. Equity COMMITMENT instead**, and the two
-    differ on any deal not fully drawn. Both are returned by
-    ``build_investment_metrics`` (``act_yr1_coc`` and
-    ``act_yr1_coc_on_commitment``) so the difference is measurable rather than
-    argued about.
+    differ on any deal not fully drawn. Both are carried on every row under
+    ``alternates.act_yr1_coc`` (``on_funded`` and ``on_commitment``), so the
+    difference stays measurable rather than argued about.
+
+    **NEITHER IS RENDERED TODAY.** ``cfg.UNLOADED_FIGURES['act_yr1_coc']`` is
+    in ``"none"`` mode, so the column prints an em dash and what this function
+    returns only reaches diagnostics. Flipping that one switch to ``computed``
+    publishes it; flipping it to ``mri`` reads an MRI field instead.
 
     **THE REFERENCE'S FIGURES IN THIS COLUMN ARE NOT DERIVED, AND NO WINDOW
     REPRODUCES THEM.** The workbook carries this formula on exactly ONE of its
@@ -834,6 +838,51 @@ def build_investment_metrics(
     return out
 
 
+def resolve_unloaded(key: str, terms: dict, computed: Dict[str, Optional[float]],
+                     diag: dict, vcode: str) -> Tuple[Optional[float], str]:
+    """What to PRINT for a column whose source Alay has not loaded yet.
+
+    One switch, in one place (``cfg.UNLOADED_FIGURES``). Three columns go
+    through here and none of them decides for itself, so turning one on when
+    the data arrives is a config edit rather than a hunt through the engine.
+
+    Returns ``(value, basis)``. ``value`` is None whenever the source is
+    absent — never 0.0, which would print as a real zero return.
+
+    A ``field`` that is named but missing from the table is reported rather
+    than treated as NULL: "Alay has not loaded it" and "the column name in the
+    config is wrong" are different problems and only one of them is waiting on
+    somebody else.
+    """
+    spec = cfg.UNLOADED_FIGURES.get(key)
+    if spec is None:
+        return computed.get("default"), "computed"
+
+    mode = spec.get("mode", "none")
+    if mode == "computed":
+        variant = spec.get("variant", "default")
+        return computed.get(variant), f"computed ({variant})"
+
+    if mode == "mri":
+        field = spec.get("field")
+        if not field:
+            diag.setdefault("unloaded_figure_misconfigured", []).append(
+                {"column": key, "reason": "mode is 'mri' but no field is named"})
+            return None, "no MRI field named"
+        if field not in terms:
+            diag.setdefault("unloaded_figure_field_absent", []).append(
+                {"column": key, "table": spec.get("table"), "field": field,
+                 "vcode": vcode})
+            return None, f"{spec.get('table')}.{field} is not present"
+        return _as_rate(terms.get(field)), f"{spec.get('table')}.{field}"
+
+    # mode == "none" — pending, and deliberately not rendered.
+    diag.setdefault("unloaded_figures_pending", {}).setdefault(
+        key, {"label": spec.get("label"), "note": spec.get("note"),
+              "deals": 0})["deals"] += 1
+    return None, f"pending Alay — {spec.get('note')}"
+
+
 #: Footnote (5): under a year of operating history, so the Act. Yr-1 CoC
 #: column shows the PROJECTED year-1 figure instead.
 #: Footnote (6): under a quarter, so ALL FOUR CoC columns do.
@@ -950,6 +999,19 @@ def _build_row(ident, table, as_of, acct, commitments, dt_index, loans,
     labels = (cfg.CELL_LABELS_CURRENT if table == CURRENT
               else cfg.CELL_LABELS_SOLD).get(ident.vcode, {})
 
+    # The three columns with no source in the app go through ONE switch. The
+    # derived Year-1 figures are computed either way and kept below in
+    # `alternates`, so turning the column on later needs no new arithmetic.
+    uw_irr_v, uw_irr_basis = resolve_unloaded(
+        "uw_irr", terms, {}, diag, ident.vcode)
+    proj_yr1_v, proj_yr1_basis = resolve_unloaded(
+        "proj_yr1_coc", terms, {}, diag, ident.vcode)
+    act_yr1_v, act_yr1_mode = resolve_unloaded(
+        "act_yr1_coc", terms,
+        {"funded": act_yr1, "commitment": act_yr1_on_commit,
+         "default": act_yr1},
+        diag, ident.vcode)
+
     row = {
         "vcode": ident.vcode,
         "investment_id": ident.investment_id,
@@ -967,14 +1029,12 @@ def _build_row(ident, table, as_of, acct, commitments, dt_index, loans,
         "pref_pct": pct(pref),
         "first_loss": first_loss,
         "first_loss_pct": pct(first_loss),
-        # UW Proj. IRR is not in MRI. None, never 0 — a zero would print as a
-        # real 0.0% return. Pending Alay.
-        "uw_irr": None,
+        # These three come from `cfg.UNLOADED_FIGURES`, not from the engine's
+        # own opinion. None, never 0 — a zero would print as a real 0.0%.
+        "uw_irr": uw_irr_v,
         "proceeds": proceeds,
-        # Projected Year-1 CoC is likewise not loaded. Pending Alay.
-        "proj_yr1_coc": None,
-        "act_yr1_coc": act_yr1,
-        "act_yr1_coc_on_commitment": act_yr1_on_commit,
+        "proj_yr1_coc": proj_yr1_v,
+        "act_yr1_coc": act_yr1_v,
         "proj_coc_since_close": uw_roe,
         "act_coc_since_close": roe,
         "pref_coupon": _as_rate(terms.get("pe_coupon")),
@@ -989,13 +1049,28 @@ def _build_row(ident, table, as_of, acct, commitments, dt_index, loans,
         "basis": {
             "capitalization": cap_basis,
             "first_lien": lien_basis,
-            "act_yr1_coc": yr1_basis,
+            "act_yr1_coc": act_yr1_mode,
+            "uw_irr": uw_irr_basis,
+            "proj_yr1_coc": proj_yr1_basis,
             "fx": (f"CAD converted at {cfg.CAD_TO_USD}" if fx != 1.0 else "USD"),
         },
         # What the sources this report did NOT use would have said. Published,
         # not discarded: the first-lien and capitalization rules were chosen
         # ahead of the data, and these are what make the choice reviewable.
         "alternates": {
+            # THE YEAR-1 FIGURES ARE COMPUTED AND KEPT, NOT SHOWN. The column
+            # prints an em dash (see cfg.UNLOADED_FIGURES) because the
+            # reference's figures in it are not reproducible from the feed
+            # under any window, so a derived number under the same heading
+            # would be read as the same quantity. Both defined denominators
+            # are here so the question stays measurable: `funded` is the
+            # agreed data rule, `commitment` is what the reference workbook
+            # divides by.
+            "act_yr1_coc": {
+                "on_funded": act_yr1,
+                "on_commitment": act_yr1_on_commit,
+                "basis": yr1_basis,
+            },
             "first_lien": {"value": to_m(lien_alt["value"]),
                            "basis": lien_alt["basis"]},
             "capitalization": [

@@ -307,6 +307,8 @@ def main():
     chk("UW projected IRR is None, not 0.0 — it is not in MRI",
         alpha and alpha["uw_irr"] is None)
     chk("projected Year-1 CoC is None, not 0.0", alpha and alpha["proj_yr1_coc"] is None)
+    chk("actual Year-1 CoC is None too — held behind the config switch",
+        alpha and alpha["act_yr1_coc"] is None)
     no_lien = build(isbs_interim_bs=pd.DataFrame(), loans=pd.DataFrame())
     _, a2 = row_of(no_lien, "P0000001")
     chk("an unknown first lien makes the TOTAL unknown too",
@@ -323,11 +325,14 @@ def main():
         f"got {alpha['proceeds']} (0.2+0.2+0.999+0.05)")
     chk("the operating partner's distributions are excluded",
         alpha and alpha["proceeds"] < 1.5)
+    alt = (alpha or {}).get("alternates", {}).get("act_yr1_coc", {})
     chk("year-one CoC counts only the first 365 days",
-        alpha and abs(alpha["act_yr1_coc"] - 0.4 / 5.0) < 1e-9,
-        f"got {alpha['act_yr1_coc']} — 1.399/5 would mean the window is open")
+        abs((alt.get("on_funded") or 0) - 0.4 / 5.0) < 1e-9,
+        f"got {alt.get('on_funded')} — 1.399/5 would mean the window is open")
     chk("the window's dates are reported, not just the ratio",
-        alpha and "365 days from 2019-03-01" in alpha["basis"]["act_yr1_coc"])
+        "365 days from 2019-03-01" in (alt.get("basis") or ""))
+    chk("both denominators are carried, so the difference stays measurable",
+        "on_funded" in alt and "on_commitment" in alt)
     _, mcxr = row_of(out, "P0000006")
     chk("a sold deal's proceeds are EVERY distribution",
         mcxr and abs(mcxr["proceeds"] - 5.2) < 1e-9)
@@ -483,6 +488,88 @@ def main():
     im._apply_young_deal_substitution(r0, {})
     chk("an UNMARKED deal is untouched",
         abs(r0["act_yr1_coc"] - 0.01) < 1e-12)
+
+    # ── 14. the one switch for the figures Alay has not loaded ────────────
+    section("14. cfg.UNLOADED_FIGURES — one switch, all three modes")
+    chk("all three columns are declared in one place",
+        set(cfg.UNLOADED_FIGURES) == {"uw_irr", "proj_yr1_coc", "act_yr1_coc"})
+    chk("every one is pending today, so every one prints a dash",
+        all(s["mode"] == "none" for s in cfg.UNLOADED_FIGURES.values()))
+    chk("no field name is filled in yet — the TODO is still open",
+        all(s["field"] is None for s in cfg.UNLOADED_FIGURES.values()))
+    chk("each one says WHY it is pending, on the row's basis",
+        alpha and "pending Alay" in alpha["basis"]["uw_irr"]
+        and "pending Alay" in alpha["basis"]["proj_yr1_coc"])
+    # Indexed defensively. A missing key here is a real failure, and it must
+    # FAIL rather than raise: a KeyError kills the run and takes every later
+    # check with it, so the one defect it detects hides a dozen others.
+    pending = out["diagnostics"].get("unloaded_figures_pending", {})
+    chk("...and the count of affected deals is reported, not just per row",
+        pending.get("uw_irr", {}).get("deals") == 4,
+        f"got {pending.get('uw_irr')}")
+
+    saved = {k: dict(v) for k, v in cfg.UNLOADED_FIGURES.items()}
+    try:
+        # mode "computed" — publish the derived figure
+        cfg.UNLOADED_FIGURES["act_yr1_coc"]["mode"] = "computed"
+        flipped = build()
+        _, a3 = row_of(flipped, "P0000001")
+        chk("flipping act_yr1_coc to 'computed' RENDERS the derived figure",
+            a3 and abs(a3["act_yr1_coc"] - 0.4 / 5.0) < 1e-9,
+            f"got {a3['act_yr1_coc'] if a3 else None}")
+        cfg.UNLOADED_FIGURES["act_yr1_coc"]["variant"] = "commitment"
+        flipped2 = build()
+        _, a4 = row_of(flipped2, "P0000001")
+        chk("...and the variant chooses the denominator",
+            a4 and a4["act_yr1_coc"] is not None)
+
+        # mode "mri" with no field named — refused and reported, not silent
+        cfg.UNLOADED_FIGURES["act_yr1_coc"]["mode"] = "mri"
+        bad = build()
+        _, a5 = row_of(bad, "P0000001")
+        chk("mode 'mri' with no field named prints a dash AND is reported",
+            a5 and a5["act_yr1_coc"] is None
+            and bad["diagnostics"].get("unloaded_figure_misconfigured"))
+
+        # mode "mri" naming a column that does not exist — a DIFFERENT problem
+        cfg.UNLOADED_FIGURES["act_yr1_coc"]["field"] = "not_a_column"
+        absent = build()
+        chk("a named field that is absent is reported separately from 'pending'",
+            absent["diagnostics"].get("unloaded_figure_field_absent"),
+            "'Alay has not loaded it' and 'the config names the wrong column' "
+            "are different problems")
+
+        # mode "mri" reading a real column
+        cfg.UNLOADED_FIGURES["act_yr1_coc"]["field"] = "pe_coupon"
+        live = build()
+        _, a6 = row_of(live, "P0000001")
+        chk("mode 'mri' reads the named field off deal_terms",
+            a6 and abs(a6["act_yr1_coc"] - 0.085) < 1e-12,
+            f"got {a6['act_yr1_coc'] if a6 else None}")
+        chk("...and says which column it came from",
+            a6 and a6["basis"]["act_yr1_coc"] == "deal_terms.pe_coupon")
+
+        # THE FOOTNOTE SUBSTITUTION ACTIVATES BY ITSELF once the projected
+        # figure exists — no second switch to remember.
+        cfg.UNLOADED_FIGURES["proj_yr1_coc"]["mode"] = "mri"
+        cfg.UNLOADED_FIGURES["proj_yr1_coc"]["field"] = "pe_coupon"
+        cfg.ROW_MARKERS_CURRENT["P0000001"] = [5]
+        act = build()
+        _, a7 = row_of(act, "P0000001")
+        chk("footnote (5) substitutes automatically once projected Yr-1 exists",
+            a7 and abs(a7["act_yr1_coc"] - 0.085) < 1e-12
+            and "footnote (5)" in a7["basis"]["act_yr1_coc"],
+            f"got {a7['act_yr1_coc'] if a7 else None} "
+            f"basis {a7['basis']['act_yr1_coc'] if a7 else None}")
+    finally:
+        cfg.ROW_MARKERS_CURRENT.pop("P0000001", None)
+        for k, v in saved.items():
+            cfg.UNLOADED_FIGURES[k].clear()
+            cfg.UNLOADED_FIGURES[k].update(v)
+    back = build()
+    _, a8 = row_of(back, "P0000001")
+    chk("the switch is restored — the column is a dash again",
+        a8 and a8["act_yr1_coc"] is None and a8["proj_yr1_coc"] is None)
 
     print(f"\n{PASS} passed, {FAIL} failed")
     if FAILURES:
