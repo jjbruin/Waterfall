@@ -49,9 +49,17 @@ the first time either side is retyped.
 #: `investment_metrics_draft` so the sidebar reads the same switch the report
 #: does, and on the report payload as `draft` so the two views do.
 #:
-#: TODO: set to False once the mismatch table has been worked through — at
-#: that point the sidebar link returns and the print sheet is clean.
-INVESTMENT_METRICS_DRAFT = True
+#: SWITCHED OFF Sep 30 2026 on Jim's instruction: the banner, the printed
+#: DRAFT line and the watermark are gone, and the sidebar links to the report
+#: under Asset Management.
+#:
+#: WHAT THIS DOES NOT MEAN. It is a presentation gate and nothing else — no
+#: figure, label, footnote or layout changes with it, which the guardrail
+#: asserts in both directions. The open items it was raised over are still
+#: open: `UNLOADED_FIGURES` still holds all three Yr-1 / UW IRR columns in
+#: "none" mode against an Alay TODO, and the first-lien column still
+#: reproduces the reference on only 42 of 76 deals.
+INVESTMENT_METRICS_DRAFT = False
 
 DRAFT_BANNER = "DRAFT - figures under review"
 DRAFT_MARK = "DRAFT"

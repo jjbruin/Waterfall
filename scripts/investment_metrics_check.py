@@ -642,27 +642,29 @@ def main():
         a8 and a8["act_yr1_coc"] is None and a8["proj_yr1_coc"] is None)
 
     # ── 15. the draft gate ────────────────────────────────────────────────
-    section("15. Draft gate (both ways: marked while True, ABSENT while False)")
-    chk("the report is a draft today", cfg.INVESTMENT_METRICS_DRAFT is True)
+    section("15. Draft gate (both ways: ABSENT while False, marked while True)")
+    chk("the report is NO LONGER a draft — the gate is off",
+        cfg.INVESTMENT_METRICS_DRAFT is False)
     chk("the flag travels on the payload, so the views cannot disagree",
-        out["draft"] is True and out["draft_banner"] == cfg.DRAFT_BANNER
+        out["draft"] is False)
+    chk("the wording survives the switch, so turning it back on needs no edit",
+        "DRAFT" in cfg.DRAFT_BANNER and "review" in cfg.DRAFT_BANNER.lower()
+        and out["draft_banner"] == cfg.DRAFT_BANNER
         and out["draft_mark"] == cfg.DRAFT_MARK)
-    chk("the banner says what it means",
-        "DRAFT" in cfg.DRAFT_BANNER and "review" in cfg.DRAFT_BANNER.lower())
     saved_draft = cfg.INVESTMENT_METRICS_DRAFT
     try:
-        cfg.INVESTMENT_METRICS_DRAFT = False
-        off = build()
-        chk("turning it off clears the flag on the payload",
-            off["draft"] is False)
+        cfg.INVESTMENT_METRICS_DRAFT = True
+        on = build()
+        chk("turning it back on sets the flag on the payload",
+            on["draft"] is True)
         chk("...and nothing else about the report moves",
-            [r["vcode"] for r in off["current"]["rows"]]
+            [r["vcode"] for r in on["current"]["rows"]]
             == [r["vcode"] for r in out["current"]["rows"]]
-            and off["current"]["total"] == out["current"]["total"],
+            and on["current"]["total"] == out["current"]["total"],
             "the gate is presentation only; it must not touch a figure")
     finally:
         cfg.INVESTMENT_METRICS_DRAFT = saved_draft
-    chk("the flag is restored", cfg.INVESTMENT_METRICS_DRAFT is True)
+    chk("the flag is restored", cfg.INVESTMENT_METRICS_DRAFT is False)
 
     # ── 16. the narrowing is EQUIVALENCE, not a shortcut ──────────────────
     section("16. Pre-narrowing changes speed and nothing else")
