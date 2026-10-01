@@ -229,29 +229,64 @@ def _report(cache_path, before_path, after_path):
         not any("error" in v for v in list(before.values()) + list(after.values())))
     chk("both sides cover the same deals", set(before) == set(after))
 
-    # THE safety property, and the one that means "waterfall stays primary":
-    # a field the waterfall already supplied is never touched. Asserted per
-    # FIELD rather than per deal, because a deal can legitimately have a Share
-    # row and no Pref row.
-    overwritten = [(k, f) for k in before for f in ("coupon", "participation")
-                   if before[k].get(f) and before[k][f] != after[k].get(f)
-                   # The sanctioned exception, and ONLY toward an explicit zero.
-                   and not (f == "participation" and k in PRESENT_ZERO
-                            and after[k].get(f) == 0.0)]
-    chk("no field the waterfall supplied was overwritten, outside the "
-        f"sanctioned present-zero deals ({len(overwritten)} violations)",
-        not overwritten)
-    for k, f in overwritten:
-        print(f"           {k} {f}: {before[k][f]} -> {after[k].get(f)}")
+    # THE SAFETY PROPERTY IS NOW FIELD-SPECIFIC (2026-09-30).
+    #
+    # COUPON — the waterfall is still primary, and a coupon it supplied is
+    # never overwritten. Unchanged.
+    #
+    # PARTICIPATION — MRI DEAL TERMS NOW WIN whenever they carry a value, so an
+    # overwrite is EXPECTED and the old "never touched" assertion would now be
+    # asserting the defect. The two One Pager cells printed different numbers
+    # for the same term on six deals; this is what fixed it. PRESENT_ZERO stops
+    # being an exception and becomes one instance of the general rule.
+    overwritten_coupon = [k for k in before
+                          if before[k].get("coupon")
+                          and before[k]["coupon"] != after[k].get("coupon")]
+    chk("no COUPON the waterfall supplied was overwritten "
+        f"({len(overwritten_coupon)} violations)", not overwritten_coupon)
+    for k in overwritten_coupon:
+        print(f"           {k} coupon: {before[k]['coupon']} -> "
+              f"{after[k].get('coupon')}")
+
+    def _dt_share(k):
+        """deal_terms participation for one deal, as a fraction, or None."""
+        raw = dt_rows.get(k, {}).get("pe_split_capital")
+        if raw is None or raw == "":
+            return None
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            return None
+        if v < 0:
+            return None
+        return v if v <= 1 else v / 100      # mirrors one_pager.normalize_share
+
+    # BOTH DIRECTIONS. "deal terms win" is satisfied by blanking every cell, so
+    # this asserts the value IS the deal_terms figure, and the paired check
+    # after it asserts the waterfall still supplies the deals that have none.
+    wrong = [(k, after[k].get("participation"), _dt_share(k)) for k in before
+             if _dt_share(k) is not None
+             and (after[k].get("participation") is None
+                  or abs(after[k]["participation"] - _dt_share(k)) > 1e-12)]
+    chk("every deal with a deal_terms participation shows EXACTLY that value "
+        f"({len(wrong)} violations)", not wrong)
+    for k, got, want in wrong:
+        print(f"           {k} participation: got {got} want {want}")
+
+    kept_wf = [k for k in before
+               if _dt_share(k) is None and before[k].get("participation")]
+    chk("a deal with NO deal_terms participation keeps the waterfall's "
+        f"({len(kept_wf)} deals)",
+        all(before[k].get("participation") == after[k].get("participation")
+            for k in kept_wf))
 
     chk("the present-zero deals went to exactly 0.0 in both directions "
         f"{sorted(PRESENT_ZERO)}",
         all(after.get(k, {}).get("participation") == 0.0 for k in PRESENT_ZERO))
 
-    chk("every changed field was 0/None before (present-zero deals aside)",
-        all(not before[k].get(f) for k in changed if k not in PRESENT_ZERO
-            for f in ("coupon", "participation")
-            if before[k].get(f) != after[k].get(f)))
+    chk("every changed COUPON was 0/None before",
+        all(not before[k].get("coupon") for k in changed
+            if before[k].get("coupon") != after[k].get("coupon")))
 
     chk("every changed field equals its deal_terms value",
         all(abs((after[k][f] or 0) - float(dt_rows.get(k, {}).get(col) or 0))
@@ -276,11 +311,31 @@ def _report(cache_path, before_path, after_path):
         before.get(burton) == after.get(burton)
         and before.get(burton, {}).get("coupon"))
 
+    # Narrowed with the precedence change: a deal whose waterfall gave both
+    # values is byte-identical ONLY where deal_terms has no participation to
+    # override it with. Deals carrying both sources are covered by the
+    # deal_terms assertions above instead.
     full_wf = [k for k in before if before[k].get("coupon")
-               and before[k].get("participation") and k not in PRESENT_ZERO]
-    chk("every deal whose waterfall gave BOTH values is byte-identical "
-        f"({len(full_wf)} deals, present-zero pair aside)",
+               and before[k].get("participation")
+               and k not in PRESENT_ZERO and _dt_share(k) is None]
+    chk("every deal whose waterfall gave BOTH values AND has no deal_terms "
+        f"participation is byte-identical ({len(full_wf)} deals)",
         all(before[k] == after[k] for k in full_wf))
+
+    # The deals the precedence change is FOR: both sources present and
+    # disagreeing. Each must now show the deal_terms figure, i.e. the same
+    # number the Capitalization block has always printed.
+    both_disagree = [k for k in before
+                     if _dt_share(k) is not None
+                     and before[k].get("participation") is not None
+                     and abs(before[k]["participation"] - _dt_share(k)) > 1e-12]
+    chk("every deal where the two sources DISAGREED now shows deal_terms "
+        f"({len(both_disagree)} deals: {sorted(both_disagree)})",
+        all(abs(after[k].get("participation") - _dt_share(k)) < 1e-12
+            for k in both_disagree))
+    for k in sorted(both_disagree):
+        print(f"           {k}: waterfall {fmt(before[k]['participation'])}"
+              f" -> deal terms {fmt(after[k].get('participation'))}")
 
     # 0.0 -> None is NOT a loss: both render N/A. A loss is a value that stops
     # being shown, which is why this now tests the rendered form.

@@ -22,7 +22,7 @@ function toggleSection(key: string) {
 }
 
 // Auto-expand section containing current route
-const amRoutes = ['/deal-analysis', '/property-financials', '/surveillance', '/valuations', '/one-pager', '/portfolio-snapshot', '/review-tracking', '/waterfall-setup', '/reports']
+const amRoutes = ['/deal-analysis', '/property-financials', '/surveillance', '/valuations', '/one-pager', '/portfolio-snapshot', '/review-tracking', '/investment-metrics', '/waterfall-setup', '/reports']
 // Investment Management. Ownership moved here from Asset Management on
 // Sep 15 2026: the ownership chain is about who owns the investment, not
 // about operating the asset.
@@ -517,6 +517,18 @@ function toggleCollapsed() {
           <router-link to="/one-pager" class="nav-item" :class="{ active: route.path === '/one-pager' }">One Pager</router-link>
           <router-link to="/portfolio-snapshot" class="nav-item" :class="{ active: route.path === '/portfolio-snapshot' }">Portfolio Snapshot</router-link>
           <router-link to="/review-tracking" class="nav-item" :class="{ active: route.path === '/review-tracking' }">Review Tracking</router-link>
+          <!-- Investment Metrics — the quarterly PSC Investment Summary
+               (Current + Sold). Hidden while the report is a draft; the same
+               server flag that put a DRAFT banner on the page kept it out of
+               here. `investment_metrics_draft` comes from /api/data/config, and
+               while that is still loading it is undefined and the link stays
+               hidden, which is the safe way round. -->
+          <router-link
+            v-if="data.config?.investment_metrics_draft === false"
+            to="/investment-metrics"
+            class="nav-item"
+            :class="{ active: route.path.startsWith('/investment-metrics') }"
+          >Investment Metrics</router-link>
           <router-link to="/waterfall-setup" class="nav-item" :class="{ active: route.path === '/waterfall-setup' }">Waterfall Setup</router-link>
 
           <!-- Report Settings — expandable config panel -->

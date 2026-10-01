@@ -1216,6 +1216,7 @@ def _tool_get_one_pager(inp):
             budget_econ_occ=data.get("budget_econ_occ"),
             deal_terms=data.get("deal_terms_raw"),
             at_close_noi=data.get("at_close_noi_raw"),
+            commitments_raw=data.get("commitments_raw"),
             event_dates=data.get("event_dates_raw"),
             # PASSED SO THIS TOOL AGREES WITH THE SCREEN. The One Pager route
             # (flask_app/api/financials.py) passes both and this did not, and

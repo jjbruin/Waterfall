@@ -1142,7 +1142,8 @@ def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
                        waterfalls, acct, occupancy_raw=None,
                        budget_econ_occ=None, deal_terms=None, at_close_noi=None,
                        full_data=None, relationships=None, event_dates=None,
-                       mri_loans_all=None, inspection=None):
+                       mri_loans_all=None, inspection=None,
+                       commitments_raw=None):
     """Aggregate all One Pager sections into a single response.
 
     Args:
@@ -1174,7 +1175,8 @@ def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
     cap_stack = get_capitalization_stack(vcode, mri_loans, mri_val, waterfalls, acct, inv,
                                          isbs_raw=isbs_raw, quarter_str=quarter_str,
                                          relationships=relationships,
-                                         inspection=inspection)
+                                         inspection=inspection,
+                                         commitments=commitments_raw)
     prop_perf = get_property_performance(vcode, quarter_str, isbs_raw, mri_val, occupancy_raw,
                                           budget_econ_occ_df=budget_econ_occ,
                                           at_close_noi_df=at_close_noi,
@@ -1186,7 +1188,8 @@ def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
     # _enrich_cap_stack_from_deal_terms() below, which overrides.
     pe_perf = get_pe_performance(vcode, quarter_str, acct, waterfalls, inv,
                                  isbs_raw=isbs_raw,
-                                 deal_terms=deal_terms) if quarter_str else {}
+                                 deal_terms=deal_terms,
+                                 commitments=commitments_raw) if quarter_str else {}
     comments = get_one_pager_comments(vcode, quarter_str) if quarter_str else {}
 
     # Enrich PE performance from deal analysis waterfall results
@@ -1198,10 +1201,33 @@ def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
         _enrich_cap_stack_from_deal_terms(cap_stack, deal_terms, vcode)
 
     # Compute PE Yield on Exposure = Actual YE NOI / (Debt + PE)
+    #
+    # COMPUTED WHENEVER IT CAN BE, blank only when it genuinely cannot. The
+    # gate was `noi_ye > 0`, which declined a deal whose NOI is really
+    # NEGATIVE and reported it as absent — so "we cannot compute this" and
+    # "this is negative" came out as the same answer. A negative NOI over a
+    # positive exposure is a real, computable, negative yield and is now
+    # published as one: Jefferson Addison Heights -235,114 / 61,854,983 =
+    # -0.38%, Jefferson Eastchase -698,661 / 71,381,704 = -0.98% (26Q2).
+    #
+    # THE TEST IS TRUTHINESS, NOT `is not None`, AND THAT IS LOAD-BEARING.
+    # `perf['noi']['actual_ye']` DEFAULTS TO 0 (one_pager.py:1355) while
+    # `ytd_actual` defaults to None, so on a deal with no actuals at all the
+    # NOI reads as a literal 0 that was never assigned. Gating on "not None"
+    # would divide that no-data 0 by the exposure and publish a computed
+    # "0.0%" — reinstating, for 15 of the 17 affected deals at 26Q2, exactly
+    # the fake zero the `pe_yield_on_exposure` default was just changed to
+    # avoid. Falsy 0 keeps them blank; a negative is truthy and gets through.
+    #
+    # KNOWN LIMIT, deliberately not papered over: a deal whose NOI is a
+    # GENUINELY measured 0 is indistinguishable from one that was never
+    # assigned, so it reads blank. Fixing that means giving `noi.actual_ye`
+    # (and revenue/expenses beside it) a None default, which is a wider change
+    # than this one and would move other readers.
     if prop_perf and cap_stack:
         noi_ye = prop_perf.get('noi', {}).get('actual_ye', 0) or prop_perf.get('noi', {}).get('ytd_actual', 0) or 0
         senior_plus_pe = cap_stack.get('debt', 0) + cap_stack.get('pref_equity', 0)
-        if senior_plus_pe > 0 and noi_ye > 0:
+        if senior_plus_pe > 0 and noi_ye:
             cap_stack['pe_yield_on_exposure'] = noi_ye / senior_plus_pe
 
     return {
@@ -1303,13 +1329,21 @@ def _enrich_pe_from_deal_result(pe: dict, vcode: str, data: dict, quarter_str: s
 
         # Capital outstanding per the ENGINE, at the quarter end. Kept on
         # seed_states rather than recomputed as `funded_to_date -
-        # return_of_capital`: that looks like the same thing and is not, because
-        # `return_of_capital` also absorbs "realized gain" rows, so the
-        # subtraction understates the balance on any deal carrying a gain while
-        # capital is still outstanding. East Manchester is the visible proof —
-        # its ROC field is 5,139,662 against 3,600,000 funded, so the formula
-        # yields -1,539,662 where the engine correctly reports 0. One
-        # definition of capital outstanding, asked at the right date.
+        # return_of_capital`, because one figure should have one engine and
+        # this one is the waterfall's.
+        #
+        # THE DIVERGENCE THAT USED TO MAKE THAT ESSENTIAL IS FIXED.
+        # `return_of_capital` absorbed "realized gain" rows, so the subtraction
+        # understated the balance on any deal carrying a gain while capital was
+        # still outstanding: East Manchester's ROC field read 5,139,662 against
+        # 3,600,000 funded, so the formula yielded -1,539,662 where the engine
+        # correctly reported 0. `one_pager._is_return_of_capital` now gates
+        # that sum on the `Capital` flag, so the two agree — East Manchester's
+        # ROC is 3,600,000 and the subtraction gives the engine's 0.
+        #
+        # This line does NOT change: agreeing is not the same as being the
+        # source, and seed_states remains the one definition of capital
+        # outstanding, asked at the right date.
         pe["current_pe_balance"] = total_capital_outstanding
 
         # Accrued balance from authoritative Pref Balance Detail calculation
@@ -1383,15 +1417,23 @@ def _enrich_pe_from_deal_result(pe: dict, vcode: str, data: dict, quarter_str: s
                         pref_paid = grace_rows.loc[pref_mask, "Amt"].sum()
                         pe["accrued_balance"] = max(0.0, pe["accrued_balance"] - abs(pref_paid))
 
-        # Committed PE: if no commitment rows in accounting, use total PE contributions
-        if pe.get("committed_pe", 0) == 0:
+        # Committed PE: when NO source could answer, fall back to contributions.
+        #
+        # `is None`, NOT `== 0`. Since committed pref became None-for-absent
+        # (committed_pref.resolve_committed_pref), a falsy test fires on a deal
+        # whose committed pref is genuinely zero AND on every None, silently
+        # relabelling "no pledge on file" as "fully funded". A real zero must
+        # survive. This is the one place the distinction is load-bearing.
+        if pe.get("committed_pe") is None:
             total_contrib = sum(
                 pr.get("contributions", 0.0)
                 for pr in partner_results
                 if pr.get("is_pref_equity")
             )
-            pe["committed_pe"] = total_contrib
-            pe["remaining_to_fund"] = 0.0  # Fully funded if no commitments data
+            if total_contrib:
+                pe["committed_pe"] = total_contrib
+                pe["committed_pe_basis"] = "funded (no commitment row)"
+                pe["remaining_to_fund"] = 0.0  # fully funded if no commitments data
 
     except Exception as e:
         log.warning("Could not enrich PE performance from deal result for %s: %s", vcode, e)
@@ -1472,7 +1514,13 @@ def _enrich_cap_stack_from_deal_terms(cap_stack: dict, deal_terms, vcode: str):
     # the two in step or the page prints two numbers for the same term.
     pe_split = pd.to_numeric(r.get("pe_split_capital"), errors="coerce")
     if pd.notna(pe_split) and pe_split >= 0:
-        cap_stack["pe_participation"] = pe_split if pe_split < 1 else pe_split / 100
+        # `normalize_share` is the ONE definition of "a share as a fraction",
+        # shared with the two waterfall readers and `_pe_terms_fallback`. It
+        # was four copies of `v if v < 1 else v / 100`, which is why the
+        # docstrings above ask callers to keep them in step by hand — and why
+        # a 1.0 share printed as "1%" in all four.
+        from one_pager import normalize_share
+        cap_stack["pe_participation"] = normalize_share(float(pe_split))
 
     # IRR Lookback — new field
     irr = pd.to_numeric(r.get("irr_lookback"), errors="coerce")

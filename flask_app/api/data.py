@@ -361,7 +361,16 @@ def get_config():
         # explain a disabled button rather than render a dead control; the
         # server refuses regardless of what the client believes.
         "freeze_enabled": _freeze_enabled(),
+        # Read-only. ONE switch drives the report's DRAFT banner, its printed
+        # DRAFT mark and whether the sidebar links to it at all; the sidebar
+        # reads it here so it cannot disagree with the report itself.
+        "investment_metrics_draft": _investment_metrics_draft(),
     })
+
+
+def _investment_metrics_draft() -> bool:
+    import investment_metrics_config
+    return bool(investment_metrics_config.INVESTMENT_METRICS_DRAFT)
 
 
 def _freeze_enabled() -> bool:

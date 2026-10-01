@@ -16,6 +16,11 @@ interface AppConfig {
   pro_yr_base: number
   actuals_through: string | null
   db_path: string
+  freeze_enabled?: boolean
+  /** Server-side draft gate for the Investment Metrics report. Optional
+   *  because `updateConfig` rebuilds this object from the PUT response, which
+   *  does not carry it; read-only either way. */
+  investment_metrics_draft?: boolean
 }
 
 interface ImportResult {

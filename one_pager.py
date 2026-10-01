@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from database import execute_query, get_db_connection
 from utils import normalize_columns
 from loaders import capital_after
+from committed_pref import resolve_committed_pref
 
 
 # ============================================================
@@ -510,6 +511,35 @@ def _dev_hard_costs(vcode: str, inspection: pd.DataFrame,
     return float(vals.sum())
 
 
+def normalize_share(v):
+    """A participation share as a FRACTION, whichever way the source states it.
+
+    MRI stores a share either as a fraction (0.475) or as a percentage (47.5),
+    so the reader has to decide. The rule is ``<= 1`` is already a fraction and
+    anything above it is a percentage.
+
+    ``<= 1``, NOT ``< 1``, AND THAT BOUNDARY IS THE BUG THIS FIXES. A share of
+    exactly 1.0 means the holder takes ALL of it — 100%. The old ``< 1`` test
+    sent it down the percentage branch, 1.0 / 100 = 0.01, and the page printed
+    "1%" for a hundred percent share: the most wrong a percentage can be while
+    still looking plausible. 1.0 is genuinely ambiguous in the abstract, but a
+    participation of 1% is not a term anyone writes, and 100% is — two live
+    deals carry exactly 1.0 (Jefferson Addison Heights, Jefferson Eastchase),
+    both the OPERATING PARTNER's whole share read off the wrong entity.
+
+    ONE definition, called from every site that reads a share: the two
+    waterfall readers and both deal-terms paths. It used to be four copies of
+    the same expression and the docstrings asked callers to keep them in step
+    by hand.
+
+    Deliberately NOT applied to ``pe_coupon``, which uses the same expression
+    for a different quantity: a 1.0 coupon much more plausibly means 1% than
+    100%, so that boundary is left where it is. See the note in
+    ``_pe_terms_fallback``.
+    """
+    return v if v <= 1 else v / 100
+
+
 def get_capitalization_stack(
     vcode: str,
     mri_loans: pd.DataFrame,
@@ -521,6 +551,7 @@ def get_capitalization_stack(
     quarter_str: str = None,
     relationships: pd.DataFrame = None,
     inspection: pd.DataFrame = None,
+    commitments: pd.DataFrame = None,
 ) -> Dict[str, Any]:
     """
     Get capitalization stack and deal terms
@@ -590,7 +621,22 @@ def get_capitalization_stack(
         # computed from. `fmtPct` renders None as the same em dash, so the two
         # cells now agree that the figure does not exist.
         'pe_exposure_on_value': None,
-        'pe_yield_on_exposure': 0.0,
+        # None, NOT 0.0 — the third field on this pattern, for the same reason
+        # as the two above. `financials_service` only assigns it when
+        # `senior_plus_pe > 0 and noi_ye > 0`, so on a deal with no exposure or
+        # no NOI the DEFAULT is what the payload carries, and 0.0 published a
+        # computed yield of nil where there was nothing to compute it from.
+        #
+        # THE FIELD'S OWN TRACE ALREADY DISAGREED WITH IT: the `check` for
+        # `one_pager.pe_yield_on_exposure` in `field_trace_service` returns
+        # None in exactly these cases, so the published value said 0.0 while
+        # the trace beside it said "no value". They now agree.
+        #
+        # The screen does not move: both One Pager cells read
+        # `cap.pe_yield_on_exposure ? fmtPct(...) : 'N/A'`, and 0.0 and None are
+        # both falsy, so the rendered cell was — and stays — "N/A". What changes
+        # is the API payload and anything reading it directly.
+        'pe_yield_on_exposure': None,
         'committed_pe': 0.0,
         # Which source `committed_pe` came from — see the fallback below.
         'committed_pe_basis': '',
@@ -884,7 +930,54 @@ def get_capitalization_stack(
                 if not share_rows.empty:
                     part = pd.to_numeric(share_rows.iloc[0]['FXRate'], errors='coerce')
                     if pd.notna(part):
-                        cap['pe_participation'] = part if part < 1 else part / 100
+                        # The BASE only — `_enrich_cap_stack_from_deal_terms`
+                        # overrides this from MRI deal terms when they carry a
+                        # value. See normalize_share for the <= 1 boundary.
+                        cap['pe_participation'] = normalize_share(part)
+
+    # Inputs to the committed-pref resolution below. Seeded here so the
+    # resolution still runs when the accounting block is skipped or raises.
+    _acct_committed = 0.0
+    _deal_iid_for_commitments: list = []
+    _committed_as_of = None
+    if quarter_str:
+        try:
+            _, _committed_as_of = quarter_to_date_range(quarter_str)
+        except Exception:
+            _committed_as_of = None
+    # Derived from inv_map alone: a deal with no accounting rows still has a
+    # commitment to resolve, and the block below is skipped for it.
+    if inv_map is not None:
+        try:
+            from loaders import build_investmentid_to_vcode as _b
+            _deal_iid_for_commitments = [
+                iid for iid, vc in _b(inv_map).items() if str(vc) == vcode_str]
+        except Exception:
+            _deal_iid_for_commitments = []
+
+    # A SOLD DEAL THAT IS NOT KEPT ON THE REPORT CARRIES NO COMMITMENT AFTER THE
+    # SALE. Its commitment row is never ended in MRI, so without this the open
+    # row would be resurrected on every later quarter for ever.
+    #
+    # GATED ON KEEP_DESPITE_SOLD, unlike the debt suppression below. The four
+    # kept deals are read at the quarter they were last held — the caller passes
+    # that as `quarter_str` — so for them the rule is already "the commitment in
+    # effect on the last held quarter" and no suppression is wanted.
+    _sold_and_dropped = False
+    if quarter_str and inv_map is not None and not getattr(inv_map, "empty", True):
+        try:
+            from flask_app.services.portfolio_snapshot_service import (
+                is_sold_as_of, KEEP_DESPITE_SOLD,
+            )
+            _vc_col = 'vcode' if 'vcode' in inv_map.columns else 'vCode'
+            _srow = inv_map[inv_map[_vc_col].astype(str).str.strip().str.upper()
+                            == vcode_str.upper()]
+            if not _srow.empty and vcode_str.upper() not in KEEP_DESPITE_SOLD:
+                _, _q_end_sold = quarter_to_date_range(quarter_str)
+                _sold_and_dropped = bool(
+                    is_sold_as_of(_srow.iloc[0], _q_end_sold))
+        except Exception:
+            _sold_and_dropped = False
 
     # Get equity from accounting feed (filtered to quarter end when available)
     if acct is not None and not acct.empty and inv_map is not None:
@@ -893,6 +986,7 @@ def get_capitalization_stack(
         try:
             inv_to_vcode = build_investmentid_to_vcode(inv_map)
             deal_investment_ids = [iid for iid, vc in inv_to_vcode.items() if str(vc) == vcode_str]
+            _deal_iid_for_commitments = list(deal_investment_ids)
 
             acct_norm = acct.copy()
             normalize_columns(acct_norm)
@@ -916,12 +1010,14 @@ def get_capitalization_stack(
                 deal_acct["TypeName"] = deal_acct["TypeName"].fillna("").astype(str).str.strip()
                 deal_acct["InvestorID"] = deal_acct["InvestorID"].astype(str).str.strip()
 
-                # Get committed PE from accounting commitment rows (non-OP only)
+                # The accounting-side committed figure. NO LONGER THE PUBLISHED
+                # ANSWER — it is what the commitments table defers to when it
+                # has no row in effect on the quarter. See committed_pref.py.
                 if "is_commitment" in deal_acct.columns:
                     non_op_mask = ~deal_acct["InvestorID"].str.upper().str.startswith("OP")
                     commitment_rows = deal_acct[deal_acct["is_commitment"] & non_op_mask]
                     if not commitment_rows.empty:
-                        cap['committed_pe'] = commitment_rows["Amt"].abs().sum()
+                        _acct_committed = float(commitment_rows["Amt"].abs().sum())
 
                 investor_balances = {}
                 for _, row in deal_acct.iterrows():
@@ -957,17 +1053,34 @@ def get_capitalization_stack(
         except Exception as e:
             pass
 
-    # ---- Committed pref falls back to funded when no commitment row exists ----
+    # ---- Committed pref comes from MRI's IA_Commitment, as of the quarter ----
     #
-    # `committed_pe` is summed from Typename='Commitment' accounting rows. Two
-    # deals on live have none at all: East Manchester (PPI20) and City West
-    # (PPICW), both pre-dating the convention. Left at 0.0 they read as a real
-    # "$0.0M committed" rather than as "no pledge on file" — and the Portfolio
-    # Snapshot's Total Pref, now on the committed basis, would print $0.0 for
-    # deals carrying $3.60M and $5.92M of funded pref.
+    # ONE ENGINE: committed_pref.resolve_committed_pref. `get_pe_performance`
+    # and `investment_metrics.capitalization_sources` call the same function,
+    # so the One Pager's two halves and the Investment Metrics report cannot
+    # disagree about the same fact. They did, on twelve deals, until 2026-10-01.
+    #
+    # Deliberately outside the try/except above so it still applies when the
+    # accounting block raised and left the figures at their 0.0 defaults.
+    _committed, _basis = resolve_committed_pref(
+        commitments, _deal_iid_for_commitments, _committed_as_of,
+        accounting_committed=_acct_committed or None,
+        sold_and_dropped=_sold_and_dropped,
+    )
+    cap['committed_pe'] = _committed
+    cap['committed_pe_basis'] = _basis
+
+    # ---- Committed pref falls back to funded when nothing else answers ----
+    #
+    # Two deals on live carry no commitment anywhere: East Manchester (PPI20)
+    # and City West (PPICW), both pre-dating the convention. Left at None they
+    # read as "no pledge on file" — and the Portfolio Snapshot's Total Pref,
+    # on the committed basis, would print a dash for deals carrying $3.60M and
+    # $5.92M of funded pref.
     #
     # Funded is the correct floor: capital actually contributed is committed by
-    # definition, so this can only ever raise a zero, never lower a real pledge.
+    # definition, so this can only ever raise an absent figure, never lower a
+    # real pledge.
     #
     # IT HAS TO LIVE HERE. `pe_performance.committed_pe` carries a similar
     # fallback (financials_service._enrich_pe_from_deal_result), but it is not
@@ -977,15 +1090,12 @@ def get_capitalization_stack(
     # read (portfolio_snapshot_financial and portfolio_snapshot_summary) — is
     # what stops the two pages disagreeing about the same deal.
     #
-    # Deliberately outside the try/except above so it still applies when the
-    # accounting block raised and left both figures at their 0.0 defaults.
-    cap['committed_pe_basis'] = 'commitment rows'
-    if not cap['committed_pe']:
+    # NEVER 0 FOR "NO PLEDGE". A zero is indistinguishable from a real zero to
+    # every consumer downstream; None renders as an em dash through fmtMil.
+    if cap['committed_pe'] is None:
         if cap['pref_equity']:
             cap['committed_pe'] = cap['pref_equity']
             cap['committed_pe_basis'] = 'funded (no commitment row)'
-        else:
-            cap['committed_pe_basis'] = 'none'
 
     # ---- A SOLD DEAL'S DEBT IS NOT REPORTED ----
     #
@@ -2474,32 +2584,105 @@ def _pe_terms_fallback(pe: Dict[str, Any], deal_terms: pd.DataFrame,
         v = float(v)
 
         if key == 'coupon':
-            # Unchanged: fill only when the waterfall gave nothing, and only
-            # from a positive rate.  A 0% coupon is not a thing.
-            if pe.get(key) or v == 0:
+            # COUPON: MRI DEAL TERMS WIN when they state a rate, the same
+            # precedence participation uses below and the same one the
+            # Capitalization block has always used
+            # (`_enrich_cap_stack_from_deal_terms`, which overrides on
+            # `coupon > 0`). The waterfall is the fallback.
+            #
+            # THIS WAS NOT PREVENTIVE, WHICH IS WHY IT IS WORTH STATING.
+            # Measured on production 2026-09-30 at 26Q2: THREE deals carry
+            # both sources and disagree, so each was printing two different
+            # coupons on one page — Capitalization from deal terms, PE
+            # Performance from the waterfall:
+            #
+            #   P0000066  Pegasus Life Storage   PE 10%  -> 9%    (cap 9%)
+            #   P0000084  Cocoplum Apartments    PE  5%  -> 8.5%  (cap 8.5%)
+            #   P0000032  Orange Grove           PE  8%  -> 8.5%  (cap 8.5%)
+            #
+            # The Capitalization cell does not move on any deal; only the PE
+            # block does, onto the figure that block was already showing.
+            #
+            # A ZERO IS STILL NOT A COUPON and does not count as a value —
+            # it falls through to the waterfall rather than overriding it.
+            # Unlike participation, where an explicit 0 is a real term
+            # ("the PE takes no share"), a 0% preferred return is not a
+            # structure anyone writes. Inert on today's data: 75 deals carry
+            # a deal_terms coupon and none of them is 0.
+            if v == 0:
                 continue
         else:
-            # Participation carries ONE extra rule: an explicit zero in
-            # deal_terms overrides whatever the waterfall produced.
+            # PARTICIPATION: MRI DEAL TERMS WIN, ALWAYS, when they carry a
+            # value. The waterfall is the fallback and is used only where
+            # deal_terms says nothing (pd.isna above already skipped those).
             #
-            # The waterfall reader takes the first vState='Share' row with no
-            # PropCode filter, so on a deal where the PE has no Share row it
-            # silently reports the OPERATING PARTNER's share instead — there is
-            # no way for it to say "the PE participates in nothing", which is
-            # exactly what that shape means.  pe_split_capital == 0 is MRI
-            # stating the term affirmatively, so it wins.  Live today this is
+            # THIS SETTLES A QUESTION THIS FUNCTION USED TO LEAVE OPEN. It
+            # previously took deal_terms only when the waterfall gave nothing
+            # OR when deal_terms was an explicit 0, and its own note said "a
+            # POSITIVE deal_terms value still defers to the waterfall ...
+            # picking a winner there is a separate question about which source
+            # is right." That question is now decided in favour of deal terms,
+            # and the same precedence the Capitalization block has always used
+            # (`_enrich_cap_stack_from_deal_terms`) — so the two cells stop
+            # printing different numbers for the same term.
+            #
+            # MEASURED ON PRODUCTION: eight deals have both sources and the two
+            # disagree. Six change here, each moving to the Capitalization
+            # cell's existing figure — 5-15 Broad St 0.333 -> 0.33, Merle Hay
+            # 0.7 -> 0.3, OREI Portfolio / Whitney Manor / Westchase
+            # 0.75 -> 0.475, Donald Lynch 0.2 -> 0.3. The other two already
+            # agreed at 0.0 through the explicit-zero rule below.
+            #
+            # The explicit ZERO case is now just an instance of this rule
+            # rather than an exception to it: the waterfall reader takes the
+            # first vState='Share' row with no PropCode filter, so where the PE
+            # has no Share row it reports the OPERATING PARTNER's share and has
+            # no way to say "the PE participates in nothing".
+            # pe_split_capital == 0 is MRI stating that term affirmatively.
             # Jefferson Eastchase (P0000085) and Jefferson Addison Heights
-            # (P0000077): both carry two Share rows owned by OPJPI at
-            # FXRate 1.0, which the `< 1` heuristic below renders as 1%.
-            #
-            # A POSITIVE deal_terms value still defers to the waterfall, so the
-            # six deals where the two sources disagree on a real number are
-            # untouched.  Keep it that way — picking a winner there is a
-            # separate question about which source is right.
-            if pe.get(key) is not None and v != 0:
-                continue
+            # (P0000077) are those deals; both carry Share rows owned by OPJPI
+            # at FXRate 1.0.
+            pass
 
-        pe[key] = v if v < 1 else v / 100
+        # `normalize_share` for participation; the coupon keeps its own `< 1`
+        # boundary deliberately — a 1.0 coupon reads as 1%, a 1.0 SHARE as
+        # 100%. See normalize_share.
+        pe[key] = (normalize_share(v) if key == 'participation'
+                   else (v if v < 1 else v / 100))
+
+
+def _is_return_of_capital(row) -> bool:
+    """True when an accounting row actually RETURNED CAPITAL.
+
+    THE `Capital` FLAG IS THE AUTHORITY, not the Typename string. MRI sets
+    `Capital='Y'` on a Return of Capital row and `Capital='N'` on a Realized
+    Gain, and the two are different things: a gain is cash distributed on top
+    of capital, not capital coming back. Reading the Typename instead swept
+    both into one figure — East Manchester's PPI20 reported 5,139,662.37
+    (3,600,000.00 of capital plus a 1,539,662.37 gain) where the sent report
+    says 3,600,000.00.
+
+    ONE DEFINITION, ALREADY NORMALISED UPSTREAM. `loaders.load_accounting`
+    writes `is_capital = Capital == 'Y'` (loaders.py:258), so that column is
+    used wherever it survives normalisation. The `Capital` fallback below is
+    the SAME predicate for a frame that reached here un-normalised (a CSV path
+    or a test fixture) — not a second opinion about what a capital row is.
+
+    A frame carrying NEITHER column returns False rather than falling back to
+    the Typename rule: this function exists because that rule is wrong, and
+    silently reinstating it where the evidence is missing would hide the very
+    defect it was written to fix.
+    """
+    try:
+        flag = row.get("is_capital")
+    except AttributeError:
+        return False
+    if flag is not None and not (isinstance(flag, float) and pd.isna(flag)):
+        return bool(flag)
+    raw = row.get("Capital")
+    if raw is None:
+        return False
+    return str(raw).strip().upper() == "Y"
 
 
 def get_pe_performance(
@@ -2510,6 +2693,7 @@ def get_pe_performance(
     inv_map: pd.DataFrame,
     isbs_raw: pd.DataFrame = None,
     deal_terms: pd.DataFrame = None,
+    commitments: pd.DataFrame = None,
 ) -> Dict[str, Any]:
     """
     Get Preferred Equity performance metrics
@@ -2549,6 +2733,18 @@ def get_pe_performance(
     vcode_str = _canonical_vcode(vcode, inv_map)
     _, quarter_end = quarter_to_date_range(quarter_str)
 
+    # Inputs to the committed-pref resolution at the end of this function.
+    _pe_acct_committed = 0.0
+    _pe_as_of = quarter_end
+    _pe_iids: list = []
+    if inv_map is not None:
+        try:
+            from loaders import build_investmentid_to_vcode as _b2
+            _pe_iids = [iid for iid, vc in _b2(inv_map).items()
+                        if str(vc) == str(vcode).strip()]
+        except Exception:
+            _pe_iids = []
+
     # Get coupon and participation from waterfalls
     if waterfalls is not None and not waterfalls.empty:
         wf = waterfalls.copy()
@@ -2570,7 +2766,10 @@ def get_pe_performance(
                 if not share_rows.empty:
                     part = pd.to_numeric(share_rows.iloc[0]['FXRate'], errors='coerce')
                     if pd.notna(part):
-                        pe['participation'] = part if part < 1 else part / 100
+                        # The BASE only — `_pe_terms_fallback` overrides this
+                        # from MRI deal terms when they carry a value, the same
+                        # precedence the Capitalization block uses.
+                        pe['participation'] = normalize_share(part)
 
     # Whatever the waterfall did not supply, take from the MRI deal terms.
     #
@@ -2614,12 +2813,15 @@ def get_pe_performance(
                 deal_acct["TypeName"] = deal_acct["TypeName"].fillna("").astype(str).str.strip()
                 deal_acct["InvestorID"] = deal_acct["InvestorID"].astype(str).str.strip()
 
-                # Get committed PE from accounting commitment rows (non-OP only)
+                # SAME FACT AS cap_stack.committed_pe, SAME ENGINE. This used
+                # to be an independent copy of the accounting sum 1,800 lines
+                # from the other one; they agreed only because the filter was
+                # duplicated verbatim. See committed_pref.resolve_committed_pref.
                 if "is_commitment" in deal_acct.columns:
                     non_op_mask = ~deal_acct["InvestorID"].str.upper().str.startswith("OP")
                     commitment_rows = deal_acct[deal_acct["is_commitment"] & non_op_mask]
                     if not commitment_rows.empty:
-                        pe['committed_pe'] = commitment_rows["Amt"].abs().sum()
+                        _pe_acct_committed = float(commitment_rows["Amt"].abs().sum())
 
                 # Build cashflow lists for ROE calculation
                 # capital_events: all cashflows (contributions negative, distributions positive)
@@ -2655,7 +2857,14 @@ def get_pe_performance(
                         if "return of capital" in type_name or "realized gain" in type_name:
                             # Capital return (or correction if amt < 0)
                             capital_events.append((evt_date, amt))
-                            pe['return_of_capital'] += amt
+                            # ONLY a Capital='Y' row returned capital. A
+                            # Realized Gain reaches `capital_events` above —
+                            # it IS cash distributed and belongs in the ROE
+                            # series — but it is not a return of capital and
+                            # must not inflate this figure. See
+                            # `_is_return_of_capital`.
+                            if _is_return_of_capital(row):
+                                pe['return_of_capital'] += amt
                         elif "acquisition fee" not in type_name:
                             # CF (operating) distribution — preserve sign so
                             # negative corrections reduce ROE instead of inflating it.
@@ -2785,9 +2994,27 @@ def get_pe_performance(
         except Exception:
             pass
 
+    # Committed pref: ONE ENGINE, shared with cap_stack and Investment Metrics.
+    _pe_committed, _pe_basis = resolve_committed_pref(
+        commitments, _pe_iids, _pe_as_of,
+        accounting_committed=_pe_acct_committed or None,
+        sold_and_dropped=False,
+    )
+    pe['committed_pe'] = _pe_committed
+    pe['committed_pe_basis'] = _pe_basis
+
     # Calculate derived metrics
     pe['current_pe_balance'] = pe['funded_to_date'] - pe['return_of_capital']
-    pe['remaining_to_fund'] = max(0, pe['committed_pe'] - pe['funded_to_date'])
+    # NO FLOOR ON remaining_to_fund. A commitment BELOW what has been funded is
+    # a real finding — Nottingham prints -1.2M at 26Q2 — and flooring it at zero
+    # would hide a disagreement between the pledge and the ledger. Flagged in
+    # `committed_below_funded` so a reader is told rather than left to notice.
+    if pe['committed_pe'] is None:
+        pe['remaining_to_fund'] = None
+        pe['committed_below_funded'] = False
+    else:
+        pe['remaining_to_fund'] = pe['committed_pe'] - pe['funded_to_date']
+        pe['committed_below_funded'] = pe['remaining_to_fund'] < 0
 
     return pe
 

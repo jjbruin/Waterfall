@@ -75,7 +75,11 @@ class _Source:
         engine = engine or get_engine()
         self.load_errors: List[str] = []
         with engine.connect() as conn:
-            self.com = self._read(conn, "commitments")
+            # CURRENT ROWS ONLY. No-op while MRI_Commitments.sql filters
+            # EndDate IS NULL; load-bearing once ENDED rows are brought in for
+            # the committed-pref as-of rule (committed_pref.py). Superseded
+            # revisions would otherwise be walked as live ownership edges.
+            self.com = self._read(conn, "commitments", current_only=True)
             self.ent = self._read(conn, "entities")
             self.deals = self._read(conn, "deals")
             self.wf = self._read(conn, "waterfalls")
@@ -243,7 +247,7 @@ class _Source:
             self.wf_step_counts = codes.value_counts().to_dict()
             self.wf_codes = {c for c in codes if c}
 
-    def _read(self, conn, table) -> pd.DataFrame:
+    def _read(self, conn, table, current_only: bool = False) -> pd.DataFrame:
         """Load a table, RECORDING a failure rather than swallowing it.
 
         This returned an empty frame on any exception and logged a warning
@@ -252,8 +256,9 @@ class _Source:
         the truth was that the query never ran. A missing table and an empty
         one must not look the same to the reader.
         """
+        where = ' WHERE "EndDate" IS NULL' if current_only else ""
         try:
-            return pd.read_sql(text(f"SELECT * FROM {table}"), conn)
+            return pd.read_sql(text(f"SELECT * FROM {table}{where}"), conn)
         except Exception as e:
             logger.warning("ownership chain: %s not loaded", table, exc_info=True)
             self.load_errors.append(f"{table} could not be read: {str(e)[:160]}")

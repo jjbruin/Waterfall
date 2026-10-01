@@ -75,6 +75,96 @@ assign = re.search(
 chk("it is still only assigned when current_valuation > 0", assign is not None)
 
 print()
+print("1b. pe_yield_on_exposure: blank only when uncomputable, negative when negative"
+      "  (one_pager.py / financials_service.py)")
+
+m = re.search(r"^\s*'pe_yield_on_exposure':\s*(.+?),\s*$", src, re.M)
+chk("the default is declared exactly once", m is not None
+    and len(re.findall(r"'pe_yield_on_exposure':", src)) == 1)
+if m:
+    chk(f"the default is None (found: {m.group(1).strip()})",
+        m.group(1).strip() == "None")
+
+# Same reasoning as above: the field is only ASSIGNED when it can be computed,
+# so the default is what an uncomputable deal publishes. Drop that guard and
+# the default never survives, making the fix inert.
+FS = ROOT / "flask_app" / "services" / "financials_service.py"
+fsrc = read(FS)
+# A NEGATIVE NOI must COMPUTE, not blank — "cannot compute" and "is negative"
+# are different answers. The gate is truthiness, never `> 0` and never
+# `is not None`; see the note at the assignment for why each alternative is
+# wrong.
+chk("the gate is truthiness on NOI, so a negative yield is computed",
+    re.search(r"if senior_plus_pe > 0 and noi_ye:\s*\n\s*"
+              r"cap_stack\['pe_yield_on_exposure'\]\s*=", fsrc) is not None)
+# These two match the `if` STATEMENT, not the bare text: the note above the
+# assignment quotes both rejected forms verbatim to explain why they are
+# wrong, and a plain substring test scores its own documentation as a defect.
+chk("the old `noi_ye > 0` gate is gone — it declined real negative NOI",
+    re.search(r"if\s+senior_plus_pe\s*>\s*0\s+and\s+noi_ye\s*>\s*0\s*:",
+              fsrc) is None)
+chk("and the gate is NOT `is not None`, which would divide the no-data 0 "
+    "(noi.actual_ye defaults to 0) and republish a fake 0.0%",
+    re.search(r"if\s+senior_plus_pe\s*>\s*0\s+and\s+noi_ye\s+is\s+not\s+None\s*:",
+              fsrc) is None)
+# The denominator guard must stay: a zero or negative exposure has no yield.
+chk("the denominator guard survives (senior_plus_pe > 0)",
+    "senior_plus_pe > 0" in fsrc)
+# And the default it relies on must still be the no-data 0 this reasoning
+# assumes — if that ever becomes None the truthiness test needs revisiting.
+chk("noi.actual_ye still defaults to 0 in one_pager (the premise above)",
+    re.search(r"'noi':\s*\{[^}]*'actual_ye':\s*0\b", src) is not None)
+chk("financials_service never assigns it a literal zero",
+    re.search(r"pe_yield_on_exposure'\]\s*=\s*0(\.0)?\s*$", fsrc, re.M) is None)
+
+# BOTH directions. "It is blank when uncomputable" is satisfied by never
+# computing it at all, so the real computation must still be reachable.
+chk("the real computation is still there (NOI / (debt + pref_equity))",
+    "noi_ye / senior_plus_pe" in fsrc)
+
+print()
+print("1c. rendering: blank stays blank, a NEGATIVE now prints as negative")
+_vsrc = read(VUE)
+guarded = re.findall(
+    r"pe_yield_on_exposure\s*\?\s*fmtPct\([^)]*\)\s*:\s*'N/A'", _vsrc)
+chk(f"both One Pager cells stay truthiness-guarded to 'N/A' "
+    f"(found {len(guarded)})", len(guarded) == 2)
+chk("the field appears nowhere else in the component",
+    len(re.findall(r"pe_yield_on_exposure", _vsrc)) == len(guarded) * 2)
+
+# EXECUTED, not asserted — the same principle as fmtOccVariance below. The
+# claim "nothing changes on screen" rests entirely on 0.0 and null being
+# equally falsy, so run the real cell expression under node over both.
+if guarded and shutil.which("node"):
+    # The matched cell text, with whatever accessor it uses
+    # (`cap.…` / `pg.data.cap_stack?.…`) reduced to a single variable, so the
+    # ternary that actually ships is what runs.
+    expr = re.sub(r"[\w.?]*\bpe_yield_on_exposure", "v", guarded[0])
+    js = ("function fmtPct(v){return (v*100).toFixed(1)+'%';}\n"
+          f"const f = (v) => ({expr});\n"
+          "console.log(JSON.stringify("
+          "[0.0, null, undefined, 0.0625, -0.009788, -0.003801].map(f)));")
+    try:
+        got = json.loads(subprocess.run(["node", "-e", js],
+                                        capture_output=True, text=True,
+                                        check=True).stdout)
+        chk(f"0.0 renders {got[0]!r} and null renders {got[1]!r} — identical",
+            got[0] == got[1] == "N/A")
+        chk("undefined (key absent) also renders 'N/A'", got[2] == "N/A")
+        chk(f"a REAL yield still renders a figure ({got[3]!r})",
+            got[3] not in ("N/A", None) and "%" in str(got[3]))
+        # The point of the gate change: a negative is TRUTHY, so it reaches
+        # fmtPct and prints as a negative percentage rather than 'N/A'.
+        chk(f"Jefferson Eastchase's -0.009788 renders {got[4]!r}, not 'N/A'",
+            got[4] == "-1.0%")
+        chk(f"Jefferson Addison Heights' -0.003801 renders {got[5]!r}, "
+            "not 'N/A'", got[5] == "-0.4%")
+    except Exception as ex:                                   # noqa: BLE001
+        chk(f"cell expression executed under node ({type(ex).__name__})", False)
+elif guarded:
+    print("  [SKIP] node not on PATH — cell expression not executed")
+
+print()
 print("2. occupancy variance never prints '-0.0%'  (OnePagerView.vue)")
 vsrc = read(VUE)
 
