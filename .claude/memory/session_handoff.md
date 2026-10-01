@@ -24,6 +24,11 @@ not only before the build.**
 ### To finish (Jim approved deploying + pushing on Oct 1; re-confirm the span)
 
 1. `git fetch origin`; confirm `76c786c` is on origin (`git branch -r --contains 76c786c`).
+   STILL NOT ON ORIGIN at end of day Oct 1 (all branches fetched; `origin/main` still
+   `940a591`). If she pushes a REBASED copy under a different hash, the pushed commit is
+   not the one that is live: compare its tree with the live image's
+   (`git diff 76c786c <pushed>` needs `76c786c` locally -- ask her, or compare against
+   what `v549` shows on production) before merging.
 2. In `../waterfall-xirr-deploy`: `git merge origin/main` (MERGE, never rebase -- the
    branch already carries a merge of origin/main, and rebasing onto an older base is
    what drops live work).
