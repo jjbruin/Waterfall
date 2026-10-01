@@ -255,6 +255,90 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v548` = `b4a9c1f` (COMMITTED PREF COMES FROM MRI'S IA_Commitment, AS OF
+    THE QUARTER. Oct 1 2026, build `camp` 2m32s, run status Succeeded, tag
+    locked. Approved by Charlene; Jim notified.
+    ONE ENGINE. `committed_pref.resolve_committed_pref` is the only place the
+    rule lives, and the One Pager's cap stack, its PE block and Investment
+    Metrics all call it. They disagreed on TWELVE DEALS before this: the One
+    Pager summed accounting `Typename='Commitment'` rows while Investment
+    Metrics already read IA_Commitment first. `one_pager.py` carried TWO
+    independent copies of that accounting sum, 1,800 lines apart, agreeing only
+    because the filter was duplicated verbatim. Both halves now return the same
+    figure on every deal — verified live on six.
+    THE AS-OF RULE IS A DATE RANGE, NOT A QUARTER-END SNAPSHOT, and the DATA
+    decided it against the stated premise. A commitment is revised by ENDING
+    one row and opening the next the following day: of the 80 deal-level chains
+    in MRI, 30 pairs are contiguous, 0 have a gap, 1 overlaps. Exactly ONE
+    ended row in that whole population lands on a quarter end and there is no
+    `09-30` EndDate anywhere in the table. So the row that applies on Q is
+    `StartDate <= Q AND (EndDate IS NULL OR EndDate >= Q)`.
+    **THE BENEFIT IS DEFERRED AND THAT WAS THE POINT OF SHIPPING IT THIS WAY.**
+    `queries/MRI_Commitments.sql` still filters `EndDate IS NULL` — Jim's call,
+    NOT touched — so ENDED rows never reach the app. A deal whose current row
+    starts after the quarter (JB Fair Park's begins 2026-07-30) has NO row in
+    effect at 26Q2. Falling through to funded pref would have moved its printed
+    figure by **-22,850,000** to a number matching neither today, the sent
+    report, nor the answer the query change will give. So the fallback KEEPS
+    THE ACCOUNTING FIGURE, with the basis saying so. Measured before building;
+    it is what stopped the first attempt at this deploy.
+    ELEVEN DEALS CHANGED AT DEPLOY (v547 -> v548, measured on production):
+    Burton 26Q3 81,857,500 -> 54,227,500; Camarillo 0 -> 18,843,400 and Outlook
+    0 -> 11,847,307 and East Manchester 0 -> 3,600,000 (both quarters); Clima
+    Secur 26Q3 0 -> 3,025,000; Pontchartrain 12,620,000 -> 10,847,420;
+    Nottingham 26Q3 12,058,427 -> 12,535,000; JB Fair Park 26Q3 30,000,000 ->
+    29,757,181; Middle Island 8,129,967 -> 7,896,655; Asbury 26Q3 1,490,000 ->
+    1,620,000; Donald Lynch 0 -> blank.
+    THREE CHANGE FURTHER WHEN THE ENDED ROWS LOAD, all at 26Q2: Burton
+    54,227,500 -> 26,597,500, JB Fair Park 30,000,000 -> 14,300,000, Nottingham
+    12,058,427 -> 9,135,000. **Those three are the figures that were typed into
+    the sent 26Q2 TIAA report BY HAND** — which is the strongest evidence that
+    IA_Commitment is the right source. Against that report the Snapshot
+    Financial page goes 290/355 -> 300/355 and the One Pagers 182/190 -> 186/190
+    WITH the ended rows; with today's open-only table it is 287/355 and 182/190,
+    the three Camarillo cells the only movement.
+    NONE, NEVER 0, AND NO FLOOR. `financials_service` tested
+    `committed_pe == 0`, which fires on a genuine zero AND on every None,
+    silently relabelling "no pledge on file" as "fully funded"; now `is None`.
+    `remaining_to_fund` is NOT floored — Nottingham prints -1.2M at 26Q2 once
+    the ended rows load, and flooring it would hide a disagreement between the
+    pledge and the ledger. Flagged as `committed_below_funded`.
+    TOMBSTONES AND BACK-FILL. Eleven rows open and close on the same day for
+    0.00/0.01 and are dropped. A chain whose every row is MRI back-filling an
+    uploaded transaction is not a pledge register: Apple - Bales Drive would
+    have fallen 4,172,975 -> 170,179, a 96% drop driven entirely by artifacts,
+    so its accounting figure is KEPT with the basis `pending accounting`.
+    ALL EIGHT READERS OF THE `commitments` TABLE NOW FILTER TO CURRENT ROWS —
+    a no-op today, load-bearing the moment ended rows arrive. Treasury's
+    investor split is the one that would have broken loudest: AMB6 carries PSC1
+    TWICE once ended rows load (11,000,000 ended 2026-06-30 plus 4,700,000
+    open), the base doubles to 22,000,000 and EVERY ONE of the thirteen
+    investors' percentages halves; TGA25 would go 103.6M -> 438.9M. Verified
+    unchanged after deploy: AMB6 13 investors, base 11,000,000.00, PSC1
+    42.7273%; TGA25 base 103,572,497.76.
+    JIM'S ENGINES PROVED UNTOUCHED BY DIFF, not by reading: all 114 One Pager
+    payloads compared against the v547 capture, **ZERO differences outside the
+    four intended committed-pref fields**. `waterfall.py`, `capital_calls.py`,
+    `metrics.py` and `models.py` contain zero occurrences of "commit", and
+    `seed_states_from_accounting` selects on `is_contribution`, which already
+    excludes commitments at `loaders.py:275`.
+    POST-DEPLOY: root 200 (0.27-0.45s), 0 tracebacks, One Pager 1.8s, Snapshot
+    Financial 8.5s cold, Investment Metrics 0.18s. `committed_pref_check` 35/35
+    IN THE CONTAINER, proved non-vacuous against four injected defects (rule A
+    instead of B fails 2, dropping the tombstone rule 1, returning 0 instead of
+    None 1, removing the back-fill gate 3). `one_engine_per_number_check` 26/0,
+    `investment_metrics_check` 113/0, `treasury_upload_check` 27/0; every other
+    suite byte-identical to the baseline tree.
+    **NOT FULLY DELIVERED, and it is not a regression**: Investment Metrics
+    shares the FUNCTION but not the RULE — neither `capitalization_sources`
+    call site passes `as_of`, so it still takes the legacy raw-split branch.
+    No figure of its moved, but it reports Apple - Bales at the back-fill sum
+    (0.1242M CAD) where the One Pager now says 4,172,975. Closing that WOULD
+    move Investment Metrics figures and so needs its own measurement.
+    FREEZE_ENABLED still ABSENT (`[]`) before and after. Rollback:
+    `activeRevisionsMode` is Single, so redeploy the image —
+    `az containerapp update ... --image
+    acrwaterfalldev.azurecr.io/waterfall-xirr:0b439d8 --revision-suffix v549`.)
   - `v547` = `0b439d8` (THREE ONE PAGER FIGURES STOP LYING BY DEFAULT, Sep 30
     2026. Merge of `fix/pe-yield-blank-when-uncomputable` onto `origin/main`
     `6829b38`, so it sits ON TOP of Jim's v545/v546 Investment Metrics work and
