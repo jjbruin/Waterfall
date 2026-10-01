@@ -287,6 +287,7 @@ def _one_pager_payload(vcode: str, quarter: Optional[str]) -> tuple:
         budget_econ_occ=data.get("budget_econ_occ"),
         deal_terms=data.get("deal_terms_raw"),
         at_close_noi=data.get("at_close_noi_raw"),
+        commitments_raw=data.get("commitments_raw"),
         event_dates=data.get("event_dates_raw"),
         full_data=data,
         relationships=data.get("relationships_raw"),

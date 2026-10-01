@@ -1142,7 +1142,8 @@ def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
                        waterfalls, acct, occupancy_raw=None,
                        budget_econ_occ=None, deal_terms=None, at_close_noi=None,
                        full_data=None, relationships=None, event_dates=None,
-                       mri_loans_all=None, inspection=None):
+                       mri_loans_all=None, inspection=None,
+                       commitments_raw=None):
     """Aggregate all One Pager sections into a single response.
 
     Args:
@@ -1174,7 +1175,8 @@ def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
     cap_stack = get_capitalization_stack(vcode, mri_loans, mri_val, waterfalls, acct, inv,
                                          isbs_raw=isbs_raw, quarter_str=quarter_str,
                                          relationships=relationships,
-                                         inspection=inspection)
+                                         inspection=inspection,
+                                         commitments=commitments_raw)
     prop_perf = get_property_performance(vcode, quarter_str, isbs_raw, mri_val, occupancy_raw,
                                           budget_econ_occ_df=budget_econ_occ,
                                           at_close_noi_df=at_close_noi,
@@ -1186,7 +1188,8 @@ def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
     # _enrich_cap_stack_from_deal_terms() below, which overrides.
     pe_perf = get_pe_performance(vcode, quarter_str, acct, waterfalls, inv,
                                  isbs_raw=isbs_raw,
-                                 deal_terms=deal_terms) if quarter_str else {}
+                                 deal_terms=deal_terms,
+                                 commitments=commitments_raw) if quarter_str else {}
     comments = get_one_pager_comments(vcode, quarter_str) if quarter_str else {}
 
     # Enrich PE performance from deal analysis waterfall results
@@ -1414,15 +1417,23 @@ def _enrich_pe_from_deal_result(pe: dict, vcode: str, data: dict, quarter_str: s
                         pref_paid = grace_rows.loc[pref_mask, "Amt"].sum()
                         pe["accrued_balance"] = max(0.0, pe["accrued_balance"] - abs(pref_paid))
 
-        # Committed PE: if no commitment rows in accounting, use total PE contributions
-        if pe.get("committed_pe", 0) == 0:
+        # Committed PE: when NO source could answer, fall back to contributions.
+        #
+        # `is None`, NOT `== 0`. Since committed pref became None-for-absent
+        # (committed_pref.resolve_committed_pref), a falsy test fires on a deal
+        # whose committed pref is genuinely zero AND on every None, silently
+        # relabelling "no pledge on file" as "fully funded". A real zero must
+        # survive. This is the one place the distinction is load-bearing.
+        if pe.get("committed_pe") is None:
             total_contrib = sum(
                 pr.get("contributions", 0.0)
                 for pr in partner_results
                 if pr.get("is_pref_equity")
             )
-            pe["committed_pe"] = total_contrib
-            pe["remaining_to_fund"] = 0.0  # Fully funded if no commitments data
+            if total_contrib:
+                pe["committed_pe"] = total_contrib
+                pe["committed_pe_basis"] = "funded (no commitment row)"
+                pe["remaining_to_fund"] = 0.0  # fully funded if no commitments data
 
     except Exception as e:
         log.warning("Could not enrich PE performance from deal result for %s: %s", vcode, e)

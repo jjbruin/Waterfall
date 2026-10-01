@@ -274,7 +274,12 @@ def commitment_rollforward(entityid: str, engine=None) -> List[dict]:
     engine = engine or get_engine()
     with engine.connect() as conn:
         try:
-            df = pd.read_sql(text("SELECT * FROM commitments"), conn)
+            df = pd.read_sql(text(
+                'SELECT * FROM commitments WHERE "EndDate" IS NULL'
+                # CURRENT ROWS ONLY. No-op while MRI_Commitments.sql filters
+                # EndDate IS NULL; load-bearing the moment ENDED rows arrive
+                # for the committed-pref as-of rule (committed_pref.py).
+            ), conn)
         except Exception:
             return []
     if df.empty:

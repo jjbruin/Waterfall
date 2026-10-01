@@ -365,6 +365,7 @@ def _one_pager_provider(data: dict) -> Callable:
                 # Passing it does NOT move any Snapshot figure — the dev branch
                 # of resolve_debt already ignores the One Pager's debt.
                 inspection=data.get("inspection_raw"),
+                commitments=data.get("commitments_raw"),
             )
             prop_perf = get_property_performance(
                 vcode, quarter, data["isbs_raw"], data["mri_val"],
@@ -1012,6 +1013,7 @@ def _default_one_pager_getter() -> Callable:
             budget_econ_occ=data.get("budget_econ_occ"),
             deal_terms=data.get("deal_terms_raw"),
             at_close_noi=data.get("at_close_noi_raw"),
+            commitments_raw=data.get("commitments_raw"),
             event_dates=data.get("event_dates_raw"),
             full_data=data, relationships=data.get("relationships_raw"),
             mri_loans_all=data.get("mri_loans_all"),

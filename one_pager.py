@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from database import execute_query, get_db_connection
 from utils import normalize_columns
 from loaders import capital_after
+from committed_pref import resolve_committed_pref
 
 
 # ============================================================
@@ -550,6 +551,7 @@ def get_capitalization_stack(
     quarter_str: str = None,
     relationships: pd.DataFrame = None,
     inspection: pd.DataFrame = None,
+    commitments: pd.DataFrame = None,
 ) -> Dict[str, Any]:
     """
     Get capitalization stack and deal terms
@@ -933,6 +935,50 @@ def get_capitalization_stack(
                         # value. See normalize_share for the <= 1 boundary.
                         cap['pe_participation'] = normalize_share(part)
 
+    # Inputs to the committed-pref resolution below. Seeded here so the
+    # resolution still runs when the accounting block is skipped or raises.
+    _acct_committed = 0.0
+    _deal_iid_for_commitments: list = []
+    _committed_as_of = None
+    if quarter_str:
+        try:
+            _, _committed_as_of = quarter_to_date_range(quarter_str)
+        except Exception:
+            _committed_as_of = None
+    # Derived from inv_map alone: a deal with no accounting rows still has a
+    # commitment to resolve, and the block below is skipped for it.
+    if inv_map is not None:
+        try:
+            from loaders import build_investmentid_to_vcode as _b
+            _deal_iid_for_commitments = [
+                iid for iid, vc in _b(inv_map).items() if str(vc) == vcode_str]
+        except Exception:
+            _deal_iid_for_commitments = []
+
+    # A SOLD DEAL THAT IS NOT KEPT ON THE REPORT CARRIES NO COMMITMENT AFTER THE
+    # SALE. Its commitment row is never ended in MRI, so without this the open
+    # row would be resurrected on every later quarter for ever.
+    #
+    # GATED ON KEEP_DESPITE_SOLD, unlike the debt suppression below. The four
+    # kept deals are read at the quarter they were last held — the caller passes
+    # that as `quarter_str` — so for them the rule is already "the commitment in
+    # effect on the last held quarter" and no suppression is wanted.
+    _sold_and_dropped = False
+    if quarter_str and inv_map is not None and not getattr(inv_map, "empty", True):
+        try:
+            from flask_app.services.portfolio_snapshot_service import (
+                is_sold_as_of, KEEP_DESPITE_SOLD,
+            )
+            _vc_col = 'vcode' if 'vcode' in inv_map.columns else 'vCode'
+            _srow = inv_map[inv_map[_vc_col].astype(str).str.strip().str.upper()
+                            == vcode_str.upper()]
+            if not _srow.empty and vcode_str.upper() not in KEEP_DESPITE_SOLD:
+                _, _q_end_sold = quarter_to_date_range(quarter_str)
+                _sold_and_dropped = bool(
+                    is_sold_as_of(_srow.iloc[0], _q_end_sold))
+        except Exception:
+            _sold_and_dropped = False
+
     # Get equity from accounting feed (filtered to quarter end when available)
     if acct is not None and not acct.empty and inv_map is not None:
         from loaders import build_investmentid_to_vcode
@@ -940,6 +986,7 @@ def get_capitalization_stack(
         try:
             inv_to_vcode = build_investmentid_to_vcode(inv_map)
             deal_investment_ids = [iid for iid, vc in inv_to_vcode.items() if str(vc) == vcode_str]
+            _deal_iid_for_commitments = list(deal_investment_ids)
 
             acct_norm = acct.copy()
             normalize_columns(acct_norm)
@@ -963,12 +1010,14 @@ def get_capitalization_stack(
                 deal_acct["TypeName"] = deal_acct["TypeName"].fillna("").astype(str).str.strip()
                 deal_acct["InvestorID"] = deal_acct["InvestorID"].astype(str).str.strip()
 
-                # Get committed PE from accounting commitment rows (non-OP only)
+                # The accounting-side committed figure. NO LONGER THE PUBLISHED
+                # ANSWER — it is what the commitments table defers to when it
+                # has no row in effect on the quarter. See committed_pref.py.
                 if "is_commitment" in deal_acct.columns:
                     non_op_mask = ~deal_acct["InvestorID"].str.upper().str.startswith("OP")
                     commitment_rows = deal_acct[deal_acct["is_commitment"] & non_op_mask]
                     if not commitment_rows.empty:
-                        cap['committed_pe'] = commitment_rows["Amt"].abs().sum()
+                        _acct_committed = float(commitment_rows["Amt"].abs().sum())
 
                 investor_balances = {}
                 for _, row in deal_acct.iterrows():
@@ -1004,17 +1053,34 @@ def get_capitalization_stack(
         except Exception as e:
             pass
 
-    # ---- Committed pref falls back to funded when no commitment row exists ----
+    # ---- Committed pref comes from MRI's IA_Commitment, as of the quarter ----
     #
-    # `committed_pe` is summed from Typename='Commitment' accounting rows. Two
-    # deals on live have none at all: East Manchester (PPI20) and City West
-    # (PPICW), both pre-dating the convention. Left at 0.0 they read as a real
-    # "$0.0M committed" rather than as "no pledge on file" — and the Portfolio
-    # Snapshot's Total Pref, now on the committed basis, would print $0.0 for
-    # deals carrying $3.60M and $5.92M of funded pref.
+    # ONE ENGINE: committed_pref.resolve_committed_pref. `get_pe_performance`
+    # and `investment_metrics.capitalization_sources` call the same function,
+    # so the One Pager's two halves and the Investment Metrics report cannot
+    # disagree about the same fact. They did, on twelve deals, until 2026-10-01.
+    #
+    # Deliberately outside the try/except above so it still applies when the
+    # accounting block raised and left the figures at their 0.0 defaults.
+    _committed, _basis = resolve_committed_pref(
+        commitments, _deal_iid_for_commitments, _committed_as_of,
+        accounting_committed=_acct_committed or None,
+        sold_and_dropped=_sold_and_dropped,
+    )
+    cap['committed_pe'] = _committed
+    cap['committed_pe_basis'] = _basis
+
+    # ---- Committed pref falls back to funded when nothing else answers ----
+    #
+    # Two deals on live carry no commitment anywhere: East Manchester (PPI20)
+    # and City West (PPICW), both pre-dating the convention. Left at None they
+    # read as "no pledge on file" — and the Portfolio Snapshot's Total Pref,
+    # on the committed basis, would print a dash for deals carrying $3.60M and
+    # $5.92M of funded pref.
     #
     # Funded is the correct floor: capital actually contributed is committed by
-    # definition, so this can only ever raise a zero, never lower a real pledge.
+    # definition, so this can only ever raise an absent figure, never lower a
+    # real pledge.
     #
     # IT HAS TO LIVE HERE. `pe_performance.committed_pe` carries a similar
     # fallback (financials_service._enrich_pe_from_deal_result), but it is not
@@ -1024,15 +1090,12 @@ def get_capitalization_stack(
     # read (portfolio_snapshot_financial and portfolio_snapshot_summary) — is
     # what stops the two pages disagreeing about the same deal.
     #
-    # Deliberately outside the try/except above so it still applies when the
-    # accounting block raised and left both figures at their 0.0 defaults.
-    cap['committed_pe_basis'] = 'commitment rows'
-    if not cap['committed_pe']:
+    # NEVER 0 FOR "NO PLEDGE". A zero is indistinguishable from a real zero to
+    # every consumer downstream; None renders as an em dash through fmtMil.
+    if cap['committed_pe'] is None:
         if cap['pref_equity']:
             cap['committed_pe'] = cap['pref_equity']
             cap['committed_pe_basis'] = 'funded (no commitment row)'
-        else:
-            cap['committed_pe_basis'] = 'none'
 
     # ---- A SOLD DEAL'S DEBT IS NOT REPORTED ----
     #
@@ -2630,6 +2693,7 @@ def get_pe_performance(
     inv_map: pd.DataFrame,
     isbs_raw: pd.DataFrame = None,
     deal_terms: pd.DataFrame = None,
+    commitments: pd.DataFrame = None,
 ) -> Dict[str, Any]:
     """
     Get Preferred Equity performance metrics
@@ -2668,6 +2732,18 @@ def get_pe_performance(
 
     vcode_str = _canonical_vcode(vcode, inv_map)
     _, quarter_end = quarter_to_date_range(quarter_str)
+
+    # Inputs to the committed-pref resolution at the end of this function.
+    _pe_acct_committed = 0.0
+    _pe_as_of = quarter_end
+    _pe_iids: list = []
+    if inv_map is not None:
+        try:
+            from loaders import build_investmentid_to_vcode as _b2
+            _pe_iids = [iid for iid, vc in _b2(inv_map).items()
+                        if str(vc) == str(vcode).strip()]
+        except Exception:
+            _pe_iids = []
 
     # Get coupon and participation from waterfalls
     if waterfalls is not None and not waterfalls.empty:
@@ -2737,12 +2813,15 @@ def get_pe_performance(
                 deal_acct["TypeName"] = deal_acct["TypeName"].fillna("").astype(str).str.strip()
                 deal_acct["InvestorID"] = deal_acct["InvestorID"].astype(str).str.strip()
 
-                # Get committed PE from accounting commitment rows (non-OP only)
+                # SAME FACT AS cap_stack.committed_pe, SAME ENGINE. This used
+                # to be an independent copy of the accounting sum 1,800 lines
+                # from the other one; they agreed only because the filter was
+                # duplicated verbatim. See committed_pref.resolve_committed_pref.
                 if "is_commitment" in deal_acct.columns:
                     non_op_mask = ~deal_acct["InvestorID"].str.upper().str.startswith("OP")
                     commitment_rows = deal_acct[deal_acct["is_commitment"] & non_op_mask]
                     if not commitment_rows.empty:
-                        pe['committed_pe'] = commitment_rows["Amt"].abs().sum()
+                        _pe_acct_committed = float(commitment_rows["Amt"].abs().sum())
 
                 # Build cashflow lists for ROE calculation
                 # capital_events: all cashflows (contributions negative, distributions positive)
@@ -2915,9 +2994,27 @@ def get_pe_performance(
         except Exception:
             pass
 
+    # Committed pref: ONE ENGINE, shared with cap_stack and Investment Metrics.
+    _pe_committed, _pe_basis = resolve_committed_pref(
+        commitments, _pe_iids, _pe_as_of,
+        accounting_committed=_pe_acct_committed or None,
+        sold_and_dropped=False,
+    )
+    pe['committed_pe'] = _pe_committed
+    pe['committed_pe_basis'] = _pe_basis
+
     # Calculate derived metrics
     pe['current_pe_balance'] = pe['funded_to_date'] - pe['return_of_capital']
-    pe['remaining_to_fund'] = max(0, pe['committed_pe'] - pe['funded_to_date'])
+    # NO FLOOR ON remaining_to_fund. A commitment BELOW what has been funded is
+    # a real finding — Nottingham prints -1.2M at 26Q2 — and flooring it at zero
+    # would hide a disagreement between the pledge and the ledger. Flagged in
+    # `committed_below_funded` so a reader is told rather than left to notice.
+    if pe['committed_pe'] is None:
+        pe['remaining_to_fund'] = None
+        pe['committed_below_funded'] = False
+    else:
+        pe['remaining_to_fund'] = pe['committed_pe'] - pe['funded_to_date']
+        pe['committed_below_funded'] = pe['remaining_to_fund'] < 0
 
     return pe
 

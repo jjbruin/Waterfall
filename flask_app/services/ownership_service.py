@@ -266,7 +266,12 @@ def crossed_fund_investors(min_assets: int = 2) -> dict:
         from flask_app.db import get_engine
         from sqlalchemy import text as _text
         with get_engine().connect() as conn:
-            com = pd.read_sql(_text("SELECT * FROM commitments"), conn)
+            com = pd.read_sql(_text(
+                'SELECT * FROM commitments WHERE "EndDate" IS NULL'
+                # CURRENT ROWS ONLY. No-op while MRI_Commitments.sql filters
+                # EndDate IS NULL; load-bearing the moment ENDED rows arrive
+                # for the committed-pref as-of rule (committed_pref.py).
+            ), conn)
     except Exception:
         logger.warning("crossed_fund_investors: commitments not loaded", exc_info=True)
         return out
