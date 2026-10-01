@@ -843,7 +843,12 @@ def derive_properties(engine=None, max_hops: int = 2) -> Dict[str, dict]:
     out: Dict[str, dict] = {}
     try:
         with engine.connect() as conn:
-            com = pd.read_sql(text("SELECT * FROM commitments"), conn)
+            com = pd.read_sql(text(
+                'SELECT * FROM commitments WHERE "EndDate" IS NULL'
+                # CURRENT ROWS ONLY. No-op while MRI_Commitments.sql filters
+                # EndDate IS NULL; load-bearing the moment ENDED rows arrive
+                # for the committed-pref as-of rule (committed_pref.py).
+            ), conn)
             dl = pd.read_sql(text("SELECT * FROM deals"), conn)
     except Exception as e:
         logger.warning("derive_properties failed: %s", e)

@@ -894,7 +894,12 @@ def build_schedule_of_investments(entityid: str, period_end: str,
             logger.warning("relationships not loaded", exc_info=True)
             rel = pd.DataFrame()
         try:
-            com = pd.read_sql(text("SELECT * FROM commitments"), conn)
+            com = pd.read_sql(text(
+                'SELECT * FROM commitments WHERE "EndDate" IS NULL'
+                # CURRENT ROWS ONLY. No-op while MRI_Commitments.sql filters
+                # EndDate IS NULL; load-bearing the moment ENDED rows arrive
+                # for the committed-pref as-of rule (committed_pref.py).
+            ), conn)
         except Exception:
             logger.warning("commitments not loaded", exc_info=True)
             com = pd.DataFrame()

@@ -65,6 +65,7 @@ silently disappearing.
 from __future__ import annotations
 
 import datetime as _dt
+from committed_pref import resolve_committed_pref  # ONE ENGINE
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -499,6 +500,7 @@ def capitalization_sources(
     ident: DealIdentity,
     acct: pd.DataFrame,
     commitments: Optional[pd.DataFrame],
+    as_of: Any = None,
 ) -> List[Tuple[str, Optional[float], Optional[float]]]:
     """Every source for (PSC pref, first-loss), in precedence order.
 
@@ -527,7 +529,23 @@ def capitalization_sources(
         key = (_NORM_ID_COL if _NORM_ID_COL in commitments.columns else None)
         m = (commitments[commitments[key] == iid] if key
              else commitments[commitments["EntityID"].map(norm_id) == iid])
-        out.append(("commitments (IA_Commitment)",) + split(m, "Amount"))
+        # ONE ENGINE for the PSC pref side. `committed_pref.resolve_committed_pref`
+        # is what the One Pager's cap stack and PE block now read; calling it here
+        # too is what stops this report and that page disagreeing about the same
+        # deal, which they did on twelve deals until 2026-10-01. With no as-of
+        # supplied the whole chain is offered, which is this report's own basis.
+        if as_of is not None:
+            psc, _basis = resolve_committed_pref(m, iid, as_of)
+        else:
+            psc = split(m, "Amount")[0]
+        # The first-loss (OP) side has no as-of rule and must not see superseded
+        # revisions, so it is taken from CURRENT rows only.
+        if "EndDate" in m.columns:
+            m_cur = m[m["EndDate"].isna()]
+        else:
+            m_cur = m
+        _, op_side = split(m_cur, "Amount")
+        out.append(("commitments (IA_Commitment)", psc, op_side))
     else:
         out.append(("commitments (IA_Commitment)", None, None))
 
