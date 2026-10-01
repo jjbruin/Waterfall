@@ -143,6 +143,35 @@ MULTI = [
 amt, _ = cp.resolve_committed_pref(frame(MULTI), ["APPLE", "APPLE2"], Q2)
 chk("the same investor on two entities is two pledges", amt == 3000.0, f"got {amt}")
 
+print("\n-- ENDED ROWS NOW LOAD: every reader must be unmoved by them --")
+from investment_metrics import capitalization_sources, DealIdentity
+CHAIN_OPEN = [
+    {"EntityID": "PONTCH", "InvestorID": "PPI31", "Amount": 10847420.0,
+     "StartDate": "2025-12-08", "EndDate": None, "CommitmentUID": 1362,
+     "TransactionNote": None},
+]
+CHAIN_FULL = CHAIN_OPEN + [
+    {"EntityID": "PONTCH", "InvestorID": "PPI31", "Amount": 10370000.0,
+     "StartDate": "2021-02-01", "EndDate": "2023-07-30", "CommitmentUID": 783,
+     "TransactionNote": None},
+    {"EntityID": "PONTCH", "InvestorID": "PPI31", "Amount": 10790420.0,
+     "StartDate": "2023-07-31", "EndDate": "2025-10-05", "CommitmentUID": 1360,
+     "TransactionNote": None},
+    {"EntityID": "PONTCH", "InvestorID": "PPI31", "Amount": 10815420.0,
+     "StartDate": "2025-10-06", "EndDate": "2025-12-07", "CommitmentUID": 1361,
+     "TransactionNote": None},
+]
+_ident = DealIdentity(vcode="P0000037", investment_id="PONTCH", name="Pontchartrain")
+_a = capitalization_sources(_ident, pd.DataFrame(), frame(CHAIN_OPEN))[0][1]
+_b = capitalization_sources(_ident, pd.DataFrame(), frame(CHAIN_FULL))[0][1]
+chk("Investment Metrics is UNMOVED when the ended rows load",
+    _a is not None and _b is not None and abs(_a - _b) < 0.01, f"open={_a} full={_b}")
+chk("...and does NOT sum the superseded revisions (42,823,260)", _b != 42823260.0, f"got {_b}")
+_amt, _ = cp.resolve_committed_pref(frame(CHAIN_FULL), "PONTCH", date(2024, 6, 30))
+chk("the as-of engine picks the row in force mid-2024 (10,790,420)", _amt == 10790420.0, f"got {_amt}")
+_amt, _ = cp.resolve_committed_pref(frame(CHAIN_FULL), "PONTCH", date(2026, 6, 30))
+chk("...and the current one at 26Q2 (10,847,420)", _amt == 10847420.0, f"got {_amt}")
+
 print("\n-- the eight readers of the commitments table filter to current rows --")
 READERS = [
     ("flask_app/services/ownership_service.py", None),
