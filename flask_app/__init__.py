@@ -109,6 +109,13 @@ def create_app(config_name: str = None) -> Flask:
         from flask_app.services.data_adapters import configure_from_env
         configure_from_env()
 
+    # Section access by username: one gate in front of every /api route, so a
+    # blueprint added later is covered the day it is registered. The mapping
+    # lives in auth/sections.py; scripts/section_access_check.py fails while
+    # any /api route is assigned to nothing.
+    from flask_app.auth.sections import enforce_section_access
+    app.before_request(enforce_section_access)
+
     # Register blueprints
     from flask_app.auth.routes import auth_bp
     app.register_blueprint(auth_bp, url_prefix="/auth")

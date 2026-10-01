@@ -182,6 +182,17 @@ router.beforeEach(async (to) => {
   if (auth.isAuthenticated && !auth.user) {
     await auth.fetchMe()
   }
+  // Section access by username. The server refuses the API regardless; this
+  // keeps a user from landing on a screen that would only fill with 403s --
+  // including the default '/' -> '/dashboard' for someone without Dashboard.
+  if (to.meta.requiresAuth !== false && auth.user) {
+    await auth.loadSectionCatalog()
+    const sec = auth.sectionForPath(to.path)
+    if (sec && !auth.hasSection(sec)) {
+      const dest = auth.firstAllowedPath()
+      if (dest !== to.path) return { path: dest, query: { denied: auth.sectionLabel(sec) } }
+    }
+  }
 })
 
 export default router

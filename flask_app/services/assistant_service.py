@@ -815,9 +815,64 @@ def _error_hint(tool_name: str, tool_input: dict, exc: Exception) -> str:
     return ""
 
 
+#: Which sections a tool reads, mirroring the API it stands in for
+#: (auth/sections.API_SECTIONS). ANY ONE suffices; ``()`` is open to every
+#: signed-in user. The assistant is reachable from every screen, so without
+#: this a user unchecked for a section could simply ask for its data.
+#: scripts/section_access_check.py fails while any tool in TOOLS is missing
+#: from this map -- a new tool has to say where its data lives.
+_AM = ("asset_management",)
+_DEALS = ("asset_management", "new_business")
+TOOL_SECTIONS = {
+    "resolve_deal": (), "list_deals": (), "query_deal_data": (),
+    "get_portfolio_summary": (), "get_user_feedback": (),
+    "lookup_field": (), "impact_of": (),
+    # Open, but refuses a restricted table -- see _tool_query_database.
+    "query_database": (),
+    "query_accounting": _AM,
+    "get_occupancy": _AM,
+    "get_financial_statement": _AM,
+    "get_one_pager": _AM,
+    "get_valuation_cycle": _AM,
+    "get_valuation_detail": _AM,
+    "trace_field_value": _AM,
+    "compute_deal_returns": _DEALS,
+    "get_loan_details": _DEALS,
+    "get_waterfall_structure": _DEALS,
+    "get_annual_forecast": _DEALS,
+    "get_capitalization": _DEALS,
+    "compare_deals": _DEALS,
+    "get_debt_service": _DEALS,
+    "get_cash_management": _DEALS,
+    "get_tenant_roster": _DEALS,
+    "get_sold_returns": ("reports",),
+}
+
+
+def _tool_refusal(tool_name: str):
+    """A refusal string if the signed-in user lacks the tool's section."""
+    from flask_app.auth.sections import current_allowed, label_for
+    secs = TOOL_SECTIONS.get(tool_name)
+    if secs is None:
+        # Unmapped fails CLOSED here (unlike the API gate): a refused tool
+        # is one failed answer, not an outage, and the guardrail names it.
+        return json.dumps({"error": f"Tool {tool_name} has no section "
+                                    f"assigned; it is unavailable."})
+    if not secs or any(s in current_allowed() for s in secs):
+        return None
+    names = " or ".join(label_for(s) for s in secs)
+    return json.dumps({"error": f"This user does not have access to the "
+                                f"{names} section, so {tool_name} is not "
+                                f"available. Say so plainly; do not try "
+                                f"to reach the same data another way."})
+
+
 def execute_tool(tool_name: str, tool_input: dict) -> str:
     """Execute a tool and return the result as a string."""
     try:
+        refused = _tool_refusal(tool_name)
+        if refused:
+            return refused
         if tool_name == "resolve_deal":
             return _tool_resolve_deal(tool_input)
         elif tool_name == "list_deals":
@@ -962,6 +1017,17 @@ def _tool_query_database(inp):
     for keyword in ["DROP", "DELETE", "UPDATE", "INSERT", "ALTER", "TRUNCATE", "CREATE", "GRANT", "REVOKE"]:
         if keyword in sql_upper.split():
             return json.dumps({"error": f"Query contains forbidden keyword: {keyword}"})
+
+    # Section access: a restricted table (gl_detail and friends) is refused
+    # for a user who could not open it in Data Explorer either.
+    from flask_app.auth.sections import (
+        sql_names_hidden_table, table_section, label_for)
+    hidden = sql_names_hidden_table(sql)
+    if hidden:
+        return json.dumps({"error": f"Table {hidden} is visible only to users "
+                                    f"with access to the "
+                                    f"{label_for(table_section(hidden))} "
+                                    f"section, and this user does not have it."})
 
     from flask_app.db import get_engine
     engine = get_engine()

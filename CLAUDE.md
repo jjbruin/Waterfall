@@ -2657,6 +2657,54 @@ columns are loaded from somebody else's spreadsheet, and the debt rows are ours.
   directions: a rule tested only in the refusing direction is satisfied by
   locking everyone out.
 
+### Section access by username
+Built Oct 1 2026, NOT deployed. Registry: `flask_app/auth/sections.py`.
+
+Jim: access is granted per SIDEBAR SECTION, by username, from checkboxes in
+Settings > User Management that default to ticked. Users without Accounting
+cannot see `gl_accounts`, `gl_detail`, `ia_transactions` or ANY `tr_*`,
+`wp_*` or `ic_*` table (treasury, workpapers, intercompany -- matched by
+PREFIX, so a new table in those families is covered when it is created). The
+USERNAME `admin` always has every section; the admin ROLE has only what is
+ticked. **Only the `admin` USERNAME can change the boxes** -- admin-role users
+see them greyed out and the endpoint refuses them (403), so nobody can grant
+themselves a section they were denied. **Asset Management and New Business
+are granted together "for now"** (`LINKED_SECTIONS`): one click writes both,
+and a request splitting them is refused. Delete the group to separate them.
+
+- **A second axis, not a replacement for roles.** The section says where a user
+  may GO; the role still says what they may DO there. Both must pass.
+- **Only an untick is stored** (`user_section_access.allowed = FALSE`). No row
+  means allowed, so a NEW section is ticked for every existing user, and every
+  section for a new user, with no backfill. Re-ticking DELETES the row.
+- **Enforced on the server**, one `before_request` gate over every `/api` path
+  (`enforce_section_access`). The sidebar and router hide what is refused; they
+  are not the control. Read from the database on every request, so an untick
+  takes effect at the user's next click, not when their token expires.
+- **Shared APIs name every section that uses them** -- `/api/deals` and
+  `/api/argus` are Asset Management OR New Business, because both sections'
+  screens call them. Most of `/api/data` (deal list, config, reload) is open
+  plumbing; only Data Management's own tools are gated.
+- **The three GL tables are blocked wherever raw rows leave the app**: Data
+  Explorer (listed AND rows), the database export, the MRI query run/download
+  for `MRI_GL_Detail` / `MRI_GL_Accounts` / `MRI_IA_Transactions`, and the
+  assistant's `query_database` tool.
+- **The assistant's tools are gated one by one** (`TOOL_SECTIONS` in
+  `assistant_service.py`) -- it is on every screen, so otherwise a user could
+  simply ask it for a section's data. An unmapped tool is refused.
+- **Settings is open to everyone** -- it is the user's own password. It sits
+  under Data Management, so the sidebar footer links it when that is unticked.
+
+**THE RULE (Jim, Oct 1 2026): A NEW SECTION GOES IN THE REGISTRY.** Adding a
+section to the sidebar means adding it to `SECTIONS` in `auth/sections.py` and
+gating its block on `auth.hasSection('<key>')`; it then appears in User
+Management, ticked for everyone, with no screen change. Likewise every new Vue
+route, `/api` route and assistant tool must be assigned. Guardrail
+`scripts/section_access_check.py` (252) fails until they are -- it enumerates
+the RUNNING app's url_map rather than grepping -- and the pre-commit hook runs
+its `--static` half whenever the sidebar, router, an API blueprint or the
+assistant is staged.
+
 ### Treasury — the bank side of the close
 **Full detail in `.claude/memory/treasury.md`.** Live at `v508`, screen `/treasury`.
 
@@ -3157,6 +3205,7 @@ The sidebar (`AppSidebar.vue`) is organized into major sections with expandable 
 | **Data Management** | Expandable | Data Explorer, MRI Data (expandable panel), Database Tools (expandable panel), Reload Data, Settings |
 | **Feedback & Requests** | Expandable | Submit form + request list (standalone section below nav) |
 
+- **A NEW SECTION MUST BE REGISTERED in `flask_app/auth/sections.py`** and gated on `auth.hasSection('<key>')` -- that is what puts its checkbox column in User Management. See "Section access by username"; `scripts/section_access_check.py` and the pre-commit hook enforce it.
 - **Report Settings** under Asset Management: expandable inline config panel (Start Year, Horizon, Pro_Yr Base, YTD Actuals + Apply Settings button)
 - **MRI Data** under Data Management: expandable panel with server status, query list, per-query download/run/import buttons, admin "Refresh All Data from MRI"
 - **Database Tools** under Data Management: expandable panel with Import CSVs (file upload + match), Export Database (.zip download)

@@ -5,6 +5,9 @@ import io
 import os
 
 from flask_app.auth.routes import login_required, role_required
+from flask_app.auth.sections import (
+    any_hidden, can_see_table, label_for, table_section,
+)
 from flask_app.services import data_service
 from flask_app.services import compute_service
 from flask_app.services.sold_service import clear_sold_cache
@@ -184,7 +187,7 @@ def table_definitions():
 def export_database():
     """Export entire database as a zip of CSVs."""
     db_path = current_app.config["DB_PATH"]
-    zip_bytes = export_all_tables_to_zip(db_path)
+    zip_bytes = _without_hidden_tables(export_all_tables_to_zip(db_path))
     return send_file(
         io.BytesIO(zip_bytes),
         mimetype="application/zip",
@@ -193,12 +196,46 @@ def export_database():
     )
 
 
+def _without_hidden_tables(zip_bytes: bytes) -> bytes:
+    """The export minus the tables this user may not see.
+
+    Filtered here rather than inside ``export_all_tables_to_zip`` so the
+    general-purpose exporter keeps no notion of who is asking. The export
+    writes each table as ``{table}_db_export.csv``.
+    """
+    if not any_hidden():
+        return zip_bytes
+    import zipfile
+    src = zipfile.ZipFile(io.BytesIO(zip_bytes))
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as dst:
+        for name in src.namelist():
+            if not can_see_table(name.lower().removesuffix("_db_export.csv")):
+                continue
+            dst.writestr(name, src.read(name))
+    return out.getvalue()
+
+
+def _hidden_table_refusal(table_name):
+    need = table_section(table_name)
+    return jsonify({
+        "error": "Forbidden",
+        "message": "'%s' is visible only to users with access to the %s "
+                   "section." % (table_name, label_for(need)),
+    }), 403
+
+
 @data_bp.route("/tables", methods=["GET"])
 @login_required
 def list_tables():
-    """List all database tables with row counts."""
+    """List all database tables with row counts.
+
+    A restricted table the user may not see is left OUT of the list, not
+    listed and then refused -- its row count is itself information.
+    """
     from database import list_all_tables
-    tables = list_all_tables()
+    tables = [t for t in list_all_tables()
+              if can_see_table(t.get("name") or t.get("table_name") or "")]
     return jsonify({"tables": safe_json(tables)})
 
 
@@ -216,6 +253,9 @@ def table_rows(table_name):
     """
     import sqlalchemy as sa
     from flask_app.db import get_engine
+
+    if not can_see_table(table_name):
+        return _hidden_table_refusal(table_name)
 
     engine = get_engine()
 
@@ -404,7 +444,24 @@ def mri_status():
 def mri_list_queries():
     """List all available MRI queries."""
     from flask_app.services.mri_service import list_queries
-    return jsonify({"queries": list_queries()})
+    # A query whose output is a restricted table is not offered to a user
+    # who could not open that table anywhere else.
+    return jsonify({"queries": [q for q in list_queries()
+                                if not q.get("target_table")
+                                or can_see_table(q["target_table"])]})
+
+
+def _hidden_query_refusal(query_name):
+    """Refuse an MRI query whose output IS a restricted table.
+
+    ``MRI_GL_Detail`` returns exactly the rows ``gl_detail`` holds, so letting
+    anyone download it would undo the table restriction one menu away.
+    """
+    from flask_app.services.mri_service import QUERY_REGISTRY
+    target = (QUERY_REGISTRY.get(query_name) or {}).get("target_table")
+    if target and not can_see_table(target):
+        return _hidden_table_refusal(target)
+    return None
 
 
 @data_bp.route("/mri/queries/<query_name>/run", methods=["POST"])
@@ -417,6 +474,10 @@ def mri_run_query(query_name):
     Returns: { query, server, rows, columns, elapsed_seconds, csv_path }
     """
     from flask_app.services.mri_service import run_query
+
+    refused = _hidden_query_refusal(query_name)
+    if refused:
+        return refused
 
     body = request.get_json(silent=True) or {}
     server_key = body.get("server")
@@ -441,6 +502,10 @@ def mri_run_query(query_name):
 def mri_download_query(query_name):
     """Run a query and return results directly as CSV download (no file save)."""
     from flask_app.services.mri_service import run_query
+
+    refused = _hidden_query_refusal(query_name)
+    if refused:
+        return refused
 
     try:
         result = run_query(query_name, save_csv=False)

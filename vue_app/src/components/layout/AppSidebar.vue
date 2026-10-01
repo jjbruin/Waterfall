@@ -39,6 +39,12 @@ watch(() => route.path, (path) => {
   if (imRoutes.some(r => path.startsWith(r))) expandedSections.im = true
 }, { immediate: true })
 
+// The router sends a user who asked for a section they lack to the first one
+// they have, naming it in ?denied= -- say so rather than silently redirecting.
+watch(() => route.query.denied, (denied) => {
+  if (denied) data.addToast(`You do not have access to ${denied}.`, 'error')
+}, { immediate: true })
+
 // MRI Data tools
 const showMriTools = ref(false)
 const mriQueries = ref<Array<{
@@ -480,7 +486,12 @@ function toggleCollapsed() {
 
     <nav class="sidebar-nav" v-show="!collapsed">
       <!-- Dashboard — standalone, styled like section headers -->
+      <!-- Every section is gated on auth.hasSection(key), the registry in
+           flask_app/auth/sections.py. A NEW SECTION HERE NEEDS AN ENTRY THERE
+           and a v-if like these; scripts/section_access_check.py fails until
+           both exist. -->
       <router-link
+        v-if="auth.hasSection('dashboard')"
         to="/dashboard"
         class="nav-section-link"
         :class="{ active: route.path === '/dashboard' }"
@@ -489,7 +500,7 @@ function toggleCollapsed() {
       </router-link>
 
       <!-- Asset Management -->
-      <div class="nav-section">
+      <div v-if="auth.hasSection('asset_management')" class="nav-section">
         <button
           class="nav-section-header"
           :class="{ expanded: expandedSections.am }"
@@ -554,7 +565,7 @@ function toggleCollapsed() {
       </div>
 
       <!-- Accounting -->
-      <div class="nav-section">
+      <div v-if="auth.hasSection('accounting')" class="nav-section">
         <button
           class="nav-section-header"
           :class="{ expanded: expandedSections.acct }"
@@ -572,7 +583,7 @@ function toggleCollapsed() {
       </div>
 
       <!-- New Business -->
-      <div class="nav-section">
+      <div v-if="auth.hasSection('new_business')" class="nav-section">
         <button
           class="nav-section-header"
           :class="{ expanded: expandedSections.nb }"
@@ -590,7 +601,7 @@ function toggleCollapsed() {
       </div>
 
       <!-- Investment Management -->
-      <div class="nav-section">
+      <div v-if="auth.hasSection('investment_management')" class="nav-section">
         <button
           class="nav-section-header"
           :class="{ expanded: expandedSections.im }"
@@ -606,6 +617,7 @@ function toggleCollapsed() {
 
       <!-- Reports — standalone section-level link -->
       <router-link
+        v-if="auth.hasSection('reports')"
         to="/reports"
         class="nav-section-link"
         :class="{ active: route.path === '/reports' }"
@@ -614,7 +626,7 @@ function toggleCollapsed() {
       </router-link>
 
       <!-- Data Management -->
-      <div class="nav-section">
+      <div v-if="auth.hasSection('data_management')" class="nav-section">
         <button
           class="nav-section-header"
           :class="{ expanded: expandedSections.dm }"
@@ -943,6 +955,10 @@ function toggleCollapsed() {
     <div class="sidebar-footer" v-show="!collapsed">
       <div class="user-info" v-if="auth.user">
         <span>{{ auth.user.username }}</span>
+        <!-- Settings lives under Data Management, but it is the user's own
+             account (change password) and must stay reachable without it. -->
+        <router-link v-if="!auth.hasSection('data_management')" to="/settings"
+                     class="user-settings-link">Settings</router-link>
         <span class="user-role">{{ auth.user.role }}</span>
       </div>
       <button class="btn btn-logout" @click="handleLogout">
@@ -966,6 +982,13 @@ function toggleCollapsed() {
   z-index: 100;
   transition: width 0.2s;
   overflow-y: auto;
+}
+
+.user-settings-link {
+  color: inherit;
+  font-size: 11px;
+  opacity: 0.8;
+  margin-left: 6px;
 }
 
 .sidebar.collapsed {

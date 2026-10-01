@@ -22,6 +22,26 @@ fixed, plus `MANUAL_RATIO_SEEDS` and its expiry), `onepager_audit_q1_2026.md`.
 
 ---
 
+## 16. Section access by username (Oct 1 2026) — built, NOT deployed
+
+Built and verified locally (`scripts/section_access_check.py` 252/0, proved
+non-vacuous against eleven injected defects; accounting_access 54/0,
+gl_ia_query 123/0, treasury_api 46/0 unchanged). See CLAUDE.md "Section access
+by username". Open:
+
+- **16.1 DONE (Oct 1):** `tr_*`, `wp_*`, `ic_*` restricted to Accounting by
+  prefix. Only the `admin` username assigns access; Asset Management and New
+  Business are linked "for now" -- revisit when they should separate.
+- **16.2 Settled (Jim, Oct 1):** review roles in Settings stay behind Asset
+  Management; shared screens (`/api/deals`, `/api/argus`) stay shared.
+- **16.3 Feedback & Requests is not a section** — every user can report a
+  problem. It sits below the nav, not in it.
+- **16.4 Deploy note:** creates `user_section_access` on first gated request
+  (once per process). No backfill; with no rows every user keeps every
+  section, so the deploy itself changes nobody's access.
+
+---
+
 ## 15. Guardrails that are RED for a known reason (Sep 29 2026)
 
 A check that has been red for a while stops being read, and then the day it goes

@@ -23,6 +23,7 @@ const newUserSendWelcome = ref(true)
 
 onMounted(async () => {
   if (auth.isAdmin) {
+    await auth.loadSectionCatalog()
     await auth.loadUsers()
     await loadReviewRoles()
   }
@@ -80,6 +81,37 @@ async function updateRole(userId: number, role: string) {
     dataStore.addToast('Role updated', 'success')
   } catch (e: any) {
     dataStore.addToast(e.response?.data?.error || 'Failed to update role', 'error')
+  }
+}
+
+// Section access by username. One column per section in the server's
+// registry (flask_app/auth/sections.py), so a section added there appears
+// here, ticked for everyone, with no change to this file.
+function sectionChecked(u: { superuser: boolean; denied_sections?: string[] }, key: string) {
+  return u.superuser || !(u.denied_sections || []).includes(key)
+}
+
+function sectionTitle(u: { username: string; superuser: boolean }, sec: { key: string; label: string }) {
+  if (u.superuser) return `The ${u.username} user always has every section`
+  if (!auth.canAssignSections) return `${u.username}: ${sec.label} (only the admin user can change this)`
+  const others = auth.linkedTo(sec.key).map(k => auth.sectionLabel(k))
+  return others.length
+    ? `${u.username}: ${sec.label} (granted together with ${others.join(', ')})`
+    : `${u.username}: ${sec.label}`
+}
+
+async function setSection(userId: number, username: string, key: string, allowed: boolean) {
+  // A linked section moves with this one, so send both and say so.
+  const keys = [key, ...auth.linkedTo(key)]
+  try {
+    await auth.updateUserSections(
+      userId, Object.fromEntries(keys.map(k => [k, allowed])))
+    dataStore.addToast(
+      `${username}: ${keys.map(k => auth.sectionLabel(k)).join(' + ')} `
+      + `${allowed ? 'granted' : 'removed'}`, 'success')
+  } catch (e: any) {
+    dataStore.addToast(e.response?.data?.error || 'Failed to update section access', 'error')
+    await auth.loadUsers()
   }
 }
 
@@ -237,15 +269,36 @@ function formatReviewRole(role: string): string {
       <div class="section">
         <h3>User Management</h3>
 
+        <p class="section-desc">
+          <span v-if="!auth.canAssignSections" class="section-readonly-note">
+            Read only: only the <strong>admin</strong> user can change section access.
+          </span>
+          The ticked sections are the ones each user can open. Every section is
+          ticked by default, including new ones. The role still decides what a
+          user may change inside a section. The <strong>admin</strong> user
+          always has every section; other users with the admin role have only
+          the sections ticked. Users without Accounting cannot see the
+          gl_accounts, gl_detail or ia_transactions tables, or the treasury,
+          workpaper and intercompany tables, anywhere. Asset Management and
+          New Business are granted together for now.
+        </p>
+
         <!-- Existing Users -->
         <div v-if="auth.usersLoading" class="placeholder">Loading users...</div>
-        <table v-else-if="auth.users.length" class="users-table">
+        <div v-else-if="auth.users.length" class="users-scroll">
+        <table class="users-table">
           <thead>
             <tr>
               <th>ID</th>
               <th>Username</th>
               <th>Email</th>
               <th>Role</th>
+              <th
+                v-for="sec in auth.sectionCatalog"
+                :key="sec.key"
+                class="section-col"
+                :title="`Access to the ${sec.label} section`"
+              >{{ sec.label }}</th>
               <th>Status</th>
               <th>Created</th>
               <th>Actions</th>
@@ -265,6 +318,17 @@ function formatReviewRole(role: string): string {
                 >
                   <option v-for="r in roleOptions" :key="r" :value="r">{{ roleLabel(r) }}</option>
                 </select>
+              </td>
+              <td v-for="sec in auth.sectionCatalog" :key="sec.key" class="section-col">
+                <input
+                  type="checkbox"
+                  :checked="sectionChecked(u, sec.key)"
+                  :disabled="u.superuser || !auth.canAssignSections"
+                  :class="{ 'section-locked': u.superuser || !auth.canAssignSections }"
+                  :title="sectionTitle(u, sec)"
+                  :aria-label="`${u.username}: ${sec.label}`"
+                  @change="(e: any) => setSection(u.id, u.username, sec.key, e.target.checked)"
+                />
               </td>
               <td>
                 <span v-if="u.must_change_password" class="status-badge pending">Pending</span>
@@ -292,6 +356,7 @@ function formatReviewRole(role: string): string {
             </tr>
           </tbody>
         </table>
+        </div>
       </div>
 
       <!-- Create New User -->
@@ -519,6 +584,31 @@ h3 { font-size: 15px; margin: 0 0 12px 0; }
 .users-table td {
   padding: 6px 12px;
   border-bottom: 1px solid var(--color-border);
+}
+
+.users-scroll {
+  overflow-x: auto;
+}
+
+/* A box the viewer cannot change reads as such: greyed, no pointer. */
+.section-col input.section-locked {
+  opacity: 0.45;
+  filter: grayscale(1);
+  cursor: not-allowed;
+}
+
+.section-readonly-note {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--color-text-secondary);
+  font-style: italic;
+}
+
+.section-col {
+  text-align: center;
+  font-size: 11px;
+  white-space: normal;
+  max-width: 84px;
 }
 
 .email-cell {
