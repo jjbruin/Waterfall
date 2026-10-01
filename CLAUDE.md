@@ -238,8 +238,18 @@ az acr repository update -n acrwaterfalldev --image waterfall-xirr:$SHA --write-
 az containerapp update -g rg-waterfall-dev -n app-waterfall-dev-v2 --image acrwaterfalldev.azurecr.io/waterfall-xirr:$SHA --revision-suffix v350
 ```
 
-Pick the revision suffix by bumping the current one — reusing a suffix is rejected. This same
-query answers "what commit is live?", since the image tag is the SHA:
+**RE-RUN P1 IMMEDIATELY BEFORE `az containerapp update`, not only before the build.**
+On Oct 1 2026 Charlene deployed `v549` = `76c786c` eight minutes before the
+section-access build started and after its P1 -- from a clone she had not pushed, so
+`git fetch` could not have shown it. Deploying the new image would have rolled her
+work back; it was caught only because the suffix `v549` was already taken. If the
+active image is no longer the one P2 was computed against, STOP: get it pushed,
+merge it, and run the pre-flight again.
+
+Pick the revision suffix by bumping the HIGHEST existing one — reusing a suffix is
+rejected, and an INACTIVE revision still holds its name, so list with `--all`
+(`az containerapp revision list ... --all`). This same query answers "what commit is
+live?", since the image tag is the SHA:
 ```bash
 az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --query "[?properties.active].{name:name,image:properties.template.containers[0].image}" -o table
 ```
@@ -2984,7 +2994,7 @@ columns are loaded from somebody else's spreadsheet, and the debt rows are ours.
 |---|---|---|
 | `ACCOUNTING_ROLES` | admin, cfo, accounting_manager, accountant | every write in `/api/workpapers` and `/api/treasury` |
 | `CLOSE_PLAN_ROLES` | admin, cfo | when the close opens, when things are due, what order entities are worked in |
-| — | everyone signed in | reads |
+| — | everyone ticked for Accounting (Settings > User Management) | reads -- see "Section access by username"; before that gate, every signed-in user |
 
 - **`roles_exactly`, NOT `role_required`.** `role_required` compares LEVELS and
   `analyst`, `accountant`, `accounting_manager` and `cfo` are ALL level 1 — so any
@@ -3053,10 +3063,16 @@ section to the sidebar means adding it to `SECTIONS` in `auth/sections.py` and
 gating its block on `auth.hasSection('<key>')`; it then appears in User
 Management, ticked for everyone, with no screen change. Likewise every new Vue
 route, `/api` route and assistant tool must be assigned. Guardrail
-`scripts/section_access_check.py` (252) fails until they are -- it enumerates
+`scripts/section_access_check.py` (256) fails until they are -- it enumerates
 the RUNNING app's url_map rather than grepping -- and the pre-commit hook runs
 its `--static` half whenever the sidebar, router, an API blueprint or the
-assistant is staged.
+assistant is staged. **It caught its first case before it shipped:** merging
+`origin/main` brought in Investment Metrics (`v545`), whose `/investment-metrics`
+screens and `/api/investment-metrics` endpoints belonged to no section. They are
+Asset Management's (`b93dd5f`).
+
+**Deploy status (Oct 1 2026): built and imaged as `b93dd5f`, NOT deployed** --
+see the top of `.claude/memory/session_handoff.md`. Delete this line when it ships.
 
 ### Treasury — the bank side of the close
 **Full detail in `.claude/memory/treasury.md`.** Live at `v508`, screen `/treasury`.
@@ -3550,10 +3566,10 @@ The sidebar (`AppSidebar.vue`) is organized into major sections with expandable 
 | Section | Type | Children |
 |---------|------|----------|
 | **Dashboard** | Standalone link | `/dashboard` |
-| **Asset Management** | Expandable | Deal Analysis, Property Financials, Surveillance, One Pager, Review Tracking, Ownership, Waterfall Setup, Report Settings (expandable config panel) |
+| **Asset Management** | Expandable | Deal Analysis, Property Financials, Surveillance, Valuations, One Pager, Portfolio Snapshot, Review Tracking, Investment Metrics, Waterfall Setup, Report Settings (expandable config panel) |
 | **Accounting** | Expandable | Workpaper Packages, Treasury, Intercompany, GL / IA Query |
 | **New Business** | Expandable | Pipeline, Deal Analysis, Lease Review, Lease Risk Analysis |
-| **Investment Management** | Future (dimmed) | — |
+| **Investment Management** | Expandable | Ownership (moved here from Asset Management Sep 15 2026) |
 | **Reports** | Standalone link | `/reports` (Projected Returns, ROE Summary, Pref Balance Detail, Sold Portfolio, PSCKOC, Portfolio Analysis) |
 | **Data Management** | Expandable | Data Explorer, MRI Data (expandable panel), Database Tools (expandable panel), Reload Data, Settings |
 | **Feedback & Requests** | Expandable | Submit form + request list (standalone section below nav) |

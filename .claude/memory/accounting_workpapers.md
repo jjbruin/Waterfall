@@ -188,6 +188,13 @@ provenance is "the app produced it" is not reviewable.
 
 ## Who may edit any of this (Sep 17 2026)
 
+**A SECTION GATE SITS IN FRONT OF ALL OF THIS** (Oct 1 2026, built, deploy pending):
+a user must be ticked for Accounting in Settings > User Management to reach any
+`/api/workpapers`, `/api/treasury`, `/api/intercompany` or `/api/gl-ia-query` route at
+all -- reads included -- and without it the `gl_*`, `ia_transactions`, `tr_*`, `wp_*`
+and `ic_*` tables are hidden everywhere raw rows leave the app. The role gates below
+then decide who may WRITE. See CLAUDE.md "Section access by username".
+
 **Two gates, both MEMBERSHIP checks, both in `flask_app/auth/routes.py`.**
 
 | | Who |

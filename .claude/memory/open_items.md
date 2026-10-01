@@ -39,6 +39,11 @@ by username". Open:
 - **16.4 Deploy note:** creates `user_section_access` on first gated request
   (once per process). No backfill; with no rows every user keeps every
   section, so the deploy itself changes nobody's access.
+- **16.5 DEPLOY PENDING (Oct 1):** image `b93dd5f` built and locked, NOT deployed --
+  Charlene's `v549` (`76c786c`) went live mid-build and must be merged first. Steps
+  at the top of `session_handoff.md`. Owner: **next session**, after Charlene pushes.
+- **16.6 Confirm a user named `admin` exists on production** after deploy -- only
+  that username can assign access. Owner: **Jim**.
 
 ---
 
