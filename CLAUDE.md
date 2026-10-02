@@ -266,6 +266,16 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v562` = `fae6013` (EXPENSE JE DESCRIPTIONS HELD TO MRI'S RULE -- 80 characters,
+    letters, digits and spaces only (Jim, Oct 2 2026). `ER FK <deal> <comment>`, `IC ER
+    ...` for intercompany, comment words the deal already says dropped, long common
+    words abbreviated only when over 80, the payroll credit `ER Trinet Payroll 202609
+    <suffix>`, the CAD note `USD 712 98`. Expense only; intercompany's fixed text already
+    complies, treasury's bank-sourced text unchanged. Accounting's own Sep 24 file had
+    punctuation on all 119 lines and 12 over 80. Span vs live `9adfddd`: `06b3256` plus
+    docs and a zero-line merge. Built from the clean worktree, gated; site 200. In the
+    container: `expense_coding_check` 47/0 (the Sep 24 rebuild skips -- the file is not
+    on the server); 53/0 locally with it.)
   - `v561` = `9adfddd` (THE EXPENSE LINE OPENS AS A POP-UP AGAIN -- entry left,
     receipt right, stacked under 900px -- and READ-ONLY for the approver and
     accounting; Edit/Remove (View for anyone who cannot edit) moved to the FIRST
