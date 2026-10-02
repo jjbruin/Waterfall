@@ -261,10 +261,53 @@ def acct_fixture():
 
 
 def commitments_fixture():
+    """Shaped like the live table, DATES INCLUDED.
+
+    Every one of the 897 rows on live carries a StartDate — measured, not
+    assumed. This fixture used to carry none, and it was green only because
+    nothing read them: the report took the current row and the dates were
+    decoration. The moment the as-of rule was wired up, a dateless row stopped
+    resolving and the basis check failed, which is the fixture reporting its
+    own defect. A commitment with no start has no term, and
+    `resolve_committed_pref` is right to decline it.
+
+    That is the v550 lesson pointing the other way: there the suite was green
+    on a shape the database cannot deliver (`None` where pandas gives `NaT`);
+    here it was green on a shape the database never delivers either. A fixture
+    looser than the real table proves less than it appears to.
+    """
     return pd.DataFrame([
         # trailing space, as the live table has
-        dict(EntityID="ALPHA ", InvestorID="PPI1", Amount=5_000_000.0),
-        dict(EntityID="ALPHA", InvestorID="OPACME", Amount=2_000_000.0),
+        dict(EntityID="ALPHA ", InvestorID="PPI1", Amount=5_000_000.0,
+             StartDate="2024-01-01", EndDate=None, CommitmentUID=1,
+             TransactionNote=""),
+        dict(EntityID="ALPHA", InvestorID="OPACME", Amount=2_000_000.0,
+             StartDate="2024-01-01", EndDate=None, CommitmentUID=2,
+             TransactionNote=""),
+    ])
+
+
+def burton_commitments_fixture():
+    """Burton's four real rows, read off the live table on 2026-10-02.
+
+    A REVISION ENDS ONE ROW AND OPENS THE NEXT THE FOLLOWING DAY, and it
+    revises BOTH sides together. These four are the whole reason the as-of rule
+    exists: taking the current row reads a pledge that does not take effect
+    until the quarter AFTER the one being reported.
+    """
+    return pd.DataFrame([
+        dict(EntityID="BURTON", InvestorID="PPIBRP", Amount=26_597_500.0,
+             StartDate="2025-08-28", EndDate="2026-06-30", CommitmentUID=1209,
+             TransactionNote=""),
+        dict(EntityID="BURTON", InvestorID="PPIBRP", Amount=54_227_500.0,
+             StartDate="2026-07-01", EndDate=None, CommitmentUID=1346,
+             TransactionNote=""),
+        dict(EntityID="BURTON", InvestorID="OPBURT", Amount=11_400_000.0,
+             StartDate="2025-08-28", EndDate="2026-06-30", CommitmentUID=1220,
+             TransactionNote=""),
+        dict(EntityID="BURTON", InvestorID="OPBURT", Amount=14_470_000.0,
+             StartDate="2026-07-01", EndDate=None, CommitmentUID=1345,
+             TransactionNote=""),
     ])
 
 
@@ -1250,6 +1293,122 @@ def main():
             for vcode, tbl, *_ in POPULATION_26Q2
             for n in derived.get(vcode, [])
             for p in [{"table": "current" if tbl == "c" else "sold"}]))
+
+    # ── 23. committed equity is read AS OF THE QUARTER ───────────────────
+    section("23. Committed equity as of the quarter (both ways: the figure "
+            "must MOVE with the quarter, not merely be right at one of them)")
+    bc = burton_commitments_fixture()
+    BURTON = "BURTON"
+
+    def burton_sources(as_of):
+        ident = im.DealIdentity(vcode="P0000109", investment_id=BURTON,
+                                name="Burton Retail Portfolio", currency="USD")
+        levels = im.capitalization_sources(ident, pd.DataFrame(), bc,
+                                           as_of=as_of)
+        return {b: (p, o) for b, p, o in levels}
+
+    q2 = burton_sources(dt.date(2026, 6, 30))["commitments (IA_Commitment)"]
+    q3 = burton_sources(dt.date(2026, 9, 30))["commitments (IA_Commitment)"]
+    chk("Burton PSC pref at 2026-06-30 is 26.60, the figure the reference "
+        "prints and the One Pager shows",
+        q2[0] is not None and abs(q2[0] / 1e6 - 26.5975) < 1e-6,
+        f"got {q2[0]} - 54,227,500 is the row that opens 2026-07-01")
+    chk("...and its FIRST-LOSS side is 11.40 at the same date",
+        q2[1] is not None and abs(q2[1] / 1e6 - 11.40) < 1e-6,
+        f"got {q2[1]} - 14,470,000 would mean the OP side still "
+        "takes the current row while the pref side moved")
+    chk("the quarter AFTER the revision takes the new pref, 54.23",
+        q3[0] is not None and abs(q3[0] / 1e6 - 54.2275) < 1e-6,
+        f"got {q3[0]}")
+    chk("...and the new first-loss, 14.47",
+        q3[1] is not None and abs(q3[1] / 1e6 - 14.47) < 1e-6,
+        f"got {q3[1]}")
+    chk("NON-VACUOUS: the two quarters do not return the same figure",
+        q2[0] != q3[0] and q2[1] != q3[1])
+    chk("WITH NO AS-OF the current row is still what comes back - the "
+        "no-as-of path is unchanged for any other caller",
+        (lambda s: s[0] is not None and abs(s[0] / 1e6 - 54.2275) < 1e-6
+         and abs(s[1] / 1e6 - 14.47) < 1e-6)(
+            burton_sources(None)["commitments (IA_Commitment)"]),
+        "passing no as_of must not silently acquire a quarter")
+
+    # The rebase: a sold deal is read at the last quarter it was held.
+    sold = im.DealIdentity(vcode="P0000017", investment_id="PPI20",
+                           name="East Manchester", sale_status="SOLD",
+                           sale_date=dt.date(2026, 6, 25),
+                           invest_date=dt.date(2019, 3, 1))
+    held = im.DealIdentity(vcode="P0000109", investment_id=BURTON,
+                           name="Burton Retail Portfolio")
+    later = im.DealIdentity(vcode="P0000001", investment_id="30BEAR",
+                            name="30 Bearfoot", sale_status="SOLD",
+                            sale_date=dt.date(2026, 8, 15),
+                            invest_date=dt.date(2018, 1, 1))
+    AO = dt.date(2026, 6, 30)
+    chk("a deal sold inside the quarter is rebased to the last held quarter",
+        im.committed_as_of(sold, AO) == dt.date(2026, 3, 31),
+        f"got {im.committed_as_of(sold, AO)}")
+    chk("...a deal still held keeps the report quarter",
+        im.committed_as_of(held, AO) == AO)
+    chk("...and one sold AFTER the as-of was still held at it, so keeps it too",
+        im.committed_as_of(later, AO) == AO,
+        "Clima Secur, 30 Bearfoot and 870 Donald Lynch are this case")
+    chk("a sale date earlier than the deal's own acquisition does NOT rebase - "
+        "it is a data error and would fabricate an empty stack",
+        im.committed_as_of(
+            im.DealIdentity(vcode="X", investment_id="X", name="X",
+                            sale_status="SOLD",
+                            sale_date=dt.date(2026, 1, 5),
+                            invest_date=dt.date(2026, 6, 1)), AO) == AO)
+
+    # THROUGH THE REPORT, NOT JUST THE FUNCTION. The defect was never in
+    # `capitalization_sources` — it has taken an `as_of` since the committed-
+    # pref rewire shipped. It was that `_build_row` never passed one. A check
+    # that calls the function directly is satisfied by the broken call site,
+    # so the rule is pinned where it actually failed: on the built row.
+    alpha_chain = pd.DataFrame([
+        dict(EntityID="ALPHA ", InvestorID="PPI1", Amount=5_000_000.0,
+             StartDate="2024-01-01", EndDate="2026-06-30", CommitmentUID=11,
+             TransactionNote=""),
+        dict(EntityID="ALPHA ", InvestorID="PPI1", Amount=9_000_000.0,
+             StartDate="2026-07-01", EndDate=None, CommitmentUID=12,
+             TransactionNote=""),
+        dict(EntityID="ALPHA", InvestorID="OPACME", Amount=2_000_000.0,
+             StartDate="2024-01-01", EndDate="2026-06-30", CommitmentUID=13,
+             TransactionNote=""),
+        dict(EntityID="ALPHA", InvestorID="OPACME", Amount=3_000_000.0,
+             StartDate="2026-07-01", EndDate=None, CommitmentUID=14,
+             TransactionNote=""),
+    ])
+    _, r_q2 = row_of(build(commitments=alpha_chain,
+                           as_of=dt.date(2026, 6, 30)), "P0000001")
+    _, r_q3 = row_of(build(commitments=alpha_chain,
+                           as_of=dt.date(2026, 9, 30)), "P0000001")
+    chk("THE BUILT ROW takes the pref in force at the report quarter",
+        r_q2 and abs(r_q2["pref"] - 5.0) < 1e-9,
+        f"got {(r_q2 or {}).get('pref')} - 9.0 means _build_row did not "
+        "pass as_of and the current row was read")
+    chk("...and its first-loss likewise",
+        r_q2 and abs(r_q2["first_loss"] - 2.0) < 1e-9,
+        f"got {(r_q2 or {}).get('first_loss')}")
+    chk("THE BUILT ROW moves to the revised pref a quarter later",
+        r_q3 and abs(r_q3["pref"] - 9.0) < 1e-9,
+        f"got {(r_q3 or {}).get('pref')}")
+    chk("...and to the revised first-loss",
+        r_q3 and abs(r_q3["first_loss"] - 3.0) < 1e-9,
+        f"got {(r_q3 or {}).get('first_loss')}")
+    chk("NON-VACUOUS: the built row is not the same at both quarters",
+        r_q2 and r_q3 and r_q2["pref"] != r_q3["pref"]
+        and r_q2["first_loss"] != r_q3["first_loss"])
+    chk("the basis still names the commitments table on the built row",
+        r_q2 and "commitments" in r_q2["basis"]["capitalization"])
+
+    # The whole point of the fix: the report and the One Pager agree.
+    from committed_pref import resolve_committed_pref as _rcp
+    op_pref, _ = _rcp(bc, BURTON, dt.date(2026, 6, 30))
+    chk("ONE ENGINE: the report's pref equals what the One Pager's cap stack "
+        "resolves from the same rows at the same date",
+        op_pref is not None and abs(op_pref - q2[0]) < 1e-6,
+        f"report {q2[0]} vs one-pager {op_pref}")
 
     print(f"\n{PASS} passed, {FAIL} failed")
     if FAILURES:

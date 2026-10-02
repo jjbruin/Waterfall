@@ -553,6 +553,96 @@ def pref_and_first_loss(
     return pref, floss, basis
 
 
+def _committed_first_loss(m: pd.DataFrame, as_of: Any) -> Optional[float]:
+    """The OP-side commitment in force on ``as_of``, summed over chains.
+
+    `committed_pref.resolve_committed_pref` answers this question for the PSC
+    side and DROPS the OP rows (`deal_commitment_rows` filters on `is_op`), so
+    there is nothing shared to call for the first-loss half. The RULE is still
+    shared rather than restated: `row_in_effect` decides which revision applies
+    and `_as_date` parses the dates, both imported from that module.
+
+    Re-deriving either would be the dangerous choice, not the tidy one. The
+    date parse is where `v550` failed — `pd.NaT` IS an instance of `datetime`,
+    so a hand-rolled isinstance branch returns NaT and every `end >= as_of`
+    comparison raises once a column types as `datetime64`. The one-line
+    reimplementation is exactly the one that took every 26Q3 One Pager to 500.
+
+    Tombstones are dropped on the same test `deal_commitment_rows` applies: a
+    row that opens and closes on one day for a trivial amount is a correction,
+    not a pledge. Returns None, never 0 — a zero is indistinguishable from a
+    real zero to every consumer and would stop the fallback walking on.
+    """
+    from committed_pref import _as_date, row_in_effect, TOMBSTONE_MAX_ABS
+
+    q = _as_date(as_of)
+    if q is None or m is None or getattr(m, "empty", True):
+        return None
+
+    chains: Dict[Tuple[str, str], List[dict]] = {}
+    for r in m.to_dict("records"):
+        inv = norm_id(r.get("InvestorID"))
+        if is_psc_side(inv):
+            continue
+        start, end = _as_date(r.get("StartDate")), _as_date(r.get("EndDate"))
+        amount = _to_float(r.get("Amount")) or 0.0
+        if start is not None and end is not None and start == end \
+                and abs(amount) <= TOMBSTONE_MAX_ABS:
+            continue
+        chains.setdefault((norm_id(r.get("EntityID")), inv), []).append(
+            {"start": start, "end": end, "amount": amount,
+             "uid": r.get("CommitmentUID")})
+
+    total = 0.0
+    for key in sorted(chains):
+        pick = row_in_effect(chains[key], q)
+        if pick is not None:
+            total += abs(pick["amount"])
+    return total or None
+
+
+def committed_as_of(ident: DealIdentity, as_of: Any) -> Any:
+    """The date a deal's commitments should be read at.
+
+    The report quarter for a deal still held, and the LAST HELD QUARTER for one
+    sold on or before it — the same rebase the Portfolio Snapshot applies, via
+    `portfolio_snapshot_service.last_held_quarter`, so the two cannot disagree
+    about which quarter a sold deal's stack belongs to.
+
+    Why a sold deal cannot be read at the report quarter: its commitment row is
+    never ended in MRI, so the open row is resurrected on every later quarter
+    for ever, and the figure drifts as MRI revises a pledge on a deal we no
+    longer own. The last held quarter is the last date the commitment meant
+    anything.
+
+    A deal sold AFTER ``as_of`` was still held at the quarter and keeps it —
+    that is Clima Secur, 30 Bearfoot and 870 Donald Lynch on the 6/30/26 run,
+    the same three the footnote-(4) rule marks.
+
+    Falls back to ``as_of`` whenever the rebase cannot be established, which is
+    the behaviour that was there before: `last_held_quarter` returns None for a
+    deal with no sale date on file, or one whose sale date precedes its own
+    acquisition (a data error — rebasing onto it would fabricate an empty
+    stack).
+    """
+    if not ident.is_sold or ident.sale_date is None:
+        return as_of
+    if as_of is not None and ident.sale_date > as_of:
+        return as_of                       # still held at the report quarter
+    try:
+        from flask_app.services.portfolio_snapshot_service import (
+            last_held_quarter,
+        )
+        from one_pager import quarter_to_date_range
+        quarter = last_held_quarter({"sale_date": ident.sale_date,
+                                     "acquisition_date": ident.invest_date})
+        if not quarter:
+            return as_of
+        return quarter_to_date_range(quarter)[1]
+    except Exception:
+        return as_of
+
+
 def capitalization_sources(
     ident: DealIdentity,
     acct: pd.DataFrame,
@@ -604,10 +694,19 @@ def capitalization_sources(
         else:
             m_cur = m
         if as_of is not None:
+            # BOTH SIDES ARE RESOLVED AS OF THE QUARTER, not just the pref.
+            # A revision ends one row and opens the next the following day, and
+            # it revises BOTH sides together: Burton's pref goes 26,597,500 ->
+            # 54,227,500 and its OP side 11,400,000 -> 14,470,000, all four
+            # rows turning on 2026-06-30/07-01. Resolving the pref as of the
+            # quarter while the OP side kept taking the current row would have
+            # printed one half of the stack at the quarter and the other half
+            # at today, which is not a capitalization anyone can foot.
             psc, _basis = resolve_committed_pref(m, iid, as_of)
+            op_side = _committed_first_loss(m, as_of)
         else:
             psc = split(m_cur, "Amount")[0]
-        _, op_side = split(m_cur, "Amount")
+            _, op_side = split(m_cur, "Amount")
         out.append(("commitments (IA_Commitment)", psc, op_side))
     else:
         out.append(("commitments (IA_Commitment)", None, None))
@@ -1561,7 +1660,14 @@ def _build_row(ident, table, as_of, acct, commitments, dt_index, loans,
     # Computed ONCE and shared: `pref_and_first_loss` consumes this list and
     # the row publishes it, and building it twice per deal was measurably the
     # third-largest cost in the profile.
-    cap_alts = capitalization_sources(ident, acct, commitments)
+    # AS OF THE QUARTER, which this call site did not say until 2026-10-02.
+    # `capitalization_sources` has taken an `as_of` since the committed-pref
+    # rewire shipped, and neither call site passed one — so the report read the
+    # CURRENT commitments row while the One Pager read the row in force at the
+    # quarter, and the two printed different numbers for one fact. Burton 26Q2
+    # was $54.23M here against $26.60M there; the reference prints $26.60M.
+    cap_alts = capitalization_sources(ident, acct, commitments,
+                                      as_of=committed_as_of(ident, as_of))
     pref_usd, floss_usd, cap_basis = pref_and_first_loss(
         ident, acct, commitments, sources=cap_alts)
     lien_usd, lien_basis = first_lien(ident, loans, isbs_interim_bs, children,
