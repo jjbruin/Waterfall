@@ -332,12 +332,13 @@ def decide_basis(engine, actor: dict, report: dict, holders=None) -> Optional[st
     return None
 
 
-def can_view(engine, actor: dict, report: dict, holders=None) -> bool:
+def can_view(engine, actor: dict, report: dict, holders=None, authority=None) -> bool:
     if int(actor["id"]) == int(report["user_id"]):
         return True
     if report["status"] == "draft":
         return False
-    if report["status"] in ACCOUNTING_VISIBLE and has_accounting_authority(actor, engine):
+    if report["status"] in ACCOUNTING_VISIBLE and (
+            authority if authority is not None else has_accounting_authority(actor, engine)):
         return True
     # Whoever may decide it may read it, before and after the decision.
     return decide_basis(engine, actor, report, holders) is not None
@@ -937,6 +938,7 @@ def list_reports(engine, actor, scope: str = "mine") -> List[dict]:
     ensure_tables(engine)
     users, emps = _users(engine), _employees(engine)
     holders = _review_role_holders(engine)
+    authority = has_accounting_authority(actor, engine)   # once, not per report
     with engine.connect() as c:
         rows = [dict(x) for x in c.execute(text(
             "SELECT r.*, (SELECT COALESCE(SUM(amount), 0) FROM er_lines l "
@@ -951,7 +953,7 @@ def list_reports(engine, actor, scope: str = "mine") -> List[dict]:
         if scope == "to_approve" and not (r["status"] == "submitted" and
                                           decide_basis(engine, actor, r, holders)):
             continue
-        if not can_view(engine, actor, r, holders):
+        if not can_view(engine, actor, r, holders, authority):
             continue
         s = _summary(r, users, emps)
         s["total"] = round(float(r["line_total"] or 0), 2)
