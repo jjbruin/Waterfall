@@ -271,11 +271,11 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
     Geocoding "PHL" alone is "Philippines". The deploy WIRES `GOOGLE_MAPS_API_KEY` to
     the container secret `google-maps-key` (`secretref`). Built from the clean
     worktree, tag gated before the update; site 200 throughout. VERIFIED IN THE
-    CONTAINER: the env reads the secret -- and THE SECRET HOLDS A 14-CHARACTER VALUE,
-    not a Google key (length of the placeholder `PASTE_KEY_HERE`), so Google refuses
-    and the wizard says so; miles can be typed meanwhile. Jim to set the real value
-    and restart the revision. Locally, with the real key: PHL -> City Hall round trip
-    24.5 mi. `expense_distance_check` 26/0.)
+    CONTAINER: the env reads the secret. It first held a 14-character placeholder
+    (Google refused, the wizard said so); Jim set the real key and restarted the
+    revision, and in the container the key is 39 chars and PHL -> Philadelphia City
+    Hall round trip measures 24.5 mi (11.9 + 12.5), the same as locally.
+    `expense_distance_check` 26/0.)
   - `v558` = `7626b3e` (PURPOSE AND DEAL AS DROPDOWNS on the expense table, saved on
     change with the whole line sent; the receipts list below the table and the
     submit notice. Served chunk verified to carry the new strings. Site 200.)
