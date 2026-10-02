@@ -22,7 +22,31 @@ fixed, plus `MANUAL_RATIO_SEEDS` and its expiry), `onepager_audit_q1_2026.md`.
 
 ---
 
-## 16. Section access by username (Oct 1 2026) — built, NOT deployed
+## 17. Employee expense reports (Oct 2 2026) — LIVE at `v553`
+
+Design, phases and measurements: `expense_reporting.md`.
+
+- **17.1 The intercompany ownership rule — accounting's call.** Right for Fairview,
+  Nottingham and Woodlands (and Ascent's split); wrong for Pontchartrain, Gallery and
+  Belleville because the investee funds INVF7 / INVF2 / INVF11 keep their own
+  `MR15000002` while accounting books their parent PSC3. Do investee funds always pass
+  through to PSC3? Needs a rule from accounting before the walk changes. Owner:
+  **Jim / accounting**.
+- **17.2 Apple and Brainerd shares are data questions.** Commitments carry PSS1 17.93%
+  into APPLE beside PPI2 (accounting books PPI2 100%); Brainerd's commitment dollars give
+  TGA22 82.68 / PSC1 17.32 against accounting's ~62.4 / 37.6. Owner: **accounting**.
+- **17.3 Accounting sets PPI2 to CAD** (Expense Coding > Currencies & recurring). Nothing
+  seeds it. Owner: **accounting**.
+- **17.4 The admin unticks Expenses** for anyone who should not see it, and sets every
+  employee's name on reports and approver. Owner: **admin**.
+- **17.5 No mileage rate is set** — mileage lines are refused until accounting sets one.
+  Owner: **accounting**.
+- Until 17.1-17.2 are settled, accounting should check every intercompany row; every
+  proposal is editable and a hand-set split is kept.
+
+---
+
+## 16. Section access by username (Oct 1 2026) — LIVE at `v552`
 
 Built and verified locally (`scripts/section_access_check.py` 252/0, proved
 non-vacuous against eleven injected defects; accounting_access 54/0,
@@ -39,11 +63,9 @@ by username". Open:
 - **16.4 Deploy note:** creates `user_section_access` on first gated request
   (once per process). No backfill; with no rows every user keeps every
   section, so the deploy itself changes nobody's access.
-- **16.5 DEPLOY PENDING (Oct 1):** image `b93dd5f` built and locked, NOT deployed --
-  Charlene's `v549` (`76c786c`) went live mid-build and must be merged first. Steps
-  at the top of `session_handoff.md`. Owner: **next session**, after Charlene pushes.
-- **16.6 Confirm a user named `admin` exists on production** after deploy -- only
-  that username can assign access. Owner: **Jim**.
+- **16.5 DONE (Oct 2):** deployed as `v552` = `11c3455` after origin/main was merged in.
+- **16.6 DONE (Oct 2):** a user named `admin` exists on production (verified in-process:
+  `can_assign` true for it, 403 for the admin-role users `anaik` and `cbui`).
 
 ---
 

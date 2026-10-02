@@ -1,6 +1,6 @@
-# Employee expense reporting — design (Oct 2 2026; ALL FOUR PHASES BUILT, not deployed)
+# Employee expense reporting (Oct 2 2026; LIVE at `v553` = `79d21a2`)
 
-**All four phases are on branch `feat/expense-reports`** (off `feat/section-access`, which it
+**Live at `v553` (Oct 2 2026).** Built on branch `feat/expense-reports` (off `feat/section-access`, which it
 needs for the Expenses section), not merged or deployed as of Oct 2 2026. Delete this
 paragraph when it ships. What is built and how, below under "Phase 1 as built".
 
@@ -306,3 +306,33 @@ against injected defects.
 
 Mileage-rate history is the existing table (effective date, rate, basis, who); nothing
 more was needed.
+
+## The ownership proposal against production (Oct 2 2026, `v553`)
+
+Run in the container against the real commitments and GL (intercompany population: 64
+entities). Accounting's booking (Sep 24 upload and their `Interco Ownership Splits` tab)
+against the app's proposal:
+
+| Deal | Accounting | App | |
+|---|---|---|---|
+| Fairview (FAIRVH) | TGA6, rltd PPIFVH | TGA6 100%, rltd PPIFVH | match |
+| Nottingham (NOTTNV) | TGANOT 48.49 / PSCKOC 51.51 | same | match |
+| Woodlands (WOODSQ) | PSCKOC 67.51 / PSC1 32.49 | same | match |
+| Ascent (ASCENT) | TGAAS 76.82 / PSCKOC 23.18 | same split; PSCKOC's rltd INVASC not PPIAS | split matches |
+| Pontchartrain (PONTCH) | PSC3, rltd INVF7 | INVF7 100%, rltd PPI31 | WRONG |
+| Gallery (THEGAL) | PSCKOC 70 / PSC3 30 | PSCKOC 70 / INVF2 30 | WRONG |
+| Belleville (BELLES) | KOCTRS 50 / PSC3 50 | KOCTRS 50 / INVF11 50 | WRONG |
+| Apple (APPLE) | PPI2 100% | PPI2 82.07 / PSS1 17.93 | WRONG |
+| Brainerd (BRNERD) | TGA22 ~62.4 / PSC1 ~37.6 | TGA22 82.68 / PSC1 17.32 | WRONG |
+
+- **The three PSC3 rows are ONE cause.** The investee funds INVF7, INVF2 and INVF11
+  carry their own `MR15000002`, so "the first owner with an intercompany account" stops
+  at them; accounting treats them as pass-throughs and books PSC3. Whether investee
+  funds always pass through to their parent is accounting's rule to state -- a data
+  criterion for it is not known yet, and a name rule (`INVF*`) would be a guess.
+- **Apple and Brainerd are data questions**: the commitments carry PSS1 beside PPI2 into
+  APPLE, and Brainerd's commitment dollars give different shares from accounting's tab.
+- Brainerd's nine building properties (BRN-1..9) find no owner -- not reachable from the
+  employee's deal list, which offers the parent deal only.
+- Not changed: every proposal is editable and a hand-set split is kept. Until the rule
+  is settled accounting should CHECK every intercompany row.

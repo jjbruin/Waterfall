@@ -266,6 +266,29 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v553` = `79d21a2` (EMPLOYEE EXPENSE REPORTS, all four phases -- the
+    Expenses section and Accounting > Expense Coding. Design and measurements:
+    `.claude/memory/expense_reporting.md`. Deployed Oct 2 2026 15:52 UTC, build
+    2m12s. P2 against live `11c3455`: 7 commits -- the five expense phases, the
+    v552 docs commit, a merge with ZERO lines of its own; live is an ancestor.
+    No vcode or entity literals in shipped code. Behaviour changes: Expenses is a
+    new section ticked for everyone; `validate_gl` now refuses a MULTI-entity
+    entry out of balance by entity (treasury's byte-identical rebuild unchanged,
+    58/58); `er_` tables hidden from raw-table paths without Accounting; Expense
+    Coding READS closed to analysts. NEW DEPENDENCY `pillow-heif` 1.8.0 (Pillow
+    12.3.0), bounded, prebuilt cp312 manylinux wheel. GUARDRAILS on the merged
+    tree, 13 suites: expense 83/53/46/23, section 265, accounting 56, treasury
+    upload 58 / api 46, intercompany 53, gl_ia 123, investment metrics 178,
+    committed pref 47, lease scan 43; vite build. VERIFIED ON PRODUCTION: HEIC
+    converts in the container; 11 `er_*` tables on PostgreSQL; intercompany
+    population 64 entities. OWNERSHIP PROPOSALS vs accounting's own booking:
+    right for Fairview, Nottingham, Woodlands (and Ascent's split); WRONG for
+    Pontchartrain, Gallery, Belleville -- the investee funds INVF7/INVF2/INVF11
+    keep their own MR15000002 so the walk stops there, while accounting books
+    their parent PSC3 -- and Apple (commitments carry PSS1 17.93% beside PPI2)
+    and Brainerd (82.68/17.32 against accounting's ~62.4/37.6). Proposals are
+    editable; the rule is accounting's question, not changed. See
+    expense_reporting.md and open_items.md.)
   - `v552` = `11c3455` (SECTION ACCESS BY USERNAME -- per-sidebar-section
     checkboxes in Settings > User Management; only the `admin` USERNAME assigns;
     without Accounting the GL/IA tables and every `tr_`/`wp_`/`ic_` table are
