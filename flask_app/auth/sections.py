@@ -74,6 +74,11 @@ SECTIONS = (
                 "/psckoc")},
     {"key": "data_management", "label": "Data Management",
      "routes": ("/data-explorer",)},
+    # Employee expense reports (Oct 2 2026). Ticked by default like every
+    # section; inside it, who sees which REPORT is per record, in
+    # expense_service -- not a change to section access.
+    {"key": "expenses", "label": "Expenses",
+     "routes": ("/expenses",)},
 )
 SECTION_KEYS = tuple(s["key"] for s in SECTIONS)
 
@@ -113,6 +118,7 @@ API_SECTIONS = (
     ("/api/sold-portfolio", ("reports",)),
     ("/api/portfolio-analysis", ("reports",)),
     ("/api/psckoc", ("reports",)),
+    ("/api/expenses", ("expenses",)),
     # Data Management's own tools. The rest of /api/data is shared plumbing.
     ("/api/data/tables", ("data_management",)),
     ("/api/data/export", ("data_management",)),
@@ -157,6 +163,10 @@ RESTRICTED_TABLE_PREFIXES = {
     "tr_": "accounting",   # treasury
     "wp_": "accounting",   # workpapers
     "ic_": "accounting",   # intercompany
+    # Expense reports: every employee's spending and, from phase 2, their
+    # receipts. Raw-table paths would otherwise show all of them to anyone with
+    # Data Management, past the per-report rule the Expenses screens enforce.
+    "er_": "accounting",
 }
 
 #: Sections granted TOGETHER. Jim, Oct 1 2026: "people with access to asset

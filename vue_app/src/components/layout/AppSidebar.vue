@@ -637,6 +637,16 @@ function toggleCollapsed() {
         Reports
       </router-link>
 
+      <!-- Expenses — standalone section-level link -->
+      <router-link
+        v-if="auth.hasSection('expenses')"
+        to="/expenses"
+        class="nav-section-link"
+        :class="{ active: route.path === '/expenses' }"
+      >
+        Expenses
+      </router-link>
+
       <!-- Data Management -->
       <div v-if="auth.hasSection('data_management')" class="nav-section">
         <button

@@ -130,6 +130,7 @@ waterfall-xirr/
 - **.claude/memory/app_reference.md** - What each app tab displays + AI Assistant tools/endpoints (split out of this file Sep 11 2026)
 - **.claude/memory/treasury.md** - The bank side of the close: PNC import, the three-way tie, the matcher, what `current_available` cannot say (Sep 17 2026)
 - **.claude/memory/rent_roll_exhibit.md** - New business's rent-roll specification, the gaps against it, the IC exhibit's exact formatting, and the five-step build plan (Sep 29 2026)
+- **.claude/memory/expense_reporting.md** - Employee expense reports: accounting's process and files, the design, phase 1 as built (Oct 2 2026)
 - **.claude/memory/intercompany.md** - Due to/from PSC Manager reconciliation from `gl_detail`, basis A.B only; phase 1 built Sep 29 2026, the Pay/JE step is not
 
 ## Running the Application

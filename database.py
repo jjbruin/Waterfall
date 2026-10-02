@@ -1673,6 +1673,9 @@ PROTECTED_TABLES = {'capital_calls', 'waterfalls', 'one_pager_comments', 'waterf
                     # Due To/From account and which accounts are its cash; the
                     # notes are the accountant's explanation of each variance.
                     'ic_entity_settings', 'ic_recon_notes',
+                    # Employee expense reports -- app-written, the only copy.
+                    'er_employees', 'er_reports', 'er_lines', 'er_line_splits',
+                    'er_events', 'er_mileage_rates',
                     # The analysts' reading of each tenant's exclusives and
                     # co-tenancy -- app-written, and the only copy of it.
                     'lease_clause_reviews',
