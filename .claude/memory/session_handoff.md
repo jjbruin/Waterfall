@@ -1,27 +1,81 @@
-# Session Handoff — through Oct 2 2026 (v559 live)
+# Session Handoff — through Oct 2 2026 (v561 live)
 
-## Oct 2 2026 — v553 shipped expense reports
+## Oct 2 2026 — SIX FEATURES SHIPPED, v552 -> v561; ONE OUTAGE; PANDAS 3 FOUND
 
-- **Live: `v559` = `05b6f5f`** (see CLAUDE.md's deploy history for v553-v559). `main`
-  is level with live as of Oct 2 2026 (`0be6ea8`). Pushes to `main` are blocked for
-  Claude by the permission classifier -- Jim fast-forwards it.
-- **Open from the deploy**: the intercompany ownership proposal is right for 3 of 7
-  booked deals; the investee-fund pass-through (INVF7/INVF2/INVF11 -> PSC3) needs
-  accounting's rule, Apple's PSS1 and Brainerd's shares are data questions
-  (`expense_reporting.md`). Accounting must set PPI2 to CAD.
+**Live: `v561` = `9adfddd`. `main` = `683fab1`, level with live; every branch from this
+session is on `main`.** Pushes to `main` are blocked for Claude by the permission
+classifier -- Jim fast-forwards it; Claude pushes feature branches. Full per-revision
+detail is in CLAUDE.md's deploy history; this is what a reader needs to carry forward.
 
-## Oct 2 2026 — v552 shipped section access; branches
+### What shipped
 
-- **Live: `v552` = `11c3455`** (section access). Recorded in CLAUDE.md's deploy history.
-  `main` still needs fast-forwarding to `11c3455` -- the push was blocked by the
-  permission classifier and is Jim's to do.
-- **`feat/intercompany-pay-je`** (`be7a33e`, pushed): intercompany phase 2 -- Pay and the
-  reimbursement JE. Not yet through pre-flight review.
-- **`feat/expense-reports`** (`3b1f38b`, pushed): employee expense reports, all four
-  phases (`.claude/memory/expense_reporting.md`). Built on `feat/section-access`.
-  Adds `pillow-heif` (check PyPI before building). After deploy: compare the ownership
-  proposals with production for the Sep 24 deals, and accounting sets PPI2 to CAD.
-- Both will conflict trivially in `database.py`'s PROTECTED_TABLES list.
+| Rev | SHA | What |
+|---|---|---|
+| v552 | `11c3455` | Section access by username (held a day: Charlene's v549/v550 were deployed from an unpushed clone) |
+| v553 | `79d21a2` | Employee expense reports, all four phases: reports/approval, receipts read by the lease model, accounting's coding + TriNet payroll batch, recurring lines / duplicates / accounting's return |
+| v554 | `baf619e` | Intercompany phase 2 -- Pay and the reimbursement JE, with a DOUBLE-BATCH LOCK added in pre-flight (two simultaneous generates could both reimburse one entity; reproduced 1 run in 3 without the lock) |
+| v555 | `effab11` | A NULL segment is blank under pandas 3 -- the intercompany reconciliation had carried an entity called NAN since v531 |
+| v556 | -- | FAILED; ~4 min outage (below) |
+| v556r | `effab11` | Restore |
+| v557 | `68ffce3` | pandas pinned `<3.1`; the CFO may sign off any employee's expense report |
+| v558 | `7626b3e` | Purpose and Deal as dropdowns on the expense table; receipts list below |
+| v559 | `05b6f5f` | Distance wizard (Google Routes + Geocoding); `GOOGLE_MAPS_API_KEY` = secret `google-maps-key` |
+| v560 | `1455419` | Charlene's -- TGA VI on the Snapshot |
+| v561 | `9adfddd` | The expense line opens as a pop-up again (entry + receipt), read-only for approvers; Edit/View moved to the first column |
+
+### Lessons -- each cost something today
+
+1. **THE OUTAGE (v556, ~16:41-16:45 UTC).** `az acr build` failed mid-upload because a
+   background guardrail sweep was using the local SQLite db in the same checkout; the
+   chained script deployed the missing tag anyway; DEACTIVATING the broken revision then
+   deprovisioned the healthy one (single-revision mode: traffic follows the LATEST).
+   Rules now, in memory `deploy-gate-on-build-success`: **build only from the clean
+   deploy worktree (`../waterfall-xirr-deploy`, checked out detached at the target);
+   gate `containerapp update` on the tag existing AND the run succeeding for that SHA;
+   back out by rolling FORWARD to the last good locked tag, never by deactivating.**
+2. **RE-RUN P1 IMMEDIATELY BEFORE THE UPDATE.** It caught Charlene twice: v549/v550
+   (unpushed clone) and v560 (deployed between this work's span and its update).
+   Merge origin/main and recompute the span; never deploy over a live SHA you lack.
+3. **PRODUCTION RUNS PANDAS 3 (since 3.0.0, Jan 21 2026); local dev ran 2.3.3.** Found
+   only because `intercompany_check` failed INSIDE THE CONTAINER while passing locally.
+   Pandas 3 reads a SQL NULL as NaN. A sequential sweep of all guardrails under both
+   found NO other difference. Local `.venv` now matches production exactly (pandas
+   3.0.6, numpy 2.5.3, SQLAlchemy 2.0.54, NO pyarrow -- with pyarrow present pandas 3
+   stores strings differently). Pinned `<3.1`. **Run guardrails in the container
+   after a deploy, not only locally.** Never run the sweep in parallel: checks share
+   fixed temp-db names.
+4. **Assert the premise, not the screen.** "The edit screen was removed" was a link
+   pushed off the right edge by the new dropdowns; "the key doesn't work" was a
+   `^` pasted on the end, then the literal placeholder `PASTE_KEY_HERE` in the secret.
+
+### Open -- with owners (`open_items.md` §17-18)
+
+- **Accounting -- the intercompany ownership rule.** The expense coding proposal is
+  right for Fairview, Nottingham, Woodlands (and Ascent's split) and WRONG for
+  Pontchartrain, Gallery, Belleville: investee funds INVF7/INVF2/INVF11 keep their own
+  MR15000002, so the walk stops there, while accounting books their parent PSC3. Do
+  investee funds always pass through? Apple (PSS1 17.93% beside PPI2) and Brainerd
+  (82.68/17.32 vs ~62.4/37.6) are data questions. Proposals are editable meanwhile;
+  accounting should check every intercompany row.
+- **Accounting -- setup**: PPI2 to CAD in Expense Coding; a mileage rate (mileage lines
+  are refused until one is set).
+- **Admin -- setup**: every employee's name on reports and approver; untick Expenses
+  for anyone who should not see it.
+- **DECIDED, do not change without Jim**: Expense Coding's Void does NOT check whether
+  MRI posted the batch (§17.6). Safe only for a never-uploaded file; an uploaded batch
+  is reversed in MRI.
+- **Possible next**: Google Places API if loose landmark names resolve poorly
+  ("Pontchartrain Landing, New Orleans" resolved to Pontchartrain Blvd).
+
+### Where things are
+
+- Design and measurements: `.claude/memory/expense_reporting.md` (all phases, the
+  production ownership comparison, the wizard). Intercompany: `intercompany.md`.
+- Guardrails added this session: `expense_report_check` 84, `expense_receipt_check` 53,
+  `expense_coding_check` 46 (incl. the Sep 24 acceptance: 114/119 lines identical),
+  `expense_phase4_check` 23, `expense_distance_check` 26; `intercompany_check` 88.
+- Scratchpad (session-local, not in the repo): the pandas-3 venv and sweep results,
+  `venv_before_pandas3.txt` (the old package list, to roll back).
 
 ## Sep 28 2026 — THE ARGUS CASH FLOW, AM'S THIRD LIST
 
