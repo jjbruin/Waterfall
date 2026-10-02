@@ -489,6 +489,11 @@ def summarise(gl_lines, ia_rows=None, cash_account: str = "",
         out["ia_difference"] = iv.get("difference")
         out["errors"] += iv["errors"]
         out["warnings"] += iv["warnings"]
+    # What each description WILL BE in the file, so the screen can show the text
+    # MRI receives (Jim, Oct 2 2026: 80 characters, no punctuation) rather than
+    # the bank's -- the rule lives here, not a copy of it in the browser.
+    out["mri_text"] = {str(d): mri_description(d) for d in
+                       {ln.get("descrpn") for ln in gl_lines} if d is not None}
     return out
 
 

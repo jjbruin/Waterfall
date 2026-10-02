@@ -184,6 +184,34 @@ def main():
         chk("the Guide sheet still explains the rules",
             wb["Guide"].cell(row=2, column=1).value == "Transaction Type")
 
+    print("\n5b. The preview says what each description WILL BE in the file")
+    # Jim, Oct 2 2026: treasury descriptions follow MRI's rule. The file has been
+    # written to it since v563; the screen shows the same text because the preview
+    # returns it -- the rule lives in one place, not copied into the browser.
+    pl = [{"entityid": "AMB6", "acctnum": "MR10005000", "amount": -100.0,
+           "descrpn": "Reed Smith 3977530 RE: 2026 Ambassador Fund", "period": "202608",
+           "basis": "B", "entrdate": "2026-08-15"},
+          {"entityid": "AMB6", "acctnum": "MR52000004", "amount": 100.0,
+           "descrpn": "To Record the Distribution to JJ&C Investments, LLC -- Q2 2026 per "
+                      "the operating agreement section 4.2(b)", "period": "202608",
+           "basis": "B", "entrdate": "2026-08-15"}]
+    sm = tu.summarise(pl, cash_account="MR10005000")
+    mt = sm.get("mri_text") or {}
+    chk("the preview maps each description to what the file will carry",
+        mt.get(pl[0]["descrpn"]) == "Reed Smith 3977530 RE 2026 Ambassador Fund", mt)
+    chk("...held to the rule: 80 characters at most, letters, digits and spaces",
+        all(len(v) <= 80 and v.replace(" ", "").isalnum() for v in mt.values()), mt)
+    chk("...and the file written from those lines carries exactly that text",
+        all(mt[l["descrpn"]] in tu.build_gl_csv(pl) for l in pl))
+    from pathlib import Path as _P
+    _tv = _P(__file__).resolve().parent.parent / "vue_app" / "src" / "views" / "TreasuryView.vue"
+    if _tv.exists():
+        _src = _tv.read_text(encoding="utf-8")
+        chk("the treasury screen reads the preview's mri_text, by that name",
+            "data?.mri_text" in _src and 'maxlength="80"' in _src)
+    else:
+        print("   (no vue_app/ here -- screen check skipped)")
+
     print("\n6. Round trip against the files MRI actually accepted")
     if not (GL_REAL.exists() and IA_REAL.exists()):
         print("   (the real August files are not on this machine -- skipped)")

@@ -358,6 +358,25 @@ async function refreshPreview() {
       lines: glLines(), rows: iaRows(),
       cash_account: cashAccountOf.value, ia_account: iaAccount.value })
     preview.value = data
+    // MRI's rule (80 characters, letters, digits and spaces): the server says what
+    // each description will be written as, and the row takes that text, so what is
+    // read, edited and downloaded is one thing. Re-checked after the swap.
+    const m = data?.mri_text || {}
+    let changed = false
+    for (const r of coded.value) {
+      const w = m[r.descrpn]
+      if (w !== undefined && w !== r.descrpn) { r.descrpn = w; changed = true }
+      for (const p of (r.split || [])) {
+        const pw = m[p.descrpn]
+        if (p.descrpn && pw !== undefined && pw !== p.descrpn) { p.descrpn = pw; changed = true }
+      }
+    }
+    if (changed) {
+      const again = await api.post('/api/treasury/upload/preview', {
+        lines: glLines(), rows: iaRows(),
+        cash_account: cashAccountOf.value, ia_account: iaAccount.value })
+      preview.value = again.data
+    }
   } catch (e) { fail(e, 'Checking the entry') }
 }
 
@@ -1150,7 +1169,8 @@ onMounted(() => { loadAccounts(); loadPending(); loadStatements() })
                 <tr :class="{ done: r.acctnum || (r.split && r.split.length) }">
                   <td class="l">{{ r.as_of_date }}</td>
                   <td class="l">
-                    <input v-if="canManage" v-model="r.descrpn" class="desc-in"
+                    <input v-if="canManage" v-model="r.descrpn" class="desc-in" maxlength="80"
+                           title="MRI: 80 characters, letters, digits and spaces only"
                            @change="refreshPreview" />
                     <span v-else>{{ r.descrpn }}</span>
                   </td>
