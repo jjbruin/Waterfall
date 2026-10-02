@@ -1,8 +1,8 @@
-# Session Handoff — through Oct 2 2026 (v561 live)
+# Session Handoff — through Oct 2 2026 (v563 live)
 
-## Oct 2 2026 — SIX FEATURES SHIPPED, v552 -> v561; ONE OUTAGE; PANDAS 3 FOUND
+## Oct 2 2026 — v552 -> v563: SECTION ACCESS, EXPENSES, INTERCOMPANY PAY; ONE OUTAGE; PANDAS 3; MRI DESCRIPTION RULE
 
-**Live: `v561` = `9adfddd`. `main` = `683fab1`, level with live; every branch from this
+**Live: `v563` = `577511b`. `main` = `c6ac3a2`, level with live; every branch from this
 session is on `main`.** Pushes to `main` are blocked for Claude by the permission
 classifier -- Jim fast-forwards it; Claude pushes feature branches. Full per-revision
 detail is in CLAUDE.md's deploy history; this is what a reader needs to carry forward.
@@ -22,6 +22,8 @@ detail is in CLAUDE.md's deploy history; this is what a reader needs to carry fo
 | v559 | `05b6f5f` | Distance wizard (Google Routes + Geocoding); `GOOGLE_MAPS_API_KEY` = secret `google-maps-key` |
 | v560 | `1455419` | Charlene's -- TGA VI on the Snapshot |
 | v561 | `9adfddd` | The expense line opens as a pop-up again (entry + receipt), read-only for approvers; Edit/View moved to the first column |
+| v562 | `fae6013` | Expense JE descriptions to MRI's rule: `ER FK <deal> <comment>`, `IC ER ...`, initials, 80 chars, no punctuation |
+| v563 | `577511b` | EVERY MRI JE description to the rule, in `build_gl_csv` (treasury, intercompany, expense); Expense Coding's receipt link opens the pop-up (it had shown a PDF as a broken image) |
 
 ### Lessons -- each cost something today
 
@@ -44,7 +46,12 @@ detail is in CLAUDE.md's deploy history; this is what a reader needs to carry fo
    stores strings differently). Pinned `<3.1`. **Run guardrails in the container
    after a deploy, not only locally.** Never run the sweep in parallel: checks share
    fixed temp-db names.
-4. **Assert the premise, not the screen.** "The edit screen was removed" was a link
+4. **MRI's description rule (Jim): 80 characters, letters, digits and spaces only,
+   for EVERY journal-entry description.** Enforced in `treasury_upload.build_gl_csv` --
+   the one writer -- via `mri_description` (comment trimmed first, then the deal; long
+   common words abbreviated only when over 80; a suffix keeps its room). Any new MRI
+   upload path MUST go through `build_gl_csv`. `validate_gl` warns what it cleaned.
+5. **Assert the premise, not the screen.** "The edit screen was removed" was a link
    pushed off the right edge by the new dropdowns; "the key doesn't work" was a
    `^` pasted on the end, then the literal placeholder `PASTE_KEY_HERE` in the secret.
 
@@ -59,6 +66,11 @@ detail is in CLAUDE.md's deploy history; this is what a reader needs to carry fo
   accounting should check every intercompany row.
 - **Accounting -- setup**: PPI2 to CAD in Expense Coding; a mileage rate (mileage lines
   are refused until one is set).
+- **Accounting -- the MRI rule's evidence**: MRI ACCEPTED the AMB6 August GL file with
+  punctuation in 23 of 51 descriptions, and accounting's Sep 24 expense upload carries
+  punctuation on all 119 lines and 12 over 80. Ask whether the restriction is specific
+  characters or upload types; the app strips all punctuation regardless, as Jim asked.
+- **Possible**: two employees with the same initials would read alike in MRI -- not handled.
 - **Admin -- setup**: every employee's name on reports and approver; untick Expenses
   for anyone who should not see it.
 - **DECIDED, do not change without Jim**: Expense Coding's Void does NOT check whether
@@ -72,7 +84,9 @@ detail is in CLAUDE.md's deploy history; this is what a reader needs to carry fo
 - Design and measurements: `.claude/memory/expense_reporting.md` (all phases, the
   production ownership comparison, the wizard). Intercompany: `intercompany.md`.
 - Guardrails added this session: `expense_report_check` 84, `expense_receipt_check` 53,
-  `expense_coding_check` 46 (incl. the Sep 24 acceptance: 114/119 lines identical),
+  `expense_coding_check` 53 (the Sep 24 acceptance now compares against accounting's text
+  held to MRI's rule; every batch line <=80 and punctuation-free),
+  `treasury_upload_check` 61 (accepted file identical in every field but the description),
   `expense_phase4_check` 23, `expense_distance_check` 26; `intercompany_check` 88.
 - Scratchpad (session-local, not in the repo): the pandas-3 venv and sweep results,
   `venv_before_pandas3.txt` (the old package list, to roll back).
