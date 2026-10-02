@@ -349,6 +349,53 @@ def section_pay(engine):
     chk("a voided batch frees its rows", row("PSC1")["pending_batch"] is None
         and ic.batches(engine)[0]["status"] == "voided")
 
+    # TWO GENERATES AT ONCE. The race, made deterministic: generate B's
+    # pre-check is a read taken BEFORE generate A committed (`stale`), so it
+    # sees PSC1 as free. Only the re-check inside the lock can refuse it.
+    stale = ic.reconcile(engine, P)
+    first = ic.build_batch(engine, P, ["PSC1"], "202609", "9/28/2026", "kh", commit=True)
+    n_before = len(ic.batches(engine))
+    real = ic.reconcile
+    ic.reconcile = lambda *a, **kw: stale
+    try:
+        why = _raises(ic.build_batch, engine, P, ["PSC1"], "202609", "9/28/2026", "rg",
+                      commit=True)
+    finally:
+        ic.reconcile = real
+    chk("a second generate whose pre-check missed the first is refused inside the lock",
+        why is not None and "a moment ago" in why and first["batch_id"] in why, why)
+    chk("...and stores nothing: one batch, not two, reimburses PSC1",
+        len(ic.batches(engine)) == n_before
+        and sum(1 for b in ic.batches(engine) if not b["voided_at"]
+                and any(x["entity_id"] == "PSC1" for x in b["entities"])) == 1)
+    ic.void_batch(engine, first["batch_id"], "kh")
+
+    # ...and for real: two threads released together, both holding the same
+    # stale pre-check. The lock must serialise them -- exactly one file.
+    import threading
+    stale = ic.reconcile(engine, P)
+    gate, results = threading.Barrier(2), []
+
+    def go(who):
+        gate.wait()
+        try:
+            results.append(("ok", ic.build_batch(engine, P, ["PSC1"], "202609", "9/28/2026",
+                                                 who, commit=True)["batch_id"]))
+        except ValueError as e:
+            results.append(("refused", str(e)))
+    ic.reconcile = lambda *a, **kw: stale
+    try:
+        ts = [threading.Thread(target=go, args=(w,)) for w in ("kh", "rg")]
+        [t.start() for t in ts]
+        [t.join(30) for t in ts]
+    finally:
+        ic.reconcile = real
+    chk("two simultaneous generates: exactly one batch, the other refused",
+        sorted(r[0] for r in results) == ["ok", "refused"], results)
+    for r in results:
+        if r[0] == "ok":
+            ic.void_batch(engine, r[1], "kh")
+
     from flask_app.services.treasury_upload import validate_gl
     lopsided = [dict(entityid="A1", acctnum="X", amount=5, period=P, entrdate="2026-09-28",
                      descrpn="d"),

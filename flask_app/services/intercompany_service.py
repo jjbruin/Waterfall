@@ -885,6 +885,19 @@ def build_batch(engine, period: str, entity_ids: List[str], je_period: str,
     bid = "IC-%s-%s" % (jp, uuid.uuid4().hex[:6].upper())
     now = datetime.utcnow().isoformat(timespec="seconds")
     with engine.begin() as c:
+        # CLAIMED UNDER A LOCK, OR TWO GENERATES PAY TWICE. The pending check
+        # above ran on a read taken before this transaction; another accountant
+        # could commit a batch for the same entity in between, and both files
+        # would then reimburse it. So the batch table is locked against other
+        # writers and the pending set re-read INSIDE the lock: a competing
+        # generate waits at the lock, then sees this batch and is refused.
+        _lock_batches(c, engine)
+        pending = _pending_entities(engine)
+        clash = sorted(x["entity_id"] for x in out["entities"] if x["entity_id"] in pending)
+        if clash:
+            raise ValueError("%s went into batch %s a moment ago, which the GL does not "
+                             "show yet; nothing was generated." % (
+                                 ", ".join(clash), pending[clash[0]]))
         c.execute(text(
             "INSERT INTO ic_je_batches (batch_id, period, entrdate, entities, csv, total,"
             " created_by, created_at) VALUES (:b, :p, :d, :e, :csv, :t, :u, :now)"),
@@ -892,6 +905,20 @@ def build_batch(engine, period: str, entity_ids: List[str], je_period: str,
              "csv": csv_text, "t": out["total_paid"], "u": user, "now": now})
     out.update(batch_id=bid, csv=csv_text)
     return out
+
+
+def _lock_batches(conn, engine) -> None:
+    """Hold the batch table against other writers until `conn`'s transaction ends.
+
+    PostgreSQL: SHARE ROW EXCLUSIVE conflicts with itself and with the INSERT a
+    competing generate makes, but not with plain reads, so the screens keep
+    working. SQLite has no LOCK TABLE: the first write statement takes the
+    database's write lock, and a no-op DELETE is that statement.
+    """
+    if engine.dialect.name == "postgresql":
+        conn.execute(text("LOCK TABLE ic_je_batches IN SHARE ROW EXCLUSIVE MODE"))
+    else:
+        conn.execute(text("DELETE FROM ic_je_batches WHERE 1 = 0"))
 
 
 def batch_csv(engine, batch_id: str) -> Optional[dict]:
