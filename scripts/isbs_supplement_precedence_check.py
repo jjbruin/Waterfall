@@ -93,19 +93,26 @@ def main() -> int:
     for t in sorted(ds._ISBS_SUPPLEMENTS):
         chk(f"{t} is not an MRI target", t not in targets)
 
-    # The real function is exercised below on real data; this replicates its shadowing
-    # rule so the edge cases can be stated explicitly.
     KEY = ["vcode", "dtEntry", "vSource", "vAccount"]
 
+    # THIS CALLS THE SHIPPED FUNCTION. It used to be a local replica of the
+    # shadowing rule, and the replica is why the case/date-drift defect in
+    # section 7 survived every run of this file: the replica compared the key
+    # with `.astype(str)`, the engine compared it with `.astype(str)`, the two
+    # agreed perfectly, and both were wrong. A test that reimplements the thing
+    # it is testing can only ever confirm that the author made the same mistake
+    # twice.
+    #
+    # `_append_isbs_supplements` opens by loading each supplement table through
+    # its adapter; with no database behind it every one of those raises and is
+    # swallowed by the function's own `except: pass`, so nothing is appended and
+    # the frame passed in — which already carries `_is_supplement` — goes
+    # straight into the supersede block. That block is what these checks are
+    # about, and it is now the real one.
     def shadow(df):
-        is_supp = df["_is_supplement"].astype(bool)
-        if not is_supp.any():
-            return df.reset_index(drop=True)
-        supp_keys = set(map(tuple, df.loc[is_supp, KEY].astype(str).values))
-        mri_keys = pd.Series(
-            list(map(tuple, df.loc[~is_supp, KEY].astype(str).values)),
-            index=df.index[~is_supp])
-        return df.drop(index=mri_keys[mri_keys.isin(supp_keys)].index).reset_index(drop=True)
+        return ds._append_isbs_supplements(
+            df.copy(), {"db_path": "__no_such_db_for_guardrail__"}
+        ).reset_index(drop=True)
 
     cols = ["vcode", "dtEntry", "vSource", "vAccount", "mAmount"]
 
@@ -149,6 +156,154 @@ def main() -> int:
     out = shadow(other)
     chk("nothing is shadowed and every row survives", len(out) == len(other),
         f"{len(other)} in, {len(out)} out")
+
+    print("\n7. THE KEY IS NORMALISED ON BOTH SIDES — case and date drift still match")
+    # THE DEFECT THIS SECTION EXISTS FOR. `_append_isbs_supplements` runs INSIDE
+    # `_assemble_isbs`, one line BEFORE `_normalize_isbs` lower-cases vcode and
+    # parses dtEntry — so the supersede key saw MRI's raw spellings. MRI writes
+    # 'p0000069' / '2026-01-31T00:00:00'; the app's budget import writes
+    # 'P0000069' / '2026-01-31'. Four different strings, no key ever matched,
+    # and BOTH rows reached isbs_raw where every consumer sums them.
+    #
+    # Measured on production: P0000069 Mount Prospect's 2026-Q2 budget NOI came
+    # out at 2,685,375.22 against a true 1,342,687.61 — exactly double, which is
+    # the hardest kind of wrong to see, because a doubled NOI is still a
+    # plausible NOI.
+    drift = pd.DataFrame([
+        # MRI's spelling: lower-case vcode, timestamped date
+        {**dict(zip(cols, ["p0000069", "2026-01-31T00:00:00", "Budget IS", "4010", 1_342_687.61])),
+         "_is_supplement": False},
+        # The app's spelling: the deal's own case, a bare date
+        {**dict(zip(cols, ["P0000069", "2026-01-31", "Budget IS", "4010", 1_342_687.61])),
+         "_is_supplement": True},
+    ])
+    out = shadow(drift)
+    chk("case + date drift on the SAME fact is ONE key — the MRI row is dropped",
+        len(out) == 1 and bool(out.iloc[0]._is_supplement),
+        f"got {len(out)} rows — 2 means the pre-fix key, and the figure doubles")
+    chk("...so the total is the budget, not twice the budget",
+        abs(out.mAmount.sum() - 1_342_687.61) < 0.005,
+        f"got {out.mAmount.sum():,.2f} against 1,342,687.61")
+
+    # Each drift axis on its own, so a half-fix cannot pass.
+    case_only = pd.DataFrame([
+        {**dict(zip(cols, ["p1", "2026-01-31", "Budget IS", "4010", 10.0])), "_is_supplement": False},
+        {**dict(zip(cols, ["P1", "2026-01-31", "Budget IS", "4010", 10.0])), "_is_supplement": True},
+    ])
+    chk("case drift alone is one key", len(shadow(case_only)) == 1,
+        "vcode is not being lower-cased for the comparison")
+    date_only = pd.DataFrame([
+        {**dict(zip(cols, ["p1", "2026-01-31T00:00:00", "Budget IS", "4010", 10.0])), "_is_supplement": False},
+        {**dict(zip(cols, ["p1", "2026-01-31", "Budget IS", "4010", 10.0])), "_is_supplement": True},
+    ])
+    chk("date drift alone is one key", len(shadow(date_only)) == 1,
+        "dtEntry is not being parsed for the comparison")
+
+    print("\n8. Normalising the key must not widen it, and must not touch the data")
+    # The dangerous direction. Under-matching double-counts; OVER-matching
+    # DELETES MRI rows. A different DAY, a different account and a different
+    # source must still all miss, however the strings are spelled.
+    wrong_day = pd.DataFrame([
+        {**dict(zip(cols, ["p1", "2026-01-30T00:00:00", "Budget IS", "4010", 10.0])), "_is_supplement": False},
+        {**dict(zip(cols, ["P1", "2026-01-31", "Budget IS", "4010", 99.0])), "_is_supplement": True},
+    ])
+    chk("a date one day apart is NOT the same key", len(shadow(wrong_day)) == 2,
+        "normalisation has started matching different days")
+    unparseable = pd.DataFrame([
+        {**dict(zip(cols, ["p1", "not a date", "Budget IS", "4010", 10.0])), "_is_supplement": False},
+        {**dict(zip(cols, ["p1", "also not a date", "Budget IS", "4010", 99.0])), "_is_supplement": True},
+    ])
+    chk("two DIFFERENT unparseable dates do not collapse onto one key",
+        len(shadow(unparseable)) == 2,
+        "every unparseable date became NaT, so one bad supplement row would "
+        "shadow every bad MRI row — that deletes data rather than doubling it")
+    same_unparseable = pd.DataFrame([
+        {**dict(zip(cols, ["p1", "not a date", "Budget IS", "4010", 10.0])), "_is_supplement": False},
+        {**dict(zip(cols, ["p1", "not a date", "Budget IS", "4010", 99.0])), "_is_supplement": True},
+    ])
+    chk("...but two IDENTICAL unparseable dates still match, as they did before",
+        len(shadow(same_unparseable)) == 1)
+    # The stored values are the loader's business, not the comparison's.
+    src = pd.DataFrame([
+        {**dict(zip(cols, ["P0000069", "2026-01-31T00:00:00", "Budget IS", "4010", 10.0])),
+         "_is_supplement": False},
+    ])
+    out = shadow(src)
+    chk("the comparison does NOT rewrite vcode or dtEntry — _normalize_isbs owns that",
+        out.iloc[0].vcode == "P0000069" and out.iloc[0].dtEntry == "2026-01-31T00:00:00",
+        f"got {out.iloc[0].vcode!r} / {out.iloc[0].dtEntry!r}")
+    # And the journal rule from section 4 must survive the normalisation.
+    drifted_journal = pd.DataFrame(
+        [{**dict(zip(cols, ["p1", "2026-01-31T00:00:00", "Budget IS", "4010", 25.0])),
+          "_is_supplement": False} for _ in range(4)])
+    chk("4 same-key MRI rows STILL all survive with no supplement present",
+        len(shadow(drifted_journal)) == 4,
+        "the journal rule is the 358k-row deletion; normalisation must not reach it")
+
+    print("\n9. A YTD-CUMULATIVE vSource is never superseded")
+    # FOUND BY THE SECTION-7 FIX, NOT BEFORE IT. While the key never matched,
+    # this could not happen; the moment it matched, three deals' underwritten
+    # capital DOUBLED.
+    #
+    # `isbs_projected_is` account 7073 is a RUNNING TOTAL. Burton carries
+    # 26,597,500 on 2025-06-30 and the same 26,597,500 every month to December —
+    # one contribution, restated, not seven. `one_pager._get_uw_7073_signed`
+    # reads the first month of a year as the periodic figure and every later
+    # month as a difference from the one before, which is zero.
+    #
+    # The supplement row is PERIODIC: a different quantity on the same key.
+    # Supersede it and MRI's 2025-06-30 row goes, which makes 2025-07-31 the
+    # first month of the year — so its full cumulative is read as a SECOND
+    # contribution, while the supplement still supplies the real one. Measured
+    # on production: Burton -26,597,500 -> -53,195,000, Presidential Arms
+    # -20,600,000 -> -41,200,000, Court of Deptford -8,751,184 -> -18,297,184,
+    # all of which feed U/W ROE to Date and CoC Proj. Since Close.
+    #
+    # The genuine duplicate is ALREADY resolved downstream by the
+    # (date, amount) dedupe at the end of `_get_uw_7073_signed`. There is
+    # nothing for this layer to do and real harm in trying.
+    chk("Interim IS and Projected IS are declared cumulative",
+        ds._CUMULATIVE_VSOURCES == frozenset({"Interim IS", "Projected IS"}),
+        f"got {ds._CUMULATIVE_VSOURCES}")
+    cumulative = pd.DataFrame([
+        {**dict(zip(cols, ["p0000109", "2025-06-30T00:00:00", "Projected IS", "7073", 26_597_500.0])),
+         "_is_supplement": False},
+        {**dict(zip(cols, ["p0000109", "2025-07-31T00:00:00", "Projected IS", "7073", 26_597_500.0])),
+         "_is_supplement": False},
+        {**dict(zip(cols, ["P0000109", "6/30/2025", "Projected IS", "7073", 26_597_500.0])),
+         "_is_supplement": True},
+    ])
+    out = shadow(cumulative)
+    chk("a Projected IS supplement does NOT drop the MRI row it matches",
+        len(out) == 3 and (~out["_is_supplement"].astype(bool)).sum() == 2,
+        f"got {len(out)} rows — dropping the 06-30 row makes 07-31 read as a "
+        "second contribution and the capital doubles")
+    # Both halves of the rule, so neither can be satisfied by doing nothing.
+    periodic = pd.DataFrame([
+        {**dict(zip(cols, ["p0000069", "2026-01-31T00:00:00", "Budget IS", "4010", 1_342_687.61])),
+         "_is_supplement": False},
+        {**dict(zip(cols, ["P0000069", "2026-01-31", "Budget IS", "4010", 1_342_687.61])),
+         "_is_supplement": True},
+    ])
+    chk("...while a Budget IS supplement on the same drift still DOES",
+        len(shadow(periodic)) == 1,
+        "scoping by vSource must not switch the fix off for periodic sources")
+    interim = pd.DataFrame([
+        {**dict(zip(cols, ["p1", "2026-01-31T00:00:00", "Interim IS", "4010", 10.0])),
+         "_is_supplement": False},
+        {**dict(zip(cols, ["P1", "2026-01-31", "Interim IS", "4010", 10.0])),
+         "_is_supplement": True},
+    ])
+    chk("Interim IS — also YTD cumulative — is likewise left alone",
+        len(shadow(interim)) == 2)
+    bs = pd.DataFrame([
+        {**dict(zip(cols, ["p1", "2026-01-31T00:00:00", "Interim BS", "2150", 10.0])),
+         "_is_supplement": False},
+        {**dict(zip(cols, ["P1", "2026-01-31", "Interim BS", "2150", 10.0])),
+         "_is_supplement": True},
+    ])
+    chk("Interim BS is a point-in-time balance, so it IS superseded",
+        len(shadow(bs)) == 1)
 
     print(f"\nPASS={PASS} FAIL={FAIL}")
     return 1 if FAIL else 0
