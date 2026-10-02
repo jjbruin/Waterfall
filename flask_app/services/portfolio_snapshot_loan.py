@@ -1001,7 +1001,7 @@ def assemble_loan(investor_code: str, quarter: str, *,
     from flask_app.services.portfolio_snapshot_operating import (
         is_dev_deal, resolve_strategy)
     from flask_app.services.portfolio_snapshot_service import (
-        group_total_label, PORTFOLIO_TOTAL_LABEL,
+        group_display_label, group_total_label, PORTFOLIO_TOTAL_LABEL,
     )
 
     loader = comment_loader or _default_comment_loader
@@ -1425,6 +1425,8 @@ def assemble_loan(investor_code: str, quarter: str, *,
         # Alongside `groups`, not nested in it, so every existing consumer keeps
         # reading {name: [rows]} unchanged.
         "group_labels": {g: group_total_label(g) for g in groups},
+        # The HEADER label — see portfolio_snapshot_service.GROUP_DISPLAY_LABELS.
+        "group_display_labels": {g: group_display_label(g) for g in groups},
         "subtotals": {g: loan_subtotal(rows, group_total_label(g))
                       for g, rows in groups.items()},
         "total": loan_subtotal(

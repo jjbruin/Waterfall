@@ -224,13 +224,35 @@ KEEP_DESPITE_SOLD: set[str] = {
 #: them out ("Total PSC TGA 2022 LLC"), so the mapping lives here rather than in
 #: any one subtab — Financial, Operating and Loan all label the same groups and
 #: must not drift apart. An unmapped group falls back to "Total <key>", which is
-#: what a genuinely new fund (TGA6 at 26Q2) reads as until it is added.
+#: what a genuinely new fund reads as until it is added — TGA6 read as
+#: "Total TGA6" from 26Q2 until the entry below was written.
 GROUP_TOTAL_LABELS: dict[str, str] = {
     INDIVIDUAL_GROUP: "Total Individual Investments",
     "TGA22": "Total PSC TGA 2022 LLC",
     "TGA23": "Total PSC TGA 2023 LLC",
     "TGA24": "Total PSC TGA 2024 LLC",
     "TGA25": "Total PSC TGA 2025 LLC",
+    # The sent TIAA report prints the Roman numeral, not the entity code. The
+    # fund is PSC Ambassadors Fund TGA VI LLC (AMB6); the traversal keys it
+    # TGA6, and that key is what every subtotal, override and lookup is written
+    # against — so the spelling is fixed HERE and the key is left alone.
+    "TGA6": "Total TGA VI",
+}
+
+#: Group key -> the label printed on the group's HEADER row.
+#:
+#: SEPARATE FROM THE TOTAL LABELS, and deliberately almost empty. Operating and
+#: Loan print a header above each fund's deals and render the GROUP KEY there —
+#: "TGA22", "TGA23" — while Financial prints no header at all and names the fund
+#: only on its total row. Deriving the header from `GROUP_TOTAL_LABELS` by
+#: dropping "Total " would therefore rewrite every other fund's header from
+#: "TGA22" to "PSC TGA 2022 LLC", which is neither what the sent report shows
+#: nor what was asked for.
+#:
+#: So: one entry, for the one fund whose printed name differs from its key.
+#: Every other group keeps the key, exactly as before.
+GROUP_DISPLAY_LABELS: dict[str, str] = {
+    "TGA6": "TGA VI",
 }
 
 #: The PDF's label for the all-deals row. Plural, unlike the group totals.
@@ -240,6 +262,11 @@ PORTFOLIO_TOTAL_LABEL = "Portfolio Totals"
 def group_total_label(group: str) -> str:
     """The PDF's total-row label for a group key."""
     return GROUP_TOTAL_LABELS.get(group, f"Total {group}")
+
+
+def group_display_label(group: str) -> str:
+    """The header-row label for a group key; the key itself when unmapped."""
+    return GROUP_DISPLAY_LABELS.get(group, group)
 
 
 def resolve_committed_pref(cap: dict) -> tuple:
