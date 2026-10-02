@@ -494,12 +494,21 @@ onMounted(async () => {
 
       <table class="data-table">
         <thead><tr>
-          <th>Date / period</th><th>Category</th><th>Purpose</th><th>Deal</th>
-          <th>Vendor</th><th>Comment</th><th class="num">Amount</th><th>Receipt</th><th></th>
+          <th></th><th>Date / period</th><th>Category</th><th>Purpose</th><th>Deal</th>
+          <th>Vendor</th><th>Comment</th><th class="num">Amount</th><th>Receipt</th>
         </tr></thead>
         <tbody>
           <tr v-for="ln in report.lines" :key="ln.id"
               :class="{ bad: report.check.by_line[ln.id]?.errors.length }">
+            <!-- First, not last: the dropdowns widen the table, and an Edit at the
+                 far right went off the screen (Jim, Oct 2 2026). -->
+            <td class="row-actions first">
+              <template v-if="report.permissions.edit">
+                <button class="link" @click="editLine(ln)">Edit</button>
+                <button class="link danger" @click="deleteLine(ln)">Remove</button>
+              </template>
+              <button v-else class="link" @click="viewing = ln">View</button>
+            </td>
             <td>{{ ln.line_date }}<template v-if="ln.line_date_end"> – {{ ln.line_date_end }}</template></td>
             <td :title="ln.category_account">{{ ln.category_name || ln.category_account }}</td>
             <td>
@@ -551,18 +560,12 @@ onMounted(async () => {
               <template v-else-if="ln.receipt === 'N'">No — {{ ln.no_receipt_reason }}</template>
               <div v-if="ln.extracted?.handwritten_amount" class="warn-text">handwritten amount</div>
             </td>
-            <td class="row-actions">
-              <template v-if="report.permissions.edit">
-                <button class="link" @click="editLine(ln)">Edit</button>
-                <button class="link" @click="deleteLine(ln)">Remove</button>
-              </template>
-            </td>
           </tr>
           <tr v-if="!report.lines.length"><td colspan="9" class="muted">No lines yet.</td></tr>
         </tbody>
         <tfoot><tr>
-          <td colspan="6" class="num"><strong>Total</strong></td>
-          <td class="num"><strong>{{ fmt(report.total) }}</strong></td><td colspan="2"></td>
+          <td colspan="7" class="num"><strong>Total</strong></td>
+          <td class="num"><strong>{{ fmt(report.total) }}</strong></td><td></td>
         </tr></tfoot>
       </table>
 
@@ -573,8 +576,14 @@ onMounted(async () => {
                 @click="copyRecurring">↻ Copy recurring lines from my last report</button>
       </div>
 
-      <!-- ---------- line form ---------- -->
-      <div v-if="editing" class="line-form" :class="{ 'with-receipt': editingReceipt }">
+      <!-- ---------- line form: a pop-up, the receipt beside the entry ---------- -->
+      <div v-if="editing" class="modal-backdrop" @click.self="editing = null">
+       <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-head">
+          <strong>{{ editing.id ? 'Edit expense' : 'New expense' }}</strong>
+          <button class="link" @click="editing = null">✕ Close</button>
+        </div>
+      <div class="line-form" :class="{ 'with-receipt': editingReceipt }">
        <div class="form-col">
         <div class="row">
           <label>Date <input type="date" v-model="editing.line_date" /></label>
@@ -696,6 +705,8 @@ onMounted(async () => {
                         :amount="editing.isMileage ? mileageAmount : parseFloat(editing.amount)" />
        </div>
       </div>
+       </div>
+      </div>
 
       <!-- ---------- what stops a submit ---------- -->
       <div v-if="report.permissions.submit && report.check.errors.length" class="notice">
@@ -742,13 +753,58 @@ onMounted(async () => {
         </table>
       </div>
 
-      <div v-if="viewing && !editing" class="view-panel">
-        <div class="row"><button class="link" @click="viewing = null">Close receipt</button></div>
-        <ReceiptViewer :report-id="report.id" :receipt-id="viewing.receipt_id" :page="viewing.receipt_page"
-                       :content-type="receiptOf(viewing.receipt_id)?.content_type"
-                       :view-type="receiptOf(viewing.receipt_id)?.view_type"
-                       :filename="receiptOf(viewing.receipt_id)?.filename"
-                       :extracted="viewing.extracted" :amount="viewing.amount" />
+      <!-- ---------- a line, read-only: what the approver sees ---------- -->
+      <div v-if="viewing && !editing" class="modal-backdrop" @click.self="viewing = null">
+       <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-head">
+          <strong>{{ viewing.id ? 'Expense' : receiptOf(viewing.receipt_id)?.filename }}</strong>
+          <span>
+            <button v-if="viewing.id && report.permissions.edit" class="link"
+                    @click="editLine(viewing); viewing = null">Edit</button>
+            <button class="link" @click="viewing = null">✕ Close</button>
+          </span>
+        </div>
+        <div class="line-form" :class="{ 'with-receipt': viewing.id && viewing.receipt_id }">
+          <div v-if="viewing.id" class="form-col">
+            <dl class="details">
+              <dt>Date</dt><dd>{{ viewing.line_date }}<template v-if="viewing.line_date_end"> – {{ viewing.line_date_end }}</template></dd>
+              <dt>Category</dt><dd>{{ viewing.category_name || viewing.category_account || '—' }}</dd>
+              <dt>Purpose</dt><dd>{{ viewing.purpose || '—' }}</dd>
+              <dt>Deal</dt>
+              <dd>
+                <template v-if="viewing.splits?.length">
+                  <div v-for="x in viewing.splits" :key="x.id">{{ dealOf(x) }} — {{ fmt(x.amount) }}</div>
+                </template>
+                <template v-else>{{ dealOf(viewing) || '—' }}</template>
+              </dd>
+              <dt>Vendor</dt><dd>{{ viewing.vendor || '—' }}</dd>
+              <dt>Comment</dt><dd>{{ viewing.comment || '—' }}</dd>
+              <dt>Amount</dt><dd><strong>{{ fmt(viewing.amount) }}</strong></dd>
+              <template v-if="viewing.miles != null">
+                <dt>Mileage</dt><dd>{{ viewing.miles }} mi × ${{ viewing.mileage_rate }}</dd>
+              </template>
+              <template v-if="viewing.route">
+                <dt>Route</dt>
+                <dd>{{ viewing.route.summary }}
+                  <div v-for="(x, i) in viewing.route.stops" :key="i" class="muted">{{ x.input }} → {{ x.resolved }}</div></dd>
+              </template>
+              <dt>Receipt</dt>
+              <dd>{{ viewing.receipt_id ? receiptOf(viewing.receipt_id)?.filename
+                     : viewing.receipt === 'N' ? 'None — ' + (viewing.no_receipt_reason || '') : '—' }}</dd>
+              <template v-if="viewing.recurring"><dt>Recurring</dt><dd>every month</dd></template>
+            </dl>
+            <div v-for="m in report.check.by_line[viewing.id]?.errors" :key="m" class="err-text">Line {{ m }}</div>
+            <div v-for="m in report.check.by_line[viewing.id]?.warnings" :key="m" class="warn-text">{{ m }}</div>
+          </div>
+          <div v-if="viewing.receipt_id" class="receipt-col">
+            <ReceiptViewer :report-id="report.id" :receipt-id="viewing.receipt_id" :page="viewing.receipt_page"
+                           :content-type="receiptOf(viewing.receipt_id)?.content_type"
+                           :view-type="receiptOf(viewing.receipt_id)?.view_type"
+                           :filename="receiptOf(viewing.receipt_id)?.filename"
+                           :extracted="viewing.extracted" :amount="viewing.amount" />
+          </div>
+        </div>
+       </div>
       </div>
 
       <div class="actions">
@@ -934,6 +990,26 @@ input, select, textarea {
 }
 .num-in { width: 90px; text-align: right; }
 .line-form { border: 1px solid var(--color-border); border-radius: 6px; padding: 8px 12px; margin: 10px 0; }
+.modal-backdrop { position: fixed; inset: 0; z-index: 1000; background: rgba(15, 20, 30, .45);
+  display: flex; align-items: flex-start; justify-content: center; padding: 3vh 2vw; overflow: auto; }
+.modal { background: var(--color-bg, #fff); color: var(--color-text); border-radius: 8px;
+  width: min(1320px, 96vw); max-height: 94vh; overflow: auto; padding: 10px 16px 14px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .25); }
+.modal-head { display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  padding-bottom: 6px; border-bottom: 1px solid var(--color-border); margin-bottom: 8px; }
+.modal .line-form { border: none; margin: 0; padding: 0; }
+.modal .receipt-col { min-height: 72vh; }
+.modal:not(:has(.receipt-col)) { width: min(760px, 96vw); }
+.details { display: grid; grid-template-columns: 110px 1fr; gap: 4px 12px; margin: 0 0 8px; font-size: 13px; }
+.details dt { color: var(--color-text-secondary); font-size: 11.5px; text-transform: uppercase; padding-top: 2px; }
+.details dd { margin: 0; }
+td.row-actions.first { white-space: nowrap; width: 1%; }
+.link.danger { color: #a33; }
+/* On a narrow window the receipt goes UNDER the entry, not off to the right. */
+@media (max-width: 900px) {
+  .line-form.with-receipt { grid-template-columns: 1fr; }
+  .modal .receipt-col { min-height: 60vh; }
+}
 .line-form.with-receipt { display: grid; grid-template-columns: minmax(420px, 1fr) minmax(360px, 1fr); gap: 16px; }
 .form-col { min-width: 0; }
 .receipt-col { min-width: 0; display: flex; }
@@ -941,8 +1017,7 @@ input, select, textarea {
 .receipts { margin: 10px 0; }
 .data-table.compact td { padding: 3px 8px; }
 .file-btn { display: inline-flex; flex-direction: row; cursor: pointer; padding: 4px 10px; font-size: 12.5px; color: var(--color-text); }
-.view-panel { border: 1px solid var(--color-border); border-radius: 6px; padding: 8px 12px; margin: 10px 0; height: 640px; display: flex; flex-direction: column; }
-.view-panel > :last-child { flex: 1; }
+
 .splits { border-top: 1px dashed var(--color-border); padding-top: 6px; }
 .wizard { border: 1px solid var(--color-border); border-radius: 6px; padding: 6px 10px; margin: 6px 0; background: var(--color-surface); }
 .wizard .resolved { font-size: 12.5px; margin: 4px 0; }
