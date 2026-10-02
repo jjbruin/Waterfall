@@ -266,6 +266,57 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v560` = `1455419` (THE SNAPSHOT PRINTS **TGA VI**, NOT **TGA6**, IN BOTH PLACES.
+    Oct 2 2026, tag locked. THIS IS LIVE. The fund is PSC Ambassadors Fund TGA VI
+    LLC (AMB6); the ownership traversal keys it `TGA6`, and that key is what every
+    subtotal, override and lookup is written against — so only the printed
+    spelling moved and the key was left alone.
+
+    **TWO MAPS, BECAUSE THERE ARE TWO ROUTES ONTO THE PAGE and they only look like
+    one.** The subtotal row takes `group_total_label(key)`, which falls back to
+    `"Total <key>"`; the header row on Operating and Loan renders the GROUP KEY
+    itself, with no map behind it at all. So TGA6 arrived at 26Q2 printing `TGA6`
+    above its deals and `Total TGA6` below them — nothing errored, nothing was
+    missing, and the only way to see it was to read the page against the sent
+    report. `GROUP_TOTAL_LABELS` gains `"Total TGA VI"`; `GROUP_DISPLAY_LABELS` is
+    NEW and has exactly ONE entry, because the header cannot be derived from the
+    total label — stripping `"Total "` would rewrite TGA22's header from `TGA22` to
+    `PSC TGA 2022 LLC`. Every other group keeps its key.
+
+    Operating and Loan publish `group_display_labels` beside `group_labels`; their
+    components render it and **fall back to the key when the field is absent**, so
+    a Snapshot frozen before this field existed still renders a header rather than
+    an empty cell. Financial is untouched — it prints no header row and names the
+    fund only on its total row.
+
+    **THE RE-CHECK BEFORE BUILDING IS WHY THIS SHIPPED CORRECTLY.** The branch was
+    cut from `68ffce3` (v557). By the time it was ready, live had moved twice —
+    to v559 `05b6f5f` — and Jim had merged his line into main, ending the
+    prod/main divergence that had stood through v552–v557. Building the original
+    branch would have shipped a tree of `68ffce3` + the label fix, **silently
+    reverting the expense distance wizard and the dropdown work** (675 lines, 9
+    files, a new service and a DB column). Nothing would have errored; the
+    features would simply have been gone. Rebased onto `0be6ea8` instead — the
+    three intervening commits touch expenses and docs and **not one** of the six
+    files here, so the rebase was conflict-free.
+
+    Guardrail: `scripts/snapshot_group_label_check.py` (27). It pins the whole sent
+    page group by group, header AND subtotal, so "TGA6 is relabelled" cannot pass
+    by relabelling everything and "no other fund moved" cannot pass by changing
+    nothing. The full `snapshot_*_check` sweep is byte-identical before and after
+    on the same machine, the only difference being this file's 27 checks
+    appearing; the two standing failures (`subtotal_method` 33/34 "KNOWN entry is
+    stale", `temp_suppress` 25/26) reproduce identically on the clean base and are
+    untouched. **11 snapshot suites cannot run locally at all** (`ModuleNotFoundError:
+    live_api` — that module is not in the repo) and 4 more need the `coa` table;
+    same on both sides, counted as neither pass nor fail.
+
+    Verified on live: Operating and Loan both carry header `TGA VI` and subtotal
+    `Total TGA VI`, Financial carries `Total TGA VI`, and the other five groups are
+    unchanged on all three. No stale `TGA6` string anywhere in the payload. Smoke:
+    Dashboard, One Pager, Investment Metrics, two Snapshot bundles, the Expenses
+    screen Jim shipped in v558/v559, deals list — all 200. 1,028 MiB of 2,048,
+    **0 tracebacks**.)
   - `v559` = `05b6f5f` (THE DISTANCE WIZARD -- driving miles by Google Routes, each
     stop resolved by Geocoding; a bare 3-letter code asked as an airport, because
     Geocoding "PHL" alone is "Philippines". The deploy WIRES `GOOGLE_MAPS_API_KEY` to
