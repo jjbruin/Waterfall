@@ -37,6 +37,7 @@ const fmt = (v: any) => v == null ? '' :
   Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const STATUS: Record<string, string> = {
   draft: 'Draft', submitted: 'Submitted', returned: 'Returned', approved: 'Approved',
+  batched: 'Batched for payroll',
 }
 // A pipeline deal is not on any list: the employee types its name (Jim, Oct 2
 // 2026). PIPELINE is what the form SENDS; the server stores the typed name.

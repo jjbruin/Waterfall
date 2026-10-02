@@ -1,6 +1,6 @@
-# Employee expense reporting — design (Oct 2 2026; PHASES 1-2 BUILT, not deployed)
+# Employee expense reporting — design (Oct 2 2026; PHASES 1-3 BUILT, not deployed)
 
-**Phases 1 and 2 are on branch `feat/expense-reports`** (off `feat/section-access`, which it
+**Phases 1-3 are on branch `feat/expense-reports`** (off `feat/section-access`, which it
 needs for the Expenses section), not merged or deployed as of Oct 2 2026. Delete this
 paragraph when it ships. What is built and how, below under "Phase 1 as built".
 
@@ -225,3 +225,59 @@ guardrail `scripts/expense_receipt_check.py` (53, no API calls; injection-proved
   161.99, tip 30.00 and total 191.99 written in: read as 191.99, printed 161.99,
   handwritten flagged, vendor, date, category and "Dinner, 3 guests"; the form showed
   the image beside it with that reading above. Test data deleted.
+
+## Phase 3 as built (Oct 2 2026): accounting's coding and the payroll batch
+
+Accounting > **Expense Coding** (`/expense-coding`), `flask_app/services/expense_coding.py`,
+`flask_app/api/expense_coding.py`, `vue_app/src/views/ExpenseCodingView.vue`, guardrail
+`scripts/expense_coding_check.py` (46, four injected defects each caught).
+
+- **Every approved line arrives PRE-CODED**; only what accounting CHANGES is stored
+  (`er_coding`, per line or per split), so a corrected chart or ownership record still
+  reaches every row nobody decided by hand. Changed fields are starred; the employee's
+  category stays beside a recode.
+- **The booking follows `deal_kind`**: operations -> the category's account; pipeline ->
+  `MR11000012`; owned -> `MR15000001` at PSCMAN (RLTDENTITY = owning entity) plus, at the
+  entity, the expense against `MR15000002`.
+- **WHICH ENTITY OWNS THE EXPENSE IS READ FROM THE DATA**: `ownership_chain_service.build_chain`
+  (commitment dollars), walked up each branch to the FIRST owner that keeps an
+  intercompany account with PSC Manager (carries `MR15000002`, or is a `MR15000001`
+  segment on PSCMAN, basis A/B). That one rule gives Gallery -> PSCKOC 70 / PSC3 30
+  (PPI25 keeps no such account: "a simple pass through") AND Apple -> PPI2 (it does).
+  A name-based rule could not give both. Branches never reaching one (an operating
+  partner) are dropped and the rest RE-BASED, said in the basis text. RLTDENTITY at the
+  entity = the entity below it on the path (INVF7 for Pontchartrain, as in the file).
+  **NOT YET RUN AGAINST PRODUCTION OWNERSHIP** — locally `commitments` has 3 rows.
+  Before accounting relies on a proposal, compare it on production for the Sep 24
+  deals: Apple -> PPI2, Pontchartrain -> PSC3 (INVF7), Fairview -> TGA6 (PPIFVH),
+  and the six splits on accounting's `Interco Ownership Splits` tab.
+- **Splits use `treasury_upload.allocate`** (largest remainder, to the cent); **the file is
+  `build_gl_csv` / `validate_gl`**, with the per-entity balance check brought over from
+  `feat/intercompany-pay-je` VERBATIM so the two branches merge cleanly.
+- **One batch per payroll date**: one credit at PSCMAN to `MR20000001`, "Expense
+  Reimbursement Activity - Trinet Payroll - {YYYYMM} {suffix}". Reports are CLAIMED by a
+  conditional UPDATE (status `batched`, `batch_id`), so two people cannot batch one
+  report. "Posted" = the GL shows that credit. Void releases the reports, coding kept.
+- **A non-USD entity** is listed in `er_entity_currency`; the batch requires a USD-to-X
+  rate for it, books the entity side in that currency and appends "(712.98 USD)". PSC
+  Manager's side stays USD. **Accounting must list PPI2 as CAD** — nothing seeds it.
+- **Recurring reimbursements** (`er_recurring`, e.g. FK - Benefits) are ticked per batch.
+- **Reads are closed to analysts too** — the grid is everyone's spending. The one named
+  exception in `accounting_access_check` (`READ_CLOSED_PREFIXES`), asserted both ways.
+
+### Acceptance — accounting's Sep 24 upload, rebuilt
+
+The file's own coding was fed back through the app (its accounts, entities, related
+entities and descriptions as accounting's decisions) and the batch compared line by line:
+**114 of 119 lines identical** (entity, account, amount, description, related entity) —
+every PSCMAN, PSC3 and TGA6 line. The five that differ are all PPI2: the 0.30 cab typo
+(the file credits 159.96 against a 159.66 debit; the app balances, and REFUSES the file as
+written), one CAD cent (613.44 vs 613.45 — accounting's rates vary 1.41341-1.41350 line
+to line, the app uses one per batch), and accounting typing a shorter description at
+PPI2 than at PSCMAN for one mileage line. This proves the ASSEMBLY; the ownership
+PROPOSAL is the production check above.
+
+### Not built (phase 4)
+Recurring EMPLOYEE lines (the $50 phone line), duplicate detection by vendor/date/amount
+across reports, mileage-rate history UI beyond the table, accounting returning an
+approved report to the employee.

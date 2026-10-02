@@ -96,7 +96,7 @@ BACKUP_REVIEW_ROLES = ("ceo", "president")
 #: Statuses at which the report is the employee's to change.
 EDITABLE = ("draft", "returned")
 #: From here on, accounting may read it.
-ACCOUNTING_VISIBLE = ("approved",)
+ACCOUNTING_VISIBLE = ("approved", "batched")
 
 MONEY_TOLERANCE = 0.005
 

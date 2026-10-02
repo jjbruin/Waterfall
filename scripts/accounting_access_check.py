@@ -27,7 +27,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 _passed, _failed = [], []
 
 #: Blueprints that make up the accounting section.
-ACCOUNTING_PREFIXES = ("/api/workpapers", "/api/treasury", "/api/intercompany")
+ACCOUNTING_PREFIXES = ("/api/workpapers", "/api/treasury", "/api/intercompany",
+                       "/api/expense-coding")
+#: Accounting prefixes whose READS are narrowed to ACCOUNTING_ROLES as well.
+READ_CLOSED_PREFIXES = ("/api/expense-coding",)
 
 #: Anything that changes something. GET is a read and stays open.
 WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
@@ -239,13 +242,28 @@ def main():
             _call("POST", "/api/workpapers/cycles/1/schedule/properties",
                   role) != 403)
 
-    print("\n4. Reads stay open")
+    print("\n4. Reads stay open -- except expense coding, closed on purpose")
+    # EXPENSE CODING IS THE ONE PREFIX WHOSE READS ARE NARROWED (Oct 2 2026): its
+    # grid is every employee's spending, and an analyst opening Accounting has
+    # no business reading colleagues' expenses. Asserted in BOTH directions --
+    # closed to the analyst, open to the accountant -- so the exception cannot
+    # quietly become "closed to everyone".
     reads = [(str(r), _sample_path(r)) for r in app.url_map.iter_rules()
              if str(r).startswith(ACCOUNTING_PREFIXES) and "GET" in (r.methods or set())]
-    refused = [p for p, path in reads
+    open_reads = [(p, path) for p, path in reads if not p.startswith(READ_CLOSED_PREFIXES)]
+    closed_reads = [(p, path) for p, path in reads if p.startswith(READ_CLOSED_PREFIXES)]
+    refused = [p for p, path in open_reads
                if client.get(path, headers=analyst).status_code == 403]
-    chk("an analyst can still READ all %d accounting endpoints" % len(reads),
+    chk("an analyst can still READ all %d other accounting endpoints" % len(open_reads),
         not refused, "; ".join(refused[:4]))
+    admitted = [p for p, path in closed_reads
+                if client.get(path, headers=analyst).status_code != 403]
+    chk("an analyst CANNOT read the %d expense coding endpoints" % len(closed_reads),
+        bool(closed_reads) and not admitted, "; ".join(admitted[:4]))
+    acct_h = {"Authorization": "Bearer %s" % _token(app, "accountant")}
+    shut = [p for p, path in closed_reads
+            if client.get(path, headers=acct_h).status_code == 403]
+    chk("an accountant CAN read them", not shut, "; ".join(shut[:4]))
     chk("an unsigned request is still refused",
         client.get("/api/treasury/accounts").status_code == 401)
 

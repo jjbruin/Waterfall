@@ -195,6 +195,8 @@ def create_app(config_name: str = None) -> Flask:
     app.register_blueprint(intercompany_bp)
     from flask_app.api.expenses import expenses_bp
     app.register_blueprint(expenses_bp)
+    from flask_app.api.expense_coding import expense_coding_bp
+    app.register_blueprint(expense_coding_bp)
 
     from flask_app.api.investment_metrics import investment_metrics_bp
     app.register_blueprint(investment_metrics_bp)

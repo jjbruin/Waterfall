@@ -135,6 +135,11 @@ const routes = [
     component: () => import('../views/TreasuryView.vue'),
   },
   {
+    path: '/expense-coding',
+    name: 'Expense Coding',
+    component: () => import('../views/ExpenseCodingView.vue'),
+  },
+  {
     path: '/intercompany',
     name: 'Intercompany',
     component: () => import('../views/IntercompanyView.vue'),

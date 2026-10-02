@@ -140,6 +140,7 @@ def validate_gl(lines: Iterable[dict]) -> dict:
 
     total = 0.0
     periods, entities = set(), set()
+    by_entity: dict = {}
     for i, ln in enumerate(lines, start=1):
         amt = _num(ln.get("amount"))
         if amt is None:
@@ -150,6 +151,8 @@ def validate_gl(lines: Iterable[dict]) -> dict:
             errors.append("Line %d has a zero amount." % i)
         else:
             total += amt
+            ent = str(ln.get("entityid") or "").strip().upper()
+            by_entity[ent] = by_entity.get(ent, 0.0) + amt
 
         if not str(ln.get("acctnum") or "").strip():
             errors.append("Line %d has no account number." % i)
@@ -178,6 +181,15 @@ def validate_gl(lines: Iterable[dict]) -> dict:
         # for it, and with the figure to look for.
         errors.append("The entry does not balance: it is out by %s. A journal "
                       "entry must sum to zero." % ("{:,.2f}".format(total)))
+    # EACH ENTITY'S LINES MUST BALANCE TOO. An entry spanning several entities
+    # (the intercompany reimbursement) can sum to zero overall while one entity
+    # is out -- which MRI rejects or, worse, posts.
+    off = sorted((e, round(v, 2)) for e, v in by_entity.items()
+                 if abs(round(v, 2)) >= BALANCE_TOLERANCE)
+    if len(by_entity) > 1 and off:
+        errors.append("Out of balance by entity: %s. Each entity's lines must sum "
+                      "to zero." % ", ".join("%s %s" % (e, "{:,.2f}".format(v))
+                                              for e, v in off))
     if len(periods) > 1:
         errors.append("The lines span more than one period (%s). One upload is "
                       "one period." % ", ".join(sorted(periods)))
