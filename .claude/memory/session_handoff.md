@@ -1,68 +1,17 @@
-# Session Handoff — through Oct 1 2026 (v549 live; section access BUILT, NOT DEPLOYED)
+# Session Handoff — through Oct 2 2026 (v552 live)
 
-## Oct 1 2026 — SECTION ACCESS BY USERNAME: built, image built, DEPLOY PENDING
+## Oct 2 2026 — v552 shipped section access; three branches remain
 
-**IN FLIGHT as of Oct 1 2026. Delete this section once it ships and is recorded in
-CLAUDE.md's deploy history.** Design and rules: CLAUDE.md "Section access by
-username"; open questions `open_items.md` §16.
-
-### Where it stands
-
-| Thing | State |
-|---|---|
-| Code | branch `feat/section-access`, tip `b93dd5f` (+ this docs commit). LOCAL ONLY -- the push to `main` was blocked by Claude's permission classifier; Jim to push or allow `git push` |
-| Clean checkout | `../waterfall-xirr-deploy` (a git worktree on that branch, with its own `vue_app/node_modules`). The main checkout is on `main` with someone's UNCOMMITTED intercompany work (`database.py`, `intercompany*`, `treasury_upload.py`, `IntercompanyView.vue`) -- do not build from it |
-| Image | `waterfall-xirr:b93dd5f` built (ACR run `camr`, 2m20s, Succeeded) and LOCKED. It also moved `:latest` -- harmless, nothing deploys `:latest` |
-| Live | **`v549` = `76c786c`**, Charlene's, deployed 21:34 UTC Oct 1 -- eight minutes BEFORE the `b93dd5f` build started and after this work's P1. `76c786c` was NOT on origin when checked; Charlene was pushing it |
-
-**DO NOT DEPLOY `b93dd5f`.** It does not contain `76c786c`, so deploying it would roll
-back whatever Charlene shipped in v549. That was caught only because `v549` was
-already taken as a suffix -- P1 lists active revisions, and hers became active between
-P1 and the build. Lesson: **re-run P1 immediately before `az containerapp update`,
-not only before the build.**
-
-### To finish (Jim approved deploying + pushing on Oct 1; re-confirm the span)
-
-1. `git fetch origin`; confirm `76c786c` is on origin (`git branch -r --contains 76c786c`).
-   STILL NOT ON ORIGIN at end of day Oct 1 (all branches fetched; `origin/main` still
-   `940a591`). If she pushes a REBASED copy under a different hash, the pushed commit is
-   not the one that is live: compare its tree with the live image's
-   (`git diff 76c786c <pushed>` needs `76c786c` locally -- ask her, or compare against
-   what `v549` shows on production) before merging.
-2. In `../waterfall-xirr-deploy`: `git merge origin/main` (MERGE, never rebase -- the
-   branch already carries a merge of origin/main, and rebasing onto an older base is
-   what drops live work).
-3. Run `scripts/section_access_check.py` (expect 256+; a NEW screen or `/api` route in
-   Charlene's work will fail it until assigned in `flask_app/auth/sections.py` -- that
-   is the rule working, exactly as Investment Metrics did in `b93dd5f`), plus
-   `accounting_access_check` 54, `treasury_api_check` 46, `gl_ia_query_check` 123,
-   `investment_metrics_check` 113, and `npx vite build` in `vue_app`.
-4. Pre-flight P1-P4 against the LIVE image (`76c786c`), then tell Jim the span.
-5. Build the new SHA, lock it, **re-run P1**, deploy as **`v550`** (or the next free
-   suffix -- `revision list --all`, since an inactive revision still holds its name).
-6. Push the branch to `main`; record the deploy in CLAUDE.md; delete this section.
-
-### What it does (all verified locally; nothing on production yet)
-
-- One checkbox column per sidebar section in Settings > User Management, all ticked
-  by default; only an UNTICK is stored (`user_section_access`), so new sections and
-  new users start ticked with no backfill. The table is created on the first gated
-  request; with no rows nobody's access changes at deploy.
-- **Only the `admin` USERNAME assigns** (403 for admin-role users; their boxes render
-  greyed with a read-only note). `admin` always has every section. **Not confirmed
-  that an account literally named `admin` exists on production** -- check after
-  deploy, or nobody can change access.
-- Without Accounting: `gl_accounts`, `gl_detail`, `ia_transactions` and every `tr_*`,
-  `wp_*`, `ic_*` table are blocked in Data Explorer, the DB export, MRI query
-  run/download and the assistant's SQL tool. Assistant tools gated per section.
-- Asset Management and New Business are granted TOGETHER for now (`LINKED_SECTIONS`).
-- Behaviour change: the DB export and MRI query downloads were open to any signed-in
-  user; they now need Data Management (which everyone has by default).
-- After deploy, verify on production: `/auth/sections` 200 with `can_assign` true only
-  for `admin`; an admin-role PUT to `/auth/users/<id>/sections` is 403;
-  `section_access_check.py --static` in the container (the Vue-source parts skip, no
-  `vue_app/` in the image).
-
+- **Live: `v552` = `11c3455`** (section access). Recorded in CLAUDE.md's deploy history.
+  `main` still needs fast-forwarding to `11c3455` -- the push was blocked by the
+  permission classifier and is Jim's to do.
+- **`feat/intercompany-pay-je`** (`be7a33e`, pushed): intercompany phase 2 -- Pay and the
+  reimbursement JE. Not yet through pre-flight review.
+- **`feat/expense-reports`** (`3b1f38b`, pushed): employee expense reports, all four
+  phases (`.claude/memory/expense_reporting.md`). Built on `feat/section-access`.
+  Adds `pillow-heif` (check PyPI before building). After deploy: compare the ownership
+  proposals with production for the Sep 24 deals, and accounting sets PPI2 to CAD.
+- Both will conflict trivially in `database.py`'s PROTECTED_TABLES list.
 
 ## Sep 28 2026 — THE ARGUS CASH FLOW, AM'S THIRD LIST
 

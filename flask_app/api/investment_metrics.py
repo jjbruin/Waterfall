@@ -110,10 +110,19 @@ def quarters():
     """
     import investment_metrics as engine
 
-    default = engine.latest_quarter_end()
+    # THE LIST AND THE DEFAULT ARE SEPARATE QUESTIONS. The list is every quarter
+    # end that has finished; the default is the one the screen opens on, which
+    # `cfg.DEFAULT_QUARTER` pins because the quarter that closed two days ago has
+    # no closed accounting behind it. Deriving the list from the default would
+    # hide the newer quarters, which stay selectable on purpose.
+    default = engine.default_as_of()
+    newest = engine.latest_quarter_end()
     out = []
-    d = default
+    d = max(newest, default)
     for _ in range(16):
         out.append(d.isoformat())
         d = engine.latest_quarter_end(d)
+    if default.isoformat() not in out:
+        out.append(default.isoformat())
+        out.sort(reverse=True)
     return jsonify({"quarters": out, "default": default.isoformat()})

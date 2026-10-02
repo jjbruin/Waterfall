@@ -74,7 +74,27 @@ def is_op(investor_id: Any) -> bool:
 
 
 def _as_date(value: Any) -> Optional[date]:
-    if value is None or value == "":
+    # NULLS ARE GUARDED BEFORE ANY isinstance TEST, and the order is the whole
+    # point. `pd.NaT` IS an instance of `datetime` (`isinstance(pd.NaT,
+    # datetime)` is True), so an isinstance branch placed first returns
+    # `NaT.date()`, which is NaT, and the caller's `end >= as_of` then raises
+    # "Cannot compare NaT with datetime.date object".
+    #
+    # This was unreachable until 2026-10-01. While MRI_Commitments.sql filtered
+    # `EndDate IS NULL` the column was entirely null, so pandas typed it object
+    # or float, NaN is NOT a datetime, and the pd.to_datetime path below
+    # returned None correctly. The moment ended rows loaded the column became
+    # datetime64 and every OPEN row's EndDate arrived as NaT. It took the One
+    # Pager down on every 26Q3 deal. A fixture using Python `None` for an open
+    # row cannot catch it -- the test has to pass pd.NaT.
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):          # pd.NaT, NaN, pd.NA
+            return None
+    except (TypeError, ValueError):
+        pass                        # not a scalar pandas understands; carry on
+    if value == "":
         return None
     if isinstance(value, datetime):
         return value.date()

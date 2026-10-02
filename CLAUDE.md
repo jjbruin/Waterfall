@@ -266,6 +266,208 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v552` = `11c3455` (SECTION ACCESS BY USERNAME -- per-sidebar-section
+    checkboxes in Settings > User Management; only the `admin` USERNAME assigns;
+    without Accounting the GL/IA tables and every `tr_`/`wp_`/`ic_` table are
+    hidden from Data Explorer, the export, MRI query downloads and the assistant's
+    SQL. Deployed Oct 2 2026 15:38 UTC, build 2m17s. HELD a day: `b93dd5f` was
+    imaged Oct 1 but Charlene had deployed `v549`/`v550` from an unpushed clone
+    between this work's P1 and its build; deploying it would have rolled hers back.
+    Re-run P1 before the update caught it (memory: recheck-live-before-deploy).
+    Once her commits reached origin, origin/main was MERGED into the branch
+    (`11c3455`). P2 against live `c255729` (v551): 8 commits -- `0362ecb`,
+    `b93dd5f`, four docs-only, two merges with ZERO lines of their own (`git show
+    --cc`); runtime delta is the 11 section-access files only; `c255729` is an
+    ancestor. No vcode literals. Behaviour change: the DB export and MRI query
+    downloads now need Data Management (ticked for everyone by default).
+    GUARDRAILS on the merged tree: section_access 256, accounting_access 54,
+    treasury_api 46, gl_ia_query 123, investment_metrics 178, committed_pref 47,
+    vite build. P1 re-run immediately before `containerapp update`: still v551.
+    VERIFIED ON PRODUCTION, in-process with a minted token: an account named
+    `admin` EXISTS (16 users); `admin` gets `/auth/sections` 200 `can_assign`
+    true, all 7 sections; the admin-ROLE users `anaik` and `cbui` get
+    `can_assign` false and their PUT is 403; `user_section_access` has 0 rows, so
+    nobody's access changed at deploy; `section_access_check --static` 98/0 in
+    the container. Root 200 in 0.15s, clean boot.)
+  - `v551` = `c255729` (INVESTMENT METRICS: Act. Yr-1 CoC IS COMPUTED, AND THREE
+    FOOTNOTE MARKERS ARE DERIVED RATHER THAN TRANSCRIBED. Oct 2 2026, tag locked.
+    THIS IS LIVE. Pre-flight P2 against the live `b250639` listed six commits, all
+    Charlene's and all but this one docs-only.
+
+    **Act. Yr-1 CoC now prints**, from the One Pager's ROE engine windowed to the
+    deal's first twelve months. The column had been an em dash because the figure
+    behind it was a different quantity — preferred return over funded-to-date,
+    which ignores excess cash flow and the capital actually at risk and returns
+    0.0% on ten deals that paid no pref in year one. Against the reference
+    workbook at 2026-06-30, at display rounding: **24/76** exact, against 23/76
+    for the old pref/funded alternate and **21/76 for printing nothing**. It is
+    **biased low** — of the 51 rows where both sides carry a number, 40 come in
+    below and 11 above, mean **-1.21pp**, 21 within 1pp, 30 within 2pp. The
+    reference's cells are typed-in constants on 75 of its 76 rows, so the gap is
+    not a window that needs tuning, and it is reported rather than fitted.
+
+    **The window opens at the EARLIER of the invest date and the first cash
+    event**, and that is the one thing most likely to be "simplified" back out.
+    `Acquisition_Date` is overwritten at load time with the earliest accounting
+    entry across ALL investors, and on six live deals PSC's own first
+    contribution is dated the day BEFORE it — Evergreen Plaza, Giant-7, Mount
+    Prospect, OREI, Pontchartrain and 870 Donald Lynch. Opening strictly on the
+    invest date drops that contribution, takes contributions in the window to
+    zero, and takes the whole figure to a dash: measured, it blanked **seven of
+    76** deals outright and sent Cocoplum to **36.0%** against a reference 4.98%.
+
+    **Footnote (5) is derived from the date and now ACTS.** Invest date + 12
+    calendar months past the as-of date selects **exactly the nine deals the
+    reference marks** — Apple, Burton, Trolley Square, Jefferson Stephens, Plaza
+    Del Mar, Hanestowne, Presidential Arms, Swartz Creek, Fairview — with a wide
+    margin either side (the newest UNMARKED deal is Green Valley Ranch at 16
+    months; the oldest marked one is Apple at 11.5). Act. Yr-1 CoC, CoC Proj.
+    Since Close and CoC Act. Since Close all take the projected year-1 figure,
+    which is what the TABLE does on Apple's row even though **the printed note
+    names only the first column**. Both are reproduced; neither is edited to
+    agree with the other. With `proj_yr1_coc` still unloaded the three cells are
+    **BLANKED** rather than left showing a stub period — Presidential Arms' ROE
+    over seven weeks is not a year-1 return, and 8.0% on the page is a number
+    somebody will quote. Precedence is **Dev. > Lease up > this rule > computed**,
+    per cell, which is why Trolley Square and Jefferson Stephens still print
+    `Dev.` The substitution activates by itself the moment `proj_yr1_coc` is
+    switched on.
+
+    **WHAT THIS COSTS, SAID OUT LOUD.** Overall agreement with the reference goes
+    **539/1242 -> 537/1242**. act_yr1_coc gains 2 (21 -> 23); blanking the young
+    deals loses 1 on act_coc_since_close (36 -> 35) and 3 on proj_coc_since_close
+    (32 -> 29). That is the instructed behaviour and the reference is not the
+    target — but the number moved the wrong way and it is recorded here rather
+    than left for somebody to rediscover. **60 cells change in all**, 31 of them
+    dashes becoming figures.
+
+    Totals: Current Act. Yr-1 CoC — -> **7.1%**, CoC Proj. Since Close 7.9% ->
+    **8.2%**, CoC Act. Since Close 6.9% -> **6.5%**; Sold Act. Yr-1 CoC — ->
+    **7.9%**, both Sold since-close averages unmoved. The nine (5) deals are
+    **$132.2m of $784.8m = 16.8%** of Current pref weight and are excluded from
+    those averages entirely, never counted as zero.
+
+    **First lien reads ORIGINATION dates** where the data carries them, off the
+    RAW `mri_loans_all` frame: one loan is the first lien; several loans all
+    carrying an Origination row give the sum of those sharing the earliest;
+    anything else falls back and names the undated LoanIDs in
+    `first_lien_origination_missing`. **Maturity is never a proxy** — the
+    existing `earliest_loan` basis sorts on `dtEvent`, which is a MATURITY on 83
+    of 91 live rows, so what it calls "the earliest loan" is the
+    earliest-maturing one. Development deals keep the committed facility.
+    Measured before shipping: 49 deals have one loan, 16 none, 11 several, and
+    **not one of the 11 carries an origination date on every loan** — the whole
+    live table holds four Origination rows and all four sit on single-loan deals.
+    **No printed figure moved**, and 10 deals are named in the diagnostic.
+    `_collapse_loan_date_events` and `_filter_paid_off_loans` were NOT touched;
+    the report already read upstream of both.
+
+    **Three markers derived, the rest transcribed**: Current (2) from
+    `Currency != 'USD'` (exactly one deal, Apple/CAD), Current (5) from the date
+    test, Sold (4) from `sale_date > as_of` (exactly Clima Secur, 30 Bearfoot and
+    870 Donald Lynch — East Manchester sold 2026-06-25, five days the other side,
+    and is correctly unmarked). Woodlands Square's Current (4), City West's Sold
+    (2) and every (6) stay hardcoded. **The marker set on live is byte-identical
+    to v550's** — nothing on the page moved; the hand-maintained lists just stopped
+    being the authority. A new runtime diagnostic,
+    `config_entries_without_a_deal`, names any config vcode with no deal behind it
+    and any footnote number its table does not carry: **empty on live.**
+
+    **The default quarter is pinned to 2026-06-30.** `latest_quarter_end` returns
+    the quarter that has finished, which on Oct 2 is 2026-09-30 — closed two days
+    ago with no accounting behind it, and the report opened on it.
+    `DEFAULT_QUARTER_LAG_DAYS = 45` is the rule that replaces the pin and is
+    deliberately unwired; `PROCEEDS_CUTOFF_DAYS_AFTER_QUARTER = None` is today's
+    behaviour. The guardrail asserts both are inert by reading the engine source.
+    Every quarter stays selectable — the list and the default are separate
+    questions, and 2026-09-30 is still in the list.
+
+    Guardrail `investment_metrics_check.py` **113 -> 178**, including an
+    equivalence test that pins `_pe_roe_events` to `get_pe_performance`'s own
+    `roe_to_date` at a quarter end, so the restated classification cannot drift
+    from the engine it restates, and a marker regression over the real 76-deal
+    population frozen inline. Printed sheet re-measured from the LIVE payload:
+    **44/44, fits the sheet.** Live payload verified cell-for-cell against the
+    locally predicted one: **0 disagreements across 76 rows x 17 columns.**
+    Smoke: One Pager, Portfolio Snapshot bundle (OWPSC/PSC3/PSCKOC, `errors: {}`),
+    Dashboard KPIs, deals list, `/investment-metrics` 20.1s cold / 0.17s warm,
+    1,057 MiB of 2,048, **0 tracebacks**.)
+  - `v550` = `b250639` (HOTFIX FOR v549 — NULLS ARE GUARDED BEFORE THE
+    isinstance TEST IN `_as_date`. Oct 1 2026, tag locked.
+    **`pd.NaT` IS an instance of `datetime`** — `isinstance(pd.NaT, datetime)`
+    is True — so the isinstance branch sitting AHEAD of the null guard returned
+    `NaT.date()`, which is NaT, and `row_in_effect`'s `end >= as_of` then
+    raised "Cannot compare NaT with datetime.date object".
+    UNREACHABLE UNTIL THE DATA CHANGED, which is why it shipped quietly in
+    v548. While `queries/MRI_Commitments.sql` filtered `EndDate IS NULL` the
+    column was entirely null, pandas typed it object/float, NaN is NOT a
+    datetime, and the `pd.to_datetime` path returned None correctly. The moment
+    ended rows loaded the column became `datetime64[us]` and every OPEN row's
+    EndDate arrived as NaT.
+    REPRODUCED AGAINST THE REAL REFRESHED ROWS BEFORE FIXING: Pontchartrain
+    raised at both quarters, Camarillo at 26Q3, Asbury at 26Q3. Asbury's 26Q2
+    SURVIVED — its in-force row there is an ENDED one that matched before the
+    loop reached a NaT — which is exactly the mixed 200/500 pattern seen live.
+    After the fix all five resolve and open commitments are still counted as of
+    quarter end: Pontchartrain 10,847,420 both quarters, Camarillo 18,843,400,
+    Asbury 1,490,000 at 26Q2 and 1,620,000 at 26Q3.
+    **THE SUITE WAS GREEN ON A SHAPE THE DATABASE CANNOT DELIVER.** Every
+    fixture used Python `None` for an open row; pandas never produces None once
+    the column is `datetime64`, it produces NaT. `committed_pref_check` 39 ->
+    47, the new cases passing `pd.NaT`. Pre-fix it does not merely fail:
+    `_as_date(pd.NaT)` returns NaT AND `_as_date(pd.NA)` raises "boolean value
+    of NA is ambiguous" on the old `value == ""`, so the old ordering carried a
+    SECOND latent fault the guard also closes.
+    VERIFIED ON v550: 114/114 One Pagers 200, 0 failing; 26Q2 Burton
+    26,597,500 / JB Fair Park 14,300,000 / Nottingham 9,135,000 and 26Q3 Burton
+    54,227,500 / JB Fair Park 29,757,181 / Nottingham 12,535,000, all exact;
+    `cap_stack.committed_pe == pe_performance.committed_pe` on every deal
+    checked; Snapshot all 4 subtabs x TGAM/KOCINV/BCA build clean; Treasury
+    AMB6 13 investors / base 11,000,000.00 / PSC1 42.7273% and TGA25 base
+    103,572,497.76 both unchanged; `committed_pref_check` 47/47 and
+    `treasury_upload_check` 26/0 IN THE CONTAINER; logs 0 tracebacks, root 200
+    ~0.2s. `requirements.txt` still pins `SQLAlchemy>=2.0,<2.1`, re-confirmed.
+    Rollback: `activeRevisionsMode` is Single, so redeploy the image —
+    `az containerapp update ... --image
+    acrwaterfalldev.azurecr.io/waterfall-xirr:b4a9c1f --revision-suffix v551`,
+    which is v548 and therefore also reverts the SQL. Note the `commitments`
+    TABLE refresh is NOT in git and is not undone by a rollback.)
+  - `v549` = `76c786c` (DROPS THE `EndDate IS NULL` FILTER SO ENDED COMMITMENT
+    ROWS LOAD — **AND TOOK EVERY 26Q3 ONE PAGER TO HTTP 500**, fixed minutes
+    later by v550. Oct 1 2026, tag locked. Approved by Jim.
+    `queries/MRI_Commitments.sql` becomes `select * from IA_Commitment`. The
+    table goes 557 -> 897 rows, 339 ended, and carries ENDED revisions for the
+    first time — which is what `committed_pref.resolve_committed_pref` (v548)
+    needs: its as-of rule is `StartDate <= Q AND (EndDate IS NULL OR EndDate >=
+    Q)`, and until now the row that WAS in force on a past quarter simply was
+    not in the database. **The table refresh is a DATA change that is not in
+    git**: run `import_query_to_database("MRI_Commitments")` under a BARE Flask
+    app context (never `create_app()`), then `POST /api/data/reload` as admin,
+    because that function does not clear caches and the exec session is a
+    different process from the workers'.
+    ONE READER WAS NOT SAFE AND THE PRE-FLIGHT CHECK IS WHAT FOUND IT. v548
+    added `EndDate IS NULL` to the six SQL readers and filtered Investment
+    Metrics' FIRST-LOSS side, but its PSC-PREF side took the legacy raw-split
+    branch — `capitalization_sources` is only quarter-aware when `as_of` is
+    passed, and NEITHER call site passes it. Summing that frame once ended rows
+    load reads EVERY PAST VERSION of a pledge as a live one: Pontchartrain
+    10,847,420 -> 42,823,260 (4 revisions), Middle Island 7,896,655 ->
+    29,978,275, Belleville 4,752,161 -> 21,533,305, Burton 54,227,500 ->
+    80,825,000, JB Fair Park 29,757,181 -> 44,057,181, Nottingham 12,535,000 ->
+    21,670,000. Both sides now take the current row on the no-as-of path, so
+    the report is UNMOVED by the data change — 0 of 6 deals differ, proved both
+    ways against a fixture carrying the real ended rows.
+    A FIXTURE BUG WORTH RECORDING: the first audit said all six deals changed
+    even WITH the fix, because the scratch fixture serialised a null EndDate as
+    the STRING "None", so `.isna()` matched nothing and every row read as
+    ended. The filter looked broken when it was the test that was.
+    `committed_pref_check` 35 -> 39, `treasury_upload_check` 27/0,
+    `investment_metrics_check` 113/0, `one_engine_per_number_check` 26/0 — and
+    every one of them was green across the outage. See v550.
+    STILL OPEN: **Investment Metrics shares the FUNCTION but not the RULE.**
+    Neither `capitalization_sources` call site passes `as_of`, so it takes the
+    current row rather than the as-of one. Deliberate — making it quarter-aware
+    WOULD move its figures and needs its own measurement.)
   - `v548` = `b4a9c1f` (COMMITTED PREF COMES FROM MRI'S IA_Commitment, AS OF
     THE QUARTER. Oct 1 2026, build `camp` 2m32s, run status Succeeded, tag
     locked. Approved by Charlene; Jim notified.

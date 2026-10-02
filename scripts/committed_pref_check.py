@@ -143,6 +143,73 @@ MULTI = [
 amt, _ = cp.resolve_committed_pref(frame(MULTI), ["APPLE", "APPLE2"], Q2)
 chk("the same investor on two entities is two pledges", amt == 3000.0, f"got {amt}")
 
+print("\n-- pd.NaT, NOT None: an OPEN row as pandas actually delivers it --")
+# THE TEST THAT WOULD HAVE CAUGHT THE v549 OUTAGE. While the commitments table
+# held only current rows its EndDate column was entirely null, so pandas typed
+# it object/float and an open row arrived as None or NaN. Once ENDED rows load
+# the column is datetime64 and an open row arrives as pd.NaT -- which IS an
+# instance of datetime, so an isinstance branch ahead of the null guard returns
+# NaT and the as-of comparison raises. Every 26Q3 One Pager 500'd.
+chk("pd.NaT is an instance of datetime (why order matters)",
+    isinstance(pd.NaT, __import__("datetime").datetime))
+chk("_as_date(pd.NaT) is None", cp._as_date(pd.NaT) is None,
+    f"got {cp._as_date(pd.NaT)!r}")
+chk("_as_date(float nan) is None", cp._as_date(float("nan")) is None)
+chk("_as_date(pd.NA) is None", cp._as_date(pd.NA) is None)
+NAT_ROWS = [
+    {"EntityID": "ASHBCO", "InvestorID": "PPI22", "Amount": 1490000.0,
+     "StartDate": pd.Timestamp("2019-05-15"), "EndDate": pd.Timestamp("2026-09-10"),
+     "CommitmentUID": 660, "TransactionNote": None},
+    {"EntityID": "ASHBCO", "InvestorID": "PPI22", "Amount": 1620000.0,
+     "StartDate": pd.Timestamp("2026-09-11"), "EndDate": pd.NaT,
+     "CommitmentUID": 1900, "TransactionNote": None},
+]
+_f = pd.DataFrame(NAT_ROWS)
+chk("the fixture really carries a datetime64 EndDate with NaT",
+    str(_f["EndDate"].dtype).startswith("datetime64") and bool(_f["EndDate"].isna().any()),
+    str(_f["EndDate"].dtype))
+try:
+    _amt, _bs = cp.resolve_committed_pref(_f, "ASHBCO", date(2026, 9, 30))
+    _raised = None
+except Exception as _e:
+    _amt, _bs, _raised = None, "", f"{type(_e).__name__}: {_e}"
+chk("committed_pe computes without raising on a NaT open row",
+    _raised is None, _raised or "")
+chk("...and the OPEN row is the one in force at 26Q3 (1,620,000)",
+    _amt == 1620000.0, f"got {_amt}")
+_amt2, _ = cp.resolve_committed_pref(_f, "ASHBCO", date(2026, 6, 30))
+chk("...while 26Q2 still takes the ended row (1,490,000)",
+    _amt2 == 1490000.0, f"got {_amt2}")
+
+print("\n-- ENDED ROWS NOW LOAD: every reader must be unmoved by them --")
+from investment_metrics import capitalization_sources, DealIdentity
+CHAIN_OPEN = [
+    {"EntityID": "PONTCH", "InvestorID": "PPI31", "Amount": 10847420.0,
+     "StartDate": "2025-12-08", "EndDate": None, "CommitmentUID": 1362,
+     "TransactionNote": None},
+]
+CHAIN_FULL = CHAIN_OPEN + [
+    {"EntityID": "PONTCH", "InvestorID": "PPI31", "Amount": 10370000.0,
+     "StartDate": "2021-02-01", "EndDate": "2023-07-30", "CommitmentUID": 783,
+     "TransactionNote": None},
+    {"EntityID": "PONTCH", "InvestorID": "PPI31", "Amount": 10790420.0,
+     "StartDate": "2023-07-31", "EndDate": "2025-10-05", "CommitmentUID": 1360,
+     "TransactionNote": None},
+    {"EntityID": "PONTCH", "InvestorID": "PPI31", "Amount": 10815420.0,
+     "StartDate": "2025-10-06", "EndDate": "2025-12-07", "CommitmentUID": 1361,
+     "TransactionNote": None},
+]
+_ident = DealIdentity(vcode="P0000037", investment_id="PONTCH", name="Pontchartrain")
+_a = capitalization_sources(_ident, pd.DataFrame(), frame(CHAIN_OPEN))[0][1]
+_b = capitalization_sources(_ident, pd.DataFrame(), frame(CHAIN_FULL))[0][1]
+chk("Investment Metrics is UNMOVED when the ended rows load",
+    _a is not None and _b is not None and abs(_a - _b) < 0.01, f"open={_a} full={_b}")
+chk("...and does NOT sum the superseded revisions (42,823,260)", _b != 42823260.0, f"got {_b}")
+_amt, _ = cp.resolve_committed_pref(frame(CHAIN_FULL), "PONTCH", date(2024, 6, 30))
+chk("the as-of engine picks the row in force mid-2024 (10,790,420)", _amt == 10790420.0, f"got {_amt}")
+_amt, _ = cp.resolve_committed_pref(frame(CHAIN_FULL), "PONTCH", date(2026, 6, 30))
+chk("...and the current one at 26Q2 (10,847,420)", _amt == 10847420.0, f"got {_amt}")
+
 print("\n-- the eight readers of the commitments table filter to current rows --")
 READERS = [
     ("flask_app/services/ownership_service.py", None),
