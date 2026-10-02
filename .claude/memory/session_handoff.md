@@ -3,7 +3,7 @@
 ## Oct 2 2026 — v552 -> v564: SECTION ACCESS, EXPENSES, INTERCOMPANY PAY; ONE OUTAGE; PANDAS 3; MRI DESCRIPTION RULE; ONE ADMIN
 
 **Live: `v564` = `d6adabe`. `main` = `a1ad346` (v564 + its docs), level with live.**
-ONE BRANCH IS NOT ON MAIN: `fix/treasury-mri-text` (`8ac9fe9`, local only -- not pushed),
+ONE BRANCH IS NOT ON MAIN: `fix/treasury-mri-text` (`8ac9fe9`, pushed, not merged),
 see "Next" below. Main was fast-forwarded and pushed by Claude today without a block. Full per-revision
 detail is in CLAUDE.md's deploy history; this is what a reader needs to carry forward.
 
@@ -113,7 +113,7 @@ description input is `maxlength="80"`. `treasury_upload_check` 61 -> 65.
 
 - `vue-tsc` reports three `'total' is possibly 'null'` errors at `ExpensesView.vue`
   179-183 (pre-existing; the build does not type-check, so it ships fine).
-- Preview servers from today (flask-api, vue-dev) may still be running; stop them.
+- Preview servers from today were stopped at the end of the session.
 
 ### Where things are
 

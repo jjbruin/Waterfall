@@ -67,8 +67,8 @@ Design, phases and measurements: `expense_reporting.md`.
 - **17.7 Untick Accounting for Charlene (`cbui`)** -- and `anaik` if appropriate. `v564`
   makes accounting's expense rights need the Accounting SECTION, not just the admin
   role, but nothing changes for her until the box is unticked. Owner: **Jim**.
-- **17.8 Treasury descriptions on screen (`fix/treasury-mri-text`, `8ac9fe9`, local
-  only).** Built, not verified in the app, not deployed; wire descriptions need a
+- **17.8 Treasury descriptions on screen (`fix/treasury-mri-text`, `8ac9fe9`, pushed,
+  not merged).** Built, not verified in the app, not deployed; wire descriptions need a
   payee-first default (Jim's call). See the handoff. Owner: **Claude, then Jim**.
 - **17.6 DECIDED (Jim, Oct 2 2026): Expense Coding's Void stays as it is.** It does not
   check whether MRI already posted the batch (intercompany's void does). So it is safe
