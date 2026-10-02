@@ -266,6 +266,19 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v559` = `05b6f5f` (THE DISTANCE WIZARD -- driving miles by Google Routes, each
+    stop resolved by Geocoding; a bare 3-letter code asked as an airport, because
+    Geocoding "PHL" alone is "Philippines". The deploy WIRES `GOOGLE_MAPS_API_KEY` to
+    the container secret `google-maps-key` (`secretref`). Built from the clean
+    worktree, tag gated before the update; site 200 throughout. VERIFIED IN THE
+    CONTAINER: the env reads the secret -- and THE SECRET HOLDS A 14-CHARACTER VALUE,
+    not a Google key (length of the placeholder `PASTE_KEY_HERE`), so Google refuses
+    and the wizard says so; miles can be typed meanwhile. Jim to set the real value
+    and restart the revision. Locally, with the real key: PHL -> City Hall round trip
+    24.5 mi. `expense_distance_check` 26/0.)
+  - `v558` = `7626b3e` (PURPOSE AND DEAL AS DROPDOWNS on the expense table, saved on
+    change with the whole line sent; the receipts list below the table and the
+    submit notice. Served chunk verified to carry the new strings. Site 200.)
   - `v557` = `68ffce3` (PANDAS PINNED `<3.1` -- resolves 3.0.6, what production
     already ran, so it changes nothing live and stops 3.1 (rc0 out Sep 30) arriving
     unannounced -- and THE CFO MAY SIGN OFF ANY EMPLOYEE'S EXPENSE REPORT, recorded
