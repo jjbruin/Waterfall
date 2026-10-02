@@ -255,8 +255,111 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v551` = `c255729` (INVESTMENT METRICS: Act. Yr-1 CoC IS COMPUTED, AND THREE
+    FOOTNOTE MARKERS ARE DERIVED RATHER THAN TRANSCRIBED. Oct 2 2026, tag locked.
+    THIS IS LIVE. Pre-flight P2 against the live `b250639` listed six commits, all
+    Charlene's and all but this one docs-only.
+
+    **Act. Yr-1 CoC now prints**, from the One Pager's ROE engine windowed to the
+    deal's first twelve months. The column had been an em dash because the figure
+    behind it was a different quantity — preferred return over funded-to-date,
+    which ignores excess cash flow and the capital actually at risk and returns
+    0.0% on ten deals that paid no pref in year one. Against the reference
+    workbook at 2026-06-30, at display rounding: **24/76** exact, against 23/76
+    for the old pref/funded alternate and **21/76 for printing nothing**. It is
+    **biased low** — of the 51 rows where both sides carry a number, 40 come in
+    below and 11 above, mean **-1.21pp**, 21 within 1pp, 30 within 2pp. The
+    reference's cells are typed-in constants on 75 of its 76 rows, so the gap is
+    not a window that needs tuning, and it is reported rather than fitted.
+
+    **The window opens at the EARLIER of the invest date and the first cash
+    event**, and that is the one thing most likely to be "simplified" back out.
+    `Acquisition_Date` is overwritten at load time with the earliest accounting
+    entry across ALL investors, and on six live deals PSC's own first
+    contribution is dated the day BEFORE it — Evergreen Plaza, Giant-7, Mount
+    Prospect, OREI, Pontchartrain and 870 Donald Lynch. Opening strictly on the
+    invest date drops that contribution, takes contributions in the window to
+    zero, and takes the whole figure to a dash: measured, it blanked **seven of
+    76** deals outright and sent Cocoplum to **36.0%** against a reference 4.98%.
+
+    **Footnote (5) is derived from the date and now ACTS.** Invest date + 12
+    calendar months past the as-of date selects **exactly the nine deals the
+    reference marks** — Apple, Burton, Trolley Square, Jefferson Stephens, Plaza
+    Del Mar, Hanestowne, Presidential Arms, Swartz Creek, Fairview — with a wide
+    margin either side (the newest UNMARKED deal is Green Valley Ranch at 16
+    months; the oldest marked one is Apple at 11.5). Act. Yr-1 CoC, CoC Proj.
+    Since Close and CoC Act. Since Close all take the projected year-1 figure,
+    which is what the TABLE does on Apple's row even though **the printed note
+    names only the first column**. Both are reproduced; neither is edited to
+    agree with the other. With `proj_yr1_coc` still unloaded the three cells are
+    **BLANKED** rather than left showing a stub period — Presidential Arms' ROE
+    over seven weeks is not a year-1 return, and 8.0% on the page is a number
+    somebody will quote. Precedence is **Dev. > Lease up > this rule > computed**,
+    per cell, which is why Trolley Square and Jefferson Stephens still print
+    `Dev.` The substitution activates by itself the moment `proj_yr1_coc` is
+    switched on.
+
+    **WHAT THIS COSTS, SAID OUT LOUD.** Overall agreement with the reference goes
+    **539/1242 -> 537/1242**. act_yr1_coc gains 2 (21 -> 23); blanking the young
+    deals loses 1 on act_coc_since_close (36 -> 35) and 3 on proj_coc_since_close
+    (32 -> 29). That is the instructed behaviour and the reference is not the
+    target — but the number moved the wrong way and it is recorded here rather
+    than left for somebody to rediscover. **60 cells change in all**, 31 of them
+    dashes becoming figures.
+
+    Totals: Current Act. Yr-1 CoC — -> **7.1%**, CoC Proj. Since Close 7.9% ->
+    **8.2%**, CoC Act. Since Close 6.9% -> **6.5%**; Sold Act. Yr-1 CoC — ->
+    **7.9%**, both Sold since-close averages unmoved. The nine (5) deals are
+    **$132.2m of $784.8m = 16.8%** of Current pref weight and are excluded from
+    those averages entirely, never counted as zero.
+
+    **First lien reads ORIGINATION dates** where the data carries them, off the
+    RAW `mri_loans_all` frame: one loan is the first lien; several loans all
+    carrying an Origination row give the sum of those sharing the earliest;
+    anything else falls back and names the undated LoanIDs in
+    `first_lien_origination_missing`. **Maturity is never a proxy** — the
+    existing `earliest_loan` basis sorts on `dtEvent`, which is a MATURITY on 83
+    of 91 live rows, so what it calls "the earliest loan" is the
+    earliest-maturing one. Development deals keep the committed facility.
+    Measured before shipping: 49 deals have one loan, 16 none, 11 several, and
+    **not one of the 11 carries an origination date on every loan** — the whole
+    live table holds four Origination rows and all four sit on single-loan deals.
+    **No printed figure moved**, and 10 deals are named in the diagnostic.
+    `_collapse_loan_date_events` and `_filter_paid_off_loans` were NOT touched;
+    the report already read upstream of both.
+
+    **Three markers derived, the rest transcribed**: Current (2) from
+    `Currency != 'USD'` (exactly one deal, Apple/CAD), Current (5) from the date
+    test, Sold (4) from `sale_date > as_of` (exactly Clima Secur, 30 Bearfoot and
+    870 Donald Lynch — East Manchester sold 2026-06-25, five days the other side,
+    and is correctly unmarked). Woodlands Square's Current (4), City West's Sold
+    (2) and every (6) stay hardcoded. **The marker set on live is byte-identical
+    to v550's** — nothing on the page moved; the hand-maintained lists just stopped
+    being the authority. A new runtime diagnostic,
+    `config_entries_without_a_deal`, names any config vcode with no deal behind it
+    and any footnote number its table does not carry: **empty on live.**
+
+    **The default quarter is pinned to 2026-06-30.** `latest_quarter_end` returns
+    the quarter that has finished, which on Oct 2 is 2026-09-30 — closed two days
+    ago with no accounting behind it, and the report opened on it.
+    `DEFAULT_QUARTER_LAG_DAYS = 45` is the rule that replaces the pin and is
+    deliberately unwired; `PROCEEDS_CUTOFF_DAYS_AFTER_QUARTER = None` is today's
+    behaviour. The guardrail asserts both are inert by reading the engine source.
+    Every quarter stays selectable — the list and the default are separate
+    questions, and 2026-09-30 is still in the list.
+
+    Guardrail `investment_metrics_check.py` **113 -> 178**, including an
+    equivalence test that pins `_pe_roe_events` to `get_pe_performance`'s own
+    `roe_to_date` at a quarter end, so the restated classification cannot drift
+    from the engine it restates, and a marker regression over the real 76-deal
+    population frozen inline. Printed sheet re-measured from the LIVE payload:
+    **44/44, fits the sheet.** Live payload verified cell-for-cell against the
+    locally predicted one: **0 disagreements across 76 rows x 17 columns.**
+    Smoke: One Pager, Portfolio Snapshot bundle (OWPSC/PSC3/PSCKOC, `errors: {}`),
+    Dashboard KPIs, deals list, `/investment-metrics` 20.1s cold / 0.17s warm,
+    1,057 MiB of 2,048, **0 tracebacks**.)
   - `v550` = `b250639` (HOTFIX FOR v549 — NULLS ARE GUARDED BEFORE THE
-    isinstance TEST IN `_as_date`. Oct 1 2026, tag locked. THIS IS LIVE.
+    isinstance TEST IN `_as_date`. Oct 1 2026, tag locked.
     **`pd.NaT` IS an instance of `datetime`** — `isinstance(pd.NaT, datetime)`
     is True — so the isinstance branch sitting AHEAD of the null guard returned
     `NaT.date()`, which is NaT, and `row_in_effect`'s `end >= as_of` then
