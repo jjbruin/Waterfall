@@ -13,6 +13,10 @@
     POST   /api/expenses/reports/<id>/submit         to the approver
     POST   /api/expenses/reports/<id>/recall         back to draft, before a decision
     POST   /api/expenses/reports/<id>/decide         {action: approve | return, note}
+    POST   /api/expenses/reports/<id>/receipts       upload files (multipart, field "files")
+    GET    /api/expenses/reports/<id>/receipts/<rid>/file   the image or PDF, to show
+    POST   /api/expenses/reports/<id>/receipts/<rid>/extract  read it; propose its lines
+    DELETE /api/expenses/reports/<id>/receipts/<rid>        remove a file
     GET    /api/expenses/employees                   everyone's name, approver and route
     PUT    /api/expenses/employees/<user_id>         name on reports, approver (admin)
     PUT    /api/expenses/mileage-rates               a rate and the date it takes effect
@@ -27,12 +31,13 @@ accounting's.
 """
 import logging
 
-from flask import Blueprint, g, jsonify, request
+from flask import Blueprint, Response, g, jsonify, request
 
 from flask_app.auth.routes import ACCOUNTING_ROLES, login_required, roles_exactly
 from flask_app.db import get_engine
 from flask_app.serializers import safe_json
 from flask_app.services import expense_service as ex
+from flask_app.services import expense_receipts as rc
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +157,47 @@ def post_decide(report_id):
     b = _body()
     return _run("decide", ex.decide, get_engine(), _actor(), report_id,
                 b.get("action"), b.get("note"))
+
+
+@expenses_bp.route("/reports/<int:report_id>/receipts", methods=["POST"])
+@login_required
+def post_receipts(report_id):
+    files = [(f.filename, f.read()) for f in request.files.getlist("files")]
+    if not files:
+        return jsonify({"error": "No files were sent."}), 400
+    return _run("upload receipts", rc.upload, get_engine(), _actor(), report_id, files)
+
+
+@expenses_bp.route("/reports/<int:report_id>/receipts/<int:receipt_id>/file", methods=["GET"])
+@login_required
+def get_receipt_file(report_id, receipt_id):
+    # Readable by whoever may read the report -- the owner, the approver and,
+    # once approved, accounting -- and by nobody else (404, like the report).
+    try:
+        data, ctype, name = rc.receipt_file(get_engine(), _actor(), report_id, receipt_id)
+    except LookupError as e:
+        return jsonify({"error": str(e)}), 404
+    except Exception as e:
+        logger.error(f"expenses receipt file failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+    safe = name.replace('"', "")
+    return Response(data, mimetype=ctype, headers={
+        "Content-Disposition": 'inline; filename="%s"' % safe,
+        "Cache-Control": "private, no-store"})
+
+
+@expenses_bp.route("/reports/<int:report_id>/receipts/<int:receipt_id>/extract",
+                   methods=["POST"])
+@login_required
+def post_extract(report_id, receipt_id):
+    return _run("read receipt", rc.extract, get_engine(), _actor(), report_id, receipt_id)
+
+
+@expenses_bp.route("/reports/<int:report_id>/receipts/<int:receipt_id>", methods=["DELETE"])
+@login_required
+def delete_receipt(report_id, receipt_id):
+    return _run("delete receipt", rc.delete_receipt, get_engine(), _actor(), report_id,
+                receipt_id)
 
 
 @expenses_bp.route("/employees", methods=["GET"])

@@ -1,6 +1,6 @@
-# Employee expense reporting — design (Oct 2 2026; PHASE 1 BUILT, not deployed)
+# Employee expense reporting — design (Oct 2 2026; PHASES 1-2 BUILT, not deployed)
 
-**Phase 1 is on branch `feat/expense-reports`** (off `feat/section-access`, which it
+**Phases 1 and 2 are on branch `feat/expense-reports`** (off `feat/section-access`, which it
 needs for the Expenses section), not merged or deployed as of Oct 2 2026. Delete this
 paragraph when it ships. What is built and how, below under "Phase 1 as built".
 
@@ -186,3 +186,42 @@ proved against five injected defects).
   the attached file.
 - Verified in the running app (local): report opened, a line saved and totalled,
   submit disabled with the reason, setup tab rendered, draft deleted.
+
+## Phase 2 as built (Oct 2 2026): receipts, read and shown beside the line
+
+Jim: the employee sees "the image of the uploaded invoice related to the line they
+are completing", to correct handwritten amounts the reader missed.
+`flask_app/services/expense_receipts.py`, `vue_app/src/components/expenses/ReceiptViewer.vue`,
+guardrail `scripts/expense_receipt_check.py` (53, no API calls; injection-proved).
+
+- **Upload is Lease Review's**: pick files or a folder. **One file per request** —
+  `MAX_CONTENT_LENGTH` is 50 MB and a folder of phone photos passes it; counting
+  through them is the progress. `.DS_Store`-type files are skipped and said so.
+- **Stored as uploaded** (`er_receipts.file_data`, protected). HEIC/TIFF/BMP also get a
+  JPEG `view_data` a browser can show. Needs `pillow-heif` (added to requirements,
+  bounded `<2`, with `Pillow<13`).
+- **The reader is the lease engine's route**: `EXTRACTION_MODEL`, a PDF as a document
+  block, page images on a retry (`_render_pdf_pages`), `_pdf_fits`; text blocks
+  joined (thinking first), `stop_reason` checked for a refusal. Its own prompt.
+  An image is sent UPRIGHT (EXIF rotation applied — a phone portrait is stored
+  sideways) and at most 2000 px.
+- **One line per receipt in the file**, on its page, with `extracted_json` kept beside
+  the employee's figures. The total is the amount PAID — a handwritten tip and total
+  win over the printed total, and the reader says when an amount is handwritten.
+- **A receipt is now an ATTACHED FILE**: "receipt Y" with nothing attached means
+  nothing; a line needs a file or "no receipt" with a reason.
+- **The image is fetched with the token** and shown from a blob URL: an `<img src>`
+  cannot send the Authorization header, and the file is per-record (owner, approver,
+  accounting once approved; 404 otherwise).
+- **Duplicates**: the same file twice on one report is not stored; the same file on
+  another report is stored and flagged on the line (a shared dinner is one receipt).
+- **A file with lines from it cannot be re-read** — remove its lines first, so a re-read
+  never overwrites what the employee settled.
+- **Two defects found by the new check**: `save_employee` never created the tables (a
+  fresh database 500'd on the first approver set — phase 1's check called `options`
+  first and hid it); and a failed reading built its reply INSIDE the transaction, so
+  the screen showed the receipt still unread after the row said otherwise.
+- **Verified with the real model locally** on a drawn Arnaud's receipt: printed total
+  161.99, tip 30.00 and total 191.99 written in: read as 191.99, printed 161.99,
+  handwritten flagged, vendor, date, category and "Dinner, 3 guests"; the form showed
+  the image beside it with that reading above. Test data deleted.

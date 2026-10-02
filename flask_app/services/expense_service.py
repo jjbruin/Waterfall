@@ -38,6 +38,7 @@ rounded once, and the rate is recorded on the line.
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import date, datetime, timezone
 from typing import Dict, List, Optional
@@ -158,6 +159,9 @@ def ensure_tables(engine) -> None:
             mileage_rate      DOUBLE PRECISION,
             receipt           TEXT,
             no_receipt_reason TEXT,
+            receipt_id        INTEGER,
+            receipt_page      INTEGER,
+            extracted_json    TEXT,
             updated_at        TEXT)""",
         f"""CREATE TABLE IF NOT EXISTS er_line_splits (
             id        {pk},
@@ -186,6 +190,10 @@ def ensure_tables(engine) -> None:
         for s in ddl:
             c.execute(text(s))
     _DDL_DONE.add(key)
+    # Phase 2's receipts table and line columns live with the receipt code; it
+    # is called from here so every path that reaches a report has them.
+    from flask_app.services import expense_receipts
+    expense_receipts.ensure_receipt_tables(engine)
 
 
 # ------------------------------------------------------------------ helpers
@@ -406,6 +414,7 @@ def employees(engine) -> List[dict]:
 
 
 def save_employee(engine, user_id: int, body: dict, by: str) -> dict:
+    ensure_tables(engine)
     users = _users(engine)
     uid = int(user_id)
     if uid not in users:
@@ -543,6 +552,7 @@ def delete_report(engine, actor, report_id) -> dict:
             c.execute(text("DELETE FROM er_line_splits WHERE line_id = :l"), {"l": lid})
         c.execute(text("DELETE FROM er_lines WHERE report_id = :r"), {"r": r["id"]})
         c.execute(text("DELETE FROM er_events WHERE report_id = :r"), {"r": r["id"]})
+        c.execute(text("DELETE FROM er_receipts WHERE report_id = :r"), {"r": r["id"]})
         c.execute(text("DELETE FROM er_reports WHERE id = :r"), {"r": r["id"]})
     return {"deleted": r["id"]}
 
@@ -562,6 +572,10 @@ def _lines(engine, report_id) -> List[dict]:
                 splits.setdefault(s["line_id"], []).append(dict(s))
     for x in lines:
         x["splits"] = splits.get(x["id"], [])
+        try:
+            x["extracted"] = json.loads(x.pop("extracted_json") or "null")
+        except (TypeError, ValueError):
+            x["extracted"] = None
     return lines
 
 
@@ -606,10 +620,17 @@ def line_problems(line: dict, categories: set, deal_codes: set) -> tuple:
                           deal_codes)
         if p:
             errs.append(p)
-    if line.get("receipt") not in ("Y", "N"):
-        errs.append("does not say whether a receipt was submitted")
-    elif line["receipt"] == "N" and not (line.get("no_receipt_reason") or "").strip():
-        errs.append("has no receipt and no reason why")
+    # A RECEIPT IS AN ATTACHED FILE from phase 2, not a Y typed beside the line:
+    # accounting's template asked "receipt submitted? Y/N", and the attachment is
+    # now the answer. Without one, the line says why there is none.
+    if line.get("receipt_id"):
+        pass
+    elif line.get("receipt") == "N":
+        if not (line.get("no_receipt_reason") or "").strip():
+            errs.append("has no receipt and no reason why")
+    else:
+        errs.append("has no receipt attached -- attach one, or mark it 'no receipt' "
+                    "and say why")
     return errs, warns
 
 
@@ -678,6 +699,22 @@ def save_line(engine, actor, report_id, body: dict, line_id=None) -> dict:
         deal_fields((body.get("deal_code") or "").strip() or None, body.get("deal_name"))
 
     receipt = (body.get("receipt") or "").strip().upper() or None
+    receipt_id = body.get("receipt_id")
+    receipt_id = int(receipt_id) if receipt_id not in (None, "") else None
+    receipt_page = body.get("receipt_page")
+    receipt_page = int(receipt_page) if receipt_page not in (None, "") else None
+    if receipt_id is not None:
+        with engine.connect() as c:
+            pc = c.execute(text("SELECT page_count FROM er_receipts WHERE id = :i AND "
+                                "report_id = :r"), {"i": receipt_id, "r": r["id"]}).first()
+        if not pc:
+            raise ValueError("Receipt %s is not on this report." % receipt_id)
+        if receipt_page and pc[0] and not (1 <= receipt_page <= int(pc[0])):
+            raise ValueError("The receipt has %s page(s); there is no page %s."
+                             % (pc[0], receipt_page))
+        receipt = "Y"
+    elif receipt == "Y":
+        receipt = None          # a Y with nothing attached means nothing
     vals = {"report": r["id"], "d": d, "de": d_end,
             "cat": (body.get("category_account") or "").strip() or None,
             "pur": (body.get("purpose") or "").strip() or None,
@@ -685,7 +722,8 @@ def save_line(engine, actor, report_id, body: dict, line_id=None) -> dict:
             "v": (body.get("vendor") or "").strip() or None,
             "cm": (body.get("comment") or "").strip() or None,
             "amt": amount, "mi": miles, "rate": rate, "rc": receipt,
-            "why": (body.get("no_receipt_reason") or "").strip() or None, "at": _now()}
+            "why": (body.get("no_receipt_reason") or "").strip() or None,
+            "rid": receipt_id, "rpg": receipt_page if receipt_id else None, "at": _now()}
     with engine.begin() as c:
         if line_id is None:
             n = c.execute(text("SELECT COALESCE(MAX(sort_order), 0) FROM er_lines "
@@ -694,15 +732,17 @@ def save_line(engine, actor, report_id, body: dict, line_id=None) -> dict:
             line_id = c.execute(text(
                 "INSERT INTO er_lines (report_id, sort_order, line_date, line_date_end, "
                 "category_account, purpose, deal_code, deal_kind, deal_name, vendor, comment, "
-                "amount, miles, mileage_rate, receipt, no_receipt_reason, updated_at) VALUES "
+                "amount, miles, mileage_rate, receipt, no_receipt_reason, receipt_id, "
+                "receipt_page, updated_at) VALUES "
                 "(:report, :so, :d, :de, :cat, :pur, :dc, :dk, :dn, :v, :cm, :amt, :mi, :rate, "
-                ":rc, :why, :at) RETURNING id"), vals).scalar()
+                ":rc, :why, :rid, :rpg, :at) RETURNING id"), vals).scalar()
         else:
             got = c.execute(text("UPDATE er_lines SET line_date = :d, line_date_end = :de, "
                                  "category_account = :cat, purpose = :pur, deal_code = :dc, "
                                  "deal_kind = :dk, deal_name = :dn, vendor = :v, comment = :cm, "
                                  "amount = :amt, miles = :mi, mileage_rate = :rate, receipt = :rc, "
-                                 "no_receipt_reason = :why, updated_at = :at "
+                                 "no_receipt_reason = :why, receipt_id = :rid, "
+                                 "receipt_page = :rpg, updated_at = :at "
                                  "WHERE id = :id AND report_id = :report"),
                             {**vals, "id": int(line_id)})
             if got.rowcount != 1:
@@ -729,9 +769,10 @@ def delete_line(engine, actor, report_id, line_id) -> dict:
     return get_report(engine, actor, r["id"])
 
 
-def _check(engine, report: dict, lines: List[dict]) -> dict:
+def _check(engine, report: dict, lines: List[dict], receipts=None) -> dict:
     cats, codes, _, _ = _option_sets(engine)
     errors, warnings, by_line = [], [], {}
+    dup = {x["id"] for x in (receipts or []) if x.get("duplicate_of")}
     if not lines:
         errors.append("The report has no lines.")
     for i, ln in enumerate(lines, start=1):
@@ -739,6 +780,10 @@ def _check(engine, report: dict, lines: List[dict]) -> dict:
         by_line[ln["id"]] = {"errors": e, "warnings": w}
         errors += ["Line %d %s." % (i, x) for x in e]
         warnings += ["Line %d %s." % (i, x) for x in w]
+        if ln.get("receipt_id") in dup:
+            w.append("its receipt is also on another expense report")
+            by_line[ln["id"]]["warnings"] = w
+            warnings.append("Line %d's receipt is also on another expense report." % i)
         if ln.get("line_date") and ln["line_date"] > report["period_end"]:
             warnings.append("Line %d is dated %s, after the period ends." % (i, ln["line_date"]))
     return {"errors": errors, "warnings": warnings, "by_line": by_line}
@@ -752,6 +797,8 @@ def get_report(engine, actor, report_id) -> dict:
     _, _, _, cat_names = _option_sets(engine)
     for ln in lines:
         ln["category_name"] = cat_names.get(ln.get("category_account"), "")
+    from flask_app.services import expense_receipts
+    receipts = expense_receipts._receipt_rows(engine, r["id"])
     with engine.connect() as c:
         events = [dict(x) for x in c.execute(text(
             "SELECT * FROM er_events WHERE report_id = :r ORDER BY id"),
@@ -760,7 +807,8 @@ def get_report(engine, actor, report_id) -> dict:
     basis = decide_basis(engine, actor, r, holders) if r["status"] == "submitted" else None
     route = route_for(engine, r["user_id"], users, emps) if r["status"] in EDITABLE else None
     return {**_summary(r, users, emps, lines), "lines": lines, "events": events,
-            "check": _check(engine, r, lines),
+            "receipts": receipts,
+            "check": _check(engine, r, lines, receipts),
             "route": route,
             "permissions": {"edit": mine and r["status"] in EDITABLE,
                             "delete": mine and r["status"] == "draft" and not r.get("submitted_at"),
@@ -819,7 +867,8 @@ def list_reports(engine, actor, scope: str = "mine") -> List[dict]:
 def submit(engine, actor, report_id) -> dict:
     r = _owned_editable(engine, actor, report_id)
     lines = _lines(engine, r["id"])
-    chk = _check(engine, r, lines)
+    from flask_app.services import expense_receipts
+    chk = _check(engine, r, lines, expense_receipts._receipt_rows(engine, r["id"]))
     if chk["errors"]:
         raise ValueError("The report cannot be submitted yet: " + " ".join(chk["errors"]))
     route = route_for(engine, actor["id"])

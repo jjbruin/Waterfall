@@ -28,7 +28,7 @@ _passed, _failed = [], []
 def chk(label, cond, detail=""):
     (_passed if cond else _failed).append(label)
     print("   %s %s%s" % ("ok  " if cond else "FAIL", label,
-                          ("   [%s]" % detail) if detail and not cond else ""))
+                          ("   [%s]" % (detail,)) if detail and not cond else ""))
 
 
 def main():
@@ -126,7 +126,10 @@ def main():
 
     GOOD = {"line_date": "2026-09-10", "category_account": "MR53000011",
             "purpose": "Property Visit - Existing", "deal_code": "P1", "vendor": "American",
-            "comment": "Apple Site Visit - Airfare", "amount": "712.98", "receipt": "Y"}
+            "comment": "Apple Site Visit - Airfare", "amount": "712.98",
+            # Phase 2: a receipt is an ATTACHED FILE (expense_receipt_check covers
+            # it). Lines here carry none, so each says why.
+            "receipt": "N", "no_receipt_reason": "Fixture line"}
 
     def add(rid, who="emp", **kw):
         return call("POST", "/reports/%d/lines" % rid, who, {**GOOD, **kw})
@@ -215,7 +218,7 @@ def main():
     chk("a split that foots is clean", not b["check"]["by_line"][str(bad_line)]["errors"]
         if str(bad_line) in b["check"]["by_line"] else not b["check"]["by_line"][bad_line]["errors"])
     chk("a split line carries no deal of its own", split_line["deal_code"] is None)
-    st, b = add(rid, receipt="N")
+    st, b = add(rid, receipt="N", no_receipt_reason="")
     chk("no receipt and no reason blocks submit",
         any("no receipt and no reason" in e for e in b["check"]["errors"]))
     nr = b["lines"][-1]["id"]

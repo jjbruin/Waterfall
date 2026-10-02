@@ -15,6 +15,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import api from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useDataStore } from '@/stores/data'
+import ReceiptViewer from '@/components/expenses/ReceiptViewer.vue'
 
 const auth = useAuthStore()
 const dataStore = useDataStore()
@@ -117,7 +118,8 @@ async function deleteReport() {
 const blankLine = () => ({
   id: null as number | null, line_date: '', line_date_end: '', category_account: '',
   purpose: '', deal_code: 'OPERATIONS', deal_name: '', vendor: '', comment: '', amount: '',
-  miles: '', receipt: 'Y', no_receipt_reason: '',
+  miles: '', receipt: '', no_receipt_reason: '',
+  receiptChoice: '' as string | number, receipt_page: 1 as number | null, extracted: null as any,
   isPeriod: false, isMileage: false, isSplit: false,
   splits: [] as { deal_code: string; deal_name: string; amount: string; pct: string }[],
 })
@@ -132,6 +134,8 @@ function editLine(ln: any) {
     amount: ln.amount ?? '', miles: ln.miles ?? '',
     deal_code: ln.deal_kind === 'pipeline' ? PIPELINE : (ln.deal_code || ''),
     deal_name: ln.deal_kind === 'pipeline' ? (ln.deal_name || '') : '',
+    receiptChoice: ln.receipt_id ? ln.receipt_id : (ln.receipt === 'N' ? 'N' : ''),
+    receipt_page: ln.receipt_page || 1, extracted: ln.extracted || null,
     isPeriod: !!ln.line_date_end, isMileage: ln.miles != null,
     isSplit: (ln.splits || []).length > 0,
     splits: (ln.splits || []).map((s: any) => ({
@@ -188,7 +192,10 @@ async function saveLine() {
     deal_name: !e.isSplit && e.deal_code === PIPELINE ? e.deal_name : '',
     vendor: e.vendor, comment: e.comment,
     amount: e.isMileage ? '' : e.amount, miles: e.isMileage ? e.miles : '',
-    receipt: e.receipt, no_receipt_reason: e.receipt === 'N' ? e.no_receipt_reason : '',
+    receipt: e.receiptChoice === 'N' ? 'N' : '',
+    no_receipt_reason: e.receiptChoice === 'N' ? e.no_receipt_reason : '',
+    receipt_id: typeof e.receiptChoice === 'number' ? e.receiptChoice : '',
+    receipt_page: typeof e.receiptChoice === 'number' ? e.receipt_page : '',
     splits: e.isSplit ? e.splits.map((s: any) => ({
       deal_code: s.deal_code, amount: s.amount,
       deal_name: s.deal_code === PIPELINE ? s.deal_name : '' })) : [],
@@ -199,6 +206,77 @@ async function saveLine() {
     editing.value = null
   } catch (err) { fail(err, 'Could not save the line') }
 }
+
+// ---- receipts ----
+const receiptOf = (id: any) => (report.value?.receipts || []).find((r: any) => r.id === id)
+const editingReceipt = computed(() =>
+  typeof editing.value?.receiptChoice === 'number' ? receiptOf(editing.value.receiptChoice) : null)
+const RSTATUS: Record<string, string> = {
+  pending: 'not read yet', read: 'read', no_receipt: 'no receipt found', error: 'could not be read',
+}
+const progress = ref('')
+const RECEIPT_ACCEPT = '.pdf,.jpg,.jpeg,.png,.gif,.webp,.heic,.heif,.tif,.tiff,.bmp'
+
+// ONE FILE PER REQUEST: a folder of phone photos runs past the server's
+// request-size limit in one go, and counting through them is the progress.
+async function uploadFiles(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const files = Array.from(input.files || [])
+  input.value = ''
+  if (!files.length || !report.value) return
+  const problems: string[] = []
+  const stored: number[] = []
+  for (let i = 0; i < files.length; i++) {
+    progress.value = `Uploading ${i + 1} of ${files.length}…`
+    const fd = new FormData()
+    fd.append('files', files[i], files[i].name)
+    try {
+      const r = await api.post(`/api/expenses/reports/${report.value.id}/receipts`, fd)
+      for (const x of r.data.results) {
+        if (x.result === 'stored') stored.push(x.receipt_id)
+        if (x.why && x.result !== 'skipped') problems.push(`${x.file}: ${x.why}`)
+      }
+    } catch (e: any) {
+      problems.push(`${files[i].name}: ${e?.response?.data?.error || 'upload failed'}`)
+    }
+  }
+  await readReceipts(stored)
+  if (problems.length) dataStore.addToast(problems.join(' · '), 'info')
+}
+
+// Reads one file per request, for the same reason, and so the employee sees
+// "Reading 3 of 12" rather than a spinner that might be stuck.
+async function readReceipts(ids?: number[]) {
+  if (!report.value) return
+  const todo = ids ?? (report.value.receipts || [])
+    .filter((r: any) => r.status === 'pending').map((r: any) => r.id)
+  for (let i = 0; i < todo.length; i++) {
+    progress.value = `Reading receipt ${i + 1} of ${todo.length}…`
+    try {
+      report.value = (await api.post(
+        `/api/expenses/reports/${report.value.id}/receipts/${todo[i]}/extract`)).data
+    } catch (e) { fail(e, 'Could not read a receipt') }
+  }
+  progress.value = ''
+  report.value = (await api.get(`/api/expenses/reports/${report.value.id}`)).data
+}
+
+async function rereadReceipt(rc: any) { await readReceipts([rc.id]) }
+async function removeReceipt(rc: any) {
+  try {
+    report.value = (await api.delete(`/api/expenses/reports/${report.value.id}/receipts/${rc.id}`)).data
+  } catch (e) { fail(e, 'Could not remove the receipt') }
+}
+function lineForReceipt(rc: any) {
+  editing.value = { ...blankLine(), receiptChoice: rc.id, receipt_page: 1 }
+}
+const pendingCount = computed(() =>
+  (report.value?.receipts || []).filter((r: any) => r.status === 'pending').length)
+const linesFrom = (rcId: number) =>
+  (report.value?.lines || []).filter((l: any) => l.receipt_id === rcId).length
+
+// A read-only look at a line's receipt -- what an approver uses.
+const viewing = ref<any>(null)
 
 async function deleteLine(ln: any) {
   try {
@@ -304,6 +382,51 @@ onMounted(async () => {
         <button v-if="report.permissions.edit" class="btn-secondary" @click="saveHeader">Save</button>
       </div>
 
+      <!-- ---------- receipts ---------- -->
+      <div class="receipts">
+        <div class="row">
+          <strong>Receipts</strong>
+          <template v-if="report.permissions.edit">
+            <label class="btn-secondary file-btn">Upload files
+              <input type="file" multiple :accept="RECEIPT_ACCEPT" hidden @change="uploadFiles" /></label>
+            <label class="btn-secondary file-btn">Upload a folder
+              <input type="file" webkitdirectory hidden @change="uploadFiles" /></label>
+            <button v-if="pendingCount && !progress" class="btn-secondary" @click="readReceipts()">
+              Read {{ pendingCount }} waiting</button>
+          </template>
+          <span v-if="progress" class="muted">{{ progress }}</span>
+          <span v-else class="muted">PDF, JPG, PNG, iPhone HEIC and other images. Each receipt read becomes a line for you to complete.</span>
+        </div>
+        <table v-if="report.receipts?.length" class="data-table compact">
+          <tbody>
+            <tr v-for="rc in report.receipts" :key="rc.id">
+              <td><button class="link" @click="viewing = { receipt_id: rc.id, receipt_page: 1 }">📎 {{ rc.filename }}</button>
+                <span v-if="rc.page_count > 1" class="muted"> ({{ rc.page_count }} pages)</span></td>
+              <td :class="{ 'warn-text': rc.status === 'error' || rc.status === 'no_receipt' }">
+                {{ RSTATUS[rc.status] || rc.status }}<template v-if="rc.error"> — {{ rc.error }}</template></td>
+              <td class="muted">{{ linesFrom(rc.id) }} line(s)</td>
+              <td><span v-if="rc.duplicate_of" class="warn-text">also on another report</span></td>
+              <td class="row-actions">
+                <template v-if="report.permissions.edit">
+                  <button v-if="!linesFrom(rc.id) && rc.status !== 'pending'" class="link" @click="rereadReceipt(rc)">Read again</button>
+                  <button class="link" @click="lineForReceipt(rc)">Add a line for it</button>
+                  <button class="link" @click="removeReceipt(rc)">Remove</button>
+                </template>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div v-if="viewing && !editing" class="view-panel">
+        <div class="row"><button class="link" @click="viewing = null">Close receipt</button></div>
+        <ReceiptViewer :report-id="report.id" :receipt-id="viewing.receipt_id" :page="viewing.receipt_page"
+                       :content-type="receiptOf(viewing.receipt_id)?.content_type"
+                       :view-type="receiptOf(viewing.receipt_id)?.view_type"
+                       :filename="receiptOf(viewing.receipt_id)?.filename"
+                       :extracted="viewing.extracted" :amount="viewing.amount" />
+      </div>
+
       <table class="data-table">
         <thead><tr>
           <th>Date / period</th><th>Category</th><th>Purpose</th><th>Deal</th>
@@ -328,7 +451,12 @@ onMounted(async () => {
               <div v-for="m in report.check.by_line[ln.id]?.errors" :key="m" class="err-text">Line {{ m }}</div>
             </td>
             <td class="num">{{ fmt(ln.amount) }}</td>
-            <td>{{ ln.receipt === 'N' ? 'No — ' + (ln.no_receipt_reason || '') : ln.receipt === 'Y' ? 'Yes' : '' }}</td>
+            <td>
+              <button v-if="ln.receipt_id" class="link" @click="viewing = ln">
+                📎 {{ receiptOf(ln.receipt_id)?.filename }}<template v-if="ln.receipt_page > 1"> p.{{ ln.receipt_page }}</template></button>
+              <template v-else-if="ln.receipt === 'N'">No — {{ ln.no_receipt_reason }}</template>
+              <div v-if="ln.extracted?.handwritten_amount" class="warn-text">handwritten amount</div>
+            </td>
             <td class="row-actions">
               <template v-if="report.permissions.edit">
                 <button class="link" @click="editLine(ln)">Edit</button>
@@ -348,7 +476,8 @@ onMounted(async () => {
         + Add an expense</button>
 
       <!-- ---------- line form ---------- -->
-      <div v-if="editing" class="line-form">
+      <div v-if="editing" class="line-form" :class="{ 'with-receipt': editingReceipt }">
+       <div class="form-col">
         <div class="row">
           <label>Date <input type="date" v-model="editing.line_date" /></label>
           <label class="check"><input type="checkbox" v-model="editing.isPeriod" /> a period</label>
@@ -389,10 +518,16 @@ onMounted(async () => {
             <span v-else class="warn-text">No mileage rate is in force on that date — accounting sets it.</span>
           </template>
           <label v-else>Amount <input v-model="editing.amount" class="num-in" placeholder="0.00" /></label>
-          <label>Receipt submitted?
-            <select v-model="editing.receipt"><option value="Y">Yes</option><option value="N">No</option></select>
+          <label>Receipt
+            <select v-model="editing.receiptChoice">
+              <option value="" disabled>attach one…</option>
+              <option v-for="rc in report.receipts" :key="rc.id" :value="rc.id">{{ rc.filename }}</option>
+              <option value="N">No receipt</option>
+            </select>
           </label>
-          <label v-if="editing.receipt === 'N'" class="grow">If no receipt, why
+          <label v-if="editingReceipt && editingReceipt.page_count > 1">Page
+            <input type="number" min="1" :max="editingReceipt.page_count" v-model.number="editing.receipt_page" class="num-in" /></label>
+          <label v-if="editing.receiptChoice === 'N'" class="grow">Why is there no receipt?
             <input v-model="editing.no_receipt_reason" /></label>
         </div>
         <div v-if="editing.isSplit" class="splits">
@@ -420,6 +555,15 @@ onMounted(async () => {
           <button class="btn-primary" @click="saveLine">Save line</button>
           <button class="btn-secondary" @click="editing = null">Cancel</button>
         </div>
+       </div>
+       <!-- The receipt beside the line it supports, so a handwritten amount the
+            reader missed can be read off the image and corrected here. -->
+       <div v-if="editingReceipt" class="receipt-col">
+         <ReceiptViewer :report-id="report.id" :receipt-id="editingReceipt.id" :page="editing.receipt_page"
+                        :content-type="editingReceipt.content_type" :view-type="editingReceipt.view_type"
+                        :filename="editingReceipt.filename" :extracted="editing.extracted"
+                        :amount="editing.isMileage ? mileageAmount : parseFloat(editing.amount)" />
+       </div>
       </div>
 
       <!-- ---------- what stops a submit ---------- -->
@@ -604,6 +748,15 @@ input, select, textarea {
 }
 .num-in { width: 90px; text-align: right; }
 .line-form { border: 1px solid var(--color-border); border-radius: 6px; padding: 8px 12px; margin: 10px 0; }
+.line-form.with-receipt { display: grid; grid-template-columns: minmax(420px, 1fr) minmax(360px, 1fr); gap: 16px; }
+.form-col { min-width: 0; }
+.receipt-col { min-width: 0; display: flex; }
+.receipt-col > * { flex: 1; }
+.receipts { margin: 10px 0; }
+.data-table.compact td { padding: 3px 8px; }
+.file-btn { display: inline-flex; flex-direction: row; cursor: pointer; padding: 4px 10px; font-size: 12.5px; color: var(--color-text); }
+.view-panel { border: 1px solid var(--color-border); border-radius: 6px; padding: 8px 12px; margin: 10px 0; height: 640px; display: flex; flex-direction: column; }
+.view-panel > :last-child { flex: 1; }
 .splits { border-top: 1px dashed var(--color-border); padding-top: 6px; }
 .split-cell { white-space: nowrap; }
 .link { background: none; border: none; color: var(--color-primary, #2f6f4f); cursor: pointer; padding: 0 4px; font-size: 12px; }
