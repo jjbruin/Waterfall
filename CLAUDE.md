@@ -265,6 +265,29 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v552` = `11c3455` (SECTION ACCESS BY USERNAME -- per-sidebar-section
+    checkboxes in Settings > User Management; only the `admin` USERNAME assigns;
+    without Accounting the GL/IA tables and every `tr_`/`wp_`/`ic_` table are
+    hidden from Data Explorer, the export, MRI query downloads and the assistant's
+    SQL. Deployed Oct 2 2026 15:38 UTC, build 2m17s. HELD a day: `b93dd5f` was
+    imaged Oct 1 but Charlene had deployed `v549`/`v550` from an unpushed clone
+    between this work's P1 and its build; deploying it would have rolled hers back.
+    Re-run P1 before the update caught it (memory: recheck-live-before-deploy).
+    Once her commits reached origin, origin/main was MERGED into the branch
+    (`11c3455`). P2 against live `c255729` (v551): 8 commits -- `0362ecb`,
+    `b93dd5f`, four docs-only, two merges with ZERO lines of their own (`git show
+    --cc`); runtime delta is the 11 section-access files only; `c255729` is an
+    ancestor. No vcode literals. Behaviour change: the DB export and MRI query
+    downloads now need Data Management (ticked for everyone by default).
+    GUARDRAILS on the merged tree: section_access 256, accounting_access 54,
+    treasury_api 46, gl_ia_query 123, investment_metrics 178, committed_pref 47,
+    vite build. P1 re-run immediately before `containerapp update`: still v551.
+    VERIFIED ON PRODUCTION, in-process with a minted token: an account named
+    `admin` EXISTS (16 users); `admin` gets `/auth/sections` 200 `can_assign`
+    true, all 7 sections; the admin-ROLE users `anaik` and `cbui` get
+    `can_assign` false and their PUT is 403; `user_section_access` has 0 rows, so
+    nobody's access changed at deploy; `section_access_check --static` 98/0 in
+    the container. Root 200 in 0.15s, clean boot.)
   - `v551` = `c255729` (INVESTMENT METRICS: Act. Yr-1 CoC IS COMPUTED, AND THREE
     FOOTNOTE MARKERS ARE DERIVED RATHER THAN TRANSCRIBED. Oct 2 2026, tag locked.
     THIS IS LIVE. Pre-flight P2 against the live `b250639` listed six commits, all
