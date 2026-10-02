@@ -266,6 +266,35 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v555` = `effab11` (A NULL SEGMENT IS BLANK UNDER PANDAS 3. PRODUCTION RUNS
+    PANDAS 3.0.6 -- `requirements.txt` says only `pandas>=2.3`, pandas 3.0.0 shipped
+    Jan 21 2026, so EVERY image in this history has run pandas 3 -- while local dev
+    runs 2.3.3 and every guardrail runs locally. Pandas 3 reads a SQL NULL as NaN,
+    `_norm` made it the string "NAN", and the intercompany reconciliation carried an
+    ENTITY CALLED NAN (PSC Manager's unsegmented MR15000001) in 202609 and 202610
+    instead of the blank-segment check -- since v531, and payable from v554. Found
+    because `intercompany_check` failed 4 checks INSIDE THE CONTAINER (68/4/1) while
+    passing 86/86 locally; production data confirmed untouched by that run (0
+    batches, 0 pay rows, gl_detail 79,752 real rows). AFTER: no NAN, 63 rows -- the
+    count on the CFO's own sheet; the "64" recorded at v531 included the phantom --
+    blank segment 3 rows netting 0; `intercompany_check` 74/0/1 in the container.
+    Span vs live `baf619e`: this one commit. A pandas-2-vs-3 sweep of all guardrails
+    is open in open_items §18. Build 2m18s.)
+  - `v554` = `baf619e` (INTERCOMPANY PHASE 2 -- PAY AND THE REIMBURSEMENT JE, plus
+    the DOUBLE-BATCH LOCK. P2 vs live `79d21a2`: `be7a33e` (the feature, committed
+    from work found uncommitted in the checkout and reviewed in full), the v553 docs
+    commit, a merge whose only resolution was the union of two PROTECTED_TABLES
+    additions, and `baf619e`. P4 FOUND A DOUBLE-PAYMENT RACE and it was fixed before
+    building: generate checked for a pending batch on a read taken before its own
+    transaction, so two simultaneous generates could both reimburse one entity. Now
+    the batch table is locked inside the generate transaction (PostgreSQL SHARE ROW
+    EXCLUSIVE; SQLite's write lock) and the pending set re-read inside it. WITHOUT
+    the lock the threaded check produced two batches in one run of three; with it,
+    six of six pass. Behaviour change: PPI2/PSC2 cash defaults to their USD MR1000*
+    less the Canada accounts (CFO, Sep 30), so their can-afford is now computed.
+    VERIFIED ON PRODUCTION: both tables; the Sep 30 answers applied to the seed rows
+    only; reconcile runs for 202610; `LOCK TABLE` works on PostgreSQL (rolled back).
+    13 guardrails green on the merged tree. Build 2m16s.)
   - `v553` = `79d21a2` (EMPLOYEE EXPENSE REPORTS, all four phases -- the
     Expenses section and Accounting > Expense Coding. Design and measurements:
     `.claude/memory/expense_reporting.md`. Deployed Oct 2 2026 15:52 UTC, build

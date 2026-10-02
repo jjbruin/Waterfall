@@ -22,6 +22,25 @@ fixed, plus `MANUAL_RATIO_SEEDS` and its expiry), `onepager_audit_q1_2026.md`.
 
 ---
 
+## 18. Production runs pandas 3; every guardrail runs on pandas 2 (Oct 2 2026)
+
+`requirements.txt` has `pandas>=2.3`. Pandas 3.0.0 shipped Jan 21 2026, so every
+production image since has resolved pandas 3 (3.0.6 at `v553`-`v555`), while the local
+`.venv` -- where every guardrail runs -- is pandas 2.3.3. Found when `intercompany_check`
+failed inside the container: pandas 3 reads a SQL NULL as NaN, and the intercompany
+reconciliation had an entity called NAN (fixed at `v555`).
+
+- **18.1 Sweep every guardrail under pandas 3.** Scratch venv with the container's
+  resolution; first run was confounded (parallel runs collided on fixed temp-db
+  names), re-running sequentially. Owner: **next session** -- read the result.
+- **18.2 Pin pandas** (`<3.1` at least): pandas 3.1.0rc0 shipped Sep 30 2026 and the
+  next rebuild after 3.1.0 is final takes it unannounced -- the v524 SQLAlchemy shape.
+  Owner: **Jim's call** (pin the version production already runs).
+- **18.3 Move local dev to pandas 3** so guardrails test what production runs. Owner:
+  **Jim's call**.
+
+---
+
 ## 17. Employee expense reports (Oct 2 2026) — LIVE at `v553`
 
 Design, phases and measurements: `expense_reporting.md`.
