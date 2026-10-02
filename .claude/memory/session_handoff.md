@@ -1,10 +1,10 @@
-# Session Handoff — through Oct 2 2026 (v553 live)
+# Session Handoff — through Oct 2 2026 (v559 live)
 
 ## Oct 2 2026 — v553 shipped expense reports
 
-- **Live: `v553` = `79d21a2`** (expense reports, on top of v552 section access).
-  `main` is BEHIND live: pushes to `main` are blocked by the permission classifier --
-  Jim to fast-forward `main` to `79d21a2` (`origin/feat/expense-reports`).
+- **Live: `v559` = `05b6f5f`** (see CLAUDE.md's deploy history for v553-v559). `main`
+  is level with live as of Oct 2 2026 (`0be6ea8`). Pushes to `main` are blocked for
+  Claude by the permission classifier -- Jim fast-forwards it.
 - **Open from the deploy**: the intercompany ownership proposal is right for 3 of 7
   booked deals; the investee-fund pass-through (INVF7/INVF2/INVF11 -> PSC3) needs
   accounting's rule, Apple's PSS1 and Brainerd's shares are data questions

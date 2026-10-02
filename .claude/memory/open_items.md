@@ -36,8 +36,13 @@ reconciliation had an entity called NAN (fixed at `v555`).
   files (§15) -- so they say nothing about pandas 3 either way. The first, parallel
   run was confounded by checks sharing fixed temp-db names; run them sequentially.
 - **18.2 DONE (Oct 2, `v557`):** `pandas>=2.3,<3.1`, resolving 3.0.6.
-- **18.3 Move local dev to pandas 3** so guardrails test what production runs. Owner:
-  **Jim's call**.
+- **18.3 DONE (Oct 2):** the local `.venv` matches production -- pandas 3.0.6, numpy
+  2.5.3, SQLAlchemy 2.0.54 -- and the leftover `streamlit` (unused, not in requirements)
+  and the `pyarrow` it pulled in are REMOVED: with pyarrow present pandas 3 stores strings
+  differently from production, which has none. A SQL NULL now reads as `nan` locally, as
+  in the container. All 135 guardrails re-run one at a time: identical to the scratch
+  pandas-3 run (85 pass; the 50 are §15's environmental ones). Previous package list:
+  the session scratchpad's `venv_before_pandas3.txt`.
 
 ---
 
