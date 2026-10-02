@@ -87,7 +87,9 @@ def fixture():
           row("PSC1", "202602", "MR10005000", 1000),
           row("PSC1", "202602", "MR10007000", 2000),
           row("PSC1", "202602", "MR10008000", 5000)]
-    # PPI2: CAD cash is the two CAD accounts; its USD account must not count.
+    # PPI2: its USD cash counts and its two Canada accounts do not (CFO, Sep 30
+    # 2026: "default it to the USD accounts as we try to convert that CAD
+    # separately anyway" -- it was the reverse on Sep 29).
     r += [row("PPI2", "202602", E, -40), row(MGR, "202602", M, 50, rlt="PPI2"),
           row("PPI2", "202602", "MR10006000", 400),
           row("PPI2", "202602", "MR10003000", 100),
@@ -149,9 +151,10 @@ def section_fixture():
     chk("PSC1 can afford all 10 it owes", s["affordable"] == 10.0, s["affordable"])
 
     c = rows["PPI2"]
-    chk("PPI2 cash is its two CAD accounts (500), USD account ignored",
-        c["cash_balance"] == 500.0 and c["currency"] == "CAD", c)
-    chk("PPI2 affordability is NOT computed (no FX rate)", c["affordable"] is None)
+    chk("PPI2 cash is its USD account (999); the two Canada accounts do not count",
+        c["cash_balance"] == 999.0 and c["currency"] == "USD", c)
+    chk("PPI2 can afford all 50 it owes, computed in USD", c["affordable"] == 50.0,
+        c["affordable"])
     chk("PPI2 variance 10 -> Investigate", c["variance"] == 10.0 and c["status"] == "Investigate")
 
     z = rows.get("INVF10") or {}
@@ -209,6 +212,7 @@ def section_fixture():
         chk("a malformed period is refused", True)
 
     section_writes(engine)
+    section_pay(engine)
     engine.dispose()
     os.remove(path)
 
@@ -219,7 +223,8 @@ def section_writes(engine):
     chk("five settings seeded, each saying where it came from",
         set(st) == {"PEGASU", "NOTTNV", "PPI2", "PSC2", "PSC1"}
         and all(s["basis"] for s in st.values()), sorted(st))
-    chk("PSC1's seed is marked INFERRED", "INFERRED" in st["PSC1"]["basis"])
+    chk("PSC1's Liberty exclusion is the CFO's, no longer inferred",
+        "confirmed" in st["PSC1"]["basis"] and "INFERRED" not in st["PSC1"]["basis"])
 
     ic.save_settings(engine, "PSC1", {}, "tester")
     ic._DDL_DONE.clear()
@@ -249,6 +254,165 @@ def section_writes(engine):
     r = {x["entity_id"]: x for x in ic.reconcile(engine, "202609")["rows"]}
     chk("an empty comment clears it", r["NOTTNV"]["comment"] == "")
     chk("the workbook builds", len(ic.to_excel(ic.reconcile(engine, "202609"))) > 2000)
+
+
+def _raises(fn, *a, **kw):
+    try:
+        fn(*a, **kw)
+        return None
+    except ValueError as e:
+        return str(e)
+
+
+def section_pay(engine):
+    print("\n== pay and the journal entry (CFO, Sep 30 2026) ==")
+    load(engine, fixture())
+    P = "202609"
+
+    def row(e):
+        return next(x for x in ic.reconcile(engine, P)["rows"] if x["entity_id"] == e)
+
+    b = row("AMB23")
+    chk("the amount to pay STARTS at what it can afford (100 of 161.34)",
+        b["pay_prompt"] == 100.0 and b["pay_amount"] == 100.0 and not b["pay_amount_set"], b)
+    chk("...and pays from the PNC account", b["pay_cash_account"] == "MR10005000")
+    chk("more than it can afford is refused",
+        "more than it can afford" in (_raises(ic.save_pay, engine, P, "AMB23",
+                                              {"amount": 150}, "kh") or ""))
+    chk("an adjusted can-afford needs a reason",
+        "Say why" in (_raises(ic.save_pay, engine, P, "AMB23",
+                              {"afford_override": 161.34}, "kh") or ""))
+    chk("an adjusted can-afford may not exceed what the manager is owed",
+        "more than PSC Manager is owed" in (_raises(ic.save_pay, engine, P, "AMB23",
+            {"afford_override": 200, "afford_reason": "x"}, "kh") or ""))
+    out = ic.save_pay(engine, P, "AMB23", {"afford_override": 161.34,
+                                           "afford_reason": "cash arriving 9/30"}, "kh")
+    b = out["row"]
+    chk("adjusted up, with a reason: the prompt follows, the GL figure is kept beside it",
+        b["affordable"] == 161.34 and b["pay_amount"] == 161.34
+        and b["affordable_computed"] == 100.0 and b["afford_reason"] == "cash arriving 9/30", b)
+    chk("...and says the cash does not cover it", out["warnings"], out["warnings"])
+    # AMB6's case (CFO): it could afford more, and reimburses less.
+    b = ic.save_pay(engine, P, "PSC1", {"amount": 7.50}, "kh")["row"]
+    chk("less than it can afford is simply typed (7.50 of 10)",
+        b["pay_amount"] == 7.50 and b["pay_amount_set"] and b["affordable"] == 10.0, b)
+    b = ic.save_pay(engine, P, "PSC1", {"amount": ""}, "kh")["row"]
+    chk("clearing the amount puts the prompt back", b["pay_amount"] == 10.0
+        and not b["pay_amount_set"], b)
+    chk("the pay amounts survive a refresh, per period",
+        row("AMB23")["pay_amount"] == 161.34 and all(
+            x["afford_override"] is None for x in ic.reconcile(engine, "202608")["rows"]))
+
+    pv = ic.build_batch(engine, P, ["AMB23", "PSC1"], "", "", "kh")
+    chk("no journal period and no entry date: refused, both named",
+        any("journal period" in e for e in pv["errors"])
+        and any("entry date" in e for e in pv["errors"]), pv["errors"])
+    pv = ic.build_batch(engine, P, ["AMB23", "PSC1"], "202609", "9/28/2026", "kh")
+    L = pv["lines"]
+    chk("preview: 8 lines, no errors, nothing stored", len(L) == 8 and not pv["errors"]
+        and not ic.batches(engine), pv["errors"])
+    chk("the template's order: each entity's pair, then PSC Manager's pairs",
+        [(x["entityid"], x["acctnum"]) for x in L] ==
+        [("AMB23", E), ("AMB23", "MR10005000"), ("PSC1", E), ("PSC1", "MR10005000"),
+         (MGR, "MR10005000"), (MGR, M), (MGR, "MR10005000"), (MGR, M)],
+        [(x["entityid"], x["acctnum"]) for x in L])
+    chk("the manager's interco line names the entity; the rest do not",
+        [x["rltdentity"] for x in L] == ["", "", "", "", "", "AMB23", "", "PSC1"])
+    chk("fixed descriptions", L[0]["descrpn"] == "Intercompany Reimbursement to PSC Manager"
+        and L[5]["descrpn"] == "Intercompany Reimbursement from AMB23")
+    done = ic.build_batch(engine, P, ["AMB23", "PSC1"], "202609", "9/28/2026", "kh",
+                          commit=True)
+    chk("generated: a batch and a CSV", done.get("batch_id") and done["csv"].startswith(
+        "EntityID,AcctNum,Amount,Descrpn,ADDLDESC,RLTDENTITY,JobCode,Period,Basis,ENTRDATE"))
+    chk("...the entry date written as MRI's file writes it",
+        ",202609,B,9/28/2026" in done["csv"])
+    chk("a row in a batch the GL does not show cannot be paid again",
+        row("AMB23")["pending_batch"] == done["batch_id"]
+        and ic.build_batch(engine, P, ["AMB23"], "202609", "9/28/2026", "kh")["errors"])
+    chk("the batch is listed as generated, not in the GL",
+        ic.batches(engine)[0]["status"].startswith("generated"))
+
+    # An MRI refresh brings AMB23's lines in: the batch is partly posted and
+    # cannot be voided; AMB23 is no longer pending.
+    extra = [dict(zip(COLS, ["AMB23", P, "2026-09-28", E, E, "B", "N", 1, "R",
+                             "Intercompany Reimbursement to PSC Manager", None, None,
+                             None, 161.34]))]
+    load(engine, pd.concat([fixture(), pd.DataFrame(extra, columns=COLS)]))
+    bt = ic.batches(engine)[0]
+    chk("the GL showing one entity's lines makes the batch partly posted",
+        bt["status"] == "partly posted" and row("AMB23")["pending_batch"] is None
+        and row("PSC1")["pending_batch"] == bt["batch_id"], bt["status"])
+    chk("a batch the GL shows cannot be voided",
+        "cannot be voided" in (_raises(ic.void_batch, engine, bt["batch_id"], "kh") or ""))
+    load(engine, fixture())
+    ic.void_batch(engine, bt["batch_id"], "kh")
+    chk("a voided batch frees its rows", row("PSC1")["pending_batch"] is None
+        and ic.batches(engine)[0]["status"] == "voided")
+
+    from flask_app.services.treasury_upload import validate_gl
+    lopsided = [dict(entityid="A1", acctnum="X", amount=5, period=P, entrdate="2026-09-28",
+                     descrpn="d"),
+                dict(entityid="B2", acctnum="Y", amount=-5, period=P, entrdate="2026-09-28",
+                     descrpn="d")]
+    v = validate_gl(lopsided)
+    chk("an entry that balances overall but not by entity is refused",
+        any("by entity" in e for e in v["errors"]), v["errors"])
+
+
+def section_migration():
+    print("\n== the Sep 30 answers reach rows seeded on Sep 29 ==")
+    engine, path = fresh_engine()
+    ic.ensure_tables(engine)
+    with engine.begin() as c:
+        c.execute(text("UPDATE ic_entity_settings SET cash_accounts='MR10006000,MR10003000',"
+                       " cash_exclude='', currency='CAD', basis='old' WHERE entity_id='PPI2'"))
+        c.execute(text("UPDATE ic_entity_settings SET cash_accounts='MR10006000,MR10003000',"
+                       " cash_exclude='', currency='CAD', basis='mine', updated_by='kh'"
+                       " WHERE entity_id='PSC2'"))
+        c.execute(text("UPDATE ic_entity_settings SET basis='INFERRED, confirm'"
+                       " WHERE entity_id='PSC1'"))
+    ic._DDL_DONE.clear()
+    ic.ensure_tables(engine)
+    st = ic.get_settings(engine)
+    chk("a seeded CAD row becomes the USD accounts",
+        st["PPI2"]["currency"] == "USD" and st["PPI2"]["cash_exclude"] ==
+        ["MR10006000", "MR10003000"] and not st["PPI2"]["cash_accounts"], st["PPI2"])
+    chk("a row an accountant set is left alone", st["PSC2"]["currency"] == "CAD", st["PSC2"])
+    chk("PSC1 marked confirmed", "confirmed" in st["PSC1"]["basis"])
+    ic._DDL_DONE.clear()
+    ic.ensure_tables(engine)
+    chk("idempotent", ic.get_settings(engine) == st)
+    engine.dispose()
+    os.remove(path)
+
+
+def section_je_template(engine, wb):
+    """THE CFO'S OWN 9/28 BATCH, rebuilt: his rows, his amounts, his order --
+    and the file must say what his `JE Template` says, line for line."""
+    print("\n== the CFO's JE Template, rebuilt ==")
+    ws = wb["JE Template"]
+    tpl = [r for r in ws.iter_rows(min_row=2, values_only=True) if r and r[0]]
+    order = []
+    for r in tpl:
+        if r[0] != MGR and r[0] not in order:
+            order.append(r[0])
+    amounts = {r[0]: float(r[2]) for r in tpl if r[0] != MGR and r[1] == E}
+    problems = []
+    for e, a in amounts.items():
+        try:
+            ic.save_pay(engine, "202609", e, {"amount": a}, "check")
+        except ValueError as x:
+            problems.append(str(x))
+    chk("every amount he paid is payable under the rules (AMB6 13,500 of 18,477.50)",
+        not problems, problems)
+    out = ic.build_batch(engine, "202609", order, "202609", "2026-09-28", "check")
+    chk("his batch builds with no errors", not out["errors"], out["errors"][:3])
+    got = [(l["entityid"], l["acctnum"], round(float(l["amount"]), 2), l["descrpn"],
+            l["rltdentity"] or None, int(l["period"]), l["basis"]) for l in out["lines"]]
+    want = [(r[0], r[1], round(float(r[2]), 2), r[3], r[5], int(r[7]), r[8]) for r in tpl]
+    diff = [(i, g, w) for i, (g, w) in enumerate(zip(got, want)) if g != w]
+    chk("%d lines, identical to his JE Template line for line" % len(want),
+        len(got) == len(want) and not diff, (len(got), len(want), diff[:3]))
 
 
 def section_cfo():
@@ -298,12 +462,14 @@ def section_cfo():
                  ("OWPSC", 51181.0)):
         chk(f"{e} cash {v:,.2f} = his typed figure", rows[e]["cash_balance"] == v,
             rows[e]["cash_balance"])
+    section_je_template(engine, wb)
     engine.dispose()
     os.remove(path)
 
 
 if __name__ == "__main__":
     section_fixture()
+    section_migration()
     section_cfo()
     print(f"\n{len(_passed)} passed, {len(_failed)} failed, {len(_skipped)} skipped")
     sys.exit(1 if _failed else 0)

@@ -7,8 +7,10 @@
  * GL lines behind it, and those lines are selected by the same rule as the figure,
  * so they always add up to it. Design: .claude/memory/intercompany.md.
  *
- * Phase 1 is the reconciliation. The Pay step and the MRI journal entry file come
- * next; "Can afford" is shown now because it is the CFO's rule for the prompt.
+ * Pay (CFO, Sep 30 2026): the amount to pay STARTS at what the entity can afford
+ * and may be changed; the can-afford figure itself may be adjusted, with a reason,
+ * because not all GL cash is spendable (AMB6 withholds cash for tax and audit
+ * accruals). Ticked rows become the MRI GL upload -- the JE Template's shape.
  */
 import { ref, computed, onMounted, watch } from 'vue'
 import api from '@/api/client'
@@ -109,7 +111,10 @@ const COLS = [
   { key: 'comment', label: 'Comments' },
   { key: 'cash_balance', label: 'Cash', num: true, side: 'cash', tip: 'Cash per the GL at period end' },
   { key: 'affordable', label: 'Can afford', num: true,
-    tip: "The lower of what PSC Manager is owed (D) and the entity's cash" },
+    tip: "The lower of what PSC Manager is owed (D) and the entity's cash — adjustable, with a reason" },
+  { key: 'pay_amount', label: 'To pay', num: true,
+    tip: 'Starts at what it can afford; type a different amount to pay less' },
+  { key: 'pay_cash_account', label: 'Pay from', tip: 'The cash account the entry credits' },
 ]
 
 function toggleSort(key: string) {
@@ -274,7 +279,109 @@ async function saveSettings() {
   }
 }
 
-onMounted(async () => { await loadPeriods(); await load() })
+// ── pay ────────────────────────────────────────────────────────────────
+// A row can be ticked when PSC Manager is owed something and it is not already
+// in a batch the GL does not show. The ORDER ticked is the order in the file.
+const selected = ref<string[]>([])
+const payable = (r: any) => r.manager_balance > 0.005 && !r.pending_batch
+function toggleSelect(r: any) {
+  const i = selected.value.indexOf(r.entity_id)
+  if (i >= 0) selected.value.splice(i, 1)
+  else selected.value.push(r.entity_id)
+}
+const payEdit = ref<{ entity: string, field: string } | null>(null)
+const payDraft = ref<any>({})
+const payError = ref<string | null>(null)
+const payWarn = ref<string | null>(null)
+const savingPay = ref(false)
+function startPay(r: any, field: string) {
+  if (!canEdit.value || !payable(r)) return
+  payError.value = null
+  payEdit.value = { entity: r.entity_id, field }
+  payDraft.value = field === 'afford'
+    ? { value: r.afford_override ?? r.affordable_computed ?? '', reason: r.afford_reason || '' }
+    : field === 'amount' ? { value: r.pay_amount ?? '' }
+      : { value: r.pay_cash_account || '' }
+}
+async function savePay(r: any, patch: Record<string, any>) {
+  savingPay.value = true
+  payError.value = null
+  payWarn.value = null
+  try {
+    const res = await api.put('/api/intercompany/pay', {
+      period: period.value, entity_id: r.entity_id, ...patch,
+    })
+    Object.assign(r, res.data.row)
+    payWarn.value = (res.data.warnings || []).length
+      ? `${r.entity_id}: ${res.data.warnings.join(' ')}` : null
+    payEdit.value = null
+  } catch (e: any) {
+    payError.value = e.response?.data?.error || e.message
+  } finally {
+    savingPay.value = false
+  }
+}
+function commitPay(r: any) {
+  const f = payEdit.value?.field, d = payDraft.value
+  if (f === 'afford') savePay(r, { afford_override: d.value, afford_reason: d.reason })
+  else if (f === 'amount') savePay(r, { amount: d.value })
+  else savePay(r, { cash_account: d.value })
+}
+
+const jePeriod = ref('')
+const entrDate = ref('')
+const preview = ref<any>(null)
+const generating = ref(false)
+const selectedRows = computed(() =>
+  selected.value.map(e => allRows.value.find(r => r.entity_id === e)).filter(Boolean))
+const selectedTotal = computed(() =>
+  selectedRows.value.reduce((t: number, r: any) => t + Number(r.pay_amount || 0), 0))
+async function runBatch(commit: boolean) {
+  generating.value = true
+  try {
+    const res = await api.post('/api/intercompany/batches', {
+      period: period.value, entities: selected.value, je_period: jePeriod.value,
+      entrdate: entrDate.value, commit,
+    }, { validateStatus: s => s < 500 })
+    preview.value = res.data
+    if (commit && res.data.batch_id) {
+      downloadBatch(res.data.batch_id)
+      selected.value = []
+      await load()
+      await loadBatches()
+    }
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
+  } finally {
+    generating.value = false
+  }
+}
+async function downloadBatch(id: string) {
+  const res = await api.get(`/api/intercompany/batches/${id}/csv`, { responseType: 'blob' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(new Blob([res.data], { type: 'text/csv' }))
+  a.download = `${id}.csv`
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
+const batchList = ref<any[]>([])
+async function loadBatches() {
+  try { batchList.value = (await api.get('/api/intercompany/batches')).data.batches || [] }
+  catch { batchList.value = [] }
+}
+async function voidBatch(b: any) {
+  if (!confirm(`Void ${b.batch_id}? Only if it will NOT be uploaded to MRI.`)) return
+  try {
+    await api.post(`/api/intercompany/batches/${b.batch_id}/void`)
+    await load()
+    await loadBatches()
+  } catch (e: any) {
+    error.value = e.response?.data?.error || e.message
+  }
+}
+watch(period, () => { selected.value = []; preview.value = null })
+
+onMounted(async () => { await loadPeriods(); await load(); await loadBatches() })
 </script>
 
 <template>
@@ -360,6 +467,7 @@ onMounted(async () => { await loadPeriods(); await load() })
         <table class="data-table">
           <thead>
             <tr>
+              <th v-if="canEdit" class="tick" title="Tick to pay; the file follows the order ticked">Pay</th>
               <th v-for="c in COLS" :key="c.key"
                   :class="{ num: c.num, sorted: sortKey === c.key }"
                   :title="(c as any).tip || `Sort by ${c.label}`"
@@ -369,6 +477,7 @@ onMounted(async () => { await loadPeriods(); await load() })
               </th>
             </tr>
             <tr v-if="filtersOpen" class="filter-row">
+              <th v-if="canEdit"></th>
               <th v-for="c in COLS" :key="c.key">
                 <input v-model="colFilters[c.key]" class="colf" :placeholder="c.label" />
               </th>
@@ -378,6 +487,11 @@ onMounted(async () => { await loadPeriods(); await load() })
             <tr v-for="r in viewRows" :key="r.entity_id"
                 :class="{ active: detailRow?.entity_id === r.entity_id
                           || settingsFor?.entity_id === r.entity_id }">
+              <td v-if="canEdit" class="tick">
+                <input v-if="payable(r)" type="checkbox" :checked="selected.includes(r.entity_id)"
+                       @change="toggleSelect(r)" />
+                <span v-else-if="r.pending_batch" class="ph" :title="`In ${r.pending_batch}, not yet in the GL`">in batch</span>
+              </td>
               <td>
                 <button class="ent" @click="openSettings(r)"
                         :title="r.settings_basis || 'Default accounts'">{{ r.entity_id }}</button>
@@ -404,19 +518,61 @@ onMounted(async () => { await loadPeriods(); await load() })
               </td>
               <td class="num"><button class="fig" @click="openLines(r, 'cash')"
                       :title="r.cash_basis">{{ money(r.cash_balance) }}</button></td>
-              <td class="num">
-                <span v-if="r.affordable !== null">{{ money(r.affordable) }}</span>
-                <span v-else-if="r.currency !== 'USD' && r.manager_balance > 0" class="ph"
-                      title="CAD cash cannot cap a USD amount — the app holds no exchange rate">
-                  CAD</span>
+              <td class="num pay" @click="startPay(r, 'afford')"
+                  :title="r.afford_override !== null
+                    ? `Adjusted from ${money(r.affordable_computed)}: ${r.afford_reason}` : ''">
+                <span v-if="payEdit?.entity === r.entity_id && payEdit?.field === 'afford'" class="pay-edit"
+                      @click.stop>
+                  <input v-model="payDraft.value" class="amt" placeholder="amount" />
+                  <input v-model="payDraft.reason" class="why" placeholder="why (required)"
+                         @keyup.enter="commitPay(r)" />
+                  <button class="mini" :disabled="savingPay" @click="commitPay(r)">Save</button>
+                  <button class="mini" v-if="r.afford_override !== null" :disabled="savingPay"
+                          @click="savePay(r, { afford_override: null })">Reset</button>
+                  <button class="mini" @click="payEdit = null">✕</button>
+                </span>
+                <template v-else>
+                  <span v-if="r.affordable !== null" :class="{ adj: r.afford_override !== null }">
+                    {{ money(r.affordable) }}</span>
+                  <span v-else-if="r.currency !== 'USD' && r.manager_balance > 0" class="ph"
+                        title="CAD cash cannot cap a USD amount — the app holds no exchange rate">
+                    CAD</span>
+                </template>
+              </td>
+              <td class="num pay" @click="startPay(r, 'amount')">
+                <span v-if="payEdit?.entity === r.entity_id && payEdit?.field === 'amount'" class="pay-edit"
+                      @click.stop>
+                  <input v-model="payDraft.value" class="amt" @keyup.enter="commitPay(r)"
+                         @keyup.esc="payEdit = null" />
+                  <button class="mini" :disabled="savingPay" @click="commitPay(r)">Save</button>
+                  <button class="mini" v-if="r.pay_amount_set" :disabled="savingPay"
+                          @click="savePay(r, { amount: null })">Reset</button>
+                </span>
+                <span v-else-if="r.pay_amount !== null" :class="{ adj: r.pay_amount_set }"
+                      :title="r.pay_amount_set ? `Typed by ${r.pay_by}; can afford ${money(r.affordable)}` : 'What it can afford'">
+                  {{ money(r.pay_amount) }}</span>
+              </td>
+              <td class="mono pay" @click="startPay(r, 'cash')">
+                <span v-if="payEdit?.entity === r.entity_id && payEdit?.field === 'cash'" class="pay-edit"
+                      @click.stop>
+                  <select v-model="payDraft.value">
+                    <option v-for="a in r.cash_by_account" :key="a.account" :value="a.account">
+                      {{ a.account }} {{ money(a.amount) }}</option>
+                    <option v-if="r.pay_cash_account && !r.cash_by_account.some((a: any) => a.account === r.pay_cash_account)"
+                            :value="r.pay_cash_account">{{ r.pay_cash_account }}</option>
+                  </select>
+                  <button class="mini" :disabled="savingPay" @click="commitPay(r)">Save</button>
+                </span>
+                <span v-else-if="r.manager_balance > 0.005">{{ r.pay_cash_account || '—' }}</span>
               </td>
             </tr>
             <tr v-if="!viewRows.length">
-              <td :colspan="COLS.length" class="empty">No row matches.</td>
+              <td :colspan="COLS.length + (canEdit ? 1 : 0)" class="empty">No row matches.</td>
             </tr>
           </tbody>
           <tfoot v-if="viewRows.length">
             <tr>
+              <td v-if="canEdit"></td>
               <td colspan="2">{{ filtered ? 'Shown' : 'Totals' }} ({{ viewRows.length }})</td>
               <td class="num">{{ money(shownTotals.entity_balance) }}</td>
               <td></td>
@@ -427,8 +583,11 @@ onMounted(async () => { await loadPeriods(); await load() })
               <td colspan="2"></td>
               <td class="num">{{ money(shownTotals.cash_balance) }}</td>
               <td class="num">{{ money(shownTotals.affordable) }}</td>
+              <td class="num">{{ money(shownTotals.pay_amount) }}</td>
+              <td></td>
             </tr>
             <tr v-if="filtered" class="grand">
+              <td v-if="canEdit"></td>
               <td colspan="2">All {{ allRows.length }}</td>
               <td class="num">{{ money(result.totals.entity_balance) }}</td>
               <td></td>
@@ -436,9 +595,78 @@ onMounted(async () => { await loadPeriods(); await load() })
               <td class="num">{{ money(result.totals.total_entity) }}</td>
               <td class="num">{{ money(result.totals.manager_balance) }}</td>
               <td class="num">{{ money(result.totals.variance) }}</td>
-              <td colspan="4"></td>
+              <td colspan="6"></td>
             </tr>
           </tfoot>
+        </table>
+      </div>
+
+      <div v-if="payError" class="error-banner">{{ payError }}</div>
+      <div v-if="payWarn" class="notice">{{ payWarn }}</div>
+
+      <!-- ===== pay: the journal entry ===== -->
+      <div v-if="canEdit && selected.length" class="drawer">
+        <div class="drawer-head">
+          <div>
+            <h3>Pay {{ selected.length }} entit{{ selected.length === 1 ? 'y' : 'ies' }} —
+              {{ money(selectedTotal) }}</h3>
+            <div class="sub">In the order ticked: {{ selected.join(', ') }}. Each entity's two
+              lines, then PSC Manager's, as the JE Template.</div>
+          </div>
+          <button class="btn-secondary" @click="selected = []; preview = null">Clear</button>
+        </div>
+        <div class="pay-form">
+          <label class="ctl">Journal period
+            <input v-model="jePeriod" placeholder="YYYYMM" class="mono" /></label>
+          <label class="ctl">Entry date
+            <input v-model="entrDate" type="date" /></label>
+          <button class="btn-secondary" :disabled="generating" @click="runBatch(false)">Preview</button>
+          <button class="btn-primary" :disabled="generating || !jePeriod || !entrDate"
+                  @click="runBatch(true)">{{ generating ? 'Working…' : 'Generate & download' }}</button>
+        </div>
+        <div v-if="preview?.errors?.length" class="error-banner">
+          <div v-for="(e, i) in preview.errors" :key="i">{{ e }}</div>
+        </div>
+        <div v-else-if="preview?.batch_id" class="notice">
+          {{ preview.batch_id }} generated and downloaded. It shows as pending until the next
+          MRI refresh brings it into the GL.</div>
+        <div v-if="preview?.lines?.length && !preview?.batch_id" class="table-scroll short">
+          <table class="data-table">
+            <thead><tr><th>Entity</th><th>Account</th><th class="num">Amount</th>
+              <th>Description</th><th>Related</th><th>Period</th><th>Basis</th><th>Date</th></tr></thead>
+            <tbody>
+              <tr v-for="(l, i) in preview.lines" :key="i">
+                <td>{{ l.entityid }}</td><td class="mono">{{ l.acctnum }}</td>
+                <td class="num">{{ money(l.amount) }}</td><td>{{ l.descrpn }}</td>
+                <td>{{ l.rltdentity }}</td><td>{{ l.period }}</td><td>{{ l.basis }}</td>
+                <td>{{ l.entrdate }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ===== generated batches ===== -->
+      <div v-if="batchList.length" class="drawer">
+        <div class="drawer-head"><h3>Journal entries generated</h3></div>
+        <table class="data-table">
+          <thead><tr><th>Batch</th><th>Period</th><th>Entry date</th><th>Entities</th>
+            <th class="num">Total</th><th>Status</th><th>By</th><th></th></tr></thead>
+          <tbody>
+            <tr v-for="b in batchList" :key="b.batch_id">
+              <td class="mono">{{ b.batch_id }}</td><td>{{ b.period }}</td><td>{{ b.entrdate }}</td>
+              <td class="clip" :title="b.entities.map((x: any) => x.entity_id + (x.posted ? ' ✓' : '')).join(', ')">
+                {{ b.entities.length }}</td>
+              <td class="num">{{ money(b.total) }}</td>
+              <td>{{ b.status }}</td>
+              <td>{{ b.created_by }}, {{ String(b.created_at).slice(0, 10) }}</td>
+              <td>
+                <button class="linkish" @click="downloadBatch(b.batch_id)">CSV</button>
+                <button v-if="canEdit && b.status.startsWith('generated')" class="linkish"
+                        @click="voidBatch(b)">Void</button>
+              </td>
+            </tr>
+          </tbody>
         </table>
       </div>
 
@@ -622,4 +850,14 @@ onMounted(async () => { await loadPeriods(); await load() })
 .sform label.radio { flex-direction: row; align-items: center; gap: 6px; }
 .wide { width: 220px; }
 .basis { font-size: 11.5px; color: var(--color-text-secondary); line-height: 1.45; }
+.tick { width: 34px; text-align: center; }
+td.pay { cursor: pointer; }
+.pay-edit { display: inline-flex; gap: 4px; align-items: center; }
+.pay-edit input, .pay-edit select { font-size: 12px; padding: 1px 4px; border: 1px solid var(--color-border); border-radius: 3px; }
+.pay-edit .amt { width: 80px; text-align: right; }
+.pay-edit .why { width: 160px; }
+.mini { font-size: 11px; padding: 1px 6px; cursor: pointer; }
+.adj { font-style: italic; color: #2b4c7e; }
+.pay-form { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 8px; }
+.pay-form input { font-size: 12.5px; padding: 4px 6px; border: 1px solid var(--color-border); border-radius: 4px; }
 </style>

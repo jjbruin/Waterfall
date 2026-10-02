@@ -81,19 +81,33 @@ _SEED_SETTINGS = [
          cash_exclude="", currency="USD",
          basis="CFO, Sep 29 2026: alternate account MR99982002 Accounts "
                "Payable - Other stays."),
-    dict(entity_id="PPI2", alt_account="", cash_accounts="MR10006000,MR10003000",
-         cash_exclude="", currency="CAD",
-         basis="CFO, Sep 29 2026: Canadian-dollar cash, the total of MR10006000 "
-               "and MR10003000; reimbursed on PSC Manager's USD balance."),
-    dict(entity_id="PSC2", alt_account="", cash_accounts="MR10006000,MR10003000",
-         cash_exclude="", currency="CAD",
-         basis="CFO, Sep 29 2026: Canadian-dollar cash, the total of MR10006000 "
-               "and MR10003000; reimbursed on PSC Manager's USD balance."),
+    dict(entity_id="PPI2", alt_account="", cash_accounts="",
+         cash_exclude=",".join(("MR10006000", "MR10003000")), currency="USD",
+         basis=None),
+    dict(entity_id="PSC2", alt_account="", cash_accounts="",
+         cash_exclude=",".join(("MR10006000", "MR10003000")), currency="USD",
+         basis=None),
     dict(entity_id="PSC1", alt_account="", cash_accounts="",
-         cash_exclude="MR10008000", currency="USD",
-         basis="INFERRED, not stated: the CFO's sheet typed 12,794,339.93, which "
-               "is PNC + Wells Fargo MM without Liberty Bank MM. Confirm."),
+         cash_exclude="MR10008000", currency="USD", basis=None),
 ]
+#: The CFO's second answers, Sep 30 2026. Also applied to a row already seeded
+#: from the first ones -- but ONLY while it is still the seed's, so a setting an
+#: accountant has since changed is never put back.
+_CAD_TO_USD_BASIS = ("CFO, Sep 30 2026: default to the entity's USD cash accounts "
+                     "(MR1000* less the two Canada accounts MR10006000 and "
+                     "MR10003000) -- the CAD is converted separately.")
+_LIBERTY_BASIS = ("CFO, Sep 30 2026: confirmed -- PSC1's cash excludes the Liberty "
+                  "Bank money market MR10008000.")
+for _s in _SEED_SETTINGS:
+    if _s["basis"] is None:
+        _s["basis"] = _LIBERTY_BASIS if _s["entity_id"] == "PSC1" else _CAD_TO_USD_BASIS
+
+#: Fixed wording (CFO, Sep 30 2026), exactly as `JE Template` writes it.
+JE_ENTITY_DESCRIPTION = "Intercompany Reimbursement to PSC Manager"
+JE_MANAGER_DESCRIPTION = "Intercompany Reimbursement from %s"
+#: PSC Manager receives into its PNC operating account on every line of the
+#: CFO's template.
+MANAGER_CASH_ACCOUNT = "MR10005000"
 
 _DDL = [
     """
@@ -118,9 +132,57 @@ _DDL = [
         PRIMARY KEY (period, entity_id)
     )
     """,
+    # What the accountant decided for one entity in one period. The CAN AFFORD
+    # figure may be adjusted, with a reason, because the GL cash is not all
+    # spendable -- AMB6 withholds cash from distributions for tax and audit
+    # accruals and reimburses its formation costs $6,750 at a time (CFO, Sep 30
+    # 2026). `amount` NULL means "the prompt", i.e. what it can afford.
+    """
+    CREATE TABLE IF NOT EXISTS ic_pay_rows (
+        period          TEXT NOT NULL,
+        entity_id       TEXT NOT NULL,
+        afford_override DOUBLE PRECISION,
+        afford_reason   TEXT,
+        amount          DOUBLE PRECISION,
+        cash_account    TEXT,
+        updated_by      TEXT,
+        updated_at      TEXT,
+        PRIMARY KEY (period, entity_id)
+    )
+    """,
+    # A generated journal entry. Until the GL shows it, the balance it pays
+    # still reads unpaid, so without this the same reimbursement can be paid
+    # twice between the download and the next MRI refresh.
+    """
+    CREATE TABLE IF NOT EXISTS ic_je_batches (
+        batch_id    TEXT PRIMARY KEY,
+        period      TEXT NOT NULL,
+        entrdate    TEXT NOT NULL,
+        entities    TEXT NOT NULL,
+        csv         TEXT NOT NULL,
+        total       DOUBLE PRECISION,
+        created_by  TEXT,
+        created_at  TEXT,
+        voided_by   TEXT,
+        voided_at   TEXT
+    )
+    """,
 ]
 
 _DDL_DONE = set()
+
+
+def _apply_sep30_answers(conn) -> None:
+    """The CFO's Sep 30 answers onto rows the Sep 29 seed wrote. Idempotent, and
+    a row an accountant has edited (updated_by is not 'seed') is left alone."""
+    conn.execute(text(
+        "UPDATE ic_entity_settings SET cash_accounts = '', cash_exclude = :x, "
+        "currency = 'USD', basis = :b WHERE entity_id IN ('PPI2', 'PSC2') "
+        "AND updated_by = 'seed' AND currency = 'CAD'"),
+        {"x": "MR10006000,MR10003000", "b": _CAD_TO_USD_BASIS})
+    conn.execute(text(
+        "UPDATE ic_entity_settings SET basis = :b WHERE entity_id = 'PSC1' "
+        "AND updated_by = 'seed' AND basis LIKE 'INFERRED%'"), {"b": _LIBERTY_BASIS})
 
 
 def ensure_tables(engine=None) -> None:
@@ -143,6 +205,7 @@ def ensure_tables(engine=None) -> None:
                     "updated_at) VALUES (:entity_id, :alt_account, :cash_accounts, "
                     ":cash_exclude, :currency, :basis, 'seed', :now)"),
                     {**s, "now": now})
+        _apply_sep30_answers(conn)
     _DDL_DONE.add(key)
 
 
@@ -329,6 +392,8 @@ def reconcile(engine=None, period: Optional[str] = None,
     tol = abs(float(tolerance if tolerance is not None else DEFAULT_TOLERANCE))
     settings = get_settings(engine)
     cols = ["ENTITYID", "ACCTNUM", "RLTDENTITY", "RLTDENTITY_NAME", "AMT"]
+    pay = _pay_rows(engine, period)
+    pending = _pending_entities(engine)
 
     frames = {}
     for side in ("entity", "manager"):
@@ -406,9 +471,25 @@ def reconcile(engine=None, period: Optional[str] = None,
         # What it can afford, per the CFO's rule: the lower of what the manager
         # is owed and the cash on hand. Only USD cash can cap a USD amount; the
         # app holds no FX rate, so a CAD row is shown, never computed.
-        affordable = None
+        computed = None
         if d > 0.005 and currency == "USD":
-            affordable = round(max(0.0, min(d, cash)), 2)
+            computed = round(max(0.0, min(d, cash)), 2)
+        # THE ACCOUNTANT MAY ADJUST IT, with a reason (CFO, Sep 30 2026): not all
+        # the GL cash is spendable. The computed figure is kept beside it.
+        pr = pay.get(e) or {}
+        override = pr.get("afford_override")
+        affordable = round(float(override), 2) if override is not None else computed
+        # The pay amount STARTS at what it can afford and may be changed. A CAD
+        # row, with nothing to cap it, is prompted with what the manager is owed.
+        prompt = None
+        if d > 0.005:
+            prompt = affordable if affordable is not None else d
+        amount = pr.get("amount")
+        pay_amount = round(float(amount), 2) if amount is not None else prompt
+        default_cash = (MANAGER_CASH_ACCOUNT if MANAGER_CASH_ACCOUNT in by_acct.index
+                        else (by_acct.abs().idxmax() if len(by_acct) else
+                              (s.get("cash_accounts") or [None])[0]))
+        pay_cash = pr.get("cash_account") or default_cash
 
         n = notes.get(e) or {}
         rows.append({
@@ -419,6 +500,14 @@ def reconcile(engine=None, period: Optional[str] = None,
             "cash_by_account": [{"account": k, "name": acct_names.get(k, ""),
                                  "amount": float(v)} for k, v in by_acct.items()],
             "currency": currency, "affordable": affordable,
+            "affordable_computed": computed,
+            "afford_override": affordable if override is not None else None,
+            "afford_reason": pr.get("afford_reason") or "",
+            "pay_prompt": prompt, "pay_amount": pay_amount,
+            "pay_amount_set": amount is not None,
+            "pay_cash_account": pay_cash,
+            "pay_by": pr.get("updated_by"), "pay_at": pr.get("updated_at"),
+            "pending_batch": pending.get(e),
             "comment": n.get("comment") or "", "comment_by": n.get("updated_by"),
             "comment_at": n.get("updated_at"),
             "settings_basis": s.get("basis"),
@@ -430,6 +519,7 @@ def reconcile(engine=None, period: Optional[str] = None,
     totals = {k: tot(k) for k in ("entity_balance", "alt_balance", "total_entity",
                                   "manager_balance", "variance", "cash_balance")}
     totals["affordable"] = round(sum(r["affordable"] or 0 for r in rows), 2)
+    totals["pay_amount"] = round(sum(r["pay_amount"] or 0 for r in rows), 2)
     opening = _opening_present(engine, period)
     blank_amt = round(float(blank["AMT"].sum()), 2)
     checks = [
@@ -551,6 +641,288 @@ def save_settings(engine, entity_id: str, body: dict, user: str) -> dict:
                                            "currency": "USD"}
 
 
+# ------------------------------------------------------------------ pay
+
+def _pay_rows(engine, period: str) -> Dict[str, dict]:
+    ensure_tables(engine)
+    with engine.connect() as c:
+        rows = c.execute(text("SELECT * FROM ic_pay_rows WHERE period = :p"),
+                         {"p": period}).mappings().all()
+    return {_norm(r["entity_id"]): dict(r) for r in rows}
+
+
+def _num(v) -> Optional[float]:
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return None
+    try:
+        return round(float(str(v).replace(",", "").replace("$", "").strip()), 2)
+    except (TypeError, ValueError):
+        raise ValueError("%r is not an amount." % (v,))
+
+
+def _batch_rows(engine) -> List[dict]:
+    import json
+    ensure_tables(engine)
+    with engine.connect() as c:
+        rows = c.execute(text("SELECT batch_id, period, entrdate, entities, total, "
+                              "created_by, created_at, voided_by, voided_at "
+                              "FROM ic_je_batches ORDER BY created_at DESC")).mappings().all()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["entities"] = json.loads(d["entities"] or "[]")
+        out.append(d)
+    return out
+
+
+def _posted(engine, batches: List[dict]) -> set:
+    """(entity, period, amount) for every reimbursement line the GL already
+    carries -- how a generated batch is known to have been uploaded."""
+    periods_ = sorted({b["period"] for b in batches})
+    if not periods_ or not _has_table(engine, "gl_detail"):
+        return set()
+    E, A, P, D, AMT, B = (_q(engine, x) for x in
+                          ("ENTITYID", "ACCTNUM", "PERIOD", "DESCRPN", "AMT", "BASIS"))
+    stmt = text(f"SELECT {E}, {P}, {AMT} FROM gl_detail WHERE {A} = :acct AND "
+                f"{D} = :d AND {P} IN :ps AND {B} IN :bases").bindparams(
+        bindparam("ps", expanding=True), bindparam("bases", expanding=True))
+    with engine.connect() as c:
+        got = c.execute(stmt, {"acct": ENTITY_ACCOUNT, "d": JE_ENTITY_DESCRIPTION,
+                               "ps": periods_, "bases": list(BASES)}).fetchall()
+    return {(_norm(e), str(p), round(float(a or 0), 2)) for e, p, a in got}
+
+
+def batches(engine=None) -> List[dict]:
+    """Every generated batch, each saying whether the GL shows it yet."""
+    engine = engine or get_engine()
+    bs = _batch_rows(engine)
+    live = [b for b in bs if not b["voided_at"]]
+    posted = _posted(engine, live)
+    for b in bs:
+        for x in b["entities"]:
+            x["posted"] = (x["entity_id"], b["period"], round(x["amount"], 2)) in posted
+        n = sum(1 for x in b["entities"] if x["posted"])
+        b["status"] = ("voided" if b["voided_at"] else
+                       "posted" if n == len(b["entities"]) else
+                       "partly posted" if n else "generated, not yet in the GL")
+    return bs
+
+
+def _pending_entities(engine) -> Dict[str, str]:
+    """entity -> batch id, for a reimbursement generated and not yet in the GL."""
+    out = {}
+    for b in batches(engine):
+        if b["voided_at"]:
+            continue
+        for x in b["entities"]:
+            if not x["posted"]:
+                out.setdefault(x["entity_id"], b["batch_id"])
+    return out
+
+
+def _row_problems(r: dict, amount: Optional[float]) -> List[str]:
+    """Why this row cannot be paid this amount. Empty when it can."""
+    e = r["entity_id"]
+    if amount is None or amount < 0.005:
+        return ["%s: there is no amount to pay." % e]
+    out = []
+    if r["manager_balance"] < 0.005:
+        out.append("%s: PSC Manager is owed nothing." % e)
+    elif amount > r["manager_balance"] + 0.005:
+        out.append("%s: %s is more than PSC Manager is owed (%s)."
+                   % (e, _m(amount), _m(r["manager_balance"])))
+    if r["affordable"] is not None and amount > r["affordable"] + 0.005:
+        out.append("%s: %s is more than it can afford (%s). Adjust the can-afford "
+                   "figure, with the reason, to pay more." % (e, _m(amount), _m(r["affordable"])))
+    if not r.get("pay_cash_account"):
+        out.append("%s: no cash account to pay from." % e)
+    if r.get("pending_batch"):
+        out.append("%s: already in batch %s, which the GL does not show yet."
+                   % (e, r["pending_batch"]))
+    return out
+
+
+def _m(v) -> str:
+    return "{:,.2f}".format(float(v))
+
+
+def save_pay(engine, period: str, entity_id: str, body: dict, user: str) -> dict:
+    """An entity's can-afford adjustment, amount to pay and cash account.
+
+    Only the keys present in `body` change. A blank or null clears it back to
+    the computed figure. An adjusted can-afford needs a reason, and may not
+    exceed what PSC Manager is owed; the amount may not exceed the can-afford.
+    """
+    engine = engine or get_engine()
+    ensure_tables(engine)
+    period = _check_period(period)
+    e = _norm(entity_id)
+    res = reconcile(engine, period)
+    row = next((r for r in res.get("rows", []) if r["entity_id"] == e), None)
+    if row is None:
+        raise ValueError("%s is not on the %s reconciliation." % (e, period))
+    cur = _pay_rows(engine, period).get(e) or {}
+    rec = {k: cur.get(k) for k in ("afford_override", "afford_reason", "amount",
+                                   "cash_account")}
+    if "afford_override" in body:
+        rec["afford_override"] = _num(body.get("afford_override"))
+    if "afford_reason" in body:
+        rec["afford_reason"] = (body.get("afford_reason") or "").strip()
+    if "amount" in body:
+        rec["amount"] = _num(body.get("amount"))
+    if "cash_account" in body:
+        ca = _norm(body.get("cash_account"))
+        if ca and not _ACCOUNT_RE.match(ca):
+            raise ValueError("Not an MRI account number: %s." % ca)
+        rec["cash_account"] = ca or None
+
+    warnings = []
+    ov = rec["afford_override"]
+    if ov is not None:
+        if ov < 0:
+            raise ValueError("Can afford cannot be negative.")
+        if ov > row["manager_balance"] + 0.005:
+            raise ValueError("Can afford %s is more than PSC Manager is owed (%s)."
+                             % (_m(ov), _m(row["manager_balance"])))
+        if not rec["afford_reason"]:
+            raise ValueError("Say why the can-afford figure is adjusted.")
+        if row["currency"] == "USD" and ov > row["cash_balance"] + 0.005:
+            warnings.append("%s is more than the %s cash the GL shows."
+                            % (_m(ov), _m(row["cash_balance"])))
+    else:
+        rec["afford_reason"] = None
+    cap = ov if ov is not None else row["affordable_computed"]
+    if rec["amount"] is not None:
+        if rec["amount"] < 0:
+            raise ValueError("The amount to pay cannot be negative.")
+        if cap is not None and rec["amount"] > cap + 0.005:
+            raise ValueError("%s is more than it can afford (%s). Adjust the can-afford "
+                             "figure, with the reason, to pay more." % (_m(rec["amount"]), _m(cap)))
+        if rec["amount"] > row["manager_balance"] + 0.005:
+            raise ValueError("%s is more than PSC Manager is owed (%s)."
+                             % (_m(rec["amount"]), _m(row["manager_balance"])))
+    now = datetime.utcnow().isoformat(timespec="seconds")
+    with engine.begin() as c:
+        c.execute(text("DELETE FROM ic_pay_rows WHERE period = :p AND entity_id = :e"),
+                  {"p": period, "e": e})
+        if any(rec[k] is not None for k in ("afford_override", "amount", "cash_account")):
+            c.execute(text(
+                "INSERT INTO ic_pay_rows (period, entity_id, afford_override, afford_reason,"
+                " amount, cash_account, updated_by, updated_at) VALUES (:p, :e, :ov, :why,"
+                " :amt, :ca, :u, :t)"),
+                {"p": period, "e": e, "ov": ov, "why": rec["afford_reason"],
+                 "amt": rec["amount"], "ca": rec["cash_account"], "u": user, "t": now})
+    row = next(r for r in reconcile(engine, period)["rows"] if r["entity_id"] == e)
+    return {"row": row, "warnings": warnings}
+
+
+def build_batch(engine, period: str, entity_ids: List[str], je_period: str,
+                entrdate: str, user: str, commit: bool = False) -> dict:
+    """The MRI GL upload for the ticked rows -- `JE Template`'s shape exactly:
+    each entity's two lines, then PSC Manager's two per entity, in the order the
+    rows were ticked. `commit=False` is the preview; nothing is stored.
+
+    Refused: an amount over what it can afford or over what is owed, no cash
+    account, a row already in a batch the GL does not show, a missing entry
+    date or period (both typed by the accountant -- no default), and anything
+    `validate_gl` refuses, which now includes an entity left out of balance.
+    """
+    import json
+    import uuid
+    from flask_app.services.treasury_upload import _iso, build_gl_csv, validate_gl
+    engine = engine or get_engine()
+    period = _check_period(period)
+    res = reconcile(engine, period)
+    by_id = {r["entity_id"]: r for r in res.get("rows", [])}
+    errors, chosen = [], []
+    ids = []
+    for x in entity_ids or []:
+        n = _norm(x)
+        if n and n not in ids:
+            ids.append(n)
+    if not ids:
+        errors.append("Tick at least one entity to pay.")
+    for e in ids:
+        r = by_id.get(e)
+        if r is None:
+            errors.append("%s is not on the %s reconciliation." % (e, period))
+            continue
+        errors += _row_problems(r, r["pay_amount"])
+        chosen.append(r)
+    jp = str(je_period or "").strip()
+    if not _PERIOD_RE.match(jp):
+        errors.append("Type the journal period (YYYYMM).")
+    ed = _iso(entrdate)
+    if not ed:
+        errors.append("Type the entry date.")
+    lines = []
+    for r in chosen:
+        amt = r["pay_amount"] or 0
+        for acct, a in ((ENTITY_ACCOUNT, amt), (r["pay_cash_account"], -amt)):
+            lines.append({"entityid": r["entity_id"], "acctnum": acct, "amount": a,
+                          "descrpn": JE_ENTITY_DESCRIPTION, "rltdentity": "",
+                          "period": jp, "basis": "B", "entrdate": ed})
+    for r in chosen:
+        amt = r["pay_amount"] or 0
+        d = JE_MANAGER_DESCRIPTION % r["entity_id"]
+        lines.append({"entityid": MANAGER_ENTITY, "acctnum": MANAGER_CASH_ACCOUNT,
+                      "amount": amt, "descrpn": d, "rltdentity": "", "period": jp,
+                      "basis": "B", "entrdate": ed})
+        lines.append({"entityid": MANAGER_ENTITY, "acctnum": MANAGER_ACCOUNT,
+                      "amount": -amt, "descrpn": d, "rltdentity": r["entity_id"],
+                      "period": jp, "basis": "B", "entrdate": ed})
+    v = validate_gl(lines) if lines and not errors else {"errors": [], "warnings": []}
+    errors += v["errors"]
+    out = {"period": period, "je_period": jp, "entrdate": ed, "lines": lines,
+           "errors": errors, "warnings": [w for w in v.get("warnings", [])
+                                           if "more than one entity" not in w],
+           "total_paid": round(sum(r["pay_amount"] or 0 for r in chosen), 2),
+           "entities": [{"entity_id": r["entity_id"], "amount": r["pay_amount"],
+                         "cash_account": r["pay_cash_account"]} for r in chosen]}
+    if not commit or errors:
+        return out
+    csv_text = build_gl_csv(lines)
+    bid = "IC-%s-%s" % (jp, uuid.uuid4().hex[:6].upper())
+    now = datetime.utcnow().isoformat(timespec="seconds")
+    with engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO ic_je_batches (batch_id, period, entrdate, entities, csv, total,"
+            " created_by, created_at) VALUES (:b, :p, :d, :e, :csv, :t, :u, :now)"),
+            {"b": bid, "p": jp, "d": ed, "e": json.dumps(out["entities"]),
+             "csv": csv_text, "t": out["total_paid"], "u": user, "now": now})
+    out.update(batch_id=bid, csv=csv_text)
+    return out
+
+
+def batch_csv(engine, batch_id: str) -> Optional[dict]:
+    engine = engine or get_engine()
+    ensure_tables(engine)
+    with engine.connect() as c:
+        r = c.execute(text("SELECT batch_id, csv FROM ic_je_batches WHERE batch_id = :b"),
+                      {"b": batch_id}).fetchone()
+    return {"batch_id": r[0], "csv": r[1]} if r else None
+
+
+def void_batch(engine, batch_id: str, user: str) -> dict:
+    """A batch that will not be uploaded. Its rows can then be paid again, so
+    voiding one that WAS uploaded would invite paying twice -- refused once the
+    GL shows any of it."""
+    engine = engine or get_engine()
+    b = next((x for x in batches(engine) if x["batch_id"] == batch_id), None)
+    if b is None:
+        raise ValueError("No batch %s." % batch_id)
+    if b["voided_at"]:
+        raise ValueError("Batch %s is already void." % batch_id)
+    if any(x["posted"] for x in b["entities"]):
+        raise ValueError("Batch %s is already in the GL (in part or whole); it "
+                         "cannot be voided." % batch_id)
+    now = datetime.utcnow().isoformat(timespec="seconds")
+    with engine.begin() as c:
+        c.execute(text("UPDATE ic_je_batches SET voided_by = :u, voided_at = :t "
+                       "WHERE batch_id = :b"), {"u": user, "t": now, "b": batch_id})
+    return {"batch_id": batch_id, "voided_by": user, "voided_at": now}
+
+
 # ------------------------------------------------------------------ export
 
 def to_excel(result: dict) -> bytes:
@@ -562,7 +934,9 @@ def to_excel(result: dict) -> bytes:
             ("variance", "C + D  Variance"), ("status", "Status"),
             ("comment", "Comments"), ("currency", "Cash Currency"),
             ("cash_balance", "Cash Balance"), ("cash_basis", "Cash Accounts"),
-            ("affordable", "Can Afford")]
+            ("affordable_computed", "Can Afford (GL)"), ("affordable", "Can Afford"),
+            ("afford_reason", "Adjusted Because"), ("pay_amount", "Amount to Pay"),
+            ("pay_cash_account", "Pay From")]
     df = pd.DataFrame([{label: r.get(k) for k, label in cols} for r in result["rows"]])
     head = pd.DataFrame([
         ("Due to / from PSC Manager Reconciliation", ""),
