@@ -101,7 +101,22 @@ async function resetRow(r: any) {
     await load()
   } catch (e) { fail(e, 'Could not reset') }
 }
+// The pop-up: the line and accounting's coding on the left, the receipt on the
+// right -- the same layout as the Expenses screen. The report is read for the
+// receipt's file type and what the reader saw for the line.
 const viewing = ref<any>(null)
+async function openLine(r: any) {
+  viewing.value = { row: r, line: null, receipt: null, error: '' }
+  try {
+    const rep = (await api.get(`/api/expenses/reports/${r.report_id}`)).data
+    viewing.value.line = (rep.lines || []).find((l: any) => l.id === r.line_id) || null
+    viewing.value.receipt = (rep.receipts || []).find((x: any) => x.id === r.receipt_id) || null
+  } catch (e: any) {
+    viewing.value.error = e?.response?.status === 403
+      ? 'The Expenses section is not open to you, so the line\'s detail cannot be shown; the receipt still can.'
+      : (e?.response?.data?.error || 'The line could not be loaded.')
+  }
+}
 
 // ---- the batch ----
 const pick = ref<Record<number, boolean>>({})
@@ -222,7 +237,7 @@ onMounted(async () => { await load(); loadBatches() })
     <template v-if="tab === 'code'">
       <div v-if="loading" class="muted">Loading…</div>
       <div v-else-if="!rows.length" class="muted">No approved reports are waiting.</div>
-      <div v-else :class="{ split: viewing }">
+      <div v-else>
         <table class="data-table">
           <thead><tr>
             <th>Employee</th><th>Date</th><th>Deal</th><th>Comment</th><th class="num">Amount</th>
@@ -247,7 +262,8 @@ onMounted(async () => { await load(); loadBatches() })
                   <span v-if="r.description !== r.description_proposed" class="chg">*</span></td>
                 <td class="row-actions">
                   <button class="link" @click="startEdit(r)">Code</button>
-                  <button v-if="r.receipt_id" class="link" @click="viewing = r">📎</button>
+                  <button v-if="r.receipt_id" class="link" title="Open the line and its receipt"
+                          @click="openLine(r)">📎</button>
                 </td>
               </tr>
               <tr v-if="r.problems.length"><td colspan="9" class="err-text">{{ r.problems.join('; ') }}</td></tr>
@@ -289,11 +305,56 @@ onMounted(async () => { await load(); loadBatches() })
             </template>
           </tbody>
         </table>
-        <div v-if="viewing" class="viewer-col">
-          <div class="row"><button class="link" @click="viewing = null">Close receipt</button></div>
-          <ReceiptViewer :report-id="viewing.report_id" :receipt-id="viewing.receipt_id"
-                         :page="viewing.receipt_page" :filename="`${viewing.employee} — ${viewing.comment}`"
-                         :amount="viewing.amount" />
+        <div v-if="viewing" class="modal-backdrop" @click.self="viewing = null">
+         <div class="modal" role="dialog" aria-modal="true">
+          <div class="modal-head">
+            <strong>{{ viewing.row.employee }} — {{ viewing.row.comment }}</strong>
+            <span>
+              <button class="link" @click="startEdit(viewing.row); viewing = null">Code</button>
+              <button class="link" @click="viewing = null">✕ Close</button>
+            </span>
+          </div>
+          <div class="pane">
+            <div class="form-col">
+              <dl class="details">
+                <dt>Employee</dt><dd>{{ viewing.row.employee }}</dd>
+                <dt>Date</dt><dd>{{ viewing.row.line_date }}<template v-if="viewing.row.line_date_end"> – {{ viewing.row.line_date_end }}</template></dd>
+                <dt>Deal</dt><dd>{{ viewing.row.deal_kind === 'operations' ? 'Operations' : viewing.row.deal_name }}
+                  <span v-if="viewing.row.deal_kind === 'pipeline'" class="muted">(pipeline)</span></dd>
+                <template v-if="viewing.line">
+                  <dt>Category</dt><dd>{{ viewing.line.category_name || viewing.line.category_account }}</dd>
+                  <dt>Purpose</dt><dd>{{ viewing.line.purpose || '—' }}</dd>
+                  <dt>Vendor</dt><dd>{{ viewing.line.vendor || '—' }}</dd>
+                </template>
+                <dt>Comment</dt><dd>{{ viewing.row.comment }}</dd>
+                <dt>Amount</dt><dd><strong>{{ fmt(viewing.row.amount) }}</strong></dd>
+                <template v-if="viewing.line?.route">
+                  <dt>Route</dt><dd>{{ viewing.line.route.summary }}</dd>
+                </template>
+                <dt>Booking</dt><dd>{{ BOOK[viewing.row.booking] }}</dd>
+                <dt>Account</dt><dd>{{ viewing.row.booking === 'deal_cost' ? 'MR11000012' : viewing.row.expense_account }}
+                  <span v-if="viewing.row.expense_account_changed" class="muted">(employee chose {{ viewing.row.employee_account }})</span></dd>
+                <template v-if="viewing.row.booking === 'interco'">
+                  <dt>Entities</dt>
+                  <dd><div v-for="a in viewing.row.interco || []" :key="a.entity">{{ a.entity }} {{ Number(a.pct).toFixed(2) }}%
+                    <span class="muted" v-if="a.rltd">related {{ a.rltd }}</span></div></dd>
+                </template>
+                <dt>JE description</dt><dd>{{ viewing.row.description }}</dd>
+              </dl>
+              <div v-if="viewing.row.problems.length" class="err-text">{{ viewing.row.problems.join('; ') }}</div>
+              <div v-if="viewing.row.warnings?.length" class="warn-text">{{ viewing.row.warnings.join('; ') }}</div>
+              <div v-if="viewing.error" class="muted">{{ viewing.error }}</div>
+            </div>
+            <div class="receipt-col">
+              <ReceiptViewer :report-id="viewing.row.report_id" :receipt-id="viewing.row.receipt_id"
+                             :page="viewing.row.receipt_page"
+                             :content-type="viewing.receipt?.content_type"
+                             :view-type="viewing.receipt?.view_type"
+                             :filename="viewing.receipt?.filename || ''"
+                             :extracted="viewing.line?.extracted" :amount="viewing.row.amount" />
+            </div>
+          </div>
+         </div>
         </div>
         <datalist id="ec-accounts">
           <option v-for="c in categories" :key="c.account" :value="c.account">{{ c.name }}</option>
@@ -452,9 +513,21 @@ input, select { border: 1px solid var(--color-border); border-radius: 4px; paddi
 .interco { width: 100%; border-top: 1px dashed var(--color-border); padding-top: 6px; }
 .link { background: none; border: none; color: var(--color-primary, #2f6f4f); cursor: pointer; padding: 0 4px; font-size: 12px; }
 .row-actions { white-space: nowrap; }
-.split { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(320px, 1fr); gap: 16px; }
-.viewer-col { display: flex; flex-direction: column; height: 700px; position: sticky; top: 10px; }
-.viewer-col > :last-child { flex: 1; }
+.modal-backdrop { position: fixed; inset: 0; z-index: 1000; background: rgba(15, 20, 30, .45);
+  display: flex; align-items: flex-start; justify-content: center; padding: 3vh 2vw; overflow: auto; }
+.modal { background: var(--color-bg, #fff); color: var(--color-text); border-radius: 8px;
+  width: min(1320px, 96vw); max-height: 94vh; overflow: auto; padding: 10px 16px 14px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .25); }
+.modal-head { display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  padding-bottom: 6px; border-bottom: 1px solid var(--color-border); margin-bottom: 8px; }
+.pane { display: grid; grid-template-columns: minmax(380px, 1fr) minmax(380px, 1.2fr); gap: 16px; }
+.form-col { min-width: 0; }
+.receipt-col { min-width: 0; display: flex; min-height: 72vh; }
+.receipt-col > * { flex: 1; }
+.details { display: grid; grid-template-columns: 120px 1fr; gap: 4px 12px; margin: 0 0 8px; font-size: 13px; }
+.details dt { color: var(--color-text-secondary); font-size: 11.5px; text-transform: uppercase; padding-top: 2px; }
+.details dd { margin: 0; }
+@media (max-width: 900px) { .pane { grid-template-columns: 1fr; } .receipt-col { min-height: 60vh; } }
 .notice { margin: 8px 0; padding: 8px 12px; font-size: 12.5px; border: 1px solid #e6c9a8; background: #fdf6ee; border-radius: 6px; }
 .notice ul { margin: 4px 0 0 18px; padding: 0; }
 </style>

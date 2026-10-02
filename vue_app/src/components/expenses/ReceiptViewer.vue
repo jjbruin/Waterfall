@@ -27,11 +27,15 @@ const url = ref<string | null>(null)
 const error = ref<string | null>(null)
 const loading = ref(false)
 const rotate = ref(0)
+// What the server actually sent. A caller that does not pass the content type
+// (Expense Coding's rows carry none) must still show a PDF as a PDF -- before
+// this, the PDF went into an <img> and rendered as a broken image.
+const blobType = ref<string | null>(null)
 const zoom = ref(1)
 let current: string | null = null
 
 const isPdf = computed(() =>
-  (props.viewType || props.contentType) === 'application/pdf')
+  (props.viewType || props.contentType || blobType.value) === 'application/pdf')
 const src = computed(() =>
   url.value && isPdf.value ? `${url.value}#page=${props.page || 1}&view=FitH` : url.value)
 
@@ -47,6 +51,7 @@ async function load() {
     const r = await api.get(
       `/api/expenses/reports/${props.reportId}/receipts/${props.receiptId}/file`,
       { responseType: 'blob' })
+    blobType.value = r.data?.type || null
     current = URL.createObjectURL(r.data)
     url.value = current
   } catch (e: any) {

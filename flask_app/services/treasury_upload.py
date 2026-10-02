@@ -134,7 +134,7 @@ def validate_gl(lines: Iterable[dict]) -> dict:
     do not block: an empty description is untidy, not wrong.
     """
     lines = list(lines)
-    errors, warnings = [], []
+    errors, warnings, cleaned = [], [], []
     if not lines:
         return {"errors": ["There are no lines to upload."], "warnings": [],
                 "total": 0.0, "balanced": False, "line_count": 0}
@@ -171,6 +171,8 @@ def validate_gl(lines: Iterable[dict]) -> dict:
                           % (i, ln.get("entrdate")))
         if not str(ln.get("descrpn") or "").strip():
             warnings.append("Line %d has no description." % i)
+        elif mri_description(ln.get("descrpn")) != str(ln.get("descrpn")).strip():
+            cleaned.append(i)
         basis = str(ln.get("basis") or "B").strip().upper()
         if basis != "B":
             warnings.append("Line %d is basis %r, not B." % (i, basis))
@@ -191,6 +193,11 @@ def validate_gl(lines: Iterable[dict]) -> dict:
         errors.append("Out of balance by entity: %s. Each entity's lines must sum "
                       "to zero." % ", ".join("%s %s" % (e, "{:,.2f}".format(v))
                                               for e, v in off))
+    if cleaned:
+        warnings.append("%d description(s) will be written to MRI's rule -- punctuation "
+                        "removed, shortened to 80 characters (line%s %s)." % (
+                            len(cleaned), "s" if len(cleaned) > 1 else "",
+                            ", ".join(map(str, cleaned[:8])) + (" ..." if len(cleaned) > 8 else "")))
     if len(periods) > 1:
         errors.append("The lines span more than one period (%s). One upload is "
                       "one period." % ", ".join(sorted(periods)))
@@ -277,7 +284,11 @@ def build_gl_csv(lines: Iterable[dict]) -> str:
             str(ln.get("entityid") or "").strip().upper(),
             str(ln.get("acctnum") or "").strip(),
             _fmt_amount(_num(ln.get("amount"))),
-            str(ln.get("descrpn") or "").strip(),
+            # MRI's rule for EVERY journal entry description (Jim, Oct 2 2026):
+            # 80 characters, letters, digits and spaces. Applied here, in the one
+            # writer treasury, intercompany and expense all use, so no module --
+            # and none added later -- can send MRI a description that breaks it.
+            mri_description(ln.get("descrpn")),
             str(ln.get("addldesc") or "").strip(),
             str(ln.get("rltdentity") or "").strip(),
             str(ln.get("jobcode") or "").strip(),

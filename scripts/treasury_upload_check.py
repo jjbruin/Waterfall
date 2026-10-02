@@ -212,10 +212,28 @@ def main():
     new_rows = [r for r in rebuilt.split("\r\n") if r.strip(", ")]
     chk("the rebuild has the same number of rows",
         len(new_rows) == len(orig_rows), "%d vs %d" % (len(new_rows), len(orig_rows)))
-    diffs = [(i, a, b) for i, (a, b) in enumerate(zip(orig_rows, new_rows))
-             if a != b]
-    chk("and every row is byte-identical to the accepted file", not diffs,
+    # EVERY FIELD IDENTICAL EXCEPT THE DESCRIPTION, which is now held to MRI's
+    # rule (Jim, Oct 2 2026: 80 characters, no punctuation). This file was
+    # accepted with punctuation in 23 of its 51 descriptions, so the rebuild
+    # writes them cleaned: the description must equal the accepted text cleaned,
+    # and every other field must still match byte for byte.
+    import csv as _csv
+    o_parsed = list(_csv.reader(orig_rows))
+    n_parsed = list(_csv.reader(new_rows))
+    di = tu.GL_COLUMNS.index("Descrpn")
+    diffs = [(i, a, b) for i, (a, b) in enumerate(zip(o_parsed, n_parsed))
+             if [x for k, x in enumerate(a) if k != di] != [x for k, x in enumerate(b) if k != di]]
+    chk("and every field but the description is identical to the accepted file", not diffs,
         ("first difference at row %d: %r vs %r" % diffs[0]) if diffs else "")
+    ddiff = [(i, a[di], b[di]) for i, (a, b) in enumerate(zip(o_parsed, n_parsed))
+             if i and b[di] != tu.mri_description(a[di])]
+    chk("each description is the accepted text held to MRI's rule", not ddiff,
+        ddiff[:2])
+    import re as _re
+    chk("no rebuilt description breaks the rule",
+        all(len(r[di]) <= 80 and not _re.search(r"[^A-Za-z0-9 ]", r[di]) for r in n_parsed[1:]))
+    chk("the validation names the descriptions it will clean",
+        any("written to MRI's rule" in w for w in tu.validate_gl(lines)["warnings"]))
 
     ia = pd.read_excel(IA_REAL, sheet_name=tu.IA_SHEET).dropna(how="all")
     chk("the real IA sample reads back", len(ia) == AUG["ia_rows"], str(len(ia)))
