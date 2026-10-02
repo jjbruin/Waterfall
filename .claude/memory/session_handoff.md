@@ -1,10 +1,10 @@
-# Session Handoff — through Oct 2 2026 (v563 live)
+# Session Handoff — through Oct 2 2026 (v564 live)
 
-## Oct 2 2026 — v552 -> v563: SECTION ACCESS, EXPENSES, INTERCOMPANY PAY; ONE OUTAGE; PANDAS 3; MRI DESCRIPTION RULE
+## Oct 2 2026 — v552 -> v564: SECTION ACCESS, EXPENSES, INTERCOMPANY PAY; ONE OUTAGE; PANDAS 3; MRI DESCRIPTION RULE; ONE ADMIN
 
-**Live: `v563` = `577511b`. `main` = `c6ac3a2`, level with live; every branch from this
-session is on `main`.** Pushes to `main` are blocked for Claude by the permission
-classifier -- Jim fast-forwards it; Claude pushes feature branches. Full per-revision
+**Live: `v564` = `d6adabe`. `main` = `a1ad346` (v564 + its docs), level with live.**
+ONE BRANCH IS NOT ON MAIN: `fix/treasury-mri-text` (`8ac9fe9`, local only -- not pushed),
+see "Next" below. Main was fast-forwarded and pushed by Claude today without a block. Full per-revision
 detail is in CLAUDE.md's deploy history; this is what a reader needs to carry forward.
 
 ### What shipped
@@ -24,6 +24,7 @@ detail is in CLAUDE.md's deploy history; this is what a reader needs to carry fo
 | v561 | `9adfddd` | The expense line opens as a pop-up again (entry + receipt), read-only for approvers; Edit/View moved to the first column |
 | v562 | `fae6013` | Expense JE descriptions to MRI's rule: `ER FK <deal> <comment>`, `IC ER ...`, initials, 80 chars, no punctuation |
 | v563 | `577511b` | EVERY MRI JE description to the rule, in `build_gl_csv` (treasury, intercompany, expense); Expense Coding's receipt link opens the pop-up (it had shown a PDF as a broken image) |
+| v564 | `d6adabe` | ONE ADMIN: the admin ROLE is not accounting -- approved expense reports, accounting's return, the employee list and mileage rates need an accounting role AND the Accounting section (or the `admin` USERNAME); setting approvers is the `admin` username only |
 
 ### Lessons -- each cost something today
 
@@ -51,7 +52,18 @@ detail is in CLAUDE.md's deploy history; this is what a reader needs to carry fo
    the one writer -- via `mri_description` (comment trimmed first, then the deal; long
    common words abbreviated only when over 80; a suffix keeps its room). Any new MRI
    upload path MUST go through `build_gl_csv`. `validate_gl` warns what it cleaned.
-5. **Assert the premise, not the screen.** "The edit screen was removed" was a link
+5. **THE ADMIN ROLE IS A DEVELOPER ROLE; THE `admin` USERNAME IS JIM** (Jim, Oct 2:
+   "There is only 1 Admin for the system ... and that is me. Charlene has admin rights
+   to make enhancements ... if she is blocked from accounting, she should not be able to
+   view or update accounting tables or screens"). Charlene saw Jim's approved expense
+   report because `can_view` admitted any ACCOUNTING_ROLES role and `admin` is one.
+   **Never grant accounting rights on role alone** -- use
+   `sections.has_accounting_authority(user)` (username `admin`, or accounting role AND
+   the Accounting section). Anything only the Admin should do checks the USERNAME
+   (`sections.SUPERUSER`), like section assignment and now approvers. The screen mirrors
+   it: `auth.canEditAccounting` requires `hasSection('accounting')`; `auth.canAssignSections`
+   is the username test. Admin-role users today: `admin`, `cbui`, `anaik`.
+6. **Assert the premise, not the screen.** "The edit screen was removed" was a link
    pushed off the right edge by the new dropdowns; "the key doesn't work" was a
    `^` pasted on the end, then the literal placeholder `PASTE_KEY_HERE` in the secret.
 
@@ -71,19 +83,44 @@ detail is in CLAUDE.md's deploy history; this is what a reader needs to carry fo
   punctuation on all 119 lines and 12 over 80. Ask whether the restriction is specific
   characters or upload types; the app strips all punctuation regardless, as Jim asked.
 - **Possible**: two employees with the same initials would read alike in MRI -- not handled.
-- **Admin -- setup**: every employee's name on reports and approver; untick Expenses
-  for anyone who should not see it.
+- **Jim -- UNTICK ACCOUNTING FOR CHARLENE (`cbui`)** in Settings > User Management, and
+  for `anaik` if they should not see it. v564 does nothing for her until then: with
+  Accounting ticked her admin role still reads approved/batched expense reports.
+- **Admin -- setup**: every employee's name on reports and approver (only the `admin`
+  login can now); untick Expenses for anyone who should not see it.
 - **DECIDED, do not change without Jim**: Expense Coding's Void does NOT check whether
   MRI posted the batch (§17.6). Safe only for a never-uploaded file; an uploaded batch
   is reversed in MRI.
 - **Possible next**: Google Places API if loose landmark names resolve poorly
   ("Pontchartrain Landing, New Orleans" resolved to Pontchartrain Blvd).
 
+### Next -- the treasury branch (`fix/treasury-mri-text`, `8ac9fe9`, NOT deployed)
+
+Jim asked: "Make treasury descriptions follow the MRI rule." The FILE already does (v563);
+this makes the SCREEN show it. `summarise` returns `mri_text` (each description as the file
+will carry it), the Journal Entry tab swaps each row's text to it and re-previews, and the
+description input is `maxlength="80"`. `treasury_upload_check` 61 -> 65.
+- **Still to do:** verify the JE tab in the running app (month input = 2026-08, Load the
+  month, every description <=80 and punctuation-free); then DELETE the AMB6 August treasury
+  rows imported into the LOCAL db for that test.
+- **Raise with Jim first -- a better default for wires.** PNC wire descriptions are
+  hundreds of characters with the payee at the END ("...CREDITOR:CCGS Investco LLC"), so
+  cutting to 80 keeps a useless bank header. Propose extracting the payee (and reference)
+  as the default text; the accountant can still edit it.
+- Deploy only on Jim's approval, with the full pre-flight.
+
+### Small things noticed, not fixed
+
+- `vue-tsc` reports three `'total' is possibly 'null'` errors at `ExpensesView.vue`
+  179-183 (pre-existing; the build does not type-check, so it ships fine).
+- Preview servers from today (flask-api, vue-dev) may still be running; stop them.
+
 ### Where things are
 
 - Design and measurements: `.claude/memory/expense_reporting.md` (all phases, the
   production ownership comparison, the wizard). Intercompany: `intercompany.md`.
-- Guardrails added this session: `expense_report_check` 84, `expense_receipt_check` 53,
+- Guardrails added this session: `expense_report_check` 98 (§12: the admin role vs the
+  Accounting section, and approvers by username; 98/0 in the v564 container), `expense_receipt_check` 53,
   `expense_coding_check` 53 (the Sep 24 acceptance now compares against accounting's text
   held to MRI's rule; every batch line <=80 and punctuation-free),
   `treasury_upload_check` 61 (accepted file identical in every field but the description),

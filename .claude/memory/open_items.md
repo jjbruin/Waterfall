@@ -62,7 +62,14 @@ Design, phases and measurements: `expense_reporting.md`.
 - **17.3 Accounting sets PPI2 to CAD** (Expense Coding > Currencies & recurring). Nothing
   seeds it. Owner: **accounting**.
 - **17.4 The admin unticks Expenses** for anyone who should not see it, and sets every
-  employee's name on reports and approver. Owner: **admin**.
+  employee's name on reports and approver -- since `v564` only the `admin` LOGIN can set
+  approvers. Owner: **admin**.
+- **17.7 Untick Accounting for Charlene (`cbui`)** -- and `anaik` if appropriate. `v564`
+  makes accounting's expense rights need the Accounting SECTION, not just the admin
+  role, but nothing changes for her until the box is unticked. Owner: **Jim**.
+- **17.8 Treasury descriptions on screen (`fix/treasury-mri-text`, `8ac9fe9`, local
+  only).** Built, not verified in the app, not deployed; wire descriptions need a
+  payee-first default (Jim's call). See the handoff. Owner: **Claude, then Jim**.
 - **17.6 DECIDED (Jim, Oct 2 2026): Expense Coding's Void stays as it is.** It does not
   check whether MRI already posted the batch (intercompany's void does). So it is safe
   only for a file that was NEVER uploaded: voiding an uploaded batch releases its
